@@ -3704,6 +3704,60 @@
       "latest": "0.1.2",
       "readme": "# @magpie-community/opencode-agnes-code-auth\n\n把 **Agnes Code 桌面端** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态（会话文件解密），直连云端 OpenAI 兼容网关，agent 以 `agnes-code/<model>` 使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。\n\n## 与 `agnes`（Agnes AI 国际版）的区别\n\nAgnes 在 registry 里有两个入口，都保留（[#614](https://github.com/magpie-community/plugins/issues/614)）：\n\n| | 本包（`agnes-code`） | [agnes](../agnes)（`agnes`） |\n| --- | --- | --- |\n| 登录 | 读 Agnes **Code 桌面端**已保存的会话（Windows，DPAPI + safeStorage），或粘贴 `accessToken` | 在 Chrome 里登录 Agnes AI 国际版网页（agnes-ai.com），不需要桌面端 |\n| 服务 | Agnes Code 编码产品：`api-agnes-code.agnes-ai.com/v1`（chat completions，编码模型目录） | Agnes AI 国际版的文本模型、Token/Agent Plan 用量与美元余额 |\n| 每日额度 | 本产品的每日积分（`api/v2/subscription/credits-balance`） | 该产品自己的套餐与余额读数 |\n| 平台 | 桌面端解密仅 Windows，其余平台走粘贴 | 有 Chrome 即可 |\n\n两者是 Agnes 同一个账号体系下的**两个不同产品**：各自读各自产品的余额读数，装的模型与端点也不同，装两个不会重复也不会互相替代。\n\nEnglish: two entries serve Agnes. This one reuses the Agnes Code desktop's\nsaved session (Windows) or a pasted `accessToken` and calls the Agnes Code\ngateway; the `agnes` entry signs in to Agnes AI international in Chrome and\nmeters that product's plans and USD balance. Same account system, different\nproducts: neither entry replaces the other.\n\n## 登录什么\n\n两种方式（登录时二选一）：\n\n1. **读取 Agnes Code 桌面端登录态（推荐，仅 Windows）**——本机装有 Agnes Code 桌面版并登录过即可，不用填任何东西。没装/没登录时这一步会给出 [Agnes Code 官网页](https://agnes-ai.com/agnescode) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（登录已过期、DPAPI 解不开、会话里没有 accessToken）会直接说明原因，打开桌面端登录或修好后同样自动完成。插件按 Chrome 同款方案解出会话（`Local State` 的 DPAPI 包裹 AES 主密钥 → 解 `code-auth-session.v1` 的 AES-256-GCM），只在本机、当前 Windows 用户下可解，凭据不外传：\n   - 会话目录：`%APPDATA%\\AgnesCode\\`。macOS/Linux 下桌面端解密不可用，会明确提示改用粘贴方式。\n   - 会话 JWT 过期会提示打开 Agnes Code 重新登录后重试（桌面端负责续期）。\n2. **粘贴 accessToken**——从桌面端会话里复制 JWT（`eyJ…`）；可选填用户名便于区分账号。\n\n每个账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。\n\n## 模型\n\n供应商 id `agnes-code`。目录**按账号实时拉取**（`GET /v1/models`，读取不计费）。2026-11 实测目录：\n\n| modelId | context | 备注 |\n| --- | --- | --- |\n| `agnes-3.0-flash` | 512k | 免费，思考 |\n| `agnes-2.5-flash` | 512k | 免费，思考 |\n| `agnes-2.5-pro` | 512k | 免费，思考 |\n| `gpt-6.1-sol` | 1M | 会员 |\n| `gpt-6-astra` | 1M | 会员 |\n| `grok-4.7` | 500k | 会员 |\n| `claude-opus-5-5` | 1M | 会员 |\n| `deepseek-v4.1-flash` | 1M | 会员，思考 |\n| `deepseek-v4-pro` | 1M | 会员，思考 |\n| `glm-5.3` | 1M | 会员 |\n| `kimi-k3` | 1M | 会员 |\n\n带 `thinking_toggle` 的模型标为推理模型；会员专属模型照常列出，免费账号调用会得到上游透明的 403（`subscription_required`），不影响登录态。\n\n## 每日签到\n\n免费档「每日登录送 600 积分」由服务端随当日会话自动发放，没有领取接口——插件的 `auth.checkin` 每天做一次账号会话活跃（只读请求）并观测发放前后的余额差：涨了记已领取（+600）；没涨**不谎称已签**，如实报「未观测到新发放」（发放可能挂靠桌面端登录）。\n\n## 用量\n\n显示真实积分余额（`GET /api/v2/subscription/credits-balance`，读取不计费）：积分总额、限时积分、永久积分（有则显示）。401/403 会把账号标记为需要重新登录。\n\n## 协议与上游\n\n- 模型调用：`POST https://api-agnes-code.agnes-ai.com/v1/chat/completions`（OpenAI chat 协议，`Authorization: Bearer <accessToken>`，思考在 `reasoning_content`）。\n- 模型目录：`GET https://api-agnes-code.agnes-ai.com/v1/models`。\n- 积分：`GET https://api.agnes-ai.com/api/v2/subscription/credits-balance`。\n\n## 风险提示\n\n非官方集成，凭据与协议来自桌面客户端逆向，上游随时可能变更；共享登录态的自动化使用可能违反 Agnes Code 服务条款，账号风险自担。请勿用于批量/滥用场景。\n\n## 安装与开发\n\n```\nmagpie plugin add @magpie-community/opencode-agnes-code-auth\nmagpie plugin login agnes-code              # 选「读取 Agnes Code 桌面端登录态」或「粘贴 accessToken」\nmagpie provider test agnes-code agnes-3.0-flash\n```\n\n测试（零依赖，Node ≥18 或 Bun）：\n\n```\nnpm test          # = node --test\n# 或 bun test\n```\n"
     },
+    "@magpie-community/opencode-agy-cli-auth": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-opencode-agy-cli-auth-0.1.0.tgz",
+          "integrity": "sha512-/Rs84vWPCBOGKo7+RlhXzSYCVdv1MXTbwdClBXvJNW16eycJ4pJXhg5TUcgBv0AzogFuAuRfXkpggEtbOh9ztQ==",
+          "time": "2026-11-07T12:20:00.299Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-agy-cli-auth",
+            "version": "0.1.0",
+            "description": "Magpie/OpenCode model provider that connects your local agy CLI through the Agent Client Protocol (agy acp), so Antigravity subscription models run through the real CLI",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "platform.mjs",
+              "mcp-server.mjs",
+              "usage.mjs",
+              "README.md",
+              "README.en.md",
+              "LICENSE",
+              "NOTICE.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-plugin",
+              "opencode",
+              "opencode-plugin",
+              "antigravity",
+              "agy",
+              "acp"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/agy-cli"
+            },
+            "scripts": {
+              "test": "bun test"
+            },
+            "magpie": {
+              "maxConcurrency": 16
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# agy-cli\n\n把本机的 Antigravity CLI（`agy`）接成 Magpie 里的一个模型 provider。装好以后，\nOpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放的模型，请求实际由\n`agy` 进程完成。\n\n**[English → README.en.md](README.en.md)** ｜ 来源、版权与迁移说明见 [NOTICE.md](NOTICE.md)\n\n## 这是什么\n\n插件以 Magpie provider 的形式运行。客户端发来 Anthropic Messages 格式的请求，插件把它\n翻译成 ACP（Agent Client Protocol）消息，交给本机的 `agy acp` 进程处理，再把输出翻译回\n流式响应。\n\n- 底层是真正的 agy CLI，走它自带的 ACP 通道。ACP 握手里的 `clientInfo` 是本插件自己的\n  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器；插件也不直接请求 Google\n  的内部接口。\n- 客户端自己的工具（读写文件、执行命令等）通过 MCP 暴露给模型。工具由客户端执行，结果\n  回传到同一轮 agy 对话里，模型看到的是原生工具调用。\n- 账号风险不由插件决定。Google 的使用政策变化时，插件无法替你保证账号不受限制。\n\n## 与 Antigravity ACP 的区别\n\n社区里的 Antigravity ACP（`antigravity-acp`）走的是同一个渠道：Antigravity 的模型经由 ACP。\n两者的区别：\n\n- **运行的程序**：Antigravity ACP 自己下载 Google 的 ACP 服务端（`agy_acp_server.par`，\n  约 400 MB），依赖 Antigravity IDE 的登录。本插件不下载任何东西，运行你自己装好、自己\n  登录过的 `agy` CLI（`agy acp`）。\n- **会话**：Antigravity ACP 每个请求开一个新会话，把历史当作上下文带上。本插件维护一个\n  agy 进程池，同一段对话复用同一个 agy 会话，重启后用 `session/resume` 接上；只有接不上时\n  才在字节预算内重放历史。\n- **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把\n  客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。\n- **额度**：本插件读 agy 自己的 `/usage` 报告；Antigravity ACP 读每次回复带的配额。\n\n## 工具桥接\n\nagy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy 的 PATH 最前面放一个\n私有的 `nc`，它把这条连接接到插件自己的 MCP 服务上；控制端口只监听本机回环地址，每个进程\n有自己的令牌。\n\n- 这依赖 agy 拨号的方式，不是 agy 公开承诺的接口，已在 1.4.12 和 1.5.0 上验证。agy 低于\n  1.4.12 时，插件会直接报错并提示升级。\n- 这个 `nc` 只对插件启动的 agy 进程生效，但对这些进程来说，它替换了 agy 运行的所有 `nc`。\n\n## 功能\n\n- **agy 开放的模型**：模型列表以 ACP 会话里 agy 给出的模型选项为准。`agy models` 列出的\n  模型如果没有在会话里向本客户端开放（agy 可能只向它认可的客户端开放 Claude、GPT-OSS），\n  就不会出现在列表里；第一个会话建立之前只列 Gemini。模型和思考等级可以在会话中切换，\n  历史保留。\n- **流式输出与思考摘要**：思考摘要以 `thinking` 块返回，设置 `AGY_BRIDGE_THINKING=0` 可关闭。\n- **图片输入**：支持内联 base64 的 PNG、JPEG、GIF、WebP。需要 agy 1.5.0 或更新版本，\n  因为图片能力要由 ACP 服务端声明。\n- **工具调用**：支持并行和连续调用。运行超过 150 秒的工具会先收到 \"still running\" 的\n  占位响应，真正的结果送达后继续同一轮对话，每个调用只在客户端执行一次。\n- **会话续接**：每轮结束后记录会话。重启 Magpie 或插件后，只要历史和指令的哈希一致，\n  就用 `session/resume` 接上上下文。状态文件只存会话 ID 与哈希，不存消息原文。\n- **隔离运行**：不读取你的全局 MCP 配置。每个 agy 进程使用临时 agent。agy 发起的权限\n  请求（shell、写文件、浏览器等）一律拒绝，真正的操作都在客户端侧完成。\n- **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口，仅作展示，额度耗尽时不会自动拦截请求。\n\n## 环境要求\n\n- Antigravity CLI（`agy`），带 `acp` 子命令，并且在终端里交互登录过一次 Google 账号。\n  文本与工具调用已在 1.4.12 和 1.5.0 上验证；图片输入需要 1.5.0。\n- 支持 OpenCode 风格 provider 插件的 Magpie。额度查询已在 Magpie 0.1.1599 上验证。\n- agy 版本低于 1.4.12 时，会话会被拒绝（见「工具桥接」）；低于 1.1.11 时，额度查询也会被\n  拒绝，以免旧版本把 `/usage` 当成模型提示词。\n- **自动更新**：插件启动的 agy 进程默认带 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，免得进程池里的\n  多个进程同时更新同一个可执行文件。你自己在终端里运行的 agy 不受影响，照常更新。你自己设置了\n  `AGY_CLI_DISABLE_AUTO_UPDATE`（包括设为 `false`）时，插件原样使用你的值。只通过本插件使用\n  agy 的话，请定期在终端里运行一次 `agy` 让它更新：版本过旧本身也更显眼。\n\n## 安装\n\n从 Magpie 社区插件市场安装（推荐）：在 Magpie 的 Plugins 页找到「Antigravity (local agy CLI)」点安装，或在终端运行：\n\n```sh\nmagpie plugin add @magpie-community/opencode-agy-cli-auth\n```\n\n装好后 provider id 是 `agy-cli`，模型写成 `agy-cli/<模型>`。默认并发 16，可在 Magpie 的 Providers 页 Concurrency 里改（0 表示不限）。\n\n安装完成后，先在终端运行一次 `agy` 完成 Google 登录。\n\n## 使用\n\n1. 在 Magpie 的 Providers 页找到 `agy-cli` 并点击 Sign in。插件会用 `agy models`\n   确认 CLI 可用。Google 凭据始终由 agy 自己保管，插件不读取、不保存。\n2. 模型名写成 `agy-cli/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，\n   在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。\n3. 在客户端里选用这个模型即可。\n\n## 并发\n\n- 插件自己的进程池上限由 `AGY_BRIDGE_MAX_PROCS` 决定，默认 16 个 agy 进程。\n- Magpie 的 Providers 页有单独的 Concurrency 设置，可填 0–1000，0 表示不限制。\n  你在页面里改的值会覆盖 `package.json` 里 `magpie.maxConcurrency` 的默认声明（16）。\n- 进程池已满、又找不到可以淘汰的进程时，插件返回 HTTP 503。建议两处数值保持一致：\n  Providers 页的并发数超过进程池上限，多出来的请求就会得到 503。\n\n## 平台\n\n- **macOS、Linux**：支持。\n- **原生 Windows**：支持 `.exe`、`.cmd`、`.bat` 的查找与启动，后台更新检查不弹控制台窗口，\n  并支持 `magpie quota`。目前只有命令构造的单元测试，尚未在 Windows 实机完成端到端验证。\n\n## 额度\n\n```sh\nmagpie quota agy-cli --json\nmagpie quota refresh agy-cli --json\n```\n\n额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组\n分别列出。插件不读写 Google 令牌，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示\n\"Limits not available\"，而不是 0% 或 100%。\n\n## 环境变量\n\n| 变量 | 默认值 | 作用 |\n|---|---|---|\n| `AGY_PATH` | 按 PATH 查找 | 指定 agy 可执行文件 |\n| `AGY_BRIDGE_MAX_PROCS` | 16 | agy 进程池上限 |\n| `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |\n| `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |\n| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |\n| `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |\n| `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |\n| `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |\n| `AGY_BRIDGE_IDE_CALL_DEADLINE_MS` | 150000 | 工具运行超过该时间仍未结束时，先返回 \"still running\" |\n| `AGY_BRIDGE_START_TIMEOUT_MS` / `_TURN_TIMEOUT_MS` / `_TOOL_TIMEOUT_MS` | 60 秒 / 5 分钟 / 30 分钟 | 进程启动、agy 无输出、等待客户端工具结果的超时 |\n| `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | 客户端已断开的挂起工具回合，最多占用进程池槽位这么久 |\n| `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 重放历史提示词的字节预算 |\n| `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |\n| `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |\n| `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |\n\n## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）\n\n默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词附加在后面（agy 声明\n支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在\n第一条提示词开头）。\n\n设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有\nagy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一\n发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的\n不再是 agy 自己的请求形态，所以默认关闭，由你自行决定是否开启。\n\n## 常见排查\n\n- **找不到 agy**：设置 `AGY_PATH` 指向可执行文件，或确认 `agy` 在 PATH 里。\n- **Sign in 失败或 agy 报登录相关错误**：在终端运行一次 `agy`，重新完成 Google 登录。\n- **HTTP 503**：进程池满。提高 `AGY_BRIDGE_MAX_PROCS` 和 Providers 页的 Concurrency，\n  或者减少同时进行的会话。\n- **额度显示 \"Limits not available\" 或报版本错误**：该窗口没有可测量的数据；版本错误则\n  把 agy 升级到 1.1.11 以上。\n- **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力（需要 1.5.0 以上）。另外只接受\n  内联 base64，URL 图片和 PDF 等二进制文档都会被拒绝。\n- **回复里出现 \"Agent execution terminated due to error.\"**：这是 agy 的错误标记。插件会\n  从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。\n- **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。\n  能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。\n- **想关掉思考摘要**：设置 `AGY_BRIDGE_THINKING=0`，或者在请求里带上\n  `thinking: { \"type\": \"disabled\" }`。\n\n## 开发\n\n```sh\nbun test packages/agy-cli        # 在仓库根目录\nbun scripts/check.mjs agy-cli\n```\n\n测试用假的 agy 进程（`test/` 下的 ACP stdio 服务）跑完整的 ACP 与 MCP 链路，不调用真实\nagy，不消耗额度。\n\n## License\n\nMIT。版权声明见 [LICENSE](LICENSE)，上游来源与逐项变更见 [NOTICE.md](NOTICE.md)。\n"
+    },
     "@magpie-community/opencode-astudio-auth": {
       "versions": {
         "0.1.0": {
