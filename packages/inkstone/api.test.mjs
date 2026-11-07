@@ -13,8 +13,8 @@ afterEach(() => f?.close())
 const META = JSON.parse(readFileSync(new URL("./testdata/public-models.json", import.meta.url), "utf8"))
 const auth = { type: "oauth", access: "sk-test", apiKey: "sk-test", uaaToken: "uaa-token" }
 
-async function plugin() {
-  return InkStoneAuthPlugin({ client: { auth: { set: async () => {} } } })
+async function plugin(options) {
+  return InkStoneAuthPlugin({ client: { auth: { set: async () => {} } } }, options)
 }
 
 function serve(live = [{ id: "glm-5.3" }, { id: "Agents-A1" }, { id: "intern-decision-4b" }]) {
@@ -111,7 +111,8 @@ test("the loader serves the models with the key at the platform's base URL", asy
 })
 
 test("the sign-in methods cover browser, API key, and API key + console token", async () => {
-  const p = await plugin()
+  // a machine with a Chromium browser, whatever the test machine has
+  const p = await plugin({ browserCandidates: () => ["/opt/chromium/chrome"] })
   const labels = p.auth.methods.map((m) => m.label)
   expect(labels[0]).toContain("Browser sign-in")
   expect(labels[1]).toContain("API key only")
@@ -123,7 +124,7 @@ test("the sign-in methods cover browser, API key, and API key + console token", 
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     // a displayless CI runner is refused up front, not left with a window it cannot open
     expect(result.type).toBe("failed")
-    expect(result.error).toContain("no display")
+    expect(result.error).toContain("needs a display")
   } else {
     expect(result.method).toBe("auto")
     expect(typeof result.callback).toBe("function")
@@ -134,6 +135,31 @@ test("the sign-in methods cover browser, API key, and API key + console token", 
   expect(browser.prompts[0].validate("")).toBeUndefined()
   expect(browser.prompts[0].validate("sk-abc")).toBeUndefined()
   expect(browser.prompts[0].validate("nope")).toContain("sk-")
+})
+
+test("with no Chromium browser the browser sign-in fails at authorize and names the other sign-ins (#825)", async () => {
+  // a display is claimed so a displayless runner reaches the browser check
+  const display = process.env.DISPLAY
+  process.env.DISPLAY = display || ":99"
+  try {
+    const p = await plugin({ browserCandidates: () => [] })
+    const result = p.auth.methods[0].authorize({})
+    // never "opened" with instructions that say a window opens
+    expect(result.type).toBe("failed")
+    expect(result.opened).toBeUndefined()
+    expect(result.callback).toBeUndefined()
+    expect(result.error).toContain("Microsoft Edge, Google Chrome or Chromium")
+    expect(result.error).toContain('"API key only"')
+    expect(result.error).toContain('"API key + console token"')
+    // the names it gives are the other methods' own labels
+    expect(p.auth.methods[1].label).toStartWith("API key only")
+    expect(p.auth.methods[2].label).toStartWith("API key + console token")
+    if (process.platform === "darwin") expect(result.error).toContain("Safari can't be used")
+    else expect(result.error).not.toContain("Safari")
+  } finally {
+    if (display === undefined) delete process.env.DISPLAY
+    else process.env.DISPLAY = display
+  }
 })
 
 test("the API-key + console-token method reads the token out of a pasted cookie", async () => {

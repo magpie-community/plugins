@@ -64,6 +64,8 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 | **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
 | **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
 
+浏览器登录需要本机装有 Microsoft Edge、Google Chrome 或 Chromium（也可以用 `MAGPIE_INKSTONE_BROWSER` 指定路径）。Safari 用不了：插件要在单独的浏览器 profile 里登录，Safari 不支持。没有这些浏览器时，选「仅 API Key」，或「API Key + 控制台 token」（token 可以从任何浏览器里复制，包括 Safari）。
+
 > 不读、不动你日常浏览器的任何数据：Edge/Chrome 136+ 禁止在默认用户目录上开调试端口，而且把真实 profile 从别的路径打开会清掉端砚登录态。插件的专用 profile 是唯一可行且安全的地方。
 
 浏览器登录时可以把**现有 Key** 粘进 “TokenPlan API key”；留空才会

@@ -9,6 +9,7 @@ import {
   jwtExp,
   profileDir,
   readUaaToken,
+  requireBrowser,
   tokenFresh,
   waitForConsoleWindow,
   waitForToken,
@@ -37,6 +38,27 @@ test("browser candidates reject a path that is not there", () => {
   expect(() => browserCandidates("C:\\definitely\\not\\here.exe")).toThrow()
   // an existing executable is taken as the explicit browser
   expect(browserCandidates(process.execPath)).toEqual([process.execPath])
+})
+
+test("requireBrowser gives the first browser, and with none says what to use instead (#825)", () => {
+  expect(requireBrowser(undefined, { candidates: () => ["/a/chrome", "/b/edge"] })).toBe("/a/chrome")
+  const none = { candidates: () => [] }
+  for (const platform of ["darwin", "linux", "win32"]) {
+    let msg = ""
+    try {
+      requireBrowser(undefined, { ...none, platform })
+    } catch (e) {
+      msg = e.message
+    }
+    expect(msg).toContain('"API key only"')
+    expect(msg).toContain('"API key + console token"')
+    expect(msg).toContain("MAGPIE_INKSTONE_BROWSER")
+    // Safari is named on macOS only, where it is the browser the user has
+    if (platform === "darwin") expect(msg).toContain("Safari can't be used")
+    else expect(msg).not.toContain("Safari")
+  }
+  // a missing explicit path still says which path
+  expect(() => requireBrowser("/definitely/not/here")).toThrow("/definitely/not/here")
 })
 
 test("waitForToken's single read has its own timeout, the account never waits 8 minutes", async () => {

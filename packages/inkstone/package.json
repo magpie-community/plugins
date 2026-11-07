@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-inkstone-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Intern InkStone (书生·端砚) TokenPlan in OpenCode and magpie: one console sign-in gives the ink-credit balance, the 5-hour and 7-day windows and the credit packs, and (with an API key) the plan's models for chat",
   "type": "module",
   "main": "./opencode.mjs",

@@ -30,8 +30,8 @@ import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/model
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
 import {
-  browserCandidates,
   readUaaToken,
+  requireBrowser,
   renewSilently,
   signInWithBrowser,
   tokenFresh,
@@ -108,6 +108,8 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   const waitForLogin = typeof options.waitForLogin === "function" ? options.waitForLogin : undefined
   const quotaTtlMs = optNum(options.quotaTtlMs, QUOTA_TTL_MS)
   const browserPath = typeof options.browser === "string" && options.browser.trim() ? options.browser.trim() : undefined
+  // test hook: the browsers this machine has, in place of the real lookup
+  const browserList = typeof options.browserCandidates === "function" ? options.browserCandidates : undefined
 
   const log = (level, message) => {
     try {
@@ -395,11 +397,13 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
               return {
                 type: "failed",
-                error: "no display for the browser sign-in; use the API key sign-in on this machine",
+                error:
+                  'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
               }
             }
             try {
-              browserCandidates(browserPath)
+              // an empty list fails here, before the host is told a window opened
+              requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
             } catch (e) {
               return { type: "failed", error: cleanDetail(e?.message ?? e) }
             }
