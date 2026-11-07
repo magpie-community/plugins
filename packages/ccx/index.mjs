@@ -10,11 +10,6 @@ export function fingerprint(auth) {
 }
 
 export async function CCXPlugin({ client } = {}, options = {}) {
-  const save = async (auth) => {
-    await client.auth.set({ path: { id: ID }, body: auth })
-    return auth
-  }
-
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -39,43 +34,47 @@ export async function CCXPlugin({ client } = {}, options = {}) {
       methods: [
         {
           type: "api",
-          label: "API Key（推荐，可自动签到）",
+          label: "API Key",
           prompts: [
-            { type: "password", key: "apiKey", message: "AutoBits 的 LLM API Key", placeholder: "sk-...", validate: (v) => String(v ?? "").trim() ? undefined : "请输入 API Key" },
+            { type: "password", key: "apiKey", message: "AutoBits 的 LLM API Key", placeholder: "sk-..." },
           ],
           async authorize(inputs) {
             const key = String(inputs?.apiKey ?? "").trim()
             if (!key) return { type: "failed", error: "请输入 API Key" }
-            // 只验证 Key 格式，不启动浏览器（避免闪退/卡住）
-            const profileId = fingerprint({ apiKey: key })
-            const auth = { type: "oauth", access: key, refresh: "", expires: 0, apiKey: key, profileId, accountId: `ccx-${profileId}`, username: "AutoBits 账号" }
-            return { type: "success", ...auth }
+            // api 方法的 authorize 返回 key 即可，Magpie 会存成 {type:"api", key}
+            return { type: "success", key }
           },
         },
         {
           type: "oauth",
-          label: "浏览器登录（没有 API Key 时使用）",
-          prompts: [
-            { type: "password", key: "apiKey", required: false, message: "可选：API Key（留空时先登录，再在控制台创建）", placeholder: "sk-..." },
-          ],
-          authorize(inputs) {
-            // 返回启动指令，让 Magpie 的宿主去打开浏览器
-            // 浏览器登录在 callback 里完成，这里只描述要做什么
+          label: "浏览器登录",
+          prompts: [],
+          authorize(inputs, { signal } = {}) {
+            // 立刻返回。opened: true 告诉 Magpie「插件自己会打开浏览器」，
+            // Magpie 就不会再打开一次（两个窗口会冲突）。
+            const profileId = fingerprint({ apiKey: randomUUID() })
             return {
-              url: "https://ccx.autobits.cc/login",
-              opened: false,
+              url: "",
+              opened: true,
               method: "auto",
-              instructions: "请点击下方「打开浏览器」按钮，在打开的 Edge/Chrome 窗口里手动登录 AutoBits（密码、邮件验证码或通行密钥）。登录成功后窗口会自动关闭。",
-              async callback(_code, { signal } = {}) {
+              instructions: "登录窗口会自己打开。请在窗口里完成登录（密码、验证码或通行密钥），完成后自动结束。",
+              async callback(_code, { signal: cbSignal } = {}) {
                 try {
-                  const key = String(inputs?.apiKey ?? "").trim()
-                  const profileId = fingerprint({ apiKey: key || randomUUID() })
-                  const auth = { type: "oauth", access: key, apiKey: key, profileId }
-                  const info = await signIn(auth, { ...options, signal })
-                  auth.accountId = info.username || `ccx-${profileId}`
-                  auth.username = info.username || "AutoBits 账号"
-                  return { type: "success", ...auth }
-                } catch (e) { return { type: "failed", error: e?.message ?? String(e) } }
+                  const auth = { type: "oauth", profileId }
+                  const info = await signIn(auth, { ...options, signal: cbSignal ?? signal })
+                  return {
+                    type: "success",
+                    access: "",
+                    refresh: "",
+                    expires: 0,
+                    apiKey: "",
+                    profileId,
+                    accountId: info.username || `ccx-${profileId}`,
+                    username: info.username || "AutoBits 账号",
+                  }
+                } catch (e) {
+                  return { type: "failed", error: e?.message ?? String(e) }
+                }
               },
             }
           },
