@@ -8,6 +8,7 @@ import { rpc } from './rpc.mjs';
 import { normalizeModels, mergeRuntimeModels, isMenuAlias } from './catalog.mjs';
 import { prepareLibrary, applyInstructions } from './library.mjs';
 import { inspectSecondary, patchSecondary } from './secondary-config.mjs';
+import { inspectModelPool, patchModelPool } from './model-pool-config.mjs';
 
 const PROVIDER = 'daimon-kimi-code';
 const TOOL_ORIGIN = 'https://agent-gw.kimi.com';
@@ -29,6 +30,22 @@ const SECONDARY_CODES = new Set(['secondary_config_unsupported', 'secondary_mode
   'secondary_model_reload_failed', 'secondary_model_unsupported_runtime', 'kimi_config_changed']);
 
 const validModelID = value => typeof value === 'string' && value.length <= 1024 && MODEL_ID.test(value);
+const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const sameModels = (left, right) => left === null || right === null ? left === right
+  : Object.keys(left).length === Object.keys(right).length
+    && Object.entries(left).every(([key, value]) => Object.hasOwn(right, key) && right[key] === value);
+const samePool = (left, right) => Boolean(left && right) && sameModels(left.models, right.models)
+  && left.defaultModel === right.defaultModel
+  && left.hasSecondaryTable === right.hasSecondaryTable && left.hasModelsTable === right.hasModelsTable;
+
+function plainPoolSnapshot(value) {
+  if (!record(value) || (value.models !== null && (!record(value.models)
+      || Object.values(value.models).some(description => typeof description !== 'string')))
+      || (value.defaultModel !== null && typeof value.defaultModel !== 'string')
+      || typeof value.hasSecondaryTable !== 'boolean' || typeof value.hasModelsTable !== 'boolean') return null;
+  return { models: value.models === null ? null : { ...value.models }, defaultModel: value.defaultModel,
+    hasSecondaryTable: value.hasSecondaryTable, hasModelsTable: value.hasModelsTable };
+}
 
 // A snapshot is the helper's four JSON fields and nothing else. Anything else
 // is treated as absent instead of being trusted.
@@ -155,6 +172,9 @@ export class KimiAdapter {
     this.secondaryReloadPending = false;
     this.secondaryReloadStale = false;
     this.secondaryExternal = null;
+    this.modelPoolExternal = null;
+    this.secondaryReloadRuntime = null;
+    this.secondaryReloadGeneration = null;
     this.secondaryAfter = 0;
   }
 
@@ -245,8 +265,9 @@ export class KimiAdapter {
       try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
       catch { status = 'catalog_unavailable'; }
     }
-    const appliedSecondaryModel = fs.existsSync(this.convertedNativeConfigFile) ? undefined : this.state?.secondaryModel
-      || (!this.state?.secondary ? this.state?.model || this.live?.model : undefined);
+    const appliedSecondaryModel = fs.existsSync(this.convertedNativeConfigFile) ? this.confirmedModelPool()
+      : this.state?.secondaryPool ? undefined : this.state?.secondaryModel
+        || (!this.state?.secondary ? this.state?.model || this.live?.model : undefined);
     return {
       enabled: desired.enabled === true,
       primaryModel: typeof desired.model === 'string' ? desired.model : '',
@@ -409,6 +430,7 @@ export class KimiAdapter {
     // Read the two scalars before the control calls below can regenerate the
     // file, so a value another writer owns survives them.
     this.observeNativeSecondary();
+    this.observeModelPool();
     if (!this.state?.active) return;
     let doc = readJSON(this.configFile);
     let modelsRestored = false;
@@ -503,12 +525,12 @@ export class KimiAdapter {
 
   // Replace the runtime TOML atomically, but only while it still holds the
   // bytes this patch was computed from. Mode 0600, same as Kimi's own writes.
-  commitNativeSecondary(bytes, text) {
-    if (!fs.readFileSync(this.nativeConfigFile).equals(bytes)) throw Error('kimi_config_changed');
-    const temp = this.nativeConfigFile + '.' + process.pid + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
+  commitNativeSecondary(bytes, text, file = this.nativeConfigFile) {
+    if (!fs.readFileSync(file).equals(bytes)) throw Error('kimi_config_changed');
+    const temp = file + '.' + process.pid + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
     try {
       fs.writeFileSync(temp, text, { mode: 0o600, flag: 'wx' });
-      fs.renameSync(temp, this.nativeConfigFile);
+      fs.renameSync(temp, file);
     } finally { try { fs.unlinkSync(temp); } catch { /* Renamed. */ } }
   }
 
@@ -562,7 +584,10 @@ export class KimiAdapter {
   // first application. Nothing is read while the feature is not in use.
   protectNativeSecondary(wanted) {
     this.observeNativeSecondary();
-    if (wanted && !this.secondaryOwnership() && !fs.existsSync(this.convertedNativeConfigFile)) {
+    this.observeModelPool();
+    if (fs.existsSync(this.convertedNativeConfigFile)) {
+      if ((wanted || this.secondaryOwnership()) && !this.modelPoolOwnership()) this.captureModelPoolBaseline();
+    } else if (wanted && !this.secondaryOwnership() && !this.modelPoolOwnership()) {
       this.captureSecondaryBaseline();
     }
   }
@@ -592,6 +617,235 @@ export class KimiAdapter {
     };
   }
 
+  // V2 owns only the pool/default keys. Model and provider definitions can carry
+  // credentials, so they are validated in memory and never copied into state.
+  modelPoolOwnership() {
+    const owned = this.state?.secondaryPool;
+    const baseline = plainPoolSnapshot(owned?.baseline);
+    return baseline ? { baseline, written: plainPoolSnapshot(owned.written),
+      selection: typeof owned.selection === 'string' ? owned.selection : '', restored: owned.restored === true } : null;
+  }
+
+  convertedConfig(text) {
+    let doc;
+    try { doc = Bun.TOML.parse(text); } catch { throw Error('secondary_model_unsupported_runtime'); }
+    if (!record(doc.models) || !record(doc.providers) || typeof doc.default_model !== 'string'
+        || !record(doc.models[doc.default_model]) || !record(doc.loop_control)
+        || !Number.isSafeInteger(doc.loop_control.max_attempts_per_step)
+        || doc.loop_control.max_attempts_per_step < 0 || Object.hasOwn(doc.loop_control, 'max_retries_per_step')) {
+      throw Error('secondary_model_unsupported_runtime');
+    }
+    return doc;
+  }
+
+  assertModelPoolAliases(doc, aliases) {
+    for (const alias of aliases) {
+      const model = doc.models[alias];
+      if (!isMenuAlias(alias) || !record(model) || model.provider !== PROVIDER || model.model !== alias
+          || (model.name !== undefined && model.name !== alias)
+          || !record(doc.providers[PROVIDER]) || doc.providers[PROVIDER].type !== 'kimi') {
+        throw Error('secondary_model_unsupported_runtime');
+      }
+    }
+  }
+
+  captureModelPoolBaseline() {
+    let baseline;
+    try {
+      const text = fs.readFileSync(this.convertedNativeConfigFile, 'utf8');
+      this.convertedConfig(text);
+      baseline = inspectModelPool(text);
+    } catch { return; } // The primary connects before optional native errors are reported.
+    this.state.secondaryPool = { baseline, written: null, selection: '' };
+    this.saveState();
+  }
+
+  confirmedModelPool() {
+    const owned = this.modelPoolOwnership();
+    if (!owned?.written?.models || !this.state?.secondaryPoolModel) return;
+    try {
+      const text = fs.readFileSync(this.convertedNativeConfigFile, 'utf8');
+      this.assertModelPoolAliases(this.convertedConfig(text), Object.keys(owned.written.models));
+      if (samePool(inspectModelPool(text), owned.written)) {
+        return this.state.secondaryPoolModel;
+      }
+    } catch { /* An unreadable or changed pool has no current confirmation. */ }
+  }
+
+  setAppliedModelPool(value) {
+    if (!this.state) return;
+    let changed = this.state.secondaryPoolModel !== value;
+    this.state.secondaryPoolModel = value;
+    if (value && this.state.secondaryPool?.restored) { delete this.state.secondaryPool.restored; changed = true; }
+    if (changed) this.saveState();
+  }
+
+  observeModelPool() {
+    const owned = this.modelPoolOwnership();
+    if (!owned?.written) { this.modelPoolExternal = null; return; }
+    let current;
+    try { current = this.effectiveModelPool(inspectModelPool(fs.readFileSync(this.convertedNativeConfigFile, 'utf8'))); }
+    catch { return; }
+    if (owned.restored && samePool(current, owned.baseline)) { this.modelPoolExternal = null; return; }
+    const foreignModels = current.models !== null && !sameModels(current.models, owned.written.models);
+    const foreignDefault = current.defaultModel !== null && current.defaultModel !== owned.written.defaultModel;
+    // Pool keys and its default form one valid binding. Preserve the whole
+    // narrow snapshot if either part changed, including across regeneration.
+    this.modelPoolExternal = foreignModels || foreignDefault ? current : null;
+  }
+
+  effectiveModelPool(current) {
+    const external = this.modelPoolExternal;
+    if (!external) return current;
+    const models = current.models === null && external.models !== null ? external.models : current.models;
+    const defaultModel = current.defaultModel === null && external.defaultModel !== null ? external.defaultModel : current.defaultModel;
+    return { models, defaultModel,
+      hasSecondaryTable: current.hasSecondaryTable || external.hasSecondaryTable,
+      hasModelsTable: models === current.models ? current.hasModelsTable : external.hasModelsTable };
+  }
+
+  useSecondaryReloadRuntime(runtime) {
+    const generation = this.state?.generation;
+    if (this.secondaryReloadRuntime === runtime && this.secondaryReloadGeneration === generation) return;
+    this.secondaryReloadRuntime = runtime;
+    this.secondaryReloadGeneration = generation;
+    this.secondaryPending.clear();
+    this.secondaryReloadPending = false;
+    this.secondaryReloadStale = false;
+    this.secondaryAfter = 0;
+  }
+
+  async confirmModelPoolReload(runner, requireSession) {
+    const retried = await this.retrySecondarySessions(runner);
+    if (retried.failed) throw Error('secondary_model_reload_failed');
+    if (retried.pending) return { waiting: true };
+    if (!this.secondaryReloadPending) return {};
+    if (!runner || runner.lifecycleStatus !== 'running') return requireSession ? { waitingSession: true } : {};
+    if (busy(runner)) return { waiting: true };
+    if (Date.now() < this.secondaryAfter) return requireSession ? { waitingSession: true } : { waiting: true };
+    const reload = await this.reloadSecondarySessions(runner);
+    if (reload.failed) throw Error('secondary_model_reload_failed');
+    if (reload.pending) return { waiting: true };
+    // Unlike legacy, an empty V2 batch does not reload the shared ConfigService.
+    if (requireSession && !reload.confirmed) return { waitingSession: true };
+    this.secondaryReloadPending = false;
+    return {};
+  }
+
+  async reconcileModelPool(runner, wanted, primary) {
+    let owned = this.modelPoolOwnership();
+    if (!wanted && !owned && !this.secondaryOwnership()) return { untouched: true };
+    this.useSecondaryReloadRuntime('v2');
+    this.setAppliedSecondary(''); // Never carry a legacy acknowledgement into V2.
+    let bytes, doc, fileState;
+    try {
+      bytes = fs.readFileSync(this.convertedNativeConfigFile);
+      doc = this.convertedConfig(bytes.toString('utf8'));
+      fileState = inspectModelPool(bytes.toString('utf8'));
+    } catch { this.setAppliedModelPool(''); throw Error('secondary_model_unsupported_runtime'); }
+    const primaryRow = this.catalog.find(row => row.id === primary);
+    const secondaryRow = this.catalog.find(row => row.id === (wanted || primary));
+    if (!primaryRow || !secondaryRow) { this.setAppliedModelPool(''); throw Error('secondary_model_unavailable'); }
+    try { this.assertModelPoolAliases(doc, [primaryRow.alias, secondaryRow.alias]); }
+    catch (error) { this.setAppliedModelPool(''); throw error; }
+    const nativeEffort = doc.secondary_model?.default_effort;
+    if (nativeEffort !== undefined) {
+      if (typeof nativeEffort !== 'string') { this.setAppliedModelPool(''); throw Error('secondary_config_unsupported'); }
+      const effort = nativeEffort.trim().toLowerCase();
+      for (const row of [primaryRow, secondaryRow]) {
+        if (!effort) break;
+        const model = doc.models[row.alias];
+        const capabilities = Array.isArray(model.capabilities)
+          ? model.capabilities.filter(value => typeof value === 'string').map(value => value.trim().toLowerCase())
+          : model.capabilities?.thinking === true ? ['thinking'] : [];
+        const always = model.always_thinking === true || capabilities.includes('always_thinking');
+        const thinking = always || model.adaptive_thinking === true || capabilities.includes('thinking');
+        const efforts = Array.isArray(model.support_efforts)
+          ? model.support_efforts.filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean) : [];
+        if (effort === 'off' ? always : !thinking || (efforts.length > 0 && effort !== 'on' && !efforts.includes(effort))) {
+          this.setAppliedModelPool(''); throw Error('secondary_config_unsupported');
+        }
+      }
+    }
+    const requested = { models: primaryRow.alias === secondaryRow.alias
+      ? { [primaryRow.alias]: 'Primary and secondary model / 主模型与副模型' }
+      : { [primaryRow.alias]: 'Primary model / 主模型', [secondaryRow.alias]: 'Secondary model / 副模型' },
+      defaultModel: secondaryRow.alias, hasSecondaryTable: true, hasModelsTable: true };
+    const selection = sha(JSON.stringify([primary, wanted || primary]));
+    const current = this.effectiveModelPool(fileState);
+    const reassert = !owned || owned.selection !== selection || (owned.restored && samePool(current, owned.baseline));
+    const ownsModels = current.models === null || sameModels(current.models, requested.models)
+      || Boolean(owned?.written && sameModels(current.models, owned.written.models));
+    const ownsDefault = current.defaultModel === null || current.defaultModel === requested.defaultModel
+      || current.defaultModel === owned?.written?.defaultModel;
+    const target = reassert || (ownsModels && ownsDefault) ? requested : current;
+    let next;
+    try { next = patchModelPool(bytes.toString('utf8'), target); }
+    catch { this.setAppliedModelPool(''); throw Error('secondary_model_unsupported_runtime'); }
+    const changed = next !== bytes.toString('utf8');
+    const applied = samePool(target, requested);
+    const newSelection = !owned?.written || owned.selection !== selection || !samePool(owned.written, requested);
+    if (changed || newSelection || !applied) this.setAppliedModelPool('');
+    if ((changed || newSelection || this.secondaryReloadPending || (applied && !this.state.secondaryPoolModel)) && busy(runner)) {
+      return { waiting: true };
+    }
+    if (!owned) {
+      this.state.secondaryPool = { baseline: fileState, written: null, selection: '' };
+      owned = this.modelPoolOwnership();
+    }
+    if (newSelection) {
+      this.state.secondaryPool.written = requested;
+      this.state.secondaryPool.selection = selection;
+      this.saveState();
+    }
+    if (changed || newSelection) {
+      this.secondaryPending.clear();
+      this.secondaryReloadStale = false;
+      this.secondaryAfter = 0;
+      this.secondaryReloadPending = true;
+    }
+    if (changed) this.commitNativeSecondary(bytes, next, this.convertedNativeConfigFile);
+    this.modelPoolExternal = null;
+    if (applied && !this.state.secondaryPoolModel) this.secondaryReloadPending = true;
+    const confirmation = await this.confirmModelPoolReload(runner, applied);
+    if (confirmation.waiting || confirmation.waitingSession) return confirmation;
+    if (!applied) return { applied: false };
+    this.setAppliedModelPool(wanted || primary);
+    return { applied: true };
+  }
+
+  restoreModelPoolOnExit() {
+    const owned = this.modelPoolOwnership();
+    if (!owned) return;
+    const bytes = fs.readFileSync(this.convertedNativeConfigFile);
+    const current = this.effectiveModelPool(inspectModelPool(bytes.toString('utf8')));
+    const ownsModels = current.models === null || Boolean(owned.written && sameModels(current.models, owned.written.models));
+    const ownsDefault = current.defaultModel === null || current.defaultModel === owned.written?.defaultModel;
+    const target = ownsModels && ownsDefault ? owned.baseline : current;
+    const next = patchModelPool(bytes.toString('utf8'), target);
+    if (next !== bytes.toString('utf8')) this.commitNativeSecondary(bytes, next, this.convertedNativeConfigFile);
+    if (ownsModels && ownsDefault) { this.state.secondaryPool.restored = true; this.saveState(); }
+    this.setAppliedModelPool('');
+  }
+
+  async restoreModelPools(runner) {
+    if (busy(runner)) return { waiting: true };
+    const starting = this.secondaryReloadRuntime !== 'v2-restore';
+    this.useSecondaryReloadRuntime('v2-restore');
+    // Both files return to their own baseline before confirming the final state.
+    this.restoreNativeSecondaryOnExit();
+    this.restoreModelPoolOnExit();
+    if (starting) this.secondaryReloadPending = true;
+    const confirmation = await this.confirmModelPoolReload(runner, false);
+    if (confirmation.waiting) return confirmation;
+    this.dropSecondaryOwnership();
+    delete this.state.secondaryPool;
+    delete this.state.secondaryPoolModel;
+    this.modelPoolExternal = null;
+    this.saveState();
+    return { applied: true };
+  }
+
   // Cached sessions only. An empty list means there is nothing left to reload;
   // an unconfirmed session is retried by id once the runtime is idle. Every row
   // is accounted for by id, so a mixed skipped+failed result can never become a
@@ -602,12 +856,12 @@ export class KimiAdapter {
     try { result = await this.rpcCall(runner, RELOAD_SESSIONS, {}, { timeout: 30000 }); }
     catch { this.secondaryReloadStale = true; return { failed: true }; }
     if (!Array.isArray(result?.sessions)) { this.secondaryReloadStale = true; return { failed: true }; }
-    let failed = false;
+    let failed = false, confirmed = false;
     for (const session of result.sessions) {
       const status = session?.status;
       const id = typeof session?.kernelSessionId === 'string' && session.kernelSessionId
         ? session.kernelSessionId : '';
-      if (status === 'reloaded') { if (id) this.secondaryPending.delete(id); continue; }
+      if (status === 'reloaded') { if (id) { confirmed = true; this.secondaryPending.delete(id); } continue; }
       if ((status === 'skipped-active-turn' || status === 'failed') && id) {
         this.secondaryPending.add(id);
         if (status === 'failed') failed = true;
@@ -620,7 +874,7 @@ export class KimiAdapter {
     if (failed) return { failed: true };
     const pending = this.secondaryPending.size > 0;
     if (!pending) this.secondaryReloadStale = false;
-    return { pending };
+    return { pending, confirmed };
   }
 
   // Retry only the ids a previous pass left unconfirmed. Sessions that were
@@ -652,18 +906,19 @@ export class KimiAdapter {
   // {waiting}; unsupported input and unconfirmed reloads throw a fixed code.
   // With no preference and no ownership the runtime TOML is never read.
   async reconcileSecondary(runner, wanted, { inheritModel = '' } = {}) {
+    if (!wanted && !inheritModel) {
+      if (this.modelPoolOwnership()) return this.restoreModelPools(runner);
+    } else if (fs.existsSync(this.convertedNativeConfigFile) || this.modelPoolOwnership()) {
+      return this.reconcileModelPool(runner, wanted, inheritModel);
+    }
+    return this.reconcileLegacySecondary(runner, wanted, { inheritModel });
+  }
+
+  async reconcileLegacySecondary(runner, wanted, { inheritModel = '' } = {}) {
     const owned = this.secondaryOwnership();
     if (!wanted && !owned) { this.secondaryExternal = null; return { untouched: true }; }
     const inheriting = !wanted && Boolean(inheritModel);
     if (inheriting) wanted = inheritModel;
-
-    // V2 reads the converted file and uses a different secondary-model contract.
-    // A legacy write plus reload acknowledgement cannot confirm application.
-    // Restore calls have no wanted model and still recover our legacy scalars.
-    if (wanted && fs.existsSync(this.convertedNativeConfigFile)) {
-      this.setAppliedSecondary('');
-      throw Error('secondary_model_unsupported_runtime');
-    }
 
     const retried = await this.retrySecondarySessions(runner);
     if (retried.failed) throw Error('secondary_model_reload_failed');
@@ -769,7 +1024,7 @@ export class KimiAdapter {
     if (!owned) return;
     const bytes = fs.readFileSync(this.nativeConfigFile);
     const text = bytes.toString('utf8');
-    const current = inspectSecondary(text);
+    const current = this.effectiveSecondary(inspectSecondary(text));
     const next = patchSecondary(text, restoreTarget(current, owned.baseline, owned.alias));
     if (next !== text) this.commitNativeSecondary(bytes, next);
     // A clean exit deliberately restored our own two scalars. Distinguish that
@@ -794,7 +1049,7 @@ export class KimiAdapter {
         if (this.state.active && busy(runner)) { this.report('waiting_kimi_idle'); return; }
         const wasActive = this.state.active;
         await this.restore();
-        if (wasActive && this.secondaryOwnership()) {
+        if (wasActive && (this.secondaryOwnership() || this.modelPoolOwnership())) {
           // These ids were waiting for the old preference. A full disconnect
           // restores the file first and starts confirmation of that baseline.
           this.secondaryPending.clear();
@@ -830,6 +1085,7 @@ export class KimiAdapter {
         this.protectNativeSecondary(wantedSecondary);
         await this.syncCatalog(runner, desired, target);
         const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
+        if (secondary.waitingSession) { this.report('secondary_model_waiting_session'); return; }
         if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
         if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
         this.report('connected', { model: desired.model, models: this.catalog.length, ...(this.catalogError ? {catalog: this.catalogError} : {}) }); return;
@@ -860,6 +1116,7 @@ export class KimiAdapter {
       const previous = this.state;
       this.state = { active: true, originalBase, bridgeURL: this.bridgeURL, generation, signature, model: desired.model,
         ...(previous?.secondary ? { secondary: previous.secondary } : {}),
+        ...(previous?.secondaryPool ? { secondaryPool: previous.secondaryPool, secondaryPoolModel: '' } : {}),
         ...(typeof previous?.secondaryModel === 'string' ? { secondaryModel: previous.secondaryModel } : {}) };
       // Persist recovery ownership before writing the Kimi file.
       this.saveState();
@@ -877,6 +1134,7 @@ export class KimiAdapter {
       // Reapply after the catalog sync, which may regenerate the same file.
       const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
       this.pausedSignature = null;
+      if (secondary.waitingSession) { this.report('secondary_model_waiting_session'); return; }
       if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
       if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
       this.report('connected', { model: desired.model });
@@ -906,15 +1164,18 @@ export class KimiAdapter {
     await settingsServer?.stop();
     while (this.running) await new Promise(resolve => setTimeout(resolve, 20));
     if (this.locked) {
-      try { await this.restore({ reload: false }); } catch { /* Never write a changed third-party configuration. */ }
-      // Shutdown restores disk state without starting a new session reload.
-      // Keep ownership as the synchronous exit path does for the next start.
+      try { await this.restore(); } catch { /* Never write a changed third-party configuration. */ }
+      // Restore primary/menu settings through the normal control API first.
+      // The owned secondary fields then return to disk without extra session
+      // reload calls; keep ownership for the next start, as on synchronous exit.
       let code = 'disconnected';
       try {
         this.restoreNativeSecondaryOnExit();
       } catch (error) {
         if (SECONDARY_CODES.has(error.message)) code = error.message;
       }
+      try { this.restoreModelPoolOnExit(); }
+      catch { code = 'secondary_config_unsupported'; }
       this.report(code);
       this.releaseLock();
     }
@@ -936,6 +1197,7 @@ export class KimiAdapter {
     // Synchronous host exit: only the two owned scalars, never a control call.
     // Ownership stays on disk so the next start can finish anything left over.
     try { this.restoreNativeSecondaryOnExit(); } catch { /* Leave a changed configuration alone. */ }
+    try { this.restoreModelPoolOnExit(); } catch { /* Leave a changed configuration alone. */ }
     try { atomicJSON(this.catalogFile, {schemaVersion:1, enabled:false, models:[], updatedAt:new Date().toISOString()}); } catch { /* Exiting. */ }
     this.releaseLock();
   }

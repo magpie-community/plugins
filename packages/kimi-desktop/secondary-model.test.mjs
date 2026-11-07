@@ -96,9 +96,20 @@ async function fixture({ secondaryModel = '', native, regenerate = true, script 
         case 'conversations.getKimiModelList': return { models: runtimeModels };
         case 'conversations.updateKimiModelList':
           runtimeModels = params.models;
+          {
+            const current = read(controller.configFile);
+            current.model.models = Object.fromEntries(runtimeModels.map(row => [row.model,
+              { model: row.model, provider: 'daimon-kimi-code' }]));
+            write(controller.configFile, current);
+          }
           if (regenerate) writeNative(runtimeToml());
           return { ok: true };
         case 'conversations.setModel':
+          {
+            const current = read(controller.configFile);
+            current.model.current = params.modelAlias;
+            write(controller.configFile, current);
+          }
           if (regenerate) writeNative(runtimeToml());
           return { current: params.modelAlias };
         case 'kimiPlugin.reloadActiveSessions': return behavior.reload();
@@ -140,6 +151,7 @@ async function fixture({ secondaryModel = '', native, regenerate = true, script 
   const nativeText = () => fs.readFileSync(nativeFile, 'utf8');
   return {
     controller, connection, runner, calls, upstream, nativeFile, catalog, doc,
+    get runtimeModels() { return runtimeModels; },
     nativeText, writeNative,
     // Daimon rewriting the file from its own fixed key set, outside any adapter call.
     regenerate: (options = {}) => writeNative(runtimeToml(options)),
@@ -261,6 +273,35 @@ for (const includeSecondary of [false, true]) {
   });
 }
 
+test('a two-model POST reports partial persistence when only the secondary file save fails', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  const rename = fs.renameSync;
+  const selected = [];
+  let blockedWrites = 0, hostBytes;
+  try {
+    f.controller.setPrimaryModel = async model => {
+      selected.push(model);
+      write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model });
+      hostBytes = fs.readFileSync(f.controller.connectionFile, 'utf8');
+    };
+    fs.renameSync = (from, to) => {
+      if (to === f.controller.connectionFile) {
+        blockedWrites += 1;
+        throw Object.assign(Error('synthetic secondary persistence failure'), { code: 'EACCES' });
+      }
+      return rename(from, to);
+    };
+    const response = await settingsPost(f.controller, { primaryModel: secondaryID, secondaryModel: '' });
+    expect(response).toEqual({ status: 409, body: { error: 'settings_partially_saved' } });
+    expect(blockedWrites).toBe(1);
+    expect(selected).toEqual([secondaryID]);
+    expect(fs.readFileSync(f.controller.connectionFile, 'utf8')).toBe(hostBytes);
+    expect(read(f.controller.connectionFile).model).toBe(secondaryID);
+    expect(read(f.controller.connectionFile).secondaryModel).toBe(secondaryID);
+    expect(read(f.controller.connectionFile).gateway).toEqual(f.connection.gateway);
+  } finally { fs.renameSync = rename; await f.cleanup(); }
+});
+
 test('disconnect reloads the baseline after control calls even when its bytes were already restored externally', async () => {
   const baseline = runtimeToml({ secondaryModel: 'native/first', flag: false });
   const f = await fixture({ secondaryModel: secondaryID, native: baseline, regenerate: false });
@@ -356,7 +397,7 @@ test('an unsupported optional secondary TOML does not block the primary bridge r
   } finally { await f.cleanup(); }
 });
 
-test('a converted runtime rejects the first secondary application while the primary still routes', async () => {
+test('an unrecognized converted layout rejects secondary application while the primary still routes', async () => {
   const f = await fixture({ secondaryModel: secondaryID, regenerate: false });
   const convertedFile = path.join(path.dirname(f.nativeFile), 'home', 'config.toml');
   const converted = 'default_model = "converted-native"\n';
@@ -385,7 +426,7 @@ test('a converted runtime rejects the first secondary application while the prim
 });
 
 for (const cleanup of ['disconnect', 'stop']) {
-  test(`a newly converted runtime invalidates secondary confirmation but ${cleanup} still restores legacy ownership`, async () => {
+  test(`an unrecognized converted layout invalidates legacy confirmation but ${cleanup} still restores legacy ownership`, async () => {
     const baseline = runtimeToml({ secondaryModel: 'native/first', flag: false });
     const f = await fixture({ secondaryModel: secondaryID, native: baseline, regenerate: false });
     const convertedFile = path.join(path.dirname(f.nativeFile), 'home', 'config.toml');
@@ -420,7 +461,8 @@ for (const cleanup of ['disconnect', 'stop']) {
       } else {
         const calls = f.calls.length;
         await f.controller.stop();
-        expect(f.calls).toHaveLength(calls);
+        expect(reloadCalls(f.calls.slice(calls))).toHaveLength(0);
+        expect(sessionCalls(f.calls.slice(calls))).toHaveLength(0);
         expect(read(f.controller.stateFile).secondary.restored).toBe(true);
       }
       expect(f.controller.status.code).toBe('disconnected');
@@ -862,7 +904,7 @@ test('a reload row that cannot be retried by id keeps the preference unapplied u
   } finally { await f.cleanup(); }
 });
 
-test('stop restores the disk baseline without new RPCs and keeps recovery ownership', async () => {
+test('legacy stop restores native current and menu without secondary session RPCs', async () => {
   const f = await fixture({
     secondaryModel: secondaryID,
     native: runtimeToml({ secondaryModel: 'native/first', flag: false }),
@@ -871,16 +913,31 @@ test('stop restores the disk baseline without new RPCs and keeps recovery owners
     await f.controller.tick();
     expect(f.controller.status.code).toBe('connected');
     expect(Bun.TOML.parse(f.nativeText()).secondary_model.model).toBe(alias.get(secondaryID));
+    const current = read(f.controller.configFile);
+    current.model.current = alias.get(primaryID);
+    write(f.controller.configFile, current);
+    expect(f.runtimeModels.some(row => row.model === alias.get(primaryID))).toBe(true);
+    expect(fs.existsSync(f.controller.modelBackupFile)).toBe(true);
     const calls = f.calls.length;
     await f.controller.stop();
+    expect(read(f.controller.configFile).model.current).toBe('k2d8-preview');
+    expect(f.runtimeModels.map(row => row.model)).toEqual(['k2d8-preview']);
+    expect(Object.keys(read(f.controller.configFile).model.models)).toEqual(['k2d8-preview']);
+    expect(f.calls.slice(calls).map(call => call.method)).toEqual([
+      'conversations.getKimiModelList', 'conversations.setModel',
+      'conversations.updateKimiModelList', 'conversations.setModel',
+    ]);
+    expect(fs.existsSync(f.controller.modelBackupFile)).toBe(false);
     // Still checked before the temporary directory is removed.
     const toml = Bun.TOML.parse(f.nativeText());
     expect(toml.secondary_model.model).toBe('native/first');
     expect(toml.experimental['secondary-model']).toBe(false);
     expect(toml.models['k2d8-preview']).toBeDefined();
     expect(fs.readFileSync(f.controller.configFile, 'utf8')).toContain(official);
-    expect(f.calls).toHaveLength(calls);
+    expect(reloadCalls(f.calls.slice(calls))).toHaveLength(0);
+    expect(sessionCalls(f.calls.slice(calls))).toHaveLength(0);
     expect(read(f.controller.stateFile).secondary.restored).toBe(true);
+    expect(read(f.controller.stateFile).active).toBe(false);
     expect(f.controller.status.code).toBe('disconnected');
   } finally { await f.cleanup(); }
 });

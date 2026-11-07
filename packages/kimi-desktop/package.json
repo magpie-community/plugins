@@ -12,6 +12,7 @@
     "catalog.mjs",
     "library.mjs",
     "secondary-config.mjs",
+    "model-pool-config.mjs",
     "primary-model.mjs",
     "settings.mjs",
     "settings.html",

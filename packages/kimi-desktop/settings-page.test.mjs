@@ -156,6 +156,43 @@ for (const lang of ['en', 'zh']) {
     p.state.status = 'connected'; await p.refresh();
     assert.match(p.node('application').textContent, w.applied);
   });
+  test(`${lang}: primary-only confirmation survives saves and refreshes without confirming a secondary`, async () => {
+    const state = initial(); delete state.appliedSecondaryModel;
+    const p = await page({ lang, state, saveStatus: 'connected' });
+    const primaryOnly = lang === 'zh'
+      ? '主模型已应用，未单独选择辅助模型。'
+      : 'The primary model is applied. No secondary model is selected.';
+    assert.equal(p.node('application').textContent, primaryOnly);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    await p.refresh(); assert.equal(p.node('application').textContent, primaryOnly);
+    await p.choose('primary', 'fixture/other');
+    assert.match(p.node('application').textContent, w.dirty);
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/other' }]);
+    assert.match(p.node('notice').textContent, w.saved);
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+    p.state.appliedPrimaryModel = 'fixture/other';
+    await p.refresh(); assert.equal(p.node('application').textContent, primaryOnly);
+    for (const status of ['secondary_model_waiting_session', 'secondary_model_unsupported_runtime', 'secondary_config_unsupported']) {
+      p.state.status = status; await p.refresh();
+      assert.notEqual(p.node('application').textContent, primaryOnly);
+      assert.doesNotMatch(p.node('application').textContent, w.applied);
+    }
+    p.state.status = 'connected'; await p.refresh();
+    await p.choose('secondary', 'fixture/auxiliary'); await p.save();
+    assert.deepEqual(p.posts().at(-1), { secondaryModel: 'fixture/auxiliary' });
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    await p.choose('secondary', ''); await p.save();
+    assert.equal(p.node('application').textContent, primaryOnly);
+    p.state.appliedSecondaryModel = 'fixture/main'; await p.refresh();
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    p.state.appliedSecondaryModel = 'fixture/other'; await p.refresh();
+    assert.match(p.node('application').textContent, w.applied);
+    assert.notEqual(p.node('application').textContent, primaryOnly);
+  });
   test(`${lang}: a failed save keeps radio drafts for retry`, async () => {
     const p = await page({ lang, failures: 1 });
     await p.choose('primary', 'fixture/other'); await p.choose('secondary', 'fixture/auxiliary'); await p.save();
@@ -172,6 +209,31 @@ for (const lang of ['en', 'zh']) {
       ? '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'
       : 'This Kimi runtime does not currently support a secondary model. The primary model remains available.');
     assert.equal(p.node('primary').disabled, false);
+  });
+  test(`${lang}: waiting for a session cannot confirm stale applied IDs and keeps both models editable`, async () => {
+    const p = await page({ lang, state: { ...initial(), secondaryModel: 'fixture/auxiliary', appliedSecondaryModel: 'fixture/auxiliary', status: 'secondary_model_waiting_session' }, saveStatus: 'secondary_model_waiting_session' });
+    const waiting = lang === 'zh'
+      ? '设置已保存。请先在 Work 会话中发送一条消息，待会话空闲后确认副模型配置已载入。'
+      : 'Settings are saved. Send a message in a Work conversation, then wait for it to become idle so the secondary model configuration can be confirmed.';
+    assert.equal(p.state.appliedPrimaryModel, p.state.primaryModel);
+    assert.equal(p.state.appliedSecondaryModel, p.state.secondaryModel);
+    assert.equal(p.node('connection').textContent, waiting);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    assert.equal(p.node('primary').disabled, false);
+    assert.equal(p.node('secondary').disabled, false);
+    await p.choose('primary', 'fixture/other'); await p.choose('secondary', 'fixture/main'); await p.save();
+    assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/other', secondaryModel: 'fixture/main' }]);
+    assert.match(p.node('notice').textContent, w.saved);
+    assert.equal(p.node('connection').textContent, waiting);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    Object.assign(p.state, { appliedPrimaryModel: 'fixture/other', appliedSecondaryModel: 'fixture/main' });
+    await p.refresh();
+    assert.equal(p.node('connection').textContent, waiting);
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    assert.equal(p.node('primary').disabled, false);
+    assert.equal(p.node('secondary').disabled, false);
+    p.state.status = 'connected'; await p.refresh();
+    assert.match(p.node('application').textContent, w.applied);
   });
   test(`${lang}: partial failure refresh retains only the unsaved secondary`, async () => {
     const p = await page({ lang, failures: 1, failureCode: 'settings_partially_saved' });
@@ -204,7 +266,7 @@ for (const lang of ['en', 'zh']) {
       'catalog_sync_failed', 'catalog_unavailable', 'kimi_config_changed', 'invalid_gateway', 'invalid_connection',
       'unsupported_kimi_config', 'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
       'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected',
-      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'secondary_model_unsupported_runtime', 'adapter_failed']) {
+      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'secondary_model_waiting_session', 'secondary_model_unsupported_runtime', 'adapter_failed']) {
       p.state.status = code; await p.refresh();
       const shown = p.node('connection').textContent;
       assert.notEqual(shown, code); assert.equal(shown.includes('_'), false, code);

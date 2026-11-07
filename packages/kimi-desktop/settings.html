@@ -88,6 +88,7 @@
     dirty: ['There are unsaved changes.', '有未保存的更改。'],
     dirtyApplication: ['There are unsaved changes. Save before checking whether they are applied.', '有未保存的更改。保存后再确认应用状态。'],
     applied: ['The primary and secondary model configuration is applied.', '当前主模型与辅助模型配置已应用。'],
+    primaryOnlyApplied: ['The primary model is applied. No secondary model is selected.', '主模型已应用，未单独选择辅助模型。'],
     waitingApplication: ['Waiting for Kimi to become idle before applying this configuration.', '等待 Kimi 空闲后应用当前配置。'],
     unconfirmed: ['Application is not confirmed yet. Refresh to check again.', '当前配置的应用状态尚未确认。可稍后刷新查看。'],
     saving: ['Saving…', '正在保存…'], refreshing: ['Refreshing…', '正在刷新…'],
@@ -115,6 +116,7 @@
     secondary_model_unsupported_runtime: ['This Kimi runtime does not currently support a secondary model. The primary model remains available.', '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'],
     secondary_model_unavailable: ['The secondary model is unavailable. Choose another model.', '辅助模型当前不可用，请选择其他模型。'],
     secondary_model_reload_failed: ['Kimi has not confirmed reloading the secondary model. Refresh to retry.', 'Kimi 尚未确认辅助模型已重新载入，请刷新重试。'],
+    secondary_model_waiting_session: ['Settings are saved. Send a message in a Work conversation, then wait for it to become idle so the secondary model configuration can be confirmed.', '设置已保存。请先在 Work 会话中发送一条消息，待会话空闲后确认副模型配置已载入。'],
     invalid_gateway: ['The Magpie gateway address is invalid. Check the Kimi connection settings.', 'Magpie 网关地址无效，请检查 Kimi 接入设置。'],
     invalid_connection: ['The Kimi connection settings are invalid. Reconnect Kimi in Magpie.', 'Kimi 接入配置无效，请在 Magpie 中重新接入。'],
     unsupported_kimi_config: ['The current Kimi configuration cannot be used. Check it before retrying.', '无法使用当前 Kimi 配置，请检查后重试。'],
@@ -219,6 +221,9 @@
     else if (settings.status === 'connected' && settings.primaryModel
         && settings.appliedPrimaryModel === settings.primaryModel
         && settings.appliedSecondaryModel === (settings.secondaryModel || settings.primaryModel)) application.textContent = text('applied');
+    else if (settings.status === 'connected' && settings.primaryModel
+        && settings.appliedPrimaryModel === settings.primaryModel
+        && settings.secondaryModel === '' && settings.appliedSecondaryModel === undefined) application.textContent = text('primaryOnlyApplied');
     else application.textContent = text(settings.status === 'waiting_kimi_idle' ? 'waitingApplication' : 'unconfirmed');
   }
   function render(value, draft = {}) {
