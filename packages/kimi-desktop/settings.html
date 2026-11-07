@@ -63,6 +63,7 @@
   </div>
   <p id="notice" role="status" aria-live="polite"></p>
   <p id="guidance" class="guidance">New Agent subtasks may choose the configured primary or secondary model. Naming another model in a prompt does not change this configuration.</p>
+  <p id="path-guidance" class="guidance">If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.</p>
 </main>
 <script nonce="__KIMI_SETTINGS_NONCE__">
 (() => {
@@ -97,6 +98,7 @@
     unknownStatus: ['Kimi status is unavailable. Refresh to check again.', 'Kimi 状态暂不可用，请刷新检查。'],
     unknownError: ['The settings operation could not be completed. Try again later.', '无法完成设置操作，请稍后重试。'],
     guidance: ['New Agent subtasks may choose the configured primary or secondary model. Naming another model in a prompt does not change this configuration.', '新建的 Agent 子任务可在已配置的主模型与辅助模型中选择。仅在提示词中写入其他模型名称，不会改变模型配置。'],
+    pathGuidance: ['If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.', 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'],
   };
   const text = key => localize(copy[key]);
   const statusNames = {
@@ -110,6 +112,7 @@
     catalog_unavailable: ['The model list could not be read.', '无法读取模型目录。'],
     kimi_config_changed: ['Kimi settings changed. Check Kimi before retrying.', 'Kimi 配置已变化，请检查后重试。'],
     secondary_config_unsupported: ['The current Kimi secondary configuration cannot be used.', '无法使用当前 Kimi 辅助模型配置。'],
+    secondary_model_unsupported_runtime: ['This Kimi runtime does not currently support a secondary model. The primary model remains available.', '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'],
     secondary_model_unavailable: ['The secondary model is unavailable. Choose another model.', '辅助模型当前不可用，请选择其他模型。'],
     secondary_model_reload_failed: ['Kimi has not confirmed reloading the secondary model. Refresh to retry.', 'Kimi 尚未确认辅助模型已重新载入，请刷新重试。'],
     invalid_gateway: ['The Magpie gateway address is invalid. Check the Kimi connection settings.', 'Magpie 网关地址无效，请检查 Kimi 接入设置。'],
@@ -141,7 +144,7 @@
   document.title = text('title');
   for (const [id, key] of [['heading', 'title'], ['description', 'description'], ['primary-label', 'primary'],
     ['secondary-label', 'secondary'], ['save', 'save'], ['refresh', 'refresh'], ['connection', 'loading'],
-    ['models-hint', 'modelsHint'], ['guidance', 'guidance']]) document.getElementById(id).textContent = text(key);
+    ['models-hint', 'modelsHint'], ['guidance', 'guidance'], ['path-guidance', 'pathGuidance']]) document.getElementById(id).textContent = text(key);
 
   const token = document.querySelector('meta[name="magpie-kimi-settings-token"]').content;
   const primary = document.getElementById('primary'), secondary = document.getElementById('secondary');

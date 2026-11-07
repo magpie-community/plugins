@@ -17,6 +17,15 @@ async function executablePath(value) {
   } catch { return ''; }
 }
 
+async function discoveredMagpiePath(value, platform) {
+  const names = platform === 'win32' ? /^magpie(?:\.exe)?$/i : /^magpie$/i;
+  const basename = value => (platform === 'win32' ? path.win32 : path).basename(value.trim());
+  if (typeof value !== 'string' || !names.test(basename(value))) return '';
+  const resolved = await executablePath(value);
+  // A magpie symlink must not turn an unrelated executable into the host.
+  return resolved && names.test(basename(resolved)) ? resolved : '';
+}
+
 // Use the running host's executable and environment so its normal agent setter
 // owns the primary model, applied record and stash, including portable profiles.
 export async function setPrimaryModel(model, { magpiePath, directory, env = process.env,
@@ -28,17 +37,25 @@ export async function setPrimaryModel(model, { magpiePath, directory, env = proc
   } else {
     let parent = '';
     try {
-      if (platform === 'darwin') {
+      const validPID = Number.isSafeInteger(parentPID) && parentPID > 0;
+      const options = { cwd: directory || undefined, env,
+        timeout: 6000, encoding: 'utf8', windowsHide: true };
+      if (validPID && platform === 'darwin') {
         const result = await run('/bin/ps', ['-ww', '-p', String(parentPID), '-o', 'comm='],
-          { timeout: 6000, encoding: 'utf8', windowsHide: true });
+          options);
         parent = String(result.stdout || '').trim();
-      } else if (platform === 'linux') {
+      } else if (validPID && platform === 'linux') {
         parent = await readlink(`/proc/${parentPID}/exe`);
+      } else if (validPID && platform === 'win32') {
+        const command = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; '
+          + `(Get-CimInstance Win32_Process -Filter 'ProcessId=${parentPID}').ExecutablePath`;
+        const result = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], options);
+        parent = String(result.stdout || '').trim();
       }
     } catch { /* An explicit path or PATH may still name the host. */ }
-    executable = await executablePath(parent);
+    executable = await discoveredMagpiePath(parent, platform);
     if (!executable) {
-      try { executable = await executablePath(which('magpie')); } catch { /* No PATH entry. */ }
+      try { executable = await discoveredMagpiePath(which('magpie'), platform); } catch { /* No PATH entry. */ }
     }
   }
   if (!executable) throw failure('primary_model_unavailable');

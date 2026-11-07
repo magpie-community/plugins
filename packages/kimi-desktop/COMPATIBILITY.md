@@ -14,7 +14,7 @@ The inheritance revision came after this live check: when the original native se
 
 ### Revised model page and recovery tests
 
-The revised candidate passed **113 tests with 795 assertions across 10 files** under a temporary HOME on Bun 1.4.4. The primary picker uses Magpie's official CLI, with a private child-process flag preventing another Kimi adapter from starting. Its command arguments, inherited environment and profile directory are covered with a fake executable. Primary-only saves retain the secondary preference; partial saves are reported without rolling the primary back.
+The first review revision, `b5f46210`, passed **113 tests with 795 assertions across 10 files** under a temporary HOME on Bun 1.4.4. The primary picker uses Magpie's official CLI, with a private child-process flag preventing another Kimi adapter from starting. Its command arguments, inherited environment and profile directory are covered with a fake executable. Primary-only saves retain the secondary preference; partial saves are reported without rolling the primary back.
 
 Isolated regressions reproduce and fix a failed targeted session reload blocking disconnect restoration, and missing or unsupported secondary TOML blocking the primary connection. The latter tests send an actual HTTP request through the mock bridge and confirm the primary route remains usable. Shutdown closes the settings service without another secondary RPC; a changed service port is rebound when options reload.
 
@@ -22,9 +22,17 @@ The page has 22 pure VM interaction tests covering host-language forwarding, Eng
 
 ### Native primary-model page save, 2026-11-07
 
-The revised candidate was installed into official Magpie 0.1.3077; all 15 installed package files matched its checked tarball. In Magpie's native window, the Chinese model page selected and saved primary `codex/gpt-6-astra`, then restored `codex/gpt-6.1-sol`. At both stages the host's applied-model record, stash reference and connection model agreed, and the stash credential matched the current connection in memory. The page distinguished saving from confirmed application; refreshing confirmed the applied state. The normal Agents → Kimi card also showed the restored Sol selection. The secondary preference remained inherit-primary.
+The first review revision was installed into official Magpie 0.1.3077; all 15 installed package files matched its checked tarball. In Magpie's native window, the Chinese model page selected and saved primary `codex/gpt-6-astra`, then restored `codex/gpt-6.1-sol`. At both stages the host's applied-model record, stash reference and connection model agreed, and the stash credential matched the current connection in memory. The page distinguished saving from confirmed application; refreshing confirmed the applied state. The normal Agents → Kimi card also showed the restored Sol selection. The secondary preference remained inherit-primary.
 
 Kimi remained **3.2.17 / build 3.2.17.4**, with Daimon **0.6.7**, running and idle throughout; it was not exited or restarted. No Work conversation or inference was submitted for this check, and no Chrome or Playwright was started. All four native model entries and unrelated Kimi settings matched their before-install comparisons. The credential aggregate changed during the installation/UI-save interval; its cause was not isolated, and no credential values or full configuration copies were retained. This check verifies the real page, official CLI and host synchronization; the failed-reload and unsupported-TOML cases remain isolated-test coverage.
+
+### Subsequent review guards
+
+The subsequent revision passed **128 tests with 886 assertions across 10 files** under a temporary HOME on Bun 1.4.4, including 24 pure VM page tests. The helper now validates the basename of both automatically discovered paths and resolved targets. A shell parent, a non-Magpie PATH result and `magpie-bun` are rejected without executing a model command. Explicit `magpiePath` remains available for custom executable names. Windows parent discovery uses PowerShell CIM with a numeric process ID, argument-array invocation and a bounded timeout; failures fall back to PATH or the configured option. Fake-exec tests cover this lookup and fallback, not a real Windows installation.
+
+HTTP regressions reject a valid-looking primary ID absent from the gateway catalog without calling the host setter, and detect a gateway-key change during primary saving in both primary-only and combined saves. A disconnect test first lets an external writer restore the baseline and a normal tick clear the application marker; disconnect must still request the final baseline batch reload. Removing each corresponding guard in a temporary module copy makes its behavioral test fail. The discovered-executable basename guard was also checked this way. The V2-layout checks are described below.
+
+These changes to the helper, adapter and page follow the native check above. This revision's isolated tests and package checks do not extend that earlier live result to a different Kimi runtime. No real Windows/Linux test, application restart, browser or model request was used for this review round.
 
 ### Runtime TOML representation
 
@@ -32,7 +40,9 @@ The patch targets the two secondary-model scalars, but writes serialize the whol
 
 ### Kimi 3.2.25 / Daimon 1.0.6 static boundary
 
-A separate read-only inspection of a staged Kimi **3.2.25.22 / Daimon 1.0.6** bundle found both reload RPC names and the runner/control layout still present. Its V2 core, however, uses a model pool for the standard `Agent` tool rather than the old built-in `primary|secondary` roles. It retains legacy `secondary_model.model` parsing but no longer uses the `secondary-model` experimental key. Daimon also converts the legacy TOML into `runtime/kimi-code/home/config.toml`, which V2 actually reads. This adapter currently patches only the legacy file, so its secondary-model integration does not support that V2 layout. The staged application was not started, and no new-version dynamic acceptance was performed.
+A separate read-only inspection of a staged Kimi **3.2.25.22 / Daimon 1.0.6** bundle found both reload RPC names and the runner/control layout still present. Its V2 core, however, uses a model pool for the standard `Agent` tool rather than the old built-in `primary|secondary` roles. It retains legacy `secondary_model.model` parsing but no longer uses the `secondary-model` experimental key. Daimon also converts the legacy TOML into `runtime/kimi-code/home/config.toml`, which V2 actually reads. This adapter currently patches only the legacy file, so its secondary-model integration does not support that V2 layout. The staged application was not started during that inspection.
+
+The adapter now detects the converted file and reports `secondary_model_unsupported_runtime` before applying a secondary preference. It hides stale secondary application markers and leaves the converted file unchanged. The guard does not block the primary bridge or restoration of previously owned legacy scalars on disconnect or shutdown. Isolated tests cover a V2 layout from first connection and a V2 layout appearing after a legacy secondary was applied; a successful reload acknowledgement cannot make either case report applied. The page tests exercise the corresponding English and Chinese status with stale applied IDs. These are isolated checks, not dynamic acceptance of the new runtime.
 
 ## macOS desktop UI turn, 2026-11-06
 

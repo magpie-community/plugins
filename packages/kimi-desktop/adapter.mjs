@@ -26,7 +26,7 @@ const RELOAD_SESSION = 'kimiPlugin.ReloadSession';
 const SECONDARY_RETRY_MS = 5000;
 const MODEL_ID = /^[^\x00-\x1f/]+\/[^\x00-\x1f]+$/;
 const SECONDARY_CODES = new Set(['secondary_config_unsupported', 'secondary_model_unavailable',
-  'secondary_model_reload_failed', 'kimi_config_changed']);
+  'secondary_model_reload_failed', 'secondary_model_unsupported_runtime', 'kimi_config_changed']);
 
 const validModelID = value => typeof value === 'string' && value.length <= 1024 && MODEL_ID.test(value);
 
@@ -131,6 +131,7 @@ export class KimiAdapter {
     this.kimiDir = kimiDir || defaultKimiDirectory(home);
     this.configFile = path.join(this.kimiDir, 'config.json');
     this.nativeConfigFile = path.join(this.kimiDir, 'runtime', 'kimi-code', 'config.toml');
+    this.convertedNativeConfigFile = path.join(this.kimiDir, 'runtime', 'kimi-code', 'home', 'config.toml');
     this.runnerFile = path.join(this.kimiDir, 'agents', 'main', 'runner.state.json');
     this.connectionFile = path.join(this.stateDir, 'connection.json');
     this.stateFile = path.join(this.stateDir, 'adapter-state.json');
@@ -244,7 +245,7 @@ export class KimiAdapter {
       try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
       catch { status = 'catalog_unavailable'; }
     }
-    const appliedSecondaryModel = this.state?.secondaryModel
+    const appliedSecondaryModel = fs.existsSync(this.convertedNativeConfigFile) ? undefined : this.state?.secondaryModel
       || (!this.state?.secondary ? this.state?.model || this.live?.model : undefined);
     return {
       enabled: desired.enabled === true,
@@ -561,7 +562,9 @@ export class KimiAdapter {
   // first application. Nothing is read while the feature is not in use.
   protectNativeSecondary(wanted) {
     this.observeNativeSecondary();
-    if (wanted && !this.secondaryOwnership()) this.captureSecondaryBaseline();
+    if (wanted && !this.secondaryOwnership() && !fs.existsSync(this.convertedNativeConfigFile)) {
+      this.captureSecondaryBaseline();
+    }
   }
 
   // Only the helper's four fields of the scalars this adapter does not own.
@@ -653,6 +656,14 @@ export class KimiAdapter {
     if (!wanted && !owned) { this.secondaryExternal = null; return { untouched: true }; }
     const inheriting = !wanted && Boolean(inheritModel);
     if (inheriting) wanted = inheritModel;
+
+    // V2 reads the converted file and uses a different secondary-model contract.
+    // A legacy write plus reload acknowledgement cannot confirm application.
+    // Restore calls have no wanted model and still recover our legacy scalars.
+    if (wanted && fs.existsSync(this.convertedNativeConfigFile)) {
+      this.setAppliedSecondary('');
+      throw Error('secondary_model_unsupported_runtime');
+    }
 
     const retried = await this.retrySecondarySessions(runner);
     if (retried.failed) throw Error('secondary_model_reload_failed');
@@ -873,7 +884,8 @@ export class KimiAdapter {
       const codes = new Set(['invalid_gateway', 'invalid_connection', 'unsupported_kimi_config',
         'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
         'kimi_config_changed', 'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected',
-        'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed']);
+        'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed',
+        'secondary_model_unsupported_runtime']);
       const code = codes.has(error.message) ? error.message : 'adapter_failed';
       this.report(code);
     } finally { this.running = false; }

@@ -118,6 +118,9 @@ for (const lang of ['en', 'zh']) {
     assert.equal(p.node('primary-label').textContent, w.primary);
     assert.equal(p.node('secondary-label').textContent, w.secondary);
     assert.equal(p.node('save').textContent, w.save);
+    assert.equal(p.node('path-guidance').textContent, lang === 'zh'
+      ? 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'
+      : 'If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.');
     await p.choose('primary', 'fixture/other');
     assert.equal(p.node('save').disabled, false);
     assert.match(p.node('notice').textContent, w.dirty);
@@ -162,6 +165,14 @@ for (const lang of ['en', 'zh']) {
     await p.save();
     assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/other', secondaryModel: 'fixture/auxiliary' }, { primaryModel: 'fixture/other', secondaryModel: 'fixture/auxiliary' }]);
   });
+  test(`${lang}: unsupported runtime cannot confirm stale applied model IDs`, async () => {
+    const p = await page({ lang, state: { ...initial(), secondaryModel: 'fixture/auxiliary', appliedSecondaryModel: 'fixture/auxiliary', status: 'secondary_model_unsupported_runtime' } });
+    assert.doesNotMatch(p.node('application').textContent, w.applied);
+    assert.equal(p.node('connection').textContent, lang === 'zh'
+      ? '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'
+      : 'This Kimi runtime does not currently support a secondary model. The primary model remains available.');
+    assert.equal(p.node('primary').disabled, false);
+  });
   test(`${lang}: partial failure refresh retains only the unsaved secondary`, async () => {
     const p = await page({ lang, failures: 1, failureCode: 'settings_partially_saved' });
     await p.choose('primary', 'fixture/other'); await p.choose('secondary', 'fixture/auxiliary'); await p.save();
@@ -193,7 +204,7 @@ for (const lang of ['en', 'zh']) {
       'catalog_sync_failed', 'catalog_unavailable', 'kimi_config_changed', 'invalid_gateway', 'invalid_connection',
       'unsupported_kimi_config', 'library_path_conflict', 'adapter_lock_invalid', 'adapter_lock_unavailable',
       'kimi_control_unavailable', 'kimi_control_timeout', 'kimi_control_closed', 'kimi_control_rejected',
-      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'adapter_failed']) {
+      'secondary_config_unsupported', 'secondary_model_unavailable', 'secondary_model_reload_failed', 'secondary_model_unsupported_runtime', 'adapter_failed']) {
       p.state.status = code; await p.refresh();
       const shown = p.node('connection').textContent;
       assert.notEqual(shown, code); assert.equal(shown.includes('_'), false, code);

@@ -4,8 +4,10 @@ import { test, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:http';
 import { KimiAdapter } from './adapter.mjs';
 import { normalizeModels } from './catalog.mjs';
+import { startSettingsServer, TOKEN_HEADER } from './settings.mjs';
 
 const official = 'https://agent-gw.kimi.com/coding/v1';
 const primaryID = 'original-provider/test-model';
@@ -20,6 +22,28 @@ const write = (file, value) => {
 };
 const reloadCalls = calls => calls.filter(call => call.method === 'kimiPlugin.reloadActiveSessions');
 const sessionCalls = calls => calls.filter(call => call.method === 'kimiPlugin.ReloadSession');
+
+async function settingsPost(controller, body) {
+  const reservation = createServer();
+  await new Promise((resolve, reject) => {
+    reservation.once('error', reject);
+    reservation.listen(0, '127.0.0.1', resolve);
+  });
+  const port = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
+  const service = await startSettingsServer({ port,
+    readSettings: () => controller.readSettings(), saveSettings: patch => controller.saveSettings(patch) });
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    const page = await (await fetch(base)).text();
+    const token = /name="magpie-kimi-settings-token" content="([0-9a-f]{64})"/.exec(page)?.[1];
+    const response = await fetch(base + '/api/settings', {
+      method: 'POST', headers: { Origin: 'null', [TOKEN_HEADER]: token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  } finally { await service.stop(); }
+}
 
 // The fixed key set Daimon's own generator writes. It never contains
 // secondary_model or experimental, so a regeneration drops both sections.
@@ -194,6 +218,77 @@ test('two-model saves validate before the host call and report partial persisten
   } finally { await f.cleanup(); }
 });
 
+test('a catalog-hidden primary is rejected before the host setter or file writes', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  const selected = [];
+  try {
+    const before = [f.controller.connectionFile, f.controller.configFile, f.nativeFile]
+      .map(file => fs.readFileSync(file, 'utf8'));
+    const hadState = fs.existsSync(f.controller.stateFile);
+    f.controller.setPrimaryModel = async model => {
+      selected.push(model);
+      write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model });
+    };
+    const response = await settingsPost(f.controller, { primaryModel: 'hidden-provider/hidden-model' });
+    expect(response).toEqual({ status: 400, body: { error: 'model_not_enabled_for_kimi' } });
+    expect(selected).toEqual([]);
+    expect([f.controller.connectionFile, f.controller.configFile, f.nativeFile]
+      .map(file => fs.readFileSync(file, 'utf8'))).toEqual(before);
+    expect(fs.existsSync(f.controller.stateFile)).toBe(hadState);
+  } finally { await f.cleanup(); }
+});
+
+for (const includeSecondary of [false, true]) {
+  test(`a ${includeSecondary ? 'two-model' : 'primary-only'} POST detects a gateway change after the primary setter`, async () => {
+    const f = await fixture({ secondaryModel: secondaryID });
+    const selected = [];
+    let hostBytes;
+    try {
+      f.controller.setPrimaryModel = async model => {
+        selected.push(model);
+        write(f.controller.connectionFile, { ...read(f.controller.connectionFile), model,
+          gateway: { ...f.connection.gateway, key: 'synthetic-new-gateway' } });
+        hostBytes = fs.readFileSync(f.controller.connectionFile, 'utf8');
+      };
+      const response = await settingsPost(f.controller, { primaryModel: secondaryID,
+        ...(includeSecondary ? { secondaryModel: '' } : {}) });
+      expect(response).toEqual({ status: 409,
+        body: { error: includeSecondary ? 'settings_partially_saved' : 'connection_changed' } });
+      expect(selected).toEqual([secondaryID]);
+      expect(fs.readFileSync(f.controller.connectionFile, 'utf8')).toBe(hostBytes);
+      expect(read(f.controller.connectionFile).secondaryModel).toBe(secondaryID);
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('disconnect reloads the baseline after control calls even when its bytes were already restored externally', async () => {
+  const baseline = runtimeToml({ secondaryModel: 'native/first', flag: false });
+  const f = await fixture({ secondaryModel: secondaryID, native: baseline, regenerate: false });
+  try {
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    f.writeNative(baseline);
+    f.complete();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('kimi_config_changed');
+    expect(read(f.controller.stateFile).secondaryModel).toBe('');
+    expect(f.controller.secondaryReloadPending).toBe(false);
+    const before = f.calls.length;
+    const reloads = reloadCalls(f.calls).length;
+    write(f.controller.connectionFile, { ...f.connection, enabled: false });
+    f.complete();
+    await f.controller.tick();
+    const methods = f.calls.slice(before).map(call => call.method);
+    expect(methods).toContain('conversations.updateKimiModelList');
+    expect(methods).toContain('conversations.setModel');
+    expect(methods.at(-1)).toBe('kimiPlugin.reloadActiveSessions');
+    expect(reloadCalls(f.calls)).toHaveLength(reloads + 1);
+    expect(f.nativeText()).toBe(baseline);
+    expect(f.controller.status.code).toBe('disconnected');
+    expect(read(f.controller.stateFile).secondary).toBeUndefined();
+  } finally { await f.cleanup(); }
+});
+
 test('disconnect restores the native baseline despite a failing pending reload from the old preference', async () => {
   const f = await fixture({
     secondaryModel: secondaryID, regenerate: false,
@@ -260,6 +355,82 @@ test('an unsupported optional secondary TOML does not block the primary bridge r
     expect(f.upstream.at(-1).body.model).toBe(primaryID);
   } finally { await f.cleanup(); }
 });
+
+test('a converted runtime rejects the first secondary application while the primary still routes', async () => {
+  const f = await fixture({ secondaryModel: secondaryID, regenerate: false });
+  const convertedFile = path.join(path.dirname(f.nativeFile), 'home', 'config.toml');
+  const converted = 'default_model = "converted-native"\n';
+  try {
+    fs.mkdirSync(path.dirname(convertedFile), { recursive: true });
+    fs.writeFileSync(convertedFile, converted);
+    const legacy = f.nativeText();
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_model_unsupported_runtime');
+    expect(f.nativeText()).toBe(legacy);
+    expect(fs.readFileSync(convertedFile, 'utf8')).toBe(converted);
+    expect(reloadCalls(f.calls)).toHaveLength(0);
+    expect(f.controller.state.secondary).toBeUndefined();
+    const settings = await f.controller.readSettings();
+    expect(settings.status).toBe('secondary_model_unsupported_runtime');
+    expect(settings.appliedPrimaryModel).toBe(primaryID);
+    expect(settings.appliedSecondaryModel).toBeUndefined();
+    const response = await fetch(f.controller.bridgeURL + '/chat/completions', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + read(f.controller.configFile).credentials.kimiCode.apiKey },
+      body: JSON.stringify({ model: 'k2d8-preview', messages: [] }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.upstream.at(-1).body.model).toBe(primaryID);
+  } finally { await f.cleanup(); }
+});
+
+for (const cleanup of ['disconnect', 'stop']) {
+  test(`a newly converted runtime invalidates secondary confirmation but ${cleanup} still restores legacy ownership`, async () => {
+    const baseline = runtimeToml({ secondaryModel: 'native/first', flag: false });
+    const f = await fixture({ secondaryModel: secondaryID, native: baseline, regenerate: false });
+    const convertedFile = path.join(path.dirname(f.nativeFile), 'home', 'config.toml');
+    const converted = 'default_model = "converted-native"\n';
+    try {
+      await f.controller.tick();
+      expect(f.controller.status.code).toBe('connected');
+      expect((await f.controller.readSettings()).appliedSecondaryModel).toBe(secondaryID);
+      const owned = read(f.controller.stateFile).secondary;
+      const legacy = f.nativeText();
+      const reloads = reloadCalls(f.calls).length;
+      fs.mkdirSync(path.dirname(convertedFile), { recursive: true });
+      fs.writeFileSync(convertedFile, converted);
+      // A stale acknowledgement must disappear even before the next tick.
+      expect((await f.controller.readSettings()).appliedSecondaryModel).toBeUndefined();
+      f.complete();
+      await f.controller.tick();
+      expect(f.controller.status.code).toBe('secondary_model_unsupported_runtime');
+      expect(read(f.controller.stateFile).secondaryModel).toBe('');
+      expect(read(f.controller.stateFile).secondary).toEqual(owned);
+      expect(f.nativeText()).toBe(legacy);
+      expect(reloadCalls(f.calls)).toHaveLength(reloads);
+      const settings = await f.controller.readSettings();
+      expect(settings.appliedPrimaryModel).toBe(primaryID);
+      expect(settings.appliedSecondaryModel).toBeUndefined();
+      if (cleanup === 'disconnect') {
+        write(f.controller.connectionFile, { ...f.connection, enabled: false });
+        f.complete();
+        await f.controller.tick();
+        expect(read(f.controller.stateFile).secondary).toBeUndefined();
+        expect(reloadCalls(f.calls)).toHaveLength(reloads + 1);
+      } else {
+        const calls = f.calls.length;
+        await f.controller.stop();
+        expect(f.calls).toHaveLength(calls);
+        expect(read(f.controller.stateFile).secondary.restored).toBe(true);
+      }
+      expect(f.controller.status.code).toBe('disconnected');
+      const restored = Bun.TOML.parse(f.nativeText());
+      expect(restored.secondary_model.model).toBe('native/first');
+      expect(restored.experimental['secondary-model']).toBe(false);
+      expect(fs.readFileSync(convertedFile, 'utf8')).toBe(converted);
+    } finally { await f.cleanup(); }
+  });
+}
 
 test('the chosen secondary model is written as its catalog alias and both roles keep their alias route', async () => {
   const f = await fixture({ secondaryModel: secondaryID });
