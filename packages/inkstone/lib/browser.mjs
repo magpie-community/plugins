@@ -82,22 +82,6 @@ export function browserCandidates(explicit) {
   return out
 }
 
-/**
- * 浏览器登录要用的那个浏览器；本机一个 Chromium 系浏览器都没有就抛错。
- * authorize() 和真正启动浏览器的地方都走这里，提示语只有一份。
- * `candidates` 只给测试用。
- */
-export function requireBrowser(explicit, { candidates = browserCandidates, platform = process.platform } = {}) {
-  const list = candidates(explicit)
-  if (list.length) return list[0]
-  let msg =
-    "The browser sign-in needs Microsoft Edge, Google Chrome or Chromium, and none is installed. " +
-    'Sign in with "API key only", or with "API key + console token" to also get the ink-credit card. ' +
-    "Or install one of those browsers, or set MAGPIE_INKSTONE_BROWSER to its path."
-  if (platform === "darwin") msg += " Safari can't be used: the sign-in runs in its own browser profile, which Safari doesn't support."
-  throw new Error(msg)
-}
-
 /** 插件专用（可续期）profile 的目录；不同平台放各自的应用数据目录。 */
 export function profileDir(env = process.env, platform = process.platform) {
   if (env.MAGPIE_INKSTONE_PROFILE) return env.MAGPIE_INKSTONE_PROFILE
@@ -381,7 +365,8 @@ async function waitForDebugPort(portFile, child, timeoutMs = 25_000) {
  * Edge 的同步确认页还是别的，都能读到 `uaa-token`。
  */
 export async function openSession({ browserPath, profile, headless = false, plainBrowser = false, url = LOGIN_URL, log = () => {} } = {}) {
-  const exe = requireBrowser(browserPath)
+  const exe = browserCandidates(browserPath)[0]
+  if (!exe) throw new Error("No Chromium browser was found (Edge or Chrome); use the API key sign-in instead.")
   if (!existsSync(profile)) mkdirSync(profile, { recursive: true, mode: 0o700 })
   const portFile = join(profile, "DevToolsActivePort")
   // 上一轮被强制关闭时可能留下端口/单例锁文件；没有浏览器运行时清掉是安全的。
@@ -533,7 +518,17 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  */
 export async function waitForConsoleWindow(
   child,
-  { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform, titleOf = windowTitleOf, settleMs = 5000 } = {},
+  {
+    timeoutMs = 8 * 60_000,
+    pollMs = 1000,
+    signal,
+    log = () => {},
+    platform = process.platform,
+    // 标题探测的两个注入点：测试用 titleDelayMs: 0 + 一个假 windowTitle 证明
+    // 非 Windows 上它从不被调用（把 canReadTitle 在所有系统都打开，测试会红）
+    titleDelayMs = 5000,
+    windowTitle = windowTitleOf,
+  } = {},
 ) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
@@ -549,7 +544,7 @@ export async function waitForConsoleWindow(
       continue
     }
     // 只看我们自己的窗口；并且给它至少 5 秒，控制台标题在跳转 SSO 前会闪一下。
-    const title = Date.now() - started >= settleMs ? titleOf(child.pid) : ""
+    const title = Date.now() - started > titleDelayMs ? windowTitle(child.pid, platform) : ""
     if (title && /Intern InkStone|端砚/i.test(title) && !/用户认证|登录/i.test(title)) {
       hits += 1
       if (hits >= 2) return "console"
@@ -572,9 +567,9 @@ export async function waitForConsoleWindow(
  * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
  */
 export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, waitForLogin, signal, log = () => {} } = {}) {
-  // before the one-off profile is made, so a missing browser leaves no folder
-  const exe = requireBrowser(browserPath)
   const dir = keepSignIn ? profileDir() : oneOffProfileDir()
+  const exe = browserCandidates(browserPath)[0]
+  if (!exe) throw new Error("No Chromium browser was found (Edge or Chrome); use the API key sign-in instead.")
   const cancelled = () => Boolean(signal?.aborted)
   return await exclusive(async () => {
     log("opening the sign-in window")

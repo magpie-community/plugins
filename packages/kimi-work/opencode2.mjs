@@ -85,7 +85,6 @@ export function fieldsOf(prompts) {
     if (p.placeholder) f.placeholder = String(p.placeholder)
     if (p.type === "select" && Array.isArray(p.options))
       f.options = p.options.map((o) => ({ value: String(o.value), label: String(o.label ?? o.value), ...(o.hint ? { description: String(o.hint) } : {}) }))
-    // a prompt shown only when another answer says so can't be required
     // a prompt shown only when another answer says so can't be required, and
     // neither can one whose own validate() accepts an empty answer (the
     // browser sign-in's optional API key)
