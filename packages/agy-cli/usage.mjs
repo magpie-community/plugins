@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { agySpawnSpec } from "./platform.mjs"
+import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
@@ -240,12 +240,10 @@ export async function fetchUsage(agy, {
     for (const key of Object.keys(baseEnv)) {
       if (/^path$/i.test(key) && key !== "PATH") delete baseEnv[key]
     }
-    const childEnv = {
-      ...baseEnv,
-      AGY_CLI_DISABLE_AUTO_UPDATE: "true",
+    const childEnv = agyChildEnv(baseEnv, {
       PATH: directory + path.delimiter + inheritedPath,
       BROWSER: path.join(directory, process.platform === "win32" ? "open.cmd" : "open"),
-    }
+    })
     const options = { cwd: directory, env: childEnv, deadline, signal, maxOutputBytes, onTreeKill: p => { pendingTreeKill = p } }
     const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + 3000) })
     if (version.code !== 0) throw commandFailure(version.stderr)

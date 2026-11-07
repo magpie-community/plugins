@@ -1013,7 +1013,6 @@ class Proc {
           PATH: bin + path.delimiter + inheritedPath,
           AGY_BRIDGE_CONTROL_PORT: String(controlServer.address().port),
           AGY_BRIDGE_TOKEN: this.token,
-          AGY_CLI_DISABLE_AUTO_UPDATE: "true",
         },
       })
     } catch (error) {

@@ -65,21 +65,33 @@ export function agySpawnSpec(file, args, platform = process.platform, env = proc
   }
 }
 
-export function spawnAgy(file, args, options = {}) {
-  const command = agySpawnSpec(file, args)
+// The environment an agy child runs with. A value the user set for
+// AGY_CLI_DISABLE_AUTO_UPDATE (in the parent's environment or the caller's)
+// is kept as written. Only when nobody set it do the plugin's children run
+// with auto-update off, so a pool of ACP processes doesn't update the binary
+// under each other; the user's own `agy` runs keep updating.
+export function childEnv(parent = process.env, extra = {}, platform = process.platform) {
   const env = {}
   const names = new Map()
-  for (const source of [process.env, options?.env]) {
+  for (const source of [parent, extra]) {
     for (const [key, value] of Object.entries(source || {})) {
-      if (key.toUpperCase() === "AGY_CLI_DISABLE_AUTO_UPDATE") continue
+      if (value === undefined) continue
       // Windows treats env names case-insensitively; keep the caller's PATH.
-      const name = process.platform === "win32" ? key.toUpperCase() : key
+      const name = platform === "win32" ? key.toUpperCase() : key
       if (names.has(name)) delete env[names.get(name)]
       names.set(name, key)
       env[key] = value
     }
   }
-  env.AGY_CLI_DISABLE_AUTO_UPDATE = "true"
+  if (![...names.keys()].some(name => name.toUpperCase() === "AGY_CLI_DISABLE_AUTO_UPDATE")) {
+    env.AGY_CLI_DISABLE_AUTO_UPDATE = "true"
+  }
+  return env
+}
+
+export function spawnAgy(file, args, options = {}) {
+  const command = agySpawnSpec(file, args)
+  const env = childEnv(process.env, options?.env)
   return spawn(command.file, command.args, { ...options, ...command.options, windowsHide: true, env })
 }
 
