@@ -150,14 +150,24 @@ const REFUSED_HINT =
   "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
 // A 406's diagnosis is the system prompt and nothing else. The dump is off
-// by default — the body is the user's conversation — and runs only when
-// AUTOCLAW_406_DUMP_DIR names a directory, or the plugin's dump406 option is
-// on (then the default directory below). What a dump holds is the rewritten
-// system and developer messages only, never user, assistant or tool content,
-// one file per refusal, the newest D406_KEEP kept, file mode 0600 in a 0700
-// directory. Everything is best-effort: a dump that cannot be written never
-// breaks the 406 it documents.
+// by default — the body is the user's conversation, and a system prompt is
+// not free of personal data either (harnesses put the working directory, git
+// status, project instruction files and sometimes the user's email there) —
+// and runs only when AUTOCLAW_406_DUMP_DIR names a directory, or the plugin's
+// dump406 option is on (then the default directory below). What a dump holds
+// is the rewritten system and developer messages only, never user, assistant
+// or tool content, one file per refusal, the newest D406_KEEP kept, file mode
+// 0600 in a 0700 directory. The dump directory may be any directory the user
+// points at, so rotation touches only the dump's own files — every name
+// matching the DUMP_NAME shape — never anything else's. Everything is
+// best-effort: a dump that cannot be written never breaks the 406 it
+// documents.
 const D406_KEEP = 10;
+// DUMP_NAME is the whole name a dump file goes by: rotation filters on this
+// exact shape, so a user's own .json files in the same directory are never
+// deleted (a plain *.json filter removed four of thirteen foreign files in a
+// probe).
+const DUMP_NAME = /^autoclaw-406-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[\w-]{8}-[\w-]+\.json$/;
 
 // The default dump directory, magpie's own config home. The fallbacks matter
 // on Windows, where the GUI process often runs without HOME — 11-05's dumps
@@ -171,7 +181,7 @@ function dumpDefaultDir() {
 
 function dump406(sentBody, providerId, wantDump) {
   try {
-    const dir = process.env.AUTOCLAW_406_DUMP_DIR || (wantDump ? dumpDefaultDir() : "");
+    const dir = process.env.AUTOCLAW_406_DUMP_DIR || (wantDump === true ? dumpDefaultDir() : "");
     if (!dir) return;
     let body;
     try {
@@ -189,12 +199,12 @@ function dump406(sentBody, providerId, wantDump) {
     // random tail keeps both files, and rotation goes by write time, not by
     // name
     writeFileSync(
-      `${dir}/${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`,
+      `${dir}/autoclaw-406-${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`,
       JSON.stringify({ model: body.model, messages }),
       { mode: 0o600 },
     );
     const old = readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
+      .filter((f) => DUMP_NAME.test(f))
       .map((f) => {
         try { return { f, at: statSync(`${dir}/${f}`).mtimeMs }; } catch { return { f, at: 0 }; }
       })

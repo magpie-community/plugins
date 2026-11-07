@@ -89,6 +89,7 @@ EOF
 | `signin` | `true` | 旧链路自动补签总开关（不影响原生 checkin） |
 | `signinOnUsage` | `false` | 查额度/刷新时自动补签（默认关，交给原生开关） |
 | `signinHour` | `null` | 限定补签小时：`8` = 仅当本地时间处于 8:00–8:59 时补签；`null` 不限 |
+| `dump406` | `false` | 406 诊断落盘总开关（布尔值，`"false"` 字符串不算开）。开启后写入 `~/.config/magpie/autoclaw-406/`；`AUTOCLAW_406_DUMP_DIR` 环境变量可改址、且设了即开启（优先于本选项） |
 
 ## 对话网关与请求整形
 
@@ -101,6 +102,12 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 - **官方客户端指纹（国际版对话）**：国际版对话请求带官方 AutoClaw 2.0.3 桌面端（`official` 渠道）的整套请求头，取自其 AppImage 的 `dist/main.cjs`：`X-Channel: official`、`X-Version: 2.0.3`、`X-Lang: en`、`X-Client-Type: pc`、`X-Product: autoclaw`、`x_trace_id: autoclaw-desktop`、`X-Auth-Appid/X-Auth-TimeStamp/X-Auth-Sign`（`md5("100003&<秒级时间戳>&<appKey>")`，与登录/积分接口同一签名）、`X-Request-Id` = `X-Trace-Id`（每次请求一个 UUID）、`X-Session-Id`（同一对话不变的 UUID，插件由对话首条消息导出）、OpenAI SDK 6.26.0 的 `User-Agent` 与 `X-Stainless-*`。`X-Tm` 与官方 `managedPlatform()` 一致：macOS `mac`、Windows `win`、Linux `linux`（x64/arm64 相同）。网关只在**非官方指纹**旁拒收 `X-Tm: linux`（403 `forbidden`，#367）；0.2.7–0.2.11 发的 `linux-x64` 只是绕过，不是官方值。
 
 国内版 `autoclaw-cn` 走 AutoClaw 2.1.0 managed gateway（`autoglm-acceleration-api.zhipuai.cn`）；国际版 `autoclaw` 走海外直连网关（`autoglm-api.autoglm.ai`）。两者均已通过真实调用与推理验证。
+
+### 406 诊断落盘（默认关）
+
+406 的上游 body 是空的，magpie 只留 token 计数——排查"FLAGGED 没盖住的那句"需要被拒请求的原文。开启（`AUTOCLAW_406_DUMP_DIR` 环境变量，或插件选项 `"dump406": true`）后，每次 406 把**改写后实际发出的** system/developer 消息（含 `model` 字段，绝无 user/assistant/tool 内容）写成一份 JSON：文件 0600、目录 0700，只留最近 10 份（按写入时间轮转，只动 `autoclaw-406-*.json` 形状的文件，不动目录里其它任何文件）。
+
+**注意隐私**：system prompt 并非不含个人信息——harness 会把工作目录、git 状态、项目指令文件、有时还有用户邮箱放进去。这是本地 0600、默认关闭的诊断文件，但开启前应当知情。`AUTOCLAW_406_DUMP_DIR` 可指向任意已有目录（轮转只删自己写的文件）；默认目录在 Windows 的 GUI 进程（常无 `HOME`）下依次回退 `HOME` → `USERPROFILE` → `os.homedir()`。
 
 ## 已知行为
 

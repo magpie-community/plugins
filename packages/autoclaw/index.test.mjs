@@ -2,7 +2,7 @@
 // answer the upstream gives lands on one of its outcomes, and the plugin
 // factory registers both providers with every hook check.mjs looks for.
 import { expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, statSync, utimesSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AutoclawAuthPlugin, AutoclawCnAuthPlugin, _internal } from "./index.mjs"
@@ -428,23 +428,38 @@ test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write 
     // ten at most: an eleventh refusal drops the oldest. The pre-placed file's
     // name sorts after every new one while its write time is older, so only
     // rotation by write time removes it (a name sort would keep it and drop
-    // the newest dump instead)
-    const old = join(dir, "9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    // the newest dump instead). It carries the dump name's shape, since only
+    // the dump's own files rotate.
+    const old = join(dir, "autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
     writeFileSync(old, JSON.stringify({ model: "m", messages: [{ role: "system", content: "pre-existing" }] }))
     const past = new Date(Date.now() - 60_000)
     utimesSync(old, past, past)
+    // the directory is the user's to point anywhere: foreign files — a
+    // settings.json, a non-dump anything — survive every refusal untouched
+    writeFileSync(join(dir, "settings.json"), "{}")
+    writeFileSync(join(dir, "keep-me.txt"), "not a dump")
     for (let i = 0; i < 10; i++) {
       await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: `refusal ${i}` }] }), "autoclaw-cn")
     }
     const left = readdirSync(dir)
-    expect(left).toHaveLength(10)
-    expect(left).not.toContain("9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
-    const said = left.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).messages[0].content).sort()
+    expect(left).toContain("settings.json")
+    expect(left).toContain("keep-me.txt")
+    expect(left).not.toContain("autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    const dumps = left.filter((f) => f.startsWith("autoclaw-406-"))
+    expect(dumps).toHaveLength(10)
+    const said = dumps.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).messages[0].content).sort()
     expect(said).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `refusal ${i}`))
+
+    // the dump is 0600 in a 0700 directory (real modes exist off Windows)
+    if (process.platform !== "win32") {
+      const newest = dumps.at(-1)
+      expect(statSync(join(dir, newest)).mode & 0o777).toBe(0o600)
+      expect(statSync(dir).mode & 0o777).toBe(0o700)
+    }
 
     // a non-406 leaves no file, and a dump failure never breaks the 406
     await explained(new Response('{"x":1}', { status: 502 }), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
-    expect(readdirSync(dir)).toHaveLength(10)
+    expect(readdirSync(dir)).toHaveLength(12)
     // a directory that cannot be created: the path runs through a regular
     // file (kept outside the dump dir, so the count above stays clean)
     const blocker = join(mkdtempSync(tmpdir()), "blocker")
@@ -452,8 +467,35 @@ test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write 
     process.env.AUTOCLAW_406_DUMP_DIR = join(blocker, "beneath")
     const still = await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
     expect(still.status).toBe(406)
-    expect(readdirSync(dir)).toHaveLength(10)
+    expect(readdirSync(dir)).toHaveLength(12)
   } finally { delete process.env.AUTOCLAW_406_DUMP_DIR }
+})
+
+// "dump406": "false" in plugins.json is the option OFF, not on: only a real
+// boolean true arms the default directory.
+test("the dump406 option takes a boolean, not any truthy value", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
+  try {
+    for (const bad of ["false", "true", 1, "yes"]) {
+      await explained(refused406(), body, "autoclaw", { dump406: bad })
+      expect(existsSync(dumpDefaultDir())).toBe(false)
+    }
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+    rmSync(join(fake, ".config"), { recursive: true, force: true })
+  }
 })
 
 // Off by default: without the env and without the option, a 406 writes
