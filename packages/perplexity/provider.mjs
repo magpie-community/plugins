@@ -76,6 +76,7 @@ export const server = async (input, options) => {
     chromePath: "",
     apiVersion: "2.18",
     locale: "auto",
+    tools: "reject",
     ...(options || {}),
   }
   const t = strings(resolveLocale(opt.locale))
@@ -210,9 +211,13 @@ export const server = async (input, options) => {
           headers: { "x-pplx-hook": "1" },
           async fetch(requestUrl, init) {
             const body = readBody(init)
-            if (asksForTools(body)) {
+            // A host that sends tools cannot be served by this endpoint. Either
+            // say so (reject) or answer as text and mark the response (ignore).
+            const stripTools = asksForTools(body)
+            if (stripTools && opt.tools !== "ignore") {
               return errResponse(400, t.toolsUnsupported, "invalid_request", "tools_unsupported")
             }
+            const extraHeaders = stripTools ? { "x-magpie-tools-ignored": "1" } : {}
 
             let model = String(body.model || "pplx_pro")
             if (body.reasoning_effort || body.thinking || body.reasoning) {
@@ -302,7 +307,7 @@ export const server = async (input, options) => {
               if (!text.trim()) return errResponse(502, t.upstreamEmpty, "upstream_error", "empty_answer")
               return new Response(JSON.stringify(completionObj(cid, model, text, query)), {
                 status: 200,
-                headers: { "content-type": "application/json; charset=utf-8" },
+                headers: { "content-type": "application/json; charset=utf-8", ...extraHeaders },
               })
             }
 
@@ -380,6 +385,7 @@ export const server = async (input, options) => {
               headers: {
                 "content-type": "text/event-stream; charset=utf-8",
                 "cache-control": "no-cache",
+                ...extraHeaders,
               },
             })
           },

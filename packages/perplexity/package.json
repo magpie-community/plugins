@@ -41,7 +41,8 @@
       "keepSystem": false,
       "chromePath": "",
       "apiVersion": "2.18",
-      "locale": "auto"
+      "locale": "auto",
+      "tools": "reject"
     },
     "summary": {
       "en": "Your Perplexity Pro or Max plan as a provider: every model it serves, with its built-in web search, signed in from the browser or a session cookie.",

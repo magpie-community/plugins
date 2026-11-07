@@ -72,6 +72,7 @@ hidden.
 | `keepSystem` | `false` | forward system/developer prompts into the query. Off by default: Perplexity searches every word of the query, and a coding agent's system prompt poisons its results |
 | `chromePath` | auto | Chrome/Chromium/Edge executable for browser sign-in |
 | `apiVersion` | `2.18` | the `version` Perplexity's web client sends; raise it if the endpoint starts refusing |
+| `tools` | `reject` | what to do with a request that carries `tools`: `reject` answers 400 (fail loudly); `ignore` answers as text and marks the response `x-magpie-tools-ignored: 1` |
 | `locale` | `auto` | `auto` / `zh` / `en`: language of the sign-in flow, the account card and `magpie quota`, and of every error this provider returns |
 
 ## Quota
@@ -104,11 +105,13 @@ when the request sets `stream_options.include_usage`.
 ## Limitations
 
 - **No function calling.** The web endpoint has none; the models are declared
-  with `toolcall: false`. A request that carries `tools` / `functions` is
-  **rejected with a 400** naming the reason, rather than having its tools
-  silently dropped, so an agent fails loudly instead of quietly losing its
-  tools. These models suit chat, research, writing, translation and
-  summarising — not tool-driven coding agents.
+  with `toolcall: false`. By default a request that carries `tools` / `functions`
+  is **rejected with a 400** naming the reason, rather than having its tools
+  silently dropped. Set `tools: "ignore"` to answer as text instead — the
+  response then carries `x-magpie-tools-ignored: 1`, so the substitution is
+  visible rather than silent. A host like Claude Code, which always sends its
+  tool list, needs `ignore`. These models suit chat, research, writing,
+  translation and summarising — not tool-driven coding agents.
 - **No images, files, structured output, multiple choices or sampling
   parameters.**
 - Perplexity sometimes substitutes the model it actually ran; the answer still

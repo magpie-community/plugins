@@ -167,6 +167,28 @@ test("tools are rejected instead of silently dropped", async () => {
   assert.match(out.error.message, /function calling/i)
 })
 
+test("with tools: \"ignore\" the request is answered as text and marked", async () => {
+  const { shim } = await load({ tools: "ignore" })
+  const res = await withFetch(
+    async () => new Response(SSE_OK, { status: 200 }),
+    () => shim.fetch("https://ask", ask({ tools: [{ type: "function", function: { name: "Read" } }] })),
+  )
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
+  const out = await res.json()
+  assert.equal(out.choices[0].message.content, "Hello world.")
+})
+
+test("the tools-ignored mark is on a streamed answer too", async () => {
+  const { shim } = await load({ tools: "ignore" })
+  const res = await withFetch(
+    async () => new Response(SSE_OK, { status: 200 }),
+    () => shim.fetch("https://ask", ask({ stream: true, tools: [{ type: "function", function: { name: "Read" } }] })),
+  )
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
+})
+
 test("tool_choice without any tools is not a tool request", async () => {
   // Clients send "auto" by default; only an actual tools array means tools.
   const { shim } = await load()

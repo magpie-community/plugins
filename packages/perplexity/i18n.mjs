@@ -37,7 +37,7 @@ const ZH = {
   upstreamMidStream: "回答中断：{detail}",
   notSignedIn: "未登录",
   toolsUnsupported:
-    "该供应商没有 function calling（Perplexity 网页接口不支持工具调用）。请去掉请求里的 tools 再试，或改用别的模型。",
+    "该供应商没有 function calling（Perplexity 网页接口不支持工具调用）。去掉请求里的 tools 再试，或把插件选项 tools 设为 ignore，让它改为直接返回文字回答。",
   badRequest: "请求无效：{detail}",
 
   loginChromeMissing: "找不到 Chrome/Chromium。请在插件选项里设置 chromePath。",
@@ -90,7 +90,7 @@ const EN = {
   upstreamMidStream: "The answer was cut off: {detail}",
   notSignedIn: "Not signed in",
   toolsUnsupported:
-    "This provider has no function calling (Perplexity's web endpoint does not take tools). Drop the request's tools and retry, or use another model.",
+    "This provider has no function calling (Perplexity's web endpoint does not take tools). Drop the request's tools and retry, or set the plugin's tools option to ignore to get a plain text answer instead.",
   badRequest: "Bad request: {detail}",
 
   loginChromeMissing: "Chrome/Chromium not found. Set the chromePath option to its executable.",
