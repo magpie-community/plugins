@@ -10,6 +10,26 @@ import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
+// Client tools reach the session through a private `nc` placed first on agy's
+// PATH: agy dials `--ide-mcp-port` by running `nc 127.0.0.1 <port>`. That is
+// how agy works, not a documented interface, and it was checked on 1.4.12 and
+// 1.5.0. An older agy is refused with a clear message; a version agy doesn't
+// report is not known to be older, so the session goes ahead.
+export const MIN_AGY_VERSION = "1.4.12"
+export function agyTooOld(version) {
+  const parse = value => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? "").trim())
+    return match ? match.slice(1).map(Number) : null
+  }
+  const have = parse(version)
+  if (!have) return null
+  const need = parse(MIN_AGY_VERSION)
+  for (let i = 0; i < 3; i++) {
+    if (have[i] > need[i]) return null
+    if (have[i] < need[i]) return `agy ${version} is older than ${MIN_AGY_VERSION}, the oldest version this plugin was checked on. Update agy.`
+  }
+  return null
+}
 // agy is told who is connecting: this plugin, by its own package name.
 const CLIENT_INFO = (() => {
   try {
@@ -1065,6 +1085,8 @@ class Proc {
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
     })
     this.agentVersion = init?.agentInfo?.version ?? null
+    const tooOld = agyTooOld(this.agentVersion)
+    if (tooOld) throw new Error(tooOld)
     const capabilities = init?.agentCapabilities ?? {}
     this.supportsImages = capabilities.promptCapabilities?.image === true ||
       capabilities.prompt_capabilities?.image === true
