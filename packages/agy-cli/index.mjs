@@ -69,8 +69,10 @@ const PING_INTERVAL_MS = 15_000
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
 const AGENT_ERROR_MARKER = "\n⚠ Agent execution terminated due to error.\n"
 const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
-// Only the minimal agent costs ~500 input tokens; the default agy agent costs ~8,400.
-const MINIMAL_AGENT = process.env.AGY_BRIDGE_MINIMAL_AGENT !== "0"
+// Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
+// tokens a model call, against ~500 without them), so the request goes upstream
+// with the client's system prompt in their place.
+const MINIMAL_AGENT = process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
@@ -555,7 +557,7 @@ function agentDefinition() {
     "inheritMcp: false",
     "inheritCustomizations: false",
   ]
-  // The client's system prompt replaces agy's default coding-agent prompt.
+  // Opt-in: the client's system prompt stands in for agy's own coding-agent prompt.
   if (MINIMAL_AGENT) lines.push("excludeDefaultComponents: true")
   lines.push(
     "---",

@@ -125,7 +125,7 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 | `AGY_BRIDGE_MAX_PROCS` | 16 | Maximum number of agy processes in the pool |
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | on | Set to `0` to keep agy's default prompt components (about 2,600 more input tokens per model call) |
+| `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | How long a reclaimed session stays resumable (6 hours) |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | Where resumable session records are kept |
@@ -135,6 +135,21 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
+
+## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
+
+By default agy runs every request with its own system prompt, and the
+client's system prompt is added to it: in the session when agy advertises
+`systemPrompt.append`, otherwise as `<external_system_instructions>` at the
+start of the first prompt.
+
+Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
+request that goes upstream then has none of agy's own system prompt, only
+the plugin's one-line tool note and the client's system prompt (sent in one
+of the two ways above). The original author measured about 8,400 input
+tokens per model call with agy's prompt and about 500 without. The cost is
+that upstream no longer sees agy's own request shape, which is why it is
+off unless you turn it on.
 
 ## Troubleshooting
 

@@ -96,7 +96,7 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_MAX_PROCS` | 16 | agy 进程池上限 |
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
-| `AGY_BRIDGE_MINIMAL_AGENT` | 开启 | 设为 `0` 保留 agy 默认提示组件，每次模型调用多约 2,600 个输入 token |
+| `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
@@ -106,6 +106,17 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 重放历史提示词的字节预算 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
+
+## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
+
+默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词附加在后面（agy 声明
+支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在
+第一条提示词开头）。
+
+设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
+agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
+发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的
+不再是 agy 自己的请求形态，所以默认关闭，由你自行决定是否开启。
 
 ## 常见排查
 
