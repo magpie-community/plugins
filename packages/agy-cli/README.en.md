@@ -26,6 +26,38 @@ response.
 - Account standing is outside the plugin's control. If Google changes its usage
   policies, the plugin cannot promise your account will not be restricted.
 
+## How it differs from Antigravity ACP
+
+The community Antigravity ACP plugin (`antigravity-acp`) serves the same
+channel: Antigravity's models over ACP. The differences:
+
+- **What runs**: Antigravity ACP downloads Google's ACP server
+  (`agy_acp_server.par`, about 400 MB) and rides the Antigravity IDE's sign-in.
+  This plugin downloads nothing; it runs the `agy` CLI you installed and signed
+  in to yourself (`agy acp`).
+- **Sessions**: Antigravity ACP opens a new session per request and carries the
+  history as context. This plugin keeps a pool of agy processes, reuses one agy
+  session for one conversation, and picks it up again with `session/resume`
+  after a restart; only when that fails does it replay the history, within a
+  byte budget.
+- **Tool calls**: Antigravity ACP ends the turn with the call as the reply's
+  `tool_calls`. This plugin feeds the client's result back into the same agy
+  turn (see "Tool bridge" below).
+- **Usage**: this plugin reads agy's own `/usage` report; Antigravity ACP reads
+  the quota each reply carries.
+
+## Tool bridge
+
+agy reaches `--ide-mcp-port` by running `nc 127.0.0.1 <port>`. The plugin puts
+a private `nc` first on agy's PATH, which connects that line to the plugin's own
+MCP server. The control port listens on loopback only, with a token per process.
+
+- This rests on how agy dials, not on an interface agy promises. It was checked
+  on 1.4.12 and 1.5.0. On an agy older than 1.4.12 the plugin refuses the session
+  and says to update.
+- The private `nc` applies only to the agy processes the plugin starts, but for
+  those it stands in for every `nc` agy runs.
+
 ## Features
 
 - **The models agy offers**: the list follows the model option agy advertises
@@ -58,8 +90,16 @@ response.
   been verified on 1.4.12 and 1.5.0; image input needs 1.5.0.
 - A Magpie build with OpenCode-style provider plugin support. Usage reporting was
   verified on Magpie 0.1.1599.
-- agy versions older than 1.1.11 are refused for usage queries, because those
-  builds can treat `/usage` as an ordinary model prompt.
+- agy older than 1.4.12 is refused for sessions (see "Tool bridge"), and older
+  than 1.1.11 for usage queries too, because those builds can treat `/usage` as
+  an ordinary model prompt.
+- **Auto-update**: the agy processes the plugin starts get
+  `AGY_CLI_DISABLE_AUTO_UPDATE=true` by default, so the processes in the pool
+  don't update one binary under each other. agy runs you start yourself are not
+  affected and update as usual. If you set `AGY_CLI_DISABLE_AUTO_UPDATE`
+  yourself (`false` included), the plugin passes your value on as written. If
+  you use agy only through this plugin, run `agy` in a terminal now and then so
+  it updates: an old version stands out too.
 
 ## Install
 
@@ -135,6 +175,7 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
+| `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
 
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
 
@@ -177,20 +218,12 @@ off unless you turn it on.
 ## Development
 
 ```sh
-node --check index.mjs
-node --check mcp-server.mjs
-node --check usage.mjs
-npm test
-npm pack --dry-run
+bun test packages/agy-cli        # from the repo root
+bun scripts/check.mjs agy-cli
 ```
 
-`npm test` runs the full ACP and MCP path against a fake agy process, so it uses
-no quota. The integration check against the real CLI is opt-in and uses a small
-amount of subscription quota:
-
-```sh
-AGY_BRIDGE_INTEGRATION=1 npm run test:integration
-```
+The tests run the full ACP and MCP path against a fake agy (an ACP stdio server
+under `test/`), so they never start the real agy and use no quota.
 
 ## License
 

@@ -19,6 +19,31 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
   回传到同一轮 agy 对话里，模型看到的是原生工具调用。
 - 账号风险不由插件决定。Google 的使用政策变化时，插件无法替你保证账号不受限制。
 
+## 与 Antigravity ACP 的区别
+
+社区里的 Antigravity ACP（`antigravity-acp`）走的是同一个渠道：Antigravity 的模型经由 ACP。
+两者的区别：
+
+- **运行的程序**：Antigravity ACP 自己下载 Google 的 ACP 服务端（`agy_acp_server.par`，
+  约 400 MB），依赖 Antigravity IDE 的登录。本插件不下载任何东西，运行你自己装好、自己
+  登录过的 `agy` CLI（`agy acp`）。
+- **会话**：Antigravity ACP 每个请求开一个新会话，把历史当作上下文带上。本插件维护一个
+  agy 进程池，同一段对话复用同一个 agy 会话，重启后用 `session/resume` 接上；只有接不上时
+  才在字节预算内重放历史。
+- **工具调用**：Antigravity ACP 把工具调用作为回复的 `tool_calls` 结束这一轮。本插件把
+  客户端的结果送回同一轮 agy 对话（见下文「工具桥接」）。
+- **额度**：本插件读 agy 自己的 `/usage` 报告；Antigravity ACP 读每次回复带的配额。
+
+## 工具桥接
+
+agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy 的 PATH 最前面放一个
+私有的 `nc`，它把这条连接接到插件自己的 MCP 服务上；控制端口只监听本机回环地址，每个进程
+有自己的令牌。
+
+- 这依赖 agy 拨号的方式，不是 agy 公开承诺的接口，已在 1.4.12 和 1.5.0 上验证。agy 低于
+  1.4.12 时，插件会直接报错并提示升级。
+- 这个 `nc` 只对插件启动的 agy 进程生效，但对这些进程来说，它替换了 agy 运行的所有 `nc`。
+
 ## 功能
 
 - **agy 开放的模型**：模型列表以 ACP 会话里 agy 给出的模型选项为准。`agy models` 列出的
@@ -41,7 +66,12 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
 - Antigravity CLI（`agy`），带 `acp` 子命令，并且在终端里交互登录过一次 Google 账号。
   文本与工具调用已在 1.4.12 和 1.5.0 上验证；图片输入需要 1.5.0。
 - 支持 OpenCode 风格 provider 插件的 Magpie。额度查询已在 Magpie 0.1.1599 上验证。
-- agy 版本低于 1.1.11 时，额度查询会被拒绝，以免旧版本把 `/usage` 当成模型提示词。
+- agy 版本低于 1.4.12 时，会话会被拒绝（见「工具桥接」）；低于 1.1.11 时，额度查询也会被
+  拒绝，以免旧版本把 `/usage` 当成模型提示词。
+- **自动更新**：插件启动的 agy 进程默认带 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，免得进程池里的
+  多个进程同时更新同一个可执行文件。你自己在终端里运行的 agy 不受影响，照常更新。你自己设置了
+  `AGY_CLI_DISABLE_AUTO_UPDATE`（包括设为 `false`）时，插件原样使用你的值。只通过本插件使用
+  agy 的话，请定期在终端里运行一次 `agy` 让它更新：版本过旧本身也更显眼。
 
 ## 安装
 
@@ -106,6 +136,7 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 重放历史提示词的字节预算 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
+| `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 
@@ -138,19 +169,12 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 ## 开发
 
 ```sh
-node --check index.mjs
-node --check mcp-server.mjs
-node --check usage.mjs
-npm test
-npm pack --dry-run
+bun test packages/agy-cli        # 在仓库根目录
+bun scripts/check.mjs agy-cli
 ```
 
-`npm test` 用假的 agy 进程跑完整的 ACP 与 MCP 链路，不消耗额度。真实 CLI 的集成检查需要
-显式开启，并会消耗少量订阅额度：
-
-```sh
-AGY_BRIDGE_INTEGRATION=1 npm run test:integration
-```
+测试用假的 agy 进程（`test/` 下的 ACP stdio 服务）跑完整的 ACP 与 MCP 链路，不调用真实
+agy，不消耗额度。
 
 ## License
 
