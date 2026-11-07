@@ -34,6 +34,9 @@
     "url": "git+https://github.com/magpie-community/plugins.git",
     "directory": "packages/agy-cli"
   },
+  "scripts": {
+    "test": "bun test"
+  },
   "magpie": {
     "maxConcurrency": 16
   }
