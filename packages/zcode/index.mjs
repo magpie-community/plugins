@@ -315,6 +315,19 @@ function spentUp(text, status) {
   return c1 === "1113" || c1 === "1005" || c2 === "1113" || c2 === "1005"
 }
 
+// spentSaid is an answer that carries spentUp's code inside a 200, as a
+// spent bucket's can, said as the 429 it is (plugins#817: a Start Plan
+// account's GLM-5.3 out for the day answered 200 "exceed quota limit",
+// which magpie took for a reply that did not stream and rested the whole
+// account, GLM-5.3-Flash's own bucket with it). Any other answer goes on
+// as it came; a stream's body is never read here.
+async function spentSaid(res) {
+  if (res.status >= 400 || !(res.headers.get("content-type") ?? "").includes("application/json")) return res
+  const text = await res.text()
+  const status = spentUp(text, res.status) ? 429 : res.status
+  return new Response(text, { status, statusText: status === 429 ? "Too Many Requests" : res.statusText, headers: res.headers })
+}
+
 // ---- keys ------------------------------------------------------------------------
 
 function teamHeaders(base, org, project) {
@@ -2708,7 +2721,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 if (EDGE_PAGE.test(text)) edge.until = Date.now() + EDGE_HOLD
                 if (freeGift) {
                   restModel(false)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
                 return kept(startBlocked(res, text))
@@ -2756,18 +2769,20 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 const spent = !cap && spentUp(text, res.status)
                 if (spent) {
                   restModel(true)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 if (res.status >= 400) {
                   if (!cap && (res.status === 401 || res.status === 403)) routes.delete(s.key + "\0" + s.jwt)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 return done(kept(res, text))
               }
             }
             // the plan's answer goes on as it came, the account kept: the
-            // built-in never marked a ZCode account lapsed nor cleared one
-            return done(kept(res))
+            // built-in never marked a ZCode account lapsed nor cleared one.
+            // A spent bucket's 200 says 429 (spentSaid), as a trial
+            // entry's does, so magpie rests the model, not the account
+            return done(kept(await spentSaid(res)))
           },
         }
       },

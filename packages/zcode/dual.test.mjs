@@ -230,6 +230,19 @@ test("a gift 200 that says the quota is spent is answered from the plan too", as
   expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
 })
 
+// the plan free first falls back on, itself spent inside a 200, says 429
+// as a plain request's plan does (plugins#817)
+test("free first's plan answer that says it is spent inside a 200 says 429", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: 1005, msg: "exceed quota limit" }), { headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = new Response(JSON.stringify({ code: 1113, msg: "Insufficient balance or no resource package. Please recharge." }), { headers: { "content-type": "application/json" } })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(429)
+  expect((await res.json()).code).toBe(1113)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+})
+
 test("after the minute's rest the plan keeps serving, inside the route's ten", async () => {
   planAndBalance()
   answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "Insufficient balance or no resource package", code: 1113 } }), { status: 429, headers: { "content-type": "application/json" } })

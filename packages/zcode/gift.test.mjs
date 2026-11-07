@@ -14,13 +14,14 @@ const MSG = "https://api.z.ai/api/anthropic/v1/messages"
 const ok = (data) => new Response(JSON.stringify({ code: 0, data }), { headers: { "content-type": "application/json" } })
 const real = globalThis.fetch
 const sent = []
-let balance, paid, giftReply
+let balance, paid, giftReply, planReply
 
 beforeEach(() => {
   _internal.routes.clear()
   _internal.blocked.clear()
   sent.length = 0
   paid = 100
+  planReply = null
   giftReply = new Response(JSON.stringify({ type: "message", content: [] }), { headers: { "content-type": "application/json" } })
   balance = {
     server_time: now,
@@ -35,7 +36,7 @@ beforeEach(() => {
     if (url.pathname.endsWith("/messages")) {
       const text = init.body ?? (input instanceof Request ? await input.text() : undefined)
       sent.push({ origin: url.origin, path: url.pathname, body: JSON.parse(text), headers: new Headers(init.headers ?? (input instanceof Request ? input.headers : {})) })
-      return url.origin === "https://zcode.z.ai" ? giftReply.clone() : ok({ type: "message", content: [] })
+      return url.origin === "https://zcode.z.ai" ? giftReply.clone() : planReply ? planReply.clone() : ok({ type: "message", content: [] })
     }
     throw new Error("unmocked request blocked: " + url.pathname)
   }
@@ -113,6 +114,37 @@ test("a gift quota error inside HTTP 200 becomes 429 without paid fallback", asy
   expect((await send()).status).toBe(429)
   expect(sent).toHaveLength(1)
   expect(sent[0].origin).toBe("https://zcode.z.ai")
+})
+
+// plugins#817 (zane668): a gift-only account's own model, not a -Trial
+// entry, out of its bucket for the day is answered 200 "exceed quota
+// limit" as the trial entry's is. It says 429 too, its words kept, so
+// magpie rests that model and not the account, whose other buckets
+// (GLM-5.3-Flash's) still serve.
+test("a gift-only account's plain model spent inside HTTP 200 becomes 429", async () => {
+  const only = { type: "oauth", access: jwt, refresh: JSON.stringify({ ...state, key: undefined, plan: undefined }), expires: 0 }
+  const said = { code: 1005, msg: "exceed quota limit", logid: "x" }
+  giftReply = new Response(JSON.stringify(said), { headers: { "content-type": "application/json" } })
+  const res = await send(original, only)
+  expect(res.status).toBe(429)
+  expect(await res.json()).toEqual(said)
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatchObject({ origin: "https://zcode.z.ai", body: { model: original } })
+  // an answer that is a reply stays the reply it was
+  giftReply = new Response(JSON.stringify({ type: "message", content: [{ type: "text", text: "1005" }] }), { headers: { "content-type": "application/json" } })
+  const fine = await send(original, only)
+  expect(fine.status).toBe(200)
+  expect((await fine.json()).content[0].text).toBe("1005")
+})
+
+// the coding plan's own spent answer inside a 200 is said the same way
+test("the coding plan's spent answer inside HTTP 200 becomes 429", async () => {
+  planReply = new Response(JSON.stringify({ code: 1113, msg: "Insufficient balance or no resource package. Please recharge." }), { headers: { "content-type": "application/json" } })
+  const res = await send("glm-5.3")
+  expect(res.status).toBe(429)
+  expect((await res.json()).code).toBe(1113)
+  expect(sent).toHaveLength(1)
+  expect(sent[0].origin).toBe("https://api.z.ai")
 })
 
 test("an exhausted gift alias is refused locally without a paid request", async () => {
