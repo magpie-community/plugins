@@ -62,7 +62,7 @@
     <p id="application" class="muted"></p>
   </div>
   <p id="notice" role="status" aria-live="polite"></p>
-  <p id="guidance" class="guidance">New Agent subtasks may choose the configured primary or secondary model. Naming another model in a prompt does not change this configuration.</p>
+  <p id="guidance" class="guidance">New ordinary Agent subtasks use the secondary model by default. Request the primary model to switch roles. Set both models here first.</p>
   <p id="path-guidance" class="guidance">If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.</p>
 </main>
 <script nonce="__KIMI_SETTINGS_NONCE__">
@@ -98,7 +98,7 @@
     kept: [' Your choices were kept. You can retry.', ' 当前选择已保留，可重试。'],
     unknownStatus: ['Kimi status is unavailable. Refresh to check again.', 'Kimi 状态暂不可用，请刷新检查。'],
     unknownError: ['The settings operation could not be completed. Try again later.', '无法完成设置操作，请稍后重试。'],
-    guidance: ['New Agent subtasks may choose the configured primary or secondary model. Naming another model in a prompt does not change this configuration.', '新建的 Agent 子任务可在已配置的主模型与辅助模型中选择。仅在提示词中写入其他模型名称，不会改变模型配置。'],
+    guidance: ['New ordinary Agent subtasks use the secondary model by default. Request the primary model to switch roles. Set both models here first.', '新建的普通 Agent 子任务默认使用辅助模型，可在提示词中要求改用主模型。请先在本页配置这两个模型。'],
     pathGuidance: ['If Magpie cannot be located automatically on Windows, you can set magpiePath in the plugin options to the current Magpie executable.', 'Windows 下若无法自动定位 Magpie，可在插件选项 magpiePath 指定当前 Magpie 可执行文件。'],
   };
   const text = key => localize(copy[key]);
@@ -108,7 +108,7 @@
     waiting_kimi: ['Waiting for Kimi Work to start.', '等待 Kimi Work 启动。'],
     waiting_kimi_idle: ['Waiting for Kimi to become idle.', '等待 Kimi 空闲。'],
     waiting_kimi_ready: ['Waiting for Kimi to become ready.', '等待 Kimi 就绪。'],
-    restored_waiting_kimi: ['Previous settings restored; waiting for Kimi.', '已恢复原配置，等待 Kimi 就绪。'],
+    restored_waiting_kimi: ['Restoring previous settings; waiting for Kimi.', '正在恢复原配置，等待 Kimi 就绪。'],
     catalog_sync_failed: ['The model list could not be synchronized.', '模型目录同步失败。'],
     catalog_unavailable: ['The model list could not be read.', '无法读取模型目录。'],
     kimi_config_changed: ['Kimi settings changed. Check Kimi before retrying.', 'Kimi 配置已变化，请检查后重试。'],
@@ -116,6 +116,7 @@
     secondary_model_unsupported_runtime: ['This Kimi runtime does not currently support a secondary model. The primary model remains available.', '当前 Kimi 运行时暂不支持辅助模型，主模型仍可用。'],
     secondary_model_unavailable: ['The secondary model is unavailable. Choose another model.', '辅助模型当前不可用，请选择其他模型。'],
     secondary_model_reload_failed: ['Kimi has not confirmed reloading the secondary model. Refresh to retry.', 'Kimi 尚未确认辅助模型已重新载入，请刷新重试。'],
+    agent_profile_conflict: ['A generated agent profile was changed. It was kept; check the profile before retrying.', '生成的 Agent 角色配置已被修改，现有内容已保留。请检查后重试。'],
     secondary_model_waiting_session: ['Settings are saved. Send a message in a Work conversation, then wait for it to become idle so the secondary model configuration can be confirmed.', '设置已保存。请先在 Work 会话中发送一条消息，待会话空闲后确认副模型配置已载入。'],
     invalid_gateway: ['The Magpie gateway address is invalid. Check the Kimi connection settings.', 'Magpie 网关地址无效，请检查 Kimi 接入设置。'],
     invalid_connection: ['The Kimi connection settings are invalid. Reconnect Kimi in Magpie.', 'Kimi 接入配置无效，请在 Magpie 中重新接入。'],

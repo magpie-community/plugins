@@ -13,7 +13,8 @@ export function controlEndpoint(state) {
 export async function rpc(state, method, params = {}, { timeout = 6000, Socket = globalThis.WebSocket } = {}) {
   if (!['models.current', 'conversations.setModel', 'conversations.getKimiModelList',
     'conversations.updateKimiModelList', 'kimiPlugin.reloadActiveSessions',
-    'kimiPlugin.ReloadSession'].includes(method)) throw Error('unsupported_control_method');
+    'kimiPlugin.ReloadSession', 'kimiPlugin.installPlugin', 'kimiPlugin.updatePlugin',
+    'kimiPlugin.getPluginInfo', 'kimiPlugin.setPluginEnabled'].includes(method)) throw Error('unsupported_control_method');
   const endpoint = controlEndpoint(state);
   return new Promise((resolve, reject) => {
     let socket, settled = false;

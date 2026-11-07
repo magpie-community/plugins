@@ -32,6 +32,10 @@ const kernelSessionId = 'synthetic-kernel-session';
 const reloadCases = [
   ['kimiPlugin.reloadActiveSessions', {}, { sessions: [{ kernelSessionId, status: 'reloaded' }] }],
   ['kimiPlugin.ReloadSession', { kernelSessionId }, { status: 'reloaded' }],
+  ['kimiPlugin.installPlugin', { source: '/synthetic/role-plugin' }, { id: 'synthetic-role-plugin', enabled: true }],
+  ['kimiPlugin.updatePlugin', { source: '/synthetic/role-plugin' }, { id: 'synthetic-role-plugin', enabled: true }],
+  ['kimiPlugin.getPluginInfo', { id: 'synthetic-role-plugin' }, { id: 'synthetic-role-plugin', enabled: true }],
+  ['kimiPlugin.setPluginEnabled', { id: 'synthetic-role-plugin', enabled: true }, { id: 'synthetic-role-plugin', enabled: true }],
 ];
 
 for (const [method, params, acknowledgement] of reloadCases) {
