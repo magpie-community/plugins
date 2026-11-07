@@ -1287,7 +1287,9 @@ test("the models hook's catalog says which ClinePass DeepSeek model the pin asks
 
 test("the user's own provider or providerOptions on a ClinePass DeepSeek request is left as they set it, and never retried without it", async () => {
 	const { client: c } = client()
-	const hooks = await ClinePlugin({ client: c })
+	// pinUpstream on, so the plugin has a pin of its own the user's field
+	// must win over (with no pin by default, nothing would be guarded)
+	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
 	const own = [
 		// hy125245's extra body, word for word
 		{ model: "cline-pass/deepseek-v4.1-flash-1017", messages: [], providerOptions: { gateway: { only: ["deepseek"], has: ["vision", "implicit-caching"] } } },
@@ -1311,7 +1313,8 @@ test("the user's own provider or providerOptions on a ClinePass DeepSeek request
 
 test("a client's own providerOptions refused by Cline is passed through, not blamed on pinUpstream", async () => {
 	const { client: c } = client()
-	const hooks = await ClinePlugin({ client: c })
+	// pinUpstream on: the client's field is still theirs, and the refusal theirs
+	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
 	const own = { model: "cline-pass/deepseek-v4.1-flash", messages: [], providerOptions: { gateway: { only: ["deepseek"] } } }
 	serve([
 		[chatUrl, () => Response.json({ error: { message: 'Error 403: client-supplied "providerOptions" model routing is not supported' } }, { status: 403 })],
@@ -1336,7 +1339,9 @@ test("a pinUpstream DeepSeek request Cline refuses says how to turn the pin off,
 	expect(res.status).toBe(403)
 	const body = await res.json()
 	expect(body.error.type).toBe("cline_error")
-	expect(body.error.message).toContain("Turn off pinUpstream")
+	expect(body.error.message).toContain("Turn off the plugin's pinUpstream option")
+	// magpie's Upstream tick never sets this option, so the hint names the option, not the tick
+	expect(body.error.message).not.toMatch(/tick/i)
 	expect(body.error.message).toContain("glm-5.3-flash")
 	expect(body.error.message).toContain("not actually pinned")
 	expect(calls.length).toBe(1)

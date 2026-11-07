@@ -803,7 +803,7 @@ const MAKERS = [
 ]
 
 // pinned is where a DeepSeek or GLM model of Cline's is pinned when the
-// pinUpstream option is on (magpie's built-in ClinePass has the same tick):
+// pinUpstream option is on (magpie's Upstream tick is its own, not this option):
 // { upstream, openRouter }, DeepSeek's own API for DeepSeek's, Z.ai's for
 // GLM, openRouter true for a model Cline sends through OpenRouter. Cline's
 // routers otherwise pick among the providers serving the model, and some
@@ -1156,7 +1156,7 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 									errorResponse({
 										status: 403,
 										message:
-												'Cline refused the providerOptions pin (HTTP 403: client-supplied "providerOptions" model routing is not supported). Turn off pinUpstream (the Upstream tick) and let Cline route the model itself; glm-5.3-flash still works, but Cline ignores its top-level provider field, so it is not actually pinned.',
+												`Cline refused the providerOptions pin (HTTP 403: client-supplied "providerOptions" model routing is not supported). Turn off the plugin's pinUpstream option (in magpie: magpie plugin options @magpie-community/opencode-cline-auth '{"pinUpstream": false}'; in OpenCode: the plugin's or provider.cline's options) and let Cline route the model itself; glm-5.3-flash still works, but Cline ignores its top-level provider field, so it is not actually pinned.`,
 									}),
 									renewed(cred),
 								)

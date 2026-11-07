@@ -105,10 +105,14 @@ downgrade. If Cline restores `providerOptions` routing, the same option works
 again without a plugin change. A request with `provider` or
 `providerOptions` of its own — magpie's extra body, say — goes as sent.
 
-The option is off by default. Turn it on:
+The option is off by default. Turn it on (or back off, with `false`):
 
-- in magpie: the provider's editor › Upstream › tick "DeepSeek and GLM
-  models only from their makers' own APIs";
+- in magpie: `magpie plugin options @magpie-community/opencode-cline-auth
+  '{"pinUpstream": true}'`, which keeps it in magpie's plugins.json. The
+  provider editor's Upstream tick ("DeepSeek and GLM models only from their
+  makers' own APIs") is magpie's own setting and never sets this option;
+  since Cline refuses `providerOptions`, magpie no longer writes that field
+  for the tick either;
 - in OpenCode: `"provider": {"cline": {"options": {"pinUpstream": true}}}` in
   `opencode.json`, or the plugin's own options:
   `"plugin": [["@magpie-community/opencode-cline-auth", {"pinUpstream": true}]]`.
