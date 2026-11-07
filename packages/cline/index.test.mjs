@@ -1163,9 +1163,11 @@ test("pinBody pins a GLM model to Z.ai's API, keeping the body's prefix", () => 
 
 // sdytman (#feedback, 10-20): Cline sends glm-5.3-flash through OpenRouter,
 // not Vercel's AI Gateway, and OpenRouter ignores providerOptions.gateway.only.
-// It reads a top-level provider.only with its own slug, "z-ai". DeepSeek's
-// v4.1 flash models go through Vercel and keep providerOptions.
-test("pinBody pins glm-5.3-flash by OpenRouter's provider.only, keeping the body's prefix", () => {
+// It reads a top-level provider.only with its own slug, "z-ai". Cline
+// currently ignores that field too, so the request works but is not pinned.
+// DeepSeek's v4.1 flash models go through Vercel and use providerOptions when
+// pinned (Cline refuses that field; see the pinUpstream tests below).
+test("pinBody writes glm-5.3-flash's OpenRouter provider.only, which Cline currently ignores without error", () => {
 	const { pinBody, pinned } = _internal
 	const body = `{"model":"cline-pass/glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	const out = pinBody(body, JSON.parse(body), true)
@@ -1225,19 +1227,31 @@ test("without pinUpstream a usage-billed DeepSeek request goes as sent", async (
 	expect(calls[0].init.body).toBe(JSON.stringify(sent))
 })
 
-// ---- ClinePass's DeepSeek models: pinned to DeepSeek by default ------------------
+// ---- ClinePass's DeepSeek models: pinned only when pinUpstream is on -------------
 //
 // hy125245 on X (10-23): on ClinePass the server's own routing for a model wins
 // over providerOptions.gateway.only alone (a fake upstream was served all the
 // same); with the gateway's capability filter beside it, has: ["vision",
 // "implicit-caching"], the request went to DeepSeek (finalProvider
 // "deepseek") and a fake upstream was refused with "no matching upstream".
+// Since 2026-11-06 Cline refuses the field outright, so it is sent only when
+// the user asks for the pin, and that refusal is reported with a hint.
 
 const PASS_PIN = (images) => ({ gateway: { only: ["deepseek"], has: [...(images ? ["vision"] : []), "implicit-caching"] } })
 
-test("a ClinePass DeepSeek request is pinned to DeepSeek by default, vision asked only of a model that takes images", async () => {
+test("a ClinePass DeepSeek request goes as sent unless pinUpstream is on", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
+	serve([[chatUrl, () => Response.json({ ok: true })]])
+	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
+	const sent = { model: "cline-pass/deepseek-v4.1-flash", messages: [] }
+	await l.fetch(chatUrl, chatInit(sent))
+	expect(calls[0].init.body).toBe(JSON.stringify(sent))
+})
+
+test("with pinUpstream on a ClinePass DeepSeek request is pinned to DeepSeek, vision asked only of a model that takes images", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
 	serve([0, 1, 2, 3].map(() => [chatUrl, () => Response.json({ ok: true })]))
 	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
 	const msgs = [{ role: "user", content: "hi" }]
@@ -1254,7 +1268,7 @@ test("a ClinePass DeepSeek request is pinned to DeepSeek by default, vision aske
 
 test("the models hook's catalog says which ClinePass DeepSeek model the pin asks vision of", async () => {
 	const { client: c } = client()
-	const hooks = await ClinePlugin({ client: c })
+	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
 	serve([
 		["/ai/cline/recommended-models", () => Response.json({ clinePass: [{ id: "cline-pass/deepseek-v4.1-flash" }, { id: "cline-pass/deepseek-v4-pro" }] })],
 		["/ai/cline/models", () => Response.json({ data: [
@@ -1295,44 +1309,38 @@ test("the user's own provider or providerOptions on a ClinePass DeepSeek request
 	expect(res.map((r) => r.status)).toEqual([200, 400, 200, 200])
 })
 
-for (const [why, status, answer] of [
-	["no upstream matches the pin", 400, { error: "no matching upstream" }],
-	["no upstream matches the pin (OpenAI's error shape)", 404, { error: { message: "No matching upstream for cline-pass/deepseek-v4-pro" } }],
-	["DeepSeek's upstream is down", 503, { error: { message: "upstream unavailable" } }],
-]) {
-	test(`a default pin that fails because ${why} goes once more as sent`, async () => {
-		const { client: c } = client()
-		const hooks = await ClinePlugin({ client: c })
-		serve([
-			[chatUrl, () => Response.json(answer, { status })],
-			[chatUrl, () => new Response("data: {}\n\n", { headers: { "Content-Type": "text/event-stream" } })],
-		])
-		const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
-		const sent = { model: "cline-pass/deepseek-v4.1-flash-1017", messages: [{ role: "user", content: "hi" }], stream: true }
-		const res = await l.fetch(chatUrl, chatInit(sent))
-		expect(res.status).toBe(200)
-		expect(await res.text()).toBe("data: {}\n\n")
-		expect(calls.length).toBe(2)
-		expect(JSON.parse(calls[0].init.body).providerOptions).toEqual(PASS_PIN(true))
-		expect(calls[1].init.body).toBe(JSON.stringify(sent))
-		// the retry carries the same account and Cline's headers
-		expect(new Headers(calls[1].init.headers).get("Authorization")).toBe("Bearer ck")
-		expect(new Headers(calls[1].init.headers).get("X-CLIENT-TYPE")).toBe(CLIENT.type)
-	})
-}
-
-test("the unpinned retry runs once: its own failure is the answer", async () => {
+test("a client's own providerOptions refused by Cline is passed through, not blamed on pinUpstream", async () => {
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c })
+	const own = { model: "cline-pass/deepseek-v4.1-flash", messages: [], providerOptions: { gateway: { only: ["deepseek"] } } }
 	serve([
-		[chatUrl, () => Response.json({ error: "no matching upstream" }, { status: 400 })],
-		[chatUrl, () => Response.json({ error: { message: "upstream unavailable" } }, { status: 503 })],
-		[chatUrl, () => Response.json({ ok: true })],
+		[chatUrl, () => Response.json({ error: { message: 'Error 403: client-supplied "providerOptions" model routing is not supported' } }, { status: 403 })],
 	])
 	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
-	const res = await l.fetch(chatUrl, chatInit({ model: "cline-pass/deepseek-v4-pro", messages: [] }))
-	expect(res.status).toBe(503)
-	expect(calls.length).toBe(2)
+	const res = await l.fetch(chatUrl, chatInit(own))
+	expect(res.status).toBe(403)
+	const body = await res.json()
+	expect(body.error.message).toBe('Error 403: client-supplied "providerOptions" model routing is not supported')
+	expect(calls.length).toBe(1)
+	expect(calls[0].init.body).toBe(JSON.stringify(own))
+})
+
+test("a pinUpstream DeepSeek request Cline refuses says how to turn the pin off, and is not retried", async () => {
+	const { client: c } = client()
+	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
+	serve([
+		[chatUrl, () => Response.json({ error: { message: 'Error 403: client-supplied "providerOptions" model routing is not supported' } }, { status: 403 })],
+	])
+	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
+	const res = await l.fetch(chatUrl, chatInit({ model: "cline-pass/deepseek-v4.1-flash", messages: [] }))
+	expect(res.status).toBe(403)
+	const body = await res.json()
+	expect(body.error.type).toBe("cline_error")
+	expect(body.error.message).toContain("Turn off pinUpstream")
+	expect(body.error.message).toContain("glm-5.3-flash")
+	expect(body.error.message).toContain("not actually pinned")
+	expect(calls.length).toBe(1)
+	expect(JSON.parse(calls[0].init.body).providerOptions).toEqual(PASS_PIN(true))
 })
 
 test("a pinned request the account was refused is not retried without the pin", async () => {
@@ -1344,7 +1352,7 @@ test("a pinned request the account was refused is not retried without the pin", 
 		[400, { error: { message: "messages: field required" } }],
 	]) {
 		const { client: c } = client()
-		const hooks = await ClinePlugin({ client: c })
+		const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
 		serve([[chatUrl, () => Response.json(answer, { status })]])
 		const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }), { id: "cline", options: {} })
 		const res = await l.fetch(chatUrl, chatInit({ model: "cline-pass/deepseek-v4.1-flash", messages: [] }))
@@ -1366,8 +1374,12 @@ test("other models go as sent: ClinePass's non-DeepSeek, the free DeepSeek and u
 	expect(calls.map((x) => x.init.body)).toEqual(models.map((model) => JSON.stringify({ model, messages: [] })))
 })
 
-test("pinUpstream set off leaves ClinePass's DeepSeek models unpinned; set on, they are pinned with no way back", async () => {
-	for (const [plugin, provider] of [[{ pinUpstream: false }, undefined], [undefined, { id: "cline", options: { pinUpstream: "false" } }]]) {
+test("pinUpstream off, including by default, leaves ClinePass's DeepSeek models unpinned; on, they are pinned and a 400 is not undone", async () => {
+	for (const [plugin, provider] of [
+		[undefined, undefined],
+		[{ pinUpstream: false }, undefined],
+		[undefined, { id: "cline", options: { pinUpstream: "false" } }],
+	]) {
 		const { client: c } = client()
 		const hooks = await ClinePlugin({ client: c }, plugin)
 		serve([[chatUrl, () => Response.json({ ok: true })]])
@@ -1378,10 +1390,7 @@ test("pinUpstream set off leaves ClinePass's DeepSeek models unpinned; set on, t
 	}
 	const { client: c } = client()
 	const hooks = await ClinePlugin({ client: c }, { pinUpstream: true })
-	serve([
-		[chatUrl, () => Response.json({ error: "no matching upstream" }, { status: 400 })],
-		[chatUrl, () => Response.json({ ok: true })],
-	])
+	serve([[chatUrl, () => Response.json({ error: "no matching upstream" }, { status: 400 })]])
 	const l = await hooks.auth.loader(async () => ({ type: "api", key: "ck" }))
 	const res = await l.fetch(chatUrl, chatInit({ model: "cline-pass/deepseek-v4.1-flash", messages: [] }))
 	// the user asked for DeepSeek's own API only: that is kept, not undone
@@ -1390,12 +1399,14 @@ test("pinUpstream set off leaves ClinePass's DeepSeek models unpinned; set on, t
 	expect(JSON.parse(calls[0].init.body).providerOptions).toEqual(PASS_PIN(true))
 })
 
-test("unpinWorthy is a missing upstream or a 5xx, never an account's refusal", () => {
-	const { unpinWorthy, hasImages } = _internal
-	expect(unpinWorthy(400, `{"error":"no matching upstream"}`)).toBe(true)
-	expect(unpinWorthy(404, "No available providers for this model")).toBe(true)
-	expect(unpinWorthy(502, "")).toBe(true)
-	for (const s of [400, 401, 402, 403, 429]) expect(unpinWorthy(s, `{"error":"nope"}`)).toBe(false)
+test("routingRejected reads Cline's exact providerOptions refusal, and nothing looser", () => {
+	const { routingRejected, hasImages } = _internal
+	const exact = 'Error 403: client-supplied "providerOptions" model routing is not supported'
+	expect(routingRejected(403, exact)).toBe(true)
+	expect(routingRejected(403, JSON.stringify({ error: { message: exact } }))).toBe(true)
+	expect(routingRejected(401, exact)).toBe(false)
+	expect(routingRejected(403, "providerOptions not supported")).toBe(false)
+	expect(routingRejected(403, "prefix: " + exact)).toBe(false)
 	expect(hasImages(`{"messages":[{"content":[{"type": "image_url"}]}]}`)).toBe(true)
 	expect(hasImages(`{"messages":[{"content":"type image_url"}]}`)).toBe(false)
 })
