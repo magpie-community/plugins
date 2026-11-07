@@ -84,7 +84,7 @@
   function applyTheme(theme) {
     lang = normalize(theme && theme.lang)
     if (typeof document !== "undefined" && document.documentElement) {
-      document.documentElement.lang = languageTag(theme.lang)
+      document.documentElement.lang = languageTag(theme && theme.lang)
       document.title = lang === "zh" ? "输出策略" : "Output Strategy"
       translate(document.body)
     }
@@ -100,8 +100,8 @@
   }
 
   var host = globalThis.magpie
+  applyTheme(host && host.theme)
   if (host) {
-    if (host.theme) applyTheme(host.theme)
     if (host.ready && typeof host.ready.then === "function") host.ready.then(applyTheme).catch(function () {})
     if (typeof host.onTheme === "function") host.onTheme(applyTheme)
   }

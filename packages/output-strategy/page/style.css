@@ -246,6 +246,7 @@ button:disabled {
     width: min(100% - 32px, 600px);
     padding-top: 28px;
   }
+}
 
 @media (max-width: 460px) {
   .intro { align-items: flex-start; }

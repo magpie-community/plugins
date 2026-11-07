@@ -193,6 +193,22 @@ describe("host language", () => {
     expect(text.nodeValue).toBe("Output Strategy")
   })
 
+  test("closes each responsive media block and increments the shipping version", () => {
+    const css = readFileSync(new URL("../page/style.css", import.meta.url), "utf8")
+    const opens = (css.match(/{/g) || []).length
+    const closes = (css.match(/}/g) || []).length
+    expect(closes).toBe(opens)
+    expect(css).toContain("padding-top: 28px;\n  }\n}\n\n@media (max-width: 460px)")
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.2.1")
+  })
+
+  test("falls back safely when host theme is missing", () => {
+    const sandbox = { document: { documentElement: {}, body: null }, magpie: { theme: null } }
+    vm.createContext(sandbox)
+    expect(() => vm.runInContext(i18nSource, sandbox)).not.toThrow()
+    expect(sandbox.document.documentElement.lang).toBe("en")
+  })
+
   test("ships English HTML and no private stats or local language switch", () => {
     const html = readFileSync(new URL("../page/index.html", import.meta.url), "utf8")
     expect(html).toContain('<html lang="en">')
