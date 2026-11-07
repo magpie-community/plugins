@@ -23,19 +23,12 @@
     "PROVENANCE.json",
     "LICENSES/"
   ],
-  "keywords": [
-    "magpie",
-    "magpie-middleware",
-    "output-styles",
-    "prompt"
-  ],
+  "keywords": ["magpie", "magpie-middleware", "output-styles", "prompt"],
   "magpie": {
     "middleware": "./output-strategy.middleware.js",
     "page": {
       "title": "Output Strategy",
-      "titles": {
-        "zh": "输出策略"
-      },
+      "titles": { "zh": "输出策略" },
       "file": "page/index.html"
     },
     "options": {
