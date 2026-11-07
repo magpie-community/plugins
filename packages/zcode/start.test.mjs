@@ -696,26 +696,28 @@ test("caps that land after the hold armed change neither hits nor until (request
     _internal.busyHold.now = () => clock
     const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
     const opts = await hooks.auth.loader(async () => start("zai"), { id: "zcode" })
-    // the fake parks each /messages request on a gate until the test opens it
-    const parked = []
+    // the fake parks every /messages request on one gate until the test opens it
     let open = () => {}
     const gate = new Promise((r) => (open = r))
     answer = async () => {
-      if (!parked.length) parked.push(open)
       await gate
       return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
     }
     const all = Array.from({ length: 12 }, () =>
       opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText }))
     // every request is in flight (reached the fake) before any answer comes
-    for (let i = 0; parked.length < 1 || i < 200; i++) if (parked.length) break; else await Bun.sleep(5)
-    expect(parked.length).toBe(1)
+    while (got.filter((r) => r.path.endsWith("/messages")).length < 12) await Bun.sleep(5)
+    expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
     clock += 1_000
     open()
     const rs = await Promise.all(all)
-    // all 12 came back the local hold answer (they armed the hold on their
-    // first caps and were held for their retries), and nothing re-armed it
+    // all 12 armed the hold on their first caps and were held from then on:
+    // the caps after arming changed neither hits nor until, no request asked
+    // again (12 asks, not 24), and each answer is the hold's own 429 with
+    // its Retry-After, not busyAnswer's bare one
     expect(rs.every((r) => r.status === 429)).toBe(true)
+    expect(got.filter((r) => r.path.endsWith("/messages")).length).toBe(12)
+    expect(rs.every((r) => r.headers.get("retry-after") === String(_internal.BUSY_HOLD / 1000))).toBe(true)
     expect(_internal.busyHold.hits.length).toBe(0)
     expect(_internal.busyHold.until).toBe(clock + _internal.BUSY_HOLD)
   } finally {

@@ -2035,12 +2035,18 @@ async function askBusy(u, o, hs, onCap) {
     const cap = busy(429, text)
     // one request's retries are one saturation signal, not one per wait
     if (cap && !counted) { counted = true; onCap?.() }
+    // the hold armed: a request already in flight stops asking too. The
+    // second check catches the asks that capped before the hold armed and
+    // woke from their wait after it. Keying on onCap keeps the coding plan
+    // and free first's replay (no onCap) as they are.
+    if (cap && onCap && busyHeld()) { res = busyHeldAnswer(); break }
     if (!cap || i >= BUSY_WAITS.length) {
       res = cap ? busyAnswer(res, text) : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
       break
     }
     const w = BUSY_WAITS[i]
     await sleep(Math.round(w * (0.75 + Math.random() * 0.5)))
+    if (onCap && busyHeld()) { res = busyHeldAnswer(); break }
     res = await fetch(u, { ...o, headers: hs })
   }
   return res
@@ -2712,11 +2718,6 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               delete opts.duplex
               return askBusy(u, opts, h2)
             }
-            // a block page held this computer off zcode.z.ai (edge): the
-            // Start Plan and a picked gift are answered here; free first
-            // already left the gift for the plan. Checked before the busy
-            // hold: an IP the firewall already refused keeps that behavior
-            // (the 405 magpie reads as the network's), hold or no hold.
             // a block page held this computer off zcode.z.ai (edge): the
             // Start Plan and a picked gift are answered here; free first
             // already left the gift for the plan. Checked before the busy

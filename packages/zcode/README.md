@@ -223,9 +223,12 @@ Five cap-hit requests in one minute now hold Start Plan requests off
 answer them here with a 429 and `Retry-After`, so magpie still rests the
 account and asks the group's next provider. A coding plan, served by
 another host, is never held. The window clears when the hold is armed, so
-the hold's own 429s cannot keep it armed. This is distinct from the
-network's 405 block page hold (plugins#649), which is what an IP already
-refused needs.
+the hold's own 429s cannot keep it armed, and a request already in
+flight stops asking too: once the hold is armed, its remaining waits
+answer locally with the hold's 429 instead of asking the counting
+firewall again. This is distinct from the network's 405 block page hold
+(plugins#649), which is what an IP already refused needs; when both are
+on, the 405 hold's answer wins.
 
 ## Two accounts at once
 
