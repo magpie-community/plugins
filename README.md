@@ -262,6 +262,7 @@ it off puts the config back.
 
 | Package | Agent |
 |---|---|
+| [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
