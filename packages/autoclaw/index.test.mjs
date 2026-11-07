@@ -404,7 +404,7 @@ test("explained adds the way out to a 406 and keeps the sign-in", async () => {
 // only — never user, assistant or tool content. The dump must never break the
 // 406 it documents.
 test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write time", async () => {
-  const dir = join(mkdtempSync(tmpdir()), "autoclaw-406")
+  const dir = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "autoclaw-406")
   process.env.AUTOCLAW_406_DUMP_DIR = dir
   try {
     const refused406 = () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
@@ -462,7 +462,7 @@ test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write 
     expect(readdirSync(dir)).toHaveLength(12)
     // a directory that cannot be created: the path runs through a regular
     // file (kept outside the dump dir, so the count above stays clean)
-    const blocker = join(mkdtempSync(tmpdir()), "blocker")
+    const blocker = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "blocker")
     writeFileSync(blocker, "a file, not a directory")
     process.env.AUTOCLAW_406_DUMP_DIR = join(blocker, "beneath")
     const still = await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
@@ -534,7 +534,7 @@ test("a 406 dumps nothing unless the dump is opted into, and the option uses the
 // the wiring, not just the helper: a 406 through either loader dumps the
 // rewritten system prompt that loader actually sent
 test("a 406 through either loader dumps the rewritten system prompt it sent", async () => {
-  const dir = join(mkdtempSync(tmpdir()), "autoclaw-406-wire")
+  const dir = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "autoclaw-406-wire")
   process.env.AUTOCLAW_406_DUMP_DIR = dir
   const realFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
