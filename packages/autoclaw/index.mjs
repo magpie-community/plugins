@@ -19,6 +19,7 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { Buffer } from "node:buffer";
 import * as http from "node:http";
@@ -75,7 +76,7 @@ const FLAGGED = [
   // Code, …" — ten 406 dumps that afternoon, all the same one line; the plain
   // "You are Claude Code" rule above can't catch it. The "an agent for" part
   // is generic and stays; only the harness name is masked the same way.
-  [/an agent for Claude Code/gi, "an agent for the Claude Code CLI"],
+  [/an agent for Claude Code(?! CLI)/gi, "an agent for the Claude Code CLI"],
   [/You are Codex/gi, "You are the Codex agent"],
   [/Codex CLI/gi, "Codex command-line tool"],
   [/You are opencode/gi, "You are the opencode agent"],
@@ -148,26 +149,50 @@ function unflag(messages) {
 const REFUSED_HINT =
   "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
-// 一个 406 就是被拦的整份请求要说话。magpie 只留 token 计数，上游的拒绝理由
-// 又是空的，所以被拒的那一刻把**改写后实际发出的**完整 body 落盘（AUTOCLAW_406_DUMP_DIR
-// 可改址；默认 magpie 配置目录下 autoclaw-406/），一次 406 一份、按时间命名，
-// 只留最近 10 份——排查"FLAGGED 没盖住的那句"不再依赖外抓工具的截断副本。
-// 一切 best-effort：盘写不进去绝不影响 406 本身返回。
+// A 406's diagnosis is the system prompt and nothing else. The dump is off
+// by default — the body is the user's conversation — and runs only when
+// AUTOCLAW_406_DUMP_DIR names a directory, or the plugin's dump406 option is
+// on (then the default directory below). What a dump holds is the rewritten
+// system and developer messages only, never user, assistant or tool content,
+// one file per refusal, the newest D406_KEEP kept, file mode 0600 in a 0700
+// directory. Everything is best-effort: a dump that cannot be written never
+// breaks the 406 it documents.
 const D406_KEEP = 10;
-// 家目录的找法与 magpie 一致，但多一层 Windows 兜底：magpie 的 GUI 进程
-// 常常没有 HOME（11-05 的 dump 全写到了 CWD 盘根 C:\.config\…），USERPROFILE
-// 每个进程都有。空串不算有——`${HOME ?? ""}` 会把空 HOME 变成 "/.config"。
-function dumpHomeDir() {
-  const home = [process.env.HOME, process.env.USERPROFILE].find((h) => h) ?? "";
-  return process.env.XDG_CONFIG_HOME ?? (home ? `${home}/.config` : "");
+
+// The default dump directory, magpie's own config home. The fallbacks matter
+// on Windows, where the GUI process often runs without HOME — 11-05's dumps
+// landed at the CWD's drive root (C:\.config\…) until USERPROFILE backed it
+// up. An empty variable is no value: XDG_CONFIG_HOME="" under ?? gave
+// "/magpie/autoclaw-406"; os.homedir() is the last resort.
+function dumpDefaultDir() {
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
+  return `${process.env.XDG_CONFIG_HOME || `${home}/.config`}/magpie/autoclaw-406`;
 }
-function dump406(sentBody, providerId) {
+
+function dump406(sentBody, providerId, wantDump) {
   try {
-    const dir = process.env.AUTOCLAW_406_DUMP_DIR ?? `${dumpHomeDir()}/magpie/autoclaw-406`;
-    mkdirSync(dir, { recursive: true });
+    const dir = process.env.AUTOCLAW_406_DUMP_DIR || (wantDump ? dumpDefaultDir() : "");
+    if (!dir) return;
+    let body;
+    try {
+      body = JSON.parse(typeof sentBody === "string" ? sentBody : JSON.stringify(sentBody));
+    } catch {
+      return;
+    }
+    const messages = (Array.isArray(body?.messages) ? body.messages : []).filter(
+      (m) => m && (m.role === "system" || m.role === "developer"),
+    );
+    if (!messages.length) return;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    // 同毫秒的两次 406 不是同一份请求：文件名带随机尾，写不冲突、轮转按名排序
-    writeFileSync(`${dir}/${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`, typeof sentBody === "string" ? sentBody : JSON.stringify(sentBody));
+    // two refusals in the same millisecond are not the same request: the
+    // random tail keeps both files, and rotation goes by write time, not by
+    // name
+    writeFileSync(
+      `${dir}/${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`,
+      JSON.stringify({ model: body.model, messages }),
+      { mode: 0o600 },
+    );
     const old = readdirSync(dir)
       .filter((f) => f.endsWith(".json"))
       .map((f) => {
@@ -181,9 +206,9 @@ function dump406(sentBody, providerId) {
   } catch {}
 }
 
-async function explained(res, sentBody, providerId) {
+async function explained(res, sentBody, providerId, options) {
   if (res.status < 400) return res;
-  if (res.status === 406 && sentBody) dump406(sentBody, providerId);
+  if (res.status === 406 && sentBody) dump406(sentBody, providerId, options?.dump406);
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
@@ -1099,7 +1124,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                 fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
 
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId);
+              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId, options);
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
@@ -1114,7 +1139,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
-              return explained(res2, nextBody, providerId);
+              return explained(res2, nextBody, providerId, options);
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
@@ -1128,7 +1153,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: sentBody,
             });
-            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId);
+            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId, options);
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
@@ -1813,5 +1838,6 @@ export const _internal = {
   balanceObserve, usageStatePath: () => usageStatePath ?? usageStatePathDefault(), setUsageStatePath, beijingDayOf,
   fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth,
   FLAGGED, unflagged, unflag, tidyBody, rewriteManagedBody, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+  dumpDefaultDir, D406_KEEP,
   guidePageHtml, callbackPageHtml,
 };

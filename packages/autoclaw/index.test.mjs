@@ -2,14 +2,14 @@
 // answer the upstream gives lands on one of its outcomes, and the plugin
 // factory registers both providers with every hook check.mjs looks for.
 import { expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AutoclawAuthPlugin, AutoclawCnAuthPlugin, _internal } from "./index.mjs"
 
 const {
   checkinOutcome, signinConfig, bareToken, codeValue, tokenFields, refreshTokens, startLocalOAuth,
-  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT, dumpDefaultDir,
 } = _internal
 
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
@@ -278,6 +278,8 @@ test("a system prompt carrying every known line at once comes out clean in one p
     // "You are Claude Code"; ten dumps that afternoon all carried this one line
     ["You are an agent for Claude Code, Anthropic's official CLI for Claude. Use the tools available to complete the task.", "You are an agent for the Claude Code CLI, Anthropic's official CLI for Claude. Use the tools available to complete the task."],
     ["Intro.\nYou are an agent for Claude Code, dispatched mid-task.", "Intro.\nYou are an agent for the Claude Code CLI, dispatched mid-task."],
+    // the rewritten form must not grow a second CLI
+    ["an agent for Claude Code CLI, ask it", "an agent for Claude Code CLI, ask it"],
     ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
     ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
     ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
@@ -396,9 +398,12 @@ test("explained adds the way out to a 406 and keeps the sign-in", async () => {
 
 // 11-04: the reporter's capture tool truncated the failing body at 256 KB and
 // the refused sentence sat past the cut. The plugin sees the body it actually
-// sends, so a 406 dumps it whole (rewritten form, both channels), one file per
-// refusal, newest kept. The dump must never break the 406 it documents.
-test("a 406 dumps the sent body whole; the oldest dumps rot away", async () => {
+// sends, so a 406 can dump the rewritten system prompt for diagnosis. The
+// body is the user's conversation, so the dump is opt-in (AUTOCLAW_406_DUMP_DIR,
+// or the plugin's dump406 option) and holds the system and developer messages
+// only — never user, assistant or tool content. The dump must never break the
+// 406 it documents.
+test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write time", async () => {
   const dir = join(mkdtempSync(tmpdir()), "autoclaw-406")
   process.env.AUTOCLAW_406_DUMP_DIR = dir
   try {
@@ -412,53 +417,111 @@ test("a 406 dumps the sent body whole; the oldest dumps rot away", async () => {
     const files = readdirSync(dir)
     expect(files).toHaveLength(1)
     const dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.model).toBe("zai_glm-5.3-flash")
+    // the refusal is about the system prompt: the user's words are not in it
+    expect(dumped.messages).toHaveLength(1)
+    expect(dumped.messages[0].role).toBe("system")
     expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are powered by the GLM-5.3-flash model.`)
     expect(dumped.messages[0].content).not.toMatch(/powered by the model glm/i)
-    expect(dumped.messages[1].content).toBe("hi")
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
 
-    // ten at most: an eleventh refusal drops the oldest (rotation by write time,
-    // not by name — same-millisecond refusals are distinct requests)
-    for (let i = 0; i < 11; i++) await explained(refused406(), JSON.stringify({ n: i }), "autoclaw-cn")
+    // ten at most: an eleventh refusal drops the oldest. The pre-placed file's
+    // name sorts after every new one while its write time is older, so only
+    // rotation by write time removes it (a name sort would keep it and drop
+    // the newest dump instead)
+    const old = join(dir, "9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    writeFileSync(old, JSON.stringify({ model: "m", messages: [{ role: "system", content: "pre-existing" }] }))
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(old, past, past)
+    for (let i = 0; i < 10; i++) {
+      await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: `refusal ${i}` }] }), "autoclaw-cn")
+    }
     const left = readdirSync(dir)
     expect(left).toHaveLength(10)
-    const ns = left.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).n).sort((a, b) => a - b)
-    expect(ns).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].slice(1))
+    expect(left).not.toContain("9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    const said = left.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).messages[0].content).sort()
+    expect(said).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `refusal ${i}`))
 
     // a non-406 leaves no file, and a dump failure never breaks the 406
-    await explained(new Response('{"x":1}', { status: 502 }), "not json at all", "autoclaw")
+    await explained(new Response('{"x":1}', { status: 502 }), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
     expect(readdirSync(dir)).toHaveLength(10)
-    process.env.AUTOCLAW_406_DUMP_DIR = join(dir, "no-such-slash-does-not-exist")
-    const still = await explained(refused406(), "{}", "autoclaw")
+    // a directory that cannot be created: the path runs through a regular
+    // file (kept outside the dump dir, so the count above stays clean)
+    const blocker = join(mkdtempSync(tmpdir()), "blocker")
+    writeFileSync(blocker, "a file, not a directory")
+    process.env.AUTOCLAW_406_DUMP_DIR = join(blocker, "beneath")
+    const still = await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
     expect(still.status).toBe(406)
+    expect(readdirSync(dir)).toHaveLength(10)
   } finally { delete process.env.AUTOCLAW_406_DUMP_DIR }
 })
 
-// 11-05: the magpie GUI process on Windows runs without HOME, so the default
-// dump dir `${HOME ?? ""}/.config/...` collapsed to "/.config/..." and landed
-// at the CWD's drive root (C:\.config\magpie\autoclaw-406) — the dumps were
-// written, ten of them, just where nobody looks. USERPROFILE is the Windows
-// home that process always has; HOME alone must stop deciding the location.
-test("the default dump dir follows USERPROFILE, not just HOME", async () => {
-  const fake = mkdtempSync(join(tmpdir(), "autoclaw-home-"))
-  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME
+// Off by default: without the env and without the option, a 406 writes
+// nothing anywhere. The dump406 option turns it on at the default directory.
+test("a 406 dumps nothing unless the dump is opted into, and the option uses the default dir", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
   delete process.env.XDG_CONFIG_HOME
-  process.env.HOME = ""
-  process.env.USERPROFILE = join(fake, "magpie-home")
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
   try {
-    const refused406 = () => new Response("{}", { status: 406 })
-    const refused = await explained(refused406(), "{}", "autoclaw")
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    const refused = await explained(refused406(), body, "autoclaw")
     expect(refused.status).toBe(406)
-    const written = readdirSync(join(process.env.USERPROFILE, ".config/magpie/autoclaw-406"))
-    expect(written).toHaveLength(1)
-    // with HOME set again it still wins over USERPROFILE (XDG conventions)
-    process.env.HOME = join(fake, "xdg-home")
-    await explained(refused406(), "{}", "autoclaw")
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    // the option arms the default directory
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+    // an empty XDG_CONFIG_HOME is no value: it falls through to HOME
+    process.env.XDG_CONFIG_HOME = ""
+    process.env.HOME = join(fake, "home2")
+    await explained(refused406(), body, "autoclaw", { dump406: true })
     expect(readdirSync(join(process.env.HOME, ".config/magpie/autoclaw-406"))).toHaveLength(1)
-    expect(readdirSync(join(process.env.USERPROFILE, ".config/magpie/autoclaw-406"))).toHaveLength(1)
+    expect(existsSync(join(fake, "magpie/autoclaw-406"))).toBe(false)
   } finally {
-    process.env.HOME = oldHome
-    process.env.USERPROFILE = oldProfile
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
     if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+  }
+})
+
+// the wiring, not just the helper: a 406 through either loader dumps the
+// rewritten system prompt that loader actually sent
+test("a 406 through either loader dumps the rewritten system prompt it sent", async () => {
+  const dir = join(mkdtempSync(tmpdir()), "autoclaw-406-wire")
+  process.env.AUTOCLAW_406_DUMP_DIR = dir
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+  try {
+    const overseas = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await overseas.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content: "You are Claude Code, Anthropic's official CLI for Claude." }, { role: "user", content: "hi" }] })
+    expect((await loader.fetch("x", { method: "POST", body })).status).toBe(406)
+    let files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    let dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toContain("You are the Claude Code CLI")
+    expect(dumped.messages[0].content).not.toMatch(/You are Claude Code/)
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
+
+    // the CN managed channel dumps its own rewritten system too
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    const cn = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const cnLoader = await cn.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const cnBody = JSON.stringify({ model: "zaicoding_glm-5.3", messages: [{ role: "system", content: "You are a Claude agent, built on Anthropic's Claude Agent SDK." }, { role: "user", content: "hi" }] })
+    expect((await cnLoader.fetch("x", { method: "POST", body: cnBody })).status).toBe(406)
+    files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are a coding assistant.`)
+  } finally {
+    globalThis.fetch = realFetch
+    delete process.env.AUTOCLAW_406_DUMP_DIR
   }
 })
 
