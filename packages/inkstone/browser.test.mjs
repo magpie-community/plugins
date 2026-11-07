@@ -116,3 +116,25 @@ test('off Windows the login wait ends on process exit, never on a title', async 
   }
 })
 
+test('the window title is read on Windows only, even when it already shows the console (#824)', async () => {
+  const { spawn } = await import('node:child_process')
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { stdio: 'ignore' })
+  try {
+    // a title that would end the wait at once, if anything read it
+    let reads = 0
+    const titleOf = () => {
+      reads += 1
+      return '书生·端砚 Intern InkStone'
+    }
+    for (const platform of ['darwin', 'linux']) {
+      reads = 0
+      expect(await waitForConsoleWindow(child, { platform, titleOf, settleMs: 0, timeoutMs: 200, pollMs: 20 })).toBe('timeout')
+      expect(reads).toBe(0)
+    }
+    // the same title does end it on Windows, so the check above is not empty
+    expect(await waitForConsoleWindow(child, { platform: 'win32', titleOf, settleMs: 0, timeoutMs: 2000, pollMs: 20 })).toBe('console')
+  } finally {
+    try { child.kill() } catch {}
+  }
+})
+

@@ -531,7 +531,10 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  * 登录窗口的完成等待。可测试：`platform` 参数让非 Windows 的"只认进程退出"
  * 行为在任何宿主上都能被验证。
  */
-export async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform } = {}) {
+export async function waitForConsoleWindow(
+  child,
+  { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform, titleOf = windowTitleOf, settleMs = 5000 } = {},
+) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
   // 窗口标题只能靠 Windows 的 Get-Process 读；别的平台就以“用户关掉窗口”
@@ -546,7 +549,7 @@ export async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, poll
       continue
     }
     // 只看我们自己的窗口；并且给它至少 5 秒，控制台标题在跳转 SSO 前会闪一下。
-    const title = Date.now() - started > 5000 ? windowTitleOf(child.pid) : ""
+    const title = Date.now() - started >= settleMs ? titleOf(child.pid) : ""
     if (title && /Intern InkStone|端砚/i.test(title) && !/用户认证|登录/i.test(title)) {
       hits += 1
       if (hits >= 2) return "console"

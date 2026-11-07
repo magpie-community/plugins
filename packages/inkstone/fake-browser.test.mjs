@@ -13,13 +13,15 @@ import { renewSilently } from "./lib/browser.mjs"
 import { fakeInkStone, json, ok, fail } from "./fake.mjs"
 
 let fakeExe = ""
+let fakeDir = ""
 let profile = ""
 const savedEnv = {}
 let f
 
 beforeAll(() => {
   // compile the fake browser once (bun build --compile takes under a second)
-  const out = join(mkdtempSync(join(tmpdir(), "inkstone-fake-browser-")), process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
+  fakeDir = mkdtempSync(join(tmpdir(), "inkstone-fake-browser-"))
+  const out = join(fakeDir, process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
   execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(out)}`, { stdio: "pipe" })
   fakeExe = out
@@ -42,9 +44,12 @@ afterAll(() => {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  try {
-    rmSync(profile, { recursive: true, force: true })
-  } catch {}
+  // the compiled fake is ~59 MB: never leave it behind (#824)
+  for (const dir of [profile, fakeDir]) {
+    try {
+      if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    } catch {}
+  }
 })
 
 afterEach(() => {
