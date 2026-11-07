@@ -269,6 +269,7 @@ it off puts the config back.
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): Magpie's endpoint and model catalog in `~/.pig/agent/models.json`, and the model PiG starts on (`defaultProvider`/`defaultModel` in `settings.json`) picked on the Agents page |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
+| [nowledge-mem-agent](packages/nowledge-mem-agent) | [Nowledge Mem / AI Now](https://mem.nowledge.co/): choose Default, AI Now and Background models through Magpie, with recovery journaling; separate from the Nowledge memory recall/capture gateway plugin |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
