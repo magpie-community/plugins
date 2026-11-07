@@ -8,7 +8,7 @@ import "./page/validate.js";
 const validateExplicitOptions = globalThis.__nowledgeMemValidateOptions;
 
 // Bumped with package.json: Mem's own clients record it on imported Threads.
-export const version = "0.1.5";
+export const version = "0.1.6";
 
 // The only report codes magpie's Plugins page shows; tools turn these into
 // messages, never the service's own text.
@@ -40,6 +40,18 @@ export function resolveOptions(raw = {}, env = process.env) {
     if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) throw new MemFailure("invalid");
     const skipAgents = new Set(skip.map(agentKey).filter(Boolean));
     const captureFilter = raw.captureFilter === undefined ? "off" : raw.captureFilter;
+    // Presence, including an empty object, opts into fail-closed key policies.
+    const enforceKeyPolicies = Object.hasOwn(raw, "keyPolicies");
+    // IDs come from the host's authenticated caller, never request text.
+    const policies = enforceKeyPolicies ? raw.keyPolicies : {};
+    if (!policies || typeof policies !== "object" || Array.isArray(policies))
+        throw new MemFailure("invalid");
+    for (const [id, policy] of Object.entries(policies)) {
+        if (!id || id.startsWith("sk-magpie-") || !policy || typeof policy !== "object" || Array.isArray(policy) ||
+            typeof policy.recall !== "boolean" || typeof policy.capture !== "boolean" ||
+            (policy.spaceId !== undefined && (typeof policy.spaceId !== "string" || !policy.spaceId.trim())))
+            throw new MemFailure("invalid");
+    }
     // The Mem endpoint, as its own clients resolve it: the option, then the
     // portable NMEM_API_URL, then the local desktop default. A URL from the
     // environment that isn't an HTTP(S) address is ignored rather than fatal.
@@ -82,6 +94,7 @@ export function resolveOptions(raw = {}, env = process.env) {
         throw new MemFailure("invalid");
     return {
         server, apiKey, apiKeyEnv,
+        keyPolicies: policies, enforceKeyPolicies,
         spaceId: text(raw.spaceId),
         agentId: text(raw.agentId),
         hostAgentId: text(raw.hostAgentId),
