@@ -46,10 +46,9 @@ export async function CCXPlugin({ client } = {}, options = {}) {
           async authorize(inputs) {
             const key = String(inputs?.apiKey ?? "").trim()
             if (!key) return { type: "failed", error: "请输入 API Key" }
+            // 只验证 Key 格式，不启动浏览器（避免闪退/卡住）
             const profileId = fingerprint({ apiKey: key })
             const auth = { type: "oauth", access: key, refresh: "", expires: 0, apiKey: key, profileId, accountId: `ccx-${profileId}`, username: "AutoBits 账号" }
-            const info = await readUsage(auth, options)
-            if (info.user) auth.username = info.user
             return { type: "success", ...auth }
           },
         },
@@ -60,9 +59,13 @@ export async function CCXPlugin({ client } = {}, options = {}) {
             { type: "password", key: "apiKey", required: false, message: "可选：API Key（留空时先登录，再在控制台创建）", placeholder: "sk-..." },
           ],
           authorize(inputs) {
+            // 返回启动指令，让 Magpie 的宿主去打开浏览器
+            // 浏览器登录在 callback 里完成，这里只描述要做什么
             return {
-              url: "", opened: true, method: "auto",
-              instructions: "会打开 Edge 或 Chrome 的 AutoBits 页面。请手动登录（密码、邮件验证码或通行密钥），完成后窗口会自动关闭。验证码由你完成，软件不会代答。",
+              url: "https://ccx.autobits.cc/login",
+              opened: false,
+              method: "auto",
+              instructions: "请点击下方「打开浏览器」按钮，在打开的 Edge/Chrome 窗口里手动登录 AutoBits（密码、邮件验证码或通行密钥）。登录成功后窗口会自动关闭。",
               async callback(_code, { signal } = {}) {
                 try {
                   const key = String(inputs?.apiKey ?? "").trim()
