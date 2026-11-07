@@ -342,10 +342,10 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           confirm:
             "Old ink-<host>-<account>-* keys on this machine will be deleted; manual keys, unreadable keys and the key from this sign-in are kept.",
           confirms: {
-            zh: "将删除本机旧的 ink-<host>-<account>-* 密钥；手动创建的密钥和正在使用的密钥会保留。",
-            "zh-TW": "將刪除本機舊的 ink-<host>-<account>-* 金鑰；手動建立的金鑰和正在使用的金鑰會保留。",
-            ja: "このマシン上の古い ink-<host>-<account>-* キーを削除します。手動で作成したキーと使用中のキーは残します。",
-            de: "Alte ink-<host>-<account>-* Keys werden gelöscht; manuell erstellte Keys und der verwendete Key bleiben erhalten.",
+            zh: "将删除本机旧的 ink-<host>-<account>-* 密钥；手动创建的密钥和本次登录创建的密钥会保留。",
+            "zh-TW": "將刪除本機舊的 ink-<host>-<account>-* 金鑰；手動建立的金鑰和本次登入建立的金鑰會保留。",
+            ja: "このマシン上の古い ink-<host>-<account>-* キーを削除します。手動で作成したキーと今回のサインインで作成したキーは残します。",
+            de: "Alte ink-<host>-<account>-* Keys werden gelöscht; manuell erstellte Keys und der bei dieser Anmeldung erstellte Key bleiben erhalten.",
           },
           default: true,
         },
