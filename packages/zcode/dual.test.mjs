@@ -705,7 +705,7 @@ test("a trial entry goes to the Start Plan, dressed", async () => {
   const m = sent.at(-1)
   expect(m.origin).toBe("https://zcode.z.ai")
   expect(m.path).toBe("/api/v1/zcode-plan/anthropic/v1/messages")
-  expect(m.headers["x-title"]).toBe("Z Code@cli")
+  expect(m.headers["x-title"]).toBe("Z Code@electron")
   expect(m.headers.authorization).toBe("Bearer " + jwt)
   expect(m.headers["x-api-key"]).toBeUndefined()
   expect(JSON.parse(m.body).system.length).toBeGreaterThan(1) // dressed

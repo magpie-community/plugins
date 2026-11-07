@@ -789,6 +789,23 @@ function noteRateLimit(key, saidMs, message) {
 }
 const CAPTCHA_WORDS = /captcha/i
 
+// claimNeedsCaptcha says whether ZCode's claims want its security check
+// now, from what client/configs says: its captcha (Aliyun's, which the
+// ZCode app passes before every claim, invisibly as a rule, and sends as
+// X-Aliyun-Captcha-Verify-Param, 3.17.2's requestVerificationClaimHeaders)
+// switched on. No captcha in the configs is no check, as the app reads it
+// (readRequestVerificationConfig gives null, and the claim goes without
+// the header); one that isn't an object is unknown, null.
+// skip_model_request is the same check for Start Plan requests, which it
+// spares (true on 11-07); it is not read here.
+function claimNeedsCaptcha(c) {
+  const k = c?.configs?.captcha
+  if (k == null) return false
+  if (typeof k !== "object" || Array.isArray(k)) return null
+  return k.enabled !== false
+}
+const CAPTCHA_CLAIM = "claim it in the ZCode app: ZCode asks its security check before a claim, which only the app passes, so the daily check-in leaves it to the app"
+
 // The marketing feed and the claim are gated on the client's version:
 // under an older version's header the feed answers empty (11-03, #678:
 // the day's banner showed for 3.17.2 and for no older one), so they go,
@@ -976,6 +993,24 @@ async function claimDaily(s) {
     return unread.length
       ? { outcome: "failed", message: unread.join("; ") }
       : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+  }
+  // a claim ZCode guards with its security check is not posted: the app
+  // passes it before each claim and sends the proof in a header, which
+  // this plugin can't make, and a claim without it only gets 3007 again
+  // (young02036 on Discord, 11-07: asked every day, never claimed). The
+  // plans are named, to claim in the ZCode app. A config that doesn't
+  // read leaves it unknown: nothing is posted, and it is asked again.
+  let guarded
+  try {
+    guarded = claimNeedsCaptcha(await clientConfigs())
+  } catch (e) {
+    guarded = null
+    unread.push(`ZCode's client config: ${e?.message ?? String(e)}`)
+  }
+  if (guarded !== false) {
+    rateWait.delete(holdKey(s))
+    if (guarded === null) return { outcome: "failed", message: [...plans.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
+    return { outcome: "captcha", message: plans.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
   }
   const got = []
   for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
@@ -1833,12 +1868,29 @@ function localConfig() {
 // remoteConfig is the release of ZCode's provider config zcode.z.ai names now.
 async function remoteConfig() {
   const signal = AbortSignal.timeout(8000)
-  const c = await call("GET", `${ZCODE}/api/v1/client/configs?app_version=${APP_VERSION}&platform=${platform()}`, { signal })
+  const c = await clientConfigs()
   const url = c?.configs?.builtin_provider_config_json
   if (!String(url ?? "").startsWith("https://")) throw new Error("ZCode's configs name no provider config")
   const res = await fetch(url, { headers: { "User-Agent": UA }, signal })
   if (!res.ok) throw new Error(`ZCode's provider config: ${res.status}`)
   return res.json()
+}
+
+// clientConfigs is what zcode.z.ai tells this client version
+// (/api/v1/client/configs): the provider config's address, and the
+// captcha its claims and requests need (claimNeedsCaptcha). A read that
+// came through is kept for 10 minutes; a failed one is not kept, and
+// throws.
+let clientCache = null
+async function clientConfigs() {
+  if (clientCache && Date.now() - clientCache.at < 600_000) return clientCache.c
+  const c = await call("GET", `${ZCODE}/api/v1/client/configs?app_version=${APP_VERSION}&platform=${platform()}`, { signal: AbortSignal.timeout(8000) })
+  clientCache = { c, at: Date.now() }
+  return c
+}
+// resetClientConfigs is for tests: the next read asks zcode.z.ai again.
+export function resetClientConfigs() {
+  clientCache = null
 }
 
 // config is ZCode's provider config, the later of zcode.z.ai's and an
@@ -2182,7 +2234,12 @@ function startHeaders(h, jwt) {
   out.set("HTTP-Referer", ZCODE)
   out.set("User-Agent", UA + " ai-sdk/anthropic/3.0.81")
   out.set("X-ZCode-App-Version", APP_VERSION)
-  out.set("X-Title", "Z Code@cli")
+  // the desktop app's agent names itself electron: 3.17.2's
+  // zcode-protocol-entrypoint passes sourceTitle "electron", and a bare
+  // run under app-server says the same (Mvc in glm/zcode.cjs); "cli" is
+  // the zcode command line's alone, which sends no X-Device-Mid on the
+  // app's calls and no desktop prompt texts, as this plugin does
+  out.set("X-Title", "Z Code@electron")
   out.set("X-Release-Channel", "production")
   const o = intl()
   out.set("X-Client-Language", o.locale || "unknown")
@@ -2199,6 +2256,30 @@ function startHeaders(h, jwt) {
   // 3.16's createModelRequestAttributionHeaders: what asked the model
   out.set("x-zcode-query-source", "main_turn")
   return out
+}
+
+// queryOf is the request's x-query-id, as 3.17.2's
+// createModelRequestAttributionHeaders (zft in glm/zcode.cjs) sends it:
+// the user's query, "query_" + a UUID with the prefix cut, the same for
+// every request of one turn (the tool calls the model makes on the way)
+// and a new one for the next thing the user says. The agent's turns are
+// counted: a user message that carries text, not tool results alone,
+// starts a query. A body that doesn't read gives none, and none is sent.
+function queryOf(text, session) {
+  let b
+  try {
+    b = JSON.parse(text)
+  } catch {
+    return ""
+  }
+  if (!Array.isArray(b?.messages)) return ""
+  let n = 0
+  for (const m of b.messages) {
+    if (m?.role !== "user") continue
+    const c = m.content
+    if (typeof c === "string" ? c.trim() : Array.isArray(c) && c.some((x) => x && x.type !== "tool_result")) n++
+  }
+  return n ? uuidOf("zcode-query\0" + session + "\0" + n) : ""
 }
 
 // Claude Code's tool search, as ZCode's plans take it. Claude Code
@@ -2739,6 +2820,8 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               if (opts.body != null) {
                 const text = orig ?? (typeof opts.body === "string" ? opts.body : await new Response(opts.body).text())
                 opts.body = dress(text, s.site, s.device, place, sid)
+                const q = queryOf(text, sid)
+                if (q) h.set("x-query-id", q)
                 delete opts.duplex
                 h.delete("content-length")
               }
@@ -2975,4 +3058,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, busyHold, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, busyHold, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

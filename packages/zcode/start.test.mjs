@@ -248,7 +248,7 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "http-referer": "https://zcode.z.ai",
     "user-agent": "ZCode/3.17.2 ai-sdk/anthropic/3.0.81",
     "x-zcode-app-version": "3.17.2",
-    "x-title": "Z Code@cli",
+    "x-title": "Z Code@electron",
     "x-release-channel": "production",
     "x-client-language": o.locale,
     "x-client-timezone": o.timeZone,
@@ -260,9 +260,12 @@ test("a Start Plan request carries ZCode's headers, and only those", async () =>
     "x-zcode-session-type": "main",
     "x-zcode-trace-id": h["x-zcode-trace-id"],
     "x-zcode-query-source": "main_turn",
+    // the user's query this turn answers, as 3.17.2 names it
+    "x-query-id": _internal.queryOf(JSON.stringify(agentBody), _internal.sessionOf("", DEVICE)),
     // the conversation, as ZCode names it; the agent told none (#387)
     "x-session-id": _internal.sessionOf("", DEVICE),
   })
+  expect(h["x-query-id"]).toMatch(UUID)
   expect(h["x-api-key"]).toBeUndefined()
   expect(h["x-device-mid"]).toBeUndefined()
 })
@@ -297,7 +300,7 @@ test("a Start Plan request from Claude Code goes with ZCode's headers alone, wit
     const h = own(r.headers)
     for (const k of Object.keys(CLAUDE_CODE)) if (!TRANSPORT.has(k)) expect(h[k]).toBeUndefined()
     expect(Object.keys(h).sort()).toEqual(
-      ["authorization", "anthropic-version", "content-type", "http-referer", "user-agent", "x-zcode-app-version", "x-title", "x-release-channel", "x-client-language", "x-client-timezone", "x-zcode-agent", "x-platform", "x-os-category", "x-os-version", "x-request-id", "x-zcode-session-type", "x-zcode-trace-id", "x-zcode-query-source", "x-session-id"].sort(),
+      ["authorization", "anthropic-version", "content-type", "http-referer", "user-agent", "x-zcode-app-version", "x-title", "x-release-channel", "x-client-language", "x-client-timezone", "x-zcode-agent", "x-platform", "x-os-category", "x-os-version", "x-request-id", "x-zcode-session-type", "x-zcode-trace-id", "x-zcode-query-source", "x-query-id", "x-session-id"].sort(),
     )
     expect(r.headers.accept).not.toBe(CLAUDE_CODE.accept)
   }
@@ -375,7 +378,7 @@ test("a Start Plan body with no model has no powered-by line; a blank system add
 
 test("a Start Plan request made as a Request, its body a stream, is dressed too", async () => {
   const r = await send(start("zai"), JSON.stringify(agentBody), { asRequest: true })
-  expect(r.headers["x-title"]).toBe("Z Code@cli")
+  expect(r.headers["x-title"]).toBe("Z Code@electron")
   expect(JSON.parse(r.body).system).toEqual(zcodeSystem("zai-api/GLM-5.3-Flash", undefined, AGENT_OWN))
   expect(Number(r.headers["content-length"])).toBe(Buffer.byteLength(r.body))
 })
@@ -754,4 +757,22 @@ test("a few caps do not hold the Start Plan, and coding plan caps hold nothing",
     _internal.BUSY_WAITS.push(...waits)
     _internal.busyHold.now = () => Date.now()
   }
+})
+
+// 3.17.2's x-query-id (createModelRequestAttributionHeaders) names the
+// user's query: every request of one turn, the tool calls on the way
+// among them, carries the same, and what the user says next a new one.
+test("x-query-id is the turn's: the same through tool results, new for the next user message", () => {
+  const q = (messages, sid = "s1") => _internal.queryOf(JSON.stringify({ messages }), sid)
+  const ask = { role: "user", content: [{ type: "text", text: "fix it" }] }
+  const call = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] }
+  const result = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "a.go" }] }
+  const first = q([ask])
+  expect(first).toMatch(UUID)
+  expect(q([ask, call, result])).toBe(first)
+  expect(q([ask, call, result, { role: "assistant", content: "done" }, { role: "user", content: "thanks" }])).not.toBe(first)
+  expect(q([ask], "s2")).not.toBe(first)
+  // nothing the user said, or a body that doesn't read: none
+  expect(q([result])).toBe("")
+  expect(_internal.queryOf("{", "s1")).toBe("")
 })

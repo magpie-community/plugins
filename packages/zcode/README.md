@@ -31,7 +31,10 @@ over Anthropic's Messages API. Provider id: `zcode`.
     picks by it, so without it the cache is mostly missed (#387). An
     account known only by its key gets a device id made from the key, the
     same on every start. Every request also carries the `x-session-id`
-    header below. zcode.z.ai also
+    header below. ZCode's headers are the desktop app's (3.17.2):
+    `X-Title: Z Code@electron`, and an `x-query-id` per user turn, a UUID
+    that stays the same through the turn's tool results and is new with
+    the next user message, as ZCode makes one per query. zcode.z.ai also
     answers 405 code 3012 to every request of an account its risk control
     blocked, ZCode's own app's included (plugins#348). That answer comes
     back as ZCode's words, then "ZCode's risk control blocked this account
@@ -326,6 +329,13 @@ the body's code, not the HTTP status:
   read is *failed*, never nothing to claim;
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
+- ZCode's own client config (`GET /api/v1/client/configs`, read at most
+  every ten minutes) says whether a claim needs its security check
+  (`captcha.enabled`). While it does, which is so since 11-07, nothing is
+  posted: every plan answers *captcha*, "claim it in the ZCode app", since
+  a claim without the app's proof only spends one of ZCode's refusals. A
+  config that doesn't read answers *failed*, and nothing is posted then
+  either;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in
   the ZCode app — the claim is gated on the Aliyun captcha the app's
   renderer answers, and a claim from outside the app is refused it
