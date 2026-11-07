@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { burnScale, effortValue, namedRoute, rankCandidates, selectBestRoute } from "../src/allocator.js";
-import { CANONICAL_ROUTES, DEFAULT_SCORING_POLICY, EFFORT_CURVES } from "../src/catalog.js";
+import { CANONICAL_ROUTES, DEFAULT_SCORING_POLICY, EFFORT_CURVES, canonicalModel } from "../src/catalog.js";
 import {
   CACHE_COLD_MS,
   CHATGPT_CODEX_COLD_MS,
@@ -2181,6 +2181,14 @@ test("9.7 PR #670 Round 2 Guard: Mainstream real model IDs & trivial single-vari
       `Expected claude-opus-4-6:(high|xhigh|max) for permutation [${candidateModels.join(", ")}], got ${auditOut.model}`
     );
   }
+
+  // A multi-prefix id resolves by its last segment; an unknown one keeps only its first prefix stripped
+  assert.equal(canonicalModel("openrouter/openai/gpt-5-mini"), "gpt-6-luna");
+  assert.equal(canonicalModel("OpenRouter/OpenAI/GPT-5-Mini"), "gpt-6-luna");
+  // Alias keys with capitals (`MiniMax-M3`) need the exact-case last-segment lookup
+  assert.equal(canonicalModel("openrouter/minimax/MiniMax-M3"), "minimax-m3");
+  assert.equal(canonicalModel("openrouter/qwen/foo"), "qwen/foo");
+  assert.equal(canonicalModel("qwen/foo"), "foo");
 });
 
 test("9.8 PR #670 Round 2 Guard: `options.fetch` alone never enables external scorer unless `allowExternalScorer === true`", async () => {

@@ -135,9 +135,11 @@ Cursor's count of a step's tool calls includes calls the plugin answers itself:
 a tool the request doesn't have is refused to the model, and Cursor's own
 `get_mcp_tools` is answered with the request's tools. It also includes calls
 Cursor completes by itself, which it writes and completes in the step but never
-starts on the client or sends to it; those count toward it too. Once the count
-has come, a checkpoint whose state waits on exactly the calls the caller was
-given also ends the step (#550). The step's calls are the rest.
+starts on the client or sends to it; those count toward it too. When the count
+comes after the step's calls, a checkpoint whose state waits on exactly the
+calls the caller was given also ends the step (#550); a checkpoint between
+calls after a count sent ahead of them does not seal the batch early. The
+step's calls are the rest.
 
 These are retention limits. A missing, expired, restarted, busy, incompatible,
 or full owner uses the original history reconstruction and stateless decoder
@@ -150,8 +152,9 @@ the old native exec again.
 
 A native tool handoff reports zero usage with `magpie_native.accounting=pending`;
 the final native answer bills the turn's totals. Its own `prompt_tokens` and
-`completion_tokens` are its last model call's share (the larger of that
-call's prompt estimate and the turn's mean per call), since a client reads
+`completion_tokens` are its last model call's count (`ModelCallCompletedUpdate`,
+asked for with `emit_model_call_usage`, else the larger of that call's prompt
+estimate and the turn's mean per call), since a client reads
 them as how full its context is; the earlier calls' share is
 `usage.magpie_deferred` (#156). An identical completed retry
 replays the saved response with zero usage. A native final also collects earlier

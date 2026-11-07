@@ -51,3 +51,21 @@ describe("Provider info cache", () => {
     expect(dropPlaceholder([{ id: "gpt", name: "GPT" }])).toHaveLength(1);
   });
 });
+
+describe("Codex modelCache clears with clearProviderCache", () => {
+  it("registerProviderCacheClear hook runs for codex and for a full clear", async () => {
+    const { registerProviderCacheClear, clearProviderCache } = await import("../../daemon/src/providers/infoCache.js");
+    const { clearCodexModelCache } = await import("../../daemon/src/providers/codex/provider.js");
+    // clearCodexModelCache is idempotent; calling clearProviderCache must invoke registered hooks
+    let hits = 0;
+    registerProviderCacheClear((id) => {
+      if (!id || id === "codex") {
+        clearCodexModelCache();
+        hits++;
+      }
+    });
+    clearProviderCache("codex");
+    clearProviderCache();
+    expect(hits).toBeGreaterThanOrEqual(2);
+  });
+});

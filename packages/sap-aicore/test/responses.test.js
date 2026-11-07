@@ -34,7 +34,7 @@ const COMPLETED = {
   error: null, incomplete_details: null,
 }
 
-async function fixture(inference = () => new Response(JSON.stringify(COMPLETED))) {
+async function fixture(inference = () => new Response(JSON.stringify(COMPLETED)), { image = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-responses-"))
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
@@ -52,7 +52,7 @@ async function fixture(inference = () => new Response(JSON.stringify(COMPLETED))
       return json({ resources: url.searchParams.get("$skip") === "0" ? [{ id: "deployment-a", status: "RUNNING", deploymentUrl: state.deployment, configurationId: "configuration-a", details: { resources: { backendDetails: { model: { name: MODEL, version: state.activeVersion } } } } }] : [] })
     }
     if (url.pathname === "/v2/lm/configurations/configuration-a") return json({ id: "configuration-a", scenarioId: "foundation-models", executableId: "azure-openai", parameterBindings: [{ key: "modelName", value: MODEL }, { key: "modelVersion", value: VERSION }] })
-    if (url.pathname === "/v2/lm/scenarios/foundation-models/models") return json({ resources: [{ model: MODEL, executableId: "azure-openai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "azure-openai" }], versions: [{ name: VERSION }] }] })
+    if (url.pathname === "/v2/lm/scenarios/foundation-models/models") return json({ resources: [{ model: MODEL, executableId: "azure-openai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "azure-openai" }], versions: [{ name: VERSION, inputTypes: image ? ["text", "image"] : ["text"] }] }] })
     sent.push({ url: url.href, init, body: JSON.parse(init.body) })
     return inference(input, init)
   }
@@ -338,6 +338,45 @@ test("unsupported stateful, multimodal and unverified parameters never reach SAP
     assert.equal(response.headers.get("x-magpie-sign-in"), "kept")
   }
   assert.equal(sent.length, 0)
+})
+
+test("function results accept strings and input_text arrays without image capability", () => {
+  for (const output of ["", "tool text", [], [{ type: "input_text", text: "tool text" }]]) {
+    const body = { model: MODEL, input: [{ type: "function_call_output", call_id: "call_image", output }] }
+    assert.deepEqual(validateResponsesRequest(body).input, body.input)
+  }
+})
+
+test("image function results are forwarded verbatim only for image-capable models", async () => {
+  const { request, sent } = await fixture(undefined, { image: true })
+  const image = { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "auto" }
+  for (const output of [[image], [{ type: "input_text", text: "Read image file [image/png]" }, image]]) {
+    const body = { model: MODEL, input: [USER, CALL, { type: "function_call_output", call_id: CALL.call_id, output }] }
+    assert.throws(() => validateResponsesRequest(body), { code: "invalid-request" })
+    assert.throws(() => validateResponsesRequest(body, { capabilities: { image: false } }), { code: "invalid-request" })
+    const response = await request(body)
+    assert.equal(response.status, 200)
+    assert.deepEqual(sent.at(-1).body.input, body.input)
+  }
+})
+
+test("function result arrays still reject malformed images, unsupported parts and invalid call ids", () => {
+  const entry = { capabilities: { image: true } }
+  const badOutputs = [
+    undefined, null, 7, {}, [null],
+    [{ type: "input_text" }], [{ type: "output_text", text: "wrong direction" }],
+    [{ type: "input_file", file_id: "file_a" }],
+    [{ type: "input_image" }],
+    [{ type: "input_image", image_url: "ftp://example.invalid/image.png" }],
+    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "high", extra: true }],
+    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "invalid" }],
+  ]
+  for (const output of badOutputs) {
+    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ type: "function_call_output", call_id: "call_image", output }] }, entry), { code: "invalid-request" })
+  }
+  for (const call_id of [undefined, null, "", 7]) {
+    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ type: "function_call_output", call_id, output: [{ type: "input_text", text: "ok" }] }] }, entry), { code: "invalid-request" })
+  }
 })
 
 test("an input_image part is accepted only for an image-capable model", () => {

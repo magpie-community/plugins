@@ -135,9 +135,14 @@ button.tb-pill { border: 0; font-family: inherit; cursor: pointer; }
 }
 
 /* Timeline: content max width 760, centered */
-.scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; position: relative; }
+.scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; position: relative; scrollbar-gutter: stable; }
 /* Conversation and composer share one column: --col, 720px by default (Settings → Content width: 640 / 720 / 880 / full) */
-.tl-wrap { max-width: calc(var(--col) + 40px); min-width: 0; margin: 0 auto; padding: 24px 20px 16px; }
+/* 1.3.7: no bottom padding here — the virtual rows are position:absolute, and an absolute row overflowing the old
+   totalSize doesn't count the ancestor's padding-bottom in scrollHeight, so the gap vanished for one frame and came
+   back the next (the stuck-to-bottom chat bounced --tl-pad-b px per streamed line). The last row carries the gap instead
+   (Chat.tsx), inside its own measured height, so both frames have the same scrollHeight. */
+.tl-wrap { --tl-pad-b: 16px; display: flow-root; max-width: calc(var(--col) + 40px); min-width: 0; margin: 0 auto; padding: 24px 20px 0; }
+.tl-wrap > .nt, .tl-wrap > .sb-empty { margin-bottom: var(--tl-pad-b); }
 
 /* ↓ jump-to-bottom button */
 .jump {
@@ -304,7 +309,7 @@ button.tb-pill { border: 0; font-family: inherit; cursor: pointer; }
   .sidebar.open { transform: none; }
   .sidebar ~ .rs-l { display: none; }
   .tb-menu-btn { display: inline-flex; }
-  .tl-wrap { padding: 16px 14px 8px; }
+  .tl-wrap { --tl-pad-b: 8px; padding: 16px 14px 0; }
   .tb-model { display: none; }
 }
 

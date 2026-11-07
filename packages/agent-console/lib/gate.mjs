@@ -64,9 +64,16 @@ export function failureHtml(error) {
 
 /**
  * The Magpie plugin page boot.js came from (?back=), so the daemon page can go back through it after the plugin host restarts
- * (fresh session.js → new gate → new daemon). Only a loopback Magpie plugin page is accepted, so the daemon page can't be turned
- * into an open redirect; it travels in the 302's # fragment next to the token and never reaches a server.
- * Keep in sync with web/src/api/backToMagpie.ts.
+ * (fresh session.js → new gate → new daemon). Only a Magpie plugin page on loopback (`magpie web`: 127.0.0.1, localhost,
+ * [::1]) is accepted, so the daemon page can't be turned into an open redirect; it travels in the 302's # fragment next to
+ * the token and never reaches a server.
+ * Magpie's desktop window is never a back target, on any OS: wails://localhost (macOS / Linux) can't be navigated to from
+ * this http page at all, and http://wails.localhost (Windows) only exists inside WebView2's request interception, which
+ * Wails sets up with the plain AddWebResourceRequestedFilter (no request source kinds): it doesn't see requests from the
+ * sandboxed plugin frame once that frame is on 127.0.0.1 (an out-of-process iframe), so the navigation goes to the real
+ * network, fails, and leaves WebView2's own gray error page in the frame with none of our script to recover (1.3.5/1.3.6).
+ * Without a back URL the wrapper asks Magpie to show its Try again card instead, which rebuilds the frame from the window.
+ * Keep in sync with web/src/api/backToMagpie.ts and lib/wrapper.mjs SAFE_BACK_SRC.
  */
 export function safeBackUrl(raw) {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
@@ -75,7 +82,9 @@ export function safeBackUrl(raw) {
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.username || u.password) return null;
   const hostname = u.hostname.toLowerCase();
-  if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "[::1]") return null;
+  // Exact loopback hosts only: never 127.0.0.1.evil… / wails.localhost (see above)
+  const loopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+  if (!loopback) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return `${u.protocol}//${u.host}${u.pathname}${u.search}`;
 }

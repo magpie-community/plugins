@@ -20,6 +20,7 @@
 //   FAKE_ACP_CANCEL_SETTLE_MS  Devin-like: after session/cancel, wait this many ms (emit STALE_FROM_TURN_1 chunk)
 //                          before settling cancelled. A new session/prompt that arrives while cancelling is
 //                          itself answered stopReason cancelled (0ms-resend race).
+//   FAKE_ACP_CONFIG_OPTIONS JSON session/new config snapshot; FAKE_ACP_CONFIG_LOG logs set_config_option params
 // Every prompt is answered with one agent_message_chunk ("ok: <n> blocks") and stopReason end_turn.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -28,6 +29,8 @@ const caps = process.env.FAKE_ACP_PROMPT_CAPS ? JSON.parse(process.env.FAKE_ACP_
 const session = process.env.FAKE_ACP_SESSION ? JSON.parse(process.env.FAKE_ACP_SESSION) : {};
 const logFile = process.env.FAKE_ACP_LOG;
 const sessionLog = process.env.FAKE_ACP_SESSION_LOG;
+const configOptions = JSON.parse(process.env.FAKE_ACP_CONFIG_OPTIONS || "[]");
+const configLog = process.env.FAKE_ACP_CONFIG_LOG;
 const cancelLog = process.env.FAKE_ACP_CANCEL_LOG;
 const permMode = process.env.FAKE_ACP_PERM;
 const permLog = process.env.FAKE_ACP_PERM_LOG;
@@ -78,7 +81,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "session/new": {
       const sessionId = "fake-session-1";
       logSession("session/new", sessionId);
-      return answer(m.id, { sessionId });
+      return answer(m.id, { sessionId, configOptions });
     }
     case "session/load": {
       if (!agentCapabilities.loadSession) {
@@ -97,7 +100,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "session/set_mode":
       return answer(m.id, {});
     case "session/set_config_option":
-      return answer(m.id, { configOptions: [] });
+      if (configLog) appendFileSync(configLog, JSON.stringify(p) + "\n");
+      return answer(m.id, { configOptions });
     case "session/prompt": {
       if (logFile) appendFileSync(logFile, JSON.stringify(p.prompt) + "\n");
       out({

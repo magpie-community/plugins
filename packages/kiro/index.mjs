@@ -392,6 +392,51 @@ async function profileOf(c) {
   throw last ?? new Error("Kiro has no profile for this sign-in")
 }
 
+// ---- an Identity Center account's credit regions ----------------------------------
+//
+// An Identity Center account has a profile, and a month's credits, in each
+// of Kiro's regions its organization enabled for it: each region's credits
+// are its own, with its own overage cap. A request goes to one region; once
+// that region's credits are used up the account goes on in the other, and
+// only with every enabled region used up is it used up for magpie.
+const CREDIT_REGIONS = ["us-east-1", "eu-central-1"]
+const twoRegions = (c) => c.method === "idc" && !c.builderID
+const SPENT_MS = 60 * 60 * 1000 // a region Kiro said is used up, with no reset known, rests this long
+const PROBE_MS = 10 * 60 * 1000 // a region with no profile is asked for one again at most this often
+const REMIND_SHARE = 80 // the share at which a region not enabled is pointed out
+
+// regionKey names an account for its credit regions: kiro-cli's or the
+// IDE's by where it is read, one signed in here by its client and name,
+// which outlive its tokens
+const regionKey = (auth) => (auth?.source ? "source:" + auth.source : "own:" + (auth?.clientId ?? "") + ":" + (auth?.accountId ?? ""))
+const sameProfiles = (a, b) => {
+  const ka = Object.keys(a ?? {}), kb = Object.keys(b ?? {})
+  return ka.length === kb.length && ka.every((k) => a[k] === b?.[k])
+}
+const firstProfile = (profiles) => CREDIT_REGIONS.map((r) => profiles?.[r]).find(Boolean) ?? Object.values(profiles ?? {})[0] ?? ""
+
+// profilesOf is every profile Kiro lists for a sign-in, by its region.
+async function profilesOf(c) {
+  const found = {}
+  let last
+  for (const region of CREDIT_REGIONS) {
+    try {
+      const out = await managementCall(region, { token: c.access, tokenType: tokenType(c) }, "List-Available-Profiles", null, {})
+      for (const p of out?.profiles ?? []) if (p?.arn) found[regionOf(p.arn, region)] ??= p.arn
+    } catch (e) {
+      // a Builder ID sign-in the token didn't say was one
+      if (c.method === "idc" && e?.status === 403 && e.body.includes("Builder ID")) return { [regionOf(BUILDER_ID_PROFILE)]: BUILDER_ID_PROFILE }
+      last = e
+    }
+  }
+  if (!Object.keys(found).length) throw last ?? new Error("Kiro has no profile for this sign-in")
+  return found
+}
+
+// usedUpSaid is whether Kiro's words say the credits are used up, rather
+// than that it is asked too fast.
+const usedUpSaid = (msg) => /MONTHLY_REQUEST_COUNT|USAGE_LIMIT/.test(String(msg ?? ""))
+
 // usageLimits is Get-Usage-Limits: the plan, the account's email, credits.
 function usageLimits(a, email) {
   // an API key's, as kiro-cli asks for it: no profile, no email asked
@@ -426,10 +471,18 @@ function goG(x) {
 // reset. They are shown only (aside). Kiro spends the plan's credits
 // first, then these, so a month used up while a bonus has credits left
 // is set aside too, and the account isn't taken for spent.
+//
+// With overage on, Kiro goes on past the plan's credits up to the overage
+// cap, which is the month's whole limit (a 2000-credit plan used 4104, of
+// them 2104 overage, under a cap of 10000), so the month's window counts
+// against the cap. With overage off the cap Kiro still sends means nothing.
+const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
+const overageOn = (l) =>
+  String(l?.overageConfiguration?.overageStatus ?? "").toUpperCase() === "ENABLED" || l?.overageConfiguration?.overageEnabled === true
 function usageOf(l, now = Date.now()) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
-  const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
   const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
+  const overage = overageOn(l)
   const windows = []
   for (const u of l?.usageBreakdownList ?? []) {
     const t = u?.freeTrialInfo
@@ -446,7 +499,8 @@ function usageOf(l, now = Date.now()) {
       bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
         amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
     }
-    const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
+    const used = num(u?.currentUsageWithPrecision)
+    const limit = Math.max(num(u?.usageLimitWithPrecision), overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0)
     if (limit > 0) {
       const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
       const carried = used >= limit && bonuses.some((b) => b.amount < b.limit)
@@ -457,6 +511,57 @@ function usageOf(l, now = Date.now()) {
   }
   const email = l?.userInfo?.email
   return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
+}
+
+// regionsUsage is an Identity Center account's credits from each region's
+// read (reads: { region, l } read, { region, error } not, { region,
+// missing } with no profile, not enabled): each region's month shown only,
+// and their sum the window magpie weighs the account by, used up only when
+// every region read is. A free trial or bonus credits are the first read
+// region's. regions says, of each region read, whether it is used up and
+// when it resets. Regions read come first, then those that couldn't be read,
+// then those not enabled: a card that shows only the first few windows then
+// shows the credits an account has.
+function regionsUsage(reads, now = Date.now()) {
+  const shown = []
+  const failed = []
+  const off = []
+  const regions = []
+  const missing = []
+  let amount = 0, limit = 0, resets = 0, first, monthName
+  for (const r of reads) {
+    const name = `Credits (${r.region})`
+    if (r.error) {
+      failed.push({ name, display: "couldn't be read", aside: true })
+      continue
+    }
+    if (!r.l) {
+      missing.push(r.region)
+      off.push({ name, display: "not enabled", aside: true })
+      continue
+    }
+    const u = usageOf(r.l, now)
+    first ??= u
+    const month = u.windows.find((w) => w.span)
+    if (!month) continue
+    monthName ??= month.name
+    amount += month.amount
+    limit += month.limit
+    const at = Date.parse(month.resetsAt ?? "")
+    if (at > 0 && (!resets || at < resets)) resets = at
+    shown.push({ ...month, name: `${month.name} (${r.region})`, aside: true })
+    regions.push({ region: r.region, full: month.amount >= month.limit, resetsAt: at > 0 ? at : 0 })
+  }
+  const windows = []
+  if (limit > 0) {
+    let display = count(amount, limit)
+    if (missing.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${missing.join(", ")} not enabled: ask your admin to enable it`
+    windows.push({ name: monthName, used: (100 * amount) / limit, ...(resets ? { resetsAt: new Date(resets).toISOString() } : {}),
+      display, amount, limit, unit: "credits", span: 30 * 24 * 3600 })
+  }
+  windows.push(...shown, ...failed, ...off, ...(first?.windows ?? []).filter((w) => !w.span))
+  const { windows: _w, ...who } = first ?? {}
+  return { usage: { ...who, windows }, regions, missing }
 }
 
 // ---- the account, as the plugin holds it -------------------------------------------
@@ -472,7 +577,8 @@ async function credOf(auth) {
   if (!auth.access) return null
   return { access: auth.access, refresh: auth.refresh ?? "", expires: auth.expires ?? 0, method: auth.method || "social",
     region: auth.region || "us-east-1", profile: auth.profileArn ?? "", clientId: auth.clientId ?? "", clientSecret: auth.clientSecret ?? "",
-    builderID: isBuilderID(auth.loginProvider), own: true }
+    builderID: isBuilderID(auth.loginProvider), own: true,
+    ...(auth.profiles && typeof auth.profiles === "object" && !Array.isArray(auth.profiles) ? { profiles: { ...auth.profiles } } : {}) }
 }
 
 // Account holds the credentials in use, refreshing them when near their
@@ -515,7 +621,16 @@ function account(client) {
     if (!c.own || !client?.auth?.set) return
     const { type: _t, ...rest } = auth
     await client.auth.set({ path: { id: ID }, body: { ...rest, type: "oauth", access: c.access, refresh: c.refresh, expires: c.expires,
-      profileArn: c.profile, region: c.region, ...idFields(auth) } }).catch(() => {})
+      profileArn: c.profile, region: c.region, ...(c.profiles ? { profiles: c.profiles } : {}), ...idFields(auth) } }).catch(() => {})
+  }
+  // each account's credit regions (twoRegions), by regionKey: their
+  // profiles, when they were last asked for, and the regions used up till
+  // when. One plugin serves every account, so this is kept by account.
+  const regionStates = new Map()
+  const stateOf = (key) => {
+    let st = regionStates.get(key)
+    if (!st) regionStates.set(key, (st = { profiles: {}, probed: 0, spent: {}, builderID: false }))
+    return st
   }
   const creds = (auth, stale = false) =>
     locked(async () => {
@@ -545,6 +660,29 @@ function account(client) {
           saved = true
         }
       }
+      const key = regionKey(auth)
+      const st = stateOf(key)
+      if (twoRegions(c) && !st.builderID) {
+        c.profiles = { ...st.profiles, ...c.profiles }
+        if (c.profile) c.profiles[regionOf(c.profile, c.region)] ??= c.profile
+        if (CREDIT_REGIONS.some((r) => !c.profiles[r]) && Date.now() - st.probed > PROBE_MS) {
+          st.probed = Date.now()
+          try {
+            const found = await profilesOf(c)
+            if (Object.values(found).includes(BUILDER_ID_PROFILE)) {
+              st.builderID = true
+              c.profile ||= BUILDER_ID_PROFILE
+            } else c.profiles = { ...c.profiles, ...found }
+          } catch {}
+        }
+        st.profiles = c.profiles
+        if (st.builderID) delete c.profiles
+        if (!c.profile) c.profile = firstProfile(c.profiles)
+        if (!saved && c.own && c.profile && (st.builderID ? !auth?.profileArn : !sameProfiles(c.profiles, auth?.profiles))) {
+          await save(auth, c)
+          saved = true
+        }
+      }
       if (c.method === "apikey") {
         if (!c.asked) {
           c.profile = await keyProfile(c)
@@ -566,8 +704,22 @@ function account(client) {
       // kiro-cli names no profile in an API key's calls, even one GetProfile
       // found; the profile only says the key's region
       const profile = c.method === "apikey" ? "" : c.profile
-      return { token: c.access, tokenType: tokenType(c), profile, region: regionOf(c.profile, c.region) }
+      const a = { token: c.access, tokenType: tokenType(c), profile, region: regionOf(c.profile, c.region) }
+      if (!twoRegions(c) || st.builderID || !c.profiles) return a
+      // the first enabled region with credits left, in CREDIT_REGIONS' order
+      const now = Date.now()
+      const open = CREDIT_REGIONS.filter((r) => c.profiles[r])
+      const pick = open.find((r) => !(st.spent[r] > now))
+      if (pick) Object.assign(a, { region: pick, profile: c.profiles[pick] })
+      return { ...a, key, profiles: { ...c.profiles }, open }
     })
+  // spend marks a region of an account used up till until (0: SPENT_MS from
+  // now), or, with until -1, as having credits again
+  creds.spend = (key, region, until = 0) => {
+    const st = stateOf(key)
+    if (until < 0) delete st.spent[region]
+    else st.spent[region] = until > Date.now() ? until : Date.now() + SPENT_MS
+  }
   // renew is auth.refresh's: a sign-in kept here (not kiro-cli's or the
   // IDE's, which their owners keep) renewed under the same lock as the
   // requests' refresh, so the two never spend one refresh token. It saves
@@ -1185,7 +1337,7 @@ const TOO_LONG = "input is too long for the model's context: "
 
 // failure is the status and message for an error Kiro answered with:
 // {"message": "...", "reason": "..."}.
-function failure(status, body) {
+function failure(status, body, id) {
   let msg = String(body ?? "").trim()
   try {
     const e = JSON.parse(body)
@@ -1195,19 +1347,75 @@ function failure(status, body) {
   if (tooLongSaid(msg)) return { status: 400, message: TOO_LONG + msg }
   if (msg.includes("INSUFFICIENT_MODEL_CAPACITY")) return { status: 503, message: msg }
   if (msg.includes("MONTHLY_REQUEST_COUNT") || msg.includes("USAGE_LIMIT")) return { status: 429, message: "usage limit reached: " + msg }
+  if (msg.includes(USER_RATE)) return { status: 429, message: userRate(msg, id) }
   return { status, message: msg }
 }
+
+// USER_RATE is the reason Kiro gives a 429 for one account's requests
+// coming too often (the Kiro IDE's ThrottlingException reasons, agent
+// 1.1.499: apart from the credit rate, the service's rate and the daily
+// and monthly counts). Kiro's own words, "Too many requests, please wait
+// before trying again.", say neither whose limit it is nor how long:
+// onemezao on Discord had it on every request of one account through pi,
+// 42s each, while the Kiro IDE answered on the same account.
+const USER_RATE = "USER_REQUEST_RATE_EXCEEDED"
+// USER_RATE_WAIT is the wait a USER_RATE refusal says when Kiro says none:
+// longer than magpie's same-account retries (8s), so the request isn't
+// sent again at 1, 2 and 4s, each try one more on the account's rate.
+// Other Kiro relays pause 3 to 12s for it; one that outlived those
+// wasn't going to clear in magpie's next few.
+const USER_RATE_WAIT = 30_000
+
+// userRate is a USER_RATE refusal in plain words: whose limit, what to
+// do, and the request ID Kiro support asks for.
+const userRate = (msg, id) =>
+  `rate limited: Kiro is limiting how often this Kiro account sends requests (${msg}). ` +
+  "Wait a minute before sending again. If it keeps coming back while the Kiro app works on the same account, " +
+  "the limit is on the account, and Kiro support (app.kiro.dev) can look at it" +
+  (id ? `, with request ID ${id}.` : ".")
 
 const ERROR_TYPES = { 400: "invalid_request_error", 401: "authentication_error", 402: "billing_error", 403: "permission_error",
   404: "not_found_error", 413: "request_too_large", 429: "rate_limit_error", 503: "overloaded_error", 529: "overloaded_error" }
 const errorType = (status) => ERROR_TYPES[status] ?? "api_error"
 // Each failure says X-Magpie-Sign-In: kept, as the built-in never marked
-// an account lapsed (see gone).
-const errorResponse = (status, message) =>
+// an account lapsed (see gone). One Kiro said when to ask again (waitOf)
+// says it as Retry-After, in whole seconds, for magpie to wait as long.
+const errorResponse = (status, message, wait) =>
   new Response(JSON.stringify({ type: "error", error: { type: errorType(status), message } }), {
     status,
-    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept",
+      ...(wait > 0 ? { "Retry-After": String(Math.ceil(wait / 1000)) } : {}) },
   })
+
+// requestID is the ID Kiro gave its answer, which its support asks for:
+// what the Kiro IDE reads (x-amzn-requestid, else x-request-id).
+const requestID = (headers) => headers.get("x-amzn-requestid") || headers.get("x-request-id") || ""
+
+// waitOf is the milliseconds Kiro's refusal says to wait before asking
+// again, or undefined: what Kiro's own clients read. The Kiro IDE (agent
+// 1.1.499) reads the x-amzn-kiro-ratelimit-retry-after header and the
+// body's retryAfterMilliseconds, both in milliseconds; kiro-cli's AWS SDK
+// reads x-amz-retry-after, in milliseconds; and Retry-After is HTTP's, in
+// seconds or as a date. Unsaid, magpie keeps to its own pauses, but for
+// an account's request rate (USER_RATE_WAIT).
+function waitOf(headers, body) {
+  const ms = (v) => {
+    const n = v == null || v === "" ? NaN : Number(v)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  let w = ms(headers.get("x-amzn-kiro-ratelimit-retry-after")) ?? ms(headers.get("x-amz-retry-after"))
+  if (w === undefined)
+    try {
+      w = ms(JSON.parse(body)?.retryAfterMilliseconds)
+    } catch {}
+  const ra = headers.get("retry-after")
+  if (w === undefined && ra) {
+    const secs = ms(ra)
+    w = secs !== undefined ? secs * 1000 : ms(Date.parse(ra) - Date.now())
+  }
+  if (w === undefined && String(body ?? "").includes(USER_RATE)) w = USER_RATE_WAIT
+  return w
+}
 
 // kept is res saying the account is kept: a success too, which the
 // built-in never took for a sign-in come back.
@@ -1286,6 +1494,7 @@ function exception(kind, payload) {
   } catch {}
   let msg = e.message || e.Message || new TextDecoder().decode(payload).trim()
   if (e.reason) msg += ` (${e.reason})`
+  if (e.reason === USER_RATE) return userRate(msg)
   if (String(kind).toLowerCase().includes("throttl")) return "rate limited: " + msg
   return kind ? `${kind}: ${msg}` : msg
 }
@@ -1364,7 +1573,9 @@ async function* events(body, model, budget) {
   // kiro-cli 2.32's own trace log shows its MetadataEvent with every token
   // count None, while a repeated prompt is billed about half the credits,
   // so Kiro does cache and doesn't say how much
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false }
+  // credits: what Kiro's meteringEvents say the request cost, summed;
+  // undefined when it sent none
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false, credits: undefined }
   let pct = 0
   let said = 0
   let failed = ""
@@ -1423,6 +1634,8 @@ async function* events(body, model, budget) {
         }
       } else if (kind === "contextUsageEvent") {
         if (m.contextUsagePercentage > 0) pct = m.contextUsagePercentage
+      } else if (kind === "meteringEvent") {
+        if (Number.isFinite(m.usage) && m.usage >= 0 && (!m.unit || /^credit/i.test(m.unit))) usage.credits = (usage.credits ?? 0) + m.usage
       } else if (["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"].includes(kind)) {
         failed = exception(kind, f.payload)
         break
@@ -1478,6 +1691,9 @@ const anthropicUsage = (u) => ({
     : { input_tokens: u.input, output_tokens: u.output, magpie_cache_unknown: true }),
   // the hosted web searches made (searching)
   ...(u.searches ? { server_tool_use: { web_search_requests: u.searches } } : {}),
+  // what Kiro said the request cost in credits (its meteringEvents), as
+  // magpie reads a plan's credits (yetone/magpie#4328)
+  ...(u.credits !== undefined ? { credit: u.credits } : {}),
 })
 
 // quotaWords are magpie's (internal/gateway/fallback.go): how a vendor says
@@ -1495,7 +1711,7 @@ const QUOTA_WORDS = /quota|insufficient|balance|credit|billing|exceeded|rate.?li
 // error, so it never compacted (ergou0954_54426 on Discord: Kiro in a
 // group routed by intent, "超出上下文", the turn failed).
 const failedBefore = (text) =>
-  tooLongSaid(text) ? errorResponse(400, TOO_LONG + text) : errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
+  tooLongSaid(text) ? errorResponse(400, TOO_LONG + text) : text.includes(USER_RATE) ? errorResponse(429, text, USER_RATE_WAIT) : errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
 
 // reply answers the Messages request from Kiro's events: a stream of
 // Messages' events, or one message. names gives back the caller's name of
@@ -1842,7 +2058,7 @@ async function generate(creds, auth, req, signal) {
   const hosted = hostedSearch(req)
   if (hosted?.error) return errorResponse(400, hosted.error)
   const first = await ask(creds, auth, req, model, budget, signal)
-  if (!first.res) return errorResponse(first.status, first.message)
+  if (!first.res) return errorResponse(first.status, first.message, first.wait)
   const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first) : events(first.res.body, model, budget)
   return kept(await reply(it, model, req.stream === true, toolNames(req)))
 }
@@ -1877,11 +2093,44 @@ async function ask(creds, auth, req, model, budget, signal) {
       return { status: 502, message: e.message }
     }
   }
+  // an Identity Center account whose region's credits are used up goes on
+  // in its other enabled region, once each; with none left it is used up
+  // for magpie, and says which regions are and which aren't enabled
+  const tried = new Set()
+  while (!res.ok && a.key && creds.spend) {
+    const text = (await res.text()).slice(0, 1 << 20)
+    const f = { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
+    if (!usedUpSaid(f.message)) return f
+    tried.add(a.region)
+    creds.spend(a.key, a.region)
+    let next
+    try {
+      next = await creds(auth)
+    } catch (e) {
+      return { status: 401, message: e.message }
+    }
+    if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message, wait: f.wait }
+    a = next
+    try {
+      res = await sendKiro(a, await kiroBody(req, model, a.profile, budget), signal)
+    } catch (e) {
+      if (e?.name === "AbortError") throw e
+      return { status: 502, message: e.message }
+    }
+  }
   if (!res.ok) {
     // Kiro's own 401 is passed on, as the built-in did, the sign-in kept
-    return failure(res.status, (await res.text()).slice(0, 1 << 20))
+    const text = (await res.text()).slice(0, 1 << 20)
+    return { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
   }
   return { res, a }
+}
+
+// regionsUsedUp heads the 429 of an account with every enabled region used
+// up: the regions, and those not enabled, which an admin may enable.
+function regionsUsedUp(a) {
+  const off = CREDIT_REGIONS.filter((r) => !a.open?.includes(r))
+  return `Kiro credits used up in ${(a.open ?? []).join(", ")}` + (off.length ? `; ${off.join(", ")} not enabled: ask your admin to enable it` : "") + ". "
 }
 
 const aborted = () => Object.assign(new Error("the request was cancelled"), { name: "AbortError" })
@@ -1944,6 +2193,7 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
     usage.cacheRead += stop.usage.cacheRead
     usage.cacheWrite += stop.usage.cacheWrite
     usage.reported ||= stop.usage.reported
+    if (stop.usage.credits !== undefined) usage.credits = (usage.credits ?? 0) + stop.usage.credits
     for (const b of said)
       if (b.type === "tool_use")
         try {
@@ -2360,7 +2610,23 @@ export async function KiroAuthPlugin({ client } = {}) {
         const auth = await getAuth()
         if (!(auth?.type === "api" && auth.key) && auth?.type !== "oauth") return { error: "not signed in", signIn: "kept" }
         try {
-          const u = usageOf(await usageLimits(await creds(auth), true))
+          const a = await creds(auth)
+          let u
+          if (a.key) {
+            // every credit region, the ones not enabled told as such
+            const reads = await Promise.all(CREDIT_REGIONS.map(async (region) => {
+              if (!a.profiles[region]) return { region }
+              try {
+                return { region, l: await usageLimits({ ...a, region, profile: a.profiles[region] }, true) }
+              } catch (error) {
+                return { region, error }
+              }
+            }))
+            if (reads.every((r) => r.error || !r.l)) throw reads.find((r) => r.error)?.error ?? new Error("Kiro read no credits")
+            const got = regionsUsage(reads)
+            for (const r of got.regions) creds.spend(a.key, r.region, r.full ? r.resetsAt || 0 : -1)
+            u = got.usage
+          } else u = usageOf(await usageLimits(a, true))
           // named as the account is
           if (u.user && auth.type === "oauth" && !auth.source) u.user = nameOf(u.user, auth.loginProvider)
           return { ...u, signIn: "renewed" }
@@ -2418,4 +2684,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, waitOf, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }

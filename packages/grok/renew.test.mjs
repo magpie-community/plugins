@@ -17,7 +17,7 @@
 // ever found, and fetch is a stand-in: nothing reaches the network.
 import { noRealGrok } from "./nocli.mjs"
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { GrokAuthPlugin } from "./index.mjs"
@@ -40,6 +40,7 @@ echo $n > "$GROK_HOME/runs"
 case "$FAKE_GROK" in
   renew) printf '{"a":{"key":"tok-%s","email":"g@x.ai","expires_at":"${later}"}}' $n > "$GROK_HOME/auth.json" ;;
   same) ;;
+  slow) /bin/sleep 2; echo done > "$GROK_HOME/slow" ;;
   *) echo "silent refresh outcome=Failed(SelfHealing)" >&2; exit 1 ;;
 esac
 `,
@@ -73,13 +74,19 @@ const runs = () => {
   }
 }
 
-// grok answers 401 to tok-0 and serves any other token
-function grok(ok) {
+// grok answers 401 to tok-0 and serves any other token; refused is the
+// 401's body, by default what cli-chat-proxy says of a token it doesn't
+// take (curl'd 11-07 with a made-up token)
+const TURNED_AWAY = { error: "Invalid or expired credentials (auth_kind=none, x_xai_token_auth=none, upstream=Unauthenticated, reason=no auth context)" }
+// and the 401 zane668 got on a token that worked again minutes later
+const PASSING = { error: "Authentication required" }
+function grok(ok, refused = TURNED_AWAY, delay = 0) {
   const sent = []
   globalThis.fetch = async (url, init) => {
     const auth = new Headers(init?.headers).get("Authorization")
     sent.push(auth)
-    if (auth === "Bearer tok-0") return Response.json({ error: "Invalid or expired credentials" }, { status: 401 })
+    if (delay) await new Promise((r) => setTimeout(r, delay))
+    if (auth === "Bearer tok-0") return Response.json(refused, { status: 401 })
     return ok(String(url))
   }
   return sent
@@ -200,4 +207,95 @@ test("auth.json torn with nothing read before is unknown: no account is marked s
   expect(e.signIn).toBeUndefined()
   expect(e.message).toContain("couldn't be read")
   expect(e.message).not.toContain("not signed in")
+})
+
+// plugins#818: a 401 that isn't Grok's judgement of the token, on one
+// Grok Build left as it was and still good, passed by itself minutes later.
+// It is a 503 with Retry-After that keeps the sign-in, never "add the
+// account in magpie again".
+test("a 401 that isn't Grok judging the token, on a token Grok Build left good, is a 503 that passes, not a new sign-in", async () => {
+  process.env.FAKE_GROK = "same"
+  const auth = signedIn("tok-0")
+  const sent = grok(() => Response.json({ ok: true }), PASSING, 1100)
+  const { res } = await chat(auth)
+  expect(res.status).toBe(503)
+  expect(res.headers.get("Retry-After")).toBe("60")
+  expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+  const err = (await res.json()).error
+  expect(err.code).toBe("auth_refused_transient")
+  expect(err.message).toContain("Authentication required")
+  expect(err.message).toContain("grok models ran and left the same token")
+  expect(err.message).toContain(`good till ${later}`)
+  expect(err.message).toContain("Grok answered 401 after 1s")
+  expect(err.message).not.toMatch(/add the account|grok login|open Grok Build|couldn't renew/)
+  expect(sent).toEqual(["Bearer tok-0"])
+  expect(runs()).toBe(1)
+})
+
+test("Grok judging the token on a 401 still says to sign in again, though the CLI left it good", async () => {
+  process.env.FAKE_GROK = "same"
+  const auth = signedIn("tok-0")
+  grok(() => Response.json({ ok: true }))
+  const { res } = await chat(auth)
+  expect(res.status).toBe(401)
+  const err = (await res.json()).error
+  expect(err.code).toBe("sign_in_unrenewed")
+  expect(err.message).toContain("add the account in magpie again")
+})
+
+test("a passing-looking 401 the CLI failed to renew is still a sign-in it couldn't renew", async () => {
+  process.env.FAKE_GROK = "fail"
+  const auth = signedIn("tok-0")
+  grok(() => Response.json({ ok: true }), PASSING)
+  const { res } = await chat(auth)
+  expect(res.status).toBe(401)
+  const err = (await res.json()).error
+  expect(err.code).toBe("sign_in_unrenewed")
+  expect(err.message).toContain("grok models exited 1")
+})
+
+test("a refused request waits on Grok Build's renewal a bounded time, and the run's end is still waited for", async () => {
+  process.env.FAKE_GROK = "slow"
+  const { waits } = (await import("./index.mjs"))._internal
+  const was = waits.renew
+  waits.renew = 300
+  try {
+    const auth = signedIn("tok-0")
+    grok(() => Response.json({ ok: true }), PASSING)
+    const at = Date.now()
+    const { res } = await chat(auth)
+    const took = Date.now() - at
+    expect(res.status).toBe(503)
+    expect((await res.json()).error.message).toContain("grok models was still running after 0.3s")
+    expect(took).toBeLessThan(1900)
+  } finally {
+    waits.renew = was
+    // the fake CLI ends before the test does
+    for (let i = 0; i < 100 && !existsSync(join(home, "slow")); i++) await new Promise((r) => setTimeout(r, 50))
+  }
+  expect(existsSync(join(home, "slow"))).toBe(true)
+})
+
+test("a model list refused that way says it passes, and leaves the sign-in be", async () => {
+  process.env.FAKE_GROK = "same"
+  const auth = signedIn("tok-0")
+  grok(() => Response.json(MODELS), PASSING)
+  const { hooks } = await plugin()
+  const e = await hooks.provider.models({ id: "grok", models: {} }, { auth }).catch((e) => e)
+  expect(e).toBeInstanceOf(Error)
+  expect(e.message).toContain("Authentication required")
+  expect(e.message).not.toMatch(/add the account|couldn't renew/)
+  expect(e.signIn).toBeUndefined()
+})
+
+test("a usage read refused that way says it passes", async () => {
+  process.env.FAKE_GROK = "same"
+  const auth = signedIn("tok-0")
+  grok(() => Response.json({ config: { creditUsagePercent: 10 } }), PASSING)
+  const { hooks } = await plugin()
+  const u = await hooks.auth.usage(async () => auth)
+  expect(u.signIn).toBe("kept")
+  expect(u.error).toContain("Authentication required")
+  expect(u.error).not.toMatch(/add the account|couldn't renew/)
+  expect(u.said).toBeUndefined()
 })

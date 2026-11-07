@@ -1,10 +1,12 @@
 // Self-heal after the plugin host restarts (Magpie restarts its Bun plugin host from time to time; the old host's daemon exits with it
 // and the gate key / port change). This page was opened by the gate with the Magpie plugin page URL in the fragment (#t=…&b=…).
 // When the daemon can't be reached for a few seconds, the page goes back to that Magpie page: boot.js reads the fresh session.js and
-// opens the new gate, which starts a new daemon. Only a loopback Magpie plugin page URL is ever followed (no open redirect),
-// and the token is never put anywhere but this page's own fragment.
+// opens the new gate, which starts a new daemon. Only a Magpie plugin page URL on loopback (magpie web) is ever followed (no open
+// redirect), and the token is never put anywhere but this page's own fragment. Magpie's desktop window (wails://localhost,
+// http://wails.localhost on Windows) is never a back target: a frame on 127.0.0.1 can't navigate there (see lib/gate.mjs
+// safeBackUrl); framed by Magpie without a back URL, this page asks Magpie for its Try again card instead.
 
-/** The same check as lib/gate.mjs safeBackUrl: http(s), loopback host, no credentials, /_magpie/plugin/<id>/[page/]index.html */
+/** Same check as lib/gate.mjs safeBackUrl: http(s), loopback only, no credentials, /_magpie/plugin/<id>/[page/]index.html */
 export function safeBackUrl(raw: string | null | undefined): string | null {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
   let u: URL;
@@ -12,7 +14,8 @@ export function safeBackUrl(raw: string | null | undefined): string | null {
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.username || u.password) return null;
   const host = u.hostname.toLowerCase();
-  if (host !== "127.0.0.1" && host !== "localhost" && host !== "[::1]") return null;
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
+  if (!loopback) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return `${u.protocol}//${u.host}${u.pathname}${u.search}`;
 }
@@ -40,6 +43,18 @@ export function goBackToMagpie(): boolean {
   if (!target) return false;
   location.replace(target);
   return true;
+}
+
+/** Framed by Magpie with no back URL: ask the window for its Try again card ({magpie:1, method:"error"}), which replaces this
+ *  frame and rebuilds it from the Magpie page. False when not framed (nothing to ask). */
+export function askMagpieRetry(message: string): boolean {
+  if (typeof window === "undefined" || window.parent === window) return false;
+  try {
+    window.parent.postMessage({ magpie: 1, method: "error", params: { message } }, "*");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Calls onStuck once the connection has been down for `ms` without coming back */

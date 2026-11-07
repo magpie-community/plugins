@@ -73,7 +73,7 @@ const UPDATES = {
   1: "text", 2: "tool call started", 3: "tool call completed", 4: "thinking", 5: "thinking done",
   6: "user message", 7: "partial tool call", 8: "token count", 9: "summary", 10: "summary started",
   11: "summary done", 12: "shell output", 14: "turn end", 15: "tool call delta", 16: "step started",
-  17: "step done", 27: "tool count",
+  17: "step done", 27: "tool count", 31: "model call completed",
 }
 const MESSAGES = { 2: "tool call", 3: "checkpoint", 4: "blob request" }
 function kindOf(f) {
@@ -495,6 +495,7 @@ export class StepCalls {
     this.execs = new Set() // the short strings of each exec's args: its tool_call_id among them
     this.partial = new Set() // calls the model is writing in this step
     this.byCursor = new Set()
+    this.listedAfter = false // whether tool_requests_listed came after the latest call/update
   }
   // update takes an InteractionUpdate's own field (num) and its fields; it
   // says whether a call was completed by Cursor: one this step wrote (7)
@@ -502,6 +503,7 @@ export class StepCalls {
   // completion of an earlier step's call is never counted again.
   update(n, uf) {
     if (n !== 2 && n !== 3 && n !== 7) return false
+    this.listedAfter = false
     const id = str(uf, 1)
     if (!id) return false
     if (n === 2) this.started.add(id)
@@ -512,14 +514,23 @@ export class StepCalls {
     return true
   }
   // exec notes an exec's args, whatever its kind: each kind keeps its
-  // tool_call_id at a field of its own (ShellArgs 4, ReadArgs 2, McpArgs 3)
+  // tool_call_id at a field of its own (ShellArgs 4, ReadArgs 2, McpArgs 3).
+  // If #3 came before its exec, it was not completed by Cursor after all.
   exec(data) {
+    this.listedAfter = false
     try {
       for (const e of this.parse(data)) {
         if (e.wire !== 2 || e.num === 15 || e.num === 19) continue
-        for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) this.execs.add(a.data.toString("utf8"))
+        for (const a of this.parse(e.data)) if (a.wire === 2 && a.data.length && a.data.length <= 512) {
+          const s = a.data.toString("utf8")
+          this.execs.add(s)
+          this.byCursor.delete(s)
+        }
       }
     } catch {}
+  }
+  listed() {
+    this.listedAfter = true
   }
   get completed() {
     return this.byCursor.size
@@ -536,6 +547,7 @@ export class StepCalls {
   nextStep() {
     this.partial.clear()
     this.byCursor.clear()
+    this.listedAfter = false
   }
 }
 // pendingCalls is how many calls a checkpoint (ConversationStateStructure)
@@ -860,6 +872,8 @@ export class NativeSessionPool {
     owner.checkpoint = null
     owner.execs.clear()
     owner.nativeCalls.clear()
+    owner.stepUsages.clear()
+    owner.lastStepUsage = null
   }
   async clear() {
     await Promise.all([...this.entries].map((e) => e.cancel("native owner removed")))
@@ -894,6 +908,8 @@ class NativeSession {
     // latest one began: the last step's own share of the turn (#156)
     this.steps = 1
     this.stepSaid = 0
+    this.stepUsages = new Map()
+    this.lastStepUsage = null
     this.said = 0
     this.wrote = 0
     this.terminal = false
@@ -1087,7 +1103,19 @@ class NativeSession {
     this.stepCalls.nextStep()
     this.quiet.nextStep(this.steps)
     this.stepSaid = this.said
+    this.lastStepUsage = null
     if (estimate != null) this.stepEstimate = estimate
+  }
+  modelCallCompleted(fields) {
+    const id = str(fields, 1)
+    const entry = {
+      usage: this.wire.usageOf(fields, 1),
+      measuredInput: fields.some((f) => [2, 4, 5].includes(f.num)),
+      measuredOutput: fields.some((f) => f.num === 3),
+      hasReasoning: fields.some((f) => f.num === 6),
+    }
+    this.stepUsages.set(id || `step:${this.steps}:${this.stepUsages.size}`, entry)
+    this.lastStepUsage = entry
   }
   // waitForBatch gives the step batchWait from its latest call, answered
   // call, count, text or heartbeat, not from its first. Cursor sends each
@@ -1126,11 +1154,15 @@ class NativeSession {
     this.sealBatch()
   }
   // A checkpoint whose state waits on just the calls handed to the caller,
-  // after the step's count, is a step Cursor has finished: what more the
-  // count says will not come (plugins#550).
+  // after the step's count came at the end of the step's calls, is a step
+  // Cursor has finished: what more the count says will not come (plugins#550).
+  // When the count was sent before or between the step's calls, a mid-batch
+  // checkpoint after an early call has only the calls sent so far in
+  // pending_tool_calls and must not seal the batch early before the
+  // remaining calls arrive.
   waitedOn(data) {
     const s = this.segment
-    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length) return
+    if (this.terminal || this.state === "awaiting-results" || s.closed || s.expected == null || !s.calls.length || !this.stepCalls.listedAfter) return
     if (pendingCalls(data) !== s.calls.length) return
     s.waitedOn = true
     this.sealBatch()
@@ -1145,6 +1177,7 @@ class NativeSession {
       return
     }
     this.segment.expected = count
+    this.stepCalls.listed()
     if (this.state === "awaiting-results") return // an identical retransmission
     this.waitForBatch()
     this.sealBatch()
@@ -1264,28 +1297,57 @@ class NativeSession {
     if (this.error || this.state === "complete") return
     if (!this.terminal) invalid("native Run ended before TurnEnded or a complete final answer", 502)
     const { usageOf } = this.wire
-    const measuredInput = this.usageFields?.some((f) => [1, 3, 4].includes(f.num))
-    const measuredOutput = this.usageFields?.some((f) => f.num === 2)
+    const turnInput = this.usageFields?.some((f) => [1, 3, 4].includes(f.num))
+    const turnOutput = this.usageFields?.some((f) => f.num === 2)
+    const last = this.lastStepUsage
+    const measuredInput = turnInput || !!last?.measuredInput
+    const measuredOutput = turnOutput || !!last?.measuredOutput
     const u = usageOf(this.usageFields ?? [])
+    if (!turnInput && last?.measuredInput) Object.assign(u, { input: last.usage.input, cacheRead: last.usage.cacheRead, cacheWrite: last.usage.cacheWrite })
+    if (!turnOutput && last?.measuredOutput) Object.assign(u, { output: last.usage.output, reasoning: last.usage.reasoning })
     if (!measuredInput) u.input = this.estimate
     if (!measuredOutput) u.output = Math.floor((this.said + 3) / 4)
     // A turn of several model calls: TurnEndedUpdate counts them all, but a
     // client reads the last response's prompt as how full its context is
-    // (Codex compacted a 61K context at 1.1M, #156). The last call keeps its
-    // own share, the larger of its prompt estimate and the turn's mean per
-    // call; the rest is billed as magpie_deferred.
+    // (Codex compacted a 61K context at 1.1M, #156). When Cursor emitted
+    // ModelCallCompletedUpdate (31) for the last step, it keeps its exact
+    // count; otherwise it keeps the larger of its prompt estimate and the
+    // turn's mean per call. The rest is billed as magpie_deferred.
     let earlier = null
     if (this.steps > 1) {
-      const whole = u.input + u.cacheRead + u.cacheWrite
-      const share = (total, own) => total > 0 ? Math.min(1, Math.max(own, total / this.steps) / total) : 0
-      const fi = share(whole, measuredInput ? this.stepEstimate ?? 0 : whole)
-      const fo = share(u.output, Math.floor((this.said - this.stepSaid + 3) / 4))
-      const own = {
-        input: Math.round(u.input * fi), cacheRead: Math.round(u.cacheRead * fi), cacheWrite: Math.round(u.cacheWrite * fi),
-        output: Math.round(u.output * fo), reasoning: Math.round(u.reasoning * fo),
+      if (last && (last.measuredInput || last.measuredOutput)) {
+        const prev = [...this.stepUsages.values()].filter((e) => e !== last)
+        const sum = (k) => prev.reduce((s, e) => s + e.usage[k], 0)
+        const whole = u.input + u.cacheRead + u.cacheWrite
+        const share = (total, own) => total > 0 ? Math.min(1, Math.max(own, total / this.steps) / total) : 0
+        const fi = share(whole, turnInput ? this.stepEstimate ?? 0 : whole)
+        const fo = share(u.output, Math.floor((this.said - this.stepSaid + 3) / 4))
+        const own = {
+          input: last.measuredInput ? last.usage.input : Math.round(u.input * fi),
+          cacheRead: last.measuredInput ? last.usage.cacheRead : Math.round(u.cacheRead * fi),
+          cacheWrite: last.measuredInput ? last.usage.cacheWrite : Math.round(u.cacheWrite * fi),
+          output: last.measuredOutput ? last.usage.output : Math.round(u.output * fo),
+          reasoning: last.hasReasoning ? last.usage.reasoning : last.measuredOutput ? Math.min(u.reasoning, last.usage.output) : Math.round(u.reasoning * fo),
+        }
+        earlier = {
+          input: turnInput ? Math.max(0, u.input - own.input) : sum("input"),
+          cacheRead: turnInput ? Math.max(0, u.cacheRead - own.cacheRead) : sum("cacheRead"),
+          cacheWrite: turnInput ? Math.max(0, u.cacheWrite - own.cacheWrite) : sum("cacheWrite"),
+          output: turnOutput ? Math.max(0, u.output - own.output) : sum("output"),
+        }
+        Object.assign(u, own)
+      } else {
+        const whole = u.input + u.cacheRead + u.cacheWrite
+        const share = (total, own) => total > 0 ? Math.min(1, Math.max(own, total / this.steps) / total) : 0
+        const fi = share(whole, measuredInput ? this.stepEstimate ?? 0 : whole)
+        const fo = share(u.output, Math.floor((this.said - this.stepSaid + 3) / 4))
+        const own = {
+          input: Math.round(u.input * fi), cacheRead: Math.round(u.cacheRead * fi), cacheWrite: Math.round(u.cacheWrite * fi),
+          output: Math.round(u.output * fo), reasoning: Math.round(u.reasoning * fo),
+        }
+        earlier = { input: u.input - own.input, cacheRead: u.cacheRead - own.cacheRead, cacheWrite: u.cacheWrite - own.cacheWrite, output: u.output - own.output }
+        Object.assign(u, own)
       }
-      earlier = { input: u.input - own.input, cacheRead: u.cacheRead - own.cacheRead, cacheWrite: u.cacheWrite - own.cacheWrite, output: u.output - own.output }
-      Object.assign(u, own)
     }
     // What a later Run collected of this Run's event while this one waited on
     // results (handover) is in the turn's totals too: it comes off them, from
@@ -1300,7 +1362,7 @@ class NativeSession {
     this.finalUsage = {
       prompt_tokens: prompt, completion_tokens: u.output, total_tokens: prompt + u.output,
       prompt_tokens_details: { cached_tokens: u.cacheRead, cache_write_tokens: u.cacheWrite },
-      ...(this.usageFields?.some((f) => f.num === 5) ? { completion_tokens_details: { reasoning_tokens: u.reasoning } } : {}),
+      ...(this.usageFields?.some((f) => f.num === 5) || last?.hasReasoning ? { completion_tokens_details: { reasoning_tokens: u.reasoning } } : {}),
       ...(!measuredInput || !measuredOutput ? { magpie_native: { accounting: "estimated" } } : {}),
     }
     this.state = "finalizing"
@@ -1356,6 +1418,8 @@ class NativeSession {
                 } else if (u.num === 14) {
                   if (!this.segment.content && !this.segment.calls.length) invalid("an empty reply (Cursor ended the turn without text or a tool call)", 502)
                   this.terminalSeen(uf)
+                } else if (u.num === 31) {
+                  this.modelCallCompleted(uf)
                 } else if (u.num === 27) {
                   this.listed(num(uf, 1))
                   if (this.error) return

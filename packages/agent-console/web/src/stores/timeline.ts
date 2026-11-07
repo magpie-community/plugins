@@ -9,6 +9,27 @@ import { Outbox, newClientId, withOutbox, type SendDisplay, type SendPayload } f
 export type QueueItem = { id: string; text: string; attachments?: { path: string; mime: string }[] };
 export type PendingReq = { requestId: string; kind: "permission" | "question"; key?: string };
 
+/** Shared empty list: "nothing waiting" is always the same reference, so selectors on `pending` don't fire */
+export const EMPTY_PENDING: PendingReq[] = [];
+
+/** Same waiting requests (same order, ids, kinds and keys) */
+export function samePending(a: readonly PendingReq[], b: readonly PendingReq[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!, y = b[i]!;
+    if (x.requestId !== y.requestId || x.kind !== y.kind || x.key !== y.key) return false;
+  }
+  return true;
+}
+
+/** Keep the previous reference when nothing changed: a token delta must not hand App a new `pending` array
+ *  (that re-rendered the whole three-column shell on every delta) */
+export function stablePending(prev: PendingReq[], next: PendingReq[]): PendingReq[] {
+  if (next.length === 0) return EMPTY_PENDING;
+  return samePending(prev, next) ? prev : next;
+}
+
 type TlStore = {
   threadId: string | null;
   status: string;
@@ -92,7 +113,7 @@ export const useTimeline = create<TlStore>((set, get) => {
         }
         applyEvent(st, ev);
         // pending is derived from timeline items (pending permission/question → composer waiting state)
-        set({ ...view(threadId), pending: pendingRequests(st.items) });
+        set({ ...view(threadId), pending: stablePending(get().pending, pendingRequests(st.items)) });
         return;
       }
       if (data.type === "status" && data.status) {
@@ -101,7 +122,7 @@ export const useTimeline = create<TlStore>((set, get) => {
         syncRuntimeFlags();
         // Going idle closes the open cards (syncRuntimeFlags): the waiting state follows them, or the top bar would
         // keep 等待授权 with no card to click
-        set({ ...view(threadId), pending: pendingRequests(st.items) });
+        set({ ...view(threadId), pending: stablePending(get().pending, pendingRequests(st.items)) });
         return;
       }
       if (data.type === "queue" && data.queue) {
@@ -110,7 +131,8 @@ export const useTimeline = create<TlStore>((set, get) => {
       }
       if (data.type === "pending" && data.pending) {
         // Only requests the timeline shows a live card for
-        set({ pending: pendingRequests(st.items).filter((p) => data.pending!.some((d) => d.requestId === p.requestId)) });
+        const next = pendingRequests(st.items).filter((p) => data.pending!.some((d) => d.requestId === p.requestId));
+        set({ pending: stablePending(get().pending, next) });
         return;
       }
       if (data.type === "commands" && data.commands) {
@@ -127,7 +149,7 @@ export const useTimeline = create<TlStore>((set, get) => {
     status: "idle",
     items: [],
     queue: [],
-    pending: [],
+    pending: EMPTY_PENDING,
     lastUserText: null,
     error: null,
     slashCommands: [],
@@ -136,7 +158,7 @@ export const useTimeline = create<TlStore>((set, get) => {
     open: (threadId) => {
       if (get().threadId === threadId) return;
       get().close();
-      set({ threadId, status: "initializing", items: outbox.items(threadId), queue: [], pending: [], lastUserText: null, error: null, slashCommands: [] });
+      set({ threadId, status: "initializing", items: outbox.items(threadId), queue: [], pending: EMPTY_PENDING, lastUserText: null, error: null, slashCommands: [] });
       st = newTimelineState();
       stSeqMax = 0;
       runtimeStatus = "initializing";
@@ -160,7 +182,7 @@ export const useTimeline = create<TlStore>((set, get) => {
             ...view(threadId),
             // Not g.pending: the daemon's list could hold a request the timeline already closed (a 1.2 daemon kept
             // one whose turn had ended). Waiting follows the cards that show buttons.
-            queue: g.queue ?? [], pending: pendingRequests(st.items), lastUserText: r.lastUserText,
+            queue: g.queue ?? [], pending: stablePending(get().pending, pendingRequests(st.items)), lastUserText: r.lastUserText,
           });
           // Subscribe only once the snapshot is ready: the server replays events after afterSeq=stSeqMax, joining the snapshot seamlessly
           if (get().threadId === threadId) subscribeChannel(threadId);
@@ -175,7 +197,7 @@ export const useTimeline = create<TlStore>((set, get) => {
       unsub = null;
       st = newTimelineState();
       stSeqMax = 0;
-      set({ threadId: null, items: [], queue: [], pending: [], lastUserText: null, error: null, status: "idle", slashCommands: [] });
+      set({ threadId: null, items: [], queue: [], pending: EMPTY_PENDING, lastUserText: null, error: null, status: "idle", slashCommands: [] });
     },
 
     send: async (threadId, payload, display = {}, opts = {}) => {

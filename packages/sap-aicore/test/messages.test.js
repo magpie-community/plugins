@@ -91,6 +91,29 @@ test("an image-capable model still rejects non-base64 sources and malformed imag
   for (const block of bad) await assert.rejects(parseWith(withImage(block), IMAGE_CAPABLE), { code: "invalid-request" }, JSON.stringify(block))
 })
 
+test("tool results accept text and images without allowing other nested content", async () => {
+  const bodyFor = content => base({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "tool_image", content }] }] })
+  for (const content of ["", "tool text", [], [{ type: "text", text: "tool text" }]]) {
+    assert.deepEqual(await parse(bodyFor(content)), bodyFor(content))
+  }
+  for (const content of [[imageBlock], [{ type: "text", text: "Read image file [image/png]" }, imageBlock]]) {
+    await assert.rejects(parseWith(bodyFor(content)), { code: "invalid-request" })
+    await assert.rejects(parseWith(bodyFor(content), { capabilities: { image: false } }), { code: "invalid-request" })
+    assert.deepEqual(await parseWith(bodyFor(content), IMAGE_CAPABLE), bodyFor(content))
+  }
+  const badContents = [
+    undefined, null, 7, {}, [null], [{ type: "text" }],
+    [{ type: "image", source: { type: "url", url: "https://example.invalid/i.png" } }],
+    [{ type: "image", source: { type: "base64", media_type: "image/png" } }],
+    [{ ...imageBlock, extra: true }],
+    [{ type: "tool_use", id: "nested", name: "read", input: {} }],
+    [{ type: "tool_result", tool_use_id: "nested", content: "ok" }],
+    [{ type: "thinking", thinking: "x", signature: "sig" }],
+    [{ type: "document", source: {} }],
+  ]
+  for (const content of badContents) await assert.rejects(parseWith(bodyFor(content), IMAGE_CAPABLE), { code: "invalid-request" })
+})
+
 test("tools, tool_choice and a forced tool name are validated against declared tools", async () => {
   const tools = [{ name: "lookup", input_schema: { type: "object" } }]
   assert.ok(await parse(base({ tools, tool_choice: { type: "tool", name: "lookup" } })))
@@ -194,6 +217,22 @@ test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", a
   assert.equal("stream" in call.body, false, "stream selector is omitted from the body")
   assert.deepEqual(call.body.stop_sequences, ["STOP"], "explicit native fields are forwarded, not dropped")
   assert.deepEqual(call.body.messages, [{ role: "user", content: "hi" }])
+})
+
+test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {
+  const { post, sent } = await fixture()
+  const cache_control = { type: "ephemeral" }
+  const toolUse = { type: "tool_use", id: "tool_image", name: "read", input: { path: "image.png" } }
+  for (const content of [[imageBlock], [{ type: "text", text: "Read image file [image/png]", cache_control }, { ...imageBlock, cache_control }]]) {
+    const messages = [
+      { role: "user", content: "Read image.png" },
+      { role: "assistant", content: [toolUse] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: toolUse.id, content, is_error: false, cache_control }] },
+    ]
+    const response = await post("/messages", base({ messages }))
+    assert.equal(response.status, 200)
+    assert.deepEqual(sent.at(-1).body.messages, messages)
+  }
 })
 
 test("pi's non-native tool hints are stripped from the Bedrock invoke body", async () => {

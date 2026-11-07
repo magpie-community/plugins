@@ -189,9 +189,10 @@ itself.
 |---|---|
 | A refused sign-in (no code, or code 105) | 401 |
 | A quota (codes 110, 112–119, 122) | 429 |
-| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
+| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
+| "Range of max_tokens should be [1, N]" behind "Error in upstream response" (since 0.2.63) | Asked again once with max_tokens N, which later requests for that model are sent from the start; refused again, 400 with Qoder's words, the sign-in untouched. QoDuck (`lmodel`) is never sent more than 131072, and a model whose listing entry names `max_output_tokens` never more than that; a smaller max_tokens goes as asked |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 
@@ -577,11 +578,23 @@ Since **0.2.28** a queued request waits its turn as Qoder's own client
 model and the plan's `queueType`, at once and then every
 `retryAfterSeconds` (held to 0.5–30s, 30s when unsaid), and once
 `isQueued` is false it waits that state's `retryAfterSeconds` and sends the
-same request again (up to 10 times). Qoder's client waits up to an hour;
-the plugin waits at most 4 minutes from the request's start, since nothing
-reaches the agent meanwhile (magpie keeps a stream alive with comments for
-5 minutes of silence). Three failed status asks in a row, a 404, or a
-cancelled request end the wait early. Qoder's client also reports the end
+same request again (up to 10 times). Three failed status asks in a row, a
+404, or a cancelled request end the wait early.
+
+Since **0.2.62** a streamed request (every agent's) waits as long as
+Qoder's client does, up to an hour from the request's start, where it
+waited at most 4 minutes and then was a 503 that Codex retried, a stop and
+a restart for the user (plugins#807). It is answered 200 at once, with an
+SSE comment saying the queue (": Qoder queued the request for smodel
+(this plan's queue: p3, 284 ahead); try again in 30s") and a comment every
+10 seconds while it waits. magpie counts each comment as the reply going
+on: a Codex client is told `response.in_progress`, the event its 300s idle
+timeout counts, and a Chat client gets the comment. What comes of the wait
+goes on in the same stream: the answer, or a refusal (the queue's own after
+the hour) as the stream's error. Nothing needs setting. A request that isn't
+streamed has nothing to keep its client alive with, so it still waits 4
+minutes at most before the 503. Claude Code takes a ping as life only 30
+times in a row, about 35 minutes, so a longer wait still ends there. Qoder's client also reports the end
 of its turn to `/api/v2/service/ask/finish`; the plugin doesn't, and
 Qoder releases that lease on its own TTL. `queue.test.mjs` has the wait.
 

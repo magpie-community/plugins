@@ -17,6 +17,7 @@ import { hostname } from "node:os"
 import pkg from "./package.json" with { type: "json" }
 
 import { MODELS } from "./models.mjs"
+import { RATES } from "./rates.mjs"
 
 const ID = "opendesign"
 const CONTROL = "https://amr-api.open-design.ai"
@@ -49,10 +50,20 @@ const TIMEOUT = 20_000
 const HOUR = 3600
 const WEEK = 7 * 24 * HOUR
 
-// The vendor's spending words as magpie's rate, and its quality words as
+// The vendor's spending words as magpie's rate — the fallback only now: the
+// plan's real deduction multipliers are the table rates.mjs holds, and the
+// catalog's words disagree with it for most models. Its quality words say
 // whether the model thinks before it answers.
 const COST = { low: "x0.5", medium: "x1", high: "x2", very_high: "x4" }
 const THINKING = { advanced: true, standard: false }
+
+// rateOf is a model's quota multiplier as magpie reads a rate ("x0.5"): the
+// plan's own multiplier when rates.mjs names the model, and its catalog cost
+// word for one the table doesn't name yet.
+const rateOf = (id, m) => {
+  const named = RATES[id]
+  return named === undefined ? COST[text(m?.cost)] : "x" + named
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : "")
@@ -275,7 +286,7 @@ function levelsOf(m) {
 // "advanced". variants are its levels as @ai-sdk/openai options: magpie
 // shows a model's levels only from its variants, and only when it reasons.
 function modelOf(id, m) {
-  const rate = COST[text(m?.cost)]
+  const rate = rateOf(id, m)
   const levels = levelsOf(m)
   const thinking = levels.length > 0 || (THINKING[text(m?.capability)] ?? !!m?.reasoning)
   const context = Number(m?.context)
@@ -355,16 +366,48 @@ function seed() {
   return Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, modelOf(id, m)]))
 }
 
+// withSeed() is a catalog entry's facts with the seed's filling what the
+// entry leaves out: a limit, a cost or capability word the catalog doesn't
+// give is the seed's, not modelOf's 200K/32K fallback or no word at all.
+//
+// input is the seed's and the catalog's together (#829). The seed's input is
+// what amr-link's own catalog listed when models.mjs was last refreshed
+// (refresh-models.mjs writes only what is listed), and DeepSeek V4.1 Flash
+// Eco took an image on amr-link while the live entry left image out. The two
+// mistakes don't cost the same: a kind listed that the model refuses is the
+// vendor's visible error, while a kind dropped is silent, as magpie hands the
+// image to another model for a description, at that account's cost, and
+// sends this one text. So a catalog that lists text only takes nothing away
+// from a kind the seed declares; refresh-models.mjs says when it does, and
+// removing a kind is a change to models.mjs. A model the seed doesn't know,
+// or a kind it doesn't declare, is the catalog's alone.
+function withSeed(id, f) {
+  const s = MODELS[id] ?? {}
+  const positive = (n) => Number.isFinite(n) && n > 0
+  const seedInput = Array.isArray(s.input) ? s.input.filter((x) => typeof x === "string" && x !== "text") : []
+  return {
+    ...f,
+    context: positive(f.context) ? f.context : s.context,
+    output: positive(f.output) ? f.output : s.output,
+    input: [...new Set([...seedInput, ...f.input])],
+    cost: f.cost || text(s.cost),
+    capability: f.capability || text(s.capability),
+    name: s.name ?? id,
+    efforts: s.efforts,
+  }
+}
+
 // modelsOf() shapes amr-link's live catalog as magpie's models: the list an
 // account's plan entitles it to right now, as provider.models gives them. A
-// model the seed knows keeps its name and its measured levels; the catalog
-// carries ids only.
+// model the seed knows keeps its name and its measured levels, which the
+// catalog doesn't carry, and what the seed says of it that the catalog
+// doesn't (withSeed).
 function modelsOf(catalog) {
   const out = {}
   for (const m of catalog?.data ?? []) {
     const id = text(m?.id)
     if (!id) continue
-    out[id] = servedOf(id, { ...facts(m), name: MODELS[id]?.name ?? id, efforts: MODELS[id]?.efforts })
+    out[id] = servedOf(id, withSeed(id, facts(m)))
   }
   return out
 }
@@ -430,12 +473,14 @@ export const OpenDesignAuthPlugin = async () => {
     config: async (cfg) => {
       cfg.provider ??= {}
       const was = cfg.provider[ID] ?? {}
-      // the wire is this plugin's to declare, never a kept copy's: magpie
-      // hands back what the hook last wrote, and a model kept from 0.1.5
-      // would otherwise stay on the Responses API it chose for every model
+      // the wire and the quota multiplier are this plugin's to declare, never
+      // a kept copy's: magpie hands back what the hook last wrote, and a model
+      // kept from an earlier version would otherwise stay on the Responses API
+      // it chose for every model, or on a rate the plan no longer charges
       const models = { ...seed(), ...(was.models ?? {}) }
       for (const [id, m] of Object.entries(models)) {
-        models[id] = { ...m, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) } }
+        const rate = RATES[id] === undefined ? undefined : "x" + RATES[id]
+        models[id] = { ...m, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
       }
       cfg.provider[ID] = {
         name: "Open Design",
@@ -505,4 +550,4 @@ export const OpenDesignAuthPlugin = async () => {
 
 // _internal is what the tests read through; magpie calls every exported
 // function as a plugin, so only the plugin itself is exported bare.
-export const _internal = { authOf, allowances, controlKeyOf, credits, modelsOf, money, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }
+export const _internal = { authOf, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }

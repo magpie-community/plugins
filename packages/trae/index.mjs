@@ -10,10 +10,11 @@
 // (/trae/api/…) as the account, for magpie's daily check-in (每日签到:
 // /trae/api/v2/ug/checkin_credits/status, then /claim).
 import { createDecipheriv, createHash, generateKeyPairSync, randomBytes, randomUUID, randomInt, sign } from "node:crypto"
+import { linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { createServer, STATUS_CODES } from "node:http"
 import { homedir, release, version as osVersion } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 // SEES is a fallback model that takes images, as Trae's lists mark it
 // (multimodal: true)
@@ -1388,10 +1389,55 @@ const nativeTools = (tools, moonshot = false) =>
 // from the chat.headers hook to the loader's fetch. It goes no further.
 const SESSION = "x-magpie-trae-session"
 
-// SALT is what the id is derived with, so it says nothing of the words it was
-// made from. New in each process, as Trae's own session ids are one session's
-// own within a run.
-const SALT = randomBytes(16).toString("hex")
+// saltOf is what the id is derived with, so it says nothing to Trae of the
+// words it was made from. It is this machine's own, kept in a file of the
+// plugin's (saltFile) and made once, so a conversation keeps its session_id
+// when the plugin's process starts again: magpie restarts its plugins on an
+// update of magpie or of any plugin, and a salt new in each process gave
+// every conversation going on then a session of its new own — Trae counting
+// it as a conversation started anew, with nothing of the one before (baoguo
+// on magpie's Discord). The file is made under another name and linked into
+// place, so two processes starting at once both read the one that won, never
+// a half-written one. A file that can't be read or made, or holds anything
+// but a salt, is left as it is, and the process uses a salt of its own, as
+// every process did before.
+const saltFile = () => process.env.MAGPIE_TRAE_SESSION_SALT || join(homedir(), ".config", "magpie", "trae-session-salt")
+const SALT_SHAPE = /^[0-9a-f]{32}$/
+let salt = ""
+function saltOf() {
+  if (salt) return salt
+  const file = saltFile()
+  const read = () => {
+    try {
+      const s = readFileSync(file, "utf8").trim()
+      return SALT_SHAPE.test(s) ? s : null
+    } catch (e) {
+      return e?.code === "ENOENT" ? "" : null
+    }
+  }
+  let s = read()
+  if (s === "") {
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`
+    try {
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(tmp, randomBytes(16).toString("hex") + "\n", { mode: 0o600 })
+      try {
+        linkSync(tmp, file)
+      } catch (e) {
+        if (e?.code !== "EEXIST") throw e
+      }
+      s = read()
+    } catch {
+      s = null
+    } finally {
+      try {
+        unlinkSync(tmp)
+      } catch {}
+    }
+  }
+  salt = s || randomBytes(16).toString("hex")
+  return salt
+}
 
 // conversationID is the conversation a chat belongs to, as the UUID the
 // request's session_id wants: the session magpie or OpenCode names (its
@@ -1419,7 +1465,7 @@ function conversationID(chat, session, who = "") {
 // uuidOf is a version 4 UUID made of a hash's first 16 bytes: the shape
 // randomUUID() returns, since that is what session_id carried before.
 function uuidOf(s) {
-  const b = Buffer.from(createHash("sha256").update(SALT + "|" + s).digest().subarray(0, 16))
+  const b = Buffer.from(createHash("sha256").update(saltOf() + "|" + s).digest().subarray(0, 16))
   b[6] = (b[6] & 0x0f) | 0x40
   b[8] = (b[8] & 0x3f) | 0x80
   const h = b.toString("hex")
@@ -1562,7 +1608,13 @@ const eventName = (s) =>
 // went on with no cache field, which magpie can only read as a miss, so
 // since 10-28 every chat showed 0 (yetone/magpie#3979, #3991; plugins#434
 // says Trae stopped sending cache_read_input_tokens then). A count naming
-// the cache, a 0 included, is Trae's own word and goes as before.
+// the cache with nothing read and nothing written is unknown too: Trae
+// answers 0 and 0 while it bills the turn at its cache price (a real
+// Trae CN account on 10-29, deepseek-v4.1-flash, a 146k prompt: 5.84
+// credits cold, 0.12 warm, cache_read 0 on both; dingminhua/dsh-connect-
+// trae's docs/ISSUE69_DIAGNOSIS.md), so a 0 says nothing of the cache
+// (feng2787 on magpie's Discord: every hit 0). A nonzero read or write is
+// Trae's word, as before.
 // DeepSeek's prompt_cache_hit_tokens, a bare cached_tokens and the
 // Responses-style input_tokens_details are read too, the largest of them,
 // should Trae pass a model's own usage on.
@@ -1585,6 +1637,7 @@ function tokensOf(u) {
     const w = n(u.cache_creation_input_tokens, u.cacheCreationInputTokens)
     if (r) out.cache_read_input_tokens = r
     if (w) out.cache_creation_input_tokens = w
+    if (!r && !w) out.magpie_cache_unknown = true
   }
   const thought = n(u.reasoning_tokens, u.completion_tokens_details?.reasoning_tokens)
   if (thought) out.completion_tokens_details = { reasoning_tokens: thought }

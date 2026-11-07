@@ -27,7 +27,7 @@ OpenCode & Magpie provider plugin for **SenseTime Raccoon (商汤小浣熊, `xia
   3. 直接只读复用本机商汤小浣熊客户端实时登录态（客户端保存的 `auth.json`：新版在客户端配置目录下的 `agent/config/auth.json`（macOS 为 `~/Library/Application Support/office-raccoon`，Windows 为 `%USERPROFILE%\.office-raccoon`），旧版在 `~/.box-agent/config/auth.json`）。桌面端席位会把登录时读到的 token 保存在自己的账号记录里，因此它不会拿到、也不会**上报**另一个账号的凭据或积分；一旦自己的 token 被拒或用尽，就提示重新登录（客户端自身的 refresh token 依旧不会被动用）。
 - **Token 自动续期**：浏览器登录账号过期前 5 分钟自动单飞刷新。
 - **动态模型目录与积分倍率**：实时同步 `/api/web/llm/v2/model_catalog`，展示模型上下文、最大输出、视觉/思考能力、积分倍率与限免（`Free`）标识。
-- **积分余额与套餐查询**：展示可用积分、未过期发放额度、每日积分过期时间与 Pro/Free 套餐状态。
+- **积分余额与套餐查询**：展示可用积分、未过期发放额度、每日积分过期时间与 Pro/Free 套餐状态。积分余额接口 `/api/web/points/v1/balance` 拒绝时（403），改从 `/api/web/office/v3/setting_info` 读可用积分；套餐接口读不到时不显示套餐，而不是当作 Free。
 - **每日签到与桌面端登录奖励**：支持 Magpie 每日自动签到（`+300` 积分/天）及首次桌面端 `+3000` 积分登录奖励领取。
 - **SSE 模型名重写**：将上游响应中的内部模型名重写为下游请求的 `model`，确保 Claude Code / Codex / OpenCode 等客户端兼容。
 

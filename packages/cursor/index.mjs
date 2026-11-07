@@ -1932,15 +1932,17 @@ function conversationID(chat, session) {
   return uuidOf(sum)
 }
 
-// usageOf is a TurnEndedUpdate as magpie counts usage, as the built-in's
-// cursorUsage has it (magpie #498). Its input_tokens is the whole prompt,
-// what was read from the cache and written to it included, as Cursor's
-// own client has it (it takes both out to get the prompt's uncached
-// rest); input is that rest, the cache added back for prompt_tokens. Its
-// reasoning_tokens is kept as reasoning.
-function usageOf(uf) {
-  const [inp, cr, cw] = [pbNum(uf, 1), pbNum(uf, 3), pbNum(uf, 4)]
-  return { input: Math.max(inp - cr - cw, 0), output: pbNum(uf, 2), cacheRead: cr, cacheWrite: cw, reasoning: pbNum(uf, 5) }
+// usageOf is a TurnEndedUpdate or ModelCallCompletedUpdate as magpie
+// counts usage, as the built-in's cursorUsage has it (magpie #498). Its
+// input_tokens is the whole prompt, what was read from the cache and
+// written to it included, as Cursor's own client has it (it takes both out
+// to get the prompt's uncached rest); input is that rest, the cache added
+// back for prompt_tokens. Its reasoning_tokens is kept as reasoning.
+// ModelCallCompletedUpdate carries model_call_id at field 1 and the five
+// token counts at 2..6 (one after TurnEndedUpdate's 1..5).
+function usageOf(uf, shift = 0) {
+  const [inp, cr, cw] = [pbNum(uf, 1 + shift), pbNum(uf, 3 + shift), pbNum(uf, 4 + shift)]
+  return { input: Math.max(inp - cr - cw, 0), output: pbNum(uf, 2 + shift), cacheRead: cr, cacheWrite: cw, reasoning: pbNum(uf, 5 + shift) }
 }
 
 // A step that calls the caller's tools has no TurnEndedUpdate: Cursor ends
@@ -2354,6 +2356,7 @@ function buildRun(msgs, lastUser, tools, model, conv = "", { maxMode = false, pa
     .str(5, conv || randomUUID())
     .bytes(9, requested)
     .varint(19, 1) // inline images
+    .varint(37, 1) // emit_model_call_usage: ModelCallCompletedUpdate (31) per step
   return { first: pb().bytes(1, rr).done(), blobs }
 }
 
@@ -3093,7 +3096,7 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
   // owed); and with what the conversation's earlier steps owed, which a
   // step that ends the turn waits for
   const settled = async () => {
-    if (calls > 0 && !ended && stepUsage) {
+    if (calls > 0 && !ended && !counted && stepUsage) {
       close?.()
       const u = await stepUsage().catch(() => null)
       if (u) usage = u
@@ -3189,9 +3192,16 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
                   break
                 case 27: // how many tool calls the step makes, sent before or after them
                   listed = pbNum(uf, 1)
+                  step.listed()
                   if (stepDone()) {
                     yield await settled()
                     return
+                  }
+                  break
+                case 31: // model_call_completed: the step's own token usage
+                  if (!ended && uf.some((f) => f.num >= 2 && f.num <= 6)) {
+                    usage = usageOf(uf, 1)
+                    counted = true
                   }
                   break
                 case 2: // a call started on the client
@@ -3226,10 +3236,10 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
           }
           case 3:
             // conversation_checkpoint_update: Cursor's state. Once the step
-            // has its count, a state waiting on just the calls handed to the
-            // caller is a step Cursor has finished: what more the count
-            // says will not come (plugins#550)
-            if (listed && calls > 0 && pendingCalls(m.data, fields) === calls) {
+            // has its count after the calls, a state waiting on just the
+            // calls handed to the caller is a step Cursor has finished: what
+            // more the count says will not come (plugins#550)
+            if (listed && step.listedAfter && calls > 0 && pendingCalls(m.data, fields) === calls) {
               note?.("waited on")
               yield await settled()
               return

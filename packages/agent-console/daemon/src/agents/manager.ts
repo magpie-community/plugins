@@ -14,6 +14,7 @@ import { getProvider } from "../providers/registry.js";
 import { catalogById, providerCreatable } from "../providers/catalog.js";
 import { isProviderEnabled } from "../providers/enabled.js";
 import { cachedDetect, cachedModels } from "../providers/infoCache.js";
+import { magpieDefaultModel } from "../providers/magpieGateway.js";
 import type { ProviderEvent, TimelineEvent } from "../timeline/types.js";
 import { Coalescer } from "../timeline/coalescer.js";
 import { ApiError } from "../ws/methods.js";
@@ -68,6 +69,11 @@ type Runtime = {
   deltasOnly: boolean;
   /** 1.3: the "Git Bash not found" hint was already shown in this conversation during this daemon run */
   bashHinted?: boolean;
+  /**
+   * When the thread is on「默认」(meta.model null), the Magpie / agent default id last pushed into the live session.
+   * Used to adopt a Magpie default-model change on the next turn without interrupting a running one.
+   */
+  syncedDefaultModel?: string | null;
 };
 
 type DeltaType = "assistant_delta" | "reasoning_delta" | "tool_output_delta";
@@ -337,6 +343,8 @@ export class AgentManager {
       }
     }
     // A live session needs no detection: the Agent is running (the 60 s detect cache used to re-run "--version" on later sends)
+    //「默认」threads: adopt Magpie's latest default before this turn (session is still idle here)
+    await this.syncDefaultModelIfNeeded(threadId, meta, rt);
 
     // Windows without Git Bash: say so before the agent's first command fails on the WSL launcher
     await agentShellReady();
@@ -640,11 +648,61 @@ export class AgentManager {
         });
       }
     }
+    // Thread stays on「默认」when model is null; the live session still gets the resolved default id
+    // so switching back to Default (and Magpie default changes) take effect on the next turn.
+    const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     await this.threads.patch(threadId, { model, effort });
     const rt = this.rt(threadId);
-    if (rt.session) await rt.session.setModel(model);
+    let applied: boolean | void = true;
+    if (rt.session) {
+      // Only an explicit user pick may bypass ACP's session/new model validation.
+      if (model !== null) applied = await rt.session.setModel(sessionModel, { force: true });
+      else applied = await rt.session.setModel(sessionModel);
+    }
+    // 1.3.6: a default the session skipped (ACP validation) is not "synced" — the next idle send retries it
+    rt.syncedDefaultModel = model ? undefined : applied === false ? undefined : sessionModel;
     this.gw.publish("sidebar", { type: "thread.upsert", thread: await this.threads.get(threadId) });
   }
+
+  /**
+   * Default model id to push into a live session while the thread is on「默认」.
+   * dsh must use its own ACP model ids from cachedModels (never raw applied.json "magpie/…" strings).
+   */
+  private async resolveDefaultSessionModel(providerId: string): Promise<string | null> {
+    if (providerId === "dsh") {
+      const provider = getProvider(providerId);
+      if (!provider) return null;
+      const settings = await this.settings.get();
+      const launch = launchFromSettings(settings, providerId);
+      const available = await cachedModels(provider, launch).catch(() => []);
+      const magpie = available.filter((m) => /magpie/i.test(m.id));
+      return (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
+    }
+    return magpieDefaultModel(providerId);
+  }
+
+  /**
+   * Thread on「默认」+ idle live session: if Magpie's applied default changed since we last synced,
+   * push the new id into the session (never interrupts a running turn — caller only invokes while idle/before send).
+   */
+  private async syncDefaultModelIfNeeded(threadId: string, meta: ThreadMeta, rt: Runtime): Promise<void> {
+    if (meta.model) return; // explicit model pick — leave it alone
+    if (!rt.session) return;
+    // Only skip a turn that is already running / initializing. rt.starting is true for the whole
+    // startTurnInner (including this sync-before-send), so it must not block adoption of a new Magpie default.
+    if (rt.status === "running" || rt.status === "initializing") return;
+    const current = await this.resolveDefaultSessionModel(meta.provider);
+    if (current === (rt.syncedDefaultModel ?? null)) return;
+    try {
+      const applied = await rt.session.setModel(current);
+      // 1.3.6: ACP may skip a Magpie default that isn't in the session's model options (no blind
+      // set_config_option). Don't record it as synced then, or later idle sends never retry it.
+      if (applied !== false) rt.syncedDefaultModel = current;
+    } catch (e) {
+      log("warn", `thread ${threadId} sync default model failed：${String(e)}`);
+    }
+  }
+
   async setMode(threadId: string, mode: Mode): Promise<void> {
     const meta = await this.threads.patch(threadId, { mode });
     const rt = this.rt(threadId);
@@ -851,10 +909,10 @@ export class AgentManager {
       }
     } else if (meta.provider === "dsh" && !model) {
       // No model picked: start dsh on the route a new conversation would use (its ACP takes images only for the route it starts on)
-      const available = await cachedModels(provider).catch(() => []);
-      const magpie = available.filter((m) => /magpie/i.test(m.id));
-      model = (magpie.find((m) => m.isDefault) ?? magpie[0] ?? available.find((m) => m.isDefault))?.id ?? null;
+      model = await this.resolveDefaultSessionModel("dsh");
     }
+    //「默认」: pass the resolved Magpie / agent default into the session so a live process doesn't stick on an old spawn-time default
+    const sessionModel = model ?? await this.resolveDefaultSessionModel(meta.provider);
     if (opts.updateStatus) await this.setStatus(threadId, "initializing");
     const settings = await this.settings.get();
     const launch = launchFromSettings(settings, meta.provider);
@@ -864,7 +922,7 @@ export class AgentManager {
     rt.session = await provider.createSession({
       threadId,
       cwd: proj.path,
-      model,
+      model: sessionModel,
       mode: clampMode(provider.capabilities.modes, meta.mode),
       effort: meta.effort,
       resumeId: meta.providerSessionId,
@@ -872,6 +930,7 @@ export class AgentManager {
       cursorAutoReview: meta.cursorAutoReview,
       launch,
     });
+    rt.syncedDefaultModel = model ? undefined : sessionModel;
     void this.pumpEvents(threadId, rt.session);
     return rt.session;
   }

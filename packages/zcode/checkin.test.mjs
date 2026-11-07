@@ -11,10 +11,10 @@ import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, _internal
+let ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
@@ -22,21 +22,32 @@ afterAll(() => (globalThis.fetch = real))
 beforeEach(() => {
   globalThis.fetch = offline
   _internal.routes.clear()
+  resetRateWait() // each test starts with no hold of its own (they share an account key)
+  resetClientConfigs() // and reads client/configs from its own fake
 })
 
 // serve is the fake zcode.z.ai: route answers each request, and a request
-// it doesn't answer is a 404
+// it doesn't answer is a 404, but client/configs, which says whether a
+// claim wants ZCode's captcha: unless route answers it, configs with no
+// captcha, as they were before 11-07
+const CONFIGS = "/api/v1/client/configs"
+const NO_CAPTCHA = { code: 0, msg: "", data: { configs: { builtin_provider_config_json: "https://cdn-zcode.z.ai/zcode/config/zcode-builtin-production-43.json" } } }
+// 11-07's configs as zcode.z.ai answered 3.17.2 (cut to the two keys the
+// plugin reads): claims want the captcha, Start Plan requests are spared
+const CAPTCHA_ON = JSON.parse(readFileSync(new URL("./testdata/client-configs-1107.json", import.meta.url), "utf8"))
 function serve(route) {
   const calls = []
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
     const c = { url: u, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body }
     calls.push(c)
-    return (await route(c)) ?? new Response("", { status: 404 })
+    return (await route(c)) ?? (u.pathname === CONFIGS ? Response.json(NO_CAPTCHA) : new Response("", { status: 404 }))
   }
   return calls
 }
 const json = (v, status = 200) => new Response(typeof v === "string" ? v : JSON.stringify(v), { status })
+// jsonWith is json with headers: a Retry-After comes as one
+const jsonWith = (v, status, headers) => new Response(typeof v === "string" ? v : JSON.stringify(v), { status, headers })
 const jwt = (exp) => ["{}", JSON.stringify({ exp })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
 const now = Math.trunc(Date.now() / 1000)
 const DEVICE = "11111111-2222-4333-8444-555555555555"
@@ -76,6 +87,10 @@ const CAPTCHA = '{"code":3007,"msg":"captcha verify failed"}'
 // The same six accounts answered it under an older APP_VERSION's header
 // and four of them claimed with code 0 under 3.17.2's.
 const NOT_ELIGIBLE = '{"code":1004,"msg":"your account is not eligible for this plan yet"}'
+// 11-04 (#503, MiniFullC): what ZCode says to a client that asked too
+// often, with HTTP 429 — read 180 times over four days at magpie's
+// 30-minute retry
+const RATE_LIMITED = '{"code":3002,"msg":"请求过于频繁"}'
 
 const PREVIEW = "/api/v1/zcode-plan/billing/preview"
 const CLAIM = "/api/v1/zcode-plan/billing/claim"
@@ -204,6 +219,91 @@ test("a 1004 beside a claimed plan is claimed, naming the one not offered", asyn
   const r = await checkin()
   expect(r.outcome).toBe("claimed")
   expect(r.message).toContain("ZCODE GLOBAL BUILD: your account is not eligible for this plan yet")
+})
+
+test("a rate-limited feed is failed with an until half an hour out", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  expect(r.message).toContain("Too Many Requests")
+  const t = Date.parse(r.until)
+  expect(t).toBeGreaterThan(Date.now() + 25 * 60_000)
+  expect(t).toBeLessThan(Date.now() + 35 * 60_000)
+})
+
+// the hold itself: magpie asks a failed again after 30 minutes of its own
+// whatever `until` says, so the plugin must be the one that waits
+test("a check-in inside the wait asks ZCode nothing, and answers the failed it gave", async () => {
+  const calls = claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const first = await checkin()
+  expect(first.outcome).toBe("failed")
+  const asked = calls.length // what the first read spent
+  const again = await checkin()
+  expect(again.outcome).toBe("failed")
+  expect(again.message).toBe(first.message) // the same failed, replayed
+  expect(again.until).toBe(first.until)
+  expect(calls.length).toBe(asked) // not one request more
+})
+
+test("a check-in after the wait reaches ZCode again", async () => {
+  const calls = claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  await checkin()
+  const asked = calls.length
+  resetRateWait(true) // stand where the wait has passed
+  await checkin()
+  expect(calls.length).toBeGreaterThan(asked)
+})
+
+test("a Retry-After ZCode sent is honored", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => jsonWith("", 429, { "retry-after": "7200" }))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  const t = Date.parse(r.until)
+  expect(t).toBeGreaterThan(Date.now() + 110 * 60_000)
+  expect(t).toBeLessThan(Date.now() + 130 * 60_000)
+})
+
+test("a claim ZCode rate limited (3002) is failed and held too", async () => {
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const r = await checkin()
+  expect(r.outcome).toBe("failed")
+  expect(r.message).toContain("ZCode Trust Build: 请求过于频繁")
+  expect(Date.parse(r.until)).toBeGreaterThan(Date.now() + 25 * 60_000)
+})
+
+// stateOf gives a sign-in that has a jwt and no API key (the
+// Start-Plan-only accounts that claim gift plans) key: "", so a hold keyed
+// by the key alone would answer for every one of them
+test("another keyless sign-in still reaches ZCode while one is held", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  expect((await checkin()).outcome).toBe("failed") // the first account is held
+  const other = claimWith(() => json(CLAIMED_NOW), touchOf([TRUST, "ZCode Trust Build"]))
+  const r = await checkin(oauth({ site: "zai", jwt: jwt(now + 86401), device: DEVICE }))
+  expect(other.length).toBeGreaterThan(0) // asked ZCode all the same
+  expect(r.outcome).toBe("claimed")
+})
+
+test("a claim ZCode keeps limiting waits longer each time", async () => {
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const first = Date.parse((await checkin()).until)
+  resetRateWait(true) // the wait passed, so the next claim reaches ZCode
+  claimWith(() => json(RATE_LIMITED, 400), touchOf([TRUST, "ZCode Trust Build"]))
+  const second = Date.parse((await checkin()).until)
+  expect(second - first).toBeGreaterThan(20 * 60_000) // ~30 min -> ~60 min
+})
+
+test("the wait doubles while ZCode keeps turning the ask away, and a read that comes through forgets it", async () => {
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  const first = Date.parse((await checkin()).until)
+  resetRateWait(true) // the wait passed, so the next ask reaches ZCode
+  const second = Date.parse((await checkin()).until)
+  expect(second - first).toBeGreaterThan(20 * 60_000) // ~30 min -> ~60 min
+  // a read that comes through (nothing to claim) forgets the wait
+  resetRateWait(true)
+  claimWith(() => json(CLAIMED_NOW), TOUCH_NONE)
+  expect((await checkin()).outcome).toBe("inactive")
+  claimWith(() => json(CLAIMED_NOW), () => json("", 429))
+  expect(Date.parse((await checkin()).until)).toBeLessThan(Date.now() + 35 * 60_000)
 })
 
 test("a claim that doesn't read is failed (unknown), never claimed", async () => {
@@ -383,4 +483,63 @@ test("the feed is asked in zh-CN or en-US only, as the app asks it", async () =>
   } finally {
     Intl.DateTimeFormat = realDTF
   }
+})
+
+// young02036 on Discord (11-07): the check-in asked for a captcha every
+// day while the ZCode app showed none. zcode.z.ai's client/configs had
+// switched its captcha on (testdata/client-configs-1107.json), and the
+// app passes that check (Aliyun's, invisibly) before each claim, sending
+// the proof as X-Aliyun-Captcha-Verify-Param (3.17.2's
+// requestVerificationClaimHeaders). The plugin can't, so it posts no
+// claim: the plans are named, to claim in the app.
+test("a claim ZCode guards with its captcha is not posted, and the plan is named for the app", async () => {
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(CAPTCHA_ON)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+    if (url.pathname === CLAIM) return json(CAPTCHA, 400)
+  })
+  const r = await checkin()
+  expect(r.outcome).toBe("captcha")
+  expect(r.message).toBe("ZCODE WEEKEND BUILD: claim it in the ZCode app: ZCode asks its security check before a claim, which only the app passes, so the daily check-in leaves it to the app")
+  expect(r.until).toBeUndefined() // settled for the day, as a captcha was
+  expect(claims(calls)).toEqual([])
+})
+
+test("captcha switched off in the configs: the claim is posted as before", async () => {
+  const off = structuredClone(CAPTCHA_ON)
+  off.data.configs.captcha.enabled = false
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(off)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+    if (url.pathname === CLAIM && method === "POST") return json(CLAIMED_WEEKEND)
+  })
+  expect((await checkin()).outcome).toBe("claimed")
+  expect(claims(calls)).toHaveLength(1)
+})
+
+// a failed read is unknown, never "no captcha": nothing is posted, and
+// the failed is asked again by magpie later
+test("configs that don't read: no claim posted, failed", async () => {
+  for (const configs of [() => json("", 500), () => json({ code: 0, data: { configs: { captcha: "on" } } })]) {
+    resetClientConfigs()
+    const calls = serve(({ url, method }) => {
+      if (url.pathname === CONFIGS) return configs()
+      if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+      if (url.pathname === CLAIM && method === "POST") return json(CLAIMED_WEEKEND)
+    })
+    const r = await checkin()
+    expect(r.outcome).toBe("failed")
+    expect(r.message).toContain("ZCODE WEEKEND BUILD: not claimed, ZCode's security check for claims can't be read")
+    expect(claims(calls)).toEqual([])
+  }
+})
+
+// nothing to claim asks no config at all: the feed alone, as before
+test("nothing in the feed: client/configs is not asked", async () => {
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(CAPTCHA_ON)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_NONE)
+  })
+  expect((await checkin()).outcome).toBe("inactive")
+  expect(calls.filter((c) => c.url.pathname === CONFIGS)).toEqual([])
 })

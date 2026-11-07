@@ -100,8 +100,13 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     title. One conversation answered by two accounts (magpie failing over, or
     rotating, inside it) is named twice then, as two conversations, so Trae
     never reads one account's conversation as another's; that costs the two
-    halves of such a conversation their single row. `request_id` is the
-    request's own, fresh on every one.
+    halves of such a conversation their single row. The id is a salted hash,
+    so it says nothing of the words it was made from; the salt is this
+    machine's own, made once in `~/.config/magpie/trae-session-salt`
+    (`MAGPIE_TRAE_SESSION_SALT` names another file), so a conversation keeps
+    its `session_id` when magpie restarts the plugin (on any update). If that
+    file can't be read or made, each run of the plugin has a salt of its own,
+    as before 0.2.32. `request_id` is the request's own, fresh on every one.
 - **Headers:** TRAE SOLO CN 0.1.69's (`x-ide-version`/`x-app-version`
   0.1.69, version code 20260917; Trae offers a model only to clients new
   enough for it): `Authorization: Cloud-IDE-JWT …`, `X-Cloudide-Token`,
@@ -118,7 +123,9 @@ agent's `POST https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat`:
     `prompt_cache_hit_tokens` and `cached_tokens` are read as cache reads
     too. A `token_usage` that names no cache count at all goes on with
     `magpie_cache_unknown: true`, so magpie shows the cache as unknown,
-    not as a 0% miss (0.2.26).
+    not as a 0% miss (0.2.26). So does one that counts 0 read and 0
+    written: Trae answers that while it bills the turn at its cache price
+    (0.2.31).
     `done`'s `finish_reason` `length`/`max_tokens` is OpenAI's `length`.
   - Queue events are ignored.
   - A `{"reasoning_content": …}` object written into the text is reasoning,

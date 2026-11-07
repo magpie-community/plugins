@@ -272,3 +272,23 @@ test("its models are the IDE's, and usage and check-in ask the domain nothing", 
   expect((await hooks.auth.checkin(s.get)).outcome).toBe("inactive")
   expect(seen).toEqual([])
 })
+
+// plugins#822: a max_tokens above the model's ceiling, which Qoder says
+// behind "Error in upstream response", is asked again once at that ceiling
+// on a Lingma domain too, before the next model is tried
+test("a Lingma domain's max_tokens range refusal is asked again at the ceiling it named", async () => {
+  _internal.LEARNED_CAPS.clear()
+  const RANGE = frame({ message: "Error in upstream response", details: JSON.stringify({ error: { message: "Range of max_tokens should be [1, 131072]" } }) }, 400)
+  const maxOf = (s) => JSON.parse(_internal.decodeBody(s.body)).parameters.max_tokens
+  route = (at, { body }) => {
+    if (at !== HOST + CHAT) return new Response("", { status: 404 })
+    return sse(JSON.parse(_internal.decodeBody(body)).parameters.max_tokens > 131072 ? RANGE : OK)
+  }
+  const s = store(signedIn())
+  const opts = await (await QoderCNAuthPlugin({ client: s.client })).auth.loader(s.get)
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...ask, max_tokens: 384000 }) })
+  expect(res.status).toBe(200)
+  expect(chats().map(sentModel)).toEqual(["qmodel_latest", "qmodel_latest"])
+  expect(chats().map(maxOf)).toEqual([384000, 131072])
+  _internal.LEARNED_CAPS.clear()
+})

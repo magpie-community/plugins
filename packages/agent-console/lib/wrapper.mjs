@@ -17,23 +17,30 @@
 //     the 3 automatic tries are used up), so the user never returns to a dead button.
 //   - every disconnect / invalid-link end state shows a Reconnect button. A missing #b= is filled from sessionStorage
 //     (last safe Magpie back URL written when this page first saw a valid b; read/write re-run safeBack). With a stored
-//     back, recover navigates via go(false). With none, the button reloads and the copy tells the user to flip Magpie's
-//     top-bar page and open Agent Console again if reload is not enough.
+//     back, recover navigates via go(false). With none: if this page is framed by Magpie (window.parent !== window), it
+//     posts { magpie: 1, method: "error", params: { message } } so the host shows its Try-again card and rebuilds the
+//     plugin iframe; Reconnect does the same and falls back to location.reload() after 300 ms if the frame was not
+//     unloaded. The copy tells the user to turn the Agent Console plugin off and on again in Magpie's Plugins page if
+//     that is still not enough (switching Magpie top-bar tabs does not rebuild the iframe within IDLE_MS).
 //
 // Security: this page holds no secret of its own. The daemon token arrives only in its # fragment (as before, never sent to a
 // server, not in Referer) and is handed to the child in the child's fragment; the gate key is never here. The child is always
-// http://127.0.0.1:<integer port>/, b must pass the same loopback Magpie-page check as everywhere else (no open redirect),
+// http://127.0.0.1:<integer port>/, b must pass the same Magpie-page check as everywhere else (http(s) on loopback only,
+// path /_magpie/plugin/<id>/(page/)?index.html, no credentials — no open redirect; never the desktop window's
+// wails://localhost or http://wails.localhost, which this frame can't navigate to: see gate.mjs safeBackUrl),
 // and only the Magpie theme protocol is relayed (theme events / hello answers down, the hello call up). The page runs inside
 // Magpie's sandboxed plugin frame (opaque origin) and is served with a nonce-only CSP.
 
-/** Same check as safeBackUrl in gate.mjs / web/src/api/backToMagpie.ts, as source for the page */
+/** Same check as safeBackUrl in gate.mjs / web/src/api/backToMagpie.ts, as source for the page: loopback Magpie pages only
+ *  (magpie web). Never Magpie's desktop window (wails://localhost, http://wails.localhost): see gate.mjs safeBackUrl. */
 const SAFE_BACK_SRC = String.raw`function safeBack(raw) {
   if (typeof raw !== "string" || !raw || raw.length > 2048) return null;
   var u; try { u = new URL(raw); } catch (e) { return null; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (u.username || u.password) return null;
   var h = u.hostname.toLowerCase();
-  if (h !== "127.0.0.1" && h !== "localhost" && h !== "[::1]") return null;
+  var loopback = h === "127.0.0.1" || h === "localhost" || h === "[::1]";
+  if (!loopback) return null;
   if (!/^\/_magpie\/plugin\/[A-Za-z0-9_-]{1,128}\/(?:page\/)?index\.html$/.test(u.pathname)) return null;
   return u.protocol + "//" + u.host + u.pathname + u.search;
 }`;
@@ -54,8 +61,15 @@ const SCRIPT = String.raw`(function () {
   var token = frag.get("t") || "";
   var port = Number(frag.get("p"));
   var BACK_KEY = "ac_wrap_back";
+  // A stored value that no longer passes safeBack (e.g. http://wails.localhost/… kept by 1.3.5 / 1.3.6) is never followed
+  // and is dropped. (Inside Magpie's sandboxed frame this page has an opaque origin and sessionStorage throws: null.)
   function readStoredBack() {
-    try { return safeBack(sessionStorage.getItem(BACK_KEY)); } catch (e) { return null; }
+    try {
+      var raw = sessionStorage.getItem(BACK_KEY);
+      var v = safeBack(raw);
+      if (raw && !v) sessionStorage.removeItem(BACK_KEY);
+      return v;
+    } catch (e) { return null; }
   }
   function writeStoredBack(v) {
     if (!v) return;
@@ -81,23 +95,43 @@ const SCRIPT = String.raw`(function () {
     box.hidden = false;
     if (button) { btn.textContent = zh ? button[0] : button[1]; btn.hidden = false; }
   }
+  // Ask Magpie's parent frame to show its native "Try again" card: pluginpages.js broke(key) → kernel.js fail() replaces
+  // #view-<key>'s children (this frame included) with the card at once, and Try again runs open(key) again, a fresh
+  // <iframe sandbox=allow-scripts> on the Magpie page URL → boot.js → fresh session.js → new gate /open → new daemon.
+  // Used whenever there is no loopback #b=: always in Magpie's desktop window (wails://localhost on macOS / Linux,
+  // http://wails.localhost on Windows, neither reachable from this http page).
+  function askMagpieRetry(why) {
+    if (window.parent === window) return false;
+    try {
+      window.parent.postMessage({ magpie: 1, method: "error", params: { message: why || (zh ? "本地服务已断开" : "Local service disconnected") } }, "*");
+      return true;
+    } catch (e) { return false; }
+  }
   // The Reconnect action of the end state on screen (null while none is): coming back to the page runs it once
   var ended = null;
   function wireReconnect(targetBack) {
     ended = btn.onclick = function () {
       if (btn.disabled) return;
       btn.disabled = true;
-      if (targetBack) location.replace(targetBack);
-      else location.reload();
+      if (targetBack) { location.replace(targetBack); return; }
+      // Framed in Magpie: ask the host to rebuild the plugin iframe (Magpie removes this frame right away). The reload is
+      // only a fallback for a parent that ignores the message; it reloads this same #t=/p= and doesn't get a new session.
+      if (askMagpieRetry()) {
+        setTimeout(function () { location.reload(); }, 300);
+      } else {
+        location.reload();
+      }
     };
   }
   if (!/^[0-9a-f]{32,128}$/i.test(token) || !(port > 0 && port < 65536 && Math.floor(port) === port)) {
     msg(
-      "链接已失效。请点重新连接；若仍不行，可在 Magpie 顶栏先切到别的页再点回「Agent 控制台」。",
-      "This link is no longer valid. Click Reconnect; if that fails, switch to another Magpie top-bar page, then open Agent Console again.",
+      "链接已失效。请点重新连接；若仍不行，可在 Magpie「插件」页关闭再打开「Agent 控制台」。",
+      "This link is no longer valid. Click Reconnect; if that fails, turn the Agent Console plugin off and on again in Magpie's Plugins page.",
       RECONNECT
     );
-    wireReconnect(back || readStoredBack());
+    var invalidBack = back || readStoredBack();
+    wireReconnect(invalidBack);
+    if (!invalidBack) askMagpieRetry(zh ? "链接已失效" : "This link is no longer valid");
     onReturn(function () { if (ended) ended(); });
     return;
   }
@@ -139,11 +173,13 @@ const SCRIPT = String.raw`(function () {
         return;
       }
       msg(
-        "本地服务已断开。请点重新连接；若仍不行，可在 Magpie 顶栏先切到别的页再点回「Agent 控制台」。",
-        "The local service disconnected. Click Reconnect; if that fails, switch to another Magpie top-bar page, then open Agent Console again.",
+        "本地服务已断开。请点重新连接；若仍不行，可在 Magpie「插件」页关闭再打开「Agent 控制台」。",
+        "The local service disconnected. Click Reconnect; if that fails, turn the Agent Console plugin off and on again in Magpie's Plugins page.",
         RECONNECT
       );
       wireReconnect(null);
+      // Magpie iframe with no usable #b=: notify the host immediately so its Try-again card appears (one click rebuilds the frame).
+      askMagpieRetry(zh ? "本地服务已断开" : "Local service disconnected");
       return;
     }
     var go = function (auto) {

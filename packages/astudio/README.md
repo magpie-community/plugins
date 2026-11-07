@@ -1,6 +1,6 @@
 # @magpie-community/opencode-astudio-auth
 
-把 **AStudio（科大讯飞 Astron Studio 桌面端）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到与积分余额显示。
+把 **AStudio（科大讯飞 Astron Studio）** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：浏览器登录或复用桌面端登录态，直连云端模型网关（OpenAI Responses 协议），agent 以 `astudio/<model>` 使用它的模型；支持每日登录积分自动签到、积分余额与到期时间显示，每个账号各占账号池一格。
 
 ## 与 Providers Hub 的 `hub-astudio` 的区别
 
@@ -8,31 +8,33 @@ AStudio 在 registry 里有两个入口，都保留（[#614](https://github.com/
 
 | | 本包（`astudio`） | [magpie-providers-hub](https://www.npmjs.com/package/magpie-providers-hub)（`hub-astudio`） |
 | --- | --- | --- |
-| 登录 | 读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken`；不需要再输手机号或密码 | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |
-| 适合 | 装了 AStudio 桌面端的用户（数据目录按 `ASTUDIO_HOME`、Windows 注册表、`~/.acode` 查找；其他情况粘贴凭据） | 任何平台，没装桌面端也行 |
+| 登录 | 浏览器登录（推荐，可多账号）、读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken` | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |
+| 适合 | 装了桌面端就复用登录态；没装也可以用浏览器登录（可多账号）；两者都不方便时粘贴凭据 | 任何平台，没装桌面端也行 |
 | 模型端点 | `…/model-gateway/v1/responses`（OpenAI Responses，与桌面端一致） | `…/model-gateway/v1/chat/completions` |
-| 每日积分 | 做一次会话活跃，按前后余额差与 `client-popups/pending` 待通知弹窗记录，不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
+| 每日积分 | 先读当日获得流水（与网页后台「获得明细」同源）：有当日 GRANT 行即已发放，此时一个写请求都不发；流水为空才做一次会话活跃再读流水，流水不可用才退回余额差 + `client-popups/pending` 弹窗观测；不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
 
 两者用同一个 AStudio 账号时，读的是同一个 `points/balance`，模型调用也扣同一份积分：**每日登录积分是一个池子，装两个不会多一份。** 同一账号两边都登录只会重复显示同一笔余额。
 
-English: two entries serve AStudio. This one reuses the AStudio desktop's
-sign-in (or a pasted `modelBearerToken`) and calls the Responses endpoint;
+English: two entries serve AStudio. This one signs in through a browser
+(each account gets its own pool slot), reuses the AStudio desktop's sign-in,
+or takes a pasted `modelBearerToken`, and calls the Responses endpoint;
 Providers Hub's `hub-astudio` signs in on a local page (SMS code, password
 or WeChat QR) and calls chat/completions. On one account both draw on the
 same daily points balance.
 
 ## 登录什么
 
-两种方式（登录时二选一）：
+三种方式（登录时选一种）：
 
-1. **读取 AStudio 桌面端登录态（推荐）**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用），不用填任何东西。没装/没登录时这一步会给出 [AStudio 官网](https://agent.xfyun.cn/) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（会话不是有效 JSON、没有凭据、账号被封禁）会直接说明原因，登录/修好后同样自动完成。数据目录按以下顺序查找：
+1. **浏览器登录（推荐，可多账号）**——弹出的浏览器里登录讯飞账号（手机验证码或扫码），插件收割网页会话 Cookie（`ssoSessionId` + `account_id` 必需，`token` 有则一并带上），再调桌面端启动时的同款 `POST auth/bearer-token` 换发模型凭据（JWT，实测 3 年有效；换发后旧 token 仍可用）。不装桌面端也能用。每次登录用全新浏览器 profile，绝不带旧票；登录收尾后连 profile 一起删掉（会话已进账号 metadata，浏览器目录不留第二份凭据）。网页会话 Cookie 过期后积分/签到会提示重新登录（重新走一次浏览器登录即可；模型凭据是 3 年 JWT，聊天不受影响）。需要本机有 Chrome 或 Edge（或用 `ASTUDIO_CHROME_PATH` 指到可执行文件）；profile 根目录是 `<配置目录>/magpie/astudio-browser-profiles`——Windows 为 `%APPDATA%`、macOS/Linux 为 `~/.config`（`XDG_CONFIG_HOME` 可改），`ASTUDIO_BROWSER_PROFILE` 可整体覆盖；登录收尾即删。
+2. **读取 AStudio 桌面端登录态**——本机装有 AStudio 桌面版并登录过即可，插件自动从它的数据目录读出模型凭据与网页会话（积分/签到用），不用填任何东西。没装/没登录时这一步会给出 [AStudio 官网](https://agent.xfyun.cn/) 链接并自动等待：装好登录后自动完成，不用回来点按钮。本机已有数据但读不出来（会话不是有效 JSON、没有凭据、账号被封禁）会直接说明原因，登录/修好后同样自动完成。数据目录按以下顺序查找：
    - `ASTUDIO_HOME`（或 `SYNARA_HOME`）环境变量指定的目录；
    - Windows 注册表 `HKCU\Software\AStudioStorage` 的 `Production/Canary/DevelopmentDataRoot`；
    - 兜底 `~/.acode/acode/`。
    - 目标文件：`<数据根>/userdata/astron-session.json`（其次 `<数据根>/runtime/acode-home/config.toml`，该方式无网页会话，积分/签到不可用）。
-2. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。
+3. **粘贴 modelBearerToken**——从 `astron-session.json` 的 `modelBearerToken`（或 `config.toml` 的 `experimental_bearer_token`）复制粘贴；可选填账号面 `accountId` 与网页会话 `token`（两者齐才能用积分/签到，另有 `ssoSessionId`/uid 可选）。
 
-每个 AStudio 账号登录一次即得一个 magpie 账号，可多账号故障切换。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。
+每个 AStudio 账号登录一次即得 magpie 账号池里的一格：签到、用量、模型调用都按账号各算各的，网关在账号间故障切换。同一账号用浏览器登录和桌面端登录会归到同一格（`accountId` 都是 uid）。凭据保存在 magpie 的 `plugin-auth.json`（权限 600），不上传。
 
 ## 模型
 
@@ -52,11 +54,15 @@ same daily points balance.
 
 ## 每日签到（每日登录积分）
 
-AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。插件为此提供 magpie 的 `auth.checkin`：每天替账号做一次会话活跃（只读请求，带桌面端 `clientType` / `studioVersion` 身份头；缺 `clientType` 会被服务端以 `11001001` 拒绝），再观测前后余额差与 `client-popups/pending` 的 `DAILY_REWARD_DIALOG` 待通知弹窗——涨了记为已领取，见到弹窗记为今日已发放，两者都没有则如实报「未观测到新发放」，**不谎称已签**。发放由服务端按账号会话判定，插件不能代替桌面端登录，也不保证某天一定有积分到账。签到需要账号带网页会话（桌面端登录态方式默认有）。
+AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。
+
+插件为此提供 magpie 的 `auth.checkin`，**先读当日获得流水**（`points/details?direction=CREDIT`，与网页后台「获得明细」同源，时间窗口按北京时间算）：有 `GRANT` 且 reason 为「每日登录赠送」的入账即已发放——此时**一个写请求都不发**，连会话活跃也不做。流水为空才替账号做一次会话活跃（`POST tenant-app/v2/init-app`，带桌面端 `clientType` / `studioVersion` 身份头；缺 `clientType` 会被服务端以 `11001001` 拒绝），再读一次流水：新出现的 GRANT 行记为本次领取；流水接口不可用时退回余额差 + `client-popups/pending` 的 `DAILY_REWARD_DIALOG` 弹窗观测。余额涨了但流水还没入账也记领取（流水滞后）；流水通畅、余额没涨、也没有当日弹窗则如实报「未观测到新发放」，**不谎称已签**。
+
+签到**不调用** `client-popups/complete`：桌面端的「知道了」是桌面端的交互，插件只读弹窗、不替用户点掉。除 init-app 外，签到发出的都是只读请求。发放由服务端按账号会话判定，插件不能代替桌面端登录，也不保证某天一定有积分到账。签到需要账号带网页会话（浏览器登录与桌面端登录态方式默认有）。
 
 ## 用量
 
-有网页会话时显示真实数据：会员档（体验版/标准版/高级版/畅享版）、通用积分余额（含最近到期批次与时间）、星火积分余额。所有读取均不计费；模型调用本身才消耗账号额度。401/403/登录异常会把账号标记为需要重新登录。
+有网页会话时显示真实数据：会员档（体验版/标准版/高级版/畅享版）、通用积分余额（含最近到期批次与时间）、星火积分余额与最早到期时间（`runsOutAt` / `runsOut`：60 天流水里未过期批次按到期日聚合，翻页读取，金额按余额封顶）。星火积分 7 天内到期时，签到消息会追加提醒。所有读取均不计费；模型调用本身才消耗账号额度。401/403/登录异常会把账号标记为需要重新登录。
 
 ## 协议与上游
 
@@ -72,7 +78,7 @@ AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃
 
 ```
 magpie plugin add @magpie-community/opencode-astudio-auth
-magpie plugin login astudio                 # 选「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」
+magpie plugin login astudio                 # 选「浏览器登录」「读取 AStudio 桌面端登录态」或「粘贴 modelBearerToken」
 magpie provider test astudio spark-x2.6-4b  # 限免模型，验收一发
 ```
 

@@ -135,6 +135,32 @@ describe("chat", () => {
     expect(content[1].type).toBe("image_url")
   })
 
+  test("DeepSeek-V4.1-Flash keeps its image_url parts (plugins#811)", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const parts = [
+      { type: "text", text: "图里写的数字是多少" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+    ]
+    await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "DeepSeek-V4.1-Flash", stream: false, messages: [{ role: "user", content: parts }] }),
+    })
+    const content = fake.state.chatCalls[0].body.messages[0].content
+    expect(content).toEqual(parts)
+    expect(JSON.stringify(content)).not.toContain("<image_base64>")
+  })
+
+  test("which models get the base64 marker", () => {
+    // the reporter's ids: V4.1 reads image_url parts, 0731 is the model the
+    // marker was added for
+    expect(_internal.prefersTagFormat("DeepSeek-V4.1-Flash")).toBe(false)
+    expect(_internal.prefersTagFormat("deepseek-v4.1-flash")).toBe(false)
+    expect(_internal.prefersTagFormat("deepseek-v4-flash-0731")).toBe(true)
+    expect(_internal.prefersTagFormat("deepseek-v4-flash")).toBe(true)
+    expect(_internal.prefersTagFormat("GLM-5.3-Flash")).toBe(false)
+    expect(_internal.prefersTagFormat(undefined)).toBe(false)
+  })
+
   test("a refused session says 401", async () => {
     saved = { type: "oauth", access: "gone", expires: 0 }
     const loader = await plugin.auth.loader(getAuth)

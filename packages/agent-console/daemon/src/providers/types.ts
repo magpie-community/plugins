@@ -70,7 +70,11 @@ export interface ProviderSession {
   send(input: SendInput): Promise<void>;
   steer?(input: SendInput): Promise<void>;
   interrupt(): Promise<void>;
-  setModel(model: string | null): Promise<void>;
+  /**
+   * Resolves `false` only when the session deliberately skipped the model (ACP: not in the session's
+   * model options and not forced) — callers must not treat that model as applied. Anything else = applied.
+   */
+  setModel(model: string | null, opts?: { force?: boolean }): Promise<boolean | void>;
   setMode(mode: Mode): Promise<void>;
   setEffort(effort: string | null): Promise<void>;
   respond(requestId: string, answer: RespondAnswer): void;

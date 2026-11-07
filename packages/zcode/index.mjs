@@ -96,8 +96,11 @@ async function call(method, url, { auth, body, headers, device, signal } = {}) {
   } catch {}
   const code = env?.code == null ? "" : String(env.code)
   if (!res.ok) {
-    if (env?.msg) throw new ZError(code && code !== "0" ? `${env.msg} (${res.status}, code ${code})` : `${env.msg} (${res.status})`, res.status)
-    throw new ZError(STATUS_TEXT[res.status] ?? `${res.status} ${res.statusText}`.trim(), res.status)
+    const said = env?.msg ? (code && code !== "0" ? `${env.msg} (${res.status}, code ${code})` : `${env.msg} (${res.status})`) : (STATUS_TEXT[res.status] ?? `${res.status} ${res.statusText}`.trim())
+    const err = new ZError(said, res.status)
+    err.code = Number(code) || 0 // 3002 and the like: so a caller can tell a rate limit from a failure
+    err.retryAfterMs = retryAfterMs(res) // 0 unless the reply carried a Retry-After
+    throw err
   }
   if (!env || typeof env !== "object") throw new ZError("not JSON", res.status)
   if (code && code !== "0" && code !== "200") throw new ZError(env.msg || `error ${code}`, res.status)
@@ -310,6 +313,19 @@ function spentUp(text, status) {
   const code = (v) => String(v ?? "")
   const c1 = code(b.code), c2 = code(b.error?.code)
   return c1 === "1113" || c1 === "1005" || c2 === "1113" || c2 === "1005"
+}
+
+// spentSaid is an answer that carries spentUp's code inside a 200, as a
+// spent bucket's can, said as the 429 it is (plugins#817: a Start Plan
+// account's GLM-5.3 out for the day answered 200 "exceed quota limit",
+// which magpie took for a reply that did not stream and rested the whole
+// account, GLM-5.3-Flash's own bucket with it). Any other answer goes on
+// as it came; a stream's body is never read here.
+async function spentSaid(res) {
+  if (res.status >= 400 || !(res.headers.get("content-type") ?? "").includes("application/json")) return res
+  const text = await res.text()
+  const status = spentUp(text, res.status) ? 429 : res.status
+  return new Response(text, { status, statusText: status === 429 ? "Too Many Requests" : res.statusText, headers: res.headers })
 }
 
 // ---- keys ------------------------------------------------------------------------
@@ -715,7 +731,80 @@ const CAPTCHA = 3007
 // 1004 under 3.16.3's header, and four of them claimed with code 0 under
 // 3.17.2's, one night, with nothing else changed).
 const NOT_ELIGIBLE = 1004
+// RATE_LIMITED is Z.ai's "请求过于频繁" body code, its answer (with HTTP
+// 429) to a client that asked too often. #503 (MiniFullC, 11-04) read 180
+// "gift plans to claim: Too Many Requests" over four days at magpie's
+// 30-minute retry, so asking again the same half hour keeps the limit on.
+// magpie asks a failed again once retryAfter() has passed, whatever the
+// answer's `until` says (the contract reads `until` as when an answer
+// stops standing, not as the earliest time to ask again), so the account
+// is held here instead: while the wait lasts, claimDaily answers the same
+// failed again, `until` and all, and asks ZCode nothing. A Retry-After
+// ZCode sent is honored up to RATE_LIMIT_MAX_MS; without one the
+// account's own wait doubles from RECHECK_MS, and a read that comes
+// through forgets it.
+const RATE_LIMITED = 3002
+const RATE_LIMIT_MAX_MS = 6 * 60 * 60_000
+const rateWait = new Map() // s.key -> { ms, until, message }: the hold this account is under
+// resetRateWait is for tests: it forgets the holds, and with `expire` it
+// back-dates them, standing where the wait has passed. The plugin itself
+// forgets a hold by reading through or by waiting it out, never by calling
+// this.
+export function resetRateWait(expire = false) {
+  if (!expire) {
+    rateWait.clear()
+    return
+  }
+  for (const [k, h] of rateWait) rateWait.set(k, { ...h, until: new Date(Date.now() - 1).toISOString() })
+}
+// holdKey names the account a wait belongs to. stateOf gives key: "" to a
+// sign-in that has a jwt and no API key — the Start-Plan-only sign-ins
+// that claim gift plans, #503's case — so the key alone would put every
+// one of them under a single hold, and one account's 429 would answer for
+// all of them. The jwt tells them apart; a renewed token starting its own
+// wait is fine.
+const holdKey = (s) => s.key || s.jwt
+// retryAfterMs is a Retry-After header, in seconds or as an HTTP date, in
+// ms; 0 when there is none or it doesn't read.
+function retryAfterMs(res) {
+  const v = first(res?.headers?.get?.("retry-after"))
+  if (!v) return 0
+  const secs = Number(v)
+  if (Number.isFinite(secs) && secs > 0) return secs * 1000
+  const at = Date.parse(v)
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0
+}
+// noteRateLimit remembers the wait this account is under, with the failed
+// that wait answers with, and says when it ends: a Retry-After ZCode sent
+// is taken as it is, up to the cap; without one the wait doubles from
+// RECHECK_MS (and never falls below it), so a client ZCode keeps turning
+// away asks less and less.
+function noteRateLimit(key, saidMs, message) {
+  const last = rateWait.get(key)?.ms ?? 0
+  const want = saidMs > 0 ? saidMs : Math.max(RECHECK_MS, last * 2)
+  const ms = Math.min(RATE_LIMIT_MAX_MS, want)
+  const until = new Date(Date.now() + ms).toISOString()
+  rateWait.set(key, { ms, until, message })
+  return until
+}
 const CAPTCHA_WORDS = /captcha/i
+
+// claimNeedsCaptcha says whether ZCode's claims want its security check
+// now, from what client/configs says: its captcha (Aliyun's, which the
+// ZCode app passes before every claim, invisibly as a rule, and sends as
+// X-Aliyun-Captcha-Verify-Param, 3.17.2's requestVerificationClaimHeaders)
+// switched on. No captcha in the configs is no check, as the app reads it
+// (readRequestVerificationConfig gives null, and the claim goes without
+// the header); one that isn't an object is unknown, null.
+// skip_model_request is the same check for Start Plan requests, which it
+// spares (true on 11-07); it is not read here.
+function claimNeedsCaptcha(c) {
+  const k = c?.configs?.captcha
+  if (k == null) return false
+  if (typeof k !== "object" || Array.isArray(k)) return null
+  return k.enabled !== false
+}
+const CAPTCHA_CLAIM = "claim it in the ZCode app: ZCode asks its security check before a claim, which only the app passes, so the daily check-in leaves it to the app"
 
 // The marketing feed and the claim are gated on the client's version:
 // under an older version's header the feed answers empty (11-03, #678:
@@ -747,6 +836,8 @@ async function claimOne(s, planID) {
   } catch {}
   const code = env && typeof env === "object" && env.code != null && String(env.code).trim() !== "" ? Number(env.code) : NaN
   const msg = typeof env?.msg === "string" ? env.msg : ""
+  // a rate limit is no claim: it is said as one, and carries how long to wait
+  if (res.status === 429 || code === RATE_LIMITED) return { outcome: "failed", why: `${msg || STATUS_TEXT[429]} (HTTP ${res.status}${Number.isFinite(code) ? `, code ${code}` : ""})`, rate: retryAfterMs(res) }
   if (code === CAPTCHA || CAPTCHA_WORDS.test(msg)) return { outcome: "captcha", why: msg || `code ${code}` }
   if (code === CLAIMED_ALREADY) return { outcome: "done" }
   if (code === NOT_ELIGIBLE) return { outcome: "ineligible", why: msg || `code ${code}` }
@@ -829,12 +920,14 @@ async function toClaim(s) {
     d = await call("GET", `${ZCODE}${TOUCH}?seq=${touchSeq++}`, { auth: "Bearer " + s.jwt, device: s.device, headers: marketingHeaders() })
   } catch (e) {
     unread.push(`gift plans to claim: ${e?.message ?? String(e)}`)
-    return { plans, unread }
+    // rate is the ms ZCode asked to wait (0 when it sent no Retry-After),
+    // null when this was not a rate limit at all
+    return { plans, unread, rate: e?.status === 429 || e?.code === RATE_LIMITED ? (e.retryAfterMs || 0) : null }
   }
   const got = touchPlans(d)
   if (!got) unread.push("gift plans to claim: the plan list doesn't read")
   else got.forEach(add)
-  return { plans, unread }
+  return { plans, unread, rate: null }
 }
 
 // RECHECK is how long an "nothing to claim" stands before magpie's loop
@@ -863,7 +956,16 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 // captcha for one (it is claimed in the ZCode app), ineligible when
 // ZCode is not offering one at that moment (code 1004, read again later
 // in the day), failed when a list
-// or a claim can't be read. A failed one is asked again later in the
+// or a claim can't be read. A rate-limited read (HTTP 429, or code 3002)
+// is not asked again either: the account is held here until the wait ends
+// (a Retry-After ZCode sent, else the account's own wait doubling from
+// RECHECK_MS, out to RATE_LIMIT_MAX_MS — see RATE_LIMITED), and every ask
+// inside the wait answers the failed it already gave, without a request.
+// The hold belongs to one account (`s.key || s.jwt`) and lives in this
+// process's memory alone: a magpie restart forgets it. magpie from
+// v0.1.3165 honors a failed's `until` itself; older versions wait for
+// this hold, which is why it stays.
+// A failed one is asked again later in the
 // day, when a plan claimed now answers 1003. An inactive stands only
 // until RECHECK_MS from now, so a plan dropped into the feed later in
 // the day is still claimed; the other settled answers stand for the day
@@ -872,9 +974,44 @@ const recheck = () => new Date(Date.now() + RECHECK_MS).toISOString()
 async function claimDaily(s) {
   if (!s?.jwt) return { outcome: "ineligible", message: "ZCode's gift plans are claimed with a ZCode sign-in; this account has none" }
   if (jwtExpired(s.jwt)) return { outcome: "failed", message: EXPIRED }
-  const { plans, unread } = await toClaim(s)
-  if (!plans.length && unread.length) return { outcome: "failed", message: unread.join("; ") }
-  if (!plans.length) return { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+  // a rate limit this account is still under: the same failed again, and
+  // not one request (magpie asks a failed again after 30 minutes of its
+  // own, so holding it is the plugin's job — see RATE_LIMITED)
+  const held = rateWait.get(holdKey(s))
+  if (held && Date.now() < Date.parse(held.until)) return { outcome: "failed", message: held.message, until: held.until }
+  const { plans, unread, rate = null } = await toClaim(s)
+  // a rate-limited read: held here until the wait is over
+  if (rate !== null) {
+    const message = unread.join("; ") || "ZCode rate limited this account"
+    return { outcome: "failed", message, until: noteRateLimit(holdKey(s), rate, message) }
+  }
+  // the feed answered and no claim is read: the wait is over. It is not
+  // forgotten before the claims below, so a claim ZCode keeps limiting
+  // waits longer each time (see noteRateLimit)
+  if (!plans.length) {
+    rateWait.delete(holdKey(s))
+    return unread.length
+      ? { outcome: "failed", message: unread.join("; ") }
+      : { outcome: "inactive", message: "no ZCode gift plan to claim", until: recheck() }
+  }
+  // a claim ZCode guards with its security check is not posted: the app
+  // passes it before each claim and sends the proof in a header, which
+  // this plugin can't make, and a claim without it only gets 3007 again
+  // (young02036 on Discord, 11-07: asked every day, never claimed). The
+  // plans are named, to claim in the ZCode app. A config that doesn't
+  // read leaves it unknown: nothing is posted, and it is asked again.
+  let guarded
+  try {
+    guarded = claimNeedsCaptcha(await clientConfigs())
+  } catch (e) {
+    guarded = null
+    unread.push(`ZCode's client config: ${e?.message ?? String(e)}`)
+  }
+  if (guarded !== false) {
+    rateWait.delete(holdKey(s))
+    if (guarded === null) return { outcome: "failed", message: [...plans.map((p) => `${p.name}: not claimed, ZCode's security check for claims can't be read`), ...unread].join("; ") }
+    return { outcome: "captcha", message: plans.map((p) => `${p.name}: ${CAPTCHA_CLAIM}`).join("; ") }
+  }
   const got = []
   for (const p of plans) got.push({ name: p.name, ...(await claimOne(s, p.plan_id)) })
   const named = (o) => got.filter((g) => g.outcome === o).map((g) => g.name)
@@ -888,6 +1025,10 @@ async function claimDaily(s) {
   ].filter(Boolean).join("; ")
   // a plan claimed now is used by the next request, not ten minutes on
   if (claimed.length) routes.delete(s.key + "\0" + s.jwt)
+  // a claim ZCode rate limited: the plan may still be there, later
+  const limitedClaim = got.find((g) => g.rate !== undefined)
+  if (limitedClaim) return { outcome: "failed", message: said, until: noteRateLimit(holdKey(s), limitedClaim.rate, said) }
+  rateWait.delete(holdKey(s)) // nothing in this check-in was rate limited: the wait is over
   // a list that didn't read may hold a plan not claimed: asked again
   if (unread.length || got.some((g) => g.outcome === "failed")) return { outcome: "failed", message: said }
   if (got.some((g) => g.outcome === "captcha")) return { outcome: "captcha", message: said }
@@ -1727,12 +1868,29 @@ function localConfig() {
 // remoteConfig is the release of ZCode's provider config zcode.z.ai names now.
 async function remoteConfig() {
   const signal = AbortSignal.timeout(8000)
-  const c = await call("GET", `${ZCODE}/api/v1/client/configs?app_version=${APP_VERSION}&platform=${platform()}`, { signal })
+  const c = await clientConfigs()
   const url = c?.configs?.builtin_provider_config_json
   if (!String(url ?? "").startsWith("https://")) throw new Error("ZCode's configs name no provider config")
   const res = await fetch(url, { headers: { "User-Agent": UA }, signal })
   if (!res.ok) throw new Error(`ZCode's provider config: ${res.status}`)
   return res.json()
+}
+
+// clientConfigs is what zcode.z.ai tells this client version
+// (/api/v1/client/configs): the provider config's address, and the
+// captcha its claims and requests need (claimNeedsCaptcha). A read that
+// came through is kept for 10 minutes; a failed one is not kept, and
+// throws.
+let clientCache = null
+async function clientConfigs() {
+  if (clientCache && Date.now() - clientCache.at < 600_000) return clientCache.c
+  const c = await call("GET", `${ZCODE}/api/v1/client/configs?app_version=${APP_VERSION}&platform=${platform()}`, { signal: AbortSignal.timeout(8000) })
+  clientCache = { c, at: Date.now() }
+  return c
+}
+// resetClientConfigs is for tests: the next read asks zcode.z.ai again.
+export function resetClientConfigs() {
+  clientCache = null
 }
 
 // config is ZCode's provider config, the later of zcode.z.ai's and an
@@ -1795,20 +1953,23 @@ function kept(res, text) {
 
 // ---- the plan's concurrency ------------------------------------------------------
 // ZCode serves one account a few requests at a time. Past that it answers 429
-// with code 3008, "user concurrency limit exceeded", or 3009, "model
-// concurrency limit exceeded": the request's turn has not come — not a plan
-// spent (1113/1005) and not a rate limit (1302/1303). magpie sends every
-// agent's and every session's requests of this computer through this one
-// process, and its own queue spaces an account's requests by the number
-// declared below (DEFAULT_CONCURRENCY, on the auth hook and in package.json);
-// a request the vendor refuses anyway waits a moment and asks again, the same
-// bytes. A refusal is immediate while a turn's answer is not, so a redundant
-// ask costs a round trip and no tokens.
+// with code 3008, "user concurrency limit exceeded", 3009, "model
+// concurrency limit exceeded", or 3010: the request's turn has not come — not
+// a plan spent (1113/1005) and not a rate limit (1302/1303). ZCode's own
+// client (3.17.2) reads the three as one ("当前系统繁忙"), asks again after 1s
+// and 2s, and then gives up; it sends one request per session at a time and
+// has no hold. magpie sends every agent's and every session's requests of
+// this computer through this one process, so the plugin does what that
+// client does: the Start Plan gets a few requests of an account in flight at
+// once (startGate), the rest wait their turn here instead of being sent to be
+// refused, and a refusal anyway is asked again twice (BUSY_WAITS).
 //
-// The plugin keeps no gate of its own: a plan's cap depends on its tier (Z.ai
-// serves Max more at once than Pro, and Lite fewer) and is higher off-peak
-// (https://docs.z.ai/devpack/usage-policy), so a number written here would
-// hold a Max account to a Lite one's, with no way for the user to raise it.
+// The coding plan keeps no gate of the plugin's: its cap depends on its tier
+// (Z.ai serves Max more at once than Pro, and Lite fewer) and is higher
+// off-peak (https://docs.z.ai/devpack/usage-policy), so a number written here
+// would hold a Max account to a Lite one's. magpie's own queue spaces it by
+// the number declared below (DEFAULT_CONCURRENCY, on the auth hook and in
+// package.json), which a user raises on the account.
 const DEFAULT_CONCURRENCY = 3
 // DEFAULT_ACCOUNTS is how many of a user's ZCode accounts magpie sends
 // requests to at the same time (maxAccounts, on the auth hook and in
@@ -1817,15 +1978,198 @@ const DEFAULT_CONCURRENCY = 3
 // once from one address got the address refused with a 405, two didn't. A
 // user sets their own on the provider (Accounts at once), 0 for no limit.
 const DEFAULT_ACCOUNTS = 2
-const BUSY_CODES = new Set(["3008", "3009"])
-// BUSY_WAITS are the waits between asks, longest last: about ten seconds of
-// them. Past that the account is saturated rather than busy, and magpie's
-// routing takes the request (or rests the account, as its 429 says).
-const BUSY_WAITS = [250, 500, 900, 1600, 2800, 4000]
+const BUSY_CODES = new Set(["3008", "3009", "3010"])
+// BUSY_WAITS are the waits before each ask again: ZCode's own client's,
+// 1s and 2s (kqo in its bundle). Past them the cap goes back to magpie,
+// which takes the request to another account or rests this one as its 429
+// says. Six asks over ten seconds, before 0.1.56, put two or three times the
+// requests a capped account could serve on the wire, and the agents' own
+// retries came on top.
+const BUSY_WAITS = [1000, 2000]
+// The hint names neither "plan" nor "limit": after the vendor's "…limit
+// exceeded" either would read to magpie as a plan used up.
 const BUSY_HINT =
-  "ZCode serves one account a few requests at a time, and every agent and session of this computer asks through magpie; this request came behind the others, and the same request a moment later is served"
+  "ZCode serves one account a few requests at a time and was still busy when asked again after 1s and 2s; run fewer agents or subagents on ZCode at once, or try again in a moment"
 
-// busy says a 429 is that in-flight cap: its own code (3008, 3009), or its
+// startGate is the Start Plan's in-flight count per account. PR #395 measured
+// one Z.ai gift account at 3 of 12 parallel requests served in one run and 4
+// of 12 in another, so three are in flight at once, what magpie's queue sends
+// by DEFAULT_CONCURRENCY too. The gate holds them there when that queue
+// doesn't: a user who raised the account's number for the coding plan, two
+// magpie providers signed in to one account, a host that doesn't read
+// maxConcurrency. A cap the server still says now and then (a slot it lets
+// go of late, the ZCode app on the same account) the 1s re-ask gets past.
+// A request past them waits here, first come first served, until one is
+// answered to the end, up to startGate.wait; an agent that gives up leaves
+// the queue. A wait that runs out is answered startQueueAnswer's 429,
+// nothing sent. The gate lives in this process's memory alone, by account
+// (gateKey).
+const startGate = { inflight: 3, wait: 120_000, lanes: new Map() }
+
+// startFull says the account's Start Plan slots are all taken, or others wait.
+const startFull = (key) => {
+  const l = startGate.lanes.get(key)
+  return !!l && (l.busy >= startGate.inflight || l.queue.length > 0)
+}
+
+// startSlot waits for one of the account's Start Plan slots: { release },
+// null when startGate.wait ran out first, or the agent's abort thrown.
+function startSlot(key, signal) {
+  const lanes = startGate.lanes
+  let l = lanes.get(key)
+  if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
+  const next = () => {
+    while (l.busy < startGate.inflight && l.queue.length) l.queue.shift()()
+    if (!l.busy && !l.queue.length && lanes.get(key) === l) lanes.delete(key)
+  }
+  const take = () => {
+    l.busy++
+    let gone = false
+    return {
+      release() {
+        if (gone) return
+        gone = true
+        l.busy--
+        next()
+      },
+    }
+  }
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"))
+  if (l.busy < startGate.inflight && !l.queue.length) return Promise.resolve(take())
+  return new Promise((resolve, reject) => {
+    const leave = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener?.("abort", aborted)
+      const i = l.queue.indexOf(go)
+      if (i >= 0) l.queue.splice(i, 1)
+    }
+    const go = () => {
+      leave()
+      resolve(take())
+    }
+    const aborted = () => {
+      leave()
+      next()
+      reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"))
+    }
+    const timer = setTimeout(() => {
+      leave()
+      next()
+      resolve(null)
+    }, startGate.wait)
+    signal?.addEventListener?.("abort", aborted, { once: true })
+    l.queue.push(go)
+  })
+}
+
+// released hands res on and lets its slot go once ZCode's answer has come
+// to its end, failed, or been given up on (the agent's abort, the reader's
+// cancel) — the request is in flight at ZCode until then. The answer is read
+// as it comes, whether or not the agent reads it yet, so a reply read late,
+// or dropped unread, does not keep its slot past ZCode's own end of it.
+function released(res, slot, signal) {
+  if (!slot) return res
+  if (!res.body) {
+    slot.release()
+    return res
+  }
+  const reader = res.body.getReader()
+  const stop = (why) => {
+    slot.release()
+    reader.cancel(why).catch(() => {})
+  }
+  signal?.addEventListener?.("abort", () => slot.release(), { once: true })
+  const pump = async (c) => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        c.enqueue(value)
+      }
+      slot.release()
+      c.close()
+    } catch (e) {
+      slot.release()
+      try {
+        c.error(e)
+      } catch {}
+    }
+  }
+  // started, not awaited: the agent reads each chunk as it comes
+  const body = new ReadableStream({ start: (c) => void pump(c), cancel: stop })
+  return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })
+}
+
+// startQueueAnswer is a request that waited its whole turn behind the
+// account's others and was never sent: a 429 magpie reads as a rate limit,
+// so it tries the next account, and a short Retry-After.
+function startQueueAnswer() {
+  const error = {
+    type: "rate_limit_error",
+    message: `ZCode's free Start Plan serves this account ${startGate.inflight} requests at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+  }
+  return new Response(JSON.stringify({ type: "error", error }), {
+    status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
+  })
+}
+
+// busyHold is the firewall's countdown. Two days of logs (11-05 23:06–23:15
+// and 11-06 06:23–06:27) show the same shape: sustained ~18 requests/min on
+// the Start Plan, up to ~10 of them in flight against a cap of about three,
+// brings code-3008 caps in a run, and 3–7.5 minutes later the edge firewall
+// (errors.aliyun.com) refuses the whole IP with 405 for 1–2 hours. Re-asks
+// absorbed ~90% of those caps, so neither magpie nor the agent saw that the
+// address was saturated and nobody slowed the arrival rate down. startGate
+// now keeps this computer's own requests under the cap, so a cap is ZCode
+// busy or another client on the account; a request refused on its first ask
+// and again a second later (busyCap) is that, sustained, and BUSY_N of them
+// in one minute hold the Start Plan (zcode.z.ai only, process-wide, every
+// account) off BUSY_HOLD. A cap the 1s re-ask got past counts for nothing:
+// on 0.1.55 every capped request counted, a lone late slot as much as a
+// saturated address, and busy afternoons held users for nothing. Replay of
+// both days: N=5, H=3min froze 2–7 minutes before the first 405 and spared
+// 37–52 requests. A held request answers 429 with Retry-After, so magpie
+// still reads a rate limit, rests the account and fails over; it is not the
+// 405/BlockedHint of an IP already refused. The coding plan, on another
+// host, is never held. The hold lives in this process's memory alone: magpie
+// restarting forgets it. Only model requests are held — balance reads, the
+// usage card and check-in still reach zcode.z.ai during it (the check-in
+// holds its own reads per account on a 429).
+const BUSY_N = 5
+const BUSY_WINDOW = 60_000
+const BUSY_HOLD = 3 * 60_000
+const busyHold = { hits: [], until: 0, now: () => Date.now() }
+// busyHold.now is the clock, injectable for tests: a hold's window, its
+// length and its expiry all read through it.
+const busyHeld = () => busyHold.now() < busyHold.until
+
+// busyCap records one sustained concurrency cap of a Start Plan request.
+// Only a run arms a hold; the window is cleared on arming, and a cap that
+// lands while the hold is on counts toward nothing — the hold's own 429s and
+// the first caps after it cannot keep re-arming it.
+function busyCap() {
+  if (busyHeld()) return
+  const now = busyHold.now()
+  busyHold.hits.push(now)
+  while (busyHold.hits.length && now - busyHold.hits[0] > BUSY_WINDOW) busyHold.hits.shift()
+  if (busyHold.hits.length >= BUSY_N) {
+    busyHold.until = now + BUSY_HOLD
+    busyHold.hits.length = 0
+  }
+}
+
+function busyHeldAnswer() {
+  const wait = Math.max(1, Math.ceil((busyHold.until - busyHold.now()) / 1000))
+  const error = {
+    type: "rate_limit_error",
+    message: `ZCode turned away ${BUSY_N} requests in the last minute as too many requests at once, each again when asked a second later. So that ZCode's firewall does not block this network, magpie sends no free Start Plan requests for the next ${wait}s. Wait, run fewer agents or subagents on ZCode at once, or use a GLM Coding Plan model`,
+  }
+  return new Response(JSON.stringify({ type: "error", error }), {
+    status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": String(wait) },
+  })
+}
+
+// busy says a 429 is that in-flight cap: its own code (3008, 3009, 3010), or its
 // own words when the envelope carries no code.
 function busy(status, text) {
   if (status !== 429) return false
@@ -1866,22 +2210,31 @@ function busyAnswer(res, text) {
 }
 
 // askBusy asks once and, when the answer is the vendor's in-flight cap
-// (3008/3009, or its own words), asks again through BUSY_WAITS's waits, a
-// quarter of a second and longer — about ten seconds of them. Past that the
-// account is saturated rather than busy, and the cap goes back as
-// busyAnswer's 429. The plan path's patience, shared with free first's
-// replay, whose plan has a cap of its own.
-async function askBusy(u, o, hs) {
+// (3008/3009/3010, or its own words), asks again after BUSY_WAITS's waits,
+// 1s and then 2s, as ZCode's own client does. Past them the cap goes back as
+// busyAnswer's 429. A request refused again at its 1s re-ask is a sustained
+// cap, told to onCap once (the firewall hold's count); one the re-ask got
+// past is not. The plan path's patience, shared with free first's replay,
+// whose plan has a cap of its own.
+async function askBusy(u, o, hs, onCap) {
   let res = await fetch(u, { ...o, headers: hs })
+  let caps = 0
   for (let i = 0; res.status === 429; i++) {
     const text = await res.text()
     const cap = busy(429, text)
+    // one request's refusals are one saturation signal, not one per ask
+    if (cap && ++caps === 2) onCap?.()
+    // the hold armed: a request already in flight stops asking too. The
+    // second check catches the asks that capped before the hold armed and
+    // woke from their wait after it. Keying on onCap keeps the coding plan
+    // and free first's replay (no onCap) as they are.
+    if (cap && onCap && busyHeld()) { res = busyHeldAnswer(); break }
     if (!cap || i >= BUSY_WAITS.length) {
       res = cap ? busyAnswer(res, text) : new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
       break
     }
-    const w = BUSY_WAITS[i]
-    await sleep(Math.round(w * (0.75 + Math.random() * 0.5)))
+    await sleep(BUSY_WAITS[i])
+    if (onCap && busyHeld()) { res = busyHeldAnswer(); break }
     res = await fetch(u, { ...o, headers: hs })
   }
   return res
@@ -2017,7 +2370,12 @@ function startHeaders(h, jwt) {
   out.set("HTTP-Referer", ZCODE)
   out.set("User-Agent", UA + " ai-sdk/anthropic/3.0.81")
   out.set("X-ZCode-App-Version", APP_VERSION)
-  out.set("X-Title", "Z Code@cli")
+  // the desktop app's agent names itself electron: 3.17.2's
+  // zcode-protocol-entrypoint passes sourceTitle "electron", and a bare
+  // run under app-server says the same (Mvc in glm/zcode.cjs); "cli" is
+  // the zcode command line's alone, which sends no X-Device-Mid on the
+  // app's calls and no desktop prompt texts, as this plugin does
+  out.set("X-Title", "Z Code@electron")
   out.set("X-Release-Channel", "production")
   const o = intl()
   out.set("X-Client-Language", o.locale || "unknown")
@@ -2034,6 +2392,30 @@ function startHeaders(h, jwt) {
   // 3.16's createModelRequestAttributionHeaders: what asked the model
   out.set("x-zcode-query-source", "main_turn")
   return out
+}
+
+// queryOf is the request's x-query-id, as 3.17.2's
+// createModelRequestAttributionHeaders (zft in glm/zcode.cjs) sends it:
+// the user's query, "query_" + a UUID with the prefix cut, the same for
+// every request of one turn (the tool calls the model makes on the way)
+// and a new one for the next thing the user says. The agent's turns are
+// counted: a user message that carries text, not tool results alone,
+// starts a query. A body that doesn't read gives none, and none is sent.
+function queryOf(text, session) {
+  let b
+  try {
+    b = JSON.parse(text)
+  } catch {
+    return ""
+  }
+  if (!Array.isArray(b?.messages)) return ""
+  let n = 0
+  for (const m of b.messages) {
+    if (m?.role !== "user") continue
+    const c = m.content
+    if (typeof c === "string" ? c.trim() : Array.isArray(c) && c.some((x) => x && x.type !== "tool_result")) n++
+  }
+  return n ? uuidOf("zcode-query\0" + session + "\0" + n) : ""
 }
 
 // Claude Code's tool search, as ZCode's plans take it. Claude Code
@@ -2411,9 +2793,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
       provider: PROVIDER,
       // a plan serves one account a few requests at a time: magpie's own
       // field, so its queue spaces what the agents ask for before the vendor
-      // sees it. This is a default, not a cap the plugin enforces — a plan's
-      // own cap follows its tier (Max > Pro > Lite) and the time of day, and
-      // a user who knows theirs can raise this on the account
+      // sees it. For the coding plan this is a default, not a cap the plugin
+      // enforces — its cap follows its tier (Max > Pro > Lite) and the time
+      // of day, and a user who knows theirs can raise this on the account.
+      // The Start Plan has the plugin's own gate below it (startGate)
       maxConcurrency: DEFAULT_CONCURRENCY,
       // how many accounts take requests at once, the others in reserve
       // (DEFAULT_ACCOUNTS); a magpie that doesn't read it uses them all
@@ -2443,9 +2826,24 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
           baseURL: s0.base + "/v1",
           apiKey: s0.key || "zcode", // the fetch below puts the real one on
           async fetch(input, init) {
+            // a Start Plan request holds one of its account's slots
+            // (startSlot) until its answer has been read to the end
+            const own = {}
+            try {
+              return released(await serve(input, init, own), own.slot, own.signal)
+            } catch (e) {
+              own.slot?.release()
+              throw e
+            }
+          },
+        }
+        async function serve(input, init, own) {
             const auth = await getAuth()
             const s = await located(stateOf(auth))
             if (!s) throw new Error("not signed in to ZCode")
+            // the account a Start Plan slot belongs to: its user id, which a
+            // renewed session keeps, before the key or session itself
+            const gateKey = String(auth?.uid || auth?.accountId || holdKey(s))
             let url = input instanceof Request ? input.url : String(input)
             const opts = input instanceof Request ? { method: input.method, headers: input.headers, body: input.body, signal: input.signal, duplex: "half", ...init } : { ...init }
             const { start: alone, gift: known } = await plansOf(s)
@@ -2488,7 +2886,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
-              } else if (!alone && !edgeHeld() && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
+              } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -2496,7 +2894,13 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 // the request on the plan with no read per request; a
                 // gift-only account is already on the gift and is left as
                 // it was. A refusal past this check is replayed on the plan
-                // in the same request (replayOnPlan below).
+                // in the same request (replayOnPlan below). A busy hold (or
+                // a block page) keeps the plain model off the gift: the
+                // coding plan is never held, and free first must not move
+                // the request onto a route the hold answers 429 without
+                // asking. Nor onto a gift whose slots are all taken
+                // (startFull): the plan serves it now, the gift only after
+                // the others.
                 const raw = giftNames(known).find((x) => x.toLowerCase() === m.toLowerCase())
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
@@ -2531,6 +2935,8 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // agent sent it, the plan's headers, the plan's own patience
             // (askBusy).
             const replayOnPlan = async () => {
+              // the gift is done with: its slot goes to the next request
+              own.slot?.release()
               let u = askedUrl
               for (const b of [START_BASE, ZAI_BASE, BIGMODEL_BASE]) {
                 if (u.startsWith(b)) {
@@ -2551,8 +2957,24 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             }
             // a block page held this computer off zcode.z.ai (edge): the
             // Start Plan and a picked gift are answered here; free first
-            // already left the gift for the plan
+            // already left the gift for the plan. Checked before the busy
+            // hold: an IP the firewall already refused keeps that behavior
+            // (the 405 magpie reads as the network's), hold or no hold.
             if (start && edgeHeld()) return kept(edgeHeldAnswer())
+            // a run of busy caps held this computer off zcode.z.ai before the
+            // edge firewall could block the IP: a held request is answered
+            // here, with a 429 magpie still reads as a rate limit
+            if (start && busyHeld()) return kept(busyHeldAnswer())
+            // the account's Start Plan slots (startGate): a request past them
+            // waits here for one rather than being sent to be refused
+            if (start) {
+              own.slot = await startSlot(gateKey, opts.signal)
+              own.signal = opts.signal
+              if (!own.slot) return kept(startQueueAnswer())
+              // a hold may have armed while it waited
+              if (edgeHeld()) return kept(edgeHeldAnswer())
+              if (busyHeld()) return kept(busyHeldAnswer())
+            }
             if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -2564,6 +2986,8 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               if (opts.body != null) {
                 const text = orig ?? (typeof opts.body === "string" ? opts.body : await new Response(opts.body).text())
                 opts.body = dress(text, s.site, s.device, place, sid)
+                const q = queryOf(text, sid)
+                if (q) h.set("x-query-id", q)
                 delete opts.duplex
                 h.delete("content-length")
               }
@@ -2592,7 +3016,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // the number declared above
             let res
             try {
-              res = await askBusy(url, opts, h)
+              // Only Start Plan caps count toward the firewall hold: the
+              // coding plan is served by another host and was never refused
+              // with the IP's 405.
+              res = await askBusy(url, opts, h, start ? busyCap : undefined)
             } catch (e) {
               // free first moved the request onto the gift, so a gift that
               // cannot be asked at all — the network, the host — is answered
@@ -2615,7 +3042,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 if (EDGE_PAGE.test(text)) edge.until = Date.now() + EDGE_HOLD
                 if (freeGift) {
                   restModel(false)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 if (s.key && !forcedGift) routes.delete(s.key + "\0" + s.jwt)
                 return kept(startBlocked(res, text))
@@ -2663,19 +3090,20 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 const spent = !cap && spentUp(text, res.status)
                 if (spent) {
                   restModel(true)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 if (res.status >= 400) {
                   if (!cap && (res.status === 401 || res.status === 403)) routes.delete(s.key + "\0" + s.jwt)
-                  return done(kept(await replayOnPlan()))
+                  return done(kept(await spentSaid(await replayOnPlan())))
                 }
                 return done(kept(res, text))
               }
             }
             // the plan's answer goes on as it came, the account kept: the
-            // built-in never marked a ZCode account lapsed nor cleared one
-            return done(kept(res))
-          },
+            // built-in never marked a ZCode account lapsed nor cleared one.
+            // A spent bucket's 200 says 429 (spentSaid), as a trial
+            // entry's does, so magpie rests the model, not the account
+            return done(kept(await spentSaid(res)))
         }
       },
       // the plan's allowance, as magpie's built-in showed it. Each read
@@ -2795,4 +3223,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, busyHold, startGate, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

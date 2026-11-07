@@ -1,15 +1,15 @@
 // The check-in mapping is magpie's contract (provider-plugins.md): every
 // answer the upstream gives lands on one of its outcomes, and the plugin
 // factory registers both providers with every hook check.mjs looks for.
-import { expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs"
+import { expect, test, setSystemTime } from "bun:test"
+import { existsSync, mkdtempSync, mkdirSync, statSync, utimesSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AutoclawAuthPlugin, AutoclawCnAuthPlugin, _internal } from "./index.mjs"
 
 const {
   checkinOutcome, signinConfig, bareToken, codeValue, tokenFields, refreshTokens, startLocalOAuth,
-  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT, dumpDefaultDir,
 } = _internal
 
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
@@ -192,18 +192,28 @@ test("ZCode's and pi's identity lines are rewritten", () => {
 // opening line, and the CN gateway answers 406 for "This conversation is
 // powered by GLM-<version>" in any case. The fixture is the reporter's line
 // byte for byte; each rewritten form was a 200 in the reporter's probes.
+// 11-03: the same refusal caught the Fable harness's "You are powered by
+// the model glm-5.3-flash[1m]." (42 x 406 in one day; probed: the line
+// alone 406s, the rewritten form 200s), so a second rule rewrites that
+// "powered by the model <version>" shape, context-tier bracket and all.
 test("WorkBuddy's GLM opening line and CodeBuddy Code's identity line are rewritten", () => {
   const opening = "This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)"
   expect(unflagged(opening)).toBe("This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)")
   expect(unflagged("This conversation is powered by GLM-4")).toBe("This conversation is powered by the GLM-4 model")
   expect(unflagged("Intro.\nthis conversation is powered by glm-5.3.")).toBe("Intro.\nThis conversation is powered by the GLM-5.3 model.")
   expect(unflagged("This conversation is powered by GLM-4.5-Air.")).toBe("This conversation is powered by the GLM-4.5-Air model.")
+  // the Fable harness's model line: probed 406 as written, 200 rewritten
+  expect(unflagged("You are powered by the model glm-5.3-flash[1m].")).toBe("You are powered by the GLM-5.3-flash model.")
+  expect(unflagged("Powered by the model GLM-4.5-Air.")).toBe("Powered by the GLM-4.5-Air model.")
   // what the gateway takes stays as written
   for (const t of [
     "This conversation is powered by GLM",
     "This conversation is powered by ChatGLM-5.3",
     "The conversation is powered by GLM-5.3",
     "You are powered by GLM-5.3",
+    "You are powered by the GLM-5.3-flash model",
+    "You are powered by the model claude-fable-5-1",
+    "powered by the model 4.6-turbo",
   ]) expect(unflagged(t)).toBe(t)
 
   expect(unflagged("You are CodeBuddy Code.")).toBe("You are the CodeBuddy Code CLI.")
@@ -252,6 +262,55 @@ test("Hermes Agent's identity lines are rewritten", () => {
   expect(unflagged("You are Kimi Code CLI, an interactive general AI agent running on a user's computer.")).toBe("You are the Kimi Code CLI agent, an interactive general AI agent running on a user's computer.")
   expect(unflagged("You are goose, an autonomous AI agent created by AAIF (Agentic AI Foundation).")).toBe("You are the goose agent, an autonomous AI agent created by AAIF (Agentic AI Foundation).")
   expect(unflagged("You are a general-purpose AI agent called goose")).toBe("You are a general-purpose AI agent called goose")
+})
+
+// A table over every entry, so a later edit to one rule cannot silently
+// break another (the 11-03 session's failing request carried three known
+// lines at once, and only the missing one needed rewriting). Left side =
+// what the harness opens with (or the reported line, byte for byte);
+// right side = the form the gateway takes (probed, or the reporter's
+// probe for that entry's original report). Idempotent on every row, so
+// a cached prefix rewritten once stays put.
+test("a system prompt carrying every known line at once comes out clean in one pass", () => {
+  const lines = [
+    ["You are Claude Code, Anthropic's official CLI for Claude.", "You are the Claude Code CLI, Anthropic's official CLI for Claude."],
+    // 11-05: subagent prompts (fork/Explore) open with "an agent for", not
+    // "You are Claude Code"; ten dumps that afternoon all carried this one line
+    ["You are an agent for Claude Code, Anthropic's official CLI for Claude. Use the tools available to complete the task.", "You are an agent for the Claude Code CLI, Anthropic's official CLI for Claude. Use the tools available to complete the task."],
+    ["Intro.\nYou are an agent for Claude Code, dispatched mid-task.", "Intro.\nYou are an agent for the Claude Code CLI, dispatched mid-task."],
+    // the rewritten form must not grow a second CLI
+    ["an agent for Claude Code CLI, ask it", "an agent for Claude Code CLI, ask it"],
+    ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
+    ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
+    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
+    ["You are Codex, OpenAI's coding agent.", "You are the Codex agent, OpenAI's coding agent."],
+    ["Codex CLI is the tool you run.", "Codex command-line tool is the tool you run."],
+    ["You are opencode, an AI coding agent.", "You are the opencode agent, an AI coding agent."],
+    ["You are Cursor, a coding assistant.", "You are the Cursor agent, a coding assistant."],
+    ["You are Cline, a coding assistant.", "You are the Cline agent, a coding assistant."],
+    ["You are Qwen Code, an interactive CLI tool.", "You are the Qwen Code agent, an interactive CLI tool."],
+    ["You are ZCode, an interactive coding agent", "You are the ZCode agent, an interactive coding agent"],
+    ["operating inside pi, a coding agent harness.", "operating inside the pi coding agent harness."],
+    ["This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)", "This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)"],
+    ["You are powered by the model glm-5.3-flash[1m].", "You are powered by the GLM-5.3-flash model."],
+    ["You are CodeBuddy Code.", "You are the CodeBuddy Code CLI."],
+    ["You are Hermes Agent, built by Nous Research.", "You are the agent Hermes, built by Nous Research."],
+    ["You run on Hermes Agent (by Nous Research).", "You run on Hermes-Agent (by Nous Research)."],
+    ["You are Gemini CLI, an interactive CLI agent.", "You are the Gemini CLI agent, an interactive CLI agent."],
+    ["You are Kimi Code CLI, an interactive AI agent.", "You are the Kimi Code CLI agent, an interactive AI agent."],
+    ["You are goose, an autonomous AI agent.", "You are the goose agent, an autonomous AI agent."],
+  ]
+  for (const [inp, want] of lines) {
+    expect(unflagged(inp)).toBe(want)
+    // one pass of the whole table through one text, then that text again:
+    // every row stays where its own rewrite put it
+    expect(unflagged(unflagged(inp))).toBe(want)
+  }
+  // all lines at once, in one text: each rewritten, none twice
+  const all = lines.map(([inp]) => inp).join("\n")
+  const once = unflagged(all)
+  expect(unflagged(once)).toBe(once)
+  for (const [, want] of lines) expect(once).toContain(want)
 })
 
 test("CN loader sends Hermes' system prompt without its identity line", async () => {
@@ -335,6 +394,184 @@ test("explained adds the way out to a 406 and keeps the sign-in", async () => {
   const ok = await explained(new Response('{"choices":[]}', { status: 200 }))
   expect(ok.status).toBe(200)
   expect(await ok.text()).toBe('{"choices":[]}')
+})
+
+// 11-04: the reporter's capture tool truncated the failing body at 256 KB and
+// the refused sentence sat past the cut. The plugin sees the body it actually
+// sends, so a 406 can dump the rewritten system prompt for diagnosis. The
+// body is the user's conversation, so the dump is opt-in (AUTOCLAW_406_DUMP_DIR,
+// or the plugin's dump406 option) and holds the system and developer messages
+// only — never user, assistant or tool content. The dump must never break the
+// 406 it documents.
+test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write time", async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "autoclaw-406")
+  process.env.AUTOCLAW_406_DUMP_DIR = dir
+  try {
+    const refused406 = () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+    const line = "You are powered by the model glm-5.3-flash[1m]."
+    // overseas path: the loader passes the body it actually sent — the rewritten one
+    const raw = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content: line }, { role: "user", content: "hi" }] })
+    const sent = JSON.stringify(autoclawRewriteBody(raw))
+    const refused = await explained(refused406(), sent, "autoclaw")
+    expect(refused.status).toBe(406)
+    const files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    const dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.model).toBe("zai_glm-5.3-flash")
+    // the refusal is about the system prompt: the user's words are not in it
+    expect(dumped.messages).toHaveLength(1)
+    expect(dumped.messages[0].role).toBe("system")
+    expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are powered by the GLM-5.3-flash model.`)
+    expect(dumped.messages[0].content).not.toMatch(/powered by the model glm/i)
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
+
+    // ten at most: an eleventh refusal drops the oldest. The pre-placed file's
+    // name sorts after every new one while its write time is older, so only
+    // rotation by write time removes it (a name sort would keep it and drop
+    // the newest dump instead). It carries the dump name's shape, since only
+    // the dump's own files rotate.
+    const old = join(dir, "autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    writeFileSync(old, JSON.stringify({ model: "m", messages: [{ role: "system", content: "pre-existing" }] }))
+    const past = new Date(Date.now() - 60_000)
+    utimesSync(old, past, past)
+    // the first dump is older than every refusal below, by its write time:
+    // a file system whose times are coarser than these writes (WSL2's ext4
+    // on a busy box) would otherwise tie it with them, and rotation could
+    // drop a refusal in its place
+    const firstDump = join(dir, files[0])
+    const later = new Date(past.getTime() + 1_000)
+    utimesSync(firstDump, later, later)
+    // the directory is the user's to point anywhere: foreign files — a
+    // settings.json, a non-dump anything — survive every refusal untouched
+    writeFileSync(join(dir, "settings.json"), "{}")
+    writeFileSync(join(dir, "keep-me.txt"), "not a dump")
+    for (let i = 0; i < 10; i++) {
+      await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: `refusal ${i}` }] }), "autoclaw-cn")
+    }
+    const left = readdirSync(dir)
+    expect(left).toContain("settings.json")
+    expect(left).toContain("keep-me.txt")
+    expect(left).not.toContain("autoclaw-406-9999-12-31T00-00-00-000Z-zzzzzzzz-autoclaw.json")
+    const dumps = left.filter((f) => f.startsWith("autoclaw-406-"))
+    expect(dumps).toHaveLength(10)
+    const said = dumps.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")).messages[0].content).sort()
+    expect(said).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `refusal ${i}`))
+
+    // the dump is 0600 in a 0700 directory (real modes exist off Windows)
+    if (process.platform !== "win32") {
+      const newest = dumps.at(-1)
+      expect(statSync(join(dir, newest)).mode & 0o777).toBe(0o600)
+      expect(statSync(dir).mode & 0o777).toBe(0o700)
+    }
+
+    // a non-406 leaves no file, and a dump failure never breaks the 406
+    await explained(new Response('{"x":1}', { status: 502 }), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
+    expect(readdirSync(dir)).toHaveLength(12)
+    // a directory that cannot be created: the path runs through a regular
+    // file (kept outside the dump dir, so the count above stays clean)
+    const blocker = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "blocker")
+    writeFileSync(blocker, "a file, not a directory")
+    process.env.AUTOCLAW_406_DUMP_DIR = join(blocker, "beneath")
+    const still = await explained(refused406(), JSON.stringify({ model: "m", messages: [{ role: "system", content: "x" }] }), "autoclaw")
+    expect(still.status).toBe(406)
+    expect(readdirSync(dir)).toHaveLength(12)
+  } finally { delete process.env.AUTOCLAW_406_DUMP_DIR }
+})
+
+// "dump406": "false" in plugins.json is the option OFF, not on: only a real
+// boolean true arms the default directory.
+test("the dump406 option takes a boolean, not any truthy value", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
+  try {
+    for (const bad of ["false", "true", 1, "yes"]) {
+      await explained(refused406(), body, "autoclaw", { dump406: bad })
+      expect(existsSync(dumpDefaultDir())).toBe(false)
+    }
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+    rmSync(join(fake, ".config"), { recursive: true, force: true })
+  }
+})
+
+// Off by default: without the env and without the option, a 406 writes
+// nothing anywhere. The dump406 option turns it on at the default directory.
+test("a 406 dumps nothing unless the dump is opted into, and the option uses the default dir", async () => {
+  const fake = mkdtempSync(join(tmpdir(), "autoclaw-dumpopt-"))
+  const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldXdg = process.env.XDG_CONFIG_HOME, oldDump = process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.AUTOCLAW_406_DUMP_DIR
+  delete process.env.XDG_CONFIG_HOME
+  process.env.HOME = fake
+  process.env.USERPROFILE = fake
+  const refused406 = () => new Response("{}", { status: 406 })
+  const body = JSON.stringify({ model: "m", messages: [{ role: "system", content: "opted" }] })
+  try {
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    const refused = await explained(refused406(), body, "autoclaw")
+    expect(refused.status).toBe(406)
+    expect(existsSync(dumpDefaultDir())).toBe(false)
+    // the option arms the default directory
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(dumpDefaultDir())).toHaveLength(1)
+    // an empty XDG_CONFIG_HOME is no value: it falls through to HOME
+    process.env.XDG_CONFIG_HOME = ""
+    process.env.HOME = join(fake, "home2")
+    await explained(refused406(), body, "autoclaw", { dump406: true })
+    expect(readdirSync(join(process.env.HOME, ".config/magpie/autoclaw-406"))).toHaveLength(1)
+    expect(existsSync(join(fake, "magpie/autoclaw-406"))).toBe(false)
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
+    if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile
+    if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg
+    if (oldDump === undefined) delete process.env.AUTOCLAW_406_DUMP_DIR; else process.env.AUTOCLAW_406_DUMP_DIR = oldDump
+  }
+})
+
+// the wiring, not just the helper: a 406 through either loader dumps the
+// rewritten system prompt that loader actually sent
+test("a 406 through either loader dumps the rewritten system prompt it sent", async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "autoclaw-test-")), "autoclaw-406-wire")
+  process.env.AUTOCLAW_406_DUMP_DIR = dir
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+  try {
+    const overseas = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await overseas.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content: "You are Claude Code, Anthropic's official CLI for Claude." }, { role: "user", content: "hi" }] })
+    expect((await loader.fetch("x", { method: "POST", body })).status).toBe(406)
+    let files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    let dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toContain("You are the Claude Code CLI")
+    expect(dumped.messages[0].content).not.toMatch(/You are Claude Code/)
+    expect(JSON.stringify(dumped)).not.toContain('"hi"')
+
+    // the CN managed channel dumps its own rewritten system too
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    const cn = await AutoclawCnAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const cnLoader = await cn.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const cnBody = JSON.stringify({ model: "zaicoding_glm-5.3", messages: [{ role: "system", content: "You are a Claude agent, built on Anthropic's Claude Agent SDK." }, { role: "user", content: "hi" }] })
+    expect((await cnLoader.fetch("x", { method: "POST", body: cnBody })).status).toBe(406)
+    files = readdirSync(dir)
+    expect(files).toHaveLength(1)
+    dumped = JSON.parse(readFileSync(join(dir, files[0]), "utf8"))
+    expect(dumped.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nYou are a coding assistant.`)
+  } finally {
+    globalThis.fetch = realFetch
+    delete process.env.AUTOCLAW_406_DUMP_DIR
+  }
 })
 
 test("overseas loader().fetch drops X-Harness-Type and explains 406", async () => {
@@ -629,6 +866,49 @@ test("CN preserves string and array system content", async () => {
   } finally { globalThis.fetch = realFetch }
 })
 
+// 11-04: the same Fable line reached the gateway in both system-content
+// shapes the 11-03/11-04 captures show — one text part in an array, and a
+// plain string — and both answered 406 with it in. Through both loaders the
+// line that leaves is the probed 200 form, wherever it sits and whatever
+// case it is in.
+test("both channels rewrite the model line in a string or a text part, mid-prompt too", async () => {
+  const realFetch = globalThis.fetch
+  const line = "You are powered by the model glm-5.3-flash[1m]."
+  const want = "You are powered by the GLM-5.3-flash model."
+  for (const [factory, host] of [
+    [makePlugin("autoclaw-cn"), "https://autoglm-acceleration-api.zhipuai.cn"],
+    [makePlugin("autoclaw"), "https://autoglm-api.autoglm.ai"],
+  ]) {
+    const calls = []
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) })
+      return Response.json({ ok: true })
+    }
+    try {
+      const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      for (const content of [
+        line,
+        [{ type: "text", text: line }],
+        [{ type: "text", text: "before" }, { type: "text", text: line }],
+        `intro\n\n${line}\n\nnext`,
+        "you are powered by the model glm-5.3-flash[1m].",
+      ]) {
+        await loader.fetch("x", { body: JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "system", content }, { role: "user", content: "hi" }] }) })
+        const sys = calls.at(-1).body.messages[0].content
+        const text = Array.isArray(sys) ? sys.map((p) => p.text).join("\n") : sys
+        expect(text).not.toMatch(/powered by (?!the GLM-[\w.-]+ model\b)/i)
+        // the lowercase fixture keeps its own case through the rewrite, and
+        // the gateway refuses case-insensitively — compare the wording only
+        expect(text.toLowerCase()).toContain(want.toLowerCase())
+        expect(text.startsWith("You are AutoClaw. Answer the user directly and concisely.")).toBe(true)
+        // the user's own words still go as written
+        expect(calls.at(-1).body.messages[1].content).toBe("hi")
+      }
+    } finally { globalThis.fetch = realFetch }
+  }
+})
+
 test("CN managed catalog uses variant objects and overseas keeps its limits", async () => {
   const factory = makePlugin("autoclaw-cn")
   const cn = await factory({ client: { auth: { set: async () => {} } } }, {})
@@ -721,6 +1001,8 @@ test("usage: the credit balance and its wallets are the balance, never a window 
     if (u.includes("wallets")) return Response.json({ code: 0, data: { total_balance: 1234.4, wallets: [
       { display_name: "赠送积分", balance: 500 }, { display_name: "会员积分", balance: 734.4 }, { display_name: "空", balance: 0 },
     ] } })
+    // 活动流水查询失败/无数据：活动行省略，余额照常
+    if (u.includes("ledgers_std")) return Response.json({ code: 500001, msg: "服务异常" })
     return Response.json({ code: 0, data: null })
   }
   const dir = mkdtempSync(join(tmpdir(), "autoclaw-usage-"))
@@ -728,12 +1010,13 @@ test("usage: the credit balance and its wallets are the balance, never a window 
   try {
     const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
     const u = await hooks.auth.usage(async () => ({ type: "oauth", access: "a1" }))
-    expect(u.balance).toBe("1234 积分（赠送积分 500 · 会员积分 734）")
+    expect(u.balance).toBe("1,234 积分（赠送积分 500 · 会员积分 734）")
     // the prepaid wallet reading (magpie #3950): the balance as told, in its
     // unit, and no share invented - a first read has no spend window yet
     expect(u.windows.filter((w) => w.name !== "每日签到")).toEqual([
       { name: "积分余额", balance: 1234.4, unit: "积分" },
     ])
+    expect(u.windows.some((w) => w.name === "活动积分")).toBe(false)
   } finally {
     globalThis.fetch = realFetch
     rmSync(dir, { recursive: true, force: true })
@@ -1138,7 +1421,7 @@ test("usage: the spend window across two reads, and a check-in that reopens the 
     expect(w.remaining).toBe(84.4)
     expect(w.amount).toBe(3123)
     expect(w.limit).toBe(20000)
-    expect(w.display).toBe("3123 / 20000 积分 · 今日 -3123")
+    expect(w.display).toBe("3,123 / 20,000 积分 · 今日 -3,123")
     // a check-in +200 lands below the old peak and still reopens the cycle
     balance = 17077
     const third = await hooks.auth.usage(async () => auth)
@@ -1291,7 +1574,7 @@ test("checkin: a user-info network failure never blocks the daily signin and is 
     expect(hosts).toEqual(["autoglm-api.autoglm.ai", "autoglm-api.zhipuai.cn"])
     expect(result.outcome).toBe("claimed")
     expect(result.credit).toBe(400)
-    expect(result.message).toContain("登录活动奖励未触发")
+    expect(result.message).toContain("活动奖励未触发")
   } finally {
     globalThis.fetch = realFetch
   }
@@ -1311,7 +1594,7 @@ test("checkin: both task-list hosts failing throws (failed), never misreports in
     let threw
     try { await hooks.auth.checkin(async () => claimAuth("qc-tasklistfail")) } catch (e) { threw = e }
     expect(threw).toBeInstanceOf(Error)
-    expect(threw.message).toContain("task-list")
+    expect(threw.message).toContain("无响应")
   } finally {
     globalThis.fetch = realFetch
   }
@@ -1581,4 +1864,928 @@ test("usage: an unreadable total_balance is unknown, not a drained pool", async 
     globalThis.fetch = realFetch
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+
+// ── 活动积分（0.2.16）──────────────────────────────────────────────────
+
+// 真实流水条目形状（2026-11-06 真机抓包）。metadata 按事件类型有/无；
+// expire 带顶层+metadata 的 wallet_scope 但没有 activity_id；debit 同。
+const ledEntry = (o = {}) => ({
+  id: String(o.id ?? 1),
+  asset_type: "point",
+  wallet_type: "earned",
+  wallet_id: o.wallet ?? "wlt_a1",
+  wallet_scope: o.scope ?? "campaign",
+  mutation_type: o.type ?? "credit",
+  amount: o.amount ?? 4000,
+  description: o.desc ?? "AutoClaw Weekly Perks +4000 credits",
+  occurred_at: "2026-11-06T01:00:11.16+08:00",
+  ...(o.noMeta ? {} : { metadata: o.meta ?? {
+    activity_id: o.act ?? "autoclaw_weekly_perks_20261013",
+    event_type: "autoclaw_user_active",
+    wallet_scope: o.scope ?? "campaign",
+    reward_points: String(o.amount ?? 4000),
+    grant_date: "2026-11-02",
+    period_id: "454",
+    wallet_instance_balance_after: "5000",
+  } }),
+})
+const led = (entries, extra = {}) =>
+  Response.json({ code: 0, msg: "SUCCESS", data: { entries, next_page_token: "", ...extra } })
+
+// 活动测试统一路由：按 pathname 分支（"wallet_scope" 会撞 includes("wallet")）。
+const campFetch = ({ total = 5000, ledger, calls = [], signin = null, complete = null } = {}) => (input, init) => {
+  const url = new URL(String(input))
+  if (url.pathname.endsWith("/wallets")) {
+    return Response.json({ code: 0, data: { total_balance: total, wallets: [] } })
+  }
+  if (url.pathname === "/agent-assetmgr/api/v1/ledgers_std") {
+    calls.push({ url, headers: new Headers(init?.headers) })
+    return typeof ledger === "function" ? ledger(url) : led(ledger ?? [])
+  }
+  if (url.pathname.endsWith("/autoclaw-task-list")) {
+    return typeof signin === "function" ? signin() : (signin ?? Response.json({ code: 0, data: [] }))
+  }
+  if (url.pathname.endsWith("/autoclaw-task-complete")) {
+    return typeof complete === "function" ? complete() : (complete ?? signedTask(400, 1))
+  }
+  return Response.json({ code: 0, data: {} })
+}
+const campAuth = (tag, extra = {}) => ({
+  type: "oauth", access: `at-camp-${tag}`, refresh: claimJwt(`camp-${tag}`),
+  accountId: "测试账号", uid: `u-camp-${tag}`, ...extra,
+})
+const campHooks = async (client = { auth: { set: async () => {} } }) =>
+  AutoclawAuthPlugin({ client }, {})
+
+const campCleanup = (realFetch, dir) => {
+  globalThis.fetch = realFetch
+  _internal.clearCampaignLedger()
+  if (dir) rmSync(dir, { recursive: true, force: true })
+}
+
+// A+B+C 全量：按实例对账的剩余、已领、过期，以及活动名标签。
+test("campaign: the card names live campaign points, claims and expiries (A+B+C)", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const calls = []
+  globalThis.fetch = campFetch({
+    total: 6800,
+    calls,
+    ledger: [
+      ledEntry({ id: 1, wallet: "wlt_live", amount: 4000, desc: "AutoClaw Weekly Perks +4000 credits" }),
+      ledEntry({ id: 2, wallet: "wlt_dead", amount: 10000, desc: "New-user credits (Day 1/7) +10000", act: "autoclaw_new_user_day_1_to_7_bonus_new_20260922" }),
+      ledEntry({ id: 3, wallet: "wlt_dead", type: "debit", amount: -2289, noMeta: true }),
+      ledEntry({ id: 4, wallet: "wlt_dead", type: "expire", amount: -7711, noMeta: true, desc: "活动积分到期失效" }),
+    ],
+  })
+  try {
+    const hooks = await campHooks()
+    const u = await hooks.auth.usage(async () => campAuth("happy"))
+    const row = u.windows.find((w) => w.name === "活动积分")
+    expect(row).toBeDefined()
+    expect(row.aside).toBe(true)
+    expect(row.used).toBe(0)
+    expect(row.balance).toBeUndefined()
+    // Weekly Perks 实例活着：4000 − 0 − 0；新用户礼实例清零：不进剩余
+    expect(row.display).toBe("剩 4,000（AutoClaw Weekly Perks） · 已领 14,000 · 过期 7,711（近期）")
+    // 余额行保持干净的总额（绝不被活动标签污染）
+    expect(u.balance).toBe("6,800 积分")
+    // 请求契约：过滤参数 + 账号令牌 + 无 X-Authorization
+    expect(calls.length).toBe(1)
+    const q = calls[0].url.searchParams
+    expect(q.get("biz_app_id")).toBe("autoclaw")
+    expect(q.get("wallet_scope")).toBe("campaign")
+    expect(calls[0].headers.get("Authorization")).toBe("Bearer at-camp-happy")
+    expect(calls[0].headers.get("X-Channel")).toBe("AutoClaw4") // bizHeaders（同 fetchWallets）
+    expect(calls[0].headers.get("X-Authorization")).toBeNull()
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 服务端忽略过滤参数时（返回了 annual 条目），客户端必须再过滤。
+test("campaign: a server that ignores wallet_scope is re-filtered client-side", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  globalThis.fetch = campFetch({
+    total: 4000,
+    ledger: [
+      ledEntry({ id: 1, wallet: "wlt_c", amount: 4000, scope: "campaign" }),
+      ledEntry({ id: 2, wallet: "wlt_d", amount: 400, scope: "annual", desc: "每日签到" }),
+      ledEntry({ id: 3, wallet: "wlt_d", type: "debit", amount: -45, scope: "annual", noMeta: true }),
+    ],
+  })
+  try {
+    const hooks = await campHooks()
+    const u = await hooks.auth.usage(async () => campAuth("refilter"))
+    const row = u.windows.find((w) => w.name === "活动积分")
+    expect(row.display).toBe("剩 4,000（AutoClaw Weekly Perks） · 已领 4,000 · 过期 0（近期）")
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 没有活动历史（entries 空 / 全是别的 scope / 读取失败）→ 整行省略。
+test("campaign: no campaign history or a failed read omits the row, never breaks the card", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  globalThis.fetch = campFetch({ total: 1000, ledger: [] })
+  try {
+    const hooks = await campHooks()
+    const u1 = await hooks.auth.usage(async () => campAuth("empty"))
+    expect(u1.windows.some((w) => w.name === "活动积分")).toBe(false)
+    expect(u1.balance).toBe("1,000 积分")
+    expect(u1.error).toBeUndefined()
+    _internal.clearCampaignLedger()
+    // 流水接口整体 500：余额照常
+    globalThis.fetch = campFetch({ total: 1000, ledger: () => new Response("boom", { status: 500 }) })
+    const u2 = await hooks.auth.usage(async () => campAuth("empty"))
+    expect(u2.balance).toBe("1,000 积分")
+    expect(u2.windows.some((w) => w.name === "活动积分")).toBe(false)
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// TTL 缓存：10 分钟内第二次 usage() 不再打流水；两个账号各查各的。
+test("campaign: the ledger read is cached per account for 10 minutes", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const calls = []
+  globalThis.fetch = campFetch({
+    total: 4000,
+    calls,
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  try {
+    const hooks = await campHooks()
+    const a = campAuth("cache-a")
+    const b = campAuth("cache-b")
+    await hooks.auth.usage(async () => a)
+    await hooks.auth.usage(async () => a)
+    await hooks.auth.usage(async () => b)
+    const ledgerCalls = calls.filter((c) => c.url.pathname === "/agent-assetmgr/api/v1/ledgers_std").length
+    expect(ledgerCalls).toBe(2) // a 一次 + b 一次
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// checkin 里 user-info 成功（活动可能刚到账）→ 缓存立即失效。
+test("campaign: a checkin whose user-info reached the server invalidates the cache", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const calls = []
+  globalThis.fetch = campFetch({
+    total: 4000,
+    calls,
+    signin: () => pendingTask(),
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  try {
+    const hooks = await campHooks()
+    const auth = campAuth("invalidate")
+    await hooks.auth.usage(async () => auth)
+    await hooks.auth.checkin(async () => auth) // user-info code=0 → uiReached
+    await hooks.auth.usage(async () => auth)
+    const ledgerCalls = calls.filter((c) => c.url.pathname === "/agent-assetmgr/api/v1/ledgers_std").length
+    expect(ledgerCalls).toBe(2) // 失效后重新拉取
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P0-2：CAS 把「已登出」当「未变」会覆盖用户凭证——现在必须跳过写回。
+// 场景：task-list 401 → refresh 轮换 → CAS 复读时发现用户已登出（getAuth 返回 null）。
+test("checkin: a logged-out account is never resurrected by the rotation write-back", async () => {
+  const realFetch = globalThis.fetch
+  const auth = campAuth("cas-logout")
+  const sets = []
+  globalThis.fetch = campFetch({
+    total: 4000,
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt("cas-logout-fresh"), refresh_token: "rt-cas-fresh" } })
+    }
+    return staleFetch(input)
+  }
+  try {
+    let reads = 0
+    const hooks = await campHooks({ auth: { set: async (o) => { sets.push(o); return { data: true } } } })
+    const expiredTaskList = () => new Response("{}", { status: 401 })
+    const prev = globalThis.fetch
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      if (url.includes("autoclaw-task-list")) return expiredTaskList()
+      return prev(input)
+    }
+    let threw
+    try { await hooks.auth.checkin(async () => (++reads === 1 ? auth : null)) } catch (e) { threw = e }
+    expect(reads).toBeGreaterThanOrEqual(2) // CAS 复读确实发生了
+    expect(sets.length).toBe(0) // 绝不复活已登出的记录
+    expect(threw?.signIn ?? "none").toBe("none") // 不标 expired（用户已登出是用户的行为）
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P0-3：额度用尽的 403 不是登录失效——不烧 RT、不标 expired。
+test("checkin: a quota-exhausted 403 at task-list keeps the sign-in and never refreshes", async () => {
+  const realFetch = globalThis.fetch
+  let refreshes = 0
+  globalThis.fetch = campFetch({
+    total: 4000,
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("autoclaw-task-list")) {
+      return new Response(String.raw`{"code":810000,"message":"GLM-5.3 免费额度已用完,请购买充值"}`, { status: 403 })
+    }
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) refreshes++
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    let threw
+    try { await hooks.auth.checkin(async () => campAuth("quota403")) } catch (e) { threw = e }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw.message).toContain("额度已用完")
+    expect(threw.signIn).toBe("kept") // 登录保留，不是 expired
+    expect(refreshes).toBe(0) // 不烧 RT
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P0-1：刷新成功后的重试再遇 401，绝不能把健康账号标成 expired。
+test("checkin: a second 401 right after a successful renewal degrades to a retryable failure", async () => {
+  const realFetch = globalThis.fetch
+  const auth = campAuth("reexpired")
+  const sets = []
+  let oldReads = 0
+  let stage = "old"
+  globalThis.fetch = campFetch({
+    total: 4000,
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+      stage = "new"
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt("reexpired-fresh"), refresh_token: "rt-reexpired-fresh" } })
+    }
+    if (url.includes("autoclaw-task-list")) return new Response("{}", { status: 401 }) // 两个阶段都 401
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks({ auth: { set: async (o) => { sets.push(o); return { data: true } } } })
+    let threw
+    try { await hooks.auth.checkin(async () => (++oldReads <= 2 ? auth : null)) } catch (e) { threw = e }
+    expect(threw).toBeInstanceOf(Error)
+    expect(threw.signIn).toBeUndefined() // 关键：不能带 expired
+    expect(sets.length).toBe(1) // 刷新已写回，账号仍是健康的
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P1-4：混合 host 失败必须保住 expired 标记。两种顺序都测：
+// ① 401 在前、网络错在后（401 自带标记）；② 网络错在前、401 在后
+// （标记只能靠 expiredErr 单独保存——这是它的存在意义）。
+test("checkin: a mixed host failure keeps the expired marker and refreshes, in both orders", async () => {
+  const realFetch = globalThis.fetch
+  for (const order of ["expired-first", "network-first"]) {
+    const auth = campAuth(`mixedfail-${order}`)
+    let refreshes = 0
+    globalThis.fetch = campFetch({ total: 4000, ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })] })
+    const staleFetch = globalThis.fetch
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      if (url.includes("autoclaw-task-list")) {
+        const host = new URL(String(input)).host
+        const first = host === "autoglm-api.autoglm.ai"
+        const isExpiredTurn = order === "expired-first" ? first : !first
+        return isExpiredTurn ? new Response("{}", { status: 401 }) : (() => { throw new Error("ECONNRESET") })()
+      }
+      if (url.includes("/userapi/v1/refresh") || url.includes("/agent-refresh")) {
+        refreshes++
+        return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt(`mixedfail-${order}-fresh`), refresh_token: `rt-mixedfail-${order}-fresh` } })
+      }
+      return staleFetch(input)
+    }
+    try {
+      const hooks = await campHooks()
+      let threw
+      try { await hooks.auth.checkin(async () => auth) } catch (e) { threw = e }
+      expect(refreshes).toBe(1) // expired 标记没丢 → 刷新发生了
+      expect(threw?.message ?? "").not.toBeUndefined()
+    } finally {
+      _internal.clearRefreshGates()
+      campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+    }
+  }
+})
+
+// 0.2.15 遗留 P1-5 姐妹案：主 host 空 []、备用 host 有任务 → 必须用备用 host 签上。
+test("checkin: an empty task list on host[0] still finds the task on host[1]", async () => {
+  const realFetch = globalThis.fetch
+  const auth = campAuth("emptyfirst")
+  globalThis.fetch = campFetch({ total: 4000, ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })] })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("autoclaw-task-list")) {
+      const host = new URL(String(input)).host
+      return host === "autoglm-api.autoglm.ai"
+        ? Response.json({ code: 0, data: [] })
+        : pendingTask()
+    }
+    if (url.includes("autoclaw-task-complete")) return signedTask(400, 2)
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => auth)
+    expect(r.outcome).toBe("claimed")
+    expect(r.credit).toBe(400)
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P1-6：user-info 失败时 done 路径也要说「活动没触发」。
+test("campaign: a done checkin still reports when the login event never reached the server", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  globalThis.fetch = campFetch({
+    total: 4000,
+    signin: () => completedTask(),
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) return Response.json({ code: 410000, msg: "用户未登录" })
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => campAuth("donenote"))
+    expect(r.outcome).toBe("done")
+    expect(r.message).toContain("活动奖励未触发")
+  } finally {
+    campCleanup(realFetch, typeof dir !== "undefined" ? dir : undefined)
+  }
+})
+
+// 0.2.15 遗留 P1-8：401 带 code:0 的怪响应不算「活动已触发」（假成功）。
+test("campaign: a 401 with a zero code is not a reached login event", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-camp-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  globalThis.fetch = campFetch({
+    total: 4000,
+    signin: () => completedTask(),
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) return Response.json({ code: 0, msg: "SUCCESS" }, { status: 401 })
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => campAuth("fakeok"))
+    expect(r.outcome).toBe("done")
+    expect(r.message).toContain("活动奖励未触发") // 假成功被识破：活动其实没触发
+  } finally {
+    campCleanup(realFetch, dir)
+  }
+})
+
+// fmtPoints：确定性三位分组（不依赖 locale）。
+test("campaign: numbers are grouped in threes, deterministically", () => {
+  expect(_internal.fmtPoints(0)).toBe("0")
+  expect(_internal.fmtPoints(999)).toBe("999")
+  expect(_internal.fmtPoints(1000)).toBe("1,000")
+  expect(_internal.fmtPoints(14000)).toBe("14,000")
+  expect(_internal.fmtPoints(1234567)).toBe("1,234,567")
+  expect(_internal.fmtPoints(1234.6)).toBe("1,235")
+})
+
+// 聚合的数字边界：字符串金额、缺失 metadata、未知 mutation_type。
+// mutation_type 大小写不敏感（服务端约定小写，防御性归一后照算）。
+test("campaign: the breakdown survives weird entries without miscounting", () => {
+  const b = _internal.campaignBreakdown([
+    ledEntry({ id: 1, wallet: "w1", amount: "4000" }), // 字符串金额（防御）
+    ledEntry({ id: 2, wallet: "w1", type: "debit", amount: -1000, noMeta: true }),
+    ledEntry({ id: 3, wallet: "w2", amount: 500, type: "Credit" }), // 大小写归一后照算
+    ledEntry({ id: 4, wallet: "w3", type: "refund", amount: -99, noMeta: true }), // 未知类型 → 忽略
+    ledEntry({ id: 5, wallet: "w4", type: "expire", amount: -800, noMeta: true, desc: "活动积分到期失效" }),
+    { id: "6", mutation_type: "credit", amount: "not-a-number", wallet_id: "w5", metadata: { wallet_scope: "campaign" } }, // 非数字 → 忽略
+    null,
+    "junk",
+  ])
+  expect(b.claimed).toBe(4500)
+  expect(b.expired).toBe(800)
+  expect(b.remaining).toBe(3500) // w1: 4000−1000 = 3000；w2: 500 → 3500
+  expect(b.labels).toEqual(["AutoClaw Weekly Perks"])
+})
+
+
+// ── yetone #774 review：作者亲测「改坏也不红」的缺件 ──────────────────────────
+
+// review 1+2：auth.refresh 带 signinOnUsage 时，task-complete 的 403-quota
+// 必须照常返回轮换后的令牌，绝不抛 signIn:expired（旧链路 maybeSignin 会把
+// 403 标成登录失效，magpie 的 renewLocked 读到就登出账号、新令牌丢失）。
+test("review#1: auth.refresh with signinOnUsage and a quota 403 at task-complete returns the rotated tokens", async () => {
+  const realFetch = globalThis.fetch
+  const freshAccess = claimJwt("rev-fresh")
+  let refreshes = 0
+  globalThis.fetch = (input) => {
+    const url = String(input)
+    if (url.includes("/refresh") || url.includes("/agent-refresh")) {
+      refreshes++
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: freshAccess, refresh_token: "rt-rev-fresh" } })
+    }
+    if (url.includes("/autoclaw-task-complete")) {
+      return new Response(String.raw`{"code":810000,"message":"GLM-5.3 免费额度已用完"}`, { status: 403 })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin(
+      { client: { auth: { set: async () => ({ data: true }) } } },
+      { signin: true, signinOnUsage: true },
+    )
+    const auth = claimAuth("rev-quota", { access: "at-rev-quota" })
+    const t = await hooks.auth.refresh(auth)
+    expect(t.refresh).toBe("rt-rev-fresh")
+    expect(t.access).toBe(freshAccess)
+    expect(refreshes).toBe(1)
+  } finally {
+    _internal.clearRefreshGates()
+    _internal.clearRotatedMemo()
+    globalThis.fetch = realFetch
+  }
+})
+
+// 同一链路走 usage()：403-quota 不能把整张卡变成「积分查询失败」。
+test("review#1: usage() with signinOnUsage and a quota 403 at task-complete still shows the balance", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-rev-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  globalThis.fetch = (input) => {
+    const url = new URL(String(input))
+    if (url.pathname.endsWith("/wallets")) return Response.json({ code: 0, data: { total_balance: 4000, wallets: [] } })
+    if (url.pathname.endsWith("/autoclaw-task-list")) return Response.json({ code: 0, data: [{ task_id: "daily_signin", status: "pending", reward_points: 400 }] })
+    if (url.pathname.endsWith("/autoclaw-task-complete")) {
+      return new Response(String.raw`{"code":810000,"message":"GLM-5.3 免费额度已用完"}`, { status: 403 })
+    }
+    if (url.pathname === "/agent-assetmgr/api/v1/ledgers_std") return led([])
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin(
+      { client: { auth: { set: async () => ({ data: true }) } } },
+      { signin: true, signinOnUsage: true },
+    )
+    const u = await hooks.auth.usage(async () => claimAuth("rev-usage", { access: "at-rev-usage" }))
+    expect(u.error).toBeUndefined()
+    expect(u.windows.some((w) => w.name === "积分余额")).toBe(true)
+  } finally {
+    _internal.clearCampaignLedger()
+    globalThis.fetch = realFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// review 4a：Windows 上 HOME 常未设，配置目录必须落到用户目录，不能是盘根
+// （旧实现 `${HOME ?? ""}/.config/magpie` → C:\.config\magpie，任意本地用户可写）。
+test("review#4: the magpie config dir falls back to USERPROFILE/homedir when HOME is unset", () => {
+  const saved = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, USERPROFILE: process.env.USERPROFILE }
+  try {
+    delete process.env.HOME
+    delete process.env.XDG_CONFIG_HOME
+    process.env.USERPROFILE = "C:\\Users\\Someone"
+    const p = _internal.magpieCfgDir()
+    expect(p).toBe("C:\\Users\\Someone/.config/magpie")
+    expect(p).not.toBe("/.config/magpie")
+    expect(p).not.toContain("C:\\.config")
+    // USERPROFILE 也没有 → os.homedir()
+    delete process.env.USERPROFILE
+    const h = _internal.magpieCfgDir()
+    expect(h.endsWith("/.config/magpie")).toBe(true)
+    expect(h).not.toBe("/.config/magpie")
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
+// review 4b：内存兜底里的 access token 过期后，绝不能继续喂给调用方——
+// 必须拿兜底里的新 RT 走一次真刷新。
+test("review#4: an expired rotated-memo entry is dropped and refreshed over the wire", async () => {
+  const realFetch = globalThis.fetch
+  const freshAccess = claimJwt("memo-fresh")
+  const bodies = []
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/refresh") || url.includes("/agent-refresh")) {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")))
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: freshAccess, refresh_token: "rt-memo-next" } })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    _internal.clearRefreshGates()
+    _internal.clearRotatedMemo()
+    // 已花费的 RT → 一对令牌，但其中的 access 已经过期
+    _internal.rememberRotated("rt-memo-spent", { access: claimJwt("memo-stale"), refresh: "rt-memo-live", expires: Date.now() - 1_000 })
+    const t = await _internal.refreshShared("rt-memo-spent", [])
+    expect(t.access).toBe(freshAccess)
+    // 真的走了网络，而且用的是兜底里的新 RT（不是已花费的旧 RT）
+    expect(bodies.length).toBe(1)
+    expect(bodies[0].refresh_token).toBe("rt-memo-live")
+    // 对照：未过期的兜底直接命中内存，不再打网络
+    _internal.rememberRotated("rt-memo-spent-2", { access: claimJwt("memo-live"), refresh: "rt-memo-live-2", expires: Date.now() + 60_000 })
+    const before = bodies.length
+    const t2 = await _internal.refreshShared("rt-memo-spent-2", [])
+    expect(bodies.length).toBe(before)
+    expect(t2.refresh).toBe("rt-memo-live-2")
+  } finally {
+    _internal.clearRefreshGates()
+    _internal.clearRotatedMemo()
+    globalThis.fetch = realFetch
+  }
+})
+
+// review 4c：refreshTokens 在首个 host 网络错误时必须继续试下一个 host
+// （旧实现第一个 host 断连就整体中止，账号永远续不上期）。
+test("review#4: a network failure on the first refresh host falls through to the next", async () => {
+  const realFetch = globalThis.fetch
+  const freshAccess = claimJwt("host-fb-fresh")
+  const hosts = []
+  globalThis.fetch = async (input) => {
+    const u = new URL(String(input))
+    hosts.push(u.host)
+    if (u.host === "autoglm-api.autoglm.ai") throw new Error("ECONNRESET")
+    return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: freshAccess, refresh_token: "rt-host-fb" } })
+  }
+  try {
+    _internal.clearRefreshGates()
+    const rt = claimJwt("host-fb") // 非短信账号：GLOBAL 在前、CN 在后
+    const t = await _internal.refreshTokens(rt, [])
+    expect(hosts).toEqual(["autoglm-api.autoglm.ai", "autoglm-api.zhipuai.cn"])
+    expect(t.access).toBe(freshAccess)
+    expect(t.refresh).toBe("rt-host-fb")
+  } finally {
+    _internal.clearRefreshGates()
+    globalThis.fetch = realFetch
+  }
+})
+
+// review 4d：task-complete 的 403（额度用尽）在 checkin 里必须落成 failed、
+// 不抛、不烧 RT——登录保留（dailySignin 不再把 HTTP 状态变成 signIn:expired）。
+test("review#2: a 403 at task-complete ends the day as failed, keeps the sign-in and never refreshes", async () => {
+  const realFetch = globalThis.fetch
+  let refreshes = 0
+  globalThis.fetch = campFetch({
+    total: 4000,
+    signin: () => pendingTask(),
+    complete: () => new Response(String.raw`{"code":810000,"message":"GLM-5.3 免费额度已用完,请购买充值"}`, { status: 403 }),
+    ledger: [ledEntry({ id: 1, wallet: "wlt_c", amount: 4000 })],
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/refresh") || url.includes("/agent-refresh")) refreshes++
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    let threw
+    let result
+    try { result = await hooks.auth.checkin(async () => campAuth("keep403")) } catch (e) { threw = e }
+    expect(threw).toBeUndefined()
+    expect(result.outcome).toBe("failed")
+    expect(result.signIn).toBeUndefined()
+    expect(refreshes).toBe(0)
+  } finally {
+    campCleanup(realFetch)
+  }
+})
+
+// review 5：campaignCached 的注释说「失败不缓存」，实现也必须如此——
+// 一次瞬时失败不能让活动行消失 10 分钟。
+test("review#5: a ledger read failure is not cached — the next usage() retries the wire", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-rev2-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  let calls = 0
+  globalThis.fetch = campFetch({ total: 4000, ledger: () => { calls++; return new Response("boom", { status: 500 }) } })
+  try {
+    const hooks = await campHooks()
+    const auth = campAuth("rev-retry")
+    const u1 = await hooks.auth.usage(async () => auth)
+    expect(u1.balance).toBe("4,000 积分")
+    expect(u1.windows.some((w) => w.name === "活动积分")).toBe(false) // 第一次读失败 → 省略活动行
+    expect(calls).toBe(2) // 两个 host 都试过，都失败
+    const u2 = await hooks.auth.usage(async () => auth)
+    expect(calls).toBe(4) // 失败未被缓存：第二次又重新打了两个 host
+    expect(u2.error).toBeUndefined()
+    expect(u2.balance).toBe("4,000 积分")
+  } finally {
+    campCleanup(realFetch, dir)
+  }
+})
+
+
+// ── 代理审查修复（0.2.16 第三轮）：memo 全路径、缓存复活、note 追加 ──────────
+
+// P1：refreshShared 成功即记 memo——auth.refresh 路径轮换后，>60s（gate 已清）
+// 还持有旧 RT 的第二条记录必须拿到兜底令牌，而不是拿死 RT 打网络被判 expired。
+test("agent: a stale RT holder gets the memo'd pair after the gate is swept", async () => {
+  const realFetch = globalThis.fetch
+  let rotations = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/refresh") || url.includes("/agent-refresh")) {
+      rotations++
+      return Response.json({ code: 0, msg: "SUCCESS", data: { access_token: claimJwt(`memo-all-${rotations}`), refresh_token: `rt-all-${rotations}` } })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    _internal.clearRefreshGates()
+    _internal.clearRotatedMemo()
+    const t1 = await _internal.refreshShared("rt-spent-0", [])
+    expect(t1.refresh).toBe("rt-all-1")
+    // 模拟 60 秒后 gate 被清理（不真等：直接清 gates，memo 保留）
+    _internal.clearRefreshGates()
+    // 另一条记录拿着同一个已花费的旧 RT 续期 → 命中 memo，零额外网络
+    const t2 = await _internal.refreshShared("rt-spent-0", [])
+    expect(t2.refresh).toBe("rt-all-1")
+    expect(rotations).toBe(1)
+  } finally {
+    _internal.clearRefreshGates()
+    _internal.clearRotatedMemo()
+    globalThis.fetch = realFetch
+  }
+})
+
+// P2：campaignCached 的在途读迟于失效返回时不得写回——checkin 刚删的缓存
+// 不能被旧读复活（刚领的奖励要立即可见）。
+test("agent: an in-flight ledger read that lands after invalidation is not re-cached", async () => {
+  _internal.clearCampaignLedger()
+  let release
+  const pending = new Promise((r) => { release = r })
+  const key = "agent|uid:resurrect"
+  let loads = 0
+  const slow = () => { loads++; return pending.then(() => ["old-entry"]) }
+  const p = pendingRead(key, slow)
+  // 在途期间：失效（checkin 里 user-info 到达时的行为）
+  _internal.clearCampaignLedger()
+  release()
+  expect(await p).toEqual(["old-entry"]) // 在途的调用方照常拿到它要的数据
+  // 缓存必须仍是空：下一次走 loader，而不是读被复活的旧条目
+  const fresh = await pendingRead(key, () => Promise.resolve(["new-entry"]))
+  expect(fresh).toEqual(["new-entry"])
+  expect(loads).toBe(1) // 只有第一次真正加载；第二次用的是新 loader（说明没缓存旧值）
+})
+// 直接驱动 campaignCached（不经过 usage，避免多路径干扰）
+function pendingRead(key, loader) {
+  return _internal.campaignCached(key, loader)
+}
+
+// note 追加而非覆盖：签到成功消息必须保留，活动提示只接在后面。
+test("agent: a claimed checkin keeps its own message and appends the campaign note", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = campFetch({
+    total: 4000,
+    signin: () => pendingTask(),
+    complete: () => signedTask(400, 3),
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    // user-info 完全失败：登录事件没到服务端
+    if (url.includes("/userapi/v1/user-info")) throw new Error("ECONNRESET")
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => campAuth("appendnote"))
+    expect(r.outcome).toBe("claimed")
+    expect(r.credit).toBe(400)
+    // 两段都在：真实签到结果 + 活动提示（顺序固定）
+    expect(r.message).toContain("已签到")
+    expect(r.message).toContain("活动奖励未触发")
+    expect(r.message.indexOf("已签到")).toBeLessThan(r.message.indexOf("活动奖励未触发"))
+  } finally {
+    campCleanup(realFetch)
+  }
+})
+
+// 失败路径同样保留原因（不能被活动提示吞掉）。
+test("agent: a failed checkin keeps its failure reason when the login event missed", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = campFetch({
+    total: 4000,
+    signin: () => pendingTask(),
+    complete: () => new Response("boom", { status: 500 }),
+  })
+  const staleFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/user-info")) throw new Error("ECONNRESET")
+    return staleFetch(input)
+  }
+  try {
+    const hooks = await campHooks()
+    const r = await hooks.auth.checkin(async () => campAuth("appendfail"))
+    expect(r.outcome).toBe("failed")
+    expect(r.message).toContain("签到接口无响应") // 真实原因保留
+    expect(r.message).toContain("活动奖励未触发")
+  } finally {
+    campCleanup(realFetch)
+  }
+})
+
+// A2：md5Hex 已知向量——防止签名算法被换掉而测试仍绿（自证陷阱）。
+test("agent: the request signature is real MD5, pinned by a known vector", () => {
+  expect(_internal.md5Hex("abc")).toBe("900150983cd24fb0d6963f7d28e17f72")
+  expect(_internal.md5Hex("")).toBe("d41d8cd98f00b204e9800998ecf8427e")
+  expect(_internal.md5Hex("100003&1700000000&38d2391985e2369a5fb8227d8e6cd5e5")).toHaveLength(32)
+})
+
+// A5：北京日界（UTC+8）——16:00Z 之后已经是北京的第二天。
+test("agent: the signin day boundary is Beijing time, not UTC", () => {
+  expect(_internal.beijingDayOf(new Date("2026-11-06T15:30:00Z"))).toBe("2026-11-06") // 北京 23:30
+  expect(_internal.beijingDayOf(new Date("2026-11-06T16:30:00Z"))).toBe("2026-11-07") // 北京次日 00:30
+  expect(_internal.beijingDayOf(new Date("2026-11-06T00:30:00Z"))).toBe("2026-11-06") // 北京 08:30
+})
+
+// C2：signinOnUsage 默认关——usage() 看到未签任务也绝不能自动签。
+test("agent: usage() never signs in when signinOnUsage is off (the default)", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-ag2-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const completes = []
+  globalThis.fetch = campFetch({
+    total: 5000,
+    ledger: [],
+    signin: () => pendingTask(),
+    complete: () => { completes.push(1); return signedTask(400, 1) },
+  })
+  try {
+    const hooks = await campHooks() // 默认 options
+    const u = await hooks.auth.usage(async () => campAuth("defaultoff"))
+    expect(completes.length).toBe(0) // 没打 task-complete
+    expect(u.windows.find((w) => w.name === "每日签到")?.display).toBe("今日未签（+400）")
+  } finally {
+    campCleanup(realFetch, dir)
+  }
+})
+
+// C12：maybeSignin 同日去重（北京日），且第二次调用不再打网络。
+test("agent: maybeSignin signs once per Beijing day per account", async () => {
+  const realFetch = globalThis.fetch
+  let signs = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/autoclaw-task-complete")) {
+      signs++
+      return Response.json({ code: 0, data: { success: true, reward_points: 400, continuous_days: 1 } })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const opts = { signin: true, signinOnUsage: true }
+    const key = `agent-dedupe-${Date.now()}`
+    await _internal.maybeSignin("at-x", "https://autoglm-api.autoglm.ai", opts, "usage", key)
+    await _internal.maybeSignin("at-x", "https://autoglm-api.autoglm.ai", opts, "usage", key)
+    expect(signs).toBe(1)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+
+// ── maintainer 第三轮 review（4 项）：日界测试、淘汰语义 ────────────────────
+
+// 北京日界在 maybeSignin 里的使用（他亲手把 beijingDayOf() 改成 UTC 日后 90 测试
+// 仍全绿）。用 bun 的 setSystemTime 停在「两套日界结论不同」的时刻，双向验证：
+// ① 同一北京日、跨 UTC 日 → 绝不重签（UTC 版会签两次）；② 同一 UTC 日、
+// 跨北京日 → 必须重签（UTC 版会断签）。
+// 恢复必须用无参的 setSystemTime()：带参调用（含 setSystemTime(Date.now())）
+// 只是把时钟冻结在另一个常量上，不会交还真实时间（review #4 实测，
+// qoder 的 checkin 测试的 afterEach 也是这么做的）。
+test("maintainer: maybeSignin dedupes by the Beijing day, in both directions", async () => {
+  const realFetch = globalThis.fetch
+  let signs = 0
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes("/autoclaw-task-complete")) {
+      signs++
+      return Response.json({ code: 0, data: { success: true, reward_points: 400, continuous_days: 1 } })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  const opts = { signin: true, signinOnUsage: true }
+  const host = "https://autoglm-api.autoglm.ai"
+  const key = "bj-day"
+  try {
+    // 起点：北京 11-07 07:30（UTC 11-06 23:30）——UTC 日 11-06、北京日 11-07
+    setSystemTime(new Date("2026-11-06T23:30:00Z"))
+    await _internal.maybeSignin("at-bj", host, opts, "usage", key)
+    expect(signs).toBe(1)
+    // +1h：北京 11-07 08:30（UTC 11-07 00:30）——UTC 日翻了、北京日没翻 → 不重签
+    setSystemTime(new Date("2026-11-07T00:30:00Z"))
+    await _internal.maybeSignin("at-bj", host, opts, "usage", key)
+    expect(signs).toBe(1)
+    // +24h：北京 11-08 07:30（UTC 11-07 23:30）——北京日翻了、UTC 日没翻 → 必须重签
+    setSystemTime(new Date("2026-11-07T23:30:00Z"))
+    await _internal.maybeSignin("at-bj", host, opts, "usage", key)
+    expect(signs).toBe(2)
+  } finally {
+    setSystemTime() // 无参 = 交还真实时钟（带参会冻结，见上）
+    globalThis.fetch = realFetch
+  }
+})
+
+// 淘汰只动「已定」条目：在途读被撕掉的话，它的结果无处写回（白打一次网络）。
+// 100 个在途读占满缓存 → 插入第 101 条不得撕任何在途读 → 在途读完成后写回生效。
+test("maintainer: cache eviction never evicts an in-flight read", async () => {
+  _internal.clearCampaignLedger()
+  const resolvers = []
+  const inFlight = []
+  try {
+    for (let i = 0; i < 100; i++) {
+      inFlight.push(_internal.campaignCached(`if-${i}`, () => new Promise((r) => resolvers.push(() => r([`v${i}`])))))
+    }
+    const v = await _internal.campaignCached("if-new", () => Promise.resolve(["new"]))
+    expect(v).toEqual(["new"])
+    // 放行所有在途读，并等它们自己的写成落定（不猜微任务跳数）
+    for (const rel of resolvers) rel()
+    await Promise.all(inFlight)
+    let loads = 0
+    const again = await _internal.campaignCached("if-0", () => { loads++; return Promise.resolve(["again"]) })
+    expect(again).toEqual(["v0"]) // 读到的是写回的缓存值，不是新加载
+    expect(loads).toBe(0)         // 若 if-0 被淘汰，这里会重新加载（loads=1 → 红）
+  } finally {
+    _internal.clearCampaignLedger()
+  }
+})
+
+// 上限本身也要守卫（review #4：删掉 while (size >= MAX) 循环这条测试必须红）：
+// 100 条已定 + 第 101 条 → 最旧的 cap-0 被挤出（读它要走网络），而新的头部还在。
+// 注意 FIFO：读回 cap-0 又是一次插入，会把当时的次旧条目 cap-1 挤掉——
+// 所以第二段断言选 cap-2（读 cap-0 时它还在）。
+test("maintainer: a settled entry is evicted once the cache passes its cap", async () => {
+  _internal.clearCampaignLedger()
+  try {
+    for (let i = 0; i < 100; i++) await _internal.campaignCached(`cap-${i}`, () => Promise.resolve([`v${i}`]))
+    const v = await _internal.campaignCached("cap-new", () => Promise.resolve(["new"]))
+    expect(v).toEqual(["new"])
+    // cap-0 已被挤出：读它必须重新加载（loads=1）；这次重读又会挤掉下一旧的
+    let loads0 = 0
+    const first = await _internal.campaignCached("cap-0", () => { loads0++; return Promise.resolve(["v0-again"]) })
+    expect(first).toEqual(["v0-again"])
+    expect(loads0).toBe(1)
+    // 刚插入的 cap-new 是最新条目，仍在缓存（loads=0）——证明淘汰只挤最旧的
+    let loadsNew = 0
+    const again = await _internal.campaignCached("cap-new", () => { loadsNew++; return Promise.resolve(["nope"]) })
+    expect(again).toEqual(["new"])
+    expect(loadsNew).toBe(0)
+  } finally {
+    _internal.clearCampaignLedger()
+  }
+})
+
+// 进程时钟必须归还：setSystemTime(Date.now) 这类带参调用会把时钟冻在常量上，
+// 全仓单进程跑测试时后面所有包基于时钟的等待会死等（CI 曾挂 55 分钟）。
+// 守卫：上面的测试恢复后（无参 setSystemTime()），时钟必须照常流逝；
+// 若有人改回带参恢复，这里会红。
+test("maintainer: the fake clock never leaks into the rest of the suite", async () => {
+  const t0 = Date.now()
+  await Bun.sleep(60)
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(40)
 })

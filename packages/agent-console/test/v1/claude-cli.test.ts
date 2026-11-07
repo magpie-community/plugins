@@ -455,8 +455,13 @@ describe("AgentManager + Claude crash keeps thread open (resume)", () => {
 
     delete process.env.FAKE_CLAUDE_CRASH_AFTER_DELTA;
     await manager.send(threadId, { text: "after-crash" });
-    await waitFor(async () => (await threads.get(threadId))?.lastTurnStatus === "completed");
+    // turn_ended patches lastTurnStatus a tick before setStatus("idle"): wait for both
+    await waitFor(async () => {
+      const m = await threads.get(threadId);
+      return m?.lastTurnStatus === "completed" && m?.status === "idle";
+    });
     const meta2 = await threads.get(threadId);
+    expect(meta2?.lastTurnStatus).toBe("completed");
     expect(meta2?.status).toBe("idle");
     expect(meta2?.status).not.toBe("closed");
     const argvs = readFileSync(logFile, "utf8")

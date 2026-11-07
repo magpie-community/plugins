@@ -225,3 +225,77 @@ test("an answer says the account is kept, streamed or not, renewed or not", asyn
     })
   }
 })
+
+// onemezao on Discord: Kiro's 429 USER_REQUEST_RATE_EXCEEDED ("Too many
+// requests, please wait before trying again.") went to magpie with no word
+// of when, so magpie asked the one account again after 1, 2 and 4s and on
+// through its patience, six asks of the same request where Kiro had said
+// how long to wait. Kiro's wait goes on as Retry-After, from wherever Kiro's
+// own clients read it.
+test("Kiro's wait before asking again goes on as Retry-After", async () => {
+  const limited = JSON.stringify({ message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })
+  const cases = [
+    [{ "x-amzn-kiro-ratelimit-retry-after": "12500" }, limited, "13"],
+    [{ "x-amz-retry-after": "3000" }, limited, "3"],
+    [{}, JSON.stringify({ message: "Too many requests", reason: "USER_REQUEST_RATE_EXCEEDED", retryAfterMilliseconds: 20000 }), "20"],
+    [{ "retry-after": "7" }, limited, "7"],
+    [{ "retry-after": new Date(Date.now() + 30_000).toUTCString() }, limited, null],
+    [{}, limited, "30"],
+    [{ "x-amzn-kiro-ratelimit-retry-after": "soon" }, limited, "30"],
+    [{}, JSON.stringify({ message: "Too many requests", reason: "SERVICE_REQUEST_RATE_EXCEEDED" }), null],
+  ]
+  for (const [headers, body, want] of cases) {
+    await withFetch(() => new Response(body, { status: 429, headers }), async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).toBe(429)
+      expect((await res.json()).error.message).toContain(JSON.parse(body).message + " (" + JSON.parse(body).reason + ")")
+      const got = res.headers.get("Retry-After")
+      if (headers["retry-after"]?.includes("GMT")) expect(Number(got)).toBeWithin(28, 32)
+      else expect(got).toBe(want)
+    })
+  }
+})
+
+// onemezao on Discord: through pi, every request of one Kiro account was
+// refused with Kiro's "Too many requests, please wait before trying
+// again. (USER_REQUEST_RATE_EXCEEDED)", 42s each, while the Kiro IDE
+// answered on the same account. The words said neither whose limit it
+// was nor what to do, and with no wait said magpie asked the same
+// account again at 1, 2 and 4s, the whole request each time.
+test("an account's request rate says whose limit it is, what to do and the request ID", async () => {
+  const body = JSON.stringify({ message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })
+  await withFetch(
+    () => new Response(body, { status: 429, headers: { "x-amzn-requestid": "3f1c-req" } }),
+    async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).toBe(429)
+      // past magpie's same-account retries (longestPause, 8s)
+      expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(8)
+      const b = await res.json()
+      expect(b.error.type).toBe("rate_limit_error")
+      const m = b.error.message
+      expect(m).toContain("Kiro is limiting how often this Kiro account sends requests")
+      expect(m).toContain("(USER_REQUEST_RATE_EXCEEDED)")
+      expect(m).toContain("Wait a minute")
+      expect(m).toContain("Kiro support")
+      expect(m).toContain("request ID 3f1c-req")
+      // magpie's creditWords would take it for money owed, never retried
+      expect(m).not.toMatch(/balance|credit|billing|payment|suspended/i)
+    },
+  )
+})
+
+test("an account's request rate in the stream is the same plain 429, with a wait", async () => {
+  for (const s of [true, false]) {
+    const res = await ask(
+      stream(frame({ ":message-type": "exception", ":exception-type": "ThrottlingException" },
+        { message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })),
+      s,
+    )
+    expect(res.status).toBe(429)
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(8)
+    const m = (await res.json()).error.message
+    expect(m).toMatch(/^rate limited: Kiro is limiting how often this Kiro account sends requests/)
+    expect(m).toContain("(USER_REQUEST_RATE_EXCEEDED)")
+  }
+})
