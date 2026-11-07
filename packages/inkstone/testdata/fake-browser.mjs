@@ -44,6 +44,9 @@ if (!headless) {
     mkdirSync(profilePath, { recursive: true })
     const server = Bun.serve({
       port: 0,
+      // 仅本机回环：绑 0.0.0.0（不指定 hostname 的默认）会触发 Windows 防火墙
+      // 对每次编译出来的新 exe 弹"允许访问"，路径随机所以每次都弹
+      hostname: "127.0.0.1",
       fetch(req, server) {
         const u = new URL(req.url)
         if (u.pathname === "/json/version") return Response.json({ Browser: "FakeChrome/1.0" })

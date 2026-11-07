@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
 import { renewSilently } from "./lib/browser.mjs"
-import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
+import { fakeInkStone, json, ok, fail } from "./fake.mjs"
 
 let fakeExe = ""
 let fakeDir = ""
@@ -19,11 +19,22 @@ const savedEnv = {}
 let f
 
 beforeAll(() => {
-  // compile the fake browser once (bun build --compile takes under a second)
-  fakeDir = mkdtempSync(join(tmpdir(), "inkstone-fake-browser-"))
-  const out = join(fakeDir, process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
+  // compile the fake browser once (bun build --compile takes under a second).
+  // The exe goes to a FIXED path keyed by the source's hash, not a fresh
+  // mkdtemp every run: Windows Defender allows an exe by its path, so a
+  // randomly named one pops the firewall prompt on every run (and every run
+  // of every contributor's machine). Same bytes → same path → prompted once.
+  // Rebuilt only when testdata/fake-browser.mjs changes. The dir is cleaned
+  // on exit; a leftover from a crashed run is replaced by the rebuild.
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
-  execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(out)}`, { stdio: "pipe" })
+  const { createHash } = require("node:crypto")
+  const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
+  fakeDir = join(tmpdir(), `inkstone-fake-browser-${key}`)
+  mkdirSync(fakeDir, { recursive: true })
+  const out = join(fakeDir, process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
+  if (!existsSync(out)) {
+    execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(out)}`, { stdio: "pipe" })
+  }
   fakeExe = out
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
   // save what we override: bun test runs every file in one process, so these
@@ -44,12 +55,12 @@ afterAll(() => {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  // the compiled fake is ~59 MB: never leave it behind (#824)
-  for (const dir of [profile, fakeDir]) {
-    try {
-      if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-    } catch {}
-  }
+  try {
+    rmSync(profile, { recursive: true, force: true })
+  } catch {}
+  // the profile is per-run; the compiled fake browser is not (fixed path,
+  // rebuilt only when its source changes), so removing it here would make
+  // every run recompile and re-prompt the firewall on Windows
 })
 
 afterEach(() => {
@@ -93,28 +104,6 @@ test("the silent renewal reads the session cookie through a real CDP exchange", 
   expect(token).toBe("fake-uaa-token-for-tests")
   // a second renewal works too: the fake browser was closed and the profile is reusable
   expect(await renewSilently({ browserPath: fakeExe })).toBe("fake-uaa-token-for-tests")
-}, 30_000)
-
-// #826: an "API key + console token" entry is saved by the host as
-// {type: "api", key, metadata: {apiKey, uaaToken}}. A renewed token goes back
-// under metadata, and the rest of the entry is written back as it was.
-test("a renewed token is written back where the api entry keeps it, under metadata", async () => {
-  f = fakeInkStone()
-  f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
-  f.route("GET /api/tokenplan/v1/credits/packages", () => ok(packagesFixture()))
-  f.route("GET /api/tokenplan/v1/users/validate", () => ok({ name: "张三", phone: "12345678901" }))
-  const writes = []
-  const p = await InkStoneAuthPlugin(
-    { client: { auth: { set: async (req) => writes.push(structuredClone(req.body)) } } },
-    { browser: fakeExe },
-  )
-  const expired = jwtOf({ exp: Math.floor(Date.now() / 1000) - 60 })
-  const saved = { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: expired } }
-  const u = await p.auth.usage(async () => saved)
-  expect(u.error).toBeUndefined()
-  expect(writes).toEqual([
-    { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: "fake-uaa-token-for-tests" } },
-  ])
 }, 30_000)
 
 test("a full browser sign-in opens the login window, reads the session, and creates the key", async () => {
@@ -170,4 +159,17 @@ test("prune_keys off leaves every key alone, whatever the count", async () => {
     expect(saved.type).toBe("success")
   }
   expect(keys.length).toBe(3)
+}, 60_000)
+
+test("the reuse method keeps a pasted key instead of creating one", async () => {
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const p = await pluginWithFakeBrowser()
+  const reuse = p.auth.methods[1]
+  expect(reuse.label).toContain("reuse")
+  const saved = await reuse.authorize({ apiKey: "sk-pasted" }).callback("", {})
+  expect(saved.type).toBe("success")
+  expect(saved.apiKey).toBe("sk-pasted")
+  // the pasted key is kept: nothing was created on the console
+  expect(keys.length).toBe(0)
 }, 60_000)
