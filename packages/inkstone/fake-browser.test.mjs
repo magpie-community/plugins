@@ -4,7 +4,7 @@
 // port-file → CDP cookie read → graceful close → key creation path runs here.
 import "./nonet.mjs"
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
@@ -19,11 +19,46 @@ const savedEnv = {}
 let f
 
 beforeAll(() => {
-  // compile the fake browser once (bun build --compile takes under a second)
-  fakeDir = mkdtempSync(join(tmpdir(), "inkstone-fake-browser-"))
-  const out = join(fakeDir, process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
+  // compile the fake browser once (bun build --compile takes under a second).
+  // The exe goes to a FIXED path keyed by the source's hash, not a fresh
+  // mkdtemp every run: Windows Defender allows an exe by its path, so a
+  // randomly named one pops the firewall prompt on every run (and every run
+  // of every contributor's machine). Same bytes → same path → prompted once.
+  // Rebuilt only when testdata/fake-browser.mjs changes.
+  //
+  // The dir is per-user (`os.userInfo().username`): a fixed name in the
+  // shared /tmp could be pre-created by another user on a Linux CI runner.
+  // A half-written build never parks at the final name — the compile goes to
+  // a temp name that is renamed over, so `existsSync(out)` below is only
+  // true of a complete exe (the reviewer's point about a crashed compile
+  // keeping junk forever).
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
-  execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(out)}`, { stdio: "pipe" })
+  const { createHash } = require("node:crypto")
+  const { userInfo } = require("node:os")
+  let user = ""
+  try {
+    user = userInfo().username.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
+  } catch {
+    user = process.env.USER || process.env.USERNAME || "u"
+    user = user.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
+  }
+  const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
+  fakeDir = join(tmpdir(), `inkstone-fake-browser-${user}-${key}`)
+  mkdirSync(fakeDir, { recursive: true })
+  const exeName = process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome"
+  const out = join(fakeDir, exeName)
+  if (!existsSync(out)) {
+    // bun build --compile appends its own .exe on Windows, so the temp name
+    // is computed after the build: look for whatever `*.building*` came out
+    const tmpOut = join(fakeDir, `${exeName}.building`)
+    try {
+      rmSync(tmpOut, { force: true })
+    } catch {}
+    rmSync(join(fakeDir, `${exeName}.building.exe`), { force: true })
+    execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(tmpOut)}`, { stdio: "pipe" })
+    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building.exe`)
+    renameSync(built, out)
+  }
   fakeExe = out
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
   // save what we override: bun test runs every file in one process, so these
@@ -44,12 +79,12 @@ afterAll(() => {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  // the compiled fake is ~59 MB: never leave it behind (#824)
-  for (const dir of [profile, fakeDir]) {
-    try {
-      if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-    } catch {}
-  }
+  try {
+    rmSync(profile, { recursive: true, force: true })
+  } catch {}
+  // the profile is per-run; the compiled fake browser is not (fixed path,
+  // rebuilt only when its source changes), so removing it here would make
+  // every run recompile and re-prompt the firewall on Windows
 })
 
 afterEach(() => {
@@ -95,9 +130,6 @@ test("the silent renewal reads the session cookie through a real CDP exchange", 
   expect(await renewSilently({ browserPath: fakeExe })).toBe("fake-uaa-token-for-tests")
 }, 30_000)
 
-// #826: an "API key + console token" entry is saved by the host as
-// {type: "api", key, metadata: {apiKey, uaaToken}}. A renewed token goes back
-// under metadata, and the rest of the entry is written back as it was.
 test("a renewed token is written back where the api entry keeps it, under metadata", async () => {
   f = fakeInkStone()
   f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
@@ -170,4 +202,17 @@ test("prune_keys off leaves every key alone, whatever the count", async () => {
     expect(saved.type).toBe("success")
   }
   expect(keys.length).toBe(3)
+}, 60_000)
+
+test("the reuse method keeps a pasted key instead of creating one", async () => {
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const p = await pluginWithFakeBrowser()
+  const reuse = p.auth.methods[1]
+  expect(reuse.label).toContain("reuse")
+  const saved = await reuse.authorize({ apiKey: "sk-pasted" }).callback("", {})
+  expect(saved.type).toBe("success")
+  expect(saved.apiKey).toBe("sk-pasted")
+  // the pasted key is kept: nothing was created on the console
+  expect(keys.length).toBe(0)
 }, 60_000)

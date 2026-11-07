@@ -29,6 +29,7 @@ import {
 import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/models.mjs"
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
+import { precheckImages, rewriteBody, translateError } from "./lib/preflight.mjs"
 import {
   readUaaToken,
   requireBrowser,
@@ -45,6 +46,71 @@ const QUOTA_TTL_MS = 60_000
 const DEFAULT_LOGIN_TIMEOUT_MS = 8 * 60_000
 
 const apiBase = () => ENDPOINTS.api
+
+/**
+ * 模型请求的 fetch 包装：预检（超限本地拒、宿主可切换）→ 改写（补 detail、
+ * 剥无效参数）→ 真发 → 错误翻译（端砚的图片错误宿主读不对，见 preflight.mjs）。
+ * 只认 chat/completions 和 models 两个端点；别的原样透传。
+ */
+function chatFetch(key, log = () => {}) {
+  const upstream = (...args) => globalThis.fetch(...args)
+  return async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input?.url ?? ""
+    const method = (init.method ?? (typeof input === "object" ? input?.method : undefined) ?? "GET").toUpperCase()
+    const isChat = url.includes("/chat/completions") && method === "POST"
+    if (!isChat) return upstream(input, init)
+    const raw = init.body
+    let text = ""
+    if (typeof raw === "string") text = raw
+    else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
+    else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
+    else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
+    if (text) {
+      // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
+      let body
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = null
+      }
+      if (body) {
+        const refusal = precheckImages(body)
+        if (refusal) {
+          return new Response(refusal.body, {
+            status: refusal.status,
+            headers: { "content-type": "application/json" },
+          })
+        }
+      }
+      // ②③改写：补 detail、剥无效参数。
+      init = { ...init, body: rewriteBody(text) }
+    }
+    // 真发。
+    let res
+    try {
+      res = await upstream(input, init)
+    } catch (e) {
+      throw e
+    }
+    // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
+    if (!res.ok && res.status !== 429) {
+      let said = ""
+      try {
+        said = await res.text()
+      } catch {}
+      const translated = translateError(res.status, said, log)
+      if (translated) {
+        return new Response(translated.body, {
+          status: translated.status,
+          headers: { "content-type": "application/json" },
+        })
+      }
+      // 没翻译就还回去：body 只能读一次，用读到的重建。
+      return new Response(said, { status: res.status, statusText: res.statusText, headers: res.headers })
+    }
+    return res
+  }
+}
 
 const optNum = (v, fallback) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : fallback)
 
@@ -288,6 +354,81 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     return declared
   }
 
+  /**
+   * 两个浏览器登录方式共用的 authorize：display 与候选浏览器的预检、
+   * 开窗指令、回调里的建 Key。差别只在粘贴的 Key（零提示方式为空）。
+   */
+  const browserAuthorize = (pasted) => {
+    if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+      return {
+        type: "failed",
+        error:
+          'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
+      }
+    }
+    try {
+      // an empty list fails here, before the host is told a window opened
+      requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
+    } catch (e) {
+      return { type: "failed", error: cleanDetail(e?.message ?? e) }
+    }
+    // The browser work runs in the callback: the host's authorize call
+    // has a short deadline, while a sign-in can take minutes.
+    return {
+      url: "",
+      opened: true,
+      instructions:
+        process.platform === "win32"
+          ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
+          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+      method: "auto",
+      async callback(_code, { signal } = {}) {
+        let token = ""
+        try {
+          token = await signInWithBrowser({
+            browserPath,
+            keepSignIn: keepSignInOn(),
+            timeoutMs: loginTimeoutMs,
+            waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
+            signal,
+            log,
+          })
+        } catch (e) {
+          if (e?.cancelled) return { type: "failed", error: "the sign-in was cancelled" }
+          return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
+        }
+        try {
+          const user = await usersValidate(token).catch(() => null)
+          const data = user?.data ?? {}
+          const username = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
+          // 如果账号段读不出，拿 token 的指纹兜底：保证两账号前缀永远不撞。
+          const accountIdent = username || `anon-${fingerprint(token).slice(0, 8)}`
+          const apiKey = await ensureKey(token, accountIdent, {
+            apiKey: pasted,
+            create: createKeyOn(),
+            prune: pruneOn(),
+            log,
+          })
+          return {
+            type: "success",
+            access: apiKey,
+            refresh: "",
+            expires: 0,
+            apiKey,
+            uaaToken: token,
+            accountId: username || `inkstone-${fingerprint(apiKey)}`,
+            username,
+            source: "browser",
+          }
+        } catch (e) {
+          return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
+        }
+      },
+    }
+  }
+
+
+
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -396,7 +537,19 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           type: "oauth",
           label: "Browser sign-in (ink credits + creates an API key)",
           /**
-           * 插件专用 profile 的窗口；插件实时读会话并自己关窗。
+           * 零提示：点一下直接开窗，登录后自动建 ink-* Key。与 sensenova、
+           * cursor、cline 的浏览器登录同款——生态惯例是浏览器登录不问问题。
+           */
+          authorize() {
+            return browserAuthorize("")
+          },
+        },
+        {
+          type: "oauth",
+          label: "Browser sign-in + reuse an existing API key",
+          /**
+           * 浏览器登录前可粘贴已有 Key（留空则自动新建）。唯一一个先问
+           * 一句再开窗的浏览器方式；不想被问就用上一个。
            */
           prompts: [
             {
@@ -412,73 +565,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             },
           ],
           authorize(inputs) {
-            const pasted = normalizeApiKey(inputs?.apiKey)
-            if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-              return {
-                type: "failed",
-                error:
-                  'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
-              }
-            }
-            try {
-              // an empty list fails here, before the host is told a window opened
-              requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
-            } catch (e) {
-              return { type: "failed", error: cleanDetail(e?.message ?? e) }
-            }
-            // The browser work runs in the callback: the host's authorize call
-            // has a short deadline, while a sign-in can take minutes.
-            return {
-              url: "",
-              opened: true,
-              instructions:
-                process.platform === "win32"
-                  ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you."
-                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you.",
-              method: "auto",
-              async callback(_code, { signal } = {}) {
-                let token = ""
-                try {
-                  token = await signInWithBrowser({
-                    browserPath,
-                    keepSignIn: keepSignInOn(),
-                    timeoutMs: loginTimeoutMs,
-                    waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
-                    signal,
-                    log,
-                  })
-                } catch (e) {
-                  if (e?.cancelled) return { type: "failed", error: "the sign-in was cancelled" }
-                  return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
-                }
-                try {
-                  const user = await usersValidate(token).catch(() => null)
-                  const data = user?.data ?? {}
-                  const username = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
-                  // 如果账号段读不出，拿 token 的指纹兜底：保证两账号前缀永远不撞。
-                  const accountIdent = username || `anon-${fingerprint(token).slice(0, 8)}`
-                  const apiKey = await ensureKey(token, accountIdent, {
-                    apiKey: pasted,
-                    create: createKeyOn(),
-                    prune: pruneOn(),
-                    log,
-                  })
-                  return {
-                    type: "success",
-                    access: apiKey,
-                    refresh: "",
-                    expires: 0,
-                    apiKey,
-                    uaaToken: token,
-                    accountId: username || `inkstone-${fingerprint(apiKey)}`,
-                    username,
-                    source: "browser",
-                  }
-                } catch (e) {
-                  return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
-                }
-              },
-            }
+            return browserAuthorize(normalizeApiKey(inputs?.apiKey))
           },
         },
         {
@@ -577,7 +664,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         const auth = await getAuth()
         const key = apiKeyOf(auth)
         if (!key) return {}
-        return { baseURL: apiBase(), apiKey: key }
+        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(key, log) }
       },
 
       /**

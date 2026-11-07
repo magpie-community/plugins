@@ -132,7 +132,11 @@ test('the window title is read on Windows only, even when it already shows the c
       expect(reads).toBe(0)
     }
     // the same title does end it on Windows, so the check above is not empty
+    // — on the second hit exactly (a build that counts three reads the
+    // window a third time before it answers, and fails here)
+    reads = 0
     expect(await waitForConsoleWindow(child, { platform: 'win32', titleOf, settleMs: 0, timeoutMs: 2000, pollMs: 20 })).toBe('console')
+    expect(reads).toBe(2)
   } finally {
     try { child.kill() } catch {}
   }

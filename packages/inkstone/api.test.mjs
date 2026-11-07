@@ -5,7 +5,7 @@ import "./nonet.mjs"
 import { readFileSync } from "node:fs"
 import { afterEach, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
-import { fakeInkStone, json } from "./fake.mjs"
+import { fakeInkStone, json, ok } from "./fake.mjs"
 
 let f
 afterEach(() => f?.close())
@@ -110,14 +110,21 @@ test("the loader serves the models with the key at the platform's base URL", asy
   expect(loader.baseURL).toBe(f.origin + "/v1")
 })
 
-test("the sign-in methods cover browser, API key, and API key + console token", async () => {
+test("the sign-in methods cover two browser ways, API key, and API key + console token", async () => {
   // a machine with a Chromium browser, whatever the test machine has
   const p = await plugin({ browserCandidates: () => ["/opt/chromium/chrome"] })
   const labels = p.auth.methods.map((m) => m.label)
+  // zero-prompt browser sign-in first, the paste-optional one second
   expect(labels[0]).toContain("Browser sign-in")
-  expect(labels[1]).toContain("API key only")
-  expect(labels[2]).toContain("console token")
-  // the browser method must not block the host's authorize call: the browser
+  expect(labels[0]).not.toContain("reuse")
+  expect(labels[1]).toContain("Browser sign-in")
+  expect(labels[1]).toContain("reuse")
+  expect(labels[2]).toContain("API key only")
+  expect(labels[3]).toContain("console token")
+  // the zero-prompt method has no prompts at all: the host opens the window
+  // straight away (sensenova's and cursor's browser sign-in is the same)
+  expect(p.auth.methods[0].prompts ?? []).toEqual([])
+  // both browser methods must not block the host's authorize call: the browser
   // work runs in its callback (the host's authorize deadline is short)
   const browser = p.auth.methods[0]
   const result = browser.authorize({})
@@ -131,10 +138,11 @@ test("the sign-in methods cover browser, API key, and API key + console token", 
     expect(result.instructions).toContain("Sign in there")
     expect(result.url).toBe("")
   }
-  // the browser method's key prompt is optional; a non-sk- one is refused
-  expect(browser.prompts[0].validate("")).toBeUndefined()
-  expect(browser.prompts[0].validate("sk-abc")).toBeUndefined()
-  expect(browser.prompts[0].validate("nope")).toContain("sk-")
+  // the reuse method's key prompt is optional; a non-sk- one is refused
+  const reuse = p.auth.methods[1]
+  expect(reuse.prompts[0].validate("")).toBeUndefined()
+  expect(reuse.prompts[0].validate("sk-abc")).toBeUndefined()
+  expect(reuse.prompts[0].validate("nope")).toContain("sk-")
 })
 
 test("with no Chromium browser the browser sign-in fails at authorize and names the other sign-ins (#825)", async () => {
@@ -152,8 +160,8 @@ test("with no Chromium browser the browser sign-in fails at authorize and names 
     expect(result.error).toContain('"API key only"')
     expect(result.error).toContain('"API key + console token"')
     // the names it gives are the other methods' own labels
-    expect(p.auth.methods[1].label).toStartWith("API key only")
-    expect(p.auth.methods[2].label).toStartWith("API key + console token")
+    expect(p.auth.methods[2].label).toStartWith("API key only")
+    expect(p.auth.methods[3].label).toStartWith("API key + console token")
     if (process.platform === "darwin") expect(result.error).toContain("Safari can't be used")
     else expect(result.error).not.toContain("Safari")
   } finally {
@@ -167,7 +175,7 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
   serve()
   f.route("GET /api/tokenplan/v1/users/validate", () => json({ code: 0, data: { name: "张三", phone: "12345678901" } }))
   const p = await plugin()
-  const method = p.auth.methods[2]
+  const method = p.auth.methods[3]
   // a full cookie string must be reduced to just the uaa-token value
   const okResult = await method.authorize({
     apiKey: "sk-test",
@@ -194,6 +202,104 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
     expect(bad.type).toBe("failed")
     expect(bad.error).toContain("uaa-token")
   }
+})
+
+test("the key-management calls ride the session cookie, not the bearer", async () => {
+  f = fakeInkStone()
+  const p = await plugin()
+  const seen = []
+  const serve = (method, path) =>
+    f.route(`${method} /api/tokenplan/v1${path}`, (r) => {
+      seen.push(`${method} ${path}: auth=${r.headers.get("authorization") ? "bearer" : "none"} cookie=${r.headers.get("cookie") ? "yes" : "no"}`)
+      return json({ code: 0, msg: "success", data: {} })
+    })
+  serve("GET", "/keys")
+  serve("POST", "/keys")
+  serve("DELETE", "/keys/ak_1")
+  const { listKeys, createKey, deleteKey } = await import("./lib/protocol.mjs")
+  const token = "fake-token"
+  await listKeys(token).catch(() => {})
+  await createKey(token, "ink-x", "idem-1").catch(() => {})
+  await deleteKey(token, "ak_1").catch(() => {})
+  expect(seen.length).toBe(3)
+  for (const line of seen) {
+    // the /keys family takes the session cookie; a bearer there is the
+    // -10002 "not authenticated" the real console answers (verified live,
+    // 2026-11-07: the sign-in then failed at key creation on the real thing)
+    expect(line).toContain("cookie=yes")
+    expect(line).not.toContain("auth=bearer")
+  }
+})
+
+test("the fetch wiring is the request path — each piece breaks it in a way the fake sees", async () => {
+  // 作者 review：他逐项破坏 chatFetch 的每一节（删 loader fetch、关翻译、关
+  // rewrite、关软重试、还原分页），97 个测试全绿——纯函数测试抓不住接线。
+  // 这一条把接线钉住：每一节都经这层 fetch（或 keys 层）被假服务看到。
+  f = fakeInkStone()
+  const p = await plugin()
+  const loader = await p.auth.loader(async () => auth)
+  const tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+  // ① 预检在 fetch 层生效：9 张图到不了平台
+  let asked = 0
+  f.route("POST /v1/chat/completions", () => (asked++, json({ ok: true })))
+  const nine = {
+    model: "Sage-A1.5",
+    messages: [{ role: "user", content: [{ type: "text", text: "x" }, ...Array.from({ length: 9 }, () => ({ type: "image_url", image_url: { url: `data:image/png;base64,${tiny}` } }))] }],
+  }
+  const r1 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify(nine) })
+  expect(r1.status).toBe(400)
+  expect((await r1.json()).error.message).toContain("extra inputs are not permitted")
+  expect(asked).toBe(0)
+
+  // ② 翻译在 fetch 层生效：端砚的 invalid_media 400 被换写成宿主认得的形状
+  f.route("POST /v1/chat/completions", () => json({ code: "invalid_media", message: "unsupported media type" }, 400))
+  const r2 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) })
+  expect(r2.status).toBe(400)
+  expect((await r2.json()).error.message).toContain("extra inputs are not permitted")
+
+  // ③ 改写在 fetch 层生效：reasoning 被剥、detail 被补，上游收到的就是改写后的
+  let received = null
+  f.route("POST /v1/chat/completions", (r) => {
+    asked++
+    received = r.json
+    return json({ ok: true })
+  })
+  const withReasoning = {
+    model: "Sage-A1.5",
+    reasoning: { effort: "high" },
+    messages: [{ role: "user", content: [{ type: "text", text: "x" }, { type: "image_url", image_url: { url: `data:image/png;base64,${tiny}` } }] }],
+  }
+  const r3 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify(withReasoning) })
+  expect(r3.status).toBe(200)
+  expect("reasoning" in received).toBe(false)
+  expect(received.messages[0].content[1].image_url.detail).toBe("auto")
+
+  // ④ /keys 的 cookie + 无分页 query（真机修复的回归防线——query 加回去会红）
+  const seen = { query: "", cookie: "" }
+  f.route("GET /api/tokenplan/v1/keys", (r) => {
+    seen.query = r.url
+    seen.cookie = r.headers.get("cookie") ?? ""
+    return json({ code: 0, data: { total: 0, items: [] } })
+  })
+  const { listKeys } = await import("./lib/protocol.mjs")
+  await listKeys("fake-token")
+  expect(seen.cookie).toContain("uaa-token=fake-token")
+  expect(seen.query).not.toContain("page=")
+  expect(seen.query).not.toContain("page_size=")
+
+  // ⑤ 软拒绝重试在 keys 层生效：-15100 后换名字再试
+  const attempts = []
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    attempts.push(r.json?.name)
+    if (attempts.length === 1) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
+    return ok({ key: "sk-retried" })
+  })
+  const { ensureKey } = await import("./lib/keys.mjs")
+  const key = await ensureKey("fake-token", "acct", { create: true, log: () => {} })
+  expect(key).toBe("sk-retried")
+  expect(attempts.length).toBe(2)
+  expect(attempts[0]).not.toBe(attempts[1])
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {

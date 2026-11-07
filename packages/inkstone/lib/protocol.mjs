@@ -69,6 +69,27 @@ export function consoleHeaders(token, extra = {}) {
   }
 }
 
+/**
+ * Key 管理接口（/keys 的 GET/POST/DELETE）只认会话 cookie，不认 Bearer——
+ * 2026-11-07 真机实测：Bearer 打 /keys 返回 -10002 "request is not
+ * authenticated"，同一枚 token 作 cookie 就 200。额度接口恰好相反（只认
+ * Bearer，见上）。所以 console* 系列带 auth 选项，keys.mjs 传 "cookie"。
+ */
+export function cookieHeaders(token, extra = {}) {
+  return {
+    accept: "application/json",
+    "accept-language": "zh-CN",
+    origin: ENDPOINTS.console,
+    referer: `${ENDPOINTS.console}/token-plan/home`,
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-dest": "empty",
+    ...clientHints(),
+    cookie: `uaa-token=${token}`,
+    ...extra,
+  }
+}
+
 async function readJson(res, what) {
   const text = await res.text().catch(() => "")
   let json = null
@@ -98,12 +119,12 @@ async function readJson(res, what) {
   return json
 }
 
-async function consoleFetch(url, token, init, what, timeoutMs = TIMEOUT_MS) {
+async function consoleFetch(url, token, init, what, timeoutMs = TIMEOUT_MS, auth = "bearer") {
   let res
   try {
     res = await fetch(url, {
       ...init,
-      headers: consoleHeaders(token, init?.headers),
+      headers: auth === "cookie" ? cookieHeaders(token, init?.headers) : consoleHeaders(token, init?.headers),
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (e) {
@@ -113,13 +134,13 @@ async function consoleFetch(url, token, init, what, timeoutMs = TIMEOUT_MS) {
 }
 
 /** GET a console API. `query` is an object of search params. */
-export function consoleGet(path, token, { query, timeoutMs } = {}) {
+export function consoleGet(path, token, { query, timeoutMs, auth } = {}) {
   const q = query ? `?${new URLSearchParams(query)}` : ""
-  return consoleFetch(`${ENDPOINTS.console}${path}${q}`, token, { method: "GET" }, path, timeoutMs)
+  return consoleFetch(`${ENDPOINTS.console}${path}${q}`, token, { method: "GET" }, path, timeoutMs, auth)
 }
 
 /** POST/PUT/DELETE a console API. */
-export function consoleSend(path, token, { method = "POST", body, headers, timeoutMs } = {}) {
+export function consoleSend(path, token, { method = "POST", body, headers, timeoutMs, auth } = {}) {
   return consoleFetch(
     `${ENDPOINTS.console}${path}`,
     token,
@@ -130,6 +151,7 @@ export function consoleSend(path, token, { method = "POST", body, headers, timeo
     },
     path,
     timeoutMs,
+    auth,
   )
 }
 
@@ -194,7 +216,7 @@ export const usersValidate = (token, o) => consoleGet(`${CONSOLE_API}/users/vali
 export const freeGrant = (token, o) => consoleSend(`${CONSOLE_API}/users/free-grant`, token, { ...o })
 
 export function listKeys(token, o) {
-  return consoleGet(`${CONSOLE_API}/keys`, token, o)
+  return consoleGet(`${CONSOLE_API}/keys`, token, { ...o, auth: "cookie" })
 }
 
 export function createKey(token, name, idempotencyKey, o) {
@@ -202,11 +224,12 @@ export function createKey(token, name, idempotencyKey, o) {
     body: { name },
     headers: { "Idempotency-Key": idempotencyKey },
     ...o,
+    auth: "cookie",
   })
 }
 
 export function deleteKey(token, id, o) {
-  return consoleSend(`${CONSOLE_API}/keys/${encodeURIComponent(id)}`, token, { method: "DELETE", ...o })
+  return consoleSend(`${CONSOLE_API}/keys/${encodeURIComponent(id)}`, token, { method: "DELETE", ...o, auth: "cookie" })
 }
 
 /** A stable short fingerprint for names and cache buckets. */
