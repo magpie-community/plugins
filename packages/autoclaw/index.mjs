@@ -18,7 +18,8 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { Buffer } from "node:buffer";
 import * as http from "node:http";
@@ -71,6 +72,11 @@ const FLAGGED = [
   [/(?:Anthropic's |the )?Claude Agent SDK/gi, "the agent framework"],
   [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
+  // 11-05: subagent prompts (fork/Explore) open "You are an agent for Claude
+  // Code, …" — ten 406 dumps that afternoon, all the same one line; the plain
+  // "You are Claude Code" rule above can't catch it. The "an agent for" part
+  // is generic and stays; only the harness name is masked the same way.
+  [/an agent for Claude Code(?! CLI)/gi, "an agent for the Claude Code CLI"],
   [/You are Codex/gi, "You are the Codex agent"],
   [/Codex CLI/gi, "Codex command-line tool"],
   [/You are opencode/gi, "You are the opencode agent"],
@@ -81,10 +87,15 @@ const FLAGGED = [
   [/operating inside pi, a coding agent harness/gi, "operating inside the pi coding agent harness"],
   // ZCode's opening line is "This conversation is powered by GLM-<version>";
   // the CN gateway refuses that wording with any GLM version, in any case,
-  // anywhere (#466: WorkBuddy renders it for a custom GLM model). A bare
-  // "GLM", "ChatGLM-5.3" or "the GLM-5.3 model" passes. The version stops
-  // before a sentence's closing period.
+  // anywhere (#466: WorkBuddy renders it for a custom GLM model). On 11-03
+  // the same refusal caught the Fable harness's "You are powered by the
+  // model glm-5.3-flash[1m]." (42 x 406; probed: that line alone 406s, the
+  // rewritten form 200s). The version stops before a sentence's closing
+  // period, and a context-tier bracket ("[1m]") after it goes with it. Only
+  // forms with the GLM name are touched: a bare model name ("the model
+  // 4.6-turbo") is not one the gateway has been seen to refuse.
   [/This conversation is powered by GLM-([\w-]+(?:\.[\w-]+)*)/gi, "This conversation is powered by the GLM-$1 model"],
+  [/(powered by )the model GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?/gi, "$1the GLM-$2 model"],
   // WorkBuddy's CLI template still opens "You are CodeBuddy Code." (#466);
   // "You are CodeBuddy" alone passes.
   [/You are CodeBuddy Code/gi, "You are the CodeBuddy Code CLI"],
@@ -138,8 +149,76 @@ function unflag(messages) {
 const REFUSED_HINT =
   "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
-async function explained(res) {
+// A 406's diagnosis is the system prompt and nothing else. The dump is off
+// by default — the body is the user's conversation, and a system prompt is
+// not free of personal data either (harnesses put the working directory, git
+// status, project instruction files and sometimes the user's email there) —
+// and runs only when AUTOCLAW_406_DUMP_DIR names a directory, or the plugin's
+// dump406 option is on (then the default directory below). What a dump holds
+// is the rewritten system and developer messages only, never user, assistant
+// or tool content, one file per refusal, the newest D406_KEEP kept, file mode
+// 0600 in a 0700 directory. The dump directory may be any directory the user
+// points at, so rotation touches only the dump's own files — every name
+// matching the DUMP_NAME shape — never anything else's. Everything is
+// best-effort: a dump that cannot be written never breaks the 406 it
+// documents.
+const D406_KEEP = 10;
+// DUMP_NAME is the whole name a dump file goes by: rotation filters on this
+// exact shape, so a user's own .json files in the same directory are never
+// deleted (a plain *.json filter removed four of thirteen foreign files in a
+// probe).
+const DUMP_NAME = /^autoclaw-406-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[\w-]{8}-[\w-]+\.json$/;
+
+// The default dump directory, magpie's own config home. The fallbacks matter
+// on Windows, where the GUI process often runs without HOME — 11-05's dumps
+// landed at the CWD's drive root (C:\.config\…) until USERPROFILE backed it
+// up. An empty variable is no value: XDG_CONFIG_HOME="" under ?? gave
+// "/magpie/autoclaw-406"; os.homedir() is the last resort.
+function dumpDefaultDir() {
+  const home = process.env.HOME || process.env.USERPROFILE || homedir();
+  return `${process.env.XDG_CONFIG_HOME || `${home}/.config`}/magpie/autoclaw-406`;
+}
+
+function dump406(sentBody, providerId, wantDump) {
+  try {
+    const dir = process.env.AUTOCLAW_406_DUMP_DIR || (wantDump === true ? dumpDefaultDir() : "");
+    if (!dir) return;
+    let body;
+    try {
+      body = JSON.parse(typeof sentBody === "string" ? sentBody : JSON.stringify(sentBody));
+    } catch {
+      return;
+    }
+    const messages = (Array.isArray(body?.messages) ? body.messages : []).filter(
+      (m) => m && (m.role === "system" || m.role === "developer"),
+    );
+    if (!messages.length) return;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    // two refusals in the same millisecond are not the same request: the
+    // random tail keeps both files, and rotation goes by write time, not by
+    // name
+    writeFileSync(
+      `${dir}/autoclaw-406-${stamp}-${randomUUID().slice(0, 8)}-${providerId}.json`,
+      JSON.stringify({ model: body.model, messages }),
+      { mode: 0o600 },
+    );
+    const old = readdirSync(dir)
+      .filter((f) => DUMP_NAME.test(f))
+      .map((f) => {
+        try { return { f, at: statSync(`${dir}/${f}`).mtimeMs }; } catch { return { f, at: 0 }; }
+      })
+      .sort((a, b) => a.at - b.at)
+      .map((e) => e.f);
+    for (const f of old.slice(0, Math.max(0, old.length - D406_KEEP))) {
+      try { unlinkSync(`${dir}/${f}`); } catch {}
+    }
+  } catch {}
+}
+
+async function explained(res, sentBody, providerId, options) {
   if (res.status < 400) return res;
+  if (res.status === 406 && sentBody) dump406(sentBody, providerId, options?.dump406);
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
@@ -1055,7 +1134,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                 fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
 
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1);
+              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId, options);
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
@@ -1070,20 +1149,21 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
-              return explained(res2);
+              return explained(res2, nextBody, providerId, options);
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
             // channel. It requires the system prefix and rejects max_tokens.
             const { payload, model } = rewriteManagedBody(init?.body);
             const headers = managedHeaders(accessToken, model);
+            const sentBody = JSON.stringify(payload);
             const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
               ...init,
               method: "POST",
               headers,
-              body: JSON.stringify(payload),
+              body: sentBody,
             });
-            if (res.status !== 401 && res.status !== 403) return explained(res);
+            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId, options);
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
@@ -1768,5 +1848,6 @@ export const _internal = {
   balanceObserve, usageStatePath: () => usageStatePath ?? usageStatePathDefault(), setUsageStatePath, beijingDayOf,
   fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth,
   FLAGGED, unflagged, unflag, tidyBody, rewriteManagedBody, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+  dumpDefaultDir, D406_KEEP,
   guidePageHtml, callbackPageHtml,
 };
