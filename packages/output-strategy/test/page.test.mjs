@@ -11,6 +11,7 @@ const sampleCatalog = ids.map(id => ({ id, label: `Label ${id}`, description: `D
 class FakeElement {
   constructor(tagName, id = "") {
     this.tagName = tagName.toUpperCase()
+    this.nodeType = 1
     this.id = id
     this.children = []
     this.parentNode = null
@@ -37,8 +38,8 @@ class FakeElement {
   }
   get firstChild() { return this.children[0] || null }
   get nextSibling() {
-    if (!this.parentNode) return null
-    return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null
+    const siblings = this.parentNode ? this.parentNode.children : []
+    return siblings[siblings.indexOf(this) + 1] || null
   }
   set textContent(value) {
     this._textContent = String(value)
@@ -160,6 +161,36 @@ describe("host language", () => {
     expect(document.documentElement.lang).toBe("en")
     expect(document.nodes.saveButton.textContent).toBe("Save changes")
     expect(document.nodes.formMessage.textContent).toBe("Pick styles and save.")
+    setLang("zh-TW")
+    expect(document.documentElement.lang).toBe("zh-TW")
+    expect(document.nodes.saveButton.textContent).toBe("Save changes")
+  })
+
+  test("preserves unsaved choices when host language changes", async () => {
+    const { document, setLang } = await boot({ current: { styles: {} }, lang: "en" })
+    const before = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    before[0].checked = true
+    before[0].dispatch("change")
+    setLang("zh-CN")
+    setLang("en")
+    const after = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    expect(after[0].checked).toBe(true)
+    expect(document.nodes.saveButton.disabled).toBe(false)
+    expect(document.nodes.formMessage.textContent).toBe("Unsaved changes.")
+  })
+
+  test("translates static English text to Chinese and back to its original text", () => {
+    const body = new FakeElement("body")
+    const text = { nodeType: 3, nodeValue: "Output Strategy", parentNode: body }
+    body.append(text)
+    const document = { documentElement: {}, body }
+    let repaint
+    const sandbox = { document, magpie: { theme: { lang: "zh" }, onTheme(callback) { repaint = callback } } }
+    vm.createContext(sandbox)
+    vm.runInContext(i18nSource, sandbox)
+    expect(text.nodeValue).toBe("输出策略")
+    repaint({ lang: "en" })
+    expect(text.nodeValue).toBe("Output Strategy")
   })
 
   test("ships English HTML and no private stats or local language switch", () => {

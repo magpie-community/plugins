@@ -71,6 +71,10 @@
   }
 
   function renderCatalog() {
+    var checked = Object.create(null)
+    catalog.forEach(function (style) {
+      if (inputs[style.id]) checked[style.id] = inputs[style.id].checked === true
+    })
     clear(list)
     inputs = Object.create(null)
     renderCatalogState()
@@ -88,6 +92,7 @@
       input.type = "checkbox"
       input.id = "style-" + style.id
       input.name = style.id
+      input.checked = checked[style.id] === true
       input.setAttribute("data-style-id", style.id)
       input.addEventListener("change", function () {
         dirty = true

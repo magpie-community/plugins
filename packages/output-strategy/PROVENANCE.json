@@ -56,6 +56,12 @@
       "revision": "v3.8.52",
       "license": "MIT"
     },
+    "ANTISLOP_BOUNDARIES": {
+      "repository": "https://github.com/diegosouzapw/OmniRoute",
+      "path": "open-sse/services/compression/outputStyles/antislop.ts",
+      "revision": "v3.8.52",
+      "license": "MIT"
+    },
     "apply-design": {
       "repository": "https://github.com/diegosouzapw/OmniRoute",
       "path": "open-sse/services/compression/outputStyles/apply.ts",

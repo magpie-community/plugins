@@ -1,5 +1,4 @@
 node_modules/
-page/stats.js
 *.tmp
 *.bak
 .DS_Store

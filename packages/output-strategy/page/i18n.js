@@ -41,17 +41,36 @@
   }
 
   function normalize(value) {
-    return String(value || "").toLowerCase().indexOf("zh") === 0 ? "zh" : "en"
+    var lower = String(value || "").toLowerCase()
+    return lower === "zh" || lower === "zh-cn" || lower === "zh-hans" ? "zh" : "en"
+  }
+
+  function languageTag(value) {
+    var lower = String(value || "").toLowerCase()
+    if (lower === "zh-tw" || lower === "zh-hant") return "zh-TW"
+    return lang === "zh" ? "zh-CN" : "en"
   }
 
   var lang = "en"
   var listeners = []
+  var sourceText = typeof WeakMap === "undefined" ? null : new WeakMap()
+  var translatedText = typeof WeakMap === "undefined" ? null : new WeakMap()
 
   function translate(root) {
     if (!root) return
     if (root.nodeType === 3) {
-      var text = root.nodeValue.trim()
-      if (lang === "zh" && ZH[text]) root.nodeValue = root.nodeValue.replace(text, ZH[text])
+      if (sourceText && translatedText && root.nodeValue !== translatedText.get(root)) {
+        sourceText.delete(root)
+      }
+      var text = sourceText ? sourceText.get(root) : root.nodeValue
+      if (text === undefined) {
+        text = root.nodeValue
+        if (sourceText) sourceText.set(root, text)
+      }
+      var trimmed = text.trim()
+      var next = lang === "zh" && ZH[trimmed] ? text.replace(trimmed, ZH[trimmed]) : text
+      if (translatedText) translatedText.set(root, next)
+      root.nodeValue = next
       return
     }
     if (root.nodeType !== 1 || root.tagName === "SCRIPT" || root.tagName === "STYLE") return
@@ -65,7 +84,8 @@
   function applyTheme(theme) {
     lang = normalize(theme && theme.lang)
     if (typeof document !== "undefined" && document.documentElement) {
-      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en"
+      document.documentElement.lang = languageTag(theme.lang)
+      document.title = lang === "zh" ? "输出策略" : "Output Strategy"
       translate(document.body)
     }
     listeners.forEach(function (listener) { listener(lang) })
