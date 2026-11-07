@@ -248,21 +248,25 @@ function noteOfferedModels(configOptions, models) {
   acpOfferedKey = key
 }
 
+// A model the session offers that `agy models` did not list is served as is.
+function withOffered(list) {
+  if (!acpOfferedModels) return list
+  const covered = new Set(list.flatMap(model => [model.id, modelFamilyId(model)]))
+  return [...list, ...[...acpOfferedModels].filter(([id]) => !covered.has(id)).map(([id, name]) => ({ id, name }))]
+}
+
 function offeredFilter(list) {
   if (!acpOfferedModels) return list.filter(model => /^gemini-/i.test(model.id))
-  const kept = list.filter(model => acpOfferedModels.has(model.id) ||
-    (modelFamilyId(model) && acpOfferedModels.has(modelFamilyId(model))))
-  // A model the session offers that `agy models` did not list is served as is.
-  const covered = new Set(kept.flatMap(model => [model.id, modelFamilyId(model)]))
-  for (const [id, name] of acpOfferedModels) {
-    if (!covered.has(id)) kept.push({ id, name })
-  }
-  return kept
+  return withOffered(list.filter(model => acpOfferedModels.has(model.id) ||
+    (modelFamilyId(model) && acpOfferedModels.has(modelFamilyId(model)))))
 }
 
 function catalogOf(entry) {
   if (entry.offeredKey !== acpOfferedKey || !entry.catalog) {
     entry.catalog = buildModelCatalog(offeredFilter(entry.list))
+    // A request is routed by every model agy lists: the first request for a
+    // model comes before any session has said what it offers.
+    entry.catalog.routing = buildModelCatalog(withOffered(entry.list))
     entry.offeredKey = acpOfferedKey
   }
   return entry.catalog
@@ -467,7 +471,8 @@ function resolveCatalogAlias(catalog, model) {
   return { id: model, inlineEffort: "" }
 }
 
-function resolveAgyModel(catalog, model, body) {
+function resolveAgyModel(listed, model, body) {
+  const catalog = listed.routing ?? listed
   const { id: resolvedId, inlineEffort } = resolveCatalogAlias(catalog, model)
   const family = catalog.routes.get(resolvedId)
   if (!family) return resolvedId
