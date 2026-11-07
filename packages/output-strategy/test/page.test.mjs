@@ -199,7 +199,7 @@ describe("host language", () => {
     const closes = (css.match(/}/g) || []).length
     expect(closes).toBe(opens)
     expect(css).toContain("padding-top: 28px;\n  }\n}\n\n@media (max-width: 460px)")
-    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.2.1")
+    expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe("0.2.2")
   })
 
   test("falls back safely when host theme is missing", () => {

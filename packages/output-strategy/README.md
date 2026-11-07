@@ -1,6 +1,8 @@
 # output-strategy
 
-Composable output-style instructions injected before a model call. Seven styles are available in a small selection panel; **every style is off by default**.
+An (unofficial) output-style plugin for magpie, developed and maintained by manjughosa.
+
+本插件由 manjughosa 独立开发并维护，非官方出品。七种输出样式可以自由组合，全部默认关闭。
 
 The style texts and the original request-injection design are adapted from OmniRoute's Output Styles, caveman, ponytail, i-have-adhd and 9router. Exact sources, revisions, licenses and adaptations are recorded in `PROVENANCE.json`; upstream license files are in `LICENSES/`.
 
