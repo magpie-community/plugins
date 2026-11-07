@@ -33,17 +33,27 @@ export function decodedBytes(b64) {
   return Math.max(0, Math.floor((s.length * 3) / 4) - pad)
 }
 
-/** 一张图片的类型与原图字节：data: URL 解前缀；http(s) URL 猜扩展名。 */
+// URL 引用里已知平台不收的图片扩展名：只拒绝这些，其余一律放行——平台
+// 会自己拉取并按字节判断（拉不到是 502 media_fetch_failed，会被翻译成
+// 形状错误）。按最后一个点猜格式会误伤 `render.php?id=1`、`abc.download`
+// 这类链接（真机审查发现，2026-11-07）。
+const UNTAKEN_EXTENSIONS = new Set(["svg", "svgz", "tiff", "tif", "heic", "heif", "avif", "ico"])
+
+/** 一张图片的类型与原图字节：data: URL 解前缀；http(s) URL 只认已知坏扩展。 */
 export function imageOf(url) {
   const m = DATA_URL.exec(String(url ?? ""))
   if (m) {
     const rest = String(url).slice(m[0].length)
-    return { type: m[1].toLowerCase(), bytes: m[2] ? decodedBytes(rest) : 0, inline: true }
+    // data:image/jpg 在野外在见（非正式媒体类型），按 image/jpeg 判
+    const type = m[1].toLowerCase() === "image/jpg" ? "image/jpeg" : m[1].toLowerCase()
+    return { type, bytes: m[2] ? decodedBytes(rest) : 0, inline: true }
   }
   const u = String(url ?? "").split(/[?#]/)[0].toLowerCase()
   const ext = /\.([a-z0-9]+)$/.exec(u)?.[1]
-  const type = ext ? `image/${ext === "jpg" ? "jpeg" : ext}` : ""
-  return { type, bytes: 0, inline: false }
+  // 只认黑名单：命中 → 平台不收的类型；未知扩展（php、download、无扩展）
+  // → type 置空放行，平台按拉到的字节自己判断
+  const untaken = ext && UNTAKEN_EXTENSIONS.has(ext) ? `image/${ext === "svgz" ? "svg+xml" : ext}` : ""
+  return { type: untaken, bytes: 0, inline: false }
 }
 
 // 拒绝文案里禁止出现的字眼：它们是宿主 quotaWords/creditWords/unservedWords

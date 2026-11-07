@@ -71,13 +71,22 @@ describe("imageOf", () => {
     expect(one.inline).toBe(true)
     expect(one.bytes).toBe(decodedBytes(tiny))
   })
-  test("reads a data: URL without base64 as zero bytes", () => {
+  test("data:image/jpg is read as image/jpeg (the informal type is in the wild)", () => {
+    expect(imageOf("data:image/jpg;base64,AAAA").type).toBe("image/jpeg")
+  })
+  test("a data: URL without base64 is zero bytes", () => {
     expect(imageOf("data:image/svg+xml,<svg/>")).toEqual({ type: "image/svg+xml", bytes: 0, inline: true })
   })
-  test("guesses a URL image's type from its extension", () => {
-    expect(imageOf("https://x.test/a.PNG?w=1")).toEqual({ type: "image/png", bytes: 0, inline: false })
-    expect(imageOf("https://x.test/a.jpg")).toEqual({ type: "image/jpeg", bytes: 0, inline: false })
-    expect(imageOf("https://x.test/noext")).toEqual({ type: "", bytes: 0, inline: false })
+  test("a URL whose extension is a known-untaken type is refused", () => {
+    expect(imageOf("https://x.test/p.svg?w=1").type).toBe("image/svg")
+    expect(imageOf("https://x.test/p.heic").type).toBe("image/heic")
+    expect(imageOf("https://x.test/p.tif").type).toBe("image/tif")
+  })
+  test("a URL with an unknown (or no) extension passes — the plan fetches and judges the bytes itself", () => {
+    // 每一个都曾被误判为图片类型而拒绝（真机审查，2026-11-07）
+    for (const url of ["https://x.test/render.php?id=1", "https://x.test/abc.download", "https://x.test/12345.67", "https://x.test/noext", "https://x.test/a.png?w=1"]) {
+      expect(imageOf(url).type).toBe("")
+    }
   })
 })
 

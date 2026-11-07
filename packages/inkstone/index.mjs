@@ -63,7 +63,7 @@ function chatFetch(key, log = () => {}) {
     let text = ""
     if (typeof raw === "string") text = raw
     else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
-    else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw.buffer ?? raw)
+    else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
     else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
     if (text) {
       // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。

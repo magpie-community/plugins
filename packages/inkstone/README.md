@@ -32,6 +32,8 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 | **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
 | **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
 
+> 浏览器登录需要本机装有 Microsoft Edge、Google Chrome 或 Chromium（可以用 `MAGPIE_INKSTONE_BROWSER` 指定路径）。Safari 用不了：插件要在单独的浏览器 profile 里登录，Safari 不支持。没有这些浏览器时，选「仅 API Key」，或「API Key + 控制台 token」（token 可以从任何浏览器里复制，包括 Safari）。
+>
 > 不读、不动你日常浏览器的任何数据：Edge/Chrome 136+ 禁止在默认用户目录上开调试端口，而且把真实 profile 从别的路径打开会清掉端砚登录态。插件的专用 profile 是唯一可行且安全的地方。
 
 账号的 Key 上限是 10 把，所以本插件建的 Key 名字是
@@ -121,33 +123,6 @@ permitted: …`）。magpie 对这种错误的处理是**问组里的下一个�
 按模型的 token 消耗明细不在额度卡上（那是用量页的事），额度卡只管额度。
 读不到的字段不会显示成 0：额度读取失败时卡片说明原因，模型调用不受影响。
 
-<<<<<<< HEAD
-## 登录方式
-
-| 方式 | 做什么 | 产出 |
-|---|---|---|
-| **浏览器登录（推荐）** | 用**插件自己的专用浏览器 profile** 开一个窗口，你在里面登录控制台（密码 / 短信 / 扫码）。登录窗口**不带调试端口**（阿里验证码能过）。**Windows** 上插件用窗口标题判断登录完成、**自己关窗**；**macOS / Linux** 读不了窗口标题，登录完成后请**自己关掉窗口**，插件接着自动收尾。之后的续期/重登都静默完成 | 额度 + 模型 |
-| **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
-| **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
-
-浏览器登录需要本机装有 Microsoft Edge、Google Chrome 或 Chromium（也可以用 `MAGPIE_INKSTONE_BROWSER` 指定路径）。Safari 用不了：插件要在单独的浏览器 profile 里登录，Safari 不支持。没有这些浏览器时，选「仅 API Key」，或「API Key + 控制台 token」（token 可以从任何浏览器里复制，包括 Safari）。
-
-> 不读、不动你日常浏览器的任何数据：Edge/Chrome 136+ 禁止在默认用户目录上开调试端口，而且把真实 profile 从别的路径打开会清掉端砚登录态。插件的专用 profile 是唯一可行且安全的地方。
-
-浏览器登录时可以把**现有 Key** 粘进 “TokenPlan API key”；留空才会
-创建新 Key。账号的 Key 上限是 10 把，所以本插件建的 Key 名字是
-`ink-<host>-<account>-<random>`（18 字符），清理只碰这个前缀，**手动建的 Key
-永远不动**；默认保留最新两把、并始终保留本次登录创建的那把。
-
-### 登录态复用与续期
-
-`uaa-token` 是网页登录态，不是 OAuth refresh token；平台前端没有 refresh
-逻辑。插件默认保留一个**专用浏览器 profile**，快过期时用 headless 打开控制台
-页面**静默续期**（SSO 会话还在就会换新 cookie）。关掉 `keep_sign_in` 就改成
-一次性 profile：登录完删除，过期后手动重登。
-
-=======
->>>>>>> 70301cd (inkstone: the README covers the image caps, the preflight and the error mapping, lists all four sign-in ways, and gains an English section (the reviewer's note that an English one would help))
 ## 免费墨点领取（可选）
 
 控制台首页加载时会 `POST /users/free-grant` 领当月免费墨点（幂等，没有按钮）。

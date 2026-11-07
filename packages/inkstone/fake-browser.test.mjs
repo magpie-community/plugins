@@ -4,13 +4,13 @@
 // port-file → CDP cookie read → graceful close → key creation path runs here.
 import "./nonet.mjs"
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
 import { renewSilently } from "./lib/browser.mjs"
-import { fakeInkStone, json, ok, fail } from "./fake.mjs"
+import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
 
 let fakeExe = ""
 let fakeDir = ""
@@ -24,16 +24,40 @@ beforeAll(() => {
   // mkdtemp every run: Windows Defender allows an exe by its path, so a
   // randomly named one pops the firewall prompt on every run (and every run
   // of every contributor's machine). Same bytes → same path → prompted once.
-  // Rebuilt only when testdata/fake-browser.mjs changes. The dir is cleaned
-  // on exit; a leftover from a crashed run is replaced by the rebuild.
+  // Rebuilt only when testdata/fake-browser.mjs changes.
+  //
+  // The dir is per-user (`os.userInfo().username`): a fixed name in the
+  // shared /tmp could be pre-created by another user on a Linux CI runner.
+  // A half-written build never parks at the final name — the compile goes to
+  // a temp name that is renamed over, so `existsSync(out)` below is only
+  // true of a complete exe (the reviewer's point about a crashed compile
+  // keeping junk forever).
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
   const { createHash } = require("node:crypto")
+  const { userInfo } = require("node:os")
+  let user = ""
+  try {
+    user = userInfo().username.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
+  } catch {
+    user = process.env.USER || process.env.USERNAME || "u"
+    user = user.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
+  }
   const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
-  fakeDir = join(tmpdir(), `inkstone-fake-browser-${key}`)
+  fakeDir = join(tmpdir(), `inkstone-fake-browser-${user}-${key}`)
   mkdirSync(fakeDir, { recursive: true })
-  const out = join(fakeDir, process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome")
+  const exeName = process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome"
+  const out = join(fakeDir, exeName)
   if (!existsSync(out)) {
-    execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(out)}`, { stdio: "pipe" })
+    // bun build --compile appends its own .exe on Windows, so the temp name
+    // is computed after the build: look for whatever `*.building*` came out
+    const tmpOut = join(fakeDir, `${exeName}.building`)
+    try {
+      rmSync(tmpOut, { force: true })
+    } catch {}
+    rmSync(join(fakeDir, `${exeName}.building.exe`), { force: true })
+    execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(tmpOut)}`, { stdio: "pipe" })
+    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building.exe`)
+    renameSync(built, out)
   }
   fakeExe = out
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
@@ -104,6 +128,25 @@ test("the silent renewal reads the session cookie through a real CDP exchange", 
   expect(token).toBe("fake-uaa-token-for-tests")
   // a second renewal works too: the fake browser was closed and the profile is reusable
   expect(await renewSilently({ browserPath: fakeExe })).toBe("fake-uaa-token-for-tests")
+}, 30_000)
+
+test("a renewed token is written back where the api entry keeps it, under metadata", async () => {
+  f = fakeInkStone()
+  f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
+  f.route("GET /api/tokenplan/v1/credits/packages", () => ok(packagesFixture()))
+  f.route("GET /api/tokenplan/v1/users/validate", () => ok({ name: "张三", phone: "12345678901" }))
+  const writes = []
+  const p = await InkStoneAuthPlugin(
+    { client: { auth: { set: async (req) => writes.push(structuredClone(req.body)) } } },
+    { browser: fakeExe },
+  )
+  const expired = jwtOf({ exp: Math.floor(Date.now() / 1000) - 60 })
+  const saved = { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: expired } }
+  const u = await p.auth.usage(async () => saved)
+  expect(u.error).toBeUndefined()
+  expect(writes).toEqual([
+    { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: "fake-uaa-token-for-tests" } },
+  ])
 }, 30_000)
 
 test("a full browser sign-in opens the login window, reads the session, and creates the key", async () => {

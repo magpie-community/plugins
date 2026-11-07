@@ -5,7 +5,7 @@ import "./nonet.mjs"
 import { readFileSync } from "node:fs"
 import { afterEach, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
-import { fakeInkStone, json } from "./fake.mjs"
+import { fakeInkStone, json, ok } from "./fake.mjs"
 
 let f
 afterEach(() => f?.close())
@@ -229,6 +229,77 @@ test("the key-management calls ride the session cookie, not the bearer", async (
     expect(line).toContain("cookie=yes")
     expect(line).not.toContain("auth=bearer")
   }
+})
+
+test("the fetch wiring is the request path — each piece breaks it in a way the fake sees", async () => {
+  // 作者 review：他逐项破坏 chatFetch 的每一节（删 loader fetch、关翻译、关
+  // rewrite、关软重试、还原分页），97 个测试全绿——纯函数测试抓不住接线。
+  // 这一条把接线钉住：每一节都经这层 fetch（或 keys 层）被假服务看到。
+  f = fakeInkStone()
+  const p = await plugin()
+  const loader = await p.auth.loader(async () => auth)
+  const tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+  // ① 预检在 fetch 层生效：9 张图到不了平台
+  let asked = 0
+  f.route("POST /v1/chat/completions", () => (asked++, json({ ok: true })))
+  const nine = {
+    model: "Sage-A1.5",
+    messages: [{ role: "user", content: [{ type: "text", text: "x" }, ...Array.from({ length: 9 }, () => ({ type: "image_url", image_url: { url: `data:image/png;base64,${tiny}` } }))] }],
+  }
+  const r1 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify(nine) })
+  expect(r1.status).toBe(400)
+  expect((await r1.json()).error.message).toContain("extra inputs are not permitted")
+  expect(asked).toBe(0)
+
+  // ② 翻译在 fetch 层生效：端砚的 invalid_media 400 被换写成宿主认得的形状
+  f.route("POST /v1/chat/completions", () => json({ code: "invalid_media", message: "unsupported media type" }, 400))
+  const r2 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }) })
+  expect(r2.status).toBe(400)
+  expect((await r2.json()).error.message).toContain("extra inputs are not permitted")
+
+  // ③ 改写在 fetch 层生效：reasoning 被剥、detail 被补，上游收到的就是改写后的
+  let received = null
+  f.route("POST /v1/chat/completions", (r) => {
+    asked++
+    received = r.json
+    return json({ ok: true })
+  })
+  const withReasoning = {
+    model: "Sage-A1.5",
+    reasoning: { effort: "high" },
+    messages: [{ role: "user", content: [{ type: "text", text: "x" }, { type: "image_url", image_url: { url: `data:image/png;base64,${tiny}` } }] }],
+  }
+  const r3 = await loader.fetch(`${f.origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify(withReasoning) })
+  expect(r3.status).toBe(200)
+  expect("reasoning" in received).toBe(false)
+  expect(received.messages[0].content[1].image_url.detail).toBe("auto")
+
+  // ④ /keys 的 cookie + 无分页 query（真机修复的回归防线——query 加回去会红）
+  const seen = { query: "", cookie: "" }
+  f.route("GET /api/tokenplan/v1/keys", (r) => {
+    seen.query = r.url
+    seen.cookie = r.headers.get("cookie") ?? ""
+    return json({ code: 0, data: { total: 0, items: [] } })
+  })
+  const { listKeys } = await import("./lib/protocol.mjs")
+  await listKeys("fake-token")
+  expect(seen.cookie).toContain("uaa-token=fake-token")
+  expect(seen.query).not.toContain("page=")
+  expect(seen.query).not.toContain("page_size=")
+
+  // ⑤ 软拒绝重试在 keys 层生效：-15100 后换名字再试
+  const attempts = []
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    attempts.push(r.json?.name)
+    if (attempts.length === 1) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
+    return ok({ key: "sk-retried" })
+  })
+  const { ensureKey } = await import("./lib/keys.mjs")
+  const key = await ensureKey("fake-token", "acct", { create: true, log: () => {} })
+  expect(key).toBe("sk-retried")
+  expect(attempts.length).toBe(2)
+  expect(attempts[0]).not.toBe(attempts[1])
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
