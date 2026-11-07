@@ -1337,7 +1337,7 @@ const TOO_LONG = "input is too long for the model's context: "
 
 // failure is the status and message for an error Kiro answered with:
 // {"message": "...", "reason": "..."}.
-function failure(status, body) {
+function failure(status, body, id) {
   let msg = String(body ?? "").trim()
   try {
     const e = JSON.parse(body)
@@ -1347,8 +1347,32 @@ function failure(status, body) {
   if (tooLongSaid(msg)) return { status: 400, message: TOO_LONG + msg }
   if (msg.includes("INSUFFICIENT_MODEL_CAPACITY")) return { status: 503, message: msg }
   if (msg.includes("MONTHLY_REQUEST_COUNT") || msg.includes("USAGE_LIMIT")) return { status: 429, message: "usage limit reached: " + msg }
+  if (msg.includes(USER_RATE)) return { status: 429, message: userRate(msg, id) }
   return { status, message: msg }
 }
+
+// USER_RATE is the reason Kiro gives a 429 for one account's requests
+// coming too often (the Kiro IDE's ThrottlingException reasons, agent
+// 1.1.499: apart from the credit rate, the service's rate and the daily
+// and monthly counts). Kiro's own words, "Too many requests, please wait
+// before trying again.", say neither whose limit it is nor how long:
+// onemezao on Discord had it on every request of one account through pi,
+// 42s each, while the Kiro IDE answered on the same account.
+const USER_RATE = "USER_REQUEST_RATE_EXCEEDED"
+// USER_RATE_WAIT is the wait a USER_RATE refusal says when Kiro says none:
+// longer than magpie's same-account retries (8s), so the request isn't
+// sent again at 1, 2 and 4s, each try one more on the account's rate.
+// Other Kiro relays pause 3 to 12s for it; one that outlived those
+// wasn't going to clear in magpie's next few.
+const USER_RATE_WAIT = 30_000
+
+// userRate is a USER_RATE refusal in plain words: whose limit, what to
+// do, and the request ID Kiro support asks for.
+const userRate = (msg, id) =>
+  `rate limited: Kiro is limiting how often this Kiro account sends requests (${msg}). ` +
+  "Wait a minute before sending again. If it keeps coming back while the Kiro app works on the same account, " +
+  "the limit is on the account, and Kiro support (app.kiro.dev) can look at it" +
+  (id ? `, with request ID ${id}.` : ".")
 
 const ERROR_TYPES = { 400: "invalid_request_error", 401: "authentication_error", 402: "billing_error", 403: "permission_error",
   404: "not_found_error", 413: "request_too_large", 429: "rate_limit_error", 503: "overloaded_error", 529: "overloaded_error" }
@@ -1363,12 +1387,17 @@ const errorResponse = (status, message, wait) =>
       ...(wait > 0 ? { "Retry-After": String(Math.ceil(wait / 1000)) } : {}) },
   })
 
+// requestID is the ID Kiro gave its answer, which its support asks for:
+// what the Kiro IDE reads (x-amzn-requestid, else x-request-id).
+const requestID = (headers) => headers.get("x-amzn-requestid") || headers.get("x-request-id") || ""
+
 // waitOf is the milliseconds Kiro's refusal says to wait before asking
 // again, or undefined: what Kiro's own clients read. The Kiro IDE (agent
 // 1.1.499) reads the x-amzn-kiro-ratelimit-retry-after header and the
 // body's retryAfterMilliseconds, both in milliseconds; kiro-cli's AWS SDK
 // reads x-amz-retry-after, in milliseconds; and Retry-After is HTTP's, in
-// seconds or as a date. Unsaid, magpie keeps to its own pauses.
+// seconds or as a date. Unsaid, magpie keeps to its own pauses, but for
+// an account's request rate (USER_RATE_WAIT).
 function waitOf(headers, body) {
   const ms = (v) => {
     const n = v == null || v === "" ? NaN : Number(v)
@@ -1384,6 +1413,7 @@ function waitOf(headers, body) {
     const secs = ms(ra)
     w = secs !== undefined ? secs * 1000 : ms(Date.parse(ra) - Date.now())
   }
+  if (w === undefined && String(body ?? "").includes(USER_RATE)) w = USER_RATE_WAIT
   return w
 }
 
@@ -1464,6 +1494,7 @@ function exception(kind, payload) {
   } catch {}
   let msg = e.message || e.Message || new TextDecoder().decode(payload).trim()
   if (e.reason) msg += ` (${e.reason})`
+  if (e.reason === USER_RATE) return userRate(msg)
   if (String(kind).toLowerCase().includes("throttl")) return "rate limited: " + msg
   return kind ? `${kind}: ${msg}` : msg
 }
@@ -1680,7 +1711,7 @@ const QUOTA_WORDS = /quota|insufficient|balance|credit|billing|exceeded|rate.?li
 // error, so it never compacted (ergou0954_54426 on Discord: Kiro in a
 // group routed by intent, "超出上下文", the turn failed).
 const failedBefore = (text) =>
-  tooLongSaid(text) ? errorResponse(400, TOO_LONG + text) : errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
+  tooLongSaid(text) ? errorResponse(400, TOO_LONG + text) : text.includes(USER_RATE) ? errorResponse(429, text, USER_RATE_WAIT) : errorResponse(QUOTA_WORDS.test(text) ? 429 : 502, text)
 
 // reply answers the Messages request from Kiro's events: a stream of
 // Messages' events, or one message. names gives back the caller's name of
@@ -2068,7 +2099,7 @@ async function ask(creds, auth, req, model, budget, signal) {
   const tried = new Set()
   while (!res.ok && a.key && creds.spend) {
     const text = (await res.text()).slice(0, 1 << 20)
-    const f = { ...failure(res.status, text), wait: waitOf(res.headers, text) }
+    const f = { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
     if (!usedUpSaid(f.message)) return f
     tried.add(a.region)
     creds.spend(a.key, a.region)
@@ -2090,7 +2121,7 @@ async function ask(creds, auth, req, model, budget, signal) {
   if (!res.ok) {
     // Kiro's own 401 is passed on, as the built-in did, the sign-in kept
     const text = (await res.text()).slice(0, 1 << 20)
-    return { ...failure(res.status, text), wait: waitOf(res.headers, text) }
+    return { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
   }
   return { res, a }
 }
