@@ -271,6 +271,7 @@ it off puts the config back.
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
 | [nowledge-mem-agent](packages/nowledge-mem-agent) | [Nowledge Mem / AI Now](https://mem.nowledge.co/): choose Default, AI Now and Background models through Magpie, with recovery journaling; separate from the Nowledge memory recall/capture gateway plugin |
+| [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
