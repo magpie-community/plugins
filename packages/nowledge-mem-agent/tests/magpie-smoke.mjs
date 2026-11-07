@@ -9,13 +9,14 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import {sandboxEnvironment,assertSandboxEnvironment} from './sandbox.mjs';
 
 const bin=process.env.MAGPIE_BIN;
 if(!bin)throw Error('Set MAGPIE_BIN to the installed Magpie executable.');
 const dir=await fs.mkdtemp(path.join(tmpdir(),'nowledge-magpie-smoke-'));
 const root=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const plugin=path.join(dir,'plugin');
-const selectionFile=path.join(dir,'agent','selection.json');
+const selectionFile=path.join(dir,'home','.config','magpie-nowledge-mem','selection.json');
 const config={enabled:false,provider:'',active_provider:'',model:'',providers:{},purposes:Object.fromEntries(['default','ai_now','background','ocr','embedding','decision'].map(p=>[p,{provider:null,model:null}]))};
 const original=structuredClone(config);
 let modelCalls=0,service,logs='';
@@ -40,8 +41,10 @@ const backend=createServer(async(req,res)=>{
 });
 await new Promise(resolve=>backend.listen(0,'127.0.0.1',resolve));
 const url=`http://127.0.0.1:${backend.address().port}`;
-const env={...process.env,XDG_CONFIG_HOME:path.join(dir,'xdg'),MAGPIE_NOWLEDGE_CONFIG:path.join(dir,'adapter.json'),NMEM_API_KEY:'',MAGPIE_NO_ACCOUNTS:'1',DO_NOT_TRACK:'1'};
+const portServer=createServer();await new Promise(r=>portServer.listen(0,'127.0.0.1',r));const port=portServer.address().port;await new Promise(r=>portServer.close(r));
+const env={...sandboxEnvironment(dir),MAGPIE_NOWLEDGE_CONFIG:path.join(dir,'adapter.json'),MAGPIE_ADDR:`127.0.0.1:${port}`};
 const command=(...args)=>new Promise((resolve,reject)=>{
+  assertSandboxEnvironment(env,dir);
   const child=spawn(bin,args,{env,stdio:['ignore','pipe','pipe']});let text='';
   child.stdout.on('data',b=>text+=b);child.stderr.on('data',b=>text+=b);
   const timer=setTimeout(()=>child.kill('SIGTERM'),30000);
@@ -51,14 +54,12 @@ async function until(predicate,label){const end=Date.now()+20000;while(Date.now(
 
 try {
   await fs.mkdir(plugin,{recursive:true});
-  for(const name of ['package.json','agent.js','index.mjs','lib'])await fs.cp(path.join(root,name),path.join(plugin,name),{recursive:true});
-  const agentPath=path.join(plugin,'agent.js');
-  await fs.writeFile(agentPath,(await fs.readFile(agentPath,'utf8')).replace("'~/.config/magpie-nowledge-mem/selection.json'",JSON.stringify(selectionFile)));
+  await fs.mkdir(env.HOME,{recursive:true,mode:0o700});
+  for(const name of ['package.json','nowledge-mem.agent.js','index.mjs','lib'])await fs.cp(path.join(root,name),path.join(plugin,name),{recursive:true});
   await fs.writeFile(env.MAGPIE_NOWLEDGE_CONFIG,JSON.stringify({selectionFile,apiUrl:url,pollMs:500}));
   await command('plugin','add',plugin);
   await command('plugin','options',plugin,JSON.stringify({selectionFile,apiUrl:url,pollMs:500}));
   await command('provider','add','smoke',`url=${url}/v1`,'key=smoke-only','models=one,two','context=65536');
-  const portServer=createServer();await new Promise(r=>portServer.listen(0,'127.0.0.1',r));const port=portServer.address().port;await new Promise(r=>portServer.close(r));
   // Gateway's persisted port is documented in settings.json, but is not a
   // writable key in the CLI's `settings set` subset on 0.1.3212.
   const settingsFile=path.join(env.XDG_CONFIG_HOME,'magpie','settings.json');
@@ -66,6 +67,7 @@ try {
   await fs.mkdir(path.dirname(settingsFile),{recursive:true});
   await fs.writeFile(settingsFile,JSON.stringify({...settings,port}));
   const agents=await command('agents');assert.ok(agents.includes('Nowledge Mem / AI Now'),'Agent row missing');
+  assertSandboxEnvironment(env,dir);
   service=spawn(bin,['serve'],{env,stdio:['ignore','pipe','pipe']});
   service.stdout.on('data',b=>logs+=b);service.stderr.on('data',b=>logs+=b);
   await command('nowledge-mem','smoke/one');

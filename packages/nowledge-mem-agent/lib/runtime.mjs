@@ -52,38 +52,54 @@ export async function status(config) {
   return {apiUrl:config.apiUrl,selectionFile:config.selectionFile,recoveryPending:!!journal,paused,last,enabled:c.enabled,purposes:Object.fromEntries(['default','ai_now','background'].map(p=>[p,{provider:c.purposes?.[p]?.provider??null,model:c.purposes?.[p]?.model??null}]))};
 }
 
-export async function startAdapter(input, options) {
-  const initial=await settings(options);
+export async function startAdapter(input, options, dependencies={}) {
+  const resolveSettings=dependencies.settings||settings;
+  const readSelection=dependencies.selectionText||selectionText;
+  const synchronizeOnce=dependencies.runOnce||runOnce;
+  const schedule=dependencies.setTimeout||setTimeout;
+  const cancel=dependencies.clearTimeout||clearTimeout;
+  const now=dependencies.now||Date.now;
+  const initial=await resolveSettings(options);
   const directory=path.dirname(initial.selectionFile);
   await fs.mkdir(directory,{recursive:true,mode:0o700});
   // Only tighten our own standard directory; do not chmod arbitrary parents
   // supplied by an integrator through selectionFile.
   if(directory===defaultDirectory)await fs.chmod(directory,0o700);
-  let stopped=false, timer, previousText, previousMessage='';
+  let stopped=false, timer, previousText, previousMessage='',lastResult,nextRemoteSync=0,remoteDelay=initial.pollMs;
   const log=(level,message)=>{
     if(message===previousMessage)return;
     previousMessage=message;
     try { input?.client?.app?.log?.({body:{service:'nowledge-agent',level,message}})?.catch?.(()=>{}); } catch {}
   };
   const tick=async()=>{
+    if(stopped)return;
     let delay=2000;
+    let remote=false;
     try {
-      const config=await settings(options);delay=config.pollMs;
-      const text=await selectionText(config.selectionFile);
+      const config=await resolveSettings(options);delay=config.pollMs;
+      remote=!['127.0.0.1','localhost','[::1]'].includes(new URL(config.apiUrl).hostname);
+      const text=await readSelection(config.selectionFile);
       // Magpie patches individual keys. Wait for a full quiet polling period
       // before interpreting a newly changed selection.
-      if(text!==previousText){previousText=text;return;}
-      const result=await runOnce(config);
+      if(text!==previousText){previousText=text;nextRemoteSync=0;remoteDelay=config.pollMs;lastResult=undefined;return;}
+      if(remote&&now()<nextRemoteSync)return;
+      const result=await synchronizeOnce(config);
+      if(remote){
+        const signature=JSON.stringify(result);
+        remoteDelay=signature===lastResult?Math.min(Math.max(config.pollMs,30000),remoteDelay*2):config.pollMs;
+        nextRemoteSync=now()+remoteDelay;lastResult=signature;
+      }
       log(result.conflicts.length?'warn':'info',`nowledge-agent: ${result.status}${result.model?` · ${result.model}`:''}${result.conflicts.length?` · conflicts: ${result.conflicts.join(', ')}`:''}`);
     } catch(error) {
+      if(remote){remoteDelay=Math.min(Math.max(delay,30000),Math.max(delay,remoteDelay*2));nextRemoteSync=now()+remoteDelay;}
       // Errors from our API wrapper contain no server body or credentials.
       const message=error instanceof SyntaxError?'Selection/config JSON is incomplete; waiting for a valid file.':error.code==='ENOENT'?'A configured credential file is missing.':error.message;
       log('warn',`nowledge-agent: ${message}`);
     } finally {
-      if(!stopped){timer=setTimeout(tick,delay);timer.unref?.();}
+      if(!stopped){timer=schedule(tick,delay);timer.unref?.();}
     }
   };
   // Init must finish before a backend is available; no network in this call.
-  timer=setTimeout(tick,0);timer.unref?.();
-  return ()=>{stopped=true;clearTimeout(timer);};
+  timer=schedule(tick,0);timer.unref?.();
+  return ()=>{stopped=true;cancel(timer);};
 }

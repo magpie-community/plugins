@@ -6,6 +6,15 @@ import { providerConfig } from '../lib/selection.mjs';
 
 const api=createAPI({apiUrl:process.env.NMEM_API_URL || 'http://127.0.0.1:14242',apiKey:process.env.NMEM_API_KEY});
 const before=await api('/remote-llm/config');
+const spec=await api('/openapi.json');
+console.log('Nowledge service version:',spec.info?.version||'unknown');
+if(process.argv.includes('--read-only')){
+  assert.equal(typeof before.enabled,'boolean');
+  for(const purpose of ['default','ai_now','background'])assert.ok(before.purposes?.[purpose]&&Object.hasOwn(before.purposes[purpose],'provider')&&Object.hasOwn(before.purposes[purpose],'model'));
+  assert.ok(Object.values(before.providers||{}).some(p=>p.provider_type==='magpie'),'Read-only check requires an existing native Magpie provider');
+  console.log('PASS: read-only config shape and native Magpie provider confirmed; no writes.');
+  process.exit(0);
+}
 assert.equal(before.enabled,false,'Contract check requires disabled Remote mode');
 assert.ok(!Object.values(before.providers || {}).some(p=>p.model||p.has_api_key||p.api_base),'Contract check requires no configured providers (empty legacy placeholders are allowed)');
 assert.ok(!before.active_provider&&!before.provider,'Contract check requires no active provider');

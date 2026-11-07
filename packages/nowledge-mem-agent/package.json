@@ -14,17 +14,18 @@
     "url": "https://github.com/magpie-community/plugins/issues"
   },
   "files": [
-    "agent.js",
+    "nowledge-mem.agent.js",
     "index.mjs",
     "cli.mjs",
     "lib/",
     "README.md",
     "VALIDATION.md",
-    "LICENSE"
+    "LICENSE",
+    "README.zh-CN.md"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
-    "check": "node --check index.mjs && node --check cli.mjs && node --check agent.js"
+    "test": "bun test ./*.test.mjs",
+    "check": "node --check index.mjs && node --check cli.mjs && node --check nowledge-mem.agent.js"
   },
   "engines": {
     "node": ">=22"
@@ -39,11 +40,12 @@
   ],
   "license": "MIT",
   "magpie": {
-    "agent": "./agent.js",
+    "agent": "./nowledge-mem.agent.js",
     "name": "Nowledge Mem / AI Now",
     "summary": {
       "zh": "从 Magpie 管理 Nowledge Mem 的 Default、AI Now 和后台任务模型",
       "en": "Manage Nowledge Mem Default, AI Now and Background models"
-    }
+    },
+    "icon": "https://mem.nowledge.co/favicon.png"
   }
 }

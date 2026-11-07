@@ -18,7 +18,8 @@ function owns(entry,current) {
   return !entry.released && [entry.applied,entry.pending, ...(!entry.applied ? [entry.before] : [])].filter(Boolean).some(x=>equal(x,current));
 }
 function validConfig(config) {
-  if (!config || typeof config.enabled !== 'boolean' || !Object.hasOwn(config,'providers') || !config.purposes || typeof config.purposes !== 'object') throw new Error('Unsupported Nowledge config response; no changes made.');
+  const assignment=p=>p&&typeof p==='object'&&!Array.isArray(p)&&Object.hasOwn(p,'provider')&&Object.hasOwn(p,'model');
+  if (!config || typeof config.enabled !== 'boolean' || !Object.hasOwn(config,'providers') || Array.isArray(config.providers) || !PURPOSES.every(p=>assignment(config.purposes?.[p]))) throw new Error('Unsupported Nowledge config response; no changes made.');
 }
 
 export async function synchronize(rawSelection,options) {
@@ -72,7 +73,7 @@ export async function synchronize(rawSelection,options) {
         // Read back to use the server's canonical field values.
         config=await api('/remote-llm/config');validConfig(config);
         const confirmed=config.providers?.[state.providerId];
-        if (!confirmed || confirmed.model !== body.model || confirmed.api_base?.replace(/\/+$/,'') !== body.api_base) throw new Error('Nowledge did not retain the requested provider configuration.');
+        if (!confirmed || confirmed.provider_type!=='magpie' || confirmed.model !== body.model || confirmed.api_base?.replace(/\/+$/,'') !== body.api_base) throw new Error('Nowledge did not retain the requested native Magpie provider configuration.');
         record.applied=fingerprint(confirmed);record.pending=null;record.digest=digest;await save();
       }
       for (const p of PURPOSES) {
