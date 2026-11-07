@@ -192,6 +192,7 @@ itself.
 | Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
+| "Range of max_tokens should be [1, N]" behind "Error in upstream response" (since 0.2.63) | Asked again once with max_tokens N, which later requests for that model are sent from the start; refused again, 400 with Qoder's words, the sign-in untouched. QoDuck (`lmodel`) is never sent more than 131072, and a model whose listing entry names `max_output_tokens` never more than that; a smaller max_tokens goes as asked |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 

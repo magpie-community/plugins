@@ -1,0 +1,1 @@
+{"code": 0, "msg": "", "data": {"configs": {"builtin_provider_config_json": "https://cdn-zcode.z.ai/zcode/config/zcode-builtin-production-43.json", "captcha": {"enabled": true, "prefix": "no8xfe", "region": "cn", "sceneId": "11xygtvd", "skip_model_request": true}}}, "logid": "2026110704092358084f882cce978c69bf"}

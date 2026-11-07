@@ -38,6 +38,11 @@ beforeEach(async () => {
   _internal.blocked.clear()
   _internal.sidelined.clear()
   _internal.edge.until = 0
+  _internal.busyHold.until = 0
+  _internal.busyHold.hits.length = 0
+  _internal.busyHold.now = () => Date.now()
+  // a reply a test leaves unread keeps its Start Plan slot (startGate)
+  _internal.startGate.lanes.clear()
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -227,6 +232,19 @@ test("a gift 200 that says the quota is spent is answered from the plan too", as
   const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
   expect(res.status).toBe(200)
   expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+})
+
+// the plan free first falls back on, itself spent inside a 200, says 429
+// as a plain request's plan does (plugins#817)
+test("free first's plan answer that says it is spent inside a 200 says 429", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ code: 1005, msg: "exceed quota limit" }), { headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = new Response(JSON.stringify({ code: 1113, msg: "Insufficient balance or no resource package. Please recharge." }), { headers: { "content-type": "application/json" } })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(res.status).toBe(429)
+  expect((await res.json()).code).toBe(1113)
   expect(sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
 })
 
@@ -427,6 +445,29 @@ test("a gift's block page holds free first on the plan and a trial entry here (p
   expect([gift(), plan()]).toEqual([1, 2])
 })
 
+// A busy hold keeps the gift off exactly as a block page does: free first
+// must leave the dual account's plain model on its coding plan, which is
+// never held — not move it onto a route the hold answers without asking.
+test("a busy hold holds free first on the plan too, and a trial entry at the local 429", async () => {
+  planAndBalance()
+  _internal.busyHold.until = Date.now() + _internal.BUSY_HOLD
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  answers["/api/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+  const gift = () => sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages")).length
+  const plan = () => sent.filter((c) => c.origin === "https://api.z.ai" && c.path.endsWith("/messages")).length
+  // the plain model stays on the coding plan, answered 200, gift untouched
+  expect((await ask("GLM-5.3-Flash")).status).toBe(200)
+  expect([gift(), plan()]).toEqual([0, 1])
+  // the user's pick of the gift is answered at the hold's own 429
+  const res = await ask("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(429)
+  expect(res.headers.get("retry-after")).toMatch(/^\d+$/)
+  expect(JSON.parse(await res.text()).error.message).toContain("ZCode turned away 5 requests in the last minute")
+  expect([gift(), plan()]).toEqual([0, 1])
+})
+
 const giftUnreachable = (when = () => true) => {
   const under = globalThis.fetch
   globalThis.fetch = async (input, init = {}) => {
@@ -478,7 +519,9 @@ test("an aborted gift request stays aborted", async () => {
   const tries = await giftThrowing(() => new DOMException("This operation was aborted", "AbortError"))
   const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
   await expect(opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash"), signal: ctl.signal })).rejects.toThrow()
-  expect(tries.gift).toBe(1)
+  // the Start Plan's slot (startGate) is not taken for an agent already
+  // gone: the gift is never asked, and the plan isn't either
+  expect(tries.gift).toBe(0)
   expect(tries.plan).toBe(0)
 })
 
@@ -666,7 +709,7 @@ test("a trial entry goes to the Start Plan, dressed", async () => {
   const m = sent.at(-1)
   expect(m.origin).toBe("https://zcode.z.ai")
   expect(m.path).toBe("/api/v1/zcode-plan/anthropic/v1/messages")
-  expect(m.headers["x-title"]).toBe("Z Code@cli")
+  expect(m.headers["x-title"]).toBe("Z Code@electron")
   expect(m.headers.authorization).toBe("Bearer " + jwt)
   expect(m.headers["x-api-key"]).toBeUndefined()
   expect(JSON.parse(m.body).system.length).toBeGreaterThan(1) // dressed

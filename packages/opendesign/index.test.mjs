@@ -284,6 +284,37 @@ test("a kept model's rate is re-declared, so a charge an earlier version wrote c
   expect(models["brand-new-9"].rate).toBe("x1")
 })
 
+// #829 (exposir): the signed-in catalog's DeepSeek V4.1 Flash Eco entry
+// left image out, so it was served text-only and magpie sent another model's
+// description of the image instead, while amr-link took the image itself
+test("a kind the seed declares stays when the catalog leaves it out (#829)", () => {
+  const models = I.modelsOf({
+    data: [
+      // listed, text only
+      { id: "deepseek-v4.1-flash-eco", architecture: { input_modalities: ["text"] }, metadata: { cost: "low", capability: "advanced", context_limit: 1048000, context_budget: 232000 } },
+      // no architecture at all, nor limits or words
+      { id: "glm-5.3-flashx" },
+      // the catalog's own kinds add to the seed's
+      { id: "kimi-k2.7-code", architecture: { input_modalities: ["text", "image", "video"] } },
+      // a model the seed says takes text only stays text only
+      { id: "deepseek-v4-pro", architecture: { input_modalities: ["text"] } },
+      // a model the seed doesn't know is the catalog's alone
+      { id: "brand-new-9", architecture: { input_modalities: ["text"] } },
+    ],
+  })
+  const input = (id) => Object.entries(models[id].capabilities.input).filter(([, on]) => on).map(([k]) => k)
+  expect(asMagpieReads(models["deepseek-v4.1-flash-eco"]).image).toBe(true)
+  expect(input("deepseek-v4.1-flash-eco")).toEqual(["text", "image"])
+  expect(input("glm-5.3-flashx")).toEqual(["text", "image", "video"])
+  expect(input("kimi-k2.7-code")).toEqual(["text", "image", "video"])
+  expect(input("deepseek-v4-pro")).toEqual(["text"])
+  expect(input("brand-new-9")).toEqual(["text"])
+  // the limits and words the catalog leaves out are the seed's, not 200K/32K
+  expect(models["glm-5.3-flashx"].limit).toEqual({ context: 1000000, output: 232000 })
+  expect(models["glm-5.3-flashx"].rate).toBe("x2")
+  expect(models["brand-new-9"].limit).toEqual({ context: 200000, output: 32000 })
+})
+
 test("an empty catalog is no models", () => {
   expect(I.modelsOf({ data: [] })).toEqual({})
   expect(I.modelsOf(null)).toEqual({})

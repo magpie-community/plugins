@@ -1,4 +1,5 @@
-// Tabbit (web.tabbit.com) as a magpie provider.
+// Tabbit (web.tabbit.com, and web.tabbit.ai for international accounts) as a
+// magpie provider.
 //
 // The shape is the one every magpie provider plugin has — config, auth,
 // provider.models — because the work is a plain HTTP conversation with
@@ -483,7 +484,7 @@ function createPlugin() {
             callback: async () => {
               try {
                 const sign = desktopSignIn()
-                return { type: "success", key: sign.key, accountId: sign.userId, metadata: { userId: sign.userId, source: "desktop" } }
+                return { type: "success", key: sign.key, accountId: sign.userId, metadata: { userId: sign.userId, source: "desktop", site: sign.site } }
               } catch (error) {
                 return { type: "failed", error: String(error?.message ?? error) }
               }

@@ -43,11 +43,26 @@ Tabbit's sign-in is a `token` cookie: an RS256 JWT issued by
 | Method | What it does |
 |---|---|
 | **Read Tabbit Browser sign-in** (macOS) | Finds the cookie store Tabbit Browser keeps (`~/Library/Application Support/Tabbit Browser/Default/Cookies`), reads the `token` cookie, and decrypts it with the password in the login keychain under `Tabbit Browser Safe Storage`. Nothing is copied by hand; the browser does not have to be closed — the database is copied before it is read. |
-| **Paste Tabbit token** | For anything the first method can't reach (Windows or Linux, a browser profile kept somewhere else). In Tabbit Browser, open `web.tabbit.com` and read the `token` cookie from the developer tools; paste it whole. |
+| **Paste Tabbit token** | For anything the first method can't reach (Windows or Linux, a browser profile kept somewhere else). In Tabbit Browser, open `web.tabbit.com` (or `web.tabbit.ai` for an international account) and read the `token` cookie from the developer tools; paste it whole. |
 
 A pasted value may be the bare JWT or a whole `name=value; name=value` cookie
 string. The account id is read out of the token itself, so nothing else has to
 be pasted.
+
+**Two sites.** Tabbit runs `web.tabbit.com` and, for international accounts,
+`web.tabbit.ai`: the same API, but a token from one is refused on the other
+(#833). Nothing is set by hand. The desktop method records the site whose
+cookie it found. A pasted token goes to `web.tabbit.com` first; when that
+refuses it, `web.tabbit.ai` is asked once, and the site that accepts it serves
+that token from then on (a token both refuse is an expired sign-in, as
+before). A `web.tabbit.com` token never asks `web.tabbit.ai` anything.
+
+> **International site, chat turns:** `web.tabbit.ai` answers a turn's
+> `runs` call with `429`, code `492` ("Welcome to Tabbit Browser...") unless
+> the request carries a `unique-uuid` header — the browser sends a fresh
+> uuid on every API call, and the gate accepts any well-formed one (a
+> net-export capture of Tabbit Browser's own traffic showed the header on
+> `runs`, `join` and `usage`). The plugin sends one per call (#834).
 
 There is no refresh endpoint. When the token runs out (7 days), magpie shows
 the account as needing a sign-in again and the first method takes one more

@@ -24,7 +24,11 @@ import path from "node:path"
 import crypto from "node:crypto"
 import { execFileSync } from "node:child_process"
 
-export const HOST = "web.tabbit.com"
+// The two sites a Tabbit account can belong to (see SITES in api.mjs), the
+// Chinese one first. A browser signed in to either keeps the token under
+// that site's host, so the host it was found under names the account's site.
+export const HOSTS = ["web.tabbit.com", "web.tabbit.ai"]
+export const HOST = HOSTS[0]
 const SAFE_STORAGE = "Tabbit Browser Safe Storage"
 
 // profileDirs are the places Tabbit Browser has kept its profile, newest
@@ -132,7 +136,7 @@ function require_node_sqlite() {
 //
 // `platform` and `tmpParent` are for the tests: the same code path runs with a
 // fixture store under a temp parent the test can look into afterwards.
-export function desktopSignIn({ dirs = profileDirs(), host = HOST, store, password, tmpParent, platform = process.platform } = {}) {
+export function desktopSignIn({ dirs = profileDirs(), hosts = HOSTS, store, password, tmpParent, platform = process.platform } = {}) {
   if (platform !== "darwin") {
     throw new Error(`reading Tabbit Browser's cookies is macOS-only; on ${platform} paste the token instead`)
   }
@@ -141,15 +145,21 @@ export function desktopSignIn({ dirs = profileDirs(), host = HOST, store, passwo
   const dir = fs.mkdtempSync(path.join(tmpParent ?? os.tmpdir(), "tabbit-cookies-"))
   try {
     const copy = copyStore(file, dir)
-    const rows = readCookies(copy, { host })
+    let host = hosts[0]
+    let rows = []
+    for (const candidate of hosts) {
+      rows = readCookies(copy, { host: candidate })
+      host = candidate
+      if (rows.some((r) => r.name === "token")) break
+    }
     const token = rows.find((r) => r.name === "token")
-    if (!token) throw new Error(`Tabbit Browser is not signed in to ${host}`)
+    if (!token) throw new Error(`Tabbit Browser is not signed in to ${hosts.join(" or ")}`)
     const secret = password ?? keychainPassword()
     const value = token.value?.startsWith("ey") ? token.value : decryptValue(token.encrypted, { password: secret, host })
     const uid = rows.find((r) => r.name === "user_id")
     const uidValue = uid?.value || (uid?.encrypted ? safeDecrypt(uid.encrypted, secret, host) : "")
     const header = [`token=${value}`, uidValue && `user_id=${uidValue}`, uidValue && `SAPISID=${uidValue}`, "managed=tab_browser"].filter(Boolean).join("; ")
-    return { key: header, userId: uidValue, store: file }
+    return { key: header, userId: uidValue, store: file, site: `https://${host}` }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

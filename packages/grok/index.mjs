@@ -23,6 +23,18 @@ const LOOP_CHECKS = [["x-grok-doom-loop-check", "1024"], ["x-grok-exact-repetiti
 const REFRESH_MARGIN = 5 * 60 * 1000 // a token this close to its end is renewed before a request
 const LEAD_MS = REFRESH_MARGIN // and this close, magpie renews it ahead of time (auth.refresh)
 const LINK_WAIT = 30 * 1000
+// waits.renew is how long a request, model list or usage read Grok turned
+// away waits on Grok Build's renewal before it gives up on it: the run
+// goes on, and whoever asks next takes what it gave (plugins#818)
+const waits = { renew: 15 * 1000 }
+// TURNED_AWAY are the words of a 401 in which Grok judged the token
+// itself: cli-chat-proxy answers a token it doesn't take, in under a
+// second, `{"error":"Invalid or expired credentials (auth_kind=…,
+// upstream=Unauthenticated, reason=…)"}`. Any other 401, such as the
+// `{"error":"Authentication required"}` that came after 78–114 s on a token
+// that worked again minutes later (plugins#818), isn't that judgement.
+const TURNED_AWAY = /invalid or expired credentials/i
+const RETRY_SECS = 60 // the Retry-After of a refusal that passes by itself
 const INSTALL = process.platform === "win32" ? "irm https://x.ai/cli/install.ps1 | iex" : "curl -fsSL https://x.ai/cli/install.sh | bash"
 // NO_CLI is what a sign-in without Grok Build says: how to install it, and
 // that one put somewhere else by hand (a container with no shell to run the
@@ -205,9 +217,34 @@ function notSignedIn(home) {
 // and its last line.
 function cliSaid(r) {
   if (!r) return ""
+  if (r.late) return ` (grok models was still running after ${waits.renew / 1000}s)`
   const last = (r.stderr || r.stdout || "").replace(ANSI, "").split("\n").map((l) => l.trim()).filter(Boolean).at(-1)?.slice(0, 200)
   const how = !r.err ? "ran and left the same token" : r.err.killed ? "timed out" : `exited ${r.err.code ?? "with an error"}`
-  return ` (grok models ${how}${last ? `: ${last}` : ""})`
+  const took = r.ms >= 1000 ? ` in ${Math.round(r.ms / 1000)}s` : ""
+  return ` (grok models ${how}${took}${last ? `: ${last}` : ""})`
+}
+
+// passing says a 401 on a token Grok Build left as it was is a refusal
+// that passes by itself, not a sign-in to make again: Grok's words aren't
+// its judgement of the token (TURNED_AWAY), the token isn't past its end,
+// and the CLI didn't fail renewing it (it ran, or was still running). A
+// token Grok really turned away, or one the CLI failed to renew, is
+// unrenewed as before.
+function passing(c, r, said) {
+  if (typeof said !== "string" || TURNED_AWAY.test(said)) return false
+  if (c.expires && c.expires <= Date.now()) return false
+  return !r?.err || !!r.err.killed || !!r.late
+}
+
+// transient is such a refusal: what Grok said, that the sign-in stands,
+// and that it is tried again later.
+function transient(c, r, said) {
+  const till = c.expires ? `, good till ${new Date(c.expires).toISOString()}` : ""
+  const words = said.trim().slice(0, 200) || "an empty 401"
+  return Object.assign(
+    new Error(`Grok refused the request (${words}) on a sign-in that still holds: Grok Build left the token as it was${till}${cliSaid(r)}. Such a refusal has passed by itself within minutes; the account is tried again then, with no new sign-in needed`),
+    { transient: true },
+  )
 }
 
 // unrenewed is a token Grok turned away, or one past its end, that Grok
@@ -229,11 +266,18 @@ function dead(home) {
 }
 
 function run(file, args, opts) {
+  const at = Date.now()
   return new Promise((resolve) => {
     execFile(file, args, { timeout: 30000, ...opts }, (err, stdout, stderr) =>
-      resolve({ err, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") }),
+      resolve({ err, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), ms: Date.now() - at }),
     )
   })
+}
+
+// within is p, or { late: true } once ms have gone by without it.
+function within(p, ms) {
+  let t
+  return Promise.race([p, new Promise((ok) => (t = setTimeout(() => ok({ late: true }), ms)))]).finally(() => clearTimeout(t))
 }
 
 // refreshing runs the CLI's renewals one after another; renewing is the one
@@ -259,17 +303,20 @@ function renew(exe, home) {
 // turned away: rejected is that token (or true for whatever home holds).
 // A token on disk other than the one turned away was renewed already and
 // is taken as it is; one the CLI's run leaves as it was is unrenewed,
-// never "not signed in" nor "expired".
-async function token(home, rejected = false) {
+// never "not signed in" nor "expired". said is what Grok answered the
+// token turned away with: a refusal that wasn't Grok's judgement of a
+// token still good is transient (passing). A renewal for a token turned
+// away is waited on waits.renew at most.
+async function token(home, rejected = false, said) {
   let c = await credential(home)
   const exe = executable()
   const refused = !!c && (rejected === true || (typeof rejected === "string" && c.key === rejected))
   let r
   if (c && exe && (refused || c.expires - Date.now() < REFRESH_MARGIN)) {
     const was = c.key
-    r = await renew(exe, home)
+    r = refused ? await within(renew(exe, home), waits.renew) : await renew(exe, home)
     c = await credential(home)
-    if (c && refused && c.key === was) throw unrenewed(home, r)
+    if (c && refused && c.key === was) throw passing(c, r, said) ? transient(c, r, said) : unrenewed(home, r)
   }
   if (!c) throw new Error(notSignedIn(home))
   if (!exe && (refused || (c.expires && c.expires <= Date.now()))) throw new Error(`Grok turned the sign-in away and there is no Grok Build here to renew it; ${NO_CLI}`)
@@ -525,7 +572,7 @@ async function listModels(key) {
   const text = await res.text()
   // a token Grok turned away before its time: the caller has Grok Build
   // renew it and asks once more (models below)
-  if (res.status === 401) throw Object.assign(new Error("Grok turned the sign-in away"), { status: 401 })
+  if (res.status === 401) throw Object.assign(new Error("Grok turned the sign-in away"), { status: 401, said: text })
   if (!res.ok) throw new Error(`Grok models: ${res.status} ${text.slice(0, 200)}`)
   const out = []
   for (const d of JSON.parse(text)?.data ?? []) {
@@ -827,7 +874,7 @@ async function usage(key) {
   } catch (e) {
     return { error: netError(url, e), windows: [] }
   }
-  if (!res.ok) return { error: statusText(res.status), windows: [], status: res.status }
+  if (!res.ok) return { error: statusText(res.status), windows: [], status: res.status, said: await res.text().catch(() => "") }
   let data
   try {
     data = JSON.parse(text)
@@ -1011,8 +1058,10 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
               for (const [k, v] of LOOP_CHECKS) if (!headers.has(k)) headers.set(k, v)
             }
             headers.delete("content-length")
+            let at = 0 // when the last request went out, signed
             const send = async (key) => {
               await sign(headers, key)
+              at = Date.now()
               return fetch(req.url, { ...init, method: req.method, headers, body })
             }
             // Grok's answer goes on as it came, the account kept, as the
@@ -1021,22 +1070,38 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
             // expires_at) is renewed by Grok Build and the request sent once
             // more; one Grok Build couldn't renew is a 401 saying so, and
             // what helps.
+            //
+            // A 401 that wasn't Grok's judgement of the token, on one Grok
+            // Build left as it was and still good, is a refusal that passes
+            // by itself (plugins#818): a 503 saying so, with Retry-After,
+            // so magpie rests the account a moment and asks the next, and
+            // never says to sign in again. How long Grok took to answer is
+            // in the words: the wait is Grok's, not the plugin's.
             let res = await send(c.key)
             if (res.status === 401 && (typeof body === "string" || body == null)) {
+              const took = Date.now() - at
+              const said = (await res.text().catch(() => "")).slice(0, 300)
               try {
-                c = await token(home, c.key)
+                c = await token(home, c.key, said)
               } catch (e) {
-                const said = (await res.text().catch(() => "")).slice(0, 300)
                 note(home, res)
+                const after = took >= 1000 ? ` after ${Math.round(took / 1000)}s` : ""
+                if (e?.transient) {
+                  return kept(
+                    new Response(JSON.stringify({ error: { message: `${e.message}. Grok answered 401${after}`, type: "server_error", code: "auth_refused_transient" } }), {
+                      status: 503,
+                      headers: { "content-type": "application/json", "retry-after": String(RETRY_SECS) },
+                    }),
+                  )
+                }
                 return kept(
-                  new Response(JSON.stringify({ error: { message: `${e.message}${said ? `. Grok said: ${said}` : ""}`, type: "authentication_error", code: "sign_in_unrenewed" } }), {
+                  new Response(JSON.stringify({ error: { message: `${e.message}${said ? `. Grok said${after}: ${said}` : ""}`, type: "authentication_error", code: "sign_in_unrenewed" } }), {
                     status: 401,
                     statusText: res.statusText,
                     headers: { "content-type": "application/json" },
                   }),
                 )
               }
-              await res.body?.cancel().catch(() => {})
               await remember(auth, c)
               res = await send(c.key)
             }
@@ -1088,7 +1153,7 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
         // a token turned away is renewed once, as a request's is
         if (u.status === 401) {
           try {
-            c = await token(auth.refresh, c.key)
+            c = await token(auth.refresh, c.key, u.said)
           } catch (e) {
             return { error: e.message, windows: [], signIn: "kept" }
           }
@@ -1096,6 +1161,7 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
           u = await usage(c.key)
         }
         delete u.status
+        delete u.said
         if (!u.error) u.windows = [...rateWindow(auth.refresh), ...u.windows]
         return { ...u, signIn: "kept" }
       },
@@ -1115,7 +1181,7 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
         } catch (e) {
           if (e?.status !== 401) throw e
           // turned away before its time: renewed once, as a request's is
-          c = await token(auth.refresh, c.key)
+          c = await token(auth.refresh, c.key, e.said)
           list = await listModels(c.key).catch((e) => {
             throw e?.status === 401 ? new Error(dead(auth.refresh)) : e
           })
@@ -1151,4 +1217,4 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { rewrite, objectRoot, bodyText, limited, HOLD_MS, windowsOf, modelOf }
+export const _internal = { rewrite, objectRoot, bodyText, limited, HOLD_MS, windowsOf, modelOf, waits }

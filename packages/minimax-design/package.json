@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-minimax-design",
+  "version": "0.1.0",
+  "description": "MiniMax Design (design.minimax.io) as a magpie agent: one switch points Design's custom text model at magpie's gateway, with magpie's model list synced automatically",
+  "type": "module",
+  "files": ["minimax-design.agent.js", "README.md", "COMPATIBILITY.md"],
+  "keywords": ["magpie", "magpie-agent", "minimax", "minimax-design", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax-design" },
+  "magpie": { "agent": "./minimax-design.agent.js", "icon": "https://design.minimax.io/favicon.ico" }
+}

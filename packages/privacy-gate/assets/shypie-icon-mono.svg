@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="ShyPie — monochrome mark">
+  
+  <g color="#0D4B4E">
+  <g fill="none" stroke="currentColor" stroke-width="22" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M 512 212 Q 574.82 196.19 626.81 234.84 Q 690.89 244.27 724.13 299.87 Q 779.73 333.11 789.16 397.19 Q 827.81 449.18 812 512 Q 827.81 574.82 789.16 626.81 Q 779.73 690.89 724.13 724.13 Q 690.89 779.73 626.81 789.16 Q 574.82 827.81 512 812 Q 449.18 827.81 397.19 789.16 Q 333.11 779.73 299.87 724.13 Q 244.27 690.89 234.84 626.81 Q 196.19 574.82 212 512 Q 196.19 449.18 234.84 397.19 Q 244.27 333.11 299.87 299.87 Q 333.11 244.27 397.19 234.84 Q 449.18 196.19 512 212 Z"/><circle cx="512" cy="512" r="250" stroke-width="16"/>
+    <path d="M 512 486 L 700 520 C 724 640 646 742 512 810 C 378 742 300 640 324 520 Z"/>
+    <path d="M 395 426 C 410 452 442 452 458 426"/><path d="M 566 426 C 582 452 614 452 630 426"/>
+  </g>
+  <g fill="currentColor"><path d="M 360 585 L 512 645 L 664 585 L 664 635 L 512 695 L 360 635 Z" fill="currentColor" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/><circle cx="305" cy="650" r="36"/><circle cx="344" cy="681" r="21"/><circle cx="719" cy="650" r="36"/><circle cx="680" cy="681" r="21"/></g>
+</g>
+</svg>

@@ -3498,18 +3498,38 @@ function replyAfterToolsOn(b) {
 // URIs (dsh-session:) and skills the agent calls, stays, as does a tool's
 // result, which is what a file or command said. Case counts, so the name
 // in an identifier (DSH_HOME) is left too.
+//
+// The bare name is taken out only where dsh wrote it: the system prompt and
+// the tools' descriptions (DSH_PROSE). The user's and the assistant's text
+// get dsh's own lines alone (DSH_LINES: its runtime context comes as a user
+// message, and the model can quote a line back); a bare DSH or "DeepSeek
+// Harness" there is the user's own word. liby233 on Discord: a user asked
+// for "/root/DSH/Work/OC-182.92.66.95/" word for word and got
+// "/root/the agent harness/Work/…" back. Even in the system prompt a name
+// in a path or a file name (/root/DSH/, C:\DSH\, DSH.md) is never prose
+// (IN_PATH_BEFORE, IN_PATH_AFTER), so a working directory dsh writes there stays as it is.
 const HIDE_DSH = "hide_dsh"
-const DSH_NAMED = [
+const DSH_LINES = [
   [/You are an AI agent,? powered by DeepSeek Harness\.?/g, "You are an AI agent."],
   [/DeepSeek Harness (Web GUI)/g, "$1"],
   [/DeepSeek Harness (implementation checkout)/g, "agent $1"],
   [/\bDSH itself\b/g, "the agent itself"],
-  [/\b([Tt]he )?DeepSeek Harness\b/g, (_, the) => (the ?? "the ") + "agent harness"],
-  [/\bDSH\b(?!_)/g, "the agent harness"],
+]
+// before and after a name, what makes it part of a path, a file's name or
+// an identifier rather than a word of prose
+const IN_PATH_BEFORE = String.raw`(?<![\w/\\.~:@-])`
+const IN_PATH_AFTER = String.raw`(?![\w/\\@-]|\.\w)`
+const DSH_PROSE = [
+  ...DSH_LINES,
+  [new RegExp(IN_PATH_BEFORE + "([Tt]he )?DeepSeek Harness" + IN_PATH_AFTER, "g"), (_, the) => (the ?? "the ") + "agent harness"],
+  [new RegExp(IN_PATH_BEFORE + "DSH" + IN_PATH_AFTER, "g"), "the agent harness"],
 ]
 
-function dshHidden(text) {
-  for (const [re, to] of DSH_NAMED) text = text.replace(re, to)
+// dshHidden takes the name out of text dsh wrote (the system prompt, a
+// tool's description); in the user's or the assistant's text (said) only
+// dsh's own lines are reworded.
+function dshHidden(text, said = false) {
+  for (const [re, to] of said ? DSH_LINES : DSH_PROSE) text = text.replace(re, to)
   return text
 }
 
@@ -3520,24 +3540,25 @@ function dshHidden(text) {
 function hideDsh(chat) {
   if (!chat || typeof chat !== "object") return false
   let changed = false
-  const parts = (content) => {
+  const parts = (content, said) => {
     if (typeof content === "string") {
-      const t = dshHidden(content)
+      const t = dshHidden(content, said)
       if (t !== content) changed = true
       return t
     }
     if (!Array.isArray(content)) return content
     return content.map((p) => {
       if (!p || typeof p.text !== "string" || (p.type !== undefined && p.type !== "text")) return p
-      const t = dshHidden(p.text)
+      const t = dshHidden(p.text, said)
       if (t === p.text) return p
       changed = true
       return { ...p, text: t }
     })
   }
   if (Array.isArray(chat.messages))
-    for (const m of chat.messages) if (m && typeof m === "object" && m.role !== "tool") m.content = parts(m.content)
-  if (chat.system !== undefined) chat.system = parts(chat.system)
+    for (const m of chat.messages)
+      if (m && typeof m === "object" && m.role !== "tool") m.content = parts(m.content, m.role !== "system" && m.role !== "developer")
+  if (chat.system !== undefined) chat.system = parts(chat.system, false)
   const described = (o) => {
     if (!o || typeof o !== "object") return
     if (Array.isArray(o)) return o.forEach(described)

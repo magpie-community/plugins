@@ -145,6 +145,37 @@ withCleanup("a failed desktop sign-in leaves no copy either", () => {
   assert.deepEqual(fs.readdirSync(parent), [])
 })
 
+// An international account's browser keeps the token under web.tabbit.ai,
+// sealed with that host's hash (#833).
+withCleanup("a browser signed in to web.tabbit.ai signs in there, and says so", () => {
+  let DatabaseSync
+  try {
+    DatabaseSync = globalThis.process.getBuiltinModule("node:sqlite").DatabaseSync
+  } catch {
+    return
+  }
+  const AI = "web.tabbit.ai"
+  const root = tmp("tabbit-store-ai-")
+  const file = path.join(root, "Cookies")
+  const db = new DatabaseSync(file)
+  db.exec("create table cookies(host_key text, name text, value text, encrypted_value blob)")
+  db.prepare("insert into cookies values (?,?,?,?)").run(AI, "token", "", seal("tok-intl", { host: AI }))
+  db.prepare("insert into cookies values (?,?,?,?)").run(AI, "user_id", "", seal("u-intl", { host: AI }))
+  db.close()
+  const sign = desktopSignIn({ store: file, password: PASSWORD, tmpParent: tmp("tabbit-parent-"), platform: "darwin" })
+  assert.match(sign.key, /^token=tok-intl; user_id=u-intl;/)
+  assert.equal(sign.userId, "u-intl")
+  assert.equal(sign.site, "https://web.tabbit.ai")
+})
+
+withCleanup("a browser signed in to web.tabbit.com still signs in there", () => {
+  const file = storeWith("tok-com")
+  if (!file) return
+  const sign = desktopSignIn({ store: file, password: PASSWORD, tmpParent: tmp("tabbit-parent-"), platform: "darwin" })
+  assert.match(sign.key, /token=tok-com/)
+  assert.equal(sign.site, "https://web.tabbit.com")
+})
+
 test("the desktop method is macOS-only, and says so elsewhere", () => {
   assert.throws(() => desktopSignIn({ store: "/nonexistent/Cookies", platform: "linux" }), /macOS-only/)
   assert.throws(() => desktopSignIn({ store: "/nonexistent/Cookies", platform: "win32" }), /macOS-only/)
