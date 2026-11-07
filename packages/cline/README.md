@@ -76,10 +76,13 @@ ask for the maker's own API, but Cline changed what it accepts:
 - **`glm-5.3-flash` still works, but is not actually pinned.** Cline sends it
   through OpenRouter, so the plugin writes a top-level
   `"provider": {"only": ["z-ai"]}` rather than `providerOptions` (since
-  0.1.10). Cline does not reject that field; it ignores it. A live request
-  with the Upstream tick on returned `finalProvider:
-  "openai-compatible-private"`, so the request succeeds but stays on Cline's
-  own route. That is why it still works while DeepSeek fails.
+  0.1.10). Cline does not reject that field; it ignores it. In five live
+  requests with the Upstream tick on,
+  `provider_metadata.gateway.routing.finalProvider` stayed
+  `"openai-compatible-private"` (and `canonicalSlug` was
+  `private/cw-glm-53-flash`), so the request succeeds but stays on Cline's
+  own route. Check `finalProvider`, not the displayed model name. That is why
+  it still works while DeepSeek fails.
 
 The plugin therefore sends no pin by default. With the `pinUpstream` option
 on, a request for a ClinePass DeepSeek model (`cline-pass/deepseek-…`)
