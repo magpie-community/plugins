@@ -2061,7 +2061,7 @@ async function ask(creds, auth, req, model, budget, signal) {
   const tried = new Set()
   while (!res.ok && a.key && creds.spend) {
     const text = (await res.text()).slice(0, 1 << 20)
-    const f = failure(res.status, text)
+    const f = { ...failure(res.status, text), wait: waitOf(res.headers, text) }
     if (!usedUpSaid(f.message)) return f
     tried.add(a.region)
     creds.spend(a.key, a.region)
@@ -2071,7 +2071,7 @@ async function ask(creds, auth, req, model, budget, signal) {
     } catch (e) {
       return { status: 401, message: e.message }
     }
-    if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message }
+    if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message, wait: f.wait }
     a = next
     try {
       res = await sendKiro(a, await kiroBody(req, model, a.profile, budget), signal)

@@ -35,8 +35,9 @@ const limits = (used, { overage = true } = {}) => ({
     usageLimit: 2000, overageCap: 10000, overageCapWithPrecision: 10000, currentOverages: Math.max(0, used - 2000), nextDateReset: RESET }],
 })
 const USED_UP = { status: 402, body: { message: "You have reached the limit.", reason: "MONTHLY_REQUEST_COUNT" } }
-const THROTTLED = { status: 429, body: { message: "Too many requests, please wait." } }
+const THROTTLED = { status: 429, body: { message: "Too many requests, please wait." }, headers: { "x-amzn-kiro-ratelimit-retry-after": "12500" } }
 const STOP = { status: 500, body: { message: "stop here" } }
+const MAX_ASKS = 6
 
 // kiro is Kiro's API with the profiles each region lists, each region's
 // credits, and how each region's runtime answers a chat
@@ -54,9 +55,11 @@ function kiro({ profiles = { "us-east-1": [US], "eu-central-1": [EU] }, usage = 
       return Response.json(usage[region] ?? limits(0))
     }
     if (url.pathname === "/generateAssistantResponse") {
+      // a region loop that doesn't end fails here, not on a timeout
+      if (seen.chat.length >= MAX_ASKS) throw new Error(`Kiro asked more than ${MAX_ASKS} times for one request`)
       seen.chat.push([region, JSON.parse(init.body).profileArn])
       const r = chat[region] ?? STOP
-      return new Response(JSON.stringify(r.body), { status: r.status })
+      return new Response(JSON.stringify(r.body), { status: r.status, headers: r.headers })
     }
     throw new Error("unexpected " + url)
   }
@@ -68,7 +71,7 @@ const ask = async (h, a) => {
   const l = await h.auth.loader(async () => a)
   const res = await l.fetch("https://kiro.invalid/v1/messages", { method: "POST",
     body: JSON.stringify({ model: "claude-sonnet-5.5", messages: [{ role: "user", content: "hi" }] }) })
-  return { status: res.status, message: (await res.json())?.error?.message ?? "" }
+  return { status: res.status, wait: res.headers.get("Retry-After"), message: (await res.json())?.error?.message ?? "" }
 }
 
 test("overage on counts the month against the overage cap", () => {
@@ -124,18 +127,41 @@ test("a region Kiro says is used up goes on in the other, and stays there", asyn
   expect(seen.chat).toEqual([["eu-central-1", EU]])
 })
 
-test("both regions used up is a 429 that says so", async () => {
-  const seen = kiro({ chat: { "us-east-1": USED_UP, "eu-central-1": USED_UP } })
+test("both regions used up is a 429 that says so, with Kiro's wait", async () => {
+  const seen = kiro({ chat: { "us-east-1": USED_UP, "eu-central-1": { ...USED_UP, headers: { "retry-after": "60" } } } })
   const r = await ask(await hooks(), auth())
   expect(r.status).toBe(429)
+  expect(r.wait).toBe("60")
   expect(r.message).toContain("Kiro credits used up in us-east-1, eu-central-1")
   expect(seen.chat).toEqual([["us-east-1", US], ["eu-central-1", EU]])
+})
+
+test("every region used up ends the request at once, however often it is asked", async () => {
+  const seen = kiro({ chat: { "us-east-1": USED_UP, "eu-central-1": USED_UP } })
+  const h = await hooks()
+  for (let i = 0; i < 3; i++) {
+    seen.chat.length = 0
+    const r = await ask(h, auth())
+    expect(r.status).toBe(429)
+    expect(seen.chat.length).toBeLessThanOrEqual(2)
+  }
+})
+
+test("a region not enabled is asked for again only after PROBE_MS", async () => {
+  const seen = kiro({ profiles: { "us-east-1": [US] } })
+  const h = await hooks()
+  await ask(h, auth())
+  expect(seen.profiles).toBe(2)
+  await ask(h, auth())
+  await ask(h, auth())
+  expect(seen.profiles).toBe(2)
 })
 
 test("a rate limit isn't taken for credits used up: no other region is asked", async () => {
   const seen = kiro({ chat: { "us-east-1": THROTTLED } })
   const r = await ask(await hooks(), auth())
   expect(r.status).toBe(429)
+  expect(r.wait).toBe("13") // Kiro's wait goes on as Retry-After
   expect(seen.chat).toEqual([["us-east-1", US]])
 })
 
