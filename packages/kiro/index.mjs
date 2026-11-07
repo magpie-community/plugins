@@ -1338,8 +1338,8 @@ function sessionOf(input, init) {
 // is the AWS SDK for JavaScript's: the SDK's user agent, m/N for the
 // endpoint the IDE names itself, then the IDE's own "KiroIDE <version>
 // <machine id>" with KAS/<version> and acp-client/kiro-ide, spaces made
-// "-". Its retry budget is 3 tries at a conversation's start, said in
-// amz-sdk-request and x-amzn-kiro-attempt; the plugin tries once.
+// "-". Its retry budget is 3 tries, said in amz-sdk-request and
+// x-amzn-kiro-attempt, which count up on each (see paced).
 const IDE_VERSION = "1.4.121"
 const IDE_KAS = "0.66.89"
 const IDE_NODE = "24.22.1"
@@ -1350,11 +1350,11 @@ const IDE_SDK_UA = `aws-sdk-js/1.0.0 ua/2.1 os/${sdkPart(platform())}#${sdkPart(
 // sdkHeaders are the AWS SDK's headers on a call to Kiro's runtime, as the
 // Kiro IDE's client sends them: who is calling, and as which client. The
 // IDE names a Builder ID or Identity Center token's kind (SSO_OIDC) too.
-function sdkHeaders(a) {
+function sdkHeaders(a, attempt = 1, invocation = randomUUID()) {
   const h = {
     ...authHeaders(a),
-    "amz-sdk-invocation-id": randomUUID(),
-    "amz-sdk-request": "attempt=1; max=3",
+    "amz-sdk-invocation-id": invocation,
+    "amz-sdk-request": `attempt=${attempt}; max=${TRIES}`,
     "x-amz-user-agent": `aws-sdk-js/1.0.0 ${IDE_APP}`,
     "User-Agent": IDE_SDK_UA,
     "x-amzn-kiro-client-attribution": "kiro-ide",
@@ -1363,14 +1363,75 @@ function sdkHeaders(a) {
   return h
 }
 
-function sendKiro(a, body, signal) {
+function sendKiro(a, body, signal, attempt = 1, invocation) {
   return fetch(runtime(a.region) + "/generateAssistantResponse", {
     method: "POST",
-    headers: { ...sdkHeaders(a), "x-amzn-kiro-attempt": "1;max=3", "x-amzn-codewhisperer-optout": "true", "x-amzn-kiro-agent-mode": "vibe",
-      "Content-Type": "application/json", Accept: "application/vnd.amazon.eventstream" },
+    headers: { ...sdkHeaders(a, attempt, invocation), "x-amzn-kiro-attempt": `${attempt};max=${TRIES}`, "x-amzn-codewhisperer-optout": "true",
+      "x-amzn-kiro-agent-mode": "vibe", "Content-Type": "application/json", Accept: "application/vnd.amazon.eventstream" },
     body,
     signal,
   })
+}
+
+// TRIES is the Kiro IDE's tries of one chat call (its QClientRetryStrategy,
+// agent 1.1.787, QAf), the first included.
+const TRIES = 3
+// PACE is the IDE's pause before the nth try after a throttle (its
+// throttling backoff: 1s doubling, 20% either way, at most 20s), unless
+// Kiro said how long (retryAfterMilliseconds and the like).
+const PACE = { base: 1000, jitter: 0.2, max: 20_000 }
+const paceOf = (n) => Math.min(PACE.max, PACE.base * 2 ** (n - 1)) * (1 - PACE.jitter + Math.random() * 2 * PACE.jitter)
+// THROTTLES are the reasons the IDE takes a 429 for a throttle it waits
+// out and tries again (its C1p and ServiceThrottleError): a throttle
+// Kiro gives no reason for is one too. A daily, monthly or usage limit
+// is not (usedUpSaid), nor is INSUFFICIENT_MODEL_CAPACITY.
+const THROTTLES = new Set(["USER_REQUEST_RATE_EXCEEDED", "CREDIT_CONSUMPTION_RATE_EXCEEDED", "SERVICE_REQUEST_RATE_EXCEEDED"])
+function throttleSaid(text) {
+  let e = {}
+  try {
+    e = JSON.parse(text) ?? {}
+  } catch {}
+  if (e.reason) return THROTTLES.has(e.reason)
+  return !usedUpSaid(text) && !/INSUFFICIENT_MODEL_CAPACITY/.test(text) && /too many requests|throttl/i.test(text)
+}
+
+// timing is how the plugin waits; tests make it instant.
+const timing = {
+  sleep: (ms, signal) =>
+    new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(aborted())
+      const t = setTimeout(() => {
+        signal?.removeEventListener("abort", stop)
+        resolve()
+      }, ms)
+      const stop = () => {
+        clearTimeout(t)
+        reject(aborted())
+      }
+      signal?.addEventListener("abort", stop, { once: true })
+    }),
+}
+
+// paced is sendKiro as the Kiro IDE sends a chat call: a 429 throttle is
+// waited out and tried again, up to TRIES in all, each try said in
+// amz-sdk-request and x-amzn-kiro-attempt under one invocation id. The
+// IDE answers its own USER_REQUEST_RATE_EXCEEDED so ("Retrying in N
+// seconds"), which is why a burst it rides out reached magpie's agent
+// as a 429 (onemezao on Discord). A wait Kiro says is longer than PACE.max
+// isn't held here: the 429 goes back with it, for magpie to rest the
+// account. The answer of the last try is the answer.
+async function paced(a, body, signal) {
+  const invocation = randomUUID()
+  for (let n = 1; ; n++) {
+    const res = await sendKiro(a, body, signal, n, invocation)
+    if (res.status !== 429 || n >= TRIES) return res
+    const text = (await res.text()).slice(0, 1 << 20)
+    const again = () => new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
+    if (!throttleSaid(text)) return again()
+    const said = saidWait(res.headers, text)
+    if (said > PACE.max) return again()
+    await timing.sleep(said ?? paceOf(n), signal)
+  }
 }
 
 // tooLongSaid is whether Kiro's words say the conversation is past the
@@ -1447,6 +1508,14 @@ const requestID = (headers) => headers.get("x-amzn-requestid") || headers.get("x
 // seconds or as a date. Unsaid, magpie keeps to its own pauses, but for
 // an account's request rate (USER_RATE_WAIT).
 function waitOf(headers, body) {
+  let w = saidWait(headers, body)
+  if (w === undefined && String(body ?? "").includes(USER_RATE)) w = USER_RATE_WAIT
+  return w
+}
+
+// saidWait is the wait Kiro itself said, if any (waitOf, but none of
+// magpie's own).
+function saidWait(headers, body) {
   const ms = (v) => {
     const n = v == null || v === "" ? NaN : Number(v)
     return Number.isFinite(n) && n > 0 ? n : undefined
@@ -1461,7 +1530,6 @@ function waitOf(headers, body) {
     const secs = ms(ra)
     w = secs !== undefined ? secs * 1000 : ms(Date.parse(ra) - Date.now())
   }
-  if (w === undefined && String(body ?? "").includes(USER_RATE)) w = USER_RATE_WAIT
   return w
 }
 
@@ -2125,7 +2193,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
   }
   let res
   try {
-    res = await sendKiro(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+    res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
   } catch (e) {
     if (e?.name === "AbortError") throw e
     return { status: 502, message: e.message }
@@ -2138,7 +2206,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
       return { status: 502, message: e.message }
     }
     try {
-      res = await sendKiro(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+      res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
     } catch (e) {
       if (e?.name === "AbortError") throw e
       return { status: 502, message: e.message }
@@ -2163,7 +2231,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
     if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message, wait: f.wait }
     a = next
     try {
-      res = await sendKiro(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+      res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
     } catch (e) {
       if (e?.name === "AbortError") throw e
       return { status: 502, message: e.message }
@@ -2735,4 +2803,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, waitOf, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }

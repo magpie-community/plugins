@@ -12,7 +12,13 @@ beforeAll(async () => {
   // no real sign-in is ever read
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   ;({ KiroAuthPlugin: plugin, _internal } = await import("./index.mjs"))
+  // a throttle's pauses (paced) are counted, not waited
+  sleep = _internal.timing.sleep
+  _internal.timing.sleep = async (ms) => void pauses.push(ms)
 })
+let sleep
+const pauses = []
+afterAll(() => (_internal.timing.sleep = sleep))
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
 globalThis.fetch = offline
@@ -159,10 +165,13 @@ test("a region not enabled is asked for again only after PROBE_MS", async () => 
 
 test("a rate limit isn't taken for credits used up: no other region is asked", async () => {
   const seen = kiro({ chat: { "us-east-1": THROTTLED } })
+  pauses.length = 0
   const r = await ask(await hooks(), auth())
   expect(r.status).toBe(429)
   expect(r.wait).toBe("13") // Kiro's wait goes on as Retry-After
-  expect(seen.chat).toEqual([["us-east-1", US]])
+  // waited out and tried again in the same region, as the Kiro IDE does
+  expect(seen.chat).toEqual([["us-east-1", US], ["us-east-1", US], ["us-east-1", US]])
+  expect(pauses).toEqual([12500, 12500])
 })
 
 test("a region not enabled is shown so, pointed out near the end, and named when the other is used up", async () => {
