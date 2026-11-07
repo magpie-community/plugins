@@ -29,6 +29,7 @@ import {
 import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/models.mjs"
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
+import { precheckImages, rewriteBody, translateError } from "./lib/preflight.mjs"
 import {
   readUaaToken,
   requireBrowser,
@@ -45,6 +46,71 @@ const QUOTA_TTL_MS = 60_000
 const DEFAULT_LOGIN_TIMEOUT_MS = 8 * 60_000
 
 const apiBase = () => ENDPOINTS.api
+
+/**
+ * 模型请求的 fetch 包装：预检（超限本地拒、宿主可切换）→ 改写（补 detail、
+ * 剥无效参数）→ 真发 → 错误翻译（端砚的图片错误宿主读不对，见 preflight.mjs）。
+ * 只认 chat/completions 和 models 两个端点；别的原样透传。
+ */
+function chatFetch(key, log = () => {}) {
+  const upstream = (...args) => globalThis.fetch(...args)
+  return async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input?.url ?? ""
+    const method = (init.method ?? (typeof input === "object" ? input?.method : undefined) ?? "GET").toUpperCase()
+    const isChat = url.includes("/chat/completions") && method === "POST"
+    if (!isChat) return upstream(input, init)
+    const raw = init.body
+    let text = ""
+    if (typeof raw === "string") text = raw
+    else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
+    else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw.buffer ?? raw)
+    else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
+    if (text) {
+      // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
+      let body
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = null
+      }
+      if (body) {
+        const refusal = precheckImages(body)
+        if (refusal) {
+          return new Response(refusal.body, {
+            status: refusal.status,
+            headers: { "content-type": "application/json" },
+          })
+        }
+      }
+      // ②③改写：补 detail、剥无效参数。
+      init = { ...init, body: rewriteBody(text) }
+    }
+    // 真发。
+    let res
+    try {
+      res = await upstream(input, init)
+    } catch (e) {
+      throw e
+    }
+    // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
+    if (!res.ok && res.status !== 429) {
+      let said = ""
+      try {
+        said = await res.text()
+      } catch {}
+      const translated = translateError(res.status, said, log)
+      if (translated) {
+        return new Response(translated.body, {
+          status: translated.status,
+          headers: { "content-type": "application/json" },
+        })
+      }
+      // 没翻译就还回去：body 只能读一次，用读到的重建。
+      return new Response(said, { status: res.status, statusText: res.statusText, headers: res.headers })
+    }
+    return res
+  }
+}
 
 const optNum = (v, fallback) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : fallback)
 
@@ -577,7 +643,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         const auth = await getAuth()
         const key = apiKeyOf(auth)
         if (!key) return {}
-        return { baseURL: apiBase(), apiKey: key }
+        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(key, log) }
       },
 
       /**
