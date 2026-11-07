@@ -434,6 +434,13 @@ test("a 406 dumps the system prompt, opt-in; the oldest dumps rot away by write 
     writeFileSync(old, JSON.stringify({ model: "m", messages: [{ role: "system", content: "pre-existing" }] }))
     const past = new Date(Date.now() - 60_000)
     utimesSync(old, past, past)
+    // the first dump is older than every refusal below, by its write time:
+    // a file system whose times are coarser than these writes (WSL2's ext4
+    // on a busy box) would otherwise tie it with them, and rotation could
+    // drop a refusal in its place
+    const firstDump = join(dir, files[0])
+    const later = new Date(past.getTime() + 1_000)
+    utimesSync(firstDump, later, later)
     // the directory is the user's to point anywhere: foreign files — a
     // settings.json, a non-dump anything — survive every refusal untouched
     writeFileSync(join(dir, "settings.json"), "{}")
