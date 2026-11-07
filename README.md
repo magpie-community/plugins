@@ -57,6 +57,7 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [param-override](packages/param-override) | New API's 参数覆盖 (`param_override`): set, delete, move, copy or rewrite request fields, for some models or under conditions, or turn a request away |
 | [model-map](packages/model-map) | New API's 模型重定向 (`model_mapping`): send a model under another name, by name or `/pattern/`; replies name the model asked for |
 | [system-prompt](packages/system-prompt) | Your own system prompt on every request, or on some agents' or models', in each API's own place |
+| [output-strategy](packages/output-strategy) | Seven composable output styles with a selection panel; off by default, cache-stable, and Codex `instructions` stay untouched |
 | [word-guard](packages/word-guard) | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies |
 | [think-tags](packages/think-tags) | Take a leading `<think>`, `<thinking>` or `<thought>` block out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
