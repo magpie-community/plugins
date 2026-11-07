@@ -176,6 +176,11 @@ test("the API-key + console-token method reads the token out of a pasted cookie"
   expect(okResult.type).toBe("success")
   expect(okResult.uaaToken).toBe("abc.def.ghi")
   expect(JSON.stringify(okResult)).not.toContain("SESSIONSECRET")
+  // host save() stores {...inputs, ...result.metadata} under metadata (#826):
+  // the result's metadata carries the parsed token, so the pasted cookie
+  // string, with its other session cookies, is not what gets saved
+  expect(okResult.metadata.uaaToken).toBe("abc.def.ghi")
+  expect(okResult.metadata.apiKey).toBe("sk-test")
   // a bare token value is accepted as-is
   const bare = await method.authorize({ apiKey: "sk-test", uaaToken: "abc.def.ghi" })
   expect(bare.type).toBe("success")

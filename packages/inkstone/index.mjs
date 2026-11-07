@@ -137,8 +137,27 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     const raw = auth.type === "api" ? (auth.key ?? "") : (auth.apiKey ?? auth.access ?? "")
     return normalizeApiKey(raw)
   }
-  const uaaTokenOf = (auth) => String(auth?.uaaToken ?? auth?.uaa_token ?? auth?.consoleToken ?? "").trim()
-  const usernameOf = (auth) => String(auth?.username ?? auth?.accountId ?? auth?.email ?? "").trim()
+  // The browser sign-in is saved as an oauth entry with the token at the top
+  // level. magpie saves an "api" method's answers under metadata instead:
+  // {type: "api", key, metadata: {apiKey, uaaToken}} (host.js save(), #826).
+  const TOKEN_FIELDS = ["uaaToken", "uaa_token", "consoleToken"]
+  const tokenField = (o) => TOKEN_FIELDS.find((k) => typeof o?.[k] === "string" && o[k].trim())
+  const uaaTokenOf = (auth) => {
+    const top = tokenField(auth)
+    if (top) return auth[top].trim()
+    const md = tokenField(auth?.metadata)
+    return md ? auth.metadata[md].trim() : ""
+  }
+  /** A renewed token goes where the entry kept its token, so the entry keeps its shape. */
+  const putToken = (auth, token) => {
+    if (!tokenField(auth) && tokenField(auth?.metadata)) auth.metadata[tokenField(auth.metadata)] = token
+    else auth[tokenField(auth) ?? "uaaToken"] = token
+    return auth
+  }
+  const usernameOf = (auth) =>
+    String(
+      firstNonEmpty(auth?.username, auth?.accountId, auth?.email, auth?.metadata?.username, auth?.metadata?.accountId, auth?.metadata?.email) ?? "",
+    ).trim()
 
   const save = async (auth) => {
     if (typeof client?.auth?.set !== "function") return false
@@ -174,7 +193,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             return ""
           }
         }
-        auth.uaaToken = token
+        putToken(auth, token)
         await save(auth)
         return token
       } finally {
@@ -230,7 +249,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           const next = uaaTokenOf(fresh)
           if (next && next !== token) return await readQuota(getAuth, fresh, depth + 1)
           const renewed = await renew(auth)
-          if (renewed && renewed !== token) return await readQuota(getAuth, { ...auth, uaaToken: renewed }, depth + 1)
+          if (renewed && renewed !== token) return await readQuota(getAuth, putToken(structuredClone(auth), renewed), depth + 1)
         }
         return {
           plan: "墨点计划 (Token Plan)",
@@ -533,13 +552,19 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             try {
               const user = await usersValidate(token)
               const data = user?.data ?? {}
+              const accountId = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email, `inkstone-${fingerprint(key)}`)
+              const username = firstNonEmpty(data.name, data.username)
               return {
                 type: "success",
                 key,
                 uaaToken: token,
-                accountId: firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email, `inkstone-${fingerprint(key)}`),
-                username: firstNonEmpty(data.name, data.username),
+                accountId,
+                username,
                 source: "manual",
+                // magpie keeps an api method's answers as metadata, and this
+                // metadata over them: the token read out of the paste, never
+                // the whole pasted cookie string (#826)
+                metadata: { apiKey: key, uaaToken: token, accountId, username, source: "manual" },
               }
             } catch (e) {
               return { type: "failed", error: cleanDetail(`console token: ${e?.message ?? e}`) }

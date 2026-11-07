@@ -212,3 +212,18 @@ test("a phone number missing before free credits is reported by auth.checkin", a
     message: "Bind a phone number in the InkStone console to claim free credits.",
   })
 })
+
+// #826: the "API key + console token" method is an api method, and magpie's
+// host save() keeps its answers under metadata, not at the top level:
+// {type: "api", key, metadata: {...inputs, ...result.metadata}}.
+test("an api entry with the token under metadata (as host save() writes it) reads the card", async () => {
+  f = fakeInkStone()
+  serve()
+  const p = await plugin()
+  for (const field of ["uaaToken", "uaa_token", "consoleToken"]) {
+    const saved = { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", [field]: "uaa-token" } }
+    const u = await p.auth.usage(async () => saved)
+    expect(u.error).toBeUndefined()
+    expect(u.balance).toBe("10 墨点 · 2 个可用包")
+  }
+})

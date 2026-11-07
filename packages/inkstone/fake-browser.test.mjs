@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
 import { renewSilently } from "./lib/browser.mjs"
-import { fakeInkStone, json, ok, fail } from "./fake.mjs"
+import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
 
 let fakeExe = ""
 let fakeDir = ""
@@ -93,6 +93,28 @@ test("the silent renewal reads the session cookie through a real CDP exchange", 
   expect(token).toBe("fake-uaa-token-for-tests")
   // a second renewal works too: the fake browser was closed and the profile is reusable
   expect(await renewSilently({ browserPath: fakeExe })).toBe("fake-uaa-token-for-tests")
+}, 30_000)
+
+// #826: an "API key + console token" entry is saved by the host as
+// {type: "api", key, metadata: {apiKey, uaaToken}}. A renewed token goes back
+// under metadata, and the rest of the entry is written back as it was.
+test("a renewed token is written back where the api entry keeps it, under metadata", async () => {
+  f = fakeInkStone()
+  f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
+  f.route("GET /api/tokenplan/v1/credits/packages", () => ok(packagesFixture()))
+  f.route("GET /api/tokenplan/v1/users/validate", () => ok({ name: "张三", phone: "12345678901" }))
+  const writes = []
+  const p = await InkStoneAuthPlugin(
+    { client: { auth: { set: async (req) => writes.push(structuredClone(req.body)) } } },
+    { browser: fakeExe },
+  )
+  const expired = jwtOf({ exp: Math.floor(Date.now() / 1000) - 60 })
+  const saved = { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: expired } }
+  const u = await p.auth.usage(async () => saved)
+  expect(u.error).toBeUndefined()
+  expect(writes).toEqual([
+    { type: "api", key: "sk-test", metadata: { apiKey: "sk-test", uaaToken: "fake-uaa-token-for-tests" } },
+  ])
 }, 30_000)
 
 test("a full browser sign-in opens the login window, reads the session, and creates the key", async () => {
