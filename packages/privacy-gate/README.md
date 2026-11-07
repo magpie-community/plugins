@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-0D4B4E">
+  <img alt="version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-0D4B4E">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-F2B35A">
 </p>
 
@@ -50,9 +50,9 @@ Codex, Cursor, Claude Code and scripts.
 | **Hooks** | `onRequest`, `onProvider`, `onUsage` |
 | **Protocols** | OpenAI chat, OpenAI Responses, Anthropic Messages, Gemini |
 | **Default policy** | `binaryPolicy: fail` — binary part for a non-local model → **403** |
-| **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/size metadata + a neutral local-tool prompt |
+| **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/media/size metadata + a neutral local-tool prompt |
 | **Text masking** | **Not here.** Use Magpie **Settings → Privacy** |
-| **Tests** | 62 cases through the repository's `scripts/middleware.mjs` |
+| **Tests** | 67 cases through the repository's `scripts/middleware.mjs` |
 
 ## Install
 
@@ -84,7 +84,7 @@ The request is rewritten into a text-only request:
 
 ```text
 [A binary attachment was withheld locally and was NOT sent to you
-(type image; mime image/png; bytes 481094). Do not claim to have seen it.
+(type image; media image; bytes 481094). Do not claim to have seen it.
 First ask how the user/agent can process or read it locally.]
 ```
 
@@ -178,9 +178,6 @@ magpie plugin options privacy-gate '{
   checks still fail closed.
 - **A guide prompt is not extraction.** It names local tools but cannot execute
   them. Agents without a configured local extractor will only get advice.
-- **Guide-mode MIME metadata has a known bug:** [issue #795](https://github.com/magpie-community/plugins/issues/795)
-  validates a clipped prefix rather than the whole `media_type`. It does not
-  forward binary bytes.
 - **Magpie engine timeouts fail open.** Magpie stops a hook at 250 ms and sends
   the request unchanged. This plugin keeps its own work bounded, but cannot turn
   an engine timeout into a rejection. See
@@ -297,7 +294,7 @@ magpie plugin        # 确认中间件已列出并启用
 
 ```text
 [A binary attachment was withheld locally and was NOT sent to you
-(type image; mime image/png; bytes 481094). Do not claim to have seen it.
+(type image; media image; bytes 481094). Do not claim to have seen it.
 First ask how the user/agent can process or read it locally.]
 ```
 
@@ -388,9 +385,6 @@ magpie plugin options privacy-gate '{
   超过总预算的文本不会被检查。结构性检查仍然失败关闭。
 - **guide 提示不是提取。** 它会列出本地工具名，但不能执行工具。没有配置本地
   提取器的 agent 只会得到建议。
-- **guide 模式的 MIME 元数据存在已知问题：**
-  [issue #795](https://github.com/magpie-community/plugins/issues/795)
-  检查的是截断后的前缀，而不是完整的 `media_type`。它不会转发二进制字节。
 - **Magpie 引擎超时会失败开放。** Magpie 在 250 ms 时停止钩子并原样发送请求。
   本插件会限制自身工作耗时，但无法把引擎超时变成拒绝。参见
   [magpie#5305](https://github.com/yetone/magpie/issues/5305)。
