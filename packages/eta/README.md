@@ -18,7 +18,7 @@ Requires [Eta 0.1.164 or later](https://github.com/Lingwcy/eta/releases/tag/v0.1
 
    Once published and listed, the package is `@magpie-community/agent-eta`, displayed as **Eta** under Plugins → Discover → Agents. The community release workflow distributes it after review and merge.
 
-   If you previously imported `eta.agent.mjs` alone, disconnect Eta and remove that single-file plugin entry before adding the package folder; do not install both at once. Standalone files still work, but the installed-plugin row cannot read their package name or summary and may show the filename instead.
+   If you previously imported the standalone agent file alone, disconnect Eta and remove that single-file plugin entry before adding the package folder; do not install both at once. Standalone files still work, but the installed-plugin row cannot read their package name or summary and may show the filename instead.
 
 2. In Magpie's Agents page, connect **Eta** to Magpie and choose which models and routing groups Eta may see. Installing the plugin exposes the Eta entry even before Eta's first launch; it does not automatically connect it.
 3. Keep Magpie running on the same computer. Fully quit and reopen Eta, then select a model from the **Magpie** group. Your current selection, direct providers and saved conversations are unchanged.
@@ -43,7 +43,7 @@ The versioned contract is:
 
 The address and key are examples; the plugin uses Magpie's configured origin and Eta-scoped gateway key. Eta fetches the visible catalog from `/v1/models` rather than copying model lists into this file, and calls OpenAI Chat Completions through Magpie. Route IDs stay intact.
 
-Only same-machine HTTP loopback gateways are supported, not remote gateways or WSL routing. A missing/unavailable Magpie does not silently switch Eta to a direct provider. This plugin does not configure remote Bots. Native desktop interaction and paid upstream model acceptance have not been verified by the automated host tests.
+Only same-machine HTTP loopback gateways are supported, not remote gateways or WSL routing. A missing/unavailable Magpie does not silently switch Eta to a direct provider. This plugin does not configure remote Bots. Native desktop interaction and paid upstream model acceptance are not covered by the package tests.
 
 ## License
 

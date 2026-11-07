@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agent, connect } from "./eta.agent.mjs";
+import { agent, connect } from "./eta.agent.js";
 
 const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json();
 
