@@ -157,17 +157,16 @@ measurements, not a guarantee that the engine's 250 ms hook limit is never hit.
   is the engine's fail-open behavior, tracked in
   [magpie#5305](https://github.com/yetone/magpie/issues/5305).
 
-## Known issue
+## Guide metadata
 
-[Issue #795](https://github.com/magpie-community/plugins/issues/795): guide-mode
-`guideMime` validates a 100-character clip rather than the whole `media_type`.
-A long base64-like value with a slash in the first 100 characters can contribute
-a fake MIME prefix to the guide prompt. This is a metadata-validation bug, not a
-binary egress bypass; the part's bytes are still withheld.
+Guide mode never copies a raw MIME value into the prompt. It maps the detected
+type to one fixed coarse class: `image`, `pdf`, `office`, `audio`, `video` or
+`unknown`. Exact subtypes and parameters are deliberately omitted; the model
+only needs enough information to choose a local extractor.
 
 ## Verification
 
-- 62 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
+- 64 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
   hook calls Magpie performs.
 - The package has no network, timers, Node APIs or imports; the middleware file
   is one plain JavaScript module.
