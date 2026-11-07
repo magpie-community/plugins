@@ -564,6 +564,50 @@ export function firstWords(body) {
   return "";
 }
 
+/**
+ * The latest genuine user turns of the conversation the client resent, newest first:
+ * `{ index, stamp, short }`. `index` is the item's position, so the body cut after it is the
+ * request that turn began with; `stamp` names the turn (`<index>:<hash>`) and stays the same as
+ * the conversation grows, since history is only appended to. Scans back from the end and stops
+ * after `max` turns, so a long conversation costs no more than its last few turns.
+ */
+export function recentUserTurns(body, max = 6) {
+  const items = getNormalizedItems(body);
+  const turns = [];
+  let i = items.length - 1;
+  for (; i >= 0 && turns.length < max; i--) {
+    const item = items[i];
+    if (!item || typeof item !== "object" || String(item.role || "").toLowerCase() !== "user") {
+      continue;
+    }
+    const info = inspectMessageItem(item, { needFullText: true, needAssistantText: false });
+    if (!info.userSaid) continue;
+    turns.push({
+      index: i,
+      stamp: `${i}:${sha256Hex(info.userSaid.slice(0, MAX_FIRST_WORDS_HASH_CHARS)).slice(0, 16)}`,
+      short: isShortFollowupMessage(info.userSaid),
+    });
+  }
+  // the conversation's opening turn is never a follow-up of anything
+  if (i < 0 && turns.length > 0) {
+    turns[turns.length - 1].short = false;
+  }
+  return turns;
+}
+
+/**
+ * `body` as it was when the item at `index` was its last: the request that began that turn,
+ * for the router to decide again what that request was given.
+ */
+export function bodyUpTo(body, index) {
+  const cut = { ...body };
+  delete cut.estimated_input_tokens;
+  if (Array.isArray(body.messages)) cut.messages = body.messages.slice(0, index + 1);
+  else if (Array.isArray(body.input)) cut.input = body.input.slice(0, index + 1);
+  else if (Array.isArray(body.contents)) cut.contents = body.contents.slice(0, index + 1);
+  return cut;
+}
+
 function getHeaderCaseInsensitive(headers, name) {
   if (!headers || typeof headers !== "object") return "";
   const target = name.toLowerCase();
@@ -1348,6 +1392,8 @@ export class SessionContinuityStore {
       sessionKey,
       {
         model: decision.model || existing?.model || "",
+        // the model as routed (`upstream/claude-opus-5-5`); `model` is kept canonical
+        target: decision.model || existing?.target || "",
         effort: decision.effort || existing?.effort || "medium",
         provider: decision.provider ?? existing?.provider ?? "",
         workKind: decision.workKind || existing?.workKind || "general_implementation",
@@ -1358,6 +1404,7 @@ export class SessionContinuityStore {
         cached,
         healthy: true,
         turn: facts.turn || existing?.turn || 1,
+        anchor: decision.anchor ?? existing?.anchor ?? "",
         lastWhy: decision.why || "first",
         lastHeld: Boolean(decision.held),
       },

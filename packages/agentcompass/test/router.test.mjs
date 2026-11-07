@@ -2297,7 +2297,13 @@ test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `
     protocol: "messages",
     headers: { "x-session-id": "perf-bench-run" },
     state: {},
-    options: { candidateModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] },
+    // Affinity off: the last turn's capped text alone decides the route. Under the default `cache` affinity
+    // the 25 turns before it are a session, decided again from the history and held (checked below).
+    options: {
+      candidateModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+      affinityMode: "off",
+      continuityStore: new SessionContinuityStore(),
+    },
   });
   const elapsedMs = performance.now() - tStart;
 
@@ -2307,6 +2313,21 @@ test("9.9 PR #670 Round 2 & 3 Guard: Single-pass bounded work (`scannedChars`, `
     elapsedMs < 200,
     `Expected single-pass mwOnRequest smoke check on ${(rawSize / 1024).toFixed(1)}KB body to finish in < 200ms, took ${elapsedMs.toFixed(2)}ms`
   );
+
+  // 3. The same request on a runtime that never saw the session decides its earlier turns again from the
+  // history (`MAX_REPLAY_DEPTH` of them): bounded too
+  const tReplay = performance.now();
+  const replayed = mwOnRequest({ ...structuredClone(req), model: "agentcompass" }, {
+    protocol: "messages",
+    state: {},
+    options: {
+      candidateModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+      continuityStore: new SessionContinuityStore(),
+    },
+  });
+  const replayMs = performance.now() - tReplay;
+  assert.match(replayed.model, /^claude-(opus|sonnet|haiku)-4-[56]:/);
+  assert.ok(replayMs < 200, `Expected replayed mwOnRequest on ${(rawSize / 1024).toFixed(1)}KB body in < 200ms, took ${replayMs.toFixed(2)}ms`);
 });
 
 
@@ -2513,4 +2534,71 @@ test("9.13 The gateway always routes: when every candidate is below the task's f
   const visualCtx = { protocol: "chat", agent: "claude-code", options: { scorerType: "heuristic", candidateModels: ["claude-fable-5-1:high", "gemini-3.8-flash-high:low"] }, state: {}, report() {} };
   await hookOnRequest(visualBody(), visualCtx);
   assert.equal(visualCtx.state.route?.targetModel, "gemini-3.8-flash-high");
+});
+
+test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-1 route, the tool loop and the short follow-up", () => {
+  // Magpie hands each request a moejs runtime from a sync.Pool, and middleware has no storage across requests
+  // (internal/middleware/middleware.go). Each store below is one runtime's module state; Magpie's ctx carries no
+  // headers, so the session is known only by its body.
+  const candidateModels = [
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gemini-4-argon-high",
+    "gemini-3.8-flash-high",
+    "grok-4.7",
+    "deepseek-v4.1-flash-free",
+  ].map((m) => `upstream/${m}`);
+  const t0 = 1_700_000_000_000;
+  const runtime = (store, now) => ({ protocol: "chat", state: {}, options: { candidateModels, continuityStore: store, now } });
+  const first = {
+    role: "user",
+    content: "Audit our multi-module distributed lock manager to find the root cause of the deadlock and race condition.",
+  };
+  const toolLoop = [
+    first,
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "package lock // simple utility" },
+    { role: "user", content: "<system-reminder>The TodoWrite tool hasn't been used recently.</system-reminder>" },
+  ];
+  const followup = [
+    first,
+    { role: "assistant", content: "I found the lock inversion between ShardLock and TxLock. Shall I continue with the fix?" },
+    { role: "user", content: "继续" },
+  ];
+
+  const storeA = new SessionContinuityStore();
+  const turn1 = mwOnRequest({ model: "agentcompass/auto", messages: [first] }, runtime(storeA, t0));
+  assert.ok(turn1?.model, "turn 1 is routed");
+
+  // The tool loop and the follow-up each land on a runtime that never saw the session
+  const loopB = mwOnRequest({ model: "agentcompass/auto", messages: toolLoop }, runtime(new SessionContinuityStore(), t0 + 1_000));
+  const followB = mwOnRequest({ model: "agentcompass/auto", messages: followup }, runtime(new SessionContinuityStore(), t0 + 2_000));
+  // ... and on the runtime that did
+  const followA = mwOnRequest({ model: "agentcompass/auto", messages: followup }, runtime(storeA, t0 + 2_000));
+
+  assert.equal(loopB.model, turn1.model, "a fresh runtime holds the turn's model and effort in the tool loop");
+  assert.equal(followB.model, turn1.model, "a fresh runtime holds the model and effort on the short follow-up");
+  assert.equal(followA.model, turn1.model, "the runtime that routed turn 1 holds it on the follow-up");
+
+  // A runtime whose record is of an earlier turn doesn't take its record for the current turn's
+  const storeC = new SessionContinuityStore();
+  const bulk = { role: "user", content: "Perform a mechanical batch rename of foo_bar to fooBar across JSON fixtures." };
+  const turn2 = [first, { role: "assistant", content: "Fixed the lock inversion." }, bulk];
+  mwOnRequest({ model: "agentcompass/auto", messages: [first] }, runtime(storeC, t0));
+  const turn2B = mwOnRequest({ model: "agentcompass/auto", messages: turn2 }, runtime(new SessionContinuityStore(), t0 + 3_000));
+  const turn2Loop = [
+    ...turn2,
+    { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "grep", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c2", content: "fixtures/a.json" },
+  ];
+  const loopC = mwOnRequest({ model: "agentcompass/auto", messages: turn2Loop }, runtime(storeC, t0 + 4_000));
+  const loopD = mwOnRequest({ model: "agentcompass/auto", messages: turn2Loop }, runtime(new SessionContinuityStore(), t0 + 4_000));
+  assert.equal(loopC.model, turn2B.model, "a record of turn 1 doesn't decide turn 2's tool loop");
+  assert.equal(loopD.model, turn2B.model, "turn 2's tool loop is held on a fresh runtime too");
 });
