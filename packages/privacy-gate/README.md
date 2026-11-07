@@ -52,7 +52,7 @@ Codex, Cursor, Claude Code and scripts.
 | **Default policy** | `binaryPolicy: fail` — binary part for a non-local model → **403** |
 | **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/media/size metadata + a neutral local-tool prompt |
 | **Text masking** | **Not here.** Use Magpie **Settings → Privacy** |
-| **Tests** | 64 cases through the repository's `scripts/middleware.mjs` |
+| **Tests** | 67 cases through the repository's `scripts/middleware.mjs` |
 
 ## Install
 

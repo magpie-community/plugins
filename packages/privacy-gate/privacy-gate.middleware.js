@@ -831,7 +831,12 @@ function guideMimeCandidate(node) {
 // The guide prompt only needs a coarse class. Never echo raw media_type: it is
 // untrusted metadata and exact subtypes/parameters are not useful for tool choice.
 function guideMediaClass(node, kind) {
-  var candidate = guideMimeCandidate(node).toLowerCase();
+  var candidate = guideMimeCandidate(node);
+  // Do not normalize an unbounded untrusted string outside the scan budget.
+  // 256 is above the longest usable type/subtype+parameters prefix and keeps
+  // this step O(1) for oversized metadata.
+  if (candidate.length > 256) candidate = '';
+  candidate = candidate.split(';')[0].trim().toLowerCase();
   if (candidate.indexOf('image/') === 0) return 'image';
   if (candidate === 'application/pdf' || candidate === 'application/x-pdf') return 'pdf';
   if (candidate === 'application/msword' || candidate === 'application/vnd.ms-excel' ||
@@ -839,7 +844,9 @@ function guideMediaClass(node, kind) {
     candidate.indexOf('application/vnd.openxmlformats-officedocument.') === 0) return 'office';
   if (candidate.indexOf('audio/') === 0) return 'audio';
   if (candidate.indexOf('video/') === 0) return 'video';
-  if (kind === 'image' || kind === 'audio' || kind === 'video') return kind;
+  if (kind === 'image' || kind === 'image_url' || kind === 'input_image') return 'image';
+  if (kind === 'audio' || kind === 'input_audio') return 'audio';
+  if (kind === 'video' || kind === 'input_video') return 'video';
   return 'unknown';
 }
 

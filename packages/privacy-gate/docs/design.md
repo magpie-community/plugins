@@ -162,11 +162,13 @@ measurements, not a guarantee that the engine's 250 ms hook limit is never hit.
 Guide mode never copies a raw MIME value into the prompt. It maps the detected
 type to one fixed coarse class: `image`, `pdf`, `office`, `audio`, `video` or
 `unknown`. Exact subtypes and parameters are deliberately omitted; the model
-only needs enough information to choose a local extractor.
+only needs enough information to choose a local extractor. MIME parameters are
+stripped before classification, and oversized candidates are ignored before
+lowercasing so untrusted metadata cannot add unbounded normalization work.
 
 ## Verification
 
-- 64 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
+- 67 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
   hook calls Magpie performs.
 - The package has no network, timers, Node APIs or imports; the middleware file
   is one plain JavaScript module.
