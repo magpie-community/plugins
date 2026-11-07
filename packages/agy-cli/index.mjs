@@ -3114,7 +3114,6 @@ function validateBody(body) {
           if (block?.type === "tool_result") toolResult(block)
           else if (block?.type === "image") parseUserImage(block)
           else if (block?.type === "text" || typeof block === "string") continue
-          else if (block?.type === "image") parseUserImage(block)
           else if (block?.type === "document") parseUserDocumentText(block)
           else if (block?.type === "search_result") parseSearchResultText(block)
           else blockText(block)
