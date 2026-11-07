@@ -1,8 +1,8 @@
 # agy-cli
 
 把本机的 Antigravity CLI（`agy`）接成 Magpie 里的一个模型 provider。装好以后，
-OpenCode、Claude Code 等客户端经由 Magpie 调用你订阅里的 Gemini、Claude 和
-GPT-OSS 模型，请求实际由 `agy` 进程完成。
+OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放的模型，请求实际由
+`agy` 进程完成。
 
 **[English → README.en.md](README.en.md)** ｜ 来源、版权与迁移说明见 [NOTICE.md](NOTICE.md)
 
@@ -12,7 +12,8 @@ GPT-OSS 模型，请求实际由 `agy` 进程完成。
 翻译成 ACP（Agent Client Protocol）消息，交给本机的 `agy acp` 进程处理，再把输出翻译回
 流式响应。
 
-- 底层是真正的 agy CLI，走它自带的 ACP 通道。插件不伪造 IDE 身份，也不直接请求 Google
+- 底层是真正的 agy CLI，走它自带的 ACP 通道。ACP 握手里的 `clientInfo` 是本插件自己的
+  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器；插件也不直接请求 Google
   的内部接口。
 - 客户端自己的工具（读写文件、执行命令等）通过 MCP 暴露给模型。工具由客户端执行，结果
   回传到同一轮 agy 对话里，模型看到的是原生工具调用。
@@ -20,8 +21,10 @@ GPT-OSS 模型，请求实际由 `agy` 进程完成。
 
 ## 功能
 
-- **订阅内的模型都能用**：Gemini、Claude、GPT-OSS 等模型在会话中切换，历史保留；思考
-  等级也可以在会话中切换。
+- **agy 开放的模型**：模型列表以 ACP 会话里 agy 给出的模型选项为准。`agy models` 列出的
+  模型如果没有在会话里向本客户端开放（agy 可能只向它认可的客户端开放 Claude、GPT-OSS），
+  就不会出现在列表里；第一个会话建立之前只列 Gemini。模型和思考等级可以在会话中切换，
+  历史保留。
 - **流式输出与思考摘要**：思考摘要以 `thinking` 块返回，设置 `AGY_BRIDGE_THINKING=0` 可关闭。
 - **图片输入**：支持内联 base64 的 PNG、JPEG、GIF、WebP。需要 agy 1.5.0 或更新版本，
   因为图片能力要由 ACP 服务端声明。
@@ -82,7 +85,7 @@ magpie quota refresh agy-cli --json
 ```
 
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
-分别列出。插件不读写 Google 令牌，也不会替你伪装成其他账号。没有可测量数据的窗口会显示
+分别列出。插件不读写 Google 令牌，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
 ## 环境变量

@@ -10,6 +10,15 @@ import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
+// agy is told who is connecting: this plugin, by its own package name.
+const CLIENT_INFO = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+    return { name: String(pkg.name).replace(/^@[^/]+\//, ""), version: String(pkg.version) }
+  } catch {
+    return { name: "opencode-agy-cli-auth", version: "0.0.0" }
+  }
+})()
 const AGENT_NAME = "magpie-bridge"
 const MCP_SERVER_PATH = fileURLToPath(new URL("./mcp-server.mjs", import.meta.url))
 // agy exposes tools from the --ide-mcp-port server as direct functions with this prefix.
@@ -64,6 +73,8 @@ const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
 const MINIMAL_AGENT = process.env.AGY_BRIDGE_MINIMAL_AGENT !== "0"
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
+// Until `agy models` answers. Gemini only: agy's ACP server decides which other
+// models a client gets, and the plugin serves no more than it offers.
 const FALLBACK_MODELS = [
   { id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", effort: "high" },
   { id: "gemini-4-argon-medium", name: "Gemini 4 Argon (Medium)", effort: "medium" },
@@ -71,13 +82,6 @@ const FALLBACK_MODELS = [
   { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", effort: "high" },
   { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", effort: "medium" },
   { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", effort: "low" },
-  { id: "claude-opus-5-5-high", name: "Claude Opus 5.5 (High)", effort: "high" },
-  { id: "claude-opus-5-5-medium", name: "Claude Opus 5.5 (Medium)", effort: "medium" },
-  { id: "claude-opus-5-5-low", name: "Claude Opus 5.5 (Low)", effort: "low" },
-  { id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)", effort: "high" },
-  { id: "claude-sonnet-5-5-medium", name: "Claude Sonnet 5.5 (Medium)", effort: "medium" },
-  { id: "claude-sonnet-5-5-low", name: "Claude Sonnet 5.5 (Low)", effort: "low" },
-  { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", effort: "medium" },
 ]
 
 const pool = new Map()
@@ -194,6 +198,54 @@ const MODEL_CATALOG_RETRY_MS = 5_000
 let modelCatalogRefreshPromise = null
 let cachedModelCatalog = fallbackModelCatalog()
 
+// `agy models` lists every model of the account, while agy's ACP server offers
+// a client only some of them. A session's model option (and its
+// models.availableModels) says which; the catalog keeps to that. Before any
+// session has said, only Gemini models are served.
+let acpOfferedModels = null
+let acpOfferedKey = ""
+
+function offeredModelsOf(configOptions, models) {
+  const out = []
+  const option = configSelect(Array.isArray(configOptions) ? configOptions : [], "model")
+  for (const value of selectValues(option?.options)) out.push({ id: value.value, name: value.name })
+  for (const model of Array.isArray(models?.availableModels) ? models.availableModels : []) {
+    const id = model?.modelId ?? model?.id
+    if (typeof id === "string" && id) out.push({ id, name: model.name })
+  }
+  return out
+}
+
+function noteOfferedModels(configOptions, models) {
+  const offered = offeredModelsOf(configOptions, models)
+  if (!offered.length) return
+  const names = new Map(offered.map(model => [model.id, typeof model.name === "string" && model.name ? model.name : model.id]))
+  const key = [...names.keys()].sort().join("\n")
+  if (key === acpOfferedKey) return
+  acpOfferedModels = names
+  acpOfferedKey = key
+}
+
+function offeredFilter(list) {
+  if (!acpOfferedModels) return list.filter(model => /^gemini-/i.test(model.id))
+  const kept = list.filter(model => acpOfferedModels.has(model.id) ||
+    (modelFamilyId(model) && acpOfferedModels.has(modelFamilyId(model))))
+  // A model the session offers that `agy models` did not list is served as is.
+  const covered = new Set(kept.flatMap(model => [model.id, modelFamilyId(model)]))
+  for (const [id, name] of acpOfferedModels) {
+    if (!covered.has(id)) kept.push({ id, name })
+  }
+  return kept
+}
+
+function catalogOf(entry) {
+  if (entry.offeredKey !== acpOfferedKey || !entry.catalog) {
+    entry.catalog = buildModelCatalog(offeredFilter(entry.list))
+    entry.offeredKey = acpOfferedKey
+  }
+  return entry.catalog
+}
+
 function modelFamilyId(model) {
   if (!model.effort) return ""
   return model.id.slice(0, -(model.effort.length + 1))
@@ -254,7 +306,7 @@ function buildModelCatalog(list) {
 }
 
 function fallbackModelCatalog(agyPath = null) {
-  return { agyPath, catalog: buildModelCatalog(FALLBACK_MODELS), isFallback: true, fetchedAt: 0, lastAttemptAt: null }
+  return { agyPath, list: FALLBACK_MODELS, catalog: null, offeredKey: null, isFallback: true, fetchedAt: 0, lastAttemptAt: null }
 }
 
 // Magpie gives models() about two seconds, while `agy models` can take longer.
@@ -267,9 +319,9 @@ async function loadModelCatalog(agyPath) {
     modelCatalogRefreshPromise = null
   }
   const current = cachedModelCatalog
-  if (!agyPath) return current.catalog
+  if (!agyPath) return catalogOf(current)
   const now = Date.now()
-  if (!current.isFallback && now - current.fetchedAt < MODEL_CATALOG_TTL_MS) return current.catalog
+  if (!current.isFallback && now - current.fetchedAt < MODEL_CATALOG_TTL_MS) return catalogOf(current)
   if (!modelCatalogRefreshPromise &&
       (current.lastAttemptAt === null || now - current.lastAttemptAt >= MODEL_CATALOG_RETRY_MS)) {
     current.lastAttemptAt = now
@@ -277,7 +329,9 @@ async function loadModelCatalog(agyPath) {
       if (list?.length && cachedModelCatalog === current) {
         cachedModelCatalog = {
           agyPath,
-          catalog: buildModelCatalog(list),
+          list,
+          catalog: null,
+          offeredKey: null,
           isFallback: false,
           fetchedAt: Date.now(),
           lastAttemptAt: current.lastAttemptAt,
@@ -301,7 +355,7 @@ async function loadModelCatalog(agyPath) {
       clearTimeout(timer)
     }
   }
-  return cachedModelCatalog.catalog
+  return catalogOf(cachedModelCatalog)
 }
 
 function modelLimits(id) {
@@ -1004,8 +1058,9 @@ class Proc {
   async #handshake() {
     const init = await this.conn.request("initialize", {
       protocolVersion: 1,
-      // agy offers non-Gemini models only to allowlisted ACP clients.
-      clientInfo: { name: "zed", version: "0.0.0" },
+      // The plugin's own name. agy decides which models it offers this client,
+      // and the catalog follows what the session advertises.
+      clientInfo: CLIENT_INFO,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
     })
     this.agentVersion = init?.agentInfo?.version ?? null
@@ -1045,6 +1100,7 @@ class Proc {
     // A resumed session reports the account default; always apply the selection.
     this.currentModel = session?.models?.currentModelId ?? null
     this.configOptions = Array.isArray(session?.configOptions) ? session.configOptions : []
+    noteOfferedModels(this.configOptions, session?.models)
     if (this.model) await this.#setModel(this.model, this.selection, this.resumed)
     if (this.tools.length) await this.#waitForToolList(this.toolsVersion)
   }
@@ -1164,6 +1220,7 @@ class Proc {
     if (params.update?.sessionUpdate === "config_option_update" && Array.isArray(params.update.configOptions)) {
       this.configOptions = params.update.configOptions
       this.currentSelectionKey = null
+      noteOfferedModels(this.configOptions)
       return
     }
     const turn = this.turn

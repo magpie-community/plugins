@@ -1,9 +1,9 @@
 # agy-cli
 
 Turn the local Antigravity CLI (`agy`) into a model provider inside Magpie. Once
-it is set up, clients such as OpenCode and Claude Code can reach the Gemini,
-Claude and GPT-OSS models in your subscription through Magpie, and every request
-is actually carried out by an `agy` process.
+it is set up, clients such as OpenCode and Claude Code can reach the models agy
+offers this plugin through Magpie, and every request is actually carried out by
+an `agy` process.
 
 **[中文 → README.md](README.md)** · Provenance, licensing and migration notes:
 [NOTICE.md](NOTICE.md)
@@ -16,8 +16,9 @@ them to a local `agy acp` process, and converts the output back into a streamed
 response.
 
 - The work is done by the real agy CLI over the ACP channel it ships with. The
-  plugin does not impersonate the IDE and does not call Google's internal
-  endpoints directly.
+  ACP handshake's `clientInfo` is the plugin's own package name and version
+  (`opencode-agy-cli-auth`), not Zed or any other editor, and the plugin does
+  not call Google's internal endpoints directly.
 - Tools that belong to the client, such as file reads, writes and shell commands,
   are exposed to the model over MCP. The client runs them and the results flow
   back into the same agy conversation, so the model sees ordinary native tool
@@ -27,9 +28,12 @@ response.
 
 ## Features
 
-- **Every model in the subscription**: switch between Gemini, Claude and GPT-OSS
-  models mid-conversation without losing history. Thinking levels can be changed
-  the same way.
+- **The models agy offers**: the list follows the model option agy advertises
+  in the ACP session. A model `agy models` lists but the session does not offer
+  this client (agy may keep Claude and GPT-OSS for clients it recognises) is
+  left out, and before the first session only Gemini is listed.
+  Models and thinking levels can be switched mid-conversation without losing
+  history.
 - **Streaming with thought summaries**: summaries come back as `thinking` blocks.
   Set `AGY_BRIDGE_THINKING=0` to turn them off.
 - **Image input**: inline base64 PNG, JPEG, GIF and WebP. This needs agy 1.5.0 or
@@ -110,7 +114,7 @@ magpie quota refresh agy-cli --json
 
 The numbers come from agy's own `/usage` report for whichever account is signed
 in to the CLI, broken down by model group. The plugin does not read or write
-Google tokens and does not present itself as another account. A window with no
+Google tokens; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
 ## Environment variables
