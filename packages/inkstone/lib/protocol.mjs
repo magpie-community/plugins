@@ -122,9 +122,13 @@ async function readJson(res, what) {
 async function consoleFetch(url, token, init, what, timeoutMs = TIMEOUT_MS, auth = "bearer") {
   let res
   try {
+    const headers = auth === "cookie" ? cookieHeaders(token, init?.headers) : consoleHeaders(token, init?.headers)
+    if (process.env.MAGPIE_INKSTONE_DEBUG_HEADERS) {
+      console.error("[consoleFetch]", what, "auth=", auth, "keys=", Object.keys(headers).join(","))
+    }
     res = await fetch(url, {
       ...init,
-      headers: auth === "cookie" ? cookieHeaders(token, init?.headers) : consoleHeaders(token, init?.headers),
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (e) {

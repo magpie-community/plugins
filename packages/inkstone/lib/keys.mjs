@@ -70,7 +70,7 @@ export function keyItems(listReply) {
 
 /** 账号现在有几把 Key（total 缺失时按数组数）。 */
 export async function keyCount(token) {
-  const listed = await listKeys(token, { query: { page: 1, page_size: 50 } })
+  const listed = await listKeys(token)
   const items = keyItems(listed)
   const total = Number(listed?.data?.total ?? listed?.data?.total_count ?? 0)
   return Math.max(Number.isFinite(total) ? total : 0, items.length)
@@ -86,7 +86,7 @@ export async function keyCount(token) {
 export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, protectName = "", log } = {}) {
   let deleted = 0
   try {
-    const listed = await listKeys(token, { query: { page: 1, page_size: 50 } })
+    const listed = await listKeys(token)
     const prefix = keyPrefixFor(username)
     const ours = keyItems(listed)
       .filter((k) => k.name.startsWith(prefix))
@@ -174,6 +174,24 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
         "the console created an API key but did not return it (the plaintext is shown only once). " +
           "Create one in the console and paste it instead.",
       )
+    }
+    // 「API Key fetch failed, refresh page and retry」：登录窗口刚关、
+    // headless 刚读完 cookie 就建 Key 时的软风控（真机实测，2026-11-07——
+    // 同一枚 cookie 稍后重试就成功）。稍等重试两次，换名字换幂等键。
+    else if (/fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
+      let last = e
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await new Promise((r) => setTimeout(r, 2500))
+        try {
+          name = keyNameFor(username)
+          reply = await createKey(token, name, randomUUID())
+          last = null
+          break
+        } catch (e2) {
+          last = e2
+        }
+      }
+      if (last) throw last
     } else throw e
   }
   const created = String(reply?.data?.key ?? "").trim()
@@ -190,7 +208,7 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     if (e?.status === 401 || e?.status === 403) {
       // 建出来却被拒：删掉这把，别给账号留垃圾。
       try {
-        const listed = await listKeys(token, { query: { page: 1, page_size: 50 } })
+        const listed = await listKeys(token)
         const match = keyItems(listed).find((k) => k.name === name)
         if (match) await deleteKey(token, match.id)
       } catch {}
