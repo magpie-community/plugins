@@ -41,20 +41,20 @@ const MUTATIONS = [
   },
   {
     file: "seed.mjs",
-    from: "if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id) || m.displayName === m.model) return m",
-    to: "return m",
+    from: "if (x.displayName === x.model) return x",
+    to: "return x",
     why: "leaves a pretty label as the picker title, so the string magpie writes matches nothing",
   },
   {
     file: "seed.mjs",
-    from: "if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id) || m.displayName === m.model) return m",
-    to: "if (!m || m.displayName === m.model) return m",
+    from: "if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id)) return m",
+    to: "if (!m || m.providerId !== PROVIDER_ID) return m",
     why: "renames entries the user named, dangling their saved selection",
   },
   {
     file: "seed.mjs",
-    from: "if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id) || m.displayName === m.model) return m",
-    to: "if (!m || m.providerId !== PROVIDER_ID || m.displayName === m.model) return m",
+    from: "if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id)) return m",
+    to: "if (!m || !seeded.has(m.id)) return m",
     why: "renames an entry of theirs that an old record still lists",
   },
   {
@@ -221,8 +221,8 @@ const MUTATIONS = [
   },
   {
     file: "seed.mjs",
-    from: "const drift = added.length > 0 || droppable.length > 0 || relabeled > 0 || providerMissing || providerMoved",
-    to: "const drift = added.length > 0 || relabeled > 0 || providerMissing || providerMoved",
+    from: "const drift = added.length > 0 || droppable.length > 0 || relabeled > 0 || refreshed > 0 || providerMissing || providerMoved",
+    to: "const drift = added.length > 0 || relabeled > 0 || refreshed > 0 || providerMissing || providerMoved",
     why: "--check calls a store in step while --prune would still drop entries from it",
   },
   {
@@ -293,9 +293,63 @@ const MUTATIONS = [
   },
   {
     file: "seed.mjs",
-    from: "if (m.displayName === selected) renamed = m.model",
-    to: "if (false) renamed = m.model",
+    from: "if (x.displayName === selected) renamed = x.model",
+    to: "if (false) renamed = x.model",
     why: "renames the entry Cowork is on and leaves the selection pointing at the old name",
+  },
+  {
+    file: "seed.mjs",
+    from: "...(te ? { extras: { thinkingEfforts: te } } : {}),",
+    to: "",
+    why: "seeds a model that takes reasoning efforts with none, so Cowork has no Reasoning row to draw (#828)",
+  },
+  {
+    file: "seed.mjs",
+    from: "const raw = Array.isArray(m.supported_reasoning_levels) && m.supported_reasoning_levels.length",
+    to: "const raw = false",
+    why: "reads only the flat reasoning_levels, so a catalog that lists the objects alone gets no efforts",
+  },
+  {
+    file: "seed.mjs",
+    from: ": Array.isArray(m.reasoning_levels) ? m.reasoning_levels : []",
+    to: ": []",
+    why: "reads only the {effort} objects, so a flat reasoning_levels list gets no efforts",
+  },
+  {
+    file: "seed.mjs",
+    from: "const options = [...new Set(names)]",
+    to: "const options = names",
+    why: "offers a level twice when the catalog repeats it",
+  },
+  {
+    file: "seed.mjs",
+    from: "for (const e of [\"medium\", \"high\"]) if (options.includes(e)) return e",
+    to: "",
+    why: "defaults to the dearest level instead of the one vendors start on",
+  },
+  {
+    file: "seed.mjs",
+    from: "if (named && options.includes(named)) return named",
+    to: "",
+    why: "ignores a default the catalog names",
+  },
+  {
+    file: "seed.mjs",
+    from: "let x = byId.has(m.model) ? withEfforts(m, byId.get(m.model)) : m",
+    to: "let x = m",
+    why: "a store seeded before #828 never gets the efforts, since its entries are never added again",
+  },
+  {
+    file: "seed.mjs",
+    from: "if (x !== m) refreshed++",
+    to: "",
+    why: "updates efforts in memory but reports nothing to write, so the store keeps the old ones",
+  },
+  {
+    file: "seed.mjs",
+    from: "const { thinkingEfforts: have, ...rest } = x.extras || {}",
+    to: "const { thinkingEfforts: have, ...rest } = {}",
+    why: "drops the other extras keys of an entry when its efforts change",
   },
 ]
 
