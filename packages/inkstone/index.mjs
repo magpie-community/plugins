@@ -354,6 +354,81 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     return declared
   }
 
+  /**
+   * 两个浏览器登录方式共用的 authorize：display 与候选浏览器的预检、
+   * 开窗指令、回调里的建 Key。差别只在粘贴的 Key（零提示方式为空）。
+   */
+  const browserAuthorize = (pasted) => {
+    if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+      return {
+        type: "failed",
+        error:
+          'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
+      }
+    }
+    try {
+      // an empty list fails here, before the host is told a window opened
+      requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
+    } catch (e) {
+      return { type: "failed", error: cleanDetail(e?.message ?? e) }
+    }
+    // The browser work runs in the callback: the host's authorize call
+    // has a short deadline, while a sign-in can take minutes.
+    return {
+      url: "",
+      opened: true,
+      instructions:
+        process.platform === "win32"
+          ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
+          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+      method: "auto",
+      async callback(_code, { signal } = {}) {
+        let token = ""
+        try {
+          token = await signInWithBrowser({
+            browserPath,
+            keepSignIn: keepSignInOn(),
+            timeoutMs: loginTimeoutMs,
+            waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
+            signal,
+            log,
+          })
+        } catch (e) {
+          if (e?.cancelled) return { type: "failed", error: "the sign-in was cancelled" }
+          return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
+        }
+        try {
+          const user = await usersValidate(token).catch(() => null)
+          const data = user?.data ?? {}
+          const username = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
+          // 如果账号段读不出，拿 token 的指纹兜底：保证两账号前缀永远不撞。
+          const accountIdent = username || `anon-${fingerprint(token).slice(0, 8)}`
+          const apiKey = await ensureKey(token, accountIdent, {
+            apiKey: pasted,
+            create: createKeyOn(),
+            prune: pruneOn(),
+            log,
+          })
+          return {
+            type: "success",
+            access: apiKey,
+            refresh: "",
+            expires: 0,
+            apiKey,
+            uaaToken: token,
+            accountId: username || `inkstone-${fingerprint(apiKey)}`,
+            username,
+            source: "browser",
+          }
+        } catch (e) {
+          return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
+        }
+      },
+    }
+  }
+
+
+
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -462,7 +537,19 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           type: "oauth",
           label: "Browser sign-in (ink credits + creates an API key)",
           /**
-           * 插件专用 profile 的窗口；插件实时读会话并自己关窗。
+           * 零提示：点一下直接开窗，登录后自动建 ink-* Key。与 sensenova、
+           * cursor、cline 的浏览器登录同款——生态惯例是浏览器登录不问问题。
+           */
+          authorize() {
+            return browserAuthorize("")
+          },
+        },
+        {
+          type: "oauth",
+          label: "Browser sign-in + reuse an existing API key",
+          /**
+           * 浏览器登录前可粘贴已有 Key（留空则自动新建）。唯一一个先问
+           * 一句再开窗的浏览器方式；不想被问就用上一个。
            */
           prompts: [
             {
@@ -478,73 +565,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             },
           ],
           authorize(inputs) {
-            const pasted = normalizeApiKey(inputs?.apiKey)
-            if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-              return {
-                type: "failed",
-                error:
-                  'The browser sign-in needs a display, and this machine has none. Sign in with "API key only", or with "API key + console token" to also get the ink-credit card.',
-              }
-            }
-            try {
-              // an empty list fails here, before the host is told a window opened
-              requireBrowser(browserPath, browserList ? { candidates: browserList } : undefined)
-            } catch (e) {
-              return { type: "failed", error: cleanDetail(e?.message ?? e) }
-            }
-            // The browser work runs in the callback: the host's authorize call
-            // has a short deadline, while a sign-in can take minutes.
-            return {
-              url: "",
-              opened: true,
-              instructions:
-                process.platform === "win32"
-                  ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you."
-                  : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account (leave the prompt empty; paste an existing key or turn off \"Create an API key on browser sign-in\" to skip) — the plaintext is shown once, and the plugin keeps it for you.",
-              method: "auto",
-              async callback(_code, { signal } = {}) {
-                let token = ""
-                try {
-                  token = await signInWithBrowser({
-                    browserPath,
-                    keepSignIn: keepSignInOn(),
-                    timeoutMs: loginTimeoutMs,
-                    waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
-                    signal,
-                    log,
-                  })
-                } catch (e) {
-                  if (e?.cancelled) return { type: "failed", error: "the sign-in was cancelled" }
-                  return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
-                }
-                try {
-                  const user = await usersValidate(token).catch(() => null)
-                  const data = user?.data ?? {}
-                  const username = firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
-                  // 如果账号段读不出，拿 token 的指纹兜底：保证两账号前缀永远不撞。
-                  const accountIdent = username || `anon-${fingerprint(token).slice(0, 8)}`
-                  const apiKey = await ensureKey(token, accountIdent, {
-                    apiKey: pasted,
-                    create: createKeyOn(),
-                    prune: pruneOn(),
-                    log,
-                  })
-                  return {
-                    type: "success",
-                    access: apiKey,
-                    refresh: "",
-                    expires: 0,
-                    apiKey,
-                    uaaToken: token,
-                    accountId: username || `inkstone-${fingerprint(apiKey)}`,
-                    username,
-                    source: "browser",
-                  }
-                } catch (e) {
-                  return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
-                }
-              },
-            }
+            return browserAuthorize(normalizeApiKey(inputs?.apiKey))
           },
         },
         {
