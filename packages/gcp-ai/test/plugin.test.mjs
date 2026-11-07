@@ -475,9 +475,17 @@ test("ADC setup reads gcloud's complete consent URL and distinguishes saved ADC 
     // ADC written before gcloud's own quota-project probe failed: the sign-in
     // worked, so the exit code is not the answer.
     await fixture.clearAdc()
+    // Real gcloud has saved the file before it exits, so the fake exits only
+    // once its write has landed: two independent timers raced on a busy
+    // machine, and the exit could be read before the file was there (#835).
     const writesThenFails = () => {
-      const child = split(["https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=x&state=y\n"], 1)
-      setTimeout(() => { void fixture.setAdc({ quota_project_id: "adc-project" }) }, 5)
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => {}
+      setTimeout(async () => {
+        child.stderr.emit("data", "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=x&state=y\n")
+        await fixture.setAdc({ quota_project_id: "adc-project" })
+        child.emit("exit", 1)
+      }, 5)
       return child
     }
     await (await beginAdcLogin({}, writesThenFails)).done
