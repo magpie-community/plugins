@@ -68,6 +68,17 @@ it, then reads it again:
   and sending it a message renews it. For a home of the plugin's (a second
   account, an imported one), opening Grok Build doesn't touch it: add the
   account in magpie again.
+- Not every 401 is Grok judging the token. A token it doesn't take is
+  answered at once with `Invalid or expired credentials (…)`. Another
+  401, such as `Authentication required` after a minute or more, on a
+  token the CLI left as it was and not yet ended, has passed by itself
+  within minutes. Unless the CLI failed renewing it, that is a 503 with
+  `Retry-After: 60` that keeps the sign-in and says how long Grok took:
+  magpie rests the account a moment and asks the next one. It never says
+  to sign in again.
+- A request, model list or usage read turned away waits on the CLI's
+  renewal 15 seconds at most. The run goes on, and the next one to ask
+  takes what it gave.
 - When the CLI no longer holds a sign-in in that home (`grok logout`),
   the account has to be signed in again. When it couldn't renew a token
   that has ended, magpie tries again later.
