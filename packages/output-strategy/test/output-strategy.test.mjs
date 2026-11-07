@@ -12,7 +12,6 @@ import {
   OUTPUT_STYLE_MARKER,
   applyOutputStyles,
   buildOutputStylesInstruction,
-  hasMediaBlocks,
 } from "../apply.js"
 import { onRequest } from "../output-strategy.middleware.js"
 
@@ -274,6 +273,15 @@ describe("skip behavior", () => {
     }
   })
 
+  test("empty and non-object system blocks do not create invalid marker containers", () => {
+    for (const system of [null, { type: "text", text: "Rules" }]) {
+      const result = applyOutputStyles({ ...chat(), system }, ["ponytail"])
+      expect(result.body.system).toBe(system)
+      if (system) expect(result.applied).toBe(false)
+      else expect(result.body.messages[0].role).toBe("system")
+    }
+  })
+
   test("does not overwrite non-string Responses instructions", () => {
     const instructions = [{ type: "input_text", text: "Existing rules" }]
     const body = { input: [{ role: "user", content: "Fix it" }], instructions }
@@ -292,6 +300,11 @@ describe("skip behavior", () => {
     expect(result.body.system).toBe(system)
   })
 
+  test("does not introduce an empty system message or leading newlines", () => {
+    const result = applyOutputStyles({ messages: [{ role: "system", content: "" }, { role: "user", content: "Hi" }] }, ["ponytail"])
+    expect(result.body.messages[0].content.startsWith(OUTPUT_STYLE_MARKER)).toBe(true)
+  })
+
   test("a marker in instructions leaves a chat-shaped body unchanged", () => {
     const body = { ...chat(), instructions: `Old rules\n\n${OUTPUT_STYLE_MARKER}\nmore` }
     const result = applyOutputStyles(body, ["terse-prose"])
@@ -299,7 +312,7 @@ describe("skip behavior", () => {
     expect(result.body).toBe(body)
   })
 
-  test("media remains detectable but cannot turn injection off", () => {
+  test("media does not turn injection off", () => {
     for (const part of [
       { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
       { type: "input_audio", input_audio: { data: "AA==", format: "wav" } },
@@ -312,7 +325,7 @@ describe("skip behavior", () => {
     }
   })
 
-  test("skips Anthropic images, documents and images nested in tool results", () => {
+  test("Anthropic images, documents and tool results retain a stable style block", () => {
     for (const content of [
       [{ type: "image", source: { type: "base64", data: "AA==" } }],
       [{ type: "document", source: { type: "base64", data: "AA==" } }],
@@ -323,19 +336,16 @@ describe("skip behavior", () => {
     }
   })
 
-  test("skips Responses input_image and input_file", () => {
+  test("Responses media keeps instructions untouched and adds the style separately", () => {
     for (const part of [{ type: "input_image", image_url: "data:image/png;base64,AA==" }, { type: "input_file", file_data: "AA==" }]) {
       const body = { input: [{ role: "user", content: [part] }] }
       expect(applyOutputStyles(body, ["terse-prose"]).applied).toBe(true)
     }
   })
 
-  test("detects Gemini inlineData and fileData without treating Gemini as an injectable shape", () => {
-    for (const key of ["inlineData", "inline_data", "fileData", "file_data"]) {
-      const body = { contents: [{ parts: [{ [key]: { data: "AA==" } }] }] }
-      expect(hasMediaBlocks(body)).toBe(true)
-      expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("no_messages")
-    }
+  test("an unsupported Gemini body passes through", () => {
+    const body = { contents: [{ parts: [{ text: "Hello" }] }] }
+    expect(applyOutputStyles(body, ["terse-prose"]).skippedReason).toBe("no_messages")
   })
 
   test("text-only turns and tool schemas mentioning image still inject", () => {
@@ -355,7 +365,7 @@ describe("prompt-cache stability and result metadata", () => {
       { type: "text", text: "Claude Code rules", cache_control: { type: "ephemeral" } },
       { type: "text", text: "Environment", cache_control: { type: "ephemeral" } },
     ]
-    const turns = ["Fix the bug", "Delete the obsolete file", "Explain the next step"]
+    const turns = ["Fix the bug", "Delete the obsolete file", "delete the temporary cache", "Explain the next step"]
     for (const text of turns) {
       const result = applyOutputStyles({ system: originalBlocks, ...chat(text) }, { styles: { ponytail: true } })
       expect(result.applied).toBe(true)
@@ -379,12 +389,11 @@ describe("prompt-cache stability and result metadata", () => {
     expect(withImage.body.system).toBe(first.body.system)
   })
 
-  test("counts UTF-8 bytes rather than UTF-16 code units", () => {
+  test("returns only the styles actually applied", () => {
     const result = applyOutputStyles(chat(), { styles: { "terse-cjk": true } })
     expect(result.applied).toBe(true)
-    const instruction = result.body.messages[0].content
-    expect(result.addedBytes).toBe(Buffer.byteLength(instruction, "utf8"))
-    expect(result.addedBytes).toBeGreaterThan(instruction.length)
+    expect(result.appliedStyles).toEqual(["terse-cjk"])
+    expect(result.addedBytes).toBeUndefined()
   })
 })
 

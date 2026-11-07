@@ -6,20 +6,6 @@ import {
 
 export const OUTPUT_STYLE_MARKER = "[Output Strategy]"
 
-const MEDIA_PART_TYPES = new Set([
-  "image",
-  "document",
-  "image_url",
-  "input_audio",
-  "audio_url",
-  "file",
-  "input_image",
-  "input_file",
-])
-const MEDIA_PART_KEYS = ["inlineData", "inline_data", "fileData", "file_data"]
-const NESTED_PART_KEYS = ["content", "output", "parts"]
-const MAX_DEPTH = 4
-
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -49,38 +35,10 @@ export function buildOutputStylesInstruction(selection) {
   return `${OUTPUT_STYLE_MARKER}\n${instructions.join("\n\n")}\n\n${boundaries.join("\n")}`
 }
 
-function nodeHasMedia(node, depth) {
-  if (!isRecord(node) || depth > MAX_DEPTH) return false
-  if (typeof node.type === "string" && MEDIA_PART_TYPES.has(node.type)) return true
-  for (const key of MEDIA_PART_KEYS) {
-    if (isRecord(node[key])) return true
-  }
-  for (const key of NESTED_PART_KEYS) {
-    const nested = node[key]
-    if (Array.isArray(nested) && nested.some((child) => nodeHasMedia(child, depth + 1))) {
-      return true
-    }
-  }
-  return false
-}
-
-export function hasMediaBlocks(body) {
-  if (!isRecord(body)) return false
-  for (const key of ["messages", "input", "contents"]) {
-    const items = body[key]
-    if (Array.isArray(items) && items.some((item) => nodeHasMedia(item, 0))) return true
-  }
-  return false
-}
-
 function contentIncludesMarker(content) {
   if (typeof content === "string") return content.includes(OUTPUT_STYLE_MARKER)
   if (!Array.isArray(content)) return false
   return content.some((block) => isRecord(block) && contentIncludesMarker(typeof block.text === "string" ? block.text : block.content))
-}
-
-function systemFieldIncludesMarker(system) {
-  return contentIncludesMarker(system)
 }
 
 // Scan every place injection can land, regardless of which request shape the
@@ -89,7 +47,7 @@ function systemFieldIncludesMarker(system) {
 // quoting the marker must not disable injection.
 function bodyIncludesMarker(body) {
   if (contentIncludesMarker(body.instructions)) return true
-  if (systemFieldIncludesMarker(body.system)) return true
+  if (contentIncludesMarker(body.system)) return true
   if (Array.isArray(body.messages)) {
     if (body.messages.some((message) => isRecord(message) && (message.role === "system" || message.role === "developer") && contentIncludesMarker(message.content))) return true
   }
@@ -100,7 +58,8 @@ function bodyIncludesMarker(body) {
 }
 
 function appendInstruction(existing, instruction) {
-  return `${existing.trimEnd()}\n\n${instruction}`
+  const trimmed = existing.trimEnd()
+  return trimmed ? `${trimmed}\n\n${instruction}` : instruction
 }
 
 function placeSystemInstruction(messages, system, instruction, protocol) {
@@ -138,7 +97,7 @@ function placeSystemInstruction(messages, system, instruction, protocol) {
 function placeOrSkip(body, messages, instruction, protocol, resolved) {
   const placed = placeSystemInstruction(messages, body.system, instruction, protocol)
   if (!placed) return { body, applied: false, skippedReason: "unsupported_system_shape" }
-  return appliedResult({ ...body, ...placed }, resolved, instruction)
+  return appliedResult({ ...body, ...placed }, resolved)
 }
 
 function responsesInput(body, instruction) {
@@ -146,22 +105,8 @@ function responsesInput(body, instruction) {
   return Array.isArray(body.input) ? [message, ...body.input] : [message, { role: "user", content: body.input }]
 }
 
-function utf8Bytes(text) {
-  let bytes = 0
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i)
-    if (code < 0x80) bytes += 1
-    else if (code < 0x800) bytes += 2
-    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
-      bytes += 4
-      i++
-    } else bytes += 3
-  }
-  return bytes
-}
-
-function appliedResult(body, appliedStyles, instruction) {
-  return { body, applied: true, appliedStyles, addedBytes: utf8Bytes(instruction) }
+function appliedResult(body, appliedStyles) {
+  return { body, applied: true, appliedStyles }
 }
 
 export function applyOutputStyles(body, selection) {
@@ -186,7 +131,7 @@ export function applyOutputStyles(body, selection) {
       if (typeof body.input !== "string" && !Array.isArray(body.input)) {
         return { body, applied: false, skippedReason: "no_messages" }
       }
-      return appliedResult({ ...body, input: responsesInput(body, instruction) }, resolved, instruction)
+      return appliedResult({ ...body, input: responsesInput(body, instruction) }, resolved)
     }
 
     if (!messages) return { body, applied: false, skippedReason: "no_messages" }

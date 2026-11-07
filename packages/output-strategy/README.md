@@ -38,7 +38,7 @@ No options, an empty options object, or all styles off leaves a request unchange
 
 - **Anthropic and Chat Completions:** append one static style block to the existing system prompt, or create the protocol-appropriate system field when none exists.
 - **Responses:** leave `instructions` completely untouched, including Codex's identity and base instructions. Add the style block as a separate `developer` input item.
-- **An existing `[Output Strategy]` marker:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced.
+- **An existing `[Output Strategy]` marker:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced. If an agent replays that marker in its history, the saved style remains part of that conversation; turning a style off does not rewrite history. Start a new conversation to begin without the old style block.
 - **Cache stability:** a selected style injects consistently across turns. The former `autoClarity` and media-history bypasses are removed because they made the cached system prefix appear and disappear.
 - **Unknown or unsupported shapes:** pass through unchanged. Middleware errors fail open.
 
