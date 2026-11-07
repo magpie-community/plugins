@@ -10,6 +10,7 @@ import {
   profileDir,
   readUaaToken,
   tokenFresh,
+  waitForConsoleWindow,
   waitForToken,
 } from "./lib/browser.mjs"
 
@@ -76,3 +77,20 @@ test("headless renewal gets its own argv and the profile is per platform", () =>
   )
   expect(profileDir({ HOME: "/home/u" }, "linux").endsWith(join("magpie", "inkstone-browser"))).toBe(true)
 })
+
+test('off Windows the login wait ends on process exit, never on a title', async () => {
+  const { spawn } = await import('node:child_process')
+  // a child that stays alive in a non-Windows run must never be treated as
+  // 'console': only its exit ends the wait
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000)'], { stdio: 'ignore' })
+  try {
+    const early = await waitForConsoleWindow(child, { platform: 'linux', timeoutMs: 120, pollMs: 40 })
+    expect(early).toBe('timeout')
+    child.kill()
+    const how = await waitForConsoleWindow(child, { platform: 'linux', timeoutMs: 2000, pollMs: 50 })
+    expect(how).toBe('closed')
+  } finally {
+    try { child.kill() } catch {}
+  }
+})
+

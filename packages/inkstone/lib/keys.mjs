@@ -79,10 +79,11 @@ export async function keyCount(token) {
 /**
  * 删掉本机本账号的旧 `ink-…` Key。
  * freeSlots = 0：保留最新两把；freeSlots > 0：为新 Key 腾出位置，最旧先删。
- * `activeSuffix`（正在用的 Key 的明文尾段）永远不删——预清理不知道另一条
- * 登录记录拿着哪把，但至少这把此刻正在发请求。建不出来时间的 Key 也不删。
+ * `protectName`（本轮刚创建的那把的名字）永远不删。正在使用的 Key 一定是
+ * 最新一次登录创建的那把，所以落在"最新两把"的保护范围内。
+ * 建不出来时间的 Key 永远不删（年龄未知）。
  */
-export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, activeSuffix = "", log } = {}) {
+export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, protectName = "", log } = {}) {
   let deleted = 0
   try {
     const listed = await listKeys(token, { query: { page: 1, page_size: 50 } })
@@ -92,8 +93,9 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, acti
       .sort((a, b) => at(b.createdAt) - at(a.createdAt))
     if (!ours.length) return 0
     const protectedIds = new Set(ours.slice(0, keep).map((k) => k.id))
-    if (activeSuffix) {
-      for (const k of ours) if (k.name.endsWith(activeSuffix)) protectedIds.add(k.id)
+    if (protectName) {
+      const fresh = ours.find((k) => k.name === protectName)
+      if (fresh?.id) protectedIds.add(fresh.id)
     }
     const candidates = ours
       .filter((k) => at(k.createdAt) > 0 && !protectedIds.has(k.id))
@@ -119,7 +121,7 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, acti
  *   - 没粘且允许创建 → 数一下，满了先清理（可选），再创建并探活。
  * 抛错时带 `code`：`key_limit`（满了且没开清理）、`refused`（Key 被平台拒）。
  */
-export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, activeSuffix = "", log } = {}) {
+export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log } = {}) {
   const pasted = String(apiKey ?? "").trim()
   if (pasted) {
     await probeWithRetry(pasted, log)
@@ -130,7 +132,7 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
   let total = await keyCount(token)
   if (total >= KEY_LIMIT && prune) {
     const need = Math.max(1, total - (KEY_LIMIT - 1))
-    const freed = await pruneKeys(token, username, { freeSlots: need, activeSuffix, log })
+    const freed = await pruneKeys(token, username, { freeSlots: need, log })
     log?.("info", `inkstone: pre-prune removed ${freed}/${need} old key(s)`)
     total = await keyCount(token)
   }
@@ -198,6 +200,6 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     }
     log?.("warn", `inkstone: the new key's check did not finish (${e?.message ?? e})`)
   }
-  if (prune) await pruneKeys(token, username, { activeSuffix: created.slice(-4), log })
+  if (prune) await pruneKeys(token, username, { protectName: name, log })
   return created
 }

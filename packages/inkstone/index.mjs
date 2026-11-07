@@ -103,6 +103,9 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   const pruneOn = () => opt("prune_keys", true)
   const keepSignInOn = () => opt("keep_sign_in", true)
   const loginTimeoutMs = optNum(options.loginTimeoutMs, DEFAULT_LOGIN_TIMEOUT_MS)
+  // an injection point for tests (the fake browser has no window title to
+  // poll): hosts never pass it, so the real window-title wait always runs
+  const waitForLogin = typeof options.waitForLogin === "function" ? options.waitForLogin : undefined
   const quotaTtlMs = optNum(options.quotaTtlMs, QUOTA_TTL_MS)
   const browserPath = typeof options.browser === "string" && options.browser.trim() ? options.browser.trim() : undefined
 
@@ -323,7 +326,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           key: "prune_keys",
           label: "Prune old inkstone API keys",
           description:
-            "Keep the newest two ink-<host>-<account>-* keys and delete older ones on this machine. The key in use is never deleted; manual keys, and keys whose creation time cannot be read, are never deleted either.",
+            "Keep the newest two ink-<host>-<account>-* keys and delete older ones on this machine. The key created on this sign-in is always kept; manual keys, and keys whose creation time cannot be read, are never deleted.",
           labels: {
             zh: "清理旧的端砚 API Key",
             "zh-TW": "清理舊的端硯 API Key",
@@ -331,13 +334,13 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             de: "Alte InkStone-API-Keys entfernen",
           },
           descriptions: {
-            zh: "保留本机最新的两个 ink-<host>-<account>-* 密钥，删除更早的。正在使用的密钥绝不删除；手动创建的、或无法读取创建时间的密钥也绝不删除。",
-            "zh-TW": "保留本機最新的兩個 ink-<host>-<account>-* 金鑰，刪除較舊的。正在使用的金鑰絕不刪除；手動建立的、或無法讀取建立時間的金鑰也絕不刪除。",
-            ja: "このマシン上の最新2つの ink-<host>-<account>-* キーだけを残し、古いものを削除します。使用中のキーは削除されません。手動で作成したキーと作成時刻を読み取れないキーも削除しません。",
-            de: "Behält die zwei neuesten ink-<host>-<account>-* Keys und löscht ältere. Der verwendete Key wird nie gelöscht; manuelle Keys und Keys ohne lesbare Erstellungszeit werden ebenfalls nie gelöscht.",
+            zh: "保留本机最新的两个 ink-<host>-<account>-* 密钥，删除更早的。本次登录创建的密钥始终保留；手动创建的、或无法读取创建时间的密钥绝不删除。",
+            "zh-TW": "保留本機最新的兩個 ink-<host>-<account>-* 金鑰，刪除較舊的。本次登入建立的金鑰始終保留；手動建立的、或無法讀取建立時間的金鑰絕不刪除。",
+            ja: "このマシン上の最新2つの ink-<host>-<account>-* キーだけを残し、古いものを削除します。今回のサインインで作成したキーは必ず残ります。手動で作成したキーと作成時刻を読み取れないキーは削除しません。",
+            de: "Behält die zwei neuesten ink-<host>-<account>-* Keys und löscht ältere. Der bei dieser Anmeldung erstellte Key bleibt immer erhalten; manuelle Keys und Keys ohne lesbare Erstellungszeit werden nie gelöscht.",
           },
           confirm:
-            "Old ink-<host>-<account>-* keys on this machine will be deleted; manual keys and the key in use are kept.",
+            "Old ink-<host>-<account>-* keys on this machine will be deleted; manual keys, unreadable keys and the key from this sign-in are kept.",
           confirms: {
             zh: "将删除本机旧的 ink-<host>-<account>-* 密钥；手动创建的密钥和正在使用的密钥会保留。",
             "zh-TW": "將刪除本機舊的 ink-<host>-<account>-* 金鑰；手動建立的金鑰和正在使用的金鑰會保留。",
@@ -417,6 +420,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
                     browserPath,
                     keepSignIn: keepSignInOn(),
                     timeoutMs: loginTimeoutMs,
+                    waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
                     signal,
                     log,
                   })

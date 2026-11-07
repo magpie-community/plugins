@@ -21,13 +21,25 @@ const url = args.find((a) => a.startsWith("http")) ?? ""
 let pageTargetUrl = ""
 
 try {
-  if (!headless) {
-    // login window: wait for the plugin's graceful close (WM_CLOSE / SIGTERM)
-    // — an instant exit reads as "blocked by policy"
-    const exit = () => process.exit(0)
-    process.on("SIGTERM", exit)
-    process.on("SIGINT", exit)
-    setInterval(() => {}, 10_000)
+if (!headless) {
+    // login window. On Unix it waits for the plugin's SIGTERM and records
+    // the signal (the test asserts no SIGKILL was needed). On Windows
+    // TerminateProcess is uncatchable and the plugin's WM_CLOSE cannot reach
+    // a windowless exe, so exit on our own — otherwise the close path waits
+    // its full 15s grace period per sign-in.
+    const exit = () => {
+      try {
+        writeFileSync(join(profilePath, "close-signal.txt"), "SIGTERM")
+      } catch {}
+      process.exit(0)
+    }
+    if (process.platform === "win32") {
+      setTimeout(() => process.exit(0), 500)
+    } else {
+      process.on("SIGTERM", exit)
+      process.on("SIGINT", exit)
+      setInterval(() => {}, 10_000)
+    }
   } else {
     mkdirSync(profilePath, { recursive: true })
     const server = Bun.serve({

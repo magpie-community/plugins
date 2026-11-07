@@ -512,7 +512,11 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  * SSO 页是「上海人工智能实验室-用户认证体系」，控制台是「书生·端砚 Intern
  * InkStone」。窗口被用户关掉也算结束（之后直接尝试读 cookie）。
  */
-async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform } = {}) {
+/**
+ * 登录窗口的完成等待。可测试：`platform` 参数让非 Windows 的"只认进程退出"
+ * 行为在任何宿主上都能被验证。
+ */
+export async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform } = {}) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
   // 窗口标题只能靠 Windows 的 Get-Process 读；别的平台就以“用户关掉窗口”
@@ -548,16 +552,12 @@ async function waitForConsoleWindow(child, { timeoutMs = 8 * 60_000, pollMs = 10
  *    不再影响验证码）。
  *
  * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
- *
- * 测试钩子：`MAGPIE_INKSTONE_LOGIN_EXIT=1` 让"登录窗口"一步直接视为完成
- * （编译出来的 fake 浏览器没有真窗口标题可读），其余路径与真实登录一致。
  */
-export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, signal, log = () => {} } = {}) {
+export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, waitForLogin, signal, log = () => {} } = {}) {
   const dir = keepSignIn ? profileDir() : oneOffProfileDir()
   const exe = browserCandidates(browserPath)[0]
   if (!exe) throw new Error("No Chromium browser was found (Edge or Chrome); use the API key sign-in instead.")
   const cancelled = () => Boolean(signal?.aborted)
-  const fakeLogin = process.env.MAGPIE_INKSTONE_LOGIN_EXIT === "1"
   return await exclusive(async () => {
     log("opening the sign-in window")
     killProfileProcesses(dir, log)
@@ -568,7 +568,11 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
         env: browserEnv(),
       })
       try {
-        const how = fakeLogin ? "console" : await waitForConsoleWindow(child, { timeoutMs, signal, log })
+        // waitForLogin is an injection point for tests: given it, the window
+        // wait is replaced entirely and nothing in this module reads the env.
+        const how = waitForLogin
+          ? await waitForLogin({ child, signal })
+          : await waitForConsoleWindow(child, { timeoutMs, signal, log })
         log(`login window finished (${how})`)
         if (how === "aborted") throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
         // 登录完成：让页面稳定一下，然后**优雅关闭**（WM_CLOSE），让 Edge

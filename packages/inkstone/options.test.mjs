@@ -39,9 +39,9 @@ test("the config screen's strings stay inside the host's caps and stay translate
   expect(Object.keys(prune.confirms).sort()).toEqual(languages)
   for (const lang of languages) expect(lengthOf(prune.confirms[lang])).toBeLessThanOrEqual(300)
 
-  // The English fallback tells every account where the line is: the key in
-  // use, manual keys and unreadable keys are never deleted.
-  expect(prune.description).toContain("The key in use is never deleted")
+  // The English fallback tells every account where the line is: the key
+  // created on this sign-in, and keys whose creation time is unreadable.
+  expect(prune.description).toContain("The key created on this sign-in is always kept")
   expect(prune.description).toContain("manual keys")
   expect(prune.description).toContain("creation time cannot be read")
 })

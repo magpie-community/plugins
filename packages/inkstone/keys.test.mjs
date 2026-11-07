@@ -119,6 +119,59 @@ test("pruning never deletes a key whose age is unknown, including created_at 0",
   expect(keys.length).toBe(3)
 })
 
+test("a freshly created key is protected by NAME even when it is the oldest of three", async () => {
+  f = fakeInkStone()
+  const prefix = keyPrefixFor("u")
+  // the newest two are newer; the protected one is the OLDEST — so keep:2
+  // alone could not save it, and only protectName does
+  const inUse = "oldest-in-use"
+  const keys = serveKeys([
+    { id: "oldest", name: `${prefix}${inUse}`, status: "active", created_at: now(1) },
+    { id: "mid", name: `${prefix}bbbb`, status: "active", created_at: now(2) },
+    { id: "newest", name: `${prefix}cccc`, status: "active", created_at: now(3) },
+  ])
+  const deleted = []
+  for (const k of keys) {
+    f.route("DELETE /api/tokenplan/v1/keys/" + k.id, () => {
+      deleted.push(k.id)
+      const i = keys.findIndex((x) => x.id === k.id)
+      if (i >= 0) keys.splice(i, 1)
+      return ok({})
+    })
+  }
+  const n = await pruneKeys("uaa", "u", { freeSlots: 0, protectName: `${prefix}${inUse}` })
+  // the protected key and the two newest survive; nothing older remains to delete
+  expect(n).toBe(0)
+  expect(deleted).toEqual([])
+  expect(keys.some((k) => k.id === "oldest")).toBe(true)
+})
+
+test("pruneKeys with a protected name really deletes the others when it should", async () => {
+  f = fakeInkStone()
+  const prefix = keyPrefixFor("u")
+  const keys = serveKeys([
+    { id: "old1", name: `${prefix}aaaa`, status: "active", created_at: now(1) },
+    { id: "old2", name: `${prefix}bbbb`, status: "active", created_at: now(2) },
+    { id: "protected", name: `${prefix}cccc`, status: "active", created_at: now(3) },
+    { id: "newest", name: `${prefix}dddd`, status: "active", created_at: now(4) },
+  ])
+  const deleted = []
+  for (const k of keys) {
+    f.route("DELETE /api/tokenplan/v1/keys/" + k.id, () => {
+      deleted.push(k.id)
+      const i = keys.findIndex((x) => x.id === k.id)
+      if (i >= 0) keys.splice(i, 1)
+      return ok({})
+    })
+  }
+  const n = await pruneKeys("uaa", "u", { freeSlots: 0, protectName: `${prefix}aaaa` })
+  // keep:2 protects "newest" and "protected"; protectName adds "old1";
+  // only "old2" is a candidate. Drop protectName and this deletes 2 keys.
+  expect(n).toBe(1)
+  expect(deleted).toEqual(["old2"])
+  expect(keys.some((k) => k.id === "old1")).toBe(true)
+})
+
 test("a key created without a plaintext is a clear failure, not a silent empty key", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))
@@ -127,19 +180,30 @@ test("a key created without a plaintext is a clear failure, not a silent empty k
   await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext|did not return/i)
 })
 
-test("an idempotency clash retries and returns the key string, not the raw envelope", async () => {
+test("an idempotency clash retries with a FRESH name and returns the key string", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))
   f.route("GET /api/tokenplan/v1/keys", () => ok({ total: 0, items: [] }))
-  let posts = 0
-  f.route("POST /api/tokenplan/v1/keys", () => {
-    posts += 1
-    return posts === 1 ? fail(-15109, "idempotency conflict") : ok({ key: "sk-retried" })
+  const posted = []
+  // the console refuses the first name only: a retry that kept the same name
+  // would keep hitting the clash, so the test goes red if the name is stale
+  let refusedName = ""
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const name = r.json?.name
+    posted.push(name)
+    if (refusedName === "") {
+      refusedName = name
+      return fail(-15109, "name clash")
+    }
+    if (name === refusedName) return fail(-15109, "name clash")
+    return ok({ key: "sk-retried" })
   })
   const key = await ensureKey("uaa", "u", { create: true })
   // must be the plaintext string; an envelope object would become
   // "Bearer [object Object]" for every later request
   expect(typeof key).toBe("string")
   expect(key).toBe("sk-retried")
-  expect(posts).toBe(2)
+  expect(posted).toHaveLength(2)
+  expect(posted[1]).not.toBe(posted[0])
+  expect(posted[0]).toBe(refusedName)
 })
