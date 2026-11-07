@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-autoclaw-auth",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "description": "OpenCode provider plugin for AutoClaw (Zhipu OpenClaw): oversea web sign-in (Google/z.ai) and CN phone SMS, multi-account pool, credit balance and daily check-in",
   "type": "module",
   "main": "./opencode.mjs",
@@ -9,7 +9,8 @@
     "index.mjs",
     "opencode.mjs",
     "opencode2.mjs",
-    "README.md"
+    "README.md",
+    "README.en.md"
   ],
   "keywords": [
     "opencode",
