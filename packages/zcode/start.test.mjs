@@ -515,6 +515,15 @@ test("a block page holds the Start Plan off zcode.z.ai for every account a while
   r = await ask(start("zai"))
   expect(r.status).toBe(200)
   expect(messages()).toBe(3)
+  // both holds on: the edge's 405 wins — an IP the firewall already refused
+  // keeps that behavior, busy hold or not
+  _internal.edge.until = Date.now() + _internal.EDGE_HOLD
+  _internal.busyHold.until = Date.now() + _internal.BUSY_HOLD
+  answer = () => Response.json({ type: "message", content: [] })
+  r = await ask(start("zai"))
+  expect(r.status).toBe(405)
+  expect(JSON.parse(r.text).error.message).toStartWith("405 Method Not Allowed — " + START_EDGE)
+  _internal.busyHold.until = 0
 })
 
 test("the Start Plan's 3012 says ZCode blocked the account, and a block page the network (plugins#348, #425)", async () => {
@@ -670,6 +679,51 @@ test("the busy hold reads its clock: a spread run holds nothing, caps during the
     _internal.BUSY_WAITS.push(...waits)
     _internal.busyHold.now = () => Date.now()
     _internal.busyHold.hits.length = 0
+  }
+})
+
+// The hold's guard is the one the serial tests cannot see: requests already
+// in flight when the hold arms get their first cap after it. Hold the clock
+// still, put 12 Start Plan requests in flight at once, answer them all 3008
+// after they have all reached the fake — with the guard gone, those 12 caps
+// arm the hold twice and the second arming pushes `until` out.
+test("caps that land after the hold armed change neither hits nor until (requests in flight)", async () => {
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  try {
+    routeToFake()
+    let clock = 1_000_000_000_000
+    _internal.busyHold.now = () => clock
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const opts = await hooks.auth.loader(async () => start("zai"), { id: "zcode" })
+    // the fake parks each /messages request on a gate until the test opens it
+    const parked = []
+    let open = () => {}
+    const gate = new Promise((r) => (open = r))
+    answer = async () => {
+      if (!parked.length) parked.push(open)
+      await gate
+      return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
+    }
+    const all = Array.from({ length: 12 }, () =>
+      opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText }))
+    // every request is in flight (reached the fake) before any answer comes
+    for (let i = 0; parked.length < 1 || i < 200; i++) if (parked.length) break; else await Bun.sleep(5)
+    expect(parked.length).toBe(1)
+    clock += 1_000
+    open()
+    const rs = await Promise.all(all)
+    // all 12 came back the local hold answer (they armed the hold on their
+    // first caps and were held for their retries), and nothing re-armed it
+    expect(rs.every((r) => r.status === 429)).toBe(true)
+    expect(_internal.busyHold.hits.length).toBe(0)
+    expect(_internal.busyHold.until).toBe(clock + _internal.BUSY_HOLD)
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+    _internal.busyHold.now = () => Date.now()
+    _internal.busyHold.hits.length = 0
+    _internal.busyHold.until = 0
   }
 })
 

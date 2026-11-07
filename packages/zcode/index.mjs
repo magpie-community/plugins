@@ -2712,14 +2712,21 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               delete opts.duplex
               return askBusy(u, opts, h2)
             }
+            // a block page held this computer off zcode.z.ai (edge): the
+            // Start Plan and a picked gift are answered here; free first
+            // already left the gift for the plan. Checked before the busy
+            // hold: an IP the firewall already refused keeps that behavior
+            // (the 405 magpie reads as the network's), hold or no hold.
+            // a block page held this computer off zcode.z.ai (edge): the
+            // Start Plan and a picked gift are answered here; free first
+            // already left the gift for the plan. Checked before the busy
+            // hold: an IP the firewall already refused keeps that behavior
+            // (the 405 magpie reads as the network's), hold or no hold.
+            if (start && edgeHeld()) return kept(edgeHeldAnswer())
             // a run of busy caps held this computer off zcode.z.ai before the
             // edge firewall could block the IP: a held request is answered
             // here, with a 429 magpie still reads as a rate limit
             if (start && busyHeld()) return kept(busyHeldAnswer())
-            // a block page held this computer off zcode.z.ai (edge): the
-            // Start Plan and a picked gift are answered here; free first
-            // already left the gift for the plan
-            if (start && edgeHeld()) return kept(edgeHeldAnswer())
             if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
