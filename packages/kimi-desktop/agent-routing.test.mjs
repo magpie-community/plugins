@@ -1,7 +1,7 @@
 import { test, expect, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { AgentModelRouter } from './agent-routing.mjs';
+import { AgentModelRouter, neutralizeRouteMarkers } from './agent-routing.mjs';
 
 const secret = 'a3'.repeat(32);
 const models = { primaryModel: 'synthetic/primary', secondaryModel: 'synthetic/secondary' };
@@ -87,7 +87,7 @@ test('the routing key is required and is never an enumerable property or output'
   expect(r.profileName(models.primaryModel)).toMatch(/^local-agent-[a-f0-9]{12}-[a-f0-9]{24}$/);
 });
 
-test('opaque binding snapshots survive restart and registration prunes only models removed from the catalog', () => {
+test('opaque binding snapshots survive restart and registerModels only pre-allocates without pruning', () => {
   const r = router();
   r.registerModels(allowedModels, allowedModels);
   const original = r.bindings, body = profileBody(r);
@@ -115,9 +115,9 @@ test('opaque binding snapshots survive restart and registration prunes only mode
   const retained = restarted.registerModels([models.primaryModel], allowedModels);
   expect(Object.values(retained)).toContain(models.secondaryModel);
   restarted.registerModels([models.primaryModel], [models.primaryModel]);
-  expect(restarted.boundModels).toEqual([models.primaryModel]);
-  expect(Object.values(restarted.bindings)).toEqual([models.primaryModel]);
-  expect(() => prepare(restarted, [system(body)])).toThrow('agent_profile_unbound');
+  expect(restarted.boundModels).toHaveLength(2);
+  expect(Object.values(restarted.bindings)).toEqual([...allowedModels].sort());
+  expect(prepare(restarted, [system(body)]).model).toBe(models.secondaryModel);
 });
 
 test('binding import and model registration reject invalid ownership without changing valid saved bindings', () => {
@@ -164,17 +164,28 @@ test('disabled roles preserve native tools and assistant audit bytes while retai
   expect(bound.payload.tools).toBe(tools);
   expect(bound.payload.messages[1]).toBe(assistant);
   expect(JSON.stringify(bound.payload)).not.toContain('[agent-profile-route');
-  expect(() => prepare(r, [user(section(r))], disabled)).toThrow('agent_profile_unbound');
+  const copied = prepare(r, [user(section(r))], disabled);
+  expect(copied.model).toBe(models.primaryModel);
+  expect(JSON.stringify(copied.payload)).not.toContain('[agent-profile-route');
 });
 
-test('reserved route residue in incomplete tags or unsupported nested fields fails closed', () => {
+test('reserved route residue in incomplete system/developer identity tags still fails closed', () => {
   const r = router(), marker = section(r);
   for (const message of [system('[agent-profile-route:v2]\nopaque\n[/agent-profile-route]'),
-    system('[/agent-profile-route]'), system(marker.replace('[/agent-profile-route]', '')),
-    system([{ type: 'image_url', image_url: { url: marker } }]),
-    system([{ type: 'text', text: marker, metadata: { text: marker } }])]) {
+    system('[/agent-profile-route]'), system(marker.replace('[/agent-profile-route]', ''))]) {
     expect(() => prepare(r, [message])).toThrow('agent_profile_unbound');
   }
+});
+
+test('non-identity nested fields inside system content neutralize instead of failing closed', () => {
+  const r = router(), marker = section(r);
+  const image = prepare(r, [system([{ type: 'image_url', image_url: { url: marker } }])]);
+  expect(image.model).toBe(models.primaryModel);
+  expect(JSON.stringify(image.payload)).not.toContain('[agent-profile-route');
+  const text = prepare(r, [system([{ type: 'text', text: marker, metadata: { text: marker } }])]);
+  expect(text.model).toBe(models.secondaryModel);
+  expect(text.payload.messages[0].content[0].text).toBe('');
+  expect(JSON.stringify(text.payload)).not.toContain('[agent-profile-route');
 });
 
 test('only the observed native Agent shape receives optional role selection, without changing other prose or schema', () => {
@@ -310,7 +321,7 @@ test('only the latest authenticated system binding is checked against the curren
     .toThrow('model_not_enabled_for_kimi');
 });
 
-test('copied profile metadata in user, assistant, tool or historical arguments fails closed without selecting a route', () => {
+test('copied profile metadata in user, assistant, tool or historical arguments neutralizes without selecting a route', () => {
   const r = router(), prompt = section(r);
   const historical = args({ prompt, metadata: { prompt }, subagent_type: r.profileName(models.secondaryModel) });
   const other = call(historical, 'Other');
@@ -321,7 +332,11 @@ test('copied profile metadata in user, assistant, tool or historical arguments f
     user(prompt), user([{ type: 'text', text: prompt }]),
     user('Read magpie-local-0123456789abcdef01234567.txt'),
   ];
-  for (const message of input.slice(0, -1)) expect(() => prepare(r, [message])).toThrow('agent_profile_unbound');
+  for (const message of input.slice(0, -1)) {
+    const result = prepare(r, [message]);
+    expect(result.model).toBe(models.primaryModel);
+    expect(JSON.stringify(result.payload)).not.toContain('[agent-profile-route');
+  }
   expect(prepare(r, input.slice(-1)).payload.messages[0]).toBe(input.at(-1));
 });
 
@@ -751,4 +766,231 @@ test('custom calls named Agent and fragments after a native finish event remain 
   expect((await iterator.next()).value).toBe(after);
   expect((await iterator.next()).value).toBe('data: [DONE]\n\n');
   expect((await iterator.next()).done).toBe(true);
+});
+
+// ---- Round-2: neutralization of non-identity route markers ----
+
+test('neutralizeRouteMarkers removes mixed-case marker brackets recursively and preserves unchanged references', () => {
+  const input = {
+    a: '[agent-profile-route:v1]open[/agent-profile-route]',
+    b: '[AGENT-PROFILE-ROUTE:v1]OPEN[/AGENT-PROFILE-ROUTE]',
+    c: { d: 'keep [agent-profile-route', nested: ['[/agent-profile-route]', 'plain'] },
+    keys: { '[agent-profile-route:v1]key': 'value' },
+    plain: 'unchanged',
+    num: 7,
+  };
+  const before = structuredClone(input);
+  const result = neutralizeRouteMarkers(input);
+  expect(result.a).toBe('agent-profile-route:v1]open/agent-profile-route]');
+  expect(result.b).toBe('AGENT-PROFILE-ROUTE:v1]OPEN/AGENT-PROFILE-ROUTE]');
+  expect(result.c.d).toBe('keep agent-profile-route');
+  expect(result.c.nested).toEqual(['/agent-profile-route]', 'plain']);
+  expect(result.keys).toEqual({ 'agent-profile-route:v1]key': 'value' });
+  expect(result.plain).toBe('unchanged');
+  expect(result.num).toBe(7);
+  expect(result).not.toBe(input);
+  expect(input).toEqual(before);
+  const unchanged = { plain: 'x', nested: { y: [1, 2] } };
+  expect(neutralizeRouteMarkers(unchanged)).toBe(unchanged);
+});
+
+test('neutralizeRouteMarkers strips the bracket from marker prefixes without a word boundary', () => {
+  expect(neutralizeRouteMarkers('[agent-profile-routeExtra')).toBe('agent-profile-routeExtra');
+  expect(neutralizeRouteMarkers('[/AGENT-PROFILE-ROUTE-extra')).toBe('/AGENT-PROFILE-ROUTE-extra');
+});
+
+test('neutralizeRouteMarkers keeps own __proto__ keys as JSON data rather than prototype identity', () => {
+  const input = JSON.parse('{"__proto__":{"keep":"value"},"text":"[agent-profile-route:v1]"}');
+  const result = neutralizeRouteMarkers(input);
+  expect(JSON.stringify(result)).toBe('{"__proto__":{"keep":"value"},"text":"agent-profile-route:v1]"}');
+});
+
+test('neutralizeRouteMarkers never calls function values, leaving JSON.stringify-time markers opaque', () => {
+  const fn = () => ({ text: '[agent-profile-route:v1]synthetic' });
+  const input = { metadata: { toJSON: fn } };
+  const neutralized = neutralizeRouteMarkers(input);
+  expect(neutralized).toBe(input);
+  expect(neutralized.metadata.toJSON).toBe(fn);
+});
+
+test('a marker produced only at JSON.stringify time still fails the reserved boundary guard', () => {
+  const r = router();
+  const payload = { messages: [], metadata: { toJSON: () => ({ text: '[agent-profile-route:v1]synthetic' }) } };
+  expect(() => r.prepare(payload, options)).toThrow('agent_profile_unbound');
+});
+
+test('copied sections in user content and tool schemas route primary, neutralize, and repeat idempotently', () => {
+  const r = router();
+  const marker = section(r, models.primaryModel);
+  const tool = { type: 'function', function: { name: 'Read',
+    description: 'Synthetic reader.\n' + marker,
+    parameters: { type: 'object', properties: { file_path: { type: 'string', description: 'Path. ' + marker } },
+      required: ['file_path'] } } };
+  const payload = { messages: [system(section(r, models.primaryModel)), user('Before\n' + marker + '\nAfter')], tools: [tool] };
+  const first = r.prepare(payload, options);
+  expect(first.model).toBe(models.primaryModel);
+  expect(JSON.stringify(first.payload)).not.toContain('[agent-profile-route');
+  expect(JSON.stringify(first.payload)).not.toContain('[/agent-profile-route');
+  const second = r.prepare(first.payload, options);
+  expect(second.model).toBe(models.primaryModel);
+  expect(JSON.stringify(second.payload)).not.toContain('[agent-profile-route');
+});
+
+test('a copied secondary section in user and tool content never selects a route and neutralizes', () => {
+  const r = router();
+  const secondary = section(r);
+  const tool = { type: 'function', function: { name: 'Read',
+    description: 'Reader.\n' + secondary,
+    parameters: { type: 'object', properties: { file_path: { type: 'string', description: 'Path. ' + secondary } },
+      required: ['file_path'] } } };
+  const payload = { messages: [user('Before\n' + secondary + '\nAfter'),
+    { role: 'tool', tool_call_id: 'read-1', content: secondary }], tools: [tool] };
+  const first = r.prepare(payload, options);
+  expect(first.model).toBe(models.primaryModel);
+  expect(JSON.stringify(first.payload)).not.toContain('[agent-profile-route');
+  expect(JSON.stringify(first.payload)).not.toContain('[/agent-profile-route');
+  const second = r.prepare(first.payload, options);
+  expect(second.model).toBe(models.primaryModel);
+  expect(JSON.stringify(second.payload)).not.toContain('[agent-profile-route');
+});
+
+// ---- Round-2: catalog observation and deferred pruning ----
+
+test('a single observed absence is retained without pruning the binding', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  const before = r.bindings;
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  expect(r.boundModels).toHaveLength(2);
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 1, firstMissingAt: 0 });
+  expect(r.bindings).toEqual(before);
+});
+
+test('three absences within the ten-minute window retain the binding', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 1000 });
+  r.observeCatalog([models.primaryModel], { now: 2000 });
+  expect(r.boundModels).toHaveLength(2);
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 3, firstMissingAt: 0 });
+});
+
+test('absence count caps at three across many observations', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  for (const now of [0, 1000, 2000, 3000, 4000]) r.observeCatalog([models.primaryModel], { now });
+  expect(r.boundModels).toHaveLength(2);
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 3, firstMissingAt: 0 });
+});
+
+test('a ten-minute absence observed fewer than three times retains the binding', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 600000 });
+  expect(r.boundModels).toHaveLength(2);
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 2, firstMissingAt: 0 });
+});
+
+test('three absences spanning ten minutes prune all bindings and their absence entry', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  const secondaryToken = Object.entries(r.bindings).find(([, model]) => model === models.secondaryModel)[0];
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 1000 });
+  r.observeCatalog([models.primaryModel], { now: 600000 });
+  expect(r.boundModels).toEqual([models.primaryModel]);
+  expect(r.absence).not.toHaveProperty(models.secondaryModel);
+  expect(r.bindings).not.toHaveProperty(secondaryToken);
+});
+
+test('a model returning to the catalog clears its absence and keeps routing with the original token', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  const before = r.bindings;
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 1000 });
+  expect(r.absence[models.secondaryModel].count).toBe(2);
+  r.observeCatalog(allowedModels, { now: 2000 });
+  expect(r.absence).not.toHaveProperty(models.secondaryModel);
+  expect(r.bindings).toEqual(before);
+  expect(prepare(r, [system(profileBody(r))]).model).toBe(models.secondaryModel);
+});
+
+test('allowRetirement false defers pruning while still counting, then an idle observation retires', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.observeCatalog([models.primaryModel], { now: 1000 });
+  r.observeCatalog([models.primaryModel], { now: 1001 });
+  r.observeCatalog([models.primaryModel], { now: 601000, allowRetirement: false });
+  expect(r.boundModels).toHaveLength(2);
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 3, firstMissingAt: 1000 });
+  const restarted = new AgentModelRouter({ secret, bindings: r.bindings, absence: r.absence });
+  restarted.observeCatalog([models.primaryModel], { now: 601001 });
+  expect(restarted.boundModels).toEqual([models.primaryModel]);
+  expect(restarted.absence).not.toHaveProperty(models.secondaryModel);
+});
+
+test('allowRetirement false still clears absence when a model returns to the catalog', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  const before = r.bindings;
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 1000, allowRetirement: false });
+  expect(r.absence[models.secondaryModel].count).toBe(2);
+  r.observeCatalog(allowedModels, { now: 2000, allowRetirement: false });
+  expect(r.absence).not.toHaveProperty(models.secondaryModel);
+  expect(r.bindings).toEqual(before);
+  expect(prepare(r, [system(profileBody(r))]).model).toBe(models.secondaryModel);
+});
+
+test('the absence getter returns a deep snapshot isolated from internal state', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  const snapshot = r.absence;
+  snapshot[models.secondaryModel].count = 99;
+  delete snapshot[models.secondaryModel];
+  expect(r.absence[models.secondaryModel]).toEqual({ count: 1, firstMissingAt: 0 });
+});
+
+test('a fresh router importing saved bindings and absence continues counting without losing state', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.observeCatalog([models.primaryModel], { now: 0 });
+  r.observeCatalog([models.primaryModel], { now: 1000 });
+  const restarted = new AgentModelRouter({ secret, bindings: r.bindings, absence: r.absence });
+  expect(restarted.absence[models.secondaryModel]).toEqual({ count: 2, firstMissingAt: 0 });
+  restarted.observeCatalog([models.primaryModel], { now: 600000 });
+  expect(restarted.boundModels).toEqual([models.primaryModel]);
+  expect(restarted.absence).not.toHaveProperty(models.secondaryModel);
+});
+
+test('repeated registerModels calls never count absences or prune bindings', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  r.registerModels([models.primaryModel], [models.primaryModel]);
+  r.registerModels([models.primaryModel], [models.primaryModel]);
+  expect(r.absence).toEqual({});
+  expect(r.boundModels).toHaveLength(2);
+});
+
+test('importing invalid absence state fails agent_profile_unbound without changing valid bindings', () => {
+  const valid = { ['A'.repeat(43)]: models.primaryModel };
+  for (const absence of [null, [], '', { '': { count: 1, firstMissingAt: 0 } },
+    { [models.primaryModel]: 'nope' }, { [models.primaryModel]: { count: -1, firstMissingAt: 0 } },
+    { [models.primaryModel]: { count: 1.5, firstMissingAt: 0 } },
+    { [models.primaryModel]: { count: 1, firstMissingAt: -1 } },
+    { [models.primaryModel]: { count: 1, firstMissingAt: 'x' } }]) {
+    expect(() => new AgentModelRouter({ secret, bindings: valid, absence })).toThrow('agent_profile_unbound');
+  }
+});
+
+test('observeCatalog rejects a non-array catalog or invalid timestamp', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  expect(() => r.observeCatalog(null, { now: 0 })).toThrow('model_not_enabled_for_kimi');
+  expect(() => r.observeCatalog([models.primaryModel], { now: -1 })).toThrow('model_not_enabled_for_kimi');
+  expect(() => r.observeCatalog([models.primaryModel], { now: 1.5 })).toThrow('model_not_enabled_for_kimi');
 });

@@ -48,15 +48,22 @@ const writeText = (file, text) => {
   fs.writeFileSync(file, text, { mode: 0o600 });
 };
 
-async function fixture({ secondaryModel, legacyModel = null, seedOwnedLegacy = false, regenerate = null } = {}) {
+async function fixture({ secondaryModel, legacyModel = null, seedOwnedLegacy = false, regenerate = null,
+  aliasedKimiDir = false } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-lifecycle-'));
-  const kimiDir = path.join(directory, 'kimi');
+  const physicalKimiDir = path.join(directory, 'kimi');
+  const kimiDir = aliasedKimiDir ? path.join(directory, 'kimi-alias') : physicalKimiDir;
+  if (aliasedKimiDir) {
+    fs.mkdirSync(physicalKimiDir);
+    fs.symlinkSync(physicalKimiDir, kimiDir, process.platform === 'win32' ? 'junction' : 'dir');
+  }
   const stateDir = path.join(directory, 'state');
   const legacyFile = path.join(kimiDir, 'runtime/kimi-code/config.toml');
   const convertedFile = path.join(kimiDir, 'runtime/kimi-code/home/config.toml');
-  const plugins = nativeRolePluginPeer(path.dirname(convertedFile));
+  const plugins = nativeRolePluginPeer(path.join(physicalKimiDir, 'runtime/kimi-code/home'));
   const calls = [], requests = [];
   let gatewayCatalog = catalogPayload;
+  let catalogStatus = 200;
   const nativeModels = ['native', 'native-alt'];
   const runtimeModels = nativeModels.map(model => ({ model, maxContextSize: 131072, capabilities: [] }));
   let controller;
@@ -65,7 +72,7 @@ async function fixture({ secondaryModel, legacyModel = null, seedOwnedLegacy = f
   // returns one Agent tool call so response translation is observable.
   const gateway = http.createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/v1/models') {
-      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.writeHead(catalogStatus, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(gatewayCatalog));
       return;
     }
@@ -225,6 +232,7 @@ async function fixture({ secondaryModel, legacyModel = null, seedOwnedLegacy = f
     directory, kimiDir, stateDir, legacyFile, convertedFile, connection, runner,
     calls, requests, plugins, complete, setBusy, configure, pluginState, pluginEnabled, methodsSince,
     setCatalogIDs(ids) { gatewayCatalog = { data: catalogPayload.data.filter(row => ids.includes(row.id)) }; },
+    setCatalogStatus(status) { catalogStatus = status; },
     registryFile, managedDirectory, sourceDirectory, roleManifest, seedRegistration, registryBytes,
     legacyText: () => fs.readFileSync(legacyFile, 'utf8'),
     async crash() {
@@ -250,6 +258,383 @@ async function chat(f, payload) {
   const text = await response.text();
   return { status: response.status, text };
 }
+
+// Second-round review: these cross the actual loopback inference boundary.
+for (const location of ['user', 'tool', 'arguments']) {
+  test('R2-1 no routing key preserves route quotations in ' + location, async () => {
+    const f = await fixture();
+    const marker = '[agent-profile-route:v1]\nquoted:source\n[/agent-profile-route]';
+    const messages = location === 'arguments'
+      ? [{ role: 'assistant', content: null, tool_calls: [{ id: 'quoted-call', type: 'function',
+        function: { name: 'Read', arguments: JSON.stringify({ path: marker }) } }] }]
+      : [{ role: location, content: marker, ...(location === 'tool' ? { tool_call_id: 'quoted-call' } : {}) }];
+    const input = { model: 'native', messages, metadata: { source: marker } };
+    try {
+      await f.controller.tick();
+      expect(read(f.controller.stateFile).agentRoutingSecret).toBeUndefined();
+      const response = await chat(f, input);
+      expect(response.status).toBe(200);
+      expect(f.requests.at(-1).body).toEqual({ ...input, model: primaryID });
+      expect(read(f.controller.stateFile).agentRoutingSecret).toBeUndefined();
+    } finally { await f.cleanup(); }
+  });
+}
+
+for (const role of ['user', 'tool']) {
+  test('R2-1 valid copied profile in ' + role + ' stays primary across later history requests', async () => {
+    const f = await fixture({ secondaryModel: secondaryID });
+    try {
+      await f.controller.tick();
+      const profile = f.controller.ensureAgentRouter().profileText(secondaryID);
+      const marker = profile.match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+      const input = { model: 'native', messages: [{ role, content: marker,
+        ...(role === 'tool' ? { tool_call_id: 'read-source' } : {}) }] };
+      for (let request = 0; request < 2; request++) {
+        const result = await chat(f, input);
+        expect(result.status).toBe(200);
+        expect(f.requests.at(-1).body.model).toBe(primaryID);
+        expect(JSON.stringify(f.requests.at(-1).body)).not.toMatch(/\[\/?agent-profile-route\b/i);
+        input.messages.push({ role: 'user', content: 'Continue reading the quoted source.' });
+      }
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('R2-1 historical shared instructions cannot bind a model or poison the next request', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const marker = f.controller.ensureAgentRouter().profileText(secondaryID)
+      .match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+    writeText(f.controller.instructionsFile, 'Read source safely.\n' + marker);
+    const input = { model: 'native', messages: [
+      { role: 'system', content: '<shared-instructions>\n' + marker + '\n</shared-instructions>' },
+      { role: 'user', content: 'Read the repository.' },
+    ] };
+    const response = await chat(f, input);
+    expect(response.status).toBe(200);
+    const body = f.requests.at(-1).body;
+    expect(body.model).toBe(primaryID);
+    expect(body.messages.filter(message => message.content?.startsWith?.('<shared-instructions>'))).toHaveLength(1);
+    expect(JSON.stringify(body)).not.toMatch(/\[\/?agent-profile-route\b/i);
+    expect(JSON.stringify(body)).toContain('Read source safely.');
+  } finally { await f.cleanup(); }
+});
+
+test('R2-1 final request guard catches route residue returned by a broken preparation stage', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const router = f.controller.ensureAgentRouter();
+    const prepare = router.prepare.bind(router);
+    router.prepare = (...args) => {
+      const result = prepare(...args);
+      return { ...result, payload: { ...result.payload, metadata: '[agent-profile-route:broken]' } };
+    };
+    const response = await chat(f, plainRequest());
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.text).error.code).toBe('agent_profile_unbound');
+    expect(f.requests).toHaveLength(0);
+  } finally { await f.cleanup(); }
+});
+
+test('R2-2 one successful catalog absence preserves the token and profile for recovery', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const router = f.controller.ensureAgentRouter();
+    const marker = router.profileText(secondaryID).match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+    const profile = path.join(f.sourceDirectory, 'agents', router.profileName(secondaryID) + '.md');
+    f.configure({ secondaryModel: thirdID });
+    f.complete(); await f.controller.tick();
+    const bindings = read(f.controller.stateFile).agentRoutingBindings;
+    f.setCatalogIDs([primaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+    expect(fs.existsSync(profile)).toBe(true);
+    expect((await chat(f, { model: 'native', messages: [{ role: 'system', content: marker }] })).status).toBe(409);
+    f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+    expect((await chat(f, { model: 'native', messages: [{ role: 'system', content: marker }] })).status).toBe(200);
+    expect(f.requests.at(-1).body.model).toBe(secondaryID);
+  } finally { await f.cleanup(); }
+});
+
+test('R2-2 a successful busy catalog observation persists absence without plugin RPCs', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    f.configure({ secondaryModel: thirdID });
+    f.complete(); await f.controller.tick();
+    f.setBusy(true);
+    f.setCatalogIDs([primaryID, thirdID]);
+    const before = f.calls.length;
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingAbsence?.[secondaryID]?.count).toBe(1);
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).toContain(secondaryID);
+    expect(f.calls.slice(before).filter(call => call.method.startsWith('kimiPlugin.'))).toEqual([]);
+  } finally { f.setBusy(false); await f.cleanup(); }
+});
+
+test('R2-2 a selected missing secondary recovers before grace and is pruned after sustained absence', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const router = f.controller.ensureAgentRouter();
+    const marker = router.profileText(secondaryID).match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+    const profileName = router.profileName(secondaryID) + '.md';
+    const source = path.join(f.sourceDirectory, 'agents', profileName);
+    const managed = path.join(f.managedDirectory, f.pluginState().id, 'agents', profileName);
+    f.setCatalogIDs([primaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_model_unavailable');
+    f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect((await chat(f, { model: 'native', messages: [{ role: 'system', content: marker }] })).status).toBe(200);
+    expect(f.requests.at(-1).body.model).toBe(secondaryID);
+    f.setCatalogIDs([primaryID, thirdID]);
+    for (let sync = 0; sync < 3; sync++) {
+      f.complete(); await f.controller.tick();
+      now += 600001;
+    }
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).not.toContain(secondaryID);
+    expect(fs.existsSync(source)).toBe(false);
+    expect(fs.existsSync(managed)).toBe(false);
+    f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    const fresh = f.controller.ensureAgentRouter().profileText(secondaryID)
+      .match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+    expect((await chat(f, { model: 'native', messages: [{ role: 'system', content: fresh }] })).status).toBe(200);
+    expect(f.requests.at(-1).body.model).toBe(secondaryID);
+  } finally { Date.now = realNow; await f.cleanup(); }
+});
+
+test('R2-2 clearing secondary defers expired binding deletion until profiles can safely synchronize', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const bindings = read(f.controller.stateFile).agentRoutingBindings;
+    const marker = f.controller.ensureAgentRouter().profileText(secondaryID)
+      .match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+    f.configure({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    f.setCatalogIDs([primaryID, thirdID]);
+    const before = f.calls.length;
+    for (let sync = 0; sync < 3; sync++) {
+      f.complete(); await f.controller.tick();
+      now += 600001;
+    }
+    expect(read(f.controller.stateFile).agentRoutingAbsence?.[secondaryID]?.count).toBe(3);
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+    expect(f.calls.slice(before).filter(call => call.method.startsWith('kimiPlugin.'))).toEqual([]);
+    f.configure({ secondaryModel: secondaryID });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('secondary_model_unavailable');
+    expect(f.calls.slice(before).filter(call => call.method.startsWith('kimiPlugin.'))).toEqual([]);
+    f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+    f.configure({ secondaryModel: secondaryID });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+    expect((await chat(f, { model: 'native', messages: [{ role: 'system', content: marker }] })).status).toBe(200);
+  } finally { Date.now = realNow; await f.cleanup(); }
+});
+
+test('R2-2 clearing secondary exactly at eligibility keeps the cache resumable for explicit opt-in', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const bindings = read(f.controller.stateFile).agentRoutingBindings;
+    f.setCatalogIDs([primaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    now += 600001;
+    f.complete(); await f.controller.tick();
+    f.configure({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingAbsence?.[secondaryID]?.count).toBe(3);
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+    f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+    f.configure({ secondaryModel: secondaryID });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(bindings);
+  } finally { Date.now = realNow; await f.cleanup(); }
+});
+
+test('R2-2 opting in to an allowed secondary synchronizes and prunes an eligible inactive target', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const oldFile = path.join(f.sourceDirectory, 'agents', f.controller.ensureAgentRouter().profileName(secondaryID) + '.md');
+    f.configure({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    f.setCatalogIDs([primaryID, thirdID]);
+    for (let sync = 0; sync < 3; sync++) {
+      f.complete(); await f.controller.tick();
+      now += 600001;
+    }
+    f.configure({ secondaryModel: thirdID });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).not.toContain(secondaryID);
+    expect(fs.existsSync(oldFile)).toBe(false);
+  } finally { Date.now = realNow; await f.cleanup(); }
+});
+
+test('R2-2 a busy selected secondary retains an expired token until an idle successful synchronization', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    f.setBusy(true);
+    f.setCatalogIDs([primaryID, thirdID]);
+    const before = f.calls.length;
+    for (let sync = 0; sync < 3; sync++) {
+      f.complete(); await f.controller.tick();
+      now += 600001;
+    }
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).toContain(secondaryID);
+    expect(f.calls.slice(before).filter(call => call.method.startsWith('kimiPlugin.'))).toEqual([]);
+    f.setBusy(false);
+    f.complete(); await f.controller.tick();
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).not.toContain(secondaryID);
+    expect(fs.existsSync(path.join(f.sourceDirectory, 'agents', f.controller.ensureAgentRouter().profileName(secondaryID) + '.md'))).toBe(false);
+  } finally { Date.now = realNow; f.setBusy(false); await f.cleanup(); }
+});
+
+test('R2-2 an absence save failure rolls back memory and refreshes the cached router', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  let save;
+  try {
+    await f.controller.tick();
+    const beforeBindings = read(f.controller.stateFile).agentRoutingBindings;
+    const beforeAbsence = read(f.controller.stateFile).agentRoutingAbsence || {};
+    const router = f.controller.ensureAgentRouter();
+    router.observeCatalog([primaryID]);
+    save = f.controller.saveState;
+    f.controller.saveState = () => { throw Error('synthetic-disk-unavailable'); };
+    expect(() => f.controller.persistAgentBindings(router)).toThrow('synthetic-disk-unavailable');
+    expect(f.controller.state.agentRoutingBindings).toEqual(beforeBindings);
+    expect(f.controller.state.agentRoutingAbsence || {}).toEqual(beforeAbsence);
+    f.controller.saveState = save;
+    expect(f.controller.ensureAgentRouter().absence).toEqual(beforeAbsence);
+    expect(read(f.controller.stateFile).agentRoutingAbsence || {}).toEqual(beforeAbsence);
+  } finally { if (save) f.controller.saveState = save; await f.cleanup(); }
+});
+
+test('R2-2 successful absence count and start time survive failure, cached ticks, and restart', async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const router = f.controller.ensureAgentRouter();
+    const profile = path.join(f.sourceDirectory, 'agents', router.profileName(secondaryID) + '.md');
+    f.configure({ secondaryModel: thirdID });
+    f.complete(); await f.controller.tick();
+    f.setCatalogIDs([primaryID, thirdID]);
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingAbsence)
+      .toEqual({ [secondaryID]: { count: 1, firstMissingAt: now } });
+    const absence = read(f.controller.stateFile).agentRoutingAbsence[secondaryID];
+    expect(absence).toEqual({ count: 1, firstMissingAt: now });
+    now++;
+    await f.controller.tick(); // Cached catalog: not a second successful observation.
+    expect(read(f.controller.stateFile).agentRoutingAbsence[secondaryID]).toEqual(absence);
+    now += 600001;
+    f.setCatalogStatus(503);
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingAbsence[secondaryID]).toEqual(absence);
+    expect(fs.existsSync(profile)).toBe(true);
+    await f.crash();
+    f.setCatalogStatus(200);
+    f.complete(); await f.controller.tick();
+    expect(read(f.controller.stateFile).agentRoutingAbsence[secondaryID]).toEqual({ ...absence, count: 2 });
+    expect(fs.existsSync(profile)).toBe(true);
+    f.complete(); await f.controller.tick();
+    expect(Object.values(read(f.controller.stateFile).agentRoutingBindings)).not.toContain(secondaryID);
+    expect(fs.existsSync(profile)).toBe(false);
+  } finally { Date.now = realNow; await f.cleanup(); }
+});
+
+test('R2-3 source and managed dot files stay unchanged through stable readiness and retirement', async () => {
+  const f = await fixture({ secondaryModel: secondaryID });
+  try {
+    await f.controller.tick();
+    const id = f.pluginState().id;
+    const sourceDot = path.join(f.sourceDirectory, 'agents', '.DS_Store');
+    const managedDot = path.join(f.managedDirectory, id, 'agents', '.DS_Store');
+    writeText(sourceDot, 'synthetic source metadata');
+    writeText(managedDot, 'synthetic managed metadata');
+    const before = f.calls.length;
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(f.controller.rolesReady).toBe(true);
+    expect(f.methodsSince(before, 'kimiPlugin.updatePlugin')).toHaveLength(0);
+    expect(f.pluginState().files['agents/.DS_Store']).toBeUndefined();
+    f.configure({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(read(f.registryFile).plugins).toEqual([]);
+    expect(fs.readFileSync(sourceDot, 'utf8')).toBe('synthetic source metadata');
+    expect(fs.readFileSync(managedDot, 'utf8')).toBe('synthetic managed metadata');
+  } finally { await f.cleanup(); }
+});
+
+for (const location of ['source', 'managed']) {
+  test('R2-3 an unknown ordinary profile still conflicts in ' + location, async () => {
+    const f = await fixture({ secondaryModel: secondaryID });
+    try {
+      await f.controller.tick();
+      const directory = location === 'source' ? f.sourceDirectory
+        : path.join(f.managedDirectory, f.pluginState().id);
+      const file = path.join(directory, 'agents', 'foo.md');
+      writeText(file, 'Unowned user profile.');
+      f.complete(); await f.controller.tick();
+      expect(f.controller.status.code).toBe('agent_profile_conflict');
+      expect(fs.readFileSync(file, 'utf8')).toBe('Unowned user profile.');
+    } finally { await f.cleanup(); }
+  });
+}
+
+test('R2-4 a parent directory alias remains owned during stable routing and disable-reload-remove', async () => {
+  const f = await fixture({ secondaryModel: secondaryID, aliasedKimiDir: true });
+  try {
+    await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    expect(f.controller.rolesReady).toBe(true);
+    const before = f.calls.length;
+    f.configure({ secondaryModel: '' });
+    f.complete(); await f.controller.tick();
+    expect(f.controller.status.code).toBe('connected');
+    const lifecycle = f.calls.slice(before).filter(call =>
+      ['kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions', 'kimiPlugin.removePlugin'].includes(call.method));
+    expect(lifecycle.map(call => call.method)).toEqual([
+      'kimiPlugin.setPluginEnabled', 'kimiPlugin.reloadActiveSessions', 'kimiPlugin.removePlugin',
+    ]);
+    expect(lifecycle[0].params.enabled).toBe(false);
+    expect(read(f.registryFile).plugins).toEqual([]);
+  } finally { await f.cleanup(); }
+});
 
 // ---------------------------------------------------------------------------
 // B1: no secondary configured means no companion plugin at all.
@@ -784,8 +1169,9 @@ test('B2 an existing router refreshes durable bindings even when its key is unch
   } finally { await f.cleanup(); }
 });
 
-test('B2 current-catalog bindings survive role changes and removed targets are pruned on disk', async () => {
+test('B2 current-catalog bindings survive role changes and sustained missing targets are pruned on disk', async () => {
   const f = await fixture({ secondaryModel: secondaryID });
+  const realNow = Date.now;
   try {
     await f.controller.tick();
     const router = f.controller.ensureAgentRouter();
@@ -797,12 +1183,19 @@ test('B2 current-catalog bindings survive role changes and removed targets are p
     expect(Object.values(read(f.controller.stateFile).agentRoutingBindings).sort())
       .toEqual([primaryID, secondaryID, thirdID].sort());
     f.setCatalogIDs([primaryID, thirdID]);
+    const firstMissingAt = realNow();
+    Date.now = () => firstMissingAt;
+    f.complete(); await f.controller.tick();
+    expect(fs.existsSync(oldProfile)).toBe(true);
+    Date.now = () => firstMissingAt + 600001;
+    f.complete(); await f.controller.tick();
+    expect(fs.existsSync(oldProfile)).toBe(true);
     f.complete(); await f.controller.tick();
     expect(f.controller.status.code).toBe('connected');
     expect(Object.values(read(f.controller.stateFile).agentRoutingBindings).sort())
       .toEqual([primaryID, thirdID].sort());
     expect(fs.existsSync(oldProfile)).toBe(false);
-  } finally { await f.cleanup(); }
+  } finally { Date.now = realNow; await f.cleanup(); }
 });
 
 test('B2 cleared roles keep a known worker binding while passing native tools and responses', async () => {
@@ -823,15 +1216,16 @@ test('B2 cleared roles keep a known worker binding while passing native tools an
   } finally { await f.cleanup(); }
 });
 
-test('B2 route metadata introduced by final shared instructions returns fixed 409 without forwarding', async () => {
+test('R2-1 shared instruction route quotations are neutralized and never select a binding', async () => {
   const f = await fixture({ secondaryModel: secondaryID });
   try {
     await f.controller.tick();
     writeText(f.controller.instructionsFile, 'Keep this task.\n[agent-profile-route:v1]\ninvalid:route\n[/agent-profile-route]');
     const result = await chat(f, plainRequest());
-    expect(result.status).toBe(409);
-    expect(JSON.parse(result.text).error.code).toBe('agent_profile_unbound');
-    expect(f.requests).toHaveLength(0);
+    expect(result.status).toBe(200);
+    expect(f.requests.at(-1).body.model).toBe(primaryID);
+    expect(JSON.stringify(f.requests.at(-1).body)).not.toMatch(/\[\/?agent-profile-route\b/i);
+    expect(JSON.stringify(f.requests.at(-1).body)).toContain('Keep this task.');
   } finally { await f.cleanup(); }
 });
 
@@ -1400,5 +1794,82 @@ for (const staleDisk of [false, true]) {
       expect(f.pluginState().phase).toBe(staleDisk ? 'disabling' : 'disabled');
       expect(read(f.registryFile).plugins.length).toBe(staleDisk ? 1 : 0);
     } finally { await f.cleanup(); }
+  });
+}
+
+
+// Recovery contract for catalog retirement blocked by temporary ownership conflicts.
+for (const [location, change] of [
+  ['source', 'unknown'], ['managed', 'unknown'],
+  ['source', 'edited'], ['managed', 'edited'], ['registry', 'provenance'],
+]) {
+  test('P2 retirement preflight: ' + location + ' ' + change + ' recovers with the original binding', async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    const f = await fixture({ secondaryModel: secondaryID });
+    try {
+      await f.controller.tick();
+      expect(f.controller.status.code).toBe('connected');
+      const router = f.controller.ensureAgentRouter();
+      const originalBindings = read(f.controller.stateFile).agentRoutingBindings;
+      const marker = router.profileText(secondaryID)
+        .match(/\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/)[0];
+      const filename = router.profileName(secondaryID) + '.md';
+      const source = path.join(f.sourceDirectory, 'agents', filename);
+      const managedDirectory = path.join(f.managedDirectory, f.pluginState().id);
+      const managed = path.join(managedDirectory, 'agents', filename);
+      const profileBytes = fs.readFileSync(source);
+      const firstMissingAt = now;
+      f.setCatalogIDs([primaryID, thirdID]);
+      f.complete(); await f.controller.tick();
+      now += 1;
+      f.complete(); await f.controller.tick();
+      expect(read(f.controller.stateFile).agentRoutingAbsence[secondaryID])
+        .toEqual({ count: 2, firstMissingAt });
+      let blocker, restore;
+      if (change === 'provenance') {
+        blocker = f.registryFile;
+        const bytes = fs.readFileSync(blocker);
+        const document = read(blocker);
+        document.plugins.find(entry => entry.id === f.pluginState().id).originalSource = f.sourceDirectory + '-foreign';
+        write(blocker, document);
+        restore = () => fs.writeFileSync(blocker, bytes);
+      } else {
+        const directory = location === 'source' ? f.sourceDirectory : managedDirectory;
+        blocker = path.join(directory, 'agents', change === 'unknown' ? 'foo.md' : filename);
+        if (change === 'unknown') {
+          writeText(blocker, 'Temporary unowned synthetic profile.');
+          restore = () => fs.unlinkSync(blocker);
+        } else {
+          const bytes = fs.readFileSync(blocker);
+          fs.appendFileSync(blocker, '\nTemporary owned profile edit.\n');
+          restore = () => fs.writeFileSync(blocker, bytes);
+        }
+      }
+      const blockedBytes = fs.readFileSync(blocker);
+      now += 600000;
+      f.complete(); await f.controller.tick();
+      expect(f.controller.status.code).toBe('agent_profile_conflict');
+      expect(fs.readFileSync(blocker)).toEqual(blockedBytes);
+      const blockedState = read(f.controller.stateFile);
+      expect(blockedState.agentRoutingAbsence[secondaryID]).toEqual({ count: 3, firstMissingAt });
+      expect(blockedState.agentRoutingBindings).toEqual(originalBindings);
+      restore();
+      f.setCatalogIDs([primaryID, secondaryID, thirdID]);
+      f.complete(); await f.controller.tick();
+      expect(f.controller.status.code).toBe('connected');
+      expect(f.pluginState().phase).toBe('ready');
+      expect(read(f.controller.stateFile).agentRoutingBindings).toEqual(originalBindings);
+      expect(read(f.controller.stateFile).agentRoutingAbsence).not.toHaveProperty(secondaryID);
+      expect(fs.readFileSync(source)).toEqual(profileBytes);
+      expect(fs.readFileSync(managed)).toEqual(profileBytes);
+      const response = await chat(f, { model: 'native', messages: [{ role: 'system', content: marker }] });
+      expect(response.status).toBe(200);
+      expect(f.requests.at(-1).body.model).toBe(secondaryID);
+    } finally {
+      Date.now = realNow;
+      await f.cleanup();
+    }
   });
 }

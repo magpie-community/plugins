@@ -35,6 +35,8 @@ export function ensureAgentProfiles({ directory, router, models, ownedFiles }) {
     }
     const wanted = new Set(entries.map(entry => path.basename(entry.file)));
     for (const name of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
+      // Hidden metadata entries are never stat'd, read, hashed, deleted, or treated as conflicts.
+      if (name.startsWith('.')) continue;
       // MUTATION profiles-ownership: unknown or edited files never become deletion authority.
       if (Object.hasOwn(ownedFiles, name)) verifyOwned(name);
       else if (!wanted.has(name)) throw conflict();

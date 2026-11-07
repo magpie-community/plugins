@@ -84,7 +84,7 @@ test('same-name symlinks or directories are conflicts and their targets are unto
   expect(fs.statSync(folder).isDirectory()).toBe(true);
 }));
 
-test('persisted profile binding survives restart and full history replacement, but copied user tags fail closed', () => fixture(directory => {
+test('persisted profile binding survives restart and full history replacement while copied user tags are neutralized', () => fixture(directory => {
   ensureAgentProfiles({ directory, router, models });
   const body = fs.readFileSync(profileFile(directory, models[1]), 'utf8').split('\n---\n')[1]
     .replace('${base_prompt}', 'Native system prompt.');
@@ -98,7 +98,10 @@ test('persisted profile binding survives restart and full history replacement, b
     expect(result.payload.messages.slice(1)).toEqual(history);
   }
   const copied = { role: 'user', content: body };
-  expect(() => restarted.prepare({ messages: [copied] }, options)).toThrow('agent_profile_unbound');
+  const result = restarted.prepare({ messages: [copied] }, options);
+  expect(result.model).toBe(options.primaryModel);
+  expect(result.payload.messages).toEqual([{ role: 'user', content: body.replace(/\[(?=\/?agent-profile-route)/gi, '') }]);
+  expect(restarted.prepare(result.payload, options).model).toBe(options.primaryModel);
 }));
 
 test('owned catalog retirement prunes byte-identical obsolete profiles and keeps retained token text stable', () => fixture(directory => {
@@ -108,6 +111,9 @@ test('owned catalog retirement prunes byte-identical obsolete profiles and keeps
   const ownership = ownedFiles(directory), primary = path.join(directory, r.profileName(models[0]) + '.md');
   const before = fs.readFileSync(primary);
   r.registerModels([models[0]], [models[0]]);
+  r.observeCatalog([models[0]], { now: 1000 });
+  r.observeCatalog([models[0]], { now: 1001 });
+  r.observeCatalog([models[0]], { now: 601000 });
   const result = ensureAgentProfiles({ directory, router: r, models: r.boundModels, ownedFiles: ownership });
   expect(result).toEqual({ changed: true, names: [r.profileName(models[0])] });
   expect(fs.readdirSync(directory)).toEqual([path.basename(primary)]);
@@ -184,4 +190,68 @@ test('a malformed router name cannot create a profile outside the namespaced fil
       expect(fs.readdirSync(directory)).toEqual([]);
     }
   } finally { if (fs.existsSync(escaped)) fs.unlinkSync(escaped); }
+}));
+
+// Problem 3 (red): directory traversal must skip every entry whose basename
+// starts '.', before stat/read/hash/delete/conflict, even when a valid
+// ownedFiles map is supplied. The dot entries must remain and never be read,
+// hashed, or deleted (never read implies never hashed, since hashing only
+// happens inside verifyOwned after readFileSync).
+test('dot-prefixed entries are skipped before stat/read/hash/delete and never conflict', () => fixture(directory => {
+  ensureAgentProfiles({ directory, router, models: [models[0]] });
+  const ownership = ownedFiles(directory);
+  const profile = profileFile(directory, models[0]);
+  const profileBytes = fs.readFileSync(profile);
+
+  const dotFile = path.join(directory, '.DS_Store');
+  const dotMd = path.join(directory, '.hidden.md');
+  const dotDir = path.join(directory, '.config');
+  const dotLink = path.join(directory, '.config-link');
+  fs.writeFileSync(dotFile, 'desktop metadata');
+  fs.writeFileSync(dotMd, 'hidden markdown');
+  fs.mkdirSync(dotDir);
+  // Hidden symlink example: a directory alias to .config.
+  fs.symlinkSync(dotDir, dotLink, process.platform === 'win32' ? 'junction' : 'dir');
+  const dotPaths = new Set([dotFile, dotMd, dotDir, dotLink]);
+
+  const read = spyOn(fs, 'readFileSync');
+  const lstat = spyOn(fs, 'lstatSync');
+  const stat = spyOn(fs, 'statSync');
+  const unlink = spyOn(fs, 'unlinkSync');
+  try {
+    expect(() => ensureAgentProfiles({ directory, router, models: [models[0]], ownedFiles: ownership })).not.toThrow();
+    // Never stat/read/delete any dot-prefixed entry.
+    for (const mocked of [read, lstat, stat, unlink]) {
+      for (const call of mocked.mock.calls) {
+        if (typeof call[0] === 'string') expect(dotPaths.has(call[0])).toBe(false);
+      }
+    }
+  } finally {
+    read.mockRestore(); lstat.mockRestore(); stat.mockRestore(); unlink.mockRestore();
+  }
+
+  expect(fs.readFileSync(dotFile, 'utf8')).toBe('desktop metadata');
+  expect(fs.readFileSync(dotMd, 'utf8')).toBe('hidden markdown');
+  expect(fs.statSync(dotDir).isDirectory()).toBe(true);
+  expect(fs.lstatSync(dotLink).isSymbolicLink()).toBe(true);
+  expect(fs.readFileSync(profile).equals(profileBytes)).toBe(true);
+}));
+
+test('ordinary unknown foo.md still conflicts while dot-prefixed entries are skipped and preserved', () => fixture(directory => {
+  ensureAgentProfiles({ directory, router, models: [models[0]] });
+  const ownership = ownedFiles(directory);
+  const profile = profileFile(directory, models[0]);
+  const profileBytes = fs.readFileSync(profile);
+
+  const dotFile = path.join(directory, '.DS_Store');
+  const foo = path.join(directory, 'foo.md');
+  fs.writeFileSync(dotFile, 'desktop metadata');
+  fs.writeFileSync(foo, 'ordinary unknown file');
+
+  expect(() => ensureAgentProfiles({ directory, router, models: [models[0]], ownedFiles: ownership }))
+    .toThrow('agent_profile_conflict');
+
+  expect(fs.readFileSync(dotFile, 'utf8')).toBe('desktop metadata');
+  expect(fs.readFileSync(foo, 'utf8')).toBe('ordinary unknown file');
+  expect(fs.readFileSync(profile).equals(profileBytes)).toBe(true);
 }));

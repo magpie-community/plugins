@@ -9,7 +9,7 @@ import { normalizeModels, isMenuAlias, canonicalMenuAlias, neutralPromptAliases 
 import { prepareLibrary, applyInstructions } from './library.mjs';
 import { inspectSecondary, patchSecondary } from './secondary-config.mjs';
 import { inspectModelPool, patchModelPool } from './model-pool-config.mjs';
-import { AgentModelRouter } from './agent-routing.mjs';
+import { AgentModelRouter, neutralizeRouteMarkers } from './agent-routing.mjs';
 import { ensureAgentProfiles } from './agent-profiles.mjs';
 import { kernelFamily, runnerGeneration } from './runtime-family.mjs';
 import { inspectRolePlugins, disableRolePluginsSync } from './role-plugin-state.mjs';
@@ -51,7 +51,7 @@ const samePool = (left, right) => Boolean(left && right) && sameModels(left.mode
   && left.hasSecondaryTable === right.hasSecondaryTable && left.hasModelsTable === right.hasModelsTable;
 
 function rolePluginFiles(directory) {
-  const names = ['kimi.plugin.json', ...fs.readdirSync(path.join(directory, 'agents')).sort().map(name => {
+  const names = ['kimi.plugin.json', ...fs.readdirSync(path.join(directory, 'agents')).filter(name => !name.startsWith('.')).sort().map(name => {
     if (!/^local-agent-(?:[a-f0-9]{12}-)?[a-f0-9]{24}\.md$/.test(name)) throw Error('agent_profile_conflict');
     return 'agents/' + name;
   })];
@@ -446,7 +446,13 @@ export class KimiAdapter {
         const enableRoles = this.rolesReady && Boolean(this.bridgeSecondaryModel);
         roles = { primaryModel: primary, secondaryModel: this.bridgeSecondaryModel || primary };
         const allowedModels = allowed.map(row => row.id);
-        if (enableRoles || /^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '')) {
+        const hasRoutingKey = enableRoles || /^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '');
+        // Refresh our shared message before authenticating profile prompts.
+        // Shared files are user content and can quote routing source code;
+        // neither an old shared message nor its replacement may bind a model.
+        try { payload = applyInstructions(payload, this.instructionsFile, hasRoutingKey ? neutralizeRouteMarkers : undefined); }
+        catch (failure) { error(failure.message === 'invalid_messages' ? 400 : 503, failure.message); return; }
+        if (hasRoutingKey) {
           router = this.ensureAgentRouter();
           routing = router.prepare(payload, { ...roles, allowedModels, enableRoles });
           payload = routing.payload;
@@ -457,8 +463,6 @@ export class KimiAdapter {
           routing = { payload, model: primary, translateResponse: false };
           payload = { ...payload, model: primary };
         }
-        try { payload = applyInstructions(payload, this.instructionsFile); }
-        catch (failure) { error(failure.message === 'invalid_messages' ? 400 : 503, failure.message); return; }
         payload = neutralPromptAliases(payload);
       }
       const headers = { 'Content-Type': 'application/json',
@@ -469,7 +473,7 @@ export class KimiAdapter {
         : officialURL(active.originalBase) + req.url.slice('/v1'.length);
       const bodyText = JSON.stringify(payload);
       // No route metadata may survive the final instructions/alias passes.
-      if (inference && RESERVED_ROUTE.test(bodyText)) throw Error('agent_profile_unbound');
+      if (inference && router && RESERVED_ROUTE.test(bodyText)) throw Error('agent_profile_unbound');
       const upstream = await this.fetchImpl(url, { method: 'POST', headers,
         body: bodyText, signal: controller.signal, redirect: 'error' });
       const responseHeaders = { 'Content-Type': upstream.headers.get('content-type') || 'application/json',
@@ -574,6 +578,7 @@ export class KimiAdapter {
         this.catalog=this.catalog.filter(x=>keep.has(x.id));
         const saved=readJSON(this.catalogFile);
         if(saved.enabled) this.publishCatalog(desired);
+        this.observeAgentCatalog([...keep], runner, desired);
       } catch { /* Initial connection waits until idle. */ }
       return;
     }
@@ -594,6 +599,7 @@ export class KimiAdapter {
         await this.rpcCall(runner, 'conversations.updateKimiModelList', { models: native });
       }
       this.publishCatalog(desired);
+      this.observeAgentCatalog(catalog.map(row => row.id), runner, desired);
       this.catalogError = null;
     } catch { this.catalogError = 'catalog_sync_failed'; }
   }
@@ -667,14 +673,16 @@ export class KimiAdapter {
       this.saveState();
     }
     const stored = record(this.state?.agentRoutingBindings) ? this.state.agentRoutingBindings : {};
+    const absence = record(this.state?.agentRoutingAbsence) ? this.state.agentRoutingAbsence : {};
     const sameBindings = (left, right) => {
       const a = Object.entries(left), b = Object.entries(right);
       return a.length === b.length && a.every(([key, value], index) =>
         b[index] && b[index][0] === key && b[index][1] === value);
     };
     if (!this.agentRouter || this.agentRouterSecret !== secret
-        || !sameBindings(this.agentRouter.bindings, stored)) {
-      try { this.agentRouter = new AgentModelRouter({ secret, bindings: stored }); }
+        || !sameBindings(this.agentRouter.bindings, stored)
+        || JSON.stringify(this.agentRouter.absence) !== JSON.stringify(absence)) {
+      try { this.agentRouter = new AgentModelRouter({ secret, bindings: stored, absence }); }
       catch { throw Error('agent_profile_conflict'); }
       this.agentRouterSecret = secret;
     }
@@ -683,15 +691,45 @@ export class KimiAdapter {
 
   persistAgentBindings(router) {
     const next = router.bindings;
-    if (JSON.stringify(next) !== JSON.stringify(this.state.agentRoutingBindings || {})) {
+    const absence = router.absence;
+    if (JSON.stringify(next) !== JSON.stringify(this.state.agentRoutingBindings || {})
+        || JSON.stringify(absence) !== JSON.stringify(this.state.agentRoutingAbsence || {})) {
       const previous = this.state.agentRoutingBindings;
+      const previousAbsence = this.state.agentRoutingAbsence;
       this.state.agentRoutingBindings = next;
+      this.state.agentRoutingAbsence = absence;
       try { this.saveState(); }
       catch (error) {
         this.state.agentRoutingBindings = previous;
+        this.state.agentRoutingAbsence = previousAbsence;
         throw error;
       }
     }
+  }
+
+  observeAgentCatalog(allowedModels, runner, desired) {
+    // A primary-only connection never mints a key or a companion namespace.
+    if (!/^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '')) return;
+    const router = this.ensureAgentRouter();
+    const secondary = desired.secondaryModel;
+    // Revoke only when the corresponding owned profiles can be synchronized.
+    // Disabled companions retain their cache for a later explicit opt-in;
+    // forgetting its token first would strand an immutable same-name file.
+    let canSynchronize = Boolean(secondary)
+      && (this.state.agentPlugin?.phase === 'ready' || allowedModels.includes(secondary));
+    const saved = this.state.agentPlugin;
+    if (canSynchronize && saved?.files) {
+      try {
+        const id = 'local-work-model-roles-' + sha(this.state.agentRoutingSecret).slice(0, 12);
+        this.rolePluginRegistered(id);
+        const directory = path.join(this.stateDir, 'native-model-roles');
+        const installed = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'managed', id);
+        if (!sameFiles(rolePluginFiles(directory), saved.files)
+            || !sameFiles(rolePluginFiles(installed), saved.files)) canSynchronize = false;
+      } catch { canSynchronize = false; }
+    }
+    router.observeCatalog(allowedModels, { allowRetirement: !busy(runner) && canSynchronize });
+    this.persistAgentBindings(router);
   }
 
   async reconcileSecondary(runner, wanted, { inheritModel = '' } = {}) {
@@ -713,7 +751,12 @@ export class KimiAdapter {
     }
     if (!inheritModel) return { applied: false };
     const target = wanted;
-    if (!this.catalog.some(row => row.id === target)) throw Error('secondary_model_unavailable');
+    if (!this.catalog.some(row => row.id === target)) {
+      if (this.state.agentPlugin?.phase === 'ready') {
+        await this.syncRolePlugin(runner, [inheritModel].filter(model => this.catalog.some(row => row.id === model)));
+      }
+      throw Error('secondary_model_unavailable');
+    }
     if (this.bridgeSecondaryModel !== target && busy(runner)) return { waiting: true };
     this.ensureAgentRouter();
     if (kernelFamily(runner, { hasConverted: fs.existsSync(this.convertedNativeConfigFile) }) !== 'v2') {
@@ -1294,6 +1337,7 @@ export class KimiAdapter {
       this.state = { active: true, originalBase, bridgeURL: this.bridgeURL, generation, signature, model: desired.model,
         ...(previous?.agentRoutingSecret ? { agentRoutingSecret: previous.agentRoutingSecret } : {}),
         ...(previous?.agentRoutingBindings ? { agentRoutingBindings: previous.agentRoutingBindings } : {}),
+        ...(previous?.agentRoutingAbsence ? { agentRoutingAbsence: previous.agentRoutingAbsence } : {}),
         ...(previous?.agentPlugin ? { agentPlugin: previous.agentPlugin } : {}),
         ...(previous?.secondary ? { secondary: previous.secondary } : {}),
         ...(previous?.secondaryPool ? { secondaryPool: previous.secondaryPool, secondaryPoolModel: '' } : {}),

@@ -4,6 +4,9 @@ const RESPONSE_LIMIT = 32 * 1024 * 1024;
 const PROFILE_SECTION = /\[agent-profile-route:v1\][\s\S]*?\[\/agent-profile-route\]/g;
 const PROFILE_BINDING = /^\[agent-profile-route:v1\]\r?\n([A-Za-z0-9_-]{43}):([a-f0-9]{64})\r?\n\[\/agent-profile-route\]$/;
 const RESERVED_PROFILE = /\[\/?agent-profile-route\b/i;
+const ROUTE_MARKER = /\[(?=\/?agent-profile-route)/gi;
+const ABSENCE_COUNT_THRESHOLD = 3;
+const ABSENCE_WINDOW_MS = 600000;
 const PROFILE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const CALL_INTENT = /^call_rs1_([a-f0-9]{16})_([dpsn])_([a-f0-9]{24})$/;
 const INTENT_ROLES = { p: 'primary', s: 'secondary', n: 'native' };
@@ -26,6 +29,41 @@ const bounded = text => {
   if (Buffer.byteLength(text) > RESPONSE_LIMIT) throw failure('agent_routing_response_too_large');
   return text;
 };
+
+function neutralizeText(text) {
+  return text.replace(ROUTE_MARKER, '');
+}
+
+// Removes the leading bracket from route markers in any non-identity string
+// without authenticating or binding it. Non-destructive and reference-
+// preserving: unchanged data keeps its original reference, and function values
+// are never called, so any marker produced only at JSON.stringify time (e.g. a
+// toJSON hook) still trips the serialized reserved-marker guard.
+export function neutralizeRouteMarkers(value) {
+  if (typeof value === 'string') return neutralizeText(value);
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = new Array(value.length);
+    for (let index = 0; index < value.length; index++) {
+      const item = neutralizeRouteMarkers(value[index]);
+      if (item !== value[index]) changed = true;
+      next[index] = item;
+    }
+    return changed ? next : value;
+  }
+  if (record(value)) {
+    let changed = false;
+    const entries = [];
+    for (const [key, entry] of Object.entries(value)) {
+      const nextKey = neutralizeText(key);
+      const nextEntry = neutralizeRouteMarkers(entry);
+      if (nextKey !== key || nextEntry !== entry) changed = true;
+      entries.push([nextKey, nextEntry]);
+    }
+    return changed ? Object.fromEntries(entries) : value;
+  }
+  return value;
+}
 
 function nativeAgent(tool) {
   const schema = tool?.function?.parameters;
@@ -55,8 +93,9 @@ export class AgentModelRouter {
   #key;
   #namespace;
   #bindings = new Map();
+  #absence = new Map();
 
-  constructor({ secret, bindings = {} }) {
+  constructor({ secret, bindings = {}, absence = {} }) {
     if (typeof secret !== 'string' || !/^[a-f0-9]{64}$/i.test(secret)) {
       throw failure('agent_routing_invalid_secret');
     }
@@ -67,11 +106,21 @@ export class AgentModelRouter {
       if (!PROFILE_TOKEN.test(token) || !modelID(model)) throw failure('agent_profile_unbound');
       this.#bindings.set(token, model);
     }
+    if (!record(absence)) throw failure('agent_profile_unbound');
+    for (const [model, entry] of Object.entries(absence)) {
+      if (!modelID(model) || !record(entry)
+          || !Number.isSafeInteger(entry.count) || entry.count < 0
+          || !Number.isSafeInteger(entry.firstMissingAt) || entry.firstMissingAt < 0) {
+        throw failure('agent_profile_unbound');
+      }
+      this.#absence.set(model, { count: entry.count, firstMissingAt: entry.firstMissingAt });
+    }
   }
 
   get namespace() { return this.#namespace; }
   get bindings() { return Object.fromEntries(this.#bindings); }
   get boundModels() { return [...new Set(this.#bindings.values())]; }
+  get absence() { return Object.fromEntries([...this.#absence].map(([model, entry]) => [model, { ...entry }])); }
 
   #token(model) {
     for (const [token, bound] of this.#bindings) if (bound === model) return token;
@@ -86,10 +135,32 @@ export class AgentModelRouter {
         || models.some(model => !modelID(model) || !allowedModels.includes(model))) {
       throw failure('model_not_enabled_for_kimi');
     }
-    // MUTATION protocol-catalog: retired bindings cannot resume onto a removed model.
-    for (const [token, model] of this.#bindings) if (!allowedModels.includes(model)) this.#bindings.delete(token);
+    // Only validate and pre-allocate. Pruning and absence counting happen in
+    // observeCatalog after a successful catalog sync.
     for (const model of models) this.#token(model);
     return this.bindings;
+  }
+
+  observeCatalog(allowedModels, { now = Date.now(), allowRetirement = true } = {}) {
+    if (!Array.isArray(allowedModels) || !Number.isSafeInteger(now) || now < 0) {
+      throw failure('model_not_enabled_for_kimi');
+    }
+    for (const model of this.boundModels) {
+      if (allowedModels.includes(model)) {
+        // Present again: clear any absence immediately and keep the original token.
+        this.#absence.delete(model);
+      } else {
+        const entry = this.#absence.get(model);
+        const count = Math.min((entry?.count ?? 0) + 1, ABSENCE_COUNT_THRESHOLD);
+        const firstMissingAt = entry?.firstMissingAt ?? now;
+        this.#absence.set(model, { count, firstMissingAt });
+        if (allowRetirement && count >= ABSENCE_COUNT_THRESHOLD && now - firstMissingAt >= ABSENCE_WINDOW_MS) {
+          for (const [token, bound] of [...this.#bindings]) if (bound === model) this.#bindings.delete(token);
+          this.#absence.delete(model);
+        }
+      }
+    }
+    return { bindings: this.bindings, absence: this.absence };
   }
 
   #mac(token) {
@@ -198,9 +269,13 @@ export class AgentModelRouter {
     const prepared = { ...payload, model,
       ...(Array.isArray(messages) ? { messages } : {}), ...(Array.isArray(tools) ? { tools } : {}),
     };
-    // MUTATION protocol-reserved: copied metadata in any other field is never sent upstream.
-    if (RESERVED_PROFILE.test(JSON.stringify(prepared))) throw failure('agent_profile_unbound');
-    return { payload: prepared, model, translateResponse };
+    // Identity text is already authenticated and stripped above; every other
+    // field is neutralized rather than bound. The serialized boundary guard
+    // still rejects any residual reserved marker, including one produced only
+    // at JSON.stringify time such as a toJSON hook.
+    const neutralized = neutralizeRouteMarkers(prepared);
+    if (RESERVED_PROFILE.test(JSON.stringify(neutralized))) throw failure('agent_profile_unbound');
+    return { payload: neutralized, model, translateResponse };
   }
 
   #translateCall(call, { primaryModel, secondaryModel }) {

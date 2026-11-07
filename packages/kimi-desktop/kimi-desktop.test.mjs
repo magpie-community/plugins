@@ -317,7 +317,7 @@ for (const format of ['json', 'sse']) {
   });
 }
 
-test('profile-shaped route metadata in user or historical Agent data fails closed without routing', async () => {
+test('profile-shaped route metadata in user or historical Agent data is neutralized without binding', async () => {
   const f = await fixture();
   try {
     write(f.controller.connectionFile, { ...f.connection, secondaryModel: f.models[1].id });
@@ -330,13 +330,15 @@ test('profile-shaped route metadata in user or historical Agent data fails close
       } }] },
       { role: 'tool', tool_call_id: 'historical-agent', content: profile },
     ];
-    const response = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
-      headers: { Authorization: 'Bearer synthetic-kimi-key' },
-      body: JSON.stringify({ model: 'k2d8-preview', messages }) });
-    expect(response.status).toBe(409);
-    expect((await response.json()).error.code).toBe('agent_profile_unbound');
-    // Reserved route metadata never selects a binding or reaches a supplier.
-    expect(f.requests).toHaveLength(0);
+    for (let turn = 0; turn < 2; turn++) {
+      const response = await fetch(f.controller.bridgeURL + '/chat/completions', { method: 'POST',
+        headers: { Authorization: 'Bearer synthetic-kimi-key' },
+        body: JSON.stringify({ model: 'k2d8-preview', messages }) });
+      expect(response.status).toBe(200); await response.text();
+      expect(f.requests).toHaveLength(turn + 1);
+      expect(f.requests.at(-1).body.model).toBe(f.models[0].id);
+      expect(/\[\/?agent-profile-route\b/i.test(JSON.stringify(f.requests.at(-1).body))).toBe(false);
+    }
   } finally { await f.cleanup(); }
 });
 

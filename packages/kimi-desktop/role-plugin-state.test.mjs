@@ -16,6 +16,9 @@ const writeJSON = (file, value) => {
 };
 const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const manifest = name => ({ name, version: '1.0.0', description: 'Local Work model roles', agents: ['./agents'] });
+// Native directory alias semantics: a junction on Windows, a directory symlink elsewhere.
+const dirSymlink = (target, alias) =>
+  fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
 const spy = (object, method) => {
   const mocked = spyOn(object, method);
   restorers.push(() => mocked.mockRestore());
@@ -367,4 +370,256 @@ test('exclusive staging creation preserves another writer\'s colliding temporary
   expect(f.bytes()).toEqual(before);
   expect(fs.existsSync(collision)).toBe(true);
   expect(fs.readFileSync(collision, 'utf8')).toBe('synthetic other writer');
+});
+
+// Problem 4 (red): caller paths may carry a symlink in an ancestor directory
+// while the persisted root/source is the physical realpath (or vice versa).
+// Ancestor aliases are allowed; direct managed/id-root symlinks stay rejected.
+function symlinkFixture() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-role-plugin-path-'));
+  homes.push(home);
+  const physicalRoot = path.join(home, 'physical');
+  const pluginsDir = path.join(physicalRoot, 'plugins');
+  const registryFile = path.join(pluginsDir, 'installed.json');
+  const managedDir = path.join(pluginsDir, 'managed');
+  const sourceDirectory = path.join(home, 'adapter-state', 'native-model-roles');
+  fs.mkdirSync(sourceDirectory, { recursive: true }); // must exist for directory-identity tests
+  const rootFor = name => path.join(managedDir, name);
+  const addPhysical = (name = id, fields = {}) => {
+    const root = rootFor(name);
+    writeJSON(path.join(root, 'kimi.plugin.json'), manifest(name));
+    return { id: name, root, source: 'local-path', enabled: true, originalSource: sourceDirectory, ...fields };
+  };
+  return { home, physicalRoot, pluginsDir, registryFile, managedDir, sourceDirectory, rootFor, addPhysical };
+}
+
+test('a logical registry path through an ancestor alias owns a physical-root record', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  const alias = path.join(f.home, 'registry-alias');
+  dirSymlink(f.physicalRoot, alias);
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: path.join(alias, 'plugins', 'installed.json'), sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('a physical registry accepts a logical entry.root reached through an ancestor alias', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const rootAlias = path.join(f.home, 'root-alias');
+  dirSymlink(f.pluginsDir, rootAlias);
+  const logicalEntry = { ...entry, root: path.join(rootAlias, 'managed', id) };
+  writeJSON(f.registryFile, { version: 1, plugins: [logicalEntry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('a logical sourceDirectory matches a physical originalSource by directory identity', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  const sourceAlias = path.join(f.home, 'source-alias');
+  dirSymlink(path.dirname(f.sourceDirectory), sourceAlias);
+  const logicalSource = path.join(sourceAlias, 'native-model-roles');
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: logicalSource });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('a logical originalSource matches a physical sourceDirectory by directory identity', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const sourceAlias = path.join(f.home, 'source-alias');
+  dirSymlink(path.dirname(f.sourceDirectory), sourceAlias);
+  const logicalSource = path.join(sourceAlias, 'native-model-roles');
+  const logicalEntry = { ...entry, originalSource: logicalSource };
+  writeJSON(f.registryFile, { version: 1, plugins: [logicalEntry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('ordinary in-place directories with an existing sourceDirectory are owned', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('a moved physical tree reached through its original alias is owned by directory identity', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  const moved = path.join(f.home, 'moved-plugins');
+  fs.renameSync(f.pluginsDir, moved);
+  dirSymlink(moved, f.pluginsDir); // original path becomes an alias to the moved tree
+  const movedEntry = { ...entry, root: path.join(moved, 'managed', id) };
+  fs.writeFileSync(f.registryFile, JSON.stringify({ version: 1, plugins: [movedEntry] }, null, 2) + '\n');
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+});
+
+test('disable through an ancestor-alias registry disables only the verified record', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const unselected = f.addPhysical(oldID);
+  writeJSON(f.registryFile, { version: 1, plugins: [entry, unselected] });
+  const alias = path.join(f.home, 'registry-alias');
+  dirSymlink(f.physicalRoot, alias);
+  let disabled;
+  expect(() => {
+    disabled = disableRolePluginsSync({
+      registryFile: path.join(alias, 'plugins', 'installed.json'), sourceDirectory: f.sourceDirectory, ids: [id],
+    });
+  }).not.toThrow();
+  expect(disabled).toEqual({
+    changed: true, disabled: [id], owned: [{ id, enabled: false }, { id: oldID, enabled: true }], conflicts: [],
+  });
+  expect(readJSON(f.registryFile).plugins.map(plugin => [plugin.id, plugin.enabled]))
+    .toEqual([[id, false], [oldID, true]]);
+});
+
+test('deleting the source at the exact same path still permits inspect/disable of a cached registration', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  fs.rmSync(f.sourceDirectory, { recursive: true, force: true });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [{ id, enabled: true }], conflicts: [] });
+  let disabled;
+  expect(() => {
+    disabled = disableRolePluginsSync({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory, ids: [id] });
+  }).not.toThrow();
+  expect(disabled).toEqual({ changed: true, disabled: [id], owned: [{ id, enabled: false }], conflicts: [] });
+});
+
+test('a different source path that does not exist is never proven equivalent', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const missingSource = path.join(f.home, 'missing', 'native-model-roles');
+  writeJSON(f.registryFile, { version: 1, plugins: [{ ...entry, originalSource: missingSource }] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a different physical root with the same id and manifest is never owned', () => {
+  const f = symlinkFixture();
+  f.addPhysical();
+  const decoy = path.join(f.home, 'decoy', 'managed', id);
+  writeJSON(path.join(decoy, 'kimi.plugin.json'), manifest(id));
+  const entry = { id, root: decoy, source: 'local-path', enabled: true, originalSource: f.sourceDirectory };
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a direct managed-directory symlink supplied through entry.root is rejected', () => {
+  const f = symlinkFixture();
+  f.addPhysical();
+  const managedLink = path.join(f.home, 'managed-link');
+  dirSymlink(f.managedDir, managedLink);
+  const entry = { id, root: path.join(managedLink, id), source: 'local-path', enabled: true, originalSource: f.sourceDirectory };
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a direct root symlink supplied as entry.root is rejected', () => {
+  const f = symlinkFixture();
+  f.addPhysical();
+  const idLink = path.join(f.managedDir, 'linked-id');
+  dirSymlink(f.rootFor(id), idLink); // managed/linked-id -> managed/id
+  const entry = { id, root: idLink, source: 'local-path', enabled: true, originalSource: f.sourceDirectory };
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a different existing source directory is never proven equivalent', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const otherSource = path.join(f.home, 'other', 'native-model-roles');
+  fs.mkdirSync(otherSource, { recursive: true });
+  writeJSON(f.registryFile, { version: 1, plugins: [{ ...entry, originalSource: otherSource }] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('two different source paths resolving to the same regular file are not directory equivalence', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  const sourceDirReal = path.join(f.home, 'source-dir');
+  fs.mkdirSync(sourceDirReal, { recursive: true });
+  fs.writeFileSync(path.join(sourceDirReal, 'source-file.txt'), 'not a directory');
+  const sourceDirAlias = path.join(f.home, 'source-dir-alias');
+  dirSymlink(sourceDirReal, sourceDirAlias); // ancestor directory alias; no file symlink privileges needed
+  const sourceFile = path.join(sourceDirReal, 'source-file.txt');
+  const sourceFileAlias = path.join(sourceDirAlias, 'source-file.txt');
+  writeJSON(f.registryFile, { version: 1, plugins: [{ ...entry, originalSource: sourceFileAlias }] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: sourceFile });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a missing managed root remains a conflict even with the same literal root', () => {
+  const f = symlinkFixture();
+  const entry = f.addPhysical();
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  fs.rmSync(f.managedDir, { recursive: true, force: true });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
+});
+
+test('a sibling directory under the same managed parent is never owned even with a matching manifest', () => {
+  const f = symlinkFixture();
+  f.addPhysical(); // healthy expected id directory + manifest at managed/id
+  const sibling = path.join(f.managedDir, 'sibling');
+  writeJSON(path.join(sibling, 'kimi.plugin.json'), manifest(id)); // matching id manifest content
+  const entry = { id, root: sibling, source: 'local-path', enabled: true, originalSource: f.sourceDirectory };
+  writeJSON(f.registryFile, { version: 1, plugins: [entry] });
+  let inspected;
+  expect(() => {
+    inspected = inspectRolePlugins({ registryFile: f.registryFile, sourceDirectory: f.sourceDirectory });
+  }).not.toThrow();
+  expect(inspected).toEqual({ owned: [], conflicts: [id] });
 });

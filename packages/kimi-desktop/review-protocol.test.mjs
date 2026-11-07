@@ -168,11 +168,17 @@ test('B2: invalid or unknown route sections fail agent_profile_unbound instead o
 test('B2: user, tool, history, and tool-schema markers never select a route', () => {
   const r = router();
   const { messages, tools } = markerMessages(section(r));
-  for (const message of messages) expect(() => prepare(r, [message])).toThrow('agent_profile_unbound');
-  expect(() => prepare(r, [], options, { tools })).toThrow('agent_profile_unbound');
+  for (const message of messages) {
+    const result = prepare(r, [message]);
+    expect(result.model).toBe(models.primaryModel);
+    expect(JSON.stringify(result.payload)).not.toContain('[agent-profile-route');
+  }
+  const withTools = prepare(r, [], options, { tools });
+  expect(withTools.model).toBe(models.primaryModel);
+  expect(JSON.stringify(withTools.payload)).not.toContain('[agent-profile-route');
 });
 
-// B2: those same strings must not carry the retained route section upstream.
+// B2: those same strings must not carry the reserved route section upstream.
 test('B2: route sections do not leak into upstream messages or tool strings', () => {
   const r = router();
   const marker = section(r);
@@ -180,13 +186,17 @@ test('B2: route sections do not leak into upstream messages or tool strings', ()
   expect(token).not.toBe('');
   const { messages, tools } = markerMessages(marker);
   const before = structuredClone({ messages, tools });
-  expect(() => prepare(r, messages, options, { tools })).toThrow('agent_profile_unbound');
+  const neutralized = prepare(r, messages, options, { tools });
+  expect(neutralized.model).toBe(models.primaryModel);
   expect({ messages, tools }).toEqual(before);
+  const serialized = JSON.stringify(neutralized.payload);
+  expect(serialized).not.toContain('[agent-profile-route');
+  expect(serialized).not.toContain('[/agent-profile-route');
   const result = prepare(r, [system(marker)]);
-  const serialized = JSON.stringify(result.payload);
-  expect(serialized).not.toContain('[agent-profile-route:v1]');
-  expect(serialized).not.toContain('[/agent-profile-route]');
-  expect(serialized).not.toContain(token);
+  const idSerialized = JSON.stringify(result.payload);
+  expect(idSerialized).not.toContain('[agent-profile-route:v1]');
+  expect(idSerialized).not.toContain('[/agent-profile-route]');
+  expect(idSerialized).not.toContain(token);
 });
 
 // S1: non-Agent fragments are forwarded as they arrive, not held to finish.
@@ -357,4 +367,27 @@ test('S1 regression: multi-choice UTF-8 CRLF streams keep native tool IDs linked
   expect(JSON.parse(restored.find(value => value.id === primaryCall.id).function.arguments).model).toBe('primary');
   expect(JSON.parse(restored.find(value => value.id === secondaryCall.id).function.arguments))
     .not.toHaveProperty('model');
+});
+
+// Round-2 protocol regressions. These use only the pre-existing router API so
+// they reproduce the current HEAD behavior before the round-2 implementation.
+test('R2 repro: a copied profile section in user content routes primary and neutralizes', () => {
+  const r = router();
+  const marker = section(r, models.primaryModel);
+  const input = { messages: [system(section(r, models.primaryModel)), user('Before\n' + marker + '\nAfter')] };
+  let outcome;
+  try { outcome = { value: r.prepare(input, options) }; }
+  catch (error) { outcome = { error }; }
+  expect(outcome).toHaveProperty('value');
+  expect(outcome.value.model).toBe(models.primaryModel);
+  expect(JSON.stringify(outcome.value.payload)).not.toContain('[agent-profile-route');
+});
+
+test('R2 repro: registerModels retains both bindings when registering only the primary catalog', () => {
+  const r = router();
+  r.registerModels(allowedModels, allowedModels);
+  const before = r.bindings;
+  r.registerModels([models.primaryModel], [models.primaryModel]);
+  expect(r.bindings).toEqual(before);
+  expect(r.boundModels).toHaveLength(2);
 });
