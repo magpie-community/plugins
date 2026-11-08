@@ -21,13 +21,17 @@ const plugin = {
   server: async (_input, options) => {
     if (!starting) {
       // manifest options（page.service.option = "port" 时 options.port 由 magpie 注入）
-      // → startServer() 内部再回退到环境变量/默认值
+      // → startServer() 内部再回退到环境变量/默认值。port 的 0/非法值归成 undefined：
+      // 服务回落到默认口，页面从同一 options 读到的也走同一回落，两边永远一致。
+      const n = Number(options?.port);
+      const port = Number.isInteger(n) && n > 0 && n < 65536 ? n : undefined;
       starting = import(pathToFileURL(path.join(here, "server.mjs")).href)
         .then((m) => m.startServer({
-          port: options?.port,
+          port,
           attribution: options?.attribution,
           remoteCallers: options?.remoteCallers,
           remoteProviders: options?.remoteProviders,
+          gateway: options?.gateway,
         }))
         .then((port) => ({ ok: true, port }))
         .catch((err) => {

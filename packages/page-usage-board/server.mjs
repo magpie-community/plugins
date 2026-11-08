@@ -22,19 +22,49 @@ const URL_HOST = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : (HOST.inclu
 // 回环绑定：看板页面只对回环开放（口令注入返回的 HTML，本机用户即所有者——与社区
 // page-usage-tree 同一模型）。注意：'::' 与 0.0.0.0 同为通配监听（dual-stack），绝不能算回环。
 const LOOPBACK_BIND = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
-const GATEWAY = (process.env.GATEWAY || 'http://127.0.0.1:3425').replace(/\/+$/, '');
+// magpie 的配置目录：与 usage.jsonl、plugin-providers.json、providers.json 的所在。
+// MAGPIE_CONFIG_DIR 显式指定 → XDG_CONFIG_HOME/magpie → ~/.config/magpie。
+function magpieConfigDir() {
+  if (process.env.MAGPIE_CONFIG_DIR) return process.env.MAGPIE_CONFIG_DIR;
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg && path.isAbsolute(xdg)) return path.join(xdg, 'magpie');
+  return path.join(os.homedir(), '.config', 'magpie');
+}
+const CONFIG_DIR = magpieConfigDir();
+// 网关解析链（与 page-usage-tree 一致）：manifest options.gateway → GATEWAY →
+// MAGPIE_GATEWAY → MAGPIE_ADDR（magpie 宿主总会设置，端口可被用户改过，不能写死）→ 3425。
+// MAGPIE_ADDR 是 host:port（宿主可能写成 0.0.0.0:[::]:），归一化成回环 http URL。
+function gatewayCandidates(optionsGateway) {
+  const out = [];
+  const push = (v) => {
+    const text = String(v || '').trim().replace(/\/+$/, '');
+    if (text && /^https?:\/\//i.test(text) && !out.includes(text)) out.push(text);
+  };
+  push(optionsGateway);
+  push(process.env.GATEWAY);
+  push(process.env.MAGPIE_GATEWAY);
+  const addr = process.env.MAGPIE_ADDR;
+  if (addr) {
+    const loopback = String(addr).replace(/^(0\.0\.0\.0|\[::\]):/, '127.0.0.1:');
+    if (/^[\w.-]+(:\d+)?$/.test(loopback)) push('http://' + loopback);
+  }
+  push('http://127.0.0.1:3425');
+  return out;
+}
+// 实际生效的网关在 main() 里定稿（listen 前）；upstream() 按请求时值取用
+let GATEWAY = 'http://127.0.0.1:3425';
 const KEY = process.env.MAGPIE_KEY || '';
 const USAGE_JSONL = process.env.USAGE_JSONL || [
-  path.join(os.homedir(), '.config', 'magpie', 'usage.jsonl'),
+  path.join(CONFIG_DIR, 'usage.jsonl'),
   path.join(ROOT, '..', 'usage.jsonl'),
   path.join(ROOT, '..', 'magpie', 'usage.jsonl'),
-].find((f) => existsSync(f)) || path.join(os.homedir(), '.config', 'magpie', 'usage.jsonl');
+].find((f) => existsSync(f)) || path.join(CONFIG_DIR, 'usage.jsonl');
 // 页面访问口令：未设 PAGE_KEY → 每次启动生成随机 token（页面 HTML 服务端注入，URL/日志/磁盘
 // 都不落）；显式设置 → 脚本调 API 用（x-dash-key 头；?key= 已废除，key 不进 URL）。
 let PAGE_KEY = '';
 const PORT_BASE = 3455;
 // manifest options（index.mjs 传入）→ 环境变量 → 内置默认，三级回退；startServer() 时定稿
-const CFG = { port: null, attribution: null, remoteCallers: null, remoteProviders: null };
+const CFG = { port: null, attribution: null, remoteCallers: null, remoteProviders: null, gateway: null };
 // 远端归因（opt-in）：开启后会把本机 magpie 配好的 remote provider key 发给远端 magpie
 // 换逐条请求记录——必须用户显式选择，绝不默认。
 let ATTRIBUTION_MODE = 'local';
@@ -49,7 +79,7 @@ const STATIC_DIR = path.join(ROOT, 'static');
 // data URI 为主）。零扫描、零下载、零落盘——https 图标不抓取（避免启动时向第三方 CDN 发请求），
 // 页面对没有图标的品牌用首字色块兜底。
 const PROVIDERS_FILE = process.env.MAGPIE_PROVIDERS_FILE || '';
-const MAGPIE_PROVIDERS = process.env.MAGPIE_PROVIDERS || path.join(os.homedir(), '.config', 'magpie', 'providers.json');
+const MAGPIE_PROVIDERS = process.env.MAGPIE_PROVIDERS || path.join(CONFIG_DIR, 'providers.json');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -147,7 +177,7 @@ async function readDetail(days) {
     // 读不到（ENOENT）= 全新安装的空态；其他读失败（权限/损坏）必须可见，不能伪装成零用量
     if (e && e.code === 'ENOENT') return { daily: [], heat, recent: [] };
     console.error('[magpie-usage] usage.jsonl read failed:', (e && e.message) || e);
-    return { daily: [], heat, recent: [], error: '日志读取失败(' + ((e && e.code) || (e && e.message) || '?') + ')' };
+    return { daily: [], heat, recent: [], error: 'usage log read failed (' + ((e && e.code) || (e && e.message) || '?') + ')' };
   }
   recent.sort((x, y) => (x.t < y.t ? 1 : -1));
   recent = recent.slice(0, 40);
@@ -197,7 +227,7 @@ async function readHourly24() {
   } catch (e) {
     if (e && e.code === 'ENOENT') return { hours: [] }; // 全新安装：空态
     console.error('[magpie-usage] usage.jsonl read failed (hourly):', (e && e.message) || e);
-    return { hours: [], error: '日志读取失败(' + ((e && e.code) || (e && e.message) || '?') + ')' };
+    return { hours: [], error: 'usage log read failed (' + ((e && e.code) || (e && e.message) || '?') + ')' };
   }
   const data = { hours: [...hours.entries()].sort().map(([hour, v]) => ({ hour, ...v })) };
   h24Cache = { key, data };
@@ -536,7 +566,7 @@ async function handleRequest(req, res, url) {
           upstream('/v1/magpie/limit?format=json').catch(() => null),
         ]);
         const detail = await readDetail(days);
-        const notes = [u.code === 200 ? undefined : '用量接口 ' + (u.code || '无响应'), detail && detail.error].filter(Boolean);
+        const notes = [u.code === 200 ? undefined : 'usage API ' + (u.code || 'no response'), detail && detail.error].filter(Boolean);
         return json(res, 200, { period, usage: u.code === 200 ? u.json : null, detail,
           limit: (lim && lim.code === 200 && lim.json) || undefined,
           note: notes.length ? notes.join('；') : undefined });
@@ -620,7 +650,7 @@ async function handleRequest(req, res, url) {
         upstream('/v1/magpie/quotas'),
       ]);
       data = { period, usage: u.json, quotas: q.json?.data || [], detail };
-      if (u.code !== 200) note = '用量接口 ' + u.code;
+      if (u.code !== 200) note = 'usage API ' + u.code;
     } catch (e) { note = String(e && e.message || e); }
     const trap = '<script>window.__errs=[];window.addEventListener("error",function(e){var m=e.message||((e.target&&e.target.src||e.target&&e.target.href)?("resource: "+(e.target.src||e.target.href)):"");if(!m)return;window.__errs.push(m+" @ "+(e.filename||"")+":"+(e.lineno||0)+":"+(e.colno||0))},true);window.addEventListener("unhandledrejection",function(e){window.__errs.push("PROMISE: "+String(e.reason&&e.reason.message||e.reason))});<\/script>';
     // 品牌 logo 映射 = magpie 自己的 plugin-providers.json（data URI，启动时读一次）
@@ -635,7 +665,9 @@ async function handleRequest(req, res, url) {
       // 页面脚本全是同源文件 + 少量内联（数据注入）；数据获取全部同源 /api/*。
       // connect-src 除 'self' 外显式列出本机回环地址——WebKit 的沙盒 frame（opaque
       // origin）会把 'self' 解析成 opaque，同源 fetch 被拦，显式地址实测可行。
-      'Content-Security-Policy': `default-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:${boundPort} http://localhost:${boundPort}; object-src 'none'; base-uri 'none'`,
+      // frame-ancestors：看板本来就是被 magpie 的框架嵌入的（桌面/webview/web 的宿主
+      // origin 不固定，收不了紧）——显式写 * 表明「被宿主嵌入是设计意图」，而不是遗漏。
+      'Content-Security-Policy': `default-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:${boundPort} http://localhost:${boundPort}; object-src 'none'; base-uri 'none'; frame-ancestors *`,
     });
     return res.end(html);
   }
@@ -712,7 +744,7 @@ async function probe(hp) {
 // 在前端保持不变，未命中品牌走首字色块。
 let providerLogos = {};
 function loadProviderLogos() {
-  const f = PROVIDERS_FILE || path.join(path.dirname(USAGE_JSONL), 'plugin-providers.json');
+  const f = PROVIDERS_FILE || path.join(CONFIG_DIR, 'plugin-providers.json');
   try {
     const j = JSON.parse(readFileSync(f, 'utf8'));
     const out = {};
@@ -749,6 +781,9 @@ function main(resolve, reject) {
   ATTRIBUTION_MODE = attr === 'remote' || attr === 'auto' ? 'remote' : 'local';
   REMOTE_CALLERS = optStr(CFG.remoteCallers, process.env.REMOTE_CALLERS, '').split(',').map((x) => x.trim()).filter(Boolean);
   REMOTE_PROVIDERS = optStr(CFG.remoteProviders, process.env.REMOTE_PROVIDERS, 'magpie-direct,magpie-cf,remote-magpie').split(',').map((x) => x.trim()).filter(Boolean);
+  // 网关按链路解析（options → GATEWAY → MAGPIE_GATEWAY → MAGPIE_ADDR → 3425）：宿主把
+  // MAGPIE_ADDR 指到哪，看板就问哪——端口改过/便携安装时写死 3425 会全盘落空。
+  GATEWAY = gatewayCandidates(CFG.gateway)[0];
 
   loadProviderLogos();
 
@@ -831,12 +866,14 @@ let bootPromise = null;
 // 「发射后不管」会让那次探测吃 connection refused（社区生命周期契约）。
 function startServer(options = {}) {
   if (bootPromise) return bootPromise;
-  // manifest options 三级回退的第一级；startServer() 已启动过则忽略（bootPromise 复用）
+  // manifest options 三级回退的第一级；startServer() 已启动过则忽略（bootPromise 复用）。
+  // port 0 = 由系统挑随机口（测试与嵌入场景）；index.mjs 会把 options.port 的 0/非法值
+  // 归成 undefined 落到默认口，页面从同一 options 读到的值与服务保持一致。
   CFG.port = options && Number.isFinite(Number(options.port)) ? Number(options.port) : null;
-  if (CFG.port === 0) CFG.port = null; // 0 交给 PORT 环境变量/默认值处理
   CFG.attribution = options ? options.attribution : null;
   CFG.remoteCallers = options ? options.remoteCallers : null;
   CFG.remoteProviders = options ? options.remoteProviders : null;
+  CFG.gateway = options ? options.gateway : null;
   bootPromise = new Promise((resolve, reject) => {
     try {
       main(resolve, reject);

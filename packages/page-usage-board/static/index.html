@@ -4,6 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title></title>
+<script>
+// 主题在 CSS 生效前定稿（无闪变）：带路页从 magpie 桥接读到宿主的深浅色经 ?theme= 传来
+//（magpie 自己的设置优先于系统）；没有参数时跟随 prefers-color-scheme。
+(function () {
+  var t = new URLSearchParams(location.search).get('theme');
+  if (t !== 'dark' && t !== 'light') {
+    t = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.dataset.theme = t;
+})();
+</script>
 <style>
 :root{
   --bg:#0e1116;--card:#161b22;--card2:#1c2330;--line:#2a3140;--txt:#d7dde6;--dim:#8b93a1;
@@ -13,15 +24,14 @@
   --skelc1:rgba(255,255,255,.05);--skelc2:rgba(255,255,255,.13);--segused:rgba(255,255,255,.18);
   color-scheme:dark;
 }
-/* 浅色：跟随系统（magpie 桌面/网页自身也随系统），图表颜色在渲染时经 cssVar() 读取这些变量 */
-@media (prefers-color-scheme: light){
-  :root{
-    --bg:#f5f7fa;--card:#ffffff;--card2:#eef1f5;--line:#d5dae2;--txt:#24292f;--dim:#57606a;
-    --heat0:#eaeef2;--tipbg:#ffffff;--tipline:#d5dae2;--tiptxt:#24292f;
-    --lineh:#b9c2ce;--barbg:#e3e8ee;--tdline:#e3e8ee;--trhov:#f0f3f7;
-    --skelc1:rgba(0,0,0,.05);--skelc2:rgba(0,0,0,.12);--segused:rgba(0,0,0,.15);
-    color-scheme:light;
-  }
+/* 浅色：data-theme 由上面的内联脚本定稿（?theme= 来自 magpie 桥接，否则跟随系统），
+   图表颜色在渲染时经 cssVar() 读取这些变量 */
+:root[data-theme="light"]{
+  --bg:#f5f7fa;--card:#ffffff;--card2:#eef1f5;--line:#d5dae2;--txt:#24292f;--dim:#57606a;
+  --heat0:#eaeef2;--tipbg:#ffffff;--tipline:#d5dae2;--tiptxt:#24292f;
+  --lineh:#b9c2ce;--barbg:#e3e8ee;--tdline:#e3e8ee;--trhov:#f0f3f7;
+  --skelc1:rgba(0,0,0,.05);--skelc2:rgba(0,0,0,.12);--segused:rgba(0,0,0,.15);
+  color-scheme:light;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:16px 18px;-webkit-font-smoothing:antialiased}
@@ -155,15 +165,6 @@ th.num,td.num{text-align:right}
     </table>
   </div>
 </div>
-<script>
-// 这一页可能被 magpie 的插件页 frame（sandbox、opaque origin）载入。宿主在等 bridge 的 hello，
-// 等不到 10 秒就把页面换掉；插件页那侧的脚本在 WebKit 下可能被 CSP 拦，所以这里自己报一次。
-(function () {
-  if (window.parent === window) return;
-  function say() { try { parent.postMessage({ magpie: 1, id: 1, method: "hello" }, "*"); } catch (e) {} }
-  say(); setTimeout(say, 3000); setTimeout(say, 8000);
-})();
-</script>
 <script src="static/echarts.min.js?v=20261107"></script>
 <script>
 // CF 链路抖动时这 1MB 可能拉挂（服务端 no-store 不缓存）：阻塞式重试两次，第二次换旧路径
@@ -1351,9 +1352,9 @@ function renderRecent(rows){
   }).join('')||'<tr><td colspan="9" class="err">'+t('noRequests')+'</td></tr>';
 }
 
-const PKEY=new URLSearchParams(location.search).get('key')||window.__KEY__||'';
-// key 不再进 URL（代理/访问日志会记录 query）：API 走 x-dash-key 请求头；
-// static/ 资源已免鉴权，图标等直接用路径。PKEY 仍接受 ?key= 读入（书签兼容）与服务端注入，仅用于请求头。
+// key 只由服务端注入 HTML（window.__KEY__），走 x-dash-key 请求头；?key= 已废除，
+// 代理/访问日志/书签里都不再出现 key。static/ 资源免鉴权。
+const PKEY=window.__KEY__||'';
 const auth=(u)=>u;
 const hf=()=>PKEY?{'x-dash-key':PKEY}:undefined;
 // 部署时由 deploy.sh 注入 window.__BUILD__（时间+短哈希）；不常显，挂在「更新于」的悬浮提示里

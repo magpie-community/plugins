@@ -90,10 +90,11 @@ reads `~/.config/magpie/usage.jsonl`.
 | `HOST` | `127.0.0.1` | Bind address. Keep loopback: the board page answers loopback binds and loopback `Host` names only, and other local users of this machine can reach a loopback-bound board. |
 | `PAGE_KEY` | generated | Optional token for scripts that call the API (sent as the `x-dash-key` header). When unset, every start generates a random token — not persisted, not logged, not in any URL. Set it **empty explicitly** (`PAGE_KEY=`) to serve the API without a token. |
 | `ALLOWED_HOSTS` | empty | Comma-separated extra `Host` names the **API** may be reached by (e.g. behind a reverse proxy). The page stays loopback-only regardless. |
-| `GATEWAY` | `http://127.0.0.1:3425` | magpie's local gateway API. |
+| `GATEWAY` | `http://127.0.0.1:3425` | magpie's local gateway API. Resolved in this order: manifest `options.gateway` → `GATEWAY` → `MAGPIE_GATEWAY` → **`MAGPIE_ADDR`** (set by magpie's plugin host; a `0.0.0.0:`/`[::]:` prefix is normalised to loopback) → the `3425` default. |
 | `MAGPIE_KEY` | empty | Bearer key for the gateway, when the gateway requires one. |
 | `USAGE_JSONL` | `~/.config/magpie/usage.jsonl` | magpie's usage log. |
-| `MAGPIE_PROVIDERS_FILE` | `plugin-providers.json` next to `usage.jsonl` | Where brand logos are read from (magpie's own provider registry — see *Brand logos*). |
+| `MAGPIE_CONFIG_DIR` | `~/.config/magpie` | magpie's config directory (honoured by `XDG_CONFIG_HOME` first when set). `usage.jsonl`, `plugin-providers.json` and `providers.json` default to files inside it — portable/XDG installs set this instead of three separate paths. |
+| `MAGPIE_PROVIDERS_FILE` | `<magpie config dir>/plugin-providers.json` | Where brand logos are read from (magpie's own provider registry — see *Brand logos*). |
 | `ATTRIBUTION` | `local` | Remote attribution is **opt-in**: the default `local` keeps attribution on this machine's log; `ATTRIBUTION=remote` (or manifest `options.attribution: "remote"`) makes the service query the configured remote magpie — the provider key is sent to that remote magpie. |
 | `MAGPIE_PROVIDERS` | `~/.config/magpie/providers.json` | Where the remote URL and key are read from (used only with `ATTRIBUTION=remote`). |
 | `REMOTE_BASE` / `REMOTE_KEY` | empty | Explicit remote override (both required) instead of `providers.json`. |

@@ -12,6 +12,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // 子进程一律 -e + 绝对 URL 导入；端口一律临时申请，不用固定口。
 // spawn 目标：本测试在 bun test 下也会被跑（社区根仓库 bun test 扫全部包），
 // spawn 一个真正的 node 需要 runtime 探测——bun 的 -e 兼容性不承诺。
+// PATH 在模块加载时快照：根仓库 bun test 所有包共用一个进程，某些包的测试会
+// 清空 process.env.PATH（gcp-ai），等到我们的 before() 再 spawn('node') 就会
+// "Executable not found"。快照取自任何测试运行之前，随后显式传给每个子进程。
+const PATH_SAVE = process.env.PATH;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NODE = typeof Bun !== 'undefined' ? 'node' : process.execPath;
 const SERVER_URL = pathToFileURL(path.join(root, 'server.mjs')).href;
@@ -25,6 +29,7 @@ let publicPort;
 
 const baseEnv = (dir) => ({
   ...process.env,
+  PATH: PATH_SAVE,
   PAGE_KEY: TEST_KEY,
   USAGE_JSONL: path.join(dir, 'usage.jsonl'),
   GATEWAY: 'http://127.0.0.1:9',
@@ -175,7 +180,7 @@ test('API accepts the token from the x-dash-key header', async () => {
   assert.equal(r.status, 200);
   const d = JSON.parse(r.body);
   assert.equal(d.usage, null);
-  assert.match(d.note, /用量接口/);
+  assert.match(d.note, /usage API/);
   assert.equal(d.detail.error, undefined); // ENOENT（空日志）= 空态，不是读取失败
 });
 
@@ -194,6 +199,8 @@ test('the page CSP lists the loopback explicitly and no third-party hosts', asyn
   const csp = String(r.headers['content-security-policy']);
   assert.match(csp, /default-src 'self'/);
   assert.match(csp, new RegExp(`connect-src 'self' http://127\\.0\\.0\\.1:${port}`));
+  // frame-ancestors 显式声明（* = 被宿主嵌入是设计意图；宿主 origin 桌面/web 不固定）
+  assert.match(csp, /frame-ancestors/);
   assert.doesNotMatch(csp, /cloudflareinsights/);
   assert.equal(r.headers['referrer-policy'], 'no-referrer');
 });
@@ -215,13 +222,94 @@ test('CORS allows only the exact bound port, not any localhost port', async () =
   assert.equal(ok.status, 401); // CORS 放行、鉴权照拦——链路各管各的
 });
 
-test('attribution stays local unless the user opts in', async () => {
-  // REMOTE_BASE/KEY 配了但 ATTRIBUTION 没显式开 → 不发任何远端请求（key 不外发，维护者红线）
-  const r = await request(port, '/api/attribution?period=7d', { headers: { 'x-dash-key': TEST_KEY } });
-  assert.equal(r.status, 200);
-  const j = JSON.parse(r.body);
-  assert.equal(j.source, 'local');
-  assert.equal(j.totals.calls, 0);
+test('attribution stays local unless the user opts in', { timeout: 30000 }, async () => {
+  // 维护者复审点：护栏必须真的能拦住默认值被改坏——这里**不能**继承 baseEnv 的
+  // ATTRIBUTION:'local'，否则有人把服务端默认改成 remote 时本测试仍绿。
+  // extra 里显式设 undefined → Node spawn 会把它从子进程环境里省掉，服务端走默认值；
+  // REMOTE_BASE/KEY 虽然没配，但默认值若是 remote，remoteSources() 就不再为空，source 会变。
+  const s = start({ ATTRIBUTION: undefined, REMOTE_BASE: 'https://remote.example', REMOTE_KEY: 'k' });
+  try {
+    const p = await s.ready;
+    const r = await request(p, '/api/attribution?period=7d', { headers: { 'x-dash-key': TEST_KEY } });
+    assert.equal(r.status, 200);
+    const j = JSON.parse(r.body);
+    assert.equal(j.source, 'local');
+    assert.equal(j.totals.calls, 0);
+  } finally {
+    s.c.kill();
+    try { rmSync(s.dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('the gateway follows options, env and MAGPIE_ADDR, not a hard-coded port', { timeout: 30000 }, async () => {
+  // 维护者实测：宿主把 MAGPIE_ADDR 指到（可能被改过端口的）真实网关——看板必须问它，
+  // 而不是写死的 3425。解析链：options.gateway → GATEWAY → MAGPIE_GATEWAY →
+  // MAGPIE_ADDR → 3425。fake 网关必须在整个测试的 finally 里关掉：断言一失败就
+  // close，否则它的监听 socket 会把 node --test 的进程挂死。
+  const fake = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ calls: 123, tokens: 456, cost: 7.89 }));
+  });
+  await new Promise((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  const gwPort = fake.address().port;
+  try {
+    // 1) MAGPIE_ADDR 单独生效（宿主场景）
+    const s1 = start({
+      MAGPIE_ADDR: `0.0.0.0:${gwPort}`, // 宿主可能写成通配地址，服务端要归一化成回环
+      GATEWAY: undefined,
+      MAGPIE_GATEWAY: undefined,
+    });
+    try {
+      const p1 = await s1.ready;
+      assert.match(s1.captured.out, new RegExp(`gateway=http://127\\.0\\.0\\.1:${gwPort}\\b`));
+      const r1 = await request(p1, '/api/overview', { headers: { 'x-dash-key': TEST_KEY } });
+      assert.equal(r1.status, 200);
+      const j1 = JSON.parse(r1.body);
+      assert.equal(j1.usage.calls, 123); // 请求打到了 MAGPIE_ADDR 指向的网关
+    } finally {
+      s1.c.kill();
+      try { rmSync(s1.dir, { recursive: true, force: true }); } catch {}
+    }
+    // 2) 显式 GATEWAY 优先于 MAGPIE_ADDR
+    const s2 = start({ MAGPIE_ADDR: '127.0.0.1:1' });
+    try {
+      await s2.ready;
+      assert.match(s2.captured.out, /gateway=http:\/\/127\.0\.0\.1:9\b/); // baseEnv 的 GATEWAY 赢了
+      assert.doesNotMatch(s2.captured.out, /gateway=http:\/\/127\.0\.0\.1:1\b/);
+    } finally {
+      s2.c.kill();
+      try { rmSync(s2.dir, { recursive: true, force: true }); } catch {}
+    }
+  } finally {
+    fake.close(() => {});
+  }
+});
+
+test('startServer({port: 0}) binds an ephemeral port, not the default', { timeout: 30000 }, async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-port0-'));
+  const code = `
+    import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
+      try {
+        const bound = await m.startServer({ port: 0 });
+        if (bound === 3455 || bound === 0) throw new Error('expected an ephemeral port, got ' + bound);
+        const r = await fetch('http://127.0.0.1:' + bound + '/api/health');
+        if (r.status !== 200) throw new Error('health ' + r.status);
+        console.log('EPHEMERAL-OK');
+        process.exit(0);
+      } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
+    });
+  `;
+  const c = spawn(NODE, ['-e', code], { env: { ...baseEnv(dir), HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  c.stdout.on('data', (d) => { out += d; });
+  c.stderr.on('data', (d) => { out += d; });
+  const exit = await new Promise((resolve) => {
+    const t = setTimeout(() => { c.kill('SIGKILL'); resolve({ code: null }); }, 25000);
+    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2 }); });
+  });
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  assert.equal(exit.code, 0, `child exit ${exit.code}: ${out.slice(0, 300)}`);
+  assert.match(out, /EPHEMERAL-OK/);
 });
 
 test('path traversal stays inside static/', async () => {
@@ -330,10 +418,11 @@ test('waits for a dying occupier on the target port, then binds it', async () =>
   assert.match(out, /BOUND-AFTER-WAIT/);
 });
 
-test('reuses a live instance of the same build, never a different one', async () => {
+test('reuses a live instance of the same build, never a different one', { timeout: 30000 }, async () => {
   // 同构建 → 复用（resolve 端口、不重复绑定）；异构建/异种 → 明确报错，绝不把看板
   // 交给一个未知进程。复用判定只认 /api/ping 的 BUILD_ID。子进程必须异步 spawn：
   // spawnSync 会阻塞本进程事件循环，同进程里的 fake server 就无法应答探测了。
+  // timeout：异构建分支要等服务端 8s deadline 才报错——超过 bun test 默认 5s（维护者复审点）。
   const runChild = (code, env, ms = 20000) => new Promise((resolve) => {
     const c = spawn(NODE, ['-e', code], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -444,10 +533,12 @@ test('the lead page has no inline scripts and no key', () => {
   assert.match(html, /boot\.js/);
 });
 
-test('boot prefers magpie.service, reads the port from the manifest options', () => {
+test('boot prefers magpie.service, reads the port and theme from the bridge', () => {
   const js = readFileSync(path.join(root, 'page', 'boot.js'), 'utf8');
   assert.match(js, /magpie\?\.service/);
   assert.match(js, /options\?\.get\?\.\(\)/);
+  assert.match(js, /current\.dark/); // magpie 自己的深浅色 → ?theme= 传给看板
+  assert.match(js, /theme/);
   assert.match(js, /3455/); // manifest 声明的默认口（fallback，不再有写死的第二个来源）
 });
 

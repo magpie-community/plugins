@@ -33,6 +33,7 @@
   };
   let lang = String(navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
   let port = DEFAULT_PORT;
+  let theme = ""; // magpie 自己的深浅色；空 = 看板回落 prefers-color-scheme
   const bar = document.getElementById("bar");
   const msg = document.getElementById("msg");
   const say = (t, bad) => {
@@ -57,6 +58,7 @@
       if (typeof current.lang === "string" && current.lang) {
         lang = current.lang.toLowerCase().startsWith("zh") ? "zh" : "en";
       }
+      if (typeof current.dark === "boolean") theme = current.dark ? "dark" : "light";
     }
   } catch (e) {
     bridgeErr = (e && e.message) || "bridge handshake failed";
@@ -90,7 +92,16 @@
     setBar(72);
     say(service ? w.ready : w.readyLocal);
   }
-  const target = service || `http://127.0.0.1:${port}/?lang=${lang}`;
+  let target = service || `http://127.0.0.1:${port}/`;
+  // lang/theme 都通过 URL 带给看板（走 service 代理路径时同样要带——用 URL 拼接避免丢已有参数）
+  try {
+    const u = new URL(target, location.href);
+    u.searchParams.set("lang", lang);
+    if (theme) u.searchParams.set("theme", theme);
+    target = u.href;
+  } catch {
+    target += (target.includes("?") ? "&" : "?") + "lang=" + lang + (theme ? "&theme=" + theme : "");
+  }
   const go = document.getElementById("go");
   if (go) go.setAttribute("content", "0;url=" + target);
   setTimeout(() => {
