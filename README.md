@@ -262,6 +262,7 @@ it off puts the config back.
 
 | Package | Agent |
 |---|---|
+| [rhino9-ai](packages/rhino9-ai) | Rhino 9's native AI panel on Windows through its Claude Code agent and the [RhinoMagpie launcher](https://github.com/mikidaren/rhino9-magpie); run the launcher installer first, then choose a model; restart the launched Rhino after changes |
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |

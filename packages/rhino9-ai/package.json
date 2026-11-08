@@ -1,0 +1,15 @@
+{
+  "name": "@magpie-community/agent-rhino9-ai",
+  "version": "0.1.0",
+  "description": "Use Magpie models in Rhino 9's native AI panel through an isolated Windows launcher and Claude Code",
+  "type": "module",
+  "files": ["rhino9-ai.agent.js", "README.md"],
+  "keywords": ["magpie-plugin", "magpie-agent", "rhino", "rhino9", "architecture"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mikidaren/rhino9-magpie.git",
+    "directory": "plugin"
+  },
+  "magpie": { "agent": "./rhino9-ai.agent.js" }
+}
