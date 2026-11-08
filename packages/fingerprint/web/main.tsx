@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowClockwise,
+  ArrowSquareOut,
   CaretDown,
+  Check,
   CheckCircle,
   CircleNotch,
   Clipboard,
   ClockCounterClockwise,
   DownloadSimple,
+  GithubLogo,
   Lightning,
   List,
   MagnifyingGlass,
@@ -1392,6 +1395,7 @@ function History({
 
 function About({ t }: { t: Text }) {
   const [copied, setCopied] = useState('');
+  const [copyFailed, setCopyFailed] = useState('');
   const links = [
     {
       label: localize(t, '项目仓库', '專案儲存庫', 'Project repository'),
@@ -1402,61 +1406,97 @@ function About({ t }: { t: Text }) {
       url: 'https://github.com/Ikaleio/lm-detector',
     },
   ];
-  const copy = async (url: string) => {
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(''), 2500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const copy = async (url: string, index: number) => {
+    setCopyFailed('');
     try {
       await navigator.clipboard.writeText(url);
       setCopied(url);
     } catch {
-      const field = document.getElementById(
-        `about-${links.findIndex((link) => link.url === url)}`,
-      ) as HTMLInputElement | null;
-      field?.focus();
-      field?.select();
-      if (document.execCommand('copy')) setCopied(url);
+      const address = document.getElementById(`about-address-${index}`);
+      const selection = window.getSelection();
+      if (address && selection) {
+        const range = document.createRange();
+        range.selectNodeContents(address);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      let success = false;
+      try {
+        success = document.execCommand('copy');
+      } catch {
+        // Leave the address selected so it can be copied manually.
+      }
+      if (success) {
+        selection?.removeAllRanges();
+        setCopied(url);
+      } else {
+        setCopied('');
+        setCopyFailed(url);
+      }
     }
   };
   return (
     <div className="about-page">
-      <h2>Fingerprint</h2>
-      {links.map((link, index) => (
-        <div className="about-link" key={link.url}>
-          <strong>{link.label}</strong>
-          <div className="about-address">
-            {embedded ? (
-              <input
-                id={`about-${index}`}
-                readOnly
-                value={link.url}
-                aria-label={link.label}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-            ) : (
-              <a href={link.url} target="_blank" rel="noopener noreferrer">
-                {link.url}
-              </a>
-            )}
+      <header className="about-heading">
+        <h2>Fingerprint</h2>
+        <p>
+          {localize(t, '模型响应指纹检测', '模型回應指紋檢測', 'Model response fingerprinting')}
+        </p>
+      </header>
+      <ul className="about-links">
+        {links.map((link, index) => (
+          <li className="about-link" key={link.url}>
+            <GithubLogo className="about-github" size={20} aria-hidden="true" />
+            <div className="about-link-content">
+              <strong>{link.label}</strong>
+              {embedded ? (
+                <span className="about-url" id={`about-address-${index}`}>
+                  {link.url}
+                </span>
+              ) : (
+                <a className="about-url" href={link.url} target="_blank" rel="noopener noreferrer">
+                  {link.url}
+                  <ArrowSquareOut size={14} aria-hidden="true" />
+                </a>
+              )}
+              {embedded && copyFailed === link.url && (
+                <span className="about-copy-error" role="status">
+                  {localize(t, '请复制选中的地址', '請複製選取的網址', 'Copy the selected address')}
+                </span>
+              )}
+            </div>
             {embedded && (
-              <button
-                className="icon icon-button"
-                onClick={() => copy(link.url)}
-                aria-label={localize(
-                  t,
-                  `复制${link.label}地址`,
-                  `複製${link.label}網址`,
-                  `Copy ${link.label} URL`,
-                )}
-                title={
-                  copied === link.url
-                    ? localize(t, '已复制', '已複製', 'Copied')
-                    : localize(t, '复制地址', '複製網址', 'Copy URL')
-                }
-              >
-                {copied === link.url ? <CheckCircle size={16} /> : <Clipboard size={16} />}
-              </button>
+              <div className="about-copy">
+                <button
+                  className="icon icon-button"
+                  onClick={() => void copy(link.url, index)}
+                  aria-label={localize(
+                    t,
+                    `复制${link.label}地址`,
+                    `複製${link.label}網址`,
+                    `Copy ${link.label} URL`,
+                  )}
+                  title={
+                    copied === link.url
+                      ? localize(t, '已复制', '已複製', 'Copied')
+                      : localize(t, '复制地址', '複製網址', 'Copy URL')
+                  }
+                >
+                  {copied === link.url ? <Check size={16} /> : <Clipboard size={16} />}
+                </button>
+                <span className="about-copy-status" role="status">
+                  {copied === link.url && localize(t, '已复制', '已複製', 'Copied')}
+                </span>
+              </div>
             )}
-          </div>
-        </div>
-      ))}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
