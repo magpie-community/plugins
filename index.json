@@ -5257,10 +5257,45 @@
               "directory": "packages/catpaw"
             }
           }
+        },
+        "0.2.1": {
+          "file": "tgz/magpie-community-opencode-catpaw-auth-0.2.1.tgz",
+          "integrity": "sha512-v9I4Mb7OWYLeI1aMlPNC3PEIruzPhF5sSGDuhhe94vO3SzDhX/kdGaUUAhhy2ev/N9L+0BvBuuuFJQdXdW4EBQ==",
+          "time": "2026-11-08T13:01:50.712Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-catpaw-auth",
+            "version": "0.2.1",
+            "description": "OpenCode & Magpie provider plugin for Meituan's 妙手 CatPaw (ai.catpaw.meituan.com): web sign-in or the desktop client's saved credentials, chat through the round/event/turn protocol, models and credit balance",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "README.md"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "catpaw",
+              "meituan",
+              "妙手"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/catpaw"
+            }
+          }
         }
       },
-      "latest": "0.2.0",
-      "readme": "# @magpie-community/opencode-catpaw-auth\n\n[OpenCode](https://opencode.ai) / [magpie](https://usemagpie.ai) provider 插件：**妙手（CatPaw，美团 `ai.catpaw.meituan.com`）**——登录、模型清单、聊天转发、余额查询。\n\n请求形态按妙手桌面客户端 2026-10-09 的真实抓包移植（`round → event(running) → turn(SSE)` 简化链路，无跨请求会话复用）：请求头、`permissionMode` 均为客户端原样取值，脱敏抓包存于 `testdata/captured-*.json`，测试逐键比对。\n\n## 安装\n\n```\nmagpie plugin add @magpie-community/opencode-catpaw-auth\nmagpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录态」/「手动粘贴 token」\n```\n\n## 能力\n\n- **登录**：\n  - `网页登录`：插件问 `login-config` 取官方登录页，浏览器完成登录后，插件按官方客户端同款 **poll-token 通道**每秒轮询 `?sid` 直接拿 token——服务端对服务端，无监听端口、不受浏览器私有网络检查（PNA）影响；再问一次 `current-user` 补 uid/昵称（失败不影响登录）。\n  - `妙手桌面端登录态`：每次请求前实时读 `~/.meituan-catpaw/auth.json`（mtime 缓存 5 分钟内；重开妙手即自动刷新）。\n  - `手动粘贴 token`。\n- **无续期接口**：token 过期后 401，网页登录重新发起一次即可；桌面端登录态则在妙手里重新登录（下一请求自动读新 token）。\n- **聊天**：`round → event → turn` 三步会话机；上游 SSE 帧为累积式，插件做差分转 OpenAI delta（`content` + `reasoning_content`），流式与非流式都支持。\n- **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表打底，再按妙手桌面端的做法向网关取账号的模型清单（`POST /api/agent/maas/model-types`，缓存 5 分钟），官方新增的模型（如 LongCat 2.5）无需发版即出现；取不到清单时用静态表。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。\n- **工具与图片**：会话协议只收一段扁平文本 prompt，图片无法送达——带图片的请求以 **400 明确拒绝**。工具以 **JSON 协议适配**支持：工具定义注入系统指令，模型按 `{\"tool_calls\":[…]}` 严格 JSON 回复，插件解析回 OpenAI `tool_calls`。只有整条回复就是调用 JSON（裸对象或单个 fence 块）才算调用——散文里引用的示例不会误判；工具名大小写漂移会匹配回声明名；未声明的工具名、缺必需参数的调用会被丢弃。流式：普通回复**边出边流**，仅 JSON 开头短暂扣留；`tool_choice=required`/指定工具时整条回复扣住（SSE 心跳保活），保证未拿到调用时能带上下文重试一次；`tool_choice=none` 保持原样透传。\n- **余额（usage）**：`GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 **`X-Auth-Token: <accessToken>`**。\n  - ⚠️ 这个接口与聊天网关**不是同一个鉴权头**：它只认 `X-Auth-Token`，把聊天用的 `Cookie: X-Passport-Token` 发到这里会稳定 401（body `code 4010`）。magpie 把 usage 的 401 当作「登录态失效」，所以鉴权头必须分开核对。\n  - 读成功后**不带 `signIn` 字段**：magpie 以此把「已退出登录」的标记撤掉。\n- **无签到**：CatPaw 没有每日签到活动。\n\n## 协议细节\n\n- 请求头（客户端抓包原样）：`m-appkey: com.sankuai.mcopilot.cli`、`m-debug: true`、`User-Agent: axios/1.19.0`、`m-traceid`/`x-request-id`/`x-trace-id` 每请求随机、`x-agent-version: 1.2.0-beta.6`、`Cookie: X-Passport-Token=...`（聊天网关 `ai.catpaw.meituan.com`）；抓包里的 `m-host` 是客户端本机局域网 IP，插件不发这个头。\n- 请求体：`source: CatX`、`mode: CATX_APP`（round 与 turn 同一份）、`permissionMode: \"unsafeBypassPermissions\"`、`toolVersion: 2.0.2`。2026-10-09 抓包里的 `CatPawCLI` / `CLI` 已被网关停用（返回 `code=400 msg=source 不存在或未启用: CatPawCLI`，plugins#605），0.1.1 起改回 `CatX` / `CATX_APP`，请求头不变。\n- **注意**：上表是**聊天网关**的头；**余额接口**（`catx.nocode.cn`）改用 `X-Auth-Token`（见上）。\n- turn SSE 总超时：15 分钟（带工具循环的长回答全程在推流，更短会把长回答掐断）。\n\n## 环境变量（测试 / 镜像用）\n\n| 变量 | 默认 |\n|---|---|\n| `CATPAW_AUTH_PATH` | `~/.meituan-catpaw/auth.json`（妙手桌面端登录态） |\n| `CATPAW_BALANCE_URL` | `https://catx.nocode.cn/api/gateway/credit/balance`（余额接口，测试用） |\n| `CATPAW_PASSPORT_BASE` | `https://catx.nocode.cn`（网页登录的 passport 域，测试用） |\n\n## 测试\n\n```\nbun test packages/catpaw\n```\n\n测试打到本地假上游（`fake.mjs`），不触网、不使用真实 token。\n\n## 许可\n\nMIT。\n"
+      "latest": "0.2.1",
+      "readme": "# @magpie-community/opencode-catpaw-auth\n\n[OpenCode](https://opencode.ai) / [magpie](https://usemagpie.ai) provider 插件：**妙手（CatPaw，美团 `ai.catpaw.meituan.com`）**——登录、模型清单、聊天转发、余额查询。\n\n请求形态按妙手桌面客户端 2026-10-09 的真实抓包移植（`round → event(running) → turn(SSE)` 简化链路，无跨请求会话复用）：请求头、`permissionMode` 均为客户端原样取值，脱敏抓包存于 `testdata/captured-*.json`，测试逐键比对。\n\n## 安装\n\n```\nmagpie plugin add @magpie-community/opencode-catpaw-auth\nmagpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录态」/「手动粘贴 token」\n```\n\n## 能力\n\n- **登录**：\n  - `网页登录`：插件问 `login-config` 取官方登录页，浏览器完成登录后，插件按官方客户端同款 **poll-token 通道**每秒轮询 `?sid` 直接拿 token——服务端对服务端，无监听端口、不受浏览器私有网络检查（PNA）影响；再问一次 `current-user` 补 uid/昵称（失败不影响登录）。\n  - `妙手桌面端登录态`：每次请求前实时读 `~/.meituan-catpaw/auth.json`（mtime 缓存 5 分钟内；重开妙手即自动刷新）。\n  - `手动粘贴 token`。\n- **无续期接口**：token 过期后 401，网页登录重新发起一次即可；桌面端登录态则在妙手里重新登录（下一请求自动读新 token）。\n- **聊天**：`round → event → turn` 三步会话机；上游 SSE 帧为累积式，插件做差分转 OpenAI delta（`content` + `reasoning_content`），流式与非流式都支持。\n- **模型**：妙手桌面端的 9 个模型（longcat-2.0 / glm-5.3 系列 / deepseek-v4 系列 / minimax-m3 / kimi-k3 / auto），静态表打底，再按妙手桌面端的做法向网关取账号的模型清单（`POST /api/agent/maas/model-types`，缓存 5 分钟），官方新增的模型（如 LongCat 2.5）无需发版即出现；取不到清单时用静态表。不声明各模型的上下文/输出窗口（客户端未公布，不编造数字），也不声明图片输入（见下）。\n- **工具与图片**：会话协议只收一段扁平文本 prompt，图片无法送达——带图片的请求以 **400 明确拒绝**。工具以 **JSON 协议适配**支持：工具定义注入系统指令，模型按 `{\"tool_calls\":[…]}` 严格 JSON 回复，插件解析回 OpenAI `tool_calls`。只有整条回复就是调用 JSON（裸对象或单个 fence 块）才算调用——散文里引用的示例不会误判；工具名大小写漂移会匹配回声明名；未声明的工具名、缺必需参数的调用会被丢弃。流式：普通回复**边出边流**，仅 JSON 开头短暂扣留；`tool_choice=required`/指定工具时整条回复扣住（SSE 心跳保活），保证未拿到调用时能带上下文重试一次；`tool_choice=none` 保持原样透传。\n- **余额（usage）**：`GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 **`X-Auth-Token: <accessToken>`**。\n  - ⚠️ 这个接口与聊天网关**不是同一个鉴权头**：它只认 `X-Auth-Token`，把聊天用的 `Cookie: X-Passport-Token` 发到这里会稳定 401（body `code 4010`）。magpie 把 usage 的 401 当作「登录态失效」，所以鉴权头必须分开核对。\n  - 读成功后**不带 `signIn` 字段**：magpie 以此把「已退出登录」的标记撤掉。\n  - 「可用积分」窗口：上游只给余额（`availableCredits`），不给总额与累计用量，所以 `used` 恒为 0、不伪造。`userPlan.nextRefreshTime`（毫秒时间戳）作为窗口的 `resetsAt`，magpie 的 Smart 路由据此先用积分先刷新的账号（plugins#867）；该字段缺失或无法解析时窗口保持 `aside`，不参与排序。\n- **无签到**：CatPaw 没有每日签到活动。\n\n## 协议细节\n\n- 请求头（客户端抓包原样）：`m-appkey: com.sankuai.mcopilot.cli`、`m-debug: true`、`User-Agent: axios/1.19.0`、`m-traceid`/`x-request-id`/`x-trace-id` 每请求随机、`x-agent-version: 1.2.0-beta.6`、`Cookie: X-Passport-Token=...`（聊天网关 `ai.catpaw.meituan.com`）；抓包里的 `m-host` 是客户端本机局域网 IP，插件不发这个头。\n- 请求体：`source: CatX`、`mode: CATX_APP`（round 与 turn 同一份）、`permissionMode: \"unsafeBypassPermissions\"`、`toolVersion: 2.0.2`。2026-10-09 抓包里的 `CatPawCLI` / `CLI` 已被网关停用（返回 `code=400 msg=source 不存在或未启用: CatPawCLI`，plugins#605），0.1.1 起改回 `CatX` / `CATX_APP`，请求头不变。\n- **注意**：上表是**聊天网关**的头；**余额接口**（`catx.nocode.cn`）改用 `X-Auth-Token`（见上）。\n- turn SSE 总超时：15 分钟（带工具循环的长回答全程在推流，更短会把长回答掐断）。\n\n## 环境变量（测试 / 镜像用）\n\n| 变量 | 默认 |\n|---|---|\n| `CATPAW_AUTH_PATH` | `~/.meituan-catpaw/auth.json`（妙手桌面端登录态） |\n| `CATPAW_BALANCE_URL` | `https://catx.nocode.cn/api/gateway/credit/balance`（余额接口，测试用） |\n| `CATPAW_PASSPORT_BASE` | `https://catx.nocode.cn`（网页登录的 passport 域，测试用） |\n\n## 测试\n\n```\nbun test packages/catpaw\n```\n\n测试打到本地假上游（`fake.mjs`），不触网、不使用真实 token。\n\n## 许可\n\nMIT。\n"
     },
     "@magpie-community/opencode-cline-auth": {
       "versions": {
