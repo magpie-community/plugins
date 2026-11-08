@@ -3,12 +3,19 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
 const source = await readFile(new URL('../page/boot.js', import.meta.url), 'utf8');
-async function boot(lang?: string, remote = false, port = 3488, desktopHost = '') {
+async function boot(
+  lang?: string,
+  remote = false,
+  port = 4388,
+  desktopHost = '',
+  clipboard?: { writeText: (value: string) => Promise<void> },
+) {
   const elements = {
     status: { textContent: 'Connecting to Fingerprint…' },
     title: { textContent: 'Fingerprint' },
     fallback: { hidden: true },
-    'service-url': { value: '', onclick: () => {}, select: () => {} },
+    'service-url': { value: '', focus: () => {}, select: () => {} },
+    'copy-service-url': { textContent: '', onclick: async () => {} },
   };
   const document = {
     title: 'Fingerprint',
@@ -18,7 +25,7 @@ async function boot(lang?: string, remote = false, port = 3488, desktopHost = ''
   let destination: URL | undefined;
   let fallback: (() => void) | undefined;
   // magpie hands no service to its desktop window, only to magpie web
-  const service = remote || desktopHost ? '' : 'http://127.0.0.1:3488/';
+  const service = remote || desktopHost ? '' : `http://127.0.0.1:${port}/`;
   await runInNewContext(source, {
     URL,
     setTimeout: (callback: () => void) => {
@@ -26,6 +33,7 @@ async function boot(lang?: string, remote = false, port = 3488, desktopHost = ''
     },
     document,
     window: {
+      navigator: clipboard ? { clipboard } : undefined,
       magpie: {
         ready: Promise.resolve({ dark: true, ...(lang ? { lang } : {}) }),
         service,
@@ -61,7 +69,7 @@ test('boot defaults to English and follows host languages before navigation', as
     expect(result.document.documentElement.lang).toBe(htmlLang!);
     expect(result.elements.status.textContent).toContain(status!);
     expect(result.destination?.searchParams.get('provider')).toBe('vendor');
-    expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:3488');
+    expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:4388');
     expect(result.destination?.searchParams.get('lang')).toBe(lang || null);
   }
 });
@@ -73,6 +81,16 @@ test('a stalled desktop navigation offers the local service address', async () =
   expect(result.elements.fallback.hidden).toBe(false);
   expect(result.elements['service-url'].value).toBe('http://127.0.0.1:4388/');
   expect(result.elements.status.textContent).toContain('本机浏览器');
+  const copied: string[] = [];
+  const withClipboard = await boot('en', false, 4388, 'wails.localhost', {
+    writeText: async (value) => void copied.push(value),
+  });
+  withClipboard.fallback?.();
+  await withClipboard.elements['copy-service-url'].onclick();
+  expect(copied).toEqual(['http://127.0.0.1:4388/']);
+  expect(withClipboard.elements.status.textContent).toBe('Address copied.');
+  await result.elements['copy-service-url'].onclick();
+  expect(result.elements.status.textContent).toContain('已选中地址');
   const remote = await boot('en');
   expect(remote.fallback).toBeUndefined();
 });
@@ -90,9 +108,9 @@ test("boot goes to the local service from magpie's desktop window on every syste
   // Wails v3: wails://localhost on macOS and Linux, http://wails.localhost
   // on Windows (WebView2), where the page said "upgrade Magpie" instead
   for (const host of ['localhost', 'wails.localhost', '[::1]', '127.0.0.1']) {
-    const result = await boot('zh-CN', false, 3490, host);
-    expect(result.destination?.origin).toBe('http://127.0.0.1:3490');
-    expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:3490');
+    const result = await boot('zh-CN', false, 4390, host);
+    expect(result.destination?.origin).toBe('http://127.0.0.1:4390');
+    expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:4390');
     expect(result.elements.status.textContent).not.toContain('升级');
   }
 });

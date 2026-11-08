@@ -33,14 +33,19 @@
         width: 100%;
         padding: 6px;
       }
+      button {
+        margin-top: 8px;
+        padding: 6px 10px;
+      }
     </style>
   </head>
   <body>
     <main>
       <strong id="title">Fingerprint</strong>
-      <p id="status">Connecting to Fingerprint…</p>
+      <p id="status" aria-live="polite">Connecting to Fingerprint…</p>
       <div id="fallback" hidden>
         <input id="service-url" readonly aria-label="Fingerprint service URL" />
+        <button id="copy-service-url" type="button">Copy address</button>
       </div>
     </main>
     <script src="_magpie/bridge.js"></script>

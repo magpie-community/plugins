@@ -36,7 +36,7 @@ bun start
 
 `rebuild` 在隔离副本中使用 `--frozen-lockfile --ignore-scripts` 安装，完成类型检查、测试和构建，再复制 `dist/` 回来并清理临时目录，避免 Bun 使用父级 monorepo 的 workspace 配置。
 
-页面服务默认监听 `3488`，通过 `http://127.0.0.1:3425` 使用 Magpie 网关。打开、刷新页面不会下载参考库，也没有后台刷新。点击「下载参考数据」会下载新快照；启动检测时仅在没有可用缓存时下载。主源为 `https://lm.ikale.io/data/`，备用源为 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`。这两个域名会看到客户端 IP；下载请求不携带 provider 凭证、模型标识、提示词或回答。仅主动开始任务才会通过网关发送采样提示。网关认证、`magpie web`、环境变量和离线数据源见 [integration.md](integration.md)。
+页面服务默认监听 `4388`，通过 `http://127.0.0.1:3425` 使用 Magpie 网关。打开、刷新页面不会下载参考库，也没有后台刷新。点击「下载参考数据」会下载新快照；启动检测时仅在没有可用缓存时下载。主源为 `https://lm.ikale.io/data/`，备用源为 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`。这两个域名会看到客户端 IP；下载请求不携带 provider 凭证、模型标识、提示词或回答。仅主动开始任务才会通过网关发送采样提示。网关认证、`magpie web`、环境变量和离线数据源见 [integration.md](integration.md)。
 
 ## 范围与限制
 

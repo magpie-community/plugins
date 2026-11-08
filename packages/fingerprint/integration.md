@@ -3,7 +3,7 @@
 ## Plugin contract
 
 The package is a Magpie page plugin. Its manifest declares `page.file` as
-`page/index.html`, a local service on port `3488` (configurable through the
+`page/index.html`, a local service on port `4388` (configurable through the
 `port` option), and one provider-menu action named `fingerprint`. Magpie sends
 the action as `{ id, provider: { id, name } }` to the page frame. The page boot
 document captures this event before navigating to the service, so the selected
@@ -21,13 +21,17 @@ WebKitGTK, magpie's Linux window, matches nothing to it there, so a policy of
 `'self'` alone loads no script and the page stays blank. The launcher origin changes
 only the document policy; the API bearer token and Host/Origin checks still apply.
 
-On Windows, port 3488 can be in an excluded TCP range. Check
+On Windows, a TCP port can be in an excluded range. Check
 `netsh interface ipv4 show excludedportrange protocol=tcp` and the Magpie
-plugin host log if the service cannot bind; configure the plugin's `port`
-option to an available port, such as 4388. If the launcher remains on
-"Connecting" after its handshake, it shows the local service address for
-opening in a browser. Magpie's "page didn't answer" message instead means the
-page did not complete the initial host handshake; inspect the host log and
+plugin host log if the service cannot bind. `EADDRINUSE` means another process
+already owns the port; `EACCES` or `EPERM` can indicate that Windows reserved
+or excluded it. Configure the plugin's `port` option to an available port.
+If the launcher remains on "Connecting" after its handshake, the page shows
+the local service address and a copy action after four seconds. Magpie's
+plugin iframe currently has no popup or top-level navigation permission, so
+opening the system browser requires an upstream native bridge. Magpie's "page
+didn't answer" message instead means the page did not complete the initial
+host handshake; inspect the host log and
 page loading errors to identify its cause.
 
 ## UI integration

@@ -56,7 +56,7 @@ on completion. In a standalone copy of this package, `bun install
 --frozen-lockfile --registry https://registry.npmjs.org` and `bun run check`
 produce the same build.
 
-The plugin page service listens on `3488` by default and uses Magpie's gateway
+The plugin page service listens on `4388` by default and uses Magpie's gateway
 at `http://127.0.0.1:3425`. Opening or refreshing the page never downloads
 reference data. **Download reference data** explicitly fetches a fresh snapshot;
 starting a run downloads one only when no usable snapshot is cached. There is
