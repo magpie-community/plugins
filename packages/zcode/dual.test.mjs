@@ -404,6 +404,55 @@ test("a rested -Trial entry's local 429 ends with the words magpie reads", async
   expect(said).toContain("not asked again for a minute")
 })
 
+// 11-08: a busy hold armed while a -Trial request was in flight answers it
+// with the hold's own 429 (askBusy's in-flight stop), and that answer has
+// no 3008 in it. spentUp counts every 429 that busy() does not claim as a
+// spent bucket, so the hold's answer armed the blocked map — the model then
+// answered "over its quota" for a minute with half its free quota left.
+// The hold's answer must pass through the -Trial path untouched and arm
+// nothing.
+test("a busy hold's answer through a -Trial entry is passed on and arms no quota rest", async () => {
+  planAndBalance()
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  try {
+    let caps = 0
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = () => {
+      caps++
+      return new Response(JSON.stringify({ code: "3008", msg: "user concurrency limit exceeded" }), { status: 429, headers: { "content-type": "application/json" } })
+    }
+    const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+    const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+    // five asks in flight: the first ask of each caps once (one signal per
+    // request), the re-ask of each caps again — the fifth distinct cap hit
+    // arms the hold, and every ask that wakes after it comes home the
+    // hold's 429
+    const all = await Promise.all([1, 2, 3, 4, 5].map(() => ask("GLM-5.3-Flash-Trial")))
+    expect(all.map((r) => r.status)).toEqual([429, 429, 429, 429, 429])
+    expect(_internal.busyHold.until).toBeGreaterThan(Date.now())
+    for (const r of all) {
+      const said = JSON.parse(await r.text())
+      const text = said.error?.message ?? said.msg ?? ""
+      // every answer is the hold's own, or the vendor's cap as it came —
+      // never a quota exhaustion the gift never said
+      expect(text.includes("turned away 5 requests") || said.code === "3008").toBe(true)
+      expect(text).not.toContain("over its quota")
+      expect(text).not.toContain("exhausted or temporarily unavailable")
+    }
+    // the hold's answer is no spent answer: the gift stays usable
+    expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeUndefined()
+    // and the next -Trial ask really goes to the gift once the hold is off
+    _internal.busyHold.until = 0
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+    sent.length = 0
+    expect((await ask("GLM-5.3-Flash-Trial")).status).toBe(200)
+    expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+  }
+})
+
 test("magpie's free-first switch is declared on, and off keeps the plain model on the plan", async () => {
   planAndBalance()
   answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
