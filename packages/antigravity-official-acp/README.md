@@ -1,7 +1,8 @@
 # Magpie Antigravity ACP provider
 
 This package exposes every model advertised by the installed Google Antigravity
-CLI to Magpie. Requests are sent to the official `agy acp` executable over its
+CLI to Magpie. The model list is read from the official ACP `session/new`
+response, and requests are sent to the official `agy acp` executable over its
 documented JSONL protocol. The package does not use T3 Code, call
 Antigravity's private HTTP endpoints, copy OAuth tokens into Magpie, or emulate
 the Antigravity web client.
@@ -9,8 +10,8 @@ the Antigravity web client.
 ## Local setup
 
 The plugin needs the official `agy` CLI and its existing sign-in. It discovers
-the complete model list by running `agy models` and uses the same installed CLI
-for `agy acp` requests.
+the complete model list from the same ACP session that handles requests, so
+models unavailable to ACP are not advertised.
 
 Set these environment variables for the Magpie process when the defaults do not
 match the installation:

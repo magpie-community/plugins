@@ -1,13 +1,11 @@
 import { existsSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { delimiter, join, resolve } from "node:path"
-import { execFile, spawn } from "node:child_process"
-import { promisify } from "node:util"
+import { spawn } from "node:child_process"
 
 const ID = "antigravity-official-acp"
 const DEFAULT_MODEL = process.env.MAGPIE_ANTIGRAVITY_MODEL || "gemini-4-argon-medium"
 const ACP_VERSION = "0.1.0"
-const execFileAsync = promisify(execFile)
 
 function fail(message, cause) {
   const e = new Error(message)
@@ -41,23 +39,17 @@ function model(id = DEFAULT_MODEL, name = id) {
 }
 
 async function discoverModels() {
-  const runtime = findRuntime()
-  const command = runtime.args.length ? [runtime.bin, "models"] : [runtime.bin, "models"]
-  let stdout
+  const acp = rpcClient({ cwd: process.cwd() })
   try {
-    ({ stdout } = await execFileAsync(command[0], command.slice(1), {
-      cwd: process.cwd(),
-      env: { ...process.env, GEMINI_HOME: runtime.home, ALL_PROXY: "", all_proxy: "" },
-      timeout: 60000,
-      maxBuffer: 1024 * 1024,
-    }))
-  } catch (error) {
-    throw fail(`official Antigravity CLI model discovery failed: ${error.message}`, error)
+    await acp.call("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "magpie-antigravity-acp-model-list", version: ACP_VERSION } })
+    acp.notify("initialized", {})
+    const session = await acp.call("session/new", { cwd: process.cwd(), mcpServers: [] })
+    const models = (session?.models?.availableModels ?? []).map((entry) => model(entry.modelId, entry.name || entry.modelId)).filter((entry) => entry.id)
+    if (!models.length) throw fail("official Antigravity ACP session returned no available models")
+    return models
+  } finally {
+    acp.stop()
   }
-  const models = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) => !line.startsWith("Fetching available models"))
-    .map((line) => { const [id, ...name] = line.split(/\t+/); return id && name.length ? model(id, name.join(" ")) : null }).filter(Boolean)
-  if (!models.length) throw fail("official Antigravity CLI returned no models")
-  return models
 }
 
 function bodyOf(input, init = {}) {
@@ -172,3 +164,4 @@ export async function AntigravityAcpPlugin() {
   }
 }
 
+export const _internal = { findBinary, findRuntime, discoverModels, promptOf, model, generate }
