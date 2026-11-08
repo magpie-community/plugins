@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/opencode-antigravity-acp",
+  "version": "0.2.0",
+  "description": "Magpie provider backed by Google's official Antigravity ACP runtime",
+  "type": "module",
+  "license": "MIT",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "keywords": ["magpie-plugin", "opencode-plugin", "antigravity", "acp"],
+  "magpie": {
+    "name": "Antigravity Official ACP",
+    "summary": {
+      "en": "Use the installed official Antigravity ACP runtime from Magpie.",
+      "zh": "通过官方 Antigravity ACP 运行时向 Magpie 提供模型。"
+    },
+    "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg"
+  }
+}
