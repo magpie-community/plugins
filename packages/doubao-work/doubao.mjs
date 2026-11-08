@@ -13,9 +13,9 @@ import { App, Page, sleep } from "./cdp.mjs"
 
 export const CHAT = "doubao-chat/chat"
 export const MODELS = {
-  auto: { label: "自动", name: "豆包工作 · 自动" },
-  "doubao-2.1-lite": { label: "豆包 2.1 Lite", name: "豆包工作 · 豆包 2.1 Lite" },
-  "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包工作 · 豆包 2.1 Pro" },
+  auto: { label: "自动", name: "自动" },
+  "doubao-2.1-lite": { label: "豆包 2.1 Lite", name: "豆包 2.1 Lite" },
+  "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包 2.1 Pro" },
 }
 
 export function binary(platform = process.platform) {

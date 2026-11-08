@@ -326,6 +326,10 @@ test("the plugin serves chat completions through Doubao, whole and streamed", as
   const cfg = {}
   await p.config(cfg)
   expect(Object.keys(cfg.provider["doubao-work"].models)).toEqual(["auto", "doubao-2.1-lite", "doubao-2.1-pro"])
+  for (const m of Object.values(cfg.provider["doubao-work"].models)) {
+    expect(m.name).not.toContain("豆包工作")
+    expect(m.modalities.input).toEqual(["text"])
+  }
   const loader = await p.auth.loader(async () => ({}))
   const whole = await (await loader.fetch(req({ model: "doubao-2.1-lite", messages: [{ role: "user", content: "hello" }] }))).json()
   expect(whole.choices[0].message.content).toBe("Hi there")

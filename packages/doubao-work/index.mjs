@@ -15,10 +15,20 @@ const BASE = "https://doubao-work.invalid/v1"
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
 
+// models are named as Doubao's menu names them: magpie adds the
+// provider's name. Each says it takes text only, or magpie would ask
+// models.dev about another vendor's model of the same id ("auto").
 function models() {
   const out = {}
   for (const [id, m] of Object.entries(MODELS))
-    out[id] = { name: m.name, limit: { context: 256000, output: 32768 }, tool_call: true, reasoning: true, attachment: false }
+    out[id] = {
+      name: m.name,
+      limit: { context: 256000, output: 32768 },
+      tool_call: true,
+      reasoning: true,
+      attachment: false,
+      modalities: { input: ["text"], output: ["text"] },
+    }
   return out
 }
 
