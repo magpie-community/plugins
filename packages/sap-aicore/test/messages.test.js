@@ -60,7 +60,7 @@ test("out-of-scope parameters, multimodal content, and unrecognized fields are r
   await assert.rejects(parse(base({ mcp_servers: [] })), { code: "invalid-request" })
   await assert.rejects(parse(base({ messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })), { code: "invalid-request" })
   // Unrecognized top-level fields fail explicitly rather than reaching upstream.
-  for (const field of ["anthropic_beta", "top_logprobs", "functions", "tool_Calls", "stream_options"]) {
+  for (const field of ["top_logprobs", "functions", "tool_Calls", "stream_options"]) {
     await assert.rejects(parse(base({ [field]: field === "top_logprobs" ? 1 : [] })), { code: "invalid-request" }, field)
   }
 })
@@ -159,37 +159,23 @@ test("native thinking controls validate structurally: enabled budget, adaptive/d
   await assert.rejects(parse(base({ output_config: { effort: 5 } })), { code: "invalid-request" })
 })
 
-test("context_management accepts only the exact literal directive and rejects every other shape", async () => {
-  const literal = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
-  const cm = edits => ({ edits })
-  assert.ok(await parse(base({ context_management: literal })))
-  assert.ok(await parse(base({ context_management: { edits: [{ keep: "all", type: "clear_thinking_20251015" }] } })))
-  assert.ok(await parse(base({ max_tokens: 2048, thinking: { type: "enabled", budget_tokens: 1024 }, context_management: literal })))
-  // A present `undefined` is rejected directly; JSON serialization would drop it.
-  assert.throws(() => validateRequest(base({ context_management: undefined })), { code: "invalid-request" })
-  const injected = JSON.parse('{"edits":[{"type":"clear_thinking_20251015","keep":"all","__proto__":{"polluted":true}}]}')
-  await assert.rejects(parse(base({ context_management: injected })), err => err.code === "invalid-request" && !String(err.message).includes("polluted"))
-  await assert.rejects(parse(base({ context_management: literal, anthropic_beta: ["context-management-2025-06-27"] })), { code: "invalid-request" })
-  const bad = [
-    null, 7, "all", [], {},
-    cm(undefined), cm(null), cm(7), cm({}), cm([]),
-    cm([null]), cm([7]), cm(["all"]),
-    cm([literal.edits[0], literal.edits[0]]),
-    cm([literal.edits[0], { type: "clear_tool_uses_20250919", keep: "all" }]),
-    cm([{ keep: "all" }]),
-    cm([{ type: "clear_thinking_20251015" }]),
-    cm([{ type: "clear_tool_uses_20250919", keep: "all" }]),
-    cm([{ type: "clear_thinking_20250101", keep: "all" }]),
-    cm([{ type: "clear_thinking_20251015", keep: "none" }]),
-    cm([{ type: "clear_thinking_20251015", keep: 3 }]),
-    cm([{ type: "clear_thinking_20251015", keep: null }]),
-    cm([{ type: "clear_thinking_20251015", keep: { number: 2 } }]),
-    cm([{ type: "clear_thinking_20251015", keep: "all", extra: 1 }]),
-    { edits: literal.edits, trigger: {} },
+test("context_management and anthropic_beta pass through validation unchanged as opaque native fields", async () => {
+  const shapes = [
+    { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    { edits: [{ type: "clear_tool_uses_20250919", keep: 5, future_field: true }] },
+    { edits: [{ type: "clear_thinking_20251015", keep: "all" }, { type: "clear_tool_uses_20250919", keep: "all" }] },
+    { edits: [], trigger: { type: "input_tokens", value: 100000 } },
   ]
-  for (const context_management of bad) {
-    await assert.rejects(parse(base({ context_management })), { code: "invalid-request" }, JSON.stringify(context_management))
+  for (const context_management of shapes) {
+    const body = base({ context_management })
+    assert.deepEqual(await parse(body), body)
   }
+  for (const anthropic_beta of [["context-management-2025-06-27"], ["some-future-beta"], [], null]) {
+    const body = base({ context_management: shapes[0], anthropic_beta })
+    assert.deepEqual(await parse(body), body)
+  }
+  const beta = base({ anthropic_beta: ["x"] })
+  assert.deepEqual(await parse(beta), beta)
 })
 
 // --- whole-reply dispatch through the plugin loader ------------------------
@@ -290,30 +276,49 @@ test("agent thinking context management reaches Bedrock with its beta and preser
   assert.equal("anthropic_beta" in body, false)
 })
 
-test("a malformed context_management is rejected before inference, and an absent directive adds no beta on the same loader", async () => {
+test("the known beta defaults for a bare directive, an explicit beta overrides it verbatim, and an absent directive leaks neither on the same loader", async () => {
   const { post, sent } = await fixture()
-  const mark = sent.length
-  const rejected = await post("/messages", base({
-    max_tokens: 64,
-    thinking: { type: "adaptive" },
-    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }, { type: "clear_thinking_20251015", keep: "all" }] },
-  }))
-  assert.equal(rejected.status, 400)
-  assert.equal((await rejected.json()).error.code, "invalid-request")
-  assert.equal(sent.length, mark, "a rejected directive never reached inference")
   const context_management = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
-  const callerBeta = await post("/messages", base({ context_management, anthropic_beta: ["context-management-2025-06-27"] }))
-  assert.equal(callerBeta.status, 400)
-  assert.equal((await callerBeta.json()).error.code, "invalid-request")
-  assert.equal(sent.length, mark)
-  const present = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" }, context_management }))
-  assert.equal(present.status, 200)
-  assert.deepEqual(await present.json(), MESSAGE)
+
+  const defaulted = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" }, context_management }))
+  assert.equal(defaulted.status, 200)
+  assert.deepEqual(sent.at(-1).body.context_management, context_management)
   assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+
+  for (const anthropic_beta of [["context-management-2025-06-27", "future-beta"], [], null]) {
+    const overridden = await post("/messages", base({ max_tokens: 64, context_management, anthropic_beta }))
+    assert.equal(overridden.status, 200)
+    assert.deepEqual(sent.at(-1).body.anthropic_beta, anthropic_beta, JSON.stringify(anthropic_beta))
+    assert.deepEqual(sent.at(-1).body.context_management, context_management)
+  }
+
+  const future = { edits: [{ type: "clear_tool_uses_20250919", keep: 3, future_field: true }] }
+  const futured = await post("/messages", base({ max_tokens: 64, context_management: future }))
+  assert.equal(futured.status, 200)
+  assert.deepEqual(sent.at(-1).body.context_management, future)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+
   const ok = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" } }))
   assert.equal(ok.status, 200)
   assert.equal("context_management" in sent.at(-1).body, false)
   assert.equal("anthropic_beta" in sent.at(-1).body, false, "thinking alone adds no beta")
+})
+
+test("a novel context_management or anthropic_beta the plugin does not model reaches inference, and its native rejection surfaces once with redaction and no retry", async () => {
+  const upstream = { type: "error", error: { type: "invalid_request_error", message: "context_management: unknown edit " + CREDS.clientSecret } }
+  const { post, sent } = await fixture(() => new Response(JSON.stringify(upstream), { status: 400 }))
+  const mark = sent.length
+  const response = await post("/messages", base({
+    max_tokens: 64,
+    context_management: { edits: [{ type: "clear_tool_uses_20250919", keep: "all" }] },
+    anthropic_beta: ["some-unrecognized-beta"],
+  }))
+  assert.equal(response.status, 400)
+  assert.equal(sent.length, mark + 1, "the request reached inference exactly once, with no retry")
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["some-unrecognized-beta"], "the explicit beta reached upstream verbatim")
+  const text = await response.text()
+  assert.equal(text.includes(CREDS.clientSecret), false)
+  assert.ok(text.includes("[redacted]"))
 })
 
 test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {
