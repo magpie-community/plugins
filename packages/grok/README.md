@@ -107,6 +107,12 @@ API (`@ai-sdk/openai`), signed as the CLI signs them:
 - `x-grok-doom-loop-check: 1024` and `x-grok-exact-repetition-check: 64`
   on a Responses request, as Grok Build sends them: the proxy then stops a
   reply that repeats itself after ~1K tokens instead of letting it run on.
+- A Responses stream that dies before any output (the connection reset,
+  or the stream ending with only reasoning) is asked again, up to three
+  times. Reasoning is not output. A cut after text or a tool call, or one
+  that still fails, is closed as `response.failed` with `created_at`, not
+  magpie's `{"error":...}`, which Grok Build reads as
+  `missing field created_at`. Cancelling the turn is not asked again.
 
 The backend turns away some of what a request may carry, so the plugin
 leaves these out:

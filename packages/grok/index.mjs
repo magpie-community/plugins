@@ -958,6 +958,193 @@ function kept(res) {
 
 // ---- the plugin ---------------------------------------------------------------
 
+// A Responses stream that dies before any output is asked again. Magpie
+// otherwise ends the 200 with {"error":{...}} and no created_at, which
+// Grok Build's serde reports as "missing field created_at". Reasoning
+// events are not output: a cut before text or a tool call is asked again.
+// A cut after output ends as response.failed, which has created_at, and
+// the stream is closed cleanly so magpie does not invent its own error.
+const STREAM_TRIES = 3
+const HOLD_BYTES = 4 << 20
+const CUT = /ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|socket connection was closed|connection lost|unexpected EOF|terminated|other side closed|UND_ERR|network connection|ECONNREFUSED/i
+const OUTPUT_EVENTS = new Set([
+  "response.output_text.delta",
+  "response.output_text.done",
+  "response.content_part.added",
+  "response.content_part.done",
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+  "response.completed",
+  "response.incomplete",
+])
+
+function eachEvent(text, visit) {
+  for (const line of String(text).split(/\r?\n/)) {
+    const trimmed = line.startsWith("data:") ? line.slice(5).trim() : ""
+    if (!trimmed || trimmed === "[DONE]" || !trimmed.startsWith("{")) continue
+    try { visit(JSON.parse(trimmed)) } catch {}
+  }
+}
+
+function eventTypes(text) {
+  const out = []
+  eachEvent(text, (event) => { if (typeof event?.type === "string") out.push(event.type) })
+  return out
+}
+
+function noteSeen(text, seen) {
+  eachEvent(text, (event) => {
+    const resp = event?.response
+    if (resp && typeof resp === "object") {
+      if (typeof resp.id === "string") seen.id = resp.id
+      if (typeof resp.created_at === "number") seen.created_at = resp.created_at
+      if (typeof resp.model === "string") seen.model = resp.model
+    }
+    const item = event?.item
+    const kind = item?.type
+    if ((event?.type === "response.output_item.added" || event?.type === "response.output_item.done") && kind && kind !== "reasoning") {
+      seen.output = true
+    }
+    if (OUTPUT_EVENTS.has(event?.type)) seen.output = true
+  })
+}
+
+function cutSse(message, model, seen = {}) {
+  const now = Math.floor(Date.now() / 1000)
+  const response = {
+    id: seen.id || `resp_cut_${now.toString(36)}`,
+    object: "response",
+    created_at: seen.created_at || now,
+    status: "failed",
+    error: { code: "server_error", message: String(message || "connection lost mid-reply").slice(0, 500) },
+    incomplete_details: null,
+    instructions: null,
+    max_output_tokens: null,
+    model: seen.model || model || "grok",
+    output: [],
+    parallel_tool_calls: true,
+    previous_response_id: null,
+    reasoning: null,
+    store: false,
+    temperature: 1,
+    text: { format: { type: "text" } },
+    tool_choice: "auto",
+    tools: [],
+    top_p: 1,
+    truncation: "disabled",
+    usage: null,
+    user: null,
+    metadata: {},
+  }
+  const failed = [
+    "event: response.failed",
+    `data: ${JSON.stringify({ type: "response.failed", response })}`,
+    "",
+    "data: [DONE]",
+    "",
+  ]
+  if (seen.sent) return failed.join("\n")
+  const created = { ...response, status: "in_progress", error: null }
+  return [
+    "event: response.created",
+    `data: ${JSON.stringify({ type: "response.created", response: created })}`,
+    "",
+    ...failed,
+  ].join("\n")
+}
+
+function holdCut(res, again, { tries = STREAM_TRIES, model = "" } = {}) {
+  const ctype = res.headers?.get?.("content-type") || ""
+  if (res.status !== 200 || !res.body) return res
+  if (!/text\/event-stream/i.test(ctype)) return res
+  const enc = new TextEncoder()
+  let current = res
+  const stream = new ReadableStream({
+    async start(controller) {
+      let last = "connection lost mid-reply"
+      const seen = { sent: false }
+      const flush = (chunks) => {
+        for (const chunk of chunks) controller.enqueue(chunk)
+        seen.sent = true
+      }
+      const fail = (reason) => {
+        controller.enqueue(enc.encode(cutSse(`Grok: connection lost mid-reply (${reason})`, model, seen)))
+        controller.close()
+      }
+      for (let attempt = 1; attempt <= tries; attempt++) {
+        if (attempt > 1) {
+          let next
+          try {
+            next = await again()
+          } catch (cause) {
+            last = String(cause?.message || cause)
+            console.warn(`[grok-auth] retry ${attempt}/${tries} did not start: ${last.slice(0, 160)}`)
+            continue
+          }
+          if (!next?.body || next.status !== 200 || !/text\/event-stream/i.test(next.headers?.get?.("content-type") || "")) {
+            const said = next ? await next.text().catch(() => "") : ""
+            last = (said || `HTTP ${next?.status || 0}`).slice(0, 180)
+            console.warn(`[grok-auth] retry ${attempt}/${tries} was not a stream: ${last}`)
+            continue
+          }
+          current = next
+        }
+        const reader = current.body.getReader()
+        const dec = new TextDecoder()
+        const chunks = []
+        let text = ""
+        let passed = false
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+              noteSeen(text, seen)
+              if (!passed && !seen.output && !eventTypes(text).includes("response.completed") && !eventTypes(text).includes("response.incomplete")) {
+                last = "stream ended before output"
+                if (attempt < tries) console.warn(`[grok-auth] stream ended before output; retry ${attempt + 1}/${tries}`)
+                break
+              }
+              if (!passed) flush(chunks)
+              controller.close()
+              return
+            }
+            if (passed) {
+              controller.enqueue(value)
+              noteSeen(dec.decode(value, { stream: true }), seen)
+              continue
+            }
+            chunks.push(value)
+            text += dec.decode(value, { stream: true })
+            noteSeen(text, seen)
+            if (seen.output || text.length > HOLD_BYTES) {
+              passed = true
+              flush(chunks)
+            }
+          }
+        } catch (cause) {
+          const reason = String(cause?.message || cause)
+          last = reason
+          try { await reader.cancel() } catch {}
+          noteSeen(text, seen)
+          if (!passed && CUT.test(reason)) {
+            if (attempt < tries) console.warn(`[grok-auth] stream cut before output (${reason.slice(0, 140)}); retry ${attempt + 1}/${tries}`)
+            continue
+          }
+          console.warn(`[grok-auth] stream failed (${reason.slice(0, 160)})`)
+          fail(reason)
+          return
+        }
+      }
+      fail(last)
+    },
+  })
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  headers.set("X-Grok-Auth-Hold", "cut-retry")
+  return new Response(stream, { status: res.status, statusText: res.statusText, headers })
+}
+
 export const GrokAuthPlugin = async ({ client, magpie }) => {
   const remember = async (auth, c) => {
     if (auth.access === c.key && auth.expires === c.expires) return
@@ -1106,7 +1293,9 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
               res = await send(c.key)
             }
             note(home, res)
-            return kept(res)
+            return kept(holdCut(res, () => send(c.key), {
+              model: typeof parsed.model === "string" ? parsed.model : "",
+            }))
           },
         }
       },
