@@ -29,6 +29,17 @@ function serveKeys(initial = []) {
     keys.push({ id: `id-${keys.length + 1}`, name, status: "active", created_at: now(keys.length + 1) })
     return ok({ key: "sk-new" })
   })
+  // the delete path too: the refused-key flow deletes its orphan by id, and
+  // that call goes through the same strict /keys fake (a query added there
+  // would hit -15100, a bearer-only request -10002)
+  for (let i = 1; i <= 6; i++) {
+    f.route(`DELETE /api/tokenplan/v1/keys/id-${i}`, (r) => {
+      const id = r.url.split("/").pop()
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+  }
   return keys
 }
 
@@ -259,4 +270,20 @@ test("a refused new key is deleted by name - the cleanup listKeys carries no que
   await expect(ensureKey("[REDACTED_VALUE]", "u", { create: true, probeDelays: [0] })).rejects.toMatchObject({ status: 401 })
   expect(keys.some((k) => k.id === "id-new")).toBe(false)
   expect(keys).toHaveLength(1)
+})
+
+test("the orphan-deleting listKeys carries no query either - the shared strict fake holds it", async () => {
+  // #847 blocking 3 + blocking 2 together: the refused-key flow lists the keys
+  // to find its orphan, and that call goes through the same serveKeys() fake.
+  // A pagination query put back on it answers -15100, the orphan is not found,
+  // it survives on the account, and this goes red.
+  f = fakeInkStone()
+  const keys = serveKeys([])
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    keys.push({ id: `id-${keys.length + 1}`, name: r.json?.name, status: "active", created_at: now(keys.length + 1) })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })).rejects.toThrow(/plaintext/i)
+  // every orphan was found and deleted through the strict list
+  expect(keys).toHaveLength(0)
 })
