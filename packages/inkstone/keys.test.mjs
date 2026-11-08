@@ -183,9 +183,23 @@ test("pruneKeys with a protected name really deletes the others when it should",
 test("a key created without a plaintext is a clear failure, not a silent empty key", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))
-  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: 0, items: [] }))
-  f.route("POST /api/tokenplan/v1/keys", () => fail(-15108, "created but hidden"))
-  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext|did not return/i)
+  // -15108（建成了但明文拿不到）与软风控同类：孤儿不能留在账号上，
+  // ensureKey 删掉它再换名重试，耗尽后如实报错（#847 blocking 3）。
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })).rejects.toThrow(/plaintext/i)
+  // 每把拿不到明文的孤儿都被删干净
+  expect(keys.length).toBe(0)
 })
 
 test("an idempotency clash retries with a FRESH name and returns the key string", async () => {

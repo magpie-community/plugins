@@ -29,7 +29,7 @@ import {
 import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/models.mjs"
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
-import { precheckImages, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
+import { precheckImages, rewriteBodyChanged, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
 import {
   readUaaToken,
   requireBrowser,
@@ -59,12 +59,16 @@ function chatFetch(log = () => {}) {
     const method = (init.method ?? (typeof input === "object" ? input?.method : undefined) ?? "GET").toUpperCase()
     const isChat = url.includes("/chat/completions") && method === "POST"
     if (!isChat) return upstream(input, init)
+    // N2: a Request whose body is not JSON is read (its stream is consumed by
+    // text()) and must be handed back, or upstream(input, init) sends a spent
+    // body. A plain string/ArrayBuffer body needs no such thing.
+    const isRequest = typeof input === "object" && typeof input?.text === "function" && init.body === undefined
     const raw = init.body
     let text = ""
     if (typeof raw === "string") text = raw
     else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
     else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
-    else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
+    else if (isRequest) text = await input.text().catch(() => "")
     if (text) {
       // 解析一次，预检与改写共用同一个对象（近 40MB 的 body 解析两遍是浪费）
       let body
@@ -82,10 +86,14 @@ function chatFetch(log = () => {}) {
             headers: { "content-type": "application/json" },
           })
         }
-        // ②③改写：补 detail、剥无效参数（对象原地改写后重新序列化）。
-        init = { ...init, body: JSON.stringify(rewriteBodyObj(body)) }
+        // ②③改写：补 detail、剥无效参数。一字未动就保留原字节（review N1，
+        // 不再无条件重新序列化）；改过才原地改写后重新序列化。
+        const rewritten = rewriteBodyObj(body)
+        if (rewriteBodyChanged(rewritten)) init = { ...init, body: JSON.stringify(rewritten) }
       }
     }
+    // N2: 若是 Request 且上面没重挂 body，把读到的字节原样交回去。
+    if (isRequest && init.body === undefined) init = { ...init, body: text }
     // 真发。
     const res = await upstream(input, init)
     // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
@@ -376,7 +384,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       instructions:
         process.platform === "win32"
           ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
-          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin watches the profile's cookie store and closes the window itself once the console session lands — you can leave the window open. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin watches the profile's cookie store and closes the window itself within about half a minute of the console session landing (Chrome writes cookies to disk on a timer) — you can leave the window open. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
       method: "auto",
       async callback(_code, { signal } = {}) {
         let token = ""

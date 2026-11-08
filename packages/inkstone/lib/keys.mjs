@@ -76,15 +76,21 @@ export async function keyCount(token) {
 }
 
 /**
- * 名字为 `name` 的 Key 是否已在账号上（软风控 -15100 后的查证：POST 可能
- * 实际建成而明文被吞——重试会多建一把，这里按 -15108 说）。
+ * 名字为 `name` 的孤儿 Key（软风控 -15100 吞了明文但 POST 实际建成）：
+ * 按名字找到就删掉，别留在账号上（#847 blocking 3——孤儿不是死胡同，
+ * 删掉换名重试，不是让用户去粘贴）。
  */
-async function keyCreatedUnderName(token, name) {
+async function deleteKeyByName(token, name, log) {
   try {
     const listed = await listKeys(token)
-    return keyItems(listed).some((k) => k.name === name)
-  } catch {
-    return false // 列表读不到时不武断：让软重试继续
+    const match = keyItems(listed).find((k) => k.name === name)
+    if (match) {
+      await deleteKey(token, match.id)
+      log?.("warn", "inkstone: deleted the refused key by name to retry with a fresh one")
+    }
+  } catch (e) {
+    // 列表读不到（同一风控）：孤儿留给下次 prune，重试继续
+    log?.("warn", "inkstone: could not list the keys to delete the refused one (" + (e?.message ?? e) + ")")
   }
 }
 
@@ -133,7 +139,7 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, prot
  *   - 没粘且允许创建 → 数一下，满了先清理（可选），再创建并探活。
  * 抛错时带 `code`：`key_limit`（满了且没开清理）、`refused`（Key 被平台拒）。
  */
-export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log, probeDelays } = {}) {
+export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log, probeDelays, softRetryDelays = [2500, 2500] } = {}) {
   const pasted = String(apiKey ?? "").trim()
   if (pasted) {
     await probeWithRetry(pasted, log)
@@ -164,7 +170,7 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     reply = await createKey(token, name, randomUUID())
   } catch (e) {
     // 幂等冲突（-15109）：换一个 Idempotency-Key 和一个新名字再试（名字也
-    // 可能撞），最多三次；-15108 是另一回事：创建成功但明文拿不到了。
+    // 可能撞），最多三次。
     if (e?.code === -15109) {
       let last = e
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -180,54 +186,61 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
       }
       if (last) throw last
     }
-    // -15108：创建成功但明文拿不到了，这把 Key 已无法使用，直接说明。
-    else if (e?.code === -15108) {
-      throw new Error(
-        "the console created an API key but did not return it (the plaintext is shown only once). " +
-          "Create one in the console and paste it instead.",
-      )
-    }
-    // 「API Key fetch failed, refresh page and retry」：登录窗口刚关、
-    // headless 刚读完 cookie 就建 Key 时的软风控（真机实测，2026-11-07——
-    // 同一枚 cookie 稍后重试就成功）。稍等重试两次，换名字换幂等键。
-    // 但第一次 POST 可能实际已建成（软风控只是把明文吞了）：重试前先列
-    // 一遍 Key，刚才的名字在，就按 -15108 说——不是再建一把。
-    else if (/fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
-      const made = await keyCreatedUnderName(token, name)
-      if (made) {
-        throw new Error(
-          "the console created an API key but did not return it (the plaintext is shown only once). " +
-            "Create one in the console and paste it instead.",
-        )
-      }
+    // 「建成了但明文没给」：-15108（平台明确答"创建成功、明文拿不到"）与
+    // -15100 软风控（吞掉明文）是同一个情形——账号上多了一把拿不到明文的
+    // 孤儿 Key。blocking 3：不留死胡同，按名字删掉孤儿、换新名重试；重试
+    // 期间再落进同一情形就再删再试，绝不指引用户去「粘贴一把 Key」。
+    else if (e?.code === -15108 || /fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
+      await deleteKeyByName(token, name, log)
       let last = e
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await new Promise((r) => setTimeout(r, 2500))
+      for (let attempt = 0; attempt < softRetryDelays.length; attempt++) {
+        if (softRetryDelays[attempt]) await new Promise((r) => setTimeout(r, softRetryDelays[attempt]))
         try {
           name = keyNameFor(username)
           reply = await createKey(token, name, randomUUID())
           last = null
           break
         } catch (e2) {
-          // 重试落进同一个软风控：同样先查是不是建成了
-          if (/fetch failed, refresh page/i.test(String(e2?.message ?? "")) && (await keyCreatedUnderName(token, name))) {
-            throw new Error(
-              "the console created an API key but did not return it (the plaintext is shown only once). " +
-                "Create one in the console and paste it instead.",
-            )
+          if (e2?.code === -15108 || /fetch failed, refresh page/i.test(String(e2?.message ?? ""))) {
+            await deleteKeyByName(token, name, log)
           }
           last = e2
         }
       }
-      if (last) throw last
+      if (last) {
+        if (last?.code === -15108) {
+          // 抬头就是"没拿到明文"，不说"去粘贴"
+          throw Object.assign(
+            new Error(
+              "the console created an API key but did not return its plaintext; the orphan key was removed — please try the sign-in again.",
+            ),
+            { code: "no_plaintext" },
+          )
+        }
+        throw last
+      }
     } else throw e
   }
-  const created = String(reply?.data?.key ?? "").trim()
+  let created = String(reply?.data?.key ?? "").trim()
+  // 回复成功却没有明文（罕见）：同上——删孤儿、换名重试，最多两次，耗尽后
+  // 如实报错，但不说「去粘贴」。
+  for (let attempt = 0; !created && attempt < 2; attempt++) {
+    await deleteKeyByName(token, name, log)
+    try {
+      name = keyNameFor(username)
+      reply = await createKey(token, name, randomUUID())
+    } catch (e2) {
+      if (e2?.code === -15108 || /fetch failed, refresh page/i.test(String(e2?.message ?? ""))) continue
+      throw e2
+    }
+    created = String(reply?.data?.key ?? "").trim()
+  }
   if (!created) {
-    // -15108：创建成功但明文拿不到了，这把 Key 已无法使用，直接说明。
-    throw new Error(
-      "the console created an API key but did not return it (the plaintext is shown only once). " +
-        "Create one in the console and paste it instead.",
+    throw Object.assign(
+      new Error(
+        "the console kept creating API keys without returning their plaintext; the orphan keys were removed from the account — please try the sign-in again.",
+      ),
+      { code: "no_plaintext" },
     )
   }
   try {

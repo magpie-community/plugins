@@ -315,6 +315,22 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
   expect(key).toBe("sk-retried")
   expect(attempts.length).toBe(2)
   expect(attempts[0]).not.toBe(attempts[1])
+
+  // ⑥ N2：input 是 Request 且 body 非 JSON 时，读完要原样交回上游——
+  // 否则 fetch 带上一个已被 text() 消费的流。fake 的 r.text 就是收到的原文。
+  let gotRaw = null
+  f.route("POST /v1/chat/completions", (r) => {
+    gotRaw = r.text
+    return json({ ok: true })
+  })
+  const req = new Request(`${f.origin}/v1/chat/completions`, {
+    method: "POST",
+    body: "not json at all",
+    headers: { "content-type": "text/plain" },
+  })
+  const r4 = await loader.fetch(req)
+  expect(r4.status).toBe(200)
+  expect(gotRaw).toBe("not json at all")
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
@@ -328,25 +344,33 @@ test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
   expect(cleanDetail("error: token expired")).toBe("error: token expired")
 })
 
-test("a soft refusal that actually created the key is not retried into a second one", async () => {
-  // -15100 有时吞掉的是已成功的 POST 的明文：重试前先列 Key，名字在就按
-  // -15108 说（明文拿不到），绝不建成两把。
+test("a soft refusal leaves no orphan key behind - each made one is deleted before the retry", async () => {
+  // -15100 有时吞掉的是已成功的 POST 的明文（真机：孤儿曾留下）。blocking 3：
+  // 每个建成的孤儿按名字删掉，重试换新名；耗尽后如实报错。账号上零孤儿。
   f = fakeInkStone()
   const created = []
+  let deleted = 0
   f.route("GET /api/tokenplan/v1/keys", () => json({ code: 0, data: { total: created.length, items: created } }))
   f.route("POST /api/tokenplan/v1/keys", (r) => {
-    created.push({ id: `ak_${created.length + 1}`, name: r.json?.name, status: "active", created_at: new Date().toISOString() })
+    const id = `ak_${created.length + 1}`
+    created.push({ id, name: r.json?.name, status: "active", created_at: new Date().toISOString() })
+    // fake.mjs 只认精确字符串路由键——DELETE 按这把 Key 的真实 id 注册，
+    // 这样「按名字删孤儿」才真的能命中（正则键永远匹配不上）。
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => (deleted++, json({ code: 0 })))
     // 平台建成了，但软风控把回复换成 -15100（明文没给）
     return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
   })
   const { ensureKey } = await import("./lib/keys.mjs")
   let said = ""
   try {
-    await ensureKey("fake-token", "acct7", { create: true, log: () => {} })
+    await ensureKey("fake-token", "acct7", { create: true, log: () => {}, softRetryDelays: [0, 0] })
   } catch (e) {
     said = String(e?.message ?? e)
   }
-  expect(said).toContain("did not return it")
-  // 只有第一把：没有重试出第二把
-  expect(created.length).toBe(1)
+  // 三次尝试（1 首发重试 2），每次建成即删：账号上零孤儿
+  expect(created.length).toBe(3)
+  expect(deleted).toBe(3)
+  expect(created.length - deleted).toBe(0)
+  // 耗尽后如实报 -15100
+  expect(said).toContain("refresh page and retry")
 })

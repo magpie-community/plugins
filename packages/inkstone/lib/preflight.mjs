@@ -130,26 +130,45 @@ function refused(detail, detailZh) {
  */
 const UNSUPPORTED_FIELDS = ["reasoning", "reasoning_effort", "thinking"]
 
+/**
+ * rewriteBodyObj 是否真改过东西，挂在一个不可枚举的 symbol 上——调用方据此
+ * 在「一字未动」时把原字节原样发出（review N1：未变的 body 以前是逐字节
+ * 透传，重新 JSON.stringify 会改掉空格与键序，同一请求体不再稳定）。
+ */
+const REWRITTEN = Symbol("inkstone.rewritten")
+
 export function rewriteBodyObj(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body
+  let changed = false
   for (const field of UNSUPPORTED_FIELDS) {
-    delete body[field]
+    if (field in body) {
+      delete body[field]
+      changed = true
+    }
   }
   if (body.output_config && typeof body.output_config === "object" && !Array.isArray(body.output_config) && "effort" in body.output_config) {
     delete body.output_config.effort
+    changed = true
   }
   for (const message of Array.isArray(body.messages) ? body.messages : []) {
     if (!Array.isArray(message?.content)) continue
     for (const part of message.content) {
       if (part?.type === "image_url" && part?.image_url && typeof part.image_url === "object" && part.image_url.detail === undefined) {
         part.image_url.detail = "auto"
+        changed = true
       }
     }
   }
+  Object.defineProperty(body, REWRITTEN, { value: changed, enumerable: false, configurable: true })
   return body
 }
 
-/** 字符串版：解析 → rewriteBodyObj → 序列化；解析失败原样返回（兼容直接调用）。 */
+/** rewriteBodyObj 改过没有（没改就把原字节发出去，不重新序列化）。 */
+export function rewriteBodyChanged(body) {
+  return Boolean(body && typeof body === "object" && body[REWRITTEN])
+}
+
+/** 字符串版：解析 → rewriteBodyObj → 序列化；未改动或解析失败时原样返回。 */
 export function rewriteBody(text) {
   let body
   try {
@@ -158,6 +177,7 @@ export function rewriteBody(text) {
     return text
   }
   const rewritten = rewriteBodyObj(body)
+  if (!rewriteBodyChanged(rewritten)) return text
   return JSON.stringify(rewritten)
 }
 

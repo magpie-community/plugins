@@ -184,6 +184,10 @@ describe("rewriteBody", () => {
     expect("thinking" in out).toBe(false)
     expect("effort" in out.output_config).toBe(false)
   })
+  test("a body that parses clean goes out byte-for-byte, not re-serialized (review N1)", () => {
+    const spaced = '{\n  "model": "Sage-A1.5",\n  "messages": [ { "role": "user", "content": "hi" } ]\n}'
+    expect(rewriteBody(spaced)).toBe(spaced)
+  })
   test("a body that is not JSON, not an object, or already clean goes back as it came", () => {
     expect(rewriteBody("not json")).toBe("not json")
     expect(rewriteBody("[1,2]")).toBe("[1,2]")
