@@ -107,6 +107,18 @@ API (`@ai-sdk/openai`), signed as the CLI signs them:
 - `x-grok-doom-loop-check: 1024` and `x-grok-exact-repetition-check: 64`
   on a Responses request, as Grok Build sends them: the proxy then stops a
   reply that repeats itself after ~1K tokens instead of letting it run on.
+- A Responses stream that dies before its first byte (the connection
+  reset, with nothing sent yet) is asked again, up to three times. The
+  retry goes out before the answer is returned, so a 429 or a 401 comes
+  back as itself. Once a byte has arrived, `response.created` and
+  reasoning included, it is passed on at once. A later cut is not asked
+  again and not rewritten: the stream ends, and magpie 0.1.3298 or newer
+  closes it as `response.failed` with `created_at` and `sequence_number`.
+  The frame this plugin used to write had `created_at` and still no
+  `sequence_number`, so Grok Build reported
+  `missing field sequence_number`. An upstream `response.failed`,
+  `error` or `response.incomplete` is passed on unchanged. Cancelling
+  the turn stops the read and is not asked again.
 
 The backend turns away some of what a request may carry, so the plugin
 leaves these out:

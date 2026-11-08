@@ -958,6 +958,121 @@ function kept(res) {
 
 // ---- the plugin ---------------------------------------------------------------
 
+// A Responses stream that dies before its first byte is asked again, up
+// to three times, before this answer is returned. A retry's 429 or 401
+// is that answer: note sees it, and it is not folded into a 200. Once a
+// byte has arrived, response.created and reasoning included, it is
+// passed on at once. A later cut is not asked again and not rewritten.
+// The stream just ends. magpie 0.1.3298 and newer closes a Responses
+// stream that ends short as response.failed, with the stream's id,
+// created_at and the next sequence_number (yetone/magpie 29bfd5dc8).
+// The frame this plugin used to write had created_at and still no
+// sequence_number, and Grok Build failed the turn on it. An upstream
+// response.failed, error or response.incomplete is passed on unchanged.
+// Cancelling stops the upstream read.
+const STREAM_TRIES = 3
+const CUT = /ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|socket connection was closed|connection lost|unexpected EOF|terminated|other side closed|UND_ERR|network connection|ECONNREFUSED/i
+
+function eventStream(res) {
+  const type = res?.headers?.get?.("content-type") || ""
+  return res?.status === 200 && !!res?.body && /text\/event-stream/i.test(type)
+}
+
+// firstByte reads one chunk. A failure here is still before anything was
+// sent, so the caller can ask again. The reader stays open when a chunk
+// did arrive: the rest of the body follows it.
+async function firstByte(body) {
+  const reader = body.getReader()
+  try {
+    const { done, value } = await reader.read()
+    if (done) return { kind: "end", reader }
+    return { kind: "byte", value, reader }
+  } catch (cause) {
+    const reason = String(cause?.message || cause)
+    try { await reader.cancel(cause) } catch {}
+    return { kind: "cut", reason }
+  }
+}
+
+function bare(res, stream) {
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  return new Response(stream, { status: res.status, statusText: res.statusText, headers })
+}
+
+// passThrough sends the chunk already read, then one upstream chunk per
+// pull. Nothing is buffered past that, and cancel stops the upstream read.
+function passThrough(res, reader, first) {
+  let lead = first
+  let leadWaiting = true
+  const stream = new ReadableStream({
+    async pull(controller) {
+      if (leadWaiting) {
+        leadWaiting = false
+        if (lead) controller.enqueue(lead)
+        lead = undefined
+        return
+      }
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.close()
+          return
+        }
+        controller.enqueue(value)
+      } catch (cause) {
+        const reason = String(cause?.message || cause)
+        try { await reader.cancel(cause) } catch {}
+        // cancel already closed this stream: nothing more to report
+        if (controller.desiredSize === null) return
+        console.warn(`[grok-auth] stream failed (${reason.slice(0, 160)})`)
+        try { controller.close() } catch {}
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason)
+    },
+  })
+  return bare(res, stream)
+}
+
+function ended(res) {
+  return bare(res, new ReadableStream({
+    start(controller) { controller.close() },
+  }))
+}
+
+async function cutRetry(res, again, { tries = STREAM_TRIES } = {}) {
+  let current = res
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    if (attempt > 1) {
+      try {
+        current = await again()
+      } catch (cause) {
+        const said = String(cause?.message || cause)
+        console.warn(`[grok-auth] retry ${attempt}/${tries} did not start: ${said.slice(0, 160)}`)
+        if (!CUT.test(said) || attempt === tries) return ended(res)
+        continue
+      }
+    }
+    if (!eventStream(current)) return current
+    const read = await firstByte(current.body)
+    if (read.kind === "byte") return passThrough(current, read.reader, read.value)
+    if (read.kind === "end") {
+      try { await read.reader.cancel() } catch {}
+      return ended(current)
+    }
+    const reason = read.reason
+    if (!CUT.test(reason) || attempt === tries) {
+      console.warn(`[grok-auth] stream failed (${reason.slice(0, 160)})`)
+      return ended(current)
+    }
+    console.warn(`[grok-auth] stream cut before any byte (${reason.slice(0, 140)}); retry ${attempt + 1}/${tries}`)
+  }
+  return ended(current)
+}
+
 export const GrokAuthPlugin = async ({ client, magpie }) => {
   const remember = async (auth, c) => {
     if (auth.access === c.key && auth.expires === c.expires) return
@@ -1106,7 +1221,11 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
               res = await send(c.key)
             }
             note(home, res)
-            return kept(res)
+            return kept(await cutRetry(res, async () => {
+              const next = await send(c.key)
+              note(home, next)
+              return next
+            }))
           },
         }
       },
