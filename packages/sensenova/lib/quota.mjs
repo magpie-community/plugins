@@ -104,7 +104,11 @@ export function toUsage(raw, { username = "", planFallback = "Token Plan" } = {}
 
     for (const [w, tag, span] of [
       [pool?.window_5h, "5 hours", 5 * 3600],
-      [pool?.window_7d, "7 days", 7 * 24 * 3600],
+      // The weekly window must not take part in magpie's max-over-windows window pick:
+//   with span 604800 it outlives the 5h window and Smart routing would keep
+//   spending the account "last", wasting the whole 5h allowance every cycle.
+//   span 0 = informational only, exactly like the aqiu817 plugin does.
+      [pool?.window_7d, "7 days", 0],
     ]) {
       const limit = flexNum(w?.limit);
       if (limit <= 0) continue;
