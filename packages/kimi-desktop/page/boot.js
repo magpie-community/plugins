@@ -47,5 +47,29 @@
   // An opaque frame cannot use connect-src 'self'; the service validates this
   // concrete origin before including it in its response's connect-src policy.
   service.searchParams.set('uiOrigin', service.origin);
-  location.replace(service.href);
+  const retry = document.getElementById('retry');
+  retry.textContent = chinese ? '重试' : 'Retry';
+  let attempts = 0;
+  const connect = () => {
+    attempts += 1;
+    // WebKit can leave this document alive when a navigation is refused.
+    // Successful navigation destroys the document and its pending timer.
+    setTimeout(() => {
+      if (attempts < 3) connect();
+      else {
+        if (message) message.textContent = chinese
+          ? '未能打开设置服务。请稍候，然后点击“重试”。'
+          : 'The settings service could not be opened. Wait a moment, then select Retry.';
+        retry.hidden = false;
+      }
+    }, 3000);
+    location.replace(service.href);
+  };
+  retry.addEventListener('click', () => {
+    attempts = 0;
+    retry.hidden = true;
+    if (message) message.textContent = chinese ? '正在连接设置服务…' : 'Connecting to the settings service…';
+    connect();
+  });
+  connect();
 })();

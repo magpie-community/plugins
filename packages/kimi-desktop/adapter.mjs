@@ -1255,6 +1255,7 @@ export class KimiAdapter {
     this.running = true;
     this.nativeRewriteConflict = false;
     try {
+      await this.syncSettings?.();
       if (!this.bootstrap()) return;
       if (!this.ownLock()) return;
       const desired = readJSON(this.connectionFile);
@@ -1388,6 +1389,7 @@ export class KimiAdapter {
   async stop() {
     clearInterval(this.timer);
     this.stopping = true;
+    await this.settingsPending;
     const settingsServer = this.settingsServer;
     this.settingsServer = null;
     await settingsServer?.stop();

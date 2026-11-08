@@ -232,9 +232,14 @@ test('the launcher awaits options and uses the service proxy, with local fallbac
   const boot = async (magpie, hostname) => {
     let destination = '';
     const message = { textContent: '' };
+    const retry = { addEventListener() {} };
+    const timers = new Map();
+    let nextTimer = 0;
     await runInNewContext(source, {
       URL, window: { magpie }, location: { hostname, replace: value => { destination = value; } },
-      document: { getElementById: () => message },
+      document: { getElementById: id => id === 'retry' ? retry : message },
+      setTimeout: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+      clearTimeout: id => timers.delete(id),
     });
     return { destination, message: message.textContent };
   };

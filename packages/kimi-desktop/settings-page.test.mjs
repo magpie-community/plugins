@@ -7,6 +7,7 @@ const html = await readFile(new URL('./settings.html', import.meta.url), 'utf8')
 const script = /<script nonce="[^"]*">([\s\S]*?)<\/script>/.exec(html)[1]
   .replaceAll('__KIMI_SETTINGS_HEADER__', 'x-fixture-session');
 const boot = await readFile(new URL('./page/boot.js', import.meta.url), 'utf8');
+const bootHtml = await readFile(new URL('./page/index.html', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const initial = () => ({
   enabled: true, primaryModel: 'fixture/main', secondaryModel: '', status: 'connected',
@@ -46,6 +47,58 @@ class Element {
   }
 }
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
+
+function fakeTimers() {
+  let now = 0, nextId = 0, destroyed = false;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = ++nextId;
+      if (!destroyed) pending.set(id, { callback, at: now + delay });
+      return id;
+    },
+    clearTimeout(id) { pending.delete(id); },
+    get now() { return now; },
+    get pending() { return pending.size; },
+    destroy() { destroyed = true; pending.clear(); },
+    advance(ms) {
+      const until = now + ms;
+      while (true) {
+        const next = [...pending].sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next || next[1].at > until) break;
+        now = next[1].at;
+        pending.delete(next[0]);
+        next[1].callback();
+      }
+      now = until;
+    },
+  };
+}
+
+async function bootPage(lang) {
+  const timers = fakeTimers(), attempts = [];
+  const nodes = { heading: new Element('h1'), message: new Element('p'), retry: new Element('button') };
+  nodes.retry.hidden = true;
+  const document = { documentElement: {}, getElementById: id => nodes[id] };
+  let reachable = false, destroyed = false;
+  await runInNewContext(boot, {
+    URL, document, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    window: { magpie: { ready: Promise.resolve({ dark: true, lang }), options: { get: async () => ({ settingsPort: 9999 }) }, service: '/prefix/_magpie/service/' } },
+    location: {
+      href: 'https://magpie.example/plugin/index.html', hostname: 'magpie.example',
+      replace(href) {
+        attempts.push({ href, at: timers.now });
+        // Successful navigation destroys the original document and its timers.
+        if (reachable) { destroyed = true; timers.destroy(); }
+      },
+    },
+  });
+  return {
+    timers, attempts, document, node: id => nodes[id],
+    get destroyed() { return destroyed; },
+    setReachable(value) { reachable = value; },
+  };
+}
 
 async function page({ lang = 'en', state = initial(), failures = 0, failureCode = 'connection_changed', saveStatus = 'waiting_kimi_idle' } = {}) {
   state = structuredClone(state);
@@ -337,9 +390,10 @@ test('all 52 available models remain actionable without a native select', async 
 test('boot forwards ready.lang, theme and the relative service URL', async () => {
   for (const lang of ['en', 'zh', 'zh-TW']) {
     let target;
-    const nodes = { heading: {}, message: {} }, document = { documentElement: {}, getElementById: id => nodes[id] };
+    const timers = fakeTimers();
+    const nodes = { heading: {}, message: {}, retry: new Element('button') }, document = { documentElement: {}, getElementById: id => nodes[id] };
     await runInNewContext(boot, {
-      URL, document,
+      URL, document, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
       window: { magpie: { ready: Promise.resolve({ dark: true, lang, language: 'wrong-field' }), options: { get: async () => ({ settingsPort: 9999 }) }, service: '/_magpie/service/' } },
       location: { href: 'https://magpie.example/plugin/index.html', hostname: 'magpie.example', replace: value => { target = new URL(value); } },
     });
@@ -361,3 +415,61 @@ test('boot defaults to English and localizes the remote-host explanation', async
     assert.match(message.textContent, lang === 'zh' ? /未获得设置服务地址/ : /No settings service address/);
   }
 });
+
+for (const lang of ['en', 'zh']) {
+  test(`${lang}: boot retries a refused navigation and recovers when the service becomes reachable`, async () => {
+    const p = await bootPage(lang);
+    assert.equal(p.attempts.length, 1);
+    assert.equal(p.node('retry').hidden, true);
+    p.timers.advance(2999);
+    assert.equal(p.attempts.length, 1, 'a refused navigation waits three seconds before retrying');
+    p.setReachable(true);
+    p.timers.advance(1);
+    assert.equal(p.attempts.length, 2, 'the surviving document retries after the service starts');
+    assert.deepEqual(p.attempts.map(attempt => attempt.at), [0, 3000]);
+    assert.equal(p.attempts[1].href, p.attempts[0].href);
+    const target = new URL(p.attempts[1].href);
+    assert.equal(target.pathname, '/prefix/_magpie/service/');
+    assert.equal(target.searchParams.get('lang'), lang);
+    assert.equal(target.searchParams.get('theme'), 'dark');
+    assert.equal(target.searchParams.get('uiOrigin'), 'https://magpie.example');
+    assert.equal(p.destroyed, true);
+    assert.equal(p.timers.pending, 0);
+    p.timers.advance(30000);
+    assert.equal(p.attempts.length, 2, 'the destroyed document cannot navigate again');
+  });
+
+  test(`${lang}: boot stops after three refused navigations and manual retry gets a fresh attempt budget`, async () => {
+    const p = await bootPage(lang);
+    p.timers.advance(6000);
+    assert.equal(p.attempts.length, 3);
+    assert.deepEqual(p.attempts.map(attempt => attempt.at), [0, 3000, 6000]);
+    assert.equal(p.node('retry').hidden, true);
+    p.timers.advance(3000);
+    assert.equal(p.attempts.length, 3, 'automatic attempts are bounded');
+    assert.equal(p.timers.pending, 0);
+    assert.equal(p.node('retry').hidden, false);
+    assert.equal(p.node('retry').textContent, lang === 'zh' ? '重试' : 'Retry');
+    assert.equal(p.node('message').textContent, lang === 'zh'
+      ? '未能打开设置服务。请稍候，然后点击“重试”。'
+      : 'The settings service could not be opened. Wait a moment, then select Retry.');
+    assert.match(bootHtml, /<button\b[^>]*\bid="retry"[^>]*\btype="button"[^>]*\bhidden/);
+    p.timers.advance(30000);
+    assert.equal(p.attempts.length, 3);
+
+    p.node('retry').click();
+    assert.equal(p.attempts.length, 4);
+    assert.equal(p.node('retry').hidden, true);
+    assert.equal(p.node('message').textContent, lang === 'zh' ? '正在连接设置服务…' : 'Connecting to the settings service…');
+    p.timers.advance(9000);
+    assert.equal(p.attempts.length, 6, 'manual retry restores all three attempts');
+    assert.equal(p.node('retry').hidden, false);
+    assert.equal(p.timers.pending, 0);
+
+    p.setReachable(true);
+    p.node('retry').click();
+    assert.equal(p.attempts.length, 7);
+    assert.equal(p.destroyed, true);
+    assert.equal(p.timers.pending, 0);
+  });
+}

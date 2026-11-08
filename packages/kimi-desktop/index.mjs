@@ -3,6 +3,37 @@ import { startSettingsServer, SETTINGS_PORT } from './settings.mjs';
 import { setPrimaryModel } from './primary-model.mjs';
 
 const instance = Symbol.for('magpie.kimi-desktop.adapter.v1');
+const SETTINGS_START_ERRORS = new Set(['settings_invalid_port', 'settings_port_in_use', 'settings_bind_failed']);
+
+function syncSettings(adapter, log) {
+  if (adapter.stopping) return;
+  if (adapter.settingsPending) return adapter.settingsPending;
+  if (adapter.settingsServer?.port === adapter.settingsPort) return;
+  adapter.settingsPending = (async () => {
+    for (;;) {
+      const previous = adapter.settingsServer;
+      adapter.settingsServer = null;
+      await previous?.stop();
+      const port = adapter.settingsPort;
+      try {
+        adapter.settingsServer = await startSettingsServer({
+          port,
+          readSettings: () => adapter.readSettings(),
+          saveSettings: patch => adapter.saveSettings(patch),
+        });
+        adapter.settingsFailure = null;
+      } catch (error) {
+        const code = SETTINGS_START_ERRORS.has(error?.message) ? error.message : 'settings_server_unavailable';
+        if (adapter.settingsFailure !== code) log(code);
+        adapter.settingsFailure = code;
+        return;
+      }
+      // A newer initialization may change the requested port while bind awaits.
+      if (port === adapter.settingsPort) return;
+    }
+  })().finally(() => { adapter.settingsPending = null; });
+  return adapter.settingsPending;
+}
 
 export default async function KimiDesktop(input, options = {}) {
   if (process.env.MAGPIE_KIMI_SKIP_ADAPTER === '1') return {};
@@ -20,19 +51,8 @@ export default async function KimiDesktop(input, options = {}) {
   }
   const adapter = globalThis[instance];
   adapter.setPrimaryModel = model => setPrimaryModel(model, { magpiePath: options?.magpiePath, directory: input?.directory });
-  const settingsPort = options?.settingsPort ?? SETTINGS_PORT;
-  if (adapter.settingsServer && adapter.settingsServer.port !== settingsPort) {
-    await adapter.settingsServer.stop();
-    adapter.settingsServer = null;
-  }
-  if (!adapter.settingsServer) {
-    try {
-      adapter.settingsServer = await startSettingsServer({
-        port: settingsPort,
-        readSettings: () => adapter.readSettings(),
-        saveSettings: patch => adapter.saveSettings(patch),
-      });
-    } catch { log('settings_server_unavailable'); }
-  }
+  adapter.settingsPort = options?.settingsPort ?? SETTINGS_PORT;
+  adapter.syncSettings = () => syncSettings(adapter, log);
+  await adapter.syncSettings();
   return {};
 }

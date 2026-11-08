@@ -1,5 +1,32 @@
 # Compatibility record
 
+## Settings-page recovery follow-up, 2026-11-08 (SGT)
+
+The package remains **0.1.6**. This follow-up changes only settings-service lifecycle and launcher recovery; it does not change model routing, profile generation, RPC permissions or Magpie application resources.
+
+The original launcher was reproduced in native Magpie **0.1.3335** with Kimi **3.2.25** present: it remained on the Chinese connecting message while port 3491 refused connections. During read-only inspection the shared Bun worker was replaced and the service became readable on that port; the main application PID stayed unchanged. The trigger and original bind error were not established. This is an observation of the previous runtime, not evidence that this patch repaired that running instance. The host's current WebKit implementation also documents that a failed service navigation can leave the old connecting document displayed.
+
+A synthetic occupied-port reproduction first failed: releasing the configured port and calling the real adapter tick did not start the settings service. The fix retries through the existing tick, shares pending initialization, follows the latest configured port, preserves the page session across stable ticks, and waits for pending initialization before shutdown closes the listener. Startup warnings use fixed allowed codes, with repeated identical failures suppressed until recovery. The launcher makes three navigation attempts, three seconds apart, and then offers a localized in-page Retry button. It continues to navigate the existing frame, with no fetch API, new network endpoint, background process or credential storage.
+
+Fourteen regression tests were added. **15/15** isolated single-point mutations produced genuine assertion failures: thirteen backend mutations (19 failing-test observations) and two launcher mutations (four observations). Tests use temporary homes, synthetic HTTP services and controlled VM timers. The missing-template case imports module copies from a temporary directory; it never renames a product file in the checkout.
+
+The frozen executable/test source passed the same isolated sequence described below on Bun **1.4.4**:
+
+| Command | Result |
+| --- | --- |
+| `HOME=<temporary HOME> bun test packages/kimi-desktop` | **464 pass, 0 fail, 3106 assertions** |
+| `bun scripts/check.mjs kimi-desktop` | **Exit 0** |
+| `bun scripts/check.mjs` | **Exit 0** |
+| `HOME=<temporary HOME> bun test` | **7285 pass, 20 skip, 0 fail, 227322 assertions; 517 files** |
+
+These runs used fresh source copies and HOME directories, the existing OS real-HOME/application deny policy, real-ps bootstrap and passive synthetic observer. There were no additional command-line test exclusions. The source checkout's AtomCode-state digest was unchanged. Documentation updates after that sequence do not change the checked executable/test bytes.
+
+The checked 20-file archive was subsequently installed through the official plugin CLI. Installation reloaded the shared Bun plugin worker; the main Magpie process remained the same before installation, after installation and after UI acceptance. At acceptance the applications were Magpie **0.1.3336** and Kimi **3.2.25 / build 3.2.25.22**. One post-install launcher returned 404; **View → Reload** refreshed only the WebView and resolved it. The native window then showed both model lists, the existing selected primary and secondary, and the connected/applied status. An independent read of the authenticated settings API returned **200** with **54 models** and matching saved/applied selections. No selection was edited and no new Kimi inference was submitted.
+
+All 20 installed files matched archive SHA-256 `e7d1111753d9b5848f882ee4d7d3deda8648357306e33d7aa612edf203aee2ae`. Other Magpie plugin entries, the other 23 native plugin records, native model definitions/current choice, and the workspace AtomCode-state digest matched the immediate pre-install snapshot. The later compatibility-note update was not reinstalled; executable/test bytes remain those checked above. The initial inspection and installation were separated by an application-process/version change whose trigger was not established; the unchanged-main-process claim applies specifically to the installation/UI-acceptance window.
+
+Port-release recovery, retry exhaustion and manual-retry behavior were exercised in synthetic HTTP/VM tests, not forced on the running native host. The five native Kimi lifecycle/routing cases below apply to the earlier `e0ac41f` runtime and were not repeated for this settings-only follow-up. This revision was not tested by submitting a new turn in the native Kimi UI. No Chrome or Playwright was started.
+
 ## Review follow-up after `6e3257e`, 2026-11-08 (SGT)
 
 The package remains **0.1.6**. This section describes the quoted-marker, catalog-absence, dotfile and equivalent-directory fixes. The dated records below describe earlier revisions and do not extend these results. No Magpie core or Kimi application resources were patched.

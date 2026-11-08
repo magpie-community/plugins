@@ -10,10 +10,11 @@
   main { max-width: 500px; padding: 24px; text-align: center; }
   h1 { margin: 0 0 8px; font-size: 18px; }
   p { color: var(--magpie-muted, GrayText); }
+  button { padding: 6px 12px; border: 1px solid var(--magpie-muted, GrayText); border-radius: 6px; background: var(--magpie-bg, Canvas); color: inherit; font: inherit; cursor: pointer; }
 </style>
 </head>
 <body>
-<main><h1 id="heading">Kimi Work models</h1><p id="message">Connecting to the settings service…</p></main>
+<main><h1 id="heading">Kimi Work models</h1><p id="message">Connecting to the settings service…</p><button id="retry" type="button" hidden>Retry</button></main>
 <script src="_magpie/bridge.js"></script>
 <script src="boot.js"></script>
 </body>
