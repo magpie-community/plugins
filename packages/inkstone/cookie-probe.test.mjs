@@ -113,10 +113,17 @@ test("off Windows the console title is never read, and a new cookie ends the wai
   try {
     const profile = fakeProfileWith([])
     let probes = 0
+    let titles = 0
+    // a title that would end the wait at once, if this platform read it
+    const titleOf = () => {
+      titles += 1
+      return "书生·端砚 Intern InkStone"
+    }
     const logs = []
     const how = await waitForConsoleWindow(child, {
       platform: "darwin",
       profile,
+      titleOf,
       cookieProbe: () => {
         probes += 1
         return probes >= 3 // the console writes the session, on poll 3
@@ -127,6 +134,8 @@ test("off Windows the console title is never read, and a new cookie ends the wai
     })
     expect(how).toBe("console")
     expect(probes).toBeGreaterThanOrEqual(3)
+    // the title is never read off Windows (it would have ended the wait at once)
+    expect(titles).toBe(0)
     // the progress lines #840 asks for
     expect(logs.some((l) => l.includes("cookie store"))).toBe(true)
     expect(logs.some((l) => l.includes("closing the window"))).toBe(true)

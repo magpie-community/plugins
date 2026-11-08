@@ -45,12 +45,21 @@ beforeAll(() => {
     user = user.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
   }
   const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
-  fakeDir = join(tmpdir(), `inkstone-fake-browser-${user}-${key}`)
+  // A tree fingerprint: both the exe path and the sweep are scoped to THIS
+  // checkout (import.meta.dir). Without it, a concurrent run of another tree
+  // with the same user and source hash lands on the same dir, and this sweep
+  // could delete the other tree's build mid-run (the review's point). Older
+  // hashes of this same tree are still removed, so a source change does not
+  // pile up ~60 MB directories.
+  const tree = createHash("sha256").update(import.meta.dir).digest("hex").slice(0, 8)
+  const name = `inkstone-fake-browser-${user}-${tree}-${key}`
+  fakeDir = join(tmpdir(), name)
   mkdirSync(fakeDir, { recursive: true })
-  // siblings: same user, another source hash — a previous build, never the
-  // concurrent one (its hash is ours)
+  // siblings: same user AND same tree, another source hash — a previous build
+  // of this checkout, never a concurrent run of a different tree
+  const owned = `inkstone-fake-browser-${user}-${tree}-`
   for (const sibling of existsSync(tmpdir()) ? readdirSync(tmpdir()) : []) {
-    if (sibling.startsWith(`inkstone-fake-browser-${user}-`) && sibling !== `inkstone-fake-browser-${user}-${key}`) {
+    if (sibling.startsWith(owned) && sibling !== name) {
       try {
         rmSync(join(tmpdir(), sibling), { recursive: true, force: true })
       } catch {}

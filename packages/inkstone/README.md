@@ -27,7 +27,7 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 
 | 方式 | 做什么 | 产出 |
 |---|---|---|
-| **浏览器登录（推荐）** | **零提示**：点一下就直接开窗。用**插件自己的专用浏览器 profile** 打开控制台，你在里面登录（密码 / 短信 / 扫码），登录完成后自动创建 `ink-*` API Key。**所有平台插件都自己判断登录完成并自动关窗**（Windows 读窗口标题；macOS / Linux 轮询专用 profile 的 cookie 存储，看到控制台会话就关窗——通常不需要你手动关闭浏览器，开着也行）。之后的续期/重登都静默完成 | 额度 + 模型 |
+| **浏览器登录（推荐）** | **零提示**：点一下就直接开窗。用**插件自己的专用浏览器 profile** 打开控制台，你在里面登录（密码 / 短信 / 扫码），登录完成后自动创建 `ink-*` API Key。**所有平台插件都自己判断登录完成并自动关窗**（Windows 读窗口标题；macOS / Linux 轮询专用 profile 的 cookie 存储，看到控制台会话就关窗——Chrome 约每 30 秒才把 cookie 写盘，所以通常在登录完成后**半分钟内**关窗，不必手动关闭，开着也行）。之后的续期/重登都静默完成 | 额度 + 模型 |
 | **浏览器登录 + 复用已有 Key** | 同上，但开窗前会先问一句要不要粘贴现有 Key（留空则新建） | 额度 + 模型 |
 | **仅 API Key** | 只粘贴 Key；`GET /v1/models` 探活 | 只有模型 |
 | **API Key + 控制台 token** | 粘贴 Key，再粘贴 `uaa-token=…` 那一项（DevTools → Application → Cookies，复制整条 `uaa-token=…` 即可，插件只取值） | 额度 + 模型 |
@@ -188,7 +188,8 @@ Unofficial. One console sign-in gives both the ink credits (balance, 5-hour and
 Four sign-in methods produce the same `intern-inkstone` account: a **zero-prompt
 browser sign-in** (one click opens the plugin's own browser profile; the plugin
 watches for the console session — the window title on Windows, the profile's
-cookie store elsewhere — and closes the window itself, then creates an `ink-*`
+cookie store elsewhere, where Chrome flushes cookies on a timer, so the window
+closes within about half a minute — and closes it itself, then creates an `ink-*``
 API key), the same browser sign-in with an
 optional pasted key to reuse, API key only (models, no credit card), and API key
 + console token (pasted `uaa-token=…`, models and card). The sign-in window
@@ -218,8 +219,9 @@ would misread (its "cumulative image bytes exceeded …" hits magpie's quota wor
 and would rest a healthy account), are translated to the same shape; the plan's
 own wording never reaches the response body. Inline images missing a `detail`
 get `detail: "auto"`, and the reasoning fields the plan silently ignores are
-stripped from the body (checked live: `reasoning_effort`, `reasoning.effort`
-and `thinking.type` all answer 200 with identical output on the free models).
+stripped from the body (one live check on the free models: each of
+`reasoning_effort`, `reasoning.effort` and `thinking.type` was answered 200 and
+left the output unchanged — an observation, not a promise for every model).
 
 `intern-decision-4b` is a SystemOne decision model, not a chat candidate. The
 plan takes no reasoning-effort controls (it silently ignores them), so the
