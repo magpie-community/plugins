@@ -85,9 +85,10 @@ MCP server. The control port listens on loopback only, with a token per process.
 
 ## Requirements
 
-- The Antigravity CLI (`agy`) with the `acp` subcommand, signed in to a Google
-  account at least once from an interactive terminal. Text and tool calls have
-  been verified on 1.4.12 and 1.5.0; image input needs 1.5.0.
+- The Antigravity CLI (`agy`) with the `acp` subcommand. Signing in from Magpie
+  needs agy 1.5.0 or later (`agy acp --login`); with an older one, run `agy` in
+  a terminal once to sign in. Text and tool calls have been verified on 1.4.12
+  and 1.5.0; image input needs 1.5.0.
 - A Magpie build with OpenCode-style provider plugin support. Usage reporting was
   verified on Magpie 0.1.1599.
 - agy older than 1.4.12 is refused for sessions (see "Tool bridge"), and older
@@ -114,13 +115,18 @@ The provider id is `agy-cli`, so models are named `agy-cli/<model>`. The
 default concurrency is 16; change it under Concurrency on Magpie's Providers
 page (0 means no limit).
 
-After installing, run `agy` once in a terminal to complete the Google sign-in.
+After installing, sign in from Magpie; no terminal needed.
 
 ## Usage
 
-1. Open Magpie's Providers page, find `agy-cli`, and click Sign in. The
-   plugin uses `agy models` to confirm the CLI works. Google credentials stay with
-   agy; the plugin never reads or stores them.
+1. Open Magpie's Providers page, find `agy-cli`, and click Sign in. If agy is
+   signed in already, that's all. If not, the plugin runs agy's own Google
+   sign-in (`agy acp --login`): Magpie opens the sign-in page, and you paste the
+   code the page shows (or the page's whole address) back into Magpie. This
+   works with Magpie on a server or in Docker too. The sign-in waits 15
+   minutes. Google credentials stay with agy (in the system keyring); the
+   plugin never reads or stores them, and counts the sign-in as done only once
+   `agy models` lists the account's models.
 2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.
@@ -196,8 +202,8 @@ off unless you turn it on.
 
 - **agy cannot be found**: set `AGY_PATH` to the executable, or make sure `agy`
   is on PATH.
-- **Sign in fails, or agy reports a login problem**: run `agy` in a terminal and
-  finish the Google sign-in again.
+- **Sign in fails, or agy reports a login problem**: click Sign in again, or run
+  `agy` in a terminal to sign in there.
 - **HTTP 503**: the pool is full. Raise `AGY_BRIDGE_MAX_PROCS` and the Providers
   page Concurrency, or reduce the number of simultaneous sessions.
 - **Usage shows "Limits not available" or a version error**: that window has no

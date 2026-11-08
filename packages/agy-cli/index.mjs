@@ -8,6 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
+import { startLogin } from "./login.mjs"
 
 const PROVIDER_ID = "agy-cli"
 // Client tools reach the session through a private `nc` placed first on agy's
@@ -211,6 +212,20 @@ async function listAgyModels(agyPath) {
     out.push({ id, name, effort })
   }
   return out.length ? out : null
+}
+
+// probeSignedIn is whether agy lists the signed-in account's models: an
+// exit code alone can't say so, so a listing without one model in it is
+// not signed in either.
+async function probeSignedIn(agy) {
+  const probe = await execOnce(agy, ["models"], { timeoutMs: 15_000 })
+  const listed = !probe.err && !probe.timedOut && probe.code === 0 &&
+    probe.stdout.split("\n").some(line => /^\S+\s+\S/.test(line.trim()))
+  if (listed) return { ok: true }
+  const why = probe.timedOut
+    ? "`agy models` timed out after 15s"
+    : `\`agy models\` says: ${(probe.stderr || probe.stdout || "").trim().split(/\r?\n/).filter(Boolean).at(-1) || probe.err?.message || `exit ${probe.code}`}`
+  return { ok: false, why }
 }
 
 const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -4003,28 +4018,38 @@ export const AntigravityBridgePlugin = async () => {
       usage: async () => readUsage(),
       methods: [
         {
-          type: "api",
-          keyless: true,
-          label: "Sign in with the agy CLI",
+          // agy's own Google sign-in (`agy acp --login`): magpie opens its
+          // link and takes the code the page shows. agy keeps the token;
+          // the plugin's account is only "agy", saved once agy says the
+          // sign-in took and lists the account's models.
+          type: "oauth",
+          label: "Sign in with Google",
           authorize: async () => {
             const agy = findAgy()
             if (!agy) {
               return {
                 type: "failed",
-                error: "agy CLI not found. Install Antigravity CLI first: https://antigravity.google/docs/cli — then run `agy` once to sign in.",
+                error: "agy CLI not found. Install Antigravity CLI first: https://antigravity.google/docs/cli",
               }
             }
-            const probe = await execOnce(agy, ["models"], { timeoutMs: 15_000 })
-            if (probe.err || probe.code !== 0 || !probe.stdout.trim()) {
-              const why = probe.timedOut
-                ? "timed out after 15s"
-                : (probe.stderr || probe.stdout || "").trim() || probe.err?.message || "unknown error"
-              return {
-                type: "failed",
-                error: `agy at ${agy} is not signed in (${why}). Run \`agy\` in a terminal once to sign in to your Google account, then try again.`,
-              }
+            // signed in to agy already: nothing to open
+            if ((await probeSignedIn(agy)).ok) {
+              return { url: "", instructions: "", method: "auto", callback: async () => ({ type: "success", key: "agy" }) }
             }
-            return { type: "success", key: "agy" }
+            const login = await startLogin(agy)
+            if (login.error) return { type: "failed", error: login.error }
+            return {
+              url: login.url,
+              instructions: "",
+              method: "code",
+              callback: async (code, opts = {}) => {
+                const done = await login.finish(code, { signal: opts.signal })
+                if (done.error) return { type: "failed", error: done.error }
+                const probe = await probeSignedIn(agy)
+                if (!probe.ok) return { type: "failed", error: `agy signed in, but ${probe.why}` }
+                return { type: "success", key: "agy" }
+              },
+            }
           },
         },
       ],

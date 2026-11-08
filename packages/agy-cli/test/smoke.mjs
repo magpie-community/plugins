@@ -63,6 +63,26 @@ if (argv.includes("/usage")) {
   }] } } })
   process.exit(0)
 }
+const signedOut = path.join(process.env.FAKE_AGY_STATE, "signed-out")
+if (argv[0] === "acp" && argv.includes("--login")) {
+  log({ type: "login", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE })
+  process.stdout.write("Open this link in a browser to log in with Google:\n\n  https://accounts.google.com/o/oauth2/auth?client_id=test&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code\n\nThen paste the authorization code, or the full URL of the page you land on, and press Enter:\n")
+  const line = await new Promise(resolve => readline.createInterface({ input: process.stdin }).once("line", resolve).once("close", () => resolve("")))
+  log({ type: "login-code", code: line })
+  if (/^(good-code|https:\/\/antigravity\.google\/oauth-callback\?code=good-code(&.*)?)$/.test(line.trim())) {
+    if (!fs.existsSync(path.join(process.env.FAKE_AGY_STATE, "login-keeps-signed-out"))) fs.rmSync(signedOut, { force: true })
+    process.stdout.write("Logged in as test@example.com.\n")
+    process.exit(0)
+  }
+  process.stderr.write('couldn\'t log in: token exchange failed: oauth2: "invalid_grant" "Bad Request"\n')
+  process.exit(1)
+}
+if (argv.includes("models") && fs.existsSync(signedOut)) {
+  log({ type: "models", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE, signedOut: true })
+  process.stdout.write("Fetching available models...\n")
+  process.stderr.write("Error: Please sign in to view available models. Launch the CLI without arguments to sign in.\n")
+  process.exit(1)
+}
 if (argv.includes("models")) {
   log({ type: "models", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE })
   process.stdout.write("gemini-test-medium\tGemini Test (Medium)\ngemini-test-high\tGemini Test (High)\ngemini-test-low\tGemini Test (Low)\nclaude-test-medium\tClaude Test (Medium)\n")
@@ -621,8 +641,43 @@ const legacyModel = "agy-cli/gemini-test-low"
   const before = logs().filter(event => event.type === "models").length
   const result = await plugin.auth.methods[0].authorize()
   const probes = logs().filter(event => event.type === "models").slice(before)
-  check("authorize login probe still succeeds", result.type === "success" && result.key === "agy")
+  check("sign-in is agy's Google sign-in, an oauth way", plugin.auth.methods.length === 1 && plugin.auth.methods[0].type === "oauth")
+  check("signed in to agy already, the sign-in opens nothing", result.url === "" && result.method === "auto")
+  check("signed in to agy already, the sign-in saves agy", (await result.callback())?.type === "success")
   check("authorize login probe disables auto update", probes.length === 1 && probes[0].update === "true")
+  check("signed in already, agy's sign-in isn't started", !logs().some(event => event.type === "login"))
+}
+
+{
+  // signed out: agy's own sign-in gives the link and takes the pasted code
+  const signedOut = path.join(stateDir, "signed-out")
+  fs.writeFileSync(signedOut, "")
+  const auth = plugin.auth.methods[0]
+  const a = await auth.authorize()
+  check("signed out, the sign-in opens Google's link agy printed", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?/.test(a.url ?? ""), JSON.stringify(a))
+  check("signed out, the sign-in takes the code the page shows", a.method === "code" && typeof a.callback === "function")
+  check("agy's sign-in runs with auto update off", logs().filter(event => event.type === "login").at(-1)?.update === "true")
+  const bad = await a.callback("4/wrong-code")
+  check("a code Google turns away saves nothing", bad?.type === "failed" && /turned the code away/.test(bad.error ?? ""), JSON.stringify(bad))
+  check("agy is handed the pasted code", logs().filter(event => event.type === "login-code").at(-1)?.code === "4/wrong-code")
+  check("still signed out after a turned-away code", fs.existsSync(signedOut))
+
+  const empty = await (await auth.authorize()).callback("  ")
+  check("an empty code saves nothing", empty?.type === "failed", JSON.stringify(empty))
+
+  const b = await auth.authorize()
+  const good = await b.callback("https://antigravity.google/oauth-callback?code=good-code&scope=x")
+  check("the page's whole address signs agy in", good?.type === "success" && good.key === "agy", JSON.stringify(good))
+  check("signed in, agy lists models again", !fs.existsSync(signedOut))
+
+  // agy that says it signed in but still lists no models saves nothing
+  fs.writeFileSync(signedOut, "")
+  const c = await auth.authorize()
+  fs.writeFileSync(path.join(stateDir, "login-keeps-signed-out"), "")
+  const odd = await c.callback("good-code")
+  fs.rmSync(path.join(stateDir, "login-keeps-signed-out"), { force: true })
+  check("agy saying it signed in while listing nothing saves nothing", odd?.type === "failed" && /agy models/.test(odd.error ?? ""), JSON.stringify(odd))
+  fs.rmSync(signedOut, { force: true })
 }
 
 async function launchedModel(body) {
