@@ -1,0 +1,52 @@
+{
+  "name": "@magpie-community/opencode-perplexity-auth",
+  "version": "0.1.0",
+  "description": "Perplexity Pro / Max subscription as an OpenAI-compatible provider: browser or cookie sign-in, live models, Pro Search quota, native web search",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "provider.mjs",
+    "pplx.mjs",
+    "models.mjs",
+    "i18n.mjs",
+    "login.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "perplexity",
+    "magpie",
+    "search"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/perplexity"
+  },
+  "magpie": {
+    "name": "Perplexity",
+    "maxConcurrency": 2,
+    "icon": "https://www.perplexity.ai/favicon.ico",
+    "options": {
+      "tier": "pro",
+      "keepSystem": false,
+      "chromePath": "",
+      "apiVersion": "2.18",
+      "locale": "auto",
+      "tools": "reject"
+    },
+    "summary": {
+      "en": "Unofficial Perplexity Pro or Max provider: the account’s models with Perplexity’s built-in web search, signed in with the browser or a session cookie.",
+      "zh": "非官方 Perplexity Pro / Max 供应商：套餐里的全部模型，自带联网搜索，浏览器登录或粘贴 Cookie。"
+    }
+  }
+}
