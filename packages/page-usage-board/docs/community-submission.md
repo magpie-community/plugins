@@ -39,37 +39,44 @@ requires all three texts to match).
 
 ## The packaging layout
 
-`npm pack` ships what the `files` field in package.json lists — which already includes the
-runtime, `docs/`, `scripts/` (the `prepack` guard lives there) and `NOTICE`. The `prepack`
-hook also asserts the checkout contains the `Dockerfile`/`docker-compose.yml`/`.env.example`
-trio that `docs/docker.md` tells readers about, and validates every relative link in
-README.md and `docs/*.md`.
+`npm pack` ships what the `files` field in package.json lists — the runtime (`index.mjs`,
+`server.mjs`, `page/`, `static/`), the vendored echarts bundle (`build/echarts-entry.mjs` +
+`static/echarts.min.js`), `docs/`, `scripts/` (`prepack.mjs`, `build-echarts.mjs`) and
+`NOTICE`. The `prepack` hook asserts that the echarts entry and its build script exist and
+are covered by `files`, and validates every relative link in README.md and `docs/*.md`.
 
 Correct layout for `packages/page-usage-board/`: the `npm pack` output, plus `LICENSE`,
-`Dockerfile`, `docker-compose.yml`, `.env.example`, `test/` and `deploy.sh` (development
-files the README references — they do not need to be in `files`).
+`.env.example` and `test/` (development files the README references — they do not need to
+be in `files`).
 
 Check before opening the PR:
 
-- `docs/` and the Docker files are in the staged tree.
+- `docs/` and `.env.example` are in the staged tree.
 - Every relative link in README.md and `docs/*.md` resolves inside
   `packages/page-usage-board/` — click through them in the GitHub PR preview.
 
 ## Checks before opening the PR
 
-- `npm test` passes (auth, `Host`, traversal, lead-page, package metadata).
+- `npm test` passes (auth, `Host`, page gate, traversal, lead-page, package metadata).
 - `npm pack --dry-run` contains no `remote.js`, no page key, and includes `LICENSE`.
 - The host part guards every route with a token **and checks `Host`** (community requirement
-  for pages that navigate to a local service). Deliberate anonymous exemptions, filed here
-  for review: `GET /api/ping` (returns `{service,ok}`) and `GET /api/health` (returns
-  `{ok,jsonl}` — liveness fingerprints, no data), the board page itself on a loopback bind
-  with no public names declared (the token is injected into the served HTML rather than
-  typed), and `/static/*` assets (the chart library and page assets — no data).
+  for pages that navigate to a local service). The board page itself is served only on a
+  loopback bind with a loopback `Host` name — the token is injected into the served HTML
+  rather than typed, and a non-loopback bind or a proxied public `Host` never receives the
+  page. Deliberate anonymous routes, filed here for review: `GET /api/ping` (returns
+  `{service,ok,build,version}` — an identity fingerprint + build id, used to recognise a
+  live instance of the same build) and `GET /api/health` (returns `{ok,jsonl}` — liveness).
+  Both carry no key and no usage data; every other `/api/*` route requires the token via
+  the `x-dash-key` header (no `?key=` query auth, no cookie channel), and `/static/*` holds
+  only the chart library and page assets (no data).
+- Remote attribution defaults to **off** (`magpie.options.attribution: "local"`); the user
+  must explicitly opt in (`ATTRIBUTION=remote` or `options.attribution: "remote"`), which
+  sends the configured provider key to the remote magpie and nowhere else.
 - The hosted page uses `window.magpie.service` when present, so a remote `magpie web`
   deployment keeps the frame under magpie's own origin and key.
 - The lead page has no inline scripts (its only sources are magpie's `_magpie/bridge.js`
   and the plugin's `boot.js`) and fetches nothing; the board itself only calls its own
-  service on `127.0.0.1` (plus two deliberate exceptions: Cloudflare's injected analytics
-  beacon on proxied deployments, and brand-icon favicon downloads for the quota wall —
-  cosmetic only).
+  service on `127.0.0.1`. Its Content-Security-Policy allows no third-party host, and brand
+  logos come from magpie's `plugin-providers.json` as data URIs — the page never contacts a
+  third-party CDN.
 - `magpie.permissions` is `[]`: the page reads nothing through the bridge.

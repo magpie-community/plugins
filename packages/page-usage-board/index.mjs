@@ -18,11 +18,18 @@ let starting = null;
 
 const plugin = {
   id: "magpie-usage-board",
-  server: async () => {
+  server: async (_input, options) => {
     if (!starting) {
+      // manifest options（page.service.option = "port" 时 options.port 由 magpie 注入）
+      // → startServer() 内部再回退到环境变量/默认值
       starting = import(pathToFileURL(path.join(here, "server.mjs")).href)
-        .then((m) => m.startServer())
-        .then(() => ({ ok: true }))
+        .then((m) => m.startServer({
+          port: options?.port,
+          attribution: options?.attribution,
+          remoteCallers: options?.remoteCallers,
+          remoteProviders: options?.remoteProviders,
+        }))
+        .then((port) => ({ ok: true, port }))
         .catch((err) => {
           starting = null; // 允许 magpie 下次调用重试
           console.error("[magpie-usage-board] server not started:", err?.message || err);
@@ -30,7 +37,8 @@ const plugin = {
         });
     }
     await starting;
-    return {};
+    // 返回 { ok, port }：magpie 只要 await 成功即可，多出的字段便于测试与排障
+    return await starting;
   },
 };
 

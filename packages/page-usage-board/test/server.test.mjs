@@ -6,9 +6,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// 所有路径都从本测试文件定位（root bun test 从仓库根跑时 cwd 不同也能工作）；
+// 子进程一律 -e + 绝对 URL 导入；端口一律临时申请，不用固定口。
+// spawn 目标：本测试在 bun test 下也会被跑（社区根仓库 bun test 扫全部包），
+// spawn 一个真正的 node 需要 runtime 探测——bun 的 -e 兼容性不承诺。
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const NODE = typeof Bun !== 'undefined' ? 'node' : process.execPath;
+const SERVER_URL = pathToFileURL(path.join(root, 'server.mjs')).href;
+const INDEX_URL = pathToFileURL(path.join(root, 'index.mjs')).href;
 const TEST_KEY = 'test-page-key';
 let tmp;
 let child;
@@ -16,24 +23,21 @@ let port;
 let publicChild;
 let publicPort;
 
+const baseEnv = (dir) => ({
+  ...process.env,
+  PAGE_KEY: TEST_KEY,
+  USAGE_JSONL: path.join(dir, 'usage.jsonl'),
+  GATEWAY: 'http://127.0.0.1:9',
+  ATTRIBUTION: 'local',
+  MAGPIE_PROVIDERS: path.join(dir, 'no-providers.json'),
+  MAGPIE_PROVIDERS_FILE: path.join(dir, 'no-plugin-providers.json'),
+});
+
 function start(extra = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-'));
   writeFileSync(path.join(dir, 'usage.jsonl'), '');
-  const c = spawn(process.execPath, [path.join(root, 'server.mjs')], {
-    env: {
-      ...process.env,
-      PORT: '0',
-      HOST: '127.0.0.1',
-      PAGE_KEY: TEST_KEY,
-      PAGE_KEY_FILE: path.join(dir, 'page-key'),
-      USAGE_JSONL: path.join(dir, 'usage.jsonl'),
-      DATA_DIR: path.join(dir, 'data'),
-      GATEWAY: 'http://127.0.0.1:9',
-      LOGOS: '0',
-      ATTRIBUTION: 'local',
-      MAGPIE_PROVIDERS: path.join(dir, 'no-providers.json'),
-      ...extra,
-    },
+  const c = spawn(NODE, [path.join(root, 'server.mjs')], {
+    env: { ...baseEnv(dir), HOST: '127.0.0.1', PORT: '0', ...extra },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const captured = { out: '' }; // 子进程完整 stdout+stderr，供启动日志断言
@@ -77,9 +81,21 @@ async function waitFor(cond, ms = 3000) {
   }
 }
 
+// 申请一个当前空闲的端口：bind 0 → 记下端口 → 立刻关闭（测试进程间传递用）
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const p = s.address().port;
+      s.close(() => resolve(p));
+    });
+  });
+}
+
 let mainLog;
 before(async () => {
-  const s = start({ MAGPIE_ADDR: '0.0.0.0:3425' }); // 主测试服务器 = 插件模式（匿名注入页面是插件模式语义）
+  const s = start();
   child = s.c;
   tmp = s.dir;
   mainLog = s.captured;
@@ -97,8 +113,8 @@ test('rejects a foreign Host header (DNS rebinding)', async () => {
   assert.equal(r.status, 403);
 });
 
-test('accepts a loopback Host with a mapped port (docker publish / tunnel)', async () => {
-  // 回环名不看端口：Docker 发布口(3456)与容器监听口(3455)必然不同，rebinding 威胁在域名
+test('accepts a loopback Host with a mapped port (reverse proxy / tunnel)', async () => {
+  // 回环名不看端口：反代/隧道发布口与服务监听口可以不同，rebinding 威胁在域名
   const r = await request(port, '/api/ping', { headers: { Host: `127.0.0.1:${port + 1}` } });
   assert.equal(r.status, 200);
 });
@@ -119,17 +135,21 @@ test('a malformed request target is answered 400 and the process survives', asyn
   assert.equal(h.status, 200);
 });
 
-test('startup logs never contain the page key (loopback bind)', async () => {
+test('startup logs never contain the page key and never offer ?key=', async () => {
   // 等 finish2 的 open 行写出后再断言（listening 行先到，open 行同 tick 跟随）
   await waitFor(() => mainLog.out.includes('[magpie-usage] open '));
   assert.doesNotMatch(mainLog.out, /\?key=/);
   assert.ok(!mainLog.out.includes(TEST_KEY), 'startup log leaked the page key');
 });
 
-test('instance fingerprint stays anonymous', async () => {
+test('instance fingerprint stays anonymous but carries the build id', async () => {
   const r = await request(port, '/api/ping');
   assert.equal(r.status, 200);
-  assert.deepEqual(JSON.parse(r.body), { service: 'magpie-usage', ok: true });
+  const j = JSON.parse(r.body);
+  assert.equal(j.service, 'magpie-usage-board');
+  assert.equal(j.ok, true);
+  assert.match(j.build, /^[0-9a-f]{16}$/);
+  assert.ok(j.version);
 });
 
 test('API needs the token', async () => {
@@ -137,21 +157,25 @@ test('API needs the token', async () => {
   assert.equal(r.status, 401);
 });
 
-test('API accepts the token from the query string', async () => {
+test('the key never works from a URL (?key= is gone)', async () => {
+  // key 一旦进 URL 就会落进代理日志/浏览器历史——查询串鉴权必须彻底无效
+  const r = await request(port, `/api/overview?key=${TEST_KEY}`);
+  assert.equal(r.status, 401);
+});
+
+test('the key never works from a cookie', async () => {
+  const r = await request(port, '/api/overview', { headers: { Cookie: `dk=${TEST_KEY}` } });
+  assert.equal(r.status, 401);
+});
+
+test('API accepts the token from the x-dash-key header', async () => {
   // Gateway is intentionally unreachable: passing auth yields 200 with local data + a
   // visible note (the gateway failure must not take the local aggregation down with it).
-  // A rejected token would be 401 instead.
-  const r = await request(port, `/api/overview?key=${TEST_KEY}`);
+  const r = await request(port, '/api/overview', { headers: { 'x-dash-key': TEST_KEY } });
   assert.equal(r.status, 200);
   const d = JSON.parse(r.body);
   assert.equal(d.usage, null);
   assert.match(d.note, /用量接口/);
-});
-
-test('API accepts the token from the cookie', async () => {
-  const r = await request(port, '/api/overview', { headers: { Cookie: `dk=${TEST_KEY}` } });
-  assert.equal(r.status, 200);
-  const d = JSON.parse(r.body);
   assert.equal(d.detail.error, undefined); // ENOENT（空日志）= 空态，不是读取失败
 });
 
@@ -159,9 +183,24 @@ test('the loopback page serves without a URL token and injects one', async () =>
   const r = await request(port, '/');
   assert.equal(r.status, 200);
   assert.match(r.body, /window\.__KEY__=/);
-  assert.match(r.body, new RegExp(`window\.__KEY__="${TEST_KEY}"`));
+  assert.match(r.body, new RegExp(`window\\.__KEY__="${TEST_KEY}"`));
   assert.match(r.body, /window\.__DATA__=/);
   assert.equal(r.headers.location, undefined);
+});
+
+test('the page CSP lists the loopback explicitly and no third-party hosts', async () => {
+  const r = await request(port, '/');
+  assert.equal(r.status, 200);
+  const csp = String(r.headers['content-security-policy']);
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, new RegExp(`connect-src 'self' http://127\\.0\\.0\\.1:${port}`));
+  assert.doesNotMatch(csp, /cloudflareinsights/);
+  assert.equal(r.headers['referrer-policy'], 'no-referrer');
+});
+
+test('a sandboxed frame (Origin: null) may fetch the page', async () => {
+  const r = await request(port, '/', { headers: { Origin: 'null' } });
+  assert.equal(r.status, 200);
 });
 
 test('a cross-origin fetch of the page is refused', async () => {
@@ -169,20 +208,20 @@ test('a cross-origin fetch of the page is refused', async () => {
   assert.equal(r.status, 403);
 });
 
-test('attribution falls back to the local log when no remote is configured', async () => {
-  const r = await request(port, `/api/attribution?period=7d&key=${TEST_KEY}`);
+test('CORS allows only the exact bound port, not any localhost port', async () => {
+  const r = await request(port, '/api/attribution', { headers: { Origin: `http://127.0.0.1:${port + 1}` } });
+  assert.equal(r.status, 403);
+  const ok = await request(port, '/api/attribution', { headers: { Origin: `http://127.0.0.1:${port}` } });
+  assert.equal(ok.status, 401); // CORS 放行、鉴权照拦——链路各管各的
+});
+
+test('attribution stays local unless the user opts in', async () => {
+  // REMOTE_BASE/KEY 配了但 ATTRIBUTION 没显式开 → 不发任何远端请求（key 不外发，维护者红线）
+  const r = await request(port, '/api/attribution?period=7d', { headers: { 'x-dash-key': TEST_KEY } });
   assert.equal(r.status, 200);
   const j = JSON.parse(r.body);
   assert.equal(j.source, 'local');
   assert.equal(j.totals.calls, 0);
-});
-
-test('the tokenized page serves inlined data and a CSP', async () => {
-  const r = await request(port, `/?key=${TEST_KEY}`);
-  assert.equal(r.status, 200);
-  assert.match(r.body, /window\.__DATA__=/);
-  assert.match(String(r.headers['content-security-policy']), /default-src 'self'/);
-  assert.equal(r.headers['referrer-policy'], 'no-referrer');
 });
 
 test('path traversal stays inside static/', async () => {
@@ -193,17 +232,39 @@ test('path traversal stays inside static/', async () => {
   }
 });
 
-test('a public bind never serves the board without the token', async () => {
+test('brand logos come from magpie, with zero network fetches', async () => {
+  // plugin-providers.json 里的 data URI 注入页面；https 图标一律不抓取（隐私红线）
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-logos-'));
+  const icon = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>').toString('base64');
+  writeFileSync(path.join(dir, 'plugin-providers.json'), JSON.stringify({
+    0: { id: 'TestProv', icon },
+    1: { id: 'remote-brand', icon: 'https://cdn.example.com/favicon.svg' },
+  }));
+  const s = start({ USAGE_JSONL: path.join(dir, 'usage.jsonl'), MAGPIE_PROVIDERS_FILE: path.join(dir, 'plugin-providers.json') });
+  try {
+    const p = await s.ready;
+    const page = await request(p, '/');
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes(icon), 'data-URI logo injected');
+    assert.doesNotMatch(page.body, /cdn\.example\.com/);
+    assert.match(s.captured.out, /logos: 1 brands/);
+  } finally {
+    s.c.kill();
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('a public bind never serves the board page at all', async () => {
   const s = start({ HOST: '0.0.0.0', ALLOWED_HOSTS: 'dash.example' });
   publicChild = s.c;
   publicPort = await s.ready;
-  // The proxy-style Host (with :443) is allowed by the explicit allowlist...
+  // The proxy-style Host (with :443) is allowed by the explicit allowlist for APIs...
   const ping = await request(publicPort, '/api/ping', { headers: { Host: 'dash.example:443' } });
   assert.equal(ping.status, 200);
-  // ...but an anonymous page request must not be 302'd to the key.
+  // ...but the page is loopback-only: a remote visitor has no auth channel (?key= is gone).
   const page = await request(publicPort, '/', { headers: { Host: 'dash.example:443' } });
-  assert.equal(page.status, 401);
-  assert.doesNotMatch(String(page.headers.location || ''), new RegExp(TEST_KEY));
+  assert.equal(page.status, 403);
+  assert.equal(String(page.body || '').includes('__KEY__'), false);
 });
 
 test('HOST=:: is a wildcard bind, never treated as loopback (P0 regression)', async () => {
@@ -211,10 +272,9 @@ test('HOST=:: is a wildcard bind, never treated as loopback (P0 regression)', as
   // key-injected page to anonymous visitors. It must behave like 0.0.0.0.
   const s = start({ HOST: '::', ALLOWED_HOSTS: 'dash.example' });
   try {
-    const port = await s.ready;
-    const page = await request(port, '/', { headers: { Host: 'dash.example:443' } });
-    assert.equal(page.status, 401);
-    assert.doesNotMatch(String(page.headers.location || ''), new RegExp(TEST_KEY));
+    const p = await s.ready;
+    const page = await request(p, '/', { headers: { Host: 'dash.example:443' } });
+    assert.equal(page.status, 403);
     assert.equal(String(page.body || '').includes('__KEY__'), false);
   } finally {
     s.c.kill();
@@ -223,130 +283,141 @@ test('HOST=:: is a wildcard bind, never treated as loopback (P0 regression)', as
 
 test('loopback bind with a public ALLOWED_HOSTS still gates the page (P1 regression)', async () => {
   // A reverse proxy forwards the public Host name to a loopback-bound service; the
-  // anonymous page gate must not open just because the BIND address is loopback.
+  // page must answer loopback hosts only, never the proxied public name.
   const s = start({ HOST: '127.0.0.1', ALLOWED_HOSTS: 'dash.example.com' });
   try {
-    const port = await s.ready;
-    const viaProxyHost = await request(port, '/', { headers: { Host: 'dash.example.com' } });
-    assert.equal(viaProxyHost.status, 401);
+    const p = await s.ready;
+    const viaProxyHost = await request(p, '/', { headers: { Host: 'dash.example.com' } });
+    assert.equal(viaProxyHost.status, 403);
     assert.equal(String(viaProxyHost.body || '').includes('__KEY__'), false);
   } finally {
     s.c.kill();
   }
 });
 
-test('index.mjs: importing has no side effects, server() starts and awaits listen', () => {
-  // The community import-check imports this file for inspection; a module-level
-  // startServer would grab a port and write config during that check.
-  const code = `
-    import('./index.mjs').then(async (m) => {
-      await new Promise((r) => setTimeout(r, 1000));
-      try { await fetch('http://127.0.0.1:3499/api/health'); console.error('FAIL: import started the service'); process.exit(1); } catch {}
-      await m.default.server();
-      const r = await fetch('http://127.0.0.1:3499/api/health');
-      if (r.status !== 200) { console.error('FAIL: server() did not start the service'); process.exit(1); }
-      console.log('LIFECYCLE-OK');
-      process.exit(0);
-    }).catch((e) => { console.error('FAIL', e && e.message); process.exit(1); });
-  `;
-  const r = spawnSync(process.execPath, ['-e', code], {
-    env: {
-      ...process.env,
-      PORT: '3499',
-      PAGE_KEY: TEST_KEY,
-      PAGE_KEY_FILE: path.join(os.tmpdir(), 'usage-board-lifecycle-key'),
-      USAGE_JSONL: path.join(os.tmpdir(), 'usage-board-lc.jsonl'),
-      DATA_DIR: path.join(os.tmpdir(), 'usage-board-lc-data'),
-      LOGOS: '0',
-      ATTRIBUTION: 'local',
-      MAGPIE_PROVIDERS: path.join(os.tmpdir(), 'usage-board-lc-np.json'),
-    },
-    encoding: 'utf8',
-    timeout: 15000,
-  });
-  assert.equal(r.status, 0, `child exit ${r.status}: ${r.stderr}`);
-  assert.match(r.stdout, /LIFECYCLE-OK/);
-});
-
-test('plugin mode waits for a dying previous instance on the base port', async () => {
-  // When magpie restarts the plugin host, the previous generation lingers on the base
-  // port briefly (answers probes, then exits). The child must wait for it to release
-  // the port and bind it itself — not "reuse" the dying instance (which 502s the page).
+test('waits for a dying occupier on the target port, then binds it', async () => {
+  // 宿主重启竞态：上一代濒死实例短暂占着口——新实例必须等它退出后自己绑定，
+  // 而不是复用一个马上要死的实例（复用会让页面 502）。
+  const p = await freePort();
   const occupier = net.createServer(() => {});
-  const occupied = await new Promise((resolve) => {
-    occupier.once('error', () => resolve(false)); // base port busy (e.g. the live board) — still a valid scenario
-    occupier.listen(3455, '127.0.0.1', () => resolve(true));
-  });
+  await new Promise((resolve, reject) => { occupier.once('error', reject); occupier.listen(p, '127.0.0.1', resolve); });
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-zombie-'));
   const code = `
-    import('./index.mjs').then(async (m) => {
-      await m.default.server();
-      const r = await fetch('http://127.0.0.1:3455/api/health');
-      if (r.status !== 200) { console.error('FAIL: health ' + r.status); process.exit(1); }
-      console.log('BOUND-AFTER-WAIT');
-      process.exit(0);
-    }).catch((e) => { console.error('FAIL', e && e.message); process.exit(1); });
+    import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
+      try {
+        const bound = await m.startServer();
+        const r = await fetch('http://127.0.0.1:' + bound + '/api/health');
+        if (r.status !== 200) throw new Error('health ' + r.status);
+        console.log('BOUND-AFTER-WAIT');
+        process.exit(0);
+      } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
+    });
   `;
-  const child = spawn(process.execPath, [path.join(root, 'index.mjs')], {
-    env: {
-      ...process.env,
-      MAGPIE_ADDR: '0.0.0.0:3425',
-      PAGE_KEY: TEST_KEY,
-      PAGE_KEY_FILE: path.join(os.tmpdir(), 'usage-board-zombie-key'),
-      USAGE_JSONL: path.join(os.tmpdir(), 'usage-board-zombie.jsonl'),
-      DATA_DIR: path.join(os.tmpdir(), 'usage-board-zombie-data'),
-      LOGOS: '0',
-      ATTRIBUTION: 'local',
-      MAGPIE_PROVIDERS: path.join(os.tmpdir(), 'usage-board-zombie-np.json'),
-    },
+  const c = spawn(NODE, ['-e', code], {
+    env: { ...baseEnv(dir), HOST: '127.0.0.1', PORT: String(p) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
-  child.stdout.on('data', (d) => { out += d; });
-  child.stderr.on('data', (d) => { out += d; });
-  if (occupied) setTimeout(() => occupier.close(() => {}), 1200); // 1.2s 后释放端口
+  c.stdout.on('data', (d) => { out += d; });
+  c.stderr.on('data', (d) => { out += d; });
+  setTimeout(() => occupier.close(() => {}), 1200); // 1.2s 后释放端口（模拟濒死实例退出）
   const exit = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ code: null }), 30000);
-    child.once('close', (c) => { clearTimeout(t); resolve({ code: c }); }); // close = exit + stdio 刷完，避免漏捕最后的日志
+    const t = setTimeout(() => { c.kill('SIGKILL'); resolve({ code: null }); }, 20000);
+    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2 }); }); // close = exit + stdio 刷完
   });
-  if (occupied) occupier.close(() => {});
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
   assert.equal(exit.code, 0, `child exit ${exit.code}: ${out.slice(0, 400)}`);
-  // 竞态窗口的正确结局：端口最终有服务——等到了就自己绑定，确认前代还活着就复用它
-  assert.match(out, /listening on http|— reusing it/);
+  assert.match(out, /BOUND-AFTER-WAIT/);
 });
 
-test('standalone with PAGE_KEY: a Host-rewriting proxy cannot open the page anonymously', async () => {
-  // nginx's default proxy_set_header Host $proxy_host rewrites Host to 127.0.0.1:<port> —
-  // standalone deployments must still require the token (only plugin mode trusts the host).
-  const s = start({ HOST: '127.0.0.1' });
+test('reuses a live instance of the same build, never a different one', async () => {
+  // 同构建 → 复用（resolve 端口、不重复绑定）；异构建/异种 → 明确报错，绝不把看板
+  // 交给一个未知进程。复用判定只认 /api/ping 的 BUILD_ID。子进程必须异步 spawn：
+  // spawnSync 会阻塞本进程事件循环，同进程里的 fake server 就无法应答探测了。
+  const runChild = (code, env, ms = 20000) => new Promise((resolve) => {
+    const c = spawn(NODE, ['-e', code], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    c.stdout.on('data', (d) => { out += d; });
+    c.stderr.on('data', (d) => { out += d; });
+    const t = setTimeout(() => { c.kill('SIGKILL'); }, ms);
+    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2, out }); });
+  });
+  const p = await freePort();
+  const first = start({ PORT: String(p) });
   try {
-    const port = await s.ready;
-    const page = await request(port, '/', { headers: { Host: '127.0.0.1:' + port } });
-    assert.equal(page.status, 401);
-    assert.equal(String(page.body || '').includes('__KEY__'), false);
-    const withKey = await request(port, '/?key=' + TEST_KEY, { headers: { Host: '127.0.0.1:' + port } });
-    assert.equal(withKey.status, 200);
+    await first.ready;
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-reuse-'));
+    const code = `
+      import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
+        try {
+          const bound = await m.startServer();
+          console.log('RESOLVED-' + bound);
+          process.exit(0);
+        } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
+      });
+    `;
+    const r = await runChild(code, { ...baseEnv(dir), HOST: '127.0.0.1', PORT: String(p) });
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    assert.equal(r.code, 0, `child exit ${r.code}: ${r.out.slice(0, 400)}`);
+    assert.match(r.out, new RegExp(`RESOLVED-${p}`));
+    // 异构建：伪装成同款服务但 build 不同 → 必须拒绝启动
+    const p2 = await freePort();
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ service: 'magpie-usage-board', ok: true, build: 'deadbeefdeadbeef', version: '9.9.9' }));
+    });
+    await new Promise((resolve) => fake.listen(p2, '127.0.0.1', resolve));
+    const dir2 = mkdtempSync(path.join(os.tmpdir(), 'usage-board-foreign-'));
+    const r2 = await runChild(code, { ...baseEnv(dir2), HOST: '127.0.0.1', PORT: String(p2) });
+    fake.close(() => {});
+    try { rmSync(dir2, { recursive: true, force: true }); } catch {}
+    assert.notEqual(r2.code, 0, 'a foreign build must not be accepted');
+    assert.match(r2.out, /held by another build/);
   } finally {
-    s.c.kill();
+    first.c.kill();
+    try { rmSync(first.dir, { recursive: true, force: true }); } catch {}
   }
 });
 
-test('plugin mode keeps the anonymous injected page on loopback', async () => {
-  const s = start({ HOST: '127.0.0.1', MAGPIE_ADDR: '0.0.0.0:3425' });
-  try {
-    const port = await s.ready;
-    const page = await request(port, '/', { headers: { Host: `127.0.0.1:${port}` } });
-    assert.equal(page.status, 200);
-    assert.match(String(page.body), /__KEY__/);
-  } finally {
-    s.c.kill();
-  }
+test('index.mjs: importing has no side effects, server() starts and awaits listen', () => {
+  // The community import-check imports this file for inspection; a module-level
+  // startServer would grab a port and write config during that check. The child
+  // picks its own free port, sets PORT, then verifies import ≠ start, server() = start.
+  const code = `
+    (async () => {
+      const net = await import('node:net');
+      const free = await new Promise((res) => {
+        const s = new net.Server();
+        s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
+      });
+      process.env.PORT = String(free);
+      const m = await import(${JSON.stringify(INDEX_URL)});
+      await new Promise((r) => setTimeout(r, 800));
+      try { await fetch('http://127.0.0.1:' + free + '/api/health'); console.error('FAIL: import started the service'); process.exit(1); } catch {}
+      const r0 = await m.default.server();
+      if (!r0 || r0.port !== free) { console.error('FAIL: server() did not report the bound port: ' + JSON.stringify(r0)); process.exit(1); }
+      const r = await fetch('http://127.0.0.1:' + free + '/api/health');
+      if (r.status !== 200) { console.error('FAIL: server() did not start the service'); process.exit(1); }
+      console.log('LIFECYCLE-OK');
+      process.exit(0);
+    })();
+  `;
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-lifecycle-'));
+  const r = spawnSync(NODE, ['-e', code], {
+    env: baseEnv(dir),
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  assert.equal(r.status, 0, `child exit ${r.status}: ${(r.stdout || '')} ${(r.stderr || '')}`);
+  assert.match(r.stdout, /LIFECYCLE-OK/);
 });
 
 test('the dashboard asks the local service for attribution', () => {
   const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
   assert.match(html, /api\/attribution\?period=/);
   assert.doesNotMatch(html, /remote\.js/);
-  assert.doesNotMatch(html, /MY_REMOTE/);
+  assert.doesNotMatch(html, /cloudflareinsights/);
 });
 
 test('registry draft summary matches package.json verbatim (three-text rule)', () => {
@@ -364,20 +435,28 @@ test('registry draft summary matches package.json verbatim (three-text rule)', (
 test('the lead page has no inline scripts and no key', () => {
   const html = readFileSync(path.join(root, 'page', 'index.html'), 'utf8')
     .replace(/<!--[\s\S]*?-->/g, '');
-  for (const tag of html.match(/<script[^>]*>/gi) || []) {
-    assert.match(tag, /src=/i);
+  for (const tag of html.match(/<script[^>]*>/gi) || []) {
+    assert.match(tag, /src=/i);
   }
   assert.doesNotMatch(html, /[?&]key=/i);
-  assert.doesNotMatch(html, /https?:\/\/(?!127\.0\.0\.1:3455)/i);
   assert.doesNotMatch(html, /fetch\(/i); // the sandboxed lead page fetches nothing
   assert.match(html, /_magpie\/bridge\.js/);
   assert.match(html, /boot\.js/);
 });
 
-test('boot uses magpie.service when present and falls back to loopback', () => {
+test('boot prefers magpie.service, reads the port from the manifest options', () => {
   const js = readFileSync(path.join(root, 'page', 'boot.js'), 'utf8');
   assert.match(js, /magpie\?\.service/);
-  assert.match(js, /127\.0\.0\.1:3455/);
+  assert.match(js, /options\?\.get\?\.\(\)/);
+  assert.match(js, /3455/); // manifest 声明的默认口（fallback，不再有写死的第二个来源）
+});
+
+test('the board page ships both languages', () => {
+  const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  assert.match(html, /navigator\.language/);
+  assert.match(html, /\?lang=/);
+  assert.match(html, /T\s*=\s*\{\s*zh:/);
+  assert.match(html, /en:/);
 });
 
 test('package metadata matches the community page spec', () => {
@@ -389,6 +468,8 @@ test('package metadata matches the community page spec', () => {
   assert.deepEqual(pkg.magpie.permissions, []);
   assert.equal(pkg.magpie.page.file, 'page/index.html');
   assert.equal(pkg.magpie.page.service.port, 3455);
+  assert.equal(pkg.magpie.page.service.option, 'port');
+  assert.equal(pkg.magpie.options.attribution, 'local'); // 远端归因必须 opt-in
   assert.ok(pkg.magpie.summary.en && pkg.magpie.summary.zh);
   assert.ok(pkg.magpie.page.titles.en && pkg.magpie.page.titles.zh);
 });

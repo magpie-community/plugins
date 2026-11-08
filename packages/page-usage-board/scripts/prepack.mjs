@@ -1,8 +1,8 @@
-// npm pack / publish 前的守卫：公开包里不能出现口令或本机部署配置。
-// 这些文件不进 git（见 .gitignore），但 deploy.sh 会把它们生成为运行时副本，
-// 在错误的目录里执行 npm pack 就会把 key 带上船。
-// 同时做布局守卫（community-submission.md 的 layout trap）：README/docs 承诺的
-// 文件（docs/、Docker 三件套）必须真实存在，文档相对链接必须可达——否则合并后全 404。
+// npm pack / publish 前的守卫：公开包里不能出现口令或本机部署物料。
+// 这些文件不进 git（见 .gitignore）；在错误的目录（如运行时副本）里执行 npm pack
+// 就会把 key 带上船。同时做布局守卫（community-submission.md 的 layout trap）：
+// README/docs 承诺的文件（docs/、vendored echarts 构建产物）必须真实存在，
+// 文档相对链接必须可达——否则合并后全 404。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,8 @@ for (const f of forbidden) {
   if (existsSync(path.join(root, f))) problems.push(`${f} must not be in the package`);
 }
 
-const secret = /[?&]key=[0-9a-f]{16,}|"key"\s*:\s*"[0-9a-f]{16,}"|PAGE_KEY\s*[:=]\s*['"]?[0-9a-f]{16,}/i;
+// 口令可能是任意随机串（含 base64url），不限 32-hex：字符集放宽到 base64url 字母表
+const secret = /[?&]key=[A-Za-z0-9_-]{16,}|"key"\s*:\s*"[A-Za-z0-9_-]{16,}"|PAGE_KEY\s*[:=]\s*['"]?[A-Za-z0-9_-]{16,}/i;
 for (const f of ['page/index.html', 'static/index.html', 'server.mjs', 'index.mjs']) {
   const full = path.join(root, f);
   if (!existsSync(full)) continue;
@@ -32,15 +33,20 @@ for (const f of pkg.files) {
   if (!existsSync(path.join(root, f))) problems.push(`files entry is missing: ${f}`);
 }
 if (!pkg.files.includes('LICENSE')) problems.push('files must include LICENSE');
+for (const f of ['build/echarts-entry.mjs', 'scripts/build-echarts.mjs']) {
+  if (!existsSync(path.join(root, f))) problems.push(`${f} must exist (vendored echarts build must be reproducible)`);
+  const dir = f.split('/')[0];
+  if (!pkg.files.includes(dir)) problems.push(`files must include ${dir} (${f} must ship)`);
+}
 
-// 布局守卫：README 与 self-hosting 承诺的部署文件必须随仓库走。
-// 仅在 git checkout 里强制（tarball 解包环境没有 Docker 三件套，属正常）
+// 布局守卫：README 与 docs 承诺的文件必须随仓库走。
+// 仅在 git checkout 里强制（tarball 解包环境没有这些开发文件，属正常）
 const inCheckout = existsSync(path.join(root, '.git'));
 if (inCheckout) {
-  for (const f of ['docs', 'Dockerfile', 'docker-compose.yml', '.env.example', 'README.md', 'LICENSE', 'NOTICE', 'LICENSES']) {
-    if (!existsSync(path.join(root, f))) problems.push(`repo tree must contain ${f} (docs/Docker references 404 otherwise)`);
+  for (const f of ['docs', '.env.example', 'README.md', 'LICENSE', 'NOTICE', 'LICENSES']) {
+    if (!existsSync(path.join(root, f))) problems.push(`repo tree must contain ${f} (docs/README references 404 otherwise)`);
   }
-  for (const f of ['docs', 'scripts', 'NOTICE', 'LICENSES']) {
+  for (const f of ['docs', 'scripts', 'build', 'NOTICE', 'LICENSES']) {
     if (!pkg.files.includes(f)) problems.push(`files must include ${f} (docs/NOTICE references 404 on npm otherwise)`);
   }
 }
@@ -80,9 +86,9 @@ for (const full of pkgFiles) {
   // remote.js 任何形态都不允许（打包产物里按任意路径出现也算）
   if (path.basename(full).toLowerCase() === 'remote.js') problems.push(`${rel} must not be in the package`);
 }
-// 非 hex 长随机口令（vps-init 允许任意长随机串）：PAGE_KEY=xxx 16 位以上非空白也要拦
+// 非十六进制的长随机口令（允许 base64url 形式）：PAGE_KEY=xxx 16 位以上非空白也要拦
 const passphr = /PAGE_KEY\s*[:=]\s*['"]?[A-Za-z0-9_/+-]{16,}/;
-for (const f of ['vps-init.sh', '.env.example', 'docs/docker.md', 'docs/self-hosting.md']) {
+for (const f of ['.env.example']) {
   const full = path.join(root, f);
   if (!existsSync(full)) continue;
   const text = readFileSync(full, 'utf8');

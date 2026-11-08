@@ -3,7 +3,7 @@
 <head><link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8IS0tIFVzYWdlIGJvYXJkOiBkYXJrIHJvdW5kZWQgcGxhdGUsIGJsdWUgdXNhZ2UgbGluZSwgb25lIGFtYmVyIGJhciAtLT4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iOTIiIGhlaWdodD0iOTIiIHJ4PSIyMCIgZmlsbD0iIzFlMjQzMCIvPgogIDwhLS0gYW1iZXIgYmFyIChxdW90YSB0b2RheSkgLS0+CiAgPHJlY3QgeD0iMjQiIHk9IjU2IiB3aWR0aD0iMTAiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjZjVhNjIzIi8+CiAgPCEtLSBibHVlIHVzYWdlIGxpbmUgb3ZlciB0aGUgbGFzdCBob3VycyAtLT4KICA8cG9seWxpbmUgcG9pbnRzPSIyMiw2NiAzNiw1MiA1MCw1OCA2NCwzOCA3OCwzMCIKICAgIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRjOWZmZSIgc3Ryb2tlLXdpZHRoPSI3IgogICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPCEtLSBlbmRwb2ludCBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNS41IiBmaWxsPSIjNGM5ZmZlIi8+Cjwvc3ZnPgo=">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>magpie 用量</title>
+<title></title>
 <style>
 :root{
   --bg:#0e1116;--card:#161b22;--card2:#1c2330;--line:#2a3140;--txt:#d7dde6;--dim:#8b93a1;
@@ -126,31 +126,31 @@ th.num,td.num{text-align:right}
 </head>
 <body>
 <div class="wrap">
-  <h1>magpie 用量</h1>
-  <div class="sub">额度与调用量总览 · <span id="updated">加载中…</span> · <button class="tbtn" id="refresh">刷新</button>
+  <h1 data-i18n="pageTitle"></h1>
+  <div class="sub"><span data-i18n="subTitle"></span> · <span id="updated" data-i18n="loading"></span> · <button class="tbtn" id="refresh" data-i18n="refresh"></button>
     <span id="periodBtns" style="margin-left:6px"></span><span id="buildTag"></span></div>
 
-  <h2>用量总览</h2>
+  <h2 data-i18n="hOverview"></h2>
   <div class="kpis" id="kpis"></div>
   <div class="charts">
-    <div class="chart" style="grid-column:1/-1"><h3 title="本地直连与远端归因按 provider 合并（品牌拆分名已归并）；图例为全期前 10，柱内画当天 ≥1万 Token 的量">每日 Token 消耗量</h3><div class="cbody" style="height:340px" id="cDaily"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
-    <div class="chart"><h3>模型用量</h3><div class="cbody" id="cModelsPie"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
-    <div class="chart"><h3>供应商用量</h3><div class="cbody" id="cProv"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
-    <div class="chart" id="remoteTtftWrap" style="display:none"><h3 title="首 Token 延迟分位数：P50 一半请求快于此 · P90 九成请求快于此">响应速度</h3><div class="err" id="remoteTtftErr" style="display:none;margin:80px 20px;text-align:center"></div><div class="cbody" id="cRemoteTtft"></div></div>
-    <div class="chart" id="remoteAcctWrap" style="display:none"><h3>账号明细<span class="pill" id="remotePill"></span></h3><div class="err" id="remoteAcctErr" style="display:none"></div><div id="remoteAcctTable" style="max-height:320px;overflow:auto"></div></div>
-    <div class="chart" style="grid-column:1/-1"><h3>缓存命中率与 Token 用量（24h）</h3><div class="cbody" id="cCache24"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
-    <div class="chart" id="flowWrap"><h3 title="按调用方拆分 VPS 上的流量占比：本机直连 / 经 remote / 其它调用方（hermes 等）">流量归属</h3><div class="cbody" id="cFlow"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
-    <div class="chart"><h3>活跃时段</h3><div class="cbody" id="cHeat"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart" style="grid-column:1/-1"><h3 data-i18n="chartDaily" data-i18n-title="dailyTip"></h3><div class="cbody" style="height:340px" id="cDaily"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartModels"></h3><div class="cbody" id="cModelsPie"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartProv"></h3><div class="cbody" id="cProv"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart" id="remoteTtftWrap" style="display:none"><h3 data-i18n="chartTtft" data-i18n-title="ttftTip"></h3><div class="err" id="remoteTtftErr" style="display:none;margin:80px 20px;text-align:center"></div><div class="cbody" id="cRemoteTtft"></div></div>
+    <div class="chart" id="remoteAcctWrap" style="display:none"><h3><span data-i18n="chartAcct"></span><span class="pill" id="remotePill"></span></h3><div class="err" id="remoteAcctErr" style="display:none"></div><div id="remoteAcctTable" style="max-height:320px;overflow:auto"></div></div>
+    <div class="chart" style="grid-column:1/-1"><h3 data-i18n="chartCache24"></h3><div class="cbody" id="cCache24"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart" id="flowWrap"><h3 data-i18n="chartFlow" data-i18n-title="flowTip"></h3><div class="cbody" id="cFlow"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartHeat"></h3><div class="cbody" id="cHeat"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
 
   </div>
 
-  <h2>额度条目 <span class="pill" id="quotaPill"></span></h2>
+  <h2><span data-i18n="hQuotas"></span> <span class="pill" id="quotaPill"></span></h2>
   <div class="grid" id="quotaGrid"></div>
 
-  <h2>最近请求 <span class="pill">网关日志 · 最近 40 条</span></h2>
+  <h2><span data-i18n="hRecent"></span> <span class="pill" data-i18n="recentPill"></span></h2>
   <div class="card" style="overflow:auto">
     <table>
-      <thead><tr><th>时间</th><th>agent</th><th>provider</th><th>模型(served)</th><th class="num">输入</th><th class="num">输出</th><th class="num">TTFT</th><th class="num">耗时</th><th>状态</th></tr></thead>
+      <thead><tr><th data-i18n="time"></th><th>agent</th><th>provider</th><th data-i18n="modelServed"></th><th class="num" data-i18n="input"></th><th class="num" data-i18n="output"></th><th class="num">TTFT</th><th class="num" data-i18n="duration"></th><th data-i18n="status"></th></tr></thead>
       <tbody id="recentBody"></tbody>
     </table>
   </div>
@@ -171,14 +171,313 @@ if(typeof echarts==='undefined')document.write('<scr'+'ipt src="static/echarts.m
 if(typeof echarts==='undefined')document.write('<scr'+'ipt src="echarts.min.js?v=20261107"><\/scr'+'ipt>');
 </script>
 <script>
+// ---- 界面文案词典 + 取词：zh=页面现有中文原文（一字未改），en=英文对照 ----
+// 语言来源：落地页 ?lang= 优先，其次浏览器语言，兜底英文。上游数据（provider/账号/模型/窗口名等）不译。
+const LANG = (new URLSearchParams(location.search).get('lang') || (navigator.language || 'en')).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+const T = {
+  zh: {
+    // 顶栏 / 全局
+    pageTitle:'magpie 用量',
+    subTitle:'额度与调用量总览',
+    loading:'加载中…',
+    refresh:'刷新',
+    updatedAt:'更新于 ',
+    // 分区 / 图表标题
+    hOverview:'用量总览',
+    chartDaily:'每日 Token 消耗量',
+    dailyTip:'本地直连与远端归因按 provider 合并（品牌拆分名已归并）；图例为全期前 10，柱内画当天 ≥1万 Token 的量',
+    chartModels:'模型用量',
+    chartProv:'供应商用量',
+    chartTtft:'响应速度',
+    ttftTip:'首 Token 延迟分位数：P50 一半请求快于此 · P90 九成请求快于此',
+    chartAcct:'账号明细',
+    chartCache24:'缓存命中率与 Token 用量（24h）',
+    chartFlow:'流量归属',
+    flowTip:'按调用方拆分 VPS 上的流量占比：本机直连 / 经 remote / 其它调用方（hermes 等）',
+    chartHeat:'活跃时段',
+    hQuotas:'额度条目',
+    hRecent:'最近请求',
+    recentPill:'网关日志 · 最近 40 条',
+    // 表格列头
+    time:'时间',
+    modelServed:'模型(served)',
+    input:'输入',
+    output:'输出',
+    duration:'耗时',
+    status:'状态',
+    account:'账号',
+    calls:'调用',
+    errors:'错误',
+    // KPI 卡
+    kpiTotalTokens:'总 Token（含 cache 读）',
+    kpiCost:'费用',
+    kpiCostNote:'按 magpie 价格表折算，非实际支出',
+    kpiTtft:'平均 TTFT',
+    kpiCacheHit:'缓存命中率',
+    kpiSpeed:'平均速度',
+    stDirect:'直连',
+    stRemote:'远端',
+    cacheReadPre:'cache 读',
+    tokPerSec:' Token/秒',
+    unpricedSuf:' 次未计价',
+    timedSuf:' 次有计时',
+    // 通用词 / 单位 / 时间
+    noData:'暂无数据',
+    noWindows:'无窗口数据',
+    noQuotaData:'没有额度数据',
+    noRequests:'没有请求记录（usage.jsonl 不可用）',
+    sec:'秒',
+    secSp:' 秒',
+    avg:'平均',
+    hitRate:'命中率',
+    hit:'命中',
+    timesUnit:' 次',
+    retryPre:' · 重试',
+    today:'今天',
+    tomorrow:'明天',
+    expToday:'今天到期',
+    expTomorrow:'明天到期',
+    voidInPre:'',
+    voidInSuf:'天作废',
+    voidDatePre:'',
+    voidDateSuf:' 作废',
+    dayUnit:'天',
+    hrUnit:'时',
+    minUnit:'分',
+    hourAxis:'时',
+    weekPre:'周',
+    weekChars:'日一二三四五六',
+    wd0:'周日',
+    wd1:'周一',
+    wd2:'周二',
+    wd3:'周三',
+    wd4:'周四',
+    wd5:'周五',
+    wd6:'周六',
+    lparen:'（',
+    rparen:'）',
+    colonFull:'：',
+    pillPre:'（',
+    pillSuf:'）',
+    p7d:'7天',
+    p30d:'30天',
+    pAll:'全部',
+    unknown:'未知',
+    uYi:'亿',
+    uWan:'万',
+    uB:'',
+    uM:'',
+    uK:'',
+    remainPct:'剩余 ',
+    remPre:'剩 ',
+    remSuf:'',
+    ofTotal:' / 共 ',
+    totalPre:'共 ',
+    totalSuf:'',
+    totalQuota:'总额度',
+    pointsBalance:'积分余额',
+    winTotalPoints:'总积分',
+    winRemPoints:'剩余积分',
+    permRight:'永久',
+    perm:'长期',
+    tempRem:'临时剩余',
+    tempUsed:'临时已用',
+    avail:'可用',
+    usedLbl:'已用',
+    unitMoli:'魔粒',
+    unitPoints:'积分',
+    callerNone:'(无)',
+    resetDone:'已重置',
+    // 图表系列 / 空态 / 错误提示
+    pieOther:'其它',
+    flowDirect:'本机直连',
+    flowViaRemote:'本机→remote',
+    flowOtherPre:'其它·',
+    otherCallersPre:'其它调用方（',
+    otherCallersSuf:' 个）',
+    lineDirectUnattr:'直连线路（未归因）',
+    lineProxyUnattr:'代理线路（未归因）',
+    logReadFail:'日志读取失败：',
+    attrTimeout:'归因请求超时（45 秒）',
+    attrApiErr:'归因接口 ',
+    remoteUnavail:'远端归因不可用：',
+    remoteUnavailTail:' —— 远端 magpie 或链路故障，恢复后刷新即恢复',
+    dataUnavail:'数据不可用',
+    needKey:'需要口令（地址后加 ?key=…）',
+    renderFail:'渲染失败：',
+    loadFail:'加载失败：',
+    quotaApiErr:'额度接口异常：',
+    quotaApiErrTail:' —— 并非额度清零',
+    quotaLoadFail:'额度加载失败：',
+    noteTail:' —— 以下数值可能不完整',
+    holdsTitle:'网关 holds 状态：',
+    holdsWarnPre:'⚠ 有 key 被 holds（',
+    holdsWarnSuf:'）',
+  },
+  en: {
+    // top bar / global
+    pageTitle:'magpie usage',
+    subTitle:'Quota & usage overview',
+    loading:'Loading…',
+    refresh:'Refresh',
+    updatedAt:'Updated at ',
+    // section / chart titles
+    hOverview:'Usage overview',
+    chartDaily:'Daily token usage',
+    dailyTip:'Local direct + remote attribution merged by provider (brand-split names merged); legend shows all-time top 10, bars also include days with ≥10k tokens',
+    chartModels:'Model usage',
+    chartProv:'Provider usage',
+    chartTtft:'Response speed',
+    ttftTip:'TTFT percentiles: P50 — half of requests are faster · P90 — 90% of requests are faster',
+    chartAcct:'Account breakdown',
+    chartCache24:'Cache hit rate & token usage (24h)',
+    chartFlow:'Traffic attribution',
+    flowTip:'Share of VPS traffic by caller: local direct / via remote / other callers (hermes etc.)',
+    chartHeat:'Active hours',
+    hQuotas:'Quotas',
+    hRecent:'Recent requests',
+    recentPill:'Gateway log · last 40',
+    // table headers
+    time:'Time',
+    modelServed:'Model (served)',
+    input:'Input',
+    output:'Output',
+    duration:'Duration',
+    status:'Status',
+    account:'Account',
+    calls:'Calls',
+    errors:'Errors',
+    // KPI cards
+    kpiTotalTokens:'Total tokens (incl. cache read)',
+    kpiCost:'Cost',
+    kpiCostNote:'Estimated from the magpie price list, not actual spend',
+    kpiTtft:'Avg TTFT',
+    kpiCacheHit:'Cache hit rate',
+    kpiSpeed:'Avg speed',
+    stDirect:'Direct',
+    stRemote:'Remote',
+    cacheReadPre:'cache read',
+    tokPerSec:' Token/s',
+    unpricedSuf:' unpriced',
+    timedSuf:' timed',
+    // common words / units / time
+    noData:'No data yet',
+    noWindows:'No window data',
+    noQuotaData:'No quota data',
+    noRequests:'No request records (usage.jsonl unavailable)',
+    sec:'s',
+    secSp:'s',
+    avg:'avg',
+    hitRate:'Hit rate',
+    hit:'hit',
+    timesUnit:' calls',
+    retryPre:' · retry',
+    today:'Today',
+    tomorrow:'Tomorrow',
+    expToday:'Expires today',
+    expTomorrow:'Expires tomorrow',
+    voidInPre:'Void in ',
+    voidInSuf:'d',
+    voidDatePre:'expires ',
+    voidDateSuf:'',
+    dayUnit:'d',
+    hrUnit:'h',
+    minUnit:'m',
+    hourAxis:':00',
+    weekPre:'',
+    weekChars:'',
+    wd0:'Sun',
+    wd1:'Mon',
+    wd2:'Tue',
+    wd3:'Wed',
+    wd4:'Thu',
+    wd5:'Fri',
+    wd6:'Sat',
+    lparen:' (',
+    rparen:')',
+    colonFull:': ',
+    pillPre:'(',
+    pillSuf:')',
+    p7d:'7d',
+    p30d:'30d',
+    pAll:'All',
+    unknown:'unknown',
+    uYi:'',
+    uWan:'',
+    uB:'B',
+    uM:'M',
+    uK:'K',
+    remainPct:'Remaining ',
+    remPre:'',
+    remSuf:' left',
+    ofTotal:' / ',
+    totalPre:'',
+    totalSuf:' total',
+    totalQuota:'Total quota',
+    pointsBalance:'Points balance',
+    winTotalPoints:'Total points',
+    winRemPoints:'Remaining points',
+    permRight:'Never expires',
+    perm:'permanent',
+    tempRem:'temp remaining',
+    tempUsed:'temp used',
+    avail:'Available',
+    usedLbl:'Used',
+    unitMoli:'Moli',
+    unitPoints:'points',
+    callerNone:'(none)',
+    resetDone:'Reset',
+    // chart series / empty states / errors
+    pieOther:'Other',
+    flowDirect:'Local direct',
+    flowViaRemote:'Local→remote',
+    flowOtherPre:'Other · ',
+    otherCallersPre:'Other callers (',
+    otherCallersSuf:')',
+    lineDirectUnattr:'Direct line (unattributed)',
+    lineProxyUnattr:'Proxy line (unattributed)',
+    logReadFail:'Failed to read logs: ',
+    attrTimeout:'Attribution request timed out (45s)',
+    attrApiErr:'Attribution API ',
+    remoteUnavail:'Remote attribution unavailable: ',
+    remoteUnavailTail:' — remote magpie or link failure; refresh to recover once restored',
+    dataUnavail:'Data unavailable',
+    needKey:'Passphrase required (append ?key=… to the URL)',
+    renderFail:'Render failed: ',
+    loadFail:'Load failed: ',
+    quotaApiErr:'Quota API error: ',
+    quotaApiErrTail:' — not a zero balance',
+    quotaLoadFail:'Failed to load quotas: ',
+    noteTail:' — figures below may be incomplete',
+    holdsTitle:'Gateway holds status: ',
+    holdsWarnPre:'⚠ key on holds (',
+    holdsWarnSuf:')',
+  }
+};
+// 取词：当前语言 → 英文 → 键名。不用 || 链：部分词条（前后缀）合法为空串，会被 || 吞掉
+const t = (k) => { const v = (T[LANG] || {})[k]; return v != null ? v : (T.en[k] != null ? T.en[k] : k); };
+// 静态 HTML 里的文案已抽进词典，这里回填（title/h1/h2/h3/表头/按钮）
+document.title = t('pageTitle');
+for(const el of document.querySelectorAll('[data-i18n]'))el.textContent = t(el.dataset.i18n);
+for(const el of document.querySelectorAll('[data-i18n-title]'))el.title = t(el.dataset.i18nTitle);
 const $=s=>document.querySelector(s);
 const fmt=n=>{if(n==null)return'—';const a=Math.abs(n);
-  if(a>=1e8)return((n/1e8).toFixed(2).replace(/\.?0+$/,''))+'亿';
-  if(a>=1e4)return((n/1e4).toFixed(1).replace(/\.0$/,''))+'万';
+  // zh 沿用 亿/万；en 按英文习惯改用 K/M/B 分级
+  if(LANG==='zh'){
+    if(a>=1e8)return((n/1e8).toFixed(2).replace(/\.?0+$/,''))+t('uYi');
+    if(a>=1e4)return((n/1e4).toFixed(1).replace(/\.0$/,''))+t('uWan');
+  }else{
+    if(a>=1e9)return((n/1e9).toFixed(2).replace(/\.?0+$/,''))+t('uB');
+    if(a>=1e6)return((n/1e6).toFixed(1).replace(/\.0$/,''))+t('uM');
+    if(a>=1e3)return((n/1e3).toFixed(1).replace(/\.0$/,''))+t('uK');
+  }
   return n.toLocaleString('en-US')};
 // magpie 计价的原始单位是美元；内置页的人民币（settings currency=cny）是它按内部汇率换算的展示口径
 const fmtCNY=n=>n==null?'—':('$'+(n>=100?n.toFixed(0):n>=1?n.toFixed(2):n.toFixed(3)));
-const fmtAxis=(v)=>(v>=1e8?((v/1e8).toFixed(1).replace(/\.0$/,''))+'亿':v>=1e4?((v/1e4).toFixed(1).replace(/\.0$/,''))+'万':String(Math.round(v)));
+const fmtAxis=(v)=>LANG==='zh'
+  ?(v>=1e8?((v/1e8).toFixed(1).replace(/\.0$/,''))+t('uYi'):v>=1e4?((v/1e4).toFixed(1).replace(/\.0$/,''))+t('uWan'):String(Math.round(v)))
+  :(v>=1e9?((v/1e9).toFixed(1).replace(/\.0$/,''))+t('uB'):v>=1e6?((v/1e6).toFixed(1).replace(/\.0$/,''))+t('uM'):v>=1e3?((v/1e3).toFixed(1).replace(/\.0$/,''))+t('uK'):String(Math.round(v)));
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const evalPieTotal=(arr)=>arr.reduce((s2,x)=>s2+(x.value||0),0)||1;
 const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -197,12 +496,12 @@ async function loadRemote() {
   if (remoteCtrl) try { remoteCtrl.abort(); } catch {}
   const seq = ++remoteSeq;
   const ctrl = remoteCtrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(new Error("归因请求超时（45 秒）")), 45000);
+  const timer = setTimeout(() => ctrl.abort(new Error(t('attrTimeout'))), 45000);
   try {
     const r = await fetch(auth('api/attribution?period=' + period), { signal: ctrl.signal, headers: hf() });
     if (seq !== remoteSeq) return; // 过期响应：直接丢弃
     if (!r.ok) {
-      let msg = '归因接口 ' + r.status;
+      let msg = t('attrApiErr') + r.status;
       try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
       throw new Error(msg);
     }
@@ -220,7 +519,7 @@ async function loadRemote() {
     remoteFailed = true; renderDaily(lastDetail || {}); renderProv(lastModels); // 真不可用：此刻才允许线路名兜底
     console.warn('[usage-board] attribution failed:', e && e.message || e);
     // 归因不可用时显示卡片+错误说明（而不是无声消失）
-    const msg = "远端归因不可用：" + esc(String(e && e.message || e)) + " —— 远端 magpie 或链路故障，恢复后刷新即恢复";
+    const msg = t('remoteUnavail') + esc(String(e && e.message || e)) + t('remoteUnavailTail');
     const tw = document.getElementById("remoteTtftWrap");
     if (tw) {
       tw.style.display = "";
@@ -236,7 +535,7 @@ async function loadRemote() {
       document.getElementById("remoteAcctTable").innerHTML = "";
     }
     const p = document.getElementById("remotePill");
-    if (p) p.textContent = "数据不可用";
+    if (p) p.textContent = t('dataUnavail');
     renderFlow();
   } finally {
     clearTimeout(timer);
@@ -263,10 +562,9 @@ function renderRemote(d) {
   document.getElementById("cRemoteTtft").style.display = "";
   const ae = document.getElementById("remoteAcctErr");
   if (ae) ae.style.display = "none";
-  const t = d.totals || {};
   const provs = d.providers || [];
 
-  $("#remotePill").textContent = "（" + ({ "7d": "7天", "30d": "30天", "all": "全部" }[d.period] || d.period || "") + "）";
+  $("#remotePill").textContent = t('pillPre') + ({ "7d": t('p7d'), "30d": t('p30d'), "all": t('pAll') }[d.period] || d.period || "") + t('pillSuf');
 
   // provider 响应速度（TTFT P50 / P90）
   const speed = provs.filter((p) => p.ttft_p50 != null).slice(0, 10).reverse();
@@ -277,15 +575,15 @@ function renderRemote(d) {
       formatter: (ps) => {
         const p = speed[ps[0].dataIndex];
         if (!p) return "";
-        return `<b>${esc(p.provider)}</b><br/>P50 ${(p.ttft_p50 / 1000).toFixed(1)} 秒 · P90 ${(p.ttft_p90 / 1000).toFixed(1)} 秒`
-          + `<br/>平均 ${((p.ttft_avg || 0) / 1000).toFixed(1)} 秒 · ${p.timed} 次有计时`;
+        return `<b>${esc(p.provider)}</b><br/>P50 ${(p.ttft_p50 / 1000).toFixed(1)}${t('secSp')} · P90 ${(p.ttft_p90 / 1000).toFixed(1)}${t('secSp')}`
+          + `<br/>${t('avg')} ${((p.ttft_avg || 0) / 1000).toFixed(1)}${t('secSp')} · ${p.timed}${t('timedSuf')}`;
       },
     },
     legend: { textStyle: { color: "#8b93a1", fontSize: 11 }, top: 0 },
     grid: { left: 104, right: 58, top: 34, bottom: 24 },
     xAxis: {
       type: "value",
-      axisLabel: { color: "#8b93a1", fontSize:11, formatter: (v) => (v / 1000).toFixed(0) + "秒" },
+      axisLabel: { color: "#8b93a1", fontSize:11, formatter: (v) => (v / 1000).toFixed(0) + t('sec') },
       splitLine: { lineStyle: { color: "#1d2430" } },
     },
     yAxis: { type: "category", data: speed.map((p) => p.provider), axisLabel: { color: "#8b93a1", fontSize: 11 } },
@@ -311,8 +609,8 @@ function renderRemote(d) {
   renderFlow();
   renderHourly();
   if (lastDetail) renderDaily(lastDetail);
-  $("#remoteAcctTable").innerHTML = '<table><thead><tr><th>provider</th><th>账号</th>'
-    + '<th class="num">调用</th><th class="num">输入</th><th class="num">输出</th><th class="num">错误</th>'
+  $("#remoteAcctTable").innerHTML = '<table><thead><tr><th>provider</th><th>'+t('account')+'</th>'
+    + '<th class="num">'+t('calls')+'</th><th class="num">'+t('input')+'</th><th class="num">'+t('output')+'</th><th class="num">'+t('errors')+'</th>'
     + "</tr></thead><tbody>" + rows + "</tbody></table>";
 }
 
@@ -359,7 +657,7 @@ function winVal(w){
     const lim=w.limit?' / '+fmt(w.limit):'';
     return amt+lim;
   }
-  return '剩余 '+fmt(w.remaining??0)+'%';
+  return t('remainPct')+fmt(w.remaining??0)+'%';
 }
 function winExp(w){
   for(const k of ['runsOutAt','expiresAt','expireAt','expires','until','validUntil']){
@@ -423,7 +721,7 @@ function pointTotal(q,wins){
     const m=b.match(/\d+(?:\.\d+)?/);
     const n=m?(/欠费/.test(b)?0:+m[0]):null;
     if(n!=null){
-      const u=/魔粒/.test(b)?'魔粒':/credits/i.test(b)?'credits':/积分/.test(b)?'积分':/points/i.test(b)?'points':'';
+      const u=/魔粒/.test(b)?t('unitMoli'):/credits/i.test(b)?'credits':/积分/.test(b)?t('unitPoints'):/points/i.test(b)?'points':'';
       return {n,u};
     }
   }
@@ -439,17 +737,17 @@ function pointTotal(q,wins){
       if(nums.length)tot=Math.max(...nums);
     }
     if(tot==null||!(tot>0))continue;
-    if(!best||tot>best.n)best={n:tot,u:/魔粒/.test(nm)?'魔粒':/credits/i.test(nm)?'credits':'积分',exp:winExp(w)};
+    if(!best||tot>best.n)best={n:tot,u:/魔粒/.test(nm)?t('unitMoli'):/credits/i.test(nm)?'credits':t('unitPoints'),exp:winExp(w)};
   }
   return best;
 }
-function fmtDaysLeft(t){
+function fmtDaysLeft(ts){
   // 用原始剩余时长判断，不用 ceil(天)：剩 6 小时不能显示「明天到期」，要和角标的「今天」一致
-  const d=(t-Date.now())/864e5;
-  if(d<1)return '今天到期';
-  if(d<2)return '明天到期';
-  if(d<=7)return Math.ceil(d)+'天作废';
-  return new Date(t).toLocaleDateString('zh-CN',{month:'2-digit',day:'2-digit'})+' 作废';
+  const d=(ts-Date.now())/864e5;
+  if(d<1)return t('expToday');
+  if(d<2)return t('expTomorrow');
+  if(d<=7)return t('voidInPre')+Math.ceil(d)+t('voidInSuf');
+  return t('voidDatePre')+new Date(ts).toLocaleDateString(LANG==='zh'?'zh-CN':'en-US',{month:'2-digit',day:'2-digit'})+t('voidDateSuf');
 }
 // 到期由近到远：≤3 天红、≤7 天橙、≤14 天黄、更远绿（角标/进度条/右侧到期文字共用）
 function expColor(d){return d<=3?'#f85149':d<=7?'#e78c08':d<=14?'#c9a227':'#3fb950';}
@@ -507,7 +805,7 @@ function segBar(name,rem,used){
   const all=rem+used;
   if(!(all>0))return '';
   const w1=(100*rem/all).toFixed(1),w2=(100*used/all).toFixed(1);
-  return `<div class="q2bar q2seg" title="${esc(name)}：可用 ${fmt(rem)} · 已用 ${fmt(used)}"><i style="width:${w1}%;background:#4da3ff"></i>${used>0?`<i style="width:${w2}%;background:var(--segused)"></i>`:''}</div>`;
+  return `<div class="q2bar q2seg" title="${esc(name)}${t('colonFull')}${t('avail')} ${fmt(rem)} · ${t('usedLbl')} ${fmt(used)}"><i style="width:${w1}%;background:#4da3ff"></i>${used>0?`<i style="width:${w2}%;background:var(--segused)"></i>`:''}</div>`;
 }
 function quotaCard(q){
   const wins=q.windows||[];
@@ -521,7 +819,7 @@ function quotaCard(q){
   const hue=[...nameStr].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7)%360;
   const initial=[...nameStr].find(c=>c.trim())||'?';
   const days=expWin?(expT-Date.now()):null;
-  const badge=days!=null?`<i class="q2days" style="background:${expColor(days/864e5)}">${days<864e5?'今天':days<2*864e5?'明天':Math.ceil(days/864e5)+'天'}</i>`:'';
+  const badge=days!=null?`<i class="q2days" style="background:${expColor(days/864e5)}">${days<864e5?t('today'):days<2*864e5?t('tomorrow'):Math.ceil(days/864e5)+t('dayUnit')}</i>`:'';
   const iconFile=brandIcon(q);
   const logo=iconFile
     ?`<div class="q2logo" style="--h:${hue}">${esc(initial)}<img src="${esc(iconFile.replace(/^\//,''))}" onerror="this.remove()">${badge}</div>`
@@ -530,27 +828,27 @@ function quotaCard(q){
   const rows=[];
   if(expWin){
     const rem=winRemain(expWin);
-    const val=rem!=null?('剩 '+fmt(rem)+(expWin.limit?(' / 共 '+fmt(expWin.limit)):''))
+    const val=rem!=null?(t('remPre')+fmt(rem)+(expWin.limit?(t('ofTotal')+fmt(expWin.limit)):'')+t('remSuf'))
       :(/欠费/.test(expWin.display||'')?esc(expWin.display)
-      :(expWin.text?('剩 '+fmt(dispNum(expWin)||0))
-      :(expWin.remaining!=null?(expWin.limit&&!/usd|美元|\$/i.test(expWin.unit||'')?('剩 '+fmt(expWin.limit*expWin.remaining/100)+' / 共 '+fmt(expWin.limit)):('剩 '+Math.round(expWin.remaining)+'%')):(expWin.display?esc(expWin.display):'—'))));
+      :(expWin.text?(t('remPre')+fmt(dispNum(expWin)||0)+t('remSuf'))
+      :(expWin.remaining!=null?(expWin.limit&&!/usd|美元|\$/i.test(expWin.unit||'')?(t('remPre')+fmt(expWin.limit*expWin.remaining/100)+t('ofTotal')+fmt(expWin.limit)+t('remSuf')):(t('remPre')+Math.round(expWin.remaining)+'%'+t('remSuf'))):(expWin.display?esc(expWin.display):'—'))));
     const left=(expT-Date.now())/864e5;
     const frac=(expWin.runsOut!=null&&expWin.limit)?expWin.runsOut/expWin.limit:(expWin.remaining!=null?expWin.remaining/100:null);
-    // 窗口本身就叫「总积分」时，第一行讲剩余、第二行讲总量，避免两个同名标签
-    const expLabel=(expWin.name==='总积分')?'剩余积分':expWin.name;
+    // 窗口本身就叫「总积分」时，第一行讲剩余、第二行讲总量，避免两个同名标签（比较对象是上游中文名，走 T.zh）
+    const expLabel=(expWin.name===T.zh.winTotalPoints)?t('winRemPoints'):expWin.name;
     const bar1=frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%;background:${expColor(days/864e5)}"></i></div>`:'';
     rows.push(`<div class="q2row"><span class="q2label" title="${esc(expWin.name)}">${esc(expLabel)}</span><span class="q2val">${val}</span><span class="q2exp" style="color:${expColor(left)}${left<=7?';font-weight:600':''}">${fmtDaysLeft(expT)}</span></div>`
       +bar1);
   }
   if(tot){
-    rows.push(`<div class="q2row"><span class="q2label">总积分</span><span class="q2val">${fmtPts(tot.n)}</span><span class="q2exp">${esc(tot.u)}${tot.exp&&(!expWin||Math.abs(tot.exp-expT)>6e4)?(' · '+fmtDaysLeft(tot.exp)):''}</span></div>`);
+    rows.push(`<div class="q2row"><span class="q2label">${t('winTotalPoints')}</span><span class="q2val">${fmtPts(tot.n)}</span><span class="q2exp">${esc(tot.u)}${tot.exp&&(!expWin||Math.abs(tot.exp-expT)>6e4)?(' · '+fmtDaysLeft(tot.exp)):''}</span></div>`);
     if(sp){
       // 可用（长期+临时剩余）与已消耗两段；两者相加=发放总量
       const avail=sp.perm+sp.tempR, all=avail+sp.used;
       const w2=x=>Math.max(0,100*x/all).toFixed(1);
       const seg=[`<i style="width:${w2(avail)}%;background:#4da3ff"></i>`];
       if(sp.used>0)seg.push(`<i style="width:${w2(sp.used)}%;background:rgba(255,255,255,.18)"></i>`);
-      rows.push(`<div class="q2bar q2seg" title="可用 ${fmtPts(avail)}（长期 ${fmtPts(sp.perm)} + 临时剩余 ${fmtPts(sp.tempR)}）· 临时已用 ${fmtPts(sp.used)}">${seg.join('')}</div>`);
+      rows.push(`<div class="q2bar q2seg" title="${t('avail')} ${fmtPts(avail)}${t('lparen')}${t('perm')} ${fmtPts(sp.perm)} + ${t('tempRem')} ${fmtPts(sp.tempR)}${t('rparen')} · ${t('tempUsed')} ${fmtPts(sp.used)}">${seg.join('')}</div>`);
     }else{
       const p2=poolSplit(expWin);
       if(p2)rows.push(segBar(expWin.name,p2.rem,p2.used));
@@ -569,29 +867,29 @@ function quotaCard(q){
         const frac2=(rem2!=null&&bw.limit)?rem2/bw.limit:(bw.remaining!=null?bw.remaining/100:null);
         const e2=winExp(bw), d2=e2!=null?(e2-Date.now())/864e5:null;
         const right2=d2!=null?fmtDaysLeft(e2):(bw.unit?esc(bw.unit):'');
-        rows.push(`<div class="q2row"><span class="q2label" title="${esc(bw.name)}">${esc(bw.name)}</span><span class="q2val">${rem2!=null?('剩 '+fmt(rem2)+(bw.limit?(' / 共 '+fmt(bw.limit)):'')):'—'}</span><span class="q2exp"${d2!=null?` style="color:${expColor(d2)}${d2<=7?';font-weight:600':''}"`:''}>${right2}</span></div>`
+        rows.push(`<div class="q2row"><span class="q2label" title="${esc(bw.name)}">${esc(bw.name)}</span><span class="q2val">${rem2!=null?(t('remPre')+fmt(rem2)+(bw.limit?(t('ofTotal')+fmt(bw.limit)):'')+t('remSuf')):'—'}</span><span class="q2exp"${d2!=null?` style="color:${expColor(d2)}${d2<=7?';font-weight:600':''}"`:''}>${right2}</span></div>`
           +(frac2!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac2*100)).toFixed(1)}%;background:${d2!=null?expColor(d2):'#4da3ff'}"></i></div>`:''));
       }
     }  }else if(totWin){
     const rem=winRemain(totWin);
     const val=rem!=null?fmt(rem):(totWin.remaining!=null?Math.round(totWin.remaining)+'%':esc(totWin.display||'—'));
     let right;
-    if(/永久/.test(totWin.name||''))right='永久';
+    if(/永久/.test(totWin.name||''))right=t('permRight');
     else if(rem!=null&&totWin.limit)right='/ '+fmt(totWin.limit);
-    else if(totWin.remaining!=null&&totWin.limit)right='共 '+fmt(totWin.limit);
+    else if(totWin.remaining!=null&&totWin.limit)right=t('totalPre')+fmt(totWin.limit)+t('totalSuf');
     else right='';
     const frac=(totWin.runsOut!=null&&totWin.limit)?totWin.runsOut/totWin.limit:(totWin.remaining!=null?totWin.remaining/100:null);
     rows.push(`<div class="q2row"><span class="q2label" title="${esc(totWin.name)}">${esc(totWin.name)}</span><span class="q2val">${val}</span><span class="q2exp">${right}</span></div>`
       +(frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%"></i></div>`:''));
   }else if(!totWin&&!q.balance&&expWin&&expWin.limit){
     const p3=poolSplit(expWin);
-    rows.push(`<div class="q2row"><span class="q2label">总额度</span><span class="q2val">共 ${fmt(expWin.limit)}</span><span class="q2exp">${esc(expWin.unit||'')}</span></div>`
+    rows.push(`<div class="q2row"><span class="q2label">${t('totalQuota')}</span><span class="q2val">${t('totalPre')+fmt(expWin.limit)+t('totalSuf')}</span><span class="q2exp">${esc(expWin.unit||'')}</span></div>`
       +(p3?segBar(expWin.name,p3.rem,p3.used):''));
   }else if(q.balance){
     const m=String(q.balance).match(/^([\d,.]+)\s*(.*)$/);
-    rows.push(`<div class="q2row"><span class="q2label">积分余额</span><span class="q2val">${m?fmt(Number(m[1].replace(/,/g,''))):esc(q.balance)}</span><span class="q2exp">${m?esc(m[2]):''}</span></div>`);
+    rows.push(`<div class="q2row"><span class="q2label">${t('pointsBalance')}</span><span class="q2val">${m?fmt(Number(m[1].replace(/,/g,''))):esc(q.balance)}</span><span class="q2exp">${m?esc(m[2]):''}</span></div>`);
   }
-  if(!rows.length)rows.push('<div class="q2row"><span class="q2label">无窗口数据</span></div>');
+  if(!rows.length)rows.push('<div class="q2row"><span class="q2label">'+t('noWindows')+'</span></div>');
   const user=(q.user&&q.user!=='None'&&q.user!==nameStr)?`<span class="q2user" title="${esc(q.user)}">${esc(q.user)}</span>`:'';
   return `<div class="card q2card">${logo}<div class="q2body">
     <div class="q2head"><span class="q2name" title="${esc(nameStr)}">${esc(nameStr)}</span>${user}</div>
@@ -601,9 +899,9 @@ function quotaCard(q){
 function countdown(iso){
   if(!iso)return'';
   const ms=new Date(iso)-Date.now();
-  if(ms<=0)return'已重置';
+  if(ms<=0)return t('resetDone');
   const h=Math.floor(ms/36e5),m=Math.floor(ms%36e5/6e4);
-  return h>=24?Math.floor(h/24)+'天'+h%24+'时':h+'时'+m+'分';
+  return h>=24?Math.floor(h/24)+t('dayUnit')+h%24+t('hrUnit'):h+t('hrUnit')+m+t('minUnit');
 }
 
 let gwLimit=null; // 最近一次 /v1/magpie/limit：网关短暂缺席时沿用旧值；此前未声明，首绘读到未定义标识符 → 「渲染失败: gwLimit is not defined」红条闪现
@@ -636,12 +934,12 @@ function renderQuotas(list,limitInfo){
     if(fb)return -1;
     return (ta-tb)||(a.name||'').localeCompare(b.name||'');
   });
-  $('#quotaGrid').innerHTML=arr.map(quotaCard).join('')||'<div class="err">没有额度数据</div>';
+  $('#quotaGrid').innerHTML=arr.map(quotaCard).join('')||'<div class="err">'+t('noQuotaData')+'</div>';
   // magpie 0.1.2981+ /v1/magpie/limit：caller key 被限（holds）时在段落标题旁亮提示
   const hl=gwLimit;
   const pill=$('#quotaPill');
-  if(pill)pill.title='网关 holds 状态：'+(hl?('key='+JSON.stringify(hl.key||'')+' limited='+hl.limited):'未知');
-  if(pill&&hl&&hl.limited){pill.style.color='#f85149';const base=pill.textContent.replace(/ · .*/,'');pill.textContent=(base?base+' · ':'')+'⚠ 有 key 被 holds（'+String(hl.key||'').slice(0,20)+'）';}
+  if(pill)pill.title=t('holdsTitle')+(hl?('key='+JSON.stringify(hl.key||'')+' limited='+hl.limited):t('unknown'));
+  if(pill&&hl&&hl.limited){pill.style.color='#f85149';const base=pill.textContent.replace(/ · .*/,'');pill.textContent=(base?base+' · ':'')+t('holdsWarnPre')+String(hl.key||'').slice(0,20)+t('holdsWarnSuf');}
   else if(pill)pill.style.color='';
 }
 
@@ -696,22 +994,22 @@ function renderKpis(u){
   const sm=(arr,f)=>arr.reduce((s2,m)=>s2+(m[f]||0),0);
   const hasRemote=sm(rem,'calls')>0;
   const k=[
-    ['调用',u.calls,x=>fmt(x),hasRemote
-      ?`直连 ${fmt(sm(mine,'calls'))} · 远端 ${fmt(sm(rem,'calls'))}`+(u.errors?` · 错误 ${u.errors}`:'')
-      :(u.errors?`错误 ${u.errors}`:'')],
-    ['总 Token（含 cache 读）',(u.input||0)+(u.output||0)+(u.cache_read||0),x=>fmt(x),
+    [t('calls'),u.calls,x=>fmt(x),hasRemote
+      ?`${t('stDirect')} ${fmt(sm(mine,'calls'))} · ${t('stRemote')} ${fmt(sm(rem,'calls'))}`+(u.errors?` · ${t('errors')} ${u.errors}`:'')
+      :(u.errors?`${t('errors')} ${u.errors}`:'')],
+    [t('kpiTotalTokens'),(u.input||0)+(u.output||0)+(u.cache_read||0),x=>fmt(x),
       hasRemote
-      ?`直连 ${fmt(sm(mine,'input')+sm(mine,'output')+sm(mine,'cache_read'))}`
-        +` · 远端 ${fmt(sm(rem,'input')+sm(rem,'output')+sm(rem,'cache_read'))}`
+      ?`${t('stDirect')} ${fmt(sm(mine,'input')+sm(mine,'output')+sm(mine,'cache_read'))}`
+        +` · ${t('stRemote')} ${fmt(sm(rem,'input')+sm(rem,'output')+sm(rem,'cache_read'))}`
       :''],
-    ['费用',u.cost,x=>fmtCNY(x),(hasRemote?`直连 ${fmtCNY(sm(mine,'cost'))} · 远端 ${fmtCNY(sm(rem,'cost'))}`:'')
-      +(u.unpriced?(hasRemote?' · ':'')+`${u.unpriced} 次未计价`:'')
-      ,'按 magpie 价格表折算，非实际支出'],
-    ['平均 TTFT',u.timed?u.ttft_ms/u.timed:null,x=>x==null?'—':(x/1000).toFixed(1)+' 秒',u.timed?`${u.timed} 次有计时`:''],
-    ['缓存命中率',(u.input||0)+(u.cache_read||0)
+    [t('kpiCost'),u.cost,x=>fmtCNY(x),(hasRemote?`${t('stDirect')} ${fmtCNY(sm(mine,'cost'))} · ${t('stRemote')} ${fmtCNY(sm(rem,'cost'))}`:'')
+      +(u.unpriced?(hasRemote?' · ':'')+`${u.unpriced}${t('unpricedSuf')}`:'')
+      ,t('kpiCostNote')],
+    [t('kpiTtft'),u.timed?u.ttft_ms/u.timed:null,x=>x==null?'—':(x/1000).toFixed(1)+t('secSp'),u.timed?`${u.timed}${t('timedSuf')}`:''],
+    [t('kpiCacheHit'),(u.input||0)+(u.cache_read||0)
       ?Math.round(100*(u.cache_read||0)/((u.input||0)+(u.cache_read||0))):0,x=>x+'%',
-      `cache 读 ${fmt(u.cache_read)} Token`],
-    ['平均速度',u.decode_n&&u.decode_ms?u.decode_out/u.decode_ms*1000:null,x=>x==null?'—':Math.round(x)+' Token/秒',`输出 ${fmt(u.output)} Token`],
+      `${t('cacheReadPre')} ${fmt(u.cache_read)} Token`],
+    [t('kpiSpeed'),u.decode_n&&u.decode_ms?u.decode_out/u.decode_ms*1000:null,x=>x==null?'—':Math.round(x)+t('tokPerSec'),`${t('output')} ${fmt(u.output)} Token`],
   ];
   $('#kpis').innerHTML=k.map(([l,,f,s,vt])=>{
     const segs=s?s.split(' · '):[];
@@ -742,7 +1040,7 @@ function drawHourly(){
   const rowsD=hourlyLocal.map(x=>({hour:x.hour,rows:[x.d||{}]}));
   const rowsR=rem.map(x=>({hour:x.hour,rows:[x.r||{}]}));
   const daysX=[...new Set([...rowsD.map(x=>x.hour),...rowsR.map(x=>x.hour)])].sort();
-  if(!daysX.length){const c=initChart('cCache24');c.clear();cover('cCache24',hourlyErr?'<span style="color:var(--bad)">日志读取失败：'+esc(hourlyErr)+'</span>':'<span>暂无数据</span>');return;}
+  if(!daysX.length){const c=initChart('cCache24');c.clear();cover('cCache24',hourlyErr?'<span style="color:var(--bad)">'+t('logReadFail')+esc(hourlyErr)+'</span>':'<span>'+t('noData')+'</span>');return;}
   cover('cCache24',null);
   const rate=rows=>{const i2=rows.reduce((s2,x)=>s2+(x.input||0),0),c2=rows.reduce((s2,x)=>s2+(x.cache_read||0),0);
     return (i2+c2)?+(100*c2/(i2+c2)).toFixed(1):0;};
@@ -759,21 +1057,21 @@ function drawHourly(){
       formatter:ps=>{
         const h2=daysX[ps[0].dataIndex];
         const rr=rowsAll[ps[0].dataIndex].rows;
-        return `<b>${esc(h2)}</b><br/>命中率 ${rate(rr)}%（命中 ${fmt(rr.reduce((s2,x)=>s2+(x.cache_read||0),0))} / 输入 ${fmt(rr.reduce((s2,x)=>s2+(x.input||0),0))}）<br/>Token ${fmt(tok(rr))}`;
+        return `<b>${esc(h2)}</b><br/>${t('hitRate')} ${rate(rr)}%${t('lparen')}${t('hit')} ${fmt(rr.reduce((s2,x)=>s2+(x.cache_read||0),0))} / ${t('input')} ${fmt(rr.reduce((s2,x)=>s2+(x.input||0),0))}${t('rparen')}<br/>Token ${fmt(tok(rr))}`;
       }},
     legend:{textStyle:{color:cssVar('--dim'),fontSize:11},top:0},
     grid:{left:48,right:60,top:32,bottom:26},
     xAxis:{type:'category',data:daysX,axisLabel:{color:cssVar('--dim'),fontSize:11,hideOverlap:true},
       axisLine:{lineStyle:{color:cssVar('--line')}},axisTick:{show:false}},
     yAxis:[
-      {type:'value',min:0,max:100,name:'命中率',nameTextStyle:{color:'#4da3ff',fontSize:11},
+      {type:'value',min:0,max:100,name:t('hitRate'),nameTextStyle:{color:'#4da3ff',fontSize:11},
         axisLabel:{color:'#4da3ff',formatter:'{value}%'},splitLine:{lineStyle:{color:'#1d2430'}}},
       {type:'value',name:'Token',nameTextStyle:{color:AMBER,fontSize:11},
         axisLabel:{color:AMBER,fontSize:11,formatter:fmtAxis},splitLine:{show:false}},
     ],
     series:[
       // 平滑双线：蓝=命中率（左轴），琥珀=token（右轴）——同「远端每天 tokens」的平滑风格
-      {name:'命中率',type:'line',yAxisIndex:0,smooth:true,symbol:'circle',symbolSize:5,
+      {name:t('hitRate'),type:'line',yAxisIndex:0,smooth:true,symbol:'circle',symbolSize:5,
         data:daysX.map((h2,i2)=>rate(rowsAll[i2].rows)),
         itemStyle:{color:'#4da3ff'},lineStyle:{width:2,color:'#4da3ff'},connectNulls:true},
       {name:'Token',type:'line',yAxisIndex:1,smooth:true,symbol:'circle',symbolSize:5,
@@ -788,7 +1086,7 @@ function renderDaily(detail){
   const c=initChart('cDaily');
   const days=(detail.daily||[]);
   if(detail.error){c.clear();cover('cDaily','<span style="color:var(--bad)">'+esc(detail.error)+'</span>');return;}
-  if(!days.length){c.clear();cover('cDaily','<span>暂无数据</span>');return;}
+  if(!days.length){c.clear();cover('cDaily','<span>'+t('noData')+'</span>');return;}
   cover('cDaily',null);
   const dayKey=d=>String(d).slice(5);
   // 真实 provider 视图（token 口径）：本机直连（去掉出口名）+ 远端归因，同名 provider 合并成一根柱。
@@ -801,7 +1099,7 @@ function renderDaily(detail){
       let pn;
       if(REMOTE_ENTRY.has(p0.provider)){
         if(lastRemote||!remoteFailed) continue; // 归因未返回时先不出口行，防止线路名闪现；真不可用才按线路兜底
-        pn=LINE_OF[p0.provider]||p0.provider;
+        pn=LINE_OF[p0.provider]?t(LINE_OF[p0.provider]):p0.provider;
       }else pn=nameOf(p0.provider);
       const a=m.get(pn)||{calls:0,tok:0};
       a.calls+=p0.calls||0; a.tok+=(p0.inp||0)+(p0.out||0)+(p0.cache||0);
@@ -902,17 +1200,17 @@ function renderDaily(detail){
 const baseModel=(id)=>{const s0=String(id||'').split(' @ ')[0];const parts=s0.split('/');return parts[parts.length-1]||s0;};
 
 function pieWithLegend(id, arr, nameFn){
-  if(!arr||!arr.length){const c=initChart(id);c.clear();cover(id,'<span>暂无数据</span>');return;}
+  if(!arr||!arr.length){const c=initChart(id);c.clear();cover(id,'<span>'+t('noData')+'</span>');return;}
   cover(id,null);
   // 前 10 + 其它；>5% 的片直接在片内标百分比（白字），<5% 不标；
   // 图例小字号、自动换行展示全部条目
   const top=arr.slice(0,10);
   const tail=arr.slice(10).reduce((s2,x)=>s2+(x.value||0),0);
-  const data=tail>0?[...top.map(x=>({name:nameFn(x),value:x.value})),{name:'其它',value:tail}]
+  const data=tail>0?[...top.map(x=>({name:nameFn(x),value:x.value})),{name:t('pieOther'),value:tail}]
     :top.map(x=>({name:nameFn(x),value:x.value}));
   const c=initChart(id);
   c.setOption({
-    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+' 次 ('+pp.percent+'%)'},
+    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+t('timesUnit')+' ('+pp.percent+'%)'},
     legend:{bottom:0,left:'center',type:'plain',
       itemWidth:10,itemHeight:10,itemGap:8,
       textStyle:{color:cssVar('--dim'),fontSize:10.5},
@@ -948,10 +1246,11 @@ let daysLenGlobal=0;
 // 真实花销以远端归因（VPS 侧 provider/providerAccount）为准
 const REMOTE_ENTRY=new Set(['magpie-direct','magpie-cf','magpie-2','remote-magpie']);
 // 归因不可用时的兜底细分：出口按线路归并展示（链路恢复后由远端归因接管，归到真实 provider）
-const LINE_OF={'magpie-direct':'直连线路（未归因）','remote-magpie':'直连线路（未归因）','magpie-cf':'代理线路（未归因）','magpie-2':'代理线路（未归因）'};
+// 值为词典键，展示时经 t() 取词（上游出口名固定为英文，与 UI 语言无关）
+const LINE_OF={'magpie-direct':'lineDirectUnattr','remote-magpie':'lineDirectUnattr','magpie-cf':'lineProxyUnattr','magpie-2':'lineProxyUnattr'};
 // 品牌拆分名归并（同一家的不同端点命名，2026-11-01 用户拍板）
-const MERGE={'autoclaw':'autoclaw-cn','msmoli':'msmoli-ai','qoder':'qoder-cn','hub-magicrew-intl':'hub-magicrew'};
-const nameOf=pn=>MERGE[pn]||pn;
+// 品牌名按 provider 原名展示（不再做个人化的归并映射）
+const nameOf=pn=>String(pn||'');
 // 线路前缀剥离（直连/代理两线路+旧出口名，归一化到同一订阅）
 const normSub=p=>String(p||'').replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//,'');
 // 品牌 logo 映射 = window.QLOGOS（deploy 部署时由 logos/manifest.json 注入；
@@ -960,7 +1259,6 @@ const normSub=p=>String(p||'').replace(/^(magpie-direct|magpie-cf|magpie-2|remot
 // 按「精确 → 去 #实例id → 别名 → 去 hub- 前缀 → 去变体后缀」依次兜底，未命中用首字色块。
 const LOGO_ALIAS={'opencode-2-free':'zen','opencode-zen-free':'zen','msmoli':'modelscope','msmoli-ai':'modelscope','~keys':'magpie'};
 function brandIcon(q){
-  if(q.icon&&q.icon.startsWith('file:'))return q.icon.slice(5);
   const map=window.QLOGOS||{};
   const s=normSub(q.provider).replace(/#.*$/,'');
   const base=s.replace(/^hub-/,'');
@@ -971,28 +1269,28 @@ function brandIcon(q){
 function renderFlow(){
   const c=initChart('cFlow');
   const direct=lastModels.filter(m=>!REMOTE_ENTRY.has(m.provider||'')).reduce((s,m)=>s+(m.calls||0),0);
-  const data=[{name:'本机直连',value:direct,itemStyle:{color:'#4da3ff'}}];
+  const data=[{name:t('flowDirect'),value:direct,itemStyle:{color:'#4da3ff'}}];
   const cb=(lastRemote&&lastRemote.callerBreakdown)||[];
   const mine=new Set(['cloud','Magpie']);
   let remote=0;
   for(const x of cb){ if(mine.has(x.name)) remote+=x.calls||0; }
-  if(lastRemote) data.push({name:'本机→remote',value:remote,itemStyle:{color:'#bc8cff'}});
-  if(!direct&&!lastRemote&&!cb.length){c.clear();cover('cFlow','<span>暂无数据</span>');return;}
+  if(lastRemote) data.push({name:t('flowViaRemote'),value:remote,itemStyle:{color:'#bc8cff'}});
+  if(!direct&&!lastRemote&&!cb.length){c.clear();cover('cFlow','<span>'+t('noData')+'</span>');return;}
   cover('cFlow',null);
   const total=(data.reduce((s2,x)=>s2+(x.value||0),0)||0)+cb.reduce((s2,x)=>s2+(mine.has(x.name)?0:(x.calls||0)),0)||1;
   const rest=[];
   for(const x of cb){
     if(mine.has(x.name)) continue;
-    const item={name:'其它·'+x.name,value:x.calls||0};
-    // 「(无)」是没带 caller key 的内部流量，不值得单独成片
-    if(x.name!=='(无)' && item.value/total>=0.02) data.push(item); else rest.push(item);
+    const item={name:t('flowOtherPre')+x.name,value:x.calls||0};
+    // 「(无)」是没带 caller key 的内部流量，不值得单独成片（比较对象是上游数据值，走 T.zh）
+    if(x.name!==T.zh.callerNone && item.value/total>=0.02) data.push(item); else rest.push(item);
   }
   if(rest.length){
     const sum=rest.reduce((s2,x)=>s2+x.value,0);
-    if(sum>0) data.push({name:'其它调用方（'+rest.length+' 个）',value:sum});
+    if(sum>0) data.push({name:t('otherCallersPre')+rest.length+t('otherCallersSuf'),value:sum});
   }
   c.setOption({
-    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+' 次 ('+pp.percent+'%)'},
+    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+t('timesUnit')+' ('+pp.percent+'%)'},
     legend:{bottom:0,left:'center',textStyle:{color:cssVar('--dim'),fontSize:11},type:'scroll'},
     series:[{type:'pie',radius:['40%','66%'],center:['50%','42%'],
       data:data.map((d,i)=>d.itemStyle?d:({...d,itemStyle:{color:PALETTE[i%PALETTE.length]}})),
@@ -1011,7 +1309,7 @@ function renderProv(models){
   for(const m of lastModels){
     const p=m.provider||'other';
     if(REMOTE_ENTRY.has(p)&&(lastRemote||!remoteFailed)) continue;
-    push(REMOTE_ENTRY.has(p)?(LINE_OF[p]||p):nameOf(p),m.calls||0);
+    push(REMOTE_ENTRY.has(p)?(LINE_OF[p]?t(LINE_OF[p]):p):nameOf(p),m.calls||0);
   }
   // 有归因时按真实 provider 合并（本地直连与远端落地的同名 provider 加在一起）
   if(lastRemote) for(const rp of (lastRemote.providers||[])) push(nameOf(rp.provider),rp.calls||0);
@@ -1021,16 +1319,18 @@ function renderProv(models){
 function renderHeat(heat){
   const c=initChart('cHeat');
   heat=heat||[];
-  if(!heat.length){c.clear();cover('cHeat','<span>暂无数据</span>');return;}
+  if(!heat.length){c.clear();cover('cHeat','<span>'+t('noData')+'</span>');return;}
   cover('cHeat',null);
   const data=[];
   for(let d=0;d<7;d++)for(let h=0;h<24;h++)data.push([h,d,heat[d*24+h]||0]);
   const max=Math.max(1,...heat);
   c.setOption({
-    tooltip:{...TIP,formatter:p=>`周${'日一二三四五六'[p.value[1]]} ${p.value[0]}:00 · ${p.value[2]} 次`},
+    tooltip:{...TIP,formatter:p=>(LANG==='zh'
+      ?t('weekPre')+t('weekChars')[p.value[1]]
+      :['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][p.value[1]])+' '+p.value[0]+':00 · '+p.value[2]+t('timesUnit')},
     grid:{left:44,right:16,top:8,bottom:52},
-    xAxis:{type:'category',data:[...Array(24).keys()].map(h=>h+'时'),axisLabel:{color:cssVar('--dim'),fontSize:11}},
-    yAxis:{type:'category',data:['周日','周一','周二','周三','周四','周五','周六'],axisLabel:{color:cssVar('--dim'),fontSize:11}},
+    xAxis:{type:'category',data:[...Array(24).keys()].map(h=>h+t('hourAxis')),axisLabel:{color:cssVar('--dim'),fontSize:11}},
+    yAxis:{type:'category',data:['wd0','wd1','wd2','wd3','wd4','wd5','wd6'].map(t),axisLabel:{color:cssVar('--dim'),fontSize:11}},
     visualMap:{min:0,max,calculable:false,orient:'horizontal',left:'center',bottom:0,
       inRange:{color:[cssVar('--heat0'),'#1a3a6b','#2563c4','#4da3ff','#a5d8ff']},textStyle:{color:cssVar('--dim'),fontSize:11}},
     series:[{type:'heatmap',data,itemStyle:{borderColor:cssVar('--bg'),borderWidth:2,borderRadius:3},
@@ -1043,12 +1343,12 @@ function renderRecent(rows){
     const ok=r.status===200;
     const retry=(r.tries||1)>1;
     const st=ok&&!retry?'ok':ok&&retry?'retry':'bad';
-    const t=r.t?r.t.slice(5,16).replace('T',' '):'';
-    return `<tr><td>${esc(t)}</td><td>${esc(r.agent||'')}</td><td>${esc(r.provider||'')}</td><td>${esc(r.model||'')}</td>
-      <td class="num">${fmt(r.in)}</td><td class="num">${fmt(r.out)}</td><td class="num">${r.ttft!=null?(r.ttft/1000).toFixed(1)+' 秒':'—'}</td>
-      <td class="num">${r.ms!=null?(r.ms/1000).toFixed(1)+' 秒':'—'}</td>
-      <td><span class="st ${st}"></span>${esc(String(r.status))}${retry?` · 重试${esc(String(r.tries-1))}`:''}</td></tr>`;
-  }).join('')||'<tr><td colspan="9" class="err">没有请求记录（usage.jsonl 不可用）</td></tr>';
+    const tm=r.t?r.t.slice(5,16).replace('T',' '):'';
+    return `<tr><td>${esc(tm)}</td><td>${esc(r.agent||'')}</td><td>${esc(r.provider||'')}</td><td>${esc(r.model||'')}</td>
+      <td class="num">${fmt(r.in)}</td><td class="num">${fmt(r.out)}</td><td class="num">${r.ttft!=null?(r.ttft/1000).toFixed(1)+t('secSp'):'—'}</td>
+      <td class="num">${r.ms!=null?(r.ms/1000).toFixed(1)+t('secSp'):'—'}</td>
+      <td><span class="st ${st}"></span>${esc(String(r.status))}${retry?t('retryPre')+esc(String(r.tries-1)):''}</td></tr>`;
+  }).join('')||'<tr><td colspan="9" class="err">'+t('noRequests')+'</td></tr>';
 }
 
 const PKEY=new URLSearchParams(location.search).get('key')||window.__KEY__||'';
@@ -1068,11 +1368,11 @@ setInterval(function(){
 
 // 上游采集异常必须可见（静默显 0 会误导，data-semantics 红线）：首屏用 __NOTE__，刷新用响应里的 note。
 // 幂等：无 note 移除横幅（恢复后降级提示不残留），note 变化时原位更新
-function showNote(t){
+function showNote(msg){
   let n=document.getElementById('noteBanner');
-  if(!t){ if(n)n.remove(); return; }
+  if(!msg){ if(n)n.remove(); return; }
   if(!n){ n=document.createElement('div'); n.id='noteBanner'; n.className='err'; document.querySelector('.sub').after(n); }
-  n.textContent='⚠ '+t+' —— 以下数值可能不完整';
+  n.textContent='⚠ '+msg+t('noteTail');
 }
 function paint(d){
   showNote(window.__NOTE__);
@@ -1087,18 +1387,18 @@ function paint(d){
   renderQuotas(d.quotas||[], d.limit);
   loadRemote(); // 归因到达后 renderRemote 会重画 daily/prov/flow/hourly；在此之前线路名不出现（见 remoteFailed）
   renderHourly();
-  $('#updated').textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  $('#updated').textContent=t('updatedAt')+new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'en-US',{hour12:false});
 }
 
 async function load(){
-  $('#updated').textContent='加载中…';
+  $('#updated').textContent=t('loading');
   // 首屏用服务端内联的 window.__DATA__（插件页在沙盒 frame 里，跨源 fetch 不可靠），
   // 刷新和切区间才走接口。
   const pre=window.__DATA__;
-  if(pre){ window.__DATA__=null; try{ paint(pre); return; }catch(e){ $('#updated').innerHTML='<span style="color:var(--bad)">渲染失败：'+esc(e.message||e)+'</span>'; } }
+  if(pre){ window.__DATA__=null; try{ paint(pre); return; }catch(e){ $('#updated').innerHTML='<span style="color:var(--bad)">'+t('renderFail')+esc(e.message||e)+'</span>'; } }
   try{
     const r=await fetch(auth('api/overview?period='+period),{headers:hf()});
-    if(r.status===401)throw new Error('需要口令（地址后加 ?key=…）');
+    if(r.status===401)throw new Error(t('needKey'));
     const jd=await r.json();
     if(jd.note)showNote(jd.note); // 网关异常时刷新路径也要可见，不能静默显 0
     const d=jd;
@@ -1111,16 +1411,16 @@ async function load(){
     renderProv(u.models||[]);
     renderHeat(d.detail.heat||[]);
     renderRecent(d.detail.recent||[]);
-    $('#updated').textContent='更新于 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    $('#updated').textContent=t('updatedAt')+new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'en-US',{hour12:false});
   }catch(e){
-    $('#updated').innerHTML='<span style="color:var(--bad)">加载失败：'+esc(e.message||e)+'</span>';
+    $('#updated').innerHTML='<span style="color:var(--bad)">'+t('loadFail')+esc(e.message||e)+'</span>';
   }
   try{
     const q=await (await fetch(auth('api/quotas'),{headers:hf()})).json();
-    if(q.error){ $('#quotaGrid').innerHTML='<div class="err">额度接口异常：'+esc(String(q.error).slice(0,80))+' —— 并非额度清零</div>'; return; }
+    if(q.error){ $('#quotaGrid').innerHTML='<div class="err">'+t('quotaApiErr')+esc(String(q.error).slice(0,80))+t('quotaApiErrTail')+'</div>'; return; }
     renderQuotas(q.data||[], q.limit);
   }catch(e){
-    $('#quotaGrid').innerHTML='<div class="err">额度加载失败：'+esc(e.message||e)+'</div>';
+    $('#quotaGrid').innerHTML='<div class="err">'+t('quotaLoadFail')+esc(e.message||e)+'</div>';
   }
   loadRemote();
   renderHourly();

@@ -9,6 +9,7 @@
     "server.mjs",
     "page",
     "static",
+    "build",
     "LICENSE",
     "README.md",
     "scripts",
@@ -19,6 +20,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
+    "build:echarts": "node scripts/build-echarts.mjs",
     "prepack": "node scripts/prepack.mjs"
   },
   "engines": {
@@ -60,10 +62,17 @@
       "file": "page/index.html",
       "icon": "page/icon.svg",
       "service": {
-        "port": 3455
+        "port": 3455,
+        "option": "port"
       }
     },
     "permissions": [],
+    "options": {
+      "port": 3455,
+      "attribution": "local",
+      "remoteCallers": "",
+      "remoteProviders": "magpie-direct,magpie-cf,remote-magpie"
+    },
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8IS0tIFVzYWdlIGJvYXJkOiBkYXJrIHJvdW5kZWQgcGxhdGUsIGJsdWUgdXNhZ2UgbGluZSwgb25lIGFtYmVyIGJhciAtLT4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iOTIiIGhlaWdodD0iOTIiIHJ4PSIyMCIgZmlsbD0iIzFlMjQzMCIvPgogIDwhLS0gYW1iZXIgYmFyIChxdW90YSB0b2RheSkgLS0+CiAgPHJlY3QgeD0iMjQiIHk9IjU2IiB3aWR0aD0iMTAiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjZjVhNjIzIi8+CiAgPCEtLSBibHVlIHVzYWdlIGxpbmUgb3ZlciB0aGUgbGFzdCBob3VycyAtLT4KICA8cG9seWxpbmUgcG9pbnRzPSIyMiw2NiAzNiw1MiA1MCw1OCA2NCwzOCA3OCwzMCIKICAgIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRjOWZmZSIgc3Ryb2tlLXdpZHRoPSI3IgogICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPCEtLSBlbmRwb2ludCBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNS41IiBmaWxsPSIjNGM5ZmZlIi8+Cjwvc3ZnPgo="
   },
   "devDependencies": {

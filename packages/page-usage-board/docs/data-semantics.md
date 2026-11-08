@@ -51,7 +51,7 @@ accounts (different phone numbers or keys) are different quotas and stay as sepa
 
 ## Remote cards have three states
 
-- No remote data source (e.g. a VPS-only install): hide the TTFT and account cards.
+- No remote data source (remote attribution is opt-in and defaults to local): hide the TTFT and account cards.
 - Source configured but the fetch fails (45 s client timeout, 10 s per remote page server-side): show a red error card explaining it.
 - Success: show the data.
 

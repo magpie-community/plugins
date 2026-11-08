@@ -11,11 +11,14 @@ This product includes third-party software and assets:
   available at https://www.apache.org/licenses/LICENSE-2.0
   Provenance: custom build from the npm `echarts@5.5.1` package via
   `build/echarts-entry.mjs` (see that file for the included components).
+  The bundle is byte-for-byte reproducible with `npm run build:echarts`
+  (scripts/build-echarts.mjs).
 
 * Brand logos
   Provider logos are not bundled with this package: at service startup the
-  server collects them from the magpie plugins installed on the same machine
-  (and may download an icon over https when a plugin declares one). Product
-  and company names and logos are trademarks or registered trademarks of
-  their respective owners, used solely to identify the corresponding
-  providers; they do not imply endorsement.
+  server reads magpie's own `plugin-providers.json` (the registry magpie
+  maintains next to its usage.jsonl) and keeps only the data-URI icons it
+  already contains. No network downloads and no plugin-directory scanning
+  are involved. Product and company names and logos are trademarks or
+  registered trademarks of their respective owners, used solely to identify
+  the corresponding providers; they do not imply endorsement.
