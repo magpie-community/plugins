@@ -86,6 +86,12 @@ export function rotatedCookie(res) {
 export function upstreamDetail(text, limit = 300) {
   const raw = String(text || "").trim()
   if (!raw) return ""
+  if (/^</.test(raw)) {
+    // A Cloudflare challenge page, not an API error: name it instead of
+    // pasting markup into the message.
+    const title = /<title[^>]*>([^<]{1,120})<\/title>/i.exec(raw)?.[1]?.trim()
+    return title ? `HTML page: ${title}` : "HTML page instead of a JSON error"
+  }
   try {
     const j = JSON.parse(raw)
     const d =
@@ -383,20 +389,20 @@ export function answerDelta(chunk, state) {
   // and disappear, and an open backtick may still turn into code.
   const stable = stableCut(state.full, mb.progress === "DONE")
   const sent = state.rawSent || ""
-  let fresh
+  const sources = state.sources || 0
+  let delta
   if (stable.startsWith(sent)) {
-    fresh = stable.slice(sent.length)
+    // Cleaned per fragment, never recomputed: a longer source list can then
+    // only affect text that has not been sent yet.
+    delta = clean(stable.slice(sent.length), sources)
   } else {
-    // The endpoint rewrote the text instead of extending it; start over rather
-    // than drop the difference.
-    fresh = stable
-    state.emitted = ""
+    // The endpoint rewrote the text instead of extending it. Send only what is
+    // new: never re-send text the client already has.
+    const whole = clean(stable, sources)
+    const previous = state.emitted || ""
+    delta = whole.startsWith(previous) ? whole.slice(previous.length) : ""
   }
   state.rawSent = stable
-
-  // Cleaned per fragment, never recomputed: a longer source list can then only
-  // affect text that has not been sent yet.
-  const delta = clean(fresh, state.sources || 0)
   state.emitted = (state.emitted || "") + delta
 
   return { delta, thinking: thinking.join("") }
@@ -431,8 +437,13 @@ export function stableCut(text, flush = false) {
   if (tickAt >= 0 && tail.split("`").length % 2 === 0) return src.slice(0, tailStart + tickAt)
 
   let cut = src
-  const pending = src.match(/\[[\d\s,–—-]*$/)
-  if (pending && pending.index > 0) cut = src.slice(0, pending.index)
+  // A run that is already complete may still gain a marker in the next
+  // fragment (`[1]` + `[2]`), and the chain is what makes the second one a
+  // citation: hold the trailing run until the fragment after it.
+  const trailingRun = src.match(/\[\d{1,3}(?:\]\[\d{1,3})*\]$/)
+  if (trailingRun && trailingRun.index > 0) cut = src.slice(0, trailingRun.index)
+  const pending = cut.match(/\[[\d\s,–—-]*$/)
+  if (pending && pending.index > 0) cut = cut.slice(0, pending.index)
 
   // Hold back a trailing sentence end too: the next fragment may open with the
   // marker (`." + "[1]`), and the punctuation is what makes it a citation.

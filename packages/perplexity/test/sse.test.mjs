@@ -152,6 +152,12 @@ test("systemTimeZone falls back to UTC instead of a hard-coded city", () => {
   assert.equal(systemTimeZone({ resolvedOptions: () => { throw new Error("no ICU") } }), "UTC")
 })
 
+test("an HTML challenge page is named, not pasted", () => {
+  const page = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cf</body></html>"
+  assert.equal(upstreamDetail(page), "HTML page: Just a moment...")
+  assert.equal(upstreamDetail("<html><body>no title</body></html>"), "HTML page instead of a JSON error")
+})
+
 test("upstreamDetail prefers Perplexity's own message", () => {
   assert.equal(upstreamDetail('{"error":{"message":"nope"}}'), "nope")
   assert.equal(upstreamDetail('{"detail":"denied"}'), "denied")

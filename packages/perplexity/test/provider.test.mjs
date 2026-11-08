@@ -189,6 +189,9 @@ test("the tools-ignored mark is on a streamed answer too", async () => {
   )
   assert.equal(res.status, 200)
   assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
+  const chunks = await readStream(res)
+  const text = chunks.map((c) => c.choices?.[0]?.delta?.content || "").join("")
+  assert.match(text, /Tools were ignored/)
 })
 
 test("tool_choice without any tools is not a tool request", async () => {

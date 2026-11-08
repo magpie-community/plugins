@@ -66,7 +66,8 @@ test("stableCut holds back an unfinished marker", () => {
   assert.equal(stableCut("Born in 1815["), "Born in 1815")
   assert.equal(stableCut("Born in 1815[1"), "Born in 1815")
   assert.equal(stableCut("Born in 1815[1, "), "Born in 1815")
-  assert.equal(stableCut("Born in 1815[1]"), "Born in 1815[1]")
+  assert.equal(stableCut("Born in 1815[1]"), "Born in 1815", "a trailing run may still grow")
+  assert.equal(stableCut("Born in 1815[1] x"), "Born in 1815.[1] x".slice(0, 0) + "Born in 1815[1] x")
 })
 
 test("stableCut holds back an unfinished code span or fence", () => {

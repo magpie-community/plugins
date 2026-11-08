@@ -163,7 +163,13 @@ export const server = async (input, options) => {
       async models(provider, ctx) {
         const auth = ctx?.auth
         if (!auth?.key) return provider.models
-        const info = await readSession(auth.key, undefined, auth.metadata?.ua)
+        let info
+        try {
+          info = await readSession(auth.key, undefined, auth.metadata?.ua)
+        } catch {
+          // A flaky network should not make the model list disappear.
+          return provider.models
+        }
         if (!info.ok) {
           if (info.code === "cookie_invalid") throw expired(t)
           return provider.models

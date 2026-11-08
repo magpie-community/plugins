@@ -99,6 +99,40 @@ test("a marker split as \"[1\" + \"]\" also survives", () => {
   assert.equal(text, "Rates rose. That is all.")
 })
 
+test("a citation chain split as \"[1]\" + \"[2]\" keeps both", () => {
+  const state = newState()
+  answerDelta(
+    {
+      blocks: [
+        {
+          intended_usage: "web_results",
+          web_result_block: { web_results: [{ url: "https://a" }, { url: "https://b" }] },
+        },
+      ],
+    },
+    state,
+  )
+  let text = ""
+  for (const part of ["The Fed held rates in September.[1]", "[2] Nothing changed."]) {
+    text += answerDelta(
+      { blocks: [{ intended_usage: "ask_text", markdown_block: { progress: "IN_PROGRESS", chunks: [part] } }] },
+      state,
+    ).delta
+  }
+  text += answerDelta(
+    {
+      blocks: [
+        {
+          intended_usage: "ask_text",
+          markdown_block: { progress: "DONE", chunks: ["The Fed held rates in September.[1][2] Nothing changed."] },
+        },
+      ],
+    },
+    state,
+  ).delta
+  assert.equal(text, "The Fed held rates in September. Nothing changed.")
+})
+
 test("a code fence split across fragments is held back and re-emitted whole", () => {
   const state = newState()
   let text = ""
