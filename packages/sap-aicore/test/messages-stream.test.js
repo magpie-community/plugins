@@ -127,6 +127,26 @@ test("a streamed request with session metadata routes to Bedrock and relays text
   assert.equal(events.at(-1).type, "message_stop")
 })
 
+test("agent thinking context management reaches streaming Bedrock with its beta and preserves native events", async () => {
+  const native = STREAM.map(event => event.type === "message_start"
+    ? { ...event, message: { ...event.message, context_management: { applied_edits: [] } } }
+    : event)
+  const { post, calls } = await fixture(() => streamResponse(native.map(frame)))
+  const body = {
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+  }
+  const response = await post(body)
+  assert.equal(response.status, 200)
+  assert.equal(calls.at(-1).url, OPUS_URL + "/invoke-with-response-stream")
+  const upstream = JSON.parse(calls.at(-1).init.body)
+  assert.deepEqual(upstream.context_management, body.context_management)
+  assert.deepEqual(upstream.anthropic_beta, ["context-management-2025-06-27"])
+  assert.deepEqual(upstream.thinking, body.thinking)
+  assert.deepEqual(await consumer(response).finish(), native)
+  assert.equal("anthropic_beta" in body, false)
+})
+
 test("each relayed frame carries the native SSE event name, including the error frame", async () => {
   // SAP relays data-only frames; clients such as pi dispatch on the `event:` name
   // and skip nameless frames, so they must be synthesized from the event type.

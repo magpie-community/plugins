@@ -233,6 +233,30 @@ test("session metadata is accepted without changing the Bedrock request or nativ
   assert.deepEqual(sent.at(-1).body, upstream)
 })
 
+test("agent thinking context management reaches Bedrock with its beta and preserves the whole native reply", async () => {
+  const reply = { ...MESSAGE, context_management: { applied_edits: [] } }
+  const { post, sent } = await fixture(() => new Response(JSON.stringify(reply)))
+  const body = base({
+    max_tokens: 256,
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    messages: [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "earlier reasoning", signature: "signed-history" }, { type: "text", text: "first answer" }] },
+      { role: "user", content: "next question" },
+    ],
+  })
+  const response = await post("/messages", body)
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), reply)
+  assert.equal(sent.at(-1).url, OPUS_URL + "/invoke")
+  assert.deepEqual(sent.at(-1).body.context_management, body.context_management)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+  assert.deepEqual(sent.at(-1).body.thinking, body.thinking)
+  assert.deepEqual(sent.at(-1).body.messages, body.messages)
+  assert.equal("anthropic_beta" in body, false)
+})
+
 test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {
   const { post, sent } = await fixture()
   const cache_control = { type: "ephemeral" }
