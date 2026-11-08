@@ -1,54 +1,43 @@
-# Rhino 9 AI agent for Magpie
+# Rhino 9 · Magpie
 
-Adds **Rhino 9 AI** to Magpie's Agents page. Selecting a model writes a dedicated
-JSON connection file read by the Windows
-[RhinoMagpie launcher](https://github.com/mikidaren/rhino9-magpie).
+Use Magpie models, custom groups and routing strategies in a native dockable
+**Magpie** panel inside Rhino 9. The companion Rhino plugin runs its own agent loop
+and calls Rhino's built-in MCP tools to inspect and create native geometry.
 
-## Requirements and use
+## Install
 
-- Windows x64, Rhino 9 with its built-in AI panel, native Claude Code, and Magpie.
-- Download the launcher from the project's GitHub Releases and run `install.ps1`
-  first. It creates the directory Magpie uses to detect this integration.
-- Install this folder with `magpie plugin add /path/to/plugin`.
-- Pick a model in Magpie's **Rhino 9 AI** row.
-- Open Rhino with `RhinoMagpie.exe`, then select **Claude / Opus (latest)** in
-  Rhino's AI settings.
+1. Install Rhino 9 on Windows and run Magpie.
+2. Download `RhinoMagpie-panel-win-x64.zip` from the companion repository releases.
+   Extract it and run `install-panel.ps1`. Restart Rhino after installation.
+3. Install this Magpie plugin with `magpie plugin add /path/to/plugin`.
+4. Connect **Rhino 9 · Magpie** in Magpie's Agents page and select a model or group.
+5. Open Rhino normally and run the `Magpie` command.
 
-This is a process-environment bridge through Rhino's existing Claude agent,
-not a new Rhino agent implementation. Model changes require closing the launched
-Rhino and opening it again with the launcher. A normal Rhino launch does not
-receive this plugin's gateway environment. Use the latest Opus, Sonnet or Haiku
-alias in Rhino; pinned version names bypass those alias mappings.
+The panel follows Magpie's configured selection on each new turn. Refresh its
+catalog to optionally select a different model or routing group for that panel.
+Leave **跟随 Magpie 当前模型 / 自定义组** selected to follow Magpie.
 
-## Configuration ownership
+The Magpie plugin manages `model`, `baseUrl` and `apiKey` in
+`~/.config/rhino9-magpie/settings.json`. Disconnect restores the previous keys.
+The panel checks that file at the start of every turn. Credentials already sent
+with an in-flight request remain effective for that request.
 
-Magpie owns `model`, `baseUrl`, and `apiKey` in
-`~/.config/rhino9-magpie/settings.json`, restoring their previous values when
-disconnected. Other keys remain untouched. The key belongs to the `rhino9-ai`
-agent so its requests can be attributed separately. No provider accounts are
-read by this plugin, and it has no runtime, timers, dependencies or install hooks.
-
-The companion launcher is required. It accepts only a local HTTP Magpie gateway
-in this release and uses a separate Claude configuration directory. The plugin
-alone does not alter Rhino's settings or launch Rhino. Disconnect before removing
-the plugin; close any launched Rhino process to stop using its inherited config.
-Local config holds a gateway credential and must not be shared.
+The two installations provide the Magpie connection and Rhino UI respectively.
+This descriptor has no install hook or background runtime. Requests are attributed
+to the distinct `rhino9-ai` gateway identity. Keep the local connection file private.
 
 ## 中文
 
-在 Magpie 的 Agent 页添加 **Rhino 9 AI**。选好模型后，用配套的 Windows
-启动器打开 Rhino，在原生 AI 面板选择 **Claude / Opus (latest)** 即可。
-Claude Code 负责代理与工具调用，请求经 Magpie 使用所选模型。
+配套 Rhino 插件提供独立的 **Magpie** 面板，支持自然语言建模、Rhino MCP、
+视口图片反馈、工具确认、停止和按文档分别保留对话。
 
-需要安装 Rhino 9、原生 Claude Code、Magpie，以及本项目 Release 中的启动器。
-先运行 Release 里的 `install.ps1` 创建检测目录，再安装插件和选择模型。
-切换模型后需要重新通过启动器打开 Rhino。当前仅支持本机 HTTP 网关。
-插件只管理专用 JSON 中的三个连接字段，断开会恢复原值；卸载前先断开，
-已打开的 Rhino 则需要关闭才能清除继承的连接环境。
+先安装 Release 内的 `.yak` 配套包，再在 Magpie 安装此插件并连接。
+在 Rhino 输入 `Magpie` 即可打开面板。每次发送都会读取 Magpie 当前的模型、
+自定义组和策略，组 ID 会原样传给 Magpie，由 Magpie 负责路由。
 
-## Development
+初次使用请保留默认的逐次修改确认，也可主动勾选会话内自动执行修改。
+支持 Windows x64、Rhino 9 和本机 HTTP Magpie 网关。模型需要支持工具调用。
+建模结果仍需检查，复杂建筑任务和所有模型的兼容性尚需进一步验证。
 
-The standalone repository tests the descriptor with Node's built-in test runner
-and the launcher with .NET checks. See the repository for CI and validation.
-
-MIT. Unofficial integration, not affiliated with McNeel or Anthropic.
+Source and releases are maintained at https://github.com/mikidaren/rhino9-magpie.
+MIT. Unofficial community integration.

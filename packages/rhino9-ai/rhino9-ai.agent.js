@@ -1,12 +1,12 @@
 export const agent = {
   id: "rhino9-ai",
-  name: "Rhino 9 AI",
+  name: "Rhino 9 · Magpie",
   dir: "~/.config/rhino9-magpie",
   config: "~/.config/rhino9-magpie/settings.json",
   format: "json",
   model: "model",
   ua: [],
-  notice: "Launch Rhino with RhinoMagpie.exe, then choose Claude / Opus (latest) in its AI panel. Restart that Rhino instance after changing models. 使用专用启动器打开 Rhino，在 AI 面板选 Claude / Opus (latest)；切换模型后重新启动。",
+  notice: "Install the companion RhinoMagpie .yak package once, then run Magpie in Rhino 9. Its native Magpie panel follows this model or routing group on each new turn. 先安装配套 Rhino 插件，在 Rhino 9 输入 Magpie 打开独立面板；每轮跟随此处选择的模型、自定义组及策略。",
 };
 
 export function connect({ gateway, model } = {}) {

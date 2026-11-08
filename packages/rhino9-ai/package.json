@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/agent-rhino9-ai",
-  "version": "0.1.0",
-  "description": "Use Magpie models in Rhino 9's native AI panel through an isolated Windows launcher and Claude Code",
+  "version": "0.2.0",
+  "description": "Connect Magpie models, custom groups and routing strategies to the RhinoMagpie native Rhino 9 panel and Rhino MCP",
   "type": "module",
   "files": ["rhino9-ai.agent.js", "README.md"],
   "keywords": ["magpie-plugin", "magpie-agent", "rhino", "rhino9", "architecture"],
