@@ -2158,6 +2158,15 @@ function busyCap() {
   }
 }
 
+// BUSY_HOLD_MARK marks an answer the hold made up: a request the gate or the
+// hold stopped locally never reached ZCode, and it says nothing about the
+// gift's quota. The gift paths (a -Trial pick, free first) read the mark
+// before they judge the answer spent, so a hold's 429 passes through as the
+// rate limit it is and arms no minute's rest (11-08: the hold's answer
+// through a -Trial entry read as "over its quota" with half the free quota
+// left).
+const BUSY_HOLD_MARK = "x-magpie-busy-hold"
+
 function busyHeldAnswer() {
   const wait = Math.max(1, Math.ceil((busyHold.until - busyHold.now()) / 1000))
   const error = {
@@ -2165,7 +2174,8 @@ function busyHeldAnswer() {
     message: `ZCode turned away ${BUSY_N} requests in the last minute as too many requests at once, each again when asked a second later. So that ZCode's firewall does not block this network, magpie sends no free Start Plan requests for the next ${wait}s. Wait, run fewer agents or subagents on ZCode at once, or use a GLM Coding Plan model`,
   }
   return new Response(JSON.stringify({ type: "error", error }), {
-    status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": String(wait) },
+    status: 429, statusText: STATUS_TEXT[429],
+    headers: { "content-type": "application/json", "retry-after": String(wait), [BUSY_HOLD_MARK]: "1" },
   })
 }
 
@@ -3067,7 +3077,11 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               const json = (res.headers.get("content-type") ?? "").includes("application/json")
               if (res.status >= 400 || json) {
                 const text = await res.text()
-                const spent = spentUp(text, res.status)
+                // the hold's own answer (BUSY_HOLD_MARK) is a rate limit the
+                // gift never said: it passes through as it came and arms
+                // no rest
+                const held = res.headers.get(BUSY_HOLD_MARK) === "1"
+                const spent = !held && spentUp(text, res.status)
                 if (!spent && res.status < 400) return done(kept(res, text))
                 if (spent) rest(blocked, s.key + "\0" + s.jwt + "\0" + modelOf(orig).toLowerCase())
                 return spent && res.status < 400 ? kept(new Response(text, { status: 429, headers: res.headers })) : done(kept(res, text))
@@ -3087,7 +3101,9 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               if (res.status >= 400 || json) {
                 const text = await res.text()
                 const cap = busy(res.status, text)
-                const spent = !cap && spentUp(text, res.status)
+                // the hold's own answer is no spent answer either (see the
+                // -Trial path above)
+                const spent = !cap && res.headers.get(BUSY_HOLD_MARK) !== "1" && spentUp(text, res.status)
                 if (spent) {
                   restModel(true)
                   return done(kept(await spentSaid(await replayOnPlan())))
