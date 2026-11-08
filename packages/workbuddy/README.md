@@ -304,6 +304,12 @@ on it, so 0.2.8 lifted the cap (#561). A prompt WorkBuddy does find too
 long ("prompt is too long: … > … maximum") is answered with its own 400,
 passed on as it came, which magpie takes as the context overflowing.
 
+A model's reply limit is the config's `maxOutputTokens`. The list used
+before the config is read gives it too since 0.2.26, for the models a
+config read from each site named (Deepseek-V4.1-Flash: 128000 on both).
+Before, that list gave none, and magpie filled in models.dev's: 384000
+for Deepseek-V4.1-Flash. A model it gives none for still gets models.dev's.
+
 A chat goes gzipped (`Content-Encoding: gzip`), as WorkBuddy's own client
 sends its model requests (`RequestBodyGzip` in both builds' product.json).
 Claude's Messages route goes as it came, and so does anything that isn't a
