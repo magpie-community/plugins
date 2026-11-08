@@ -11,9 +11,10 @@ import {
   writeSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { version } from '../package.json';
 import { options, type Options } from './config';
 
-export const VERSION = '0.2.2';
+export const VERSION = version;
 
 // The health endpoint is public, so the configuration digest must not be a
 // plain hash of a low-entropy gateway key. Keep the salt beside the install's
