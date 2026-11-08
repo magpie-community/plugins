@@ -147,6 +147,33 @@ test("agent thinking context management reaches streaming Bedrock with its beta 
   assert.equal("anthropic_beta" in body, false)
 })
 
+test("a malformed streamed context_management is rejected before inference, and an absent directive adds no beta on the same loader", async () => {
+  const { post, calls } = await fixture(() => streamResponse(STREAM.map(frame)))
+  const mark = calls.length
+  const rejected = await post({
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_tool_uses_20250919", keep: "all" }] },
+  })
+  assert.equal(rejected.status, 400)
+  assert.equal((await rejected.json()).error.code, "invalid-request")
+  assert.equal(calls.length, mark, "a rejected directive never reached streaming inference")
+  const context_management = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
+  const callerBeta = await post({ context_management, anthropic_beta: ["context-management-2025-06-27"] })
+  assert.equal(callerBeta.status, 400)
+  assert.equal((await callerBeta.json()).error.code, "invalid-request")
+  assert.equal(calls.length, mark)
+  const present = await post({ thinking: { type: "adaptive" }, context_management })
+  assert.equal(present.status, 200)
+  assert.equal((await consumer(present).finish()).at(-1).type, "message_stop")
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body).anthropic_beta, ["context-management-2025-06-27"])
+  const ok = await post({ thinking: { type: "adaptive" } })
+  assert.equal(ok.status, 200)
+  const upstream = JSON.parse(calls.at(-1).init.body)
+  assert.equal("context_management" in upstream, false)
+  assert.equal("anthropic_beta" in upstream, false, "thinking alone adds no beta")
+  assert.equal((await consumer(ok).finish()).at(-1).type, "message_stop")
+})
+
 test("each relayed frame carries the native SSE event name, including the error frame", async () => {
   // SAP relays data-only frames; clients such as pi dispatch on the `event:` name
   // and skip nameless frames, so they must be synthesized from the event type.

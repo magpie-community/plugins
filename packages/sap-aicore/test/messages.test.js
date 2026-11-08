@@ -159,6 +159,39 @@ test("native thinking controls validate structurally: enabled budget, adaptive/d
   await assert.rejects(parse(base({ output_config: { effort: 5 } })), { code: "invalid-request" })
 })
 
+test("context_management accepts only the exact literal directive and rejects every other shape", async () => {
+  const literal = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
+  const cm = edits => ({ edits })
+  assert.ok(await parse(base({ context_management: literal })))
+  assert.ok(await parse(base({ context_management: { edits: [{ keep: "all", type: "clear_thinking_20251015" }] } })))
+  assert.ok(await parse(base({ max_tokens: 2048, thinking: { type: "enabled", budget_tokens: 1024 }, context_management: literal })))
+  // A present `undefined` is rejected directly; JSON serialization would drop it.
+  assert.throws(() => validateRequest(base({ context_management: undefined })), { code: "invalid-request" })
+  const injected = JSON.parse('{"edits":[{"type":"clear_thinking_20251015","keep":"all","__proto__":{"polluted":true}}]}')
+  await assert.rejects(parse(base({ context_management: injected })), err => err.code === "invalid-request" && !String(err.message).includes("polluted"))
+  await assert.rejects(parse(base({ context_management: literal, anthropic_beta: ["context-management-2025-06-27"] })), { code: "invalid-request" })
+  const bad = [
+    null, 7, "all", [], {},
+    cm(undefined), cm(null), cm(7), cm({}), cm([]),
+    cm([null]), cm([7]), cm(["all"]),
+    cm([literal.edits[0], literal.edits[0]]),
+    cm([literal.edits[0], { type: "clear_tool_uses_20250919", keep: "all" }]),
+    cm([{ keep: "all" }]),
+    cm([{ type: "clear_thinking_20251015" }]),
+    cm([{ type: "clear_tool_uses_20250919", keep: "all" }]),
+    cm([{ type: "clear_thinking_20250101", keep: "all" }]),
+    cm([{ type: "clear_thinking_20251015", keep: "none" }]),
+    cm([{ type: "clear_thinking_20251015", keep: 3 }]),
+    cm([{ type: "clear_thinking_20251015", keep: null }]),
+    cm([{ type: "clear_thinking_20251015", keep: { number: 2 } }]),
+    cm([{ type: "clear_thinking_20251015", keep: "all", extra: 1 }]),
+    { edits: literal.edits, trigger: {} },
+  ]
+  for (const context_management of bad) {
+    await assert.rejects(parse(base({ context_management })), { code: "invalid-request" }, JSON.stringify(context_management))
+  }
+})
+
 // --- whole-reply dispatch through the plugin loader ------------------------
 
 async function fixture(inference = () => new Response(JSON.stringify(MESSAGE)), options = {}) {
@@ -255,6 +288,32 @@ test("agent thinking context management reaches Bedrock with its beta and preser
   assert.deepEqual(sent.at(-1).body.thinking, body.thinking)
   assert.deepEqual(sent.at(-1).body.messages, body.messages)
   assert.equal("anthropic_beta" in body, false)
+})
+
+test("a malformed context_management is rejected before inference, and an absent directive adds no beta on the same loader", async () => {
+  const { post, sent } = await fixture()
+  const mark = sent.length
+  const rejected = await post("/messages", base({
+    max_tokens: 64,
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }, { type: "clear_thinking_20251015", keep: "all" }] },
+  }))
+  assert.equal(rejected.status, 400)
+  assert.equal((await rejected.json()).error.code, "invalid-request")
+  assert.equal(sent.length, mark, "a rejected directive never reached inference")
+  const context_management = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
+  const callerBeta = await post("/messages", base({ context_management, anthropic_beta: ["context-management-2025-06-27"] }))
+  assert.equal(callerBeta.status, 400)
+  assert.equal((await callerBeta.json()).error.code, "invalid-request")
+  assert.equal(sent.length, mark)
+  const present = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" }, context_management }))
+  assert.equal(present.status, 200)
+  assert.deepEqual(await present.json(), MESSAGE)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+  const ok = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" } }))
+  assert.equal(ok.status, 200)
+  assert.equal("context_management" in sent.at(-1).body, false)
+  assert.equal("anthropic_beta" in sent.at(-1).body, false, "thinking alone adds no beta")
 })
 
 test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {

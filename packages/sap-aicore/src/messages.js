@@ -17,6 +17,7 @@ export { responseError } from "./transport.js"
 
 const DEPLOYMENT_PATH = /^\/v2\/inference\/deployments\/[A-Za-z0-9_-]+$/
 const ANTHROPIC_VERSION = "bedrock-2023-05-31"
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
 
 // --- strict native request validation -------------------------------------
 
@@ -40,6 +41,7 @@ const ALLOWED = new Set([
   "model", "messages", "system", "max_tokens", "stop_sequences",
   "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking",
   "output_config", "anthropic_version", "stream", "metadata",
+  "context_management",
 ])
 const ROLES = new Set(["user", "assistant"])
 const TOOL_CHOICE_TYPES = new Set(["auto", "any", "tool", "none"])
@@ -232,6 +234,24 @@ function validateOutputConfig(oc) {
   if ("effort" in oc && (typeof oc.effort !== "string" || !oc.effort)) throw invalid("An \"output_config\" \"effort\" must be a non-empty string.")
 }
 
+const CONTEXT_EDIT_KEYS = new Set(["type", "keep"])
+
+/**
+ * @param {unknown} value
+ */
+function validateContextManagement(value) {
+  const bad = () => invalid("Unsupported \"context_management\"; only {\"edits\":[{\"type\":\"clear_thinking_20251015\",\"keep\":\"all\"}]} is accepted.")
+  if (!isObject(value)) throw bad()
+  for (const key of Object.keys(value)) if (key !== "edits") throw bad()
+  if (!Object.hasOwn(value, "edits")) throw bad()
+  const edits = value.edits
+  if (!Array.isArray(edits) || edits.length !== 1) throw bad()
+  const edit = edits[0]
+  if (!isObject(edit)) throw bad()
+  allowedKeys(edit, CONTEXT_EDIT_KEYS, "a context_management edit")
+  if (edit.type !== "clear_thinking_20251015" || edit.keep !== "all") throw bad()
+}
+
 /**
  * Validate a parsed native Anthropic Messages body. Structure and the recognized
  * field allowlist are enforced; model/version-specific restrictions (sampling,
@@ -275,6 +295,7 @@ export function validateRequest(body, entry) {
   if ("tool_choice" in b) validateToolChoice(b.tool_choice, b.tools)
   if ("thinking" in b) validateThinking(b.thinking)
   if ("output_config" in b) validateOutputConfig(b.output_config)
+  if (Object.hasOwn(b, "context_management")) validateContextManagement(b.context_management)
 
   // Client version header is input metadata; a conflicting body version is
   // rejected rather than forwarded. Dispatch always supplies the Bedrock value.
@@ -333,6 +354,7 @@ function bedrockBody(body) {
     out[key] = body[key]
   }
   if ("tools" in out) out.tools = stripToolHints(out.tools)
+  if (Object.hasOwn(out, "context_management")) out.anthropic_beta = [CONTEXT_MANAGEMENT_BETA]
   out.anthropic_version = ANTHROPIC_VERSION
   return out
 }
