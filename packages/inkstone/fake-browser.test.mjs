@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
-import { renewSilently } from "./lib/browser.mjs"
+import { renewSilently, signInWithBrowser } from "./lib/browser.mjs"
 import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
 
 let fakeExe = ""
@@ -72,7 +72,7 @@ beforeAll(() => {
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
   // save what we override: bun test runs every file in one process, so these
   // would leak into whatever test file runs next
-  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "DISPLAY"]) {
+  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "FAKE_BROWSER_HOLD_COOKIE", "DISPLAY"]) {
     savedEnv[key] = process.env[key]
   }
   process.env.MAGPIE_INKSTONE_PROFILE = profile
@@ -225,3 +225,64 @@ test("the reuse method keeps a pasted key instead of creating one", async () => 
   // the pasted key is kept: nothing was created on the console
   expect(keys.length).toBe(0)
 }, 60_000)
+
+test("off Windows the production wiring closes the window on a new cookie", async () => {
+  // B4: the real signInWithBrowser path (baseline → probe → close), with the
+  // sqlite probe injected so the test does not depend on where a compiled
+  // Chromium stand-in happens to write its profile on each OS. Removing the
+  // cookieProbe wiring from signInWithBrowser makes the wait ignore the
+  // injected probe and end on the child's exit, not "console" — this goes red.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  const logs = []
+  let probes = 0
+  const token = await signInWithBrowser({
+    browserPath: fakeExe,
+    keepSignIn: true,
+    timeoutMs: 6000,
+    loginWait: {
+      platform: "linux",
+      pollMs: 50,
+      cookieProbe: () => ++probes >= 3,
+    },
+    log: (...args) => logs.push(args.map(String).join(" ")),
+  })
+  expect(token).toBe("fake-uaa-token-for-tests")
+  expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(true)
+  expect(logs.some((l) => l.includes("cookie store"))).toBe(true)
+  expect(probes).toBeGreaterThanOrEqual(3)
+}, 30_000)
+
+test("off Windows an old cookie in the kept profile is not this sign-in", async () => {
+  // B1 end-to-end with the real sqlite probe: keep_sign_in's profile carries
+  // the previous uaa-token. The launch baseline must keep it from counting as
+  // "console" (if the baseline is dropped, this immediately sees "console"
+  // and goes red). The stand-in writes no new cookie in this run.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  mkdirSync(join(profile, "Default"), { recursive: true })
+  const { Database } = require("bun:sqlite")
+  const db = new Database(join(profile, "Default", "Cookies"))
+  db.query("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)").run()
+  const old = (Date.now() - 3600_000 + 11644473600000) * 1000
+  db.query(
+    "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.intern-ai.org.cn', 'uaa-token', 'old', ?, ?, ?)",
+  ).run(old, old, old + 86400_000_000)
+  db.close()
+  process.env.FAKE_BROWSER_HOLD_COOKIE = "1"
+  const logs = []
+  try {
+    await signInWithBrowser({
+      browserPath: fakeExe,
+      keepSignIn: true,
+      timeoutMs: 2500,
+      loginWait: { platform: "linux", pollMs: 50 },
+      log: (...args) => logs.push(args.map(String).join(" ")),
+    }).catch(() => "")
+    expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(false)
+  } finally {
+    delete process.env.FAKE_BROWSER_HOLD_COOKIE
+    try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  }
+}, 30_000)

@@ -323,7 +323,7 @@ test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
   expect(cleanDetail("cookie: uaa_token: secretValue123456; other")).toBe("cookie: ***; other")
   expect(cleanDetail("auth header: Bearer opaqueToken123456")).toBe("auth header: ***")
   expect(cleanDetail("key is sk-12345678abcdef")).toBe("key is ***")
-  expect(cleanDetail("jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c")).toBe("jwt: ***")
+  expect(cleanDetail("jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig")).toBe("jwt: ***")
   // diagnostic words must stay
   expect(cleanDetail("error: token expired")).toBe("error: token expired")
 })
