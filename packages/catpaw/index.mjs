@@ -21,6 +21,29 @@ const ORIGIN = "https://ai.catpaw.meituan.com"
 // usage() — sending the cookie here marks the account signed out).
 const balanceUrl = () => process.env.CATPAW_BALANCE_URL || "https://catx.nocode.cn/api/gateway/credit/balance"
 
+// refreshAt reads the balance's `userPlan.nextRefreshTime`, when the plan's
+// credits are next refreshed: a ms epoch, as a string ("1796054400000") or
+// a number. Anything else — missing, empty, not all digits, or too small
+// to be ms (a seconds value would land in 1970) — is not known: null.
+function refreshAt(v) {
+  const s = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : ""
+  if (!/^\d{13,}$/.test(s)) return null
+  const t = new Date(Number(s))
+  return Number.isNaN(t.getTime()) ? null : t
+}
+
+// creditWindow is the balance as magpie's window. The vendor gives what is
+// left, not what was spent or the plan's size, so `used` stays 0 (a
+// difference of balances would be made up). With the refresh time known it
+// is the window's reset, and Smart routing spends the account whose credits
+// refresh first (plugins#867); without it the window stays aside, as
+// nothing about it can rank the account.
+function creditWindow(credit, nextRefreshTime) {
+  const w = { name: "可用积分", used: 0, display: `${credit} credit` }
+  const at = refreshAt(nextRefreshTime)
+  return at ? { ...w, resetsAt: at.toISOString() } : { ...w, aside: true }
+}
+
 // the passport domain the web sign-in runs on (login-config / poll-token /
 // current-user, none of them authenticated; the vendor serves them from
 // catx.nocode.cn while the conversation gateway is ai.catpaw.meituan.com)
@@ -990,7 +1013,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
         return {
           plan: plan.planName || (plan.pro ? "妙手 CatPaw Pro" : NAME),
           user: a?.type === "oauth" && a.source !== "desktop" ? a.name || a.accountId || "妙手网页登录" : authAccount(),
-          windows: [{ name: "可用积分", used: 0, display: `${credit} credit`, aside: true }],
+          windows: [creditWindow(credit, plan.nextRefreshTime)],
         }
       },
       // CatPaw has no check-in (confirmed: no such activity in its client)

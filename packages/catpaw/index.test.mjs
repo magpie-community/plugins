@@ -727,6 +727,50 @@ describe("usage", () => {
     expect(fake.state.balanceCalls).toBe(1)
   })
 
+  // plugins#867 (orinsid): the same response carries userPlan.nextRefreshTime,
+  // a ms epoch as a string, when the credits refresh. It is the window's
+  // reset, so Smart routing can rank the account by it.
+  test("the credits' refresh time is the window's reset (reporter's shape)", async () => {
+    fake.state.balancePlan = { nextRefreshTime: "1796054400000" }
+    const usage = await plugin.auth.usage(getAuth)
+    const w = usage.windows[0]
+    expect(w.aside).toBeUndefined()
+    expect(w.resetsAt).toBe("2026-11-30T16:00:00.000Z")
+    expect(new Date(w.resetsAt).getTime()).toBe(1796054400000)
+    expect(w.used).toBe(0) // the vendor gives no total: nothing to count spent against
+    expect(w.limit).toBeUndefined()
+    expect(w.display).toBe("1134.67 credit")
+  })
+
+  test("a numeric refresh time reads the same", async () => {
+    fake.state.balancePlan = { nextRefreshTime: 1796054400000 }
+    const usage = await plugin.auth.usage(getAuth)
+    expect(usage.windows[0].resetsAt).toBe("2026-11-30T16:00:00.000Z")
+    expect(usage.windows[0].aside).toBeUndefined()
+  })
+
+  // a refresh time that can't be read is not known: the window stays aside,
+  // as before, rather than ranking the account by a made-up date
+  for (const [label, v] of [
+    ["missing", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["garbage", "soon"],
+    ["seconds, not ms", "1796054400"],
+    ["a date string", "2026-12-01"],
+    ["negative", "-1796054400000"],
+    ["a fraction", "1796054400000.5"],
+    ["an object", { at: "1796054400000" }],
+  ]) {
+    test(`a refresh time that is ${label} keeps the window aside`, async () => {
+      fake.state.balancePlan = v === undefined ? {} : { nextRefreshTime: v }
+      const usage = await plugin.auth.usage(getAuth)
+      expect(usage.error).toBeUndefined()
+      expect(usage.windows[0].aside).toBe(true)
+      expect(usage.windows[0].resetsAt).toBeUndefined()
+    })
+  }
+
   test("a refused token says the sign-in expired", async () => {
     saved = { type: "oauth", access: "not-the-token", expires: 0, source: "manual" }
     const usage = await plugin.auth.usage(getAuth)
