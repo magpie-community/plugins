@@ -2643,3 +2643,60 @@ test("7.7 Pooled runtimes: two runtimes with their own stores agree on the turn-
   assert.equal(loopE.model, bigTurn1.model, "a tool loop holds turn 1's route on a fresh runtime 30 min later");
   assert.equal(loopE.why, "turn");
 });
+
+test("7.8 Unit: `evaluateProviderContinuation` treats a dated state with `ageKnown: false` as `cold` (`ageMs: null`)", () => {
+  const now = 1_700_000_000_000;
+  const state = {
+    model: "claude-opus-5-5",
+    effort: "high",
+    tokens: 5000,
+    cached: true,
+    healthy: true,
+    updatedAt: now,
+  };
+  const undated = { ...state, ageKnown: false, updatedAt: now };
+
+  for (const [label, facts] of [
+    ["cache worth holding", { within: false, turn: 2, estimatedInputTokens: 5000 }],
+    ["short follow-up", { within: false, turn: 2, isShortFollowup: true }],
+    ["plain new turn", { within: false, turn: 2 }],
+  ]) {
+    const res = evaluateProviderContinuation(facts, undated, { now });
+    assert.equal(res.shouldHold, false, `${label}: ageKnown: false must not hold`);
+    assert.equal(res.why, "cold", `${label}: ageKnown: false must return why: "cold"`);
+    assert.equal(res.ageMs, null, `${label}: ageKnown: false must return ageMs: null`);
+
+    const dated = evaluateProviderContinuation(facts, state, { now });
+    assert.equal(dated.shouldHold, true, `${label}: same state without ageKnown holds`);
+    assert.ok(
+      ["followup", "cache"].includes(dated.why),
+      `${label}: same state without ageKnown gives followup / cache (got ${dated.why})`
+    );
+  }
+
+  // Plain new turn below CACHE_WORTH_TOKENS: still why: "cold", with ageMs: null when ageKnown: false vs 0 when dated
+  const smallState = { model: "claude-opus-5-5", effort: "high", tokens: 200, cached: false, healthy: true, updatedAt: now };
+  const smallUndated = evaluateProviderContinuation({ within: false, turn: 2 }, { ...smallState, ageKnown: false, updatedAt: now }, { now });
+  assert.equal(smallUndated.shouldHold, false);
+  assert.equal(smallUndated.why, "cold");
+  assert.equal(smallUndated.ageMs, null);
+  const smallDated = evaluateProviderContinuation({ within: false, turn: 2 }, smallState, { now });
+  assert.equal(smallDated.shouldHold, false);
+  assert.equal(smallDated.why, "cold");
+  assert.equal(smallDated.ageMs, 0);
+});
+
+test("7.9 Unit: `keepsEffort` does not ratchet effort when `ageKnown: false` even with `updatedAt: now`", () => {
+  const now = 1_700_000_000_000;
+  const state = {
+    model: "claude-opus-5-5",
+    effort: "xhigh",
+    ageKnown: false,
+    updatedAt: now,
+    tokens: 5000,
+  };
+  assert.equal(keepsEffort(state, "medium", 0, now), "medium");
+
+  const { ageKnown: _, ...dated } = state;
+  assert.equal(keepsEffort(dated, "medium", 0, now), "xhigh");
+});
