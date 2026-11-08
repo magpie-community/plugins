@@ -28,12 +28,20 @@
       p {
         color: var(--magpie-muted, GrayText);
       }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 6px;
+      }
     </style>
   </head>
   <body>
     <main>
       <strong id="title">Fingerprint</strong>
       <p id="status">Connecting to Fingerprint…</p>
+      <div id="fallback" hidden>
+        <input id="service-url" readonly aria-label="Fingerprint service URL" />
+      </div>
     </main>
     <script src="_magpie/bridge.js"></script>
     <script src="boot.js"></script>

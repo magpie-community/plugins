@@ -7,6 +7,8 @@ async function boot(lang?: string, remote = false, port = 3488, desktopHost = ''
   const elements = {
     status: { textContent: 'Connecting to Fingerprint…' },
     title: { textContent: 'Fingerprint' },
+    fallback: { hidden: true },
+    'service-url': { value: '', onclick: () => {}, select: () => {} },
   };
   const document = {
     title: 'Fingerprint',
@@ -14,10 +16,14 @@ async function boot(lang?: string, remote = false, port = 3488, desktopHost = ''
     getElementById: (id: keyof typeof elements) => elements[id],
   };
   let destination: URL | undefined;
+  let fallback: (() => void) | undefined;
   // magpie hands no service to its desktop window, only to magpie web
   const service = remote || desktopHost ? '' : 'http://127.0.0.1:3488/';
   await runInNewContext(source, {
     URL,
+    setTimeout: (callback: () => void) => {
+      fallback = callback;
+    },
     document,
     window: {
       magpie: {
@@ -37,7 +43,7 @@ async function boot(lang?: string, remote = false, port = 3488, desktopHost = ''
       },
     },
   });
-  return { document, elements, destination };
+  return { document, elements, destination, fallback };
 }
 
 test('boot defaults to English and follows host languages before navigation', async () => {
@@ -58,6 +64,17 @@ test('boot defaults to English and follows host languages before navigation', as
     expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:3488');
     expect(result.destination?.searchParams.get('lang')).toBe(lang || null);
   }
+});
+
+test('a stalled desktop navigation offers the local service address', async () => {
+  const result = await boot('zh-CN', false, 4388, 'wails.localhost');
+  expect(result.elements.fallback.hidden).toBe(true);
+  result.fallback?.();
+  expect(result.elements.fallback.hidden).toBe(false);
+  expect(result.elements['service-url'].value).toBe('http://127.0.0.1:4388/');
+  expect(result.elements.status.textContent).toContain('本机浏览器');
+  const remote = await boot('en');
+  expect(remote.fallback).toBeUndefined();
 });
 
 test('boot localizes remote-service guidance and invalid-port errors', async () => {

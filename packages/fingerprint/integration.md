@@ -21,6 +21,15 @@ WebKitGTK, magpie's Linux window, matches nothing to it there, so a policy of
 `'self'` alone loads no script and the page stays blank. The launcher origin changes
 only the document policy; the API bearer token and Host/Origin checks still apply.
 
+On Windows, port 3488 can be in an excluded TCP range. Check
+`netsh interface ipv4 show excludedportrange protocol=tcp` and the Magpie
+plugin host log if the service cannot bind; configure the plugin's `port`
+option to an available port, such as 4388. If the launcher remains on
+"Connecting" after its handshake, it shows the local service address for
+opening in a browser. Magpie's "page didn't answer" message instead means the
+page did not complete the initial host handshake; inspect the host log and
+page loading errors to identify its cause.
+
 ## UI integration
 
 The service page reconnects to Magpie using the upstream page bridge, vendored

@@ -7,6 +7,7 @@
         'Upgrade Magpie for remote plugin services, or forward the service port to this computer over SSH.',
       invalidPort: 'Invalid Fingerprint service port.',
       failed: 'Could not connect',
+      fallback: 'If the page does not open, copy this address into a browser on this computer:',
     },
     'zh-Hans': {
       title: '模型指纹',
@@ -14,6 +15,7 @@
       remote: '请升级 Magpie 以支持远程插件服务，或将服务器的服务端口通过 SSH 转发到本机。',
       invalidPort: '模型指纹服务端口无效。',
       failed: '连接失败',
+      fallback: '如果页面未打开，请将此地址复制到本机浏览器：',
     },
     'zh-Hant': {
       title: '模型指紋',
@@ -21,6 +23,7 @@
       remote: '請升級 Magpie 以支援遠端外掛服務，或透過 SSH 將伺服器的服務連接埠轉送至本機。',
       invalidPort: '模型指紋服務連接埠無效。',
       failed: '連線失敗',
+      fallback: '如果頁面未開啟，請將此網址複製到本機瀏覽器：',
     },
     ja: {
       title: 'モデル指紋',
@@ -29,6 +32,8 @@
         'リモートプラグインサービスを利用するには、Magpie を更新するか、SSH でサービスポートをこのコンピューターに転送してください。',
       invalidPort: 'モデル指紋サービスのポートが無効です。',
       failed: '接続できませんでした',
+      fallback:
+        'ページが開かない場合は、このアドレスをこのコンピューターのブラウザーにコピーしてください：',
     },
     de: {
       title: 'Modell-Fingerabdruck',
@@ -37,6 +42,8 @@
         'Aktualisieren Sie Magpie für entfernte Plugin-Dienste oder leiten Sie den Dienstport per SSH an diesen Computer weiter.',
       invalidPort: 'Ungültiger Port für den Fingerabdruck-Dienst.',
       failed: 'Verbindung fehlgeschlagen',
+      fallback:
+        'Falls sich die Seite nicht öffnet, diese Adresse im Browser auf diesem Computer öffnen:',
     },
   };
   let text = messages.en;
@@ -67,6 +74,7 @@
     const port = Number(config.port ?? 3488);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(text.invalidPort);
     let service = window.magpie?.service;
+    let localFallback = '';
     if (!service) {
       // This computer's window: wails://localhost on macOS and Linux,
       // http://wails.localhost on Windows (Wails v3, WebView2).
@@ -84,6 +92,7 @@
         return;
       }
       service = `http://127.0.0.1:${port}/`;
+      localFallback = service;
     }
     const url = new URL(service, location.href);
     // Opaque Magpie web frames need the concrete proxy origin in connect-src.
@@ -100,6 +109,15 @@
         location.replace(url.href);
       }
     });
+    if (localFallback) {
+      setTimeout(() => {
+        status.textContent = text.fallback;
+        const field = document.getElementById('service-url');
+        field.value = localFallback;
+        field.onclick = () => field.select();
+        document.getElementById('fallback').hidden = false;
+      }, 4000);
+    }
     location.replace(url.href);
   })().catch((error) => {
     status.textContent = `${text.failed}: ${String(error?.message || error)}`;
