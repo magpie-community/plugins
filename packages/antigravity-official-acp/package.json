@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-antigravity-acp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Magpie provider backed by Google's official Antigravity ACP runtime",
   "type": "module",
   "license": "MIT",

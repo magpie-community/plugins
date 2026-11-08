@@ -4,7 +4,7 @@ import { delimiter, join, resolve } from "node:path"
 import { spawn } from "node:child_process"
 
 const ID = "antigravity-official-acp"
-const DEFAULT_MODEL = process.env.MAGPIE_ANTIGRAVITY_MODEL || "gemini-4-argon-medium"
+const DEFAULT_MODEL = process.env.MAGPIE_ANTIGRAVITY_MODEL || "gemini-4-argon"
 const ACP_VERSION = "0.1.0"
 
 function fail(message, cause) {
@@ -34,8 +34,62 @@ function findRuntime() {
 
 function findBinary() { return findRuntime().bin }
 
-function model(id = DEFAULT_MODEL, name = id) {
-  return { id, name, npm: "@ai-sdk/openai-compatible", url: "http://antigravity-acp.invalid/v1", apiId: id, context: 1048576, input: 1048576, output: 65535, reasoning: true, image: true, variants: [], inputs: ["text", "image"], outputs: ["text"] }
+const MODEL_SUFFIXES = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "none"])
+
+function model(id = DEFAULT_MODEL, name = id, efforts = []) {
+  return {
+    id,
+    name,
+    npm: "@ai-sdk/openai-compatible",
+    url: "http://antigravity-acp.invalid/v1",
+    apiId: id,
+    context: 1048576,
+    input: 1048576,
+    output: 65535,
+    reasoning: true,
+    image: true,
+    variants: Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }])),
+    inputs: ["text", "image"],
+    outputs: ["text"],
+  }
+}
+
+function groupedModels(entries) {
+  const groups = new Map()
+  for (const entry of entries) {
+    const match = /^(.*)-(minimal|low|medium|high|xhigh|max|none)$/.exec(entry.modelId)
+    const key = match && MODEL_SUFFIXES.has(match[2]) ? match[1] : entry.modelId
+    const group = groups.get(key) ?? []
+    group.push({ ...entry, effort: match?.[2] ?? "" })
+    groups.set(key, group)
+  }
+  const out = []
+  for (const [id, group] of groups) {
+    const efforts = [...new Set(group.map((entry) => entry.effort).filter(Boolean))]
+    if (efforts.length >= 2) {
+      const name = group.find((entry) => entry.name && !/\((?:minimal|low|medium|high|xhigh|max|none)\)$/i.test(entry.name))?.name
+        ?? group[0].name.replace(/\s*\((?:minimal|low|medium|high|xhigh|max|none)\)$/i, "")
+      out.push(model(id, name, efforts))
+    } else {
+      const entry = group[0]
+      out.push(model(entry.modelId, entry.name || entry.modelId))
+    }
+  }
+  return out
+}
+
+function effortOf(request) {
+  const value = request.reasoning_effort ?? request.reasoningEffort ?? request.variant
+  return typeof value === "string" && MODEL_SUFFIXES.has(value) ? value : ""
+}
+
+function wireModel(requestModel, effort, availableModels) {
+  const asked = String(requestModel || DEFAULT_MODEL).split("/").slice(-1)[0]
+  if (availableModels.includes(asked)) return asked
+  const candidates = availableModels.filter((id) => id.startsWith(`${asked}-`))
+  if (!candidates.length) throw fail(`official Antigravity ACP does not advertise model ${asked}`)
+  const selected = effort ? candidates.find((id) => id.endsWith(`-${effort}`)) : candidates.find((id) => id.endsWith("-medium"))
+  return selected || candidates[0]
 }
 
 async function discoverModels() {
@@ -44,7 +98,7 @@ async function discoverModels() {
     await acp.call("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "magpie-antigravity-acp-model-list", version: ACP_VERSION } })
     acp.notify("initialized", {})
     const session = await acp.call("session/new", { cwd: process.cwd(), mcpServers: [] })
-    const models = (session?.models?.availableModels ?? []).map((entry) => model(entry.modelId, entry.name || entry.modelId)).filter((entry) => entry.id)
+    const models = groupedModels(session?.models?.availableModels ?? [])
     if (!models.length) throw fail("official Antigravity ACP session returned no available models")
     return models
   } finally {
@@ -118,7 +172,10 @@ async function generate(request, signal) {
     await acp.call("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "magpie-antigravity-acp", version: ACP_VERSION } })
     acp.notify("initialized", {})
     const session = await acp.call("session/new", { cwd, mcpServers: [] })
-    const modelId = request.model?.split("/").slice(1).join("/") || DEFAULT_MODEL
+    const availableModels = (session?.models?.availableModels ?? []).map((entry) => entry.modelId).filter(Boolean)
+    const effort = effortOf(request)
+    const modelId = wireModel(request.model, effort, availableModels)
+    if (process.env.MAGPIE_ANTIGRAVITY_DEBUG === "1") console.error(`[antigravity-acp] ${request.model || DEFAULT_MODEL} effort=${effort || "default"} -> ${modelId}`)
     const option = session?.configOptions?.find?.((x) => x.configId === "model" || x.id === "model" || x.category === "model")
     if (option) await acp.call("session/set_config_option", { sessionId: session.sessionId, configId: option.configId || option.id, value: modelId })
     await acp.call("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: promptOf(request.messages) }] })
@@ -152,7 +209,7 @@ export async function AntigravityAcpPlugin() {
     async config(config) {
       config.provider ??= {}
       const old = config.provider[ID] ?? {}
-      config.provider[ID] = { name: "Antigravity Official ACP", npm: "@ai-sdk/openai-compatible", api: "http://antigravity-acp.invalid/v1", ...old, models: { ...(old.models ?? {}), [DEFAULT_MODEL]: model(DEFAULT_MODEL) } }
+      config.provider[ID] = { name: "Antigravity Official ACP", npm: "@ai-sdk/openai-compatible", api: "http://antigravity-acp.invalid/v1", ...old, models: { ...(old.models ?? {}), [DEFAULT_MODEL]: model(DEFAULT_MODEL, "Gemini 4 Argon", ["low", "medium", "high"]) } }
     },
     provider: {
       id: ID,
@@ -164,4 +221,4 @@ export async function AntigravityAcpPlugin() {
   }
 }
 
-export const _internal = { findBinary, findRuntime, discoverModels, promptOf, model, generate }
+export const _internal = { findBinary, findRuntime, discoverModels, promptOf, model, generate, wireModel }

@@ -18,7 +18,7 @@ match the installation:
 
 - `MAGPIE_ANTIGRAVITY_ACP_BIN`: optional absolute path to `agy` or another official ACP executable.
 - `MAGPIE_ANTIGRAVITY_HOME`: optional `GEMINI_HOME` directory used by `agy`.
-- `MAGPIE_ANTIGRAVITY_MODEL`: an ACP model slug, for example `gemini-4-argon-medium`.
+- `MAGPIE_ANTIGRAVITY_MODEL`: a logical ACP model ID, for example `gemini-4-argon`. Its `low`, `medium`, and `high` variants map to the exact model IDs advertised by the same ACP session.
 
 Install from the public repository:
 
@@ -45,5 +45,13 @@ traffic from Google.
 ## Validation
 
 `test/transport.mjs` validates the ACP framing and request sequence against a
-fake ACP process. A live acceptance test must run on a machine where the official
-ACP runtime is authenticated and network access is available.
+fake ACP process. On 2026-11-08, a live authenticated `agy 1.5.3 acp` check
+returned these exact selections for the logical model `gemini-4-argon`:
+
+- `low` → `gemini-4-argon-low`
+- `medium` → `gemini-4-argon-medium`
+- `high` → `gemini-4-argon-high`
+
+The same ACP session advertised 5 logical models after grouping 13 exact model
+IDs. Each model declares text/image input, a 1,048,576 token context, a 65,535
+token output limit, and reasoning support.
