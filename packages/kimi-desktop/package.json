@@ -13,6 +13,8 @@
     "role-plugin-state.mjs",
     "rpc.mjs",
     "catalog.mjs",
+    "model-options.mjs",
+    "context-budget.mjs",
     "library.mjs",
     "secondary-config.mjs",
     "model-pool-config.mjs",

@@ -58,7 +58,7 @@ for (const legacy of [false, true]) {
       await response.text();
       expect(f.requests).toHaveLength(1);
       const upstream = f.requests[0].body;
-      expect(upstream.model).toBe('provider/secondary');
+      expect(upstream.model).toBe('provider/main');
       expect(JSON.stringify(upstream)).not.toMatch(/magpie/i);
       expect(upstream.tools[0].function.parameters.properties.model.enum).toEqual(['primary', 'secondary', 'native']);
       expect(upstream.tools[0].function.description).toContain('- secondary [default]:');

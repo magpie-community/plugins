@@ -14,7 +14,13 @@ const SAVE_ERRORS = new Map([
   ['primary_model_unavailable', 503],
   ['primary_model_update_failed', 502],
   ['settings_partially_saved', 409],
+  ['invalid_model_options', 400],
+  ['unsupported_reasoning_effort', 400],
+  ['unsupported_context_length', 400],
+  ['context_control_unavailable', 503],
 ]);
+const OPTION_FIELDS = ['primaryReasoningEffort', 'secondaryReasoningEffort', 'primaryContextTokens', 'secondaryContextTokens'];
+const OPTION_STATUSES = new Set(['not_configured', 'pending', 'applied', 'context_unavailable', 'unavailable']);
 
 class RequestError extends Error {
   constructor(code, status = 400) { super(code); this.code = code; this.status = status; }
@@ -28,7 +34,12 @@ function settingsView(state) {
     if (!model || typeof model.id !== 'string' || typeof model.name !== 'string') {
       throw new Error('invalid_settings_state');
     }
-    return { id: model.id, name: model.name };
+    return { id: model.id, name: model.name,
+      ...(Array.isArray(model.reasoningEfforts) ? { reasoningEfforts: model.reasoningEfforts.filter(effort =>
+        ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) } : {}),
+      ...(Object.hasOwn(model, 'contextWindow') ? { contextWindow:
+        Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 ? model.contextWindow : null } : {}),
+    };
   });
   const view = {
     enabled: state.enabled,
@@ -39,6 +50,12 @@ function settingsView(state) {
   };
   if (typeof state.appliedSecondaryModel === 'string') view.appliedSecondaryModel = state.appliedSecondaryModel;
   if (typeof state.appliedPrimaryModel === 'string') view.appliedPrimaryModel = state.appliedPrimaryModel;
+  for (const role of ['primary', 'secondary']) {
+    const effort = role + 'ReasoningEffort', context = role + 'ContextTokens', status = role + 'OptionsStatus';
+    if (typeof state[effort] === 'string') view[effort] = state[effort];
+    if (state[context] === null || (Number.isSafeInteger(state[context]) && state[context] > 0)) view[context] = state[context];
+    if (OPTION_STATUSES.has(state[status])) view[status] = state[status];
+  }
   return view;
 }
 
@@ -165,9 +182,12 @@ export async function startSettingsServer({ port = SETTINGS_PORT, readSettings, 
       body = await readBody(req);
       if (!body || typeof body !== 'object' || Array.isArray(body)
           || Object.keys(body).length === 0
-          || Object.keys(body).some(key => key !== 'primaryModel' && key !== 'secondaryModel')
+          || Object.keys(body).some(key => key !== 'primaryModel' && key !== 'secondaryModel' && !OPTION_FIELDS.includes(key))
           || (Object.hasOwn(body, 'primaryModel') && (typeof body.primaryModel !== 'string' || !body.primaryModel))
-          || (Object.hasOwn(body, 'secondaryModel') && typeof body.secondaryModel !== 'string')) {
+          || (Object.hasOwn(body, 'secondaryModel') && typeof body.secondaryModel !== 'string')
+          || OPTION_FIELDS.some(key => Object.hasOwn(body, key) && (key.endsWith('ReasoningEffort')
+            ? typeof body[key] !== 'string'
+            : body[key] !== null && (!Number.isSafeInteger(body[key]) || body[key] <= 0)))) {
         throw new RequestError('invalid_request');
       }
     } catch (error) {

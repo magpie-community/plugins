@@ -1,5 +1,57 @@
 # Compatibility record
 
+## Independent inference settings, 2026-11-09 (SGT)
+
+The package remains **0.1.6**. The existing embedded page and settings API now save separate reasoning efforts and optional context input budgets for the primary and secondary roles. Only explicitly published catalog capabilities are offered; unknown context limits do not inherit the native runtime's 131072 fallback. Kimi's native model aliases and top-level `thinking`, `reasoning` and `reasoning_effort` no longer select external inference settings, including connections that have not saved new preferences. Native menus remain visible. No Magpie core or Kimi application resources were changed.
+
+A custom budget checks a supported, count-only copy through the existing Magpie `POST /v1/messages/count_tokens` route, using the current gateway identity. The count may be an estimate. Over-budget input returns `context_length_exceeded`; unavailable counting or an unsupported input representation returns fixed `context_count_unavailable`, without sending generation. With no budget, no count request is added. The adapter does not set Kimi's native compaction window, limit output through this setting, alter usage or directly trim history. Native compaction may follow an overflow and can lose earlier detail; its own summary requests face the same budget, so recovery is not guaranteed.
+
+Authenticated role identities distinguish primary and secondary even when they target the same model. Older authenticated profiles without a role keep their model binding and use provider defaults without an extra budget. During a pending model, gateway or key switch, active requests keep their previous role settings in memory. Partial saves merge with the latest host document and detect changed role selections before or after the official primary selector. Saved values that become unsupported remain visible for explicit replacement or reset.
+
+Other native plugins, Kimi login, paid-data authorizations, billing and service routes remain unchanged. The bridge preserves financial-tool schemas, calls and results. Counting uses already-present tool content; it does not call a financial database's paid query API. Synthetic regressions also check the original official search/fetch URL, credential and body, plus preservation of an unrelated paid-plugin record through companion enable/clear.
+
+### Automated validation
+
+The frozen runtime/test bytes passed the requested sequence on Bun **1.4.4**, in copied trees with temporary HOME/XDG directories, synthetic credentials and the existing OS real-HOME/application deny policy:
+
+| Command | Result |
+| --- | --- |
+| `HOME=<temporary HOME> bun test packages/kimi-desktop` | **626 pass, 0 fail, 3990 assertions; 29 files** |
+| `bun scripts/check.mjs kimi-desktop` | **Exit 0** |
+| `bun scripts/check.mjs` | **Exit 0** |
+| `HOME=<temporary HOME> bun test` | **7447 pass, 20 skip, 0 fail, 239426 assertions; 523 files** |
+
+This uses the same real-ps bootstrap and passive synthetic observer documented below, with no additional command-line exclusions. It is an unfiltered repository-default run with those explicit harness accommodations, not a pristine bare-process run or real-browser acceptance. The original tracked files and workspace AtomCode-state digest were unchanged by validation. Subsequent compatibility-note edits change documentation only.
+
+Component guard checks used isolated copies and required genuine matcher failures:
+
+| Component | Final assertion-red variants |
+| --- | --- |
+| Catalog capability and option policy | 24 |
+| Authenticated role/profile identity | 21 |
+| Active/pending connections and legacy isolation | 32 |
+| Existing settings API and forwarding integration | 34 |
+| Embedded controls, drafts and recovery | 50 |
+| Count conversion, transport and response checks | 36 |
+| Empty count-copy text normalization | 1 |
+
+These are **198 final single-point variants**, checked during their component revisions. Three affected count variants were rerun after empty-text normalization. An additional attempt to delete the legacy-default branch was equivalent under the current snapshot invariants; it is recorded separately and is not counted as a red deletion. Changing that branch to apply an actual effort/budget produced a matcher failure. Syntax, import, permission and listener failures were not counted.
+
+An extracted Kimi 3.2.25 SDK error-conversion probe passed **9 scenarios / 119 assertions** in a VM: the bridge's overflow response becomes the native context-overflow error. It executes extracted callables only, without importing the full application bundle, network access, real credentials or application-state writes.
+
+### Current native acceptance
+
+The checked **22-file** archive was installed through the official plugin CLI on Magpie **0.1.3336** with Kimi **3.2.25 / build 3.2.25.22**. Its SHA-256 is `62ef44e76c2e0934f62b1e5203b81c0b30d0003327f1968a5a1f6165feb0c042`. Installation reloaded the shared Bun plugin worker. The Magpie main PID and application snapshot stayed unchanged through installation, UI acceptance and restoration; no Magpie quit, start or restart command was issued. View → Reload refreshed only the WebView to load the updated page.
+
+| Check | Observed result |
+| --- | --- |
+| Capability-aware page | Both role sections appeared; the connected catalog had 54 models. Current primary and secondary each published a 1048576-token cap and their own effort lists. |
+| Independent parameter persistence | Saved primary `low` / `196608` and secondary `high` / `131072` through native controls. Authenticated API readback returned 200 with both values; a page refresh confirmed both applied. Model selections were retained. |
+| Real Kimi tool chain | In an existing owned acceptance task, the primary invoked one secondary Agent, which used one local Read tool on an owned synthetic file. Child and parent returned the expected synthetic phrases. The native model display in this task remained K3; external primary selection remained the plugin's configured choice. |
+| Restoration | Removed only the exact test preferences using original-byte comparison plus temp/rename. Original primary/secondary choices, all other connection fields, native model definitions/current choice, other 23 native-plugin records, other Magpie plugins and AtomCode-state digest were preserved. The original new-task project and unsent draft were restored. |
+
+The UI/tool run proves saved settings and successful native execution; it does not independently measure provider reasoning behavior or exact tokenization. No real paid-data query was submitted. Native over-budget compaction, same-model/different-option execution in the native UI, and the five quit/disconnect lifecycle cases were **not repeated for this revision**; synthetic cases cover the new role/budget behavior, and earlier dated native lifecycle records below retain their original scope. No Chrome or Playwright was started. The later compatibility-note update was not reinstalled; all checked executable/test bytes are unchanged.
+
 ## Settings-page recovery follow-up, 2026-11-08 (SGT)
 
 The package remains **0.1.6**. This follow-up changes only settings-service lifecycle and launcher recovery; it does not change model routing, profile generation, RPC permissions or Magpie application resources.

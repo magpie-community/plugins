@@ -49,6 +49,14 @@ export function normalizeModels(payload, {allowEmpty=false}={}) {
     const advertised = [...new Set((row.supported_reasoning_levels || []).map(x => clean(x.effort)))];
     const efforts = advertised.filter(x => Object.hasOwn(effortNames, x));
     const thinking = efforts.includes('high') ? 'high' : efforts.includes('medium') ? 'medium' : efforts[0] || '';
+    // Independent capability metadata: only explicit row-declared values, no
+    // runtime fallback and no invented provider default.
+    const options = {
+      reasoningEfforts: row.reasoning === false ? [] : [...efforts],
+      contextWindow: Number.isSafeInteger(row.context_window) && row.context_window > 0
+        ? row.context_window
+        : Number.isSafeInteger(row.context_length) && row.context_length > 0 ? row.context_length : null,
+    };
     const capabilities = ['dynamically_loaded_tools'];
     if (row.modalities?.input?.includes('image')) capabilities.push('image_in');
     if (row.reasoning) {
@@ -63,7 +71,7 @@ export function normalizeModels(payload, {allowEmpty=false}={}) {
       capabilities, ...(row.max_output_tokens ? {maxOutputSize: positive(row.max_output_tokens, 8192)} : {}),
       ...(efforts.length ? {supportEfforts: efforts, defaultEffort: thinking} : {}) };
     const title = clean(row.magpie_label) || clean(row.display_name) || id;
-    models.set(id, { id, alias, runtime, menu: {
+    models.set(id, { id, alias, runtime, options, menu: {
       key: alias, modelId: alias, modelAlias: alias, displayName: title + ' · External', description: id,
       inputPlaceholder: '尽管问，或做个 Agent 任务…', label: [], scenario: 6, agentMode: 'TYPE_NORMAL',
       kimiPlusId: 'ok-computer', switchableTo: [],

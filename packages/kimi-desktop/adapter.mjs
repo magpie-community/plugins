@@ -5,7 +5,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
 import { rpc } from './rpc.mjs';
-import { normalizeModels, isMenuAlias, canonicalMenuAlias, neutralPromptAliases } from './catalog.mjs';
+import { normalizeModels, isMenuAlias, neutralPromptAliases } from './catalog.mjs';
 import { prepareLibrary, applyInstructions } from './library.mjs';
 import { inspectSecondary, patchSecondary } from './secondary-config.mjs';
 import { inspectModelPool, patchModelPool } from './model-pool-config.mjs';
@@ -13,6 +13,8 @@ import { AgentModelRouter, neutralizeRouteMarkers } from './agent-routing.mjs';
 import { ensureAgentProfiles } from './agent-profiles.mjs';
 import { kernelFamily, runnerGeneration } from './runtime-family.mjs';
 import { inspectRolePlugins, disableRolePluginsSync } from './role-plugin-state.mjs';
+import { validateModelOptions, applyReasoningOptions } from './model-options.mjs';
+import { countContextTokens } from './context-budget.mjs';
 
 const PROVIDER = 'daimon-kimi-code';
 const TOOL_ORIGIN = 'https://agent-gw.kimi.com';
@@ -43,6 +45,26 @@ const SECONDARY_CODES = new Set(['secondary_config_unsupported', 'secondary_mode
 
 const validModelID = value => typeof value === 'string' && value.length <= 1024 && MODEL_ID.test(value);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const OPTION_ROLES = ['primary', 'secondary'];
+const optionModel = (desired, role) => role === 'primary' ? desired.model : desired.secondaryModel;
+const boundOptions = (desired, role, model = optionModel(desired, role)) => {
+  const saved = desired.modelOptions?.[role];
+  return model && record(saved) && saved.model === model ? { reasoningEffort: saved.reasoningEffort,
+    contextTokens: saved.contextTokens } : null;
+};
+const optionSnapshot = (desired, role) => {
+  const model = optionModel(desired, role);
+  return model ? { model, ...(boundOptions(desired, role) || { reasoningEffort: '', contextTokens: null }) } : null;
+};
+const modelOptionsSnapshot = desired => Object.fromEntries(OPTION_ROLES.flatMap(role => {
+  const options = optionSnapshot(desired, role);
+  return options ? [[role, options]] : [];
+}));
+const sameOptionConnection = (active, desired) => {
+  if (active.model !== desired.model || active.gatewayKey !== desired.gateway?.key) return false;
+  try { return active.gatewayURL === gatewayURL(desired.gateway?.url); }
+  catch { return false; }
+};
 const sameModels = (left, right) => left === null || right === null ? left === right
   : Object.keys(left).length === Object.keys(right).length
     && Object.entries(left).every(([key, value]) => Object.hasOwn(right, key) && right[key] === value);
@@ -206,6 +228,7 @@ export class KimiAdapter {
     this.running = false;
     this.live = null;
     this.rolesReady = false;
+    this.roleOptionsEnabled = false;
     this.stopping = false;
     this.state = null;
     this.inflight = new Set();
@@ -304,9 +327,12 @@ export class KimiAdapter {
       if (error.code !== 'ENOENT') throw Error('settings_unavailable');
       return { enabled: false, primaryModel: '', secondaryModel: '', status: 'disconnected', models: [] };
     }
-    let catalog = [], status = this.status.code || 'disconnected';
+    let catalog = [], status = this.status.code || 'disconnected', settingsGateway = '';
     if (desired.enabled && desired.gateway?.key) {
-      try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
+      try {
+        settingsGateway = gatewayURL(desired.gateway.url);
+        catalog = await this.gatewayCatalog(settingsGateway, desired.gateway.key);
+      }
       catch { status = 'catalog_unavailable'; }
     }
     // Confirmed role translation only. A pending install, conflict or opt-out
@@ -319,7 +345,30 @@ export class KimiAdapter {
       ...(this.live && this.state?.active ? { appliedPrimaryModel: this.live.model } : {}),
       ...(this.live && this.state?.active && appliedSecondaryModel ? { appliedSecondaryModel } : {}),
       status,
-      models: catalog.map(row => ({ id: row.id, name: row.menu.displayName })),
+      ...Object.fromEntries(OPTION_ROLES.flatMap(role => {
+        const saved = boundOptions(desired, role);
+        const row = catalog.find(row => row.id === optionModel(desired, role));
+        let options = { reasoningEffort: '', contextTokens: null }, optionStatus = 'not_configured';
+        if (saved) {
+          options = {
+            reasoningEffort: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(saved.reasoningEffort)
+              ? saved.reasoningEffort : '',
+            contextTokens: Number.isSafeInteger(saved.contextTokens) && saved.contextTokens > 0 ? saved.contextTokens : null,
+          };
+          try {
+            if (row) validateModelOptions(saved, row.options);
+            optionStatus = !desired.enabled || !row ? 'unavailable'
+              : this.live && this.state?.active && this.live.model === desired.model
+                && this.live.gatewayURL === settingsGateway && this.live.gatewayKey === desired.gateway?.key
+                && (role === 'primary' || (this.rolesReady && this.roleOptionsEnabled
+                  && this.bridgeSecondaryModel === desired.secondaryModel)) ? 'applied' : 'pending';
+          } catch { optionStatus = 'unavailable'; }
+        }
+        return [[role + 'ReasoningEffort', options.reasoningEffort], [role + 'ContextTokens', options.contextTokens],
+          [role + 'OptionsStatus', optionStatus]];
+      })),
+      models: catalog.map(row => ({ id: row.id, name: row.menu.displayName,
+        reasoningEfforts: row.options.reasoningEfforts, contextWindow: row.options.contextWindow })),
     };
   }
 
@@ -327,24 +376,44 @@ export class KimiAdapter {
     const fail = code => { throw Object.assign(Error(code), { code }); };
     const hasPrimary = Object.hasOwn(patch, 'primaryModel');
     const hasSecondary = Object.hasOwn(patch, 'secondaryModel');
+    const optionRoles = OPTION_ROLES.filter(role => Object.hasOwn(patch, role + 'ReasoningEffort')
+      || Object.hasOwn(patch, role + 'ContextTokens'));
     const { primaryModel, secondaryModel } = patch;
     let desired;
     try { desired = readJSON(this.connectionFile); } catch { fail('connect_kimi_first'); }
-    if (hasPrimary || secondaryModel) {
+    const needsConnection = hasPrimary || secondaryModel || optionRoles.length > 0;
+    const selections = { primary: hasPrimary ? primaryModel : desired.model,
+      secondary: hasSecondary ? secondaryModel : desired.secondaryModel };
+    const requestedOptions = {};
+    let catalog = [];
+    const optionsFor = (document, role) => {
+      const model = selections[role], row = catalog.find(row => row.id === model);
+      if (!model || !row) fail('model_not_enabled_for_kimi');
+      const previous = boundOptions(document, role, model) || { reasoningEffort: '', contextTokens: null };
+      const options = validateModelOptions({
+        reasoningEffort: Object.hasOwn(patch, role + 'ReasoningEffort') ? patch[role + 'ReasoningEffort'] : previous.reasoningEffort,
+        contextTokens: Object.hasOwn(patch, role + 'ContextTokens') ? patch[role + 'ContextTokens'] : previous.contextTokens,
+      }, row.options);
+      return { model, ...options };
+    };
+    if (needsConnection) {
       if (!desired.enabled || !desired.model || !desired.gateway?.key) fail('connect_kimi_first');
       if ((hasPrimary && !validModelID(primaryModel)) || (secondaryModel && !validModelID(secondaryModel))) {
         fail('model_not_enabled_for_kimi');
       }
-      let catalog;
       try { catalog = await this.gatewayCatalog(gatewayURL(desired.gateway.url), desired.gateway.key); }
       catch { fail('settings_unavailable'); }
       if ((hasPrimary && !catalog.some(row => row.id === primaryModel))
           || (secondaryModel && !catalog.some(row => row.id === secondaryModel))) fail('model_not_enabled_for_kimi');
+      for (const role of optionRoles) {
+        optionsFor(desired, role);
+      }
     }
     const sameGateway = value => value.gateway?.url === desired.gateway?.url && value.gateway?.key === desired.gateway?.key;
     let fresh;
     try { fresh = readJSON(this.connectionFile); } catch { fail('settings_unavailable'); }
-    if (!sameGateway(fresh) || ((hasPrimary || secondaryModel) && !fresh.enabled)) fail('connection_changed');
+    const optionsMatch = value => optionRoles.every(role => optionModel(value, role) === optionModel(desired, role));
+    if (!sameGateway(fresh) || (needsConnection && !fresh.enabled) || !optionsMatch(fresh)) fail('connection_changed');
     let primarySaved = false;
     if (hasPrimary && primaryModel !== fresh.model) {
       if (typeof this.setPrimaryModel !== 'function') fail('primary_model_unavailable');
@@ -353,9 +422,9 @@ export class KimiAdapter {
       try { fresh = readJSON(this.connectionFile); } catch { fail('primary_model_update_failed'); }
       if (!fresh.enabled || fresh.model !== primaryModel) fail('connection_changed');
       primarySaved = true;
-      if (!sameGateway(fresh)) fail(hasSecondary ? 'settings_partially_saved' : 'connection_changed');
+      if (!sameGateway(fresh)) fail(hasSecondary || optionRoles.length ? 'settings_partially_saved' : 'connection_changed');
     }
-    if (hasSecondary) {
+    if (hasSecondary || optionRoles.length) {
       // The host owns model/gateway. Merge the requested secondary preference
       // only after its primary selection, into the newest connection document.
       const secondaryFailure = code => fail(primarySaved ? 'settings_partially_saved' : code);
@@ -364,9 +433,19 @@ export class KimiAdapter {
         freshBytes = fs.readFileSync(this.connectionFile);
         fresh = JSON.parse(freshBytes.toString('utf8').replace(/^\uFEFF/, ''));
       } catch { secondaryFailure('settings_unavailable'); }
-      if (!sameGateway(fresh) || ((hasPrimary || secondaryModel) && !fresh.enabled)
-          || (hasPrimary && fresh.model !== primaryModel)) secondaryFailure('connection_changed');
-      fresh.secondaryModel = secondaryModel;
+      if (!sameGateway(fresh) || (needsConnection && !fresh.enabled)
+          || (hasPrimary && fresh.model !== primaryModel)
+          || optionRoles.some(role => optionModel(fresh, role) !== (role === 'primary' && hasPrimary
+            ? primaryModel : optionModel(desired, role)))) secondaryFailure('connection_changed');
+      // Only fields present in this patch override the freshest preference.
+      // A concurrent editor may have changed the other option during the CLI.
+      try { for (const role of optionRoles) requestedOptions[role] = optionsFor(fresh, role); }
+      catch (error) { secondaryFailure(error.code || 'settings_unavailable'); }
+      if (hasSecondary) fresh.secondaryModel = secondaryModel;
+      if (optionRoles.length || (hasSecondary && !secondaryModel && fresh.modelOptions?.secondary)) {
+        fresh.modelOptions = { ...(record(fresh.modelOptions) ? fresh.modelOptions : {}), ...requestedOptions };
+        if (hasSecondary && !secondaryModel) delete fresh.modelOptions.secondary;
+      }
       try { atomicJSON(this.connectionFile, fresh, freshBytes); }
       catch (error) { secondaryFailure(error?.message === 'kimi_config_changed' ? 'connection_changed' : 'settings_unavailable'); }
     }
@@ -437,14 +516,15 @@ export class KimiAdapter {
       const inference = req.url === '/v1/chat/completions';
       let routing, roles, router;
       if (inference) {
-        const selected = this.catalog.find(x => x.alias === canonicalMenuAlias(payload.model));
-        if (!selected && isMenuAlias(payload.model)) { error(409, 'model_no_longer_available'); return; }
         let allowed;
         try { allowed = await this.gatewayCatalog(active.gatewayURL, active.gatewayKey); }
         catch { error(503, 'catalog_unavailable'); return; }
-        const primary = selected?.id || active.model;
+        // Native menu/model fields do not choose external models. Only this
+        // connection and authenticated child-profile bindings establish them.
+        const primary = active.model;
         const enableRoles = this.rolesReady && Boolean(this.bridgeSecondaryModel);
-        roles = { primaryModel: primary, secondaryModel: this.bridgeSecondaryModel || primary };
+        roles = { primaryModel: primary, secondaryModel: this.bridgeSecondaryModel || primary,
+          ...(this.roleOptionsEnabled ? { roleOptionsEnabled: true } : {}) };
         const allowedModels = allowed.map(row => row.id);
         const hasRoutingKey = enableRoles || /^[a-f0-9]{64}$/.test(this.state?.agentRoutingSecret || '');
         // Refresh our shared message before authenticating profile prompts.
@@ -454,7 +534,7 @@ export class KimiAdapter {
         catch (failure) { error(failure.message === 'invalid_messages' ? 400 : 503, failure.message); return; }
         if (hasRoutingKey) {
           router = this.ensureAgentRouter();
-          routing = router.prepare(payload, { ...roles, allowedModels, enableRoles });
+          routing = router.prepare(payload, { ...roles, allowedModels, enableRoles, includeRouteRole: true });
           payload = routing.payload;
         } else {
           // A connection that never opted in keeps the 0.1.5 payload shape and
@@ -464,6 +544,26 @@ export class KimiAdapter {
           payload = { ...payload, model: primary };
         }
         payload = neutralPromptAliases(payload);
+        const preferences = readJSON(this.connectionFile);
+        // An authenticated historical profile without a role cannot distinguish
+        // primary from secondary, even when its model equals the parent's.
+        const role = routing.routeRole === null ? null : routing.routeRole || 'primary';
+        const roleModel = role === 'secondary' ? this.bridgeSecondaryModel : primary;
+        const useFresh = role !== null && sameOptionConnection(active, preferences)
+          && roleModel === routing.model && optionModel(preferences, role) === routing.model
+          && (role === 'primary' || (this.rolesReady && this.roleOptionsEnabled));
+        const options = validateModelOptions(role === null ? {}
+          : boundOptions(useFresh ? preferences : active, role, routing.model) || {},
+          allowed.find(row => row.id === routing.model)?.options);
+        if (useFresh) {
+          active.modelOptions = { ...active.modelOptions, [role]: { model: routing.model, ...options } };
+        }
+        payload = applyReasoningOptions(payload, options);
+        if (options.contextTokens !== null) {
+          const tokens = await countContextTokens(payload, { gatewayURL: active.gatewayURL, gatewayKey: active.gatewayKey,
+            fetchImpl: this.fetchImpl, signal: controller.signal, requestHeaders: req.headers });
+          if (tokens > options.contextTokens) { error(400, 'context_length_exceeded'); return; }
+        }
       }
       const headers = { 'Content-Type': 'application/json',
         Authorization: inference ? 'Bearer ' + active.gatewayKey : req.headers.authorization };
@@ -506,11 +606,32 @@ export class KimiAdapter {
       else if (failure?.message === 'model_not_enabled_for_kimi'
           || failure?.message === 'agent_profile_unbound') error(409, failure.message);
       else if (failure?.message?.startsWith('agent_routing_')) error(400, failure.message);
+      else if (['invalid_model_options', 'unsupported_reasoning_effort', 'unsupported_context_length'].includes(failure?.code)) {
+        error(409, failure.code);
+      }
+      else if (failure?.code === 'context_count_unavailable' && !controller.signal.aborted) error(503, failure.code);
       else error(controller.signal.aborted ? 499 : 502, controller.signal.aborted ? 'request_cancelled' : 'upstream_connection_failed');
     } finally {
       clearTimeout(timeout);
       this.inflight.delete(controller);
     }
+  }
+
+  refreshLiveModelOptions(desired) {
+    const active = this.live;
+    const latest = readJSON(this.connectionFile);
+    const configured = modelOptionsSnapshot(desired);
+    const previous = active.modelOptions || {};
+    active.modelOptions = Object.fromEntries(OPTION_ROLES.flatMap(role => {
+      const model = role === 'primary' ? active.model : this.bridgeSecondaryModel;
+      if (!model) return [];
+      // An unconfirmed secondary scope keeps the preference that this tick
+      // actually reconciled. Primary rules can take the latest saved update.
+      const source = role === 'secondary' && !this.roleOptionsEnabled ? desired : latest;
+      const options = sameOptionConnection(active, source) && optionModel(source, role) === model
+        ? optionSnapshot(source, role) : previous[role]?.model === model ? previous[role] : configured[role];
+      return [[role, { model, reasoningEffort: options.reasoningEffort, contextTokens: options.contextTokens }]];
+    }));
   }
 
   async restore({ reload = true } = {}) {
@@ -674,6 +795,7 @@ export class KimiAdapter {
     }
     const stored = record(this.state?.agentRoutingBindings) ? this.state.agentRoutingBindings : {};
     const absence = record(this.state?.agentRoutingAbsence) ? this.state.agentRoutingAbsence : {};
+    const roles = this.state?.agentRoutingRoles ?? {};
     const sameBindings = (left, right) => {
       const a = Object.entries(left), b = Object.entries(right);
       return a.length === b.length && a.every(([key, value], index) =>
@@ -681,8 +803,9 @@ export class KimiAdapter {
     };
     if (!this.agentRouter || this.agentRouterSecret !== secret
         || !sameBindings(this.agentRouter.bindings, stored)
-        || JSON.stringify(this.agentRouter.absence) !== JSON.stringify(absence)) {
-      try { this.agentRouter = new AgentModelRouter({ secret, bindings: stored, absence }); }
+        || JSON.stringify(this.agentRouter.absence) !== JSON.stringify(absence)
+        || JSON.stringify(this.agentRouter.roles) !== JSON.stringify(roles)) {
+      try { this.agentRouter = new AgentModelRouter({ secret, bindings: stored, absence, roles }); }
       catch { throw Error('agent_profile_conflict'); }
       this.agentRouterSecret = secret;
     }
@@ -692,16 +815,21 @@ export class KimiAdapter {
   persistAgentBindings(router) {
     const next = router.bindings;
     const absence = router.absence;
+    const roles = router.roles;
     if (JSON.stringify(next) !== JSON.stringify(this.state.agentRoutingBindings || {})
-        || JSON.stringify(absence) !== JSON.stringify(this.state.agentRoutingAbsence || {})) {
+        || JSON.stringify(absence) !== JSON.stringify(this.state.agentRoutingAbsence || {})
+        || JSON.stringify(roles) !== JSON.stringify(this.state.agentRoutingRoles || {})) {
       const previous = this.state.agentRoutingBindings;
       const previousAbsence = this.state.agentRoutingAbsence;
+      const previousRoles = this.state.agentRoutingRoles;
       this.state.agentRoutingBindings = next;
       this.state.agentRoutingAbsence = absence;
+      if (Object.keys(roles).length || this.state.agentRoutingRoles) this.state.agentRoutingRoles = roles;
       try { this.saveState(); }
       catch (error) {
         this.state.agentRoutingBindings = previous;
         this.state.agentRoutingAbsence = previousAbsence;
+        this.state.agentRoutingRoles = previousRoles;
         throw error;
       }
     }
@@ -732,7 +860,7 @@ export class KimiAdapter {
     this.persistAgentBindings(router);
   }
 
-  async reconcileSecondary(runner, wanted, { inheritModel = '' } = {}) {
+  async reconcileSecondary(runner, wanted, { inheritModel = '', roleOptionsEnabled = false } = {}) {
     if (this.secondaryOwnership() || this.modelPoolOwnership()) {
       const restored = await this.restoreModelPools(runner);
       if (restored.waiting) return restored;
@@ -745,6 +873,7 @@ export class KimiAdapter {
         if (retired.waiting) return retired;
       }
       this.rolesReady = false;
+      this.roleOptionsEnabled = false;
       this.bridgeSecondaryModel = '';
       this.setAppliedSecondary('');
       return { applied: true };
@@ -765,9 +894,11 @@ export class KimiAdapter {
       this.setAppliedSecondary('');
       throw Error('secondary_model_unsupported_runtime');
     }
-    const profiles = await this.syncRolePlugin(runner, [inheritModel, target]);
+    const profiles = await this.syncRolePlugin(runner, [inheritModel, target], { roleOptionsEnabled,
+      primaryModel: inheritModel, secondaryModel: target });
     if (profiles.waiting) return profiles;
     this.rolesReady = true;
+    this.roleOptionsEnabled = roleOptionsEnabled;
     this.bridgeSecondaryModel = target;
     this.setAppliedSecondary(target);
     return { applied: true };
@@ -857,10 +988,13 @@ export class KimiAdapter {
     return { applied: true, disabled: true };
   }
 
-  async syncRolePlugin(runner, models) {
+  async syncRolePlugin(runner, models, { roleOptionsEnabled = false, primaryModel, secondaryModel } = {}) {
     const router = this.ensureAgentRouter();
     const allowed = this.catalog.map(row => row.id);
-    try { router.registerModels([...new Set(models)], allowed); }
+    try {
+      router.registerModels([...new Set(models)], allowed);
+      if (roleOptionsEnabled) router.registerRoles({ primaryModel, secondaryModel }, allowed);
+    }
     catch (error) {
       if (error?.message === 'model_not_enabled_for_kimi') throw Error('secondary_model_unavailable');
       throw Error('agent_profile_conflict');
@@ -896,10 +1030,11 @@ export class KimiAdapter {
         if (name.startsWith('agents/')) ownedFiles[name.slice('agents/'.length)] = digest;
       }
     } catch { throw Error('agent_profile_conflict'); }
-    ensureAgentProfiles({ directory: path.join(directory, 'agents'), router, models: router.boundModels,
+    ensureAgentProfiles({ directory: path.join(directory, 'agents'), router, profiles: router.boundProfiles,
       ...(saved?.files ? { ownedFiles } : {}) });
     const files = rolePluginFiles(directory);
-    const selection = sha(JSON.stringify([...router.boundModels].sort()));
+    const selection = sha(JSON.stringify(Object.keys(router.roles).length
+      ? router.boundProfiles.map(profile => [profile.model, profile.role || '']).sort() : [...router.boundModels].sort()));
     const installed = path.join(path.dirname(this.convertedNativeConfigFile), 'plugins', 'managed', id);
     let current;
     try { current = rolePluginFiles(installed); }
@@ -1289,6 +1424,7 @@ export class KimiAdapter {
       }
       const target = gatewayURL(desired.gateway?.url);
       const wantedSecondary = typeof desired.secondaryModel === 'string' ? desired.secondaryModel : '';
+      const roleOptionsEnabled = OPTION_ROLES.some(role => boundOptions(desired, role));
       if (typeof desired.gateway?.key !== 'string' || !desired.gateway.key
           || typeof desired.model !== 'string' || !desired.model.includes('/') || desired.model.length > 1024
           || (desired.secondaryModel !== undefined && typeof desired.secondaryModel !== 'string')
@@ -1305,10 +1441,11 @@ export class KimiAdapter {
       if (unchanged && baseURL(doc) === this.bridgeURL && this.live) {
         this.protectNativeSecondary();
         await this.syncCatalog(runner, desired, target);
-        const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
+        const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model, roleOptionsEnabled });
         if (secondary.waitingSession) { this.report('secondary_model_waiting_session'); return; }
         if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
         if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
+        this.refreshLiveModelOptions(desired);
         this.report('connected', { model: desired.model, models: this.catalog.length, ...(this.catalogError ? {catalog: this.catalogError} : {}) }); return;
       }
       if (this.pausedSignature === signature) { this.report('kimi_config_changed'); return; }
@@ -1339,6 +1476,7 @@ export class KimiAdapter {
         ...(previous?.agentRoutingSecret ? { agentRoutingSecret: previous.agentRoutingSecret } : {}),
         ...(previous?.agentRoutingBindings ? { agentRoutingBindings: previous.agentRoutingBindings } : {}),
         ...(previous?.agentRoutingAbsence ? { agentRoutingAbsence: previous.agentRoutingAbsence } : {}),
+        ...(previous?.agentRoutingRoles ? { agentRoutingRoles: previous.agentRoutingRoles } : {}),
         ...(previous?.agentPlugin ? { agentPlugin: previous.agentPlugin } : {}),
         ...(previous?.secondary ? { secondary: previous.secondary } : {}),
         ...(previous?.secondaryPool ? { secondaryPool: previous.secondaryPool, secondaryPoolModel: '' } : {}),
@@ -1358,14 +1496,16 @@ export class KimiAdapter {
         throw error;
       }
       this.rolesReady = false;
-      this.live = { model: desired.model, gatewayURL: target, gatewayKey: desired.gateway.key, originalBase };
+      this.live = { model: desired.model, gatewayURL: target, gatewayKey: desired.gateway.key, originalBase,
+        modelOptions: modelOptionsSnapshot(desired) };
       await this.syncCatalog(runner, desired, target);
       // Reapply after the catalog sync, which may regenerate the same file.
-      const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model });
+      const secondary = await this.reconcileSecondary(runner, wantedSecondary, { inheritModel: desired.model, roleOptionsEnabled });
       this.pausedSignature = null;
       if (secondary.waitingSession) { this.report('secondary_model_waiting_session'); return; }
       if (secondary.waiting) { this.report('waiting_kimi_idle'); return; }
       if (secondary.applied === false) { this.report('kimi_config_changed'); return; }
+      this.refreshLiveModelOptions(desired);
       this.report('connected', { model: desired.model });
     } catch (error) {
       const codes = new Set(['invalid_gateway', 'invalid_connection', 'unsupported_kimi_config',

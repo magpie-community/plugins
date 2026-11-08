@@ -20,6 +20,7 @@ const initial = () => ({
 class Element {
   constructor(tagName, attributes = '', all = []) {
     this.tagName = tagName.toUpperCase();
+    this.attributes = new Map([...attributes.matchAll(/([\w:-]+)="([^"]*)"/g)].map(match => [match[1], match[2]]));
     this.disabled = /\bdisabled\b/.test(attributes);
     this.type = /\btype="([^"]+)"/.exec(attributes)?.[1] || '';
     this.children = []; this.listeners = new Map(); this.dataset = {};
@@ -31,6 +32,8 @@ class Element {
   appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
   append(...children) { for (const child of children) this.appendChild(child); }
   replaceChildren(...children) { this.children = []; this._text = ''; this.append(...children); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
   addEventListener(name, callback) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
     this.listeners.get(name).push(callback);
@@ -133,18 +136,23 @@ async function page({ lang = 'en', state = initial(), failures = 0, failureCode 
           return { ok: false, json: async () => ({ error: failureCode }) };
         }
         Object.assign(state, body, { status: saveStatus });
+        if (body.secondaryModel === '') Object.assign(state, { secondaryReasoningEffort: '', secondaryContextTokens: null });
       }
       return { ok: true, json: async () => structuredClone(state) };
     },
   });
   await tick();
   const node = id => nodes.get(id);
-  const radios = id => descendants(node(id)).filter(item => item.tagName === 'INPUT' && item.type === 'radio');
+  const radios = id => {
+    assert.ok(node(id), `${id} must provide a radio group`);
+    return descendants(node(id)).filter(item => item.tagName === 'INPUT' && item.type === 'radio');
+  };
   return {
     node, state, document, radios,
     selected: id => radios(id).find(input => input.checked)?.value ?? '',
     posts: () => calls.filter(call => call.method === 'POST').map(call => call.body),
     async choose(id, value) {
+      assert.ok(node(id), `${id} must provide a radio group`);
       assert.equal(node(id).tagName, 'FIELDSET', `${id} must offer radio rows rather than a native select`);
       const input = radios(id).find(item => item.value === value);
       assert.ok(input, `${id} must offer ${value}`);
@@ -153,12 +161,18 @@ async function page({ lang = 'en', state = initial(), failures = 0, failureCode 
     },
     async save() { node('save').click(); await tick(); },
     async refresh() { node('refresh').click(); await tick(); },
+    async enter(id, value) {
+      const input = node(id);
+      assert.ok(input, `${id} must provide a token input`);
+      assert.equal(input.type, 'number'); assert.equal(input.disabled, false);
+      input.value = String(value); input.dispatch('input'); await tick();
+    },
   };
 }
 
 const words = {
-  en: { title: 'Kimi Work models', primary: 'Primary model', secondary: 'Secondary model', save: 'Save', dirty: /unsaved/i, saved: /settings saved/i, applied: /configuration is applied/i, retained: /kept/i, unavailable: /Saved; currently unavailable/, connect: /connect.*Kimi/i, partial: /Primary model saved; secondary model was not saved/ },
-  zh: { title: 'Kimi Work 模型', primary: '主模型', secondary: '辅助模型', save: '保存', dirty: /未保存/, saved: /配置已保存/, applied: /配置已应用/, retained: /保留/, unavailable: /已保存，当前不可用/, connect: /先.*接通/, partial: /主模型已保存，辅助模型未保存/ },
+  en: { title: 'Kimi Work models', primary: 'Primary model', secondary: 'Secondary model', save: 'Save', dirty: /unsaved/i, saved: /settings saved/i, applied: /configuration is applied/i, retained: /kept/i, unavailable: /Saved; currently unavailable/, connect: /connect.*Kimi/i, partial: /Primary model changed; remaining model preferences were not saved/ },
+  zh: { title: 'Kimi Work 模型', primary: '主模型', secondary: '辅助模型', save: '保存', dirty: /未保存/, saved: /配置已保存/, applied: /配置已应用/, retained: /保留/, unavailable: /已保存，当前不可用/, connect: /先.*接通/, partial: /主模型已更改，其余模型偏好未保存/ },
 };
 const optInCopy = {
   en: {
@@ -471,5 +485,387 @@ for (const lang of ['en', 'zh']) {
     assert.equal(p.attempts.length, 7);
     assert.equal(p.destroyed, true);
     assert.equal(p.timers.pending, 0);
+  });
+}
+
+const optionState = () => ({
+  ...initial(), secondaryModel: 'fixture/main', appliedSecondaryModel: 'fixture/main',
+  primaryReasoningEffort: '', secondaryReasoningEffort: '', primaryContextTokens: null, secondaryContextTokens: null,
+  primaryOptionsStatus: 'applied', secondaryOptionsStatus: 'applied',
+  models: [
+    { id: 'fixture/main', name: 'Main', reasoningEfforts: ['low', 'high'], contextWindow: 262144 },
+    { id: 'fixture/other', name: 'Other', reasoningEfforts: ['medium'], contextWindow: 65536 },
+    { id: 'fixture/auxiliary', name: 'Auxiliary', reasoningEfforts: ['low', 'high'], contextWindow: 131072 },
+    { id: 'fixture/unknown', name: 'Unknown', reasoningEfforts: [], contextWindow: null },
+  ],
+});
+const optionCopy = {
+  en: { reasoning: 'Primary reasoning effort', context: 'Primary context input budget (counted/estimated)', defaultEffort: 'Use Magpie/provider default', defaultContext: 'No additional input budget', unknownEffort: /does not list configurable reasoning efforts/, unknownContext: /does not publish a context limit/, unsupported: /not supported/, invalidContext: /positive whole number|must not exceed/, inactive: /Native subtasks use the primary settings/, unconfirmed: /not confirmed/, dirty: /unsaved/, applied: /Subsequent requests use this plugin's model options and input budget rules/ },
+  zh: { reasoning: '主模型思考强度', context: '主模型上下文输入预算（计数／估算）', defaultEffort: '交给 Magpie／供应方默认', defaultContext: '不额外限制输入', unknownEffort: /未列出可配置的思考强度/, unknownContext: /未公布上下文上限/, unsupported: /不支持/, invalidContext: /正整数|不能超过/, inactive: /原生子任务沿用主设置/, unconfirmed: /尚未确认/, dirty: /未保存/, applied: /后续请求使用本插件的模型参数和输入预算规则/ },
+};
+const budgetCopy = {
+  en: {
+    secondary: 'Secondary context input budget (counted/estimated)',
+    guidance: "Only external inference input is limited. This does not expand or change Kimi's native compaction window. Input is checked using Magpie counts or estimates. An over-budget inference request is rejected, and Kimi may attempt automatic compaction. If recovery fails, increase or remove the budget, shorten the input, or start a new conversation. This plugin does not trim history; native compaction may reduce details from earlier messages in subsequent inference. Paid plugins keep their existing authorization, billing, and data-request paths.",
+    reasoning: "Choose an effort listed by the model catalog. A reasoning effort fixed in Magpie's routing configuration takes precedence.",
+    cap: 'The model catalog publishes a limit of 262144 tokens.',
+    error: 'The input count could not be obtained, or the current message format is unsupported. This inference request was not sent. Retry or remove the additional input budget.',
+  },
+  zh: {
+    secondary: '辅助模型上下文输入预算（计数／估算）',
+    guidance: '仅限制外部推理输入，不扩大或改变 Kimi 原生压缩窗口。按 Magpie 计数／估算检查；超预算拒绝本次推理，Kimi 可能尝试自动压缩。恢复失败时需调高或取消预算、缩短输入或新建会话。插件不裁剪历史；原生压缩可能减少后续推理中的早期细节。付费插件保持原授权、计费和数据请求通路。',
+    reasoning: '选择模型目录列出的思考强度。Magpie 路由中固定的思考强度优先。',
+    cap: '模型目录公布上限为 262144 tokens。',
+    error: '无法取得输入计数或当前消息格式不受支持；本次推理未发送，可重试或取消额外预算。',
+  },
+};
+
+for (const lang of ['en', 'zh']) {
+  const w = optionCopy[lang];
+  test(`${lang}: catalog options are independent for the same primary and secondary model`, async () => {
+    const p = await page({ lang, state: optionState() });
+    assert.equal(p.node('primary-reasoning-label')?.textContent, w.reasoning);
+    assert.equal(p.node('primary-context-label')?.textContent, w.context);
+    for (const role of ['primary', 'secondary']) {
+      assert.deepEqual(p.radios(`${role}-reasoning`).map(input => input.value), ['', 'low', 'high']);
+      assert.equal(p.node(`${role}-reasoning`).tagName, 'FIELDSET');
+      assert.equal(p.node(`${role}-context`).tagName, 'FIELDSET');
+      assert.equal(p.selected(`${role}-context`), 'catalog');
+      assert.equal(p.node(`${role}-context-tokens`).min, '1');
+      assert.equal(p.node(`${role}-context-tokens`).step, '1');
+      assert.equal(p.node(`${role}-context-tokens`).max, '262144');
+      assert.equal(p.node(`${role}-context-tokens`).disabled, true);
+    }
+    assert.doesNotMatch(html, /<select\b/i);
+    assert.match(html, /<label\b[^>]*\bfor="primary-context-tokens"/);
+    assert.match(html, /id="primary-context-tokens"[^>]*aria-describedby="primary-context-hint context-guidance"/);
+    await p.choose('primary-reasoning', 'high'); await p.choose('secondary-reasoning', 'low');
+    await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 196608);
+    await p.choose('secondary-context', 'custom'); await p.enter('secondary-context-tokens', 32768);
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: 'high', secondaryReasoningEffort: 'low', primaryContextTokens: 196608, secondaryContextTokens: 32768 }]);
+    assert.equal(p.selected('primary-reasoning'), 'high'); assert.equal(p.selected('secondary-reasoning'), 'low');
+    assert.equal(p.node('primary-context-tokens').value, '196608'); assert.equal(p.node('secondary-context-tokens').value, '32768');
+    assert.equal(p.node('save').disabled, true);
+  });
+
+  test(`${lang}: option defaults explicitly reset to provider default and no additional input budget`, async () => {
+    const p = await page({ lang, state: { ...optionState(), primaryReasoningEffort: 'high', primaryContextTokens: 65536 } });
+    assert.equal(p.selected('primary-reasoning'), 'high'); assert.equal(p.selected('primary-context'), 'custom');
+    assert.ok(p.radios('primary-reasoning').find(input => input.value === '').parentElement.textContent.includes(w.defaultEffort));
+    assert.ok(p.radios('primary-context').find(input => input.value === 'catalog').parentElement.textContent.includes(w.defaultContext));
+    await p.choose('primary-reasoning', ''); await p.choose('primary-context', 'catalog'); await p.save();
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: '', primaryContextTokens: null }]);
+  });
+
+  test(`${lang}: model switches retain invalid option drafts until the user corrects them`, async () => {
+    const p = await page({ lang, state: optionState() });
+    await p.choose('primary-reasoning', 'high'); await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 196608);
+    await p.choose('primary', 'fixture/other');
+    assert.equal(p.selected('primary-reasoning'), 'high');
+    assert.equal(p.radios('primary-reasoning').find(input => input.value === 'high').disabled, true);
+    assert.equal(p.node('primary-context-tokens').value, '196608');
+    assert.match(p.node('primary-reasoning-hint').textContent, w.unsupported);
+    assert.match(p.node('primary-context-hint').textContent, w.invalidContext);
+    assert.equal(p.node('save').disabled, true);
+    await p.save(); assert.deepEqual(p.posts(), []);
+    await p.refresh();
+    assert.equal(p.selected('primary'), 'fixture/other'); assert.equal(p.selected('primary-reasoning'), 'high');
+    assert.equal(p.node('primary-context-tokens').value, '196608'); assert.equal(p.node('save').disabled, true);
+    await p.choose('primary', 'fixture/main');
+    assert.equal(p.selected('primary-reasoning'), 'high'); assert.equal(p.node('primary-context-tokens').value, '196608');
+    assert.equal(p.node('save').disabled, false);
+    await p.save(); assert.deepEqual(p.posts(), [{ primaryReasoningEffort: 'high', primaryContextTokens: 196608 }]);
+  });
+
+  test(`${lang}: unknown capabilities disable unsupported controls and preserve old API model edits`, async () => {
+    const old = await page({ lang });
+    assert.deepEqual(old.radios('primary-reasoning').map(input => input.value), ['']);
+    assert.equal(old.radios('primary-context').find(input => input.value === 'custom').disabled, true);
+    assert.equal(old.node('primary-context-tokens').disabled, true);
+    assert.equal(old.node('primary-context-tokens').max, '');
+    assert.match(old.node('primary-reasoning-hint').textContent, w.unknownEffort);
+    assert.match(old.node('primary-context-hint').textContent, w.unknownContext);
+    await old.choose('primary', 'fixture/other'); await old.save();
+    assert.deepEqual(old.posts(), [{ primaryModel: 'fixture/other' }]);
+
+    const p = await page({ lang, state: optionState() });
+    await p.choose('primary-reasoning', 'high'); await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 4096);
+    await p.choose('primary', 'fixture/unknown');
+    assert.equal(p.node('save').disabled, true); assert.equal(p.node('primary-context-tokens').value, '4096');
+    assert.equal(p.node('primary-context-tokens').disabled, true);
+    assert.match(p.node('primary-context-hint').textContent, w.unknownContext);
+    await p.choose('primary-reasoning', ''); await p.choose('primary-context', 'catalog'); await p.save();
+    assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/unknown', primaryReasoningEffort: '', primaryContextTokens: null }]);
+  });
+
+  test(`${lang}: context drafts require positive safe integers within the real catalog cap`, async () => {
+    const p = await page({ lang, state: optionState() });
+    await p.choose('primary-context', 'custom');
+    for (const value of ['', 0, -1, 1.5, 262145, 9007199254740992]) {
+      await p.enter('primary-context-tokens', value);
+      assert.equal(p.node('save').disabled, true, `invalid token draft ${value}`);
+      assert.equal(p.node('primary-context-tokens').getAttribute('aria-invalid'), 'true');
+      assert.match(p.node('primary-context-hint').textContent, w.invalidContext);
+      await p.save();
+    }
+    assert.deepEqual(p.posts(), []);
+    await p.enter('primary-context-tokens', 1); await p.save();
+    assert.deepEqual(p.posts(), [{ primaryContextTokens: 1 }]);
+    await p.enter('primary-context-tokens', 262144); await p.save();
+    assert.deepEqual(p.posts().at(-1), { primaryContextTokens: 262144 });
+    assert.equal(p.node('primary-context-tokens').getAttribute('aria-invalid'), 'false');
+  });
+
+  test(`${lang}: failed saves and refreshes retain all independent option drafts`, async () => {
+    const p = await page({ lang, state: optionState(), failures: 1 });
+    await p.choose('primary-reasoning', 'high'); await p.choose('secondary-reasoning', 'low');
+    await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 131072);
+    await p.choose('secondary-context', 'custom'); await p.enter('secondary-context-tokens', 32768);
+    const expected = { primaryReasoningEffort: 'high', secondaryReasoningEffort: 'low', primaryContextTokens: 131072, secondaryContextTokens: 32768 };
+    await p.save(); assert.match(p.node('notice').textContent, words[lang].retained);
+    await p.refresh();
+    assert.equal(p.selected('primary-reasoning'), 'high'); assert.equal(p.selected('secondary-reasoning'), 'low');
+    assert.equal(p.node('primary-context-tokens').value, '131072'); assert.equal(p.node('secondary-context-tokens').value, '32768');
+    assert.equal(p.node('save').disabled, false); assert.match(p.node('primary-options-status').textContent, w.dirty);
+    await p.save(); assert.deepEqual(p.posts(), [expected, expected]);
+  });
+
+  test(`${lang}: disabling the secondary model keeps its draft inactive and accepts the server reset`, async () => {
+    const p = await page({ lang, state: { ...optionState(), secondaryReasoningEffort: 'low', secondaryContextTokens: 8192 } });
+    await p.choose('secondary-reasoning', 'high'); await p.enter('secondary-context-tokens', 16384);
+    await p.choose('secondary', '');
+    assert.equal(p.node('secondary-reasoning').disabled, true); assert.equal(p.node('secondary-context').disabled, true);
+    assert.equal(p.node('secondary-context-tokens').disabled, true);
+    assert.match(p.node('secondary-options-hint').textContent, w.inactive);
+    await p.refresh();
+    assert.equal(p.selected('secondary'), ''); assert.equal(p.selected('secondary-reasoning'), 'high');
+    assert.equal(p.node('secondary-context-tokens').value, '16384');
+    await p.save(); assert.deepEqual(p.posts(), [{ secondaryModel: '' }]);
+    assert.equal(p.selected('secondary-reasoning'), ''); assert.equal(p.selected('secondary-context'), 'catalog');
+    assert.equal(p.state.secondaryReasoningEffort, ''); assert.equal(p.state.secondaryContextTokens, null);
+    assert.equal(p.node('save').disabled, true);
+  });
+
+  test(`${lang}: disconnected roles disable option edits without preventing secondary removal`, async () => {
+    const p = await page({ lang, state: { ...optionState(), enabled: false, status: 'disconnected', primaryReasoningEffort: 'removed', primaryContextTokens: 999999 } });
+    for (const role of ['primary', 'secondary']) {
+      assert.ok(p.node(`${role}-reasoning`), `${role} reasoning controls must exist`);
+      assert.equal(p.node(`${role}-reasoning`).disabled, true); assert.equal(p.node(`${role}-context`).disabled, true);
+      assert.equal(p.node(`${role}-context-tokens`).disabled, true);
+      assert.equal(p.node(`${role}-context-tokens`).getAttribute('aria-invalid'), 'false');
+      for (const input of [...p.radios(`${role}-reasoning`), ...p.radios(`${role}-context`)]) assert.equal(input.disabled, true);
+    }
+    await p.choose('secondary', ''); await p.save();
+    assert.deepEqual(p.posts(), [{ secondaryModel: '' }]);
+  });
+
+  test(`${lang}: per-role option statuses are readback only and never inferred from model application`, async () => {
+    const p = await page({ lang, state: optionState(), saveStatus: 'connected' });
+    assert.ok(p.node('primary-options-status'), 'primary option application needs its own readback status');
+    const expected = lang === 'zh' ? {
+      not_configured: /使用 Magpie／供应方默认.*保存可设置独立参数/, pending: /等待 Kimi 确认/, applied: w.applied,
+      context_unavailable: /无法确认独立上下文预算/, unavailable: /模型能力或连接当前不可用/,
+    } : {
+      not_configured: /Using Magpie\/provider defaults.*Save to set independent role options/, pending: /waiting for Kimi confirmation/, applied: w.applied,
+      context_unavailable: /cannot confirm an independent context budget/, unavailable: /model capabilities or connection are unavailable/,
+    };
+    for (const [code, pattern] of Object.entries(expected)) {
+      p.state.primaryOptionsStatus = code; p.state.secondaryOptionsStatus = 'pending'; await p.refresh();
+      assert.match(p.node('primary-options-status').textContent, pattern);
+      assert.match(p.node('secondary-options-status').textContent, expected.pending);
+      if (code !== 'applied') assert.doesNotMatch(p.node('primary-options-status').textContent, w.applied);
+    }
+    for (const code of [undefined, 'future_option_status', 'constructor']) {
+      p.state.primaryOptionsStatus = code; await p.refresh();
+      assert.match(p.node('primary-options-status').textContent, w.unconfirmed);
+    }
+    p.state.primaryOptionsStatus = 'applied'; await p.refresh();
+    await p.choose('primary-reasoning', 'high');
+    assert.match(p.node('primary-options-status').textContent, w.dirty);
+    assert.doesNotMatch(p.node('primary-options-status').textContent, w.applied);
+    await p.save(); assert.deepEqual(p.posts(), [{ primaryReasoningEffort: 'high' }]);
+  });
+
+  test(`${lang}: malformed or unknown catalog limits never invent custom capability`, async () => {
+    for (const contextWindow of [null, 0, -1, 1.5, 9007199254740992]) {
+      const state = optionState(); state.models[0].contextWindow = contextWindow;
+      state.models[0].reasoningEfforts = undefined;
+      const p = await page({ lang, state });
+      assert.equal(p.radios('primary-context').find(input => input.value === 'custom').disabled, true, `invalid catalog limit ${contextWindow}`);
+      assert.equal(p.node('primary-context-tokens').max, '');
+      assert.match(p.node('primary-context-hint').textContent, w.unknownContext);
+      assert.deepEqual(p.radios('primary-reasoning').map(input => input.value), ['']);
+    }
+  });
+
+  test(`${lang}: unchecked or disabled option events cannot change the draft`, async () => {
+    const p = await page({ lang, state: optionState() });
+    p.radios('primary-reasoning').find(input => input.value === 'high').dispatch('change');
+    p.node('primary-context-tokens').value = '32768'; p.node('primary-context-tokens').dispatch('input');
+    await tick();
+    assert.equal(p.node('save').disabled, true);
+    await p.refresh();
+    assert.equal(p.selected('primary-reasoning'), ''); assert.equal(p.selected('primary-context'), 'catalog');
+    await p.choose('primary', 'fixture/unknown');
+    const custom = p.radios('primary-context').find(input => input.value === 'custom');
+    custom.checked = true; custom.dispatch('change');
+    await p.refresh(); assert.equal(p.selected('primary-context'), 'catalog');
+  });
+
+  test(`${lang}: saving disables every role option and cannot alter the in-flight draft`, async () => {
+    const p = await page({ lang, state: optionState(), failures: 1 });
+    await p.choose('primary-reasoning', 'high'); await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 8192);
+    p.node('save').click();
+    for (const role of ['primary', 'secondary']) {
+      assert.equal(p.node(`${role}-reasoning`).disabled, true); assert.equal(p.node(`${role}-context`).disabled, true);
+      assert.equal(p.node(`${role}-context-tokens`).disabled, true);
+      for (const input of [...p.radios(`${role}-reasoning`), ...p.radios(`${role}-context`)]) assert.equal(input.disabled, true);
+    }
+    const low = p.radios('primary-reasoning').find(input => input.value === 'low');
+    low.checked = true; low.dispatch('change');
+    p.node('primary-context-tokens').value = '16384'; p.node('primary-context-tokens').dispatch('input');
+    await tick(); await p.refresh();
+    assert.equal(p.selected('primary-reasoning'), 'high'); assert.equal(p.node('primary-context-tokens').value, '8192');
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: 'high', primaryContextTokens: 8192 }]);
+  });
+
+  test(`${lang}: changing a model explicitly binds unchanged valid options to that model`, async () => {
+    const p = await page({ lang, state: { ...optionState(), primaryReasoningEffort: 'low', primaryContextTokens: 65536 } });
+    await p.choose('primary', 'fixture/auxiliary');
+    assert.equal(p.selected('primary-reasoning'), 'low'); assert.equal(p.node('primary-context-tokens').value, '65536');
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryModel: 'fixture/auxiliary', primaryReasoningEffort: 'low', primaryContextTokens: 65536 }]);
+    await p.choose('secondary', 'fixture/auxiliary'); await p.save();
+    assert.deepEqual(p.posts().at(-1), { secondaryModel: 'fixture/auxiliary', secondaryReasoningEffort: '', secondaryContextTokens: null });
+  });
+
+  test(`${lang}: unavailable native context control reports an error and retains the option draft`, async () => {
+    const p = await page({ lang, state: optionState(), failures: 1, failureCode: 'context_control_unavailable' });
+    await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 8192); await p.save();
+    assert.ok(p.node('notice').textContent.includes(lang === 'zh'
+      ? '当前 Kimi 运行时无法控制上下文预算，本次参数未保存。'
+      : 'This Kimi runtime cannot control the context budget. The change was not saved.'));
+    assert.match(p.node('notice').textContent, words[lang].retained);
+    assert.doesNotMatch(p.node('notice').textContent, words[lang].saved);
+    assert.equal(p.selected('primary-context'), 'custom'); assert.equal(p.node('primary-context-tokens').value, '8192');
+    assert.equal(p.node('save').disabled, false);
+  });
+
+  test(`${lang}: fresh default options can be explicitly saved with the existing Save button`, async () => {
+    const p = await page({ lang, state: { ...optionState(), primaryOptionsStatus: 'not_configured', secondaryOptionsStatus: 'not_configured' } });
+    assert.equal(p.node('save').disabled, false, 'provider defaults can be explicitly persisted for each role');
+    for (const role of ['primary', 'secondary']) {
+      assert.equal(p.selected(`${role}-reasoning`), ''); assert.equal(p.selected(`${role}-context`), 'catalog');
+      assert.match(p.node(`${role}-options-status`).textContent, lang === 'zh' ? /使用 Magpie／供应方默认.*保存可设置独立参数/ : /Using Magpie\/provider defaults.*Save to set independent role options/);
+      assert.doesNotMatch(p.node(`${role}-options-status`).textContent, w.applied);
+      p.state[`${role}OptionsStatus`] = 'pending';
+    }
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: '', primaryContextTokens: null, secondaryReasoningEffort: '', secondaryContextTokens: null }]);
+    assert.equal(p.node('save').disabled, true);
+    assert.match(p.node('primary-options-status').textContent, lang === 'zh' ? /等待 Kimi 确认/ : /waiting for Kimi confirmation/);
+    assert.doesNotMatch(p.node('primary-options-status').textContent, w.applied);
+  });
+
+  test(`${lang}: a non-thinking model can explicitly save provider default without initializing an absent secondary role`, async () => {
+    const state = { ...optionState(), secondaryModel: '', primaryOptionsStatus: 'not_configured', secondaryOptionsStatus: 'not_configured' };
+    state.models[0].reasoningEfforts = []; state.models[0].contextWindow = null;
+    const p = await page({ lang, state });
+    assert.deepEqual(p.radios('primary-reasoning').map(input => input.value), ['']);
+    assert.equal(p.node('secondary-reasoning').disabled, true);
+    assert.equal(p.node('save').disabled, false);
+    p.state.primaryOptionsStatus = 'pending';
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: '', primaryContextTokens: null }]);
+    assert.equal(p.node('save').disabled, true);
+  });
+
+  test(`${lang}: old API responses cannot initialize option defaults or enable an empty Save`, async () => {
+    const state = { ...optionState(), primaryOptionsStatus: 'not_configured', secondaryOptionsStatus: 'not_configured' };
+    for (const role of ['primary', 'secondary']) {
+      delete state[`${role}ReasoningEffort`]; delete state[`${role}ContextTokens`];
+    }
+    const p = await page({ lang, state });
+    assert.equal(p.node('save').disabled, true);
+    await p.save(); assert.deepEqual(p.posts(), []);
+  });
+
+  test(`${lang}: default initialization cannot bypass connection or invalid context guards`, async () => {
+    const state = { ...optionState(), primaryOptionsStatus: 'not_configured', secondaryOptionsStatus: 'not_configured' };
+    const disconnected = await page({ lang, state: { ...state, enabled: false, status: 'disconnected' } });
+    assert.equal(disconnected.node('save').disabled, true);
+    await disconnected.save(); assert.deepEqual(disconnected.posts(), []);
+    const unavailable = await page({ lang, state: { ...state, primaryModel: 'missing/model', secondaryModel: '' } });
+    assert.equal(unavailable.node('save').disabled, true);
+    await unavailable.save(); assert.deepEqual(unavailable.posts(), []);
+    const invalid = await page({ lang, state: { ...state, primaryContextTokens: 262145 } });
+    assert.equal(invalid.node('save').disabled, true);
+    await invalid.save(); assert.deepEqual(invalid.posts(), []);
+  });
+
+  test(`${lang}: context labels and guidance describe counted or estimated input budgets without changing the native window`, async () => {
+    const p = await page({ lang, state: optionState() });
+    assert.equal(p.node('primary-context-label').textContent, w.context);
+    assert.equal(p.node('secondary-context-label').textContent, budgetCopy[lang].secondary);
+    for (const role of ['primary', 'secondary']) {
+      assert.equal(p.radios(`${role}-context`).find(input => input.value === 'catalog').parentElement.textContent, w.defaultContext);
+      assert.match(p.node(`${role}-context`).getAttribute('aria-describedby'), /context-guidance/);
+      assert.match(p.node(`${role}-context-tokens`).getAttribute('aria-describedby'), /context-guidance/);
+    }
+    assert.equal(p.node('context-guidance')?.textContent, budgetCopy[lang].guidance);
+    if (lang === 'en') assert.ok(html.includes(`<p id="context-guidance" class="muted option-note">${budgetCopy.en.guidance}</p>`));
+    assert.equal(p.node('primary-context-hint').textContent, budgetCopy[lang].cap);
+    assert.match(p.node('primary-options-status').textContent, w.applied);
+  });
+
+  test(`${lang}: unavailable input counts report that inference was not sent and keep the budget draft`, async () => {
+    const p = await page({ lang, state: optionState(), failures: 1, failureCode: 'context_count_unavailable' });
+    await p.choose('primary-context', 'custom'); await p.enter('primary-context-tokens', 8192); await p.save();
+    assert.ok(p.node('notice').textContent.includes(budgetCopy[lang].error));
+    assert.match(p.node('notice').textContent, words[lang].retained);
+    assert.doesNotMatch(p.node('notice').textContent, words[lang].saved);
+    assert.equal(p.node('primary-context-tokens').value, '8192'); assert.equal(p.selected('primary-context'), 'custom');
+    assert.equal(p.node('save').disabled, false);
+    assert.deepEqual(p.posts(), [{ primaryContextTokens: 8192 }]);
+  });
+
+  test(`${lang}: reasoning hints explain that a fixed Magpie routing effort takes precedence`, async () => {
+    const p = await page({ lang, state: optionState() });
+    for (const role of ['primary', 'secondary']) assert.equal(p.node(`${role}-reasoning-hint`).textContent, budgetCopy[lang].reasoning);
+  });
+
+  test(`${lang}: unavailable projected defaults can repair a single non-thinking catalog model`, async () => {
+    const state = {
+      ...optionState(), secondaryModel: '', primaryOptionsStatus: 'unavailable', secondaryOptionsStatus: 'unavailable',
+      models: [{ id: 'fixture/main', name: 'Main', reasoningEfforts: [], contextWindow: null }],
+    };
+    const p = await page({ lang, state });
+    assert.deepEqual(p.radios('primary-reasoning').map(input => input.value), ['']);
+    assert.equal(p.selected('primary-reasoning'), ''); assert.equal(p.selected('primary-context'), 'catalog');
+    assert.equal(p.node('primary-context-tokens').disabled, true);
+    assert.equal(p.node('save').disabled, false, 'projected defaults need an explicit repair operation');
+    p.state.primaryOptionsStatus = 'pending';
+    await p.save();
+    assert.deepEqual(p.posts(), [{ primaryReasoningEffort: '', primaryContextTokens: null }]);
+    assert.equal(p.node('save').disabled, true);
+  });
+
+  test(`${lang}: unavailable recovery cannot initialize disconnected or absent models or clear invalid drafts`, async () => {
+    const state = { ...optionState(), secondaryModel: '', primaryOptionsStatus: 'unavailable', secondaryOptionsStatus: 'unavailable' };
+    for (const override of [{ enabled: false, status: 'disconnected' }, { primaryModel: 'removed/model' }]) {
+      const p = await page({ lang, state: { ...state, ...override } });
+      assert.equal(p.node('save').disabled, true);
+      await p.save(); assert.deepEqual(p.posts(), []);
+    }
+    const effort = await page({ lang, state });
+    await effort.choose('primary-reasoning', 'high'); await effort.choose('primary', 'fixture/unknown');
+    assert.equal(effort.selected('primary-reasoning'), 'high'); assert.equal(effort.node('save').disabled, true);
+    await effort.save(); assert.deepEqual(effort.posts(), []);
+    const context = await page({ lang, state });
+    await context.choose('primary-context', 'custom'); await context.enter('primary-context-tokens', 196608);
+    await context.choose('primary', 'fixture/other');
+    assert.equal(context.node('primary-context-tokens').value, '196608'); assert.equal(context.node('save').disabled, true);
+    await context.save(); assert.deepEqual(context.posts(), []);
   });
 }

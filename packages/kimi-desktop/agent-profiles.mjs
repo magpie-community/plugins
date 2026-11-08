@@ -8,12 +8,14 @@ const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 // Existing files are accepted only byte-for-byte. A profile edited by the user
 // is never replaced. Optional ownership permits pruning retired private files.
-export function ensureAgentProfiles({ directory, router, models, ownedFiles }) {
-  const entries = [...new Set(models)].map(model => {
-    const name = router.profileName(model);
+export function ensureAgentProfiles({ directory, router, models, profiles, ownedFiles }) {
+  const requested = profiles ?? (models === undefined ? router.boundProfiles
+    : [...new Set(models)].map(model => ({ model })));
+  const entries = [...new Map(requested.map(({ model, role }) => {
+    const name = router.profileName(model, role);
     if (!/^local-agent-[a-f0-9]{12}-[a-f0-9]{24}$/.test(name)) throw conflict();
-    return { name, file: path.join(directory, name + '.md'), text: router.profileText(model) };
-  });
+    return [name, { name, file: path.join(directory, name + '.md'), text: router.profileText(model, role) }];
+  })).values()];
   const exists = entry => {
     let stat;
     try { stat = fs.lstatSync(entry.file); }

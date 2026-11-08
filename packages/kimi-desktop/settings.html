@@ -27,6 +27,11 @@
   .model-row input:disabled + span, fieldset:disabled { opacity: .65; }
   fieldset:disabled .model-row { cursor: default; }
   .empty { padding: 8px 12px; color: GrayText; }
+  .model-options { margin-top: 16px; }
+  .context-value { display: block; margin-top: 8px; }
+  .token-input { width: 16rem; max-width: 100%; padding: 7px 10px; border: 1px solid color-mix(in srgb, CanvasText 28%, Canvas); border-radius: 6px; background: Canvas; color: CanvasText; font: inherit; }
+  .token-input:disabled { opacity: .65; }
+  .option-note { font-size: 13px; }
   .actions { display: flex; gap: 10px; margin-top: 18px; }
   button { padding: 8px 18px; border: 1px solid color-mix(in srgb, CanvasText 28%, Canvas); border-radius: 7px; font: inherit; cursor: pointer; background: Canvas; color: CanvasText; }
   button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 6%, Canvas); }
@@ -47,11 +52,38 @@
       <legend id="primary-label">Primary model</legend>
       <div id="primary-list" class="model-list"></div>
     </fieldset>
+    <fieldset id="primary-reasoning" class="model-options" disabled aria-describedby="primary-reasoning-hint">
+      <legend id="primary-reasoning-label">Primary reasoning effort</legend>
+      <div id="primary-reasoning-list" class="model-list"></div>
+      <p id="primary-reasoning-hint" class="muted option-note"></p>
+    </fieldset>
+    <fieldset id="primary-context" class="model-options" disabled aria-describedby="primary-context-hint context-guidance">
+      <legend id="primary-context-label">Primary context input budget (counted/estimated)</legend>
+      <div id="primary-context-list" class="model-list"></div>
+      <label id="primary-context-value-label" class="context-value" for="primary-context-tokens">Input token budget</label>
+      <input id="primary-context-tokens" class="token-input" type="number" min="1" step="1" inputmode="numeric" aria-describedby="primary-context-hint context-guidance" disabled>
+      <p id="primary-context-hint" class="muted option-note"></p>
+    </fieldset>
+    <p id="primary-options-hint" class="muted option-note"></p>
     <fieldset id="secondary" disabled aria-describedby="models-hint">
       <legend id="secondary-label">Secondary model</legend>
       <div id="secondary-list" class="model-list"></div>
     </fieldset>
+    <fieldset id="secondary-reasoning" class="model-options" disabled aria-describedby="secondary-reasoning-hint">
+      <legend id="secondary-reasoning-label">Secondary reasoning effort</legend>
+      <div id="secondary-reasoning-list" class="model-list"></div>
+      <p id="secondary-reasoning-hint" class="muted option-note"></p>
+    </fieldset>
+    <fieldset id="secondary-context" class="model-options" disabled aria-describedby="secondary-context-hint context-guidance">
+      <legend id="secondary-context-label">Secondary context input budget (counted/estimated)</legend>
+      <div id="secondary-context-list" class="model-list"></div>
+      <label id="secondary-context-value-label" class="context-value" for="secondary-context-tokens">Input token budget</label>
+      <input id="secondary-context-tokens" class="token-input" type="number" min="1" step="1" inputmode="numeric" aria-describedby="secondary-context-hint context-guidance" disabled>
+      <p id="secondary-context-hint" class="muted option-note"></p>
+    </fieldset>
+    <p id="secondary-options-hint" class="muted option-note"></p>
     <p id="models-hint" class="muted">Models available to the current Kimi connection.</p>
+    <p id="context-guidance" class="muted option-note">Only external inference input is limited. This does not expand or change Kimi's native compaction window. Input is checked using Magpie counts or estimates. An over-budget inference request is rejected, and Kimi may attempt automatic compaction. If recovery fails, increase or remove the budget, shorten the input, or start a new conversation. This plugin does not trim history; native compaction may reduce details from earlier messages in subsequent inference. Paid plugins keep their existing authorization, billing, and data-request paths.</p>
     <div class="actions">
       <button id="save" type="submit" disabled>Save</button>
       <button id="refresh" type="button">Refresh</button>
@@ -60,6 +92,8 @@
   <div class="status" aria-live="polite">
     <p id="connection">Reading settings…</p>
     <p id="application" class="muted"></p>
+    <p id="primary-options-status" class="muted"></p>
+    <p id="secondary-options-status" class="muted"></p>
   </div>
   <p id="notice" role="status" aria-live="polite"></p>
   <p id="guidance" class="guidance">With a secondary model selected, new Agent calls use it only when both model and subagent_type are omitted. An explicit native subagent_type without model keeps its native profile. Use model="primary" or model="native" for an explicit choice.</p>
@@ -76,6 +110,28 @@
     description: ['Choose a primary model. Select a secondary model to enable role routing for new Agent subtasks.', '选择主模型；只有选择辅助模型后，才会启用新建 Agent 子任务的角色路由。'],
     primary: ['Primary model', '主模型'],
     secondary: ['Secondary model', '辅助模型'],
+    primaryReasoning: ['Primary reasoning effort', '主模型思考强度'],
+    secondaryReasoning: ['Secondary reasoning effort', '辅助模型思考强度'],
+    primaryContext: ['Primary context input budget (counted/estimated)', '主模型上下文输入预算（计数／估算）'],
+    secondaryContext: ['Secondary context input budget (counted/estimated)', '辅助模型上下文输入预算（计数／估算）'],
+    defaultEffort: ['Use Magpie/provider default', '交给 Magpie／供应方默认'],
+    noBudget: ['No additional input budget', '不额外限制输入'],
+    customContext: ['Set an input budget', '自定义输入预算'],
+    customTokens: ['Input token budget', '输入 token 预算'],
+    reasoningAvailable: ["Choose an effort listed by the model catalog. A reasoning effort fixed in Magpie's routing configuration takes precedence.", '选择模型目录列出的思考强度。Magpie 路由中固定的思考强度优先。'],
+    reasoningUnavailable: ['This model does not list configurable reasoning efforts. Only the Magpie/provider default is available.', '该模型未列出可配置的思考强度，仅可使用 Magpie／供应方默认。'],
+    invalidEffort: ['This reasoning effort is not supported by the selected model. Choose an available effort or the default.', '所选模型不支持当前思考强度。请选择可用强度，或明确恢复默认。'],
+    contextAvailable: ['The model catalog publishes a limit of {limit} tokens.', '模型目录公布上限为 {limit} tokens。'],
+    contextUnavailable: ['The model catalog does not publish a context limit. A custom input budget is unavailable; you can remove the additional budget.', '模型目录未公布上下文上限，无法设置自定义输入预算；仍可选择不额外限制输入。'],
+    contextGuidance: ["Only external inference input is limited. This does not expand or change Kimi's native compaction window. Input is checked using Magpie counts or estimates. An over-budget inference request is rejected, and Kimi may attempt automatic compaction. If recovery fails, increase or remove the budget, shorten the input, or start a new conversation. This plugin does not trim history; native compaction may reduce details from earlier messages in subsequent inference. Paid plugins keep their existing authorization, billing, and data-request paths.", '仅限制外部推理输入，不扩大或改变 Kimi 原生压缩窗口。按 Magpie 计数／估算检查；超预算拒绝本次推理，Kimi 可能尝试自动压缩。恢复失败时需调高或取消预算、缩短输入或新建会话。插件不裁剪历史；原生压缩可能减少后续推理中的早期细节。付费插件保持原授权、计费和数据请求通路。'],
+    invalidContext: ['Enter a positive whole number of tokens.', '请输入 token 正整数。'],
+    contextExceeded: ['The input budget must not exceed the published model catalog limit of {limit} tokens.', '输入预算不能超过模型目录公布上限 {limit} tokens。'],
+    optionsHint: ['Model options are saved in this plugin. Their application is confirmed separately below.', '模型参数以本插件设置为准，应用状态在下方单独确认。'],
+    secondaryInactive: ['No secondary model is selected. Native subtasks use the primary settings; secondary option drafts are not saved while disabled.', '未选择辅助模型。原生子任务沿用主设置；禁用期间不保存辅助参数草稿。'],
+    primaryOptions: ['Primary options:', '主模型参数：'],
+    secondaryOptions: ['Secondary options:', '辅助模型参数：'],
+    dirtyOptions: ['There are unsaved model options.', '模型参数有未保存的更改。'],
+    optionsUnconfirmed: ['Model option application is not confirmed.', '模型参数应用状态尚未确认。'],
     save: ['Save', '保存'], refresh: ['Refresh', '刷新'],
     loading: ['Reading settings…', '正在读取设置…'],
     modelsHint: ['Models available to the current Kimi connection.', '模型列表来自当前 Kimi 连接可用的模型。'],
@@ -130,6 +186,13 @@
     kimi_control_rejected: ['Kimi rejected the configuration operation. Check Kimi before retrying.', 'Kimi 未接受本次配置操作，请检查 Kimi 后重试。'],
     adapter_failed: ['The Kimi connection encountered a problem. Refresh to retry.', 'Kimi 连接出现问题，请刷新重试。'],
   };
+  const optionStatusNames = {
+    not_configured: ['Using Magpie/provider defaults. Save to set independent role options.', '使用 Magpie／供应方默认；保存可设置独立参数。'],
+    pending: ['Saved options are waiting for Kimi confirmation.', '参数已保存，等待 Kimi 确认。'],
+    applied: ["Subsequent requests use this plugin's model options and input budget rules.", '后续请求使用本插件的模型参数和输入预算规则。'],
+    context_unavailable: ['This Kimi runtime cannot confirm an independent context budget.', '当前 Kimi 运行时无法确认独立上下文预算。'],
+    unavailable: ['The model capabilities or connection are unavailable.', '模型能力或连接当前不可用。'],
+  };
   const errors = {
     invalid_session: ['The settings service restarted. Reopen this page.', '设置服务已重启，请重新打开此页面。'],
     connect_kimi_first: ['Connect Kimi in Magpie Agents → Kimi first, then refresh.', '请先在 Magpie Agents → Kimi 接通，然后刷新。'],
@@ -140,13 +203,19 @@
     settings_save_failed: ['Settings could not be saved. Refresh before retrying.', '保存失败，请刷新后重试。'],
     primary_model_unavailable: ['The Magpie executable was not found. Set magpiePath in the plugin options.', '找不到当前 Magpie 可执行文件，请在插件选项 magpiePath 中配置。'],
     primary_model_update_failed: ['The primary model change is unconfirmed. Refresh to check it.', '主模型修改尚未确认，请刷新检查。'],
-    settings_partially_saved: ['Primary model saved; secondary model was not saved. Refresh before retrying.', '主模型已保存，辅助模型未保存。请先刷新核对，再重试。'],
+    settings_partially_saved: ['Primary model changed; remaining model preferences were not saved. Refresh before retrying.', '主模型已更改，其余模型偏好未保存。请刷新后重试。'],
+    context_control_unavailable: ['This Kimi runtime cannot control the context budget. The change was not saved.', '当前 Kimi 运行时无法控制上下文预算，本次参数未保存。'],
+    context_count_unavailable: ['The input count could not be obtained, or the current message format is unsupported. This inference request was not sent. Retry or remove the additional input budget.', '无法取得输入计数或当前消息格式不受支持；本次推理未发送，可重试或取消额外预算。'],
     unreachable: ['The settings service could not be reached. Check that the Magpie plugin is running.', '无法连接设置服务，请确认 Magpie 插件已启动后重试。'],
   };
   document.documentElement.lang = lang;
   document.title = text('title');
   for (const [id, key] of [['heading', 'title'], ['description', 'description'], ['primary-label', 'primary'],
     ['secondary-label', 'secondary'], ['save', 'save'], ['refresh', 'refresh'], ['connection', 'loading'],
+    ['primary-reasoning-label', 'primaryReasoning'], ['secondary-reasoning-label', 'secondaryReasoning'],
+    ['primary-context-label', 'primaryContext'], ['secondary-context-label', 'secondaryContext'],
+    ['primary-context-value-label', 'customTokens'], ['secondary-context-value-label', 'customTokens'],
+    ['context-guidance', 'contextGuidance'],
     ['models-hint', 'modelsHint'], ['guidance', 'guidance'], ['path-guidance', 'pathGuidance']]) document.getElementById(id).textContent = text(key);
 
   const token = document.querySelector('meta[name="magpie-kimi-settings-token"]').content;
@@ -155,18 +224,60 @@
   const save = document.getElementById('save'), refresh = document.getElementById('refresh');
   const connection = document.getElementById('connection'), application = document.getElementById('application');
   const notice = document.getElementById('notice'), modelsHint = document.getElementById('models-hint');
-  const selection = { primaryModel: '', secondaryModel: '' };
-  let settings = null, busy = false, inputs = [];
+  const roles = ['primary', 'secondary'];
+  const defaults = { primaryModel: '', secondaryModel: '', primaryReasoningEffort: '', secondaryReasoningEffort: '', primaryContextTokens: null, secondaryContextTokens: null };
+  const fields = Object.keys(defaults), selection = { ...defaults };
+  let settings = null, busy = false, inputs = [], optionInputs = [], optionRoles = [];
+  const selectedValue = field => field.endsWith('ContextTokens') && selection[field] !== null && selection[field] !== ''
+    ? Number(selection[field]) : selection[field];
+  const draftChanges = () => {
+    const draft = {};
+    if (!settings) return draft;
+    for (const field of fields) if (selectedValue(field) !== settings[field]) draft[field] = selection[field];
+    return draft;
+  };
   const changes = () => {
     const patch = {};
-    if (!settings) return patch;
-    for (const key of ['primaryModel', 'secondaryModel']) if (selection[key] !== settings[key]) patch[key] = selection[key];
+    for (const field of Object.keys(draftChanges())) {
+      if (field.startsWith('secondary') && field !== 'secondaryModel' && !selection.secondaryModel) continue;
+      patch[field] = selectedValue(field);
+    }
+    for (const role of optionRoles) {
+      const initialize = ['not_configured', 'unavailable'].includes(settings[`${role}OptionsStatus`]) && roleEnabled(role);
+      if ((Object.hasOwn(patch, `${role}Model`) || initialize) && selection[`${role}Model`]) {
+        patch[`${role}ReasoningEffort`] = selectedValue(`${role}ReasoningEffort`);
+        patch[`${role}ContextTokens`] = selectedValue(`${role}ContextTokens`);
+      }
+    }
     return patch;
+  };
+  const modelFor = role => settings?.models.find(model => model.id === selection[`${role}Model`]);
+  const capabilities = role => {
+    const model = modelFor(role);
+    return {
+      efforts: Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts : [],
+      cap: Number.isSafeInteger(model?.contextWindow) && model.contextWindow > 0 ? model.contextWindow : null,
+    };
+  };
+  const roleEnabled = role => !!settings?.enabled && !!modelFor(role);
+  const validation = role => {
+    const errors = { reasoning: '', context: '' };
+    if (!settings?.enabled || (role === 'secondary' && !selection.secondaryModel)) return errors;
+    const { efforts, cap } = capabilities(role), effort = selection[`${role}ReasoningEffort`];
+    if (effort !== '' && !efforts.includes(effort)) errors.reasoning = text('invalidEffort');
+    const field = `${role}ContextTokens`, value = selectedValue(field);
+    if (selection[field] !== null) {
+      if (!Number.isSafeInteger(value) || value < 1) errors.context = text('invalidContext');
+      else if (cap === null) errors.context = text('contextUnavailable');
+      else if (value > cap) errors.context = text('contextExceeded').replace('{limit}', cap);
+    }
+    return errors;
   };
   const dirty = () => Object.keys(changes()).length > 0;
   const canSave = patch => {
     const fields = Object.keys(patch);
     return settings?.enabled ? fields.length > 0 && !!selection.primaryModel
+      && roles.every(role => !Object.values(validation(role)).some(Boolean))
       : fields.length === 1 && patch.secondaryModel === '';
   };
   const updateControls = () => {
@@ -175,6 +286,20 @@
     secondary.disabled = busy || (!enabled && !canClear);
     for (const input of inputs) input.disabled = busy || input.dataset.unavailable === 'true'
       || (!enabled && !(canClear && input.name === 'secondaryModel' && input.value === ''));
+    for (const input of optionInputs) input.disabled = busy || !roleEnabled(input.dataset.role) || input.dataset.unavailable === 'true';
+    for (const role of roles) {
+      const { efforts, cap } = capabilities(role), errors = validation(role), inactive = role === 'secondary' && !selection.secondaryModel;
+      document.getElementById(`${role}-reasoning`).disabled = busy || !roleEnabled(role);
+      document.getElementById(`${role}-context`).disabled = busy || !roleEnabled(role);
+      const tokens = document.getElementById(`${role}-context-tokens`);
+      tokens.disabled = busy || !roleEnabled(role) || selection[`${role}ContextTokens`] === null || cap === null;
+      tokens.setAttribute('aria-invalid', String(!!errors.context));
+      document.getElementById(`${role}-reasoning-hint`).textContent = inactive ? text('secondaryInactive')
+        : errors.reasoning || text(efforts.length ? 'reasoningAvailable' : 'reasoningUnavailable');
+      document.getElementById(`${role}-context-hint`).textContent = inactive ? text('secondaryInactive')
+        : errors.context || text(cap === null ? 'contextUnavailable' : 'contextAvailable').replace('{limit}', cap);
+      document.getElementById(`${role}-options-hint`).textContent = text(inactive ? 'secondaryInactive' : 'optionsHint');
+    }
     refresh.disabled = busy;
     save.disabled = busy || !canSave(changes());
   };
@@ -189,6 +314,7 @@
     input.addEventListener('change', () => {
       if (!input.checked || input.disabled || busy) return;
       selection[field] = value;
+      fillOptions();
       changed();
     });
     inputs.push(input);
@@ -216,6 +342,42 @@
     }
     if (!seen.has(value)) addRow(list, field, value, value, true, value === settings[field]);
   }
+  function addOptionRow(list, role, field, value, name, checked, unavailable, choose) {
+    const row = document.createElement('label'); row.className = 'model-row';
+    const input = document.createElement('input');
+    input.type = 'radio'; input.name = field; input.value = value; input.checked = checked;
+    input.dataset.role = role; input.dataset.unavailable = String(unavailable);
+    input.addEventListener('change', () => {
+      if (!input.checked || input.disabled || busy) return;
+      choose(); changed();
+    });
+    optionInputs.push(input);
+    const label = document.createElement('span'); label.textContent = name;
+    row.append(input, label); list.appendChild(row);
+  }
+  function fillOptions() {
+    optionInputs = [];
+    for (const role of roles) {
+      const { efforts, cap } = capabilities(role), effortField = `${role}ReasoningEffort`, contextField = `${role}ContextTokens`;
+      const effortList = document.getElementById(`${role}-reasoning-list`); effortList.replaceChildren();
+      for (const value of ['', ...new Set(efforts)]) {
+        addOptionRow(effortList, role, effortField, value, value || text('defaultEffort'), selection[effortField] === value, false,
+          () => { selection[effortField] = value; });
+      }
+      if (selection[effortField] && !efforts.includes(selection[effortField])) {
+        const value = selection[effortField], saved = value === settings[effortField];
+        addOptionRow(effortList, role, effortField, value, `${value} — ${text(saved ? 'unavailableSaved' : 'unavailableDraft')}`, true, true, () => {});
+      }
+      const tokens = document.getElementById(`${role}-context-tokens`);
+      tokens.min = '1'; tokens.step = '1'; tokens.max = cap === null ? '' : String(cap);
+      tokens.value = selection[contextField] === null ? '' : String(selection[contextField]);
+      const contextList = document.getElementById(`${role}-context-list`); contextList.replaceChildren();
+      addOptionRow(contextList, role, `${role}ContextMode`, 'catalog', text('noBudget'), selection[contextField] === null, false,
+        () => { selection[contextField] = null; tokens.value = ''; });
+      addOptionRow(contextList, role, `${role}ContextMode`, 'custom', text('customContext'), selection[contextField] !== null, cap === null,
+        () => { selection[contextField] = tokens.value; });
+    }
+  }
   function showApplication() {
     if (!settings) return;
     if (dirty()) application.textContent = text('dirtyApplication');
@@ -226,12 +388,24 @@
         && settings.appliedPrimaryModel === settings.primaryModel
         && settings.secondaryModel === '' && settings.appliedSecondaryModel === undefined) application.textContent = text('primaryOnlyApplied');
     else application.textContent = text(settings.status === 'waiting_kimi_idle' ? 'waitingApplication' : 'unconfirmed');
+    const draft = draftChanges();
+    for (const role of roles) {
+      const code = settings[`${role}OptionsStatus`];
+      const message = Object.keys(draft).some(field => field.startsWith(role)) ? text('dirtyOptions')
+        : localize(Object.hasOwn(optionStatusNames, code) ? optionStatusNames[code] : copy.optionsUnconfirmed);
+      document.getElementById(`${role}-options-status`).textContent = `${text(`${role}Options`)} ${message}`;
+    }
   }
   function render(value, draft = {}) {
-    settings = value;
-    for (const field of ['primaryModel', 'secondaryModel']) selection[field] = field in draft ? draft[field] : settings[field];
+    optionRoles = roles.filter(role => Object.hasOwn(value, `${role}ReasoningEffort`) && Object.hasOwn(value, `${role}ContextTokens`));
+    settings = { ...value };
+    for (const field of fields) {
+      settings[field] ??= defaults[field];
+      selection[field] = field in draft ? draft[field] : settings[field];
+    }
     inputs = [];
     fillModels(primaryList, 'primaryModel'); fillModels(secondaryList, 'secondaryModel');
+    fillOptions();
     modelsHint.textContent = text(!settings.enabled ? 'connectFirst' : settings.models.length ? 'modelsHint' : 'noModels');
     connection.textContent = localize(Object.hasOwn(statusNames, settings.status) ? statusNames[settings.status] : copy.unknownStatus);
     updateControls(); showApplication();
@@ -252,12 +426,12 @@
   }
   async function run(method) {
     if (busy) return;
-    const patch = changes();
+    const patch = changes(), draft = draftChanges();
     if (method === 'POST' && !canSave(patch)) return;
     busy = true; updateControls(); tell(text(method === 'POST' ? 'saving' : 'refreshing'));
     try {
       const value = await request(method, method === 'POST' ? patch : undefined);
-      render(value, method === 'GET' ? patch : {});
+      render(value, method === 'GET' ? draft : {});
       tell(text(method === 'POST' ? 'saved' : dirty() ? 'refreshedDraft' : 'refreshed'));
     } catch (error) {
       tell(localize(Object.hasOwn(errors, error.code) ? errors[error.code] : copy.unknownError) + (dirty() ? text('kept') : ''), true);
@@ -265,7 +439,15 @@
   }
   function changed() {
     updateControls(); showApplication();
-    tell(!selection.primaryModel && settings?.enabled ? text('choosePrimary') : dirty() ? text('dirty') : '');
+    const error = roles.flatMap(role => Object.values(validation(role))).find(Boolean);
+    tell(error || (!selection.primaryModel && settings?.enabled ? text('choosePrimary') : dirty() ? text('dirty') : ''), !!error);
+  }
+  for (const role of roles) {
+    const tokens = document.getElementById(`${role}-context-tokens`);
+    tokens.addEventListener('input', () => {
+      if (tokens.disabled || busy) return;
+      selection[`${role}ContextTokens`] = tokens.value; changed();
+    });
   }
   document.getElementById('settings-form').addEventListener('submit', event => {
     event.preventDefault(); if (!save.disabled) void run('POST');

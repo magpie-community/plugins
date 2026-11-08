@@ -25,6 +25,7 @@ const record = value => value !== null && typeof value === 'object' && !Array.is
 const failure = code => Object.assign(Error(code), { code });
 const modelID = value => typeof value === 'string' && value.length > 0 && value.length <= 1024
   && !/[\x00-\x1f]/.test(value);
+const scopedRole = value => value === 'primary' || value === 'secondary';
 const bounded = text => {
   if (Buffer.byteLength(text) > RESPONSE_LIMIT) throw failure('agent_routing_response_too_large');
   return text;
@@ -93,9 +94,10 @@ export class AgentModelRouter {
   #key;
   #namespace;
   #bindings = new Map();
+  #roles = new Map();
   #absence = new Map();
 
-  constructor({ secret, bindings = {}, absence = {} }) {
+  constructor({ secret, bindings = {}, roles = {}, absence = {} }) {
     if (typeof secret !== 'string' || !/^[a-f0-9]{64}$/i.test(secret)) {
       throw failure('agent_routing_invalid_secret');
     }
@@ -105,6 +107,12 @@ export class AgentModelRouter {
     for (const [token, model] of Object.entries(bindings)) {
       if (!PROFILE_TOKEN.test(token) || !modelID(model)) throw failure('agent_profile_unbound');
       this.#bindings.set(token, model);
+    }
+    if (!record(roles)) throw failure('agent_profile_unbound');
+    for (const [token, role] of Object.entries(roles)) {
+      // A role extends an owned token; it cannot introduce a route of its own.
+      if (!this.#bindings.has(token) || !scopedRole(role)) throw failure('agent_profile_unbound');
+      this.#roles.set(token, role);
     }
     if (!record(absence)) throw failure('agent_profile_unbound');
     for (const [model, entry] of Object.entries(absence)) {
@@ -119,14 +127,26 @@ export class AgentModelRouter {
 
   get namespace() { return this.#namespace; }
   get bindings() { return Object.fromEntries(this.#bindings); }
+  get roles() { return Object.fromEntries(this.#roles); }
   get boundModels() { return [...new Set(this.#bindings.values())]; }
+  get boundProfiles() {
+    const profiles = new Map();
+    for (const [token, model] of this.#bindings) {
+      const role = this.#roles.get(token);
+      profiles.set(JSON.stringify([model, role ?? null]), { model, ...(role ? { role } : {}) });
+    }
+    return [...profiles.values()];
+  }
   get absence() { return Object.fromEntries([...this.#absence].map(([model, entry]) => [model, { ...entry }])); }
 
-  #token(model) {
-    for (const [token, bound] of this.#bindings) if (bound === model) return token;
+  #token(model, role) {
+    for (const [token, bound] of this.#bindings) {
+      if (bound === model && this.#roles.get(token) === role) return token;
+    }
     let token;
     do { token = crypto.randomBytes(32).toString('base64url'); } while (this.#bindings.has(token));
     this.#bindings.set(token, model);
+    if (role !== undefined) this.#roles.set(token, role);
     return token;
   }
 
@@ -139,6 +159,19 @@ export class AgentModelRouter {
     // observeCatalog after a successful catalog sync.
     for (const model of models) this.#token(model);
     return this.bindings;
+  }
+
+  registerRoles(models, allowedModels) {
+    if (!record(models) || !Array.isArray(allowedModels)
+        || !modelID(models.primaryModel) || !allowedModels.includes(models.primaryModel)
+        || (models.secondaryModel !== undefined && models.secondaryModel !== ''
+          && (!modelID(models.secondaryModel) || !allowedModels.includes(models.secondaryModel)))) {
+      throw failure('model_not_enabled_for_kimi');
+    }
+    return {
+      primary: this.#token(models.primaryModel, 'primary'),
+      secondary: this.#token(models.secondaryModel || models.primaryModel, 'secondary'),
+    };
   }
 
   observeCatalog(allowedModels, { now = Date.now(), allowRetirement = true } = {}) {
@@ -155,7 +188,10 @@ export class AgentModelRouter {
         const firstMissingAt = entry?.firstMissingAt ?? now;
         this.#absence.set(model, { count, firstMissingAt });
         if (allowRetirement && count >= ABSENCE_COUNT_THRESHOLD && now - firstMissingAt >= ABSENCE_WINDOW_MS) {
-          for (const [token, bound] of [...this.#bindings]) if (bound === model) this.#bindings.delete(token);
+          for (const [token, bound] of [...this.#bindings]) if (bound === model) {
+            this.#bindings.delete(token);
+            this.#roles.delete(token);
+          }
           this.#absence.delete(model);
         }
       }
@@ -196,15 +232,17 @@ export class AgentModelRouter {
     } };
   }
 
-  profileName(model) {
-    if (!modelID(model)) throw failure('model_not_enabled_for_kimi');
+  profileName(model, role) {
+    if (!modelID(model) || (role !== undefined && !scopedRole(role))) throw failure('model_not_enabled_for_kimi');
+    const identity = role === undefined ? 'agent-profile-name:v1:' + model
+      : 'agent-profile-name:v2:' + JSON.stringify([model, role]);
     return 'local-agent-' + this.#namespace + '-'
-      + crypto.createHmac('sha256', this.#key).update('agent-profile-name:v1:' + model).digest('hex').slice(0, 24);
+      + crypto.createHmac('sha256', this.#key).update(identity).digest('hex').slice(0, 24);
   }
 
-  profileText(model) {
-    const name = this.profileName(model);
-    const token = this.#token(model);
+  profileText(model, role) {
+    const name = this.profileName(model, role);
+    const token = this.#token(model, role);
     return '---\n'
       + `name: ${name}\n`
       + 'description: Ordinary Work worker for an assigned task.\n'
@@ -219,7 +257,7 @@ export class AgentModelRouter {
   }
 
   #strip(text) {
-    let model = null, invalid = false;
+    let model = null, role, invalid = false;
     const clean = text.replace(PROFILE_SECTION, (section, offset) => {
       const match = PROFILE_BINDING.exec(section);
       const end = offset + section.length;
@@ -228,20 +266,26 @@ export class AgentModelRouter {
           || (end < text.length && !/^\r?\n/.test(text.slice(end)))
           || !this.#bindings.has(match[1])
           || !crypto.timingSafeEqual(this.#mac(match[1]), Buffer.from(match[2], 'hex'))) invalid = true;
-      else model = this.#bindings.get(match[1]);
+      else {
+        model = this.#bindings.get(match[1]);
+        role = this.#roles.get(match[1]);
+      }
       return '';
     });
     if (invalid || RESERVED_PROFILE.test(clean)) throw failure('agent_profile_unbound');
-    return { text: clean, model };
+    return { text: clean, model, role };
   }
 
-  prepare(payload, { primaryModel, allowedModels, enableRoles = true }) {
-    let binding = null, translateResponse = false;
+  prepare(payload, { primaryModel, allowedModels, enableRoles = true, includeRouteRole = false }) {
+    let binding = null, routeRole, translateResponse = false;
     const messages = Array.isArray(payload.messages) ? payload.messages.map(message => {
       if (message?.role === 'system' || message?.role === 'developer') {
         const cleanText = text => {
           const clean = this.#strip(text);
-          if (clean.model !== null) binding = clean.model;
+          if (clean.model !== null) {
+            binding = clean.model;
+            routeRole = clean.role;
+          }
           return clean.text;
         };
         if (typeof message.content === 'string') return { ...message, content: cleanText(message.content) };
@@ -275,10 +319,11 @@ export class AgentModelRouter {
     // at JSON.stringify time such as a toJSON hook.
     const neutralized = neutralizeRouteMarkers(prepared);
     if (RESERVED_PROFILE.test(JSON.stringify(neutralized))) throw failure('agent_profile_unbound');
-    return { payload: neutralized, model, translateResponse };
+    return { payload: neutralized, model, translateResponse,
+      ...(routeRole ? { routeRole } : includeRouteRole && binding !== null ? { routeRole: null } : {}) };
   }
 
-  #translateCall(call, { primaryModel, secondaryModel }) {
+  #translateCall(call, { primaryModel, secondaryModel, roleOptionsEnabled = false }) {
     if (call?.type !== 'function' || call.function?.name !== 'Agent') return call;
     let args;
     try { args = JSON.parse(call.function.arguments); }
@@ -292,7 +337,8 @@ export class AgentModelRouter {
     const translated = { ...args };
     delete translated.model;
     if (role !== 'native' && !(typeof args.resume === 'string' && args.resume.length > 0) && args.fork !== true) {
-      translated.subagent_type = this.profileName(role === 'primary' ? primaryModel : secondaryModel || primaryModel);
+      translated.subagent_type = this.profileName(role === 'primary' ? primaryModel : secondaryModel || primaryModel,
+        roleOptionsEnabled === true ? role : undefined);
     }
     const code = Object.hasOwn(args, 'model') ? { primary: 'p', secondary: 's', native: 'n' }[args.model] : 'd';
     return { ...call, id: this.#intentID(code, translated),
