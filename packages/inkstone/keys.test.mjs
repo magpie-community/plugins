@@ -15,7 +15,15 @@ const now = (n) => new Date(Date.UTC(2026, 10, 1, 0, 0, n)).toISOString()
 function serveKeys(initial = []) {
   const keys = initial.map((k) => ({ ...k }))
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))
-  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  f.route("GET /api/tokenplan/v1/keys", (r) => {
+    // the platform as it is now: /keys rejects a bearer-only request
+    // (-10002) and rejects any query param (-15100) - the plugin must
+    // send the uaa-token cookie and no pagination query
+    const cookie = r.headers.get("cookie") ?? ""
+    if (!cookie.startsWith("uaa-token=") || cookie === "uaa-token=") return fail(-10002, "request is not authenticated")
+    if ([...r.query.keys()].length > 0) return fail(-15100, "API Key fetch failed, refresh page and retry")
+    return ok({ total: keys.length, items: keys })
+  })
   f.route("POST /api/tokenplan/v1/keys", (r) => {
     const name = r.json?.name
     keys.push({ id: `id-${keys.length + 1}`, name, status: "active", created_at: now(keys.length + 1) })
@@ -232,8 +240,9 @@ test("a refused new key is deleted by name - the cleanup listKeys carries no que
     if (i >= 0) keys.splice(i, 1)
     return ok({})
   })
-  // probeWithRetry backs off 0+1.5+3+4.5+6s before giving up, hence the timeout
-  await expect(ensureKey("[REDACTED_VALUE]", "u", { create: true })).rejects.toMatchObject({ status: 401 })
+  // probeDelays: [0] skips probeWithRetry's real backoff (0+1.5+3+4.5+6s)
+  // so the refusal is final immediately and this test stays fast
+  await expect(ensureKey("[REDACTED_VALUE]", "u", { create: true, probeDelays: [0] })).rejects.toMatchObject({ status: 401 })
   expect(keys.some((k) => k.id === "id-new")).toBe(false)
   expect(keys).toHaveLength(1)
-}, 30000)
+})

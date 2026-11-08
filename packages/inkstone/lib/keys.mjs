@@ -39,8 +39,7 @@ const at = (value) => {
 }
 
 /** 新 Key 生效前网关可能要几秒：给几次机会，别把"还没生效"当成"被拒绝"。 */
-export async function probeWithRetry(apiKey, log) {
-  const delays = [0, 1500, 3000, 4500, 6000]
+export async function probeWithRetry(apiKey, log, delays = [0, 1500, 3000, 4500, 6000]) {
   let last = null
   for (let i = 0; i < delays.length; i++) {
     if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]))
@@ -121,7 +120,7 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, prot
  *   - 没粘且允许创建 → 数一下，满了先清理（可选），再创建并探活。
  * 抛错时带 `code`：`key_limit`（满了且没开清理）、`refused`（Key 被平台拒）。
  */
-export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log } = {}) {
+export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log, probeDelays } = {}) {
   const pasted = String(apiKey ?? "").trim()
   if (pasted) {
     await probeWithRetry(pasted, log)
@@ -203,7 +202,7 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
     )
   }
   try {
-    await probeWithRetry(created, log)
+    await probeWithRetry(created, log, probeDelays)
   } catch (e) {
     if (e?.status === 401 || e?.status === 403) {
       // 建出来却被拒：删掉这把，别给账号留垃圾。
