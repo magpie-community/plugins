@@ -41,7 +41,10 @@ function magpieConfigDir() {
 const CONFIG_DIR = magpieConfigDir();
 // 网关解析链（与 page-usage-tree 一致）：manifest options.gateway → GATEWAY →
 // MAGPIE_GATEWAY → MAGPIE_ADDR（magpie 宿主总会设置，端口可被用户改过，不能写死）→ 3425。
-// MAGPIE_ADDR 是 host:port（宿主可能写成 0.0.0.0:[::]:），归一化成回环 http URL。
+// MAGPIE_ADDR 是 host:port。只有**未指定地址**（0.0.0.0 / [::]）才换成回环——那是
+// 「绑所有网卡」的意思，等价于本机；而 [::1] 是明确的 IPv6 回环，监听在 [::1] 的网关
+// 通常**没有**在 127.0.0.1 上监听，改写会把请求打到空处（与 magpie 自己的 hostAddr
+// 语义一致：它也只处理 unspecified 地址）。
 function gatewayCandidates(optionsGateway) {
   const out = [];
   const push = (v) => {
@@ -53,11 +56,10 @@ function gatewayCandidates(optionsGateway) {
   push(process.env.MAGPIE_GATEWAY);
   const addr = process.env.MAGPIE_ADDR;
   if (addr) {
-    // 宿主可能写成 0.0.0.0/[::]/[::1] 开头的通配形式，全部归一化成可请求的回环地址
-    const loopback = String(addr)
-      .replace(/^(0\.0\.0\.0|\[::\]|\[::1\]|::1):/, '127.0.0.1:')
-      .replace(/^\[::1\]$/, '127.0.0.1');
-    if (/^(\[[0-9a-f:]+\]|[\w.-]+)(:\d+)?$/.test(loopback)) push('http://' + loopback);
+    // $1=地址 $2=冒号：换掉地址、保住端口分隔
+    const text = String(addr).trim().replace(/^(0\.0\.0\.0|\[::\])(:|$)/, '127.0.0.1$2');
+    // host:port 或 [v6]:port；URL 里的 IPv6 字面量必须带方括号
+    if (/^(\[[0-9a-f:.]+\]|[\w.-]+):\d+$/.test(text)) push('http://' + text);
   }
   push('http://127.0.0.1:3425');
   return out;

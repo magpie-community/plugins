@@ -1,9 +1,23 @@
 # magpie usage board
 
-A usage dashboard page inside [magpie](https://usemagpie.ai)'s window: a wall of quota cards
-with expiry tiers, daily and per-provider usage charts, 24-hour cache-hit and token curves,
-optional remote attribution and per-account detail — served by the plugin's own
-zero-dependency local service.
+A usage dashboard page inside [magpie](https://usemagpie.ai)'s window, served by the plugin's
+own zero-dependency local service.
+
+**Most of this board repeats magpie's own Usage page** — the allowance cards, the
+per-provider and per-model totals and the request list are all there already. Install this
+page for the five things Usage does not show:
+
+1. **Remote attribution by caller key** — traffic routed through a remote magpie, split by
+   which caller key caused it (opt-in; see *Remote attribution*).
+2. **TTFT p50/p90 per provider** — latency quality next to the volume.
+3. **A 7×24 heatmap** — when the calls actually happen, by weekday and hour.
+4. **Direct-vs-remote split of the last 24 hours** — how much went out through a remote
+   magpie versus straight out of this machine.
+5. **Expiry tiers on the quota cards** — how soon each allowance lapses, not just how much
+   is left.
+
+Everything else is convenience around those: daily and per-provider charts, 24-hour
+cache-hit and token curves, per-account detail for the remote side.
 
 Where [`@magpie-community/page-usage`](https://github.com/magpie-community/plugins/tree/main/packages/usage)
 is a bridge-only glance at magpie's summary totals, this page is the full board. Where
@@ -14,7 +28,8 @@ drills provider → account → model, this one puts quotas, costs and quality o
 
 1. **Which providers were used** — local direct traffic plus traffic that landed on a remote
    magpie (opt-in), merged under real provider names (daily chart, provider pies).
-2. **How much** — calls, tokens, daily trend; the quota wall shows what is left.
+2. **How much** — calls, tokens, daily trend; the quota wall shows what is left and when it
+   lapses.
 3. **How good** — TTFT P50/P90, per-account detail and error counts for the remote side.
 
 The two accounting views (KPI ledger vs. provider charts) and the exit-alias rules are
@@ -31,8 +46,9 @@ Two layers, the same shape the community uses for host-part pages:
    `magpie.service` first: when `magpie web` runs on another machine it proxies the local
    service under magpie's own origin, so **magpie's own key/auth is the outer gate** and the
    page never leaves that origin. A desktop window has no service, so it falls back to
-   `http://127.0.0.1:3455/`. An 8-second `<meta refresh>` is the fallback if the boot script
-   is blocked. The board page also sends the bridge `hello` once it is up.
+   `http://127.0.0.1:3455/` — the port it read from `magpie.options.get()`, the same value
+   the service was started with. An 8-second `<meta refresh>` is the fallback if the boot
+   script is blocked.
 
 The 8-second `<meta refresh>` is deliberate: an earlier all-script page could be declared dead
 by the host after 10 seconds when the bridge handshake raced; the meta fallback still

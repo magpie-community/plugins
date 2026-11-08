@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -304,20 +304,66 @@ test('the gateway follows options, env and MAGPIE_ADDR, not a hard-coded port', 
   }
 });
 
+test('[::1] in MAGPIE_ADDR stays IPv6 loopback, never 127.0.0.1', { timeout: 30000 }, async () => {
+  // 只有 unspecified（0.0.0.0/[::]）才映射回环；[::1] 是明确的 IPv6 回环，监听在 [::1]
+  // 的网关通常没有监听 127.0.0.1——改写会把请求打到空处（维护者复审实测）。
+  let hits = 0;
+  const fake6 = http.createServer((req, res) => {
+    hits++;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ calls: 7, tokens: 8, cost: 9 }));
+  });
+  const listening = await new Promise((resolve) => {
+    fake6.once('error', () => resolve(false)); // 无 IPv6 的环境（部分 CI 容器）跳过
+    fake6.listen(0, '::1', () => resolve(true));
+  });
+  if (!listening) return;
+  const gwPort = fake6.address().port;
+  // 先探测本机的 IPv6 回环是否真的可连：某些平台（Windows 的 undici）监听 ::1 成功、
+  // 但 fetch http://[::1] 会超时——那种环境只验证解析结果，不做端到端请求断言。
+  let ipv6Reachable = true;
+  try {
+    await fetch(`http://[::1]:${gwPort}/probe`, { signal: AbortSignal.timeout(2000) });
+  } catch {
+    ipv6Reachable = false;
+  }
+  hits = 0; // 探测命中了不计入
+  const s = start({ MAGPIE_ADDR: `[::1]:${gwPort}`, GATEWAY: undefined, MAGPIE_GATEWAY: undefined });
+  try {
+    const p = await s.ready;
+    assert.match(s.captured.out, new RegExp(`gateway=http://\\[::1\\]:${gwPort}\\b`));
+    assert.doesNotMatch(s.captured.out, new RegExp(`gateway=http://127\\.0\\.0\\.1:${gwPort}\\b`));
+    if (ipv6Reachable) {
+      const r = await request(p, '/api/overview', { headers: { 'x-dash-key': TEST_KEY } });
+      assert.equal(r.status, 200);
+      assert.equal(JSON.parse(r.body).usage.calls, 7); // 真的打到了 ::1 上的网关
+      assert.ok(hits > 0, 'fake IPv6 gateway received no requests');
+    }
+  } finally {
+    s.c.kill();
+    try { rmSync(s.dir, { recursive: true, force: true }); } catch {}
+    fake6.close(() => {});
+  }
+});
+
 test('config dir: the host cwd carrying magpie markers wins (portable installs)', { timeout: 30000 }, async () => {
   // magpie 宿主以数据目录为 cwd 启动服务（bunCommand(..., settings.Dir(), ...)）——
   // 便携安装因此不需要任何环境变量。不设 USAGE_JSONL，服务应通过 cwd 探测找到它。
+  // 路径比较必须用 realpathSync：macOS 的 os.tmpdir() 是 /var/folders/…，而 /var 是指向
+  // /private/var 的符号链接——子进程的 process.cwd() 与日志里的路径都是解析后的真实
+  // 路径，拿未解析的 dataDir 拼字符串比会假红（维护者复审在 macOS 实测）。
   const dataDir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-cwd-'));
   writeFileSync(path.join(dataDir, 'usage.jsonl'), '');
+  const realDir = realpathSync(dataDir);
   const c = spawn(RUNTIME, [path.join(root, 'server.mjs')], {
-    cwd: dataDir,
+    cwd: realDir,
     env: {
       ...process.env,
       PAGE_KEY: TEST_KEY,
       GATEWAY: 'http://127.0.0.1:9',
       ATTRIBUTION: 'local',
-      MAGPIE_PROVIDERS: path.join(dataDir, 'no-providers.json'),
-      MAGPIE_PROVIDERS_FILE: path.join(dataDir, 'no-plugin-providers.json'),
+      MAGPIE_PROVIDERS: path.join(realDir, 'no-providers.json'),
+      MAGPIE_PROVIDERS_FILE: path.join(realDir, 'no-plugin-providers.json'),
       HOST: '127.0.0.1',
       PORT: '0',
     },
@@ -332,7 +378,10 @@ test('config dir: the host cwd carrying magpie markers wins (portable installs)'
     c.once('exit', (code) => { clearTimeout(t); reject(new Error('exited ' + code + ': ' + out)); });
   });
   try {
-    assert.ok(out.includes('jsonl=' + path.join(dataDir, 'usage.jsonl') + '(ok)'), 'usage.jsonl resolved from cwd: ' + out.slice(0, 300));
+    assert.ok(
+      out.includes('jsonl=' + path.join(realDir, 'usage.jsonl') + '(ok)'),
+      'usage.jsonl resolved from cwd: ' + out.slice(0, 300),
+    );
   } finally {
     c.kill();
     try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
