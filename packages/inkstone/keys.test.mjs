@@ -207,3 +207,33 @@ test("an idempotency clash retries with a FRESH name and returns the key string"
   expect(posted[1]).not.toBe(posted[0])
   expect(posted[0]).toBe(refusedName)
 })
+
+test("a refused new key is deleted by name - the cleanup listKeys carries no query", async () => {
+  f = fakeInkStone()
+  const keys = [{ id: "id-manual", name: "manual", status: "active", created_at: now(0) }]
+  // the probe always refuses the new key, so ensureKey falls into its
+  // 401-cleanup path, which lists the keys to find the one it just made
+  f.route("GET /v1/models", () => json({ error: "refused" }, 401))
+  f.route("GET /api/tokenplan/v1/keys", (r) => {
+    // the platform as it is now: /keys rejects a bearer-only request
+    // (-10002), and rejects any query param (-15100). With this fake,
+    // putting the pagination query back on the cleanup listKeys call makes
+    // the list fail and the refused key survive - this test goes red.
+    if ((r.headers.get("cookie") ?? "") !== "uaa-token=[REDACTED_VALUE]") return fail(-10002, "request is not authenticated")
+    if ([...r.query.keys()].length > 0) return fail(-15100, "API Key fetch failed, refresh page and retry")
+    return ok({ total: keys.length, items: keys })
+  })
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    keys.push({ id: "id-new", name: r.json?.name, status: "active", created_at: now(keys.length + 1) })
+    return ok({ key: "sk-refused" })
+  })
+  f.route("DELETE /api/tokenplan/v1/keys/id-new", (r) => {
+    const i = keys.findIndex((k) => k.id === "id-new")
+    if (i >= 0) keys.splice(i, 1)
+    return ok({})
+  })
+  // probeWithRetry backs off 0+1.5+3+4.5+6s before giving up, hence the timeout
+  await expect(ensureKey("uaa", "u", { create: true })).rejects.toMatchObject({ status: 401 })
+  expect(keys.some((k) => k.id === "id-new")).toBe(false)
+  expect(keys).toHaveLength(1)
+}, 30000)
