@@ -276,6 +276,79 @@ function offeredFilter(list) {
     (modelFamilyId(model) && acpOfferedModels.has(modelFamilyId(model)))))
 }
 
+// Before any request has opened a session, ask agy itself: a short `agy acp`
+// that opens a session (no prompt) and reads what it offers, so the catalog
+// lists Claude and GPT-OSS without a Gemini request first. Approach from
+// yulong-ge's antigravity-official-acp (#854).
+const OFFERED_PROBE_TIMEOUT_MS = 30_000
+const OFFERED_PROBE_RETRY_MS = 60_000
+let offeredProbePromise = null
+let offeredProbeAt = null
+
+function killQuietly(child) {
+  try { child.stdin?.end() } catch {}
+  if (child.exitCode !== null || child.signalCode !== null) return
+  if (process.platform === "win32" && child.pid) {
+    execOnce("taskkill", ["/T", "/F", "/PID", String(child.pid)], { timeoutMs: 3_000, unrefTimer: true }).catch(() => {})
+  } else {
+    try { child.kill("SIGTERM") } catch {}
+  }
+}
+
+async function probeOfferedModels(agyPath) {
+  let workspace = null
+  let child = null
+  let conn = null
+  let timer
+  try {
+    workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-models-"))
+    child = spawnAgy(agyPath, ["acp"], { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+    child.on("error", () => conn?.close(new Error("agy acp failed to start")))
+    child.on("close", () => conn?.close(new Error("agy acp exited")))
+    child.stdin?.on("error", () => {})
+    child.stderr?.resume?.()
+    conn = new AcpConnection(child, {
+      onNotification: () => {},
+      onRequest: async (method) => { throw Object.assign(new Error(`not served: ${method}`), { code: -32601 }) },
+      onProtocolError: (error) => conn.close(error),
+    })
+    const deadline = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("agy acp model probe timed out")), OFFERED_PROBE_TIMEOUT_MS)
+      timer.unref?.()
+    })
+    await Promise.race([deadline, (async () => {
+      const init = await conn.request("initialize", {
+        protocolVersion: 1,
+        clientInfo: CLIENT_INFO,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      })
+      if (agyTooOld(init?.agentInfo?.version ?? null)) return
+      const session = await conn.request("session/new", { cwd: workspace, mcpServers: [] })
+      noteOfferedModels(session?.configOptions, session?.models)
+      const caps = init?.agentCapabilities ?? {}
+      if (session?.sessionId && (caps.sessionCapabilities?.close ?? caps.session_capabilities?.close)) {
+        await conn.request("session/close", { sessionId: session.sessionId }).catch(() => {})
+      }
+    })()])
+  } catch {
+    // Unknown: keep serving Gemini only, and try again later.
+  } finally {
+    clearTimeout(timer)
+    conn?.close(new Error("probe done"))
+    if (child) killQuietly(child)
+    if (workspace) fs.promises.rm(workspace, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+function probeOfferedOnce(agyPath) {
+  if (acpOfferedModels || offeredProbePromise) return offeredProbePromise
+  const now = Date.now()
+  if (offeredProbeAt !== null && now - offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
+  offeredProbeAt = now
+  offeredProbePromise = probeOfferedModels(agyPath).finally(() => { offeredProbePromise = null })
+  return offeredProbePromise
+}
+
 function catalogOf(entry) {
   if (entry.offeredKey !== acpOfferedKey || !entry.catalog) {
     entry.catalog = buildModelCatalog(offeredFilter(entry.list))
@@ -353,7 +426,9 @@ function fallbackModelCatalog(agyPath = null) {
 // Magpie gives models() about two seconds, while `agy models` can take longer.
 // Serve the last catalog (static until the first success), refresh it in the
 // background at most once at a time, and wait for that refresh only briefly.
-async function loadModelCatalog(agyPath) {
+// probeOffered: the caller is listing models (provider.models), not routing a
+// request that is about to open a session of its own.
+async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
   if (cachedModelCatalog.agyPath !== agyPath) {
     // An old executable's dynamic additions must not route to a new one.
     cachedModelCatalog = fallbackModelCatalog(agyPath)
@@ -362,7 +437,11 @@ async function loadModelCatalog(agyPath) {
   const current = cachedModelCatalog
   if (!agyPath) return catalogOf(current)
   const now = Date.now()
-  if (!current.isFallback && now - current.fetchedAt < MODEL_CATALOG_TTL_MS) return catalogOf(current)
+  if (!current.isFallback && now - current.fetchedAt < MODEL_CATALOG_TTL_MS) {
+    // A signed-in agy whose offer is unknown yet is asked in the background.
+    if (probeOffered) probeOfferedOnce(agyPath)
+    return catalogOf(current)
+  }
   if (!modelCatalogRefreshPromise &&
       (current.lastAttemptAt === null || now - current.lastAttemptAt >= MODEL_CATALOG_RETRY_MS)) {
     current.lastAttemptAt = now
@@ -392,6 +471,17 @@ async function loadModelCatalog(agyPath) {
         modelCatalogRefreshPromise,
         new Promise((resolve) => { timer = setTimeout(resolve, MODEL_CATALOG_FAST_WAIT_MS) }),
       ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  // `agy models` answered, so agy is signed in: learn what its ACP server
+  // offers this client, waiting for it as briefly as for the listing.
+  const probe = probeOffered && !cachedModelCatalog.isFallback ? probeOfferedOnce(agyPath) : null
+  if (probe) {
+    let timer
+    try {
+      await Promise.race([probe, new Promise((resolve) => { timer = setTimeout(resolve, MODEL_CATALOG_FAST_WAIT_MS) })])
     } finally {
       clearTimeout(timer)
     }
@@ -4256,7 +4346,7 @@ export const AntigravityBridgePlugin = async () => {
       models: async () => {
         const agy = findAgy()
         // Never force a refresh here: Magpie times models() out after about two seconds.
-        const catalog = await loadModelCatalog(agy)
+        const catalog = await loadModelCatalog(agy, { probeOffered: true })
         const out = {}
         for (const model of catalog.models) {
           const imageModel = /^(?:gemini-|claude-)/.test(model.id)

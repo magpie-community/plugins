@@ -614,7 +614,7 @@ const legacyModel = "agy-cli/gemini-test-low"
   process.env.AGY_PATH = probeWrapper
   const probesBefore = logs().filter(event => event.type === "models").length
   let models = {}
-  for (let attempt = 0; attempt < 50 && !models["gemini-test"]; attempt++) {
+  for (let attempt = 0; attempt < 50 && !(models["gemini-test"] && models["claude-test-medium"]); attempt++) {
     if (attempt) await new Promise(resolve => setTimeout(resolve, 100))
     models = await plugin.provider.models()
   }
@@ -628,7 +628,9 @@ const legacyModel = "agy-cli/gemini-test-low"
   check("grouped model declares sorted variants", Object.keys(models["gemini-test"]?.variants || {}).join(",") === "low,medium,high")
   check("grouped model declares Magpie and OpenCode reasoning", models["gemini-test"]?.capabilities?.reasoning === true && models["gemini-test"]?.reasoning === true)
   check("Gemini models expose image input to the host", models["gemini-test"]?.capabilities?.input?.image === true)
-  check("before any session offers it, a non-Gemini model agy lists is not served", !models["claude-test-medium"], Object.keys(models).join(","))
+  // Listing asks agy's ACP server what it offers this client (a session, no
+  // prompt), so a non-Gemini model it offers is served before any request.
+  check("listing models learns what agy's ACP server offers, before any request", !!models["claude-test-medium"], Object.keys(models).join(","))
   process.env.AGY_PATH = wrapper
   // The original executable gets its own fresh catalog before later requests route on it.
   for (let attempt = 0; attempt < 50 && !(await plugin.provider.models())["gemini-test"]; attempt++) {

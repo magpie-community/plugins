@@ -238,9 +238,14 @@ class FakeAgy {
     this.kit.acpLog.push({ method, params, sessionId: this.sessionId })
     if (method === "initialize") {
       this.respond(id, { protocolVersion: 1, agentInfo: { name: "fake-agy", version: this.kit.agentVersion }, agentCapabilities: {} })
+    } else if (method === "session/new" && this.kit.sessionNewError) {
+      // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
+      this.send({ id, error: this.kit.sessionNewError })
     } else if (method === "session/new") {
       this.sessionId = `fake-session-${++this.kit.sessionSerial}`
-      this.control({ kind: "list" })
+      // Only the bridge's own processes carry a control token; the catalog's
+      // model probe runs agy without one, as real agy does without --ide-mcp-port.
+      if (this.token) this.control({ kind: "list" })
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
       if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
@@ -398,6 +403,7 @@ export async function createBridgeKit(options = {}) {
     sessionSerial: 0,
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
+    sessionNewError: options.sessionNewError ?? null,
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
     acpLog: [],

@@ -84,20 +84,14 @@ test("首次快速成功时直接拿到动态目录", async () => {
   })
 })
 
-test("会话开放的型号才列出：Claude、GPT-OSS 和 agy models 没列的型号随会话出现", async () => {
+test("会话开放的型号才列出：不等请求，探测会话就列出 Claude、GPT-OSS 和 agy models 没列的型号", async () => {
   await withKit({ modelsBehavior: DYNAMIC_OK, offeredModels: [
     ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
     ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-opus-5-5-low", "Claude Opus 5.5 (Low)"],
     ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"], ["offered-only", "Offered Only"],
   ] }, async (kit) => {
-    const before = await kit.models()
-    assert.equal(before["claude-opus-5-5"], undefined)
-    kit.defaultPrompt = async (agent) => {
-      await agent.text("ok")
-      return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 1 } }
-    }
-    const parsed = await readSse(await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] })))
-    assert.equal(parsed.error, null, JSON.stringify(parsed.error))
+    await kit.models()
+    await settle(kit)
     const after = await kit.models()
     assert.deepEqual(Object.keys(after["claude-opus-5-5"]?.variants ?? {}).sort(), ["high", "low"])
     assert.deepEqual(JSON.parse(JSON.stringify(after["claude-opus-5-5"].limit)), { context: 1000000, output: 64000 })
@@ -107,6 +101,56 @@ test("会话开放的型号才列出：Claude、GPT-OSS 和 agy models 没列的
     assert.equal(after["gemini-3.8-flash"], undefined, "会话没开放的 Gemini 也不应列出")
     assert.equal(after["mystery-model"], undefined)
     assert.ok(after["gemini-4-argon"])
+    // 探测只开会话、不发 prompt，用插件自己的名字，进程跑完就关。
+    assert.equal(kit.acpLog.filter(entry => entry.method === "session/prompt").length, 0, "探测不应发 prompt")
+    assert.equal(kit.acpLog.filter(entry => entry.method === "session/new").length, 1)
+    assert.equal(kit.acpLog.find(entry => entry.method === "initialize")?.params?.clientInfo?.name, "opencode-agy-cli-auth")
+    assert.deepEqual(kit.acpSpawns.map(spawn => spawn.args), [["acp"]])
+    assert.equal(kit.children.size, 0, "探测的 agy acp 应已退出")
+    // 已知开放什么之后不再探测。
+    kit.clock.advance(CATALOG_TTL_MS)
+    await kit.models()
+    await settle(kit)
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
+test("探测会话失败（agy 要求登录）时只列 Gemini，限流后再试，成功即列出", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK, sessionNewError: { code: -32000, message: "Authentication required" }, offeredModels: [
+    ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-opus-5-5-low", "Claude Opus 5.5 (Low)"],
+  ] }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    const failed = await kit.models()
+    assert.equal(failed["claude-opus-5-5"], undefined)
+    assert.ok(failed["gemini-4-argon"])
+    assert.equal(kit.children.size, 0, "失败的探测也应关掉 agy acp")
+    assert.equal(kit.acpSpawns.length, 1, "一分钟内不再探测")
+    kit.sessionNewError = null
+    kit.clock.advance(60_000)
+    await kit.models()
+    // 新鲜目录不等探测：等它起来并跑完。
+    for (let i = 0; i < 200 && kit.acpSpawns.length < 2; i++) await sleep(5)
+    await settle(kit)
+    assert.equal(kit.acpSpawns.length, 2)
+    const listed = await kit.models()
+    assert.deepEqual(Object.keys(listed["claude-opus-5-5"]?.variants ?? {}).sort(), ["high", "low"])
+  })
+})
+
+test("会话后来开放的型号变了，目录随之更新", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK, offeredModels: [["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"]] }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    assert.equal((await kit.models())["claude-opus-5-5"], undefined)
+    kit.offeredModels = [["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-opus-5-5-low", "Claude Opus 5.5 (Low)"]]
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("ok")
+      return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 1 } }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] })))
+    assert.equal(parsed.error, null, JSON.stringify(parsed.error))
+    assert.ok((await kit.models())["claude-opus-5-5"])
   })
 })
 
