@@ -782,6 +782,8 @@ function configModel(m) {
       ? { reasoning: true, variants: Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) }
       : {}),
     tool_call: true,
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
   }
 }
 
@@ -807,6 +809,8 @@ function runtimeModel(m) {
       interleaved: false,
     },
     release_date: "",
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
     variants: thinks(m.id) ? Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) : {},
   }
 }
@@ -831,6 +835,21 @@ async function keyModels(a) {
   return out
 }
 
+// rateOf is the credits a model's request costs as a multiple, as Kiro's
+// list says it (rateMultiplier with rateUnit "Credit": on 11-09 a Free
+// account's list had auto 1, claude-sonnet-4.5 1.3, claude-haiku-4.5 0.4,
+// glm-5 0.5, deepseek-3.2 and minimax-m2.5 0.25, minimax-m2.1 0.15 and
+// qwen3-coder-next 0.05, which kiro-cli 2.x reads as its rate_multiplier).
+// Nothing is the rate when Kiro gives none, or gives it in another unit.
+// It is only shown: what a request cost is the meteringEvent's credits,
+// which Kiro has already multiplied (the same prompt metered 0.00535 on
+// claude-haiku-4.5 and 0.01739 on claude-sonnet-4.5, 0.4 to 1.3).
+function rateOf(m) {
+  const n = m?.rateMultiplier
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return undefined
+  return String(m.rateUnit ?? "").toLowerCase() === "credit" ? n : undefined
+}
+
 // listModels is List-Available-Models, the default first.
 async function listModels(a) {
   const out = a.tokenType === "API_KEY" ? await keyModels(a) : await managementCall(a.region, a, "List-Available-Models", { origin: "KIRO_CLI", profileArn: a.profile })
@@ -839,8 +858,9 @@ async function listModels(a) {
     if (!m?.modelId) continue
     let name = m.modelName
     if (!name || name === m.modelId) name = m.modelId === "auto" ? "Auto" : m.modelId
+    const rate = rateOf(m)
     const model = { id: m.modelId, name, context: m.tokenLimits?.maxInputTokens ?? 0, output: m.tokenLimits?.maxOutputTokens ?? 0,
-      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE") }
+      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE"), ...(rate ? { rate } : {}) }
     if (m.modelId === out?.defaultModel?.modelId) list.unshift(model)
     else list.push(model)
   }
@@ -3133,4 +3153,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, responsesBody, crMessages, crRefusal, features, FEATURES, featureKey, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, responsesBody, crMessages, crRefusal, features, FEATURES, featureKey, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, rateOf, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }

@@ -237,8 +237,10 @@ own search used instead.
 The `config` hook declares `auto` (Kiro picks the model). Once signed in,
 the `provider.models` hook replaces it with the account's own list from
 `List-Available-Models`, with the default first. Each model carries its
-context window, output limit and whether it takes images. Claude models
-and Auto have the thinking variants.
+context window, output limit and whether it takes images, and its credit
+multiplier as `rate` (Kiro's `rateMultiplier` when `rateUnit` is `Credit`:
+1.3 for claude-sonnet-4.5, 0.4 for claude-haiku-4.5), which magpie shows
+beside the model. Claude models and Auto have the thinking variants.
 
 ## Usage in magpie
 
@@ -254,7 +256,8 @@ month's window counts against the overage cap (`overageCap`), which is the
 month's whole limit; with it off, against the plan's credits.
 
 Each request's cost is what Kiro's `meteringEvent`s say, in credits, summed
-over the request (a web search's turns included). It goes on as
+over the request (a web search's turns included). Kiro has already applied
+the model's multiplier to it, so it isn't multiplied again. It goes on as
 `usage.credit` in the last `message_delta`, or in the message's `usage`, for
 magpie's ledger (yetone/magpie#4328). Kiro gives no token counts, so the
 input is reckoned from how full the context is, and the cache is unknown
