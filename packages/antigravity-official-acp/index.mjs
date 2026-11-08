@@ -48,6 +48,7 @@ function model(id = DEFAULT_MODEL, name = id, efforts = []) {
     output: 65535,
     reasoning: true,
     image: true,
+    efforts,
     variants: Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }])),
     inputs: ["text", "image"],
     outputs: ["text"],
