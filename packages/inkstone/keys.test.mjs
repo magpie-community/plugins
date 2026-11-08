@@ -233,7 +233,7 @@ test("a refused new key is deleted by name - the cleanup listKeys carries no que
     return ok({})
   })
   // probeWithRetry backs off 0+1.5+3+4.5+6s before giving up, hence the timeout
-  await expect(ensureKey("uaa", "u", { create: true })).rejects.toMatchObject({ status: 401 })
+  await expect(ensureKey("[REDACTED_VALUE]", "u", { create: true })).rejects.toMatchObject({ status: 401 })
   expect(keys.some((k) => k.id === "id-new")).toBe(false)
   expect(keys).toHaveLength(1)
 }, 30000)
