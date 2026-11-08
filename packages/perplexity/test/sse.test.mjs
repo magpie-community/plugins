@@ -123,26 +123,28 @@ test("the payload continues a thread when a backend uuid is known", () => {
 })
 
 test("payloadFor asks the machine for its zone when none is given", () => {
-  const before = process.env.TZ
-  process.env.TZ = "Asia/Shanghai"
+  // Stubbed rather than TZ-mutated: another test file in the same process can
+  // already have resolved Intl, and the mutation would then prove nothing.
+  const real = Intl.DateTimeFormat
+  Intl.DateTimeFormat = function () {
+    return { resolvedOptions: () => ({ timeZone: "Pacific/Auckland" }) }
+  }
   try {
-    const p = payloadFor("q", "pplx_pro", null, "2.18")
-    assert.notEqual(p.params.timezone, "UTC")
-    assert.equal(p.params.timezone, systemTimeZone())
+    assert.equal(payloadFor("q", "pplx_pro", null, "2.18").params.timezone, "Pacific/Auckland")
   } finally {
-    if (before === undefined) delete process.env.TZ
-    else process.env.TZ = before
+    Intl.DateTimeFormat = real
   }
 })
 
 test("systemTimeZone reads Intl when it is given no argument", () => {
-  const before = process.env.TZ
-  process.env.TZ = "Europe/Berlin"
+  const real = Intl.DateTimeFormat
+  Intl.DateTimeFormat = function () {
+    return { resolvedOptions: () => ({ timeZone: "Europe/Berlin" }) }
+  }
   try {
     assert.equal(systemTimeZone(), "Europe/Berlin")
   } finally {
-    if (before === undefined) delete process.env.TZ
-    else process.env.TZ = before
+    Intl.DateTimeFormat = real
   }
 })
 
