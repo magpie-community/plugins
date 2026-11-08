@@ -1,50 +1,55 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { clean, stripCitations } from "../pplx.mjs"
+import { clean, stripCitations, stableCut } from "../pplx.mjs"
 
-test("citation markers after prose are removed, in every form Perplexity uses", () => {
-  assert.equal(stripCitations("Born in 1815[1]."), "Born in 1815.")
-  assert.equal(stripCitations("Two sources[1][2] agree."), "Two sources agree.")
-  assert.equal(stripCitations("Several sources[1, 3] agree."), "Several sources agree.")
-  assert.equal(stripCitations("A range[1–3] of them."), "A range of them.")
-  assert.equal(stripCitations("中文回答[1] 带引用。"), "中文回答 带引用。")
+test("a citation run after sentence punctuation is removed", () => {
+  assert.equal(stripCitations("Born in 1815.[1]", 3), "Born in 1815.")
+  assert.equal(stripCitations("Born in 1815.[1][2][3]", 3), "Born in 1815.")
+  assert.equal(stripCitations("Sources agree.[1, 3]", 3), "Sources agree.")
+  assert.equal(stripCitations("A range.[1–3]", 3), "A range.")
+  assert.equal(stripCitations("中文回答。[1]", 3), "中文回答。")
+  assert.equal(stripCitations("Done！[2]", 3), "Done！")
 })
 
-test("a zero index is an array subscript, never a citation", () => {
-  assert.equal(stripCitations("use arr[0] here"), "use arr[0] here")
-  assert.equal(stripCitations("obj[0].value"), "obj[0].value")
+test("with no sources listed nothing is stripped", () => {
+  assert.equal(stripCitations("Born in 1815.[1]", 0), "Born in 1815.[1]")
+  assert.equal(stripCitations("See [1] and [2].", 0), "See [1] and [2].")
 })
 
-test("a single-letter name before the bracket is a variable, not prose", () => {
-  assert.equal(stripCitations("a[1] and x[2]"), "a[1] and x[2]")
+test("an index outside the source list is not a citation", () => {
+  assert.equal(stripCitations("Text.[12]", 3), "Text.[12]")
+  assert.equal(stripCitations("Text.[1][12]", 3), "Text.[12]")
 })
 
-test("code written in backticks keeps its indexes", () => {
-  assert.equal(stripCitations("run `list[12] + foo[3]` next"), "run `list[12] + foo[3]` next")
+test("code in prose keeps its subscripts", () => {
+  // Letters before the bracket: these are indexes, never citations.
+  assert.equal(stripCitations("Read sys.argv[1] or items[2] or matrix[1][2]", 20),
+    "Read sys.argv[1] or items[2] or matrix[1][2]")
+  assert.equal(stripCitations("use arr[0] here", 20), "use arr[0] here")
+  assert.equal(stripCitations("a[1] and x[2]", 20), "a[1] and x[2]")
 })
 
-test("anything inside an inline code span or a fenced block is left alone", () => {
-  assert.equal(stripCitations("see `arr[0]` please"), "see `arr[0]` please")
-  const fenced = "```js\nconst a = arr[0]\n```"
-  assert.equal(stripCitations(fenced), fenced)
-  // A fence that is still open (streaming) counts as code too.
-  assert.equal(stripCitations("```js\nconst a = arr[0]"), "```js\nconst a = arr[0]")
+test("a subscript chain is not dragged in by its first marker", () => {
+  assert.equal(stripCitations("matrix[1][2] stays", 20), "matrix[1][2] stays")
 })
 
-test("a citation glued to an English word is still a citation", () => {
-  assert.equal(stripCitations("According to reports[1], it grew."), "According to reports, it grew.")
+test("a marker inside a code span or a fence is untouchable", () => {
+  assert.equal(stripCitations("see `arr[1]` here", 20), "see `arr[1]` here")
+  const fenced = "```js\nconst a = arr[1]\n```"
+  assert.equal(stripCitations(fenced, 20), fenced)
+  // Streamed, still open.
+  assert.equal(stripCitations("```js\nconst a = arr[1]", 20), "```js\nconst a = arr[1]")
 })
 
-test("a bare index in prose is the documented trade-off", () => {
-  // Without citations in the payload there is no way to tell this from a
-  // citation; code belongs in backticks.
-  assert.equal(stripCitations("foo[3]"), "foo")
+test("a marker after a non-punctuation, non-letter character is left alone", () => {
+  // No sentence ended here, so this is text, not a citation.
+  assert.equal(stripCitations("price = 10 * [1]", 20), "price = 10 * [1]")
 })
 
 test("clean removes the transport wrappers and keeps the prose", () => {
-  const raw = "<grok:render>Hello<grok:end>\n<?xml version=\"1.0\"?><script>bad()</script>world[1]"
-  assert.equal(clean(raw), "Hello\nworld")
+  const raw = "<grok:render>Hello<grok:end>\n<?xml version=\"1.0\"?><script>bad()</script>world.[1]"
+  assert.equal(clean(raw, 4), "Hello\nworld.")
 })
 
 test("clean leaves an empty answer empty", () => {
@@ -53,6 +58,25 @@ test("clean leaves an empty answer empty", () => {
 })
 
 test("code survives a full clean", () => {
-  const answer = "Here[1]:\n```py\nprint(items[0])\n```\nDone[2]."
-  assert.equal(clean(answer), "Here:\n```py\nprint(items[0])\n```\nDone.")
+  const answer = "Here.[1]\n```py\nprint(items[1])\n```\nDone.[2]"
+  assert.equal(clean(answer, 5), "Here.\n```py\nprint(items[1])\n```\nDone.")
+})
+
+test("stableCut holds back an unfinished marker", () => {
+  assert.equal(stableCut("Born in 1815["), "Born in 1815")
+  assert.equal(stableCut("Born in 1815[1"), "Born in 1815")
+  assert.equal(stableCut("Born in 1815[1, "), "Born in 1815")
+  assert.equal(stableCut("Born in 1815[1]"), "Born in 1815[1]")
+})
+
+test("stableCut holds back an unfinished code span or fence", () => {
+  assert.equal(stableCut("see `arr[0]"), "see ")
+  assert.equal(stableCut("see `arr[0]`"), "see `arr[0]`")
+  assert.equal(stableCut("```js\nconst a = 1"), "")
+  assert.equal(stableCut("text ```\na[1]\n```"), "text ```\na[1]\n```")
+})
+
+test("stableCut flushes everything when the answer is final", () => {
+  assert.equal(stableCut("Born in 1815[", true), "Born in 1815[")
+  assert.equal(stableCut("```js\nconst a = 1", true), "```js\nconst a = 1")
 })

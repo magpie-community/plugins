@@ -31,6 +31,33 @@ export const BASE_HEADERS = {
   "user-agent": UA,
 }
 
+/** The OS a user agent says it runs on, for `sec-ch-ua-platform`. */
+export function platformOf(ua = UA) {
+  if (/Windows/i.test(ua)) return '"Windows"'
+  if (/Android/i.test(ua)) return '"Android"'
+  if (/iPhone|iPad|iPod/i.test(ua)) return '"iOS"'
+  if (/Macintosh|Mac OS X/i.test(ua)) return '"macOS"'
+  if (/Linux/i.test(ua)) return '"Linux"'
+  return '"macOS"'
+}
+
+/**
+ * Request headers for a specific browser, so a signed-in account keeps the user
+ * agent it signed in with instead of a fixed Chrome 130 on macOS.
+ */
+export function baseHeaders(ua = UA) {
+  // An empty string is not a user agent: fall back to the default rather than
+  // sending a blank one (Cloudflare answers that with a challenge).
+  const agent = String(ua || "").trim() || UA
+  const version = /Chrome\/(\d+)/.exec(agent)?.[1] || "130"
+  return {
+    ...BASE_HEADERS,
+    "user-agent": agent,
+    "sec-ch-ua": `"Chromium";v="${version}", "Not?A_Brand";v="99"`,
+    "sec-ch-ua-platform": platformOf(agent),
+  }
+}
+
 export function cookieHeader(key) {
   return `${COOKIE_NAME}=${key}`
 }
@@ -69,9 +96,9 @@ export function upstreamDetail(text, limit = 300) {
   return raw.slice(0, limit)
 }
 
-export async function readSession(key, signal) {
+export async function readSession(key, signal, ua) {
   const res = await fetch(PPLX_SESSION, {
-    headers: { ...BASE_HEADERS, accept: "application/json", cookie: cookieHeader(key) },
+    headers: { ...baseHeaders(ua), accept: "application/json", cookie: cookieHeader(key) },
     signal,
   })
   if (res.status === 401 || res.status === 403) {
@@ -87,6 +114,8 @@ export async function readSession(key, signal) {
   return {
     ok: true,
     email: user.email || user.name || "",
+    userId: user.id || "",
+    tier: user.subscription_tier || user.payment_tier || "",
     cookie: rotatedCookie(res) || key,
   }
 }
@@ -95,10 +124,10 @@ export async function readSession(key, signal) {
  * `/rest/rate-limit/all` gives counters, never a reset time: no `span` is
  * invented for them downstream.
  */
-export async function readQuota(key, signal) {
+export async function readQuota(key, signal, ua) {
   try {
     const res = await fetch(PPLX_RATE, {
-      headers: { ...BASE_HEADERS, accept: "application/json", cookie: cookieHeader(key) },
+      headers: { ...baseHeaders(ua), accept: "application/json", cookie: cookieHeader(key) },
       signal,
     })
     if (!res.ok) return { ok: false, status: res.status, code: "http" }
@@ -172,14 +201,22 @@ export function buildQuery(messages, keepSystem, backendUuid) {
 
 /** The machine's IANA time zone, or UTC where the runtime cannot say. */
 export function systemTimeZone(intl) {
+  let formatter = intl
+  if (!formatter) {
+    try {
+      formatter = new Intl.DateTimeFormat()
+    } catch {
+      formatter = null
+    }
+  }
   try {
-    const tz = intl?.resolvedOptions?.().timeZone
+    const tz = formatter?.resolvedOptions?.().timeZone
     if (tz) return tz
   } catch { /* no ICU */ }
   return "UTC"
 }
 
-export function payloadFor(query, pref, follow, apiVersion, timezone = systemTimeZone()) {
+export function payloadFor(query, pref, follow, apiVersion, timezone = systemTimeZone(), identity = {}) {
   return {
     query_str: query,
     params: {
@@ -198,8 +235,10 @@ export function payloadFor(query, pref, follow, apiVersion, timezone = systemTim
       search_focus: "internet",
       search_recency_filter: null,
       timezone,
-      visitor_id: crypto.randomUUID(),
-      user_nextauth_id: crypto.randomUUID(),
+      // Stable per account: a fresh pair on every request is one of the
+      // clearest tells that this is not the web client.
+      visitor_id: identity.visitorId || crypto.randomUUID(),
+      user_nextauth_id: identity.userId || crypto.randomUUID(),
       prompt_source: "user",
       query_source: "home",
       browser_history_summary: [],
@@ -220,43 +259,58 @@ export function payloadFor(query, pref, follow, apiVersion, timezone = systemTim
 }
 
 /** Kick off the ask. Returns the raw fetch Response (SSE or error JSON). */
-export async function startAsk(key, payload, signal) {
+export async function startAsk(key, payload, signal, ua) {
   return fetch(PPLX_ASK, {
     method: "POST",
-    headers: { ...BASE_HEADERS, cookie: cookieHeader(key) },
+    headers: { ...baseHeaders(ua), cookie: cookieHeader(key) },
     body: JSON.stringify(payload),
     signal,
   })
 }
 
 /** Yield {event, data} from an SSE body. */
-export async function* sseEvents(body) {
+export async function* sseEvents(body, signal) {
   const reader = body.getReader()
   const dec = new TextDecoder()
   let buf = ""
   let event = "message"
   let data = []
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    let idx
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      let line = buf.slice(0, idx)
-      buf = buf.slice(idx + 1)
-      if (line.endsWith("\r")) line = line.slice(0, -1)
-      if (line === "") {
-        if (data.length) yield { event, data: data.join("\n") }
-        event = "message"
-        data = []
-      } else if (line.startsWith("event:")) {
-        event = line.slice(6).trim()
-      } else if (line.startsWith("data:")) {
-        data.push(line.slice(5).replace(/^ /, ""))
+  // A pending read would otherwise keep the generator (and the upstream
+  // response) alive after the client walked away.
+  const aborted = signal
+    ? new Promise((_, reject) => {
+        if (signal.aborted) reject(new Error("aborted"))
+        else signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+      })
+    : null
+  try {
+    for (;;) {
+      const { value, done } = aborted ? await Promise.race([reader.read(), aborted]) : await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        let line = buf.slice(0, idx)
+        buf = buf.slice(idx + 1)
+        if (line.endsWith("\r")) line = line.slice(0, -1)
+        if (line === "") {
+          if (data.length) yield { event, data: data.join("\n") }
+          event = "message"
+          data = []
+        } else if (line.startsWith("event:")) {
+          event = line.slice(6).trim()
+        } else if (line.startsWith("data:")) {
+          data.push(line.slice(5).replace(/^ /, ""))
+        }
       }
     }
+    if (data.length) yield { event, data: data.join("\n") }
+  } finally {
+    // A client that walks away must also stop the upstream response.
+    if (!body.locked || true) {
+      try { await reader.cancel() } catch { /* already closed */ }
+    }
   }
-  if (data.length) yield { event, data: data.join("\n") }
 }
 
 /** Text delta + thinking delta from one Perplexity SSE message. */
@@ -287,6 +341,21 @@ export function answerDelta(chunk, state) {
         }
       }
     }
+    // The answer's sources are listed by the stream itself; the count is what
+    // decides whether a `[n]` in the text is a citation at all.
+    if (usage === "web_results" || usage === "sources_answer_mode") {
+      // Seen in all three shapes in real captures: nested under the block kind,
+      // or straight on the block.
+      const listed =
+        b?.web_result_block?.web_results ??
+        b?.sources_mode_block?.web_results ??
+        b?.web_results ??
+        []
+      // Lists grow as the answer streams (2 → 3 → 7 in the captured second
+      // turn), so the count only ever rises. Cleaning happens on the fresh
+      // fragment, so a later, longer list never rewrites text already sent.
+      if (listed.length > (state.sources || 0)) state.sources = listed.length
+    }
   }
 
   const candidates = blocks.filter(
@@ -310,64 +379,109 @@ export function answerDelta(chunk, state) {
   // Non-final messages carry a fragment; the final one carries the whole answer.
   state.full = mb.progress === "DONE" ? full : (state.full || "") + full
 
-  // Cleaned on the accumulated text, not per delta: a citation marker split
-  // across two chunks only becomes removable once both halves have arrived.
-  const cleaned = clean(state.full)
-  const previous = state.cleaned || ""
-  const delta = cleaned.startsWith(previous) ? cleaned.slice(previous.length) : ""
-  state.cleaned = cleaned
+  // Only emit text that cannot still change: a trailing `[1` may become `[1]`
+  // and disappear, and an open backtick may still turn into code.
+  const stable = stableCut(state.full, mb.progress === "DONE")
+  const sent = state.rawSent || ""
+  let fresh
+  if (stable.startsWith(sent)) {
+    fresh = stable.slice(sent.length)
+  } else {
+    // The endpoint rewrote the text instead of extending it; start over rather
+    // than drop the difference.
+    fresh = stable
+    state.emitted = ""
+  }
+  state.rawSent = stable
+
+  // Cleaned per fragment, never recomputed: a longer source list can then only
+  // affect text that has not been sent yet.
+  const delta = clean(fresh, state.sources || 0)
+  state.emitted = (state.emitted || "") + delta
 
   return { delta, thinking: thinking.join("") }
 }
 
-// A citation marker as Perplexity emits it in the answer text: a bare index,
-// or an index run ("[1][2]", "[1, 3]", "[1–3]").
-const CITATION = /\[\d{1,3}(?:\s*[,–—-]\s*\d{1,3})*\]/g
-const IDENT = /[A-Za-z0-9_$]/
+// A citation run as Perplexity emits it: `[1]`, `[1][2][3]`, `[1, 3]`, `[1–3]`.
+const CITATION = /\[(\d{1,3}(?:\s*[,–—-]\s*\d{1,3})*)\]/g
 
-/** Does `[12, 15]` look like a citation run rather than an array literal? */
-function citationShaped(inner) {
-  const parts = String(inner).split(/\s*[,–—-]\s*/)
-  return parts.every((n) => /^[1-9]\d{0,2}$/.test(n))
+// Perplexity puts its markers straight after sentence punctuation — measured
+// on a real capture (test/fixtures), where every one of them followed `.` or
+// another marker. That is what keeps `argv[1]` out: no letter precedes a
+// citation.
+const SENTENCE_END = new Set([".", "。", "!", "！", "?", "？", ";", "；", ":", "：", "…", ")", "）", "”"])
+
+/**
+ * Cut a raw answer at the last point that later fragments cannot change.
+ *
+ * A fragment may end mid-marker (`[`, `[1`) or mid-code (an unclosed backtick
+ * or fence); cleaning those bytes and sending them would leave text the client
+ * has already seen and that the cleaned answer no longer contains.
+ */
+export function stableCut(text, flush = false) {
+  const src = String(text || "")
+  if (flush) return src
+
+  const fenceAt = src.lastIndexOf("```")
+  if (fenceAt >= 0 && src.split("```").length % 2 === 0) return src.slice(0, fenceAt)
+
+  const tailStart = fenceAt >= 0 ? fenceAt + 3 : 0
+  const tail = src.slice(tailStart)
+  const tickAt = tail.lastIndexOf("`")
+  if (tickAt >= 0 && tail.split("`").length % 2 === 0) return src.slice(0, tailStart + tickAt)
+
+  let cut = src
+  const pending = src.match(/\[[\d\s,–—-]*$/)
+  if (pending && pending.index > 0) cut = src.slice(0, pending.index)
+
+  // Hold back a trailing sentence end too: the next fragment may open with the
+  // marker (`." + "[1]`), and the punctuation is what makes it a citation.
+  const trimmed = cut.replace(/\s+$/, "")
+  if (trimmed && SENTENCE_END.has(trimmed[trimmed.length - 1])) cut = cut.slice(0, trimmed.length - 1)
+  return cut
 }
 
 /**
- * Strip citation markers that are not code.
+ * Strip citation markers, and only those.
  *
- * Perplexity emits no citation metadata, so the marker has to be recognised by
- * shape. Only a run of plain indexes (`[1]`, `[1][2]`, `[1, 3]`, `[1–3]`) that
- * does not start with a zero is treated as a citation. Anything inside a
- * fenced block or an inline code span is left untouched, as is `arr[0]` — a
- * zero index cannot be a citation — and `a[1]`, where the preceding name is a
- * single letter and therefore a variable.
- *
- * The residual trade-off is documented, not hidden: a bare `foo[3]` written
- * outside backticks is indistinguishable from a citation and is stripped.
+ * A run is a citation when every index it names is one the stream listed as a
+ * source, it sits outside code, and it follows sentence punctuation. With no
+ * sources listed, nothing is stripped: an unmarked `[1]` is text, not a
+ * citation.
  */
-export function stripCitations(text) {
+export function stripCitations(text, sources = 0) {
+  const src = String(text || "")
+  if (!sources) return src
   // Odd splits are code: fenced blocks (closed or still open) and `spans`.
-  const parts = String(text).split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
+  const parts = src.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/)
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return part
-      return part.replace(CITATION, (whole, offset, source) => {
-        if (!citationShaped(whole.slice(1, -1))) return whole
-        let start = offset - 1
-        while (start >= 0 && IDENT.test(source[start])) start--
-        const run = source.slice(start + 1, offset)
-        if (/^[A-Za-z_$]$/.test(run)) return whole
-        return ""
-      })
+      let out = ""
+      let last = 0
+      let chainEnd = -1
+      for (const m of part.matchAll(CITATION)) {
+        const start = m.index
+        const contiguous = start === chainEnd
+        const before = start > 0 ? part[start - 1] : ""
+        if (!contiguous && !SENTENCE_END.has(before)) continue
+        const indexes = m[1].split(/\s*[,–—-]\s*/).map(Number)
+        if (!indexes.every((n) => n >= 1 && n <= sources)) continue
+        out += part.slice(last, start)
+        last = start + m[0].length
+        chainEnd = last
+      }
+      return out + part.slice(last)
     })
     .join("")
 }
 
-export function clean(text) {
+export function clean(text, sources = 0) {
   const src = String(text || "")
     .replace(/<grok:[^>]*>/g, "")
     .replace(/<\?xml[^>]*\?>/g, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-  return stripCitations(src)
+  return stripCitations(src, sources)
 }
 
 export function chatId() {

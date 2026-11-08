@@ -176,7 +176,9 @@ test("with tools: \"ignore\" the request is answered as text and marked", async 
   assert.equal(res.status, 200)
   assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
   const out = await res.json()
-  assert.equal(out.choices[0].message.content, "Hello world.")
+  // The substitution is said in the answer itself, not only in a header.
+  assert.match(out.choices[0].message.content, /Tools were ignored/)
+  assert.match(out.choices[0].message.content, /Hello world\./)
 })
 
 test("the tools-ignored mark is on a streamed answer too", async () => {
@@ -330,4 +332,94 @@ test("models() reports an expired cookie as a sign-in problem", async () => {
       )
     },
   )
+})
+
+test("a second account does not inherit the first account's thread", async () => {
+  const plugin = await server({ client: CLIENT }, { tier: "pro", locale: "en" })
+  const sent = []
+  const upstream = async (url, init) => {
+    sent.push(JSON.parse(init.body))
+    return new Response(answerChunk("ok.", "DONE") + endOfStream(), { status: 200 })
+  }
+  const alice = await plugin.auth.loader(() => ({ key: "k-a", accountId: "alice@example.com", metadata: { email: "alice@example.com" } }))
+  const bob = await plugin.auth.loader(() => ({ key: "k-b", accountId: "bob@example.com", metadata: { email: "bob@example.com" } }))
+  await withFetch(upstream, () => alice.fetch("https://ask", ask()))
+  await withFetch(upstream, () => bob.fetch("https://ask", ask()))
+  assert.equal(sent[0].params.last_backend_uuid, null)
+  assert.equal(sent[1].params.last_backend_uuid, null, "bob never sees alice's backend uuid")
+})
+
+test("the same account continues its thread", async () => {
+  const plugin = await server({ client: CLIENT }, { tier: "pro", locale: "en" })
+  const sent = []
+  const upstream = async (url, init) => {
+    sent.push(JSON.parse(init.body))
+    return new Response(answerChunk("ok.", "DONE") + endOfStream(), { status: 200 })
+  }
+  const auth = () => ({ key: "k-a", accountId: "a@example.com", metadata: { email: "a@example.com" } })
+  const shim = await plugin.auth.loader(auth)
+  await withFetch(upstream, () => shim.fetch("https://ask", ask()))
+  await withFetch(upstream, () =>
+    shim.fetch("https://ask", body({
+      model: "pplx_pro",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "answer" },
+        { role: "user", content: "second" },
+      ],
+    })),
+  )
+  assert.equal(sent[1].params.last_backend_uuid, "b-uuid")
+})
+
+test("the visitor id is stable and the user id comes from the account", async () => {
+  const plugin = await server({ client: CLIENT }, { tier: "pro", locale: "en" })
+  const sent = []
+  const upstream = async (url, init) => {
+    sent.push(JSON.parse(init.body))
+    return new Response(answerChunk("ok.", "DONE") + endOfStream(), { status: 200 })
+  }
+  const meta = { email: "a@example.com", userId: "user-123", visitorId: "visit-456" }
+  const shim = await plugin.auth.loader(() => ({ key: "k", accountId: meta.email, metadata: meta }))
+  await withFetch(upstream, () => shim.fetch("https://ask", ask()))
+  await withFetch(upstream, () => shim.fetch("https://ask", ask()))
+  assert.equal(sent[0].params.visitor_id, "visit-456")
+  assert.equal(sent[1].params.visitor_id, "visit-456", "same visitor on every request")
+  assert.equal(sent[0].params.user_nextauth_id, "user-123")
+})
+
+test("an account without a stored id still gets a stable pair", async () => {
+  const plugin = await server({ client: CLIENT }, { tier: "pro", locale: "en" })
+  const sent = []
+  const upstream = async (url, init) => {
+    sent.push(JSON.parse(init.body))
+    return new Response(answerChunk("ok.", "DONE") + endOfStream(), { status: 200 })
+  }
+  const shim = await plugin.auth.loader(() => ({ key: "k", accountId: "z@example.com", metadata: { email: "z@example.com" } }))
+  await withFetch(upstream, () => shim.fetch("https://ask", ask()))
+  await withFetch(upstream, () => shim.fetch("https://ask", ask()))
+  assert.equal(sent[0].params.visitor_id, sent[1].params.visitor_id)
+  assert.equal(sent[0].params.user_nextauth_id, sent[1].params.user_nextauth_id)
+})
+
+test("cancelling the client stream stops the upstream read", async () => {
+  const { shim } = await load()
+  let upstreamCancelled = false
+  const enc = new TextEncoder()
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(enc.encode(answerChunk("first token.", "DONE")))
+    },
+    cancel() {
+      upstreamCancelled = true
+    },
+  })
+  const res = await withFetch(
+    async () => new Response(upstreamBody, { status: 200 }),
+    () => shim.fetch("https://ask", ask({ stream: true })),
+  )
+  assert.equal(res.status, 200)
+  await res.body.cancel()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(upstreamCancelled, true, "the upstream response was released")
 })

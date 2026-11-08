@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 
-import { sseEvents, answerDelta, payloadFor, systemTimeZone, upstreamDetail } from "../pplx.mjs"
+import { sseEvents, answerDelta, payloadFor, systemTimeZone, upstreamDetail, baseHeaders } from "../pplx.mjs"
 
 // Bytes captured from a real `perplexity_ask` stream, in the order they arrive:
 // a thinking block, then two answer fragments, then the final full answer.
@@ -36,7 +36,7 @@ async function collect(stream) {
 }
 
 function newState() {
-  return { full: "", cleaned: "", thinkingSeen: new Set(), answerUsage: null }
+  return { full: "", emitted: "", thinkingSeen: new Set(), answerUsage: null, sources: 0 }
 }
 
 test("sseEvents parses captured bytes into named events", async () => {
@@ -122,6 +122,30 @@ test("the payload continues a thread when a backend uuid is known", () => {
   assert.equal(p.params.last_backend_uuid, "b-uuid")
 })
 
+test("payloadFor asks the machine for its zone when none is given", () => {
+  const before = process.env.TZ
+  process.env.TZ = "Asia/Shanghai"
+  try {
+    const p = payloadFor("q", "pplx_pro", null, "2.18")
+    assert.notEqual(p.params.timezone, "UTC")
+    assert.equal(p.params.timezone, systemTimeZone())
+  } finally {
+    if (before === undefined) delete process.env.TZ
+    else process.env.TZ = before
+  }
+})
+
+test("systemTimeZone reads Intl when it is given no argument", () => {
+  const before = process.env.TZ
+  process.env.TZ = "Europe/Berlin"
+  try {
+    assert.equal(systemTimeZone(), "Europe/Berlin")
+  } finally {
+    if (before === undefined) delete process.env.TZ
+    else process.env.TZ = before
+  }
+})
+
 test("systemTimeZone falls back to UTC instead of a hard-coded city", () => {
   assert.equal(systemTimeZone({ resolvedOptions: () => ({ timeZone: "Asia/Shanghai" }) }), "Asia/Shanghai")
   assert.equal(systemTimeZone({ resolvedOptions: () => ({}) }), "UTC")
@@ -133,4 +157,20 @@ test("upstreamDetail prefers Perplexity's own message", () => {
   assert.equal(upstreamDetail('{"detail":"denied"}'), "denied")
   assert.equal(upstreamDetail("plain text"), "plain text")
   assert.equal(upstreamDetail(""), "")
+})
+
+test("an empty user agent falls back to the default instead of a blank one", () => {
+  for (const blank of ["", "   ", undefined]) {
+    const headers = baseHeaders(blank)
+    assert.match(headers["user-agent"], /Chrome\//)
+    assert.match(headers["sec-ch-ua"], /Chromium/)
+  }
+})
+
+test("a real browser user agent is used as given", () => {
+  const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+  const headers = baseHeaders(ua)
+  assert.equal(headers["user-agent"], ua)
+  assert.equal(headers["sec-ch-ua-platform"], '"Windows"')
+  assert.match(headers["sec-ch-ua"], /v="141"/)
 })

@@ -250,6 +250,6 @@
     { "package": "@magpie-community/opencode-agy-cli-auth", "name": "Antigravity (local agy CLI)", "icon": "antigravity-color", "providers": ["agy-cli"], "community": true,
       "summary": { "en": "Unofficial provider that runs the agy CLI you installed and signed in to through the Agent Client Protocol (agy acp), serving only the models agy offers this client. Unlike Antigravity ACP, which downloads Google's ACP server and rides the Antigravity IDE's sign-in, it uses your own agy and adds a process pool, a history budget, a bridge for the client's tools, session resume and agy's usage windows.", "zh": "非官方插件：通过 Agent Client Protocol（agy acp）驱动你自己安装并登录的 agy CLI，只提供 agy 向本客户端开放的模型。与自行下载 Google ACP 服务端、依赖 Antigravity IDE 登录的 Antigravity ACP 不同，它用你本机的 agy，并带进程池、历史体积预算、客户端工具桥接、会话续接与 agy 用量窗口。" } },
     { "package": "@magpie-community/opencode-perplexity-auth", "name": "Perplexity", "icon": "https://www.perplexity.ai/favicon.ico", "providers": ["perplexity"], "community": true,
-      "summary": { "en": "Your Perplexity Pro or Max plan as a provider: every model it serves, with its built-in web search, signed in from the browser or a session cookie.", "zh": "把 Perplexity Pro / Max 订阅接成供应商：套餐里的全部模型，自带联网搜索，浏览器登录或粘贴 Cookie。" } }
+      "summary": { "en": "Unofficial Perplexity Pro or Max provider: the account’s models with Perplexity’s built-in web search, signed in from the browser or a session cookie.", "zh": "非官方 Perplexity Pro / Max 供应商：套餐里的全部模型，自带联网搜索，浏览器登录或粘贴 Cookie。" } }
   ]
 }

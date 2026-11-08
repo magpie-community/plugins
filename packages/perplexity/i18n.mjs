@@ -39,6 +39,7 @@ const ZH = {
   toolsUnsupported:
     "该供应商没有 function calling（Perplexity 网页接口不支持工具调用）。去掉请求里的 tools 再试，或把插件选项 tools 设为 ignore，让它改为直接返回文字回答。",
   badRequest: "请求无效：{detail}",
+  toolsIgnoredNotice: "⚠️ 本次请求里的 tools 已被忽略：该供应商没有 function calling，下面是纯文字回答。",
 
   loginChromeMissing: "找不到 Chrome/Chromium。请在插件选项里设置 chromePath。",
   loginDebugPort: "Chrome 调试端口没有起来",
@@ -92,6 +93,7 @@ const EN = {
   toolsUnsupported:
     "This provider has no function calling (Perplexity's web endpoint does not take tools). Drop the request's tools and retry, or set the plugin's tools option to ignore to get a plain text answer instead.",
   badRequest: "Bad request: {detail}",
+  toolsIgnoredNotice: "⚠️ Tools were ignored for this request: this provider has no function calling, so this is a plain text answer.",
 
   loginChromeMissing: "Chrome/Chromium not found. Set the chromePath option to its executable.",
   loginDebugPort: "Chrome's debugging port never came up",

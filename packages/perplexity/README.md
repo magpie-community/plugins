@@ -1,5 +1,12 @@
 # Perplexity Pro for magpie / OpenCode
 
+**Unofficial.** This is not affiliated with or endorsed by Perplexity. It drives
+the account through Perplexity's internal web endpoints with a browser session
+cookie — the same traffic a browser makes, not the public API. Perplexity's
+terms allow programmatic access through its API, so an account used this way can
+be rate-limited or suspended; that risk is yours, and an account you care about
+is better kept on the documented API.
+
 Signs in to your own **Perplexity Pro or Max** plan and serves every model it
 offers as a provider, to every agent magpie connects. Perplexity's built-in web
 search stays on, so answers carry real-time results and citations.
@@ -72,7 +79,7 @@ hidden.
 | `keepSystem` | `false` | forward system/developer prompts into the query. Off by default: Perplexity searches every word of the query, and a coding agent's system prompt poisons its results |
 | `chromePath` | auto | Chrome/Chromium/Edge executable for browser sign-in |
 | `apiVersion` | `2.18` | the `version` Perplexity's web client sends; raise it if the endpoint starts refusing |
-| `tools` | `reject` | what to do with a request that carries `tools`: `reject` answers 400 (fail loudly); `ignore` answers as text and marks the response `x-magpie-tools-ignored: 1` |
+| `tools` | `reject` | what to do with a request that carries `tools`: `reject` answers 400 (fail loudly); `ignore` answers as text, opening with a line that says the tools were ignored |
 | `locale` | `auto` | `auto` / `zh` / `en`: language of the sign-in flow, the account card and `magpie quota`, and of every error this provider returns |
 
 ## Quota
@@ -81,6 +88,10 @@ hidden.
 endpoint actually returned — remaining Pro Searches, Deep Research, Labs and
 Agentic Research, plus whether free quick searches are available. It publishes
 no reset time, so the plugin shows no span rather than inventing a 30-day one.
+
+Every request on a model other than `auto` runs in Perplexity's `copilot` mode
+and spends one Pro Search, so an agent loop burns the day's quota at the speed
+of the loop. `auto` is the free mode and spends none.
 
 Those counters drive `magpie quota`, the Usage page and
 `GET /v1/magpie/quotas`, and `routing=smart` weighs them when picking an
@@ -107,11 +118,10 @@ when the request sets `stream_options.include_usage`.
 - **No function calling.** The web endpoint has none; the models are declared
   with `toolcall: false`. By default a request that carries `tools` / `functions`
   is **rejected with a 400** naming the reason, rather than having its tools
-  silently dropped. Set `tools: "ignore"` to answer as text instead — the
-  response then carries `x-magpie-tools-ignored: 1`, so the substitution is
-  visible rather than silent. A host like Claude Code, which always sends its
-  tool list, needs `ignore`. These models suit chat, research, writing,
-  translation and summarising — not tool-driven coding agents.
+  silently dropped. `tools: "ignore"` answers as text instead, and the answer
+  itself opens with a line saying the tools were ignored — not a header, and not
+  nothing. These models suit chat, research, writing, translation and
+  summarising — not tool-driven coding agents.
 - **No images, files, structured output, multiple choices or sampling
   parameters.**
 - Perplexity sometimes substitutes the model it actually ran; the answer still
@@ -146,11 +156,15 @@ then `opencode auth login`.
 bun test ./packages/perplexity
 ```
 
-Covers `buildQuery`, `sseEvents` replayed from captured SSE bytes (including
-bytes split mid-line and CRLF), `answerDelta` reassembly and reasoning blocks,
-citation stripping, the streaming and non-streaming translation, every error
-path (401/403/429/500, mid-stream, empty answer, network), tool rejection,
-quota windows, the locale tables and both sign-in methods' surfaces.
+87 cases across 8 files: `buildQuery`; `sseEvents` replayed from captured SSE
+bytes (mid-line splits, CRLF); two real `perplexity_ask` captures in
+`test/fixtures/` (a turn with 20 listed sources and a follow-up whose source
+list grows 2 → 7) driving `answerDelta` end to end; citation stripping and the
+fragment-boundary hold-back; streaming and non-streaming translation; every
+error path (401/403/429/500, mid-stream, empty answer, network); tool rejection
+and the ignored-tools notice; quota windows; thread scoping per account; the
+stable visitor id; stream cancellation reaching upstream; the profile cleanup
+ordering and its retries; both locale tables.
 
 ## License
 

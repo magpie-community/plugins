@@ -102,6 +102,23 @@ async function browserWs(port, signal, deadline) {
   throw fail("debug_port", "Chrome's debugging port never came up")
 }
 
+/** The browser's own user agent, so the account keeps the one it signed in with. */
+async function browserUserAgent(wsUrl) {
+  const ws = new WebSocket(wsUrl)
+  try {
+    await new Promise((resolve, reject) => {
+      ws.addEventListener("open", resolve, { once: true })
+      ws.addEventListener("error", () => reject(fail("devtools", "cannot connect to Chrome DevTools")), { once: true })
+    })
+    const v = await cdp(ws, "Browser.getVersion")
+    return String(v?.userAgent || "")
+  } catch {
+    return ""
+  } finally {
+    try { ws.close() } catch { /* ignore */ }
+  }
+}
+
 async function readCookie(wsUrl) {
   let ws
   try {
@@ -134,7 +151,7 @@ async function readCookie(wsUrl) {
  * Wait for Chrome to actually go away. Killing returns before the process has
  * released its profile — on Windows the directory stays locked until it does.
  */
-async function stopChrome(proc, graceMs = 5000) {
+export async function stopChrome(proc, graceMs = 5000) {
   if (!proc) return
   try { proc.kill() } catch { /* gone */ }
   const exited = await Promise.race([
@@ -147,7 +164,7 @@ async function stopChrome(proc, graceMs = 5000) {
 }
 
 /** Delete the throwaway profile, retrying while a released handle lingers. */
-async function removeProfile(dir, root, attempts = 5) {
+export async function removeProfile(dir, root, attempts = 5) {
   const inside = dir === root || dir.startsWith(root + sep) || dir.startsWith(root + "/")
   if (!inside) return
   let last
@@ -228,15 +245,17 @@ code{background:#f2f2f4;padding:2px 6px;border-radius:4px}a{color:#0a66c2}</styl
     async wait(waitSignal) {
       const deadline = Date.now() + 5 * 60 * 1000
       const wsUrl = await browserWs(debugPort, waitSignal || signal, deadline)
+      let ua = ""
       while (Date.now() < deadline) {
         if ((waitSignal || signal)?.aborted) throw fail("cancelled", "sign-in cancelled")
         state = t.browserPageWaiting
         const cookie = await readCookie(wsUrl).catch(() => null)
         if (cookie && cookie !== current) {
           current = cookie
+          ua = await browserUserAgent(wsUrl)
           state = t.browserPageDone
           done = true
-          return { cookie }
+          return { cookie, ua }
         }
         await sleep(1500)
       }

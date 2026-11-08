@@ -8,12 +8,61 @@ import { PROVIDER, modelCatalog, thinkingPref, tierOf } from "./models.mjs"
 import {
   readSession, readQuota, buildQuery, payloadFor, startAsk, upstreamDetail,
   sseEvents, answerDelta, chunkObj, completionObj, usageChunk, sse, chatId, rotatedCookie,
+  systemTimeZone,
 } from "./pplx.mjs"
 import { browserSignIn } from "./login.mjs"
 import { fill, resolveLocale, strings } from "./i18n.mjs"
 
 const THREAD_TTL = 30 * 60 * 1000
-const threads = new Map() // sessionId -> { uuid, at }
+const THREAD_MAX = 500
+// "account|session" -> { uuid, at }: a thread belongs to one account, and must
+// not be handed to another after a failover.
+const threads = new Map()
+
+function threadKey(auth, sessionId) {
+  const who = auth?.accountId || auth?.metadata?.email || "default"
+  return `${who}|${sessionId}`
+}
+
+function rememberThread(key, uuid, at = Date.now()) {
+  threads.set(key, { uuid, at })
+  if (threads.size <= THREAD_MAX) return
+  for (const [k, v] of threads) {
+    if (at - v.at >= THREAD_TTL) threads.delete(k)
+  }
+  for (const k of threads.keys()) {
+    if (threads.size <= THREAD_MAX) break
+    threads.delete(k)
+  }
+}
+
+/** A stable uuid per account, so the same visitor id is sent every request. */
+function stableUuid(seed) {
+  let h = 0x811c9dc5
+  const src = String(seed || "perplexity")
+  for (let i = 0; i < src.length; i++) {
+    h ^= src.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  let h2 = 0xc2b2ae35
+  for (let i = src.length - 1; i >= 0; i--) {
+    h2 ^= src.charCodeAt(i)
+    h2 = Math.imul(h2, 0x01000193) >>> 0
+  }
+  const hex = (n) => n.toString(16).padStart(8, "0")
+  return `${hex(h)}-${hex(h2).slice(0, 4)}-4${hex(h2).slice(4, 7)}-8${hex(h).slice(0, 3)}-${hex(h)}${hex(h2).slice(0, 4)}`
+}
+
+/** What the payload says about the account, instead of a random pair. */
+function identityFor(auth) {
+  const meta = auth?.metadata || {}
+  const seed = auth?.accountId || meta.email || "perplexity"
+  return {
+    userId: meta.userId || stableUuid("user:" + seed),
+    visitorId: meta.visitorId || stableUuid("visitor:" + seed),
+    ua: typeof meta.ua === "string" ? meta.ua : "",
+  }
+}
 
 function expired(t) {
   return Object.assign(new Error(t.sessionExpired), { signIn: "expired" })
@@ -114,7 +163,7 @@ export const server = async (input, options) => {
       async models(provider, ctx) {
         const auth = ctx?.auth
         if (!auth?.key) return provider.models
-        const info = await readSession(auth.key)
+        const info = await readSession(auth.key, undefined, auth.metadata?.ua)
         if (!info.ok) {
           if (info.code === "cookie_invalid") throw expired(t)
           return provider.models
@@ -148,14 +197,19 @@ export const server = async (input, options) => {
             const raw = String(inputs?.cookie || "").trim()
             const m = raw.match(/__Secure-next-auth\.session-token=([^;]+)/)
             const key = (m ? m[1] : raw).trim()
-            const info = await readSession(key, ctx?.signal)
+            const info = await readSession(key, ctx?.signal, opt.ua)
             if (!info.ok) {
               return { type: "failed", error: authFailureMessage(t, info) }
             }
             return {
               type: "success",
               key: info.cookie || key,
-              metadata: { email: info.email, tier: opt.tier },
+              metadata: {
+                email: info.email,
+                tier: info.tier || opt.tier,
+                userId: info.userId,
+                visitorId: crypto.randomUUID(),
+              },
               accountId: info.email,
             }
           },
@@ -176,12 +230,18 @@ export const server = async (input, options) => {
               async callback(_code, cbCtx) {
                 try {
                   const r = await handle.wait(cbCtx?.signal)
-                  const info = await readSession(r.cookie, cbCtx?.signal)
+                  const info = await readSession(r.cookie, cbCtx?.signal, r.ua)
                   if (!info.ok) return { type: "failed", error: authFailureMessage(t, info) }
                   return {
                     type: "success",
                     key: info.cookie || r.cookie,
-                    metadata: { email: info.email, tier: opt.tier },
+                    metadata: {
+                      email: info.email,
+                      tier: info.tier || opt.tier,
+                      userId: info.userId,
+                      visitorId: crypto.randomUUID(),
+                      ua: r.ua,
+                    },
                     accountId: info.email,
                   }
                 } catch (e) {
@@ -224,18 +284,21 @@ export const server = async (input, options) => {
               model = thinkingPref(model) || model
             }
             const sessionId = new Headers(init?.headers).get("x-pplx-session-id") || ""
+            const scoped = sessionId ? threadKey(auth, sessionId) : ""
             let backendUuid = null
-            if (sessionId) {
-              const rec = threads.get(sessionId)
+            if (scoped) {
+              const rec = threads.get(scoped)
               if (rec && Date.now() - rec.at < THREAD_TTL) backendUuid = rec.uuid
+              else if (rec) threads.delete(scoped)
             }
 
+            const identity = identityFor(auth)
             const { query, follow } = buildQuery(body.messages, opt.keepSystem, backendUuid)
-            const payload = payloadFor(query, model, follow, opt.apiVersion)
+            const payload = payloadFor(query, model, follow, opt.apiVersion, systemTimeZone(), identity)
 
             let up
             try {
-              up = await startAsk(auth.key, payload, init?.signal)
+              up = await startAsk(auth.key, payload, init?.signal, identity.ua)
             } catch (e) {
               return errResponse(502, fill(t.upstreamNetwork, { detail: e?.message || e }), "upstream_error", "network")
             }
@@ -275,11 +338,11 @@ export const server = async (input, options) => {
             const cid = chatId()
             const wantsStream = body.stream === true
             const wantUsage = body.stream_options?.include_usage === true
+            // Cancelling the client must cancel the upstream read as well.
+            const upstreamAbort = new AbortController()
 
             const noteThread = (chunk) => {
-              if (chunk?.backend_uuid && sessionId) {
-                threads.set(sessionId, { uuid: chunk.backend_uuid, at: Date.now() })
-              }
+              if (chunk?.backend_uuid && scoped) rememberThread(scoped, chunk.backend_uuid)
             }
             const upstreamError = (chunk) => {
               const detail = typeof chunk.error === "string" ? chunk.error : JSON.stringify(chunk.error)
@@ -289,7 +352,7 @@ export const server = async (input, options) => {
             if (!wantsStream) {
               let text = ""
               try {
-                for await (const { event, data } of sseEvents(up.body)) {
+                for await (const { event, data } of sseEvents(up.body, upstreamAbort.signal)) {
                   if (event === "end_of_stream") break
                   if (event !== "message") continue
                   let chunk
@@ -305,6 +368,8 @@ export const server = async (input, options) => {
               }
               if (!text.trim()) text = state.cleaned
               if (!text.trim()) return errResponse(502, t.upstreamEmpty, "upstream_error", "empty_answer")
+              // Said in the answer itself, not in a header nothing reads.
+              if (stripTools) text = t.toolsIgnoredNotice + "\n\n" + text
               return new Response(JSON.stringify(completionObj(cid, model, text, query)), {
                 status: 200,
                 headers: { "content-type": "application/json; charset=utf-8", ...extraHeaders },
@@ -317,7 +382,7 @@ export const server = async (input, options) => {
             let iterator
             let ended = false
             try {
-              iterator = sseEvents(up.body)[Symbol.asyncIterator]()
+              iterator = sseEvents(up.body, upstreamAbort.signal)[Symbol.asyncIterator]()
               for (;;) {
                 const step = await iterator.next()
                 if (step.done) { ended = true; break }
@@ -345,6 +410,7 @@ export const server = async (input, options) => {
               async start(controller) {
                 const push = (o) => controller.enqueue(enc.encode(sse(o)))
                 try {
+                  if (stripTools) push(chunkObj(cid, model, t.toolsIgnoredNotice + "\n\n"))
                   for (const o of queued) push(o)
                   for (;;) {
                     const step = await iterator.next()
@@ -378,6 +444,11 @@ export const server = async (input, options) => {
                   controller.close()
                 }
               },
+              async cancel() {
+                // The client went away: stop reading the upstream answer.
+                try { upstreamAbort.abort() } catch { /* already aborted */ }
+                try { await iterator?.return?.() } catch { /* already finished */ }
+              },
             })
 
             return new Response(stream, {
@@ -396,7 +467,7 @@ export const server = async (input, options) => {
         const auth = await getAuth()
         const plan = tierOf(auth?.metadata?.tier || opt.tier) === "max" ? t.planMax : t.planPro
         if (!auth?.key) return { plan, windows: [] }
-        const q = await readQuota(auth.key)
+        const q = await readQuota(auth.key, undefined, auth.metadata?.ua)
         if (!q.ok) {
           return {
             plan,
