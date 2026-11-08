@@ -8,7 +8,7 @@
 // debugging port is one this driver picked and saved beside the profile,
 // so a later request finds the same running app instead of starting
 // another.
-import { spawn as nodeSpawn } from "node:child_process"
+import { execFileSync, spawn as nodeSpawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
@@ -50,6 +50,18 @@ export async function targets(port, fetchImpl = fetch) {
   }
 }
 
+// copies lists the command lines of the processes running binary itself
+// (not its helpers), or none where ps can't tell (Windows).
+export function copies(binary) {
+  let out = ""
+  try {
+    out = execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+  } catch {
+    return []
+  }
+  return out.split("\n").map((l) => l.trim()).filter((l) => l === binary || l.startsWith(binary + " "))
+}
+
 // App starts and finds one Chromium-based desktop app run from its own
 // profile.
 //   binary   the executable
@@ -57,9 +69,13 @@ export async function targets(port, fetchImpl = fetch) {
 //   owns     (targets) => true when the pages on a port are this app's,
 //            so a port another program took since is never driven
 //   args     more command-line switches
+//   others   () => the command lines of the app's running copies; one
+//            that isn't on this profile keeps a single-instance app (as
+//            Doubao is) from starting a second copy at all
 export class App {
-  constructor({ binary, dataDir, owns, args = [], spawn = nodeSpawn, fetchImpl = fetch }) {
+  constructor({ binary, dataDir, owns, args = [], spawn = nodeSpawn, fetchImpl = fetch, others }) {
     Object.assign(this, { binary, dataDir, owns, args, spawn, fetchImpl })
+    this.others = others ?? (() => copies(binary))
     this.profile = path.join(dataDir, "profile")
     this.portFile = path.join(dataDir, "port")
   }
@@ -88,6 +104,13 @@ export class App {
     const up = await this.running()
     if (up) return up
     if (!fs.existsSync(this.binary)) throw Object.assign(Error(`${this.binary} is not installed`), { code: "app_missing" })
+    // A copy the user opened themselves takes the new one's launch and
+    // the new one quits: there would be nothing to wait for. Its profile
+    // can't be driven either (Chromium allows debugging only off the
+    // default profile), so the user has to quit it.
+    const mine = `--user-data-dir=${this.profile}`
+    if (this.others().some((c) => !c.includes(mine)))
+      throw Object.assign(Error(`${path.basename(this.binary)} is already running from another profile`), { code: "app_busy" })
     fs.mkdirSync(this.profile, { recursive: true })
     const port = await freePort()
     fs.writeFileSync(this.portFile, String(port))

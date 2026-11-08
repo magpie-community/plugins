@@ -178,7 +178,9 @@ export class Doubao {
     const until = Date.now() + timeout
     for (;;) {
       let s
-      try { s = await this.state(signal) } catch (e) { if (e?.code === "app_missing") throw e; s = null }
+      // the app not starting is said at once; a window still loading is
+      // waited for
+      try { s = await this.state(signal) } catch (e) { if (String(e?.code ?? "").startsWith("app_") || signal?.aborted) throw e; s = null }
       if (s?.signedIn && s.name) return s
       if (Date.now() > until) return null
       await sleep(1500, signal)

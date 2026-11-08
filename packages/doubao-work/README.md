@@ -7,8 +7,8 @@ an OpenAI chat completion:
 
 1. It starts Doubao from a profile of its own (`~/Library/Application
    Support/magpie-doubao-work/profile`), with Chrome DevTools on a local
-   port. Your everyday Doubao is not touched; you sign in once in this
-   second window.
+   port. Your everyday Doubao's profile is not touched; you sign in once
+   in this second window.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
    (so Doubao's agent never reads or runs anything on your computer), picks
    the model, and writes the whole request (system prompt, tools, every
@@ -25,6 +25,11 @@ Models: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`) and 豆包 2.1 Pro
 
 - **Unofficial.** It uses Doubao the way its own window does, but ByteDance
   may not like it. Use an account you can afford to lose.
+- **Doubao runs one copy at a time.** If you opened Doubao yourself,
+  quit it (⌘Q) first: the plugin's copy can't start beside it, and yours
+  can't be driven (Chromium allows debugging only off the default
+  profile). While the plugin's copy runs, opening Doubao brings up its
+  window, which you can use as well.
 - **One request at a time.** There is one window.
 - **Every request is a new task** in your Doubao history.
 - **A request the client stops** stops being read, but Doubao finishes

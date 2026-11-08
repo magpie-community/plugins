@@ -12,6 +12,8 @@ import { flatten } from "./prompt.mjs"
 const ID = "doubao-work"
 const BASE = "https://doubao-work.invalid/v1"
 
+const BUSY = "豆包正在运行。豆包同时只能开一个，插件要用自己的豆包窗口：请先退出豆包（⌘Q）再试。"
+
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
 
@@ -36,8 +38,8 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
   const failed = (e) => {
     if (e?.signIn) throw e
     if (e?.name === "AbortError" || e?.name === "TimeoutError") throw e
-    const status = e?.code === "app_missing" || e?.code === "app_start_timeout" ? 503 : e?.status ?? 502
-    return json(status, String(e?.message ?? e), e?.code ?? "doubao_error")
+    const status = String(e?.code ?? "").startsWith("app_") ? 503 : e?.status ?? 502
+    return json(status, e?.code === "app_busy" ? BUSY : String(e?.message ?? e), e?.code ?? "doubao_error")
   }
   return {
     config: async (cfg) => {
@@ -62,6 +64,7 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
                 s = await doubao.waitSignedIn()
               } catch (e) {
                 if (e?.code === "app_missing") return { type: "failed", error: "没有找到豆包桌面版，请先安装：https://www.doubao.com/download/desktop" }
+                if (e?.code === "app_busy") return { type: "failed", error: BUSY }
                 return { type: "failed", error: "打开豆包失败：" + String(e?.message ?? e) }
               }
               if (!s) return { type: "failed", error: "五分钟内没有在豆包窗口里登录，请再试一次。" }

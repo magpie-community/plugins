@@ -2,7 +2,7 @@ import { test, expect } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { App, Page } from "./cdp.mjs"
+import { App, Page, copies } from "./cdp.mjs"
 import { Doubao, NEW_TASK, CLOUD, READ, STATE, binary, owns, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
@@ -256,6 +256,7 @@ test("App reuses its own running app and never drives a port someone else took",
         dataDir: dir,
         owns,
         spawn: (...a) => { spawned.push(a); return { unref() {} } },
+        others: () => [],
         fetchImpl: async (url) => Response.json(String(url).includes(":4567/") ? pages : [{ type: "page", url: "doubao://doubao-chat/chat" }]),
       })
     expect(await mk([{ type: "page", url: "doubao://doubao-chat/chat" }]).start()).toBe(4567)
@@ -267,6 +268,37 @@ test("App reuses its own running app and never drives a port someone else took",
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("App says at once that a copy the user opened keeps it from starting", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dw-"))
+  try {
+    const bin = path.join(dir, "app")
+    fs.writeFileSync(bin, "")
+    const spawned = []
+    const mk = (others) =>
+      new App({ binary: bin, dataDir: dir, owns, others: () => others, spawn: (...a) => { spawned.push(a); return { unref() {} } }, fetchImpl: async () => { throw Error("refused") } })
+    await expect(mk([bin]).start({ timeout: 60000 })).rejects.toMatchObject({ code: "app_busy" })
+    await expect(mk([`${bin} --type=gpu --user-data-dir=/elsewhere`]).start({ timeout: 60000 })).rejects.toMatchObject({ code: "app_busy" })
+    expect(spawned.length).toBe(0)
+    // its own copy, still starting, is waited for
+    await expect(mk([`${bin} --user-data-dir=${path.join(dir, "profile")}`]).start({ timeout: 500 })).rejects.toMatchObject({ code: "app_start_timeout" })
+    expect(spawned.length).toBe(1)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("copies lists the binary's own processes only", () => {
+  expect(copies("/no/such/binary-" + Date.now())).toEqual([])
+})
+
+test("waitSignedIn says the app not starting at once, and waits for a window still loading", async () => {
+  const busy = new Doubao({ app: { start: async () => { throw Object.assign(Error("busy"), { code: "app_busy" }) } }, poll: 1 })
+  await expect(busy.waitSignedIn({ timeout: 60000 })).rejects.toMatchObject({ code: "app_busy" })
+  let n = 0
+  const loading = new Doubao({ app: fakeApp, openPage: async () => (++n < 2 ? null : fakePage([])), poll: 1 })
+  expect(await loading.waitSignedIn({ timeout: 60000 })).toMatchObject({ signedIn: true })
 })
 
 test("App says when the app is not installed", async () => {
@@ -348,6 +380,10 @@ test("the plugin passes a sign-out on for re-sign-in and other failures as HTTP 
   await expect(out.fetch(req({ model: "auto", messages: [] }))).rejects.toMatchObject({ signIn: "expired" })
   const missing = await fail(Object.assign(Error("not installed"), { code: "app_missing" })).auth.loader(async () => ({}))
   expect((await missing.fetch(req({ model: "auto", stream: true, messages: [] }))).status).toBe(503)
+  const busy = await fail(Object.assign(Error("busy"), { code: "app_busy" })).auth.loader(async () => ({}))
+  const rb = await busy.fetch(req({ model: "auto", messages: [] }))
+  expect(rb.status).toBe(503)
+  expect((await rb.json()).error.message).toContain("退出豆包")
   const paid = await fail(Object.assign(Error("upgrade"), { code: "doubao_upgrade", status: 403 })).auth.loader(async () => ({}))
   const r = await paid.fetch(req({ model: "auto", messages: [] }))
   expect(r.status).toBe(403)
@@ -361,6 +397,10 @@ test("sign-in waits for the Doubao window's account", async () => {
   expect(r).toMatchObject({ type: "success", accountId: "豆包工作 · yetone" })
   const late = I.createPlugin({ appBinary: mac, doubao: { waitSignedIn: async () => null } })
   expect(await (await late.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("五分钟") })
+  const busy = I.createPlugin({ appBinary: mac, doubao: { waitSignedIn: async () => { throw Object.assign(Error("busy"), { code: "app_busy" }) } } })
+  const b = await (await busy.auth.methods[0].authorize()).callback()
+  expect(b.type).toBe("failed")
+  expect(b.error).toContain("退出豆包")
   const linux = I.createPlugin({ appBinary: () => "", doubao: { waitSignedIn: async () => ({ signedIn: true, name: "x" }) } })
   expect(await (await linux.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("macOS") })
 })
