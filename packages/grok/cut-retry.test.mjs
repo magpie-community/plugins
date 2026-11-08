@@ -3,18 +3,20 @@ import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { GrokAuthPlugin } from "./index.mjs"
+import { GrokAuthPlugin, _internal } from "./index.mjs"
 
 noRealGrok()
 
-// Grok Build rejects a 200 that ends as {"error":...} with no created_at
-// ("missing field created_at"). A cut before output is asked again; a later
-// cut, or one that keeps failing, is closed as response.failed.
+// A cut before the first byte is asked again. Once a byte has arrived the
+// stream is passed on, and a later cut just ends: magpie 0.1.3298+ writes
+// the response.failed. This plugin must not invent one (it had no
+// sequence_number, and Grok Build rejected it).
 const realFetch = globalThis.fetch
 const realWarn = console.warn
 afterEach(() => {
   globalThis.fetch = realFetch
   console.warn = realWarn
+  _internal.limited.clear()
 })
 const home = mkdtempSync(join(tmpdir(), "grok-cut-retry-"))
 afterAll(() => rmSync(home, { recursive: true, force: true }))
@@ -51,6 +53,15 @@ function sse(parts, { fail } = {}) {
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
 }
 
+function die(message) {
+  const stream = new ReadableStream({
+    pull(controller) {
+      controller.error(new Error(message))
+    },
+  })
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })
+}
+
 function eventsOf(text) {
   const events = []
   for (const line of text.split(/\r?\n/)) {
@@ -81,9 +92,9 @@ async function ask(attempts) {
   return { calls, res, text }
 }
 
-test("a stream cut before output is asked again", async () => {
+test("a stream cut before any byte is asked again", async () => {
   const { calls, res, text } = await ask([
-    () => sse([created("resp_a"), event("response.reasoning_summary_text.delta", { delta: "thinking-once" })], { fail: "ECONNRESET" }),
+    () => die("ECONNRESET"),
     () => sse([
       created("resp_b"),
       event("response.output_text.delta", { delta: "pong" }),
@@ -92,44 +103,50 @@ test("a stream cut before output is asked again", async () => {
   ])
   expect(calls).toBe(2)
   expect(res.status).toBe(200)
-  expect(res.headers.get("x-grok-auth-hold")).toBe("cut-retry")
   expect(text).toContain("pong")
-  expect(text).not.toContain("thinking-once")
-  expect(text).not.toContain("resp_a")
+  expect(text).toContain("resp_b")
+  expect(eventsOf(text).some((item) => item.type === "response.failed")).toBe(false)
 })
 
-test("a stream that ends before output is asked again", async () => {
+test("a stream that ends before output is not asked again", async () => {
   const { calls, text } = await ask([
     () => sse([created("resp_empty")]),
-    () => sse([
-      created("resp_ok"),
-      event("response.output_text.delta", { delta: "pong" }),
-      event("response.completed", { response: { id: "resp_ok", created_at: 1_700_000_002, status: "completed" } }),
-    ]),
+    () => sse([event("response.output_text.delta", { delta: "nope" })]),
   ])
-  expect(calls).toBe(2)
-  expect(text).toContain("pong")
-  expect(text).not.toContain("resp_empty")
+  expect(calls).toBe(1)
+  expect(text).toContain("resp_empty")
+  expect(text).not.toContain("nope")
 })
 
-test("three cuts end as response.failed with created_at", async () => {
+test("three cuts before any byte invent no response.failed", async () => {
   const { calls, res, text } = await ask([
-    () => sse([created("resp_1")], { fail: "ECONNRESET" }),
-    () => sse([created("resp_2")], { fail: "socket connection was closed unexpectedly" }),
-    () => sse([created("resp_3")], { fail: "ECONNRESET" }),
+    () => die("ECONNRESET"),
+    () => die("socket connection was closed unexpectedly"),
+    () => die("unexpected EOF"),
   ])
   expect(calls).toBe(3)
   expect(res.status).toBe(200)
-  const failed = eventsOf(text).find((item) => item.type === "response.failed")?.response
-  expect(failed.status).toBe("failed")
-  expect(failed.created_at).toBe(1_700_000_000)
-  expect(failed.id).toBe("resp_3")
-  expect(text).toContain("event: response.created")
-  expect(text).toContain("event: response.failed")
-  expect(text).not.toContain('"type":"api_error"')
+  expect(text).toBe("")
+  expect(text).not.toContain("response.failed")
+  expect(text).not.toContain("created_at")
 })
 
-test("a cut after output is not asked again", async () => {
+test("reasoning is forwarded and a later cut is not asked again", async () => {
+  const { calls, text } = await ask([
+    () => sse([
+      created("resp_think"),
+      event("response.reasoning_summary_text.delta", { delta: "thinking-once" }),
+    ], { fail: "ECONNRESET" }),
+    () => sse([event("response.output_text.delta", { delta: "should-not-retry" })]),
+  ])
+  expect(calls).toBe(1)
+  expect(text).toContain("thinking-once")
+  expect(text).toContain("resp_think")
+  expect(text).not.toContain("should-not-retry")
+  expect(text).not.toContain("response.failed")
+})
+
+test("a cut after output is not asked again and invents no event", async () => {
   const { calls, text } = await ask([
     () => sse([
       created("resp_out"),
@@ -139,22 +156,90 @@ test("a cut after output is not asked again", async () => {
   ])
   expect(calls).toBe(1)
   expect(text).toContain("pong")
+  expect(text).toContain("resp_out")
   expect(text).not.toContain("should-not-retry")
-  const failed = eventsOf(text).find((item) => item.type === "response.failed")?.response
-  expect(failed.created_at).toBe(1_700_000_000)
-  expect(failed.id).toBe("resp_out")
+  expect(eventsOf(text).map((item) => item.type)).toEqual(["response.created", "response.output_text.delta"])
+})
+
+test("an upstream response.failed is passed on", async () => {
+  const { calls, text } = await ask([
+    () => sse([
+      created("resp_no"),
+      event("response.failed", {
+        response: { id: "resp_no", created_at: 5, status: "failed", error: { message: "context too long" } },
+      }),
+    ]),
+    () => sse([event("response.output_text.delta", { delta: "nope" })]),
+  ])
+  expect(calls).toBe(1)
+  expect(text).toContain("context too long")
+  expect(text).not.toContain("nope")
+  expect(text).not.toContain("stream ended before output")
+})
+
+test("an upstream error event is passed on", async () => {
+  const { calls, text } = await ask([
+    () => sse([event("error", { error: { type: "server_error", message: "upstream said no" } })]),
+    () => sse([event("response.output_text.delta", { delta: "nope" })]),
+  ])
+  expect(calls).toBe(1)
+  expect(text).toContain("upstream said no")
+  expect(text).not.toContain("nope")
+})
+
+test("a 429 after a cut before any byte is the real answer", async () => {
+  const { calls, res, text } = await ask([
+    () => die("ECONNRESET"),
+    () => new Response("slow down", { status: 429, headers: { "content-type": "text/plain", "retry-after": "12" } }),
+  ])
+  expect(calls).toBe(2)
+  expect(res.status).toBe(429)
+  expect(text).toBe("slow down")
+  expect(res.headers.get("x-magpie-sign-in")).toBe("kept")
+  expect(text).not.toContain("response.failed")
+  const held = _internal.limited.get(home)
+  expect(held?.until).toBeGreaterThan(Date.now())
 })
 
 test("an aborted stream is not asked again", async () => {
   const { calls, text } = await ask([
-    () => sse([created("resp_abort")], { fail: "The operation was aborted." }),
+    () => die("The operation was aborted."),
     () => sse([event("response.output_text.delta", { delta: "nope" })]),
   ])
   expect(calls).toBe(1)
+  expect(text).toBe("")
   expect(text).not.toContain("nope")
-  const failed = eventsOf(text).find((item) => item.type === "response.failed")?.response
-  expect(typeof failed.created_at).toBe("number")
-  expect(failed.error.message).toContain("The operation was aborted.")
+  expect(text).not.toContain("response.failed")
+})
+
+test("cancelling the stream stops the upstream read", async () => {
+  let pulls = 0
+  let cancelled = false
+  const enc = new TextEncoder()
+  console.warn = () => {}
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      pulls += 1
+      controller.enqueue(enc.encode(event("response.output_text.delta", { delta: "x" })))
+    },
+    cancel() { cancelled = true },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } })
+  const hooks = await GrokAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => auth)
+  const res = await opts.fetch("https://cli-chat-proxy.grok.com/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "grok-4.7", input: "hi", stream: true }),
+  })
+  const reader = res.body.getReader()
+  const first = await reader.read()
+  expect(new TextDecoder().decode(first.value)).toContain('"delta":"x"')
+  const pulled = pulls
+  await reader.cancel()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  expect(cancelled).toBe(true)
+  expect(pulls).toBe(pulled)
+  expect(pulls).toBeLessThan(5)
 })
 
 test("a JSON answer is not retried or rewritten", async () => {
