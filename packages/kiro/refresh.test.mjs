@@ -35,7 +35,8 @@ function kiro(status = 200, wait = 0) {
       if (status !== 200) return new Response("{}", { status })
       return Response.json({ accessToken: "new", refreshToken: "r2", expiresIn: 3600 })
     }
-    seen.sent.push(new Headers(init.headers).get("Authorization"))
+    // the experiment read before a chat (plugins#842) is no request's send
+    if (new URL(String(url)).pathname !== "/featureConfiguration") seen.sent.push(new Headers(init.headers).get("Authorization"))
     return new Response(JSON.stringify({ message: "boom" }), { status: 500 })
   }
   return seen
