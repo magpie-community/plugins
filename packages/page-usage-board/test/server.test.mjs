@@ -11,13 +11,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // 所有路径都从本测试文件定位（root bun test 从仓库根跑时 cwd 不同也能工作）；
 // 子进程一律 -e + 绝对 URL 导入；端口一律临时申请，不用固定口。
 // spawn 目标：本测试在 bun test 下也会被跑（社区根仓库 bun test 扫全部包），
-// spawn 一个真正的 node 需要 runtime 探测——bun 的 -e 兼容性不承诺。
-// PATH 在模块加载时快照：根仓库 bun test 所有包共用一个进程，某些包的测试会
-// 清空 process.env.PATH（gcp-ai），等到我们的 before() 再 spawn('node') 就会
-// "Executable not found"。快照取自任何测试运行之前，随后显式传给每个子进程。
-const PATH_SAVE = process.env.PATH;
+// 子进程一律 spawn process.execPath（bun test 下就是 bun——magpie 宿主也正是用 bun 跑
+// server.mjs 的；node --test 下就是 node）。绝不按名字 spawn "node"：根仓库 bun test
+// 所有包共用一个进程，某些包的测试会清空 process.env.PATH（gcp-ai），按名字找可执行
+// 文件会 "Executable not found"。内联脚本的 -e 子进程改为写临时 .mjs 文件——bun 的 -e
+// 兼容性不承诺，文件形式两种运行时行为一致。
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NODE = typeof Bun !== 'undefined' ? 'node' : process.execPath;
+const RUNTIME = process.execPath;
 const SERVER_URL = pathToFileURL(path.join(root, 'server.mjs')).href;
 const INDEX_URL = pathToFileURL(path.join(root, 'index.mjs')).href;
 const TEST_KEY = 'test-page-key';
@@ -27,9 +27,8 @@ let port;
 let publicChild;
 let publicPort;
 
-const baseEnv = (dir) => ({
+const baseEnv = (dir = os.tmpdir()) => ({
   ...process.env,
-  PATH: PATH_SAVE,
   PAGE_KEY: TEST_KEY,
   USAGE_JSONL: path.join(dir, 'usage.jsonl'),
   GATEWAY: 'http://127.0.0.1:9',
@@ -38,10 +37,30 @@ const baseEnv = (dir) => ({
   MAGPIE_PROVIDERS_FILE: path.join(dir, 'no-plugin-providers.json'),
 });
 
+// 内联脚本子进程：代码写进临时 .mjs 文件再跑（跨 node/bun 一致），结束即清理。
+// 返回 { code, out }；killMs 到点强杀防止挂死 runner。
+function spawnChild(code, env, killMs = 25000) {
+  return new Promise((resolve) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-child-'));
+    const file = path.join(dir, 'child.mjs');
+    writeFileSync(file, code);
+    const c = spawn(RUNTIME, [file], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    c.stdout.on('data', (d) => { out += d; });
+    c.stderr.on('data', (d) => { out += d; });
+    const t = setTimeout(() => c.kill('SIGKILL'), killMs);
+    c.once('close', (code2) => {
+      clearTimeout(t);
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      resolve({ code: code2, out });
+    });
+  });
+}
+
 function start(extra = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-'));
   writeFileSync(path.join(dir, 'usage.jsonl'), '');
-  const c = spawn(NODE, [path.join(root, 'server.mjs')], {
+  const c = spawn(RUNTIME, [path.join(root, 'server.mjs')], {
     env: { ...baseEnv(dir), HOST: '127.0.0.1', PORT: '0', ...extra },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -285,9 +304,43 @@ test('the gateway follows options, env and MAGPIE_ADDR, not a hard-coded port', 
   }
 });
 
+test('config dir: the host cwd carrying magpie markers wins (portable installs)', { timeout: 30000 }, async () => {
+  // magpie 宿主以数据目录为 cwd 启动服务（bunCommand(..., settings.Dir(), ...)）——
+  // 便携安装因此不需要任何环境变量。不设 USAGE_JSONL，服务应通过 cwd 探测找到它。
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-cwd-'));
+  writeFileSync(path.join(dataDir, 'usage.jsonl'), '');
+  const c = spawn(RUNTIME, [path.join(root, 'server.mjs')], {
+    cwd: dataDir,
+    env: {
+      ...process.env,
+      PAGE_KEY: TEST_KEY,
+      GATEWAY: 'http://127.0.0.1:9',
+      ATTRIBUTION: 'local',
+      MAGPIE_PROVIDERS: path.join(dataDir, 'no-providers.json'),
+      MAGPIE_PROVIDERS_FILE: path.join(dataDir, 'no-plugin-providers.json'),
+      HOST: '127.0.0.1',
+      PORT: '0',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  c.stdout.on('data', (d) => { out += d; });
+  c.stderr.on('data', (d) => { out += d; });
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('server did not start: ' + out)), 10000);
+    c.stdout.on('data', (d) => { if (/listening/.test(d.toString())) { clearTimeout(t); resolve(); } });
+    c.once('exit', (code) => { clearTimeout(t); reject(new Error('exited ' + code + ': ' + out)); });
+  });
+  try {
+    assert.ok(out.includes('jsonl=' + path.join(dataDir, 'usage.jsonl') + '(ok)'), 'usage.jsonl resolved from cwd: ' + out.slice(0, 300));
+  } finally {
+    c.kill();
+    try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 test('startServer({port: 0}) binds an ephemeral port, not the default', { timeout: 30000 }, async () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-port0-'));
-  const code = `
+  const r = await spawnChild(`
     import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
       try {
         const bound = await m.startServer({ port: 0 });
@@ -298,18 +351,9 @@ test('startServer({port: 0}) binds an ephemeral port, not the default', { timeou
         process.exit(0);
       } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
     });
-  `;
-  const c = spawn(NODE, ['-e', code], { env: { ...baseEnv(dir), HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let out = '';
-  c.stdout.on('data', (d) => { out += d; });
-  c.stderr.on('data', (d) => { out += d; });
-  const exit = await new Promise((resolve) => {
-    const t = setTimeout(() => { c.kill('SIGKILL'); resolve({ code: null }); }, 25000);
-    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2 }); });
-  });
-  try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  assert.equal(exit.code, 0, `child exit ${exit.code}: ${out.slice(0, 300)}`);
-  assert.match(out, /EPHEMERAL-OK/);
+  `, { ...baseEnv(), HOST: '127.0.0.1' });
+  assert.equal(r.code, 0, `child exit ${r.code}: ${r.out.slice(0, 300)}`);
+  assert.match(r.out, /EPHEMERAL-OK/);
 });
 
 test('path traversal stays inside static/', async () => {
@@ -389,7 +433,6 @@ test('waits for a dying occupier on the target port, then binds it', async () =>
   const p = await freePort();
   const occupier = net.createServer(() => {});
   await new Promise((resolve, reject) => { occupier.once('error', reject); occupier.listen(p, '127.0.0.1', resolve); });
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-zombie-'));
   const code = `
     import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
       try {
@@ -401,21 +444,10 @@ test('waits for a dying occupier on the target port, then binds it', async () =>
       } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
     });
   `;
-  const c = spawn(NODE, ['-e', code], {
-    env: { ...baseEnv(dir), HOST: '127.0.0.1', PORT: String(p) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let out = '';
-  c.stdout.on('data', (d) => { out += d; });
-  c.stderr.on('data', (d) => { out += d; });
   setTimeout(() => occupier.close(() => {}), 1200); // 1.2s 后释放端口（模拟濒死实例退出）
-  const exit = await new Promise((resolve) => {
-    const t = setTimeout(() => { c.kill('SIGKILL'); resolve({ code: null }); }, 20000);
-    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2 }); }); // close = exit + stdio 刷完
-  });
-  try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  assert.equal(exit.code, 0, `child exit ${exit.code}: ${out.slice(0, 400)}`);
-  assert.match(out, /BOUND-AFTER-WAIT/);
+  const r = await spawnChild(code, { ...baseEnv(), HOST: '127.0.0.1', PORT: String(p) }, 20000);
+  assert.equal(r.code, 0, `child exit ${r.code}: ${r.out.slice(0, 400)}`);
+  assert.match(r.out, /BOUND-AFTER-WAIT/);
 });
 
 test('reuses a live instance of the same build, never a different one', { timeout: 30000 }, async () => {
@@ -423,30 +455,20 @@ test('reuses a live instance of the same build, never a different one', { timeou
   // 交给一个未知进程。复用判定只认 /api/ping 的 BUILD_ID。子进程必须异步 spawn：
   // spawnSync 会阻塞本进程事件循环，同进程里的 fake server 就无法应答探测了。
   // timeout：异构建分支要等服务端 8s deadline 才报错——超过 bun test 默认 5s（维护者复审点）。
-  const runChild = (code, env, ms = 20000) => new Promise((resolve) => {
-    const c = spawn(NODE, ['-e', code], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    c.stdout.on('data', (d) => { out += d; });
-    c.stderr.on('data', (d) => { out += d; });
-    const t = setTimeout(() => { c.kill('SIGKILL'); }, ms);
-    c.once('close', (code2) => { clearTimeout(t); resolve({ code: code2, out }); });
-  });
+  const code = `
+    import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
+      try {
+        const bound = await m.startServer();
+        console.log('RESOLVED-' + bound);
+        process.exit(0);
+      } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
+    });
+  `;
   const p = await freePort();
   const first = start({ PORT: String(p) });
   try {
     await first.ready;
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-reuse-'));
-    const code = `
-      import(${JSON.stringify(SERVER_URL)}).then(async (m) => {
-        try {
-          const bound = await m.startServer();
-          console.log('RESOLVED-' + bound);
-          process.exit(0);
-        } catch (e) { console.error('FAIL ' + (e && e.message || e)); process.exit(1); }
-      });
-    `;
-    const r = await runChild(code, { ...baseEnv(dir), HOST: '127.0.0.1', PORT: String(p) });
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    const r = await spawnChild(code, { ...baseEnv(), HOST: '127.0.0.1', PORT: String(p) }, 20000);
     assert.equal(r.code, 0, `child exit ${r.code}: ${r.out.slice(0, 400)}`);
     assert.match(r.out, new RegExp(`RESOLVED-${p}`));
     // 异构建：伪装成同款服务但 build 不同 → 必须拒绝启动
@@ -456,10 +478,8 @@ test('reuses a live instance of the same build, never a different one', { timeou
       res.end(JSON.stringify({ service: 'magpie-usage-board', ok: true, build: 'deadbeefdeadbeef', version: '9.9.9' }));
     });
     await new Promise((resolve) => fake.listen(p2, '127.0.0.1', resolve));
-    const dir2 = mkdtempSync(path.join(os.tmpdir(), 'usage-board-foreign-'));
-    const r2 = await runChild(code, { ...baseEnv(dir2), HOST: '127.0.0.1', PORT: String(p2) });
+    const r2 = await spawnChild(code, { ...baseEnv(), HOST: '127.0.0.1', PORT: String(p2) }, 20000);
     fake.close(() => {});
-    try { rmSync(dir2, { recursive: true, force: true }); } catch {}
     assert.notEqual(r2.code, 0, 'a foreign build must not be accepted');
     assert.match(r2.out, /held by another build/);
   } finally {
@@ -468,7 +488,7 @@ test('reuses a live instance of the same build, never a different one', { timeou
   }
 });
 
-test('index.mjs: importing has no side effects, server() starts and awaits listen', () => {
+test('index.mjs: importing has no side effects, server() starts and awaits listen', { timeout: 30000 }, async () => {
   // The community import-check imports this file for inspection; a module-level
   // startServer would grab a port and write config during that check. The child
   // picks its own free port, sets PORT, then verifies import ≠ start, server() = start.
@@ -491,15 +511,9 @@ test('index.mjs: importing has no side effects, server() starts and awaits liste
       process.exit(0);
     })();
   `;
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-lifecycle-'));
-  const r = spawnSync(NODE, ['-e', code], {
-    env: baseEnv(dir),
-    encoding: 'utf8',
-    timeout: 20000,
-  });
-  try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  assert.equal(r.status, 0, `child exit ${r.status}: ${(r.stdout || '')} ${(r.stderr || '')}`);
-  assert.match(r.stdout, /LIFECYCLE-OK/);
+  const r = await spawnChild(code, baseEnv(), 20000);
+  assert.equal(r.code, 0, `child exit ${r.code}: ${r.out.slice(0, 400)}`);
+  assert.match(r.out, /LIFECYCLE-OK/);
 });
 
 test('the dashboard asks the local service for attribution', () => {

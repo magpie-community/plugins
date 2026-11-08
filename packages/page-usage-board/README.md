@@ -93,7 +93,7 @@ reads `~/.config/magpie/usage.jsonl`.
 | `GATEWAY` | `http://127.0.0.1:3425` | magpie's local gateway API. Resolved in this order: manifest `options.gateway` → `GATEWAY` → `MAGPIE_GATEWAY` → **`MAGPIE_ADDR`** (set by magpie's plugin host; a `0.0.0.0:`/`[::]:` prefix is normalised to loopback) → the `3425` default. |
 | `MAGPIE_KEY` | empty | Bearer key for the gateway, when the gateway requires one. |
 | `USAGE_JSONL` | `~/.config/magpie/usage.jsonl` | magpie's usage log. |
-| `MAGPIE_CONFIG_DIR` | `~/.config/magpie` | magpie's config directory (honoured by `XDG_CONFIG_HOME` first when set). `usage.jsonl`, `plugin-providers.json` and `providers.json` default to files inside it — portable/XDG installs set this instead of three separate paths. |
+| `MAGPIE_CONFIG_DIR` | `~/.config/magpie` | Explicit override for magpie's config directory (magpie itself has no such env — this is for tests and unusual layouts). The service resolves the dir the way magpie does: the **host's cwd** when it carries magpie markers (`usage.jsonl` / `plugins.json` / `providers.json` — the plugin host starts the service with the data dir as cwd, which covers portable installs) → `XDG_CONFIG_HOME/magpie` → `~/.config/magpie`. `usage.jsonl`, `plugin-providers.json` and `providers.json` default to files inside it. |
 | `MAGPIE_PROVIDERS_FILE` | `<magpie config dir>/plugin-providers.json` | Where brand logos are read from (magpie's own provider registry — see *Brand logos*). |
 | `ATTRIBUTION` | `local` | Remote attribution is **opt-in**: the default `local` keeps attribution on this machine's log; `ATTRIBUTION=remote` (or manifest `options.attribution: "remote"`) makes the service query the configured remote magpie — the provider key is sent to that remote magpie. |
 | `MAGPIE_PROVIDERS` | `~/.config/magpie/providers.json` | Where the remote URL and key are read from (used only with `ATTRIBUTION=remote`). |
@@ -159,7 +159,7 @@ docs and notices; `test/` stays in the checkout.
 
 ```sh
 node --test             # auth/host/page gate, caller filtering, package metadata
-npm run build:echarts   # rebuild static/echarts.min.js byte-for-byte (CI verifies with git diff --exit-code)
+npm run build:echarts   # rebuild static/echarts.min.js byte-for-byte (verify: git diff --exit-code static/echarts.min.js)
 ```
 
 - `static/index.html` is the page source; at request time the service injects

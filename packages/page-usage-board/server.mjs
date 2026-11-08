@@ -23,9 +23,17 @@ const URL_HOST = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : (HOST.inclu
 // page-usage-tree 同一模型）。注意：'::' 与 0.0.0.0 同为通配监听（dual-stack），绝不能算回环。
 const LOOPBACK_BIND = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
 // magpie 的配置目录：与 usage.jsonl、plugin-providers.json、providers.json 的所在。
-// MAGPIE_CONFIG_DIR 显式指定 → XDG_CONFIG_HOME/magpie → ~/.config/magpie。
+// 顺序照 magpie 自己的 appdir.Config()：宿主数据目录（便携安装）→ XDG → ~/.config/magpie。
+// 便携/宿主场景靠 cwd 探测：magpie 的插件宿主以 settings.Dir() 为 cwd 启动服务
+// （internal/plugin/host.go 的 bunCommand），desktop 用户无法为宿主设环境变量，
+// 所以任何 MAGPIE_CONFIG_DIR 之类的 env 都救不了便携安装——cwd 是唯一可靠信号。
+// MAGPIE_CONFIG_DIR 仍保留为显式覆盖（测试/特殊布局用；magpie 本身没有这个变量）。
 function magpieConfigDir() {
   if (process.env.MAGPIE_CONFIG_DIR) return process.env.MAGPIE_CONFIG_DIR;
+  try {
+    const cwd = process.cwd();
+    if (cwd !== ROOT && (existsSync(path.join(cwd, 'usage.jsonl')) || existsSync(path.join(cwd, 'plugins.json')) || existsSync(path.join(cwd, 'providers.json')))) return cwd;
+  } catch {}
   const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg && path.isAbsolute(xdg)) return path.join(xdg, 'magpie');
   return path.join(os.homedir(), '.config', 'magpie');
@@ -45,8 +53,11 @@ function gatewayCandidates(optionsGateway) {
   push(process.env.MAGPIE_GATEWAY);
   const addr = process.env.MAGPIE_ADDR;
   if (addr) {
-    const loopback = String(addr).replace(/^(0\.0\.0\.0|\[::\]):/, '127.0.0.1:');
-    if (/^[\w.-]+(:\d+)?$/.test(loopback)) push('http://' + loopback);
+    // 宿主可能写成 0.0.0.0/[::]/[::1] 开头的通配形式，全部归一化成可请求的回环地址
+    const loopback = String(addr)
+      .replace(/^(0\.0\.0\.0|\[::\]|\[::1\]|::1):/, '127.0.0.1:')
+      .replace(/^\[::1\]$/, '127.0.0.1');
+    if (/^(\[[0-9a-f:]+\]|[\w.-]+)(:\d+)?$/.test(loopback)) push('http://' + loopback);
   }
   push('http://127.0.0.1:3425');
   return out;
@@ -54,11 +65,7 @@ function gatewayCandidates(optionsGateway) {
 // 实际生效的网关在 main() 里定稿（listen 前）；upstream() 按请求时值取用
 let GATEWAY = 'http://127.0.0.1:3425';
 const KEY = process.env.MAGPIE_KEY || '';
-const USAGE_JSONL = process.env.USAGE_JSONL || [
-  path.join(CONFIG_DIR, 'usage.jsonl'),
-  path.join(ROOT, '..', 'usage.jsonl'),
-  path.join(ROOT, '..', 'magpie', 'usage.jsonl'),
-].find((f) => existsSync(f)) || path.join(CONFIG_DIR, 'usage.jsonl');
+const USAGE_JSONL = process.env.USAGE_JSONL || path.join(CONFIG_DIR, 'usage.jsonl');
 // 页面访问口令：未设 PAGE_KEY → 每次启动生成随机 token（页面 HTML 服务端注入，URL/日志/磁盘
 // 都不落）；显式设置 → 脚本调 API 用（x-dash-key 头；?key= 已废除，key 不进 URL）。
 let PAGE_KEY = '';
@@ -543,7 +550,7 @@ async function handleRequest(req, res, url) {
     if (!cors(req, res)) { res.writeHead(403); return res.end('cross-origin reads not allowed'); }
     // health 免鉴权：探活与实例识别都依赖匿名访问（响应里无口令、无用量数据）
     if (p === '/api/health') return json(res, 200, { ok: true, jsonl: existsSync(USAGE_JSONL) });
-    if (!authed(req)) return json(res, 401, { error: '需要访问口令：请求带 x-dash-key 头' });
+    if (!authed(req)) return json(res, 401, { error: 'unauthorized: send the x-dash-key header' });
     try {
       if (p === '/api/quotas') {
         const [r, lim] = await Promise.all([
@@ -592,7 +599,7 @@ async function handleRequest(req, res, url) {
         }
         const callers = (url.searchParams.get('caller') || '').split(',').map((x) => x.trim()).filter(Boolean);
         const data = await readAttribution(period, days, callers);
-        if (!data) return json(res, 503, { error: 'usage.jsonl 读不到' });
+        if (!data) return json(res, 503, { error: 'usage.jsonl not readable' });
         return json(res, 200, data);
       }
       return json(res, 404, { error: 'not found' });

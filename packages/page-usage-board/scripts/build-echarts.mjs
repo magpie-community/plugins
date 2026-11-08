@@ -2,11 +2,11 @@
 //
 //   npm run build:echarts        # rebuild static/echarts.min.js from build/echarts-entry.mjs
 //
-// CI rebuilds it and compares bytes with the vendored file (git diff --exit-code), so the
-// bundle in the package can always be reproduced from the sources in this repo with the
-// pinned devDependencies (echarts@5.5.1, esbuild per package-lock.json).
+// The output must stay byte-identical, so this script IS the build definition.
+// Verify locally after any change:
+//   node scripts/build-echarts.mjs && git diff --exit-code static/echarts.min.js
+// Pins: echarts@5.5.1, esbuild per devDependencies (exact) and package-lock.json.
 //
-// The output must stay byte-identical, so this script IS the build definition:
 // - no --global-name: the entry assigns window.echarts directly (with --global-name the
 //   iife gets wrapped in "var echarts=…" and the default export nests under .default);
 // - the provenance banner below is prepended, so it is part of the reproducible output.
