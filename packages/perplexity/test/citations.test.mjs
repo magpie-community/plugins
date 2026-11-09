@@ -42,6 +42,12 @@ test("a marker inside a code span or a fence is untouchable", () => {
   assert.equal(stripCitations("```js\nconst a = arr[1]", 20), "```js\nconst a = arr[1]")
 })
 
+test("code protection holds on its own: jq's .[1] index", () => {
+  // Without the code-span split this would be stripped, since it follows a dot.
+  assert.equal(stripCitations("run `jq '.[1]' file.json` now", 5), "run `jq '.[1]' file.json` now")
+  assert.equal(stripCitations("`.[1]`", 5), "`.[1]`")
+})
+
 test("a marker after a non-punctuation, non-letter character is left alone", () => {
   // No sentence ended here, so this is text, not a citation.
   assert.equal(stripCitations("price = 10 * [1]", 20), "price = 10 * [1]")

@@ -7,11 +7,32 @@
 import { PROVIDER, modelCatalog, thinkingPref, tierOf } from "./models.mjs"
 import {
   readSession, readQuota, buildQuery, payloadFor, startAsk, upstreamDetail,
-  sseEvents, answerDelta, chunkObj, completionObj, usageChunk, sse, chatId, rotatedCookie,
-  systemTimeZone,
+  sseEvents, answerDelta, endOfAnswer, chunkObj, completionObj, usageChunk, sse, chatId,
+  rotatedCookie, systemTimeZone,
 } from "./pplx.mjs"
 import { browserSignIn } from "./login.mjs"
 import { fill, resolveLocale, strings } from "./i18n.mjs"
+
+// Announcing "tools were ignored" in every answer would be noise: say it on the
+// first message of a session, or once every ten minutes when there is none.
+const TOOLS_NOTICE_TTL = 10 * 60 * 1000
+const toolsNoticed = new Map()
+
+function shouldAnnounceTools(key, hasSession) {
+  const now = Date.now()
+  const last = toolsNoticed.get(key)
+  if (hasSession) {
+    if (last !== undefined) return false
+  } else if (last && now - last < TOOLS_NOTICE_TTL) {
+    return false
+  }
+  toolsNoticed.set(key, now)
+  if (toolsNoticed.size > 500) {
+    for (const [k, v] of toolsNoticed) if (now - v >= TOOLS_NOTICE_TTL) toolsNoticed.delete(k)
+    for (const k of toolsNoticed.keys()) if (toolsNoticed.size > 500) toolsNoticed.delete(k)
+  }
+  return true
+}
 
 const THREAD_TTL = 30 * 60 * 1000
 const THREAD_MAX = 500
@@ -277,19 +298,27 @@ export const server = async (input, options) => {
           headers: { "x-pplx-hook": "1" },
           async fetch(requestUrl, init) {
             const body = readBody(init)
+            const sessionId = new Headers(init?.headers).get("x-pplx-session-id") || ""
             // A host that sends tools cannot be served by this endpoint. Either
-            // say so (reject) or answer as text and mark the response (ignore).
+            // say so (reject) or answer as text and say so once.
             const stripTools = asksForTools(body)
             if (stripTools && opt.tools !== "ignore") {
               return errResponse(400, t.toolsUnsupported, "invalid_request", "tools_unsupported")
             }
             const extraHeaders = stripTools ? { "x-magpie-tools-ignored": "1" } : {}
+            // Say it once, at the start of a conversation: a host that sends the
+            // whole history would otherwise get the notice on every message.
+            const userTurns = (body.messages || []).filter((m) => m?.role === "user").length
+            const freshConversation = userTurns <= 1
+            const announceTools =
+              stripTools &&
+              freshConversation &&
+              shouldAnnounceTools(`${auth.accountId || auth.metadata?.email || "default"}|${sessionId || "none"}`, Boolean(sessionId))
 
             let model = String(body.model || "pplx_pro")
             if (body.reasoning_effort || body.thinking || body.reasoning) {
               model = thinkingPref(model) || model
             }
-            const sessionId = new Headers(init?.headers).get("x-pplx-session-id") || ""
             const scoped = sessionId ? threadKey(auth, sessionId) : ""
             let backendUuid = null
             if (scoped) {
@@ -372,10 +401,11 @@ export const server = async (input, options) => {
               } catch (e) {
                 return errResponse(502, fill(t.upstreamMidStream, { detail: e?.message || e }), "upstream_error", "midstream_error")
               }
-              if (!text.trim()) text = state.cleaned
+              text += endOfAnswer(state)
+              if (!text.trim()) text = state.emitted || ""
               if (!text.trim()) return errResponse(502, t.upstreamEmpty, "upstream_error", "empty_answer")
               // Said in the answer itself, not in a header nothing reads.
-              if (stripTools) text = t.toolsIgnoredNotice + "\n\n" + text
+              if (announceTools) text = t.toolsIgnoredNotice + "\n\n" + text
               return new Response(JSON.stringify(completionObj(cid, model, text, query)), {
                 status: 200,
                 headers: { "content-type": "application/json; charset=utf-8", ...extraHeaders },
@@ -416,7 +446,7 @@ export const server = async (input, options) => {
               async start(controller) {
                 const push = (o) => controller.enqueue(enc.encode(sse(o)))
                 try {
-                  if (stripTools) push(chunkObj(cid, model, t.toolsIgnoredNotice + "\n\n"))
+                  if (announceTools) push(chunkObj(cid, model, t.toolsIgnoredNotice + "\n\n"))
                   for (const o of queued) push(o)
                   for (;;) {
                     const step = await iterator.next()
@@ -432,7 +462,9 @@ export const server = async (input, options) => {
                     if (r.thinking) push(chunkObj(cid, model, "", { reasoning: r.thinking }))
                     if (r.delta) push(chunkObj(cid, model, r.delta))
                   }
-                  if (wantUsage) push(usageChunk(cid, model, state.cleaned, query))
+                  const tail = endOfAnswer(state)
+                  if (tail) push(chunkObj(cid, model, tail))
+                  if (wantUsage) push(usageChunk(cid, model, state.emitted, query))
                   push(chunkObj(cid, model, "", { finish: "stop" }))
                   controller.enqueue(enc.encode("data: [DONE]\n\n"))
                 } catch (e) {

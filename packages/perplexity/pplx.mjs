@@ -387,7 +387,25 @@ export function answerDelta(chunk, state) {
 
   // Only emit text that cannot still change: a trailing `[1` may become `[1]`
   // and disappear, and an open backtick may still turn into code.
-  const stable = stableCut(state.full, mb.progress === "DONE")
+  return { delta: emit(state, stableCut(state.full, mb.progress === "DONE")), thinking: thinking.join("") }
+}
+
+/** Longest common prefix length of two strings. */
+function commonPrefixLength(a, b) {
+  const max = Math.min(a.length, b.length)
+  let i = 0
+  while (i < max && a[i] === b[i]) i++
+  return i
+}
+
+/**
+ * Send whatever part of `stable` the client does not have yet.
+ *
+ * The endpoint sometimes rewrites the answer instead of extending it. A rewrite
+ * cannot be taken back, so the rest is still sent — after the common prefix —
+ * rather than dropped: a duplicated word beats a truncated answer.
+ */
+export function emit(state, stable) {
   const sent = state.rawSent || ""
   const sources = state.sources || 0
   let delta
@@ -396,16 +414,23 @@ export function answerDelta(chunk, state) {
     // only affect text that has not been sent yet.
     delta = clean(stable.slice(sent.length), sources)
   } else {
-    // The endpoint rewrote the text instead of extending it. Send only what is
-    // new: never re-send text the client already has.
     const whole = clean(stable, sources)
     const previous = state.emitted || ""
-    delta = whole.startsWith(previous) ? whole.slice(previous.length) : ""
+    delta = whole.startsWith(previous)
+      ? whole.slice(previous.length)
+      : whole.slice(commonPrefixLength(whole, previous))
   }
   state.rawSent = stable
   state.emitted = (state.emitted || "") + delta
+  return delta
+}
 
-  return { delta, thinking: thinking.join("") }
+/**
+ * Flush what `stableCut` was holding back, for a stream that ends without a
+ * DONE block: the answer is then finished, so nothing can still change.
+ */
+export function endOfAnswer(state) {
+  return emit(state, stableCut(state.full || "", true))
 }
 
 // A citation run as Perplexity emits it: `[1]`, `[1][2][3]`, `[1, 3]`, `[1–3]`.
@@ -434,13 +459,19 @@ export function stableCut(text, flush = false) {
   const tailStart = fenceAt >= 0 ? fenceAt + 3 : 0
   const tail = src.slice(tailStart)
   const tickAt = tail.lastIndexOf("`")
-  if (tickAt >= 0 && tail.split("`").length % 2 === 0) return src.slice(0, tailStart + tickAt)
+  if (tickAt >= 0 && tail.split("`").length % 2 === 0) {
+    // An inline span cannot cross a line: once a newline follows the unmatched
+    // backtick it is prose, not code, and holding it would stall the stream.
+    const after = tail.slice(tickAt + 1)
+    if (!after.includes("\n")) return src.slice(0, tailStart + tickAt)
+  }
 
   let cut = src
   // A run that is already complete may still gain a marker in the next
   // fragment (`[1]` + `[2]`), and the chain is what makes the second one a
   // citation: hold the trailing run until the fragment after it.
-  const trailingRun = src.match(/\[\d{1,3}(?:\]\[\d{1,3})*\]$/)
+  const RUN = "\\d{1,3}(?:\\s*[,–—-]\\s*\\d{1,3})*"
+  const trailingRun = src.match(new RegExp(`\\[(?:${RUN})\\](?:\\[(?:${RUN})\\])*$`))
   if (trailingRun && trailingRun.index > 0) cut = src.slice(0, trailingRun.index)
   const pending = cut.match(/\[[\d\s,–—-]*$/)
   if (pending && pending.index > 0) cut = cut.slice(0, pending.index)

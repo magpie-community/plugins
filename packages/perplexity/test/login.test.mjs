@@ -1,10 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { chmod, mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { stopChrome, removeProfile } from "../login.mjs"
+import { stopChrome, removeProfile, retireBrowser, makeCloser } from "../login.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -79,4 +80,83 @@ test("a profile that will not delete raises profile_cleanup", async () => {
     await chmod(root, 0o700)
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("retireBrowser removes the profile only after the process exits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pplx-test-"))
+  const profile = join(root, "magpie-pplx-login-3")
+  await mkdir(profile, { recursive: true })
+  await writeFile(join(profile, "Cookies"), "session")
+
+  let alive = true
+  let stillThereWhileAlive = false
+  const proc = {
+    kill() {},
+    exited: sleep(60).then(() => {
+      stillThereWhileAlive = existsSync(profile)
+      alive = false
+    }),
+  }
+  await retireBrowser(proc, profile, root)
+  assert.equal(alive, false)
+  assert.equal(stillThereWhileAlive, true, "the rm waited for the exit")
+  assert.equal(existsSync(profile), false)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("removeProfile retries a failed removal instead of giving up", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pplx-test-"))
+  const profile = join(root, "magpie-pplx-login-4")
+  await mkdir(profile, { recursive: true })
+  let calls = 0
+  const flaky = async (dir, options) => {
+    calls++
+    if (calls < 3) throw Object.assign(new Error("EBUSY"), { code: "EBUSY" })
+    return rm(dir, options)
+  }
+  await removeProfile(profile, root, 5, flaky)
+  assert.equal(calls, 3, "it retried until the removal worked")
+  assert.equal(existsSync(profile), false)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("removeProfile reports the code after every retry fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pplx-test-"))
+  const profile = join(root, "magpie-pplx-login-5")
+  await mkdir(profile, { recursive: true })
+  let calls = 0
+  const broken = async () => {
+    calls++
+    throw Object.assign(new Error("EACCES"), { code: "EACCES" })
+  }
+  await assert.rejects(() => removeProfile(profile, root, 3, broken), (e) => e.code === "profile_cleanup")
+  assert.equal(calls, 3)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("close() stops the page, waits for Chrome, then removes the profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pplx-test-"))
+  const profile = join(root, "magpie-pplx-login-6")
+  await mkdir(profile, { recursive: true })
+  await writeFile(join(profile, "Cookies"), "session")
+
+  const order = []
+  const page = { stop() { order.push("page") } }
+  const proc = {
+    kill() { order.push("kill") },
+    exited: Promise.resolve().then(() => order.push("exit")),
+  }
+  const remove = async (dir, options) => {
+    order.push("remove")
+    return rm(dir, options)
+  }
+  const close = makeCloser({ page, proc, profile, root, remove })
+  await close()
+  assert.deepEqual(order, ["page", "kill", "exit", "remove"], "the removal waits for the exit")
+  assert.equal(existsSync(profile), false)
+
+  // Idempotent: a second close does nothing.
+  await close()
+  assert.deepEqual(order, ["page", "kill", "exit", "remove"])
+  await rm(root, { recursive: true, force: true })
 })

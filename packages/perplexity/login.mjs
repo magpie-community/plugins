@@ -164,13 +164,13 @@ export async function stopChrome(proc, graceMs = 5000) {
 }
 
 /** Delete the throwaway profile, retrying while a released handle lingers. */
-export async function removeProfile(dir, root, attempts = 5) {
+export async function removeProfile(dir, root, attempts = 5, remove = rm) {
   const inside = dir === root || dir.startsWith(root + sep) || dir.startsWith(root + "/")
   if (!inside) return
   let last
   for (let i = 0; i < attempts; i++) {
     try {
-      await rm(dir, { recursive: true, force: true })
+      await remove(dir, { recursive: true, force: true })
       return
     } catch (e) {
       last = e
@@ -178,6 +178,32 @@ export async function removeProfile(dir, root, attempts = 5) {
     }
   }
   throw fail("profile_cleanup", `could not remove ${dir}`, { detail: last?.message || String(last) })
+}
+
+/**
+ * Stop Chrome, wait for it to exit, then delete its profile.
+ *
+ * The order matters: on Windows the directory stays locked until the process is
+ * gone, and a profile that survives still holds the session cookie.
+ */
+export async function retireBrowser(proc, profile, root, remove = rm) {
+  await stopChrome(proc)
+  await removeProfile(profile, root, 5, remove)
+}
+
+/**
+ * The `close()` a sign-in handle hands back: stop the page, stop Chrome, wait
+ * for it to exit, then delete the profile. Exported so the ordering can be
+ * tested without a browser.
+ */
+export function makeCloser({ page, proc, profile, root, remove }) {
+  let closed = false
+  return async function close() {
+    if (closed) return
+    closed = true
+    try { page?.stop?.(true) } catch { /* stopped */ }
+    await retireBrowser(proc, profile, root, remove)
+  }
 }
 
 /**
@@ -198,7 +224,6 @@ export async function browserSignIn({ chromePath, signal, locale } = {}) {
 
   let state = t.browserPageStarting
   let done = false
-  let closed = false
   let current = null
 
   const page = Bun.serve({
@@ -238,6 +263,8 @@ code{background:#f2f2f4;padding:2px 6px;border-radius:4px}a{color:#0a66c2}</styl
     { stdout: "ignore", stderr: "ignore" }
   )
 
+  const closer = makeCloser({ page, proc, profile, root })
+
   return {
     url: `http://127.0.0.1:${pagePort}/`,
     instructions: t.browserInstructions,
@@ -263,14 +290,8 @@ code{background:#f2f2f4;padding:2px 6px;border-radius:4px}a{color:#0a66c2}</styl
     },
 
     async close() {
-      if (closed) return
-      closed = true
       done = true
-      try { page.stop(true) } catch { /* stopped */ }
-      await stopChrome(proc)
-      // Throws `profile_cleanup` if the directory survives: it may still hold
-      // the session cookie, so the caller gets to report it.
-      await removeProfile(profile, root)
+      await closer()
     },
   }
 }

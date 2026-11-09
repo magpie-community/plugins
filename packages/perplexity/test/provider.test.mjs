@@ -36,16 +36,16 @@ async function load(opts = {}) {
   return { plugin, shim }
 }
 
-function body(payload) {
+function body(payload, sessionId = "session-1") {
   return {
     method: "POST",
-    headers: new Headers({ "x-pplx-session-id": "session-1" }),
+    headers: new Headers({ "x-pplx-session-id": sessionId }),
     body: JSON.stringify(payload),
   }
 }
 
-const ask = (extra = {}) =>
-  body({ model: "pplx_pro", messages: [{ role: "user", content: "hello" }], ...extra })
+const ask = (extra = {}, sessionId = "session-1") =>
+  body({ model: "pplx_pro", messages: [{ role: "user", content: "hello" }], ...extra }, sessionId)
 
 /** Parse an OpenAI-style SSE body into the objects it carried. */
 async function readStream(res) {
@@ -171,7 +171,7 @@ test("with tools: \"ignore\" the request is answered as text and marked", async 
   const { shim } = await load({ tools: "ignore" })
   const res = await withFetch(
     async () => new Response(SSE_OK, { status: 200 }),
-    () => shim.fetch("https://ask", ask({ tools: [{ type: "function", function: { name: "Read" } }] })),
+    () => shim.fetch("https://ask", ask({ tools: [{ type: "function", function: { name: "Read" } }] }, "s-tools-a")),
   )
   assert.equal(res.status, 200)
   assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
@@ -185,7 +185,7 @@ test("the tools-ignored mark is on a streamed answer too", async () => {
   const { shim } = await load({ tools: "ignore" })
   const res = await withFetch(
     async () => new Response(SSE_OK, { status: 200 }),
-    () => shim.fetch("https://ask", ask({ stream: true, tools: [{ type: "function", function: { name: "Read" } }] })),
+    () => shim.fetch("https://ask", ask({ stream: true, tools: [{ type: "function", function: { name: "Read" } }] }, "s-tools-b")),
   )
   assert.equal(res.status, 200)
   assert.equal(res.headers.get("x-magpie-tools-ignored"), "1")
@@ -346,10 +346,21 @@ test("a second account does not inherit the first account's thread", async () =>
   }
   const alice = await plugin.auth.loader(() => ({ key: "k-a", accountId: "alice@example.com", metadata: { email: "alice@example.com" } }))
   const bob = await plugin.auth.loader(() => ({ key: "k-b", accountId: "bob@example.com", metadata: { email: "bob@example.com" } }))
+  // Two user turns: with one, buildQuery ignores the uuid and the assertion
+  // would pass even with a broken thread key.
+  const followUp = body({
+    model: "pplx_pro",
+    messages: [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "answer" },
+      { role: "user", content: "second" },
+    ],
+  })
   await withFetch(upstream, () => alice.fetch("https://ask", ask()))
-  await withFetch(upstream, () => bob.fetch("https://ask", ask()))
-  assert.equal(sent[0].params.last_backend_uuid, null)
-  assert.equal(sent[1].params.last_backend_uuid, null, "bob never sees alice's backend uuid")
+  await withFetch(upstream, () => alice.fetch("https://ask", followUp))
+  await withFetch(upstream, () => bob.fetch("https://ask", followUp))
+  assert.equal(sent[1].params.last_backend_uuid, "b-uuid", "alice continues her own thread")
+  assert.equal(sent[2].params.last_backend_uuid, null, "bob never sees alice's backend uuid")
 })
 
 test("the same account continues its thread", async () => {
@@ -425,4 +436,87 @@ test("cancelling the client stream stops the upstream read", async () => {
   await res.body.cancel()
   await new Promise((r) => setTimeout(r, 50))
   assert.equal(upstreamCancelled, true, "the upstream response was released")
+})
+
+test("streamed usage counts the whole answer, not one token", async () => {
+  const { shim } = await load()
+  const long = "A complete sentence that is long enough to matter. ".repeat(12)
+  const upstream = answerChunk(long, "DONE") + endOfStream()
+  const res = await withFetch(
+    async () => new Response(upstream, { status: 200 }),
+    () => shim.fetch("https://ask", ask({ stream: true, stream_options: { include_usage: true } }, "s-usage")),
+  )
+  const chunks = await readStream(res)
+  const usage = chunks.find((c) => c.usage).usage
+  assert.ok(usage.completion_tokens > 40, `counted ${usage.completion_tokens} for ${long.length} chars`)
+  assert.ok(usage.completion_tokens <= long.length, "never more tokens than characters")
+  assert.ok(usage.total_tokens >= usage.completion_tokens)
+})
+
+test("a stream that ends without a DONE block still sends the held-back tail", async () => {
+  const { shim } = await load()
+  const res = await withFetch(
+    async () =>
+      new Response(answerChunk("Hello world.", "IN_PROGRESS") + endOfStream(), { status: 200 }),
+    () => shim.fetch("https://ask", ask({ stream: true }, "s-nodone")),
+  )
+  const text = (await readStream(res)).map((c) => c.choices?.[0]?.delta?.content || "").join("")
+  assert.equal(text, "Hello world.", "the sentence end is flushed, not dropped")
+})
+
+test("an unclosed code fence is flushed when the stream ends", async () => {
+  const { shim } = await load()
+  const code = "```py\nprint(items[2])\n```"
+  const res = await withFetch(
+    async () => new Response(answerChunk("Before.\n" + code, "IN_PROGRESS") + endOfStream(), { status: 200 }),
+    () => shim.fetch("https://ask", ask({ stream: true }, "s-fence")),
+  )
+  const text = (await readStream(res)).map((c) => c.choices?.[0]?.delta?.content || "").join("")
+  assert.match(text, /print\(items\[2\]\)/, "the code block arrives")
+})
+
+test("models() falls back to the catalog when the session check throws", async () => {
+  const { plugin } = await load()
+  const provider = { models: { keep: { id: "keep" } } }
+  const models = await withFetch(
+    async () => { throw new Error("ECONNRESET") },
+    () => plugin.provider.models(provider, { auth: { key: "cookie-value" } }),
+  )
+  assert.equal(models, provider.models)
+})
+
+test("the ignored-tools notice is only on the first message of a conversation", async () => {
+  const { shim } = await load({ tools: "ignore" })
+  const tools = [{ type: "function", function: { name: "Read" } }]
+  const first = await withFetch(
+    async () => new Response(SSE_OK, { status: 200 }),
+    () =>
+      shim.fetch(
+        "https://ask",
+        ask({ tools }, "s-notice-1"),
+      ),
+  )
+  const second = await withFetch(
+    async () => new Response(SSE_OK, { status: 200 }),
+    () =>
+      shim.fetch(
+        "https://ask",
+        body(
+          {
+            model: "pplx_pro",
+            tools,
+            messages: [
+              { role: "user", content: "hello" },
+              { role: "assistant", content: "hi" },
+              { role: "user", content: "again" },
+            ],
+          },
+          "s-notice-1",
+        ),
+      ),
+  )
+  const a = await first.json()
+  const b = await second.json()
+  assert.match(a.choices[0].message.content, /Tools were ignored/)
+  assert.doesNotMatch(b.choices[0].message.content, /Tools were ignored/, "no repeat on a follow-up")
 })

@@ -79,7 +79,7 @@ hidden.
 | `keepSystem` | `false` | forward system/developer prompts into the query. Off by default: Perplexity searches every word of the query, and a coding agent's system prompt poisons its results |
 | `chromePath` | auto | Chrome/Chromium/Edge executable for browser sign-in |
 | `apiVersion` | `2.18` | the `version` Perplexity's web client sends; raise it if the endpoint starts refusing |
-| `tools` | `reject` | what to do with a request that carries `tools`: `reject` answers 400 (fail loudly); `ignore` answers as text, opening with a line that says the tools were ignored |
+| `tools` | `reject` | what to do with a request that carries `tools`: `reject` answers 400 (fail loudly); `ignore` answers as text and says so once, on the first message of a conversation |
 | `locale` | `auto` | `auto` / `zh` / `en`: language of the sign-in flow, the account card and `magpie quota`, and of every error this provider returns |
 
 ## Quota
@@ -118,9 +118,9 @@ when the request sets `stream_options.include_usage`.
 - **No function calling.** The web endpoint has none; the models are declared
   with `toolcall: false`. By default a request that carries `tools` / `functions`
   is **rejected with a 400** naming the reason, rather than having its tools
-  silently dropped. `tools: "ignore"` answers as text instead, and the answer
-  itself opens with a line saying the tools were ignored — not a header, and not
-  nothing. These models suit chat, research, writing, translation and
+  silently dropped. `tools: "ignore"` answers as text instead and says so once
+  at the start of a conversation — in the answer itself, not in a header, and
+  not on every message. These models suit chat, research, writing, translation and
   summarising — not tool-driven coding agents.
 - **No images, files, structured output, multiple choices or sampling
   parameters.**
@@ -156,15 +156,16 @@ then `opencode auth login`.
 bun test ./packages/perplexity
 ```
 
-87 cases across 8 files: `buildQuery`; `sseEvents` replayed from captured SSE
+113 cases across 8 files: `buildQuery`; `sseEvents` replayed from captured SSE
 bytes (mid-line splits, CRLF); two real `perplexity_ask` captures in
 `test/fixtures/` (a turn with 20 listed sources and a follow-up whose source
 list grows 2 → 7) driving `answerDelta` end to end; citation stripping and the
 fragment-boundary hold-back; streaming and non-streaming translation; every
 error path (401/403/429/500, mid-stream, empty answer, network); tool rejection
-and the ignored-tools notice; quota windows; thread scoping per account; the
-stable visitor id; stream cancellation reaching upstream; the profile cleanup
-ordering and its retries; both locale tables.
+and the once-per-conversation ignored-tools notice; quota windows; thread
+scoping per account; the stable visitor id; stream cancellation reaching
+upstream; the profile cleanup ordering, its retries and the end-of-stream flush;
+both locale tables.
 
 ## License
 
