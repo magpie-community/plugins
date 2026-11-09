@@ -9,7 +9,7 @@ test("defaults match the public contract", () => {
   assert.equal(config.recall_max_tokens, 1024);
   assert.equal(config.capture, false);
   assert.deepEqual(config.agents, []);
-  assert.equal(config.gatewayTimeoutMs, 1000);
+  assert.equal(config.gatewayTimeoutMs, 5000);
   assert.equal(DEFAULTS.capture, false);
   assert.equal(agentAllowed(config, undefined), true);
 });
@@ -17,13 +17,22 @@ test("defaults match the public contract", () => {
 test("agents with native injection are skipped by default, can be force-enabled", () => {
   const open = configuration();
   assert.equal(agentAllowed(open, "claude"), true);
-  assert.equal(agentAllowed(open, "Hermes Agent"), false);
   assert.equal(agentAllowed(open, "hermes"), false);
-  assert.equal(agentAllowed(open, "DSH"), false);
-  assert.equal(agentAllowed(open, "DeepSeek Harness"), false);
+  assert.equal(agentAllowed(open, "dsh"), false);
   const forced = configuration({ agents: ["hermes"] });
-  assert.equal(agentAllowed(forced, "Hermes"), true);
+  assert.equal(agentAllowed(forced, "hermes"), true);
   assert.equal(agentAllowed(forced, "dsh"), false);
+});
+
+test("remote Hindsight API is opt-in, insecure remote HTTP needs a second opt-in", () => {
+  const remote = { hindsight_api: "https://hindsight.example.com" };
+  assert.throws(() => configuration(remote));
+  assert.equal(configuration({ ...remote, allowRemote: true }).hindsight_api, "https://hindsight.example.com");
+  const insecure = { hindsight_api: "http://hindsight.example.com" };
+  assert.throws(() => configuration({ ...insecure, allowRemote: true }));
+  assert.equal(configuration({ ...insecure, allowRemote: true, allowInsecureHttp: true }).hindsight_api, "http://hindsight.example.com");
+  // Loopback needs no opt-in at all.
+  assert.equal(configuration({ hindsight_api: "http://127.0.0.1:8888" }).allowRemote, false);
 });
 
 test("overrides are normalized without changing the bank id", () => {

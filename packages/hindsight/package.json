@@ -1,9 +1,18 @@
 {
-  "name": "@magpie-community/gateway-hindsight",
+  "name": "magpie-hindsight",
   "version": "0.1.0",
   "description": "Automatic Hindsight memory recall and opt-in conversation capture for Magpie asynchronous gateway hooks.",
   "type": "module",
   "license": "Apache-2.0",
+  "author": "Sam-dancing-nu1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sam-dancing-nu1/magpie-hindsight.git"
+  },
+  "homepage": "https://github.com/Sam-dancing-nu1/magpie-hindsight#readme",
+  "bugs": {
+    "url": "https://github.com/Sam-dancing-nu1/magpie-hindsight/issues"
+  },
   "keywords": [
     "magpie-plugin",
     "magpie",
@@ -16,7 +25,6 @@
     "bun": ">=1.3.8"
   },
   "files": [
-    "index.js",
     "hooks.mjs",
     "lib/",
     "README.md",
@@ -25,11 +33,6 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/magpie-community/plugins.git",
-    "directory": "packages/hindsight"
   },
   "magpie": {
     "name": "Hindsight Memory",

@@ -7,7 +7,7 @@
 
 Automatic [Hindsight](https://github.com/vectorize-io/hindsight) memory for clients behind [Magpie](https://github.com/yetone/magpie), implemented as an **asynchronous gateway hook**.
 
-Before a model request, the plugin recalls memories related to the latest user message and inserts them into the request's system prompt. After a completed answer, it can retain the current user/assistant turn. **Capture is disabled by default.**
+Before each new user turn, the plugin recalls related memories once and attaches the block to that user message. The block is replayed unchanged through the turn's tool loop, so the provider prompt cache keeps working. After a completed answer, it can retain the current user/assistant turn. **Capture is disabled by default.**
 
 ```text
 Agent client ──► Magpie + magpie-hindsight ──► model provider
@@ -32,7 +32,7 @@ Use one memory-injection path at a time. Hermes Agent and DeepSeek Harness alrea
 ### Install
 
 ```sh
-magpie plugin add github:Sam-dancing-nu1/magpie-hindsight
+magpie plugin add @magpie-community/gateway-hindsight
 magpie plugin list
 ```
 
@@ -45,7 +45,7 @@ magpie plugin add /path/to/magpie-hindsight
 ### Options
 
 ```sh
-magpie plugin options magpie-hindsight '{
+magpie plugin options @magpie-community/gateway-hindsight '{
   "hindsight_api": "http://127.0.0.1:8888",
   "bank": "hermes",
   "recall_max_tokens": 1024,
@@ -62,34 +62,36 @@ magpie plugin options magpie-hindsight '{
 | `recall_max_tokens` | `1024` | Token budget sent to Hindsight recall (`max_tokens`). Integer from 1 to 16384. |
 | `capture` | `false` | Opt in to retaining the completed current turn. |
 | `agents` | `[]` | Case-insensitive exact `ctx.agent` names to process. Empty = all agents **except** Hermes Agent / DeepSeek Harness, which are skipped by default because they already inject Hindsight natively. |
-| `gatewayTimeoutMs` | `1000` host default; `5000` recommended | Magpie's timeout for this hook (100–10000 ms). The plugin finishes its recall 200 ms earlier to fail open cleanly. |
+| `gatewayTimeoutMs` | `5000` | Magpie's timeout for this hook (100–10000 ms). The plugin finishes its recall 200 ms earlier to fail open cleanly. |
+| `allowRemote` | `false` | Required when `hindsight_api` is not loopback: recall sends the latest user message (up to 8 KB) to that host. |
+| `allowInsecureHttp` | `false` | Additionally required for plain `http://` to a non-loopback host. |
 
-`gatewayTimeoutMs` is a **Magpie host option**, not a Hindsight server setting. A 1000 ms host budget is often too short for recall from a populated bank. Save the recommended 5000 ms value as shown above; clearing all options also restores the host's 1000 ms default.
+`gatewayTimeoutMs` is a **Magpie host option**, not a Hindsight server setting. The 1000 ms host default is often too short for recall from a populated bank, so the plugin ships 5000 ms; clearing all options restores the host's 1000 ms default.
 
 Example: enable only agents without native injection, reusing the existing `hermes` bank:
 
 ```sh
-magpie plugin options magpie-hindsight '{"bank":"hermes","agents":["claude","codex","opencode"]}'
+magpie plugin options @magpie-community/gateway-hindsight '{"bank":"hermes","agents":["claude","codex","opencode"]}'
 ```
 
 To force-enable an agent that has native injection (not recommended unless the native side is disabled):
 
 ```sh
-magpie plugin options magpie-hindsight '{"bank":"hermes","agents":["Hermes Agent"]}'
+magpie plugin options @magpie-community/gateway-hindsight '{"bank":"hermes","agents":["hermes"]}'
 ```
 
 Restore runtime defaults:
 
 ```sh
-magpie plugin options magpie-hindsight off
+magpie plugin options @magpie-community/gateway-hindsight off
 ```
 
 ### Behavior
 
 - Supported wire protocols: OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, and Gemini.
 - Only host-classified local requests (`ctx.origin === "local"`) are processed.
-- Recall uses the latest non-empty user text, limited to 8192 characters, and Hindsight's `budget: "low"`.
-- Memories are wrapped as untrusted historical evidence in a system-prompt block. They are not added as tools.
+- One recall per user turn: the query is `ctx.query` (client notices stripped by the host) or, when empty, the turn's text capped at 8192 characters, with Hindsight's `budget: "low"`. Tool-loop requests of the same turn reuse the cached block instead of recalling again.
+- Memories are wrapped as untrusted historical evidence and appended to that turn's **user message**, never the system prompt, so the conversation prefix stays stable across tool-loop requests. They are not added as tools.
 - An empty or failed recall leaves the model request unchanged. An Hindsight outage does not block inference.
 - With `capture: true`, a successful final answer is retained with the latest user text as one item. The retain call uses `async: true`.
 - Tool-call steps, failed requests, empty answers, and answers truncated by the output-token limit are not captured.
@@ -97,15 +99,15 @@ magpie plugin options magpie-hindsight off
 
 ### Cost, latency, and privacy
 
-**Every eligible model request adds one Hindsight recall request and its latency.** The injected memories consume model input tokens and can reduce provider prompt-cache reuse. Tool loops may cause repeated recall because each client inference request passes through the gateway again.
+**Each new user turn adds one Hindsight recall request and its latency.** Recalled memories consume model input tokens, but a turn's block is sticky across its tool loop, so provider prompt-cache reuse is preserved instead of being invalidated on every request.
 
-With capture enabled, Hindsight also performs memory extraction after completed turns, which can incur its own model usage. The current user message and assistant answer are sent to the configured Hindsight server. Keep capture off unless you want this data stored. Use a trusted Hindsight endpoint; this plugin does not add authentication headers or TLS by itself.
+Recall sends the latest user text (up to 8 KB) to the configured Hindsight server on every new turn. With capture enabled, the final assistant answer is also sent, and Hindsight performs memory extraction after completed turns, which can incur its own model usage. A non-loopback server requires `allowRemote: true`, and plain HTTP to it also requires `allowInsecureHttp: true`; this plugin does not add authentication headers or TLS by itself. Keep capture off unless you want this data stored.
 
 ### Known limitations
 
 - The plugin processes local Magpie callers only; there is no remote-caller opt-in.
 - Capture stores the current user/assistant turn, not a whole conversation or tool transcript.
-- Recall is performed per request rather than cached as a session-stable injection. Repeated turns can change the system prefix and affect prompt caching.
+- Anthropic, Responses and Gemini paths are covered by mock unit tests only; Chat Completions is the only protocol verified end to end so far.
 - Hindsight does not guarantee idempotency for this plugin's generated `document_id`; unusual retries can still create duplicates.
 - Recalled text is marked untrusted, but no wrapper can make hostile memory content completely safe. Review bank contents and access controls.
 
@@ -135,7 +137,7 @@ This project was developed with AI assistance, including implementation, tests, 
 
 这是一个基于 **Magpie 异步网关 hooks** 的 [Hindsight](https://github.com/vectorize-io/hindsight) 记忆插件。
 
-模型请求发出前，插件根据最新用户消息调用 Hindsight recall，并把相关记忆注入请求的 system prompt；收到完整回答后，可选地 retain 当前用户/助手轮次。**采集默认关闭。**
+每个新的用户轮次，插件只召回一次相关记忆，并把记忆块附加到该轮用户消息上；同一轮的工具循环中注入保持逐字不变（sticky），模型提供方的 prompt cache 不会失效。收到完整回答后，可选地 retain 当前用户/助手轮次。**采集默认关闭。**
 
 ```text
 Agent 客户端 ──► Magpie + magpie-hindsight ──► 模型提供方
@@ -160,7 +162,7 @@ Hindsight 官方 **Agent Plugins 和工具集成**位于具体 Agent 内，通�
 ### 安装
 
 ```sh
-magpie plugin add github:Sam-dancing-nu1/magpie-hindsight
+magpie plugin add @magpie-community/gateway-hindsight
 magpie plugin list
 ```
 
@@ -173,7 +175,7 @@ magpie plugin add /path/to/magpie-hindsight
 ### 配置
 
 ```sh
-magpie plugin options magpie-hindsight '{
+magpie plugin options @magpie-community/gateway-hindsight '{
   "hindsight_api": "http://127.0.0.1:8888",
   "bank": "hermes",
   "recall_max_tokens": 1024,
@@ -190,34 +192,36 @@ magpie plugin options magpie-hindsight '{
 | `recall_max_tokens` | `1024` | 发送给 Hindsight recall 的 `max_tokens` 预算，范围 1–16384。 |
 | `capture` | `false` | 显式开启后才 retain 完整结束的当前轮次。 |
 | `agents` | `[]` | 要处理的 `ctx.agent` 名称，大小写不敏感精确匹配；空数组 = 全部 Agent，**但默认跳过**已有原生注入的 Hermes Agent / DeepSeek Harness。 |
-| `gatewayTimeoutMs` | 宿主默认 `1000`；建议 `5000` | Magpie 给本 hook 的超时时间（100–10000ms）。插件会提前 200ms 结束自身 recall，以便干净地失败放行。 |
+| `gatewayTimeoutMs` | `5000` | Magpie 给本 hook 的超时时间（100–10000ms）。插件会提前 200ms 结束自身 recall，以便干净地失败放行。 |
+| `allowRemote` | `false` | `hindsight_api` 非 loopback 时必须显式开启：recall 会把最新用户消息（最多 8KB）发往该主机。 |
+| `allowInsecureHttp` | `false` | 非 loopback 且为纯 `http://` 时还需额外开启。 |
 
-`gatewayTimeoutMs` 是 **Magpie 宿主选项**，不是 Hindsight 服务端配置。已有大量记忆的 bank 召回常超过 1000ms，因此建议按上例显式保存 5000ms；清空全部选项也会恢复宿主的 1000ms 默认值。
+`gatewayTimeoutMs` 是 **Magpie 宿主选项**，不是 Hindsight 服务端配置。宿主默认 1000ms 对记忆较多的 bank 常常不够，因此插件默认 5000ms；清空全部选项会恢复宿主的 1000ms。
 
 示例：只给没有原生注入的 Agent 开启，复用现有 `hermes` 库：
 
 ```sh
-magpie plugin options magpie-hindsight '{"bank":"hermes","agents":["claude","codex","opencode"]}'
+magpie plugin options @magpie-community/gateway-hindsight '{"bank":"hermes","agents":["claude","codex","opencode"]}'
 ```
 
 要强制覆盖某个自带注入的 Agent（不推荐，除非原生侧已关）：
 
 ```sh
-magpie plugin options magpie-hindsight '{"bank":"hermes","agents":["Hermes Agent"]}'
+magpie plugin options @magpie-community/gateway-hindsight '{"bank":"hermes","agents":["hermes"]}'
 ```
 
 清除已保存配置并恢复运行时默认值：
 
 ```sh
-magpie plugin options magpie-hindsight off
+magpie plugin options @magpie-community/gateway-hindsight off
 ```
 
 ### 工作方式
 
 - 支持 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 和 Gemini 协议。
 - 只处理宿主判定为本地的请求（`ctx.origin === "local"`）。
-- recall 使用最新非空用户文本，最多取 8192 字符，并设置 Hindsight `budget: "low"`。
-- 记忆作为不可信历史资料包裹后注入 system prompt，不会作为工具添加。
+- 每个用户轮次只召回一次：查询优先用 `ctx.query`（宿主已剥离客户端环境通知），为空时取该轮文本，最多 8192 字符，并设置 Hindsight `budget: "low"`；同一轮的工具循环直接复用缓存块，不再召回。
+- 记忆作为不可信历史资料包裹后附加到该轮**用户消息**，不进入 system prompt，工具循环前后对话前缀保持稳定。
 - 召回为空或失败时保留原模型请求，Hindsight 故障不会阻断推理。
 - `capture: true` 时，把最新用户文本和成功的最终助手回答作为一个 item retain；请求使用 `async: true`。
 - 工具调用中间步、失败请求、空回答以及因输出 token 上限截断的回答不会采集。
@@ -225,15 +229,15 @@ magpie plugin options magpie-hindsight off
 
 ### 成本、延迟与隐私
 
-**每个符合条件的模型请求都会增加一次 Hindsight recall 及其延迟。** 注入的记忆会消耗模型输入 token，并可能降低模型提供方的 prompt cache 命中率。Agent 工具循环中的每次推理都会再次经过网关，因此可能重复召回。
+**每个新的用户轮次只增加一次 Hindsight recall 及其延迟。** 注入的记忆消耗模型输入 token，但同一轮的工具循环复用同一注入块，prompt cache 不会每步失效。
 
-开启 capture 后，Hindsight 还会在完成轮次后执行记忆提取，可能产生额外模型用量。当前用户消息和助手回答会发送到所配置的 Hindsight 服务；如果不希望保存这些内容，请保持 capture 关闭。请使用可信的 Hindsight 地址；本插件自身不添加认证请求头或 TLS。
+recall 会把最新用户文本（最多 8KB）发送到所配置的 Hindsight 服务；开启 capture 后还会发送最终助手回答。非 loopback 服务必须显式 `allowRemote: true`，纯 HTTP 还需 `allowInsecureHttp: true`；本插件自身不添加认证请求头或 TLS。不希望保存这些内容时保持 capture 关闭。
 
 ### 已知限制
 
 - 仅处理 Magpie 本地调用方，没有开放远程调用方的开关。
 - capture 只保存当前用户/助手轮次，不保存整段历史或工具调用记录。
-- recall 按请求执行，不做会话级稳定注入缓存；后续轮次可能改变 system 前缀并影响 prompt cache。
+- Anthropic、Responses、Gemini 目前仅有 mock 单元测试；只有 Chat Completions 做过真实端到端验收。
 - Hindsight 不保证以本插件生成的 `document_id` 去重；异常重试仍可能产生重复记忆。
 - 召回文本虽被标记为不可信，但包裹格式不能彻底消除恶意记忆的提示注入风险。请审查 bank 内容和访问权限。
 

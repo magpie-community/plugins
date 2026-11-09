@@ -4,7 +4,9 @@ export const DEFAULTS = Object.freeze({
   recall_max_tokens: 1024,
   capture: false,
   agents: Object.freeze([]),
-  gatewayTimeoutMs: 1000
+  gatewayTimeoutMs: 5000,
+  allowRemote: false,
+  allowInsecureHttp: false
 });
 
 const invalid = () => { throw new Error("invalid plugin options"); };
@@ -19,6 +21,14 @@ export function configuration(options = {}) {
   try { url = new URL(rawApi); } catch { invalid(); }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) invalid();
   url.pathname = url.pathname.replace(/\/+$/, "");
+  // Recall sends the latest user message to this host, so leaving the machine
+  // is strictly opt-in: a non-loopback API needs allowRemote, and plain HTTP to
+  // a non-loopback host additionally needs allowInsecureHttp.
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  const allowRemote = options.allowRemote === true;
+  const allowInsecureHttp = options.allowInsecureHttp === true;
+  if (!loopback && !allowRemote) invalid();
+  if (!loopback && url.protocol === "http:" && !allowInsecureHttp) invalid();
 
   const bank = options.bank ?? DEFAULTS.bank;
   if (typeof bank !== "string" || !bank || bank !== bank.trim() || bank.length > 128 || /[/?#]/.test(bank)) invalid();
@@ -41,14 +51,16 @@ export function configuration(options = {}) {
     recall_max_tokens: recallMaxTokens,
     capture,
     agents: [...new Set(agents.map(a => a.toLowerCase()))],
-    gatewayTimeoutMs
+    gatewayTimeoutMs,
+    allowRemote,
+    allowInsecureHttp
   };
 }
 
 // Agents with their own automatic Hindsight injection (Hermes plugin, DSH
 // coding-agents). With no allow-list configured we skip them so memory is
 // never injected twice. Name one in `agents` to force-enable it anyway.
-const NATIVE_MEMORY_AGENTS = new Set(["hermes", "hermes agent", "dsh", "deepseek harness"]);
+const NATIVE_MEMORY_AGENTS = new Set(["hermes", "dsh"]);
 
 export function agentAllowed(config, agent) {
   if (config.agents.length > 0) return typeof agent === "string" && config.agents.includes(agent.toLowerCase());

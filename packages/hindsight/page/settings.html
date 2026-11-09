@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Hindsight Memory · Magpie</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="_magpie/bridge.js" defer></script>
+  <script src="settings.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="page-head">
+    <img class="brand" src="icon.svg" width="38" height="38" alt="">
+    <div>
+      <span class="eyebrow">MAGPIE GATEWAY</span>
+      <h1>Hindsight Memory</h1>
+      <p>在请求进入 Agent 前召回记忆，按需采集对话。</p>
+    </div>
+  </header>
+
+  <section class="panel status-panel" aria-labelledby="status-title">
+    <div class="section-heading">
+      <h2 id="status-title">运行状态</h2>
+      <span id="status" role="status" aria-live="polite">正在读取配置…</span>
+    </div>
+    <dl class="status-grid">
+      <div><dt>当前 bank</dt><dd id="status-bank">—</dd></div>
+      <div><dt>Hindsight API</dt><dd id="status-api">尚未测试</dd></div>
+      <div><dt>Agent 范围</dt><dd id="status-agents">—</dd></div>
+    </dl>
+    <p class="notice"><strong>防止双份注入：</strong>agents 留空时默认跳过 hermes / dsh，避免与 Agent 自带的 Hindsight 注入重复。</p>
+  </section>
+
+  <form id="form" class="panel">
+    <section aria-labelledby="connection-title">
+      <h2 id="connection-title">连接</h2>
+      <div class="field">
+        <label for="hindsight_api">Hindsight API 地址</label>
+        <input id="hindsight_api" name="hindsight_api" type="url" required value="http://127.0.0.1:8888" autocomplete="off" spellcheck="false" aria-describedby="hindsight_api-help">
+        <small id="hindsight_api-help">默认 http://127.0.0.1:8888。不允许 URL 凭据、查询参数或片段；非 loopback 地址建议使用 HTTPS。</small>
+      </div>
+      <div class="field">
+        <label for="bank">Bank</label>
+        <input id="bank" name="bank" type="text" required value="hermes" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="bank-help">
+        <small id="bank-help">默认复用现有 hermes bank。请填写已有 bank；此页面不会创建或删除 bank。</small>
+      </div>
+    </section>
+
+    <section aria-labelledby="memory-title">
+      <h2 id="memory-title">记忆行为</h2>
+      <div class="field">
+        <label for="recall_max_tokens">召回最大 Token 数</label>
+        <input id="recall_max_tokens" name="recall_max_tokens" type="number" required min="1" max="16384" step="1" value="1024" aria-describedby="recall_max_tokens-help">
+        <small id="recall_max_tokens-help">单次 recall 注入请求的预算，范围 1–16384，默认 1024。</small>
+      </div>
+      <div class="field">
+        <label for="agents">Agents（逗号分隔）</label>
+        <input id="agents" name="agents" type="text" autocomplete="off" spellcheck="false" placeholder="留空使用默认范围" aria-describedby="agents-help">
+        <small id="agents-help">留空：全部 Agent，但默认跳过 hermes / dsh。填写后仅列表内 Agent 启用；显式包含 hermes 或 dsh 可强制开启。</small>
+      </div>
+      <label class="check" for="capture">
+        <input id="capture" name="capture" type="checkbox">
+        <span>采集对话到当前 bank<small>默认关闭。开启后会保存对话内容；本设置页不读取或展示记忆。</small></span>
+      </label>
+    </section>
+
+    <section aria-labelledby="advanced-title">
+      <h2 id="advanced-title">宿主与安全</h2>
+      <div class="field">
+        <label for="gatewayTimeoutMs">网关超时（毫秒）</label>
+        <input id="gatewayTimeoutMs" name="gatewayTimeoutMs" type="number" required min="100" max="10000" step="100" value="5000" aria-describedby="gatewayTimeoutMs-help">
+        <small id="gatewayTimeoutMs-help">Magpie 宿主等待 hook 的预算，推荐 5000；范围 100–10000。</small>
+      </div>
+      <label class="check" for="allowRemote">
+        <input id="allowRemote" name="allowRemote" type="checkbox">
+        <span>允许远程客户端请求<small>仅当 Agent 通过非 loopback 地址访问 Magpie 时需要。默认只处理本地请求。</small></span>
+      </label>
+      <label class="check" for="allowInsecureHttp">
+        <input id="allowInsecureHttp" name="allowInsecureHttp" type="checkbox">
+        <span>允许非 loopback 明文 HTTP<small>仅当 Hindsight API 使用非 loopback 的 http:// 地址时需要；远程连接建议使用 HTTPS。</small></span>
+      </label>
+    </section>
+
+    <footer class="actions">
+      <button id="save" type="submit" disabled>保存配置</button>
+      <button id="test-connection" class="secondary" type="button" disabled>测试连接</button>
+    </footer>
+    <p id="test-help" class="action-help">测试使用已保存的配置，通过插件 loopback 服务调用 GET /health；请先保存修改。不会读取记忆内容或密钥。</p>
+  </form>
+</main>
+</body>
+</html>
