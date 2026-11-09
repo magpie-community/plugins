@@ -2105,6 +2105,63 @@ test("a benefit the account can't claim: no free models, and no benefit header",
   assert.deepEqual(sent, [null])
 })
 
+for (const status of [200, 400]) {
+  test(`gateway/config's "group not found" (HTTP ${status}) is an account with no free models, not an unread list (#905)`, async () => {
+    const cred = await makeCred()
+    const list = modelsFetcher([])
+    const sent = []
+    const fetcher = async (url, init) => {
+      if (String(url) === CHAT_URL) {
+        sent.push(new Headers(init.headers).get("maas_type"))
+        return sseResponse(okStream)
+      }
+      if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) {
+        return new Response('{"error_code":"4000","error_msg":"invalid channel, group not found","result":null}', { status })
+      }
+      return list(url, init)
+    }
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+    await plugin.provider.models({ models: {} }, { auth: makeAuth(cred) })
+    const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+    await (await loaded.fetch(CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }))).text()
+    // The fallback list would have sent it as a free model.
+    assert.deepEqual(sent, [null])
+  })
+}
+
+test("a gateway/config that fails to answer keeps the fallback list", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set() }
+  const fetcher = async (url, init) => {
+    if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) return new Response("busy", { status: 503 })
+    return modelsFetcher([])(url, init)
+  }
+  await x.fetchRemoteModels(signedCred, fetcher, state)
+  assert.equal(state.benefit, null)
+  assert.equal(x.isBenefitModel("glm-5.3-flash", state), true)
+})
+
+test("InferHub.APIG.0101.404 to the benefit header: sent again as the plain model (#905)", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set(), claim: { day: x.beijingDay(), ok: false, at: Date.now() }, claiming: null }
+  const sent = []
+  const fetcher = async (url, init) => {
+    const benefit = new Headers(init.headers).get("maas_type")
+    sent.push(benefit)
+    // The reporter's bytes: a 200 whose first frame is the error.
+    return benefit
+      ? sseResponse('data:{"text":"[DONE]","error_code":"InferHub.APIG.0101.404","error_msg":"The API does not exist or has not been published in the environment"}\n\n')
+      : sseResponse(okStream)
+  }
+  const context = { ...(await x.accountSessionIds(signedCred)), gate: x.createConcurrencyGate(3), state, fetcher }
+  const res = await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).choices[0].message.content, "你好")
+  assert.deepEqual(sent, ["benefit", null])
+  // And the next request goes without it from the start.
+  sent.length = 0
+  await (await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)).text()
+  assert.deepEqual(sent, [null])
+})
+
 test("benefit not found on a day not yet claimed claims it, and sends the free model again", async () => {
   const state = {
     benefit: new Set(["deepseek-v4.1-flash"]), regular: new Set(["deepseek-v4.1-flash"]), noBenefit: new Set(),
