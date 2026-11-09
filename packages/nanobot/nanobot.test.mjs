@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { PROVIDER, inspect, pathsFor, reconcile } from './bridge.mjs';
 import { startRuntime } from './runtime.mjs';
 import { agent, connect as connectAgent } from './nanobot.agent.js';
@@ -13,10 +14,19 @@ import { agent, connect as connectAgent } from './nanobot.agent.js';
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
-function sandbox(baseline = {}) {
+function sandbox(baseline = {}, linkedParent) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nanobot-bridge-'));
   roots.push(root);
-  const paths = pathsFor({ home: root });
+  let home = root;
+  if (linkedParent) {
+    const target = path.join(root, 'real-parent');
+    const link = path.join(root, linkedParent);
+    fs.mkdirSync(target);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target, link, 'junction');
+    if (linkedParent === 'home') home = link;
+  }
+  const paths = pathsFor({ home });
   fs.mkdirSync(path.dirname(paths.config), { recursive: true });
   fs.mkdirSync(paths.directory, { recursive: true });
   fs.writeFileSync(paths.config, `${JSON.stringify(baseline, null, 2)}\n`);
@@ -29,6 +39,78 @@ function applyModel(paths, values = {}) {
   write(paths.control, control(values));
   return reconcile(paths);
 }
+
+test.each(['home', '.nanobot', '.config', '.config/magpie-nanobot'])('applies and restores through a symlinked %s directory', linkedParent => {
+  const { paths, baseline } = sandbox({ userSetting: 'keep' }, linkedParent);
+  write(paths.control, control());
+  write(paths.mcp, { mcpServers: { probe: { type: 'http', url: 'http://127.0.0.1:7345/mcp' } } });
+  const { handle, statuses } = runtimeFor(paths);
+  try {
+    handle.tick(); handle.tick();
+    expect(statuses.at(-1).state).toBe('file-applied');
+    expect(readJson(paths.config).modelPresets[PROVIDER].model).toBe('deepseek/deepseek-flash');
+    expect(readJson(paths.config).tools.ssrfWhitelist).toEqual(['127.0.0.1/32']);
+    expect(inspect(paths).state).toBe('file-applied');
+    expect(handle.stop({ restore: true }).state).toBe('disconnected');
+    expect(readJson(paths.config)).toEqual(baseline);
+    expect(fs.existsSync(paths.state)).toBe(false);
+    expect(fs.existsSync(paths.pending)).toBe(false);
+    expect(fs.existsSync(paths.lock)).toBe(false);
+    expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+  } finally { handle.stop(); }
+});
+
+test.each(['config', 'control', 'mcp', 'state', 'pending', 'lock', 'pause', 'status'])('still refuses a symlinked %s file under a symlinked parent', key => {
+  for (const dangling of [false, true]) {
+    const { root, paths } = sandbox({}, 'home');
+    write(paths.control, control());
+    const target = path.join(root, dangling ? 'missing-target.json' : 'target.json');
+    if (!dangling) write(target, { untouched: true });
+    // Use a new leaf so no fixture file needs to be removed or replaced.
+    paths[key] = path.join(path.dirname(paths[key]), `linked-${path.basename(paths[key])}`);
+    fs.symlinkSync(target, paths[key], 'file');
+    expect(reconcile(paths)).toMatchObject({ state: 'conflict', code: 'symlink_refused' });
+    expect(fs.lstatSync(paths[key]).isSymbolicLink()).toBe(true);
+    if (dangling) expect(fs.existsSync(target)).toBe(false);
+    else expect(readJson(target)).toEqual({ untouched: true });
+    if (key !== 'config') expect(readJson(paths.config)).toEqual({});
+  }
+});
+
+test.each(['control', 'mcp', 'state', 'pending', 'lock', 'pause', 'status', 'reclaim'])('rejects a config alias of the reserved %s file without changing it', key => {
+  const { root, paths } = sandbox({}, '.config');
+  const reserved = key === 'reclaim' ? `${paths.lock}.reclaim` : paths[key];
+  write(reserved, { untouched: true });
+  const before = fs.readFileSync(reserved, 'utf8');
+  paths.config = path.join(root, 'real-parent', 'magpie-nanobot', path.basename(reserved));
+  expect(reconcile(paths)).toMatchObject({ state: 'conflict', code: 'reserved_config_path' });
+  expect(fs.readFileSync(reserved, 'utf8')).toBe(before);
+});
+
+test('creates a missing state directory beneath a symlinked config directory', () => {
+  const { root } = sandbox({}, '.config');
+  const paths = pathsFor({ home: root, stateDir: path.join(root, '.config', 'new-adapter', 'state') });
+  expect(reconcile(paths).state).toBe('disconnected');
+  expect(fs.statSync(paths.directory).isDirectory()).toBe(true);
+  expect(inspect(paths).state).toBe('disconnected');
+  expect(applyModel(paths).state).toBe('file-applied');
+  expect(reconcile(paths, { restore: true }).state).toBe('disconnected');
+  expect(readJson(paths.config)).toEqual({});
+});
+
+test('replays an interrupted transaction through a symlinked home', () => {
+  const { paths, baseline } = sandbox({}, 'home');
+  write(paths.control, control());
+  paths.__fault = point => { if (point === 'before-config') crash(point); };
+  expect(() => reconcile(paths)).toThrow('injected at before-config');
+  expect(inspect(paths).state).toBe('recovery-pending');
+  expect(readJson(paths.config)).toEqual(baseline);
+  delete paths.__fault;
+  expect(reconcile(paths).state).toBe('file-applied');
+  expect(fs.existsSync(paths.pending)).toBe(false);
+  expect(reconcile(paths, { restore: true }).state).toBe('disconnected');
+  expect(readJson(paths.config)).toEqual(baseline);
+});
 
 // The invariant PiG 0.1.1 added a test for: the provider ID a descriptor writes
 // must be the same one everything else derives from. Here one constant feeds
@@ -313,7 +395,7 @@ test('a second host stays standby and never restores the resident configuration'
   expect(readJson(paths.config)).toEqual(applied);
 });
 
-test('the owner applies only once the input holds still, then restores on stop', () => {
+test('the owner applies only once the input holds still, then honors an explicit restore on stop', () => {
   const { paths, baseline } = sandbox();
   write(paths.control, control());
   const { handle, statuses } = runtimeFor(paths);
@@ -324,9 +406,168 @@ test('the owner applies only once the input holds still, then restores on stop',
   handle.tick();
   expect(statuses.at(-1).state).toBe('file-applied');
   expect(readJson(paths.config).modelPresets[PROVIDER].model).toBe('deepseek/deepseek-flash');
-  expect(handle.stop().state).toBe('disconnected');
+  expect(handle.stop({ restore: true }).state).toBe('disconnected');
   expect(readJson(paths.config)).toEqual(baseline);
   expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+});
+
+test('normal exit preserves model and MCP configuration and a new host resumes ownership', () => {
+  const { paths } = sandbox();
+  write(paths.control, control());
+  write(paths.mcp, { mcpServers: {
+    local: { type: 'stdio', command: 'test-mcp' },
+    http: { type: 'http', url: 'http://127.0.0.1:7345/mcp' },
+  } });
+  const { handle } = runtimeFor(paths);
+  handle.tick(); handle.tick();
+  const config = fs.readFileSync(paths.config, 'utf8');
+  const state = fs.readFileSync(paths.state, 'utf8');
+  expect(handle.stop().state).toBe('file-applied');
+  expect(fs.readFileSync(paths.config, 'utf8')).toBe(config);
+  expect(fs.readFileSync(paths.state, 'utf8')).toBe(state);
+  expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+  expect(fs.existsSync(paths.lock)).toBe(false);
+  expect(handle.stop()).toBeUndefined();
+  const next = runtimeFor(paths);
+  try {
+    next.handle.tick(); next.handle.tick();
+    expect(next.statuses.at(-1).state).toBe('file-applied');
+    expect(fs.readFileSync(paths.config, 'utf8')).toBe(config);
+    expect(fs.readFileSync(paths.state, 'utf8')).toBe(state);
+  } finally { next.handle.stop(); }
+});
+
+test.each(['model', 'mcp', 'both'])('exit flushes a pending %s disconnect independently', disconnected => {
+  const { paths, baseline } = sandbox();
+  write(paths.control, control());
+  write(paths.mcp, { mcpServers: { local: { type: 'stdio', command: 'test-mcp' } } });
+  const { handle } = runtimeFor(paths);
+  handle.tick(); handle.tick();
+  // No tick after the user's change: shutdown must flush it itself.
+  if (disconnected !== 'mcp') write(paths.control, {});
+  if (disconnected !== 'model') write(paths.mcp, { mcpServers: {} });
+  expect(handle.stop().state).toBe(disconnected === 'both' ? 'disconnected' : 'file-applied');
+  const config = readJson(paths.config);
+  expect(config.modelPresets?.[PROVIDER] !== undefined).toBe(disconnected === 'mcp');
+  expect(config.tools?.mcpServers?.local !== undefined).toBe(disconnected === 'model');
+  if (disconnected === 'both') {
+    expect(config).toEqual(baseline);
+    expect(fs.existsSync(paths.state)).toBe(false);
+  }
+  expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+});
+
+test('exit keeps an explicit restore paused instead of reconnecting it', () => {
+  const { paths, baseline } = sandbox();
+  write(paths.control, control());
+  const { handle } = runtimeFor(paths);
+  handle.tick(); handle.tick();
+  expect(reconcile(paths, { restore: true, pause: true }).state).toBe('disconnected');
+  expect(handle.stop().state).toBe('paused');
+  expect(readJson(paths.config)).toEqual(baseline);
+  expect(fs.existsSync(paths.pause)).toBe(true);
+  expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+});
+
+test('exit with invalid control retains configuration and recovery records and releases its lock', () => {
+  const { paths } = sandbox();
+  write(paths.control, control());
+  const { handle } = runtimeFor(paths);
+  handle.tick(); handle.tick();
+  const config = fs.readFileSync(paths.config, 'utf8');
+  const state = fs.readFileSync(paths.state, 'utf8');
+  fs.writeFileSync(paths.control, '{');
+  expect(handle.stop()).toMatchObject({ state: 'conflict', code: 'invalid_json', recoveryPending: true });
+  expect(fs.readFileSync(paths.config, 'utf8')).toBe(config);
+  expect(fs.readFileSync(paths.state, 'utf8')).toBe(state);
+  expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+});
+
+test.each(['control', 'mcp', 'config'])('invalid %s still reports existing ownership as recovery pending', key => {
+  const { paths } = sandbox();
+  expect(applyModel(paths).state).toBe('file-applied');
+  fs.writeFileSync(paths[key], '{');
+  const config = fs.readFileSync(paths.config, 'utf8');
+  const state = fs.readFileSync(paths.state, 'utf8');
+  expect(reconcile(paths)).toMatchObject({ state: 'conflict', code: 'invalid_json', recoveryPending: true });
+  expect(inspect(paths)).toMatchObject({ state: 'conflict', code: 'invalid_json', recoveryPending: true });
+  expect(fs.readFileSync(paths.config, 'utf8')).toBe(config);
+  expect(fs.readFileSync(paths.state, 'utf8')).toBe(state);
+});
+
+test.each(['missing', 'invalid', 'foreign', 'empty'])('%s ownership records do not invent recovery work or mask the input error', kind => {
+  const { paths } = sandbox();
+  if (kind === 'invalid') fs.writeFileSync(paths.state, '{');
+  if (kind === 'foreign' || kind === 'empty') {
+    applyModel(paths);
+    const state = readJson(paths.state);
+    if (kind === 'foreign') state.configPath = path.join(path.dirname(paths.config), 'other.json');
+    else state.records = [];
+    write(paths.state, state);
+  }
+  fs.writeFileSync(paths.control, '{');
+  const before = fs.existsSync(paths.state) ? fs.readFileSync(paths.state, 'utf8') : null;
+  expect(reconcile(paths)).toMatchObject({ state: 'conflict', code: 'invalid_json', recoveryPending: false });
+  expect(fs.existsSync(paths.state) ? fs.readFileSync(paths.state, 'utf8') : null).toBe(before);
+});
+
+test.each(['connected', 'disconnect'])('the actual plugin exit hook flushes %s intent and releases locks', intent => {
+  const { root, paths, baseline } = sandbox();
+  write(paths.control, control());
+  write(paths.mcp, { mcpServers: { local: { type: 'stdio', command: 'test-mcp' } } });
+  // Only the home-directory lookup is substituted. The child loads the real
+  // plugin entry and runtime, then exits naturally without calling stop().
+  const source = `
+    import { mock } from 'bun:test';
+    import os from 'node:os';
+    import fs from 'node:fs';
+    import assert from 'node:assert/strict';
+    const root = ${JSON.stringify(root)};
+    const paths = ${JSON.stringify(paths)};
+    mock.module('node:os', () => ({ ...os, homedir: () => root, default: { ...os, homedir: () => root } }));
+    const isolatedOS = await import('node:os');
+    assert.equal(isolatedOS.homedir(), root);
+    assert.equal(isolatedOS.default.homedir(), root);
+    const { default: plugin } = await import(${JSON.stringify(new URL('./index.mjs', import.meta.url).href)});
+    await plugin();
+    const runtime = globalThis[Symbol.for('magpie.nanobot.adapter.v1')];
+    runtime.tick(); runtime.tick();
+    assert.equal(JSON.parse(fs.readFileSync(paths.status, 'utf8')).state, 'file-applied');
+    if (${JSON.stringify(intent)} === 'disconnect') {
+      fs.writeFileSync(paths.control, '{}');
+      fs.writeFileSync(paths.mcp, '{"mcpServers":{}}');
+    }
+  `;
+  const child = spawnSync(process.execPath, ['--eval', source], { encoding: 'utf8', timeout: 10_000 });
+  expect(child.error).toBeUndefined();
+  expect(child.signal).toBeNull();
+  expect(child.stderr).toBe('');
+  expect(child.status).toBe(0);
+  expect(fs.existsSync(runtimeLock(paths))).toBe(false);
+  expect(fs.existsSync(paths.lock)).toBe(false);
+  if (intent === 'connected') {
+    expect(readJson(paths.config).modelPresets[PROVIDER].model).toBe('deepseek/deepseek-flash');
+    expect(readJson(paths.config).tools.mcpServers.local.command).toBe('test-mcp');
+    expect(readJson(paths.state).records).toHaveLength(4);
+    expect(inspect(paths).state).toBe('file-applied');
+  } else {
+    expect(readJson(paths.config)).toEqual(baseline);
+    expect(fs.existsSync(paths.state)).toBe(false);
+    expect(inspect(paths).state).toBe('disconnected');
+  }
+}, 15_000);
+
+test('an owner whose runtime lock was replaced cannot flush on exit', () => {
+  const { paths } = sandbox();
+  write(paths.control, control());
+  const { handle } = runtimeFor(paths);
+  handle.tick(); handle.tick();
+  const config = fs.readFileSync(paths.config, 'utf8');
+  write(paths.control, {});
+  write(runtimeLock(paths), { pid: process.pid, nonce: 'replacement-owner' });
+  expect(handle.stop()).toBeUndefined();
+  expect(fs.readFileSync(paths.config, 'utf8')).toBe(config);
+  expect(readJson(runtimeLock(paths)).nonce).toBe('replacement-owner');
 });
 
 test('a changed input waits for its own full period before it is applied', () => {

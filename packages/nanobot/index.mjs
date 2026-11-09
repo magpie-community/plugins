@@ -14,8 +14,9 @@ export default async function NanobotAgent(input, options = {}) {
       },
     })
     globalThis[instance] = runtime
+    // Flush any pending disconnect; normal host exit keeps connected inputs.
     process.once("exit", () => {
-      try { runtime.stop() } catch { console.error("nanobot restoration paused; retain the adapter recovery files and run magpie-nanobot restore.") }
+      try { runtime.stop() } catch { console.error("nanobot final sync paused; retain the adapter recovery files and run magpie-nanobot status.") }
     })
   }
   return {}

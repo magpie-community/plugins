@@ -28,20 +28,37 @@ export function pathsFor({ home = os.homedir(), stateDir, configPath } = {}) {
     lock: path.join(directory, 'bridge.lock'), pause: path.join(directory, 'paused.json'), status: path.join(directory, 'status.json') };
 }
 
-// Reject links at every existing component. No input is read through a symlink,
-// including dangling links. This is a local writer guard, not an OS sandbox.
+// System and home/config directories may be links (e.g. macOS /var).
+// Resolve those directories, but never follow the final file, even a dangling
+// link. This is a local writer guard, not an OS sandbox or a race-proof walk.
 function regular(file, directory = false) {
-  const absolute = path.resolve(file), root = path.parse(absolute).root;
-  let cursor = root;
-  for (const part of absolute.slice(root.length).split(path.sep).filter(Boolean)) {
-    cursor = path.join(cursor, part);
-    let st;
-    try { st = fs.lstatSync(cursor); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  const absolute = path.resolve(file);
+  try {
+    const resolved = directory ? fs.realpathSync(absolute)
+      : path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+    const st = fs.lstatSync(resolved);
     if (st.isSymbolicLink()) fail('symlink_refused');
-    if (cursor !== absolute && !st.isDirectory()) fail('parent_not_directory');
-    if (cursor === absolute && (directory ? !st.isDirectory() : !st.isFile())) fail('not_regular_file');
+    if (directory ? !st.isDirectory() : !st.isFile()) fail('not_regular_file');
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    if (error.code === 'ENOTDIR') fail('parent_not_directory');
+    throw error;
   }
-  return true;
+}
+// Compare aliases even before the state directory has been created. Resolve
+// existing parents only: resolving the leaf would hide a forbidden file link.
+function fileIdentity(file) {
+  let parent = path.dirname(path.resolve(file));
+  const suffix = [path.basename(file)];
+  for (;;) {
+    try { return path.join(fs.realpathSync(parent), ...suffix); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || parent === path.dirname(parent)) throw error;
+      suffix.unshift(path.basename(parent));
+      parent = path.dirname(parent);
+    }
+  }
 }
 function read(file, required = false) {
   if (!regular(file)) { if (required) fail('required_file_missing'); return null; }
@@ -272,7 +289,8 @@ export function reconcile(paths, { restore = false, pause = false } = {}) {
   let release, st;
   try {
     paths = { ...paths, config: path.resolve(paths.config) };
-    if ([...['control', 'mcp', 'state', 'pending', 'lock', 'pause', 'status'].map(k => paths[k]), `${paths.lock}.reclaim`].some(file => path.relative(path.resolve(file), paths.config) === '')) fail('reserved_config_path');
+    const configIdentity = fileIdentity(paths.config);
+    if ([...['control', 'mcp', 'state', 'pending', 'lock', 'pause', 'status'].map(k => paths[k]), `${paths.lock}.reclaim`].some(file => fileIdentity(file) === configIdentity)) fail('reserved_config_path');
     release = acquire(paths);
     regular(paths.status);
     // Validate every source before performing even a pending target write.
@@ -365,7 +383,17 @@ export function reconcile(paths, { restore = false, pause = false } = {}) {
     if (error?.__bridgeFault) throw error;
     const known = new Set(['symlink_refused', 'parent_not_directory', 'not_regular_file', 'required_file_missing', 'invalid_json', 'json_object_required', 'config_parent_not_object', 'invalid_state_record', 'invalid_or_wrong_target_state', 'invalid_state_whitelist', 'invalid_state_parents', 'snake_case_alias_conflict', 'incomplete_control', 'invalid_gateway_url', 'invalid_model_info', 'invalid_mcp_staging', 'invalid_mcp_server', 'invalid_mcp_stdio', 'invalid_mcp_url', 'invalid_mcp_headers', 'invalid_lock', 'writer_locked', 'invalid_or_wrong_target_pending', 'invalid_pending_patch', 'pending_patch_conflict', 'config_changed_before_write', 'invalid_or_wrong_target_pause', 'managed_provider_still_referenced', 'managed_preset_still_referenced', 'managed_field_changed', 'unowned_name_collision', 'invalid_ssrf_whitelist', 'invalid_native_mcp_map', 'managed_whitelist_removed', 'reserved_config_path', 'pending_named_object_still_referenced', 'pending_whitelist_still_required', 'lock_reclaim_in_progress']);
     const code = known.has(error?.code) ? error.code : 'bridge_io_error';
-    const hasOwnership = (Array.isArray(st?.records) && st.records.length > 0) || (Array.isArray(st?.addedWhitelist) && st.addedWhitelist.length > 0);
+    // Control/config parsing can fail before ownership is loaded. Consult a
+    // valid record for this target without masking the original failure or
+    // treating an unreadable/foreign record as permission to change anything.
+    let recoveryState = st;
+    if (!recoveryState) {
+      try {
+        const saved = read(paths.state)?.data;
+        if (saved) recoveryState = validateState(saved, path.resolve(paths.config));
+      } catch { /* Keep the original conflict; recovery files are left intact. */ }
+    }
+    const hasOwnership = (Array.isArray(recoveryState?.records) && recoveryState.records.length > 0) || (Array.isArray(recoveryState?.addedWhitelist) && recoveryState.addedWhitelist.length > 0);
     const result = safeStatus(paths, 'conflict', { code, recoveryPending: hasOwnership || fs.existsSync(paths.pending) });
     // Only this lock's owner may publish diagnostics. Failure to publish must
     // never hide the original conflict or modify the target configuration.

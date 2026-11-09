@@ -114,14 +114,15 @@ export function startRuntime(p, { interval = 750, onStatus = () => {}, schedule 
   return {
     tick,
     status: () => inspect(p),
-    stop({ restore = true } = {}) {
+    stop({ restore = false } = {}) {
       if (stopped) return
       stopped = true
       cancel(timer)
-      // A normal shared-host exit cannot await RPC. Return only fields this
-      // bridge still owns; retain desired inputs for a later host instance.
+      // Flush the current intent synchronously before releasing ownership.
+      // Host exit alone is not a disconnect, but a control-file disconnect
+      // may still be waiting for the next polling tick. A standby never writes.
       if (!release) return
-      try { return restore && release.owns() ? report(reconcile(p, { restore: true })) : undefined }
+      try { return release.owns() ? report(reconcile(p, { restore })) : undefined }
       finally { release(); release = null }
     },
   }
