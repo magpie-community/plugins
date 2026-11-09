@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>请求图片</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="_magpie/bridge.js"></script>
+  <script src="app.js?v=0.4.3" defer></script>
+</head>
+<body>
+  <main>
+    <header><div class="heading"><h1>请求图片</h1><span id="status" role="status">读取中…</span></div><button id="refresh" type="button">刷新</button></header>
+    <section class="summary" aria-label="当前列表汇总">
+      <div><span>记录请求</span><strong id="count">—</strong></div>
+      <div><span>处理前 JSON</span><strong id="before">—</strong></div>
+      <div><span>处理后 JSON</span><strong id="after">—</strong></div>
+      <div class="saving"><span>体积减少</span><strong id="saved">—</strong></div>
+    </section>
+    <div class="toolbar"><h2>请求</h2><label><input type="checkbox" id="only-removed"> 仅显示删图或压缩请求</label></div>
+    <div class="table-wrap"><table><thead><tr><th>时间 / 模型</th><th>处理前</th><th>处理后</th><th>减少</th><th>图片移除</th><th>删图 / 保留</th><th>明细</th></tr></thead><tbody id="rows"></tbody></table><p id="empty" hidden>暂无请求</p></div>
+    <nav aria-label="记录分页"><button id="previous" type="button">上一页</button><span id="page-number">1 / 1</span><button id="next" type="button">下一页</button></nav>
+
+  </main>
+</body>
+</html>

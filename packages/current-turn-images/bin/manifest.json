@@ -1,0 +1,24 @@
+{
+  "platform": "win32-x64",
+  "versions": {
+    "oxipng": "10.2.1",
+    "jpegtran": "libjpeg-turbo 3.2.1",
+    "gifsicle": "1.97",
+    "webp": "1.6.0"
+  },
+  "files": {
+    "cwebp.exe": "6a2f5cb5dce71366353ab1d9caf9c636e039f25703acfce1c148eed346f2f72a",
+    "gifdiff.exe": "cd951e382682a415365848d008449e5c9910f7e0b04555e0c268917d56f61aaa",
+    "gifsicle.exe": "061d368541f422f8169291f36145630590a36236bdd28d3eb184e34b0d0f423a",
+    "jpeg62.dll": "6326d1a0844734168f424a9f3b6c725e76bc3c62cc4d30d83b263ad77901449d",
+    "jpegtran.exe": "4bd1321b6e2ef555af4ec12cf13f753cbc68c8fb55e6e4c684a05243d9cb2365",
+    "oxipng.exe": "35ae3980ab831af64f4aecc98f69b81bfa146fa750a61d17ebbb12520128cbc8"
+  },
+  "sources": {
+    "oxipng": "https://github.com/oxipng/oxipng/releases/tag/v10.2.1",
+    "jpegtran": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/tag/3.2.1",
+    "webp": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-windows-x64.zip",
+    "gifsicle": "https://eternallybored.org/misc/gifsicle/releases/gifsicle-1.97-win64.zip",
+    "gifsicleCorrespondingSource": "vendor-sources/gifsicle-1.97.tar.gz"
+  }
+}

@@ -210,6 +210,7 @@ Like middleware, these run on the requests agents send, but in magpie's Bun host
 | [OpenViking](https://github.com/volcengine/OpenViking/tree/main/examples/magpie-memory-plugin) | OpenViking context recall and opt-in completed-conversation capture using existing OpenViking configuration; published as `@openviking/magpie-plugin` and maintained in the OpenViking repository |
 | [@vshulcz/magpie-deja](https://github.com/vshulcz/deja-vu/tree/main/extensions/magpie) | [deja-vu](https://github.com/vshulcz/deja-vu) local cross-agent session memory: recalls project-scoped (`ctx.cwd`) history from the transcripts Claude Code, Codex, Hermes, Gemini CLI, OpenCode, Cursor and DSH write on disk, scrubs secret patterns, and attaches the recalled excerpt to the request sent to your model provider; when recalled history helped, the model is asked to end its reply with a one-line `déjà vu: … — reusing it.` note |
 | [notify](packages/notify) | A push to ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook when an agent's turn is done or fails, after it ran `minMinutes` or longer |
+| [current-turn-images](packages/current-turn-images) | Keep the latest request-input batch's images, remove older screenshots, losslessly optimize embedded PNG/APNG, JPEG, GIF and WebP on Windows x64, and show local request-size metrics; more aggressive than a recent-history window |
 
 Use the same plugin management commands as middleware:
 

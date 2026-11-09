@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/gateway-current-turn-images", "name": "Request images", "kind": "middleware", "community": true,
+      "summary": { "en": "Keep images from the latest request-input batch, not the whole user task; remove older screenshots and show local size metrics. Lossless embedded PNG/APNG, JPEG, GIF and WebP optimization is Windows x64 only. More aggressive than Fovea's history window; no guaranteed cache or billing savings.", "zh": "按最新一次请求输入批次保留图片，而非整轮用户任务；移除旧截图并显示本地体积统计。内嵌 PNG/APNG、JPEG、GIF、WebP 无损优化仅支持 Windows x64。比 Fovea 历史窗口更激进，不保证缓存命中率或费用降低。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "https://atomgit.com/favicon.ico", "providers": ["atomcode"], "community": true,
