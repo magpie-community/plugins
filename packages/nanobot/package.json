@@ -1,0 +1,19 @@
+{
+  "name": "@magpie-community/agent-nanobot",
+  "version": "0.1.1",
+  "description": "nanobot (HKUDS/nanobot) as a magpie agent: pick one of magpie's models for it on the Agents page, with Library MCP servers and skills",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["nanobot.agent.js", "index.mjs", "runtime.mjs", "bridge.mjs", "cli.mjs", "README.md"],
+  "bin": { "magpie-nanobot": "./cli.mjs" },
+  "scripts": { "test": "bun test nanobot.test.mjs" },
+  "engines": { "node": ">=20" },
+  "keywords": ["magpie", "magpie-agent", "nanobot", "mcp"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/nanobot"
+  },
+  "magpie": { "name": "nanobot", "agent": "./nanobot.agent.js", "icon": "https://raw.githubusercontent.com/HKUDS/nanobot/main/webui/public/brand/nanobot_mark.svg" }
+}
