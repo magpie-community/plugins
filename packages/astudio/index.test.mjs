@@ -659,6 +659,18 @@ test("check-in trusts the daily grant ledger and writes nothing when already gra
   assert.equal(completeCalls, 0)
 })
 
+test("check-in never reports done without a daily grant ledger row", async () => {
+  const completed = []
+  const plugin = createPlugin({
+    fetchImpl: checkinFetch([7900, 7900], { popups: [], ledger: [], onComplete: (body) => completed.push(body) }),
+    sleepImpl: async () => {},
+  })
+  const out = await plugin.auth.checkin(async () => checkinAuth)
+  assert.equal(out.outcome, "inactive")
+  assert.notEqual(out.outcome, "done")
+  assert.equal(completed.length, 0)
+})
+
 test("check-in claims when the grant lands after the complete call", async () => {
   // complete 之后才有 GRANT 行 ⇒ 本次领取。
   const completed = []
