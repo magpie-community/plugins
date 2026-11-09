@@ -1327,15 +1327,14 @@ test("window：重置点后挪量与读卡间隔相差超过 5 秒 → 不判滑
   expect(h.store.data.marks[id].resetRolls).toBe(false);
 });
 
-test("window：复读拿不到新读数（readAt 不变）→ 不发，按刷新节奏重试而非每分钟刷卡", async () => {
+test("window：复读拿不到新读数（readAt 不变的缓存卡）→ 不发，同一个重置点只复读一次", async () => {
   const card = rollingIdle(ms(T0));
   const h = await harness({ quotas: cardQuotas("antigravity", () => card) }); // refresh 空操作
   await h.scheduler.upsert({ ...zcodeWindowTask(), provider: "antigravity" });
   h.scheduler.start();
   await runUntil(h, ms(T0) + HOUR);
   expect(h.sendCalls).toHaveLength(0);
-  expect(h.refreshCalls.length).toBeGreaterThan(0);
-  expect(h.refreshCalls.length).toBeLessThanOrEqual(7); // 首次复读 + 之后约每 10 分钟一次
+  expect(h.refreshCalls).toHaveLength(1);
 });
 
 test("window：0.1.3 升级上来的 marks 只有 lastReset、没有读卡时刻 → 补记后照样识别滑动", async () => {
@@ -1483,4 +1482,62 @@ test("window：旧版 magpie 不给 readAt → 预报值无从判定，保持原
   h.scheduler.start();
   await runUntil(h, reset + HOUR);
   expect(h.sendCalls).toHaveLength(0);
+});
+
+// ---------- PR #878 评审补测：两次读数间隔门槛、撤销滑动判定、复读唤醒 ----------
+
+test("window：两次读数只隔 5 秒、重置点也后挪 5 秒 → 间隔不够不判滑动，不发", async () => {
+  // 真在计时的窗口，卡片读数抖动几秒也会让「挪动量 ≈ 读卡间隔」凑巧成立，60 秒门槛挡的就是它
+  const reset = ms(T0) + 3 * HOUR;
+  const card: LiveCard = { readAt: new Date(ms(T0)).toISOString(), used: 0, resetsAt: new Date(reset + 5_000).toISOString() };
+  const h = await harness({ quotas: cardQuotas("antigravity", () => card) }); // refresh 空操作
+  const id = (await h.scheduler.upsert({ ...zcodeWindowTask(), provider: "antigravity" })).id;
+  h.store.data.marks[id] = {
+    lastDue: null, resetKeys: [], lastReset: new Date(reset).toISOString(),
+    lastResetReadAt: new Date(ms(T0) - 5_000).toISOString(),
+  };
+  h.scheduler.start();
+  h.fireDue();
+  await h.flush();
+  expect(h.store.data.marks[id].resetRolls).toBe(false);
+  await runUntil(h, ms(T0) + 30 * 60_000);
+  expect(h.sendCalls).toHaveLength(0);
+});
+
+test("window：已判滑动，发送与最后一次滑动读数同秒、开窗后重置点恰好不变 → 重读确认后撤销，整点后不再发", async () => {
+  const sent = ms(T0) - 90_000;
+  const reset = new Date(sent + 5 * HOUR).toISOString(); // 最后一次滑动读数 = 开窗后的固定重置点
+  let h!: Harness;
+  let card: LiveCard = { readAt: new Date(ms(T0)).toISOString(), used: 0, resetsAt: reset };
+  h = await harness({
+    quotas: cardQuotas("antigravity", () => card),
+    refresh: () => { card = { ...card, readAt: h.now().toISOString() }; },
+  });
+  const id = (await h.scheduler.upsert({ ...zcodeWindowTask(), provider: "antigravity" })).id;
+  h.store.data.marks[id] = {
+    lastDue: null, resetKeys: [], lastReset: reset, lastResetReadAt: new Date(sent).toISOString(),
+    resetRolls: true, lastSent: new Date(sent).toISOString(),
+  };
+  h.scheduler.start();
+  await runUntil(h, ms(T0) + 2 * HOUR); // 跨两个整点
+  expect(h.store.data.marks[id].resetRolls).toBe(false);
+  expect(h.sendCalls).toHaveLength(0);
+});
+
+test("window：新出现的未来重置点 → 首读满 60 秒就醒来复读，不等 10 分钟的常规刷新", async () => {
+  let h!: Harness;
+  let card = rollingIdle(ms(T0));
+  h = await harness({
+    quotas: cardQuotas("antigravity", () => card),
+    refresh: () => { card = { ...card, readAt: h.now().toISOString() }; }, // 固定重置点，只看复读时机
+  });
+  await h.scheduler.upsert({ ...zcodeWindowTask(), provider: "antigravity" });
+  h.scheduler.start();
+  h.fireDue();
+  await h.flush();
+  expect(h.refreshCalls).toHaveLength(0);
+  h.advance(60_000);
+  h.fireDue();
+  await h.flush();
+  expect(h.refreshCalls).toHaveLength(1);
 });

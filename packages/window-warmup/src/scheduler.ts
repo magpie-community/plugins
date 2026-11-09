@@ -185,6 +185,8 @@ export class Scheduler {
   private lastErrKey = new Map<string, string>();
   /** 「供应商|账号」→ 上次请求重读该卡的时刻 */
   private lastCardRefresh = new Map<string, number>();
+  /** taskId → 已为之复读过的 resetsAt：每个新重置点只复读一次，读数不动的缓存卡不会每轮都刷 */
+  private probedFor = new Map<string, string>();
 
   constructor(deps: SchedulerDeps) {
     this.store = deps.store;
@@ -286,6 +288,7 @@ export class Scheduler {
       this.store.data.runs = this.store.data.runs.filter((r) => r.taskId !== id);
       delete this.store.data.marks[id];
       this.lastErrKey.delete(id);
+      this.probedFor.delete(id);
       await this.store.save();
       this.rearm();
     });
@@ -681,7 +684,7 @@ export class Scheduler {
   /**
    * 新出现的未来 resetsAt 只有一次读数时，要在首读满 ROLL_GAP_MS 后再读一次，才分得清它是真在计时
    * 还是随读卡滑动（否则滑动的空闲窗口永远排在「5 小时后」）。返回该重读的时刻；不需要为 null。
-   * 用量非 0 不可能判为滑动，不必重读
+   * 用量非 0 不可能判为滑动，不必重读；这个重置点复读过一次就不再复读
    */
   private rollProbeAt(task: Task, now: Date): number | null {
     const mark = this.store.data.marks[task.id];
@@ -689,6 +692,7 @@ export class Scheduler {
     const win = this.quotaWindow(task);
     if (!mark || !card || !win?.resetsAt || win.used !== 0) return null;
     if (mark.resetRolls || win.resetsAt !== mark.lastReset) return null;
+    if (this.probedFor.get(task.id) === win.resetsAt) return null;
     if (!(Date.parse(win.resetsAt) > now.getTime())) return null;
     const first = Date.parse(mark.lastResetReadAt ?? "");
     const read = Date.parse(card.readAt ?? "");
@@ -723,6 +727,8 @@ export class Scheduler {
       const last = this.lastCardRefresh.get(key);
       if (last !== undefined && now.getTime() - last < CARD_REFRESH_GAP_MS) continue;
       this.lastCardRefresh.set(key, now.getTime());
+      // probe 成立时 resetsAt 必定存在（rollProbeAt 的前提）；重读失败也算用掉，等新重置点
+      if (probe) this.probedFor.set(task.id, this.quotaWindow(task)!.resetsAt!);
       asked = true;
       await this.refreshCardFn(this.base, card.provider, card.account).catch(() => {});
     }

@@ -1224,6 +1224,7 @@ class Scheduler {
   saveError = null;
   lastErrKey = new Map;
   lastCardRefresh = new Map;
+  probedFor = new Map;
   constructor(deps) {
     this.store = deps.store;
     this.base = deps.base;
@@ -1316,6 +1317,7 @@ class Scheduler {
       this.store.data.runs = this.store.data.runs.filter((r) => r.taskId !== id);
       delete this.store.data.marks[id];
       this.lastErrKey.delete(id);
+      this.probedFor.delete(id);
       await this.store.save();
       this.rearm();
     });
@@ -1609,6 +1611,8 @@ class Scheduler {
       return null;
     if (mark.resetRolls || win.resetsAt !== mark.lastReset)
       return null;
+    if (this.probedFor.get(task.id) === win.resetsAt)
+      return null;
     if (!(Date.parse(win.resetsAt) > now.getTime()))
       return null;
     const first = Date.parse(mark.lastResetReadAt ?? "");
@@ -1640,6 +1644,8 @@ class Scheduler {
       if (last !== undefined && now.getTime() - last < CARD_REFRESH_GAP_MS)
         continue;
       this.lastCardRefresh.set(key, now.getTime());
+      if (probe)
+        this.probedFor.set(task.id, this.quotaWindow(task).resetsAt);
       asked = true;
       await this.refreshCardFn(this.base, card.provider, card.account).catch(() => {});
     }
