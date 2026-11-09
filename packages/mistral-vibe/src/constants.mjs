@@ -13,8 +13,8 @@ export const NPM = "@ai-sdk/openai-compatible"
 // ~/.vibe/.env; https://chat.mistral.ai/code/extensions shows and rotates it.
 export const KEY_HINT = "Vibe API Key (chat.mistral.ai/code/extensions → Vibe CLI → Advanced)"
 
-// Gateway-only names -> the model Mistral serves them as. Taken from
-// mistral-gateway (Classic298/mistral-gateway), which measured them.
+// Friendly names -> the id Mistral serves them as. Plain facts about the
+// ids; the same table mistral-gateway lists.
 export const MODEL_ALIASES = {
   "mistral-large": "mistral-large-4",
   "mistral-large-latest": "mistral-large-4",

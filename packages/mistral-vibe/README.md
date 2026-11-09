@@ -116,7 +116,10 @@ magpie quota mistral-vibe
 
 Written from the behaviour measured against Mistral's API — the fields it
 answers with 422, GLM's 4096-token cap without `max_tokens`, and its typed
-content parts. They are not a translation of another implementation.
+content parts, in `src/request.mjs`, `src/reply.mjs`, `src/effort.mjs` and
+`src/transport.mjs`. They are not a translation of another implementation. The
+alias table in `src/constants.mjs` is plain facts about Mistral's ids (the same
+ids mistral-gateway lists).
 
 - aliases are rewritten to the id Mistral serves;
 - `max_completion_tokens` → `max_tokens`, `seed` → `random_seed`, `user`

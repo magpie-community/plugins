@@ -1,10 +1,9 @@
 // Magpie provider plugin for a Mistral Vibe plan.
 //
-// It replaces mistral-gateway (Classic298/mistral-gateway) inside magpie: the
-// Vibe key signs in as a provider, the gateway's request/reply fixes live in
-// the provider's fetch, and the plan's monthly Vibe Code allowance is read
-// through magpie's usage hook — the card on the Usage page, `magpie quota`,
-// the quota alert and GET /v1/magpie/quotas all show it.
+// The Vibe key signs in as a provider, the request and reply fixes live in the
+// provider's fetch, and the plan's monthly Vibe Code allowance is read through
+// magpie's usage hook — the card on the Usage page, `magpie quota`, the quota
+// alert and GET /v1/magpie/quotas all show it.
 //
 // One provider, one model list. Its models are offered on both wallets:
 // the bare id spends the Vibe budget, `<id>--api` spends the API budget. Both
@@ -12,11 +11,9 @@
 // model id; magpie's account selection is not involved.
 
 import { CONSOLE_ROOT, NPM, PROVIDER_ID, V1 } from "./src/constants.mjs"
-import { sendChat } from "./src/provider.mjs"
+import { WALLET_SUFFIX } from "./src/request.mjs"
+import { sendChat } from "./src/transport.mjs"
 import { readQuota } from "./src/quota.mjs"
-
-// Ids that end this way are the API-budget variant of the model before it.
-export const API_SUFFIX = "--api"
 
 // modelOf is a live /v1/models or catalog entry in the shape magpie's
 // provider hook wants.
@@ -151,9 +148,9 @@ function variantsOf(entry, provider, keys) {
   if (keys.api) {
     out.push({
       ...base,
-      id: `${entry.id}${API_SUFFIX}`,
+      id: `${entry.id}${WALLET_SUFFIX}`,
       name: `${label} (API budget)`,
-      api: { ...base.api, id: `${entry.id}${API_SUFFIX}` },
+      api: { ...base.api, id: `${entry.id}${WALLET_SUFFIX}` },
     })
   }
   return out

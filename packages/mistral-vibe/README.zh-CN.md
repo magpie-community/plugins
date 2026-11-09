@@ -107,7 +107,10 @@ magpie quota mistral-vibe
 ## 请求与回复修正
 
 按对 Mistral 接口的实测行为重写（它对哪些字段返回 422、GLM 不传
-`max_tokens` 时 4096 的输出上限、以及类型化 content），不是对其它实现的翻译。
+`max_tokens` 时 4096 的输出上限、以及类型化 content），代码在
+`src/request.mjs`、`src/reply.mjs`、`src/effort.mjs`、`src/transport.mjs`，
+不是对其它实现的翻译。`src/constants.mjs` 的别名表是 Mistral id 的客观事实
+（mistral-gateway 也列出同一批 id）。
 
 - 别名改写为 Mistral 实际提供的 id；
 - `max_completion_tokens` → `max_tokens`、`seed` → `random_seed`、丢弃 `user`

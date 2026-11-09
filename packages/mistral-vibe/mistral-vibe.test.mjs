@@ -79,6 +79,10 @@ const server = http.createServer((req, res) => {
         res.writeHead(429, { "content-type": "application/json", "retry-after": "0" })
         return res.end('{"message":"rate limited"}')
       }
+      if (body.model === "tie-model" && body.reasoning_effort === "medium") {
+        res.writeHead(400, { "content-type": "application/json" })
+        return res.end('{"message":"reasoning_effort \'medium\' is not supported for this model, supported: \'low\', \'high\'"}')
+      }
       if (body.reasoning_effort === "xhigh" && !effortRefused) {
         effortRefused = true
         res.writeHead(400, { "content-type": "application/json" })
@@ -231,6 +235,17 @@ test("a refused reasoning_effort is retried once at a level the model lists", as
   assert.equal(seen.bodies.at(-1).reasoning_effort, "high")
 })
 
+test("a tie at medium leans towards more reasoning", async () => {
+  const loader = await plugin.auth.loader(auth)
+  const response = await loader.fetch(`${root}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "tie-model", reasoning_effort: "medium", messages: [{ role: "user", content: "hi" }] }),
+  })
+  assert.equal(response.status, 200)
+  assert.equal(seen.bodies.at(-1).reasoning_effort, "high")
+})
+
 test("a 429 is returned as it came, once", async () => {
   const loader = await plugin.auth.loader(auth)
   const before = throttled
@@ -244,7 +259,7 @@ test("a 429 is returned as it came, once", async () => {
   assert.equal(response.headers.get("retry-after"), "0")
 })
 
-test("usage shows both budgets, the key's own first", async () => {
+test("usage shows the Vibe window first and the API one set aside", async () => {
   const usage = await plugin.auth.usage(auth)
   assert.equal(usage.plan, "Pro")
   assert.equal(usage.windows.length, 2)
