@@ -275,6 +275,7 @@ it off puts the config back.
 | [nowledge-mem-agent](packages/nowledge-mem-agent) | [Nowledge Mem / AI Now](https://mem.nowledge.co/): choose Default, AI Now and Background models through Magpie, with recovery journaling; separate from the Nowledge memory recall/capture gateway plugin |
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
+| [thinkrail](packages/thinkrail) | [ThinkRail](https://github.com/JetBrains/thinkrail): Magpie's endpoint and model catalog in `~/.pi/agent/models.json` (the app embeds the pi coding agent); pick models in ThinkRail's own picker after restarting. Requires ThinkRail 0.2.0 or later |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
