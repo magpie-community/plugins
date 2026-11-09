@@ -27,3 +27,15 @@ test("empty query preserves bounded fallback without duplicate tools", () => {
   expect(new Set(selected).size).toBe(selected.length);
   expect(selectTools([], "历史专利")).toEqual([]);
 });
+
+// Adversarial fixtures: each assertion fails if its scoring rule is removed.
+test("exact identifier outranks a description matching more query terms", () => {
+  const exact = tool("get-patent", "Read patents");
+  const distractor = tool("search_records", "get-patent company historical records");
+  expect(selectTools([distractor, exact], "get-patent company historical records", 1)).toEqual([exact]);
+});
+test("rare term outranks two widespread boilerplate terms", () => {
+  const common = Array.from({length: 30}, (_, i) => tool(`get_common_${i}`, "company records"));
+  const rare = tool("get_special", "patent");
+  expect(selectTools([...common, rare], "company records patent", 1)).toEqual([rare]);
+});

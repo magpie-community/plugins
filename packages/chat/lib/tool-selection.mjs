@@ -2,7 +2,7 @@
 // as one word. Rare matching terms outrank boilerplate repeated in catalogs.
 export function selectTools(all, query, limit = 12) {
   const q = String(query).toLowerCase();
-  const terms = new Set(q.match(/[a-z0-9_]+/g)?.filter(w => w.length >= 3) || []);
+  const terms = new Set(q.match(/[a-z0-9_-]+/g)?.filter(w => w.length >= 3) || []);
   for (const run of q.match(/[\u4e00-\u9fff]+/g) || []) {
     for (let i = 0; i < run.length - 1; i++) terms.add(run.slice(i, i + 2));
   }

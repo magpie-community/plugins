@@ -1,7 +1,7 @@
-import { selectTools } from "./tool-selection.mjs";
 // magpie-chat 的服务：给窗口里的对话页提供 /api/*，并把聊天请求转给 magpie 网关。
 // 只用内置模块，不装依赖。
 
+import { selectTools } from "./tool-selection.mjs";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
