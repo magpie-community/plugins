@@ -193,6 +193,8 @@
     if (avg.cost > 0 && Number(day.cost) > 0) r = Number(day.cost) / avg.cost;
     else if (avg.tokens > 0) r = tokensOf(day) / avg.tokens;
     else return "–";
+    // a day just begun is a sliver of the average, not none of it
+    if (r > 0 && r < 0.1) return "<0.1×";
     return (r >= 100 ? Math.round(r).toLocaleString("en-US") : r.toFixed(1)) + "×";
   }
 

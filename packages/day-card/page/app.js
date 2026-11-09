@@ -60,9 +60,10 @@
     }
     return state.icons.get(ic.src);
   }
-  // A mark (a mono logo, or a colour one on a clear ground) is filled with
-  // the ink; a picture with a ground of its own prints in the ink, only its
-  // near-white parts left the paper's.
+  // A mark (a mono logo, or a colour one with no ground of its own) is
+  // filled with the ink; a picture on a light ground of its own (an app's
+  // tile, a drawing) prints in the ink, only its near-white parts left the
+  // paper's, and what is clear around it stays clear.
   function drawIcon(ctx, ic, x, y, size, scale) {
     if (!ic) {
       ctx.fillStyle = INK;
@@ -81,15 +82,22 @@
       try {
         const d = o.getImageData(0, 0, px, px);
         const p = d.data;
-        let empty = 0;
-        for (let i = 3; i < p.length; i += 4) if (p[i] < 16) empty++;
-        clear = empty / (px * px) > 0.2;
+        const lum = (i) => (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
+        let solid = 0, light = 0, dark = 0;
+        for (let i = 0; i < p.length; i += 4) {
+          if (p[i + 3] < 128) continue;
+          solid++;
+          const v = lum(i);
+          if (v > 0.8) light++;
+          else if (v < 0.5) dark++;
+        }
+        // a ground: mostly light, with something dark drawn on it
+        clear = !(solid && light / solid > 0.35 && dark / solid > 0.05) && solid < px * px * 0.8;
         if (!clear) {
           const ink = [0x1f, 0x1d, 0x20], paper = [0xf7, 0xf4, 0xed];
           for (let i = 0; i < p.length; i += 4) {
             // only what is near white stays light: a logo prints solid
-            const v = (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
-            const t = Math.min(1, Math.max(0, (v - 0.65) / 0.2));
+            const t = Math.min(1, Math.max(0, (lum(i) - 0.65) / 0.2));
             const l = t * t * (3 - 2 * t);
             for (let k = 0; k < 3; k++) p[i + k] = ink[k] + (paper[k] - ink[k]) * l;
           }

@@ -156,6 +156,9 @@ test("streak, and the day against the average day before it", () => {
   expect(V.versus({ cost: 500 }, { cost: 2, tokens: 1 })).toBe("250×")
   // nothing priced: by tokens
   expect(V.versus({ cost: 0, input: 300 }, { cost: 0, tokens: 100 })).toBe("3.0×")
+  // early in a day: a sliver of the average, not none
+  expect(V.versus({ cost: 0.07 }, { cost: 180, tokens: 1 })).toBe("<0.1×")
+  expect(V.versus({ cost: 0.5 }, { cost: 5, tokens: 1 })).toBe("0.1×")
   expect(V.versus({ cost: 1 }, null)).toBe("–")
 })
 
