@@ -420,6 +420,7 @@ export async function createBridgeKit(options = {}) {
     USERPROFILE: home,
     LOCALAPPDATA: path.join(tmp, "localappdata"),
     XDG_STATE_HOME: path.join(tmp, "state"),
+    AGY_BRIDGE_SPAWN_SPACING_MS: "0",
     AGY_PATH: options.agyPath === undefined ? kit.agyPath : options.agyPath,
     ...(options.env || {}),
   }
