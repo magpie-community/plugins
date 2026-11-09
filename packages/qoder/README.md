@@ -189,6 +189,7 @@ itself.
 |---|---|
 | A refused sign-in (no code, or code 105) | 401 |
 | A quota (codes 110, 112–119, 122) | 429 |
+| A model the account's listing has off while its usage says no credits are left (since 0.2.64, #880) | 429 usage limit reached, with the credits used and the model; a model off with credits left, or whose usage can't be read, stays 400 `unknown or disabled model`, and an id Qoder never served is that 400 at once |
 | Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
@@ -484,7 +485,8 @@ the account's credentials.
   (`Qoder.app` on macOS, `%LOCALAPPDATA%\Programs\Qoder` or, since
   0.2.26, `%ProgramFiles%\Qoder` on Windows, `/opt/Qoder` on Linux) or the runtime the CLI caches in `~/.qoder/.bin`
   (`runtime-info-<platform>-<arch>-*` on macOS and Linux,
-  `umid-win32-x64-*\runtime-info.exe` on Windows; `QODER_CONFIG_DIR`,
+  `umid-win32-x64-*\runtime-info.exe` or, as qodercli 1.21.2 caches it
+  since 0.2.64, `runtime-info-win32-x64-*.exe` on Windows; `QODER_CONFIG_DIR`,
   `QODER_CLI_HOME` and `QODER_CONFIG_DIR_NAME` move it as they move the
   CLI's folder).
 - For another installation location, set `QODER_RUNTIME_INFO` to the

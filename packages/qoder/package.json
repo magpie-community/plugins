@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-qoder-auth",
-  "version": "0.2.63",
+  "version": "0.2.64",
   "description": "Qoder and QwenWork (千问办公) subscriptions in OpenCode and magpie: qoder.com, qoder.cn, gateway.qwenwork.cn and the enterprise flagship, VPC and dedicated domains",
   "type": "module",
   "main": "./opencode.mjs",
