@@ -121,15 +121,20 @@ test('magpie 式取消：callback 立即被调 + signal abort → 立即收尾',
   f = fakeUpstream()
   fb = fakeBrowserModule({ ticket: TICKET_A })
   const plugin = await MclawAuthPlugin({}, { browserModule: fb.module, signinAbortMs: 60_000 })
-  const controller = new AbortController()
+  // magpie 给 authorize 和 callback 的是两个各自独立的 signal，取消时只 abort
+  // callback 的那个。两个入口必须用不同 controller，否则 authorize 的 listener
+  // 会替它兜住收尾，callback 就算没接 signal 测试也照样绿，测不出漏接。
+  const authorizeController = new AbortController()
+  const callbackController = new AbortController()
   // magpie 的时序：authorize 一返回就调 callback(undefined, { signal })，
   // 用户取消/登录超时时 abort signal——收尾必须立刻发生，不等 5 分钟定时器
-  const flow = await oauthMethod(plugin).authorize({}, { signal: controller.signal })
-  const done = flow.callback(undefined, { signal: controller.signal })
+  const flow = await oauthMethod(plugin).authorize({}, { signal: authorizeController.signal })
+  const done = flow.callback(undefined, { signal: callbackController.signal })
   await sleep(10)
   expect(fb.state.aborted).toBe(false)
-  controller.abort()
+  callbackController.abort() // 只取消 callback；authorize 的 signal 保持 alive
   const result = await done
+  expect(authorizeController.signal.aborted).toBe(false) // 确实没碰另一个入口
   expect(result.type).toBe('failed')
   expect(fb.state.aborted).toBe(true)
   expect(fb.state.closed).toBeGreaterThanOrEqual(1)
@@ -147,4 +152,49 @@ test('authorize 时 signal 已是 aborted → 直接收尾不开流程', async (
   expect(fb.state.aborted).toBe(true)
   expect(fb.state.closed).toBeGreaterThanOrEqual(1)
   expect(fb.state.released).toBeGreaterThanOrEqual(1)
+})
+
+// 浏览器/图形界面预检发生在 authorize、返回 opened:true 之前（#825 的修法）：
+// 失败时宿主拿到 type:'failed'，绝不能先说「窗口已弹出」再在 callback 里报错。
+test('预检失败（找不到浏览器）→ authorize 直接 failed，不开 harvest', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, {
+    browserModule: fb.module, browserCandidates: [], signinAbortMs: 60_000,
+  })
+  const out = await oauthMethod(plugin).authorize({})
+  expect(out.type).toBe('failed')
+  expect(out.error).toContain('找不到可用的 Chrome')
+  expect(out.opened).toBeUndefined()
+  expect(fb.state.harvests).toBe(0)
+})
+
+test('预检失败（Linux 无 DISPLAY）→ authorize 直接 failed，不开 harvest', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, {
+    browserModule: fb.module,
+    signinPrerequisites: async () => { throw new Error('当前 Linux 会话没有图形界面') },
+  })
+  const out = await oauthMethod(plugin).authorize({})
+  expect(out.type).toBe('failed')
+  expect(out.error).toContain('没有图形界面')
+  expect(fb.state.harvests).toBe(0)
+})
+
+test('预检通过（注入可执行候选）→ 正常开 harvest，instructions 不再谎报已弹出', async () => {
+  f = fakeUpstream()
+  fb = fakeBrowserModule({ ticket: TICKET_A })
+  const plugin = await MclawAuthPlugin({}, {
+    browserModule: fb.module,
+    signinPrerequisites: async () => {},
+    signinAbortMs: 60_000,
+  })
+  const flow = await oauthMethod(plugin).authorize({})
+  expect(flow.opened).toBe(true)
+  expect(flow.instructions).toContain('专用浏览器窗口')
+  expect(flow.instructions).toContain('不需要手动关窗')
+  fb.module.deliverHarvest()
+  const result = await flow.callback()
+  expect(result.type).toBe('success')
 })

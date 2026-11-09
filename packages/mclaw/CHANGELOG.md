@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.3 — 2026-11-09
+
+浏览器登录的「开始前」预检与提示语（对应源仓库 issue #1「弹不出登陆界面，找不到chrome」，做法对齐 magpie-community/plugins#825 对 inkstone 的修法）：
+
+- **authorize 阶段就失败，不再先说「窗口已弹出」**：登录前的图形界面/浏览器预检放在 `authorize` 里、`opened: true` 之前；没有可用浏览器或 Linux 无 `DISPLAY`/`WAYLAND_DISPLAY` 时直接返回 `type: 'failed'`，错误在选登录方式时就可见，而不是拖到 callback。此前无预检、无条件返回 `opened: true` +「已弹出专用 Chrome 窗口」，正是社区 #825 批评的形状。
+- **单一 `requireBrowser()` helper**：浏览器定位与「找不到」文案只此一份，`authorize` 预检、登录、续期共用；`launch()` 的 ENOENT 分支复用同一文案，避免多处漂移。
+- **浏览器候选表扩充**：macOS 增加 Edge / Chromium / Brave 与 `~/Applications`，Windows 增加 Edge×3，Linux 增加 `microsoft-edge` 与 `/opt/google/chrome/chrome`；仍是自维护表 + 自己 spawn（不查 PATH、不用系统默认浏览器，与社区其他登录插件一致）。
+- **`MCLAW_CHROME_PATH` 校验存在/可执行**：写错路径给专属报错「指向的浏览器不存在或不可执行」，不再混成误导性的「找不到 Chrome」；Windows 用 `F_OK`、其余用 `X_OK`。
+- **README 写明登录前提**：需本机 Chromium 内核浏览器（Safari 不行并给原因）+ 有图形界面的本地会话；远程/SSH/容器/无头环境不支持弹窗，附 `MCLAW_CHROME_PATH` 示例。
+- **instructions 按实际行为写**：「专用浏览器窗口…登录成功后自动检测并继续，窗口由插件自己关闭，不需要手动关窗」（CDP 轮询 Cookie，不依赖用户关窗）。
+- **测试加固**：合并评论里的非阻塞 follow-up——magpie 式取消用例改用两个独立 `AbortController`，只 abort callback 的那个，并断言 authorize 的 signal 未被碰；临时摘掉 callback 的 signal 接线该用例会报红。新增 `browser-path.test.mjs` 覆盖三平台候选表、空候选、override 写错/正确、有/无 DISPLAY、预检通过的 authorize 行为。测试 30 → 41。
+
 ## 0.5.2 — 2026-11-05
 
 - **magpie 式取消立即收尾**：magpie 在 authorize 之后**立刻**调 `callback(undefined, { signal })`，用户取消/登录超时时 abort signal——之前 callback 不读 signal、`clearTimeout` 又把 5 分钟兜底定时器拆了，Chrome 会一直开满 10 分钟 deadline（甚至给已被宿主放弃的登录继续取 key）。现在 `authorize` 和 `callback` 都接 signal：`signal.aborted` 先查、`addEventListener('abort', …, { once: true })` 后挂，abort 一到立即收尾。

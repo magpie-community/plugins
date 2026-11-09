@@ -66,6 +66,7 @@
  *   { "base": "https://ai.yun.139.com/api/llm/102001" }
  *   环境变量：MCLAW_CHROME_PATH（Chrome 路径）、MCLAW_BROWSER_PROFILE（登录
  *   profile 目录的根，每个账号是它下面的一个子目录）
+ *   测试缝：options.signinPrerequisites（预检函数）、options.browserCandidates
  */
 import { randomUUID } from 'node:crypto'
 import * as browserDefault from './browser.mjs'
@@ -634,6 +635,14 @@ export const MclawAuthPlugin = async (_input, options) => {
   activeBase = base
   // 测试缝：fake browser 从 options.browserModule 进（宿主不会传）。
   const browser = options?.browserModule ?? browserDefault
+  // 登录前的浏览器/图形界面预检（宿主不会传，测试可注入或给 browserCandidates）。
+  // 失败要发生在 authorize 里、返回 opened:true 之前——不能先宣称窗口已弹出再
+  // 在 callback 里报错。fake browser 不带预检时整个跳过，不碰本机真实环境。
+  const signinPrerequisites = options?.signinPrerequisites
+    ?? (options?.browserCandidates !== undefined
+      ? (pre) => browserDefault.assertBrowserSigninPrerequisites({ ...pre, candidates: options.browserCandidates })
+      : undefined)
+    ?? (options?.browserModule ? undefined : (pre) => browserDefault.assertBrowserSigninPrerequisites(pre))
   // 宿主取消登录（callback 没被调）后的收尾时限：到点关浏览器、放 profile 锁，
   // 不然锁被宿主 pid 占着，后续登录/续期全要等 LOCK_TIMEOUT。
   const signinAbortMs = Number(options?.signinAbortMs) > 0 ? Number(options.signinAbortMs) : 300_000
@@ -674,6 +683,15 @@ export const MclawAuthPlugin = async (_input, options) => {
           // metadata }，到期前宿主调 refresh 钩子 headless 续期（复开该账号
           // 自己的 profile）。
           async authorize(inputs = {}, { signal } = {}) {
+            // 预检先于任何副作用：没有图形界面（Linux 无 DISPLAY/WAYLAND）或找不到
+            // Chromium 内核浏览器时，直接在这里失败。参照 inkstone 0.1.1 的
+            // 修法——「窗口已弹出」这类话绝不能先说出去再在 callback 里报错
+            // （magpie-community/plugins#825）。
+            try {
+              if (typeof signinPrerequisites === 'function') await signinPrerequisites()
+            } catch (error) {
+              return { type: 'failed', error: error?.message ?? String(error) }
+            }
             // 不 await：Chrome 立即弹出；若宿主取消（callback 没被调），定时器
             // 到点 abort——关浏览器、放 profile 锁；挂个空 catch 免得 abort 后
             // 的拒绝刷 unhandled rejection。
@@ -689,7 +707,7 @@ export const MclawAuthPlugin = async (_input, options) => {
             return {
               url: '',
               opened: true, // Chrome 已由本插件弹出，宿主不要再开 url
-              instructions: '已弹出专用 Chrome 窗口：请在里面登录移动云（yun.139.com，网页支持多种登录方式），登录成功后本流程自动继续并收走全部凭证',
+              instructions: '已弹出专用浏览器窗口：请在里面登录移动云（yun.139.com，网页支持验证码、密码、扫码等多种方式）。登录成功后本流程自动检测并继续，窗口由插件自己关闭，你不需要手动关窗。',
               method: 'auto',
               async callback(_code, { signal: callbackSignal } = {}) {
                 clearTimeout(cleanup)
