@@ -9,7 +9,7 @@ const reply = { choices: [{ finish_reason: "stop", message: { role: "assistant",
 
 function context(options = {}, extra = {}) {
   return {
-    origin: "local", protocol: "chat", agent: "Claude Code", session: "test-session", success: true,
+    origin: "local", protocol: "chat", agent: "claude", session: "test-session", success: true,
     options, state: {}, reports: [],
     report(code, bytes) { this.reports.push({ code, bytes }); },
     ...extra
@@ -127,7 +127,7 @@ test("capture opt-in retains the current turn asynchronously to the same hermes 
   assert.match(item.content, /What is the codeword\?/);
   assert.match(item.content, /synthetic answer/);
   assert.match(item.document_id, /^magpie-[a-f0-9]{64}$/);
-  assert.deepEqual(item.metadata, { source: "magpie-hindsight", agent: "Claude Code", protocol: "chat" });
+  assert.deepEqual(item.metadata, { source: "magpie-hindsight", agent: "claude", protocol: "chat" });
   assert.ok(ctx.reports.some(r => r.code === "ready"));
 });
 
@@ -171,4 +171,39 @@ test("remote API without opt-in fails closed with no fetch", async () => {
   assert.equal(await plugin.onRequest(request(), ctx), undefined);
   assert.equal(calls.length, 0, "no opt-in, no data leaves the machine");
   assert.ok(ctx.reports.some(r => r.code === "invalid"));
+});
+
+test("origin guard refuses remote, gateway-key and missing origin with no fetch", async () => {
+  const calls = [];
+  const plugin = createPlugin({ fetcher: mockHindsight(calls) });
+  for (const origin of ["remote", "gateway-key", undefined]) {
+    const ctx = context({}, { origin });
+    assert.equal(await plugin.onRequest(request(), ctx), undefined);
+    assert.ok(ctx.reports.some(r => r.code === "skipped"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("an already-injected turn is passed through without a new recall", async () => {
+  const calls = [];
+  const plugin = createPlugin({ fetcher: mockHindsight(calls) });
+  const ctx = context();
+  const body = request();
+  body.messages[0].content += `\n\n${OPEN}\n previously recalled \n</hindsight-memories>`;
+  const changed = await plugin.onRequest(body, ctx);
+  assert.ok(changed);
+  assert.equal(calls.length, 0);
+  assert.ok(ctx.reports.some(r => r.code === "skipped"));
+});
+
+test("capture survives the tool loop's final request", async () => {
+  const calls = [];
+  const plugin = createPlugin({ fetcher: mockHindsight(calls) });
+  const ctx = context({ capture: true });
+  await plugin.onRequest(request(), ctx);
+  await plugin.onResponse({ choices: [{ finish_reason: "tool_calls", message: { content: "working" } }] }, ctx);
+  await plugin.onRequest(request(), ctx); // sticky replay of the same turn
+  await plugin.onResponse(reply, ctx);
+  const retains = calls.filter(c => c.url.endsWith("/memories"));
+  assert.equal(retains.length, 1, "the turn's final stop still captures");
 });

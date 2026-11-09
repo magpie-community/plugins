@@ -91,7 +91,7 @@ export default {
           if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return json("forbidden", 403);
           try {
             const result = await testConnection(pluginOptions);
-            return json(result.code);
+            return json(result);
           } catch {
             return json("unavailable", 503);
           }

@@ -61,7 +61,7 @@ magpie plugin options @magpie-community/gateway-hindsight '{
 | `bank` | `hermes` | Existing Hindsight bank ID used for both recall and capture. The default reuses `hermes`; no dedicated plugin bank is needed. Multi-bank users can select another existing bank. |
 | `recall_max_tokens` | `1024` | Token budget sent to Hindsight recall (`max_tokens`). Integer from 1 to 16384. |
 | `capture` | `false` | Opt in to retaining the completed current turn. |
-| `agents` | `[]` | Case-insensitive exact `ctx.agent` names to process. Empty = all agents **except** Hermes Agent / DeepSeek Harness, which are skipped by default because they already inject Hindsight natively. |
+| `agents` | `[]` | Case-insensitive exact `ctx.agent` names to process. Empty = all agents **except** `hermes` / `dsh`, which are skipped by default because they already inject Hindsight natively. |
 | `gatewayTimeoutMs` | `5000` | Magpie's timeout for this hook (100–10000 ms). The plugin finishes its recall 200 ms earlier to fail open cleanly. |
 | `allowRemote` | `false` | Required when `hindsight_api` is not loopback: recall sends the latest user message (up to 8 KB) to that host. |
 | `allowInsecureHttp` | `false` | Additionally required for plain `http://` to a non-loopback host. |
@@ -118,7 +118,7 @@ npm test
 npm run check
 ```
 
-The tests use mocked Hindsight responses and cover defaults, agent filtering, system-prompt adapters, fail-open recall, default-disabled capture, opt-in retain payloads, and truncated-answer rejection. Unit tests are not a substitute for acceptance against your own Magpie/Hindsight versions.
+The tests use mocked Hindsight responses and cover defaults, agent filtering, user-turn attachment, fail-open recall, default-disabled capture, opt-in retain payloads, and truncated-answer rejection. Unit tests are not a substitute for acceptance against your own Magpie/Hindsight versions.
 
 **Release acceptance:** Chat Completions was exercised through a local Magpie gateway against the existing `hermes` bank on Hindsight HTTP API 1.1.0, with `gatewayTimeoutMs: 5000`. The model returned a public account name available only from recall; opt-in retain was read back through Hindsight document chunks; with `capture` omitted, a completed `stop` turn created no matching document. The other protocols currently have mocked unit coverage only.
 
@@ -191,7 +191,7 @@ magpie plugin options @magpie-community/gateway-hindsight '{
 | `bank` | `hermes` | recall 和 capture 共用的现有 Hindsight bank ID。默认直接复用 `hermes`，无需插件专用 bank；多 bank 用户可选择另一个现有 bank。 |
 | `recall_max_tokens` | `1024` | 发送给 Hindsight recall 的 `max_tokens` 预算，范围 1–16384。 |
 | `capture` | `false` | 显式开启后才 retain 完整结束的当前轮次。 |
-| `agents` | `[]` | 要处理的 `ctx.agent` 名称，大小写不敏感精确匹配；空数组 = 全部 Agent，**但默认跳过**已有原生注入的 Hermes Agent / DeepSeek Harness。 |
+| `agents` | `[]` | 要处理的 `ctx.agent` 名称，大小写不敏感精确匹配；空数组 = 全部 Agent，**但默认跳过**已有原生注入的 `hermes` / `dsh`。 |
 | `gatewayTimeoutMs` | `5000` | Magpie 给本 hook 的超时时间（100–10000ms）。插件会提前 200ms 结束自身 recall，以便干净地失败放行。 |
 | `allowRemote` | `false` | `hindsight_api` 非 loopback 时必须显式开启：recall 会把最新用户消息（最多 8KB）发往该主机。 |
 | `allowInsecureHttp` | `false` | 非 loopback 且为纯 `http://` 时还需额外开启。 |
@@ -248,7 +248,7 @@ npm test
 npm run check
 ```
 
-测试使用 mock Hindsight 响应，覆盖默认配置、Agent 过滤、system prompt 协议适配、召回失败放行、默认不采集、显式 retain 请求体，以及截断回答拒绝采集。单元测试不能替代你对自己 Magpie/Hindsight 版本的端到端验收。
+测试使用 mock Hindsight 响应，覆盖默认配置、Agent 过滤、用户轮次附加、召回失败放行、默认不采集、显式 retain 请求体，以及截断回答拒绝采集。单元测试不能替代你对自己 Magpie/Hindsight 版本的端到端验收。
 
 **发布验收：** Chat Completions 已在 `gatewayTimeoutMs: 5000` 下，通过本地 Magpie 网关连接 Hindsight HTTP API 1.1.0 的现有 `hermes` bank 实测。模型返回了仅能从召回记忆得知的公开账号名；显式 retain 后通过 Hindsight 文档 chunk 回读到采集内容；省略 `capture` 配置时，一个完整 `stop` 轮次没有新增匹配文档。其他协议目前仅有 mock 单元测试覆盖。
 

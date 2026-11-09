@@ -40,6 +40,10 @@ function apiUrl() {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)
     invalid("hindsight_api", "API 地址只允许 HTTP/HTTPS，且不能包含凭据、查询参数或片段。");
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  // Mirror lib/config.mjs: any non-loopback host needs allowRemote, and plain
+  // HTTP to one additionally needs allowInsecureHttp.
+  if (!loopback && !$("allowRemote").checked)
+    invalid("allowRemote", "非 loopback 的 Hindsight API 需要勾选“允许非本机 Hindsight API”：召回会把最新用户消息（≤8KB）发往该主机。");
   if (url.protocol === "http:" && !loopback && !$("allowInsecureHttp").checked)
     invalid("allowInsecureHttp", "非 loopback 明文 HTTP 需要同时勾选安全例外；建议使用 HTTPS。");
   url.pathname = url.pathname.replace(/\/+$/, "");

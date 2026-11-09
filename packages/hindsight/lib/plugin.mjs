@@ -31,6 +31,11 @@ export function createPlugin({ fetcher = fetch } = {}) {
       if (!query) { report(ctx, "skipped"); return undefined; }
 
       const cache = conversation(ctx, config);
+      // Every accepted request carries this turn's state, so capture still
+      // works on the LAST request of a tool loop (the one with finish_reason
+      // stop), not only on the request that happened to recall.
+      ctx.state ??= {};
+      ctx.state.hindsight = { config, query };
       const kept = cache.get(turnKey(turn));
       if (kept) {
         replay(all, cache);
@@ -39,11 +44,6 @@ export function createPlugin({ fetcher = fetch } = {}) {
       }
       // A resent turn that already carries our block needs no new recall.
       if (injected(turn)) { replay(all, cache); report(ctx, "skipped"); return body; }
-
-      // Keep only plain JSON state. Capture uses this same accepted turn even if
-      // recall is empty or unavailable; capture itself remains strictly opt-in.
-      ctx.state ??= {};
-      ctx.state.hindsight = { config, query };
 
       try {
         const client = new Hindsight(config, fetcher);

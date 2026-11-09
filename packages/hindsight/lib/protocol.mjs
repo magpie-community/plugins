@@ -16,59 +16,10 @@ function items(body, protocol) {
   return undefined;
 }
 
-export function latestUserText(body, protocol) {
-  if (!body || typeof body !== "object" || Array.isArray(body) || !PROTOCOLS.has(protocol)) return "";
-  const all = items(body, protocol);
-  if (!Array.isArray(all) || all.length > 4096) return "";
-  for (let i = all.length - 1; i >= 0; i--) {
-    const item = all[i];
-    if (!item || typeof item !== "object") continue;
-    const role = protocol === "gemini" ? (item.role ?? "user") : item.role;
-    if (role !== "user") continue;
-    const value = protocol === "gemini" ? text(item.parts) : text(item.content);
-    if (value.trim()) return value.trim().slice(0, 8192);
-  }
-  return "";
-}
-
-function hasBlock(value) {
-  return typeof value === "string" ? value.includes(OPEN) : JSON.stringify(value ?? "").includes(OPEN);
-}
-
-export function alreadyInjected(body, protocol) {
-  if (protocol === "chat") return Array.isArray(body.messages) && body.messages.some(m => m?.role === "system" && hasBlock(m.content));
-  if (protocol === "anthropic") return hasBlock(body.system);
-  if (protocol === "responses") return hasBlock(body.instructions);
-  if (protocol === "gemini") return hasBlock(body.systemInstruction);
-  return false;
-}
-
-export function injectSystem(body, protocol, block) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
-  if (protocol === "chat") {
-    if (!Array.isArray(body.messages)) return undefined;
-    return { ...body, messages: [{ role: "system", content: block }, ...body.messages] };
-  }
-  if (protocol === "anthropic") {
-    if (Array.isArray(body.system)) return { ...body, system: [{ type: "text", text: block }, ...body.system] };
-    if (body.system !== undefined && typeof body.system !== "string") return undefined;
-    return { ...body, system: body.system ? `${block}\n\n${body.system}` : block };
-  }
-  if (protocol === "responses") {
-    if (body.instructions !== undefined && typeof body.instructions !== "string") return undefined;
-    return { ...body, instructions: body.instructions ? `${block}\n\n${body.instructions}` : block };
-  }
-  if (protocol === "gemini") {
-    if (body.systemInstruction === undefined) return { ...body, systemInstruction: { parts: [{ text: block }] } };
-    const current = body.systemInstruction;
-    if (!current || typeof current !== "object" || !Array.isArray(current.parts)) return undefined;
-    return { ...body, systemInstruction: { ...current, parts: [{ text: block }, ...current.parts] } };
-  }
-  return undefined;
-}
-
 function sanitize(value) {
-  return value.replaceAll(OPEN, "&lt;hindsight-memories&gt;").replaceAll(CLOSE, "&lt;/hindsight-memories&gt;").replaceAll("\0", "").trim();
+  return String(value ?? "")
+    .replaceAll(OPEN, "&lt;hindsight-memories&gt;")
+    .replaceAll(CLOSE, "&lt;/hindsight-memories&gt;");
 }
 
 export function memoryBlock(memories, maxTokens) {
