@@ -1,6 +1,7 @@
 // magpie-chat 的服务：给窗口里的对话页提供 /api/*，并把聊天请求转给 magpie 网关。
 // 只用内置模块，不装依赖。
 
+import { selectTools } from "./tool-selection.mjs";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -393,21 +394,7 @@ async function runChat({ res, body, settings, store, options }, controllers) {
     }
     const last = history[history.length - 1];
     const q = String(typeof last?.userText === "string" ? last.userText : last?.content || "").toLowerCase();
-    const words = q.split(/[^a-z0-9\u4e00-\u9fff]+/).filter((w) => w.length >= 3);
-    const scored = all.map((t) => {
-      const hay = (t.name + " " + (t.description || "")).toLowerCase();
-      let score = 0;
-      for (const w of words) if (hay.includes(w)) score += w.length > 4 ? 2 : 1;
-      return { t, score };
-    }).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
-    const MAX_TOOLS = 12;
-    tools = scored.slice(0, MAX_TOOLS).map((x) => x.t);
-    if (tools.length < 3) {
-      // 问得太笼统时给一组最通用的，但仍然封顶
-      const common = /^(get|list|search|read|fetch|query)_|(_search|_list|_get)$/;
-      const extra = all.filter((t) => common.test(t.rawName) && !tools.includes(t)).slice(0, 8);
-      tools = tools.concat(extra).slice(0, MAX_TOOLS);
-    }
+    tools = selectTools(all, q);
     if (all.length > tools.length) {
       toolNote = `（这次提供了 ${tools.length}/${all.length} 个工具：按你的问题挑的）`;
     }
