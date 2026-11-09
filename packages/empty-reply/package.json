@@ -1,0 +1,13 @@
+{
+  "name": "@magpie-community/middleware-empty-reply",
+  "version": "0.1.0",
+  "description": "Drop the end of a reasoning-only reply, so Claude Code and Codex retry instead of treating an empty turn as finished",
+  "type": "module",
+  "files": ["empty-reply.middleware.js", "README.md"],
+  "keywords": ["magpie", "magpie-middleware", "empty-reply", "claude-code", "codex", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/empty-reply" },
+  "magpie": {
+    "middleware": "./empty-reply.middleware.js"
+  }
+}

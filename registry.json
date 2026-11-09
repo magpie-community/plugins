@@ -93,6 +93,8 @@
       "summary": { "en": "New API's sensitive-word filter: turn away or mask words and patterns in what you send, and in replies.", "zh": "New API 的敏感词过滤：拒绝或替换你发出的内容和回复里的词与正则。" } },
     { "package": "@magpie-community/middleware-think-tags", "name": "Think Tags", "kind": "middleware", "community": true,
       "summary": { "en": "Take a model's leading <think>, <thinking> or <thought> block out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>、<thinking> 或 <thought> 思考块，或把 Chat 回复的思考内容放进正文。" } },
+    { "package": "@magpie-community/middleware-empty-reply", "name": "Empty Reply", "kind": "middleware", "community": true,
+      "summary": { "en": "Drop the end of a reply that has reasoning but no text, so Claude Code and Codex retry instead of treating an empty turn as finished. Anthropic and Responses, streamed or whole.", "zh": "丢掉「只有思考、没有正文」回复的结尾，让 Claude Code 和 Codex 重试，而不是把空回合当成正常结束。支持 Anthropic 与 Responses 的流式与整包回复。" } },
     { "package": "@magpie-community/agent-nowledge-mem", "name": "Nowledge Mem / AI Now models", "kind": "agent", "community": true, "icon": "https://mem.nowledge.co/favicon.png",
       "summary": {"en": "Choose Nowledge Mem Default, AI Now and Background models through Magpie. Distinct from gateway-nowledge-mem recall/capture. Disconnect before uninstalling.", "zh": "在 Magpie 管理 Nowledge 的 Default、AI Now 和后台模型；与 gateway-nowledge-mem 的记忆召回、对话导入用途不同。卸载前先断开。"} },
     { "package": "@magpie-community/agent-kilo", "name": "Kilo Code", "kind": "agent", "community": true, "icon": "https://github.com/Kilo-Org.png",
