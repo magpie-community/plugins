@@ -331,6 +331,34 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
   const r4 = await loader.fetch(req)
   expect(r4.status).toBe(200)
   expect(gotRaw).toBe("not json at all")
+
+  // ⑥b 第四轮 review 备忘：Request 的流被读掉后，交给上游的是「url 字符串 +
+  // 完整 init」，不是那个已读空的 Request。装一个一次性包装 fetch 钉住
+  // 这一半——只把 init 原样转发的包装层（catpaw 泄漏那类）也照样能跑。
+  const realFetch = globalThis.fetch
+  let sawSpentRequest = false
+  let sawUrl = ""
+  globalThis.fetch = (input2, init2 = {}) => {
+    if (String(init2?.method ?? "").toUpperCase() === "POST" && String(input2 ?? "").includes("/chat/completions")) {
+      if (typeof input2 !== "string") sawSpentRequest = true
+      else sawUrl = input2
+    }
+    return realFetch(input2, init2)
+  }
+  try {
+    const r5 = await loader.fetch(
+      new Request(`${f.origin}/v1/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    expect(r5.status).toBe(200)
+    expect(sawSpentRequest).toBe(false)
+    expect(sawUrl).toBe(`${f.origin}/v1/chat/completions`)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {

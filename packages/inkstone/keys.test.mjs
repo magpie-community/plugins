@@ -281,6 +281,40 @@ test("when the orphan list fails, the error does not claim it was removed", asyn
   expect(said).not.toContain("was removed")
 })
 
+test("a stale removed does not spare the last orphan (-15108 mid, no-plaintext success last)", async () => {
+  // 第四轮 review 的序列：①成功但没给明文 → ②-15108（删掉，removed=true）
+  // → ③又「成功但没给明文」。陈旧的 removed 会让循环外的补删被跳过：最后
+  // 那把留在账号上，文案却声称已移除。修好后最后那把也删——账号零孤儿。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  let posts = 0
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    posts += 1
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    if (posts === 2) return fail(-15108, "created but hidden")
+    return ok({}) // 建成了，但回复里没有明文
+  })
+  let said = ""
+  try {
+    await ensureKey("uaa", "u", { create: true })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  expect(said).toMatch(/plaintext/i)
+  // 最后那把（③）也删了：账号零孤儿
+  expect(keys.length).toBe(0)
+  // 且它确实被删掉了，所以这句是实话
+  expect(said).toContain("was removed")
+})
+
 test("an idempotency clash retries with a FRESH name and returns the key string", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))

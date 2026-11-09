@@ -243,6 +243,11 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
   // 一次，并按那次删除的真实结果说话（第三轮 review）。
   for (let attempt = 0; !created && attempt < 2; attempt++) {
     await deleteKeyByName(token, name, log)
+    // 每轮重置：`removed` 只描述「本轮这把孤儿」的删除结果，不继承前几轮
+    // 的。中间一轮 -15108 删过、最后一轮又是「成功但没明文」时，陈旧的
+    // true 会让循环外的补删被跳过——孤儿留下、文案却声称已移除（第四轮
+    // review：按轮设，不按整函数设）。
+    removed = false
     try {
       name = keyNameFor(username)
       reply = await createKey(token, name, randomUUID())
