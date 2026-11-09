@@ -229,6 +229,14 @@ test("check accepts a native V2-only provider without executing its setup", () =
   expect(broken.output).toContain("has no default {id, setup}")
 })
 
+test("native V2 defaults do not skip named legacy exports or packed-entry checks", () => {
+  const source = `export default {id: "fixture", setup() { throw new Error("must not call setup") }};
+    export const Legacy = async () => ({auth: {provider: "fixture", methods: [{type: "unknown"}]}, tool: {bad: {args: {}}}})`
+  const result = check(source, okRegistry, { main: "./index.mjs", exports: "./index.mjs", files: [] })
+  expect(result.code).toBe(1)
+  for (const problem of ["bad has no execute", "bad has no description", "method type unknown", "index.mjs is not in files"]) expect(result.output).toContain(problem)
+})
+
 test("check fails a model provider OpenCode 2.x can't load (plugins#657)", () => {
   for (const pkg of [{ main: "index.mjs" }, { main: "index.mjs", exports: "./index.mjs" }]) {
     const result = check(provider, okRegistry, pkg)

@@ -148,7 +148,7 @@ var readCatalogCache = async () => {
 };
 var fetchCatalogCache = async (url = MODELS_DEV_URL, timeout = 30000) => {
   const path = cachePaths()[0];
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(timeout) });
   if (!response.ok)
     throw new Error(`models.dev 返回 HTTP ${response.status}`);
   const text = await response.text();
@@ -167,8 +167,10 @@ var fetchCatalogCache = async (url = MODELS_DEV_URL, timeout = 30000) => {
 };
 var attempts = new Map;
 var pending = new Map;
-var loadCatalogCache = async (missing = false) => {
+var loadCatalogCache = async (missing = false, online = false) => {
   const cache = await readCatalogCache().catch(() => ({ data: undefined, path: cachePaths()[0], stale: true }));
+  if (!online)
+    return cache;
   const path = cachePaths()[0];
   const due = cache.stale || missing && missingPriceStale(await catalogSource());
   if (due && !pending.has(path) && Date.now() - (attempts.get(path) ?? -Infinity) >= MISSING_RETRY) {
@@ -839,9 +841,11 @@ var parsePresentation = (options) => {
   if (!isRecord(options))
     throw invalidOptions("options", "必须是对象");
   for (const key of Object.keys(options)) {
-    if (key !== "groups" && key !== "order" && key !== "remote" && key !== "agentID")
+    if (key !== "groups" && key !== "order" && key !== "remote" && key !== "agentID" && key !== "modelsDev")
       throw invalidOptions(`options.${key}`, "不是已知字段");
   }
+  if (options.modelsDev !== undefined && typeof options.modelsDev !== "boolean")
+    throw invalidOptions("options.modelsDev", "必须是布尔值");
   return {
     groups: parseGroups(options.groups),
     order: parseOrder(options.order)
@@ -979,7 +983,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile as readFile3, realpath } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import { delimiter, join as join3 } from "node:path";
+import { delimiter, isAbsolute, join as join3 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 var INSTALL_MESSAGE = "未安装 Magpie，请先从 https://usemagpie.ai/zh/ 安装并登录所需服务，再使用此插件。";
 var resolveConnection = async (options) => {
@@ -1001,8 +1005,8 @@ var resolveConnection = async (options) => {
   if (typeof remote !== "object" || remote === null || Array.isArray(remote))
     throw invalid("", "必须是包含 baseURL 和 token 的对象");
   const value = remote;
-  if (Object.keys(value).some((key) => key !== "baseURL" && key !== "token"))
-    throw invalid("", "仅支持 baseURL 和 token 字段");
+  if (Object.keys(value).some((key) => key !== "baseURL" && key !== "token" && key !== "tokenFile"))
+    throw invalid("", "仅支持 baseURL、token 和 tokenFile 字段");
   let url;
   try {
     if (typeof value.baseURL !== "string" || value.baseURL.trim() !== value.baseURL)
@@ -1013,15 +1017,42 @@ var resolveConnection = async (options) => {
   } catch {
     throw invalid(".baseURL", "必须是完整 HTTP(S) API 基地址，不能包含用户名、密码、查询参数或片段");
   }
+  const baseURL = url.href.replace(/\/+$/, "");
+  if (value.tokenFile !== undefined) {
+    if (value.token !== undefined || typeof value.tokenFile !== "string" || !isAbsolute(value.tokenFile))
+      throw invalid(".tokenFile", "必须是绝对路径，且不能同时设置 token");
+    const tokenFile = value.tokenFile;
+    const connection = {
+      agentID,
+      baseURL,
+      tokenFile,
+      token: await readAssignedKey(tokenFile, baseURL),
+      remote: true,
+      ensure: async () => {
+        connection.token = await readAssignedKey(tokenFile, baseURL);
+      }
+    };
+    return connection;
+  }
   if (typeof value.token !== "string" || !/^[\x21-\x7e]+$/.test(value.token))
     throw invalid(".token", "必须是非空 token，不能包含空格或控制字符");
   return {
     agentID,
-    baseURL: url.href.replace(/\/+$/, ""),
+    baseURL,
     token: value.token,
     remote: true,
     ensure: async () => {}
   };
+};
+var readAssignedKey = async (file, baseURL) => {
+  try {
+    const connection = JSON.parse(await readFile3(file, "utf8"));
+    if (new URL(connection.baseURL).href.replace(/\/+$/, "") !== baseURL || typeof connection.gatewayKey !== "string" || !/^[\x21-\x7e]+$/.test(connection.gatewayKey))
+      throw new Error;
+    return connection.gatewayKey;
+  } catch {
+    throw new Error("Magpie options.remote.tokenFile 不可用、无效或连接地址已改变；请检查 Agent 连接。");
+  }
 };
 var resolveBaseURL = async () => {
   if (process.env.MAGPIE_ADDR) {
@@ -1246,7 +1277,7 @@ var registerImageTools = (editor, connection) => {
   });
   editor.add({
     name: "image_gen",
-    description: "Draw one image through Magpie and save it. Returns it as a Markdown image. Load skill magpie-image-generate first.",
+    description: "Draw one image through Magpie and save it. Returns a Markdown image and the model used.",
     input: {
       type: "object",
       properties: {
@@ -1273,19 +1304,11 @@ var IMAGE_SKILL_ID = "magpie-image-generate";
 var SKILL = [
   "# Magpie image generation",
   "",
-  "Tools: `tools.magpie.image_list`, `tools.magpie.image_gen` (code mode).",
-  "",
-  "1. Pick the model. Use the one the user named; otherwise omit `model` and Magpie draws with its default. To see what exists, call `image_list` and copy an id from it.",
-  "   Done when you hold a model id or have chosen the default.",
-  "2. Write the prompt: subject, style, composition, colours, and any text to render verbatim. Size `16:9`, `9:16`, `1:1` or `WIDTHxHEIGHT`; quality `low` for drafts, `high` for finals.",
-  "   Some models take only an exact `WIDTHxHEIGHT` such as `1024x1024`: after a size error, retry with that.",
-  "   Done when the prompt is non-empty.",
-  "3. Call `image_gen` once. It waits until the image is saved, which can take minutes, and returns a Markdown image `![image](<path>)`.",
-  "   If it fails because that model is unavailable (quota, credits, a reset time, not served, unsupported size), do not retry it: call `image_list`, pick another model, preferably from another provider, and call `image_gen` again. Try at most three models.",
-  "   Done when you have a Markdown image line, or every tried model has failed.",
-  "4. Put the Markdown image in your reply body as it is, and name the model that drew it. Copy the file into the project with the shell when the user wants it there. If every model failed, tell the user each failure as written, including any reset time.",
-  "",
-  "Each image spends the user’s credits: after a success, generate again only if the user asks."
+  "`magpie.image_list` lists the image model IDs currently available through the configured gateway.",
+  "`magpie.image_gen` accepts prompt, optional model, size and quality; an omitted model uses Magpie’s configured default.",
+  "Sizes are provider-dependent: aspect ratios or WIDTHxHEIGHT. Quality values are low, medium, high or auto.",
+  "Generation can take minutes and consumes the account’s credits. Provider refusals and quota errors are returned as errors.",
+  "A successful result contains a Markdown image pointing to the saved temporary file, followed by the model used."
 ].join(`
 `);
 var registerImageSkill = (editor, path) => {
@@ -1307,13 +1330,14 @@ var setupPlugin = async (ctx) => {
   if (!ctx.provider)
     throw new Error("Magpie 插件需要 OpenCode V2 provider.transform。");
   const presentation = parsePresentation(ctx.options);
+  const modelsDev = ctx.options?.modelsDev === true;
   const connection = await resolveConnection(ctx.options);
-  const { baseURL, token, agentID } = connection;
+  const { baseURL, agentID } = connection;
   const apiURL = new URL(baseURL);
   await connection.ensure();
-  let catalog = await loadCatalogCache();
-  let inventory = buildInventory(await fetchModels(baseURL, token, agentID), baseURL, {
-    apiKey: token,
+  let catalog = await loadCatalogCache(false, modelsDev);
+  let inventory = buildInventory(await fetchModels(baseURL, connection.token, agentID), baseURL, {
+    apiKey: connection.token,
     agentID,
     catalog: catalog.data,
     fastModelIDs: connection.remote ? undefined : await loadFastModelIDs(),
@@ -1340,6 +1364,8 @@ var setupPlugin = async (ctx) => {
       if (url.origin !== apiURL.origin || !url.pathname.startsWith(`${apiURL.pathname.replace(/\/$/, "")}/`))
         return;
       await connection.ensure();
+      if (connection.tokenFile)
+        event.request.headers.set("Authorization", `Bearer ${connection.token}`);
       event.request.headers.set("X-Magpie-Session", event.sessionID);
       event.request.headers.set("X-Magpie-Agent", agentID ?? "opencode");
     }));
@@ -1366,10 +1392,10 @@ var setupPlugin = async (ctx) => {
     refreshing = true;
     try {
       await connection.ensure();
-      const rows = await fetchModels(baseURL, token, agentID);
-      catalog = await loadCatalogCache(hasUnpricedModel(inventory));
+      const rows = await fetchModels(baseURL, connection.token, agentID);
+      catalog = await loadCatalogCache(hasUnpricedModel(inventory), modelsDev);
       const next = buildInventory(rows, baseURL, {
-        apiKey: token,
+        apiKey: connection.token,
         agentID,
         catalog: catalog.data,
         fastModelIDs: connection.remote ? undefined : await loadFastModelIDs(),
@@ -1394,6 +1420,5 @@ var setupPlugin = async (ctx) => {
 };
 var src_default = plugin;
 export {
-  setupPlugin,
   src_default as default
 };

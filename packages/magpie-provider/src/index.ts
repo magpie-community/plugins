@@ -16,13 +16,14 @@ export const setupPlugin: Plugin2['setup'] = async (ctx) => {
   if (!ctx.provider) throw new Error('Magpie 插件需要 OpenCode V2 provider.transform。');
   // Parsed once. The first catalog and the 30s refresh close over the same presentation.
   const presentation = parsePresentation(ctx.options);
+  const modelsDev = (ctx.options as { modelsDev?: boolean } | undefined)?.modelsDev === true;
   const connection = await resolveConnection(ctx.options);
-  const { baseURL, token, agentID } = connection;
+  const { baseURL, agentID } = connection;
   const apiURL = new URL(baseURL);
   await connection.ensure();
-  let catalog: CatalogCache = await loadCatalogCache();
-  let inventory = buildInventory(await fetchModels(baseURL, token, agentID), baseURL, {
-    apiKey: token,
+  let catalog: CatalogCache = await loadCatalogCache(false, modelsDev);
+  let inventory = buildInventory(await fetchModels(baseURL, connection.token, agentID), baseURL, {
+    apiKey: connection.token,
     agentID,
     catalog: catalog.data,
     fastModelIDs: connection.remote ? undefined : await loadFastModelIDs(),
@@ -59,6 +60,7 @@ export const setupPlugin: Plugin2['setup'] = async (ctx) => {
         )
           return;
         await connection.ensure();
+        if (connection.tokenFile) event.request.headers.set('Authorization', `Bearer ${connection.token}`);
         event.request.headers.set('X-Magpie-Session', event.sessionID);
         event.request.headers.set('X-Magpie-Agent', agentID ?? 'opencode');
       }),
@@ -87,10 +89,10 @@ export const setupPlugin: Plugin2['setup'] = async (ctx) => {
     refreshing = true;
     try {
       await connection.ensure();
-      const rows = await fetchModels(baseURL, token, agentID);
-      catalog = await loadCatalogCache(hasUnpricedModel(inventory));
+      const rows = await fetchModels(baseURL, connection.token, agentID);
+      catalog = await loadCatalogCache(hasUnpricedModel(inventory), modelsDev);
       const next = buildInventory(rows, baseURL, {
-        apiKey: token,
+        apiKey: connection.token,
         agentID,
         catalog: catalog.data,
         fastModelIDs: connection.remote ? undefined : await loadFastModelIDs(),

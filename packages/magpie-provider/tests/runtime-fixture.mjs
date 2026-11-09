@@ -36,13 +36,13 @@ const realSetInterval = globalThis.setInterval
 const realClearInterval = globalThis.clearInterval
 const realWarn = console.warn
 let catalogDownloads = 0
+const catalogRequests = []
 const intervals = new Set()
 globalThis.fetch = async (input, init) => {
   if (String(input) === "https://models.dev/api.json") {
     catalogDownloads++
-    const headers = new Headers(init?.headers)
-    assert.equal(headers.has("Authorization"), false)
-    assert.equal(headers.has("X-Magpie-Agent"), false)
+    const request = new Request(input, init)
+    catalogRequests.push({ url: request.url, headers: Object.fromEntries(request.headers), body: await request.text(), redirect: request.redirect })
     return Response.json({ openai: { models: { "gpt-5.5": { cost: { input: 1, output: 2 } } } } })
   }
   return realFetch(input, init)
@@ -95,7 +95,13 @@ try {
   ]) await assert.rejects(plugin.setup(context({ remote: bad }).ctx), /remote/)
   assert.equal(requests.length, 0)
 
-  const state = context({ agentID: "yuri", remote })
+  const offline = context({ remote })
+  const stopOffline = await plugin.setup(offline.ctx)
+  assert.equal(catalogDownloads, 0)
+  await stopOffline()
+  requests.length = 0
+
+  const state = context({ agentID: "yuri", remote, modelsDev: true })
   cleanup = await plugin.setup(state.ctx)
   assert.equal(state.catalog[0].info.id, "magpie-cursor")
   assert.equal(state.catalog[0].info.headers["X-Magpie-Agent"], "yuri")
@@ -146,6 +152,28 @@ try {
   assert.equal(intervals.size, 0)
   assert.deepEqual(state.disposed, [...state.registrations].reverse())
   await waitFor(() => catalogDownloads > 0)
+  await waitFor(() => fs.access(path.join(home, "opencode-magpie-plugin/models.json")).then(() => true, () => false))
+  for (const request of catalogRequests) {
+    assert.equal(Object.hasOwn(request.headers, "authorization"), false)
+    assert.equal(Object.hasOwn(request.headers, "x-magpie-agent"), false)
+    assert.equal(JSON.stringify(request).includes(token), false)
+    assert.equal(request.redirect, "error")
+  }
+
+  const tokenFile = path.join(home, "connection.json")
+  await fs.writeFile(tokenFile, JSON.stringify({ baseURL, gatewayKey: token }))
+  const assigned = context({ agentID: "yuri", remote: { baseURL, tokenFile } })
+  const stopAssigned = await plugin.setup(assigned.ctx)
+  await fs.writeFile(tokenFile, JSON.stringify({ baseURL, gatewayKey: "rotated-test-key" }))
+  const assignedRequest = new Request(baseURL + "/chat/completions", { headers: { Authorization: `Bearer ${token}`, "User-Agent": "opencode/test/real-host" } })
+  await assigned.hooks.get("http.request")({ request: assignedRequest, sessionID: "assigned-session" })
+  assert.equal(assignedRequest.headers.get("Authorization"), "Bearer rotated-test-key")
+  assert.equal(assignedRequest.headers.get("User-Agent"), "opencode/test/real-host")
+  await assigned.tools.get("image_list").execute({}, { signal })
+  assert.equal(requests.at(-1).headers.authorization, "Bearer rotated-test-key")
+  await fs.unlink(tokenFile)
+  await assert.rejects(assigned.hooks.get("http.request")({ request: assignedRequest, sessionID: "assigned-session" }), /tokenFile/)
+  await stopAssigned()
 
   const legacy = context({ remote })
   const stopLegacy = await plugin.setup(legacy.ctx)

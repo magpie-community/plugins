@@ -209,9 +209,11 @@ export const parsePresentation = (options: unknown): CatalogPresentation => {
   if (options === undefined) return { groups: [], order: new Map() };
   if (!isRecord(options)) throw invalidOptions('options', '必须是对象');
   for (const key of Object.keys(options)) {
-    if (key !== 'groups' && key !== 'order' && key !== 'remote' && key !== 'agentID')
+    if (key !== 'groups' && key !== 'order' && key !== 'remote' && key !== 'agentID' && key !== 'modelsDev')
       throw invalidOptions(`options.${key}`, '不是已知字段');
   }
+  if (options.modelsDev !== undefined && typeof options.modelsDev !== 'boolean')
+    throw invalidOptions('options.modelsDev', '必须是布尔值');
   return {
     groups: parseGroups(options.groups),
     order: parseOrder(options.order),

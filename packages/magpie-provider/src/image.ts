@@ -118,7 +118,7 @@ export const registerImageTools = (editor: ToolEditor, connection: GatewayConnec
   editor.add({
     name: 'image_gen',
     description:
-      'Draw one image through Magpie and save it. Returns it as a Markdown image. Load skill magpie-image-generate first.',
+      'Draw one image through Magpie and save it. Returns a Markdown image and the model used.',
     input: {
       type: 'object',
       properties: {
@@ -146,19 +146,11 @@ export const IMAGE_SKILL_ID = 'magpie-image-generate';
 const SKILL = [
   '# Magpie image generation',
   '',
-  'Tools: `tools.magpie.image_list`, `tools.magpie.image_gen` (code mode).',
-  '',
-  '1. Pick the model. Use the one the user named; otherwise omit `model` and Magpie draws with its default. To see what exists, call `image_list` and copy an id from it.',
-  '   Done when you hold a model id or have chosen the default.',
-  '2. Write the prompt: subject, style, composition, colours, and any text to render verbatim. Size `16:9`, `9:16`, `1:1` or `WIDTHxHEIGHT`; quality `low` for drafts, `high` for finals.',
-  '   Some models take only an exact `WIDTHxHEIGHT` such as `1024x1024`: after a size error, retry with that.',
-  '   Done when the prompt is non-empty.',
-  '3. Call `image_gen` once. It waits until the image is saved, which can take minutes, and returns a Markdown image `![image](<path>)`.',
-  '   If it fails because that model is unavailable (quota, credits, a reset time, not served, unsupported size), do not retry it: call `image_list`, pick another model, preferably from another provider, and call `image_gen` again. Try at most three models.',
-  '   Done when you have a Markdown image line, or every tried model has failed.',
-  '4. Put the Markdown image in your reply body as it is, and name the model that drew it. Copy the file into the project with the shell when the user wants it there. If every model failed, tell the user each failure as written, including any reset time.',
-  '',
-  'Each image spends the user’s credits: after a success, generate again only if the user asks.',
+  '`magpie.image_list` lists the image model IDs currently available through the configured gateway.',
+  '`magpie.image_gen` accepts prompt, optional model, size and quality; an omitted model uses Magpie’s configured default.',
+  'Sizes are provider-dependent: aspect ratios or WIDTHxHEIGHT. Quality values are low, medium, high or auto.',
+  'Generation can take minutes and consumes the account’s credits. Provider refusals and quota errors are returned as errors.',
+  'A successful result contains a Markdown image pointing to the saved temporary file, followed by the model used.',
 ].join('\n');
 
 export const registerImageSkill = (editor: SkillEditor, path: string): void => {

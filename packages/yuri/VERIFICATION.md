@@ -1,5 +1,96 @@
 # PR #802 revision verification
 
+## Current review revision — 2026-11-09
+
+The sections below this heading's revision summary are historical 2026-11-07
+evidence, not instructions for the new credential/lifecycle contract.
+
+This revision refreshes the provider from the upstream working tree identified
+in `packages/magpie-provider/UPSTREAM.json` and changes the community integration:
+
+- The OpenCode entry contains `remote.baseURL` and an absolute `remote.tokenFile`
+  path, never a copied gateway key. The provider reads Magpie's native sidecar
+  at setup and before requests, notices rotation and fails closed on disconnect
+  or destination mismatch. No Yuri/OpenCode source or User-Agent is patched.
+- Host load/exit with an unchanged sidecar does not modify OpenCode, create an
+  ownership record or replay a journal. Native connection-file transitions
+  drive the existing reversible bridge. An already-on Agent needs an explicit
+  off/on transition after installation; this is documented, not silently repaired.
+- Readable jsonc-parser ESM sources replace the minified vendor bundle. They
+  were compared with 3.3.1; only relative `.js` import extensions differ.
+- models.dev reads are local-cache-only unless `modelsDev: true` is explicitly
+  configured. Opt-in refreshes are background, timed out, reject redirects and
+  retain cached fallback. No gateway/session/Agent credentials are passed.
+- The checker has no V2 early return. Native V2 default packages and any legacy
+  exports both go through their applicable checks; a fixture verifies combined
+  malformed legacy definitions and missing packed entries are all reported.
+- Bun 1.3.14 is pinned for the unminified provider build; the build command
+  rejects other versions and a dedicated PR job checks committed dist bytes.
+- Image-tool skill text now describes the tools rather than instructing the model.
+
+### Repository validation
+
+The full repository suite passed with an isolated, integrity-checked Bun 1.4.4
+and temporary HOME/XDG directories: **6569 pass, 9 skip, 0 fail**, 6578 tests
+across 481 files, 196.74 seconds. The system Bun installation was not changed.
+An earlier full run on Bun 1.3.14 failed because that runtime does not implement
+the repository's `node:test.mock` usage; it is not the final suite result.
+Bun 1.3.14 remains the pinned provider **build** toolchain.
+
+Final checks on this revision also passed:
+
+- Focused bridge/provider/checker suite on Bun 1.3.14: **126 pass, 0 fail**.
+- Node bridge tests: **43 pass**; bundled provider runtime scenario: **1 pass**.
+- Both final npm tarballs extracted without node_modules; the Agent's 43 Node
+  tests and the provider runtime scenario pass against those extracted files.
+- Two final provider rebuilds are byte-identical, SHA-256
+  `68441f59d2a160a51c49f94cad3405d8d8886314eb4f73c663ed1f5d5e375008`.
+- Whole-repository registry/plugin checker, upstream snapshot hashes, readable
+  vendor comparison, provider TypeScript check and `git diff --check` pass.
+
+### Mutation proof, not only green assertions
+
+`node packages/yuri/mutation.mjs` kills seven valid JavaScript mutations after
+passing each pristine baseline, now including a recovery journal targeting an
+unrelated file. The original six guarded mutations still fail their tests.
+
+`node packages/magpie-provider/mutation.mjs` builds a pristine copy and passes
+the bundled runtime test, then injects Authorization into the public models.dev
+fetch, rebuilds successfully and requires the runtime test to fail. The public
+request is recorded and asserted **outside** the caught background refresh;
+an assertion cannot be swallowed as an ordinary optional-download failure.
+
+### New native UI run using the file-backed credential
+
+Fresh HOME/XDG state and freshly packed/extracted Agent/provider tarballs were
+used. The actual `magpie yuri provider magpie` connection flow wrote the sidecar;
+the bridge generated a `tokenFile` entry. The unpublished npm pin was replaced
+only with the packed local provider reference, keeping all generated options.
+The assigned key was checked absent from both OpenCode config and new ownership
+state. The cloned Yuri Web production build listed the actual WorkBuddy model
+and completed **`YURI_RUNTIME_KEY_OK`**.
+
+Read-only observation for both primary/title requests:
+
+```text
+session:         ses_e40b8d383ffeAG7gHQIkcZ6W2m
+provider:        magpie-upstream%2Fworkbuddy
+path:            /v1/chat/completions
+User-Agent:      opencode/latest/2.2.6/cli
+usesAssignedKey: true
+```
+
+Actual sandbox Usage at `2026-11-09T15:47:55+08:00` has two HTTP 200 rows for
+that session, both `agent=yuri`, model `workbuddy/deepseek-v4.1-flash`, with
+input/output tokens 5302 / 8 and 209 / 4. This is connection attribution, not
+per-UI detection. Electron is not claimed as tested. No user configuration or
+running installation was modified.
+
+![File-backed provider model picker](verification/runtime-key-models.png)
+![Real reply with runtime-read credentials](verification/runtime-key-reply.png)
+
+## Historical native-contract verification — 2026-11-07
+
 Run on 2026-11-07, macOS arm64, Node 24.18.0, OpenCode 2.2.6,
 Magpie 0.1.3014. Yuri Web used the repository's production Web build
 (`@yuriai/web` working-tree version 0.2.32-beta.10), not an automated claim

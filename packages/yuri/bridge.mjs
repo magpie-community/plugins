@@ -4,7 +4,7 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { isDeepStrictEqual } from "node:util"
-import { parse, parseTree, modify, applyEdits } from "./vendor.mjs"
+import { parse, parseTree, modify, applyEdits } from "./vendor/main.js"
 import { agent } from "./yuri.agent.js"
 
 const PACKAGE = "@magpie-community/opencode-magpie-provider"
@@ -84,12 +84,12 @@ function hasPlugin(entry, file) {
   return false
 }
 
-function desired(control) {
+function desired(control, tokenFile) {
   if (!control?.baseURL && !control?.gatewayKey) return null
   if (typeof control.baseURL !== "string" || typeof control.gatewayKey !== "string" || !/^[\x21-\x7e]+$/.test(control.gatewayKey)) throw new Error("Incomplete Yuri connection; reconnect in Magpie")
   const url = new URL(control.baseURL)
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid Magpie API URL")
-  return { package: SPEC, options: { agentID: "yuri", remote: { baseURL: control.baseURL, token: control.gatewayKey } } }
+  return { package: SPEC, options: { agentID: "yuri", remote: { baseURL: control.baseURL, tokenFile } } }
 }
 
 function json(file) {
@@ -148,7 +148,7 @@ export function syncBridge(p = pathsFor()) {
   return locked(p, () => {
     recover(p)
     const state = json(p.state)
-    const entry = desired(json(p.control))
+    const entry = desired(json(p.control), p.control)
     if (state && !p.configs.includes(state.file)) throw new Error("OpenCode config location changed; disconnect using the original location")
     if (!entry) {
       if (state) {
@@ -179,16 +179,33 @@ export function syncBridge(p = pathsFor()) {
 }
 
 export function startBridge(p = pathsFor(), { interval = 3000, onError = () => console.error("Yuri bridge paused; check OpenCode configuration. Recovery files retained.") } = {}) {
+  const stamp = () => {
+    const text = read(p.control)
+    if (text === null) return null
+    const stat = fs.statSync(p.control, { bigint: true })
+    return `${stat.ino}:${stat.mtimeNs}:${text}`
+  }
+  let observed = stamp()
   let failed = false
   const tick = () => {
-    try { syncBridge(p); failed = false } catch {
+    try {
+      const current = stamp()
+      if (current === observed) return
+      syncBridge(p)
+      observed = current
+      failed = false
+    } catch {
       // Parser/network errors may include credentials or source lines.
       if (!failed) onError()
       failed = true
     }
   }
-  tick()
   const timer = setInterval(tick, interval)
   timer.unref?.()
-  return () => clearInterval(timer)
+  // Magpie unwires an agent before its host exits on disable/removal.
+  process.once("exit", tick)
+  return () => {
+    clearInterval(timer)
+    process.removeListener("exit", tick)
+  }
 }

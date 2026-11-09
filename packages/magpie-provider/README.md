@@ -13,7 +13,10 @@ Yuri Agent in Magpie; do not install this server package in Magpie's plugin host
     "package": "@magpie-community/opencode-magpie-provider@0.1.0",
     "options": {
       "agentID": "yuri",
-      "remote": { "baseURL": "http://127.0.0.1:3425/v1", "token": "YOUR_GATEWAY_KEY" }
+      "remote": {
+        "baseURL": "http://127.0.0.1:3425/v1",
+        "tokenFile": "/absolute/path/to/magpie/agents/yuri/connection.json"
+      }
     }
   }]
 }
@@ -34,11 +37,21 @@ provider, not the caller UI; it does not independently determine Magpie Usage
 attribution. Session requests additionally send `X-Magpie-Session`.
 The provider does **not** replace OpenCode's User-Agent or claim to be Yuri.
 Magpie's real Agent connection supplies `gateway.key` to `connect({ gateway })`;
-the bridge passes that assigned key unchanged as `options.remote.token`. On a
+the bridge passes only its sidecar path as `options.remote.tokenFile`. The
+provider reads the assigned key unchanged at runtime, rather than persisting
+it in OpenCode's config. On a
 local gateway, Magpie identifies that Agent from its assigned key before looking
 at the User-Agent. `X-Magpie-Agent` is a configured advisory label, not proof of
 which UI submitted a request; it alone does not relabel a direct OpenCode client.
 An existing key assigned to another agent is never rewritten to match `agentID`.
+
+`remote.tokenFile` must be an absolute path to a Magpie Agent connection JSON
+with `baseURL` and `gatewayKey`. It cannot be combined with `remote.token`.
+Discovery, refresh, model requests and image tools reread it; a missing/invalid
+file or changed destination fails closed. No token value is put in diagnostics.
+For separately managed remote setups, `remote.token` remains supported: use an
+OpenCode environment reference such as `"{env:MAGPIE_GATEWAY_KEY}"` rather than
+a literal key. Neither mode discovers credentials from unrelated Agent files.
 
 Yuri's cloned source uses the normal OpenCode session/prompt API. The shared
 OpenCode service owns the outbound model request and sets its real User-Agent.
@@ -53,11 +66,17 @@ never starts a gateway process or reads the local fast-model settings.
 
 The provider reads Magpie's live `/models` catalog, native protocol and price
 extensions, routing groups, limits, modalities and reasoning variants. It
-refreshes every 30 seconds and retains the last catalog on errors. It uses
-`https://models.dev/api.json` as a supplemental public price catalog, cached in
+refreshes every 30 seconds and retains the last catalog on errors. By default it
+reads only local price caches; it makes **no models.dev network request**.
+Explicit `options.modelsDev: true` enables an optional background refresh from
+`https://models.dev/api.json`, with a 30-second timeout, rejected redirects and
+cached fallback. The cache is in
 `$XDG_CACHE_HOME/opencode-magpie-plugin/models.json` (else `~/.cache/...`), with
 Magpie/OpenCode caches as read-only seeds. That download carries **no gateway
-token**. Image generation can download a returned image URL without gateway
+token**, Agent/session headers or prompt bodies. The runtime test records the
+actual fetch arguments and asserts outside the caught background task; a valid
+mutation that adds Authorization now fails the test. Image generation can
+download a returned image URL without gateway
 credentials. See `src/gateway.ts`, `src/catalog-cache.ts` and `src/image.ts` for
 the complete behavior; this package has no runtime npm dependency.
 

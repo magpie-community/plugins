@@ -4,7 +4,7 @@
   "description": "Connect Yuri's OpenCode V2 service through the community Magpie provider, preserving existing plugins and options",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["index.mjs", "yuri.agent.js", "bridge.mjs", "vendor.mjs", "README.md", "VERIFICATION.md", "verification", "THIRD_PARTY.md", "ASSET_NOTICE.md", "LICENSE", "LICENSE-YURI", "LICENSE-JSONC-PARSER"],
+  "files": ["index.mjs", "yuri.agent.js", "bridge.mjs", "vendor", "README.md", "VERIFICATION.md", "verification", "THIRD_PARTY.md", "ASSET_NOTICE.md", "LICENSE", "LICENSE-YURI", "LICENSE-JSONC-PARSER"],
   "scripts": { "test": "node --test yuri.test.mjs" },
   "engines": { "node": ">=22" },
   "keywords": ["magpie", "magpie-agent", "yuri", "opencode"],

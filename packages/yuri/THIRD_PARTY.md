@@ -6,16 +6,17 @@ The Agent and bridge are contributed by
 The bridge follows the ownership, journal and host-exit patterns of this
 repository's Reasonix Desktop integration. See `LICENSE`.
 
-`vendor.mjs` bundles **jsonc-parser 3.3.1**, MIT, copyright Microsoft. Only
-`parse`, `parseTree`, `modify` and `applyEdits` are exported. This preserves
-JSONC comments and avoids a runtime install or lifecycle build script. The
-original license is included as `LICENSE-JSONC-PARSER`.
+`vendor/` contains the complete, readable ESM JavaScript sources of
+**jsonc-parser 3.3.1**, MIT, copyright Microsoft, from its `lib/esm` directory.
+The sole source adaptation adds `.js` to relative import specifiers for Node
+ESM resolution. Original comments are retained; there is no minified vendor
+blob, bundler or runtime dependency installation. The original license is
+included as `LICENSE-JSONC-PARSER`.
 
-To regenerate from this package's folder with Bun 1.3.14:
+To verify against an independently unpacked jsonc-parser 3.3.1 package:
 
 ```sh
-npm install --no-save --ignore-scripts --package-lock=false --workspaces=false jsonc-parser@3.3.1
-bun build vendor-entry.mjs --target=node --format=esm --minify --outfile=vendor.mjs
+node packages/yuri/verify-vendor.mjs /absolute/path/to/jsonc-parser/lib/esm
 ```
 
 The embedded Yuri artwork is unchanged; its source and hash are recorded in

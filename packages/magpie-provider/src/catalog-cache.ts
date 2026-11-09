@@ -121,7 +121,7 @@ export const fetchCatalogCache = async (
   timeout = 30_000,
 ): Promise<CatalogCache> => {
   const path = cachePaths()[0];
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(timeout) });
   if (!response.ok) throw new Error(`models.dev 返回 HTTP ${response.status}`);
   const text = await response.text();
   const data = parse(text);
@@ -137,14 +137,15 @@ export const fetchCatalogCache = async (
   return { data, path, stale: false };
 };
 
-/** Read the cache and refresh it in the background when stale; discovery never waits on the network. */
+/** Read local caches; explicit online mode refreshes stale data without blocking discovery. */
 const attempts = new Map<string, number>();
 const pending = new Map<string, Promise<void>>();
 
-export const loadCatalogCache = async (missing = false): Promise<CatalogCache> => {
+export const loadCatalogCache = async (missing = false, online = false): Promise<CatalogCache> => {
   const cache = await readCatalogCache().catch(
     (): CatalogCache => ({ data: undefined, path: cachePaths()[0], stale: true }),
   );
+  if (!online) return cache;
   const path = cachePaths()[0];
   const due = cache.stale || (missing && missingPriceStale(await catalogSource()));
   if (

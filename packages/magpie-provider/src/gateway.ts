@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { MagpieModel } from './catalog.js';
 
@@ -13,6 +13,7 @@ export type GatewayConnection = {
   agentID?: string;
   baseURL: string;
   token: string;
+  tokenFile?: string;
   remote: boolean;
   ensure: () => Promise<void>;
 };
@@ -38,8 +39,8 @@ export const resolveConnection = async (options?: unknown): Promise<GatewayConne
   if (typeof remote !== 'object' || remote === null || Array.isArray(remote))
     throw invalid('', '必须是包含 baseURL 和 token 的对象');
   const value = remote as Record<string, unknown>;
-  if (Object.keys(value).some((key) => key !== 'baseURL' && key !== 'token'))
-    throw invalid('', '仅支持 baseURL 和 token 字段');
+  if (Object.keys(value).some((key) => key !== 'baseURL' && key !== 'token' && key !== 'tokenFile'))
+    throw invalid('', '仅支持 baseURL、token 和 tokenFile 字段');
   let url: URL;
   try {
     if (typeof value.baseURL !== 'string' || value.baseURL.trim() !== value.baseURL)
@@ -59,15 +60,40 @@ export const resolveConnection = async (options?: unknown): Promise<GatewayConne
       '必须是完整 HTTP(S) API 基地址，不能包含用户名、密码、查询参数或片段',
     );
   }
+  const baseURL = url.href.replace(/\/+$/, '');
+  if (value.tokenFile !== undefined) {
+    if (value.token !== undefined || typeof value.tokenFile !== 'string' || !isAbsolute(value.tokenFile))
+      throw invalid('.tokenFile', '必须是绝对路径，且不能同时设置 token');
+    const tokenFile = value.tokenFile;
+    const connection: GatewayConnection = {
+      agentID, baseURL, tokenFile,
+      token: await readAssignedKey(tokenFile, baseURL),
+      remote: true,
+      ensure: async () => { connection.token = await readAssignedKey(tokenFile, baseURL); },
+    };
+    return connection;
+  }
   if (typeof value.token !== 'string' || !/^[\x21-\x7e]+$/.test(value.token))
     throw invalid('.token', '必须是非空 token，不能包含空格或控制字符');
   return {
     agentID,
-    baseURL: url.href.replace(/\/+$/, ''),
+    baseURL,
     token: value.token,
     remote: true,
     ensure: async () => {},
   };
+};
+
+const readAssignedKey = async (file: string, baseURL: string): Promise<string> => {
+  try {
+    const connection = JSON.parse(await readFile(file, 'utf8'));
+    if (new URL(connection.baseURL).href.replace(/\/+$/, '') !== baseURL ||
+        typeof connection.gatewayKey !== 'string' || !/^[\x21-\x7e]+$/.test(connection.gatewayKey))
+      throw new Error();
+    return connection.gatewayKey;
+  } catch {
+    throw new Error('Magpie options.remote.tokenFile 不可用、无效或连接地址已改变；请检查 Agent 连接。');
+  }
 };
 
 export const resolveBaseURL = async (): Promise<string> => {
@@ -234,7 +260,11 @@ export const ensureGateway = async (baseURL: string): Promise<void> => {
   }
 };
 
-export const fetchModels = async (baseURL: string, token = 'magpie', agentID = 'opencode'): Promise<MagpieModel[]> => {
+export const fetchModels = async (
+  baseURL: string,
+  token = 'magpie',
+  agentID = 'opencode',
+): Promise<MagpieModel[]> => {
   const response = await fetch(`${baseURL}/models`, {
     headers: {
       Authorization: `Bearer ${token}`,

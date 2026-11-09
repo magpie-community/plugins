@@ -16,14 +16,16 @@ const cases = [
   ["no restore duplicate guard", "disconnect refuses duplicated", text => text.replace('if (matches.length > 1) throw new Error("Managed plugin duplicated; retain Yuri recovery files")', '')],
   ["no URL guard", "rejects non-HTTP", text => text.replace('if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid Magpie API URL")', '')],
   ["no key charset guard", "rejects whitespace, control", text => text.replace(' || !/^[\\x21-\\x7e]+$/.test(control.gatewayKey)', '')],
+  ["no recovery target guard", "recovery refuses a journal targeting", text => text.replace('if (!p.configs.includes(pending.file)) throw new Error("Recovery target changed; retain Yuri recovery files")', '')],
 ]
 
 for (const [name, pattern, mutate] of cases) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "yuri-mutation-"))
   try {
-    for (const file of ["package.json", "yuri.test.mjs", "bridge.mjs", "index.mjs", "vendor.mjs", "yuri.agent.js"]) {
+    for (const file of ["package.json", "yuri.test.mjs", "bridge.mjs", "index.mjs", "yuri.agent.js"]) {
       fs.copyFileSync(path.join(root, file), path.join(directory, file))
     }
+    fs.cpSync(path.join(root, "vendor"), path.join(directory, "vendor"), { recursive: true })
     const run = () => spawnSync(process.execPath, ["--test", `--test-name-pattern=${pattern}`, "yuri.test.mjs"], { cwd: directory, encoding: "utf8", timeout: 20_000 })
     const baseline = run()
     assert.equal(baseline.status, 0, `${name}: baseline failed\n${baseline.stdout}${baseline.stderr}`)

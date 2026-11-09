@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { parse } from "./vendor.mjs"
+import { parse } from "./vendor/main.js"
 import { agent, connect } from "./yuri.agent.js"
 import { pathsFor, syncBridge, startBridge } from "./bridge.mjs"
 
@@ -35,7 +35,7 @@ test("Agent and plugin card embed the same original Yuri PNG for offline use", (
   assert.ok(pkg.files.includes("ASSET_NOTICE.md"))
   assert.ok(pkg.files.includes("LICENSE-YURI"))
   assert.ok(pkg.files.includes("LICENSE-JSONC-PARSER"))
-  assert.ok(pkg.files.includes("vendor.mjs"))
+  assert.ok(pkg.files.includes("vendor"))
   assert.equal(pkg.dependencies, undefined)
   assert.deepEqual(Object.keys(pkg.magpie.summary).sort(), ["en", "zh"])
   assert.ok(Object.values(pkg.magpie.summary).every(text => typeof text === "string" && Buffer.byteLength(text) <= 300))
@@ -63,7 +63,7 @@ test("merges one plugin, leaves comments/options/providers intact, restores byte
   assert.ok(installed.includes('"providers": {"own":{"name":"Mine"}}'))
   assert.deepEqual(get(file).plugins[1], {
     package: "@magpie-community/opencode-magpie-provider@0.1.0",
-    options: { agentID: "yuri", remote: { baseURL: gateway.v1, token: gateway.key } },
+    options: { agentID: "yuri", remote: { baseURL: gateway.v1, tokenFile: p.control } },
   })
   assert.equal(fs.statSync(file).mode & 0o777, 0o640)
   assert.equal(fs.statSync(p.state).mode & 0o777, 0o600)
@@ -140,7 +140,8 @@ test("gateway changes update only the owned entry and still restore the original
   syncBridge(p)
   put(p.control, connect({ gateway: { v1: "http://127.0.0.1:3435/v1", key: "new-key" } }))
   syncBridge(p)
-  assert.equal(get(file).plugins[1].options.remote.token, "new-key")
+  assert.equal(get(file).plugins[1].options.remote.tokenFile, p.control)
+  assert.equal(fs.readFileSync(file, "utf8").includes("new-key"), false)
   assert.deepEqual(get(file).plugins[0], "other")
   put(p.control, {})
   syncBridge(p)
@@ -210,11 +211,13 @@ test("respects OpenCode config directory overrides", t => {
   assert.deepEqual(get(p.configs[1]), { model: "keep" })
 })
 
-test("error notifications do not expose malformed config or credentials", t => {
+test("error notifications do not expose malformed config or credentials", async t => {
   const { p, file } = fixture(t)
   put(file, '{"secret":"never-log",')
   const errors = []
-  const stop = startBridge(p, { onError: (...args) => errors.push(args) })
+  const stop = startBridge(p, { interval: 5, onError: (...args) => errors.push(args) })
+  put(p.control, connect({ gateway: { ...gateway, key: "updated-test-key" } }))
+  await new Promise(resolve => setTimeout(resolve, 30))
   stop()
   assert.deepEqual(errors, [[]])
 })
@@ -318,12 +321,56 @@ test("host exit restores a disconnected Agent even before the next poll", t => {
   const { home, p, file } = fixture(t)
   const original = '{ // keep\n "model":"mine"\n}'
   put(file, original)
+  syncBridge(p)
   const script = `import fs from "node:fs";
     import Yuri from ${JSON.stringify(new URL("./index.mjs", import.meta.url).href)};
     await Yuri();
     if (!fs.existsSync(${JSON.stringify(p.state)})) throw new Error("Bridge did not connect");
     fs.writeFileSync(${JSON.stringify(p.control)}, "{}");
     process.exit(0)`
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, ".config"), OPENCODE_CONFIG_DIR: path.dirname(file), OPENCODE_CONFIG: "" },
+    encoding: "utf8", timeout: 10_000,
+  })
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(fs.readFileSync(file, "utf8"), original)
+  assert.equal(fs.existsSync(p.state), false)
+})
+
+test("recovery refuses a journal targeting a file outside the configured targets", t => {
+  const { home, p } = fixture(t)
+  const outside = path.join(home, "unrelated.json")
+  put(outside, "original")
+  const pending = { file: outside, before: "original", after: "overwritten", state: null }
+  put(p.state + ".pending", pending)
+  assert.throws(() => syncBridge(p), /Recovery target changed/)
+  assert.equal(fs.readFileSync(outside, "utf8"), "original")
+  assert.deepEqual(get(p.state + ".pending"), pending)
+  assert.equal(fs.existsSync(p.state), false)
+})
+
+test("loading an already-connected host does not edit OpenCode until a connection transition", async t => {
+  const { p, file } = fixture(t)
+  const original = '{"model":"user/keep"}'
+  put(file, original)
+  const stop = startBridge(p, { interval: 5 })
+  t.after(stop)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(fs.readFileSync(file, "utf8"), original)
+  assert.equal(fs.existsSync(p.state), false)
+  put(p.control, {})
+  await new Promise(resolve => setTimeout(resolve, 30))
+  put(p.control, connect({ gateway }))
+  for (let i = 0; i < 100 && !fs.existsSync(p.state); i++) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(get(file).plugins[0].options.remote.tokenFile, p.control)
+  for (const target of [file, p.state]) assert.equal(fs.readFileSync(target, "utf8").includes(gateway.key), false)
+})
+
+test("plugin load and exit leave an already-connected user's configuration untouched", t => {
+  const { home, p, file } = fixture(t)
+  const original = '{"model":"user/keep"}'
+  put(file, original)
+  const script = `import Yuri from ${JSON.stringify(new URL("./index.mjs", import.meta.url).href)}; await Yuri(); process.exit(0)`
   const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, ".config"), OPENCODE_CONFIG_DIR: path.dirname(file), OPENCODE_CONFIG: "" },
     encoding: "utf8", timeout: 10_000,

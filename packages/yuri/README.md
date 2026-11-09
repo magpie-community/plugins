@@ -27,6 +27,12 @@ Installation alone does not connect Yuri or change OpenCode's plugins. Turn
 running while changing the switch; its Bun host applies the change within about
 three seconds. OpenCode watches its configuration; no service restart is requested.
 
+Host startup is read-only, including when a connection sidecar already exists.
+Only a subsequent native Magpie connection-file transition applies or undoes
+the bridge. After installing/upgrading while Yuri was already on, turn it off
+and on once with Magpie running; the host does not silently repair or migrate
+an existing OpenCode configuration on load.
+
 Before this contribution is merged, test the local directory:
 
 ```sh
@@ -36,7 +42,7 @@ magpie plugin add "$(pwd)/packages/yuri"
 The same integration is also available as the standalone
 [yee94/magpie-agent-yuri](https://github.com/yee94/magpie-agent-yuri) Git package.
 Install one variant only: both declare the same `yuri` Agent id. This community
-package bundles its parser and follows the repository's dist/npm publishing
+package includes readable parser source and follows the repository's dist/npm publishing
 workflow; it requires no runtime dependency installation or build scripts. The
 standalone Git package instead ships the corrected provider in its own local
 `provider/` directory, retaining its existing package names and requiring no
@@ -51,8 +57,11 @@ separate npm publication.
   Its source and runtime are reviewed and published in this repository. It needs
   its first community **npm** publication before OpenCode can resolve the pin;
   Magpie's dist fallback alone is not enough for OpenCode. A new entry passes
-  `options.remote.baseURL` and `options.remote.token` from that connection,
-  so it does not guess a port or copy any upstream subscription credentials.
+  `options.remote.baseURL` and `options.remote.tokenFile` (the absolute sidecar
+  path). The assigned key is **not copied into OpenCode's config or the new
+  bridge ownership state**. The provider reads it at runtime, checks the URL
+  still matches, and rereads it before requests. Missing/invalid connection
+  files fail closed rather than falling back to another connection.
   It also sets `options.agentID: "yuri"` as an advisory label on discovery,
   inference and image requests, without replacing OpenCode's real User-Agent.
   Local Agent attribution comes from Magpie's assigned connection key, passed
@@ -67,7 +76,7 @@ separate npm publication.
   and readable local package references are **left untouched**. They are never
   taken over, downgraded or duplicated. Their own gateway configuration wins.
 - JSONC comments, trailing commas, BOM, unrelated settings and plugins are kept.
-  The bundled `jsonc-parser` handles token-level edits rather than rewriting
+  The readable `vendor/` jsonc-parser sources handle token-level edits rather than rewriting
   the user's config as JSON; its version and license are in `THIRD_PARTY.md`.
 - `~/.config/magpie/agents/yuri/state.json` records ownership. A private
   `.pending` journal makes interrupted edits recoverable without overwriting
@@ -100,7 +109,8 @@ disable an independently installed Magpie plugin**.
 Disable/remove the Magpie package through Magpie's plugin management so it can
 unwire the sidecar first. Do not delete recovery files while connected. For a
 forced process termination during an edit, leave them in place and run Magpie
-with this package again to recover. Invalid JSONC, duplicate top-level keys,
+with this package again and make an explicit connection transition to recover.
+Loading a host alone never replays a pending config write. Invalid JSONC, duplicate top-level keys,
 missing local plugin paths, symlinked config files and conflicting recovery
 edits stop the bridge without rewriting the configuration. Errors logged by
 the timer intentionally omit source text and credentials.

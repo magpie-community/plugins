@@ -38,17 +38,12 @@ for (const name of readdirSync(root)) {
     const mod = await import(pathToFileURL(join(dir, pkg.main ?? "index.mjs")).href)
     // A native V2 provider needs no legacy auth shim. Never run setup here:
     // provider setup can contact a gateway; its own tests exercise that API.
-    if (mod.default && typeof mod.default.id === "string" && (typeof mod.default.setup === "function" || typeof mod.default.effect === "function")) {
-      problems.push(...(await opencode2Problems(dir, pkg)))
-      if (problems.length) failed++
-      console.log(problems.length ? `✗ ${name}\n  ${problems.join("\n  ")}` : `✓ ${name}`)
-      continue
-    }
+    const nativeV2 = mod.default && typeof mod.default.id === "string" && (typeof mod.default.setup === "function" || typeof mod.default.effect === "function")
     // as magpie's host takes them: every exported function, and the
     // OpenCode v1 form, a default export of { id, server }
     const fns = Object.values(mod).filter((v) => typeof v === "function")
     const v1 = typeof mod.default?.server === "function" ? mod.default.server : null
-    if (!fns.length && !v1) problems.push("exports no plugin function")
+    if (!fns.length && !v1 && !nativeV2) problems.push("exports no plugin function")
     // a page's v1 server is its host part, a local service the page
     // navigates to: no provider, no tools. It isn't started here (it would
     // take a port and write config); the package's own tests start it.
@@ -103,7 +98,7 @@ for (const name of readdirSync(root)) {
       // a provider OpenCode has built in, served by the plugin's loader
       if (!hooks.config && typeof auth.loader === "function") servesModels = true
     }
-    if (servesModels) problems.push(...(await opencode2Problems(dir, pkg)))
+    if (servesModels || nativeV2) problems.push(...(await opencode2Problems(dir, pkg)))
   } catch (e) {
     problems.push(String(e?.stack ?? e))
   }
