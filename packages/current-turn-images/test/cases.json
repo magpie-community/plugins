@@ -1,0 +1,7293 @@
+[
+  {
+    "name": "chat - historical image removed and current images retained",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - text-only current turn removes all prior user images",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - image-only historical message gets marker",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - first turn retained",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - tool request removes previous user images",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - multiple tool requests keep only the latest input images",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - adjacent user attachment messages retained",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - adjacent old user messages filtered together",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD2",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - historical assistant images removed",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/ASSISTANT",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "text": "[Historical image omitted]",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - three turns",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - no human input passes through",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - malformed entries pass through",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - historical tool payload retained",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/OLD",
+                "detail": "high"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - empty content passes through",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "chat - string content retained",
+    "protocol": "chat",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.invalid/NEW2",
+                "detail": "high"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - historical image removed and current images retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - text-only current turn removes all prior user images",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - image-only historical message gets marker",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - first turn retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - tool request removes previous user images",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - multiple tool requests keep only the latest input images",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - adjacent user attachment messages retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - adjacent old user messages filtered together",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD2",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - historical assistant images removed",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,ASSISTANT",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "text": "[Historical image omitted]",
+              "type": "input_text"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - three turns",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - no human input passes through",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - malformed entries pass through",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - historical tool payload retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - empty content passes through",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - string content retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - reasoning and function call pairing retained",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_1",
+          "encrypted_content": "opaque"
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "look",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_1",
+          "encrypted_content": "opaque"
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "look",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "ok"
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "responses - string input",
+    "protocol": "responses",
+    "request": {
+      "model": "test",
+      "input": "hi"
+    },
+    "expected": {
+      "model": "test",
+      "input": "hi"
+    }
+  },
+  {
+    "name": "responses - references retained while available history filtered",
+    "protocol": "responses",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,OLD",
+              "detail": "original"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2,
+      "previous_response_id": "resp_1",
+      "conversation": "conv_1"
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "now"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW",
+              "detail": "original"
+            },
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,NEW2",
+              "detail": "original"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2,
+      "previous_response_id": "resp_1",
+      "conversation": "conv_1"
+    }
+  },
+  {
+    "name": "anthropic - historical image removed and current images retained",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - text-only current turn removes all prior user images",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - image-only historical message gets marker",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - first turn retained",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - tool request removes previous user images",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - multiple tool requests keep only the latest input images",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[Historical image omitted]"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - adjacent user attachment messages retained",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - adjacent old user messages filtered together",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - historical assistant images removed",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "ASSISTANT"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "text": "[Historical image omitted]",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - three turns",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - no human input passes through",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - malformed entries pass through",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "content": null
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - historical tool image removed, result retained",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[Historical image omitted]"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - empty content passes through",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": []
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - string content retained",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": "old text"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "now"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "anthropic - mixed tool result and human input starts turn",
+    "protocol": "anthropic",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "a new instruction"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call_1",
+              "content": [
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "url",
+                    "url": "https://example.invalid/tool"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "a new instruction"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - historical image removed and current images retained",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - text-only current turn removes all prior user images",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - image-only historical message gets marker",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - first turn retained",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - tool request removes previous user images",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - multiple tool requests keep only the latest input images",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - adjacent user attachment messages retained",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - adjacent old user messages filtered together",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD2"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - historical assistant images removed",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "ASSISTANT"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "[Historical image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - three turns",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - no human input passes through",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - malformed entries pass through",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "parts": null
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        null,
+        17,
+        {},
+        {
+          "role": "user",
+          "parts": null
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - historical tool payload retained",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - empty content passes through",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": []
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": []
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - mixed tool result and human input starts turn",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            },
+            {
+              "text": "a new instruction"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "old"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "look",
+                "response": {
+                  "ok": true
+                }
+              }
+            },
+            {
+              "text": "a new instruction"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - file or snake-case image {\"fileData\":{\"mimeType\":\"image/jpeg\",\"fileUri\":\"gs://bucket/old\"}}",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "fileData": {
+                "mimeType": "image/jpeg",
+                "fileUri": "gs://bucket/old"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - file or snake-case image {\"inline_data\":{\"mime_type\":\"IMAGE/PNG\",\"data\":\"OLD\"}}",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inline_data": {
+                "mime_type": "IMAGE/PNG",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - file or snake-case image {\"file_data\":{\"mime_type\":\"image/webp\",\"file_uri\":\"gs://bucket/old\"}}",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "file_data": {
+                "mime_type": "image/webp",
+                "file_uri": "gs://bucket/old"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - audio and video retained",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "audio/wav",
+                "data": "A"
+              }
+            },
+            {
+              "fileData": {
+                "mimeType": "video/mp4",
+                "fileUri": "gs://v"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "audio/wav",
+                "data": "A"
+              }
+            },
+            {
+              "fileData": {
+                "mimeType": "video/mp4",
+                "fileUri": "gs://v"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "gemini - omitted role defaults to user",
+    "protocol": "gemini",
+    "request": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "parts": [
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "OLD"
+              }
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    },
+    "expected": {
+      "model": "test/model",
+      "stream": true,
+      "tools": [],
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "[Historical user image omitted]"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "answer"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "now"
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW"
+              }
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/png",
+                "data": "NEW2"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2
+    }
+  },
+  {
+    "name": "unknown protocol",
+    "protocol": "other",
+    "request": {
+      "messages": []
+    },
+    "expected": {
+      "messages": []
+    }
+  },
+  {
+    "name": "null body",
+    "protocol": "chat",
+    "request": null,
+    "expected": null
+  },
+  {
+    "name": "array body",
+    "protocol": "chat",
+    "request": [],
+    "expected": []
+  }
+]

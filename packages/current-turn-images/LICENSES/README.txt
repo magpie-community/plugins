@@ -1,0 +1,1 @@
+Independent command-line tools are bundled without modification. oxipng is MIT; libjpeg-turbo uses IJG/BSD licenses; libwebp uses BSD and a patent grant; gifsicle/gifdiff are GPL-2.0-or-later. Corresponding GIF tool source is included under vendor-sources. Tools are executed as separate processes, not linked into plugin code.

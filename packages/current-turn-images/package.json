@@ -1,0 +1,40 @@
+{
+  "name": "@magpie-community/gateway-current-turn-images",
+  "version": "0.4.3",
+  "description": "Keep latest-request input images, losslessly optimize embedded images on Windows x64, and show local request-size metrics",
+  "type": "module",
+  "files": [
+    "filter.js", "metrics.js", "journal.js", "request.hooks.js",
+    "current-turn-images.middleware.js", "cache-anchors.js", "compression.js",
+    "image-formats.js", "page", "bin", "LICENSES", "vendor-sources",
+    "LICENSE", "README.md", "CHANGELOG.md", "THIRD-PARTY.md"
+  ],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "keywords": ["magpie", "magpie-hooks", "images", "lossless", "request-size"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/current-turn-images"
+  },
+  "engines": { "bun": ">=1.4.2" },
+  "magpie": {
+    "hooks": "./request.hooks.js",
+    "page": {
+      "title": "Request images",
+      "titles": { "zh": "请求图片" },
+      "file": "page/requests-v021.html"
+    },
+    "permissions": [],
+    "options": {
+      "gatewayTimeoutMs": 10000,
+      "imageCompression": {
+        "enabled": true,
+        "maxInputBytes": 8388608,
+        "maxRawBytes": 67108864,
+        "maxMilliseconds": 2500,
+        "toolMilliseconds": 1000
+      }
+    }
+  }
+}
