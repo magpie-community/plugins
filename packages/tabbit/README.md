@@ -1,7 +1,7 @@
 # Tabbit for magpie
 
 [Tabbit](https://web.tabbit.com) as a provider in [magpie](https://usemagpie.ai)
-(and OpenCode). It signs in with the Tabbit Browser account already on this
+(and OpenCode). It signs in with the Tabbit account already on this
 computer, lists the account's real model catalog, and answers turns through
 Tabbit's own chat API — so an agent behind magpie can pick `tabbit/Default`,
 `tabbit/DeepSeek-V4.1-Flash`, `tabbit/GLM-5.3-Flash` and the rest like any
@@ -12,7 +12,7 @@ other provider, with the account's allowance, fallbacks and usage card.
 ```sh
 magpie plugin add @magpie-community/opencode-tabbit-auth   # from the community list
 # from this source tree instead:   magpie plugin add .
-magpie plugin login tabbit                                 # pick “Read Tabbit Browser sign-in (macOS)”
+magpie plugin login tabbit                                 # pick “Read the Tabbit app's sign-in (macOS)”
 magpie provider test tabbit                                # ✓ chat · Default
 ```
 
@@ -42,7 +42,7 @@ Tabbit's sign-in is a `token` cookie: an RS256 JWT issued by
 
 | Method | What it does |
 |---|---|
-| **Read Tabbit Browser sign-in** (macOS) | Finds the cookie store Tabbit Browser keeps (`~/Library/Application Support/Tabbit Browser/Default/Cookies`), reads the `token` cookie, and decrypts it with the password in the login keychain under `Tabbit Browser Safe Storage`. Nothing is copied by hand; the browser does not have to be closed — the database is copied before it is read. |
+| **Read the Tabbit app's sign-in** (macOS) | Finds the cookie store Tabbit keeps, reads the `token` cookie, and decrypts it with the password in the login keychain. The international build (Tabbit.app) keeps its store in `~/Library/Application Support/Tabbit` and the password under `Tabbit Safe Storage`; the China build (Tabbit Browser.app) in `~/Library/Application Support/Tabbit Browser`, under `Tabbit Browser Safe Storage`. Each store is read with its own build's item first, then the other's. macOS asks once for Keychain access: click Allow (or Always Allow). Nothing is copied by hand; the browser does not have to be closed — the database is copied before it is read. |
 | **Paste Tabbit token** | For anything the first method can't reach (Windows or Linux, a browser profile kept somewhere else). In Tabbit Browser, open `web.tabbit.com` (or `web.tabbit.ai` for an international account) and read the `token` cookie from the developer tools; paste it whole. |
 
 A pasted value may be the bare JWT or a whole `name=value; name=value` cookie

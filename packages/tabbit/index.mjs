@@ -476,14 +476,14 @@ function createPlugin() {
       methods: [
         {
           type: "oauth",
-          label: "Read Tabbit Browser sign-in (macOS)",
+          label: "Read the Tabbit app's sign-in (macOS)",
           authorize: () => ({
             url: "",
-            instructions: "Reads the sign-in Tabbit Browser already has on this computer. Nothing is copied by hand.",
+            instructions: "Reads the sign-in the Tabbit app already has on this computer. When macOS asks for Keychain access, click Allow. Nothing is copied by hand.",
             method: "auto",
             callback: async () => {
               try {
-                const sign = desktopSignIn()
+                const sign = await desktopSignIn()
                 return { type: "success", key: sign.key, accountId: sign.userId, metadata: { userId: sign.userId, source: "desktop", site: sign.site } }
               } catch (error) {
                 return { type: "failed", error: String(error?.message ?? error) }
