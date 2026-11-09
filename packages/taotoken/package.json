@@ -1,0 +1,16 @@
+{
+  "name": "@magpie-community/opencode-taotoken-auth",
+  "version": "0.9.1",
+  "description": "OpenCode provider plugin: TaoToken CodingPlan — API-key models through the coding gateway, and the plan's 5-hour / week / month usage windows read with the console's login token",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "icon.svg"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "taotoken", "coding-plan"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/taotoken"
+  }
+}
