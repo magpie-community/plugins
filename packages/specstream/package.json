@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/tools-specstream",
+  "version": "0.1.0",
+  "description": "SpecStream Search API and Extract API for every agent: live web answers with a source page for each value, and page text from up to 20 URLs a call",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "specstream.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-tools", "mcp", "opencode", "opencode-plugin", "web-search", "extract", "specstream"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/specstream" }
+}
