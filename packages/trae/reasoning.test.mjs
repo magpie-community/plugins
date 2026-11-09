@@ -40,12 +40,15 @@ async function live(configs) {
 test("an entry's levels are offered as the variants agents pick, named as OpenCode names them", async () => {
   const ms = await live([entry("deepseek-v4.1-flash", ["light", "high", "extra_high"], { default_level: "high" })])
   const m = ms["deepseek-v4.1-flash"]
-  expect(Object.keys(m.variants)).toEqual(["low", "high", "xhigh"])
+  // extra_high is this model's top, so it is offered as max too (sent as
+  // extra_high): a routing group with it in can offer max
+  expect(Object.keys(m.variants)).toEqual(["low", "high", "xhigh", "max"])
   // the value is what OpenCode writes into the body, so it is this plugin's
   // name for the level; effortOf turns it into Trae's on the way out
   expect(m.variants.low).toEqual({ reasoningEffort: "low" })
   expect(m.variants.high).toEqual({ reasoningEffort: "high" })
   expect(m.variants.xhigh).toEqual({ reasoningEffort: "xhigh" })
+  expect(m.variants.max).toEqual({ reasoningEffort: "max" })
   // the model reasons, as it did before the levels came
   expect(m.capabilities.reasoning).toBe(true)
 })
@@ -65,8 +68,10 @@ test("max and medium an entry names are offered and sent as Trae names them (#43
   const levels = ["low", "medium", "high", "xhigh", "max"]
   expect(chatBody(req("max"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBe("max")
   expect(chatBody(req("medium"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBe("medium")
-  // a model that names no max still sends nothing for it
-  expect(chatBody(req("max"), "chat_v3", "", 0, null, "s", false, ["low", "high", "xhigh"]).reasoning_effort).toBeUndefined()
+  // a model that names no max and tops at extra_high is sent extra_high for it
+  expect(chatBody(req("max"), "chat_v3", "", 0, null, "s", false, ["low", "high", "xhigh"]).reasoning_effort).toBe("extra_high")
+  // one whose top is lower still sends nothing for it
+  expect(chatBody(req("max"), "chat_v3", "", 0, null, "s", false, ["low", "high"]).reasoning_effort).toBeUndefined()
 })
 
 test("max reaches Trae's request for a model whose entry names it (#434)", async () => {
@@ -107,7 +112,7 @@ test("the levels an agent picks are sent as Trae's own names, and left out when 
   expect(chatBody(req("high"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBe("high")
   expect(chatBody(req("xhigh"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBe("extra_high")
   // a level the model doesn't take is not sent: Trae has no entry for it
-  expect(chatBody(req("max"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBeUndefined()
+  expect(chatBody(req("medium"), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBeUndefined()
   // no effort asked, or a model with no levels: nothing sent
   expect(chatBody(req(), "chat_v3", "", 0, null, "s", false, levels).reasoning_effort).toBeUndefined()
   expect(chatBody(req("high"), "chat_v3", "", 0, null, "s", false, []).reasoning_effort).toBeUndefined()
@@ -146,7 +151,7 @@ test("every variant's own value survives the round trip to Trae's request", asyn
   const variants = ms["deepseek-v4.1-flash"].variants
   const opts = await hooks.auth.loader(async () => signedIn())
 
-  const expectSent = { low: "light", high: "high", xhigh: "extra_high" }
+  const expectSent = { low: "light", high: "high", xhigh: "extra_high", max: "extra_high" }
   for (const [name, v] of Object.entries(variants)) {
     await opts.fetch(opts.baseURL + "/chat/completions", {
       method: "POST",
@@ -181,8 +186,8 @@ test("a model in the fallback table keeps the levels its entry names", async () 
 
   const ms = await hooks.provider.models(provider, { auth: signedIn() })
   // glm-5.2 is in the fallback table, so its config entry is the empty one
-  expect(Object.keys(ms["glm-5.2"].variants)).toEqual(["high", "xhigh"])
-  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh"])
+  expect(Object.keys(ms["glm-5.2"].variants)).toEqual(["high", "xhigh", "max"])
+  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh", "max"])
 })
 
 test("a request for a model with no levels carries no reasoning_effort", async () => {
@@ -384,7 +389,7 @@ test("of two entries a model has, the one naming levels is kept, so its levels a
   ] }))
   const hooks = await TraeCNAuthPlugin({ client: {} })
   const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
-  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh"])
+  expect(Object.keys(ms["glm-5.3"].variants)).toEqual(["low", "high", "xhigh", "max"])
 })
 
 test("a name the lists agree on still outranks an entry's levels", async () => {
@@ -404,4 +409,63 @@ test("a name the lists agree on still outranks an entry's levels", async () => {
   const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
   expect(Object.keys(ms["glm-5.3"].variants)).toEqual([])
   expect(ms["glm-5.3"].name).toBe("GLM-5.3")
+})
+
+// @avalongarden6 on X (11-09): TRAE CN's app offers DeepSeek-V4.1-Flash,
+// GLM-5.3 and Kimi-K3 轻/高/极高, and 极高 is the model's top. magpie ranged
+// the Trae member 低–很高 beside WorkBuddy's and Qoder's …–最高, and a
+// routing group, which offers the levels its members share, lost max. A
+// model whose top is extra_high is offered max, sent as extra_high.
+test("a model whose top is extra_high is offered max, and max and xhigh both go as extra_high", async () => {
+  const { offered } = _internal
+  for (const name of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3"]) {
+    const ms = await live([entry(name, ["light", "high", "extra_high"], { default_level: "high" })])
+    expect(Object.keys(ms[name].variants)).toEqual(["low", "high", "xhigh", "max"])
+    f.close()
+  }
+  const levels = ["low", "high", "xhigh"]
+  expect(offered(levels)).toEqual(["low", "high", "xhigh", "max"])
+  expect(effortOf(levels, "max")).toBe("extra_high")
+  expect(effortOf(levels, "xhigh")).toBe("extra_high")
+  expect(effortOf(levels, "extra_high")).toBe("extra_high")
+  // low and high are as they were
+  expect(effortOf(levels, "low")).toBe("light")
+  expect(effortOf(levels, "light")).toBe("light")
+  expect(effortOf(levels, "high")).toBe("high")
+  // a model that tops lower is offered no max, and sent none for it
+  expect(offered(["low", "high"])).toEqual(["low", "high"])
+  expect(effortOf(["low", "high"], "max")).toBeUndefined()
+  // nor one with no levels
+  expect(offered([])).toEqual([])
+  expect(offered(null)).toEqual([])
+  expect(effortOf([], "max")).toBeUndefined()
+})
+
+test("an entry that names Trae's own max keeps it: max is max, extra_high is xhigh", () => {
+  const { offered } = _internal
+  const levels = levelsOf({ reasoning_effort_config: { options: ["light", "high", "extra_high", "max"] } })
+  expect(offered(levels)).toEqual(["low", "high", "xhigh", "max"])
+  expect(effortOf(levels, "max")).toBe("max")
+  expect(effortOf(levels, "xhigh")).toBe("extra_high")
+  expect(effortOf(levels, "low")).toBe("light")
+})
+
+// a routing group set to max: magpie fits max to the member's own levels
+// (catalog.NearestEffort over the variants), finds max among them and sends
+// the plugin max, which must reach Trae as extra_high
+test("max asked of a model whose top is extra_high reaches Trae as extra_high", async () => {
+  f = fakeTrae()
+  f.route("POST /api/ide/v1/batch_get_detail_param", () => json({ function_configs: [
+    { function: "chat_v3", config_info_list: [entry("kimi-k3", ["light", "high", "extra_high"], { default_level: "high" })] },
+  ] }))
+  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { content: "ok" }], ["finish", { finish_reason: "stop" }]]))
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  await opts.fetch(opts.baseURL + "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "kimi-k3", stream: true, messages: [{ role: "user", content: "hi" }], reasoning_effort: "max" }),
+  })
+  const sent = f.seen.find((r) => r.path === "/api/agent/v3/llm_utils_chat")
+  expect(sent.json.reasoning_effort).toBe("extra_high")
 })

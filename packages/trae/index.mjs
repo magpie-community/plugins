@@ -2996,6 +2996,15 @@ const MAX = "-max"
 // 更大上下文 (Max) 1M-window switch, which is the model id + MAX below, not a
 // level (#434's screenshot).
 //
+// TRAE CN's 极高 (extra_high) is the top of a model that names no max of its
+// own — DeepSeek-V4.1-Flash, GLM-5.3 and Kimi-K3 offer 轻/高/极高 — so it is
+// that model's max too (@avalongarden6 on X, 11-09). Offered as xhigh alone,
+// such a member ranged 低–很高 beside WorkBuddy's and Qoder's …–最高 in a
+// routing group, and the group, which offers the levels its members share,
+// lost max for every member. So such a model is offered max as well, and max
+// is sent as extra_high (topsAtXhigh). An entry that names Trae's own max
+// keeps it: max is max and extra_high is xhigh.
+//
 // An entry without the config takes no level: Trae serves it at its own
 // default and nothing is sent. The plugin used to send none for every model,
 // which read as "Trae takes no level" — it takes them, per model, and an
@@ -3020,19 +3029,27 @@ const levelsOf = (m) => {
 // spelling here would make the body say "light", which is not one of the
 // levels this plugin offers, and the field would then be dropped. {} when the
 // model takes none.
-const variantsOf = (levels) => Object.fromEntries((levels ?? []).map((level) => [level, { reasoningEffort: level }]))
+const variantsOf = (levels) => Object.fromEntries(offered(levels).map((level) => [level, { reasoningEffort: level }]))
+
+// topsAtXhigh: the entry's top level is extra_high, with no max of its own
+const topsAtXhigh = (levels) => Array.isArray(levels) && levels.includes("xhigh") && !levels.includes("max")
+
+// offered is the levels agents are offered for a model: its own, and max
+// beside an extra_high that is its top (sent as extra_high, effortOf)
+const offered = (levels) => (topsAtXhigh(levels) ? [...levels, "max"] : levels ?? [])
 
 // effortOf is the name to send Trae for an effort the request carries, or
 // undefined when the model doesn't take that one: a level Trae has no entry for
 // is rejected, so nothing is sent instead. The effort arrives in either
 // spelling — this plugin's own (low/high/xhigh) from its variants, or Trae's
 // (light/extra_high) from a client that read them off the list — and both name
-// the same level.
+// the same level. max is sent as extra_high to a model whose top that is.
 const effortOf = (levels, effort) => {
   if (typeof effort !== "string" || !levels) return undefined
   const mine = Object.values(LEVELS).includes(effort) ? effort
     : Object.prototype.hasOwnProperty.call(LEVELS, effort) ? LEVELS[effort]
     : undefined
+  if (mine === "max" && topsAtXhigh(levels)) return "extra_high"
   if (mine === undefined || !levels.includes(mine)) return undefined
   return Object.keys(LEVELS).find((k) => LEVELS[k] === mine)
 }
@@ -3823,4 +3840,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, traeRateOf }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
