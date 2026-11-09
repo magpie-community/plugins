@@ -72,7 +72,7 @@
     "options": { "system_prompt": "Be brief.", "override": true },
     "request": { "model": "m", "instructions": "You code.", "input": [] },
     "expect_request": { "model": "m", "instructions": "You code.\nBe brief.", "input": [] } },
-  { "name": "Responses: no instructions, the prompt goes after input's last developer message",
+  { "name": "Responses: no instructions, the prompt goes after input's leading developer message",
     "ctx": { "protocol": "responses" },
     "options": { "system_prompt": "Be brief.", "override": true },
     "request": { "model": "m", "input": [
@@ -81,7 +81,7 @@
     "expect_request": { "model": "m", "input": [
       { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "You code." }, { "type": "input_text", "text": "Be brief." }] },
       { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }] } },
-  { "name": "Responses: no instructions, the last of several developer messages",
+  { "name": "Responses: no instructions, the last of several leading developer messages",
     "ctx": { "protocol": "responses" },
     "options": { "system_prompt": "Be brief.", "override": true },
     "request": { "model": "m", "input": [
@@ -91,6 +91,41 @@
     "expect_request": { "model": "m", "input": [
       { "type": "message", "role": "developer", "content": "You code." },
       { "type": "message", "role": "system", "content": "You verify.\nBe brief." },
+      { "type": "message", "role": "user", "content": "hi" }] } },
+  { "name": "Responses: a developer message in the middle of the conversation is left alone",
+    "ctx": { "protocol": "responses" },
+    "options": { "system_prompt": "Be brief.", "override": true },
+    "request": { "model": "m", "input": [
+      { "type": "message", "role": "developer", "content": "You code." },
+      { "type": "message", "role": "user", "content": "hi" },
+      { "type": "function_call", "name": "read", "arguments": "{}", "call_id": "c1" },
+      { "type": "function_call_output", "call_id": "c1", "output": "ok" },
+      { "type": "message", "role": "developer", "content": "You verify." }] },
+    "expect_request": { "model": "m", "input": [
+      { "type": "message", "role": "developer", "content": "You code.\nBe brief." },
+      { "type": "message", "role": "user", "content": "hi" },
+      { "type": "function_call", "name": "read", "arguments": "{}", "call_id": "c1" },
+      { "type": "function_call_output", "call_id": "c1", "output": "ok" },
+      { "type": "message", "role": "developer", "content": "You verify." }] } },
+  { "name": "Responses: a developer message after the last user message is left alone",
+    "ctx": { "protocol": "responses" },
+    "options": { "system_prompt": "Be brief.", "override": true },
+    "request": { "model": "m", "input": [
+      { "type": "message", "role": "developer", "content": "You code." },
+      { "type": "message", "role": "user", "content": "hi" },
+      { "type": "message", "role": "developer", "content": "# Juice: 0 !important" }] },
+    "expect_request": { "model": "m", "input": [
+      { "type": "message", "role": "developer", "content": "You code.\nBe brief." },
+      { "type": "message", "role": "user", "content": "hi" },
+      { "type": "message", "role": "developer", "content": "# Juice: 0 !important" }] } },
+  { "name": "Responses: a developer message with no content falls back to instructions",
+    "ctx": { "protocol": "responses" },
+    "options": { "system_prompt": "Be brief.", "override": true },
+    "request": { "model": "m", "input": [
+      { "type": "message", "role": "developer", "content": null },
+      { "type": "message", "role": "user", "content": "hi" }] },
+    "expect_request": { "model": "m", "instructions": "Be brief.", "input": [
+      { "type": "message", "role": "developer", "content": null },
       { "type": "message", "role": "user", "content": "hi" }] } },
   { "name": "Responses: no instructions, input's own developer message stays without override",
     "ctx": { "protocol": "responses" },
@@ -103,7 +138,7 @@
     "options": { "system_prompt": "Be brief." },
     "request": { "model": "m", "input": [{ "type": "message", "role": "user", "content": "hi" }] },
     "expect_request": { "model": "m", "instructions": "Be brief.", "input": [{ "type": "message", "role": "user", "content": "hi" }] } },
-  { "name": "Responses: prepend goes into instructions, ahead of input's developer message",
+  { "name": "Responses: prepend writes instructions, before every input item",
     "ctx": { "protocol": "responses" },
     "options": { "system_prompt": "Be brief.", "override": true, "position": "prepend" },
     "request": { "model": "m", "input": [
