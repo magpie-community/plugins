@@ -105,7 +105,10 @@ test("会话开放的型号才列出：不等请求，探测会话就列出 Clau
     assert.equal(kit.acpLog.filter(entry => entry.method === "session/prompt").length, 0, "探测不应发 prompt")
     assert.equal(kit.acpLog.filter(entry => entry.method === "session/new").length, 1)
     assert.equal(kit.acpLog.find(entry => entry.method === "initialize")?.params?.clientInfo?.name, "opencode-agy-cli-auth")
-    assert.deepEqual(kit.acpSpawns.map(spawn => spawn.args), [["acp"]])
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.deepEqual(kit.acpSpawns[0].args.slice(0, 2), ["acp", "--disable-telemetry"])
+    assert.ok(kit.acpSpawns[0].args.includes("--gemini-dir"))
+    assert.ok(kit.acpSpawns[0].args.includes("--app-data-dir"))
     assert.equal(kit.children.size, 0, "探测的 agy acp 应已退出")
     // 已知开放什么之后不再探测。
     kit.clock.advance(CATALOG_TTL_MS)

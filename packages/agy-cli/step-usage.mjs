@@ -44,9 +44,19 @@ function loadOpener() {
   return opener
 }
 
+export function isolatedGeminiDir(env = process.env) {
+  if (env.AGY_BRIDGE_ISOLATE_HOME === "0") return null
+  if (env.AGY_BRIDGE_GEMINI_DIR) return env.AGY_BRIDGE_GEMINI_DIR
+  if (env.AGY_BRIDGE_STATE_FILE) return path.join(path.dirname(env.AGY_BRIDGE_STATE_FILE), "agy-home")
+  const base = env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state")
+  return path.join(base, "magpie-agy-bridge", "agy-home")
+}
+
 export function conversationsDir(env = process.env) {
-  return env.AGY_BRIDGE_CONVERSATIONS_DIR ||
-    path.join(os.homedir(), ".gemini", "antigravity-cli", "conversations")
+  if (env.AGY_BRIDGE_CONVERSATIONS_DIR) return env.AGY_BRIDGE_CONVERSATIONS_DIR
+  const geminiDir = isolatedGeminiDir(env)
+  if (geminiDir) return path.join(geminiDir, "agy", "conversations")
+  return path.join(os.homedir(), ".gemini", "antigravity-cli", "conversations")
 }
 
 export function sessionDbPath(sessionId, env = process.env) {

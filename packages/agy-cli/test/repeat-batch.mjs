@@ -469,3 +469,67 @@ test("output-cap notice is stripped and max_tokens automatically continues up to
     assert.ok(!text.includes("exceeded the output token limit"))
   })
 })
+
+test("anti-ban isolation: passes --disable-telemetry and isolated --gemini-dir, intercepts built-in tools, soft-ban first chunk, and caps active turns", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_ACTIVE_TURNS: "2", AGY_BRIDGE_SPAWN_SPACING_MS: "40" } }, async (kit) => {
+    // 1. Soft-ban first-chunk refusal banner is intercepted and surfaced as an error frame instead of normal assistant text.
+    kit.prompts.push(async (agent) => {
+      await agent.text("⚠ Your account access has been temporarily restricted")
+      await agent.text(" due to unusual activity (VALIDATION_REQUIRED).\n")
+      return { stopReason: "end_turn", usage: { inputTokens: 50, outputTokens: 15 } }
+    })
+    const softBanParsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "soft-ban-conv" } })))
+    assert.equal(softBanParsed.content.length, 0, "soft-ban banner must not be emitted as assistant text")
+    assert.ok(softBanParsed.error, "soft-ban banner must emit an SSE error frame")
+    assert.match(softBanParsed.error.message, /forbidden|validation/i)
+    const spawnArgs = kit.acpSpawns[0]?.args || []
+    assert.ok(spawnArgs.includes("--disable-telemetry"), "agy acp must pass --disable-telemetry")
+    assert.ok(spawnArgs.includes("--gemini-dir"), "agy acp must pass --gemini-dir")
+    assert.ok(spawnArgs.includes("--app-data-dir") && spawnArgs.includes("agy"), "agy acp must pass --app-data-dir agy")
+
+    // 2. Built-in agy tools (manage_task, list_resources, read_resource) are rejected if called over MCP.
+    kit.prompts.push(async (agent) => {
+      const reply = await agent.tool("manage_task", { Action: "list" })
+      assert.match(reply?.error?.message || "", /built-in agy tool manage_task is disabled/)
+      await agent.text("Handled rejected built-in tool.")
+      return { stopReason: "end_turn", usage: { inputTokens: 50, outputTokens: 10 } }
+    })
+    const builtinParsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "builtin-intercept" } })))
+    assert.equal(builtinParsed.stopReason, "end_turn")
+
+    // 3. Active turn cap (2) rejects a 3rd concurrent in-flight generation with 503 while Measuring spawn spacing.
+    let releaseA
+    let releaseB
+    const readyA = new Promise((resolve) => {
+      kit.prompts.push(async (agent) => {
+        await agent.text("stream A")
+        resolve()
+        await new Promise((r) => { releaseA = r })
+        return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+      })
+    })
+    const readyB = new Promise((resolve) => {
+      kit.prompts.push(async (agent) => {
+        await agent.text("stream B")
+        resolve()
+        await new Promise((r) => { releaseB = r })
+        return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+      })
+    })
+    const t0 = performance.now()
+    const reqA = kit.request(baseBody({ metadata: { user_id: "active-A" } }))
+    const reqB = kit.request(baseBody({ metadata: { user_id: "active-B" } }))
+    await Promise.all([readyA, readyB])
+    const elapsed = performance.now() - t0
+    assert.ok(elapsed >= 30, `spawn spacing should space concurrent spawns (elapsed=${elapsed}ms)`)
+
+    const resC = await kit.request(baseBody({ metadata: { user_id: "active-C" } }))
+    assert.equal(resC.status, 503, "3rd concurrent active turn must be rejected with 503")
+    const bodyC = await resC.json()
+    assert.match(bodyC.error?.message || "", /2 turns are already active/)
+
+    releaseA()
+    releaseB()
+    await Promise.all([reqA.then(readSse), reqB.then(readSse)])
+  })
+})

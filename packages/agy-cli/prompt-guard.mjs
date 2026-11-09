@@ -1,5 +1,5 @@
 const NEUTRAL_IDENTITY = "You are an AI coding assistant."
-const BILLING_HEADER = /^x-anthropic-billing-header:[ \t]+cc_version=[^;\r\n]+;[ \t]+cc_entrypoint=[^;\r\n]+;$/
+const BILLING_HEADER = /^x-anthropic-billing-header:[ \t]+cc_version=[^;\r\n]+;[ \t]+cc_entrypoint=[^;\r\n]+;(?:[ \t]+[a-z0-9_]+=[^;\r\n]+;)*$/i
 
 const identityRules = [
   {
@@ -9,6 +9,10 @@ const identityRules = [
   {
     ruleId: "claude-code-sdk-identity",
     phrase: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  },
+  {
+    ruleId: "claude-code-cli-identity",
+    phrase: "You are Claude Code, Anthropic's official CLI for Claude.",
   },
 ]
 

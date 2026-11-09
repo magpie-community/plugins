@@ -3,12 +3,14 @@ import { test } from "node:test"
 import { sanitizeSystemPrompt } from "../prompt-guard.mjs"
 
 const billing = "x-anthropic-billing-header: cc_version=1.2.3; cc_entrypoint=cli;"
+const billingWithCch = "x-anthropic-billing-header: cc_version=2.1.80; cc_entrypoint=cli; cch=12345;"
 const agentIdentity = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 const codeIdentity = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+const cliIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
 const neutral = "You are an AI coding assistant."
 
 test("string system removes only a standalone billing metadata line", () => {
-  for (const system of [billing, ` \t${billing}\n`]) {
+  for (const system of [billing, ` \t${billing}\n`, billingWithCch]) {
     assert.deepEqual(sanitizeSystemPrompt(system), {
       system: "",
       diagnostics: [{ ruleId: "standalone-anthropic-billing-header", count: 1 }],
@@ -48,13 +50,14 @@ test("multiline, code, quotations and discussions of billing metadata are preser
   assert.deepEqual(sanitizeSystemPrompt(blocks), { system: blocks, diagnostics: [] })
 })
 
-test("both exact Agent SDK identity sentences are replaced inside a larger string", () => {
-  const system = `Keep all safety rules.\n${agentIdentity}\n${codeIdentity}\nRepeat: ${agentIdentity}`
+test("both exact Agent SDK and CLI identity sentences are replaced inside a larger string", () => {
+  const system = `Keep all safety rules.\n${agentIdentity}\n${codeIdentity}\n${cliIdentity}\nRepeat: ${agentIdentity}`
   const result = sanitizeSystemPrompt(system)
-  assert.equal(result.system, `Keep all safety rules.\n${neutral}\n${neutral}\nRepeat: ${neutral}`)
+  assert.equal(result.system, `Keep all safety rules.\n${neutral}\n${neutral}\n${neutral}\nRepeat: ${neutral}`)
   assert.deepEqual(result.diagnostics, [
     { ruleId: "claude-agent-sdk-identity", count: 2 },
     { ruleId: "claude-code-sdk-identity", count: 1 },
+    { ruleId: "claude-code-cli-identity", count: 1 },
   ])
 })
 

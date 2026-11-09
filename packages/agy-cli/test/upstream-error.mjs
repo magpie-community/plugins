@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { classifyUpstreamError } from "../upstream-error.mjs"
+import { classifyUpstreamError, detectInBandRefusal, mightStartSoftBan } from "../upstream-error.mjs"
 
 const NOW = Date.UTC(2026, 10, 7, 0, 0, 0)
 const isoAfter = milliseconds => new Date(NOW + milliseconds).toISOString()
@@ -237,4 +237,21 @@ test("messages omit prompt-bearing diagnostics and bound echoed detail", () => {
   const long = classifyUpstreamError("FAILED_PRECONDITION: " + "x".repeat(3000))
   assert.ok(long.message.length < 2200)
   assert.ok(!long.message.includes("x".repeat(2100)))
+})
+
+test("detects in-band soft-ban, capacity and quota refusal banners without matching ordinary prose", () => {
+  assert.equal(mightStartSoftBan("⚠ Your account"), true)
+  assert.equal(mightStartSoftBan("Hello world"), false)
+  const softBan = detectInBandRefusal("⚠ Your account access has been temporarily restricted (VALIDATION_REQUIRED).\n")
+  assert.ok(softBan)
+  assert.equal(classifyUpstreamError(softBan).category, "forbidden")
+  const cap = detectInBandRefusal("⚠ Model capacity is exhausted. Please try again later.\n")
+  assert.ok(cap)
+  assert.equal(classifyUpstreamError(cap).category, "model_capacity")
+  const quota = detectInBandRefusal("⚠ You have reached your Antigravity usage limit. Quota resets at 2026-11-07T00:05:00Z\n")
+  assert.ok(quota)
+  assert.equal(classifyUpstreamError(quota, { nowMs: NOW }).category, "quota_exhausted")
+  assert.equal(classifyUpstreamError(quota, { nowMs: NOW }).retryAfterMs, 300_000)
+  assert.equal(detectInBandRefusal("⚠ Note: this function is deprecated.\n"), null)
+  assert.equal(detectInBandRefusal("The error code MODEL_CAPACITY_EXHAUSTED means capacity is full.\n"), null)
 })

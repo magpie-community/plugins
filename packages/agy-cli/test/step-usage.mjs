@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { decodeStepUsage, lastModelStep, modelStepsAfter, sessionDbPath } from "../step-usage.mjs"
+import { conversationsDir, decodeStepUsage, isolatedGeminiDir, lastModelStep, modelStepsAfter, sessionDbPath } from "../step-usage.mjs"
 import { OutputLimitFilter } from "../output-limit.mjs"
 
 const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
@@ -26,6 +26,10 @@ test("a missing or unreadable store gives no measurement", () => {
   assert.equal(modelStepsAfter("/nonexistent/agy.db", -1), null)
   assert.equal(sessionDbPath("../escape"), null)
   assert.match(sessionDbPath("f6faf504-502b-4184-90da-aa6ff6105eb0", { AGY_BRIDGE_CONVERSATIONS_DIR: "/x" }), /^\/x\/f6faf504/)
+  assert.equal(isolatedGeminiDir({ AGY_BRIDGE_ISOLATE_HOME: "0" }), null)
+  assert.equal(isolatedGeminiDir({ AGY_BRIDGE_GEMINI_DIR: "/iso/gemini" }), "/iso/gemini")
+  assert.equal(conversationsDir({ AGY_BRIDGE_GEMINI_DIR: "/iso/gemini" }), "/iso/gemini/agy/conversations")
+  assert.match(conversationsDir({ AGY_BRIDGE_ISOLATE_HOME: "0" }), /\.gemini\/antigravity-cli\/conversations$/)
 })
 
 const run = (chunks) => {

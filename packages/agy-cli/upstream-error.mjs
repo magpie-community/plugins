@@ -2,13 +2,29 @@ const MAX_DETAIL_LENGTH = 2000
 const MAX_PARSE_LENGTH = 8000
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000
 
-const FORBIDDEN_RE = /\bTOS_VIOLATION\b|\bPERMISSION_DENIED\b|\bVALIDATION_REQUIRED\b|\bcode\s*[:=]?\s*403\b|\bstatus(?:code)?\s*[:=]?\s*403\b|\bhttp(?:\/\d(?:\.\d)?)?\s+403\b|\b403\s+Forbidden\b/i
-const MODEL_CAPACITY_RE = /\bMODEL_CAPACITY_EXHAUSTED\b/i
-const QUOTA_RE = /\bQUOTA_EXHAUSTED\b|\bquota\s+(?:has\s+been\s+)?exhausted\b|\bindividual\s+quota\b|\bquota\s+(?:limit\s+)?exceeded\b|\bexceeded\s+(?:your\s+)?(?:current\s+)?quota\b|\binsufficient\s+quota\b|\bquota[\s_-]*reset/i
+const FORBIDDEN_RE = /\bTOS_VIOLATION\b|\bPERMISSION_DENIED\b|\bVALIDATION_REQUIRED\b|\b(?:account|access)\s+(?:access\s+)?(?:has\s+been\s+|is\s+)?(?:restricted|suspended|disabled|temporarily\s+blocked)\b|\bcode\s*[:=]?\s*403\b|\bstatus(?:code)?\s*[:=]?\s*403\b|\bhttp(?:\/\d(?:\.\d)?)?\s+403\b|\b403\s+Forbidden\b/i
+const MODEL_CAPACITY_RE = /\bMODEL_CAPACITY_EXHAUSTED\b|\bmodel\s+capacity\s+(?:is\s+)?exhausted\b/i
+const QUOTA_RE = /\bQUOTA_EXHAUSTED\b|\bquota\s+(?:has\s+been\s+|is\s+)?exhausted\b|\b(?:reached|exceeded)\s+(?:your\s+)?(?:antigravity\s+)?(?:usage|quota)\s+limit\b|\bindividual\s+quota\b|\bquota\s+(?:limit\s+)?exceeded\b|\bexceeded\s+(?:your\s+)?(?:current\s+)?quota\b|\binsufficient\s+quota\b|\bquota[\s_-]*reset/i
 const EXPLICIT_RATE_LIMIT_RE = /\bToo\s+Many\s+Requests\b|\brate[\s_-]*limit(?:ed|[\s_-]*exceeded)?\b|\bTPM\b|\bRPM\b|\btokens?\s+per\s+minute\b|\brequests?\s+per\s+minute\b/i
 const RESOURCE_EXHAUSTED_RE = /\bRESOURCE_EXHAUSTED\b/i
 const HTTP_429_RE = /\bcode\s*[:=]?\s*429\b|\bstatus(?:code)?\s*[:=]?\s*429\b|\bhttp(?:\/\d(?:\.\d)?)?\s+429\b/i
 const PROMPT_CONTENT_RE = /["']?\b(?:prompt(?:[\s_-]?text)?|input|contents?|messages?|text)\b["']?\s*[:=]/i
+const SOFT_BAN_PREFIX_RE = /^\s*(?:⚠|Error\s*:|Antigravity(?:\s+(?:error|warning|notice))?\s*:|Your\s+(?:account|access)\b)/i
+const IN_BAND_REFUSAL_RE = /^\s*(?:⚠\s*|Error\s*:\s*|Antigravity(?:\s+(?:error|warning|notice))?\s*:\s*)?(?:[^\r\n]*?\b(?:TOS_VIOLATION|VALIDATION_REQUIRED|PERMISSION_DENIED|MODEL_CAPACITY_EXHAUSTED|QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED)\b|(?:your\s+)?(?:account|access)\s+(?:access\s+)?(?:has\s+been\s+|is\s+)?(?:restricted|suspended|disabled|temporarily\s+blocked)\b|you(?:'ve|\s+have)\s+(?:reached|exceeded)\s+(?:your\s+)?(?:antigravity\s+)?(?:usage|quota|rate|request)\s+limit\b|model\s+capacity\s+(?:is\s+)?exhausted\b|quota\s+(?:has\s+been\s+|is\s+)?exhausted\b|rate\s+limit\s+exceeded\b|too\s+many\s+requests\b)[^\r\n]*/i
+
+export function mightStartSoftBan(text) {
+  if (typeof text !== "string" || !text) return false
+  const trimmed = text.trimStart()
+  if (!trimmed) return false
+  return "⚠".startsWith(trimmed) || SOFT_BAN_PREFIX_RE.test(trimmed)
+}
+
+export function detectInBandRefusal(text) {
+  if (typeof text !== "string" || !text) return null
+  const firstLine = text.trimStart().split(/\r?\n/, 1)[0] || ""
+  if (!SOFT_BAN_PREFIX_RE.test(firstLine)) return null
+  return IN_BAND_REFUSAL_RE.test(firstLine) ? firstLine.trim() : null
+}
 
 /**
  * Classify an agy/Antigravity log detail without inspecting or returning prompt content.
