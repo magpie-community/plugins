@@ -2625,13 +2625,42 @@ function sameInstructions(a, b) {
   return compactIdentity(a) === compactIdentity(b)
 }
 
+// Pass the host's session through the chat.headers hook to the loader's
+// fetch. This private header never leaves the plugin.
+const SESSION_HEADER = "x-magpie-agy-session"
+
+// Magpie's synthetic session from the first user message ("magpie-" and 24 hex
+// digits) doesn't identify a distinct session: unrelated conversations can
+// start with that same message.
+function normalizeSessionToken(raw) {
+  const value = String(raw ?? "").trim()
+  if (!value || /^magpie-[0-9a-f]{24}$/i.test(value)) return ""
+  return value.slice(0, 128)
+}
+
+function sessionOf(input) {
+  return normalizeSessionToken(input?.sessionID)
+}
+
+function sessionHeaderDiscriminator(init) {
+  if (!init?.headers) return ""
+  let headers
+  try {
+    headers = new Headers(init.headers)
+  } catch {
+    return ""
+  }
+  return normalizeSessionToken(headers.get(SESSION_HEADER))
+}
+
 // The model is not part of the key: agy switches models inside a live session.
-function conversationKey(rawBody) {
+function conversationKey(rawBody, init) {
   const body = canonicalBody(rawBody)
   const system = historyKey([{ role: "system", content: compactIdentity(systemText(body)) }])
   const first = body.messages?.[0]
   const firstText = first ? historyKey([first]) : ""
-  const discriminator = body.metadata?.user_id || ""
+  const headerDiscriminator = sessionHeaderDiscriminator(init)
+  const discriminator = [body.metadata?.user_id || "", headerDiscriminator].filter(Boolean).join("\0")
   const source = discriminator + "\n" + system + "\n===\n" + firstText
   return createHash("sha256").update(source).digest("hex")
 }
@@ -4190,11 +4219,12 @@ export const AntigravityBridgePlugin = async () => {
             body = { ...canonicalBody(body), model: requestedModel }
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
-            const convKey = conversationKey(body)
+            const requestInit = init?.headers ? init : (fetchInput?.headers ? { ...init, headers: fetchInput.headers } : init)
+            const convKey = conversationKey(body, requestInit)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
-            const callerWorkDir = namedWorkDirectory(body, init)
+            const callerWorkDir = namedWorkDirectory(body, requestInit)
             const workDir = workDirectory(callerWorkDir)
             const instructions = sessionInstructions(body, callerWorkDir)
 
@@ -4339,6 +4369,12 @@ export const AntigravityBridgePlugin = async () => {
           },
         }
       },
+    },
+    async "chat.headers"(input, output) {
+      if (input?.model?.providerID !== PROVIDER_ID && input?.provider?.info?.id !== PROVIDER_ID) return
+      if (!output?.headers) return
+      const session = sessionOf(input)
+      if (session) output.headers[SESSION_HEADER] = session
     },
     provider: {
       id: PROVIDER_ID,

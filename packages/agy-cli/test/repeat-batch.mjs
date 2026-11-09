@@ -415,3 +415,47 @@ test("A16: a short replay is rendered unchanged", async () => {
     await sleep(0)
   })
 })
+
+test("session headers: chat.headers x-magpie-agy-session isolates identical opening prompts while preserving session reuse", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+
+    // 1. chat.headers populates only x-magpie-agy-session for agy-cli, ignoring synthetic magpie-<24 hex> IDs.
+    const headersA = {}
+    await kit.plugin["chat.headers"]({ sessionID: "ses_alpha", model: { providerID: "agy-cli" } }, { headers: headersA })
+    assert.equal(headersA["x-magpie-agy-session"], "ses_alpha")
+
+    const headersOther = {}
+    await kit.plugin["chat.headers"]({ sessionID: "ses_alpha", model: { providerID: "other" } }, { headers: headersOther })
+    assert.equal(headersOther["x-magpie-agy-session"], undefined)
+
+    const headersSynthetic = {}
+    await kit.plugin["chat.headers"]({ sessionID: "magpie-0123456789abcdef01234567", model: { providerID: "agy-cli" } }, { headers: headersSynthetic })
+    assert.equal(headersSynthetic["x-magpie-agy-session"], undefined)
+
+    // 2. Identical opening prompt + identical metadata.user_id with different session headers spawn distinct ACP sessions.
+    const identicalOpening = baseBody({ metadata: { user_id: "shared-user" }, messages: [{ role: "user", content: "Hi" }] })
+    const firstA = await readSse(await kit.request(identicalOpening, { headers: headersA }))
+    assert.equal(firstA.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+
+    const headersB = { "x-magpie-agy-session": "ses_beta" }
+    const firstB = await readSse(await kit.request(identicalOpening, { headers: headersB }))
+    assert.equal(firstB.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "distinct session header must isolate identical opening prompt into a new ACP session")
+
+    // 3. Follow-up turn on ses_alpha reuses its existing ACP session without spawning a 3rd process.
+    const followUpA = {
+      ...identicalOpening,
+      messages: [
+        ...identicalOpening.messages,
+        { role: "assistant", content: firstA.content.map((b) => ({ type: "text", text: b.text })) },
+        { role: "user", content: "Follow up on alpha" },
+      ],
+    }
+    const secondA = await readSse(await kit.request(followUpA, { headers: headersA }))
+    assert.equal(secondA.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "follow-up with matching session header must reuse the live ACP session")
+  })
+})
+
