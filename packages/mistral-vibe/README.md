@@ -114,14 +114,15 @@ magpie quota mistral-vibe
 
 ## Request and reply fixes
 
-Ported from [mistral-gateway](https://github.com/Classic298/mistral-gateway),
-which measured them:
+Written from the behaviour measured against Mistral's API — the fields it
+answers with 422, GLM's 4096-token cap without `max_tokens`, and its typed
+content parts. They are not a translation of another implementation.
 
 - aliases are rewritten to the id Mistral serves;
 - `max_completion_tokens` → `max_tokens`, `seed` → `random_seed`, `user`
   dropped (Mistral answers those with 422);
-- `max_tokens` is filled in (131072 for GLM, 32768 otherwise): Mistral caps GLM
-  completions at 4096 without it, which its thinking alone can spend;
+- `max_tokens` is filled in for GLM only (131072): without it Mistral caps a
+  GLM completion at 4096 tokens, which its thinking alone can spend;
 - `reasoning_content` and `index` are stripped from messages a client sends
   back as they came;
 - a GLM tool-result turn without an effort gets `reasoning_effort: "high"`,
@@ -129,10 +130,16 @@ which measured them:
 - `stream_options: {include_usage: true}` is added to a stream that names none;
 - a rejected `reasoning_effort` is retried once at the nearest level the model
   lists (nested `reasoning.effort` on `/v1/responses`);
-- a 429 is retried on the same key inside a 60 s window, honoring `Retry-After`;
+- a 429 is returned as it came: magpie rests the account and falls back on it,
+  and `Retry-After` says when to try again;
 - GLM's typed content parts (`[{type:"thinking"…},{type:"text"…}]`) become
   `content` (a string) and `reasoning_content`, streamed or buffered, and a
-  stream that delta'd tool calls but ends `stop` ends `tool_calls`.
+  stream that delta'd tool calls but ends `stop` ends `tool_calls`;
+- a rebuilt reply drops the upstream's `content-encoding` and `content-length`,
+  which no longer describe its bytes.
+
+One account holds both wallets, so a refusal that rests the account rests the
+`--api` ids with it.
 
 ## Privacy
 

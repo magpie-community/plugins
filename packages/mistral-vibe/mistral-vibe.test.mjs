@@ -1,11 +1,12 @@
-// Exercises the plugin against a local stand-in for Mistral's API: the same
-// paths, the shapes measured in mistral-vibe's own source. Run: node test.mjs
+// Runs against a local stand-in for Mistral's API: the same paths and the
+// shapes measured against it. `bun test` — no network, no key.
+import { afterAll, test } from "bun:test"
 import assert from "node:assert/strict"
 import http from "node:http"
 
 const seen = { bodies: [], keys: [] }
-let effortRetried = false
-let throttled = false
+let effortRefused = false
+let throttled = 0
 
 // Real Mistral keys are ~45 characters; parseKeys ignores shorter values.
 const VIBE_KEY = "vibe-key-0000000000000000000000000001"
@@ -14,22 +15,17 @@ const BAD_KEY = "bad-key-0000000000000000000000000000"
 
 // /v1/models: alias families and a non-chat entry, as Mistral serves them.
 const API_MODELS = [
-  // one chat family: three ids, one billing name (as /v1/models has)
   { id: "mistral-medium-latest", name: "mistral-medium-latest", billing_model_name: "mistral-medium-3-5", max_context_length: 128000, aliases: ["mistral-medium-3-5", "mistral-medium"], capabilities: { completion_chat: true, function_calling: true } },
   { id: "mistral-medium-3-5", name: "mistral-medium-latest", billing_model_name: "mistral-medium-3-5", max_context_length: 128000, aliases: ["mistral-medium-latest", "mistral-medium"], capabilities: { completion_chat: true, function_calling: true } },
   { id: "mistral-medium", name: "mistral-medium-latest", billing_model_name: "mistral-medium-3-5", max_context_length: 128000, aliases: ["mistral-medium-latest", "mistral-medium-3-5"], capabilities: { completion_chat: true, function_calling: true } },
-  // not a chat: must not be listed
   { id: "mistral-embed", name: "mistral-embed", max_context_length: 8192, aliases: [], capabilities: { completion_chat: false } },
-  // another family, billing name served too
   { id: "zai-glm-5-3", name: "zai-glm-5-3", billing_model_name: "zai-glm-5-3", max_context_length: 200000, aliases: ["zai-glm-5", "zai-glm-latest"], capabilities: { completion_chat: true, function_calling: true, reasoning: true } },
   { id: "zai-glm-5", name: "zai-glm-5-3", billing_model_name: "zai-glm-5-3", max_context_length: 200000, aliases: ["zai-glm-5-3", "zai-glm-latest"], capabilities: { completion_chat: true, function_calling: true, reasoning: true } },
   { id: "zai-glm-latest", name: "zai-glm-5-3", billing_model_name: "zai-glm-5-3", max_context_length: 200000, aliases: ["zai-glm-5-3", "zai-glm-5"], capabilities: { completion_chat: true, function_calling: true, reasoning: true } },
-  // served on the API account, not the Vibe surface: listed with a note
   { id: "deepseek-v4-1-flash-1017", name: "deepseek-v4-1-flash-1017", billing_model_name: "deepseek-v4-1-flash-1017", max_context_length: 1048576, aliases: [], capabilities: { completion_chat: true, function_calling: true, reasoning: true, vision: true } },
 ]
 
-// /v1/model-catalog?surface=vibe-code: the Vibe plan's own list, labels and
-// effort levels, as measured against Mistral (no DeepSeek on this surface).
+// /v1/model-catalog?surface=vibe-code: the Vibe plan's own list.
 const CATALOG = {
   models: [
     { id: "mistral-large-4-0", label: "Mistral Large 4", aliases: ["mistral-large-4-0-3", "mistral-large-4"], max_context_length: 1048576, parameters: { temperature: 1, reasoning: ["low", "medium", "high"] }, capabilities: { completion_chat: true, function_calling: true, vision: true } },
@@ -78,15 +74,15 @@ const server = http.createServer((req, res) => {
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
       const body = JSON.parse(raw)
       seen.bodies.push(body)
-      if (body.reasoning_effort === "xhigh" && !effortRetried) {
-        effortRetried = true
-        res.writeHead(400, { "content-type": "application/json" })
-        return res.end('{"message":"reasoning_effort \'xhigh\' is not supported for this model, supported: \'low\', \'high\'"}')
-      }
-      if (body.model === "throttle-me" && !throttled) {
-        throttled = true
+      if (body.model === "throttle-me") {
+        throttled += 1
         res.writeHead(429, { "content-type": "application/json", "retry-after": "0" })
         return res.end('{"message":"rate limited"}')
+      }
+      if (body.reasoning_effort === "xhigh" && !effortRefused) {
+        effortRefused = true
+        res.writeHead(400, { "content-type": "application/json" })
+        return res.end('{"message":"reasoning_effort \'xhigh\' is not supported for this model, supported: \'low\', \'high\'"}')
       }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" })
@@ -110,7 +106,6 @@ const server = http.createServer((req, res) => {
                   { type: "thinking", thinking: [{ text: "thinking hard" }] },
                   { type: "text", text: [{ text: "plain answer" }] },
                 ],
-                ...(body.model === "tool-then-stop" ? { tool_calls: [{ id: "c1", type: "function", function: { name: "t", arguments: "{}" } }] } : {}),
               },
             },
           ],
@@ -132,9 +127,7 @@ const { MistralVibeAuthPlugin, parseKeys, listed } = await import("./index.mjs")
 const plugin = await MistralVibeAuthPlugin()
 const auth = async () => ({ type: "api", key: VIBE_KEY })
 
-// config declares the provider; the model list comes from the hook, so no
-// static ids (which would offer the wrong wallet before sign-in).
-{
+test("config declares the provider and no static model ids", async () => {
   const config = {}
   await plugin.config(config)
   const p = config.provider["mistral-vibe"]
@@ -142,15 +135,13 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(p.api, `${root}/v1`)
   assert.equal(p.npm, "@ai-sdk/openai-compatible")
   assert.equal(p.models, undefined)
-  const kept = { provider: { "mistral-vibe": { name: "Mine", models: { "x": { name: "X" } } } } }
+  const kept = { provider: { "mistral-vibe": { name: "Mine", models: { x: { name: "X" } } } } }
   await plugin.config(kept)
   assert.equal(kept.provider["mistral-vibe"].name, "Mine")
-  assert.equal(kept.provider["mistral-vibe"].models["x"].name, "X")
-}
+  assert.equal(kept.provider["mistral-vibe"].models.x.name, "X")
+})
 
-// models is one group: the Vibe plan's catalog plus DeepSeek. With only the
-// Vibe key every model is offered on the Vibe budget.
-{
+test("one Vibe key lists the catalog plus DeepSeek on the Vibe wallet", async () => {
   const models = await plugin.provider.models({ id: "mistral-vibe", models: {} }, { auth: { type: "api", key: VIBE_KEY } })
   assert.deepEqual(Object.keys(models).sort(), ["deepseek-v4-1-flash-1017", "mistral-large-4-0", "mistral-medium-latest", "zai-glm-5-3", "zai-glm-5-3-flash"])
   assert.equal(models["mistral-large-4-0"].name, "Mistral Large 4 (Vibe budget)")
@@ -159,23 +150,18 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(models["zai-glm-5-3-flash"].capabilities.attachment, true)
   assert.equal(models["deepseek-v4-1-flash-1017"].name, "deepseek-v4-1-flash-1017 (Vibe budget)")
   assert.equal(models["deepseek-v4-1-flash-1017"].capabilities.reasoning, true)
-
-  // the fallback: /v1/models deduped to one id per chat family
   const fallback = listed(API_MODELS)
   assert.deepEqual(fallback.map((m) => m.id).sort(), ["deepseek-v4-1-flash-1017", "mistral-medium-3-5", "zai-glm-5-3"])
-}
+})
 
-// With both keys the same group carries each model twice: the bare id on the
-// Vibe budget, `<id>--api` on the API budget.
-{
+test("both keys list every model twice, the alias naming the wallet", async () => {
   assert.deepEqual(parseKeys(`vibe=${VIBE_KEY};api=${API_KEY}`), { vibe: VIBE_KEY, api: API_KEY })
   assert.deepEqual(parseKeys(`${VIBE_KEY};${API_KEY}`), { vibe: VIBE_KEY, api: API_KEY })
   assert.deepEqual(parseKeys(JSON.stringify({ vibe: VIBE_KEY, api: API_KEY })), { vibe: VIBE_KEY, api: API_KEY })
   assert.deepEqual(parseKeys(VIBE_KEY), { vibe: VIBE_KEY })
-  assert.deepEqual(parseKeys("vibe=None;api=" + API_KEY), { api: API_KEY })
+  assert.deepEqual(parseKeys(`vibe=None;api=${API_KEY}`), { api: API_KEY })
 
-  const both = async () => ({ type: "api", key: `${VIBE_KEY};${API_KEY}` })
-  const models = await plugin.provider.models({ id: "mistral-vibe", models: {} }, { auth: await both() })
+  const models = await plugin.provider.models({ id: "mistral-vibe", models: {} }, { auth: { type: "api", key: `${VIBE_KEY};${API_KEY}` } })
   const ids = Object.keys(models).sort()
   assert.equal(ids.length, 10)
   assert.ok(ids.includes("deepseek-v4-1-flash-1017"))
@@ -183,9 +169,28 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(models["deepseek-v4-1-flash-1017"].name, "deepseek-v4-1-flash-1017 (Vibe budget)")
   assert.equal(models["deepseek-v4-1-flash-1017--api"].name, "deepseek-v4-1-flash-1017 (API budget)")
   assert.equal(models["deepseek-v4-1-flash-1017--api"].api.id, "deepseek-v4-1-flash-1017--api")
+})
 
-  // The alias picks the key, and the upstream sees the bare model id.
-  const loader = await plugin.auth.loader(both)
+test("the bare alias spends the Vibe key, the --api alias the API key", async () => {
+  const loader = await plugin.auth.loader(async () => ({ type: "api", key: `${VIBE_KEY};${API_KEY}` }))
+  assert.equal(loader.baseURL, `${root}/v1`)
+
+  const vibeCall = await loader.fetch(`${root}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer stale" },
+    body: JSON.stringify({ model: "glm-5.3", messages: [{ role: "assistant", content: "hi", reasoning_content: "old", index: 3 }] }),
+  })
+  assert.equal(vibeCall.status, 200)
+  assert.equal(seen.keys.at(-1), VIBE_KEY)
+  const sent = seen.bodies.at(-1)
+  assert.equal(sent.model, "zai-glm-5-3")
+  assert.equal(sent.max_tokens, 131072)
+  assert.equal(sent.messages[0].reasoning_content, undefined)
+  assert.equal(sent.messages[0].index, undefined)
+  const body = await vibeCall.json()
+  assert.equal(body.choices[0].message.content, "plain answer")
+  assert.equal(body.choices[0].message.reasoning_content, "thinking hard")
+
   const apiCall = await loader.fetch(`${root}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -194,40 +199,9 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(apiCall.status, 200)
   assert.equal(seen.keys.at(-1), API_KEY)
   assert.equal(seen.bodies.at(-1).model, "deepseek-v4-1-flash-1017")
+})
 
-  const vibeCall = await loader.fetch(`${root}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "deepseek-v4-1-flash-1017", messages: [{ role: "user", content: "hi" }] }),
-  })
-  assert.equal(vibeCall.status, 200)
-  assert.equal(seen.keys.at(-1), VIBE_KEY)
-}
-
-// The loader maps the alias, fills max_tokens, and normalizes a GLM reply.
-{
-  const loader = await plugin.auth.loader(auth)
-  assert.equal(loader.baseURL, `${root}/v1`)
-  const response = await loader.fetch(`${root}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer stale" },
-    body: JSON.stringify({ model: "glm-5.3", messages: [{ role: "assistant", content: "hi", reasoning_content: "old", index: 3 }] }),
-  })
-  assert.equal(response.status, 200)
-  const body = await response.json()
-  assert.equal(body.choices[0].message.content, "plain answer")
-  assert.equal(body.choices[0].message.reasoning_content, "thinking hard")
-  assert.equal(seen.keys.at(-1), VIBE_KEY)
-  const sent = seen.bodies.at(-1)
-  assert.equal(sent.model, "zai-glm-5-3")
-  assert.equal(sent.max_tokens, 131072)
-  assert.equal(sent.messages[0].reasoning_content, undefined)
-  assert.equal(sent.messages[0].index, undefined)
-}
-
-// A streamed GLM reply keeps its deltas; typed parts become text, and a
-// "stop" after tool calls becomes "tool_calls".
-{
+test("a streamed GLM reply keeps its deltas and ends tool_calls", async () => {
   const loader = await plugin.auth.loader(auth)
   const response = await loader.fetch(`${root}/v1/chat/completions`, {
     method: "POST",
@@ -244,35 +218,33 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(chunks[2].choices[0].finish_reason, "tool_calls")
   assert.equal(seen.bodies.at(-1).stream_options.include_usage, true)
   assert.equal(seen.bodies.at(-1).reasoning_effort, "high")
-}
+})
 
-// A rejected reasoning_effort is retried at the nearest supported level.
-{
+test("a refused reasoning_effort is retried once at a level the model lists", async () => {
   const loader = await plugin.auth.loader(auth)
   const response = await loader.fetch(`${root}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "mistral-large-4", reasoning_effort: "xhigh", messages: [{ role: "user", content: "hi" }] }),
+    body: JSON.stringify({ model: "mistral-large-4-0", reasoning_effort: "xhigh", messages: [{ role: "user", content: "hi" }] }),
   })
   assert.equal(response.status, 200)
   assert.equal(seen.bodies.at(-1).reasoning_effort, "high")
-}
+})
 
-// A 429 is retried on the same key.
-{
+test("a 429 is returned as it came, once", async () => {
   const loader = await plugin.auth.loader(auth)
+  const before = throttled
   const response = await loader.fetch(`${root}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "throttle-me", messages: [{ role: "user", content: "hi" }] }),
   })
-  assert.equal(response.status, 200)
-  assert.ok(throttled)
-}
+  assert.equal(response.status, 429)
+  assert.equal(throttled - before, 1)
+  assert.equal(response.headers.get("retry-after"), "0")
+})
 
-// The usage hook reads the Vibe Code budget, plan and reset, and sets the
-// other budget aside for a Vibe-scoped key.
-{
+test("usage shows both budgets, the key's own first", async () => {
   const usage = await plugin.auth.usage(auth)
   assert.equal(usage.plan, "Pro")
   assert.equal(usage.windows.length, 2)
@@ -285,21 +257,17 @@ const auth = async () => ({ type: "api", key: VIBE_KEY })
   assert.equal(usage.windows[1].aside, true)
   assert.equal(usage.signIn, "kept")
 
-  // A Studio/API key's own budget is the one that stops it; the Vibe one is
-  // shown beside it.
   const apiUsage = await plugin.auth.usage(async () => ({ type: "api", key: API_KEY }))
   assert.equal(apiUsage.windows[0].aside, true)
   assert.equal(apiUsage.windows[1].name, "API budget")
   assert.equal(apiUsage.windows[1].aside, undefined)
-}
+})
 
-// A refused key marks the account expired instead of showing an empty card.
-{
+test("a refused key marks the account expired", async () => {
   const usage = await plugin.auth.usage(async () => ({ type: "api", key: BAD_KEY }))
   assert.equal(usage.signIn, "expired")
   assert.equal(usage.windows.length, 0)
   assert.match(usage.error, /refused this Vibe key/)
-}
+})
 
-server.close()
-console.log("ok: 8 checks passed")
+afterAll(() => server.close())

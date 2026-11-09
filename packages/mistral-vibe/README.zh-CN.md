@@ -106,24 +106,28 @@ magpie quota mistral-vibe
 
 ## 请求与回复修正
 
-均移植自 [mistral-gateway](https://github.com/Classic298/mistral-gateway)
-（其作者实测得出）：
+按对 Mistral 接口的实测行为重写（它对哪些字段返回 422、GLM 不传
+`max_tokens` 时 4096 的输出上限、以及类型化 content），不是对其它实现的翻译。
 
 - 别名改写为 Mistral 实际提供的 id；
 - `max_completion_tokens` → `max_tokens`、`seed` → `random_seed`、丢弃 `user`
   （Mistral 对这些返回 422）；
-- 自动补 `max_tokens`（GLM 131072，其他 32768）：不补时 Mistral 把 GLM 输出
-  限制在 4096，思考就可能耗尽；
+- 只给 GLM 补 `max_tokens`（131072）：不补时 Mistral 把 GLM 输出限制在
+  4096，思考就可能耗尽；
 - 客户端原样回传的消息里去掉 `reasoning_content` 和 `index`；
 - GLM 的 tool 结果轮次若未指定档位，补 `reasoning_effort: "high"`，避免它
   无可见输出就结束；
 - 流式请求缺少 `stream_options: {include_usage: true}` 时补上；
 - 被拒的 `reasoning_effort` 会按模型支持的最接近档位重试一次（`/v1/responses`
   下是嵌套的 `reasoning.effort`）；
-- 429 在同一把 key 上按 `Retry-After` 重试，窗口 60 秒；
+- 429 原样返回：由 magpie 停用账号并切换下一个，`Retry-After` 说明何时重试；
 - GLM 的类型化 content（`[{type:"thinking"…},{type:"text"…}]`）在流式与非流式
   下都换算为字符串 `content` 和 `reasoning_content`；已产生 tool_calls 却以
-  `stop` 结束的流改为 `tool_calls`。
+  `stop` 结束的流改为 `tool_calls`；
+- 重建的回复会去掉上游的 `content-encoding` 与 `content-length`，它们已不再
+  描述新的字节。
+
+一个账号同时装两个钱包，所以一次拒绝对账号的停用也会连带 `--api` 那些 id。
 
 ## 隐私
 

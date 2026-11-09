@@ -1,126 +1,125 @@
 // Mistral's GLM models answer with typed content parts
 // (`[{type:"thinking",thinking:[{text}]},{type:"text",text:[{text}]}]`) where
-// OpenAI clients expect a string. Ported from mistral-gateway's
-// normalize_content_chunks / normalize_stream_event / normalize_completion.
+// OpenAI clients expect a string. Written from the behaviour measured against
+// the API — not translated from another implementation.
 
-export function flattenContent(content) {
-  if (!Array.isArray(content)) return { text: content, reasoning: null }
-  const texts = []
-  const thinking = []
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue
-    if (part.type === "thinking") {
-      for (const item of Array.isArray(part.thinking) ? part.thinking : []) {
-        if (item && typeof item === "object") thinking.push(item.text ?? "")
-      }
-    } else if (part.type === "text") {
-      if (typeof part.text === "string") texts.push(part.text)
-      else if (Array.isArray(part.text)) {
-        for (const item of part.text) {
-          if (item && typeof item === "object") texts.push(item.text ?? "")
-        }
-      }
-    }
-  }
-  return { text: texts.join(""), reasoning: thinking.length ? thinking.join("") : null }
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
+
+// textOf reads the text out of a part's payload: a string, or a list of
+// `{text}` items.
+function textOf(payload) {
+  if (typeof payload === "string") return payload
+  if (!Array.isArray(payload)) return ""
+  let out = ""
+  for (const item of payload) if (isObject(item) && typeof item.text === "string") out += item.text
+  return out
 }
 
-// A choice's `message` (non-streamed) or `delta` (streamed) put in OpenAI's
-// shape. A GLM stream that deltas tool calls but ends "stop" is ended
-// "tool_calls", which is what clients dispatch on.
-export function normalizeChoice(choice, state = {}) {
-  const part = choice?.delta ?? choice?.message
-  if (part && typeof part === "object") {
-    if (Array.isArray(part.content)) {
-      const { text, reasoning } = flattenContent(part.content)
-      part.content = text
-      if (reasoning) part.reasoning_content = reasoning
+// splitParts turns typed parts into the two strings OpenAI clients read:
+// visible text, and the model's thinking.
+export function splitParts(parts) {
+  let text = ""
+  let thinking = ""
+  if (!Array.isArray(parts)) return { text: parts, thinking: null }
+  for (const part of parts) {
+    if (!isObject(part)) continue
+    if (part.type === "thinking") thinking += textOf(part.thinking)
+    else if (part.type === "text") text += textOf(part.text)
+  }
+  return { text, thinking: thinking || null }
+}
+
+// rewriteTurn fixes one choice's `message` or `delta` in place, and records
+// that tool calls were seen so a later `stop` can be reported as
+// `tool_calls` — the reason clients dispatch on.
+export function rewriteTurn(choice, seen = { toolCalls: false }) {
+  const turn = choice?.delta ?? choice?.message
+  if (isObject(turn)) {
+    if (Array.isArray(turn.content)) {
+      const { text, thinking } = splitParts(turn.content)
+      turn.content = text
+      if (thinking) turn.reasoning_content = thinking
     }
-    if (Array.isArray(part.tool_calls) && part.tool_calls.length) state.sawToolCall = true
-    if (state.sawToolCall && choice.finish_reason === "stop") choice.finish_reason = "tool_calls"
+    if (Array.isArray(turn.tool_calls) && turn.tool_calls.length > 0) seen.toolCalls = true
+    if (seen.toolCalls && choice.finish_reason === "stop") choice.finish_reason = "tool_calls"
   }
   return choice
 }
 
-export function normalizeJson(parsed, state = {}) {
-  if (!parsed || typeof parsed !== "object") return parsed
-  // /v1/responses streams and payloads carry a `response` wrapper or `output`,
-  // not `choices`; those go as they came.
-  if (Array.isArray(parsed.choices)) for (const choice of parsed.choices) normalizeChoice(choice, state)
-  return parsed
+// rewritePayload rewrites a whole JSON body. `/v1/responses` bodies carry no
+// `choices` and go as they came.
+export function rewritePayload(body, seen = { toolCalls: false }) {
+  if (!isObject(body) || !Array.isArray(body.choices)) return body
+  for (const choice of body.choices) rewriteTurn(choice, seen)
+  return body
 }
 
-// rewriteEvent turns one SSE event (its framing included) into the OpenAI
-// shape. Events whose data isn't a JSON object — `[DONE]`, a comment, a cut
-// payload — are returned as they came.
-export function rewriteEvent(event, state = {}) {
-  const frame = /^(.*?)(\r?\n\r?\n)$/s.exec(event)
-  const body = frame ? frame[1] : event
-  const separator = frame ? frame[2] : ""
+// rewriteEvent rewrites one SSE event, framing included. A payload that does
+// not parse (a cut event) or is `[DONE]` is left exactly as it was.
+export function rewriteEvent(event, seen = { toolCalls: false }) {
+  const framed = /^([\s\S]*?)(\r?\n\r?\n)$/.exec(event)
+  const body = framed ? framed[1] : event
+  const gap = framed ? framed[2] : ""
+  const newline = body.includes("\r\n") ? "\r\n" : "\n"
   const lines = body.split(/\r?\n/)
-  let changed = false
+  let touched = false
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.startsWith("data:")) continue
-    const payload = line.slice(5).replace(/^ /, "")
+    if (!lines[i].startsWith("data:")) continue
+    const payload = lines[i].slice(5).trimStart()
     if (!payload || payload === "[DONE]") continue
     let parsed
     try {
       parsed = JSON.parse(payload)
     } catch {
-      continue // a cut event's payload: leave the stream as it is
+      continue
     }
-    if (!parsed || typeof parsed !== "object") continue
+    if (!isObject(parsed)) continue
     const before = JSON.stringify(parsed)
-    normalizeJson(parsed, state)
+    rewritePayload(parsed, seen)
     if (JSON.stringify(parsed) !== before) {
       lines[i] = `data: ${JSON.stringify(parsed)}`
-      changed = true
+      touched = true
     }
   }
-  return changed ? lines.join(body.includes("\r\n") ? "\r\n" : "\n") + separator : event
+  return touched ? lines.join(newline) + gap : event
 }
 
-// normalizeSseStream rewrites a whole event stream as it arrives, keeping the
-// delta boundaries (and therefore the streaming UX) intact.
-export function normalizeSseStream(response) {
+// rewriteStream passes a streamed reply through, rewriting each event as it
+// arrives so the deltas (and the streaming itself) stay intact.
+export function rewriteStream(response) {
   if (!response.body) return response
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
-  const reader = response.body.getReader()
-  const state = { sawToolCall: false }
-  let buffered = ""
-
-  const flushEvents = (controller) => {
-    const SEP = /\r?\n\r?\n/
-    let match
-    while ((match = SEP.exec(buffered)) !== null) {
-      const end = match.index + match[0].length
-      controller.enqueue(encoder.encode(rewriteEvent(buffered.slice(0, end), state)))
-      buffered = buffered.slice(end)
-    }
-  }
+  const upstream = response.body.getReader()
+  const seen = { toolCalls: false }
+  let pending = ""
 
   const body = new ReadableStream({
     async pull(controller) {
-      const { done, value } = await reader.read()
+      const { done, value } = await upstream.read()
       if (done) {
-        if (buffered) {
-          controller.enqueue(encoder.encode(rewriteEvent(buffered, state)))
-          buffered = ""
-        }
+        if (pending) controller.enqueue(encoder.encode(rewriteEvent(pending, seen)))
         controller.close()
         return
       }
-      buffered += decoder.decode(value, { stream: true })
-      flushEvents(controller)
+      pending += decoder.decode(value, { stream: true })
+      for (;;) {
+        const gap = /\r?\n\r?\n/.exec(pending)
+        if (!gap) break
+        const end = gap.index + gap[0].length
+        controller.enqueue(encoder.encode(rewriteEvent(pending.slice(0, end), seen)))
+        pending = pending.slice(end)
+      }
     },
     cancel(reason) {
-      return reader.cancel(reason)
+      return upstream.cancel(reason)
     },
   })
 
+  // The body is no longer the upstream's bytes: a content-encoding or length
+  // kept from it would describe the old ones.
   const headers = new Headers(response.headers)
+  headers.delete("content-encoding")
   headers.delete("content-length")
   return new Response(body, { status: response.status, statusText: response.statusText, headers })
 }

@@ -1,139 +1,142 @@
-// The request side of what mistral-gateway did: Mistral's API answers 422 to
-// several OpenAI fields, GLM needs a real max_tokens, a rejected
-// reasoning_effort is retried at the nearest level the model lists, and a 429
-// is retried on the same key inside a bounded window.
+// The request side: Mistral answers 422 to several OpenAI fields, GLM needs a
+// real max_tokens, and a rejected reasoning_effort is retried once at a level
+// the model lists. Written from the behaviour measured against the API.
 
 import { MODEL_ALIASES, REASONING_EFFORT_LEVELS } from "./constants.mjs"
-import { normalizeJson, normalizeSseStream } from "./normalize.mjs"
+import { rewritePayload, rewriteStream } from "./normalize.mjs"
 
-const RETRY_429_WINDOW_MS = 60_000
-const RETRY_429_INTERVAL_MS = 10_000
 const CHAT_PATHS = /\/(chat\/completions|responses)\/?$/
+const API_SUFFIX = "--api"
+// Without max_tokens Mistral caps a GLM completion at 4096 tokens, which its
+// thinking alone can spend; GLM models accept this much output.
+const GLM_OUTPUT_LIMIT = 131072
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-export function realModel(id) {
-  return MODEL_ALIASES[id] ?? id
-}
-
-// prepareBody applies mistral-gateway's chat rewrites. Returns the body text
-// to send (unchanged when there was nothing to change).
+// prepareBody applies the request rewrites. Returns the body text to send
+// (unchanged when there was nothing to change).
 export function prepareBody(text, url) {
   if (!text) return text
-  let parsed
+  let body
   try {
-    parsed = JSON.parse(text)
+    body = JSON.parse(text)
   } catch {
     return text
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return text
+  if (!body || typeof body !== "object" || Array.isArray(body)) return text
 
-  // `<id>--api` is the API-budget variant of the model: the suffix picks the
-  // key, the upstream sees the bare id.
-  if (typeof parsed.model === "string" && parsed.model.endsWith("--api")) {
-    parsed.model = parsed.model.slice(0, -"--api".length)
+  // `<id>--api` is the API-budget variant: the suffix picked the key, the
+  // upstream sees the bare id.
+  if (typeof body.model === "string" && body.model.endsWith(API_SUFFIX)) {
+    body.model = body.model.slice(0, -API_SUFFIX.length)
   }
+  if (MODEL_ALIASES[String(body.model)]) body.model = MODEL_ALIASES[String(body.model)]
 
-  const aliased = MODEL_ALIASES[String(parsed.model)]
-  if (aliased) parsed.model = aliased
-
-  // /v1/responses carries no chat messages and Mistral takes its shape as is.
+  // /v1/responses has no chat messages, and Mistral takes its shape as is.
   if (!/\/responses\/?$/.test(url)) {
-    const stream = parsed.stream === true
-    if (stream && parsed.stream_options == null) parsed.stream_options = { include_usage: true }
+    if (body.stream === true && body.stream_options == null) body.stream_options = { include_usage: true }
 
-    if ("max_completion_tokens" in parsed) {
-      const value = parsed.max_completion_tokens
-      delete parsed.max_completion_tokens
-      if (value != null) parsed.max_tokens = value
+    // Fields Mistral answers with 422.
+    if ("max_completion_tokens" in body) {
+      const value = body.max_completion_tokens
+      delete body.max_completion_tokens
+      if (value != null) body.max_tokens = value
     }
-    if ("seed" in parsed) {
-      parsed.random_seed = parsed.seed
-      delete parsed.seed
+    if ("seed" in body) {
+      body.random_seed = body.seed
+      delete body.seed
     }
-    if ("user" in parsed) delete parsed.user
+    if ("user" in body) delete body.user
 
-    if (parsed.max_tokens == null) {
-      // Mistral caps GLM completions at 4096 without max_tokens, which its
-      // thinking alone can spend; GLM's own output limit is 128K.
-      parsed.max_tokens = String(parsed.model).includes("glm") ? 131072 : 32768
-    }
+    if (body.max_tokens == null && String(body.model).includes("glm")) body.max_tokens = GLM_OUTPUT_LIMIT
 
-    if (Array.isArray(parsed.messages)) {
-      for (const message of parsed.messages) {
+    if (Array.isArray(body.messages)) {
+      for (const message of body.messages) {
         if (!message || typeof message !== "object") continue
-        // Replies carry these; Mistral 422s a reply sent back as it came.
+        // A reply sent back as it came carries these; Mistral 422s them.
         delete message.reasoning_content
         delete message.index
       }
-      const last = parsed.messages[parsed.messages.length - 1]
+      const last = body.messages[body.messages.length - 1]
       if (
-        parsed.reasoning_effort == null &&
-        String(parsed.model).includes("glm") &&
-        Array.isArray(parsed.tools) &&
-        parsed.tools.length &&
+        body.reasoning_effort == null &&
+        String(body.model).includes("glm") &&
+        Array.isArray(body.tools) &&
+        body.tools.length > 0 &&
         last?.role === "tool"
       ) {
-        // GLM can end a tool-result turn with zero visible text; "high" makes
-        // it finish deliberating and compose (measured by mistral-gateway).
-        parsed.reasoning_effort = "high"
+        // GLM can end a tool-result turn with no visible text; asking for
+        // more deliberation makes it compose (measured against the API).
+        body.reasoning_effort = "high"
       }
     }
   }
-  return JSON.stringify(parsed)
+  return JSON.stringify(body)
 }
 
-// snapEffort rewrites a rejected reasoning_effort into the nearest level the
-// upstream error lists, or drops it when the model has none. null when the
-// error isn't about the level, so the caller passes the refusal on.
+// levelsIn reads the quoted level names an upstream error lists.
+function levelsIn(message) {
+  const found = []
+  for (const match of message.matchAll(/['"]([a-z]+)['"]/g)) {
+    if (REASONING_EFFORT_LEVELS.includes(match[1]) && !found.includes(match[1])) found.push(match[1])
+  }
+  return found
+}
+
+// snapEffort answers a refusal about reasoning_effort: drop the field when the
+// model has no such switch, else move it to the nearest level the model lists
+// (ties lean towards less reasoning below "medium", more above it). null when
+// the error is about something else, so the refusal is passed on.
 export function snapEffort(text, detail) {
-  const error = String(detail ?? "")
-  if (!error.includes("reasoning_effort")) return null
-  let parsed
+  const message = String(detail ?? "")
+  if (!message.includes("reasoning_effort")) return null
+  let body
   try {
-    parsed = JSON.parse(text)
+    body = JSON.parse(text)
   } catch {
     return null
   }
-  const nested = parsed?.reasoning
-  const owner = nested && typeof nested === "object" ? nested : parsed
-  const field = owner === nested ? "effort" : "reasoning_effort"
-  const requested = owner?.[field]
+  const holder = body?.reasoning && typeof body.reasoning === "object" ? body.reasoning : body
+  const field = holder === body ? "reasoning_effort" : "effort"
+  const asked = holder?.[field]
 
-  if (error.includes("reasoning_effort is not enabled") && requested != null) {
-    delete owner[field]
-    return JSON.stringify(parsed)
+  if (/reasoning_effort is not enabled/i.test(message) && asked != null) {
+    delete holder[field]
+    return JSON.stringify(body)
   }
-  if (!error.includes("is not supported")) return null
-  const listed = error.split("is not supported", 2)[1] ?? ""
-  const supported = REASONING_EFFORT_LEVELS.filter((level) => listed.includes(`'${level}'`))
-  if (!REASONING_EFFORT_LEVELS.includes(requested) || supported.includes(requested) || !supported.length) return null
-  const rank = REASONING_EFFORT_LEVELS.indexOf(requested)
-  const candidates = ["none", "minimal", "low"].includes(requested) ? supported : [...supported].reverse()
-  let closest = candidates[0]
-  for (const level of candidates) {
-    if (Math.abs(REASONING_EFFORT_LEVELS.indexOf(level) - rank) < Math.abs(REASONING_EFFORT_LEVELS.indexOf(closest) - rank)) closest = level
+  if (!/is not supported/i.test(message)) return null
+
+  const allowed = levelsIn(message.split(/is not supported/i)[1] ?? message)
+  if (!REASONING_EFFORT_LEVELS.includes(asked) || allowed.length === 0 || allowed.includes(asked)) return null
+
+  const rank = (level) => REASONING_EFFORT_LEVELS.indexOf(level)
+  const preferLower = rank(asked) <= rank("medium")
+  let best = allowed[0]
+  for (const level of allowed) {
+    const distance = Math.abs(rank(level) - rank(asked))
+    const bestDistance = Math.abs(rank(best) - rank(asked))
+    if (distance < bestDistance) best = level
+    else if (distance === bestDistance && preferLower && rank(level) < rank(best)) best = level
+    else if (distance === bestDistance && !preferLower && rank(level) > rank(best)) best = level
   }
-  owner[field] = closest
-  return JSON.stringify(parsed)
+  holder[field] = best
+  return JSON.stringify(body)
 }
 
 function isChat(url) {
   return CHAT_PATHS.test(new URL(url).pathname)
 }
 
-function detailOf(text) {
-  try {
-    const parsed = JSON.parse(text)
-    return JSON.stringify(parsed)
-  } catch {
-    return text
-  }
+// cleanHeaders is a rebuilt reply's headers: the body is no longer the
+// upstream's bytes, so its encoding and length must not be carried over.
+function cleanHeaders(headers) {
+  const copy = new Headers(headers)
+  copy.delete("content-encoding")
+  copy.delete("content-length")
+  return copy
 }
 
-// sendChat is the loader's fetch: the key the model's wallet names, retries
-// 429, snaps a rejected effort once, and normalizes GLM replies on the way
-// back.
+// sendChat is the loader's fetch: the key the model's wallet names, one retry
+// when the effort is refused, and reply normalization. A 429 is returned as
+// it came — magpie rests the account and falls back on it.
 export async function sendChat(input, init, keys) {
   const request = input instanceof Request ? input : new Request(input, init)
   const url = request.url
@@ -145,11 +148,11 @@ export async function sendChat(input, init, keys) {
 
   // The model id says which wallet: `<id>--api` spends the API budget, the
   // bare id the Vibe budget.
-  let requested = ""
+  let asked = ""
   try {
-    requested = JSON.parse(originalText)?.model ?? ""
+    asked = JSON.parse(originalText)?.model ?? ""
   } catch {}
-  const wantsApi = typeof requested === "string" && requested.endsWith("--api")
+  const wantsApi = typeof asked === "string" && asked.endsWith(API_SUFFIX)
   const key = wantsApi ? keys?.api : (keys?.vibe ?? keys?.api)
 
   const headers = new Headers(init?.headers ?? request.headers)
@@ -160,7 +163,7 @@ export async function sendChat(input, init, keys) {
     return new Response(
       JSON.stringify({
         error: {
-          message: `${requested || "this request"} needs the ${wantsApi ? "API" : "Vibe"} key, which this sign-in doesn't hold`,
+          message: `${asked || "this request"} needs the ${wantsApi ? "API" : "Vibe"} key, which this sign-in doesn't hold`,
           type: "invalid_request_error",
         },
       }),
@@ -168,66 +171,50 @@ export async function sendChat(input, init, keys) {
     )
   }
   headers.set("authorization", `Bearer ${key}`)
-  const lookedLikeChat = isChat(url)
-  let bodyText = lookedLikeChat ? prepareBody(originalText, url) : originalText
+  const chat = isChat(url)
+  let bodyText = chat ? prepareBody(originalText, url) : originalText
   let stream = false
   try {
     stream = JSON.parse(bodyText)?.stream === true
   } catch {}
 
-  const started = Date.now()
-  let response
-  for (;;) {
-    response = await fetch(url, {
+  const send = (text) =>
+    fetch(url, {
       method,
       headers,
-      body: method === "GET" || method === "HEAD" ? undefined : bodyText,
+      body: method === "GET" || method === "HEAD" ? undefined : text,
       signal: request.signal,
       redirect: "follow",
     })
-    if (response.status !== 429 || Date.now() - started >= RETRY_429_WINDOW_MS) break
-    const retryAfterRaw = response.headers.get("retry-after")
-    const retryAfter = retryAfterRaw == null ? Number.NaN : Number(retryAfterRaw)
-    await response.body?.cancel?.().catch(() => {})
-    const wait = Number.isFinite(retryAfter) && retryAfter >= 0 ? Math.max(100, retryAfter * 1000) : RETRY_429_INTERVAL_MS
-    await sleep(Math.min(wait, Math.max(0, RETRY_429_WINDOW_MS - (Date.now() - started))))
-  }
 
-  if ((response.status === 400 || response.status === 422) && lookedLikeChat) {
+  let response = await send(bodyText)
+
+  if (chat && (response.status === 400 || response.status === 422)) {
     const text = await response.text()
-    const snapped = snapEffort(bodyText, detailOf(text))
+    const snapped = snapEffort(bodyText, text)
     if (snapped != null) {
-      const retried = await fetch(url, {
-        method,
-        headers,
-        body: snapped,
-        signal: request.signal,
-        redirect: "follow",
-      })
+      const retried = await send(snapped)
       if (retried.ok) {
-        bodyText = snapped
         response = retried
+        bodyText = snapped
       } else {
-        return retried
+        return new Response(await retried.text(), { status: retried.status, statusText: retried.statusText, headers: cleanHeaders(retried.headers) })
       }
     } else {
-      return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers })
+      return new Response(text, { status: response.status, statusText: response.statusText, headers: cleanHeaders(response.headers) })
     }
   }
 
-  if (!response.ok) return response
-  if (!lookedLikeChat) return response
+  if (!response.ok || !chat) return response
 
   if (stream && /(^|\n)text\/event-stream/i.test(response.headers.get("content-type") ?? "")) {
-    return normalizeSseStream(response)
+    return rewriteStream(response)
   }
   const text = await response.text()
   try {
-    const parsed = normalizeJson(JSON.parse(text))
-    const headers = new Headers(response.headers)
-    headers.delete("content-length")
-    return new Response(JSON.stringify(parsed), { status: response.status, statusText: response.statusText, headers })
+    const parsed = rewritePayload(JSON.parse(text))
+    return new Response(JSON.stringify(parsed), { status: response.status, statusText: response.statusText, headers: cleanHeaders(response.headers) })
   } catch {
-    return new Response(text, { status: response.status, statusText: response.statusText, headers: response.headers })
+    return new Response(text, { status: response.status, statusText: response.statusText, headers: cleanHeaders(response.headers) })
   }
 }
