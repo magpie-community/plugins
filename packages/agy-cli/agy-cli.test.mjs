@@ -17,7 +17,6 @@ function run(args, timeout) {
 for (const [name, mocks] of [
   ["platform.mjs", true],
   ["compat.mjs", true],
-  ["prompt-guard.mjs", false],
   ["upstream-error.mjs", false],
   ["tool-schema.mjs", false],
   ["step-usage.mjs", false],

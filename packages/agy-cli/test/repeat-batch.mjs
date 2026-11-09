@@ -416,34 +416,6 @@ test("A16: a short replay is rendered unchanged", async () => {
   })
 })
 
-test("prompt guard strips billing header and replaces Agent SDK identity in fetch and count_tokens", async () => {
-  await withKit({}, async (kit) => {
-    scriptedAgent(kit)
-    const billing = "x-anthropic-billing-header: cc_version=2.1.0; cc_entrypoint=cli;"
-    const identity = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
-    const body = baseBody({
-      metadata: { user_id: "prompt-guard" },
-      system: [
-        { type: "text", text: billing },
-        { type: "text", text: `${identity}\nFollow repo rules.` },
-      ],
-      messages: [{ role: "user", content: "hello" }],
-    })
-    const tokensWithHeader = await kit.countTokens(body)
-    const tokensWithoutHeader = await kit.countTokens({
-      ...body,
-      system: [{ type: "text", text: "You are an AI coding assistant.\nFollow repo rules." }],
-    })
-    assert.equal(tokensWithHeader, tokensWithoutHeader)
-    const parsed = await readSse(await kit.request(body))
-    assert.equal(parsed.stopReason, "end_turn")
-    const proc = [...kit.module.__agyTestAllProcs][0]
-    const appended = proc?.instructions || ""
-    assert.ok(!appended.includes("x-anthropic-billing-header"))
-    assert.ok(!appended.includes("Claude Agent SDK"))
-    assert.ok(appended.includes("You are an AI coding assistant."))
-  })
-})
 
 test("output-cap notice is stripped and max_tokens automatically continues up to 3 times", async () => {
   await withKit({}, async (kit) => {

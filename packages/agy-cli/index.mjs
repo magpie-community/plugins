@@ -1,6 +1,5 @@
 import { agyCandidates, spawnAgy, windowsMcpShim } from "./platform.mjs"
 import { OutputLimitFilter } from "./output-limit.mjs"
-import { sanitizeSystemPrompt } from "./prompt-guard.mjs"
 import { lastModelStep, modelStepsAfter, sessionDbPath } from "./step-usage.mjs"
 import { sanitizeInputSchema, TOOL_SEARCH_INPUT_SCHEMA } from "./tool-schema.mjs"
 import { classifyUpstreamError } from "./upstream-error.mjs"
@@ -107,40 +106,6 @@ const STEP_USAGE_POLL_MS = 15
 const minimalAgent = () => process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
-function promptGuardEnabled() {
-  return process.env.AGY_BRIDGE_PROMPT_GUARD !== "0"
-}
-
-function promptGuardDebugEnabled() {
-  return process.env.AGY_BRIDGE_PROMPT_GUARD_DEBUG === "1"
-}
-
-function promptGuardOptions() {
-  const raw = process.env.AGY_BRIDGE_PROMPT_GUARD_EXTRA_PHRASES
-  if (raw === undefined || raw === "") return {}
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error("agy bridge: AGY_BRIDGE_PROMPT_GUARD_EXTRA_PHRASES must be a JSON string array")
-  }
-  if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string" || !item)) {
-    throw new Error("agy bridge: AGY_BRIDGE_PROMPT_GUARD_EXTRA_PHRASES must be a JSON array of non-empty strings")
-  }
-  return { extraSensitivePhrases: parsed }
-}
-
-function sanitizeBodySystemPrompt(body) {
-  if (!promptGuardEnabled() || body?.system === undefined || body?.system === null) {
-    return { body, diagnostics: [] }
-  }
-  const sanitized = sanitizeSystemPrompt(body.system, promptGuardOptions())
-  if (sanitized.diagnostics.length && promptGuardDebugEnabled()) {
-    console.error(`[agy-bridge] prompt guard sanitized system prompt: ${JSON.stringify(sanitized.diagnostics)}`)
-  }
-  if (sanitized.system === body.system) return { body, diagnostics: sanitized.diagnostics }
-  return { body: { ...body, system: sanitized.system }, diagnostics: sanitized.diagnostics }
-}
 
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
 // models a client gets, and the plugin serves no more than it offers.
@@ -860,7 +825,6 @@ class Turn {
     this.clientProgressAt = this.lastProgressAt
     this.deadlineAt = null
     this.baseHistory = trailingMessages({ messages }).history.map((message) => ({ ...message }))
-    this.promptGuardMatched = options.promptGuardMatched === true
     this.events = []
     this.waiters = []
     this.calls = []
@@ -1638,13 +1602,12 @@ class Proc {
 
   #formatAgentError(detail, turn) {
     const classified = classifyUpstreamError(detail, {
-      promptGuardMatched: turn?.promptGuardMatched === true,
     })
     const kind = ["quota_exhausted", "model_capacity", "rate_limit"].includes(classified.category)
       ? "rate_limit_error"
       : "api_error"
     return new AgentTurnError(classified.message, kind, {
-      keepProcess: classified.category !== "prompt_rejected" && classified.category !== "forbidden",
+      keepProcess: classified.category !== "forbidden",
       retryable: classified.retryable,
       retryAfterMs: classified.retryAfterMs,
       reasonCode: classified.reasonCode,
@@ -4234,8 +4197,7 @@ export const AntigravityBridgePlugin = async () => {
                 if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.messages)) {
                   return jsonError(400, "invalid count_tokens request")
                 }
-                const sanitized = sanitizeBodySystemPrompt(canonicalBody(parsed)).body
-                return new Response(JSON.stringify({ input_tokens: estimateInputTokens(sanitized) }), {
+                return new Response(JSON.stringify({ input_tokens: estimateInputTokens(canonicalBody(parsed)) }), {
                   status: 200,
                   headers: { "Content-Type": "application/json" },
                 })
@@ -4260,14 +4222,7 @@ export const AntigravityBridgePlugin = async () => {
             // One canonical form for both opening-system layouts, before anything
             // derives a key, instructions or history from the body.
             const layout = requestLayout(body)
-            let promptGuardMatched = false
-            try {
-              const sanitized = sanitizeBodySystemPrompt({ ...canonicalBody(body), model: requestedModel })
-              body = sanitized.body
-              promptGuardMatched = sanitized.diagnostics.length > 0
-            } catch (error) {
-              return jsonError(400, error.message)
-            }
+            body = { ...canonicalBody(body), model: requestedModel }
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
             const convKey = conversationKey(body)
@@ -4301,7 +4256,7 @@ export const AntigravityBridgePlugin = async () => {
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
                 hasToolResults: resultBlocks.length > 0 }
-              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, { promptGuardMatched })
+              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection)
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks)
                 const found = matches.filter((item) => item.match)

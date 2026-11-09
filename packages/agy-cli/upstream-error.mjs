@@ -14,8 +14,8 @@ const PROMPT_CONTENT_RE = /["']?\b(?:prompt(?:[\s_-]?text)?|input|contents?|mess
  * Classify an agy/Antigravity log detail without inspecting or returning prompt content.
  *
  * @param {unknown} detail agy log detail, normally the text after "agent executor error:"
- * @param {{ promptGuardMatched?: boolean, nowMs?: number }} [context]
- * @returns {{ category: "quota_exhausted"|"model_capacity"|"rate_limit"|"prompt_rejected"|"forbidden"|"unknown", retryable: boolean, message: string, retryAfterMs: number|null, reasonCode: string }}
+ * @param {{ nowMs?: number }} [context]
+ * @returns {{ category: "quota_exhausted"|"model_capacity"|"rate_limit"|"forbidden"|"unknown", retryable: boolean, message: string, retryAfterMs: number|null, reasonCode: string }}
  */
 export function classifyUpstreamError(detail, context = {}) {
   const text = detail == null ? "" : String(detail)
@@ -50,16 +50,6 @@ export function classifyUpstreamError(detail, context = {}) {
       false,
       "Antigravity reported exhausted quota; automatic retry is disabled",
       "AGY_ERROR_QUOTA_EXHAUSTED",
-      text,
-      retryAfterMs,
-    )
-  }
-  if (generic429 && options.promptGuardMatched === true) {
-    return result(
-      "prompt_rejected",
-      false,
-      "Antigravity rejected the request because the prompt guard matched; automatic retry is disabled",
-      "AGY_ERROR_PROMPT_GUARD_MATCHED",
       text,
       retryAfterMs,
     )

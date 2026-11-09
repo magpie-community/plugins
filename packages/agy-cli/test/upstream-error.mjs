@@ -57,17 +57,6 @@ test("TOS, permission, validation and HTTP 403 failures are forbidden", () => {
   }
 })
 
-test("forbidden and explicit quota evidence take precedence over promptGuardMatched", () => {
-  for (const [detail, category] of [
-    ["PERMISSION_DENIED (code 403)", "forbidden"],
-    ["QUOTA_EXHAUSTED (code 429): quota exhausted", "quota_exhausted"],
-    ["MODEL_CAPACITY_EXHAUSTED (code 429)", "model_capacity"],
-  ]) {
-    const actual = classifyUpstreamError(detail, { promptGuardMatched: true })
-    assert.equal(actual.category, category)
-    assert.equal(actual.retryable, false)
-  }
-})
 
 test("generic RESOURCE_EXHAUSTED does not claim quota or enable retries", () => {
   const actual = classifyUpstreamError("generating and executing: RESOURCE_EXHAUSTED (code 429): upstream rejected request")
@@ -108,20 +97,6 @@ test("only explicit request/token rate limits are retryable", () => {
   }
 })
 
-test("promptGuardMatched reclassifies only generic 429/resource exhaustion", () => {
-  for (const detail of ["RESOURCE_EXHAUSTED (code 429): rejected", "code 429"]) {
-    const actual = classifyUpstreamError(detail, { promptGuardMatched: true })
-    assert.equal(actual.category, "prompt_rejected", detail)
-    assert.equal(actual.retryable, false, detail)
-    assert.equal(actual.reasonCode, "AGY_ERROR_PROMPT_GUARD_MATCHED", detail)
-    assert.match(actual.message, /prompt guard matched/)
-  }
-  assert.equal(classifyUpstreamError("RESOURCE_EXHAUSTED", { promptGuardMatched: false }).category, "rate_limit")
-  assert.equal(classifyUpstreamError("FAILED_PRECONDITION", { promptGuardMatched: true }).category, "unknown")
-  const explicitRate = classifyUpstreamError("429 Too Many Requests", { promptGuardMatched: true })
-  assert.equal(explicitRate.category, "rate_limit")
-  assert.equal(explicitRate.retryable, true)
-})
 
 test("unknown and missing details preserve the existing generic diagnostic", () => {
   for (const detail of [undefined, null, "", "FAILED_PRECONDITION (code 400): fake upstream failure"]) {
