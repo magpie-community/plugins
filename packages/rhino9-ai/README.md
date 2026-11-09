@@ -40,7 +40,8 @@ Rhino 插件会自动创建检测目录，无需先选择模型。再从 Magpie 
 正常打开 Rhino 的 AI 面板即可选择 **Magpie**，无需输入命令。每次发送都会读取 Magpie 当前的模型、
 自定义组和策略，组 ID 会原样传给 Magpie，由 Magpie 负责路由。
 
-初次使用请保留默认的逐次修改确认，也可主动勾选会话内自动执行修改。
+初次使用默认为逐次修改确认。也可开启 YOLO 自动执行，选择会跨新对话、文档和 Rhino 重启保留。
+执行偏好单独存放在 `~/.config/rhino9-magpie/panel-preferences.json`，不包含连接密钥。
 支持 Windows x64、Rhino 9 和本机 HTTP Magpie 网关。模型需要支持工具调用。
 建模结果仍需检查，复杂建筑任务和所有模型的兼容性尚需进一步验证。
 
