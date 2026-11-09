@@ -2537,8 +2537,63 @@ function historyKey(messages) {
   return stableJSON(rows.filter(row => row.content.length))
 }
 
+// Assistant-prefill support: a trailing text-only assistant message is a
+// client-side prefill (chat/roleplay frontends, "continue"/"impersonate"
+// flows, bot frameworks). Keep the run in the tail so the session ledger
+// (expectedMessages, client bytes) stays aligned with the client's own
+// history across turns, and render it as a continuation carrier instead of
+// the system-reminder treatment. AGY_BRIDGE_PREFILL=0 restores the stock
+// reject; AGY_BRIDGE_PREFILL_CARRIER_NOTE overrides the carrier's note line.
+const prefillTailEnabled = () => process.env.AGY_BRIDGE_PREFILL !== "0"
+const prefillCarrierNote = () => process.env.AGY_BRIDGE_PREFILL_CARRIER_NOTE
+  || "(system note: the fragment below is part of your own unfinished reply; continue exactly from where it stops, and do not repeat it.)"
+
+// Concatenated text of an assistant message, or null when the message carries
+// anything other than plain text blocks. An empty string means "no content".
+function assistantTextOf(message) {
+  if (!message || message.role !== "assistant") return null
+  if (typeof message.content === "string") return message.content
+  if (!Array.isArray(message.content)) return null
+  let text = ""
+  for (const block of message.content) {
+    if (!block || block.type !== "text" || typeof block.text !== "string") return null
+    text += block.text
+  }
+  return text
+}
+
+// History/tail positions for a request that ends with an assistant prefill
+// run: runStart = first message of the trailing text-only assistant run,
+// boundary = history split point (after the last assistant message before the
+// run, the session ledger's newest entry). Returns null when the request does
+// not end with a text-only assistant run. Known limits: a request combining a
+// live tool_result with a prefill tail is rejected in validateBody; a run with
+// no user message before it (contiguous assistant tail, e.g. a client re-sending
+// a completed reply with a prefill appended) puts the whole run in the tail, so
+// that one turn degrades to a fresh session (safe, self-healing).
+function prefillRun(messages) {
+  const last = messages.at(-1)
+  if (!last || last.role !== "assistant") return null
+  if (assistantTextOf(last) === null) return null
+  let runStart = messages.length
+  while (runStart > 0 && messages[runStart - 1]?.role === "assistant" && assistantTextOf(messages[runStart - 1]) !== null) runStart--
+  let boundary = runStart
+  while (boundary > 0 && messages[boundary - 1]?.role !== "assistant") boundary--
+  return { runStart, boundary }
+}
+
+function renderPrefillCarrierParts(message) {
+  const body = (assistantTextOf(message) || "").trim()
+  if (!body) return []
+  return [{ type: "text", text: `${prefillCarrierNote()}\n${body}` }]
+}
+
 function trailingMessages(body) {
   body = canonicalBody(body)
+  const run = prefillTailEnabled() ? prefillRun(body.messages) : null
+  if (run) {
+    return { history: body.messages.slice(0, run.boundary), messages: body.messages.slice(run.boundary) }
+  }
   let start = body.messages.length
   while (start > 0 && body.messages[start - 1].role !== "assistant") start--
   return { history: body.messages.slice(0, start), messages: body.messages.slice(start) }
@@ -2993,7 +3048,14 @@ function renderTurnMessageParts(message) {
 }
 
 function renderTurnMessagesParts(messages) {
-  const groups = messages.map(renderTurnMessageParts).filter((group) => group.length > 0)
+  // A trailing assistant prefill run renders as a continuation carrier rather
+  // than the system-reminder treatment (see prefillRun above).
+  const run = prefillTailEnabled() && messages.length ? prefillRun(messages) : null
+  const prefillStart = run ? run.runStart : -1
+  const groups = messages.map((message, index) =>
+    prefillStart >= 0 && index >= prefillStart
+      ? renderPrefillCarrierParts(message)
+      : renderTurnMessageParts(message)).filter((group) => group.length > 0)
   const out = []
   for (let i = 0; i < groups.length; i++) {
     if (i > 0) out.push({ type: "text", text: "\n\n" })
@@ -3185,10 +3247,17 @@ function validateBody(body) {
   }
   const trailing = trailingMessages(body)
   const lastRole = body.messages.at(-1)?.role
-  const validTailRole = lastRole === "user" || lastRole === "system" || lastRole === "developer"
+  // A text-only assistant tail is a client-side prefill (see prefillRun).
+  const prefillTail = prefillTailEnabled() && lastRole === "assistant" && assistantTextOf(body.messages.at(-1)) !== null
+  const validTailRole = lastRole === "user" || lastRole === "system" || lastRole === "developer" || prefillTail
+  if (prefillTail && extractToolResults(body).length) {
+    throw new UnsupportedContent("a request combining a live tool_result with an assistant prefill tail")
+  }
   if (!validTailRole || (!extractToolResults(body).length &&
     !trailing.messages.some((message) => message.role === "user") && !trailing.history.length)) {
-    throw new UnsupportedContent("a request whose last message is not from the user or a tool-result notification")
+    throw new UnsupportedContent(prefillTail
+      ? "a request whose only messages are assistant prefill turns (no user turn to continue from)"
+      : "a request whose last message is not from the user or a tool-result notification")
   }
   if (body.system && typeof body.system !== "string") {
     if (!Array.isArray(body.system) || body.system.some((block) => block?.type !== "text")) {

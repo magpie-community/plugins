@@ -81,8 +81,34 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Isolation**: your global MCP configuration is never read. Every agy process
   runs with a temporary agent, and every permission request agy raises (shell,
   file edits, browser) is refused. Real actions happen on the client side.
+- **Assistant prefill**: requests that end with a text-only assistant message
+  (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
+  instead of rejected; the session ledger stays aligned across turns. See
+  "Assistant prefill" below.
 - **Usage visibility**: Magpie shows the agy subscription usage windows. They are
   informational only; running out of quota does not block requests automatically.
+
+## Assistant prefill
+
+A client request that ends with a **text-only assistant message** (a
+SillyTavern preset prefill, a "continue" / "impersonate" turn, a bot
+framework's assembled context) used to be rejected with a 400. The prefill now
+becomes part of the current turn:
+
+- The prefill stays in the tail, so the session ledger (expectedMessages,
+  client bytes) stays aligned with the client's own history across turns — the
+  session is reused after a prefill turn instead of replaying from scratch;
+- The prefill text renders as a continuation carrier (a note line plus the
+  fragment itself), telling the model to continue from where the fragment
+  stops;
+- `AGY_BRIDGE_PREFILL=0` restores the stock 400 reject;
+  `AGY_BRIDGE_PREFILL_CARRIER_NOTE` overrides the carrier's note line.
+
+Known limits: a prefill alongside a live tool_result, or directly after an
+unanswered tool_use, is still rejected; a
+contiguous assistant tail with no user message before it is treated as one
+prefill run (that turn degrades to a fresh session and self-heals on the next
+turn); the models a client gets remain agy's decision.
 
 ## Requirements
 
@@ -183,6 +209,8 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
+| `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |
+| `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | English system note | The note line rendered before a prefill fragment (sent to the model) |
 
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
 

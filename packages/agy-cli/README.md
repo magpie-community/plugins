@@ -60,7 +60,26 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   就用 `session/resume` 接上上下文。状态文件只存会话 ID 与哈希，不存消息原文。
 - **隔离运行**：不读取你的全局 MCP 配置。每个 agy 进程使用临时 agent。agy 发起的权限
   请求（shell、写文件、浏览器等）一律拒绝，真正的操作都在客户端侧完成。
+- **助手预填**：以 assistant 结尾的预填请求（SillyTavern 预设、继续写、bot 框架）不再
+  400 拒绝：预填留在本轮并渲染为续写载体，会话跨轮保持对齐，见下文「助手预填」。
 - **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口，仅作展示，额度耗尽时不会自动拦截请求。
+
+## 助手预填（assistant prefill）
+
+客户端的请求以一条**纯文本 assistant 消息**结尾时（SillyTavern 预设的预填、
+「继续写 / Impersonate」、bot 框架的拼装），旧版会直接 400 拒绝。现在这段
+预填被当作本轮的一部分：
+
+- 预填留在本轮尾部，会话账本（expectedMessages，客户端原字节）与客户端自己
+  的历史跨轮对齐——预填轮之后会话照常复用，不再整段重放；
+- 预填文本渲染为一条续写载体（提示行 + 原文），发给 agy 让模型从停下的地方
+  接着写；
+- `AGY_BRIDGE_PREFILL=0` 恢复原来的 400 拒绝；`AGY_BRIDGE_PREFILL_CARRIER_NOTE`
+  自定义载体提示行。
+
+已知限制：与 live tool_result 共存的预填、以及未应答 tool_use 后紧跟的预填仍被 400 拒绝；前面没有 user 消息的
+连续 assistant 尾整段视为预填（该轮降级为新会话，下一轮自愈）；向客户端开放
+哪些模型仍由 agy 决定。
 
 ## 环境要求
 
@@ -141,6 +160,8 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
+| `AGY_BRIDGE_PREFILL` | 开启 | 设为 `0` 恢复对 assistant 预填尾巴的原生 400 拒绝，见「助手预填」 |
+| `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | 英文系统提示行 | 预填片段渲染时的提示行文本（发给模型） |
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 

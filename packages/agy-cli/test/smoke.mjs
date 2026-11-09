@@ -1638,8 +1638,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
     ],
   })
   const nonTextPayload = await nonTextSystem.json()
-  check("assistant prefill and lone system messages return 400",
-    prefillOnly.status === 400 && prefillTail.status === 400 && loneSystem.status === 400,
+  check("an assistant prefill tail is served; an assistant-only request and a lone system stay 400",
+    prefillOnly.status === 400 && prefillTail.status === 200 && loneSystem.status === 400,
     `${prefillOnly.status},${prefillTail.status},${loneSystem.status}`)
   check("unsupported system content block error names the block type",
     nonTextSystem.status === 400 && nonTextPayload.error?.message?.includes('"audio_chunk"'),
