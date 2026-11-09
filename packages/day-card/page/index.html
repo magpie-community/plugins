@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Day card</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script src="view.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="days">
+    <button type="button" class="step" id="prev" aria-label="Previous day" data-t-label="prev"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
+    <div class="pick">
+      <button type="button" id="date" aria-haspopup="listbox" aria-expanded="false"><span id="date-text"></span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></svg></button>
+      <ul id="menu" role="listbox" hidden></ul>
+    </div>
+    <button type="button" class="step" id="next" aria-label="Next day" data-t-label="next"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
+    <button type="button" id="today" data-t="today">Today</button>
+  </div>
+  <div class="share">
+    <button type="button" id="copy" data-t="copy" disabled>Copy image</button>
+    <button type="button" id="save" data-t="save" disabled>Save PNG</button>
+  </div>
+</header>
+<p class="status" id="status" role="status"></p>
+<main><canvas id="card"></canvas></main>
+</body>
+</html>
