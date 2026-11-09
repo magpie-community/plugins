@@ -28,6 +28,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [grok](packages/grok) | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in | `grok` |
 | [inkstone](packages/inkstone) | (Unofficial) 书生·端砚 Token Plan: browser sign-in gives the ink-credit balance, the 5-hour and 7-day windows and the credit packs, and creates an `ink-*` API key to serve the plan's models for chat | `intern-inkstone` |
 | [joycode](packages/joycode) | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial) | `joycode` |
+| [doubao-work](packages/doubao-work) | Doubao Work (豆包工作), whose agent runs in the cloud with no API, through the Doubao desktop app driven the way a person uses it (macOS) | `doubao-work` |
 | [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |

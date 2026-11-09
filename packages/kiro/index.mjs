@@ -15,7 +15,9 @@
 // Messages, and the fetch here sends each request whole to Kiro's own API
 // (runtime.<region>.kiro.dev/generateAssistantResponse, the one kiro-cli
 // talks to) as a conversation, and turns the AWS event stream it answers
-// with back into Messages' events.
+// with back into Messages' events. An account Kiro has put on its
+// CreateResponse experiment is asked as the Kiro IDE asks it then
+// (/v1/responses, answered with server-sent events; see createResponse).
 import { createServer } from "node:http"
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
@@ -780,6 +782,8 @@ function configModel(m) {
       ? { reasoning: true, variants: Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) }
       : {}),
     tool_call: true,
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
   }
 }
 
@@ -805,6 +809,8 @@ function runtimeModel(m) {
       interleaved: false,
     },
     release_date: "",
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
     variants: thinks(m.id) ? Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) : {},
   }
 }
@@ -829,6 +835,21 @@ async function keyModels(a) {
   return out
 }
 
+// rateOf is the credits a model's request costs as a multiple, as Kiro's
+// list says it (rateMultiplier with rateUnit "Credit": on 11-09 a Free
+// account's list had auto 1, claude-sonnet-4.5 1.3, claude-haiku-4.5 0.4,
+// glm-5 0.5, deepseek-3.2 and minimax-m2.5 0.25, minimax-m2.1 0.15 and
+// qwen3-coder-next 0.05, which kiro-cli 2.x reads as its rate_multiplier).
+// Nothing is the rate when Kiro gives none, or gives it in another unit.
+// It is only shown: what a request cost is the meteringEvent's credits,
+// which Kiro has already multiplied (the same prompt metered 0.00535 on
+// claude-haiku-4.5 and 0.01739 on claude-sonnet-4.5, 0.4 to 1.3).
+function rateOf(m) {
+  const n = m?.rateMultiplier
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return undefined
+  return String(m.rateUnit ?? "").toLowerCase() === "credit" ? n : undefined
+}
+
 // listModels is List-Available-Models, the default first.
 async function listModels(a) {
   const out = a.tokenType === "API_KEY" ? await keyModels(a) : await managementCall(a.region, a, "List-Available-Models", { origin: "KIRO_CLI", profileArn: a.profile })
@@ -837,8 +858,9 @@ async function listModels(a) {
     if (!m?.modelId) continue
     let name = m.modelName
     if (!name || name === m.modelId) name = m.modelId === "auto" ? "Auto" : m.modelId
+    const rate = rateOf(m)
     const model = { id: m.modelId, name, context: m.tokenLimits?.maxInputTokens ?? 0, output: m.tokenLimits?.maxOutputTokens ?? 0,
-      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE") }
+      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE"), ...(rate ? { rate } : {}) }
     if (m.modelId === out?.defaultModel?.modelId) list.unshift(model)
     else list.push(model)
   }
@@ -1422,8 +1444,12 @@ const timing = {
 // account. The answer of the last try is the answer.
 async function paced(a, body, signal) {
   const invocation = randomUUID()
+  // the IDE's own choice of API for the account (createResponseFor): its
+  // CreateResponse arm is asked at /v1/responses, the rest as ever
+  const cr = await createResponseFor(a, signal)
+  const sent = cr ? JSON.stringify(responsesBody(JSON.parse(body))) : body
   for (let n = 1; ; n++) {
-    const res = await sendKiro(a, body, signal, n, invocation)
+    const res = cr ? await sendResponses(a, sent, signal, n) : await sendKiro(a, sent, signal, n, invocation)
     if (res.status !== 429 || n >= TRIES) return res
     const text = (await res.text()).slice(0, 1 << 20)
     const again = () => new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
@@ -1433,6 +1459,315 @@ async function paced(a, body, signal) {
     await timing.sleep(said ?? paceOf(n), signal)
   }
 }
+
+// ---- CreateResponse: the Kiro IDE's other chat API ------------------------------------
+//
+// Kiro IDE 1.4.121 (agent 1.1.787) asks Kiro one of two ways, by an A/B
+// experiment the account is in: generateAssistantResponse (sendKiro), or,
+// in the create_response_api arm, CreateResponse: POST /v1/responses on
+// the same runtime, an OpenAI Responses-like body built from the same
+// conversation (its buildCreateResponseRequest), answered with server-sent
+// events (its parseCreateResponseSse). chensihan0709-ui (plugins#848) had a
+// Builder ID student account answered 429 USER_REQUEST_RATE_EXCEEDED on
+// generateAssistantResponse through the plugin while the IDE, 11s later
+// on the same account, was answered on CreateResponse ("api=CreateResponse
+// armSource=experiment callPath=main"), and the IDE's own session-title
+// call, which stayed on generateAssistantResponse, got the 429 too.
+
+// FEATURE_SALT is what the IDE hashes a feature's name with to find it in
+// Kiro's feature configuration (its deriveWireKey: sha256 hex of salt +
+// name); CREATE_RESPONSE is the experiment's, and "create_response" the
+// value of its arm (selectModelApi). A chat call is the IDE's "main" call
+// path, which takes CreateResponse on the experiment alone.
+const FEATURE_SALT = "kiro-feature-config-key-salt-3e9b1d7a"
+const featureKey = (name) => createHash("sha256").update(FEATURE_SALT + name).digest("hex")
+const CREATE_RESPONSE = featureKey("create_response_api")
+// the IDE's ExperimentConfigService: a configuration is kept 15 minutes
+// for one sign-in (token and profile), asked for again after a minute
+// when it couldn't be read, and read within 5s or not at all, which
+// leaves the call on generateAssistantResponse (the default)
+const FEATURES = { ttl: 15 * 60_000, retry: 60_000, timeout: 5000 }
+const features = new Map() // account → { token, profile, until, config, pending }
+
+// createResponseFor is whether the account is asked as the IDE's
+// CreateResponse arm.
+async function createResponseFor(a, signal) {
+  const config = await featuresOf(a, signal)
+  return config[CREATE_RESPONSE] === "create_response"
+}
+
+async function featuresOf(a, signal) {
+  const who = a.key || a.profile || a.token
+  let f = features.get(who)
+  if (!f || f.token !== a.token || f.profile !== a.profile) {
+    f = { token: a.token, profile: a.profile, until: 0, config: {} }
+    features.set(who, f)
+  }
+  if (Date.now() < f.until) return f.config
+  f.pending ??= readFeatures(a, signal)
+    .then((config) => {
+      f.config = config
+      f.until = Date.now() + FEATURES.ttl
+    })
+    .catch(() => {
+      // what was read before is kept, as the IDE keeps its last good one
+      f.until = Date.now() + FEATURES.retry
+    })
+    .finally(() => (f.pending = undefined))
+  await f.pending
+  return f.config
+}
+
+// readFeatures is Kiro's GetFeatureConfiguration as the IDE calls it: GET
+// /featureConfiguration on the runtime with the origin and the IDE's
+// version as the query, the profile as x-amzn-kiro-profile-arn, through
+// the same SDK client (one try), answered {configuration: {...}}.
+async function readFeatures(a, signal) {
+  const q = new URLSearchParams({ origin: "AI_EDITOR", version: IDE_VERSION })
+  const headers = { ...sdkHeaders(a, 1), "amz-sdk-request": "attempt=1; max=1", Accept: "application/json" }
+  if (a.profile) headers["x-amzn-kiro-profile-arn"] = a.profile
+  const timeout = AbortSignal.timeout(FEATURES.timeout)
+  const res = await fetch(`${runtime(a.region)}/featureConfiguration?${q}`, {
+    headers,
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  })
+  if (!res.ok) {
+    await res.body?.cancel()
+    throw new Error(`featureConfiguration ${res.status}`)
+  }
+  const c = (await res.json())?.configuration
+  return c && typeof c === "object" && !Array.isArray(c) ? c : {}
+}
+
+// responses are the Responses (Response objects) answered with
+// server-sent events: CreateResponse's, read by crMessages
+const responses = new WeakSet()
+
+// sendResponses is CreateResponse as the IDE sends it (its
+// sendCreateResponseRaw): its own few headers, the plain user agent (its
+// userAgent.forHttp(), no AWS SDK's), the profile as x-amzn-kiro-profile,
+// and the try as x-amzn-kiro-attempt. A refusal is said back in
+// generateAssistantResponse's words (crRefusal), so it is read, retried
+// and reported as one of its.
+async function sendResponses(a, body, signal, attempt = 1) {
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${a.token}`,
+    "x-amzn-kiro-origin": "AI_EDITOR",
+    "x-amzn-codewhisperer-optout": "true",
+    "User-Agent": IDE_APP,
+    "x-amzn-kiro-attempt": `${attempt};max=${TRIES}`,
+  }
+  if (a.profile) headers["x-amzn-kiro-profile"] = a.profile
+  const kind = a.tokenType || (a.idc ? "SSO_OIDC" : "")
+  if (kind) headers.TokenType = kind
+  const res = await fetch(runtime(a.region) + "/v1/responses", { method: "POST", headers, body, signal })
+  if (!res.ok) {
+    const text = (await res.text()).slice(0, 1 << 20)
+    return new Response(crRefusal(res.status, text), { status: res.status, statusText: res.statusText, headers: res.headers })
+  }
+  responses.add(res)
+  return res
+}
+
+// CR_REASONS are the IDE's CreateResponse codes it says in
+// generateAssistantResponse's reasons (its normalizeReason).
+const CR_REASONS = { context_length_exceeded: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", model_not_found: "INVALID_MODEL_ID",
+  invalid_function_parameters: "TOOL_SCHEMA_INVALID", invalid_json: "REQUEST_BODY_INVALID_JSON",
+  "kiro:model_requires_user_opt_in": "MODEL_REQUIRES_USER_OPT_IN", server_is_overloaded: "MODEL_TEMPORARILY_UNAVAILABLE",
+  rate_limit_exceeded: "USER_REQUEST_RATE_EXCEEDED" }
+function crReason(status, code) {
+  if (status === 413) return "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+  if (typeof code !== "string" || !code) return undefined
+  return CR_REASONS[code] ?? (code.startsWith("kiro:") ? code.slice(5).toUpperCase() : code)
+}
+
+// crRefusal is CreateResponse's refusal ({error: {message, type, code}},
+// or Kiro's {message, reason}) as generateAssistantResponse says one:
+// {message, reason, retryAfterMilliseconds}.
+function crRefusal(status, text) {
+  let o = {}
+  try {
+    o = JSON.parse(text) ?? {}
+  } catch {}
+  if (typeof o !== "object") o = {}
+  const e = o.error && typeof o.error === "object" ? o.error : {}
+  const message = e.message ?? o.message ?? o.Message ?? (String(text).trim() || `CreateResponse HTTP ${status}`)
+  const reason = crReason(status, e.code ?? o.reason)
+  const out = { message, ...(reason ? { reason } : {}) }
+  if (Number.isFinite(o.retryAfterMilliseconds) && o.retryAfterMilliseconds >= 0) out.retryAfterMilliseconds = o.retryAfterMilliseconds
+  return JSON.stringify(out)
+}
+
+// responsesBody is a generateAssistantResponse body (kiroRequest's) as
+// the IDE's CreateResponse body: the conversation as input items, the
+// current message's tools as functions, and what went in the state as
+// metadata. The instructions stay at the head of the first message, as
+// the IDE sends them without its system_field_injection feature.
+function responsesBody(g) {
+  const s = g.conversationState
+  const current = s.currentMessage?.userInputMessage ?? {}
+  const input = []
+  for (const e of [...(s.history ?? []), s.currentMessage]) if (e) input.push(...responsesInput(e))
+  const tools = []
+  for (const t of current.userInputMessageContext?.tools ?? []) {
+    const spec = t.toolSpecification
+    if (spec?.name) tools.push({ type: "function", name: spec.name, description: spec.description, parameters: spec.inputSchema?.json })
+  }
+  const metadata = { "kiro:agent_mode": "vibe" }
+  if (s.conversationId !== undefined) metadata["kiro:conversation_id"] = s.conversationId
+  const out = { model: current.modelId, input, ...(tools.length ? { tools } : {}), stream: true, origin: current.origin ?? "AI_EDITOR" }
+  if (g.profileArn !== undefined) out.profileArn = g.profileArn
+  out.metadata = metadata
+  // its buildReasoningField: the thinking type, the effort and how it is shown
+  const f = g.additionalModelRequestFields
+  if (f && typeof f === "object") {
+    const str = (v) => (typeof v === "string" && v ? v : undefined)
+    const type = str(f.thinking?.type)
+    const effort = str(f.output_config?.effort) ?? str(f.reasoning?.effort)
+    const summary = str(f.thinking?.display)
+    if (type || effort || summary)
+      out.reasoning = { ...(type ? { type } : {}), ...(effort ? { effort } : {}), ...(summary ? { summary } : {}) }
+  }
+  return out
+}
+
+// responsesInput is one entry of the conversation as the IDE's input
+// items (its toResponsesInputMessages): tool results, then what the user
+// said (with images, a list of parts); the reply's text, then its calls.
+function responsesInput(e) {
+  const out = []
+  const u = e.userInputMessage
+  if (u) {
+    for (const r of u.userInputMessageContext?.toolResults ?? [])
+      out.push({ type: "function_call_output", call_id: r.toolUseId, output: (r.content ?? []).map((p) => p.text ?? "").join("\n") })
+    const images = (u.images ?? []).filter((i) => i.source?.bytes)
+      .map((i) => ({ type: "input_image", image_url: `data:image/${String(i.format).toLowerCase()};base64,${i.source.bytes}` }))
+    const text = typeof u.content === "string" ? u.content : ""
+    if (images.length) out.push({ role: "user", content: [...(text ? [{ type: "input_text", text }] : []), ...images] })
+    else if (text) out.push({ role: "user", content: text })
+  }
+  const m = e.assistantResponseMessage
+  if (m) {
+    if (typeof m.content === "string" && m.content) out.push({ role: "assistant", content: m.content })
+    for (const c of m.toolUses ?? [])
+      out.push({ type: "function_call", call_id: c.toolUseId, name: c.name, arguments: typeof c.input === "string" ? c.input : JSON.stringify(c.input ?? {}) })
+  }
+  return out
+}
+
+// CR_STOPS are the IDE's stop reasons for an incomplete response.
+const CR_STOPS = { max_output_tokens: "MAX_TOKENS", content_filter: "CONTENT_FILTERED",
+  compaction_required_for_model_handoff: "COMPACTION_REQUIRED_FOR_MODEL_HANDOFF" }
+// CR_TYPES are the error types the IDE takes for one when a stream's
+// error has a code alone
+const CR_TYPES = new Set(["invalid_request", "not_found", "too_many_requests", "insufficient_quota", "server_error", "model_error"])
+
+// crFailed is what a CreateResponse stream's error says, in the words of
+// generateAssistantResponse's (exception).
+function crFailed(err) {
+  let type = err?.type
+  let code = err?.code
+  if (!type && code && CR_TYPES.has(code)) [type, code] = [code, undefined]
+  const t = String(type ?? "").toLowerCase()
+  const throttled = t === "too_many_requests" || code === "rate_limit_exceeded"
+  const reason = crReason(code === "context_length_exceeded" ? 413 : 0, code)
+  let msg = err?.message || `CreateResponse stream failed (${type ?? code ?? "unknown"})`
+  if (reason) msg += ` (${reason})`
+  if (reason === USER_RATE) return userRate(msg)
+  if (throttled) return "rate limited: " + msg
+  return type ? `${type}: ${msg}` : msg
+}
+
+// crMessages reads CreateResponse's server-sent events as the events of
+// generateAssistantResponse's stream ({kind, m}, or {failed}), as the IDE
+// reads them (its parseCreateResponseSse).
+async function* crMessages(body) {
+  const open = new Set() // calls started and not stopped
+  const argued = new Set() // calls whose arguments came in pieces
+  let call
+  let refused = false // the refusal came in pieces, said already
+  const line = function* (l) {
+    if (!l.startsWith("data:")) return
+    const d = l.slice(5).trim()
+    if (!d || d === "[DONE]") return
+    let w
+    try {
+      w = JSON.parse(d)
+    } catch {
+      return
+    }
+    const type = w?.type ?? ""
+    if (type === "response.output_text.delta" && typeof w.delta === "string") yield { kind: "assistantResponseEvent", m: { content: w.delta } }
+    else if ((type === "response.reasoning_text.delta" || type === "response.reasoning.delta") && typeof w.delta === "string")
+      yield { kind: "reasoningContentEvent", m: { text: w.delta } }
+    else if (type === "response.output_item.done" && w.item?.type === "reasoning") {
+      let env
+      try {
+        env = JSON.parse(w.item.encrypted_content)
+      } catch {}
+      const sig = env?.reasoningText?.signature
+      if (typeof sig === "string" && sig) yield { kind: "reasoningContentEvent", m: { signature: sig } }
+    } else if (type === "response.refusal.delta" && typeof w.delta === "string") {
+      // a refusal is said as the reply's text
+      refused = true
+      yield { kind: "assistantResponseEvent", m: { content: w.delta } }
+    } else if (type === "response.refusal.done" && typeof w.refusal === "string") {
+      if (!refused) yield { kind: "assistantResponseEvent", m: { content: w.refusal } }
+    }
+    else if (type === "response.output_item.added" && w.item?.type === "function_call") {
+      call = w.item.call_id ?? w.item.id ?? ""
+      open.add(call)
+      yield { kind: "toolUseEvent", m: { toolUseId: call, name: w.item.name, input: w.item.arguments ?? "" } }
+    } else if (type === "response.function_call_arguments.delta" && typeof w.delta === "string") {
+      if (call) argued.add(call)
+      yield { kind: "toolUseEvent", m: { toolUseId: call, input: w.delta } }
+    } else if (type === "response.function_call_arguments.done") {
+      if (call && open.has(call)) {
+        open.delete(call)
+        argued.delete(call)
+        call = undefined
+      }
+    } else if (type === "response.output_item.done" && w.item?.type === "function_call") {
+      const id = w.item.call_id ?? w.item.id ?? ""
+      if (!open.has(id)) return
+      open.delete(id)
+      if (!argued.delete(id)) yield { kind: "toolUseEvent", m: { toolUseId: id, input: w.item.arguments ?? "" } }
+    } else if (type === "response.completed" || type === "response.incomplete") {
+      const r = w.response ?? {}
+      const incomplete = type === "response.incomplete" || r.status === "incomplete"
+      const stopReason = (incomplete && CR_STOPS[r.incomplete_details?.reason]) || "END_TURN"
+      yield { kind: "metadataEvent", m: { stopReason } }
+      const pct = r.usage?.["kiro:context_usage_percentage"]
+      if (typeof pct === "number" && Number.isFinite(pct)) yield { kind: "contextUsageEvent", m: { contextUsagePercentage: pct } }
+      const credits = r.usage?.["kiro:credits"]
+      if (typeof credits?.value === "number" && Number.isFinite(credits.value))
+        yield { kind: "meteringEvent", m: { usage: credits.value, ...(credits.unit !== undefined ? { unit: credits.unit } : {}) } }
+    } else if (type === "error" || type === "response.failed") yield { failed: crFailed(type === "error" ? w.error : w.response?.error) }
+  }
+  const dec = new TextDecoder()
+  let buf = ""
+  const reader = body.getReader()
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      buf += done ? dec.decode() : dec.decode(value, { stream: true })
+      const lines = buf.split("\n")
+      buf = done ? "" : lines.pop() ?? ""
+      if (buf.length > CR_LINE) throw new Error("a server-sent event over 4 MiB")
+      for (const l of lines)
+        for (const ev of line(l.replace(/\r$/, ""))) {
+          yield ev
+          if (ev.failed) return
+        }
+      if (done) return
+    }
+  } finally {
+    reader.releaseLock?.()
+  }
+}
+// CR_LINE is the longest line the IDE reads of the stream
+const CR_LINE = 4 << 20
 
 // tooLongSaid is whether Kiro's words say the conversation is past the
 // model's window: its ValidationException "Input is too long." with reason
@@ -1677,9 +2012,35 @@ class ThinkParser {
   }
 }
 
+// garMessages reads generateAssistantResponse's event stream: each event's
+// kind and what it says ({kind, m}), or what an error in it says ({failed}).
+const STREAM_ERRORS = ["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"]
+async function* garMessages(body) {
+  const dec = new TextDecoder()
+  for await (const f of frames(body)) {
+    const type = f.headers[":message-type"]
+    if (type === "exception" || type === "error") {
+      yield { failed: exception(f.headers[":exception-type"] || f.headers[":error-code"], f.payload) }
+      return
+    }
+    let m
+    try {
+      m = JSON.parse(dec.decode(f.payload))
+    } catch {
+      continue
+    }
+    const kind = f.headers[":event-type"]
+    if (STREAM_ERRORS.includes(kind)) {
+      yield { failed: exception(kind, f.payload) }
+      return
+    }
+    yield { kind, m }
+  }
+}
+
 // events turns Kiro's reply into events: text, thinking, tool calls (the
 // arguments in pieces), then the usage and why it stopped — or an error.
-async function* events(body, model, budget) {
+async function* events(body, model, budget, sse = false) {
   const think = new ThinkParser()
   let tool = ""
   let tools = 0
@@ -1695,21 +2056,13 @@ async function* events(body, model, budget) {
   let pct = 0
   let said = 0
   let failed = ""
-  const dec = new TextDecoder()
   try {
-    for await (const f of frames(body)) {
-      const type = f.headers[":message-type"]
-      if (type === "exception" || type === "error") {
-        failed = exception(f.headers[":exception-type"] || f.headers[":error-code"], f.payload)
+    for await (const ev of (sse ? crMessages : garMessages)(body)) {
+      if (ev.failed) {
+        failed = ev.failed
         break
       }
-      let m
-      try {
-        m = JSON.parse(dec.decode(f.payload))
-      } catch {
-        continue
-      }
-      const kind = f.headers[":event-type"]
+      const { kind, m } = ev
       if (kind === "assistantResponseEvent") {
         const text = typeof m.content === "string" ? m.content : ""
         said += text.length
@@ -1755,9 +2108,6 @@ async function* events(body, model, budget) {
         if (m.contextUsagePercentage > 0) pct = m.contextUsagePercentage
       } else if (kind === "meteringEvent") {
         if (Number.isFinite(m.usage) && m.usage >= 0 && (!m.unit || /^credit/i.test(m.unit))) usage.credits = (usage.credits ?? 0) + m.usage
-      } else if (["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"].includes(kind)) {
-        failed = exception(kind, f.payload)
-        break
       }
     }
   } catch (e) {
@@ -2178,7 +2528,7 @@ async function generate(creds, auth, req, signal, conversation) {
   if (hosted?.error) return errorResponse(400, hosted.error)
   const first = await ask(creds, auth, req, model, budget, signal, conversation)
   if (!first.res) return errorResponse(first.status, first.message, first.wait)
-  const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first, conversation) : events(first.res.body, model, budget)
+  const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first, conversation) : events(first.res.body, model, budget, responses.has(first.res))
   return kept(await reply(it, model, req.stream === true, toolNames(req)))
 }
 
@@ -2272,7 +2622,7 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
     let client = false
     let current = null
     let stop = null
-    for await (const e of events(res.body, model, budget)) {
+    for await (const e of events(res.body, model, budget, responses.has(res))) {
       if (e.kind === "toolStart") {
         current = e.name === SEARCH_NAME ? { args: "" } : null
         if (current) calls.push(current)
@@ -2803,4 +3153,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, responsesBody, crMessages, crRefusal, features, FEATURES, featureKey, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, rateOf, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }

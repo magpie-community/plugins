@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.24
+
+- A Go, GOAT or Pro account's Credits window tells its count as well as
+  its share: the credits used of the month's, in credits (amount, limit,
+  unit). magpie adds several accounts' credits up where it puts them
+  together, as the Usage page's "All N accounts" strip and a folded
+  Routing fold of accounts, "16.40 / 30 credits", instead of a mean of
+  their shares (chen2652 on magpie's Discord). Bought and free credits,
+  dollars at model cost, are the account's balance, a row of their own
+  under the windows, no longer "+ $5.00 extra" after the count.
+
 ## 0.1.22
 
 - Reflection's Beam (`reflection/beam:free`) is sent each earlier assistant

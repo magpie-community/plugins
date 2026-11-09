@@ -1,5 +1,348 @@
 # Compatibility record
 
+## Independent inference settings, 2026-11-09 (SGT)
+
+The package remains **0.1.6**. The existing embedded page and settings API now save separate reasoning efforts and optional context input budgets for the primary and secondary roles. Only explicitly published catalog capabilities are offered; unknown context limits do not inherit the native runtime's 131072 fallback. Kimi's native model aliases and top-level `thinking`, `reasoning` and `reasoning_effort` no longer select external inference settings, including connections that have not saved new preferences. Native menus remain visible. No Magpie core or Kimi application resources were changed.
+
+A custom budget checks a supported, count-only copy through the existing Magpie `POST /v1/messages/count_tokens` route, using the current gateway identity. The count may be an estimate. Over-budget input returns `context_length_exceeded`; unavailable counting or an unsupported input representation returns fixed `context_count_unavailable`, without sending generation. With no budget, no count request is added. The adapter does not set Kimi's native compaction window, limit output through this setting, alter usage or directly trim history. Native compaction may follow an overflow and can lose earlier detail; its own summary requests face the same budget, so recovery is not guaranteed.
+
+Authenticated role identities distinguish primary and secondary even when they target the same model. Older authenticated profiles without a role keep their model binding and use provider defaults without an extra budget. During a pending model, gateway or key switch, active requests keep their previous role settings in memory. Partial saves merge with the latest host document and detect changed role selections before or after the official primary selector. Saved values that become unsupported remain visible for explicit replacement or reset.
+
+Other native plugins, Kimi login, paid-data authorizations, billing and service routes remain unchanged. The bridge preserves financial-tool schemas, calls and results. Counting uses already-present tool content; it does not call a financial database's paid query API. Synthetic regressions also check the original official search/fetch URL, credential and body, plus preservation of an unrelated paid-plugin record through companion enable/clear.
+
+### Automated validation
+
+The frozen runtime/test bytes passed the requested sequence on Bun **1.4.4**, in copied trees with temporary HOME/XDG directories, synthetic credentials and the existing OS real-HOME/application deny policy:
+
+| Command | Result |
+| --- | --- |
+| `HOME=<temporary HOME> bun test packages/kimi-desktop` | **626 pass, 0 fail, 3990 assertions; 29 files** |
+| `bun scripts/check.mjs kimi-desktop` | **Exit 0** |
+| `bun scripts/check.mjs` | **Exit 0** |
+| `HOME=<temporary HOME> bun test` | **7447 pass, 20 skip, 0 fail, 239426 assertions; 523 files** |
+
+This uses the same real-ps bootstrap and passive synthetic observer documented below, with no additional command-line exclusions. It is an unfiltered repository-default run with those explicit harness accommodations, not a pristine bare-process run or real-browser acceptance. The original tracked files and workspace AtomCode-state digest were unchanged by validation. Subsequent compatibility-note edits change documentation only.
+
+Component guard checks used isolated copies and required genuine matcher failures:
+
+| Component | Final assertion-red variants |
+| --- | --- |
+| Catalog capability and option policy | 24 |
+| Authenticated role/profile identity | 21 |
+| Active/pending connections and legacy isolation | 32 |
+| Existing settings API and forwarding integration | 34 |
+| Embedded controls, drafts and recovery | 50 |
+| Count conversion, transport and response checks | 36 |
+| Empty count-copy text normalization | 1 |
+
+These are **198 final single-point variants**, checked during their component revisions. Three affected count variants were rerun after empty-text normalization. An additional attempt to delete the legacy-default branch was equivalent under the current snapshot invariants; it is recorded separately and is not counted as a red deletion. Changing that branch to apply an actual effort/budget produced a matcher failure. Syntax, import, permission and listener failures were not counted.
+
+An extracted Kimi 3.2.25 SDK error-conversion probe passed **9 scenarios / 119 assertions** in a VM: the bridge's overflow response becomes the native context-overflow error. It executes extracted callables only, without importing the full application bundle, network access, real credentials or application-state writes.
+
+The maintainer's subsequent non-blocking formatting request was also handled: twenty blank lines left by removed comments in `role-plugin-state.mjs` were deleted, with all nonblank lines byte-identical. Bun 1.4.4 `Transpiler({loader:'js', target:'bun'})` produced identical 5197-byte output before and after, SHA-256 `697b94e706162d80fdd77a0265993ffc55b3f56f79e558d0a9698cf5fceddb32`. The focused role-state suite passed **58 tests / 230 assertions** with a temporary HOME. The final four-command sequence above includes this cleanup.
+
+### Current native acceptance
+
+The checked **22-file** archive was installed through the official plugin CLI on Magpie **0.1.3336** with Kimi **3.2.25 / build 3.2.25.22**. Its SHA-256 is `62ef44e76c2e0934f62b1e5203b81c0b30d0003327f1968a5a1f6165feb0c042`. Installation reloaded the shared Bun plugin worker. The Magpie main PID and application snapshot stayed unchanged through installation, UI acceptance and restoration; no Magpie quit, start or restart command was issued. View → Reload refreshed only the WebView to load the updated page.
+
+| Check | Observed result |
+| --- | --- |
+| Capability-aware page | Both role sections appeared; the connected catalog had 54 models. Current primary and secondary each published a 1048576-token cap and their own effort lists. |
+| Independent parameter persistence | Saved primary `low` / `196608` and secondary `high` / `131072` through native controls. Authenticated API readback returned 200 with both values; a page refresh confirmed both applied. Model selections were retained. |
+| Real Kimi tool chain | In an existing owned acceptance task, the primary invoked one secondary Agent, which used one local Read tool on an owned synthetic file. Child and parent returned the expected synthetic phrases. The native model display in this task remained K3; external primary selection remained the plugin's configured choice. |
+| Restoration | Removed only the exact test preferences using original-byte comparison plus temp/rename. Original primary/secondary choices, all other connection fields, native model definitions/current choice, other 23 native-plugin records, other Magpie plugins and AtomCode-state digest were preserved. The original new-task project and unsent draft were restored. |
+
+The UI/tool run proves saved settings and successful native execution; it does not independently measure provider reasoning behavior or exact tokenization. No real paid-data query was submitted. Native over-budget compaction, same-model/different-option execution in the native UI, and the five quit/disconnect lifecycle cases were **not repeated for this revision**; synthetic cases cover the new role/budget behavior, and earlier dated native lifecycle records below retain their original scope. No Chrome or Playwright was started. The installed archive precedes the blank-line cleanup and later compatibility note; the cleanup preserves nonblank helper code and transpiler output as verified above.
+
+## Settings-page recovery follow-up, 2026-11-08 (SGT)
+
+The package remains **0.1.6**. This follow-up changes only settings-service lifecycle and launcher recovery; it does not change model routing, profile generation, RPC permissions or Magpie application resources.
+
+The original launcher was reproduced in native Magpie **0.1.3335** with Kimi **3.2.25** present: it remained on the Chinese connecting message while port 3491 refused connections. During read-only inspection the shared Bun worker was replaced and the service became readable on that port; the main application PID stayed unchanged. The trigger and original bind error were not established. This is an observation of the previous runtime, not evidence that this patch repaired that running instance. The host's current WebKit implementation also documents that a failed service navigation can leave the old connecting document displayed.
+
+A synthetic occupied-port reproduction first failed: releasing the configured port and calling the real adapter tick did not start the settings service. The fix retries through the existing tick, shares pending initialization, follows the latest configured port, preserves the page session across stable ticks, and waits for pending initialization before shutdown closes the listener. Startup warnings use fixed allowed codes, with repeated identical failures suppressed until recovery. The launcher makes three navigation attempts, three seconds apart, and then offers a localized in-page Retry button. It continues to navigate the existing frame, with no fetch API, new network endpoint, background process or credential storage.
+
+Fourteen regression tests were added. **15/15** isolated single-point mutations produced genuine assertion failures: thirteen backend mutations (19 failing-test observations) and two launcher mutations (four observations). Tests use temporary homes, synthetic HTTP services and controlled VM timers. The missing-template case imports module copies from a temporary directory; it never renames a product file in the checkout.
+
+The frozen executable/test source passed the same isolated sequence described below on Bun **1.4.4**:
+
+| Command | Result |
+| --- | --- |
+| `HOME=<temporary HOME> bun test packages/kimi-desktop` | **464 pass, 0 fail, 3106 assertions** |
+| `bun scripts/check.mjs kimi-desktop` | **Exit 0** |
+| `bun scripts/check.mjs` | **Exit 0** |
+| `HOME=<temporary HOME> bun test` | **7285 pass, 20 skip, 0 fail, 227322 assertions; 517 files** |
+
+These runs used fresh source copies and HOME directories, the existing OS real-HOME/application deny policy, real-ps bootstrap and passive synthetic observer. There were no additional command-line test exclusions. The source checkout's AtomCode-state digest was unchanged. Documentation updates after that sequence do not change the checked executable/test bytes.
+
+The checked 20-file archive was subsequently installed through the official plugin CLI. Installation reloaded the shared Bun plugin worker; the main Magpie process remained the same before installation, after installation and after UI acceptance. At acceptance the applications were Magpie **0.1.3336** and Kimi **3.2.25 / build 3.2.25.22**. One post-install launcher returned 404; **View → Reload** refreshed only the WebView and resolved it. The native window then showed both model lists, the existing selected primary and secondary, and the connected/applied status. An independent read of the authenticated settings API returned **200** with **54 models** and matching saved/applied selections. No selection was edited and no new Kimi inference was submitted.
+
+All 20 installed files matched archive SHA-256 `e7d1111753d9b5848f882ee4d7d3deda8648357306e33d7aa612edf203aee2ae`. Other Magpie plugin entries, the other 23 native plugin records, native model definitions/current choice, and the workspace AtomCode-state digest matched the immediate pre-install snapshot. The later compatibility-note update was not reinstalled; executable/test bytes remain those checked above. The initial inspection and installation were separated by an application-process/version change whose trigger was not established; the unchanged-main-process claim applies specifically to the installation/UI-acceptance window.
+
+Port-release recovery, retry exhaustion and manual-retry behavior were exercised in synthetic HTTP/VM tests, not forced on the running native host. The five native Kimi lifecycle/routing cases below apply to the earlier `e0ac41f` runtime and were not repeated for this settings-only follow-up. This revision was not tested by submitting a new turn in the native Kimi UI. No Chrome or Playwright was started.
+
+## Review follow-up after `6e3257e`, 2026-11-08 (SGT)
+
+The package remains **0.1.6**. This section describes the quoted-marker, catalog-absence, dotfile and equivalent-directory fixes. The dated records below describe earlier revisions and do not extend these results. No Magpie core or Kimi application resources were patched.
+
+### Changes and assertion-red guard checks
+
+| Issue | Change | Representative regression | Guards / assertion-red test observations |
+| --- | --- | --- | --- |
+| 1: quoted route markers | Without a routing key, retain 0.1.5 request-body behavior and existing alias cleanup. With a key, authenticate/strip system and developer identity only; invalid identity still returns 409. Neutralize reserved opening/closing tag prefixes in other fields and shared instructions without binding. Keep the final serialized residue check. | `R2-1 no routing key preserves route quotations in user`; `a copied secondary section in user and tool content never selects a route and neutralizes` | 7 / 20 |
+| 2: temporary catalog absence | Persist the first-missing time and count. Retire only after three consecutive successful missing catalog synchronizations and ten minutes, with idle, verifiable profile synchronization. Failed fetches and cached ticks do not count; returning targets retain the old token before retirement. | `R2-2 successful absence count and start time survive failure, cached ticks, and restart`; `R2-2 a selected missing secondary recovers before grace and is pruned after sustained absence` | 31 / 74 |
+| 3: dotfiles | Skip dot-prefixed entries before stat/read/hash/pruning in both agents directories. Preserve them; ordinary unknown files still conflict. | `dot-prefixed entries are skipped before stat/read/hash/delete and never conflict`; `R2-3 source and managed dot files stay unchanged through stable readiness and retirement` | 2 / 2 |
+| 4: equivalent directories | Compare canonical real paths for existing source/managed directories, including parent symlinks or junctions. Retain provenance, exact manifest, whole-root, direct-root/managed-parent/registry symlink and byte-comparison guards, plus deleted-source cleanup. | `a sibling directory under the same managed parent is never owned even with a matching manifest`; parent-directory alias lifecycle regressions | 7 / 20 |
+
+Each issue first had a failing synthetic reproduction. **47/47** single-point guard mutations then produced genuine assertion failures in isolated copies; non-assertion/environment errors were not counted. The **116** test-failure observations are summed per mutation, so the same test can count for multiple mutations. The eight helper mutations were rerun after removing twenty full-line `// MUTATION` comments; all remained assertion-red. That cleanup retained every newline and all executable text. Previous B1–B3 and S1–S3 regressions remain in the passing package suite.
+
+Five additional catalog-retirement regressions cover temporary unknown source/managed files, edits to owned profiles and registry-provenance conflicts. A detected conflict defers binding deletion until owned profiles can safely synchronize. The preflight is not a cross-process filesystem transaction against a later I/O failure or another writer.
+
+### Automated validation
+
+The final executable/test source, including the comment cleanup, was copied unchanged into fresh temporary trees. Each step used a temporary HOME below TMPDIR, synthetic credentials, and an OS policy denying the real HOME and real application/browser paths. Registry-generated AtomCode state stayed in the temporary checkout. No unrelated package source was changed.
+
+| Command | Actual final result |
+| --- | --- |
+| `HOME=<temporary HOME> bun test packages/kimi-desktop` | **450 pass, 0 fail, 3069 assertions** |
+| `bun scripts/check.mjs kimi-desktop` | **Exit 0** |
+| `bun scripts/check.mjs` | **Exit 0** |
+| `HOME=<temporary HOME> bun test` | **7271 pass, 20 skip, 0 fail, 238450 assertions; 516 files** |
+
+The commands ran in the listed order on Bun 1.4.4 through `sandbox-exec -f <owned policy> <bun> ...`, with `AGNES_BROWSER_TEST=0` and an explicit `BUN_OPTIONS` preload. No command-line test exclusions were added; the repository's two default agent-console exclusions remain. Real browser/native-app availability follows the OS deny policy. Synthetic VM, fake-browser and fake-CDP cases remain included. This is an **unfiltered command with repository defaults, real-ps bootstrap and passive observer**, not a pristine bare-process run or native browser acceptance.
+
+The bootstrap redirects only calls actually resolving to system `/bin/ps` to a private, ad-hoc-signed non-setuid copy of Apple's binary, with real argv and output. All three architectures and 25 file-backed instruction/constant sections were compared unchanged; the original `/bin/ps` bytes and mode were untouched. Fixture-provided fake ps commands remain unchanged. The corrected bootstrap preserves execFile/promisify metadata. A passive observer records only owned fake-Antigravity smoke argv/runtime/exit and synthetic output; it changes no timeout, fixture or result. The bootstrap SHA-256 is `040b912e38b49104b71b8cdc89a79f31b801d3301a65c8e1453f505f774cc37d`.
+
+Earlier unsuccessful runs are retained separately, not counted as passes: the first OS-policy/HOME setup yielded 7016 pass / 43 fail / 9 skip; the corrected HOME/availability setup without the ps bootstrap yielded 7255 / 11 / 20; an initial bootstrap lacking promisify metadata yielded 7198 / 63 / 20. A later run yielded **7270 / 1 / 20**, with one synthetic Antigravity usage smoke failure. Its cause remains unknown: focused replay and two unchanged observed whole-repository reruns passed. These passes do not claim to have fixed that one-off failure. DSH's nested OS-sandbox launch was rejected before project tests; the supervised Sol executor ran the same isolation policy without broadening DSH permissions.
+
+### Native Kimi 3.2.25 acceptance
+
+The fixed runtime candidate was installed with the official Magpie CLI and its **20 installed package files** matched the checked archive (package.json compared semantically). Kimi was **3.2.25 / build 3.2.25.22**, Daimon **1.0.6**, on macOS arm64. Magpie was **0.1.3240** for cases 1–4 and **0.1.3285** after an earlier exit/restart attempt. The later user-operated case 5 started with **0.1.3329** and observed **0.1.3335** after the user reopened Magpie. No Chrome or Playwright was started for these checks.
+
+Kimi's application-support directory is a parent symlink to relocated storage. Its registered managed root uses the physical path while the adapter also encounters the logical path. Installation, clear and disconnect now succeed across those equivalent directory forms without a drive-specific exception. An earlier native attempt stopped at that conflict and was not accepted.
+
+| Case | What was actually observed |
+| --- | --- |
+| 1. No secondary selected | After retiring a pre-existing owned registration, native `getPluginInfo` returned fixed not-found. A new UI-submitted Work turn performed one real Read and returned the fixture text. The native Agent schema had no `model` field or generated role, and still required only prompt/description. |
+| 2. Three child routes | A UI-submitted parent created three children and each performed a real Read. The requested default-secondary child used DeepSeek V4.1 Flash through the configured group; `model="primary"` used Sol; `model="native"` retained native `explore` and used the primary Sol bridge. Ten gateway requests were 200: eight primary and two group requests. |
+| 3. Clear secondary | Observed the registration enabled=false before its removal; final phase was disabled and native `getPluginInfo` returned fixed not-found. The installed await chain requires checked reload acknowledgement between disable and remove. This is state/order evidence, not an RPC packet trace. |
+| 4. Disconnect and reconnect | Disconnect restored the original official provider URL in native JSON and both runtime TOMLs and removed the companion registration. Reconnection restored the original Sol primary selection with secondary opt-in ready. Native current choice and all four native model definitions were preserved. |
+| 5. Quit Magpie and restart Kimi | **Passed in the later user-operated run.** At 22:47:38 SGT on 2026-11-08, the old plugin host had exited, no current owner was alive, the official service URL was restored and the owned disk registration was disabled. At 22:47:55, after Kimi's runtime PID and startup generation changed, native `getPluginInfo` returned the expected ID with `enabled=false` while Magpie was still offline. Native owner/control identity stayed stable across that RPC. At 22:50:10, the user-reopened host was ready and the temporarily selected companion was enabled again. |
+
+For case 2, the native history contains arguments **after bridge translation**. The recorded role intent, authenticated child bindings, completed Read calls and gateway model attribution support the observed routes; they are not a capture of raw supplier arguments. Literal simultaneous omission of `model` and `subagent_type` is covered by isolated protocol tests; the native prompt requested it, but its raw pre-translation arguments were not captured.
+
+Two short retirement observers expired before final state save or before the native disconnect confirmation was clicked. Their failed observation windows remain recorded; subsequent snapshots and native fixed-not-found results establish the final clear/disconnect states. Earlier case-5 attempts stopped at the quit dialog, missed intentional saved recovery debt with an active=false predicate, or lacked a controllable window; none is counted as a pass. The later manual run used an independently running, read-only observer with 11 synthetic checks and 42 assertions. Its restart check required a new live native PID/generation, the old PID gone, stable owner/control identity across `getPluginInfo`, and a second host-offline snapshot. A changed control token alone could not satisfy it. The observer exited 0 after offline native disablement and the user-operated host return were both confirmed. No new Kimi Work inference was submitted for this manual run.
+
+After the manual run, the saved selections were restored to **Sol / no secondary**, with the companion phase disabled, registration removed and native fixed-not-found confirmed. The default-port settings API refused the DSH restoration attempt before any save; the temporary secondary value alone was then restored by original-byte comparison and private temp/rename, preserving all other connection bytes. The connected primary bridge matched native JSON and both TOMLs. Other 23 native plugin records, other Magpie plugin entries, native choice/definitions and the workspace AtomCode-state digest matched the before-manual-run snapshot. No full real configuration or credential backup was retained. The tested runtime remains `e0ac41f`; all 20 installed files matched its archive before and after the run. This documentation-only follow-up was not reinstalled. Magpie exit/start/restart operations in the accepted run were performed by the user; the observer changed no application resources or native settings.
+
+### Remaining native boundaries
+
+Windows/Linux native behavior, native child compaction/fork, resume after disable or removal, paid tools/billing, sleep/wake and natural credential rotation remain untested in this follow-up. An optional native read of a fixture containing a valid signed route section was stopped by automatic approval review before sending, because the fixture carried a valid token/MAC. The unused fixture was byte-compared and removed; valid-token quotation behavior is isolated-test evidence only.
+
+
+## Historical `6e3257e` isolated checkpoint, 2026-11-07–08 (SGT)
+
+At this historical isolated checkpoint, `6e3257e` had not been accepted in the native Kimi UI. The later live results and limitations for the current follow-up are recorded above. The changes after `cc9a023` were developed with temporary HOME directories, synthetic credentials, synthetic control peers and protocol/VM tests, plus read-only native-source inspection. Kimi-specific validation did not read a real Kimi HOME, install the candidate, launch or control Kimi, send a real model request, or use a browser or Playwright. The native turns and desktop operations recorded for `cc9a023` below belong to the previous revision.
+
+### Baseline opt-in routing contract
+
+An empty or absent `secondaryModel` keeps native Agent declarations, audit history and response calls unchanged, apart from the existing neutral alias cleanup. It does not install or enable a role plugin or reload sessions for role routing. Explicitly selecting secondary enables optional `model="primary|secondary|native"` roles only after the profiles are ready. A new call defaults to secondary only when both `model` and `subagent_type` are absent; a native type without `model` retains its original restrictions. Clearing secondary during a busy turn preserves the current schema until idle retirement completes, then turns new role translation off.
+
+Generated ordinary workers use general native tools (`tools: ["*"]`), disable `Agent` / `AgentSwarm` and declare no subagents. They inherit the parent's permission mode and available user tools; they do not reproduce the specialized restrictions of native `coder`, `explore` or `plan` profiles. Resume or fork keeps an existing authenticated binding while that target remains allowed and the runtime already has the profile. Clearing secondary schedules registration removal; neither disable nor removal is evidence that a native profile remains resumable.
+
+Profiles carry a random opaque route token and MAC, with token-to-model mapping only in `adapter-state.json`. Their text contains no target ID or reversible target encoding. Binding state must persist before profile publication or plugin-control calls; a failed save must not let the next retry publish unbound token text. Profile names have a key-specific namespace. All reserved route sections are consumed locally: unknown or invalid identity, or a section in another message/tool context, fails with HTTP 409 `agent_profile_unbound` rather than selecting primary or reaching upstream. Authenticated opaque call IDs preserve explicit role choices for audit without establishing the route. Every inference, including an existing worker, checks the bound target against the current gateway catalog; a removed target is refused without falling back to primary.
+
+Only Agent tool fragments require translation buffering; non-Agent tools are released as their identity becomes known. Invalid Agent JSON or role values pass through for native validation. A missing `finish_reason` flushes pending calls at `[DONE]`; missing indexes use the native pass-through path rather than destroying the stream. These are isolated protocol results, not a native UI acceptance claim.
+
+### Baseline companion lifecycle and bounded files
+
+The companion is a declarative `kimi.plugin.json` plus generated Markdown agents, with neutral `local-work-model-roles-<hash>` ID. The manifest is exactly `{name:<id>,version:"1.0.0",description:"Local Work model roles",agents:["./agents"]}`; it grants no other plugin capability. Previously bound profiles are retained only while their targets remain in the current allowed gateway catalog, bounding retained generated profiles by that catalog. Pruning requires matching ownership; edited or unknown files are preserved and report `agent_profile_conflict`.
+
+Local registry discovery uses `<KIMI_HOME>/plugins/installed.json`. An ID prefix alone is not ownership: the record must have local-path provenance, the expected original source and managed root, and the exact declarative managed manifest. Before enabling roles, another key's role-plugin ID or a foreign prefix-matching registration reports `agent_profile_conflict` with no plugin RPC or registry change, preventing silent coexistence. Symlinks, malformed registry state and changed source content are not claimed or replaced. Existing native profiles and application resources remain outside ownership.
+
+Normal clearing, disconnect and `stop()` verify the saved plugin's ownership, call `kimiPlugin.setPluginEnabled(false)`, obtain explicit session-reload acknowledgement, recheck provenance, then use `kimiPlugin.removePlugin` to remove its installed registration. Busy sessions, transport failures, incomplete reload results and incomplete removal retain pending recovery for the next idle tick or start. A removal reply lost before its effect is retried; after-effect absence requires a fixed native-not-found reply and checked reload before pending work clears. Reconnecting with secondary selected installs the source when its registration is missing, even if the managed cache still contains matching files. Stable `getPluginInfo` probes are at least 30 seconds apart and skipped while busy; a transient or ambiguous failure does not change the last confirmed tool schema. Readiness changes require an idle confirmation of disabled or missing state.
+
+Disk absence is not native acknowledgement. If the registry record is missing but `getPluginInfo` still finds the plugin, recovery verifies nonsymlink source/cache directories and saved file hashes before disabling it. For plugin RPCs only, the public envelope's fixed `code:-32003` together with `data.reasonCode:"KIMI_PLUGIN_NOT_FOUND"` is mapped locally to `kimi_plugin_not_found`; other remote message/data content is discarded. Generic rejection, null, wrong IDs or missing `enabled` keep the obligation and report reload failure. Confirmed absence still needs checked reload, so a removed plugin can finish recovery without treating every rejection as success.
+
+The inspected native `removePlugin` path removes the installed record, reloads plugin contributions and refreshes active sessions. Its core removal chain does not delete the managed cache or the adapter's generated source and binding state. This is registration removal; it is not a claim that every generated file or the Magpie package was uninstalled. Ownership-checked catalog pruning remains separate.
+
+Synchronous exit performs no RPC and does not remove the registration. It changes only the saved, verified companion registration's `enabled` field to `false`, with original-byte comparison and a private mode-0600 exclusive temporary file followed by rename. The saved plugin ID and pending phase retain the runtime/removal obligation even when the helper fails or disk is already false. Missing registries are not created; foreign entries and unknown fields survive. Observed concurrent byte changes abort publication and staging files are cleaned. This is a compare/rename pattern, not a cross-process lock or an uninstall.
+
+Read-only inspection of the Kimi 3.2.25.22 / Daimon 1.0.6 bundle found no installed-registry watcher: the manager caches records and the profile loader listens to explicit plugin reload events. Disk `false` therefore does not immediately remove profiles in Kimi's memory or remove the installed record. If native presence remains, the next idle recovery must call `setPluginEnabled(false)` even if disk already says false, obtain checked `reloadActiveSessions` / targeted retry acknowledgement, then finish registration removal. Fixed native absence plus checked reload can finish an already-removed obligation. A setter reply alone can omit failed reload rows. These static findings and synthetic recovery tests do not establish live native memory refresh, removal or resume after either operation.
+
+The earlier review revisions were unreleased but had been run locally. Existing `state.secondary` and `state.secondaryPool` records therefore carry restore obligations that must finish rather than leave old aliases or owned fields behind. Only that recorded-ownership path is retained. The adapter does not acquire ownership of an untouched native `[secondary_model]` or model pool and does not reload it on connection. Foreign snapshots exist only around the adapter's own primary/menu RPCs; a restoration CAS conflict preserves concurrent bytes, reports fixed `kimi_config_changed` and allows other primary recovery to finish. Later ticks retain that warning instead of reporting connected. Earlier owned TOML restoration still serializes parsed TOML: comments and original numeric representations are not preserved. No model/provider definitions or credential-bearing configuration backup is added.
+
+### Baseline evidence and untested boundaries
+
+Repository validation deviation: an earlier repository-wide attempt accidentally included `packages/gcp-ai/test/browser.test.mjs`, which launched real Chrome with temporary test profiles. That attempt failed and is not acceptance evidence. A subsequent process check found no remaining Chrome process using those test profiles. The final repository command explicitly excludes real-browser and native-application-probe tests; it retains synthetic VM and fake-CDP tests. This deviation is separate from the untested native Kimi UI boundary.
+
+| Boundary | Evidence for this review revision |
+| --- | --- |
+| Package, repository, registry checks and mutation counts | Package: 384 pass, 0 fail, 2749 assertions. Repository with the documented exclusions: 7185 pass, 6 skip, 0 fail, 226769 assertions. Both registry commands exit 0. 129/129 mutants trigger assertion failures (217 test observations). |
+| Registry ownership, atomic disable, registration removal and recovery state | Synthetic temporary-file/controller tests; no real native profile |
+| Routing, fail-closed markers and SSE continuity | Synthetic JSON/SSE protocol tests; no real model request |
+| English/Chinese settings and opt-in state | Pure VM interaction tests and static fallback assertions; no browser |
+| Native plugin registry and reload behavior | Read-only Kimi 3.2.25.22 / Daimon 1.0.6 source inspection |
+| macOS native UI, install, reconnect and current child turns | Not tested in this review revision |
+| Windows and Linux native behavior | Not tested in this review revision |
+| Full native child compaction and fork | Not tested in native Kimi; source/synthetic evidence only |
+| Synchronous-exit in-memory residue and subsequent native refresh | Not tested in native Kimi; disk mutation synthetic, no-watcher boundary static |
+| Resume after native plugin disable or registration removal | Not tested in native Kimi |
+| Paid tools, billing, sleep/wake and natural credential rotation | Not tested in this review revision |
+
+### Baseline final commands and guard results
+
+```text
+AGNES_BROWSER_TEST=0 HOME=<temporary HOME> bun test packages/kimi-desktop
+bun scripts/check.mjs kimi-desktop
+bun scripts/check.mjs
+AGNES_BROWSER_TEST=0 HOME=<temporary HOME> bun test \
+  --path-ignore-patterns=packages/agent-console/test/** \
+  --path-ignore-patterns=packages/agent-console/web/** \
+  --path-ignore-patterns=packages/window-warmup/tests/browser.test.ts \
+  --path-ignore-patterns=packages/gcp-ai/test/browser.test.mjs \
+  --path-ignore-patterns=packages/chat/epub-reader.test.mjs \
+  --path-ignore-patterns=packages/nowledge-mem/page-layout.test.mjs \
+  --path-ignore-patterns=packages/agent-office/cli.test.mjs \
+  --path-ignore-patterns=packages/agent-office/jump.test.mjs
+```
+
+The final run used Bun 1.4.4 and a separate temporary checkout with the exact candidate executable/test bytes. The two default agent-console exclusions remain. Four real-browser files and two conditional native-terminal-probe files are also excluded; `AGNES_BROWSER_TEST=0` keeps the opt-in Agnes browser case off. Synthetic VM/fake-CDP tests remain included. The earlier DSH repository attempt failed; the final successful repository run used the Codex executor. No unrelated package source was changed for those environment failures.
+
+| Item | Status | Changes | Representative test | Mutants killed / assertion-red test observations |
+| --- | --- | --- | --- | --- |
+| B1 | Fixed | `adapter.mjs`, `agent-routing.mjs` | `B1 no secondary: supplier responses pass through unchanged` | 8/8 / 12 |
+| B2 | Fixed | `adapter.mjs`, `agent-profiles.mjs`, `agent-routing.mjs`, `role-plugin-state.mjs`, `rpc.mjs` | `B2 an idle stop disables the owned role plugin` | 91/91 / 151 |
+| B3 | Fixed | `adapter.mjs` | `B3 a busy runtime performs no getPluginInfo polling` | 7/7 / 13 |
+| S1 | Fixed | `agent-routing.mjs` | `S1: an Agent fragment without index does not destroy the stream` | 9/9 / 15 |
+| S2 | Fixed | `adapter.mjs` | `S2 a stable-tick external deletion is not repaired by the foreign snapshot` | 12/12 / 22 |
+| S3 | Fixed | `settings.html` | `en: primary-only confirmation survives saves and refreshes without confirming a secondary` | 2/2 / 4 |
+
+Mutation test observations are summed per mutation, so a test repeated across mutants is counted repeatedly. Non-assertion errors are excluded. Two equivalent next-text checks were removed instead of counting a compound mutation.
+
+## Historical signed-history role-profile candidate `cc9a023`, 2026-11-07
+
+Everything in this section describes the previous `cc9a023` revision, before the current review fixes. Its native results and test totals do not accept the current implementation.
+
+That signed-history candidate was installed into official Magpie **0.1.3208** and exercised in ordinary signed-in Kimi **3.2.25, build 3.2.25.22 / Daimon 1.0.6**, on macOS with Bun **1.4.4**. All **19 installed files** matched its tarball: 16 runtime/UI files plus documentation and package metadata. The companion loaded ordinary worker profiles and the embedded page confirmed application. That candidate still used inherit-primary behavior when secondary was empty, so those observations do not prove the new opt-out contract.
+
+In the first native Work turn, an ordinary Agent omitted `model` and used the Astra-bound profile; another explicitly selected primary and used the Sol-bound profile. Both executed native Read with the fixture marker in their tool results. Eight requests completed with HTTP 200: six Sol and two Astra, with requested and served targets matching after normalizing the provider prefix. Native Agent arguments contained no shim `model`; authenticated call IDs preserved omitted-default and explicit-primary intentions and the corresponding native result links.
+
+After that page cleared secondary to inherit-primary, resuming the existing Astra Agent with an explicit primary selector retained its prior profile and target and executed Read again, producing two Astra requests. A new ordinary Agent omitted the selector, used the Sol profile and completed Read with two Sol requests. The second turn had seven requests: five Sol and two Astra, all HTTP 200. Across both historical turns there were **15 requests, three new subagents, one resume and four successful Reads**; request totals include parent and continuation calls.
+
+The same historical page saved primary Astra, confirmed application, then restored Sol and confirmed again. Host applied-model state, stash reference and connection agreed; the credential comparison was performed only in memory. With Work idle, the native Magpie Agent card disconnected Kimi: JSON and converted runtime TOML returned to the official service, recovery ownership cleared, and four native model entries and the `k3-agent` selection remained. Reconnecting Sol returned both addresses to the bridge with secondary empty and no pool. These operations sent no additional inference and required no application restart. Native model entries and unrelated settings matched before-run comparisons. The credential aggregate changed during that acceptance interval; its cause was not isolated, so unchanged credential bytes were not claimed. No credential values or full configuration copies were retained.
+
+That source passed **234 package tests, 0 failures and 1,975 assertions across 18 files**. Its repository run passed **6,714 tests with 8 skips, 0 failures and 224,592 assertions across 485 files**, excluding the two default-excluded agent-console directories and the window-warmup browser test. Its registry check exited 0 with a cached GoAnyAPI record when remote resolution was unavailable. Four temporary-source mutations failed assertions: skipping primary restoration RPCs on stop, removing typed Agent-alias history migration, disabling staged JSON/TOML byte comparisons, and removing authenticated selection-history restoration. These are historical counts, not current review results.
+
+The previous pool-based candidate's native runtime events at **2026-11-07 09:58:39Z** showed desktop model definitions falling from **58 to 4** and a converted home pool falling from **2 entries to 0** before queue dispatch. That observation motivated replacing the pool, but does not validate the current review changes. Full native child compaction was not forced; the public `conversations.compact` targets the main agent. Fork had isolated coverage only, and Windows/Linux and paid tools had no new native acceptance in that revision.
+
+## Historical legacy primary and secondary native Agent turn, 2026-11-07
+
+The following dated records describe earlier revisions. Their implementation details and native results are retained as evidence; they are not the current role-profile support contract.
+
+The local 0.1.6 candidate ran on macOS 27.2 arm64 with ordinary signed-in Kimi desktop **3.2.17, build 3.2.17.4**, official Magpie **0.1.3077**, and Bun **1.4.4**. No Kimi or Magpie application resources were changed. The embedded Magpie plugin page rendered the current primary model and the gateway catalog; its save and refresh controls confirmed the secondary preference was applied. The same settings form was also exercised in a temporary browser tab.
+
+With primary `codex/gpt-6.1-sol` and secondary `codex/gpt-6-astra`, a new Work conversation in a task-owned test project requested two new native `Agent` subagents: one with `model="secondary"`, then one with `model="primary"`. Both completed, each used zero tools, and the parent reproduced their distinct requested markers. This was submitted through Kimi's native UI. Magpie's routing metadata recorded six Sol requests and two Astra requests, all HTTP 200 and each with its requested model equal to its served model. These eight requests include the runtime's auxiliary/continuation calls; they are not eight subagent creations.
+
+Saving **inherit primary** afterward removed the adapter-owned secondary and experimental tables from the runtime TOML, returning to their absent baseline. The main Sol connection remained enabled and connected, with no active turns or tools. All four native model entries and unrelated desktop settings matched their before-test comparisons. The credential aggregate differed during the live-turn phase; its cause was not isolated, so this phase does not claim credential bytes were unchanged. No credential values or full configuration copies were retained.
+
+That live candidate's **76 tests passed with 682 assertions**. An offline tarball install matched all eleven runtime/UI files to that candidate's source before installation into the real host. Busy-session retry, partial reload failure, regeneration and shutdown restoration were covered by isolated synthetic tests, not additional real disconnect/reconnect cycles in this phase. Official paid search/fetch, allowance accounting, sleep/wake and other operating systems were not newly tested. The original primary-only bridge has the separate record below.
+
+The inheritance revision came after this live check: when the original native secondary setting was already enabled for another registered alias, clearing the plugin preference must keep new subagents on the current primary model while connected, and preserve the original baseline for disconnect or shutdown. Isolated regression tests cover the actual mock-bridge route, applied status, following a changed primary without repeated reloads, and disconnect restoration. That revision passed **77 tests with 704 assertions**. The signed-in UI check above used the earlier adapter revision.
+
+### Revised model page and recovery tests
+
+The first review revision, `b5f46210`, passed **113 tests with 795 assertions across 10 files** under a temporary HOME on Bun 1.4.4. The primary picker uses Magpie's official CLI, with a private child-process flag preventing another Kimi adapter from starting. Its command arguments, inherited environment and profile directory are covered with a fake executable. Primary-only saves retain the secondary preference; partial saves are reported without rolling the primary back.
+
+Isolated regressions reproduce and fix a failed targeted session reload blocking disconnect restoration, and missing or unsupported secondary TOML blocking the primary connection. The latter tests send an actual HTTP request through the mock bridge and confirm the primary route remains usable. Shutdown closes the settings service without another secondary RPC; a changed service port is rebound when options reload.
+
+The page has 22 pure VM interaction tests covering host-language forwarding, English and Chinese copy, neutral radio lists, primary and secondary saves, partial failure, applied-state confirmation, and clearing a secondary preference while disconnected. These tests do not use a browser engine. Real loopback WebSocket tests exercise both reload names through the production RPC allow-list. Removing either allow-list entry, or disabling the native byte-comparison guard in temporary source copies, makes the added guard tests fail.
+
+### Native primary-model page save, 2026-11-07
+
+The first review revision was installed into official Magpie 0.1.3077; all 15 installed package files matched its checked tarball. In Magpie's native window, the Chinese model page selected and saved primary `codex/gpt-6-astra`, then restored `codex/gpt-6.1-sol`. At both stages the host's applied-model record, stash reference and connection model agreed, and the stash credential matched the current connection in memory. The page distinguished saving from confirmed application; refreshing confirmed the applied state. The normal Agents → Kimi card also showed the restored Sol selection. The secondary preference remained inherit-primary.
+
+Kimi remained **3.2.17 / build 3.2.17.4**, with Daimon **0.6.7**, running and idle throughout; it was not exited or restarted. No Work conversation or inference was submitted for this check, and no Chrome or Playwright was started. All four native model entries and unrelated Kimi settings matched their before-install comparisons. The credential aggregate changed during the installation/UI-save interval; its cause was not isolated, and no credential values or full configuration copies were retained. This check verifies the real page, official CLI and host synchronization; the failed-reload and unsupported-TOML cases remain isolated-test coverage.
+
+### Subsequent review guards
+
+The subsequent revision passed **128 tests with 886 assertions across 10 files** under a temporary HOME on Bun 1.4.4, including 24 pure VM page tests. The helper now validates the basename of both automatically discovered paths and resolved targets. A shell parent, a non-Magpie PATH result and `magpie-bun` are rejected without executing a model command. Explicit `magpiePath` remains available for custom executable names. Windows parent discovery uses PowerShell CIM with a numeric process ID, argument-array invocation and a bounded timeout; failures fall back to PATH or the configured option. Fake-exec tests cover this lookup and fallback, not a real Windows installation.
+
+HTTP regressions reject a valid-looking primary ID absent from the gateway catalog without calling the host setter, and detect a gateway-key change during primary saving in both primary-only and combined saves. A disconnect test first lets an external writer restore the baseline and a normal tick clear the application marker; disconnect must still request the final baseline batch reload. Removing each corresponding guard in a temporary module copy makes its behavioral test fail. The discovered-executable basename guard was also checked this way. The V2-layout checks are described below.
+
+These changes to the helper, adapter and page follow the native check above. This revision's isolated tests and package checks do not extend that earlier live result to a different Kimi runtime. No real Windows/Linux test, application restart, browser or model request was used for this review round.
+
+### Historical runtime TOML representation
+
+The patch targets the two secondary-model scalars, but writes serialize the whole parsed document with `Bun.TOML.stringify`. Comments are dropped and numeric representations can change: `1.0` is emitted as `1`, changing a TOML float to an integer. Integers above 2^53 are rejected by `Bun.TOML.parse` and report `secondary_config_unsupported`. These cases were confirmed with synthetic input on Bun 1.4.4. Daimon regenerates this runtime file; the adapter does not preserve its comments or original numeric representations.
+
+### Historical Kimi 3.2.25 / Daimon 1.0.6 static boundary
+
+A separate read-only inspection of a staged Kimi **3.2.25.22 / Daimon 1.0.6** bundle found both reload RPC names and the runner/control layout still present. Its V2 core, however, uses a model pool for the standard `Agent` tool rather than the old built-in `primary|secondary` roles. It retains legacy `secondary_model.model` parsing but no longer uses the `secondary-model` experimental key. Daimon also converts the legacy TOML into `runtime/kimi-code/home/config.toml`, which V2 actually reads. The staged application was not started during that inspection.
+
+Revision `536617a` detected the converted file and reported `secondary_model_unsupported_runtime` rather than applying an ineffective legacy patch. Its isolated tests covered initial V2 detection and conversion after a legacy secondary was applied. That guard revision did not claim V2 support.
+
+### Superseded V2 model-pool implementation
+
+This section describes the removed pool-based candidate. Its writes, alias registration, retry/reassertion and empty-session confirmation policy are historical; the current role-profile path above does not use them.
+
+The V2 path uses the selected models' existing catalog aliases as keys in `secondary_model.models`, with descriptions identifying the primary and secondary roles. New aliases are neutral `local-model-<hash>` names. The old branded prefix remains recognized for routing, migration and cleanup. `secondary_model.default_model` selects the secondary alias for new Agent subtasks. Global model/provider definitions are not copied into ownership state. If both selections name the same model, the pool has one entry and Kimi hides the redundant model-choice parameter. Clearing the secondary preference after use fixes new subtasks to the current primary; this explicit pool follows Kimi's pool thinking defaults. Resume and fork retain their native model-binding rules.
+
+The ordinary Agent tool does not translate literal `primary` or `secondary` strings into these pool entries. Its generated tool description lists the actual aliases and their role descriptions. A prompt can request a role, and the agent chooses its corresponding entry. Unsupported converted layouts remain guarded instead of being written as though they had this contract.
+
+A pure-function probe extracted the installed 3.2.25.22 core's real TOML parser/stringifier, secondary schema, pool resolver/validator, Agent schema/getters, tool registry and request projection. All **24 checks passed**, including the omitted-model secondary default, explicit primary selection, one-model pool behavior and the existing hash alias reaching the wire model. External catalog dependencies used synthetic stubs. The installed bundle SHA-256 was `ea1c5125c7af0825c3e5105f2753f8d1f2bccfa1bf1360e1f72c525d3a3f4f09`. The probe did not import the whole bundle, launch an application or issue an inference.
+
+The superseded pool candidate passed **211 tests with 1,636 assertions across 16 files** under a temporary HOME on Bun 1.4.4, including 28 pure VM page tests. V2 cases covered two-model HTTP routing, the secondary default, same-model selections, clearing and following the primary, home-only regeneration, busy sessions, empty batches, targeted retries, external edits, disconnect/stop restoration, restart and legacy-to-V2 transitions. Settings reads invalidated confirmation when definitions, effective capabilities/effort or daemon generation changed. Pool ownership snapshots contained only aliases, descriptions, defaults and narrow ownership metadata, including the previous written binding while a new atomic write was pending. They did not copy model/provider definitions or their authentication fields.
+
+Primary/menu restore retains recovery ownership and the model backup until both the menu and final runtime reload are acknowledged. This includes failed calls, lost replies after side effects, an address already restored by synchronous exit, and a first apply whose reply was lost. A subsequent disabled start can finish recovery. Explicit stop skips only extra secondary-session reloads. The real loopback WebSocket tests cover these failures; an independent frozen-source matrix passed **52 checks** across primary failures (8), stop/restart failures (16), apply reply loss (2), the production entry's registered exit callback (8), and external-pool resolution through the extracted real core (18). These are isolated checks, not a claim that the actual desktop process was quit and reopened.
+
+Real permission-denied writes reproduce secondary-selection and baseline-restoration failures. The previous written binding remains owned until a new write is confirmed, and baseline reload intent is set before restoring files. Retries, stop, synchronous exit and crash recovery can therefore finish the operation. Independent pool edits retain valid native entries; bindings that depend on plugin aliases being removed are cleaned before restoration, avoiding unresolved model references. An explicit new selection supersedes an intermediate external edit and later restores the original baseline. Unowned incompatible bindings are reported instead of silently changed.
+
+Runtime dispatch uses `kernel.agentKernel`, not application version strings or optional LoopControl fields. Known legacy kernels ignore residual converted files. Known V2 kernels wait for their home file; unknown or ambiguous families cannot report a secondary as applied. Equivalent native `provider`/`provider_id` and `model`/`name` forms and effective model overrides are supported. The model context and provider/wire binding must resolve, and effective effort must be compatible. Missing definitions or another provider are rejected before any pool write or reload. Deleting the alias or effort guards makes the corresponding regressions fail.
+
+The checked-in synthetic Agent schema/description and history fixture was generated through the installed core's actual Agent getter, message lowering and request projection. Real bridge tests send it with both old and neutral aliases and assert no added branding reaches upstream. Normalization is confined to Agent model identities: user messages, literal filenames, other tools, results, arbitrary keys and the rest of an Agent prompt remain unchanged. Migration retains the selected old definition, acknowledges the neutral selection, then prunes old entries. Its independent **12-case** failure matrix covers each step before/after side effects and across plugin restart. Removing historical-alias normalization, synchronous pool restoration, restored-baseline reapplication or post-staging byte comparisons makes targeted tests fail in temporary source copies.
+
+Daimon can regenerate the converted file even when the legacy TOML is unchanged. Reconciliation therefore checks the converted file after the primary/catalog control calls. Writes wait for idle and use the native byte-comparison guard. V2 confirmation requires an actual cached-session reload acknowledgement; an empty batch remains `secondary_model_waiting_session`. New sessions reuse the core's initialization promise, so neither creating a session nor waiting for the 150 ms file watcher proves the configuration was read. After a confirmed reload, Kimi's dynamic Agent getters and per-request tool reconciliation expose the changed pool.
+
+The installed Daimon generator uses direct `fs/promises.writeFile` for both TOML files; its JSON writer uses temp+rename. The adapter compares expected bytes after staging, immediately before publishing, and rejects a detected competing edit. This is best-effort comparison, not an atomic cross-process compare-and-swap: an uncoordinated Daimon write can still race the final rename, and a well-formed partial read can be indistinguishable from an intentional document. No full credential-bearing file is backed up. Serial idle-time updates remain the tested operating boundary.
+
+### Historical macOS V2 native UI acceptance, 2026-11-07
+
+The following Work turns preceded the neutral-alias, recovery/contract and role-profile changes above. They establish the earlier pool-based V2 route behavior; they are not acceptance of the current candidate.
+
+The candidate was installed into official Magpie **0.1.3208**, with ordinary signed-in Kimi **3.2.25 / build 3.2.25.22**, Daimon **1.0.6** and Bun **1.4.4**. All **16 installed package files** matched its checked tarball. No Kimi or Magpie application resources were patched, and neither application was restarted for this acceptance.
+
+The native embedded Chinese page saved secondary `codex/gpt-6-astra`, changed primary **Sol → Astra → Sol**, and retained the secondary preference. The host's applied model, stash reference and connection agreed at each primary selection. The converted pool correctly had one entry when both choices were Astra, then two entries after the primary returned to `codex/gpt-6.1-sol`. With no loaded kernel session, the page remained waiting instead of reporting application. Merely opening a conversation did not load that session; the waiting hint was subsequently clarified to request a short Work message and an idle session. That was a wording-only change verified by the page's VM tests; adapter logic stayed unchanged.
+
+A native UI-submitted Work turn created two new ordinary Agent subtasks in the task-owned test project. The prompt asked the first to omit `model` to exercise the configured secondary default, and the second to select the primary role from the tool's model descriptions. Both completed with zero tools and their distinct expected markers, which the parent reproduced. The expanded native Agent panels showed each result. Routing metadata recorded **six requests: five Sol and one Astra**, all HTTP 200. Magpie 0.1.3208 records provider-qualified requested IDs; the served model matched each exact requested provider/model target after accounting for that prefix. The six requests include parent and auxiliary/continuation calls, not six subagent creations. After the runtime became idle, the adapter obtained confirmation and the refreshed page showed both selections applied.
+
+Clearing the secondary preference on the same page produced a single pool entry for the current Sol primary. A second native UI turn created one new default Agent, which returned the expected inherit-primary marker with zero tools. All **three routed requests** in that turn used Sol and returned HTTP 200 with matching served targets.
+
+With Work idle, an authorized temporary disconnect through the official CLI restored the original service in both desktop JSON and converted TOML, removed the owned pool/default, and cleared ownership. All four native model entries and the original `k3-agent` selection remained. Reconnecting through the same CLI to Sol returned both service addresses to the active bridge; the secondary preference stayed empty and no pool ownership was recreated. No additional inference was sent for disconnect/reconnect. Native model entries and unrelated desktop settings matched their pre-install comparisons throughout. Credential aggregates changed during the primary-selection interval; the cause was not isolated, and no credential values or full configuration copies were retained. The adapter's explicit field writes and narrow snapshots were checked; native token refresh was not instrumented or ruled out, so the aggregate comparison cannot attribute the change.
+
+This round did not launch a test browser, Chrome or Playwright. It did not verify Windows/Linux V2 operation, paid search/fetch, allowance accounting, sleep/wake or natural credential renewal.
+
+## macOS desktop UI turn, 2026-11-06
+
+On 2026-11-06 a real signed-in Kimi desktop **Work** conversation submitted a turn from the native UI while the adapter was connected: macOS 27.2 arm64, ordinary Kimi desktop **3.2.17, build 3.2.17.4**, official Magpie **0.1.3077**, agent package **0.1.5**, Bun **1.4.4**. The model was selected in Magpie and served by an external, non-Kimi provider: provider `codex`, requested and served model `gpt-6.1-sol`.
+
+The UI prompt named the fixture's relative path and did not include its contents. The task-owned fixture contained a single marker line.
+
+1. The agent's native `Read` tool call requested that fixture path. In the expanded conversation, the tool response's first line and the turn's final reply contained the same marker.
+2. A later UI turn in the same conversation did not call a tool. It recalled the earlier marker from the conversation history, reproduced it accurately, and issued no new tool call.
+
+Both turns used the ordinary signed-in Work conversation; no UI code, application resource or model-menu patch was installed. Magpie's request log recorded three routed requests for the tool round and one for the recall round, each HTTP 200 with `requestedModel` equal to `servedModel` (`gpt-6.1-sol`). Those are routed requests, not a count of tool calls; the tool-call evidence is the expanded conversation described above.
+
+In this run, the first turn without the project selected refused the outside-workspace fixture; selecting its project made the retry succeed.
+
+The generated runtime TOML carried the bridge address during the successful turns. The package's 36 tests passed, and SHA-256 comparisons confirmed that all six installed runtime files matched the tested repository files byte for byte.
+
+With Work idle, disconnecting through the official Magpie CLI restored `https://agent-gw.kimi.com/coding/v1` in both the desktop JSON configuration and generated runtime TOML. Bridge aliases were removed, and all four native models and the current native selection were preserved. A local in-memory comparison found credentials and unrelated settings unchanged; no credential values or full configuration backup were persisted.
+
+Reconnecting through the same CLI to `codex/gpt-6.1-sol` succeeded. The adapter was left enabled and connected with 52 catalog models, matching loopback addresses in JSON and TOML, and no active turns or tools. No additional inference was sent during the disconnect/reconnect check.
+
+Kimi's own model menu still showed its native label (**K3**) while the actual model came from Magpie's selection; custom aliases in that menu remain unverified. Kimi's search/fetch and other paid tools, their billing and allowance accounting, sleep/wake, natural credential rotation and non-`Read` tools were not exercised.
+
 ## Kimi 3.2.18 isolated compatibility check
 
 On 2026-10-24, Windows Kimi desktop 3.2.18.13 shipped Daimon 0.6.8. An independent source copy of that installed bundle was used to exercise its unchanged model schema, thinking resolver, request builder and streamed/non-streamed response parser. Test-only exports exposed those internal functions; no installed application file was changed.

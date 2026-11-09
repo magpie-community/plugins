@@ -264,6 +264,26 @@ test("Hermes Agent's identity lines are rewritten", () => {
   expect(unflagged("You are a general-purpose AI agent called goose")).toBe("You are a general-purpose AI agent called goose")
 })
 
+// #875 (hj01857655): Grok CLI through AutoClaw 国内 was refused 406 four
+// times on 11-08. The first line is the reporter's, byte for byte; the
+// versioned and autonomous forms are Grok CLI 1.0.67's own system_prompt.txt.
+test("Grok CLI's identity line is rewritten", () => {
+  const reported = "You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks."
+  expect(unflagged(reported)).toBe("You are the Grok assistant released by xAI. You are an interactive CLI tool that helps users with software engineering tasks.")
+  const versioned = "You are Grok 4.7 released by xAI. You are an interactive CLI tool that helps users with software engineering tasks. Your main goal is to complete the user's request in the <user_query> tag."
+  expect(unflagged(versioned)).toBe("You are the Grok 4.7 assistant released by xAI. You are an interactive CLI tool that helps users with software engineering tasks. Your main goal is to complete the user's request in the <user_query> tag.")
+  const autonomous = "You are Grok 4.7 released by xAI. You are an autonomous agent that completes software engineering tasks. There is no human operator in this session."
+  expect(unflagged(autonomous).startsWith("You are the Grok 4.7 assistant released by xAI. You are an autonomous agent")).toBe(true)
+  for (const t of [reported, versioned, autonomous, `Intro.\n${reported}`, "you are grok released by xai."]) {
+    expect(unflagged(t)).not.toMatch(/You are Grok\b/i)
+    expect(unflagged(unflagged(t))).toBe(unflagged(t))
+  }
+  // a model's name is not an agent's identity line
+  for (const t of ["You are Grok-Mini.", "You are Grok, a helpful assistant.", "You are Grok 4.7."]) {
+    expect(unflagged(t)).toBe(t)
+  }
+})
+
 // A table over every entry, so a later edit to one rule cannot silently
 // break another (the 11-03 session's failing request carried three known
 // lines at once, and only the missing one needed rewriting). Left side =
@@ -299,6 +319,8 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["You are Gemini CLI, an interactive CLI agent.", "You are the Gemini CLI agent, an interactive CLI agent."],
     ["You are Kimi Code CLI, an interactive AI agent.", "You are the Kimi Code CLI agent, an interactive AI agent."],
     ["You are goose, an autonomous AI agent.", "You are the goose agent, an autonomous AI agent."],
+    ["You are Grok released by xAI. You are an interactive CLI tool", "You are the Grok assistant released by xAI. You are an interactive CLI tool"],
+    ["You are Grok 4.7 released by xAI. You are an interactive CLI tool", "You are the Grok 4.7 assistant released by xAI. You are an interactive CLI tool"],
   ]
   for (const [inp, want] of lines) {
     expect(unflagged(inp)).toBe(want)
@@ -810,7 +832,7 @@ test("CN's managed gateway gets AutoClaw's official body and headers", async () 
 
 // #245's surface: ZCode through autoclaw-cn's managed gateway. The system
 // text that leaves carries no "You are ZCode"; the user's own words do.
-test("CN's managed gateway gets ZCode's and pi's lines rewritten", async () => {
+test("CN's managed gateway gets ZCode's, pi's and Grok CLI's lines rewritten", async () => {
   const realFetch = globalThis.fetch
   const calls = []
   globalThis.fetch = async (input, init) => {
@@ -823,12 +845,14 @@ test("CN's managed gateway gets ZCode's and pi's lines rewritten", async () => {
     const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
     const zcode = "You are ZCode, an interactive coding agent"
     const pi = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
-    for (const system of [zcode, pi]) {
+    // #875: Grok CLI's line, byte for byte from the report
+    const grok = "You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks."
+    for (const system of [zcode, pi, grok]) {
       await loader.fetch("x", { body: JSON.stringify({ model: "zaicoding_glm-5.3", stream: false, messages: [{ role: "system", content: system }, { role: "user", content: system }] }) })
       const sent = calls.at(-1).body
       expect(calls.at(-1).url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
       expect(sent.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\n${unflagged(system)}`)
-      expect(sent.messages[0].content).not.toMatch(/You are ZCode|inside pi, a coding agent harness/i)
+      expect(sent.messages[0].content).not.toMatch(/You are ZCode|inside pi, a coding agent harness|You are Grok\b/i)
       expect(sent.messages[1].content).toBe(system)
     }
   } finally { globalThis.fetch = realFetch }

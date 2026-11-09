@@ -1,0 +1,30 @@
+{
+  "name": "@magpie-community/opencode-doubao-work-auth",
+  "version": "0.1.2",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "files": [
+    "index.mjs",
+    "cdp.mjs",
+    "doubao.mjs",
+    "openai.mjs",
+    "prompt.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md"
+  ],
+  "description": "Doubao Work (豆包工作) as a model provider, by driving the Doubao desktop app the way a person does",
+  "magpie": {
+    "maxConcurrency": 1
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/doubao-work"
+  },
+  "keywords": ["magpie", "magpie-plugin", "doubao", "doubao-work"],
+  "license": "MIT",
+  "exports": {
+    ".": "./opencode2.mjs"
+  }
+}

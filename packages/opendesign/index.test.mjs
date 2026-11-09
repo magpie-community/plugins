@@ -284,6 +284,34 @@ test("a kept model's rate is re-declared, so a charge an earlier version wrote c
   expect(models["brand-new-9"].rate).toBe("x1")
 })
 
+// #827 (Gitleonan): amr-link's catalog publishes more output than its API
+// takes for two models, and asking for the published number is a 400 that
+// names no field. The catalog entries are the reporter's numbers; the caps
+// are what they measured on 2026-11-09 (131072 and 65536 taken, one more
+// refused).
+test("a model's output is capped where amr-link takes less than its catalog says (#827)", async () => {
+  const models = I.modelsOf({
+    data: [
+      { id: "glm-5.3-flash", architecture: { input_modalities: ["text", "image", "video"] }, metadata: { cost: "low", capability: "advanced", context_limit: 1048000, context_budget: 232000 } },
+      { id: "gemini-3.8-flash", architecture: { input_modalities: ["text"] }, metadata: { cost: "low", capability: "standard", context_limit: 1048576, context_budget: 264000 } },
+      // a catalog that says less than the cap is taken as it says
+      { id: "deepseek-v4.1-flash", metadata: { context_limit: 1048000, context_budget: 232000 } },
+    ],
+  })
+  expect(models["glm-5.3-flash"].limit).toEqual({ context: 1048000, output: 131072 })
+  expect(models["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(models["deepseek-v4.1-flash"].limit.output).toBe(232000)
+  expect(I.modelsOf({ data: [{ id: "glm-5.3-flash", metadata: { context_budget: 100000 } }] })["glm-5.3-flash"].limit.output).toBe(100000)
+
+  // the seed, and a copy an earlier version kept with the catalog's number
+  const cfg = { provider: { opendesign: { models: { "gemini-3.8-flash": { id: "gemini-3.8-flash", name: "gemini-3.8-flash", limit: { context: 1048576, output: 264000 } } } } } }
+  await (await OpenDesignAuthPlugin({})).config(cfg)
+  const served = cfg.provider.opendesign.models
+  expect(served["glm-5.3-flash"].limit.output).toBe(131072)
+  expect(served["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(served["deepseek-v4.1-flash"].limit.output).toBe(232000)
+})
+
 // #829 (exposir): the signed-in catalog's DeepSeek V4.1 Flash Eco entry
 // left image out, so it was served text-only and magpie sent another model's
 // description of the image instead, while amr-link took the image itself

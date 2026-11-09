@@ -31,6 +31,7 @@ export function fakeCatPaw() {
     disabledSources: new Set(["CatPawCLI"]),
     turnBodies: [],
     balanceCalls: 0,
+    balancePlan: null, // extra userPlan fields a test sets (nextRefreshTime)
     // POST /api/agent/maas/model-types, the list the desktop client asks for
     // (items as its renderer reads them: modelTypeId, modelTypeName, provider,
     // supportImage). The ids here are the table's own, plus one the table has
@@ -54,6 +55,7 @@ export function fakeCatPaw() {
       state.disabledSources = new Set(["CatPawCLI"])
       state.turnBodies = []
       state.balanceCalls = 0
+      state.balancePlan = null
       state.modelTypes = defaultModelTypes()
       state.modelTypeCalls = []
       state.modelTypesFail = false
@@ -77,7 +79,7 @@ export function fakeCatPaw() {
         return json(200, {
           code: 0,
           message: "success",
-          data: { availableCredits: "1134.67", userPlan: { planId: "plan_free", planName: "体验版", pro: false, status: "active" } },
+          data: { availableCredits: "1134.67", userPlan: { planId: "plan_free", planName: "体验版", pro: false, status: "active", ...state.balancePlan } },
           errorCode: null,
         })
       }

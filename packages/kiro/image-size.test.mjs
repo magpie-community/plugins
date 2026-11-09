@@ -257,7 +257,8 @@ test("Kiro is sent the fitted image, in one request", async () => {
   const real = globalThis.fetch
   const sent = []
   globalThis.fetch = async (url, init) => {
-    sent.push({ url: String(url), body: init.body })
+    // the experiment read before the chat (plugins#842) isn't a send of the image
+    if (new URL(String(url)).pathname !== "/featureConfiguration") sent.push({ url: String(url), body: init.body })
     return new Response(JSON.stringify({ message: "stop here" }), { status: 500 })
   }
   try {

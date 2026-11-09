@@ -12,7 +12,9 @@ export function controlEndpoint(state) {
 // Bun supplies the authenticated WebSocket client; no browser or Kimi Code CLI.
 export async function rpc(state, method, params = {}, { timeout = 6000, Socket = globalThis.WebSocket } = {}) {
   if (!['models.current', 'conversations.setModel', 'conversations.getKimiModelList',
-    'conversations.updateKimiModelList'].includes(method)) throw Error('unsupported_control_method');
+    'conversations.updateKimiModelList', 'kimiPlugin.reloadActiveSessions',
+    'kimiPlugin.ReloadSession', 'kimiPlugin.installPlugin', 'kimiPlugin.updatePlugin',
+    'kimiPlugin.getPluginInfo', 'kimiPlugin.setPluginEnabled', 'kimiPlugin.removePlugin'].includes(method)) throw Error('unsupported_control_method');
   const endpoint = controlEndpoint(state);
   return new Promise((resolve, reject) => {
     let socket, settled = false;
@@ -35,7 +37,10 @@ export async function rpc(state, method, params = {}, { timeout = 6000, Socket =
         let message;
         try { message = JSON.parse(String(event.data)); } catch { return; }
         if (message.id !== 1) return;
-        finish(message.error ? 'kimi_control_rejected' : null, message.result);
+        const pluginMissing = method.startsWith('kimiPlugin.')
+          && message.error?.code === -32003
+          && message.error?.data?.reasonCode === 'KIMI_PLUGIN_NOT_FOUND';
+        finish(message.error ? (pluginMissing ? 'kimi_plugin_not_found' : 'kimi_control_rejected') : null, message.result);
       });
     } catch { finish('kimi_control_unavailable'); }
   });

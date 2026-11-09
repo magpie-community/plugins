@@ -193,6 +193,34 @@ for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"], ["darwin"
   })
 }
 
+// plugins#879 (ArmedHelicopter): qodercli 1.21.2 on Windows 11 caches the
+// runtime as one file in .bin, beside sgsdk.dll, the reporter's names:
+//   C:\Users\<user>\.qoder\.bin\runtime-info-win32-x64-faa59bbe39db0bd1.exe
+//   sgsdk.dll
+// Its .tmp while being written, another arch's and an older folder from
+// qodercli 1.1.66 are passed over for it.
+test("plugins#879: Windows finds the runtime qodercli 1.21.2 cached as a single file", async () => {
+  const cache = join(sandbox, ".qoder", ".bin")
+  mkdirSync(cache, { recursive: true })
+  writeFileSync(join(cache, "sgsdk.dll"), "fixture")
+  const file = join(cache, "runtime-info-win32-x64-faa59bbe39db0bd1.exe")
+  writeFileSync(file, "fixture")
+  utimesSync(file, new Date(2000), new Date(2000))
+  for (const other of ["runtime-info-win32-arm64-1111111111111111.exe", "runtime-info-win32-x64-2222222222222222.exe.0a1b2c3d.tmp"]) {
+    writeFileSync(join(cache, other), "fixture")
+    utimesSync(join(cache, other), new Date(3000), new Date(3000))
+  }
+  const old = join(cache, "umid-win32-x64-ffffffffffffffff")
+  mkdirSync(old)
+  writeFileSync(join(old, "runtime-info.exe"), "fixture")
+  utimesSync(join(old, "runtime-info.exe"), new Date(1000), new Date(1000))
+  const env = { LOCALAPPDATA: join(sandbox, "Local"), ProgramFiles: join(sandbox, "Program Files") }
+  expect(await inSandbox(() => _internal.campaignRuntime({ home: sandbox, platform: "win32", arch: "x64", env }))).toBe(file)
+  // the 1.1.66 folder is still taken when it is the newer
+  utimesSync(join(old, "runtime-info.exe"), new Date(4000), new Date(4000))
+  expect(await inSandbox(() => _internal.campaignRuntime({ home: sandbox, platform: "win32", arch: "x64", env }))).toBe(join(old, "runtime-info.exe"))
+})
+
 test("finds the runtime under Qoder CLI's own config folder", async () => {
   const dir = cliCache(join(sandbox, "custom"), "linux", "x64")
   const named = cliCache(join(sandbox, "clihome", ".qoder-work"), "linux", "x64")

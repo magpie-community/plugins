@@ -17,6 +17,7 @@ export { responseError } from "./transport.js"
 
 const DEPLOYMENT_PATH = /^\/v2\/inference\/deployments\/[A-Za-z0-9_-]+$/
 const ANTHROPIC_VERSION = "bedrock-2023-05-31"
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
 
 // --- strict native request validation -------------------------------------
 
@@ -25,7 +26,6 @@ const ANTHROPIC_VERSION = "bedrock-2023-05-31"
 // in ALLOWED: an unrecognized field is rejected rather than forwarded, so an
 // unsupported parameter fails explicitly instead of silently reaching upstream.
 const REJECTED = {
-  metadata: "The \"metadata\" parameter is not supported.",
   service_tier: "The \"service_tier\" parameter is not supported.",
   container: "The \"container\" parameter is not supported.",
   mcp_servers: "Hosted MCP servers are not supported.",
@@ -35,11 +35,13 @@ const REJECTED = {
 }
 // The recognized top-level native Messages fields. `output_config` (reasoning
 // effort) and `thinking` display/block_binding controls are explicitly
-// recognized; `model`/`stream` are the routing envelope consumed by dispatch.
+// recognized; `model`/`stream` are the routing envelope consumed by dispatch,
+// and client-only `metadata` is accepted but never forwarded to Bedrock.
 const ALLOWED = new Set([
   "model", "messages", "system", "max_tokens", "stop_sequences",
   "temperature", "top_p", "top_k", "tools", "tool_choice", "thinking",
-  "output_config", "anthropic_version", "stream",
+  "output_config", "anthropic_version", "stream", "metadata",
+  "context_management", "anthropic_beta",
 ])
 const ROLES = new Set(["user", "assistant"])
 const TOOL_CHOICE_TYPES = new Set(["auto", "any", "tool", "none"])
@@ -308,9 +310,9 @@ function targetURL(entry, aiRoot, streaming) {
   return raw + (streaming ? "/invoke-with-response-stream" : "/invoke")
 }
 
-// Adapt the routing envelope only: drop the canonical routing model and the
-// stream selector, strip the validated non-native client tool hints
-// (eager_input_streaming, defer_loading), supply the Bedrock anthropic_version.
+// Adapt the routing envelope only: drop the canonical routing model, stream
+// selector and client-only metadata; strip the validated non-native client tool
+// hints (eager_input_streaming, defer_loading); supply the Bedrock version.
 // Conversation semantics are preserved verbatim.
 
 function stripToolHints(tools) {
@@ -329,10 +331,11 @@ function stripToolHints(tools) {
 function bedrockBody(body) {
   const out = {}
   for (const key of Object.keys(body)) {
-    if (key === "model" || key === "stream") continue
+    if (key === "model" || key === "stream" || key === "metadata") continue
     out[key] = body[key]
   }
   if ("tools" in out) out.tools = stripToolHints(out.tools)
+  if (Object.hasOwn(out, "context_management") && !Object.hasOwn(out, "anthropic_beta")) out.anthropic_beta = [CONTEXT_MANAGEMENT_BETA]
   out.anthropic_version = ANTHROPIC_VERSION
   return out
 }

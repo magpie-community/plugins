@@ -69,7 +69,7 @@ test("Go: the month's $10 is the pool", async () => {
     "/alpha/billing/subscriptions": { data: { planId: "individual-go", status: "active" } },
     "/alpha/billing/credits": { credits: { monthlyCredits: 4 } },
   })
-  expect(u).toEqual({ signIn: "renewed", plan: "Go", windows: [{ name: "Credits", used: 60, display: "6.00 / 10.00 credits" }] })
+  expect(u).toEqual({ signIn: "renewed", plan: "Go", windows: [{ name: "Credits", used: 60, display: "6.00 / 10.00 credits", amount: 6, limit: 10, unit: "credits" }] })
 })
 
 test("credits that can't be read keep the plan and say why", async () => {
@@ -99,7 +99,7 @@ test("seconds and string amounts read as magpie reads them; a half cent goes to 
     signIn: "renewed",
     plan: "Pro",
     until: new Date(1790000000 * 1000).toISOString(),
-    windows: [{ name: "Weekly", used: 100, span: 604800 }, { name: "Credits", used: 0.4166666666666667, display: "0.12 / 30.00 credits", resetsAt: new Date(1790000000 * 1000).toISOString() }],
+    windows: [{ name: "Weekly", used: 100, span: 604800 }, { name: "Credits", used: 0.4166666666666667, display: "0.12 / 30.00 credits", amount: 0.12, limit: 30, unit: "credits", resetsAt: new Date(1790000000 * 1000).toISOString() }],
   })
 })
 
@@ -126,7 +126,7 @@ test("a slow subscription: the windows go without it, and the next card has it",
   answer()
   await new Promise((r) => setTimeout(r, 20))
   const next = await hooks.auth.usage(async () => api)
-  expect(next).toEqual({ signIn: "renewed", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "35.00 / 70.00 credits" }] })
+  expect(next).toEqual({ signIn: "renewed", plan: "GOAT", renew: "off", windows: [{ name: "5 hours", used: 1, span: 18000 }, { name: "Credits", used: 50, display: "35.00 / 70.00 credits", amount: 35, limit: 70, unit: "credits" }] })
 })
 
 test("a plan read is saved with the key, once", async () => {
@@ -159,7 +159,7 @@ test("a plan saved stands in for a subscription slow to read: waited for a momen
   const t = Date.now()
   const u = await hooks.auth.usage(async () => ({ ...api, metadata: { plan: "GOAT", planId: "individual-goat" } }))
   expect(Date.now() - t).toBeLessThan(3_000)
-  expect(u).toEqual({ signIn: "renewed", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "35.00 / 70.00 credits" }] })
+  expect(u).toEqual({ signIn: "renewed", plan: "GOAT", windows: [{ name: "Credits", used: 50, display: "35.00 / 70.00 credits", amount: 35, limit: 70, unit: "credits" }] })
   answer()
 })
 
