@@ -19,6 +19,7 @@ process.env.FAKE_AGY_LOG = logPath
 process.env.FAKE_AGY_STATE = stateDir
 const bridgeStateFile = path.join(stateDir, "bridge-sessions.json")
 process.env.AGY_BRIDGE_STATE_FILE = bridgeStateFile
+process.env.AGY_BRIDGE_SPAWN_SPACING_MS = "0"
 process.env.AGY_BRIDGE_TOOL_TIMEOUT_MS = "1000"
 process.env.AGY_BRIDGE_TURN_TIMEOUT_MS = "5000"
 
@@ -99,6 +100,9 @@ const agentConfig = agentName ? fs.readFileSync(path.join(process.cwd(), ".agent
 const agentLog = flag("--log-file")
 const idePort = flag("--ide-mcp-port")
 const addDir = flag("--add-dir")
+const geminiDir = flag("--gemini-dir")
+const appDataDir = flag("--app-data-dir")
+const disableTelemetry = argv.includes("--disable-telemetry")
 const statePath = id => path.join(process.env.FAKE_AGY_STATE, id + ".json")
 let clientInfo = null
 let session = null
@@ -383,7 +387,7 @@ async function handle(message) {
       await connectIde()
       log({
         type: "init", pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
-        cwd: process.cwd(), addDir, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
+        cwd: process.cwd(), addDir, geminiDir, appDataDir, disableTelemetry, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
         tools, idePort,
       })
       return { sessionId: session.id, models: { currentModelId: model, availableModels: [] }, configOptions: configOptions() }
@@ -762,8 +766,9 @@ async function launchedModel(body) {
   check("input_tokens reported", (usage?.input_tokens ?? 0) > 0)
   const init = inits().at(-1)
   const user = lastOf("user")
-  check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false"].every(line => init.agentConfig.includes(line)), init.agentConfig)
+  check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false", "Never call built-in host tools"].every(line => init.agentConfig.includes(line)), init.agentConfig)
   check("agy keeps its own prompt components by default", !init.agentConfig.includes("excludeDefaultComponents"), init.agentConfig)
+  check("ACP child runs with telemetry disabled and isolated gemini home", init.disableTelemetry === true && init.appDataDir === "agy" && init.geminiDir === path.join(stateDir, "agy-home"), JSON.stringify(init))
   check("ACP client names itself, not an editor", init.clientInfo?.name === "opencode-agy-cli-auth" && init.clientInfo?.version === JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, JSON.stringify(init.clientInfo))
   check("client system prompt is appended to the session instructions", init.systemAppend?.includes("SYSTEM-PROMPT-MARKER"))
   check("fresh prompt carries only the user text", user.text === "hello world", JSON.stringify(user.text))
@@ -2312,7 +2317,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
 }
 
 {
-  // AGY_BRIDGE_MINIMAL_AGENT=1 drops agy's own prompt components, for a session started after it is set.
+  // AGY_BRIDGE_MINIMAL_AGENT=1 is opt-in; 0 and unset both keep agy's prompt.
   const before = inits().length
   process.env.AGY_BRIDGE_MINIMAL_AGENT = "1"
   try {
