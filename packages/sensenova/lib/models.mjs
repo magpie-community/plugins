@@ -369,19 +369,41 @@ function modalityFlags(modalities) {
 }
 
 /**
+ * 官方文档逐个模型写明的 reasoning effort 取值（muran_91096 在 Discord 上贴的
+ * SenseNova 文档，2026-11-10）。表里的模型就给文档写的这些档；不在表里的仍是
+ * 刻意收窄的通用三档 none/low/high——多给一档会在任务中途冒出 400。
+ */
+export const DOC_EFFORTS = {
+  "glm-5.3": ["low", "high", "max"],
+  "deepseek-flash": ["none", "low", "high", "max"],
+  "deepseek-v4-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "kimi-k3": ["low", "medium", "high", "max"],
+};
+
+const COMMON_EFFORTS = ["none", "low", "high"];
+
+/** 一个模型能给的档位：文档写明的，否则是它声明的档里属于通用三档的。 */
+function effortsOf(m) {
+  if (DOC_EFFORTS[m.id]) return DOC_EFFORTS[m.id];
+  const efforts = Array.isArray(m.efforts) && m.efforts.length ? m.efforts : COMMON_EFFORTS;
+  return efforts.filter((x) => COMMON_EFFORTS.includes(x));
+}
+
+/**
  * 推理档位：每个 key 是档位，value 是该协议真正要发的参数。
  * Chat 用 reasoningEffort；Anthropic 用 thinking/output_config；Responses 只留 none。
  */
 function variantsOf(m, protocol = "chat") {
   if (m.reasoning !== true) return {};
-  const efforts = Array.isArray(m.efforts) && m.efforts.length ? m.efforts : ["none", "low", "high"];
   const out = {};
-  for (const level of efforts.filter((x) => ["none", "low", "high"].includes(x))) {
+  for (const level of effortsOf(m)) {
     if (protocol === "responses") {
       if (level === "none") out[level] = { reasoningEffort: "none" };
       continue;
     }
     if (protocol === "anthropic") {
+      // Anthropic 的 effort 没有 minimal / xhigh
+      if (level === "minimal" || level === "xhigh") continue;
       out[level] =
         level === "none"
           ? { thinking: { type: "disabled" } }
@@ -455,9 +477,9 @@ export function fellBack(map) {
 /**
  * A catalogue row as the provider lists it (the shape api.test.mjs reads).
  * The reasoning tiers are the catalogue's own supported_features gate: a model
- * that stops reasoning stops offering tiers. The tier set is deliberately the
- * common three (none/low/high): the platform publishes no per-model list, and
- * a wrong tier is answered loudly with a 400 rather than silently.
+ * that stops reasoning stops offering tiers. A model whose tiers SenseNova's
+ * docs list (DOC_EFFORTS) gets those; any other the deliberately narrow common
+ * three (none/low/high): a wrong tier is answered with a 400 mid-task.
  */
 export function modelOf(row) {
   const r = row ?? {};
@@ -478,7 +500,7 @@ export function modelOf(row) {
       input: { text: true, image },
       output: { text: true },
     },
-    ...(reasoning ? { variants: { none: { reasoningEffort: "none" }, low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" } } } : {}),
+    ...(reasoning ? { variants: variantsOf({ id: r.id, reasoning: true }) } : {}),
   };
   return out;
 }

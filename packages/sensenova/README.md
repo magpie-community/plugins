@@ -50,8 +50,10 @@ Flash-Lite。
 模型列表是**账号目录 ∩ 计划覆盖**：计划不覆盖的模型（平台会回 403）不会列出。
 DeepSeek 系列的输出上限用实测值（393,216 / 384,000，2026-10-29 在真实账号上
 测到），而不是目录里偏保守的 `max_output_length`。没有 API Key 的账号不列
-模型；被平台拒绝的 key 也不列。会推理的模型给出 `none` / `low` / `high` 三档
-reasoning effort——这是一套**刻意收窄的通用值**，不是「每个模型都核实过支持」：
+模型；被平台拒绝的 key 也不列。官方文档逐个写明档位的模型给文档里的档位
+（`kimi-k3` low/medium/high/max，`glm-5.3` low/high/max，`deepseek-flash`
+none/low/high/max，`deepseek-v4-flash` none/minimal/low/medium/high/xhigh/max）；
+其余会推理的模型给出 `none` / `low` / `high` 三档——这是一套**刻意收窄的通用值**：
 多给一档会在任务中途冒出 400，少给一档只是少一个选项。
 
 ## OpenCode 2.x
