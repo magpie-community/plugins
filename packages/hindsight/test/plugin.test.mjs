@@ -28,7 +28,7 @@ function mockHindsight(calls, memories = ["SYNTHETIC_RECALL_7F3C9A"]) {
 
 test("package declares asynchronous hooks and safe defaults", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(pkg.main, undefined);
+  assert.equal(pkg.main, "./page/service.mjs");
   assert.equal(pkg.magpie.hooks, "./hooks.mjs");
   assert.equal(pkg.license, "Apache-2.0");
   assert.equal(pkg.magpie.options.capture, false);

@@ -28,7 +28,8 @@
     "hooks.mjs",
     "lib/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "page"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
@@ -43,7 +44,18 @@
       "recall_max_tokens": 1024,
       "capture": false,
       "agents": [],
-      "gatewayTimeoutMs": 5000
+      "gatewayTimeoutMs": 5000,
+      "port": 3482
+    },
+    "page": {
+      "title": "Hindsight Memory",
+      "file": "page/settings.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3482,
+        "option": "port"
+      }
     }
-  }
+  },
+  "main": "./page/service.mjs"
 }

@@ -129,8 +129,9 @@ $("form").addEventListener("submit", async event => {
   }
   setBusy(true);
   status("正在保存…");
-  const next = { ...savedOptions, ...values };
   try {
+    const latest = await magpie.options.get();
+    const next = { ...latest, ...values };
     const saved = await magpie.options.set(next);
     savedOptions = saved && typeof saved === "object" ? saved : next;
     updateSummary(savedOptions);
