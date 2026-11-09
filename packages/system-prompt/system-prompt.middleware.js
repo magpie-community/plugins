@@ -10,15 +10,64 @@
 // keeps it as it is, unless override is true: then this one is added
 // before it ("prepend", New API's way) or after it ("append", the
 // default, which keeps a prompt cache on the agent's own prompt). agents
-// and models, when given, are the only agents and model name prefixes it
-// applies to.
+// and models, when given, are the only agents and models it applies to.
+//
+// A model in models is a prefix of the model's name: of the whole id
+// magpie gives it ("google/gemini-3.8-flash"), or of the part after any of
+// its provider segments ("gemini-3.8-flash" of it, or of
+// "openrouter/google/gemini-3.8-flash"), case aside. An agent wired to
+// magpie names its model magpie's way, provider first, so a bare model
+// name never matched the whole id (@liucl on X, 11-09). A routing group's
+// request names the group ("group/…") until it is routed: the model a
+// member is asked is known only on each try (onProvider, ctx.provider), so
+// a request onRequest didn't match is matched again there, and only the
+// tries on a model in models get the prompt.
 
 export function onRequest(body, ctx) {
   const o = ctx.options || {}
-  const prompt = typeof o.system_prompt === "string" ? o.system_prompt : ""
-  if (!prompt) return
-  if (Array.isArray(o.agents) && o.agents.length && !o.agents.includes(ctx.agent)) return
-  if (Array.isArray(o.models) && o.models.length && !o.models.some((m) => typeof m === "string" && String(body.model ?? ctx.model ?? "").startsWith(m))) return
+  if (!wanted(o, ctx)) return
+  const models = modelsOf(o)
+  if (models && !matches(String(body.model ?? ctx.model ?? ""), models)) return
+  if (ctx.state) ctx.state.given = true
+  return give(body, ctx, o)
+}
+
+// onProvider gives the prompt to a try on a model in models, when the
+// request's own model wasn't one (a group's). Each try starts from the body
+// onRequest left, so a member not in models is sent none.
+export function onProvider(body, ctx) {
+  const o = ctx.options || {}
+  const models = modelsOf(o)
+  if (!models || ctx.state?.given || !wanted(o, ctx)) return
+  const p = ctx.provider || {}
+  const model = String(p.model ?? "")
+  if (!model) return
+  if (!matches(model, models) && !(p.id && matches(p.id + "/" + model, models))) return
+  return give(body, ctx, o)
+}
+
+function wanted(o, ctx) {
+  if (typeof o.system_prompt !== "string" || !o.system_prompt) return false
+  return !(Array.isArray(o.agents) && o.agents.length && !o.agents.includes(ctx.agent))
+}
+
+// modelsOf is the prefixes in models, lowercase; null when it names none
+// (one naming only what isn't a prefix matches nothing)
+function modelsOf(o) {
+  if (!Array.isArray(o.models) || !o.models.length) return null
+  return o.models.filter((m) => typeof m === "string").map((m) => m.toLowerCase())
+}
+
+// matches: a prefix begins the whole id or the part after one of its "/"
+function matches(id, prefixes) {
+  const s = id.toLowerCase()
+  const starts = [0]
+  for (let i = s.indexOf("/"); i >= 0; i = s.indexOf("/", i + 1)) starts.push(i + 1)
+  return prefixes.some((m) => starts.some((at) => s.startsWith(m, at)))
+}
+
+function give(body, ctx, o) {
+  const prompt = o.system_prompt
   const before = o.position === "prepend"
   const over = !!o.override
   switch (ctx.protocol) {
