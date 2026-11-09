@@ -1161,6 +1161,8 @@ var QUOTA_REFRESH_MS = 600000;
 var POST_SEND_SETTLE_MS = 60000;
 var CARD_FRESH_MS = 60000;
 var CARD_REFRESH_GAP_MS = 60000;
+var ROLL_GAP_MS = 60000;
+var ROLL_TOLERANCE_MS = 5000;
 var HOUR_MS2 = 3600000;
 var DAY_MS = 24 * HOUR_MS2;
 var INTERRUPTED_REASON = "Magpie \u5728\u53D1\u9001\u4E2D\u9014\u9000\u51FA\uFF0C\u7ED3\u679C\u672A\u77E5";
@@ -1533,12 +1535,27 @@ class Scheduler {
     for (const task of this.store.data.tasks) {
       if (!task.enabled)
         continue;
-      const raw = this.quotaWindow(task)?.resetsAt;
-      if (!raw || Number.isNaN(new Date(raw).getTime()))
+      const win = this.quotaWindow(task);
+      const raw = win?.resetsAt;
+      if (!win || !raw || Number.isNaN(new Date(raw).getTime()))
         continue;
+      const readAt = this.loginCard(task)?.readAt ?? null;
       const mark = this.marksOf(task.id);
       if (mark.lastReset !== raw) {
+        const prevReset = Date.parse(mark.lastReset ?? "");
+        const read = Date.parse(readAt ?? "");
+        const dRead = read - Date.parse(mark.lastResetReadAt ?? "");
+        mark.resetRolls = prevReset > read && dRead >= ROLL_GAP_MS && Math.abs(Date.parse(raw) - prevReset - dRead) <= ROLL_TOLERANCE_MS;
+        const sent = this.lastSentMs(task);
+        mark.resetCarried = prevReset <= read && !(sent >= prevReset) ? mark.lastReset : null;
         mark.lastReset = raw;
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (!mark.lastResetReadAt && readAt) {
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (mark.resetRolls && Date.parse(readAt ?? "") - Date.parse(mark.lastResetReadAt ?? "") >= ROLL_GAP_MS) {
+        mark.resetRolls = false;
         dirty = true;
       }
     }
@@ -1552,13 +1569,21 @@ class Scheduler {
     const due = windowDue(win, this.quota.at);
     if ("error" in due)
       return null;
+    const mark = this.marksOf(task.id);
+    if (mark.resetRolls && win.resetsAt === mark.lastReset && win.used === 0) {
+      if (this.staleIdle(task))
+        return null;
+      return { at: new Date(this.quota.at.getTime()), resetKey: `idle:${hourFloorISO(this.quota.at)}` };
+    }
+    if (mark.resetCarried && due.resetKey === mark.lastReset && win.used === 0) {
+      return { at: new Date(this.quota.at.getTime()), resetKey: `after:${mark.resetCarried}` };
+    }
     if (due.resetKey.startsWith("idle:") && this.staleIdle(task))
       return null;
     const raw = win.resetsAt;
     if (raw && !Number.isNaN(new Date(raw).getTime())) {
       return { at: due.at, resetKey: raw };
     }
-    const mark = this.marksOf(task.id);
     const isFuture = (iso) => !!iso && new Date(iso).getTime() > now.getTime();
     if (isFuture(mark.lastReset) || mark.resetKeys.some(isFuture))
       return null;
@@ -1576,6 +1601,22 @@ class Scheduler {
     const sent = this.lastSentMs(task);
     return Number.isFinite(readAt) && Number.isFinite(sent) && readAt < sent + POST_SEND_SETTLE_MS;
   }
+  rollProbeAt(task, now) {
+    const mark = this.store.data.marks[task.id];
+    const card = this.loginCard(task);
+    const win = this.quotaWindow(task);
+    if (!mark || !card || !win?.resetsAt || win.used !== 0)
+      return null;
+    if (mark.resetRolls || win.resetsAt !== mark.lastReset)
+      return null;
+    if (!(Date.parse(win.resetsAt) > now.getTime()))
+      return null;
+    const first = Date.parse(mark.lastResetReadAt ?? "");
+    const read = Date.parse(card.readAt ?? "");
+    if (!Number.isFinite(first) || !Number.isFinite(read) || read - first >= ROLL_GAP_MS)
+      return null;
+    return first + ROLL_GAP_MS;
+  }
   async readCards(now) {
     let asked = false;
     for (const task of this.store.data.tasks) {
@@ -1590,7 +1631,9 @@ class Scheduler {
       const due = this.currentWindowDue(task, now);
       const readFresh = now.getTime() - readAt <= CARD_FRESH_MS;
       const dueNow = due !== null && this.windowReady(task, due, now) && !readFresh;
-      if (!afterSend && !dueNow)
+      const probeAt = this.rollProbeAt(task, now);
+      const probe = probeAt !== null && now.getTime() >= probeAt;
+      if (!afterSend && !dueNow && !probe)
         continue;
       const key = `${card.provider}|${card.account}`;
       const last = this.lastCardRefresh.get(key);
@@ -1766,6 +1809,9 @@ class Scheduler {
         const settled = this.lastSentMs(task) + POST_SEND_SETTLE_MS;
         if (settled > now.getTime())
           minDelay = Math.min(minDelay, settled - now.getTime());
+        const probeAt = this.rollProbeAt(task, now);
+        if (probeAt !== null && probeAt > now.getTime())
+          minDelay = Math.min(minDelay, probeAt - now.getTime());
         const due = this.currentWindowDue(task, now);
         if (due && due.at.getTime() > now.getTime()) {
           minDelay = Math.min(minDelay, due.at.getTime() - now.getTime());
