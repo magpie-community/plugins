@@ -1,6 +1,6 @@
 // The page: reads usage:day (the only read package.json declares) for the
-// day picked, draws it on a canvas in magpie's colours, and hands that
-// canvas's PNG to magpie.image to copy or save.
+// day picked, draws it on a canvas as a receipt, and hands that canvas's
+// PNG to magpie.image to copy or save.
 (async () => {
   const V = globalThis.DayView;
   const $ = (id) => document.getElementById(id);
@@ -23,23 +23,30 @@
     if (msg && !keep) statusTimer = setTimeout(() => status(""), 6000);
   }
 
-  // ---- colours and fonts, from magpie's theme ----
-  function look() {
-    const css = getComputedStyle(document.documentElement);
-    const v = (k, f) => css.getPropertyValue("--magpie-" + k).trim() || f;
-    const dark = document.documentElement.dataset.theme === "dark";
-    return {
-      bg: v("card", dark ? "#1c1c1e" : "#f6f6f7"),
-      fg: v("fg", dark ? "#f5f5f7" : "#1d1d1f"),
-      fg2: v("fg-2", v("fg", dark ? "#d1d1d6" : "#3a3a3c")),
-      muted: v("muted", dark ? "#98989d" : "#6e6e73"),
-      line: v("line", dark ? "#38383a" : "#e5e5ea"),
-      font: v("font", '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'),
-      code: v("code", "ui-monospace, SFMono-Regular, Menlo, monospace"),
-    };
-  }
+  // ---- the receipt's look: fixed, as a printed slip is, in either theme ----
+  const INK = "#1f1d20";
+  const MUTED = "#76736e";
+  const PAPER = "#f7f4ed";
+  const DASH = "#a8a49c";
+  const MONO = '"Day Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang SC", "Hiragino Sans", "Microsoft YaHei", "Noto Sans CJK SC", monospace';
 
-  // ---- logos: data: pictures from the read, a mono one in the text's colour ----
+  // JetBrains Mono from fonts.js's bytes: no fetch, which the frame can't make
+  const fonts = (async () => {
+    const F = globalThis.DayFonts || {};
+    await Promise.all(Object.entries(F).map(async ([weight, b64]) => {
+      try {
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        const face = new FontFace("Day Mono", buf.buffer, { weight });
+        document.fonts.add(await face.load());
+      } catch {
+        // the system's monospace draws it instead
+      }
+    }));
+  })();
+
+  // ---- logos: data: pictures from the read, each drawn in the ink ----
   function picture(name) {
     const ic = state.day?.icons?.[name];
     if (!ic?.src) return Promise.resolve(null);
@@ -53,35 +60,62 @@
     }
     return state.icons.get(ic.src);
   }
-  function drawIcon(ctx, ic, x, y, size, colour, scale) {
+  // A mark (a mono logo, or a colour one on a clear ground) is filled with
+  // the ink; a picture with a ground of its own prints in the ink, only its
+  // near-white parts left the paper's.
+  function drawIcon(ctx, ic, x, y, size, scale) {
     if (!ic) {
-      // no logo: a quiet dot where it would be
-      ctx.fillStyle = colour;
-      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = INK;
       ctx.beginPath();
-      ctx.arc(x + size / 2, y + size / 2, size * 0.28, 0, Math.PI * 2);
+      ctx.arc(x + size / 2, y + size / 2, size * 0.22, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 1;
       return;
     }
-    if (!ic.mono) {
-      ctx.drawImage(ic.img, x, y, size, size);
-      return;
-    }
-    const px = Math.ceil(size * scale);
+    const px = Math.max(1, Math.ceil(size * scale));
     const off = document.createElement("canvas");
     off.width = off.height = px;
     const o = off.getContext("2d");
     o.drawImage(ic.img, 0, 0, px, px);
-    o.globalCompositeOperation = "source-in";
-    o.fillStyle = colour;
-    o.fillRect(0, 0, px, px);
+    let clear = ic.mono;
+    if (!clear) {
+      try {
+        const d = o.getImageData(0, 0, px, px);
+        const p = d.data;
+        let empty = 0;
+        for (let i = 3; i < p.length; i += 4) if (p[i] < 16) empty++;
+        clear = empty / (px * px) > 0.2;
+        if (!clear) {
+          const ink = [0x1f, 0x1d, 0x20], paper = [0xf7, 0xf4, 0xed];
+          for (let i = 0; i < p.length; i += 4) {
+            // only what is near white stays light: a logo prints solid
+            const v = (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
+            const t = Math.min(1, Math.max(0, (v - 0.65) / 0.2));
+            const l = t * t * (3 - 2 * t);
+            for (let k = 0; k < 3; k++) p[i + k] = ink[k] + (paper[k] - ink[k]) * l;
+          }
+          o.putImageData(d, 0, 0);
+        }
+      } catch {
+        clear = true;
+      }
+    }
+    if (clear) {
+      o.globalCompositeOperation = "source-in";
+      o.fillStyle = INK;
+      o.fillRect(0, 0, px, px);
+    }
     ctx.drawImage(off, x, y, size, size);
   }
 
-  // ---- the card ----
-  const W = 600;
-  const PAD = 28;
+  // ---- the receipt ----
+  const PW = 440; // the paper
+  const PAD = 30; // the paper's margin
+  const SIDE = 207; // the backdrop either side, and above and below
+  const TOP = 48;
+  const BOTTOM = 52;
+  const TOOTH = 5; // the torn edge's teeth
+
+  const f = (w, px) => `${w} ${px}px ${MONO}`;
   function fit(ctx, s, width) {
     if (ctx.measureText(s).width <= width) return s;
     let lo = 0, hi = s.length;
@@ -91,192 +125,247 @@
     }
     return s.slice(0, lo) + "…";
   }
-
-  // the card's height for model c: the drawing's own walk, measured
-  function heightOf(c) {
-    let h = PAD + 22 + 58 + 22 + 22 + 50 + 24;
-    if (c.empty) h += 40;
-    else {
-      h += 24;
-      for (const a of c.agents) h += 30 + a.models.length * 22 + (a.more ? 20 : 0) + 8;
-      if (c.moreAgents) h += 20;
+  // text with its letters spaced, centred on cx
+  function spaced(ctx, s, cx, y, em, max) {
+    const chars = [...s];
+    const bare = chars.reduce((n, ch) => n + ctx.measureText(ch).width, 0);
+    const gap = Math.max(0, Math.min(em, (max - bare) / Math.max(1, chars.length - 1)));
+    const w = bare + gap * (chars.length - 1);
+    let x = cx - w / 2;
+    ctx.textAlign = "left";
+    for (const ch of chars) {
+      ctx.fillText(ch, x, y);
+      x += ctx.measureText(ch).width + gap;
     }
-    h += 16 + 60 + (c.note ? 18 : 0) + 18 + PAD;
-    return Math.ceil(h);
+  }
+  // the largest size up to px that keeps s within width
+  function sized(ctx, weight, px, s, width) {
+    ctx.font = f(weight, px);
+    const w = ctx.measureText(s).width;
+    if (w > width) {
+      px = Math.max(10, Math.floor(px * width / w));
+      ctx.font = f(weight, px);
+    }
+    return px;
+  }
+
+  // The slip's text, top to bottom, on the paper at (0, 0); the height it
+  // took. Run once on a scratch canvas to measure, then on the card.
+  function slip(ctx, c, icons, scale) {
+    const L = PAD, R = PW - PAD, inner = R - L;
+    const rule = (y) => {
+      ctx.save();
+      ctx.strokeStyle = DASH;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(L + 11, y + 0.5);
+      ctx.lineTo(R - 11, y + 0.5);
+      ctx.stroke();
+      ctx.restore();
+    };
+    const row = (label, value, y, o = {}) => {
+      ctx.font = f(o.weight || 400, o.px || 12.5);
+      ctx.fillStyle = o.colour || INK;
+      ctx.textAlign = "right";
+      ctx.fillText(value, R, y);
+      const vw = ctx.measureText(value).width;
+      ctx.textAlign = "left";
+      ctx.fillText(fit(ctx, label, inner - vw - 14), L, y);
+    };
+    const glow = (on) => {
+      ctx.shadowColor = on ? "rgba(31, 29, 32, .16)" : "transparent";
+      ctx.shadowBlur = on ? 14 : 0;
+      ctx.shadowOffsetY = on ? 3 : 0;
+    };
+    ctx.textBaseline = "alphabetic";
+    let y = 0;
+
+    // title and tagline
+    y += 54;
+    ctx.fillStyle = INK;
+    sized(ctx, 800, 30, c.title, inner);
+    ctx.textAlign = "center";
+    glow(true);
+    ctx.fillText(c.title, PW / 2, y);
+    glow(false);
+    y += 25;
+    ctx.font = f(400, 11.5);
+    ctx.fillText(c.tagline, PW / 2, y);
+
+    // the day, and when this was drawn
+    y += 27;
+    c.head.forEach((h, i) => {
+      if (i) y += 22;
+      row(h.label, h.value, y);
+    });
+    y += 15;
+    rule(y);
+
+    // the day's cost
+    y += 25;
+    ctx.fillStyle = INK;
+    ctx.font = f(400, 12.5);
+    spaced(ctx, c.totalLabel, PW / 2, y, 3.2, inner);
+    y += 57;
+    sized(ctx, 800, 52, c.total, inner);
+    ctx.textAlign = "center";
+    glow(true);
+    ctx.fillText(c.total, PW / 2, y);
+    glow(false);
+    y += 23;
+    sized(ctx, 400, 10.5, c.totalNote, inner);
+    spaced(ctx, c.totalNote, PW / 2, y, 1.6, inner);
+    y += 16;
+    rule(y);
+
+    // streak, requests, against an average day
+    y += 25;
+    c.stats.forEach((s, i) => {
+      if (i) y += 21;
+      row(s.label, s.value, y);
+    });
+    y += 15;
+    rule(y);
+
+    // each agent and its models, by cost
+    y += 25;
+    row(c.agentHead[0], c.agentHead[1], y, { colour: MUTED });
+    if (c.empty) {
+      y += 27;
+      ctx.font = f(400, 12.5);
+      ctx.fillStyle = MUTED;
+      ctx.textAlign = "left";
+      ctx.fillText(c.empty, L, y);
+    }
+    for (const a of c.agents) {
+      y += 27;
+      drawIcon(ctx, icons.get(a.icon), L, y - 15, 18, scale);
+      ctx.font = f(700, 14.5);
+      ctx.fillStyle = INK;
+      ctx.textAlign = "right";
+      ctx.fillText(a.value, R, y);
+      const vw = ctx.measureText(a.value).width;
+      ctx.textAlign = "left";
+      ctx.fillText(fit(ctx, a.name, inner - 26 - vw - 14), L + 26, y);
+      y += 1;
+      for (const m of a.models) {
+        y += 27;
+        drawIcon(ctx, icons.get(m.icon), L + 26, y - 10.5, 12, scale);
+        ctx.font = f(400, 12.5);
+        ctx.fillStyle = INK;
+        ctx.textAlign = "right";
+        ctx.fillText(m.value, R, y);
+        const mw = ctx.measureText(m.value).width;
+        ctx.textAlign = "left";
+        ctx.fillText(fit(ctx, m.name, inner - 44 - mw - 14), L + 44, y);
+      }
+      if (a.more) {
+        y += 24;
+        ctx.font = f(400, 11.5);
+        ctx.fillStyle = MUTED;
+        ctx.textAlign = "left";
+        ctx.fillText(a.more, L + 44, y);
+      }
+      y += 3;
+    }
+    if (c.moreAgents) {
+      y += 24;
+      ctx.font = f(400, 11.5);
+      ctx.fillStyle = MUTED;
+      ctx.textAlign = "left";
+      ctx.fillText(c.moreAgents, L + 26, y);
+    }
+    y += 17;
+    rule(y);
+
+    // the tokens
+    y += 25;
+    c.tokens.forEach((s, i) => {
+      if (i) y += 21;
+      row(s.label, s.value, y);
+    });
+    if (c.note) {
+      y += 21;
+      row(c.note, "", y, { colour: MUTED, px: 11 });
+    }
+    y += 18;
+    rule(y);
+
+    // the footer, one word of it bold
+    y += 22;
+    for (const line of c.footer) {
+      const parts = line.map((s, i) => ({ s, w: i === 1 ? 700 : 400 })).filter((p) => p.s);
+      const width = parts.reduce((n, p) => { ctx.font = f(p.w, 10.5); return n + ctx.measureText(p.s).width; }, 0);
+      let x = PW / 2 - width / 2;
+      ctx.fillStyle = INK;
+      ctx.textAlign = "left";
+      for (const p of parts) {
+        ctx.font = f(p.w, 10.5);
+        ctx.fillText(p.s, x, y);
+        x += ctx.measureText(p.s).width;
+      }
+      y += 20;
+    }
+    return Math.ceil(y + 4);
   }
 
   async function draw() {
     const day = state.day;
     if (!day) return;
+    await fonts;
     const c = V.card(day, lang);
     const icons = new Map();
     await Promise.all([...new Set(c.agents.flatMap((a) => [a.icon, ...a.models.map((m) => m.icon)]))].map(async (n) => icons.set(n, await picture(n))));
     if (state.day !== day) return;
-    const L = look();
-    const H = heightOf(c);
     const scale = Math.max(2, Math.min(3, Math.ceil(window.devicePixelRatio || 1)));
+
+    // measure, then draw
+    const ph = slip(document.createElement("canvas").getContext("2d"), c, new Map(), 1) + TOOTH;
+    const W = PW + SIDE * 2;
+    const H = Math.max(TOP + ph + BOTTOM, Math.round(W * 4 / 3));
+    const top = Math.round((H - ph) / 2.15);
     const cv = $("card");
     cv.width = W * scale;
     cv.height = H * scale;
     cv.style.aspectRatio = `${W} / ${H}`;
     const ctx = cv.getContext("2d");
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = L.bg;
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(0, 0, W, H, 18) : ctx.rect(0, 0, W, H);
-    ctx.fill();
-    ctx.textBaseline = "alphabetic";
-    const f = (w, px, fam = L.font) => `${w} ${px}px ${fam}`;
-    const right = W - PAD;
-    const rule = (y) => {
-      ctx.fillStyle = L.line;
-      ctx.fillRect(PAD, y, W - PAD * 2, 1);
-    };
-    let y = PAD;
 
-    // magpie, and the day
-    y += 14;
-    ctx.font = f(600, 13);
-    ctx.fillStyle = L.fg;
-    ctx.textAlign = "left";
-    ctx.fillText("magpie", PAD, y);
-    ctx.font = f(400, 13);
-    ctx.fillStyle = L.muted;
-    ctx.textAlign = "right";
-    ctx.fillText(c.date, right, y);
-    y += 8;
+    // the backdrop: teal at the top left to mint at the bottom right
+    const g = ctx.createLinearGradient(0, 0, W * 0.35, H);
+    g.addColorStop(0, "#1dd8d1");
+    g.addColorStop(1, "#92ecc6");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    const g2 = ctx.createLinearGradient(0, 0, W, 0);
+    g2.addColorStop(0, "rgba(255, 255, 255, 0)");
+    g2.addColorStop(1, "rgba(255, 255, 255, .14)");
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, W, H);
 
-    // the day's tokens
-    y += 52;
-    ctx.textAlign = "left";
-    ctx.fillStyle = L.fg;
-    ctx.font = f(600, 46);
-    ctx.fillText(c.headline, PAD - 2, y);
-    const hw = ctx.measureText(c.headline).width;
-    ctx.font = f(400, 16);
-    ctx.fillStyle = L.muted;
-    ctx.fillText(c.unit, PAD + hw + 8, y);
-    y += 6;
-    y += 22;
-    ctx.font = f(400, 14);
-    ctx.fillStyle = L.fg2;
-    ctx.fillText(c.sub, PAD, y);
-    y += 22;
-
-    // input, output, cache, hits
-    const col = (W - PAD * 2) / c.stats.length;
-    c.stats.forEach((s, i) => {
-      const x = PAD + i * col;
-      ctx.font = f(400, 12);
-      ctx.fillStyle = L.muted;
-      ctx.fillText(fit(ctx, s.label, col - 10), x, y + 14);
-      ctx.font = f(600, 17);
-      ctx.fillStyle = L.fg;
-      ctx.fillText(s.value, x, y + 38);
-    });
-    y += 50;
-    y += 12;
-    rule(y);
-    y += 12;
-
-    if (c.empty) {
-      ctx.font = f(400, 14);
-      ctx.fillStyle = L.muted;
-      ctx.fillText(c.empty, PAD, y + 26);
-      y += 40;
-    } else {
-      ctx.font = f(400, 12);
-      ctx.fillStyle = L.muted;
-      ctx.fillText(c.agentsLabel, PAD, y + 16);
-      y += 24;
-      for (const a of c.agents) {
-        drawIcon(ctx, icons.get(a.icon), PAD, y + 4, 18, L.fg, scale);
-        ctx.font = f(400, 13);
-        ctx.textAlign = "right";
-        ctx.fillStyle = L.fg2;
-        ctx.fillText(a.value, right, y + 18);
-        const vw = ctx.measureText(a.value).width;
-        ctx.textAlign = "left";
-        ctx.font = f(600, 14);
-        ctx.fillStyle = L.fg;
-        ctx.fillText(fit(ctx, a.name, W - PAD * 2 - 28 - vw - 16), PAD + 28, y + 18);
-        // its share of the day's busiest agent
-        ctx.fillStyle = L.line;
-        ctx.fillRect(PAD + 28, y + 25, W - PAD * 2 - 28, 2);
-        ctx.fillStyle = L.muted;
-        ctx.fillRect(PAD + 28, y + 25, Math.max(2, (W - PAD * 2 - 28) * a.share), 2);
-        y += 30;
-        for (const m of a.models) {
-          drawIcon(ctx, icons.get(m.icon), PAD + 28, y + 5, 13, L.fg2, scale);
-          ctx.font = f(400, 12);
-          ctx.textAlign = "right";
-          ctx.fillStyle = L.muted;
-          ctx.fillText(m.value, right, y + 16);
-          const mw = ctx.measureText(m.value).width;
-          ctx.textAlign = "left";
-          ctx.font = f(400, 12.5, L.code);
-          ctx.fillStyle = L.fg2;
-          ctx.fillText(fit(ctx, m.name, W - PAD * 2 - 48 - mw - 16), PAD + 48, y + 16);
-          y += 22;
-        }
-        if (a.more) {
-          ctx.font = f(400, 12);
-          ctx.fillStyle = L.muted;
-          ctx.fillText(a.more, PAD + 48, y + 14);
-          y += 20;
-        }
-        y += 8;
-      }
-      if (c.moreAgents) {
-        ctx.font = f(400, 12);
-        ctx.fillStyle = L.muted;
-        ctx.fillText(c.moreAgents, PAD + 28, y + 12);
-        y += 20;
-      }
+    // the paper, torn along its foot, and its shadow
+    ctx.save();
+    ctx.translate(SIDE, top);
+    const paper = new Path2D();
+    paper.moveTo(0, 0);
+    paper.lineTo(PW, 0);
+    paper.lineTo(PW, ph - TOOTH);
+    const teeth = Math.round(PW / (TOOTH * 2));
+    const tw = PW / teeth;
+    for (let i = teeth - 1; i >= 0; i--) {
+      paper.lineTo(i * tw + tw / 2, ph);
+      paper.lineTo(i * tw, ph - TOOTH);
     }
-
-    // streak, average day, the last two weeks
-    y += 4;
-    rule(y);
-    y += 12;
-    const third = (W - PAD * 2) / 3;
-    for (const [i, s] of [c.streak, c.average].entries()) {
-      const x = PAD + i * third;
-      ctx.textAlign = "left";
-      ctx.font = f(400, 12);
-      ctx.fillStyle = L.muted;
-      ctx.fillText(fit(ctx, s.label, third - 12), x, y + 16);
-      ctx.font = f(600, 15);
-      ctx.fillStyle = L.fg;
-      ctx.fillText(fit(ctx, s.value, third - 12), x, y + 40);
-    }
-    const bars = c.bars;
-    const most = bars.reduce((m, b) => Math.max(m, b.tokens), 0);
-    const bw = 7, gap = 4;
-    const bx = right - bars.length * (bw + gap) + gap;
-    const base = y + 44;
-    bars.forEach((b, i) => {
-      const h = b.tokens > 0 && most > 0 ? Math.max(3, (b.tokens / most) * 34) : 1.5;
-      ctx.fillStyle = i === bars.length - 1 ? L.fg : L.muted;
-      ctx.globalAlpha = i === bars.length - 1 ? 1 : b.tokens > 0 ? 0.45 : 0.3;
-      ctx.beginPath();
-      ctx.roundRect ? ctx.roundRect(bx + i * (bw + gap), base - h, bw, h, Math.min(2, h / 2)) : ctx.rect(bx + i * (bw + gap), base - h, bw, h);
-      ctx.fill();
-    });
-    ctx.globalAlpha = 1;
-    y += 60;
-    if (c.note) {
-      ctx.font = f(400, 11);
-      ctx.fillStyle = L.muted;
-      ctx.fillText(c.note, PAD, y + 8);
-      y += 18;
-    }
-    ctx.font = f(400, 11);
-    ctx.fillStyle = L.muted;
-    ctx.textAlign = "right";
-    ctx.fillText("usemagpie.ai", right, y + 10);
-    ctx.textAlign = "left";
+    paper.closePath();
+    ctx.shadowColor = "rgba(0, 60, 55, .28)";
+    ctx.shadowBlur = 36;
+    ctx.shadowOffsetY = 12;
+    ctx.fillStyle = PAPER;
+    ctx.fill(paper);
+    ctx.shadowColor = "transparent";
+    slip(ctx, c, icons, scale);
+    ctx.restore();
     $("copy").disabled = $("save").disabled = !magpie.image;
   }
 

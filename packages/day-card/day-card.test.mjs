@@ -75,52 +75,72 @@ test("every language has every word the page and the card use", () => {
     expect([lang, Object.keys(t).sort()]).toEqual([lang, keys])
     for (const [k, v] of Object.entries(t)) {
       if (typeof v === "function") expect(v(2)).toContain("2")
-      else expect([lang, k, v.trim() !== ""]).toEqual([lang, k, true])
+      else if (Array.isArray(v)) expect([lang, k, v.flat().join("").trim() !== ""]).toEqual([lang, k, true])
+      // Chinese and Japanese put no word between a date and its time
+      else if (k !== "at") expect([lang, k, v.trim() !== ""]).toEqual([lang, k, true])
     }
   }
   for (const m of read("index.html").matchAll(/data-t(?:-label)?="([^"]+)"/g)) expect(keys).toContain(m[1])
   expect([V.langOf("zh-CN"), V.langOf("zh-TW"), V.langOf("zh-Hant-HK"), V.langOf("ja-JP"), V.langOf("de-DE"), V.langOf("fr"), V.langOf("")]).toEqual(["zh", "zh-TW", "zh-TW", "ja", "de", "en", "en"])
 })
 
-test("the card: the day's tokens, cost, calls and errors, then its parts", () => {
-  const c = V.card(day, "en")
-  expect(c.headline).toBe("10.0M")
-  expect(c.unit).toBe("tokens")
-  expect(c.sub).toBe("$12.35 · 412 calls · 3 errors")
+// the clock the card's ISSUED line reads, by this computer's zone
+const now = new Date(2026, 10, 9, 23, 4)
+
+test("the receipt: title, the day, its cost, then its parts", () => {
+  const c = V.card(day, "en", {}, now)
+  expect(c.title).toBe("DAILY AI STATEMENT")
+  expect(c.head).toEqual([
+    { label: "DATE", value: "NOV 9, 2026" },
+    { label: "ISSUED", value: "NOV 9, 2026 AT 23:04" },
+  ])
+  expect(c.total).toBe("$12.35")
   expect(c.stats).toEqual([
-    { label: "Input", value: "1.20M" },
-    { label: "Output", value: "300K" },
-    { label: "Cache read", value: "8.00M" },
+    { label: "STREAK", value: "4 DAYS" },
+    { label: "REQUESTS", value: "412" },
+    { label: "ERRORS", value: "3" },
+    // $12.345 against the $2.50 of the four days before
+    { label: "VS AVERAGE DAY", value: "4.9×" },
+  ])
+  expect(c.tokens).toEqual([
+    { label: "TOTAL TOKENS", value: "10.0M" },
+    { label: "INPUT", value: "1.20M" },
+    { label: "OUTPUT", value: "300K" },
     // 8M of the 9.7M prompt came from the cache
-    { label: "Cache hits", value: "82%" },
+    { label: "CACHE HIT RATE", value: "82%" },
   ])
-  expect(c.date).toBe("Mon, Nov 9, 2026")
-  expect(c.note).toBe("2 calls without a price")
+  expect(c.note).toBe("2 requests without a price")
   expect(c.empty).toBe("")
+  // no errors, no ERRORS line
+  expect(V.card({ ...day, errors: 0 }, "en", {}, now).stats.map((s) => s.label)).toEqual(["STREAK", "REQUESTS", "VS AVERAGE DAY"])
+  // the footer is magpie's, one word of each line bold
+  for (const t of Object.values(V.TEXT)) expect(t.footer[0][1]).toBe("magpie")
 })
 
-test("agents by their tokens, each with its models and what was left out", () => {
-  const c = V.card(day, "en")
+test("agents and their models by cost, each with what was left out", () => {
+  const withCost = { ...day, agents: day.agents.map((a) => ({ ...a, models: a.models.map((m, i) => ({ ...m, cost: [1, 9][i] ?? 0 })) })) }
+  const c = V.card(withCost, "en", {}, now)
+  expect(c.agentHead).toEqual(["AGENT / MODEL", "COST"])
   expect(c.agents.map((a) => [a.name, a.icon, a.value])).toEqual([
-    ["Claude Code", "claude-color", "8.60M · $10.00"],
-    ["Codex", "openai", "1.14M · $2.30"],
-    ["No agent named", "generic", "260K · $0.04"],
+    ["CLAUDE CODE", "claude-color", "$10.00"],
+    ["CODEX", "openai", "$2.30"],
+    ["NO AGENT NAMED", "generic", "$0.04"],
   ])
-  expect(c.agents[0].share).toBe(1)
-  expect(c.agents[1].share).toBeCloseTo(1.14 / 8.6)
-  expect(c.agents[0].models.map((m) => [m.name, m.value])).toEqual([["claude-opus-4-1", "7.25M"], ["claude-haiku-4-5", "1.35M"]])
-  expect(c.agents[0].models[0].share).toBe(1)
-  expect(c.agents[0].models[1].share).toBeCloseTo(1.35 / 7.25)
+  // the cheaper model first by tokens, but by cost second
+  expect(c.agents[0].models.map((m) => [m.name, m.value])).toEqual([["CLAUDE-HAIKU-4-5", "$9.00"], ["CLAUDE-OPUS-4-1", "$1.00"]])
   expect(c.agents[0].more).toBe("")
-  expect(c.agents[1].more).toBe("+3 more")
+  expect(c.agents[1].more).toBe("+3 MORE")
+  // a cheaper agent with more tokens goes below a dearer one
+  const flipped = V.card({ ...day, agents: [{ ...day.agents[1], cost: 20 }, day.agents[0]] }, "en", {}, now)
+  expect(flipped.agents.map((a) => a.name)).toEqual(["CODEX", "CLAUDE CODE"])
   // the card's limits, and what magpie itself left out
-  const small = V.card({ ...day, moreAgents: 2 }, "en", { agents: 1, models: 1 })
+  const small = V.card({ ...day, moreAgents: 2 }, "en", { agents: 1, models: 1 }, now)
   expect(small.agents).toHaveLength(1)
-  expect(small.agents[0].more).toBe("+1 more")
-  expect(small.moreAgents).toBe("+4 more")
+  expect(small.agents[0].more).toBe("+1 MORE")
+  expect(small.moreAgents).toBe("+4 MORE")
 })
 
-test("streak, average active day and the last two weeks", () => {
+test("streak, and the day against the average day before it", () => {
   expect(V.streak(day.days, "2026-11-09", "2026-11-09")).toBe(4)
   // today with no calls yet keeps yesterday's streak
   expect(V.streak(day.days.slice(0, 4), "2026-11-09", "2026-11-09")).toBe(3)
@@ -129,25 +149,25 @@ test("streak, average active day and the last two weeks", () => {
   expect(V.streak([], "2026-11-09", "2026-11-09")).toBe(0)
   // across a month and a year
   expect(V.streak([{ date: "2025-12-31", calls: 1 }, { date: "2026-01-01", calls: 1 }], "2026-01-01", "2026-01-02")).toBe(2)
-  expect(V.average(day.days, "2026-11-08")).toEqual({ days: 4, tokens: 2500, cost: 2.5 })
-  expect(V.average([], "2026-11-08")).toBeNull()
-  const c = V.card(day, "en")
-  expect(c.streak).toEqual({ label: "Streak", value: "4 days" })
-  expect(c.average.value).toBe("2.00M · $4.47")
-  expect(c.bars).toHaveLength(14)
-  expect(c.bars[0]).toEqual({ date: "2026-10-27", tokens: 0 })
-  expect(c.bars.at(-1)).toEqual({ date: "2026-11-09", tokens: 10_000_000 })
-  expect(c.bars.filter((b) => b.tokens).length).toBe(5)
+  // the days before, not the day itself
+  expect(V.average(day.days, "2026-11-09")).toEqual({ days: 4, tokens: 2500, cost: 2.5 })
+  expect(V.average(day.days, "2026-11-01")).toBeNull()
+  expect(V.versus({ cost: 26.25 }, { cost: 2.5, tokens: 1 })).toBe("10.5×")
+  expect(V.versus({ cost: 500 }, { cost: 2, tokens: 1 })).toBe("250×")
+  // nothing priced: by tokens
+  expect(V.versus({ cost: 0, input: 300 }, { cost: 0, tokens: 100 })).toBe("3.0×")
+  expect(V.versus({ cost: 1 }, null)).toBe("–")
 })
 
 test("an empty day has nothing to divide by", () => {
-  const c = V.card({ date: "2026-11-09", today: "2026-11-09", calls: 0, agents: [], days: [], currency: "usd" }, "zh")
+  const c = V.card({ date: "2026-11-09", today: "2026-11-09", calls: 0, agents: [], days: [], currency: "usd" }, "zh", {}, now)
   expect(c.empty).toBe("这一天没有调用。")
-  expect(c.headline).toBe("0")
+  expect(c.total).toBe("$0.00")
+  expect(c.tokens[0].value).toBe("0")
+  expect(c.tokens.at(-1).value).toBe("–")
+  expect(c.stats[0].value).toBe("0 天")
   expect(c.stats.at(-1).value).toBe("–")
-  expect(c.streak.value).toBe("0 天")
-  expect(c.average.value).toBe("–")
-  expect(c.sub).toBe("$0 · 0 次调用")
+  expect(c.head[1].value).toBe("2026年11月9日 23:04")
 })
 
 test("cost in the currency magpie's Settings picked", () => {
@@ -155,8 +175,8 @@ test("cost in the currency magpie's Settings picked", () => {
   expect(V.money(12.345, "cny", 7.1)).toBe("¥87.65")
   // no rate known: dollars still
   expect(V.money(12.345, "cny", 0)).toBe("$12.35")
-  expect([V.money(0), V.money(0.004), V.money(0.0001, "cny", 7)]).toEqual(["$0", "<$0.01", "<¥0.01"])
-  expect(V.card({ ...day, currency: "cny" }, "zh").sub).toBe("¥87.65 · 412 次调用 · 3 次错误")
+  expect([V.money(0), V.money(0.004), V.money(0.0001, "cny", 7)]).toEqual(["$0.00", "<$0.01", "<¥0.01"])
+  expect(V.card({ ...day, currency: "cny" }, "zh", {}, now).total).toBe("¥87.65")
 })
 
 test("hit rate leaves out what a vendor counts no cache for", () => {
@@ -171,9 +191,22 @@ test("dates in the reader's language, by the calendar", () => {
   expect(V.shift("2026-12-31", 1)).toBe("2027-01-01")
   expect(V.dateLabel("2026-11-09", "zh")).toContain("2026")
   expect(V.dateLabel("2026-11-09", "de")).toContain("2026")
+  expect(V.receiptDate("2026-11-09", "de")).toBe("9. NOV. 2026")
   expect(V.fileName("2026-11-09")).toBe("magpie 2026-11-09")
 })
 
 test("numbers read short", () => {
-  expect([V.count(999), V.count(12345), V.count(123456), V.count(1234567), V.count(12345678), V.count(2.5e9)]).toEqual(["999", "12,345", "123K", "1.23M", "12.3M", "2.50B"])
+  expect([V.count(999), V.count(12345), V.count(123456), V.count(1234567), V.count(12345678), V.count(172e6), V.count(2.5e9), V.count(10.1e9)]).toEqual(["999", "12,345", "123K", "1.23M", "12.3M", "172M", "2.50B", "10.1B"])
+})
+
+test("the receipt's face comes with the page, as data the frame can load", () => {
+  const fonts = {}
+  new Function("globalThis", read("fonts.js"))(fonts)
+  expect(Object.keys(fonts.DayFonts).sort()).toEqual(["400", "700", "800"])
+  // woff2, whole: a font the frame can't fetch is loaded from these bytes
+  for (const b of Object.values(fonts.DayFonts)) expect(Buffer.from(b, "base64").subarray(0, 4).toString()).toBe("wOF2")
+  const html = read("index.html")
+  expect(html.indexOf('src="fonts.js"')).toBeGreaterThan(-1)
+  expect(html.indexOf('src="fonts.js"')).toBeLessThan(html.indexOf('src="app.js"'))
+  expect(read("fonts.LICENSE.txt")).toContain("SIL OPEN FONT LICENSE")
 })
