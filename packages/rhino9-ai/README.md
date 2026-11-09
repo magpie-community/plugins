@@ -1,4 +1,4 @@
-# Rhino 9 · Magpie
+# Magpie-Rhino
 
 Use Magpie models, custom groups and routing strategies in a native dockable
 **Magpie** panel inside Rhino 9. The companion Rhino plugin runs its own agent loop
@@ -7,11 +7,14 @@ and calls Rhino's built-in MCP tools to inspect and create native geometry.
 ## Install
 
 1. Install Rhino 9 on Windows and run Magpie.
-2. Download `RhinoMagpie-panel-win-x64.zip` from the companion repository releases.
-   Extract it and run `install-panel.ps1`. Restart Rhino after installation.
-3. Install this Magpie plugin with `magpie plugin add /path/to/plugin`.
-4. Connect **Rhino 9 · Magpie** in Magpie's Agents page and select a model or group.
-5. Open Rhino normally and run the `Magpie` command.
+2. Install the companion Rhino `.yak` package, or extract the companion ZIP and
+   run `install-panel.ps1`. Restart Rhino once. The plugin creates its detection
+   directory on startup without writing connection credentials.
+3. Install from Magpie's Plugins page or run
+   `magpie plugin add @magpie-community/agent-rhino9-ai`.
+4. Connect **Magpie-Rhino** in Magpie's Agents page and select a model or group.
+5. Open Rhino's AI panel normally and choose **Magpie** from its agent menu.
+   No command is required.
 
 The panel follows Magpie's configured selection on each new turn. Refresh its
 catalog to optionally select a different model or routing group for that panel.
@@ -28,16 +31,29 @@ to the distinct `rhino9-ai` gateway identity. Keep the local connection file pri
 
 ## 中文
 
-配套 Rhino 插件提供独立的 **Magpie** 面板，支持自然语言建模、Rhino MCP、
+配套 Rhino 插件在原生 AI 面板中提供 **Magpie** 入口，支持自然语言建模、Rhino MCP、
 视口图片反馈、工具确认、停止和按文档分别保留对话。
 
-先安装 Release 内的 `.yak` 配套包，再在 Magpie 安装此插件并连接。
-在 Rhino 输入 `Magpie` 即可打开面板。每次发送都会读取 Magpie 当前的模型、
+先安装配套 `.yak` 包，或运行 ZIP 内的 `install-panel.ps1`，然后重启 Rhino。
+Rhino 插件会自动创建检测目录，无需先选择模型。再从 Magpie 的插件页安装，
+或运行 `magpie plugin add @magpie-community/agent-rhino9-ai` 并连接。
+正常打开 Rhino 的 AI 面板即可选择 **Magpie**，无需输入命令。每次发送都会读取 Magpie 当前的模型、
 自定义组和策略，组 ID 会原样传给 Magpie，由 Magpie 负责路由。
 
 初次使用请保留默认的逐次修改确认，也可主动勾选会话内自动执行修改。
 支持 Windows x64、Rhino 9 和本机 HTTP Magpie 网关。模型需要支持工具调用。
 建模结果仍需检查，复杂建筑任务和所有模型的兼容性尚需进一步验证。
 
-Source and releases are maintained at https://github.com/mikidaren/rhino9-magpie.
+The MCP listener started when needed remains available until its Rhino document
+or session closes. Other processes on the same computer can use that local
+interface to invoke Rhino tools and scripts. Listener discovery uses an internal
+RhinoAI API with a public `MCPStart` fallback, so Rhino updates need a compatibility
+check.
+
+## Checks
+
+Run `bun test packages/rhino9-ai` and `bun scripts/check.mjs rhino9-ai`
+from the community repository root.
+
+Source and releases are maintained at https://github.com/mikidaren/Magpie-Rhino.
 MIT. Unofficial community integration.

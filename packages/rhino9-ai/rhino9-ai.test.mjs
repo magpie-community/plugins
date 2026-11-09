@@ -4,6 +4,7 @@ import { agent, connect } from "./rhino9-ai.agent.js";
 test("owns a dedicated config, not a personal agent profile", () => {
   expect(agent).toMatchObject({
     id: "rhino9-ai",
+    name: "Magpie-Rhino",
     config: "~/.config/rhino9-magpie/settings.json",
     dir: "~/.config/rhino9-magpie",
     model: "model",
@@ -30,4 +31,14 @@ test("package declares only an agent without a host runtime", async () => {
   expect(pkg.main).toBeUndefined();
   expect(pkg.dependencies).toBeUndefined();
   expect(pkg.scripts?.postinstall).toBeUndefined();
+});
+
+test("publication metadata matches the community repository provenance", async () => {
+  const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json();
+  expect(pkg.repository).toEqual({
+    type: "git",
+    url: "git+https://github.com/magpie-community/plugins.git",
+    directory: "packages/rhino9-ai",
+  });
+  expect(pkg.homepage).toBe("https://github.com/mikidaren/Magpie-Rhino");
 });

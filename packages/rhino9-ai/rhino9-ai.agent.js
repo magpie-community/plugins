@@ -1,12 +1,12 @@
 export const agent = {
   id: "rhino9-ai",
-  name: "Rhino 9 · Magpie",
+  name: "Magpie-Rhino",
   dir: "~/.config/rhino9-magpie",
   config: "~/.config/rhino9-magpie/settings.json",
   format: "json",
   model: "model",
   ua: [],
-  notice: "Install the companion RhinoMagpie .yak package once, then run Magpie in Rhino 9. Its native Magpie panel follows this model or routing group on each new turn. 先安装配套 Rhino 插件，在 Rhino 9 输入 Magpie 打开独立面板；每轮跟随此处选择的模型、自定义组及策略。",
+  notice: "Install the companion Magpie-Rhino .yak and restart Rhino 9. Open Rhino's AI panel and choose Magpie alongside the native agents; no command is required. MagpieStandalone is the fallback. 安装配套 .yak 后重启 Rhino，直接打开 AI 面板选择 Magpie，无需输入命令。每轮跟随此处的模型、自定义组与策略。",
 };
 
 export function connect({ gateway, model } = {}) {

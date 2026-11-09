@@ -262,7 +262,6 @@ it off puts the config back.
 
 | Package | Agent |
 |---|---|
-| [rhino9-ai](packages/rhino9-ai) | Rhino 9's native AI panel on Windows through its Claude Code agent and the [RhinoMagpie launcher](https://github.com/mikidaren/rhino9-magpie); run the launcher installer first, then choose a model; restart the launched Rhino after changes |
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
@@ -275,6 +274,7 @@ it off puts the config back.
 | [nowledge-mem-agent](packages/nowledge-mem-agent) | [Nowledge Mem / AI Now](https://mem.nowledge.co/): choose Default, AI Now and Background models through Magpie, with recovery journaling; separate from the Nowledge memory recall/capture gateway plugin |
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
+| [Magpie-Rhino](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
