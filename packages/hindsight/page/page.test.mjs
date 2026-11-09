@@ -47,7 +47,10 @@ test("health probe performs a minimal GET without reading memories", async () =>
       headers: { "Content-Type": "application/json" }
     });
   });
-  assert.deepEqual(result, { ok: true, code: "connected" });
+  assert.equal(result.ok, true);
+  assert.equal(result.code, "connected");
+  assert.equal(result.bank, "hermes");
+  assert.ok(Number.isInteger(result.ms));
   assert.equal(seen.url, "http://127.0.0.1:8888/health");
   assert.equal(seen.init.method, "GET");
   assert.equal(seen.init.body, undefined);
@@ -57,9 +60,12 @@ test("health probe performs a minimal GET without reading memories", async () =>
 
 test("health probe rejects unavailable and non-Hindsight responses", async () => {
   const unavailable = await testConnection({}, async () => new Response("{}", { status: 503 }));
-  assert.deepEqual(unavailable, { ok: false, code: "unavailable" });
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.code, "unavailable");
+  assert.equal(unavailable.bank, "hermes");
   const invalid = await testConnection({}, async () => new Response(JSON.stringify({ status: "unknown" }), { status: 200 }));
-  assert.deepEqual(invalid, { ok: false, code: "invalid" });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, "invalid");
 });
 
 test("loopback service has the Magpie host entry point without starting on import", async () => {

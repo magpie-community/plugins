@@ -30,11 +30,12 @@ async function readHealth(response) {
 }
 
 export async function testConnection(options = {}, fetcher = fetch) {
+  const started = Date.now();
   const raw = options && typeof options === "object" && !Array.isArray(options) ? options : {};
   const timeoutMs = Number.isInteger(raw.gatewayTimeoutMs) ? raw.gatewayTimeoutMs : 5000;
   let config;
   try { config = configuration({ ...raw, gatewayTimeoutMs: timeoutMs }); }
-  catch { return { ok: false, code: "invalid-options" }; }
+  catch { return { ok: false, code: "invalid-options", ms: Date.now() - started, bank: typeof raw.bank === "string" ? raw.bank : "" }; }
 
   let response;
   try {
@@ -45,13 +46,13 @@ export async function testConnection(options = {}, fetcher = fetch) {
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
-    return { ok: false, code: "unavailable" };
+    return { ok: false, code: "unavailable", ms: Date.now() - started, bank: config.bank };
   }
   if (!response.ok) {
     try { await response.body?.cancel(); } catch { /* Ignore cleanup failures. */ }
-    return { ok: false, code: [401, 403].includes(response.status) ? "unauthorized" : response.status === 404 ? "invalid" : "unavailable" };
+    return { ok: false, code: [401, 403].includes(response.status) ? "unauthorized" : response.status === 404 ? "invalid" : "unavailable", ms: Date.now() - started, bank: config.bank };
   }
   return await readHealth(response)
-    ? { ok: true, code: "connected" }
-    : { ok: false, code: "invalid" };
+    ? { ok: true, code: "connected", ms: Date.now() - started, bank: config.bank }
+    : { ok: false, code: "invalid", ms: Date.now() - started, bank: config.bank };
 }

@@ -80,7 +80,7 @@ function updateSummary(options) {
   $("status-bank").textContent = typeof options.bank === "string" && options.bank ? options.bank : DEFAULTS.bank;
   const list = Array.isArray(options.agents) ? options.agents : [];
   $("status-agents").textContent = list.length ? list.join(", ") : "全部（默认跳过 hermes / dsh）";
-  $("status-api").textContent = "尚未测试";
+  $("status-api").textContent = "未验证（点击测试连接检查）";
 }
 
 function fillForm(options) {
@@ -109,7 +109,17 @@ async function load() {
   }
 }
 
-magpie.ready.then(load).catch(() => status("Magpie 页面接口不可用。", true));
+magpie.ready.then(load).catch(error => {
+  loaded = false;
+  setBusy(true);
+  status(`Magpie 页面接口不可用：${error?.message || error}。可点击重试，或检查 Magpie 版本后重开本页。`, true);
+  const retry = document.createElement("button");
+  retry.id = "retry-load";
+  retry.type = "button";
+  retry.textContent = "重试";
+  retry.onclick = () => location.reload();
+  $("status").after(retry);
+});
 
 $("form").addEventListener("input", () => {
   if (!loaded || busy) return;

@@ -75,7 +75,7 @@
       </div>
       <label class="check" for="allowRemote">
         <input id="allowRemote" name="allowRemote" type="checkbox">
-        <span>允许远程客户端请求<small>仅当 Agent 通过非 loopback 地址访问 Magpie 时需要。默认只处理本地请求。</small></span>
+        <span>允许非本机 Hindsight API<small>仅当 Hindsight API 不在本机（非 loopback）时勾选：召回会把最新用户消息（≤8KB）发往该主机。与远程 Agent 客户端无关。</small></span>
       </label>
       <label class="check" for="allowInsecureHttp">
         <input id="allowInsecureHttp" name="allowInsecureHttp" type="checkbox">

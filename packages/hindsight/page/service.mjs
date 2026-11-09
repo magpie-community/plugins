@@ -46,7 +46,9 @@ button.secondary{border-color:#263442;background:transparent;color:#e6edf3}butto
         headers: { "x-hindsight-token": token, "Accept": "application/json" }
       });
       const result = await response.json();
-      state.textContent = messages[result.code] || "连接失败：测试服务返回了未知状态。";
+      state.textContent = result.ok
+        ? `连接成功：API 与数据库可用。\nbank：${result.bank || "hermes"}\n耗时：${result.ms ?? "—"} ms`
+        : `${messages[result.code] || "连接失败：测试服务返回了未知状态。"}\nbank：${result.bank || "hermes"}\n耗时：${result.ms ?? "—"} ms`;
     } catch {
       state.textContent = "连接失败：本地测试服务没有响应。";
     } finally {
