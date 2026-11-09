@@ -321,6 +321,70 @@ async function refusedNotSignIn(res) {
   return (await quotaRefusal(res)) ?? (await accountRefusal(res));
 }
 
+// A 401 is not always the sign-in either: the CN managed gateway answers a
+// request of ~200k tokens 401 {"message":"AutoClaw 登录状态失效"}, while the
+// same token is answered 200 seconds before and after (plugins#891,
+// hj01857655: 401 at 207k and 218k tokens, every 200 that day at most
+// 129k). Read as expired, magpie marked the account signed out and stopped
+// there. The gateway's limit isn't known, so no threshold is guessed: a
+// refusal of a body larger than the largest one this provider's gateway
+// has answered has its sign-in checked on the wallets route, and a sign-in
+// that holds there makes it a 413, the request too large, with the
+// sign-in kept. magpie then asks another route, or tells the agent to
+// compact. A body no larger than one answered, a sign-in refused there,
+// or a check that fails is the sign-in as before.
+const largestServed = new Map(); // providerId → bytes of the largest chat body the gateway answered
+
+function bodyBytes(body) {
+  if (body == null) return 0;
+  if (typeof body === "string") return Buffer.byteLength(body);
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
+  return 0;
+}
+
+function noteServed(providerId, bytes) {
+  if (bytes > (largestServed.get(providerId) ?? 0)) largestServed.set(providerId, bytes);
+}
+
+/** signInHolds is true when a host's wallets route takes the token, false when every answer refused it, null when unknown. */
+async function signInHolds(accessToken, hosts) {
+  let refused = false;
+  for (const host of dedupe(hosts)) {
+    try {
+      const res = await fetch(host + WALLETS_PATH, {
+        method: "GET",
+        headers: bizHeaders(accessToken),
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 401 || res.status === 403) {
+        refused = true;
+        try { res.body?.cancel?.(); } catch {}
+        continue;
+      }
+      if (!res.ok) {
+        try { res.body?.cancel?.(); } catch {}
+        continue;
+      }
+      const payload = await res.json().catch(() => null);
+      if (payload && payload.code === 0) return true;
+    } catch {}
+  }
+  return refused ? false : null;
+}
+
+/** sizeRefusal is a 401/403 for a body larger than any answered, its sign-in holding, as a 413; or null. */
+async function sizeRefusal(providerId, bytes, status, accessToken, hosts) {
+  const most = largestServed.get(providerId) ?? 0;
+  if (!(most > 0) || bytes <= most) return null;
+  if ((await signInHolds(accessToken, hosts)) !== true) return null;
+  const message = `AutoClaw: the gateway answered a ${bytes}-byte request ${status}, but the sign-in holds; the largest request it has answered is ${most} bytes. The request is too large for AutoClaw, not signed out.`;
+  return new Response(JSON.stringify({ error: { message, type: "request_too_large", code: null } }), {
+    status: 413,
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+  });
+}
+
 // tidyBody puts right, in place, what an agent's history can hold that
 // AutoClaw's chat gateway can't read: it answers each with 500 {"message":
 // "parse response failed"} and nothing more (plugins#437, tmuer, who
@@ -1332,8 +1396,12 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               const tryFetch = (host) =>
                 fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
 
+              const sentBytes = bodyBytes(nextBody);
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId, options);
+              if (res1.status !== 401 && res1.status !== 403) {
+                if (res1.ok) noteServed(providerId, sentBytes);
+                return explained(res1, nextBody, providerId, options);
+              }
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
@@ -1343,11 +1411,14 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               if (spent2) return spent2;
               if (res2.status === 401 || res2.status === 403) {
                 try { res2.body?.cancel?.(); } catch {}
+                const tooBig = await sizeRefusal(providerId, sentBytes, res2.status, accessToken, hosts);
+                if (tooBig) return tooBig;
                 return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
                   status: 401,
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
+              if (res2.ok) noteServed(providerId, sentBytes);
               return explained(res2, nextBody, providerId, options);
             }
 
@@ -1362,10 +1433,16 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: sentBody,
             });
-            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId, options);
+            const sentBytes = bodyBytes(sentBody);
+            if (res.status !== 401 && res.status !== 403) {
+              if (res.ok) noteServed(providerId, sentBytes);
+              return explained(res, sentBody, providerId, options);
+            }
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
+            const tooBig = await sizeRefusal(providerId, sentBytes, res.status, accessToken, hosts);
+            if (tooBig) return tooBig;
             return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
               status: 401,
               headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
@@ -2087,6 +2164,7 @@ export const AutoclawCnAuthPlugin = makeAutoclawPlugin({
 /** 测试辅助（magpie/OpenCode 不会把它当插件调用）。 */
 export const _internal = {
   quotaRefusal, accountRefusal, bannedSaid,
+  signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,

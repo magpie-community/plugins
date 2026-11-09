@@ -2868,3 +2868,115 @@ test("0.2.18: a checkin whose task-complete answers 500 with success:true ends t
     campCleanup(realFetch)
   }
 })
+
+// plugins#891 (hj01857655): the CN managed gateway answers a ~200k-token
+// request 401 "AutoClaw 登录状态失效" while the same token is answered 200
+// seconds before and after. These are the reporter's bytes for the refusal.
+const BIG_401 = '{"error":{"code":null,"message":"AutoClaw 登录状态失效","param":null,"type":"authentication_error"}}'
+const WALLETS_OK = JSON.stringify({ code: 0, data: { total_balance: 100 } })
+const chatOf = (n) => JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "x".repeat(n) }] })
+
+for (const [name, Plugin, chatHosts] of [
+  ["CN", AutoclawCnAuthPlugin, 1],
+  ["overseas", AutoclawAuthPlugin, 2],
+]) {
+  test(`${name} chat: a 401 for a body larger than any answered, its sign-in holding, is a 413 and the sign-in is kept (plugins#891)`, async () => {
+    _internal.clearLargestServed()
+    const realFetch = globalThis.fetch
+    const calls = []
+    let wallets = () => new Response(WALLETS_OK)
+    globalThis.fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes("/wallets")) { calls.push("wallets"); return wallets() }
+      calls.push("chat")
+      return String(init?.body).length > 100_000 ? new Response(BIG_401, { status: 401 }) : new Response("ok")
+    }
+    try {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+
+      // before anything was answered, a 401 is the sign-in, and no check is made
+      calls.length = 0
+      let r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls.filter((c) => c === "wallets").length).toBe(0)
+
+      expect((await loader.fetch("x", { method: "POST", body: chatOf(50_000) })).status).toBe(200)
+
+      // larger than the largest answered, the sign-in holding: too large, not signed out
+      calls.length = 0
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(413)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("kept")
+      const e = (await r.json()).error
+      expect(e.type).toBe("request_too_large")
+      expect(e.message).toContain("too large")
+      expect(e.message).not.toContain("登录")
+      expect(calls).toEqual([...Array(chatHosts).fill("chat"), "wallets"])
+
+      // the sign-in refused on the wallets route too: it is the sign-in
+      wallets = () => new Response('{"code":401,"message":"token invalid"}', { status: 401 })
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+
+      // a check that can't be read is unknown, and the 401 stays the sign-in's
+      wallets = () => { throw new TypeError("fetch failed") }
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      wallets = () => new Response(JSON.stringify({ code: 500, message: "busy" }))
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    } finally {
+      globalThis.fetch = realFetch
+      _internal.clearLargestServed()
+    }
+  })
+
+  test(`${name} chat: a 401 for a body no larger than one answered is the sign-in, with no check made (plugins#891)`, async () => {
+    _internal.clearLargestServed()
+    const realFetch = globalThis.fetch
+    const calls = []
+    let refuse = false
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      calls.push(url.includes("/wallets") ? "wallets" : "chat")
+      if (url.includes("/wallets")) return new Response(WALLETS_OK)
+      return refuse ? new Response(BIG_401, { status: 401 }) : new Response("ok")
+    }
+    try {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      expect((await loader.fetch("x", { method: "POST", body: chatOf(50_000) })).status).toBe(200)
+      refuse = true
+      calls.length = 0
+      const r = await loader.fetch("x", { method: "POST", body: chatOf(50_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls).toEqual(Array(chatHosts).fill("chat"))
+    } finally {
+      globalThis.fetch = realFetch
+      _internal.clearLargestServed()
+    }
+  })
+}
+
+test("signInHolds: taken on any host is true, refused everywhere false, otherwise unknown", async () => {
+  const realFetch = globalThis.fetch
+  let answers = []
+  globalThis.fetch = async () => answers.shift()()
+  try {
+    const hosts = ["https://a.example", "https://b.example"]
+    answers = [() => new Response("{}", { status: 401 }), () => new Response(WALLETS_OK)]
+    expect(await _internal.signInHolds("t", hosts)).toBe(true)
+    answers = [() => new Response("{}", { status: 401 }), () => new Response("{}", { status: 403 })]
+    expect(await _internal.signInHolds("t", hosts)).toBe(false)
+    answers = [() => { throw new TypeError("fetch failed") }, () => new Response("<html>", { status: 502 })]
+    expect(await _internal.signInHolds("t", hosts)).toBe(null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
