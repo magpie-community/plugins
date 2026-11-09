@@ -245,7 +245,7 @@ export async function fetchUsage(agy, {
       BROWSER: path.join(directory, process.platform === "win32" ? "open.cmd" : "open"),
     })
     const options = { cwd: directory, env: childEnv, deadline, signal, maxOutputBytes, onTreeKill: p => { pendingTreeKill = p } }
-    const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + 3000) })
+    const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + 8000) })
     if (version.code !== 0) throw commandFailure(version.stderr)
     if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)

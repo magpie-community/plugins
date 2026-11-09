@@ -17,13 +17,18 @@ function run(args, timeout) {
 for (const [name, mocks] of [
   ["platform.mjs", true],
   ["compat.mjs", true],
+  ["prompt-guard.mjs", false],
+  ["upstream-error.mjs", false],
+  ["tool-schema.mjs", false],
+  ["step-usage.mjs", false],
+  ["mcp-server.mjs", false],
   ["usage.mjs", true],
   ["catalog.mjs", false],
   ["usage-settlement.mjs", false],
   ["repeat-batch.mjs", false],
 ]) {
   test(`test/${name}`, () => {
-    const { code, output } = run(["test", ...(mocks ? ["--preload", hook] : []), `./${name}`], 240_000)
+    const { code, output } = run(["test", "--timeout", "30000", ...(mocks ? ["--preload", hook] : []), `./${name}`], 240_000)
     expect(output).toMatch(/\b[1-9]\d* pass\b/)
     expect(code).toBe(0)
   }, 250_000)

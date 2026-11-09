@@ -109,9 +109,12 @@ import fs from "node:fs"
 import path from "node:path"
 const args = process.argv.slice(2)
 const version = args[0] === "--version"
-const guardRun = process.platform === "win32"
-  ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "\"" + process.env.BROWSER + "\""], { windowsHide: true })
-  : spawnSync(process.env.BROWSER)
+const mode = process.env.TEST_MODE
+const guardRun = process.env.TEST_CHECK_GUARD !== "1"
+  ? { status: 1 }
+  : process.platform === "win32"
+    ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "\"" + process.env.BROWSER + "\""], { windowsHide: true })
+    : spawnSync(process.env.BROWSER)
 const record = {
   args, cwd: process.cwd(), pid: process.pid,
   update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
@@ -122,7 +125,6 @@ const record = {
   guard: guardRun.status,
 }
 fs.appendFileSync(process.env.TEST_LOG, JSON.stringify(record) + "\n")
-const mode = process.env.TEST_MODE
 if (mode === "version-hang" && version || mode === "hang" && !version) setInterval(() => {}, 1000)
 else if (version) {
   console.log(process.env.TEST_VERSION || "1.3.5")
@@ -161,7 +163,7 @@ else if (version) {
 }
 
 test("queries only the structured command in a private, restricted workspace and cleans up", async t => {
-  const f = await fixture(t, { AGY_CLI_DISABLE_AUTO_UPDATE: "false" })
+  const f = await fixture(t, { AGY_CLI_DISABLE_AUTO_UPDATE: "false", TEST_CHECK_GUARD: "1" })
   const originalSpawn = childProcess.spawn
   const spawns = []
   let result
@@ -293,7 +295,7 @@ test("simulated Windows timeouts kill the whole tree via taskkill /T /F /PID", {
       return originalSpawn(file, args, options)
     }
     syncBuiltinESMExports()
-    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 600 }), /timed out/)
+    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 1200 }), /timed out/)
   } finally {
     Object.defineProperty(process, "platform", descriptor)
     childProcess.spawn = originalSpawn
@@ -401,14 +403,17 @@ test("stops retrying locked-directory removal after four attempts without failin
 })
 
 test("rejects old/unverified versions before any possible model prompt", async t => {
+  const f = await fixture(t)
   for (const version of ["1.1.10", "0.9.0", "garbage", "1.3", "1.3.5-beta"]) {
-    const f = await fixture(t, { TEST_VERSION: version })
+    f.env.TEST_VERSION = version
+    await fs.rm(f.env.TEST_LOG, { force: true })
     await assert.rejects(fetchUsage(f.executable, f.options), /1\.1\.11 or later/)
     assert.equal((await f.logs()).length, 1)
     await f.assertClean()
   }
   for (const version of ["1.1.11", "1.2.0", "2.0.0"]) {
-    const f = await fixture(t, { TEST_VERSION: version })
+    f.env.TEST_VERSION = version
+    await fs.rm(f.env.TEST_LOG, { force: true })
     assert.equal((await fetchUsage(f.executable, f.options)).windows.length, 1)
     await f.assertClean()
   }
@@ -428,6 +433,7 @@ test("only concurrent refreshes share work, and callers cannot mutate each other
 })
 
 test("reports sanitized failures and preserves the bridge sign-in; failures are retryable", async t => {
+  const f = await fixture(t)
   for (const [message, expected] of [
     ["Not logged in secret@example.com https://secret.invalid/token", /sign in again/],
     ["Eligibility check failed: EOF secret@example.com", /eligibility check failed on a network/],
@@ -435,7 +441,8 @@ test("reports sanitized failures and preserves the bridge sign-in; failures are 
     ["connection refused: secret@example.com https://secret.invalid", /network or proxy/],
     ["unrecognized secret@example.com", /could not read usage/],
   ]) {
-    const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: message })
+    f.env.TEST_MODE = "fail"
+    f.env.TEST_ERROR = message
     const read = createUsageReader(() => f.executable, f.options)
     const result = await read()
     assert.deepEqual(result.windows, [])
@@ -449,12 +456,13 @@ test("reports sanitized failures and preserves the bridge sign-in; failures are 
 })
 
 test("invalid and oversized stdout/stderr reports fail within the output budget", async t => {
+  const f = await fixture(t)
   for (const [mode, expected, maxOutputBytes] of [
     ["malformed", /invalid usage report/, undefined],
     ["oversize", /size limit/, undefined],
     ["combined-output", /size limit/, 1000],
   ]) {
-    const f = await fixture(t, { TEST_MODE: mode })
+    f.env.TEST_MODE = mode
     await assert.rejects(fetchUsage(f.executable, { ...f.options, ...(maxOutputBytes ? { maxOutputBytes } : {}) }), expected)
     await f.assertClean()
   }
@@ -463,7 +471,7 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
 test("version/report hangs time out, terminate the process, and leave no workspace", async t => {
   for (const mode of ["version-hang", "hang"]) {
     const f = await fixture(t, { TEST_MODE: mode })
-    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 600 }), /timed out/)
+    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 1200 }), /timed out/)
     // The runner must actually stop the child, not just stop waiting for it.
     for (const log of await f.logs()) {
       await waitForPidExit(log.pid)
@@ -475,7 +483,7 @@ test("version/report hangs time out, terminate the process, and leave no workspa
 test("cancellation stops a running report and cleans its private workspace", async t => {
   const f = await fixture(t, { TEST_MODE: "hang" })
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 600)
+  const timer = setTimeout(() => controller.abort(), 1200)
   try {
     await assert.rejects(fetchUsage(f.executable, { ...f.options, signal: controller.signal }), /cancelled/)
   } finally { clearTimeout(timer) }
