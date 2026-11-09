@@ -3,7 +3,8 @@
 // (amr-api.open-design.ai), which answers with two keys — a control key
 // (vela_ctrl_…) for the account's plan and its Design Plan allowance, and a
 // runtime key (sk-amr-…) that the model plane (amr-link.open-design.ai)
-// takes. Model requests are the OpenAI Responses API at the runtime key;
+// takes. Model requests go there at the runtime key, on each model's own API
+// (WIRE below) or any other of the three amr-link serves it on;
 // the model list, the plan and the 5-hour and 7-day allowance windows all
 // come from the control plane.
 //
@@ -41,6 +42,37 @@ const MODEL_WIRE = {
   "glm-5.3-flash": "anthropic",
 }
 const wireOf = (id) => WIRE[MODEL_WIRE[id]] ?? WIRE.chat
+// The API a model is declared on is only its default: amr-link serves
+// every model on all three (keyblues, plugins#888: each of the fourteen
+// answered on chat completions and Responses at /v1 and on Anthropic's
+// messages at the bare host, which the AI SDK asks at /v1/messages). A
+// request can reach the plugin on another API than the declared one — magpie
+// sends it there when the model is set to be asked on it — and the key
+// rides as that API takes it, not as the declared package sends it: the
+// host signs with the declared package's header (x-api-key for
+// @ai-sdk/anthropic, Bearer for the others), so a chat model asked on
+// /messages went with a Bearer and glm-5.3-flash asked on /chat/completions
+// with an x-api-key. signFor reads the API off the request's path.
+const MESSAGES = /\/messages(\/count_tokens)?\/?$/
+const signFor = (key) => async (input, init = {}) => {
+  const url = input instanceof Request ? input.url : String(input)
+  const h = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
+  let path = ""
+  try {
+    path = new URL(url).pathname
+  } catch {}
+  if (MESSAGES.test(path)) {
+    h.delete("authorization")
+    h.set("x-api-key", key)
+    if (!h.has("anthropic-version")) h.set("anthropic-version", "2023-06-01")
+  } else {
+    h.delete("x-api-key")
+    h.set("authorization", `Bearer ${key}`)
+  }
+  // the global fetch as it is when the request is sent: the host's own,
+  // with its proxy and redirect rules, never one captured at load
+  return globalThis.fetch(input, { ...init, headers: h })
+}
 // the provider's own default: a model this plugin doesn't name is asked on
 // chat completions, where ten of the eleven thought
 const NPM = WIRE.chat
@@ -528,7 +560,7 @@ export const OpenDesignAuthPlugin = async () => {
       loader: async (getAuth) => {
         const key = runtimeKeyOf(await getAuth().catch(() => null))
         if (!key) return {}
-        return { baseURL: LINK, apiKey: key }
+        return { baseURL: LINK, apiKey: key, fetch: signFor(key) }
       },
       methods: [
         {
@@ -566,4 +598,4 @@ export const OpenDesignAuthPlugin = async () => {
 
 // _internal is what the tests read through; magpie calls every exported
 // function as a plugin, so only the plugin itself is exported bare.
-export const _internal = { authOf, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }
+export const _internal = { authOf, signFor, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }

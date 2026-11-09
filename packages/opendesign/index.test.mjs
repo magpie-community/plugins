@@ -405,9 +405,46 @@ test("the plugin declares the provider and answers its methods", async () => {
 
 test("the loader hands the runtime key to the model plane", async () => {
   const hooks = await OpenDesignAuthPlugin({})
-  expect(await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" })))
-    .toEqual({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  const o = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  expect(o).toMatchObject({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  expect(typeof o.fetch).toBe("function")
   expect(await hooks.auth.loader(async () => null)).toEqual({})
+})
+
+// keyblues (plugins#888): amr-link serves every model on chat completions,
+// Responses and Anthropic's messages. The host signs a request with the
+// header of the package the model is declared on, so a model asked on
+// another API than its own must be signed for the API it is asked on.
+test("a model asked on any of the three APIs is signed as that API takes the key (plugins#888)", async () => {
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    const h = new Headers(init?.headers)
+    seen.push({ url: url instanceof Request ? url.url : String(url), auth: h.get("authorization"), xkey: h.get("x-api-key"), version: h.get("anthropic-version"), body: init?.body })
+    return new Response("{}", { status: 200 })
+  }
+  const hooks = await OpenDesignAuthPlugin({})
+  const { fetch: send } = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  const base = "https://amr-link.open-design.ai/v1"
+  // kimi-k2.7-code is declared on chat completions, so the host sent the
+  // Bearer header: asked on Anthropic's messages it goes with x-api-key
+  await send(base + "/messages", { method: "POST", headers: { authorization: "Bearer sk-amr-b", "content-type": "application/json" }, body: '{"model":"kimi-k2.7-code"}' })
+  await send(base + "/messages/count_tokens", { method: "POST", headers: { authorization: "Bearer sk-amr-b" }, body: "{}" })
+  // glm-5.3-flash is declared on Anthropic's messages: asked on chat
+  // completions or Responses it goes with the Bearer
+  await send(base + "/chat/completions", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2023-06-01" }, body: '{"model":"glm-5.3-flash"}' })
+  await send(new Request(base + "/responses", { method: "POST", headers: { "x-api-key": "sk-amr-b" }, body: "{}" }))
+  expect(seen.map(({ url, auth, xkey }) => [url.replace(base, ""), auth, xkey])).toEqual([
+    ["/messages", null, "sk-amr-b"],
+    ["/messages/count_tokens", null, "sk-amr-b"],
+    ["/chat/completions", "Bearer sk-amr-b", null],
+    ["/responses", "Bearer sk-amr-b", null],
+  ])
+  // Anthropic's messages carry a version, the client's own when it sent one
+  expect(seen[0].version).toBe("2023-06-01")
+  expect(seen[0].body).toBe('{"model":"kimi-k2.7-code"}')
+  // the declared API's own requests go as they did
+  await send(base + "/messages", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2024-01-01" }, body: "{}" })
+  expect([seen[4].auth, seen[4].xkey, seen[4].version]).toEqual([null, "sk-amr-b", "2024-01-01"])
 })
 
 test("the account's models are read at its own key", async () => {
