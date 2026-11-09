@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
 import { readFileSync, readdirSync } from "node:fs"
-import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
+import { onRequest, onResponse, onSignIn, signInMessage, reset, settled, options, duration, message } from "./notify.hooks.mjs"
 import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background, subagent } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
@@ -816,4 +816,72 @@ test("Gotify's errorDescription is read on failure", async () => {
   const r = await send({ type: "gotify", server: "https://gotify.example.com", token: "bad" }, m)
   expect(r.ok).toBe(false)
   expect(r.error).toBe("bad token")
+})
+
+// ---- accounts signed out (magpie's onSignIn) ----
+// shannnnnks on X: in gateway mode one Codex account of several is signed
+// out now and then; a push says so, to sign it in again.
+const signedOut = { provider: "codex", providerName: "Codex", account: "me@example.com", state: "signed-out" }
+const signInCtx = (opts = {}) => ({ options: { channels: [ntfy], ...opts }, signal: new AbortController().signal })
+
+test("an account signed out is pushed, on by default", async () => {
+  onSignIn(signedOut, signInCtx())
+  await settled()
+  expect(calls.length).toBe(1)
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.title).toBe("⚠️ Codex account me@example.com signed out")
+  expect(sent.message).toBe("Sign in again in magpie.")
+  expect(sent.tags).toEqual(["warning"])
+})
+
+test("a sign-in push follows lang", async () => {
+  onSignIn(signedOut, signInCtx({ lang: "zh" }))
+  onSignIn({ provider: "claude", providerName: "Claude", account: "a@b.c", state: "ending", endsAt: new Date(clock + 2.5 * 86_400_000).toISOString() }, signInCtx({ lang: "zh" }))
+  await settled()
+  expect(calls.map((c) => JSON.parse(c.body).title)).toEqual([
+    "⚠️ Codex 账号 me@example.com 已登出",
+    "⚠️ Claude 账号 a@b.c 的登录将在 3 天后失效",
+  ])
+  expect(JSON.parse(calls[0].body).message).toBe("请在 magpie 中重新登录。")
+})
+
+test("a Claude sign-in ending is pushed with its days left", () => {
+  const m = signInMessage({ provider: "claude", providerName: "Claude", account: "a@b.c", state: "ending", endsAt: new Date(clock + 86_400_000).toISOString() }, options({}))
+  expect(m.title).toBe("⚠️ Claude account a@b.c: sign-in ends in 1 day")
+  expect(m.event).toEqual({ kind: "ending", provider: "claude", account: "a@b.c", endsAt: new Date(clock + 86_400_000).toISOString() })
+})
+
+test("accounts: false sends no sign-in push", async () => {
+  onSignIn(signedOut, signInCtx({ accounts: false }))
+  await settled()
+  expect(calls.length).toBe(0)
+})
+
+test("one account's sign-in push waits out its cooldown", async () => {
+  onSignIn(signedOut, signInCtx())
+  onSignIn(signedOut, signInCtx())
+  onSignIn({ ...signedOut, account: "other@example.com" }, signInCtx())
+  await settled()
+  expect(calls.length).toBe(2)
+  await wait(61 * 60_000)
+  onSignIn(signedOut, signInCtx())
+  await settled()
+  expect(calls.length).toBe(3)
+})
+
+test("an event that isn't a sign-in sends nothing", async () => {
+  onSignIn({ ...signedOut, state: "renewed" }, signInCtx())
+  onSignIn(null, signInCtx())
+  onSignIn(signedOut, { options: { channels: [] } })
+  await settled()
+  expect(calls.length).toBe(0)
+})
+
+test("a webhook gets the sign-in event", async () => {
+  onSignIn(signedOut, signInCtx({ channels: [{ type: "webhook", url: "https://hook.example.com/x" }] }))
+  await settled()
+  expect(JSON.parse(calls[0].body)).toEqual({
+    title: "⚠️ Codex account me@example.com signed out", body: "Sign in again in magpie.",
+    event: { kind: "signed-out", provider: "codex", account: "me@example.com" },
+  })
 })
