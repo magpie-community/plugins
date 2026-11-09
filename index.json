@@ -3497,10 +3497,46 @@
               }
             }
           }
+        },
+        "0.1.1": {
+          "file": "tgz/magpie-community-middleware-system-prompt-0.1.1.tgz",
+          "integrity": "sha512-oUE/vAvDtzulZBogNTtNgTuc5ZrJ6XHHFywHjdhALBHB64vKExNEl8LfdeUJ/oRcZOmA83aiKKXf3kW+WzKnKg==",
+          "time": "2026-11-09T07:03:21.043Z",
+          "manifest": {
+            "name": "@magpie-community/middleware-system-prompt",
+            "version": "0.1.1",
+            "description": "New API's system_prompt (系统提示词) as magpie gateway middleware: give agents' requests a system prompt of yours, in each API's own place for it",
+            "type": "module",
+            "files": [
+              "system-prompt.middleware.js",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-middleware",
+              "new-api",
+              "system-prompt",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/system-prompt"
+            },
+            "magpie": {
+              "middleware": "./system-prompt.middleware.js",
+              "options": {
+                "system_prompt": "Reply in the language the user writes in.",
+                "override": true,
+                "position": "append"
+              }
+            }
+          }
         }
       },
-      "latest": "0.1.0",
-      "readme": "# @magpie-community/middleware-system-prompt\n\nNew API's **系统提示词** (a channel's `system_prompt` and its override switch) as [magpie](https://usemagpie.ai) gateway middleware. It gives the requests agents send a system prompt of yours, in each API's own place for one:\n\n| API | Where the prompt goes |\n| --- | --- |\n| Anthropic | `system` |\n| Chat | the first `system` or `developer` message |\n| Responses | `instructions` |\n| Gemini | `systemInstruction` |\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-system-prompt`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options system-prompt '<json>'`.\n\n## Options\n\n```json\n{ \"system_prompt\": \"Reply in the language the user writes in.\",\n  \"override\": true, \"position\": \"append\",\n  \"agents\": [\"claude\"], \"models\": [\"deepseek\"] }\n```\n\n- **No system prompt yet.** A request without one gets yours.\n- **`override`.** A request that has its own prompt keeps it unchanged, unless `override` is `true`. Then yours goes in as well, placed by `position`:\n  - `\"append\"` (the default) puts yours after it. Agents cache their own prompt, so adding after it keeps that cache.\n  - `\"prepend\"` puts yours before it, as New API does. This makes the provider read the whole prompt again on every turn.\n- **`agents`.** When given, the prompt applies only to these agents, by magpie's agent ids: `claude`, `codex`, `opencode`, and so on.\n- **`models`.** When given, the prompt applies only to models whose names begin with one of these prefixes.\n\nCodex sends its own model instructions, and changing them can change how its models behave. Use `agents` to leave Codex out if you don't want that.\n\n中文：New API 的「系统提示词」，作为 magpie 网关中间件。默认把你的提示词加在 agent 自己的提示词之后，这样不会破坏提示缓存。\n"
+      "latest": "0.1.1",
+      "readme": "# @magpie-community/middleware-system-prompt\n\nNew API's **系统提示词** (a channel's `system_prompt` and its override switch) as [magpie](https://usemagpie.ai) gateway middleware. It gives the requests agents send a system prompt of yours, in each API's own place for one:\n\n| API | Where the prompt goes |\n| --- | --- |\n| Anthropic | `system` |\n| Chat | the first `system` or `developer` message |\n| Responses | `instructions` |\n| Gemini | `systemInstruction` |\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/middleware-system-prompt`. Set its options under **Plugins › Installed › Options**, or with `magpie plugin options system-prompt '<json>'`.\n\n## Options\n\n```json\n{ \"system_prompt\": \"Reply in the language the user writes in.\",\n  \"override\": true, \"position\": \"append\",\n  \"agents\": [\"claude\"], \"models\": [\"deepseek\"] }\n```\n\n- **No system prompt yet.** A request without one gets yours.\n- **`override`.** A request that has its own prompt keeps it unchanged, unless `override` is `true`. Then yours goes in as well, placed by `position`:\n  - `\"append\"` (the default) puts yours after it. Agents cache their own prompt, so adding after it keeps that cache.\n  - `\"prepend\"` puts yours before it, as New API does. This makes the provider read the whole prompt again on every turn.\n- **`agents`.** When given, the prompt applies only to these agents, by magpie's agent ids: `claude`, `codex`, `opencode`, and so on.\n- **`models`.** When given, the prompt applies only to models whose names begin with one of these prefixes, case aside. A prefix may begin magpie's whole model id (`google/gemini`) or the model's own name after its provider (`gemini-3.8-flash` matches `google/gemini-3.8-flash` and `openrouter/google/gemini-3.8-flash`). In a routing group the prompt goes only to the tries on a model in `models`: to give Gemini 3.8 Flash a prompt and no other model, whether it is asked directly or through a group, use (`override`, since most agents send a prompt of their own)\n\n  ```json\n  { \"system_prompt\": \"Answer in Chinese.\", \"override\": true, \"models\": [\"gemini-3.8-flash\"] }\n  ```\n\nCodex sends its own model instructions, and changing them can change how its models behave. Use `agents` to leave Codex out if you don't want that.\n\n中文：New API 的「系统提示词」，作为 magpie 网关中间件。默认把你的提示词加在 agent 自己的提示词之后，这样不会破坏提示缓存。`models` 按模型名前缀匹配（不分大小写），可以写完整 id（如 `google/gemini`），也可以只写模型名（如 `gemini-3.8-flash`，会匹配 `google/gemini-3.8-flash`、`openrouter/google/gemini-3.8-flash`）；路由组里只有发往这些模型的请求会加上提示词。例如只给 gemini-3.8-flash 加提示词：`{\"system_prompt\": \"用中文回答。\", \"override\": true, \"models\": [\"gemini-3.8-flash\"]}`。\n"
     },
     "@magpie-community/middleware-think-tags": {
       "versions": {
