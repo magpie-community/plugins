@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-system-prompt",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "New API's system_prompt (系统提示词) as magpie gateway middleware: give agents' requests a system prompt of yours, in each API's own place for it",
   "type": "module",
   "files": ["system-prompt.middleware.js", "README.md"],

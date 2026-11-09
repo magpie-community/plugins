@@ -22,6 +22,16 @@
 // member is asked is known only on each try (onProvider, ctx.provider), so
 // a request onRequest didn't match is matched again there, and only the
 // tries on a model in models get the prompt.
+//
+// The agent's own prompt is the leading run: the system/developer messages
+// a conversation opens with, and on Responses that run in input as well as
+// instructions. The prompt goes after the last message of that run
+// ("append"), or before the first ("prepend"). Not anywhere later: agents
+// drop developer messages into a conversation as it runs (Codex's
+// permissions, sandbox and model switches) and close requests with
+// scaffolding of their own (omp's "# Juice: 0 !important"), and a prompt
+// written after those would read as part of that scaffolding instead of as
+// the system prompt it is.
 
 export function onRequest(body, ctx) {
   const o = ctx.options || {}
@@ -82,6 +92,18 @@ function give(body, ctx, o) {
   }
 }
 
+// leadingRun is the index of the last system/developer message a
+// conversation opens with, -1 when it opens with anything else
+function leadingRun(items) {
+  let last = -1
+  for (let i = 0; i < items.length; i++) {
+    const role = items[i]?.role
+    if (role !== "system" && role !== "developer") break
+    last = i
+  }
+  return last
+}
+
 function anthropic(body, prompt, over, before) {
   const s = body.system
   if (s === undefined || s === null || s === "" || (Array.isArray(s) && !s.length)) {
@@ -100,29 +122,48 @@ function anthropic(body, prompt, over, before) {
 
 function chat(body, prompt, over, before) {
   if (!Array.isArray(body.messages)) return
-  const first = body.messages[0]
-  if (!first || (first.role !== "system" && first.role !== "developer")) {
+  const last = leadingRun(body.messages)
+  if (last < 0) {
     body.messages.unshift({ role: "system", content: prompt })
     return body
   }
   if (!over) return
-  if (typeof first.content === "string") first.content = before ? prompt + "\n" + first.content : first.content + "\n" + prompt
-  else if (Array.isArray(first.content)) {
+  const target = before ? body.messages[0] : body.messages[last]
+  if (typeof target.content === "string") target.content = before ? prompt + "\n" + target.content : target.content + "\n" + prompt
+  else if (Array.isArray(target.content)) {
     const part = { type: "text", text: prompt }
-    if (before) first.content.unshift(part)
-    else first.content.push(part)
+    if (before) target.content.unshift(part)
+    else target.content.push(part)
   } else return
   return body
 }
 
 function responses(body, prompt, over, before) {
   const s = body.instructions
-  if (typeof s !== "string" || !s) {
+  if (typeof s === "string" && s) {
+    if (!over) return
+    body.instructions = before ? prompt + "\n" + s : s + "\n" + prompt
+    return body
+  }
+  const last = leadingRun(Array.isArray(body.input) ? body.input : [])
+  // A request with a prompt of its own is left alone, whichever way the
+  // prompt would have gone: prepend writes instructions, which would still
+  // land ahead of the agent's developer messages.
+  if (!over && last >= 0) return
+  // "prepend" means before everything the agent sent, and instructions
+  // comes before every input item: that is where it goes.
+  if (before) {
     body.instructions = prompt
     return body
   }
-  if (!over) return
-  body.instructions = before ? prompt + "\n" + s : s + "\n" + prompt
+  if (last < 0) {
+    body.instructions = prompt
+    return body
+  }
+  const target = body.input[last]
+  if (typeof target.content === "string") target.content = target.content + "\n" + prompt
+  else if (Array.isArray(target.content)) target.content.push({ type: "input_text", text: prompt })
+  else body.instructions = prompt
   return body
 }
 
