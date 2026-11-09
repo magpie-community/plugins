@@ -635,12 +635,18 @@ export const MclawAuthPlugin = async (_input, options) => {
   activeBase = base
   // 测试缝：fake browser 从 options.browserModule 进（宿主不会传）。
   const browser = options?.browserModule ?? browserDefault
-  // 登录前的浏览器/图形界面预检（宿主不会传，测试可注入或给 browserCandidates）。
-  // 失败要发生在 authorize 里、返回 opened:true 之前——不能先宣称窗口已弹出再
-  // 在 callback 里报错。fake browser 不带预检时整个跳过，不碰本机真实环境。
+  // 登录前的浏览器/图形界面预检（宿主不会传，测试可注入）。失败要发生在
+  // authorize 里、返回 opened:true 之前——不能先宣称窗口已弹出再在 callback 里
+  // 报错。fake browser 不带预检时整个跳过，不碰本机真实环境。
+  // signinEnv / signinPlatform 是测试缝：让「找不到浏览器」与「无 DISPLAY」两条
+  // 预检各自可确定性触发，不受测试机（如无头 Linux CI）环境影响。
   const signinPrerequisites = options?.signinPrerequisites
-    ?? (options?.browserCandidates !== undefined
-      ? (pre) => browserDefault.assertBrowserSigninPrerequisites({ ...pre, candidates: options.browserCandidates })
+    ?? (options?.browserCandidates !== undefined || options?.signinEnv !== undefined || options?.signinPlatform !== undefined
+      ? () => browserDefault.assertBrowserSigninPrerequisites({
+        ...(options?.signinPlatform !== undefined ? { platform: options.signinPlatform } : {}),
+        ...(options?.signinEnv !== undefined ? { env: options.signinEnv } : {}),
+        ...(options?.browserCandidates !== undefined ? { candidates: options.browserCandidates } : {}),
+      })
       : undefined)
     ?? (options?.browserModule ? undefined : (pre) => browserDefault.assertBrowserSigninPrerequisites(pre))
   // 宿主取消登录（callback 没被调）后的收尾时限：到点关浏览器、放 profile 锁，

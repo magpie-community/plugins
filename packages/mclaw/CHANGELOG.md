@@ -11,6 +11,7 @@
 - **README 写明登录前提**：需本机 Chromium 内核浏览器（Safari 不行并给原因）+ 有图形界面的本地会话；远程/SSH/容器/无头环境不支持弹窗，附 `MCLAW_CHROME_PATH` 示例。
 - **instructions 按实际行为写**：「专用浏览器窗口…登录成功后自动检测并继续，窗口由插件自己关闭，不需要手动关窗」（CDP 轮询 Cookie，不依赖用户关窗）。
 - **测试加固**：合并评论里的非阻塞 follow-up——magpie 式取消用例改用两个独立 `AbortController`，只 abort callback 的那个，并断言 authorize 的 signal 未被碰；临时摘掉 callback 的 signal 接线该用例会报红。新增 `browser-path.test.mjs` 覆盖三平台候选表、空候选、override 写错/正确、有/无 DISPLAY、预检通过的 authorize 行为。测试 30 → 41。
+- **测试不依赖测试机平台**（市场 PR #898 首轮 CI 在无头 Ubuntu 上报红）：「找不到浏览器」用例原本只注入空候选，在无 `DISPLAY` 的 Linux runner 上会先命中无 GUI 预检，拿不到预期的浏览器报错。新增 `signinEnv` / `signinPlatform` 测试缝，两条预检各自可确定性触发；本机 macOS 与清空 DISPLAY 的无头模拟下均 41 pass。
 
 ## 0.5.2 — 2026-11-05
 

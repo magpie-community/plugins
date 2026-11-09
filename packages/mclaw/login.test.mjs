@@ -159,8 +159,11 @@ test('authorize 时 signal 已是 aborted → 直接收尾不开流程', async (
 test('预检失败（找不到浏览器）→ authorize 直接 failed，不开 harvest', async () => {
   f = fakeUpstream()
   fb = fakeBrowserModule({ ticket: TICKET_A })
+  // 注入「有图形界面的 Linux + 空候选」：否则无头 CI 上会先撞上无 DISPLAY
+  // 预检，测不到浏览器那条分支。两条预检各自可确定性触发。
   const plugin = await MclawAuthPlugin({}, {
     browserModule: fb.module, browserCandidates: [], signinAbortMs: 60_000,
+    signinPlatform: 'linux', signinEnv: { DISPLAY: ':0' },
   })
   const out = await oauthMethod(plugin).authorize({})
   expect(out.type).toBe('failed')
@@ -172,9 +175,10 @@ test('预检失败（找不到浏览器）→ authorize 直接 failed，不开 h
 test('预检失败（Linux 无 DISPLAY）→ authorize 直接 failed，不开 harvest', async () => {
   f = fakeUpstream()
   fb = fakeBrowserModule({ ticket: TICKET_A })
+  // 走真实预检（不是抛错桩）：即使给一个存在的浏览器，无 DISPLAY 也要先拒绝。
   const plugin = await MclawAuthPlugin({}, {
-    browserModule: fb.module,
-    signinPrerequisites: async () => { throw new Error('当前 Linux 会话没有图形界面') },
+    browserModule: fb.module, browserCandidates: ['/bin/true'],
+    signinPlatform: 'linux', signinEnv: {},
   })
   const out = await oauthMethod(plugin).authorize({})
   expect(out.type).toBe('failed')
