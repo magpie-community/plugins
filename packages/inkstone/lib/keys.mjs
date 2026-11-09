@@ -79,18 +79,21 @@ export async function keyCount(token) {
  * 名字为 `name` 的孤儿 Key（软风控 -15100 吞了明文但 POST 实际建成）：
  * 按名字找到就删掉，别留在账号上（#847 blocking 3——孤儿不是死胡同，
  * 删掉换名重试，不是让用户去粘贴）。
+ * 返回是否**真的删掉了一把**：调用方只有在 true 时才能说「已移除」
+ * （第三轮 review：列表读不到时这里只记日志返回，不能对外宣称删了）。
  */
 async function deleteKeyByName(token, name, log) {
   try {
     const listed = await listKeys(token)
     const match = keyItems(listed).find((k) => k.name === name)
-    if (match) {
-      await deleteKey(token, match.id)
-      log?.("warn", "inkstone: deleted the refused key by name to retry with a fresh one")
-    }
+    if (!match) return false
+    await deleteKey(token, match.id)
+    log?.("warn", "inkstone: deleted the refused key by name to retry with a fresh one")
+    return true
   } catch (e) {
     // 列表读不到（同一风控）：孤儿留给下次 prune，重试继续
     log?.("warn", "inkstone: could not list the keys to delete the refused one (" + (e?.message ?? e) + ")")
+    return false
   }
 }
 
@@ -166,11 +169,28 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
 
   let name = keyNameFor(username)
   let reply
+  // 「建成了但明文没给」：-15108（平台明确答"创建成功、明文拿不到"）与
+  // -15100 软风控（吞掉明文）是同一个情形——账号上多了一把拿不到明文的
+  // 孤儿 Key。重试换新名，孤儿先删；耗尽后如实说，且只有真删掉了才说
+  // 「已移除」（第三轮 review：最后一轮的孤儿也要删，文案不能谎报）。
+  const plaintextLost = (err) =>
+    err?.code === -15108 || /fetch failed, refresh page/i.test(String(err?.message ?? ""))
+  const noPlaintextError = (removed) =>
+    Object.assign(
+      new Error(
+        removed
+          ? "the console created an API key but did not return its plaintext; the orphan key was removed — please try the sign-in again."
+          : "the console created an API key but did not return its plaintext, and the orphan could not be deleted from here — please check the console's API key page.",
+      ),
+      { code: "no_plaintext" },
+    )
+  let removed = false // 最后一次删孤儿是否真的删掉了
   try {
     reply = await createKey(token, name, randomUUID())
   } catch (e) {
     // 幂等冲突（-15109）：换一个 Idempotency-Key 和一个新名字再试（名字也
-    // 可能撞），最多三次。
+    // 可能撞），最多三次。这个循环里也可能撞上 -15108/软风控：同样先删
+    // 孤儿再换名重试（第三轮 review：不能裸抛）。
     if (e?.code === -15109) {
       let last = e
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -180,17 +200,23 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
           last = null
           break
         } catch (e2) {
+          if (plaintextLost(e2)) {
+            removed = await deleteKeyByName(token, name, log)
+            last = e2
+            continue
+          }
           if (e2?.code !== -15109) throw e2
           last = e2
         }
       }
-      if (last) throw last
+      if (last) {
+        if (last?.code === -15108) throw noPlaintextError(removed)
+        throw last
+      }
     }
-    // 「建成了但明文没给」：-15108（平台明确答"创建成功、明文拿不到"）与
-    // -15100 软风控（吞掉明文）是同一个情形——账号上多了一把拿不到明文的
-    // 孤儿 Key。blocking 3：不留死胡同，按名字删掉孤儿、换新名重试；重试
-    // 期间再落进同一情形就再删再试，绝不指引用户去「粘贴一把 Key」。
-    else if (e?.code === -15108 || /fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
+    // 「建成了但明文没给」（同上）：删孤儿、换新名重试，耗尽后按真实删除
+    // 结果说话；-15100 的原文照旧透传（宿主认它）。
+    else if (plaintextLost(e)) {
       await deleteKeyByName(token, name, log)
       let last = e
       for (let attempt = 0; attempt < softRetryDelays.length; attempt++) {
@@ -201,47 +227,37 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
           last = null
           break
         } catch (e2) {
-          if (e2?.code === -15108 || /fetch failed, refresh page/i.test(String(e2?.message ?? ""))) {
-            await deleteKeyByName(token, name, log)
-          }
+          if (plaintextLost(e2)) removed = await deleteKeyByName(token, name, log)
           last = e2
         }
       }
       if (last) {
-        if (last?.code === -15108) {
-          // 抬头就是"没拿到明文"，不说"去粘贴"
-          throw Object.assign(
-            new Error(
-              "the console created an API key but did not return its plaintext; the orphan key was removed — please try the sign-in again.",
-            ),
-            { code: "no_plaintext" },
-          )
-        }
+        if (last?.code === -15108) throw noPlaintextError(removed)
         throw last
       }
     } else throw e
   }
   let created = String(reply?.data?.key ?? "").trim()
-  // 回复成功却没有明文（罕见）：同上——删孤儿、换名重试，最多两次，耗尽后
-  // 如实报错，但不说「去粘贴」。
+  // 回复成功却没有明文（罕见）：同上——删上一轮的孤儿、换名重试，最多两次。
+  // 最后一轮的孤儿在 continue 之后没有下一轮顶部的删除，所以循环外再补删
+  // 一次，并按那次删除的真实结果说话（第三轮 review）。
   for (let attempt = 0; !created && attempt < 2; attempt++) {
     await deleteKeyByName(token, name, log)
     try {
       name = keyNameFor(username)
       reply = await createKey(token, name, randomUUID())
     } catch (e2) {
-      if (e2?.code === -15108 || /fetch failed, refresh page/i.test(String(e2?.message ?? ""))) continue
+      if (plaintextLost(e2)) {
+        removed = await deleteKeyByName(token, name, log)
+        continue
+      }
       throw e2
     }
     created = String(reply?.data?.key ?? "").trim()
   }
   if (!created) {
-    throw Object.assign(
-      new Error(
-        "the console kept creating API keys without returning their plaintext; the orphan keys were removed from the account — please try the sign-in again.",
-      ),
-      { code: "no_plaintext" },
-    )
+    if (!removed) removed = await deleteKeyByName(token, name, log)
+    throw noPlaintextError(removed)
   }
   try {
     await probeWithRetry(created, log, probeDelays)

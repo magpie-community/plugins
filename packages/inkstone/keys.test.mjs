@@ -213,6 +213,74 @@ test("a key created without a plaintext is a clear failure, not a silent empty k
   expect(keys.length).toBe(0)
 })
 
+test("a successful reply without a plaintext deletes the LAST orphan too", async () => {
+  // 第三轮 review：这个循环的最后一轮 continue 之后没有下一轮顶部的删除，
+  // 所以退出循环时必须再补删一次。若缺了这一步，keys 会剩一把，测试变红。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    // 建成了，但回复里没有明文（没有 key 字段）
+    return ok({})
+  })
+  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext/i)
+  expect(keys.length).toBe(0)
+})
+
+test("-15108 inside the -15109 retry is cleaned up and reported clearly, not thrown raw", async () => {
+  // 第三轮 review：幂等重试里撞上 -15108 时，孤儿也要删、文案也要清楚。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  let posts = 0
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    posts += 1
+    if (posts === 1) return fail(-15109, "name clash")
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext/i)
+  expect(keys.length).toBe(0)
+})
+
+test("when the orphan list fails, the error does not claim it was removed", async () => {
+  // 第三轮 review：deleteKeyByName 在列表读不到时只记日志返回——对外不能
+  // 说「已移除」。这里第一次 list（keyCount）成功，之后的 list 全部失败。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  let lists = 0
+  f.route("GET /api/tokenplan/v1/keys", () => {
+    lists += 1
+    if (lists === 1) return ok({ total: 0, items: [] })
+    return fail(-10002, "request is not authenticated")
+  })
+  f.route("POST /api/tokenplan/v1/keys", () => fail(-15108, "created but hidden"))
+  let said = ""
+  try {
+    await ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  expect(said).toMatch(/plaintext/i)
+  expect(said).toContain("could not be deleted")
+  expect(said).not.toContain("was removed")
+})
+
 test("an idempotency clash retries with a FRESH name and returns the key string", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))

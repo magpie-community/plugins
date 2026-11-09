@@ -69,6 +69,14 @@ function chatFetch(log = () => {}) {
     else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
     else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
     else if (isRequest) text = await input.text().catch(() => "")
+    if (isRequest) {
+      // 第三轮 review blocking 1：Request 的流已被 text() 读掉，url/method/
+      // headers/signal 必须由 init 显式携带——宿主进程里可能有别的 fetch 包装
+      // 层只读 (url, init)（catpaw 的泄漏，#877），一个不带 method 的重挂
+      // body 会被它当成 GET 发出去（"GET/HEAD cannot have body"）。
+      // ...init 在后：调用方显式给的设置仍然优先。
+      init = { method: input.method, headers: input.headers, signal: input.signal, ...init }
+    }
     if (text) {
       // 解析一次，预检与改写共用同一个对象（近 40MB 的 body 解析两遍是浪费）
       let body
@@ -87,15 +95,16 @@ function chatFetch(log = () => {}) {
           })
         }
         // ②③改写：补 detail、剥无效参数。一字未动就保留原字节（review N1，
-        // 不再无条件重新序列化）；改过才原地改写后重新序列化。
+        // 不再无条件重新序列化）；改过才原地改写后重新序列化。Request 的
+        // method/headers 已在上面带进 init，这条路同样成立。
         const rewritten = rewriteBodyObj(body)
         if (rewriteBodyChanged(rewritten)) init = { ...init, body: JSON.stringify(rewritten) }
       }
     }
     // N2: 若是 Request 且上面没重挂 body，把读到的字节原样交回去。
     if (isRequest && init.body === undefined) init = { ...init, body: text }
-    // 真发。
-    const res = await upstream(input, init)
+    // 真发。Request 时 url 也一起显式化（不再传被读空的对象）。
+    const res = await upstream(isRequest ? input.url : input, init)
     // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
     if (!res.ok && res.status !== 429) {
       let said = ""

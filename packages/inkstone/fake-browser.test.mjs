@@ -236,30 +236,28 @@ test("the reuse method keeps a pasted key instead of creating one", async () => 
 }, 60_000)
 
 test("off Windows the production wiring closes the window on a new cookie", async () => {
-  // B4: the real signInWithBrowser path (baseline → probe → close), with the
-  // sqlite probe injected so the test does not depend on where a compiled
-  // Chromium stand-in happens to write its profile on each OS. Removing the
-  // cookieProbe wiring from signInWithBrowser makes the wait ignore the
-  // injected probe and end on the child's exit, not "console" — this goes red.
+  // B4 (third-round review): the real signInWithBrowser path with NO injected
+  // probe — launch baseline → the real sqlite probe → "console". The stand-in
+  // writes its uaa-token row ~300 ms in, and the wait must see it through the
+  // production wiring. Replacing the wiring with `loginWait?.cookieProbe`
+  // alone (no probe at all off Windows) leaves this wait to the child's exit
+  // and it never says "console" — this goes red.
   f = fakeInkStone()
   serveKeyRoutes()
+  // a clean store: whatever a previous test left is in the baseline anyway,
+  // but starting empty makes "a new row appeared" unambiguous
+  try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
   const logs = []
-  let probes = 0
   const token = await signInWithBrowser({
     browserPath: fakeExe,
     keepSignIn: true,
     timeoutMs: 6000,
-    loginWait: {
-      platform: "linux",
-      pollMs: 50,
-      cookieProbe: () => ++probes >= 3,
-    },
+    loginWait: { platform: "linux", pollMs: 50 },
     log: (...args) => logs.push(args.map(String).join(" ")),
   })
   expect(token).toBe("fake-uaa-token-for-tests")
   expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(true)
   expect(logs.some((l) => l.includes("cookie store"))).toBe(true)
-  expect(probes).toBeGreaterThanOrEqual(3)
 }, 30_000)
 
 test("off Windows an old cookie in the kept profile is not this sign-in", async () => {
