@@ -1,0 +1,16 @@
+node_modules/
+.runtime/
+.cache/
+*.tgz
+*.log
+.env
+.env.*
+.DS_Store
+verification/
+release/
+receipts/
+authorization-requests/
+authorization-operations/
+grants/
+plugins.json
+auth.json

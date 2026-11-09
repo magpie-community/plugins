@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>脱敏回执</title><script src="bridge.js"></script><link rel="stylesheet" href="style.css"><script src="app.js" defer></script></head>
+<body><main><nav class="tabs" aria-label="公司名称保护"><a href="session-authorization.html">会话授权</a><a href="./" aria-current="page">脱敏回执</a></nav>
+<h1 class="page-title">脱敏回执</h1>
+  <section id="receipts-panel" aria-label="脱敏回执">
+  <form id="filters" class="filters">
+    <label>日期（UTC）<input id="date" type="date" required></label>
+    <label class="task-filter">任务<select id="task"><option value="">全部任务</option></select></label>
+    <label>状态<select id="status"><option value="">全部状态</option><option value="已替换，回复处理完成">已替换 · 回复完成</option><option>等待完成通知</option><option>调用未完成</option><option>同步确认缺失</option><option>回复确认缺失</option><option>回复采集缺失</option><option>准备回执缺失</option><option>未确认</option><option>处理失败</option><option>未命中</option><option>授权放行</option></select></label>
+    <button id="refresh" type="button">刷新</button><label class="auto"><input id="auto" type="checkbox">自动刷新</label>
+  </form>
+  <div class="summary-line"><div id="totals" aria-label="当前筛选汇总"></div><span id="notice" role="status" aria-live="polite">正在读取…</span></div>
+  <p id="diagnostics" class="detail-message" role="status" hidden></p>
+  <section aria-label="逐请求回执">
+    <div class="table-wrap" tabindex="0" aria-label="回执表格，可横向滚动">
+      <table class="requests"><thead><tr><th>时间（北京）</th><th>任务 / 请求</th><th>状态</th><th class="number">名称 / 替换处数</th><th class="number">还原名称</th><th class="number">用时</th><th>明细</th></tr></thead><tbody id="rows"></tbody></table>
+    </div>
+    <p id="empty" hidden>没有匹配的回执，不能据此判断请求已受保护。</p>
+  </section>
+  <details class="explanation"><summary>记录说明 · 仅本机查看</summary><p>回执列表与替换明细按所有任务合计保留最近 25 个请求，超过后自动清理最早记录。清理不影响正在处理的请求还原。明细另有 30 分钟期限，只存内存，重启插件后清空；旧明细不能补出原名。自动刷新间隔为 10 秒，展开明细时暂停。</p><p>等待完成通知不证明请求仍在运行；调用未完成可能由取消、上游失败或采集超限造成。各类确认缺失分别保留对应的证据缺口。未命中不代表没有敏感名称；回复未使用代号时，还原数可以为 0。</p><p>日期按 UTC 归档，时间按北京显示。日期和任务筛选只作用于保留的最近 25 个请求。状态核对读取应用日志末尾 4 MiB。日志轮转可能使历史状态变为未确认。</p></details>
+  </section>
+
+</main></body></html>

@@ -91,6 +91,8 @@
       "summary": { "en": "Seven composable output styles, all off by default, with a selection panel and prompt-cache-stable injection that preserves Codex instructions. by manjughosa", "zh": "七种可组合的输出样式，全部默认关闭；带选择面板，注入不破坏提示缓存，也不改写 Codex instructions。由 manjughosa 维护。" } },
     { "package": "@magpie-community/middleware-word-guard", "name": "Word Guard", "kind": "middleware", "community": true,
       "summary": { "en": "New API's sensitive-word filter: turn away or mask words and patterns in what you send, and in replies.", "zh": "New API 的敏感词过滤：拒绝或替换你发出的内容和回复里的词与正则。" } },
+    { "package": "@magpie-community/middleware-company-guard", "name": "Company Guard", "kind": "middleware", "community": true,
+      "summary": { "en": "Recognize and mask company names with stable session aliases, restore replies, and show local receipts and explicit Codex session approvals. Unlike Word Guard, names can be restored. Text only; rule-based detection.", "zh": "识别公司名称并使用会话内稳定代号，回复返回本机时还原，提供本地回执与需明确确认的 Codex 会话授权。区别于 Word Guard 的词表拒绝或替换，支持名称还原；仅处理文字，采用规则识别。" } },
     { "package": "@magpie-community/middleware-think-tags", "name": "Think Tags", "kind": "middleware", "community": true,
       "summary": { "en": "Take a model's leading <think>, <thinking> or <thought> block out of its reply's text, or put a Chat reply's reasoning into it.", "zh": "去掉回复正文开头的 <think>、<thinking> 或 <thought> 思考块，或把 Chat 回复的思考内容放进正文。" } },
     { "package": "@magpie-community/agent-nowledge-mem", "name": "Nowledge Mem / AI Now models", "kind": "agent", "community": true, "icon": "https://mem.nowledge.co/favicon.png",

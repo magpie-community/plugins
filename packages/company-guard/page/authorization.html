@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>会话授权</title><script src="bridge.js"></script><link rel="stylesheet" href="style.css"><script src="authorization.js" defer></script></head>
+<body class="authorization-page"><main><nav class="tabs" aria-label="公司名称保护"><a href="session-authorization.html" aria-current="page">会话授权</a><a href="./">脱敏回执</a></nav>
+  <section id="authorization-panel" aria-label="会话原名授权">
+    <div class="authorization-heading"><div><h1>会话授权</h1><p>默认脱敏，仅对你确认的会话和范围放行原名。</p></div><button id="authorization-refresh" type="button">刷新授权</button></div>
+    <p id="authorization-notice" role="status" aria-live="polite">正在读取授权…</p>
+    <div class="authorization-guide"><span>申请放行</span><p>在目标会话单独发送 <code>申请本会话原名放行</code>，再到这里确认范围。</p><details><summary>使用说明</summary><p>待确认申请保留24小时，申请本身不会启用授权或暂停任务。任务名称只用于识别，授权以会话编号和工作目录为准。其他会话、分叉和子任务不会自动取得授权。</p></details></div>
+    <section id="authorization-pending-section" aria-labelledby="pending-title" hidden><h2 id="pending-title">待确认申请</h2><div id="authorization-pending" class="authorization-list"></div></section>
+    <section id="authorization-editor" class="authorization-editor" aria-labelledby="editor-title" hidden>
+      <div class="authorization-editor-heading"><h2 id="editor-title">确认这个会话的放行范围</h2><p id="authorization-existing" class="detail-message"></p></div><p id="authorization-target" class="identity"></p>
+      <form id="authorization-form">
+        <fieldset><legend>放行范围</legend><label><input type="radio" name="coverage" value="names" checked>仅指定公司名单</label><label><input type="radio" name="coverage" value="all">本会话全部公司名称</label></fieldset>
+        <div id="authorization-names"><label for="authorization-name-list">公司名称，每行一个，最多32个</label><textarea id="authorization-name-list" rows="3" placeholder="在本机粘贴需要放行的完整名称"></textarea><label class="file-label">或读取本地 UTF-8 文本名单<input id="authorization-file" type="file" accept=".txt,text/plain"></label><p id="authorization-file-status" class="detail-message"></p></div>
+        <p id="authorization-scope-note">名单外名称继续脱敏。其他会话、分叉和子任务不会自动取得授权。</p>
+        <div class="authorization-footer"><label class="authorization-confirm"><input id="authorization-consent" type="checkbox" required>我确认对上述会话和范围授权</label><div class="authorization-actions"><button id="authorization-approve" type="submit">确认放行</button><button id="authorization-cancel" type="button">取消</button></div></div>
+      </form>
+    </section>
+    <section aria-labelledby="active-title"><h2 id="active-title">已启用授权</h2><div id="authorization-active" class="authorization-list"></div></section>
+    <p class="authorization-footnote">授权持续到你主动恢复脱敏。恢复仅影响后续请求，已发送原文不能撤回；图片不做文字识别。</p>
+  </section>
+
+</main></body></html>
