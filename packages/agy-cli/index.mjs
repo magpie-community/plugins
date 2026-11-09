@@ -1,4 +1,8 @@
 import { agyCandidates, spawnAgy, windowsMcpShim } from "./platform.mjs"
+import { OutputLimitFilter } from "./output-limit.mjs"
+import { lastModelStep, modelStepsAfter, sessionDbPath } from "./step-usage.mjs"
+import { sanitizeInputSchema, TOOL_SEARCH_INPUT_SCHEMA } from "./tool-schema.mjs"
+import { classifyUpstreamError } from "./upstream-error.mjs"
 import { spawn } from "node:child_process"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { once } from "node:events"
@@ -90,11 +94,18 @@ const PING_INTERVAL_MS = 15_000
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
 const AGENT_ERROR_MARKER = "\n⚠ Agent execution terminated due to error.\n"
 const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
+const CONTINUATION_PROMPT_TEXT = "Continue from where you stopped. Do not repeat text already emitted."
+const MAX_OUTPUT_TOKEN_CONTINUATIONS = 3
+// agy writes the step row right before sending the MCP call or prompt result;
+// give SQLite a brief window in case the stdio side wins the race.
+const STEP_USAGE_SETTLE_MS = 120
+const STEP_USAGE_POLL_MS = 15
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
 // with the client's system prompt in their place.
 const minimalAgent = () => process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
+
 
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
 // models a client gets, and the plugin serves no more than it offers.
@@ -643,10 +654,14 @@ class UnsupportedContent extends Error {
 // An upstream failure inside a healthy agy session. The process keeps its
 // conversation, so a client retry continues without replaying history.
 class AgentTurnError extends Error {
-  constructor(message, kind = "api_error") {
+  constructor(message, kind = "api_error", options = {}) {
     super(message)
     this.kind = kind
-    this.keepProcess = true
+    this.keepProcess = options.keepProcess ?? true
+    this.retryable = options.retryable ?? false
+    this.retryAfterMs = options.retryAfterMs ?? null
+    this.reasonCode = options.reasonCode ?? null
+    this.category = options.category ?? null
   }
 }
 
@@ -803,7 +818,7 @@ class AcpConnection {
 }
 
 class Turn {
-  constructor(proc, messages) {
+  constructor(proc, messages, options = {}) {
     this.proc = proc
     this.turnId = "turn_" + randomBytes(6).toString("hex")
     this.lastProgressAt = Date.now()
@@ -821,6 +836,8 @@ class Turn {
     this.cancelRequested = false
     this.agentError = false
     this.heldText = ""
+    this.outputLimit = new OutputLimitFilter()
+    this.emittedVisibleText = false
     this.timer = null
     this.cleanupTimer = null
     this.logOffset = 0
@@ -835,6 +852,9 @@ class Turn {
     this.hasLatePrompt = false
     this.toolResponseCount = 0
     this.emittedOutputTokens = 0
+    this.modelStepCursor = null
+    this.unclaimedModelSteps = []
+    this.stepUsageTrusted = false
     // Keep upstream objects untouched: response-window estimates are not a
     // separate, exact cost ledger for the accumulated ACP prompt usage.
     this.rawAcpUsages = []
@@ -843,6 +863,42 @@ class Turn {
     let settle
     this.settled = new Promise((resolve) => { settle = resolve })
     this.settle = settle
+  }
+
+  beginModelStepTracking(sessionId) {
+    this.unclaimedModelSteps = []
+    const last = lastModelStep(sessionDbPath(sessionId))
+    this.modelStepCursor = last
+    this.stepUsageTrusted = last !== null
+  }
+
+  async claimModelStep(sessionId) {
+    if (!this.stepUsageTrusted || this.modelStepCursor == null) return null
+    const file = sessionDbPath(sessionId)
+    if (!file) {
+      this.stepUsageTrusted = false
+      return null
+    }
+    const deadline = Date.now() + STEP_USAGE_SETTLE_MS
+    const maxPolls = Math.ceil(STEP_USAGE_SETTLE_MS / STEP_USAGE_POLL_MS)
+    for (let poll = 0; ; poll++) {
+      const steps = modelStepsAfter(file, this.modelStepCursor)
+      if (steps === null) {
+        this.stepUsageTrusted = false
+        this.unclaimedModelSteps.length = 0
+        return null
+      }
+      for (const step of steps) {
+        this.modelStepCursor = step.idx
+        this.unclaimedModelSteps.push(step)
+      }
+      if (this.unclaimedModelSteps.length) return this.unclaimedModelSteps.shift()
+      if (poll >= maxPolls || Date.now() >= deadline) {
+        this.stepUsageTrusted = false
+        return null
+      }
+      await new Promise((resolve) => setTimeout(resolve, STEP_USAGE_POLL_MS))
+    }
   }
 
   registerResponse(body) {
@@ -983,7 +1039,8 @@ class Turn {
     if (marker >= 0) {
       this.agentError = true
       text = text.slice(0, marker).replace(/\n$/, "")
-      if (text) this.push({ type: "text", text })
+      this.#pushVisible(text)
+      this.#pushVisible(this.outputLimit.flush())
       return
     }
     for (let keep = Math.min(text.length, AGENT_ERROR_MARKER.length - 1); keep > 0; keep--) {
@@ -993,14 +1050,27 @@ class Turn {
         break
       }
     }
-    if (text) this.push({ type: "text", text })
+    this.#pushVisible(text)
+  }
+
+  #pushVisible(chunk) {
+    if (!chunk) return
+    const text = this.outputLimit.push(chunk)
+    if (!text) return
+    if (/\S/.test(text)) this.emittedVisibleText = true
+    this.push({ type: "text", text })
   }
 
   flushText() {
-    if (!this.heldText || this.agentError) return
-    const text = this.heldText
-    this.heldText = ""
-    this.push({ type: "text", text })
+    if (!this.agentError && this.heldText) {
+      const text = this.heldText
+      this.heldText = ""
+      this.#pushVisible(text)
+    }
+    const tail = this.outputLimit.flush()
+    if (!tail || this.agentError) return
+    if (/\S/.test(tail)) this.emittedVisibleText = true
+    this.push({ type: "text", text: tail })
   }
 
   complete(result) {
@@ -1099,6 +1169,7 @@ class Proc {
     this.stopPromise = null
     this.stderrTail = ""
     this.hasSentFirstTurn = false
+    this.promptAttempts = 0
     this.historyInvalid = false
     this.unsentPrompt = null
     this.turn = null
@@ -1370,14 +1441,14 @@ class Proc {
     }
   }
 
-  startTurn(content, messages, model, selection) {
+  startTurn(content, messages, model, selection, options = {}) {
     if (this.dead) throw this.deadError
     if (this.retiring) throw new BusyError("agy bridge: this conversation's process is being retired")
     if (this.turn) throw new BusyError("agy bridge: this conversation still has an unfinished response")
     if (content.some(block => block.type === "image") && !this.supportsImages) {
       throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
     }
-    const turn = new Turn(this, messages)
+    const turn = new Turn(this, messages, options)
     this.turn = turn
     this.expectedMessages = messages.map((message) => ({ ...message }))
     this.historyInvalid = false
@@ -1444,6 +1515,8 @@ class Proc {
       this.unsentPrompt = null
       let usage = null
       let lateCalls = null
+      let continuations = 0
+      turn.beginModelStepTracking(this.sessionId)
       for (;;) {
         turn.logOffset = await fileSize(this.logPath)
         // A cancel that arrived before the prompt would be ignored by agy.
@@ -1455,6 +1528,7 @@ class Proc {
         turn.arm()
         unpark(this.convKey)
         this.hasSentFirstTurn = true
+        this.promptAttempts++
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         const result = await this.conn.request("session/prompt", {
           sessionId: this.sessionId,
@@ -1470,12 +1544,25 @@ class Proc {
         }
         if (result?.stopReason === "refusal") {
           const detail = await lastAgentError(this.logPath, turn.logOffset)
-          if (detail) throw this.#formatAgentError(detail)
+          if (detail) throw this.#formatAgentError(detail, turn)
         }
         turn.flushText()
         // agy ended the turn without waiting for a long-running client tool:
         // deliver its real result in a follow-up prompt of the same response.
         const late = turn.calls.filter((call) => call.deferred && !call.lateDelivered)
+        // Some models return stopReason: "max_tokens" directly instead of going
+        // through agy's internal 3-retry continuation loop; continue the same
+        // ACP session up to three times before surfacing max_tokens to the client.
+        if (result?.stopReason === "max_tokens" &&
+          continuations < MAX_OUTPUT_TOKEN_CONTINUATIONS &&
+          turn.emittedVisibleText &&
+          !turn.calls.length &&
+          !late.length) {
+          continuations++
+          promptParts = [{ type: "text", text: CONTINUATION_PROMPT_TEXT }]
+          lateCalls = null
+          continue
+        }
         if (!late.length) {
           turn.complete({ ...(result ?? {}), usage })
           return
@@ -1491,7 +1578,7 @@ class Proc {
         turn.complete({ stopReason: "cancelled" })
         return
       }
-      if (error instanceof AgentTurnError && !this.dead && !turn.calls.length) {
+      if (error instanceof AgentTurnError && !this.dead && !turn.calls.length && error.keepProcess) {
         // agy kept the session; a retry of the same request continues in it.
         this.expectedMessages = turn.baseHistory
         turn.fail(error)
@@ -1510,17 +1597,22 @@ class Proc {
 
   async #agentError(turn) {
     const detail = await lastAgentError(this.logPath, turn.logOffset)
-    return this.#formatAgentError(detail)
+    return this.#formatAgentError(detail, turn)
   }
 
-  #formatAgentError(detail) {
-    if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail)) {
-      return new AgentTurnError(
-        `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}`,
-        "rate_limit_error",
-      )
-    }
-    return new AgentTurnError(`agy bridge: agy stopped the turn because of an error${detail ? ": " + detail : ""}`)
+  #formatAgentError(detail, turn) {
+    const classified = classifyUpstreamError(detail, {
+    })
+    const kind = ["quota_exhausted", "model_capacity", "rate_limit"].includes(classified.category)
+      ? "rate_limit_error"
+      : "api_error"
+    return new AgentTurnError(classified.message, kind, {
+      keepProcess: classified.category !== "forbidden",
+      retryable: classified.retryable,
+      retryAfterMs: classified.retryAfterMs,
+      reasonCode: classified.reasonCode,
+      category: classified.category,
+    })
   }
 
   // Cancel a turn the client stopped reading. The session stays usable; the
@@ -1569,6 +1661,7 @@ class Proc {
       id: "toolu_" + randomUUID().replace(/-/g, "").slice(0, 24),
       name,
       arguments: args,
+      mcpRequestId: Object.hasOwn(message, "mcpRequestId") ? message.mcpRequestId : null,
       mcpSeen: true,
       mcpResponded: false,
       ready: true,
@@ -1680,6 +1773,7 @@ class Proc {
     const turn = this.turn
     if (!turn || turn.finalized) throw new BusyError("agy bridge: no response is waiting for these tool results")
     turn.touchClient()
+    turn.flushText()
     for (const { call, result } of this.validateResults(results).values()) {
       clearTimeout(call.deadline)
       if (call.deferred) {
@@ -1757,7 +1851,7 @@ class Proc {
 
   canPark() {
     return !!this.sessionId && this.hasSentFirstTurn && !this.historyInvalid && !this.turn &&
-      !this.dead && Array.isArray(this.expectedMessages)
+      !this.dead && !this.unsentPrompt && Array.isArray(this.expectedMessages)
   }
 
   stop() {
@@ -2179,7 +2273,8 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     }
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
-      existing.matchesHistory(matchedHistory)
+      existing.matchesHistory(matchedHistory) &&
+      !(existing.promptAttempts > 0 && matchedHistory.length === 0 && !existing.unsentPrompt)
     if (compatible && !(isFreshConversation && existing.hasSentFirstTurn)) {
       await existing.updateTools(opts.tools)
       return { proc: existing, history: matchedHistory }
@@ -2286,6 +2381,19 @@ function staleTurnVerdict(proc, turn, now = Date.now()) {
   return { stale: false, reason: pendingCallCount(turn) ? "pending_tool" : "running" }
 }
 
+function pendingCallsAnsweredIn(turn, history) {
+  const pending = turn.calls.filter(call => call.id && ((call.mcpSeen && !call.mcpResponded) || (call.deferred && !call.result)))
+  if (!pending.length) return false
+  const answered = new Set()
+  for (const message of history) {
+    if (!Array.isArray(message?.content)) continue
+    for (const block of message.content) {
+      if (block?.type === "tool_result" && typeof block.tool_use_id === "string") answered.add(block.tool_use_id)
+    }
+  }
+  return pending.every(call => answered.has(call.id))
+}
+
 // A pending tool turn only owns its own line of history, not a sibling request
 // that continues its base without carrying any of the emitted tool calls.
 function lineageVerdict(proc, turn, opts) {
@@ -2302,6 +2410,7 @@ function lineageVerdict(proc, turn, opts) {
     // prefix was rewritten (a compaction summary). A plain new request has left
     // the detached tool wait behind; one carrying its tool_use is still a conflict.
     if (carried) return "conflict"
+    if (pendingCallsAnsweredIn(turn, history)) return "fork"
     return opts.hasToolResults ? null : "fork"
   }
   const expected = proc.expectedMessages
@@ -2318,6 +2427,7 @@ function lineageVerdict(proc, turn, opts) {
   if (!carried && !recorded && Array.isArray(expected) && expected.length > base.length &&
     history.length === expected.length &&
     historyKey(withoutInputs(history)) === historyKey(withoutInputs(expected))) return null
+  if (pendingCallsAnsweredIn(turn, history)) return "fork"
   return carried || recorded ? "conflict" : "fork"
 }
 
@@ -2636,121 +2746,6 @@ function conversationKey(rawBody) {
   return createHash("sha256").update(source).digest("hex")
 }
 
-function appendSchemaHint(node, hint) {
-  if (!hint) return
-  if (typeof node.description === "string" && node.description.trim()) {
-    if (!node.description.includes(hint)) node.description = `${node.description} (${hint})`
-  } else {
-    node.description = hint
-  }
-}
-
-// Sanitize JSON Schema constructs that agy's ACP -> Google Code Assist translator
-// converts into invalid Schema protos (e.g. union types leaving stale array/object
-// keywords, or non-string/empty enum entries producing `enum[0]: cannot be empty`).
-function sanitizeInputSchema(schema) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema
-  const out = { ...schema }
-
-  if (Array.isArray(out.type)) {
-    const types = out.type.filter((item) => typeof item === "string")
-    const nullable = types.includes("null")
-    const nonNull = types.filter((item) => item !== "null")
-    if (nonNull.length > 1) {
-      let chosen = nonNull[0]
-      if (nonNull.includes("array") && out.items !== undefined) chosen = "array"
-      else if (nonNull.includes("object") && (out.properties !== undefined || out.additionalProperties !== undefined)) {
-        chosen = "object"
-      }
-      out.type = nullable ? [chosen, "null"] : chosen
-      appendSchemaHint(out, `Accepts types: ${types.join(" | ")}`)
-    } else if (nonNull.length === 1) {
-      out.type = nullable ? [nonNull[0], "null"] : nonNull[0]
-    }
-  }
-
-  const resolvedType = typeof out.type === "string"
-    ? out.type
-    : Array.isArray(out.type)
-      ? out.type.find((item) => item !== "null") || null
-      : null
-
-  if (resolvedType && resolvedType !== "array") {
-    delete out.items
-    delete out.prefixItems
-    delete out.minItems
-    delete out.maxItems
-    delete out.uniqueItems
-    delete out.contains
-  }
-  if (resolvedType && resolvedType !== "object") {
-    delete out.properties
-    delete out.patternProperties
-    delete out.required
-    delete out.minProperties
-    delete out.maxProperties
-    delete out.dependentRequired
-  }
-
-  if (Array.isArray(out.enum)) {
-    const invalidEnum = out.enum.length === 0 ||
-      (resolvedType && resolvedType !== "string") ||
-      out.enum.some((item) => typeof item !== "string" || item.length === 0)
-    if (invalidEnum) {
-      if (out.enum.length) {
-        appendSchemaHint(out, `Allowed values: ${out.enum.map((item) => JSON.stringify(item)).join(", ")}`)
-      }
-      delete out.enum
-    }
-  }
-
-  if (out.const !== undefined && (typeof out.const !== "string" || out.const.length === 0 || (resolvedType && resolvedType !== "string"))) {
-    appendSchemaHint(out, `Must equal: ${JSON.stringify(out.const)}`)
-    delete out.const
-  }
-
-  if (out.properties && typeof out.properties === "object" && !Array.isArray(out.properties)) {
-    out.properties = Object.fromEntries(
-      Object.entries(out.properties).map(([key, value]) => [key, sanitizeInputSchema(value)]),
-    )
-    if (Array.isArray(out.required)) {
-      const filtered = out.required.filter((key) => typeof key === "string" && Object.hasOwn(out.properties, key))
-      if (filtered.length) out.required = filtered
-      else delete out.required
-    }
-  }
-  if (out.patternProperties && typeof out.patternProperties === "object" && !Array.isArray(out.patternProperties)) {
-    out.patternProperties = Object.fromEntries(
-      Object.entries(out.patternProperties).map(([key, value]) => [key, sanitizeInputSchema(value)]),
-    )
-  }
-  if (out.additionalProperties && typeof out.additionalProperties === "object" && !Array.isArray(out.additionalProperties)) {
-    out.additionalProperties = sanitizeInputSchema(out.additionalProperties)
-  }
-  if (Array.isArray(out.items)) {
-    out.items = out.items.map((item) => sanitizeInputSchema(item))
-  } else if (out.items && typeof out.items === "object") {
-    out.items = sanitizeInputSchema(out.items)
-  }
-  if (Array.isArray(out.prefixItems)) {
-    out.prefixItems = out.prefixItems.map((item) => sanitizeInputSchema(item))
-  }
-  for (const key of ["anyOf", "oneOf", "allOf"]) {
-    if (Array.isArray(out[key])) out[key] = out[key].map((item) => sanitizeInputSchema(item))
-  }
-  if (out.not && typeof out.not === "object" && !Array.isArray(out.not)) {
-    out.not = sanitizeInputSchema(out.not)
-  }
-  for (const defsKey of ["$defs", "definitions"]) {
-    if (out[defsKey] && typeof out[defsKey] === "object" && !Array.isArray(out[defsKey])) {
-      out[defsKey] = Object.fromEntries(
-        Object.entries(out[defsKey]).map(([key, value]) => [key, sanitizeInputSchema(value)]),
-      )
-    }
-  }
-  return out
-}
-
 function normalizeTools(body) {
   if (!Array.isArray(body.tools) || !body.tools.length) return []
   const choice = body.tool_choice
@@ -2759,20 +2754,29 @@ function normalizeTools(body) {
   const seen = new Set()
   const tools = []
   for (const tool of body.tools) {
-    if (!tool || typeof tool.name !== "string" || !tool.name) {
-      throw new UnsupportedContent("a tool without a valid name")
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+      throw new UnsupportedContent("a non-object tool definition")
     }
-    if (seen.has(tool.name)) throw new UnsupportedContent(`duplicate tool ${tool.name}`)
-    seen.add(tool.name)
-    if (selected && tool.name !== selected) continue
-    const rawSchema = tool.input_schema ?? { type: "object", properties: {} }
+    const isToolSearch = typeof tool.type === "string" && tool.type.startsWith("tool_search_tool")
+    const name = typeof tool.name === "string" && tool.name ? tool.name : isToolSearch ? "ToolSearch" : ""
+    if (!name) throw new UnsupportedContent("a tool without a valid name")
+    if (seen.has(name)) throw new UnsupportedContent(`duplicate tool ${name}`)
+    seen.add(name)
+    if (selected && name !== selected) continue
+    const rawSchema = tool.input_schema ?? (isToolSearch || name === "ToolSearch"
+      ? TOOL_SEARCH_INPUT_SCHEMA
+      : { type: "object", properties: {} })
     if (!rawSchema || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
-      throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
+      throw new UnsupportedContent(`an invalid schema for tool ${name}`)
     }
     const inputSchema = sanitizeInputSchema(rawSchema)
     tools.push({
-      name: tool.name,
-      description: typeof tool.description === "string" ? tool.description : "",
+      name,
+      description: typeof tool.description === "string" && tool.description
+        ? tool.description
+        : isToolSearch || name === "ToolSearch"
+          ? "Search deferred tools and load their definitions into the conversation."
+          : "",
       inputSchema,
     })
   }
@@ -3624,6 +3628,37 @@ function translateUsage(usage) {
   }
 }
 
+function translateStepUsage(step) {
+  if (!step || typeof step !== "object") return null
+  const input = tokenCount(step.input)
+  const cacheRead = tokenCount(step.read)
+  const cacheWrite = tokenCount(step.write)
+  const output = tokenCount(step.output)
+  const thinking = tokenCount(step.thinking)
+  if (input + cacheRead + cacheWrite + output + thinking === 0) return null
+  return {
+    input_tokens: input,
+    output_tokens: tokenCount(output + thinking),
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheWrite,
+    ...(thinking > 0 ? { output_tokens_details: { thinking_tokens: thinking } } : {}),
+  }
+}
+
+async function settleUsage(proc, turn, step, content, result) {
+  if (step.settled) return step.usage
+  const single = result !== undefined && result?.stopReason !== "cancelled" && !turn.calls.length &&
+    !turn.toolResponseCount && !turn.hasLatePrompt && turn.promptCount <= 1 && turn.responseSteps.length === 1
+  if (!single && result?.stopReason !== "cancelled") {
+    const recorded = translateStepUsage(await turn.claimModelStep(proc.sessionId))
+    if (recorded) {
+      step.usageKind = "agy_model_call"
+      return recorded
+    }
+  }
+  return responseUsage(proc, turn, step, content, result)
+}
+
 function responseOutputEstimate(content) {
   let output = 0
   let thinking = 0
@@ -3873,7 +3908,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
               }
               if (performance.now() >= batchDeadline) break
             }
-            stopMessage("tool_use", responseUsage(proc, turn, step, responseContent))
+            stopMessage("tool_use", await settleUsage(proc, turn, step, responseContent), false, step.usageKind === "agy_model_call")
             proc.recordAssistantResponse(turn, responseContent)
             detach()
             controller.close()
@@ -3882,7 +3917,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           if (event.type === "result") {
             closeBlock()
             turn.rawUsage = event.result.usage ?? turn.rawUsage
-            const usage = responseUsage(proc, turn, step, responseContent, event.result)
+            const usage = await settleUsage(proc, turn, step, responseContent, event.result)
             stopMessage(STOP_REASONS[event.result.stopReason] || "end_turn", usage, true, event.result.stopReason !== "cancelled")
             proc.recordAssistantResponse(turn, responseContent)
             proc.finalizeTurn(turn)
@@ -4081,7 +4116,7 @@ function streamResponse(proc, turn, body, signal) {
   })
 }
 
-async function beginTurn(proc, history, body, callerWorkDir, model, selection) {
+async function beginTurn(proc, history, body, callerWorkDir, model, selection, options) {
   const reminder = outputFormatReminder(body)
   const baseParts = proc.hasSentFirstTurn
     ? renderContinuedTurnParts(body.messages.slice(history.length))
@@ -4095,7 +4130,7 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection) {
     }
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
   }
-  return proc.startTurn(contentParts, body.messages, model, selection)
+  return proc.startTurn(contentParts, body.messages, model, selection, options)
 }
 
 export const AntigravityBridgePlugin = async () => {
@@ -4162,7 +4197,7 @@ export const AntigravityBridgePlugin = async () => {
                 if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.messages)) {
                   return jsonError(400, "invalid count_tokens request")
                 }
-                return new Response(JSON.stringify({ input_tokens: estimateInputTokens(parsed) }), {
+                return new Response(JSON.stringify({ input_tokens: estimateInputTokens(canonicalBody(parsed)) }), {
                   status: 200,
                   headers: { "Content-Type": "application/json" },
                 })

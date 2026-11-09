@@ -485,6 +485,10 @@ export async function createBridgeKit(options = {}) {
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
+    else if (/^\.\/[A-Za-z0-9._-]+\.mjs$/.test(key)) {
+      const file = path.join(REPO_DIR, key.slice(2))
+      module = sourceModule(file, "", pathToFileURL(file).href)
+    }
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)

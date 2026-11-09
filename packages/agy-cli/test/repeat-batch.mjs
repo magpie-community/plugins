@@ -415,3 +415,29 @@ test("A16: a short replay is rendered unchanged", async () => {
     await sleep(0)
   })
 })
+
+
+test("output-cap notice is stripped and max_tokens automatically continues up to 3 times", async () => {
+  await withKit({}, async (kit) => {
+    let call = 0
+    kit.prompts.push(
+      async (agent) => {
+        call++
+        await agent.text("First part.")
+        await agent.text("\n⚠ Your previous response was cut off because it exceeded the output token limit\nPlease continue from where you left off, keeping your response shorter\nRetries remaining: 3\n")
+        return { stopReason: "max_tokens", usage: { inputTokens: 100, outputTokens: 20 } }
+      },
+      async (agent) => {
+        call++
+        await agent.text(" Second part.")
+        return { stopReason: "end_turn", usage: { inputTokens: 120, outputTokens: 15 } }
+      },
+    )
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "output-cap" } })))
+    assert.equal(call, 2)
+    assert.equal(parsed.stopReason, "end_turn")
+    const text = parsed.content.filter((b) => b.type === "text").map((b) => b.text).join("")
+    assert.equal(text, "First part. Second part.")
+    assert.ok(!text.includes("exceeded the output token limit"))
+  })
+})
