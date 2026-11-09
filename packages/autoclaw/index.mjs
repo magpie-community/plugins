@@ -115,6 +115,14 @@ const FLAGGED = [
   [/You are Gemini CLI/gi, "You are the Gemini CLI agent"],
   [/You are Kimi Code CLI/gi, "You are the Kimi Code CLI agent"],
   [/You are goose\b/gi, "You are the goose agent"],
+  // Grok CLI (Grok Build) opens "You are Grok released by xAI. You are an
+  // interactive CLI tool ..." for a model it doesn't know, and "You are Grok
+  // 4.7 released by xAI. ..." for one it does (#875: four 406s through
+  // AutoClaw 国内 on 11-08; both forms read from its own system_prompt.txt,
+  // grok 1.0.67, the autonomous-agent variant too). Only the "released by
+  // xAI" sentence is touched: a model name such as "You are Grok-Mini" is
+  // not an agent's identity line.
+  [/You are Grok((?: \d[\w.-]*)?) released by xAI/gi, "You are the Grok$1 assistant released by xAI"],
 ];
 
 function unflagged(text) {
@@ -147,7 +155,7 @@ function unflag(messages) {
 }
 
 const REFUSED_HINT =
-  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
+  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, Grok CLI, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
 // A 406's diagnosis is the system prompt and nothing else. The dump is off
 // by default — the body is the user's conversation, and a system prompt is
