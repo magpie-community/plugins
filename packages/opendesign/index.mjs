@@ -280,6 +280,18 @@ function levelsOf(m) {
   return Array.isArray(m?.efforts) ? m.efforts.filter((e) => typeof e === "string" && e) : []
 }
 
+// CAP is the most output a model may be asked for where amr-link's catalog
+// (metadata.context_budget) says more than its API takes. Asking for more is
+// a 400 "Open Design: The request could not be completed." that names no
+// field, so nothing can lower it and retry. A client that names no limit
+// (Codex) is given the published one by magpie, so every turn would fail
+// (#827, Gitleonan, measured 2026-11-09 on two accounts): glm-5.3-flash took
+// 131072 and refused 132000 (one account took 232000), and gemini-3.8-flash
+// took 65536 and refused 65537 on both. The cap is applied here, not in
+// models.mjs: the live catalog's number overrides the seed's (withSeed), and
+// refresh-models.mjs writes the vendor's number back into the seed.
+const CAP = { "glm-5.3-flash": 131072, "gemini-3.8-flash": 65536 }
+
 // modelOf turns one model's facts — models.mjs's, or amr-link's catalog
 // read again — into the model magpie shows, as the provider's config has
 // it. A model reasons when it has levels, or else when the vendor calls it
@@ -305,7 +317,7 @@ function modelOf(id, m) {
     ...(rate && { rate }),
     limit: {
       context: Number.isFinite(context) && context > 0 ? context : 200_000,
-      output: Number.isFinite(output) && output > 0 ? output : 32_000,
+      output: Math.min(Number.isFinite(output) && output > 0 ? output : 32_000, CAP[id] ?? Infinity),
     },
     modalities: { input: ["text", ...input], output: ["text"] },
   }
@@ -480,7 +492,11 @@ export const OpenDesignAuthPlugin = async () => {
       const models = { ...seed(), ...(was.models ?? {}) }
       for (const [id, m] of Object.entries(models)) {
         const rate = RATES[id] === undefined ? undefined : "x" + RATES[id]
-        models[id] = { ...m, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
+        // a kept copy's limit is capped too: an earlier version wrote the
+        // catalog's 232000 for glm-5.3-flash, which amr-link refuses (CAP)
+        const out = Number(m.limit?.output)
+        const limit = CAP[id] && !(out > 0 && out <= CAP[id]) ? { limit: { ...(m.limit ?? {}), output: CAP[id] } } : {}
+        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
       }
       cfg.provider[ID] = {
         name: "Open Design",
