@@ -22,6 +22,12 @@ Callback URL field. The page need not load on the browser's computer. Local
 browsers that can reach the plugin's listener finish automatically. Direct
 AWS sign-in still uses authorization code + PKCE, not device authorization.
 
+In magpie, each way, question and choice shows in the window's language
+(Chinese, Traditional Chinese, Japanese, German): `labels`, `messages` and
+`hints` beside the English, which OpenCode shows. A Kiro subscription in
+magpie opens the question above first; its other ways, the API key among
+them, are under "Other ways to sign in…".
+
 
 - **Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)**: the Kiro
   IDE's own sign-in.

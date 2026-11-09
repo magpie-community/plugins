@@ -27,6 +27,23 @@ import { homedir, hostname, platform, release } from "node:os"
 import { delimiter, join } from "node:path"
 
 const ID = "kiro"
+
+// WORDS are the sign-in's words in magpie's other languages, beside the
+// English each method, question and choice has (magpie's labels, messages
+// and hints; OpenCode ignores them). Product names stay as written.
+const WORDS = {
+  browser: { zh: "Kiro 登录（Google、GitHub、AWS Builder ID、IAM Identity Center）", "zh-TW": "Kiro 登入（Google、GitHub、AWS Builder ID、IAM Identity Center）", ja: "Kiro にサインイン（Google、GitHub、AWS Builder ID、IAM Identity Center）", de: "Kiro-Anmeldung (Google, GitHub, AWS Builder ID, IAM Identity Center)" },
+  choose: { zh: "选择登录方式", "zh-TW": "選擇登入方式", ja: "サインイン方法を選択", de: "Anmeldemethode wählen" },
+  enterprise: { zh: "IAM Identity Center（组织 Start URL）", "zh-TW": "IAM Identity Center（組織 Start URL）", ja: "IAM Identity Center（組織の Start URL）", de: "IAM Identity Center (Start-URL der Organisation)" },
+  enterpriseHint: { zh: "用组织的 AWS Start URL 登录", "zh-TW": "用組織的 AWS Start URL 登入", ja: "組織の AWS Start URL でサインイン", de: "Mit der AWS-Start-URL Ihrer Organisation anmelden" },
+  builderidHint: { zh: "直接打开 AWS 登录；在远程服务器上只需粘贴一次回调地址", "zh-TW": "直接開啟 AWS 登入；在遠端伺服器上只需貼上一次回呼網址", ja: "AWS のサインインを直接開きます。リモートサーバーではコールバックを 1 回貼り付けるだけです", de: "Öffnet die AWS-Anmeldung direkt; auf einem entfernten Server wird ein Callback einmal eingefügt" },
+  portal: { zh: "Kiro 登录页", "zh-TW": "Kiro 登入頁", ja: "Kiro のサインインページ", de: "Kiro-Anmeldeseite" },
+  portalHint: { zh: "Google、GitHub、IAM Identity Center 或 Kiro 的其他登录方式", "zh-TW": "Google、GitHub、IAM Identity Center 或 Kiro 的其他登入方式", ja: "Google、GitHub、IAM Identity Center など Kiro のサインイン方法", de: "Google, GitHub, IAM Identity Center oder andere Kiro-Anmeldemethoden" },
+  startUrl: { zh: "组织 Start URL", "zh-TW": "組織 Start URL", ja: "組織の Start URL", de: "Start-URL der Organisation" },
+  region: { zh: "AWS 区域（留空为 us-east-1）", "zh-TW": "AWS 區域（留空為 us-east-1）", ja: "AWS リージョン（空欄なら us-east-1）", de: "AWS-Region (leer: us-east-1)" },
+  own: { zh: "Kiro CLI 或 Kiro IDE 已登录的账号", "zh-TW": "Kiro CLI 或 Kiro IDE 已登入的帳號", ja: "Kiro CLI または Kiro IDE のサインイン", de: "Anmeldung von Kiro CLI oder Kiro IDE" },
+  key: { zh: "Kiro API Key（ksk_…）", "zh-TW": "Kiro API Key（ksk_…）", ja: "Kiro API キー（ksk_…）", de: "Kiro-API-Schlüssel (ksk_…)" },
+}
 const MESSAGES = "@ai-sdk/anthropic"
 const BASE = "https://runtime.us-east-1.kiro.dev" // what OpenCode is given; the fetch sends each request to the account's region
 
@@ -3103,22 +3120,24 @@ export async function KiroAuthPlugin({ client } = {}) {
           return { error: e.message, signIn: e.gone ? "expired" : "kept" }
         }
       },
+      // labels, messages and hints are magpie's own fields: the same words
+      // by the window's language (OpenCode shows the English)
       methods: [
-        { type: "oauth", label: "Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)",
-          prompts: [{ type: "select", key: "loginMethod", message: "Choose a sign-in method", options: [
-            { label: "IAM Identity Center (organization Start URL)", value: "enterprise", hint: "Sign in to your organization with its AWS Start URL" },
-            { label: "AWS Builder ID", value: "builderid", hint: "Open AWS sign-in directly; one callback to paste on a remote server" },
-            { label: "Kiro sign-in page", value: "portal", hint: "Google, GitHub, IAM Identity Center or other Kiro sign-in methods" },
+        { type: "oauth", label: "Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)", labels: WORDS.browser,
+          prompts: [{ type: "select", key: "loginMethod", message: "Choose a sign-in method", messages: WORDS.choose, options: [
+            { label: "IAM Identity Center (organization Start URL)", value: "enterprise", hint: "Sign in to your organization with its AWS Start URL", labels: WORDS.enterprise, hints: WORDS.enterpriseHint },
+            { label: "AWS Builder ID", value: "builderid", hint: "Open AWS sign-in directly; one callback to paste on a remote server", hints: WORDS.builderidHint },
+            { label: "Kiro sign-in page", value: "portal", hint: "Google, GitHub, IAM Identity Center or other Kiro sign-in methods", labels: WORDS.portal, hints: WORDS.portalHint },
           ] },
-          { type: "text", key: "startUrl", message: "Organization Start URL", placeholder: "https://d-xxxxxxxxxx.awsapps.com/start",
+          { type: "text", key: "startUrl", message: "Organization Start URL", messages: WORDS.startUrl, placeholder: "https://d-xxxxxxxxxx.awsapps.com/start",
             condition: (inputs) => inputs.loginMethod === "enterprise",
             validate: (value) => httpsURL(String(value || "").trim()) ? undefined : "Enter an HTTPS Start URL" },
-          { type: "text", key: "region", message: "AWS region (blank uses us-east-1)", placeholder: "us-east-1",
+          { type: "text", key: "region", message: "AWS region (blank uses us-east-1)", messages: WORDS.region, placeholder: "us-east-1",
             condition: (inputs) => inputs.loginMethod === "enterprise",
             validate: (value) => !value || AWS_REGION.test(value.trim()) ? undefined : "Enter a valid AWS region" },
           ], authorize: browserSignIn },
-        { type: "oauth", label: "Kiro CLI's or Kiro IDE's sign-in", authorize: ownSignIn },
-        { type: "api", label: "Kiro API key (ksk_…)" },
+        { type: "oauth", label: "Kiro CLI's or Kiro IDE's sign-in", labels: WORDS.own, authorize: ownSignIn },
+        { type: "api", label: "Kiro API key (ksk_…)", labels: WORDS.key, placeholder: "ksk_…" },
       ],
     },
     async config(config) {
