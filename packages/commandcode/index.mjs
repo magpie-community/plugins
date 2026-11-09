@@ -616,8 +616,12 @@ function limits(c) {
 // never there (01huadalang on Discord). On a plan whose credits are
 // usage-value units (Go, GOAT, Pro) the bar is the month's credits alone,
 // said as credits, and the bought and free ones, dollars at model cost
-// (the docs: "Buy extra credits at model cost"), are said beside it, not
-// added to a pool of another unit (plugins #556). A reply with neither
+// (the docs: "Buy extra credits at model cost"), are the account's
+// balance beside it, not added to a pool of another unit (plugins #556).
+// Its count goes as amount of limit in credits, so magpie adds several
+// accounts' credits up ("16.40 / 30 credits") where it puts them together,
+// as it does the Usage page's strip and a Routing fold (chen2652 on
+// magpie's Discord), rather than a mean of their shares. A reply with neither
 // windows nor a plan tells a balance: a key's money, not an allowance. The
 // month's credits come back at until, the end of the plan's period
 // (billing/subscriptions' currentPeriodEnd), when it is known
@@ -641,8 +645,10 @@ function allowanceOf(c, until) {
   if (known && planMonthly > 0 && unit === "units") {
     const pool = Math.max(planMonthly, monthly)
     const extra = left - monthly
-    const display = credits(pool - monthly) + " / " + credits(pool) + " credits" + (extra > 0 ? " + " + money(extra) + " extra" : "")
-    out.windows.splice(1, 0, { name: "Credits", used: Math.min(100, (100 * (pool - monthly)) / pool), display, ...reset })
+    const spent = credits(pool - monthly)
+    const display = spent + " / " + credits(pool) + " credits"
+    out.windows.splice(1, 0, { name: "Credits", used: Math.min(100, (100 * (pool - monthly)) / pool), display, amount: Number(spent), limit: pool, unit: "credits", ...reset })
+    if (extra > 0) out.balance = money(extra)
   } else if (known && planMonthly > 0) {
     const pool = Math.max(planMonthly, monthly) + left - monthly
     out.windows.splice(1, 0, { name: "Credits", used: Math.min(100, (100 * (pool - left)) / pool), display: money(pool - left) + " / " + money(pool), ...reset })

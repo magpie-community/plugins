@@ -40,7 +40,7 @@ test("a real GOAT reply: its month is 70 credits, the units its windows count in
   const sub = fixture("subscriptions-goat.json")
   const u = await usage(sub, credits)
   const month = u.windows.find((w) => w.name === "Credits")
-  expect(month).toEqual({ name: "Credits", used: (100 * (70 - 69.8033399)) / 70, display: "0.20 / 70.00 credits", resetsAt: "2026-10-28T16:16:42.000Z" })
+  expect(month).toEqual({ name: "Credits", used: (100 * (70 - 69.8033399)) / 70, display: "0.20 / 70.00 credits", amount: 0.2, limit: 70, unit: "credits", resetsAt: "2026-10-28T16:16:42.000Z" })
   // the docs' GOAT windows: 14 and 35 credits for up to $20 and $50, and
   // the month up to $100: 70 credits, the same units
   expect(credits.windowLimits.fiveHour.cap).toBe(14)
@@ -59,9 +59,10 @@ test("Pro, Go and the old Pro say credits; Max, Ultra and Teams Pro, whose credi
   expect(await shown("teams-pro", 10)).toBe("$30.00 / $40.00")
 })
 
-test("GOAT: bought and free credits, dollars at model cost, are said beside the month, not added to it", async () => {
+test("GOAT: bought and free credits, dollars at model cost, are the balance beside the month, not added to it", async () => {
   const u = await usage(plan("individual-goat"), { credits: { monthlyCredits: 35, purchasedCredits: 4, freeCredits: 1 } })
-  expect(u.windows).toEqual([{ name: "Credits", used: 50, display: "35.00 / 70.00 credits + $5.00 extra" }])
+  expect(u.windows).toEqual([{ name: "Credits", used: 50, display: "35.00 / 70.00 credits", amount: 35, limit: 70, unit: "credits" }])
+  expect(u.balance).toBe("$5.00")
 })
 
 test("Max keeps the CLI's pool, the month and the bought credits together, in dollars", async () => {
