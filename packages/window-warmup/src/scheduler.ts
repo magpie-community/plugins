@@ -37,6 +37,12 @@ const POST_SEND_SETTLE_MS = 60_000;
 const CARD_FRESH_MS = 60_000;
 /** 同一张卡两次重读请求的最小间隔（magpie 侧另有 30 秒限频） */
 const CARD_REFRESH_GAP_MS = 60_000;
+/**
+ * 判定「重置点随读卡滑动」的两次读数最小间隔与允许误差：有的卡（Antigravity）空闲时 resetsAt
+ * 恒为读卡时刻 + 窗口长度（resetSecs 恒定），间隔须远大于误差，否则真计时的固定重置点也会被误判
+ */
+const ROLL_GAP_MS = 60_000;
+const ROLL_TOLERANCE_MS = 5_000;
 const HOUR_MS = 3_600_000;
 /** snapshot 时间轴只画未来 24 小时 */
 const DAY_MS = 24 * HOUR_MS;
@@ -179,6 +185,8 @@ export class Scheduler {
   private lastErrKey = new Map<string, string>();
   /** 「供应商|账号」→ 上次请求重读该卡的时刻 */
   private lastCardRefresh = new Map<string, number>();
+  /** taskId → 已为之复读过的 resetsAt：每个新重置点只复读一次，读数不动的缓存卡不会每轮都刷 */
+  private probedFor = new Map<string, string>();
 
   constructor(deps: SchedulerDeps) {
     this.store = deps.store;
@@ -280,6 +288,7 @@ export class Scheduler {
       this.store.data.runs = this.store.data.runs.filter((r) => r.taskId !== id);
       delete this.store.data.marks[id];
       this.lastErrKey.delete(id);
+      this.probedFor.delete(id);
       await this.store.save();
       this.rearm();
     });
@@ -561,16 +570,46 @@ export class Scheduler {
   /**
    * 记下各窗口任务最近见到的重置时间（变了才落盘）：额度卡瞬断丢了 resetsAt 时，
    * currentWindowDue 靠它分辨真假空闲。额度快照或 key 目录一更新就要补记，新建/编辑任务后也要。
+   * 换值时顺带判定新值是否「随读卡滑动」（resetRolls）或「旧重置点过后预报的下一轮」（resetCarried）。
    */
   private recordResets(): void {
     let dirty = false;
     for (const task of this.store.data.tasks) {
       if (!task.enabled) continue;
-      const raw = this.quotaWindow(task)?.resetsAt;
-      if (!raw || Number.isNaN(new Date(raw).getTime())) continue;
+      const win = this.quotaWindow(task);
+      const raw = win?.resetsAt;
+      if (!win || !raw || Number.isNaN(new Date(raw).getTime())) continue;
+      const readAt = this.loginCard(task)?.readAt ?? null;
       const mark = this.marksOf(task.id);
       if (mark.lastReset !== raw) {
+        // 真在计时的窗口，重置点不会在到来之前往后挪；挪动量又恰好等于两次读卡间隔，
+        // 说明它是「读卡时刻 + 窗口长度」的空闲读数（用量的门槛在 currentWindowDue 用的时候判）。
+        // 缺 readAt 时全是 NaN，判为否
+        const prevReset = Date.parse(mark.lastReset ?? "");
+        const read = Date.parse(readAt ?? "");
+        const dRead = read - Date.parse(mark.lastResetReadAt ?? "");
+        mark.resetRolls =
+          prevReset > read &&
+          dRead >= ROLL_GAP_MS &&
+          Math.abs(Date.parse(raw) - prevReset - dRead) <= ROLL_TOLERANCE_MS;
+        // 旧重置点过了之后读到的新重置点，而插件在旧重置点之后没发过：有的卡（Antigravity）
+        // 窗口到期后不报空闲，而是直接报「旧重置点 + 窗口长度」，看着像在计时，其实没人开窗
+        const sent = this.lastSentMs(task);
+        mark.resetCarried = prevReset <= read && !(sent >= prevReset) ? mark.lastReset : null;
         mark.lastReset = raw;
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (!mark.lastResetReadAt && readAt) {
+        // 旧数据只有 lastReset：补上首次读数时刻，否则 rollProbeAt 永远凑不齐两次读数
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (
+        mark.resetRolls &&
+        Date.parse(readAt ?? "") - Date.parse(mark.lastResetReadAt ?? "") >= ROLL_GAP_MS
+      ) {
+        // 隔开足够久重读仍是同一个值 → 固定重置点。发送恰好与最后一次滑动读数落在同一秒时，
+        // 开窗后的 resetsAt 与那次滑动值相同、不会换值，只能靠这里撤销滑动判定
+        mark.resetRolls = false;
         dirty = true;
       }
     }
@@ -586,6 +625,20 @@ export class Scheduler {
     if (!win || !this.quota) return null;
     const due = windowDue(win, this.quota.at);
     if ("error" in due) return null;
+    const mark = this.marksOf(task.id);
+    if (mark.resetRolls && win.resetsAt === mark.lastReset && win.used === 0) {
+      // 随读卡滑动的 resetsAt 是空闲的另一种报法：与 resetsAt 缺失的空闲同样按小时计 key。
+      // 用量非 0 不算：magpie 在路由请求那一刻读卡，按「最后使用 + 窗口长度」滑动的计时窗口
+      // 在使用中也会同步后挪；开窗后与滑动值同秒的固定重置点也靠用量先挡一道
+      if (this.staleIdle(task)) return null;
+      return { at: new Date(this.quota.at.getTime()), resetKey: `idle:${hourFloorISO(this.quota.at)}` };
+    }
+    if (mark.resetCarried && due.resetKey === mark.lastReset && win.used === 0) {
+      // 预报的下一轮当空闲立即发，只管重置点还没到的时候，到点之后交回常规判断。
+      // key 取已过去的旧重置点：每轮最多一次，发后厂商不改值也不再发；不能用新重置点本身——
+      // 发送与读数落在同一秒时，开窗后的 resetsAt 恰好等于它，会把下一轮误当成已发过
+      return { at: new Date(this.quota.at.getTime()), resetKey: `after:${mark.resetCarried}` };
+    }
     // 空闲读数早于上次发送：那是发送前读的（magpie 只在路由请求那一刻读卡），当没数据，
     // 等 readCards 拿到发送后的读数再判断——否则跨整点 idle key 一变就会再发一次
     if (due.resetKey.startsWith("idle:") && this.staleIdle(task)) return null;
@@ -600,7 +653,6 @@ export class Scheduler {
     // 之前见过且还没到的重置时间说明窗口其实在计时，这轮当没数据，静默等下一轮刷新；
     // 已消费过的未来 resetsAt 同理（重启后 lastReset 还没补上时兜一道）。
     // idle: 等非时间形态的 key 解析出 NaN，比较恒为假，不用单独排除
-    const mark = this.marksOf(task.id);
     const isFuture = (iso: string | null | undefined): boolean =>
       !!iso && new Date(iso).getTime() > now.getTime();
     if (isFuture(mark.lastReset) || mark.resetKeys.some(isFuture)) return null;
@@ -630,6 +682,25 @@ export class Scheduler {
   }
 
   /**
+   * 新出现的未来 resetsAt 只有一次读数时，要在首读满 ROLL_GAP_MS 后再读一次，才分得清它是真在计时
+   * 还是随读卡滑动（否则滑动的空闲窗口永远排在「5 小时后」）。返回该重读的时刻；不需要为 null。
+   * 用量非 0 不可能判为滑动，不必重读；这个重置点复读过一次就不再复读
+   */
+  private rollProbeAt(task: Task, now: Date): number | null {
+    const mark = this.store.data.marks[task.id];
+    const card = this.loginCard(task);
+    const win = this.quotaWindow(task);
+    if (!mark || !card || !win?.resetsAt || win.used !== 0) return null;
+    if (mark.resetRolls || win.resetsAt !== mark.lastReset) return null;
+    if (this.probedFor.get(task.id) === win.resetsAt) return null;
+    if (!(Date.parse(win.resetsAt) > now.getTime())) return null;
+    const first = Date.parse(mark.lastResetReadAt ?? "");
+    const read = Date.parse(card.readAt ?? "");
+    if (!Number.isFinite(first) || !Number.isFinite(read) || read - first >= ROLL_GAP_MS) return null;
+    return first + ROLL_GAP_MS;
+  }
+
+  /**
    * 该重读的订阅卡让 magpie 现读一次，返回是否发起过。kept 缓存只在 magpie 路由请求那一刻
    * 更新（无托盘的 magpie web 平时不读卡），两种时机需要新读数：
    * - 窗口按当前快照到期、马上要发：读数超过 1 分钟就先重读，别按旧空闲白发；
@@ -649,11 +720,15 @@ export class Scheduler {
       // readAt 缺失时是 NaN，「足够新」比较为假，照样算需要重读
       const readFresh = now.getTime() - readAt <= CARD_FRESH_MS;
       const dueNow = due !== null && this.windowReady(task, due, now) && !readFresh;
-      if (!afterSend && !dueNow) continue;
+      const probeAt = this.rollProbeAt(task, now);
+      const probe = probeAt !== null && now.getTime() >= probeAt;
+      if (!afterSend && !dueNow && !probe) continue;
       const key = `${card.provider}|${card.account}`;
       const last = this.lastCardRefresh.get(key);
       if (last !== undefined && now.getTime() - last < CARD_REFRESH_GAP_MS) continue;
       this.lastCardRefresh.set(key, now.getTime());
+      // probe 成立时 resetsAt 必定存在（rollProbeAt 的前提）；重读失败也算用掉，等新重置点
+      if (probe) this.probedFor.set(task.id, this.quotaWindow(task)!.resetsAt!);
       asked = true;
       await this.refreshCardFn(this.base, card.provider, card.account).catch(() => {});
     }
@@ -875,6 +950,9 @@ export class Scheduler {
       if (task.trigger.kind === "window") {
         const settled = this.lastSentMs(task) + POST_SEND_SETTLE_MS;
         if (settled > now.getTime()) minDelay = Math.min(minDelay, settled - now.getTime());
+        // 已到点的复读由下一轮 tick 的 readCards 发起，这里只为未来的复读点排唤醒（失败时按刷新节奏重试）
+        const probeAt = this.rollProbeAt(task, now);
+        if (probeAt !== null && probeAt > now.getTime()) minDelay = Math.min(minDelay, probeAt - now.getTime());
         const due = this.currentWindowDue(task, now);
         if (due && due.at.getTime() > now.getTime()) {
           minDelay = Math.min(minDelay, due.at.getTime() - now.getTime());
