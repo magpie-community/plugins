@@ -25762,6 +25762,99 @@
       "latest": "0.1.1",
       "readme": "# @magpie-community/page-usage\n\nA page in [magpie](https://usemagpie.ai)'s window with your usage at a glance. It shows calls, errors, tokens and cost for today, 7 days or 30 days, and the models that took them.\n\nInstall it from magpie's **Plugins › Discover**, or with `magpie plugin add @magpie-community/page-usage`. It then has a tab, **Usage glance** (titled in the window's language: 用量速览, 用量速覽, 使用量の概要, Nutzung im Überblick), under Plugins in the sidebar, in the app and in `magpie web`.\n\n## What it reads\n\nOnly `usage:summary`, the one permission its `package.json` declares (`magpie.permissions`). That is magpie's totals for a period, and the top models in it. magpie refuses any other read the page asks for.\n\nLike every plugin page, it runs in a sandboxed frame. It has no network (`connect-src 'none'`), no inline scripts, and no access to magpie's API except through `_magpie/bridge.js`.\n\n## Options\n\n```json\n{ \"period\": \"today\", \"sort\": \"tokens\" }\n```\n\nThe page saves the period (`today`, `7d`, `30d`) and the model sort (`tokens`, `calls`, `cost`) you last picked, so it opens the same next time.\n\n## Files\n\n- `page/index.html`, `page/style.css`: the page. It takes magpie's theme from the `--magpie-*` variables, light or dark.\n- `page/view.js`: what the numbers and rows say, in English and Chinese, with no DOM. The test loads it.\n- `page/app.js`: reads through the bridge, draws, and refreshes every minute.\n\n## Test\n\n```sh\nbun test packages/usage\n```\n\n中文：在 magpie 窗口里加一个「用量速览」页面，一眼看到今天、7 天或 30 天的调用、错误、token 和费用，以及用到的模型。它只读取声明过的 `usage:summary`，运行在无网络的沙盒 frame 里。\n"
     },
+    "@magpie-community/page-usage-board": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-page-usage-board-0.1.0.tgz",
+          "integrity": "sha512-UqY1cVS3nKk3MxtYzdc8g9TXMJtv0rccxJNmeNYekq0hdcxZZUBDNgum8ZoaKBLxo69I4Tjc3/WohIMDk7m2xw==",
+          "time": "2026-11-10T04:00:06.857Z",
+          "manifest": {
+            "name": "@magpie-community/page-usage-board",
+            "version": "0.1.0",
+            "description": "在 magpie 窗口里查看用量：额度到期卡片墙 + 每日/模型/provider 用量图表 + 可选远端归因，由插件自带的本机服务供数。A usage dashboard page in magpie's window: quota cards with expiry tiers, daily and per-provider charts, optional remote attribution, served by the plugin's own local service.",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "server.mjs",
+              "page",
+              "static",
+              "build",
+              "LICENSE",
+              "README.md",
+              "scripts",
+              "NOTICE",
+              "docs",
+              "LICENSES"
+            ],
+            "scripts": {
+              "start": "node server.mjs",
+              "test": "node --test",
+              "build:echarts": "node scripts/build-echarts.mjs",
+              "prepack": "node scripts/prepack.mjs"
+            },
+            "engines": {
+              "node": ">=22",
+              "magpie": ">=0.1.1340"
+            },
+            "keywords": [
+              "magpie",
+              "magpie-page",
+              "magpie-plugin",
+              "usage",
+              "dashboard",
+              "quota",
+              "charts",
+              "token"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/page-usage-board"
+            },
+            "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-usage-board",
+            "bugs": {
+              "url": "https://github.com/magpie-community/plugins/issues"
+            },
+            "magpie": {
+              "name": "Usage Board",
+              "summary": {
+                "en": "A quota card wall with expiry tiers, daily/per-provider charts, 24h cache-hit and token curves, optional remote attribution and account detail. Runs its own zero-dependency local service reading this machine's Magpie usage data; optional remote attribution queries the configured remote magpie.",
+                "zh": "额度到期卡片墙 + 每日与 provider 用量图表 + 24 小时缓存命中与 token 曲线，可选远端归因与账号明细。自带零依赖本机服务，读本机 Magpie 用量数据；远端归因会查询所配置的远端 magpie。"
+              },
+              "page": {
+                "title": "Usage Board",
+                "titles": {
+                  "en": "Usage Board",
+                  "zh": "用量看板"
+                },
+                "file": "page/index.html",
+                "icon": "page/icon.svg",
+                "service": {
+                  "port": 3455,
+                  "option": "port"
+                }
+              },
+              "permissions": [],
+              "options": {
+                "port": 3455,
+                "attribution": "local",
+                "remoteCallers": "",
+                "remoteProviders": "magpie-direct,magpie-cf,remote-magpie"
+              },
+              "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8IS0tIFVzYWdlIGJvYXJkOiBkYXJrIHJvdW5kZWQgcGxhdGUsIGJsdWUgdXNhZ2UgbGluZSwgb25lIGFtYmVyIGJhciAtLT4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iOTIiIGhlaWdodD0iOTIiIHJ4PSIyMCIgZmlsbD0iIzFlMjQzMCIvPgogIDwhLS0gYW1iZXIgYmFyIChxdW90YSB0b2RheSkgLS0+CiAgPHJlY3QgeD0iMjQiIHk9IjU2IiB3aWR0aD0iMTAiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjZjVhNjIzIi8+CiAgPCEtLSBibHVlIHVzYWdlIGxpbmUgb3ZlciB0aGUgbGFzdCBob3VycyAtLT4KICA8cG9seWxpbmUgcG9pbnRzPSIyMiw2NiAzNiw1MiA1MCw1OCA2NCwzOCA3OCwzMCIKICAgIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRjOWZmZSIgc3Ryb2tlLXdpZHRoPSI3IgogICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPCEtLSBlbmRwb2ludCBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNS41IiBmaWxsPSIjNGM5ZmZlIi8+Cjwvc3ZnPgo="
+            },
+            "devDependencies": {
+              "echarts": "5.5.1",
+              "esbuild": "0.28.2"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# magpie usage board\n\nA usage dashboard page inside [magpie](https://usemagpie.ai)'s window, served by the plugin's\nown zero-dependency local service.\n\n**Most of this board repeats magpie's own Usage page** — the allowance cards, the\nper-provider and per-model totals and the request list are all there already. Install this\npage for the five things Usage does not show:\n\n1. **Remote attribution by caller key** — traffic routed through a remote magpie, split by\n   which caller key caused it (opt-in; see *Remote attribution*).\n2. **TTFT p50/p90 per provider** — latency quality next to the volume.\n3. **A 7×24 heatmap** — when the calls actually happen, by weekday and hour.\n4. **Direct-vs-remote split of the last 24 hours** — how much went out through a remote\n   magpie versus straight out of this machine.\n5. **Expiry tiers on the quota cards** — how soon each allowance lapses, not just how much\n   is left.\n\nEverything else is convenience around those: daily and per-provider charts, 24-hour\ncache-hit and token curves, per-account detail for the remote side.\n\nWhere [`@magpie-community/page-usage`](https://github.com/magpie-community/plugins/tree/main/packages/usage)\nis a bridge-only glance at magpie's summary totals, this page is the full board. Where\n[`page-usage-tree`](https://github.com/magpie-community/plugins/tree/main/packages/page-usage-tree)\ndrills provider → account → model, this one puts quotas, costs and quality on one screen.\n\n## What it answers\n\n1. **Which providers were used** — local direct traffic plus traffic that landed on a remote\n   magpie (opt-in), merged under real provider names (daily chart, provider pies).\n2. **How much** — calls, tokens, daily trend; the quota wall shows what is left and when it\n   lapses.\n3. **How good** — TTFT P50/P90, per-account detail and error counts for the remote side.\n\nThe two accounting views (KPI ledger vs. provider charts) and the exit-alias rules are\ndocumented in [`docs/data-semantics.md`](docs/data-semantics.md).\n\n## How it works\n\nTwo layers, the same shape the community uses for host-part pages:\n\n1. `index.mjs` is an OpenCode v1 plugin loaded by magpie's Bun host. When magpie calls its\n   `server()` entry it starts `server.mjs`, a zero-dependency Node 22+/Bun HTTP service on\n   `127.0.0.1:3455`.\n2. `page/index.html` + `page/boot.js` is the hosted page. It asks the bridge for\n   `magpie.service` first: when `magpie web` runs on another machine it proxies the local\n   service under magpie's own origin, so **magpie's own key/auth is the outer gate** and the\n   page never leaves that origin. A desktop window has no service, so it falls back to\n   `http://127.0.0.1:3455/` — the port it read from `magpie.options.get()`, the same value\n   the service was started with. An 8-second `<meta refresh>` is the fallback if the boot\n   script is blocked.\n\nThe 8-second `<meta refresh>` is deliberate: an earlier all-script page could be declared dead\nby the host after 10 seconds when the bridge handshake raced; the meta fallback still\nnavigates if `boot.js` never runs, and the window is wide enough for slow bridge handshakes\nthat `boot.js` resolves first.\n\n### Why a local service (and its token)\n\nmagpie's bridge exposes a small set of reads — the bridge-only `usage` page uses just\n`usage:summary`. This board needs quotas, per-provider/per-day totals, a 7×24 heatmap,\nrecent requests, TTFT and account detail; those are not in that summary. Like\n[`page-usage-tree`](https://github.com/magpie-community/plugins/tree/main/packages/page-usage-tree),\nit therefore runs a small local service that reads `usage.jsonl`.\n\nThat service is a separate origin on `127.0.0.1`, outside magpie's auth. The gate is the same\nmodel the community [`page-usage-tree`](https://github.com/magpie-community/plugins/tree/main/packages/page-usage-tree)\nuses: the board page is served only on a loopback bind **and** a loopback `Host` — any\nnon-loopback bind answers 403 for the page — and the service injects its token into the\nserved HTML (`window.__KEY__`), so nobody types it. `/api/*` (except the two anonymous\nliveness routes below) checks the same token from the `x-dash-key` request header. There is\nno `?key=` query authentication and no token cookie: a key must never reach a URL, where\nproxy and browser-history logs would record it.\n\nThe token comes from the `PAGE_KEY` environment variable when you set one (for scripts that\ncall the API); otherwise every start generates a fresh random token that is never written to\ndisk and never appears in a log line or URL. When `magpie web` is remote, the page goes\nthrough `magpie.service` and stays under magpie's origin, so magpie's key remains the outer\ngate.\n\n## Install\n\nRequires Node 22+. Inside magpie (once the package is merged into the community registry):\n\n```sh\nmagpie plugin add @magpie-community/page-usage-board\n```\n\nStandalone, from a checkout or the npm package:\n\n```sh\nnpm start            # or: node server.mjs\n# [magpie-usage] listening on http://127.0.0.1:3455/\n```\n\nThe board is local-only: the page answers loopback binds and loopback `Host` names, and a\nnon-loopback bind never serves it (403) — there is no remote-visitor auth channel. Scripts\nthat want the API set `PAGE_KEY` and send it as the `x-dash-key` request header. The service\nreads `~/.config/magpie/usage.jsonl`.\n\n## Configuration\n\n| Variable | Default | Meaning |\n|---|---|---|\n| `PORT` | `3455` | Listen port; `0` = let the OS pick. When the port is held, the service retries for ~8s, then reuses a live instance of the **same build** (recognised anonymously via the build id on `/api/ping`) or fails with a clear error when a different build or a foreign process holds it. It never scans upward. |\n| `HOST` | `127.0.0.1` | Bind address. Keep loopback: the board page answers loopback binds and loopback `Host` names only, and other local users of this machine can reach a loopback-bound board. |\n| `PAGE_KEY` | generated | Optional token for scripts that call the API (sent as the `x-dash-key` header). When unset, every start generates a random token — not persisted, not logged, not in any URL. Set it **empty explicitly** (`PAGE_KEY=`) to serve the API without a token. |\n| `ALLOWED_HOSTS` | empty | Comma-separated extra `Host` names the **API** may be reached by (e.g. behind a reverse proxy). The page stays loopback-only regardless. |\n| `GATEWAY` | `http://127.0.0.1:3425` | magpie's local gateway API. Resolved in this order: manifest `options.gateway` → `GATEWAY` → `MAGPIE_GATEWAY` → **`MAGPIE_ADDR`** (set by magpie's plugin host; a `0.0.0.0:`/`[::]:` prefix is normalised to loopback) → the `3425` default. |\n| `MAGPIE_KEY` | empty | Bearer key for the gateway, when the gateway requires one. |\n| `USAGE_JSONL` | `~/.config/magpie/usage.jsonl` | magpie's usage log. |\n| `MAGPIE_CONFIG_DIR` | `~/.config/magpie` | Explicit override for magpie's config directory (magpie itself has no such env — this is for tests and unusual layouts). The service resolves the dir the way magpie does: the **host's cwd** when it carries magpie markers (`usage.jsonl` / `plugins.json` / `providers.json` — the plugin host starts the service with the data dir as cwd, which covers portable installs) → `XDG_CONFIG_HOME/magpie` → `~/.config/magpie`. `usage.jsonl`, `plugin-providers.json` and `providers.json` default to files inside it. |\n| `MAGPIE_PROVIDERS_FILE` | `<magpie config dir>/plugin-providers.json` | Where brand logos are read from (magpie's own provider registry — see *Brand logos*). |\n| `ATTRIBUTION` | `local` | Remote attribution is **opt-in**: the default `local` keeps attribution on this machine's log; `ATTRIBUTION=remote` (or manifest `options.attribution: \"remote\"`) makes the service query the configured remote magpie — the provider key is sent to that remote magpie. |\n| `MAGPIE_PROVIDERS` | `~/.config/magpie/providers.json` | Where the remote URL and key are read from (used only with `ATTRIBUTION=remote`). |\n| `REMOTE_BASE` / `REMOTE_KEY` | empty | Explicit remote override (both required) instead of `providers.json`. |\n| `REMOTE_CALLERS` | empty | Caller names kept for the remote charts. **No default** — empty means no caller filtering. |\n| `REMOTE_PROVIDERS` | `magpie-direct,magpie-cf,remote-magpie` | Provider aliases counted as \"remote\" in the 24-hour split. The default is exactly magpie's own three route names; override via manifest `options.remoteProviders`. |\n\n## Manifest options\n\nThe magpie manifest (`magpie.options` in package.json) carries the same knobs. Options take\nprecedence over environment variables, and the built-in default applies when neither is set:\n\n| Option | Default | Meaning |\n|---|---|---|\n| `port` | `3455` | Service port. `magpie.page.service.option: \"port\"` tells magpie to inject the user's chosen port into `server(input, options)`; `index.mjs` forwards it to `startServer`. |\n| `attribution` | `\"local\"` | Keep `\"local\"` to hold attribution on this machine (the default — remote is never enabled implicitly). `\"remote\"` is the explicit opt-in that queries the configured remote magpie and sends the provider key to it. |\n| `remoteCallers` | `\"\"` | Caller filter for the remote charts; empty means no filtering. |\n| `remoteProviders` | `\"magpie-direct,magpie-cf,remote-magpie\"` | Provider aliases counted as \"remote\" in the 24-hour split. |\n\n## Languages\n\nThe interface ships in Chinese and English. `?lang=zh` or `?lang=en` forces one; otherwise\nthe page follows `navigator.language` automatically.\n\n## Brand logos\n\nThe quota wall shows provider brand icons. Their only source is magpie's own\n`plugin-providers.json` — the registry magpie maintains next to `usage.jsonl`\n(`MAGPIE_PROVIDERS_FILE` overrides the path). At startup the service reads that file once,\nkeeps only `data:image/...` URIs (each capped at 2 MB, at most 4 MB injected in total) and\ninjects them into the served HTML. There is no plugin-directory scanning, no download, no\ndisk cache and no `/logos` route: `https://` icons are deliberately not fetched, so the\nboard never contacts a third-party CDN on your behalf — providers without a data-URI icon\nfall back to a colored first-letter block.\n\n## Data and privacy\n\n- Reads this machine's `usage.jsonl` and magpie's local gateway API. The board itself sends\n  no telemetry; its Content-Security-Policy allows no third-party host at all.\n- **Remote attribution is opt-in and off by default.** Only `ATTRIBUTION=remote` (or manifest\n  `options.attribution: \"remote\"`) enables it: the service then makes read-only requests to\n  the configured remote magpie's own `/v1/magpie/usage/requests`, using the provider key\n  already configured in this machine's `providers.json` — that key is sent to that remote\n  magpie and nowhere else. Rows are filtered by `REMOTE_CALLERS` (no default filter) and\n  aggregated locally; no prompts or message bodies are involved. There is no second service\n  and no separate page key.\n- The page and its assets are served from `127.0.0.1`. The trust boundary is the local\n  machine: other local users can reach a loopback-bound board, and remote attribution reads\n  every caller's rows on the shared remote magpie (filtered for display, disclosed in the\n  Pages table).\n- The anonymous surface is exactly two routes: `GET /api/ping` (an identity fingerprint +\n  build id, used to recognise a live instance of the same build) and `GET /api/health`\n  (liveness). Every other `/api/*` route requires the token via the `x-dash-key` header,\n  every route checks `Host` to block DNS rebinding, and the board page itself is never\n  served on a non-loopback bind or a public `Host` name.\n- No prompts or message bodies are read — the service aggregates model, provider, tokens,\n  cost, timing and error counts.\n\n## Develop\n\nThese commands run from a git checkout — the npm package (`npm pack`) ships the runtime,\ndocs and notices; `test/` stays in the checkout.\n\n```sh\nnode --test             # auth/host/page gate, caller filtering, package metadata\nnpm run build:echarts   # rebuild static/echarts.min.js byte-for-byte (verify: git diff --exit-code static/echarts.min.js)\n```\n\n- `static/index.html` is the page source; at request time the service injects\n  `window.__DATA__`, `window.QLOGOS` (brand logos) and, on a loopback bind, `window.__KEY__`\n  into the served HTML.\n- `npm test` / `npm pack` run the same checks; `prepack` refuses to package a stray\n  `remote.js` or a literal page key.\n- Remote attribution defaults to off and must be opted into (see *Configuration*).\n\n## License\n\nMIT. `static/echarts.min.js` is a custom Apache-2.0 build of Apache ECharts, reproducible\nbyte-for-byte with `npm run build:echarts` (see `NOTICE`). Provider logos are collected at\nruntime from magpie's `plugin-providers.json` and are the trademarks of their owners, used\nonly to identify providers (see `NOTICE`).\n"
+    },
     "@magpie-community/page-usage-tree": {
       "versions": {
         "0.1.0": {
