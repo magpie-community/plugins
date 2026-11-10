@@ -288,3 +288,68 @@ test("the streaming adapter emits only the named text call after a native placeh
     index: 0, type: "function", function: { name: "Bash", arguments: '{"command":"pwd"}' },
   })
 })
+
+// plugins#930: pedh's wire, two calls with their own ids and names at
+// index 0, each with whole arguments
+const fixtureA = { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":"A"}' } }
+const fixtureB = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":"B"}' } })
+
+test("two calls with their own ids at one index are two calls (plugins#930)", async () => {
+  const calls = callsFrom(await collect(
+    chunk({ tool_calls: [fixtureA] }, null) + chunk({ tool_calls: [fixtureB(0)] }, null) + finish,
+  ))
+  expect(calls).toEqual([
+    { index: 0, id: "call_fixture_A", name: "fixture_alpha", args: '{"key":"A"}' },
+    { index: 1, id: "call_fixture_B", name: "fixture_beta", args: '{"key":"B"}' },
+  ])
+  for (const call of calls) expect(() => JSON.parse(call.args)).not.toThrow()
+})
+
+test("calls at their own indexes stay two calls (plugins#930 control)", async () => {
+  const calls = callsFrom(await collect(
+    chunk({ tool_calls: [fixtureA] }, null) + chunk({ tool_calls: [fixtureB(1)] }, null) + finish,
+  ))
+  expect(calls).toEqual([
+    { index: 0, id: "call_fixture_A", name: "fixture_alpha", args: '{"key":"A"}' },
+    { index: 1, id: "call_fixture_B", name: "fixture_beta", args: '{"key":"B"}' },
+  ])
+})
+
+test("fragments with no id go on with the open call", async () => {
+  const calls = callsFrom(await collect(
+    chunk({ tool_calls: [{ index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"ke' } }] }, null)
+    + chunk({ tool_calls: [{ index: 0, function: { arguments: 'y":' } }] }, null)
+    + chunk({ tool_calls: [{ index: 0, function: { arguments: '"A"}' } }] }, null)
+    + finish,
+  ))
+  expect(calls).toEqual([{ index: 0, id: "call_fixture_A", name: "fixture_alpha", args: '{"key":"A"}' }])
+})
+
+test("fragments that repeat the open call's id go on with it", async () => {
+  const calls = callsFrom(await collect(
+    chunk({ tool_calls: [{ index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":' } }] }, null)
+    + chunk({ tool_calls: [{ index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } }] }, null)
+    + finish,
+  ))
+  expect(calls).toEqual([{ index: 0, id: "call_fixture_A", name: "fixture_alpha", args: '{"key":"A"}' }])
+})
+
+test("after a second id at one index, fragments with no id go to the second call", async () => {
+  const calls = callsFrom(await collect(
+    chunk({ tool_calls: [fixtureA] }, null)
+    + chunk({ tool_calls: [{ index: 0, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":' } }] }, null)
+    + chunk({ tool_calls: [{ index: 0, function: { arguments: '"B"}' } }] }, null)
+    + finish,
+  ))
+  expect(calls.map((c) => [c.id, c.args])).toEqual([["call_fixture_A", '{"key":"A"}'], ["call_fixture_B", '{"key":"B"}']])
+})
+
+test("the streaming adapter sends two calls at one upstream index as two (plugins#930)", async () => {
+  const response = await ask(chunk({ tool_calls: [fixtureA] }, null) + chunk({ tool_calls: [fixtureB(0)] }, null) + finish, true)
+  expect(response.status).toBe(200)
+  const tools = (await framesFrom(response)).flatMap((f) => f.choices?.[0]?.delta?.tool_calls ?? [])
+  expect(tools.map((t) => [t.index, t.id, t.function.name, t.function.arguments])).toEqual([
+    [0, "call_fixture_A", "fixture_alpha", '{"key":"A"}'],
+    [1, "call_fixture_B", "fixture_beta", '{"key":"B"}'],
+  ])
+})

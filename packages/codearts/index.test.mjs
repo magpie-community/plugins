@@ -3874,3 +3874,23 @@ test("a removed OfficeAce record is not written back when no restart separates t
   await ca2.auth.refresh(store.get(keyOf("codearts")))
   assert.equal(store.has(keyOf("officeace")), false, "a single removed record must stay removed without a restart")
 })
+
+// plugins#930: a streamed reply folded into one for a client that asked for
+// it whole. Two calls with their own ids at one index are two calls, not
+// one with {"a"}{"b"} arguments; fragments with no id, or the same id, go on
+// with the open call.
+test("folding a stream keeps two ids at one index as two calls", () => {
+  const ev = (call) => ({ id: "c1", model: "GLM-5.2", choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }] })
+  const A = { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":"A"}' } }
+  const B = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":"B"}' } })
+  const fold = (calls) => x.completionFromChunks([...calls.map(ev), { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }])
+    .choices[0].message.tool_calls.map((c) => [c.id, c.function.name, c.function.arguments])
+  const both = [["call_fixture_A", "fixture_alpha", '{"key":"A"}'], ["call_fixture_B", "fixture_beta", '{"key":"B"}']]
+  assert.deepEqual(fold([A, B(0)]), both)
+  assert.deepEqual(fold([A, B(1)]), both)
+  assert.deepEqual(fold([
+    { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"ke' } },
+    { index: 0, function: { arguments: 'y":' } },
+    { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
+  ]), [["call_fixture_A", "fixture_alpha", '{"key":"A"}']])
+})

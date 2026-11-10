@@ -162,6 +162,9 @@ itself.
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
   Tool calls it sends the OpenAI way keep Qoder's id.
+- Two calls sent the OpenAI way at one index, each with its own id, are
+  two calls (since 0.2.65, #930). A piece with no id, or the open call's
+  id, is more of the open call.
 - A call sent the OpenAI way that never gets its function name is never
   sent on, and its arguments go nowhere (since 0.2.51, #579). If nothing
   of the answer came before it, the request is sent once more; a second

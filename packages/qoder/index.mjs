@@ -2224,6 +2224,7 @@ async function* events(body, tools = []) {
   const a = new Splitter(tools)
   let index = -1 // the tool call being given
   const native = new Map() // upstream index -> call and its output index
+  const begun = [] // every native call, one an index has moved past too
   // one piece of the split text as an event: a call, text, or a call that
   // can't be read, which ends the turn as a 502
   const piece = (f) =>
@@ -2281,9 +2282,14 @@ async function* events(body, tools = []) {
       const args = tc.function?.arguments ?? ""
       if (!tc.id && !name && !args) continue
       let call = native.get(i)
-      if (!call) {
+      // A new id at an index already in use is a new call: Qoder Ultimate
+      // has sent two calls at index 0, and the second's arguments ran
+      // into the first's as {"a"}{"b"} (plugins#930). No id, or the same
+      // one, is the open call going on.
+      if (!call || (tc.id && call.id && tc.id !== call.id)) {
         call = { id: "", args: "" }
         native.set(i, call)
+        begun.push(call)
       }
       if (tc.id) call.id = tc.id
       if (call.index === undefined) {
@@ -2331,7 +2337,7 @@ async function* events(body, tools = []) {
   // text, reasoning and named calls already given are kept: qoder-cn's
   // qfmodel did this now and then, and the whole turn failed with an
   // error the client didn't retry (plugins#579).
-  const nameless = [...native.values()].filter((call) => call.index === undefined).length
+  const nameless = begun.filter((call) => call.index === undefined).length
   if (nameless && !said) {
     yield { error: { status: 502, message: NAMELESS, nameless: true } }
     return
