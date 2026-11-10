@@ -249,7 +249,7 @@ async function explained(res, sentBody, providerId, options) {
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
-  headers.set("X-Magpie-Sign-In", signIn);
+  headers.set("X-Magpie-Sign-In", "kept");
   const text = await res.text().catch(() => "");
   if (res.status === 406) {
     let said = "";
@@ -1498,6 +1498,10 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               if (spent1) return spent1;
               try { res1.body?.cancel?.(); } catch {}
               const res2 = await tryFetch(hosts[1]);
+              if (res2.status !== 401 && res2.status !== 403) {
+                if (res2.ok) noteServed(providerId, sentBytes);
+                return explained(res2, nextBody, providerId, options);
+              }
               const spent2 = await refusedNotSignIn(res2);
               if (spent2) return spent2;
               if (res2.status === 401) {
