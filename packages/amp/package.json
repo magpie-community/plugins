@@ -1,0 +1,17 @@
+{
+  "name": "@magpie-community/agent-amp",
+  "version": "0.1.0",
+  "description": "Select one Magpie model for an explicitly synchronized personal Amp route",
+  "type": "module",
+  "bin": { "magpie-amp": "./cli.mjs" },
+  "engines": { "node": ">=20" },
+  "files": ["amp.agent.js", "cli.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "amp"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/amp"
+  },
+  "magpie": { "agent": "./amp.agent.js" }
+}
