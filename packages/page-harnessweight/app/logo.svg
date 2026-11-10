@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Agent Lens">
-<title>Agent Lens</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="HarnessWeight">
+<title>HarnessWeight</title>
 <defs>
   <linearGradient id="t" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5EE0D2"/><stop offset="1" stop-color="#17A9A2"/></linearGradient>
   <linearGradient id="o" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFA23A"/><stop offset="1" stop-color="#F26B1D"/></linearGradient>

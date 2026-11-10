@@ -1,4 +1,4 @@
-// Agent Lens — the gateway hook that watches what each agent behind the
+// HarnessWeight — the gateway hook that watches what each agent behind the
 // gateway costs you.
 //
 //   {"port": 3492, "dataDir": "", "gatewayTimeoutMs": 2000, "agents": []}
@@ -18,7 +18,7 @@
 // tool arguments, the credentials. Only names, counts and numbers, so the
 // file it writes is safe to keep and to show.
 //
-// The rows go to ~/.config/magpie/agent-lens/tools.jsonl (or dataDir). The page (a
+// The rows go to ~/.config/magpie/harnessweight/tools.jsonl (or dataDir). The page (a
 // local service next to it) reads that file and draws the comparison.
 //
 // The gateway's contract for this file:

@@ -1,4 +1,4 @@
-// Agent Lens — the local service. magpie's plugin page is sandboxed with
+// HarnessWeight — the local service. magpie's plugin page is sandboxed with
 // connect-src 'none' and cannot fetch anything, so the page navigates its
 // frame here, and this serves the real interface and the data behind it.
 //
@@ -31,7 +31,7 @@ const MIME = {
 // lives only in this process and is written into the interface's HTML when
 // this service serves it (that HTML carries no CORS header, so no other page
 // can read it). Host must be this service itself, against DNS rebinding.
-export const TOKEN_HEADER = "x-agent-lens-token"
+export const TOKEN_HEADER = "x-harnessweight-token"
 
 export function createHandler(options = {}) {
   const port = Number(options.port) > 0 ? Number(options.port) : 3492
@@ -59,7 +59,7 @@ export function createHandler(options = {}) {
     res.setHeader("Cache-Control", "no-store")
     res.setHeader("X-Content-Type-Options", "nosniff")
     res.setHeader("Referrer-Policy", "no-referrer")
-    if (!hostOK(req) || !originOK(req)) return text(res, 403, "Agent Lens only serves its own page in magpie")
+    if (!hostOK(req) || !originOK(req)) return text(res, 403, "HarnessWeight only serves its own page in magpie")
     // after the sandboxed frame navigates here its origin is opaque ("null"), so
     // even its own module script is cross-origin: allow that, nothing else
     const cors = () => { if (req.headers.origin) res.setHeader("Access-Control-Allow-Origin", req.headers.origin === "null" ? "null" : req.headers.origin) }
@@ -95,7 +95,7 @@ export function createHandler(options = {}) {
         return json(res, 200, body)
       }
       if (url.pathname === "/api/health") {
-        return json(res, 200, { ok: true, service: "agent-lens" })
+        return json(res, 200, { ok: true, service: "harnessweight" })
       }
       const rel = url.pathname === "/" ? "index.html" : decodeURIComponent(url.pathname.slice(1))
       const full = normalize(join(APP, rel))
@@ -105,7 +105,7 @@ export function createHandler(options = {}) {
       const ext = full.slice(full.lastIndexOf("."))
       if (full === join(APP, "index.html")) {
         // the token goes into the HTML, which gets no CORS header
-        const html = content.toString("utf8").replace("<head>", `<head>\n<meta name="agent-lens-token" content="${token}">`)
+        const html = content.toString("utf8").replace("<head>", `<head>\n<meta name="harnessweight-token" content="${token}">`)
         res.writeHead(200, { "Content-Type": MIME[".html"] })
         return res.end(html)
       }
@@ -138,7 +138,7 @@ export function serve(options = {}) {
     server.on("listening", () => resolve(port))
     server.on("error", (e) => {
       if (e.code === "EADDRINUSE" && tries++ < 30) setTimeout(attempt, 2000)
-      else { console.error("[agent-lens] could not listen:", e.message); resolve(null) }
+      else { console.error("[harnessweight] could not listen:", e.message); resolve(null) }
     })
     attempt()
   })
@@ -146,6 +146,6 @@ export function serve(options = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const s = serve({ port: process.env.AGENT_LENS_PORT })
-  s.ready.then((p) => p && console.log(`agent-lens on http://127.0.0.1:${p}/`))
+  const s = serve({ port: process.env.HARNESSWEIGHT_PORT })
+  s.ready.then((p) => p && console.log(`harnessweight on http://127.0.0.1:${p}/`))
 }

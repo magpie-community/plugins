@@ -1,46 +1,50 @@
 <p align="center">
   <picture>
     <source srcset="brand/assets/lens-dark.svg" media="(prefers-color-scheme: dark)">
-    <img src="brand/assets/lens.svg" width="96" alt="Agent Lens">
+    <img src="brand/assets/lens.svg" width="96" alt="HarnessWeight">
   </picture>
 </p>
 
-<h1 align="center">Agent Lens · Agent 透镜</h1>
+<h1 align="center">HarnessWeight</h1>
 
-<p align="center">同一个 magpie 网关后面，每个 Agent 工具读了多少 token、命中多少缓存、失败多少次、每轮重发多重的工具定义。</p>
+<p align="center">给网关后面的每个 <b>agent harness</b> 称重：读了多少 token、命中多少缓存、失败多少次、每轮重发多重的工具定义。</p>
 
 <p align="center"><b>中文</b> · <a href="#english">English</a></p>
 
-![Agent Lens 浅色主题](docs/preview-light.png)
+![HarnessWeight 浅色主题](docs/preview-light.png)
+
+https://github.com/user-attachments/assets/3798be90-5b2b-411e-b83b-22688fd8a82e
+
+> ▶ 30 秒演示：结论 → Agent 卡片 → 排序 → 详情 → 切 30 天 → 深色。
 
 > 截图是作者本机 7 天的真实用量，在和 magpie 一样的沙箱框架里实拍，没有模拟数据。Agent 名字和图标与 magpie 自己显示的一致。
 
 ## 它回答什么问题
 
-你同时用 Claude Code、Codex、zcode、DSH、Cursor……都接在同一个 magpie 网关上。magpie 自带的用量页按**模型**统计；Agent Lens 按 **Agent** 统计，回答四个问题：
+你同时用 Claude Code、Codex、zcode、DSH、Cursor……都接在同一个 magpie 网关上。magpie 自带的用量页按**模型**统计；HarnessWeight 按 **agent harness** 统计，回答四个问题：
 
 - **谁在花你的 token**：每个 Agent 读进模型的总 token，其中多少命中缓存、多少按原价。
 - **谁每次读得最多**：每次请求的平均输入。上下文越大，越贵。
 - **谁最不稳**：失败率、首字延迟和总耗时（p50）。失败的请求同样会读 token。
-- **谁的工具清单最重**：Agent 每轮都会把整份工具定义重发一遍，Agent Lens 在网关上量出它有几个、多大。
+- **谁的工具清单最重**：Agent 每轮都会把整份工具定义重发一遍，HarnessWeight 在网关上量出它有几个、多大。
 
 页面顶部直接给出几句结论，例如「dsh 占了这段时间 87.9% 的输入 token」「mimocode 的失败率是 10.5%」。
 
 <details>
 <summary>深色主题</summary>
 
-![Agent Lens 深色主题](docs/preview-dark.png)
+![HarnessWeight 深色主题](docs/preview-dark.png)
 
 </details>
 
 ## 安装
 
 ```sh
-magpie plugin add @magpie-community/page-agent-lens
-# 或直接从作者仓库装：magpie plugin add github:webkubor/agent-lens
+magpie plugin add github:webkubor/harnessweight
+# 合并进社区仓后：magpie plugin add @magpie-community/page-harnessweight
 ```
 
-装好后，magpie 侧栏「插件」里会多一个「Agent 透镜」页。历史数据马上能看到，因为它读的是 magpie 已有的用量记录；工具定义重量从安装后的下一次请求开始采样。
+装好后，magpie 侧栏「插件」里会多一个「HarnessWeight」页。历史数据马上能看到，因为它读的是 magpie 已有的用量记录；工具定义重量从安装后的下一次请求开始采样。
 
 ## 工作方式
 
@@ -52,7 +56,7 @@ magpie usage.jsonl ─────────────┐
 
 | 部分 | 文件 | 做什么 |
 |---|---|---|
-| 网关 hook | `agent-lens.hooks.mjs` | 请求完成后记下 Agent 名、模型、工具的个数、字节数和名字、token。**不改请求，不记对话内容、参数和凭证**；出错也不影响请求。 |
+| 网关 hook | `harnessweight.hooks.mjs` | 请求完成后记下 Agent 名、模型、工具的个数、字节数和名字、token。**不改请求，不记对话内容、参数和凭证**；出错也不影响请求。 |
 | 用量读取 | `lib/usage.mjs` | 增量读取 magpie 的 `usage.jsonl`，几百 MB 的文件也只读新增部分；内存里保留 31 天。 |
 | 本地服务 | `service.mjs` | 只监听 127.0.0.1，提供界面和 `/api/summary`。 |
 | 带路页 | `page/` | magpie 的插件页沙箱禁止联网，只能把自己导航到本地服务，顺便带上主题和语言。 |
@@ -74,7 +78,7 @@ magpie usage.jsonl ─────────────┐
 |---|---|---|
 | `port` | `3492` | 本地服务端口 |
 | `usageLog` | `~/.config/magpie/usage.jsonl` | magpie 用量记录的位置 |
-| `dataDir` | `~/.config/magpie/agent-lens` | 工具采样存放目录 |
+| `dataDir` | `~/.config/magpie/harnessweight` | 工具采样存放目录 |
 | `agents` | `[]` | 只采样这些 Agent；空表示全部 |
 | `gatewayUrl` | `http://127.0.0.1:3425` | 取 Agent 名字和图标用的网关地址 |
 
@@ -106,7 +110,7 @@ npm run dev   # 直接起服务：http://127.0.0.1:3492/
 
 ## 状态
 
-v0.3.0。已装在作者本机 magpie 上端到端跑通：用量对比、hook 实时采样工具定义、magpie 窗口沙箱内显示均已实测。
+v0.4.0。原名 Agent Lens，因与多个同名项目撞车，在 0.4.0 改名为 HarnessWeight；旧的 GitHub 地址会自动跳转，已有的工具采样会自动迁移。
 
 ---
 
@@ -114,10 +118,10 @@ v0.3.0。已装在作者本机 magpie 上端到端跑通：用量对比、hook �
 
 ## English
 
-Agent Lens is a [magpie](https://github.com/yetone/magpie) plugin that compares the AI agents behind your gateway — Claude Code, Codex, zcode, Cursor and others — **by agent** rather than by model: input tokens, cache hit rate, tokens billed at full price, failure rate, latency, and the weight of the tool definitions each agent re-sends on every turn.
+HarnessWeight is a [magpie](https://github.com/yetone/magpie) plugin that compares the AI agents behind your gateway — Claude Code, Codex, zcode, Cursor and others — **by agent** rather than by model: input tokens, cache hit rate, tokens billed at full price, failure rate, latency, and the weight of the tool definitions each agent re-sends on every turn.
 
 ```sh
-magpie plugin add github:webkubor/agent-lens
+magpie plugin add github:webkubor/harnessweight
 ```
 
 It reads magpie's own `usage.jsonl`, so history shows up right away, and adds a read-only gateway hook that samples tool-definition sizes. Everything stays on your machine; the hook records names and numbers only, never prompts, arguments or credentials.

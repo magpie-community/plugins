@@ -1,4 +1,4 @@
-// Agent Lens — the interface. Served by the plugin's own service, so the
+// HarnessWeight — the interface. Served by the plugin's own service, so the
 // data is a same-origin fetch away.
 
 const $ = (id) => document.getElementById(id)
@@ -18,7 +18,7 @@ const state = {
 }
 
 // the service writes a per-start token into this page's HTML
-const TOKEN = document.querySelector('meta[name="agent-lens-token"]')?.content || ""
+const TOKEN = document.querySelector('meta[name="harnessweight-token"]')?.content || ""
 let reloaded = false
 const sessionStorageSafe = () => reloaded || location.hash === "#r"
 function markReloaded() { reloaded = true; location.hash = "r" }

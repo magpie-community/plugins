@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { measureTools } from "../lib/measure.mjs"
 import { parseUsageLine, protocolOf, kindOf, createUsageReader } from "../lib/usage.mjs"
 import { summarize } from "../lib/summarize.mjs"
-import { onRequest, onResponse } from "../agent-lens.hooks.mjs"
+import { onRequest, onResponse } from "../harnessweight.hooks.mjs"
 
 const schema = { type: "object", properties: { path: { type: "string" } } }
 

@@ -29,7 +29,7 @@ test("api needs the token; the token is only in the page HTML, which has no CORS
     assert.equal((await get(s.port, `/api/summary?k=${"t".repeat(64)}`, { Origin: "null" })).status, 200)
     const page = await get(s.port, "/", { Origin: "null" })
     assert.equal(page.headers.get("access-control-allow-origin"), null)
-    assert.match(await page.text(), /name="agent-lens-token" content="t{64}"/)
+    assert.match(await page.text(), /name="harnessweight-token" content="t{64}"/)
     const health = await (await get(s.port, "/api/health")).json()
     assert.deepEqual(Object.keys(health).sort(), ["ok", "service"])
   } finally { s.close() }

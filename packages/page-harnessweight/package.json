@@ -1,0 +1,71 @@
+{
+  "name": "@magpie-community/page-harnessweight",
+  "version": "0.4.0",
+  "description": "HarnessWeight: a magpie page that weighs every agent harness behind your gateway, by agent rather than by model: input tokens, cache hit rate, tokens at full price, failures, latency, and the tool definitions each harness re-sends every turn",
+  "type": "module",
+  "files": [
+    "index.mjs",
+    "harnessweight.hooks.mjs",
+    "service.mjs",
+    "lib",
+    "page",
+    "app",
+    "brand/assets",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "agent-harness",
+    "harness",
+    "token-usage",
+    "claude-code",
+    "codex",
+    "cost",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "hooks": "./harnessweight.hooks.mjs",
+    "page": {
+      "title": "HarnessWeight",
+      "titles": {
+        "zh": "HarnessWeight",
+        "zh-TW": "HarnessWeight",
+        "ja": "HarnessWeight"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3492,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3492,
+      "dataDir": "",
+      "usageLog": "",
+      "agents": [],
+      "gatewayTimeoutMs": 2000,
+      "gatewayUrl": ""
+    },
+    "permissions": [],
+    "summary": {
+      "en": "Weigh every agent harness behind your gateway — Claude Code, Codex, ZCode, DeepSeek Harness… — by agent, not by model: input tokens, cache hit rate, tokens at full price, failures, latency, and how heavy the tool definitions each harness re-sends every turn are. Plain-language takeaways, magpie's own agent names and icons. Its local service reads this machine's usage.jsonl; a read-only hook samples tool sizes (names and numbers only).",
+      "zh": "给网关后面的每个 agent harness 称重（Claude Code、Codex、ZCode、DeepSeek Harness……），按 Agent 而不是按模型：输入 token、缓存命中、按原价的 token、失败率、延迟，以及每轮重发的工具定义有多重。顶部直接给结论，名字和图标与 magpie 一致。本机服务读 usage.jsonl；只读 hook 采样工具定义大小（只记名字和数字）。"
+    }
+  },
+  "main": "./index.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "node service.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-harnessweight"
+  },
+  "homepage": "https://github.com/webkubor/harnessweight",
+  "author": "webkubor"
+}
