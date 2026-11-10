@@ -1,0 +1,34 @@
+{
+  "name": "@magpie-community/opencode-doubao-auth",
+  "version": "0.2.0",
+  "description": "Doubao (doubao.com) web account: chat through the page's own endpoint, daily check-in for experience credits, and the campaign panel's balance on magpie's usage board.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "magpie": {
+    "maxConcurrency": 1,
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0Ij48dGl0bGU+RG91YmFvPC90aXRsZT48cGF0aCBkPSJNNS4zMSAxNS43NTZjLjE3Mi0zLjc1IDEuODgzLTUuOTk5IDIuNTQ5LTYuNzM5LTMuMjYgMi4wNTgtNS40MjUgNS42NTgtNi4zNTggOC4zMDh2MS4xMkMxLjUwMSAyMS41MTMgNC4yMjYgMjQgNy41OSAyNGE2LjU5IDYuNTkgMCAwMDIuMi0uMzc1Yy4zNTMtLjEyLjctLjI0OCAxLjAzOS0uMzc4LjkxMy0uODk5IDEuNjUtMS45MSAyLjI0My0yLjk5Mi00Ljg3NyAyLjQzMS03Ljk3NC4wNzItNy43NjMtNC41bC4wMDIuMDAxeiIgZmlsbD0iIzFFMzdGQyIvPjxwYXRoIGQ9Ik0yMi41NyAxMC4yODNjLTEuMjEyLS45MDEtNC4xMDktMi40MDQtNy4zOTctMi44LjI5NSAzLjc5Mi4wOTMgOC43NjYtMi4xIDEyLjc3M2ExMi43ODIgMTIuNzgyIDAgMDEtMi4yNDQgMi45OTJjMy43NjQtMS40NDggNi43NDYtMy40NTcgOC41OTYtNS4yMTkgMi44Mi0yLjY4MyAzLjM1My01LjE3OCAzLjM2MS02LjY2YTIuNzM3IDIuNzM3IDAgMDAtLjIxNi0xLjA4NHYtLjAwMnoiIGZpbGw9IiMzN0UxQkUiLz48cGF0aCBkPSJNMTQuMzAzIDEuODY3QzEyLjk1NS43IDExLjI0OCAwIDkuMzkgMCA3LjUzMiAwIDUuODgzLjY3NyA0LjU0NSAxLjgwNyAyLjc5MSAzLjI5IDEuNjI3IDUuNTU3IDEuNSA4LjEyNXY5LjIwMWMuOTMyLTIuNjUgMy4wOTctNi4yNSA2LjM1Ny04LjMwNy41LS4zMTggMS4wMjUtLjU5NSAxLjU2OS0uODI5IDEuODgzLS44MDEgMy44NzgtLjkzMiA1Ljc0Ni0uNzA2LS4yMjItMi44My0uNzE4LTUuMDAyLS44Ny01LjYxN2guMDAxeiIgZmlsbD0iI0E1NjlGRiIvPjxwYXRoIGQ9Ik0xNy4zMDUgNC45NjFhMTk5LjQ3IDE5OS40NyAwIDAxLTEuMDgtMS4wOTRjLS4yMDItLjIxMy0uMzk4LS40MTktLjU4Ni0uNjIybC0xLjMzMy0xLjM3OGMuMTUxLjYxNS42NDggMi43ODYuODY5IDUuNjE3IDMuMjg4LjM5NSA2LjE4NSAxLjg5OCA3LjM5NiAyLjgtMS4zMDYtMS4yNzUtMy40NzUtMy40ODctNS4yNjYtNS4zMjN6IiBmaWxsPSIjMUUzN0ZDIi8+PC9zdmc+Cg=="
+  },
+  "files": [
+    "index.mjs",
+    "lib/",
+    "ensure-doubao.mjs",
+    "tasks.mjs",
+    "icon.svg",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "doubao",
+    "checkin",
+    "chat",
+    "doubao-web"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/doubao"
+  }
+}
