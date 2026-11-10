@@ -120,15 +120,19 @@ derived value for all of them.
   512–32768. On the first turn the session context takes up to 45% of it, and
   the rest stays available for Memory.
 - `requestTimeoutMs`: deadline for each search, bundle or Working Memory
-  request, default 1500, range 50–5000. Magpie's default 1000 ms hook
-  deadline can end the request earlier. The package's example options set
+  request, default 1500, range 50–30000. Magpie's default 1000 ms hook
+  deadline can end the request earlier, so a longer value needs a
+  `gatewayTimeoutMs` at least as long. A deep search can take 20 seconds. The package's example options set
   this to 900 when used explicitly. Thread imports keep a separate ten-second
   deadline because a completed reply's notification is not bound to the live
   request.
-- `gatewayTimeoutMs` (Magpie's own option, not this package's): the whole hook
-  chain's deadline, default 1000 ms, range 100–10000. A local Mem fits the
-  default; over the network, set it to 5000–10000 so the first turn's Context
-  Bundle and search can finish.
+- `gatewayTimeoutMs` (Magpie's own option, not this package's): the hook's
+  deadline, default 1000 ms, range 100–30000. A local Mem fits the default;
+  over the network, set it to 5000–10000 so the first turn's Context Bundle
+  and search can finish, and higher for a slow deep search. A budget over
+  10000 ms needs Magpie 0.1.3538 or later; an older Magpie takes
+  any value over 10000 as its 1000 ms default and stops the chain at 10
+  seconds.
 - `recallBackoffMs`: after a connection failure, timeout or unavailable
   response, skip Mem for this endpoint/credential/Space for this long, default
   30000, range 100–300000. A failing optional bundle backs off only itself; the

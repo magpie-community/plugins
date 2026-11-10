@@ -16,8 +16,8 @@ const fields = [
  ['recall','recall','bool',true], ['recall-remote','recallRemote','bool',false], ['context','contextBundle','bool',true], ['capture','capture','bool',false], ['capture-remote','captureRemote','bool',false],
  ['capture-tools','captureTools','bool',true], ['capture-filter','captureFilter','filter','off'], ['capture-cindy','captureCindy','bool',false],
  ['max-memories','maxMemories','number',5,1,20], ['max-bytes','maxBytes','number',6000,512,32768],
- ['request-timeout','requestTimeoutMs','number',1500,50,5000], ['recall-backoff','recallBackoffMs','number',30000,100,300000],
- ['gateway-timeout','gatewayTimeoutMs','number',1000,100,10000], ['port','port','number',3479,1024,65535], ['insecure','allowInsecureHttp','bool',false],
+ ['request-timeout','requestTimeoutMs','number',1500,50,30000], ['recall-backoff','recallBackoffMs','number',30000,100,300000],
+ ['gateway-timeout','gatewayTimeoutMs','number',1000,100,30000], ['port','port','number',3479,1024,65535], ['insecure','allowInsecureHttp','bool',false],
 ];
 function summary() {
  if (!savedOptions) return;
@@ -184,7 +184,7 @@ function nextOptions() {
  // Validate the explicit values before saving; environment values are
  // resolved separately by the hook.
  validateExplicitOptions(next);
- for (const [name,min,max] of [['gatewayTimeoutMs',100,10000],['port',1024,65535]]) {
+ for (const [name,min,max] of [['gatewayTimeoutMs',100,30000],['port',1024,65535]]) {
   const v = next[name];
   if (v != null && (!Number.isInteger(name === 'port' ? Number(v) : v) || Number(v) < min || Number(v) > max)) throw new Error('invalidOption');
  }
