@@ -2,7 +2,7 @@
 
 本文件记录 fovea 的对外变化。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
-## [0.3.0] — 2026-11-10
+## [0.2.6] — 2026-11-10
 
 ### Added
 
