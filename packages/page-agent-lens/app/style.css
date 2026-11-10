@@ -99,7 +99,7 @@ td.agent { font-weight: 600; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; background: var(--teal); vertical-align: 0; }
 .dot.hot { background: var(--orange); }
 
-.tool-row { display: grid; grid-template-columns: 140px 1fr 150px; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.tool-row { display: grid; grid-template-columns: 190px 1fr 190px; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
 .tool-row:last-child { border-bottom: 0; }
 .tool-track { height: 10px; background: var(--bar); border-radius: 5px; overflow: hidden; }
 .tool-fill { height: 100%; background: linear-gradient(90deg, var(--teal-2), var(--teal)); border-radius: 5px; }
@@ -151,3 +151,5 @@ td.agent { font-weight: 600; }
 .card-name { display: inline-flex; align-items: center; gap: 9px; }
 .who .dot { margin: 0 0 0 2px; }
 :root[data-theme="dark"] .mark img { background: #fff; border-radius: 5px; padding: 1px; }
+
+.tool-row .who { overflow: hidden; } .tool-row .who b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
