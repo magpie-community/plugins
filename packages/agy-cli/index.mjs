@@ -1313,6 +1313,14 @@ class Proc {
     socket.once("close", () => this.watchers.delete(socket))
   }
 
+  // Whether the client now declares a tool agy has not listed. agy checks a
+  // call against the tools it listed before the prompt began, so a tool added
+  // mid-turn (ToolSearch) stays unknown until the next session/prompt (#942).
+  toolsGrew(tools) {
+    const known = new Set(this.tools.map((tool) => tool.name))
+    return tools.some((tool) => !known.has(tool.name))
+  }
+
   // Swap the client tool catalog in place; agy re-lists on tools/list_changed.
   async updateTools(tools) {
     const signature = JSON.stringify(tools)
@@ -4332,18 +4340,18 @@ export const AntigravityBridgePlugin = async () => {
                   const historyMatches = directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
                     : proc.matchesHistory(trailingMessages(body).history)
-                  if (interrupted || !historyMatches ||
+                  if (interrupted || !historyMatches || proc.toolsGrew(tools) ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
-                    // A changed context or user-interrupted tool turn needs a new
-                    // session. Replay the real results without resolving the old
-                    // process's calls.
+                    // A changed context, a tool catalog that grew, or a
+                    // user-interrupted tool turn needs a new session. Replay the
+                    // real results without resolving the old process's calls.
                     dropFromPool(proc)
                     proc.abandonTurn(turn)
                     await proc.stop()
                   } else {
                     if (!proc.dead && !turn.done) {
-                      // A changed tool catalog applies to the rest of this turn;
-                      // a model change applies from the next prompt.
+                      // A tool catalog that lost or changed tools applies to the
+                      // rest of this turn; a model change applies from the next prompt.
                       await proc.updateTools(tools)
                       proc.continueWith(results)
                       proc.recordToolResults(turn, body.messages)

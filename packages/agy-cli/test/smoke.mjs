@@ -298,6 +298,20 @@ async function prompt(params) {
     chunk("After tool search.\n")
     return finish("After tool search.\n")
   }
+  if (text.includes("TOOLSEARCHGROW")) {
+    // Like agy 1.5.3: a call is checked against the tools listed before this
+    // prompt began; a tools/list_changed during the prompt does not reach it.
+    const known = new Set(tools.map(tool => tool.name))
+    if (!text.includes("<conversation_history>")) await invoke("ToolSearch", { query: "select:loaded_tool" })
+    if (!known.has("loaded_tool")) {
+      log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
+      chunk('Encountered error in tool validation: unknown tool: "loaded_tool" — check spelling\n')
+      return finish("unknown tool")
+    }
+    await invoke("loaded_tool", { text: "grown" })
+    chunk("After loaded tool.\n")
+    return finish("After loaded tool.\n")
+  }
   if (text.includes("ESCCALL") && !text.includes("<conversation_history>")) {
     await invoke("echo", { text: "probe" })
     chunk("After esc.\n")
@@ -1156,19 +1170,22 @@ let nativeConv
 }
 
 for (const change of ["tools", "model"]) {
-  const first = { model, messages: [{ role: "user", content: `TOOL live configuration ${change}` }], tools: [echoTool] }
+  const other = { name: "other", input_schema: { type: "object" } }
+  const first = { model, messages: [{ role: "user", content: `TOOL live configuration ${change}` }], tools: change === "tools" ? [echoTool, other] : [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
   const old = inits().at(-1)
   const second = continuation(first, events, "completed-before-change")
   if (change === "tools") {
-    second.tools = [...second.tools, { name: "other", input_schema: { type: "object" } }]
+    // A catalog that only loses tools keeps the live turn; one that grows
+    // starts a new prompt (the #942 block below).
+    second.tools = [echoTool]
     second.messages.push({ role: "user", content: [{ type: "text", text: "<system-update>tool catalog changed</system-update>" }] })
   } else second.model = legacyModel
   const final = (await readSSE(await callFetch(second))).events
   const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === old.convId).at(-1)
   check(`live ${change} change continues the pending turn`, stopOf(final) === "end_turn" && inits().at(-1).convId === old.convId && delivered?.result?.content?.[0]?.text === "completed-before-change")
   if (change === "tools") {
-    check("live tool change reaches agy", logs().some(event => event.type === "toolsList" && event.convId === old.convId && event.tools.includes("other")))
+    check("live tool change reaches agy", logs().some(event => event.type === "toolsList" && event.reason === "list_changed" && event.convId === old.convId && event.tools.includes("echo") && !event.tools.includes("other")))
     check("system update reaches the pending MCP result", delivered?.result?.content?.some(part => part.text?.includes("tool catalog changed")))
   } else {
     const next = (await readSSE(await callFetch({ ...nextTurn(second, final, "MODEL next prompt"), model: legacyModel }))).events
@@ -1748,6 +1765,41 @@ for (const location of ["inline", "system", "developer", "user"]) {
   await readSSE(afterSearchRes)
   check("turn after ToolSearch tool_reference reuses the live session",
     afterSearchRes.status === 200 && inits().length === beforeSearch)
+}
+
+{
+  // #942: a tool ToolSearch loads mid-turn is unknown to agy for the rest of
+  // that prompt, so the bridge replays the round in a new session/prompt.
+  const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
+  const loadedTool = { name: "loaded_tool", description: "Loaded by ToolSearch", input_schema: { type: "object", properties: { text: { type: "string" } } } }
+  const ask = "TOOLSEARCHGROW load a deferred tool"
+  const first = { model, messages: [{ role: "user", content: ask }], tools: [searchTool] }
+  const events = (await readSSE(await callFetch(first))).events
+  const old = inits().at(-1)
+  const before = inits().length
+  const second = continuation(first, events, [{ type: "tool_reference", tool_name: "loaded_tool" }])
+  second.tools = [searchTool, loadedTool]
+  const secondRes = await callFetch(second)
+  const secondEvents = (await readSSE(secondRes)).events
+  const replay = lastOf("user")
+  check("a tool loaded mid-turn starts a new session/prompt",
+    secondRes.status === 200 && inits().length === before + 1 && replay.convId !== old.convId, `got ${secondRes.status}`)
+  check("the new prompt replays the ToolSearch round and sends the user's turn once",
+    replay.text.includes("<conversation_history>") && replay.text.includes("Loaded tool: loaded_tool") &&
+    replay.text.split(ask).length === 2, replay.text)
+  check("no call to the loaded tool reaches agy's validator in the old prompt",
+    !logs().some(event => event.type === "unknownTool"))
+  const calls = toolCalls(secondEvents)
+  check("a call to the loaded tool reaches the client",
+    stopOf(secondEvents) === "tool_use" && calls.length === 1 && calls[0].name === "loaded_tool", JSON.stringify(calls))
+  const third = continuation(second, secondEvents, "loaded-tool-result")
+  const thirdRes = await callFetch(third)
+  const final = (await readSSE(thirdRes)).events
+  const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === replay.convId).at(-1)
+  check("the loaded tool's result continues the new session with no second replay",
+    thirdRes.status === 200 && stopOf(final) === "end_turn" && inits().length === before + 1 &&
+    lastOf("user").convId === replay.convId && delivered?.name === "loaded_tool" &&
+    delivered?.result?.content?.[0]?.text === "loaded-tool-result")
 }
 
 {
