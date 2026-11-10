@@ -34,7 +34,7 @@ const CLI_VERSION = "3000.11.3"
 // the AI SDK is given a chat completions URL; the loader's fetch answers
 // every request itself, so nothing is ever sent here
 const BASE = SERVER + "/devin/v1"
-const SIGN_IN_TIMEOUT = 30 * 60 * 1000
+const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 // how long the CLI's model list is kept, and how long a failed read waits
 const FRESH = 5 * 60 * 1000
 const RETRY = 60 * 1000
@@ -981,7 +981,7 @@ async function browserSignIn() {
       const x = await exchange(q.get("code"), verifier, redirect)
       const r = await success(x.key, SERVER)
       finish(r)
-  html(200, page(true, "You're signed in", `${r.metadata.email || "Devin"} is signed in. You can close this tab.`))
+      html(200, page(true, "You're signed in", `${r.metadata.email || "Devin"} is signed in. You can close this tab.`))
     } catch (e) {
       finish({ type: "failed", error: e.message })
       html(200, page(false, "Sign-in didn't finish", e.message))
@@ -1000,7 +1000,7 @@ async function browserSignIn() {
   const q = new URLSearchParams({
     redirect_uri: redirect,
     state,
-    prompt: "login",
+    prompt: "select_account",
     code_challenge: challenge,
     code_challenge_method: "S256",
     cli_pkce_marker: "1",
@@ -3143,7 +3143,7 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         }
       },
       methods: [
-        { type: "oauth", label: "Devin (browser, sign in another account)", authorize: browserSignIn },
+        { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
         {
           type: "api",
@@ -3251,4 +3251,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, browserSignIn, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
