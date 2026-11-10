@@ -691,3 +691,25 @@ test("read failures after a completion marker are not swallowed", async () => {
   );
   await assert.rejects(collapseResponse(response, "chat"), (error) => error === cause);
 });
+
+// plugins#930: two calls with their own ids at one index are two calls, not
+// one with {"a"}{"b"} arguments; fragments with no id, or the same id, go on
+// with the open call.
+test("collapsing chat keeps two ids at one tool index as two calls", async () => {
+  const A = { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":"A"}' } };
+  const B = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":"B"}' } });
+  const fold = async (fragments) =>
+    (await json(
+      fragments.map((tc) => event({ id: "c1", choices: [{ index: 0, delta: { tool_calls: [tc] }, finish_reason: null }] })).join("")
+        + event({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }) + event("[DONE]"),
+      "chat",
+    )).choices[0].message.tool_calls.map((c) => [c.id, c.function.name, c.function.arguments]);
+  const both = [["call_fixture_A", "fixture_alpha", '{"key":"A"}'], ["call_fixture_B", "fixture_beta", '{"key":"B"}']];
+  assert.deepEqual(await fold([A, B(0)]), both);
+  assert.deepEqual(await fold([A, B(1)]), both);
+  assert.deepEqual(await fold([
+    { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"ke' } },
+    { index: 0, function: { arguments: 'y":' } },
+    { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
+  ]), [["call_fixture_A", "fixture_alpha", '{"key":"A"}']]);
+});

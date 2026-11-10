@@ -290,7 +290,8 @@ function chatBuffer(checkName) {
       ]) {
         if (data[key] !== undefined) metadata[key] = data[key];
       }
-      const state = { calls: new Map(), legacy: null, metadata, bytes: 0 };
+      // calls: slot -> call; open: upstream index -> the slot being written
+      const state = { calls: new Map(), open: new Map(), slots: 0, collided: false, legacy: null, metadata, bytes: 0 };
       pending.set(index, state);
       charge(state, metadata);
     }
@@ -303,7 +304,10 @@ function chatBuffer(checkName) {
   function complete(state, index) {
     const delta = {};
     if (state.calls.size) {
-      delta.tool_calls = [...state.calls].sort(([a], [b]) => a - b).map(([, value]) => value);
+      // by index, and in the order they began within one (sort is stable)
+      delta.tool_calls = [...state.calls.values()].sort((a, b) => a.index - b.index);
+      // two calls that began at one index each get an index of their own
+      if (state.collided) delta.tool_calls.forEach((call, i) => (call.index = i));
     }
     if (state.legacy) delta.function_call = state.legacy;
     const { notes } = checkChatMessage(delta, checkName);
@@ -345,7 +349,24 @@ function chatBuffer(checkName) {
           }
           charge(state, fragment);
           const index = position(fragment.index);
-          const previous = state.calls.get(index) ?? { index, function: {} };
+          // A new id at an index in use is a new call, not more of the open
+          // one: two calls at one index ran together as {"a"}{"b"}
+          // (plugins#930). No id, or the same one, goes on with it.
+          let slot = state.open.get(index);
+          const open = slot === undefined ? undefined : state.calls.get(slot);
+          if (
+            slot === undefined ||
+            (typeof fragment.id === "string" &&
+              fragment.id &&
+              typeof open?.id === "string" &&
+              open.id &&
+              fragment.id !== open.id)
+          ) {
+            if (slot !== undefined) state.collided = true;
+            slot = state.slots++;
+            state.open.set(index, slot);
+          }
+          const previous = state.calls.get(slot) ?? { index, function: {} };
           const value = { ...previous, ...fragment, index, function: previous.function };
           // 空 ID 片段不应抹掉已缓存的有效 ID，同时允许首次 ID 后续到达。
           if (
@@ -356,7 +377,7 @@ function chatBuffer(checkName) {
             value.id = previous.id;
           }
           if (fragment.function != null) appendFunction(value.function, fragment.function);
-          state.calls.set(index, value);
+          state.calls.set(slot, value);
         }
         if (delta.function_call != null) {
           charge(state, delta.function_call);

@@ -1427,6 +1427,7 @@ function completionFromChunks(events) {
   const content = []
   const reasoning = []
   const toolCalls = []
+  const open = new Map() // upstream index -> the call being written there
   let finish = null
   let usage = null
   let model = first.model
@@ -1440,7 +1441,17 @@ function completionFromChunks(events) {
     if (typeof delta.content === "string") content.push(delta.content)
     if (typeof delta.reasoning_content === "string") reasoning.push(delta.reasoning_content)
     for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const slot = (toolCalls[num(call.index)] ??= { id: "", type: "function", function: { name: "", arguments: "" } })
+      // a new id at an index in use is a new call, not more of the open
+      // one: two calls at one index ran together as {"a"}{"b"}
+      // (plugins#930). No id, or the same one, goes on with it.
+      let slot = open.get(num(call.index))
+      const id = typeof call.id === "string" ? call.id : ""
+      if (!slot || (id && slot.id && id !== slot.id)) {
+        slot = { id: "", type: "function", function: { name: "", arguments: "" } }
+        if (toolCalls[num(call.index)]) toolCalls.push(slot)
+        else toolCalls[num(call.index)] = slot
+        open.set(num(call.index), slot)
+      }
       if (typeof call.id === "string" && call.id) slot.id = call.id
       if (typeof call.type === "string" && call.type) slot.type = call.type
       if (typeof call.function?.name === "string") slot.function.name += call.function.name
