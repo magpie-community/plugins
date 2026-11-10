@@ -91,13 +91,14 @@ explicitly forbid it.
 - Both stages ask the same question, so the second reuses the first answer
   for ten minutes instead of calling the model again.
 
-When the decision model can't be reached, or the prompt carries no rule
-section, the plugin answers 503. Claude Code treats that as a classifier that
-couldn't judge the action and denies it, so a broken guard blocks rather than
-lets the action through. The user sees the denial as a permission prompt or a
-refusal message naming the classifier failure; magpie itself neither retries
-the classifier nor falls back to another model for it — the next action asks
-again.
+When the decision model can't be reached, the prompt carries no rule
+section, or the action is too long to fit the budget whole, the plugin
+answers 503. Claude Code treats that as a classifier that couldn't judge the
+action and denies it, so a broken guard blocks rather than lets the action
+through. The plugin itself never answers a verdict it didn't get from the
+model. Claude Code sends the next action as a new classifier request, so a
+model that is reachable again is asked again; the plugin adds no retry of
+its own, and no other model is asked in its place.
 
 A request that isn't a classifier request gets a 400. The model isn't for
 chat.
