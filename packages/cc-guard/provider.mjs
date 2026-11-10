@@ -11,7 +11,7 @@
 // returned as 503, which Claude Code treats as "the classifier can't tell" and
 // denies the action — so a broken guard fails closed.
 
-import { decide, parseRules, questionsFor, render, systemText, transcriptOf } from "./classify.mjs";
+import { cacheKey, decide, parseRules, questionsFor, render, systemText, transcriptOf } from "./classify.mjs";
 
 export const PROVIDER = "cc-guard";
 const MODEL = "auto-mode";
@@ -53,10 +53,6 @@ export function settings(options) {
   }
   out.gateway = out.gateway.replace(/\/$/, "");
   return out;
-}
-
-function cacheKey(system, transcript) {
-  return `${system.length}:${system.slice(0, 160)}\n${transcript}`;
 }
 
 // Asks jev one batch of questions. Throws with a message on any failure,
