@@ -34,7 +34,7 @@ const CLI_VERSION = "3000.11.3"
 // the AI SDK is given a chat completions URL; the loader's fetch answers
 // every request itself, so nothing is ever sent here
 const BASE = SERVER + "/devin/v1"
-const SIGN_IN_TIMEOUT = 10 * 60 * 1000
+const SIGN_IN_TIMEOUT = 30 * 60 * 1000
 // how long the CLI's model list is kept, and how long a failed read waits
 const FRESH = 5 * 60 * 1000
 const RETRY = 60 * 1000
