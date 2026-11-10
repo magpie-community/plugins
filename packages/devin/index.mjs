@@ -981,7 +981,7 @@ async function browserSignIn() {
       const x = await exchange(q.get("code"), verifier, redirect)
       const r = await success(x.key, SERVER)
       finish(r)
-      html(200, page(true, "You're signed in", `${r.metadata.email} is signed in. You can close this tab.`))
+  html(200, page(true, "You're signed in", `${r.metadata.email || "Devin"} is signed in. You can close this tab.`))
     } catch (e) {
       finish({ type: "failed", error: e.message })
       html(200, page(false, "Sign-in didn't finish", e.message))
