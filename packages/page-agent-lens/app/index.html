@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Lens · Agent 透镜</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script>
+  // theme before first paint: ?theme= from magpie, else the system's
+  (() => { const t = new URLSearchParams(location.search).get("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t })()
+</script>
+<script src="app.js" type="module"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img class="logo on-light" src="logo.svg" alt="" width="34" height="34"><img class="logo on-dark" src="logo-dark.svg" alt="" width="34" height="34">
+    <div>
+      <h1>Agent 透镜</h1>
+      <p class="status wait" id="status" role="status">正在读取…</p>
+      <p class="sub">同一个网关后面，每个 Agent 工具读了多少 token、命中多少缓存、失败多少次。</p>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="seg" role="tablist" aria-label="统计周期" id="periods">
+      <button role="tab" data-period="today">今天</button>
+      <button role="tab" data-period="7d">7 天</button>
+      <button role="tab" data-period="30d">30 天</button>
+    </div>
+    <label class="toggle"><input type="checkbox" id="clients"> 含脚本和内部请求</label>
+  </div>
+</header>
+
+<main>
+  <section class="insights" id="insights" aria-label="结论"></section>
+  <section class="kpis" id="kpis" aria-label="总览"></section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>谁在花你的 token</h2>
+      <p class="hint">每张卡是一个 Agent。条的长度是这段时间读进模型的总 token，深色部分是按原价算的（没命中缓存）。</p>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>逐项对比</h2>
+      <p class="hint">点表头排序，点一行看详情。</p>
+    </div>
+    <div class="table-wrap"><table id="table"></table></div>
+  </section>
+
+  <section class="block" id="toolsBlock">
+    <div class="block-head">
+      <h2>工具定义重量</h2>
+      <p class="hint" id="toolsHint">Agent 每次请求都会把自己的工具清单重发一遍，这部分也按 token 计费。</p>
+    </div>
+    <div id="tools"></div>
+  </section>
+
+  <p class="state" id="state" hidden></p>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1">
+  <button class="close" id="close" aria-label="关闭">×</button>
+  <div id="detail"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<footer class="foot">
+  <span>数据只在本机读取，不上传。</span>
+  <span id="sources"></span>
+  <a href="https://github.com/webkubor/agent-lens" target="_blank" rel="noopener">GitHub</a>
+</footer>
+</body>
+</html>
