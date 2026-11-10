@@ -449,6 +449,70 @@ test("setting_info's balance fills the Credits window the bills account for (plu
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 81, limit: 9600 })
 })
 
+// The balance in plugins #936's screenshot (9,623 credits) is more than the
+// grants not yet past their expire_at: the vendor takes an expired grant's
+// remainder some time after expire_at, so the newest expired grant is still in it.
+const iso = (ms) => new Date(ms).toISOString().replace("Z", "+00:00")
+const day = 86_400_000
+
+test("a grant past expire_at the balance still holds keeps the Credits window (plugins #936)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const now = Date.now()
+  startServer({
+    "GET /api/web/points/v1/balance": forbidden,
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: { office: { pro_enable: false } } }),
+    "GET /api/web/office/v3/setting_info": () => Response.json({ code: 0, data: { available_points: 9623 } }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d4", biz_type: "daily_grant", points: 300, expire_at: iso(now + 5 * day) },
+            { bill_id: "d3", biz_type: "daily_grant", points: 300, expire_at: iso(now + 4 * day) },
+            { bill_id: "d2", biz_type: "daily_grant", points: 300, expire_at: iso(now - 3_600_000) },
+            { bill_id: "d1", biz_type: "daily_grant", points: 300, expire_at: iso(now - 2 * day) },
+            { bill_id: "r1", biz_type: "reward_grant", points: 9000 },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.balance).toBeUndefined()
+  // d2 (expired an hour ago) is counted back; d1 is not needed and stays out
+  expect(u.windows[0]).toMatchObject({
+    name: "Credits",
+    amount: 277,
+    limit: 9900,
+    display: "277 / 9900",
+    runsOutAt: new Date(Date.parse(iso(now + 4 * day))).toISOString(),
+    runsOut: 300,
+  })
+})
+
+test("expired grants that cannot make up the balance leave it balance-only (plugins #936)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const now = Date.now()
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 5270 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d2", biz_type: "daily_grant", points: 300, expire_at: iso(now + day) },
+            { bill_id: "d1", biz_type: "daily_grant", points: 300, expire_at: iso(now - day) },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.balance).toBe("5270 credits")
+  expect(u.windows).toEqual([])
+})
+
 test("a readable balance asks setting_info nothing (plugins #520)", async () => {
   const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
   let asked = 0
