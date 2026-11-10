@@ -277,6 +277,9 @@
     { "package": "@magpie-community/page-usage-board", "name": "Usage Board", "kind": "page", "community": true,
       "summary": { "en": "A quota card wall with expiry tiers, daily/per-provider charts, 24h cache-hit and token curves, optional remote attribution and account detail. Runs its own zero-dependency local service reading this machine's Magpie usage data; optional remote attribution queries the configured remote magpie.", "zh": "额度到期卡片墙 + 每日与 provider 用量图表 + 24 小时缓存命中与 token 曲线，可选远端归因与账号明细。自带零依赖本机服务，读本机 Magpie 用量数据；远端归因会查询所配置的远端 magpie。" } },
     { "package": "magpie-muse-auth", "name": "Muse (Meta)", "icon": "https://raw.githubusercontent.com/sonvivu/magpie-muse-auth/main/icon.svg", "providers": ["muse"],
-      "summary": { "en": "Muse (Meta) subscription for Magpie and OpenCode: device-code sign-in, minted API key, Wonder and Spark models with reasoning efforts. The -contributor models use Meta's Contributor lane (data may be used for training). Unofficial.", "zh": "使用 Muse (Meta) 订阅：设备码登录，自动换取 API 密钥，提供 Wonder 和 Spark 模型及推理强度设置；以 -contributor 结尾的模型走 Meta 的 Contributor 通道（数据可能用于训练）。（非官方）" } }
+      "summary": { "en": "Muse (Meta) subscription for Magpie and OpenCode: device-code sign-in, minted API key, Wonder and Spark models with reasoning efforts. The -contributor models use Meta's Contributor lane (data may be used for training). Unofficial.", "zh": "使用 Muse (Meta) 订阅：设备码登录，自动换取 API 密钥，提供 Wonder 和 Spark 模型及推理强度设置；以 -contributor 结尾的模型走 Meta 的 Contributor 通道（数据可能用于训练）。（非官方）" } },
+    { "package": "magpie-model-quota", "kind": "page", "name": "Model Quota",
+      "icon": "https://raw.githubusercontent.com/1sh1ro/magpie-model-quota/main/assets/icon.svg",
+      "summary": { "en": "Estimate how many tokens each model has left, merged across every account and provider. Runs entirely on magpie's local usage history; no telemetry or network requests.", "zh": "把所有账号、所有供应商的额度换算成 token，按模型合并估算还剩多少。完全基于 magpie 本地用量历史，不联网。" } }
   ]
 }
