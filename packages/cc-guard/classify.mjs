@@ -116,14 +116,21 @@ function stageOf(text, message) {
 // messages whole, then fills what's left from the most recent lines. File
 // writes stay too: the classifier chains an earlier write into the command
 // that runs it.
+//
+// The action is the only line judged, so it never loses its head: an action
+// longer than FINAL_BUDGET blocks instead of being judged from a fragment.
 export function trimTranscript(transcript, budget = TRANSCRIPT_BUDGET) {
   const lines = transcript.split("\n").filter((line) => line.trim());
   if (!lines.length) return "";
   if (transcript.length <= budget) return lines.join("\n");
 
+  const action = lines.at(-1);
+  // An action that doesn't fit the budget can't be judged whole: fail
+  // closed and let the caller answer 503.
+  if (action.length > FINAL_BUDGET) return null;
+
   const keep = new Set([lines.length - 1]);
-  let used = Math.min(lines.at(-1).length, FINAL_BUDGET);
-  const finalLine = lines.at(-1).length > FINAL_BUDGET ? lines.at(-1).slice(-FINAL_BUDGET) : lines.at(-1);
+  let used = action.length;
 
   const rank = lines.map((line, index) => ({
     index,
@@ -142,7 +149,6 @@ export function trimTranscript(transcript, budget = TRANSCRIPT_BUDGET) {
   }
 
   const out = lines.filter((_, index) => keep.has(index));
-  out[out.length - 1] = finalLine;
   const omitted = lines.length - out.length;
   return omitted > 0 ? `[${omitted} earlier lines omitted]\n${out.join("\n")}` : out.join("\n");
 }
@@ -153,6 +159,10 @@ function clip(text, budget) {
 }
 
 export function questionsFor(rules, transcript, system) {
+  const trimmed = trimTranscript(transcript);
+  // The action itself didn't fit the budget: judging a fragment could let
+  // the head of the command disappear, so the caller must fail closed.
+  if (trimmed === null) return null;
   const criteria = {
     none: "No rule applies. Ordinary work inside the task: reading, building, testing, editing project files, or local commands.",
   };
@@ -162,7 +172,7 @@ export function questionsFor(rules, transcript, system) {
   }
   return {
     state: {
-      transcript: trimTranscript(transcript),
+      transcript: trimmed,
       environment: clip(slice(system, "## Environment", "## Definitions"), ENVIRONMENT_BUDGET),
       session: clip(slice(system, "## Session Context", "\n\n##"), 1500),
     },
