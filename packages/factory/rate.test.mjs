@@ -4,17 +4,18 @@
 // droid. A promotion running comes off it, with the multiplier before the
 // discount as rateWas — magpie strikes that through beside the price, as it
 // does for WorkBuddy's credits and Qoder's price factors. The cases are droid
-// 0.241.1's registry costs and 0.251.0's 1017 entry, saved in testdata.
+// 0.241.1's registry costs, 0.251.0's 1017 entry and 1.7.0's new models,
+// saved in testdata.
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { FactoryAuthPlugin, _internal } from "./index.mjs"
 
-const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt"]
+const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt", "droid-1.7.0-models.txt"]
   .map((name) => readFileSync(new URL(`./testdata/${name}`, import.meta.url), "utf8")).join("\n")
 
-// cost is a model's cost text, as its entry keeps it.
+// cost is a model's cost text, as its entry keeps it (Inkling's key unquoted).
 function cost(id) {
-  const line = DROID.split("\n").find((l) => l.startsWith(`"${id}":`))
+  const line = DROID.split("\n").find((l) => l.startsWith(`"${id}":`) || l.startsWith(`${id}:{id:"${id}",`))
   if (!line) throw new Error(`${id} is not in the fixture`)
   return line.slice(line.indexOf("cost:"))
 }
@@ -68,9 +69,12 @@ test("a promotion running comes off the rate, the multiplier before it as rateWa
     expect(models[m.id].rateWas).toBe(price(m.id, now).rateWas)
   }
   // the five droid 0.241.1 offers a price off on: Sol's 20%, Mistral Large 4's
-  // launch discount, and Gemini 4 Argon's, 3.8 Flash's and 3.7 Flash's 50%
+  // launch discount, and Gemini 4 Argon's, 3.8 Flash's and 3.7 Flash's 50%;
+  // and Sol's 20% on GPT-5.6 Sol Fast Mode in 1.7.0
   const discounted = _internal.MODELS.filter((m) => models[m.id].rateWas > 0).map((m) => m.id)
-  expect(discounted).toEqual(["gpt-5.6-sol", "mistral-large-4", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash"])
+  expect(discounted).toEqual(["gpt-5.6-sol", "mistral-large-4", "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash", "gpt-5.6-sol-fast"])
+  expect(models["gpt-5.6-sol-fast"].rate).toBe(3.2)
+  expect(models["gpt-5.6-sol-fast"].rateWas).toBe(4)
   expect(models["gemini-4-argon"].rate).toBe(0.8)
   expect(models["gemini-4-argon"].rateWas).toBe(1.6)
 })

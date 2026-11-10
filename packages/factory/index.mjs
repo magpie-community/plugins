@@ -54,8 +54,15 @@ const E4 = ["low", "medium", "high", "xhigh"]
 // refused it. The Fast Mode models are droid 0.240.0's (fastBody; testdata/
 // droid-0.240.0-fast.txt), at their base model's limits and efforts as
 // droid has them. Left out: Opus 4.6/4.7 Fast and GPT-5.4 Mini Fast (their
-// base models aren't offered), GPT-5.6 Sol Fast (unreleased:!0) and
-// GLM-5.2 Fast (behind a feature flag, on a Baseten model id of its own).
+// base models aren't offered). droid 1.7.0's new models (testdata/
+// droid-1.7.0-models.txt) are offered where droid 1.7.0 lists them for an
+// account with no special access: Fable 5.2, Kimi K3.1 Pro, Nemotron 3.5
+// Super, MiniMax M3.1 Flash, Inkling, Muse Spark 1.2, Beam 1.0, and GPT-6
+// Sol, GPT-6 Luna, GPT-5.6 Sol and GLM-5.2 Fast (GLM-5.2 Fast at its own
+// limits). Left out: GPT-6.1 Terra and Muse Spark Open (feature flags droid
+// lists them under only once on), GPT-6.1 Sol Ultra Fast (high-cost terms,
+// as Astra's), and Muse Spark 1.3 (Responses on Google, a route the plugin
+// has no wire for).
 const MODELS = [
   ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
   ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
@@ -85,15 +92,21 @@ const MODELS = [
   ["glm-5.3", "GLM-5.3", CHAT, "fireworks", 1040000, 131072, ["low", "high", "max"], false, 0.56],
   ["glm-5.3-flash", "GLM-5.3-Flash", CHAT, "fireworks", 1048576, 131072, ["low", "high", "max"], true, 0.06],
   ["glm-5.2", "GLM-5.2", CHAT, "baseten", 1040000, 131072, ["none", "high", "max"], false, 0.56],
+  ["kimi-k3.1-pro", "Kimi K3.1 Pro", CHAT, "fireworks", 1000000, 131072, ["low", "high", "max"], true, 0.8],
   ["kimi-k3", "Kimi K3", CHAT, "fireworks", 262144, 65536, ["none", "low", "high", "max"], true, 1.2],
   ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", CHAT, "fireworks", 1040000, 131072, ["none", "low", "high", "max"], true, 0.12],
   ["deepseek-v4.1-flash-1017", "DeepSeek V4.1 Flash 1017", CHAT, "fireworks", 1040000, 131072, ["none", "low", "high", "max"], true, 0.12],
   ["qwen3.8-max", "Qwen3.8 Max", CHAT, "fireworks", 262144, 131072, ["low", "medium", "xhigh"], false, 0.8],
+  ["minimax-m3.1-flash", "MiniMax M3.1 Flash", CHAT, "fireworks", 1000000, 131072, E5, true, 0.06],
   ["minimax-m3", "MiniMax M3", CHAT, "fireworks", 512000, 64000, ["high"], true, 0.12],
   ["minimax-m2.7", "MiniMax M2.7", ANTHROPIC, "fireworks", 196600, 64000, ["high"], false, 0.12],
   ["mistral-large-4", "Mistral Large 4", CHAT, "mistral", 524288, 64000, ["high"], true, 0.544],
   ["mistral-medium-3.5", "Mistral Medium 3.5", CHAT, "mistral", 256000, 64000, ["high"], true, 0.6],
+  ["nemotron-3.5-super", "Nemotron 3.5 Super", CHAT, "baseten", 1000000, 65536, ["high"], true, 0.08],
   ["nemotron-3-ultra", "Nemotron 3 Ultra", CHAT, "baseten", 202000, 65536, ["high"], false, 0.24],
+  ["inkling", "Inkling", CHAT, "fireworks", 1040000, 32768, ["minimal", "low", "medium", "high", "xhigh", "max"], true, 0.4],
+  ["muse-spark-1.2", "Muse Spark 1.2", CHAT, "fireworks", 1040000, 131072, E4, false, 0.5],
+  ["beam-1.0", "Beam 1.0", CHAT, "baseten", 1048576, 32768, E5, false, 0.52],
   ["gemini-4-argon", "Gemini 4 Argon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
   ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.8],
   ["gemini-3.8-flash", "Gemini 3.8 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
@@ -101,6 +114,9 @@ const MODELS = [
   ["gemini-3.6-flash", "Gemini 3.6 Flash", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
   ["gemini-3.5-flash", "Gemini 3.5 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true, 0.6],
   ["gemini-3-flash-preview", "Gemini 3 Flash", GEMINI, "google", 1000000, 65536, ["minimal", "low", "medium", "high"], true, 0.2],
+  // after the rest, as the Fast Mode models are: first, it would push
+  // GLM-5.3-Flash out of magpie's first 24 (#119)
+  ["claude-fable-5.2", "Fable 5.2", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 3.2],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -113,6 +129,10 @@ const MODELS = [
   ["gpt-5.5-fast", "GPT-5.5 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true, 5],
   ["gpt-5.4-fast", "GPT-5.4 Fast Mode", RESPONSES, "openai", 1050000, 128000, E4, true, 2],
   ["gpt-5.3-codex-fast", "GPT-5.3-Codex Fast Mode", RESPONSES, "openai", 400000, 128000, E4, true, 1.4],
+  ["gpt-6-sol-fast", "GPT-6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 1.6],
+  ["gpt-6-luna-fast", "GPT-6 Luna Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
+  ["gpt-5.6-sol-fast", "GPT-5.6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 4],
+  ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 const byId = new Map(MODELS.map((m) => [m.id, m]))
@@ -172,6 +192,7 @@ function variant(npm, effort) {
 // promotion that has ended is no discount at all.
 const PROMOTIONS = [
   { id: "gpt-5.6-sol", discount: 0.2, from: "2026-08-22T00:00:00Z", to: "2026-11-22T00:00:00Z" },
+  { id: "gpt-5.6-sol-fast", discount: 0.2, from: "2026-08-22T00:00:00Z", to: "2026-11-22T00:00:00Z" },
   { id: "mistral-large-4", discount: 0.5, from: "2026-10-06T00:00:00Z", to: "2026-10-20T00:00:00Z" },
   { id: "gemini-4-argon", discount: 0.5, from: "2026-10-13T16:00:00Z", to: "2026-12-01T08:00:00Z" },
   { id: "gemini-3.8-flash", discount: 0.5, from: "2026-08-17T21:10:19Z", to: "2027-01-01T08:00:00Z" },
@@ -940,8 +961,10 @@ async function deviceSignIn() {
 // is a balance in cents.
 
 // CORE are the models Droid Core's windows count: those of a vendor other
-// than Anthropic, OpenAI, xAI and Google. Standard's count every other model.
-const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream)).map((m) => m.id)
+// than Anthropic, OpenAI, xAI and Google, but Muse Spark 1.2, Meta's on
+// Fireworks, which droid keeps out of the core pool (no billingPool "core").
+// Standard's count every other model.
+const CORE = MODELS.filter((m) => !["anthropic", "openai", "xai", "google"].includes(m.upstream) && m.id !== "muse-spark-1.2").map((m) => m.id)
 
 // statusLine is a status as Go's HTTP client names it, "403 Forbidden".
 const statusLine = (status) => `${status} ${STATUS_CODES[status] ?? ""}`.trim()
