@@ -15,6 +15,8 @@ import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import { gzipSync } from "node:zlib"
 
+import { runDaily } from "./tasks.mjs"
+
 const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
 const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before a request
@@ -3515,6 +3517,13 @@ function replyAfterToolsOn(b) {
 // in a path or a file name (/root/DSH/, C:\DSH\, DSH.md) is never prose
 // (IN_PATH_BEFORE, IN_PATH_AFTER), so a working directory dsh writes there stays as it is.
 const HIDE_DSH = "hide_dsh"
+
+// DAILY_TASKS is the switch that runs the growth centre's own chores after
+// the check-in: its tasks, the streak keeper, the Buddy's travel and its
+// blind box (tasks.mjs). Off by default: it reports the vendor's analytics
+// events on the account's behalf, which is a thing to choose, not to
+// inherit. Only the China build has a growth centre.
+const DAILY_TASKS = "daily_tasks"
 const DSH_LINES = [
   [/You are an AI agent,? powered by DeepSeek Harness\.?/g, "You are an AI agent."],
   [/DeepSeek Harness (Web GUI)/g, "$1"],
@@ -3655,6 +3664,9 @@ function makePlugin(site) {
   // on by default: magpie hands over the user's value, else the default;
   // OpenCode, with no magpie, has it on
   const dshOff = () => magpie?.option?.(site.id, HIDE_DSH) !== false
+  // off by default, and nowhere to turn it on in OpenCode, which has no
+  // switches: a run that reports analytics for the account is opted into
+  const dailyTasks = () => magpie?.option?.(site.id, DAILY_TASKS) === true
   // onlyFree is a list with the switch on: its free models, or a failure
   // when there are none to tell (magpie then keeps the list it had)
   const onlyFree = (ms) => {
@@ -3743,7 +3755,15 @@ function makePlugin(site) {
           if (auth?.type === "api") return { outcome: "ineligible", message: "check-in needs a signed-in account, not an API key" }
           if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }
           const a = await current(site, client, auth)
-          return await checkinOf(site, a, { waits: [2000, 4000] })
+          const got = await checkinOf(site, a, { waits: [2000, 4000] })
+          if (!dailyTasks()) return got
+          // the day's other chores, said on the same card: a failure here is
+          // never the check-in's outcome, which the card is really about
+          const more = await runDaily(site, a, { gap: 1000 }).catch((e) => ({ credit: 0, logs: [`任务失败：${e?.message ?? e}`] }))
+          const lines = [...(more.logs ?? [])]
+          if (more.credit > 0) lines.unshift(`任务 +${more.credit} 积分`)
+          if (!lines.length) return got
+          return { ...got, message: [got.message, ...lines].filter(Boolean).join(" · ") }
         },
       }),
       options: [
@@ -3762,6 +3782,16 @@ function makePlugin(site) {
             de: `Listet nur die Modelle, die ${site.name} kostenlos anbietet, und weist eine Anfrage an jedes andere hier ab, statt sie zu senden, sodass keine Credits verbraucht werden. Ein Modell, das nur nachts kostenlos ist, gilt als kostenpflichtig.`,
           },
           filtersModels: true,
+        },
+        {
+          key: DAILY_TASKS,
+          label: "Run the growth centre's daily chores",
+          description: `After the check-in, does ${site.name}'s growth centre for the account: its tasks, the streak keeper (make-up card, 7/14/28 day tiers, lottery), the Buddy's travel and its blind boxes. It reports the vendor's own analytics events for you, so it is off unless you turn it on. Tasks the vendor counts only on the desktop app, a WeChat follow or a donation are skipped, not imitated.`,
+          default: false,
+          labels: { zh: "顺手跑成长中心的每日任务" },
+          descriptions: {
+            zh: `签到之后，为该账号跑 ${site.name} 成长中心：任务、连登管家（补签卡、7/14/28 天档位、抽奖）、猫猫旅行与盲盒。它会代你上报厂商的埋点事件，因此默认关闭。只认桌面端、关注公众号、真实捐款的任务会被跳过，不会伪造。`,
+          },
         },
         {
           key: HIDE_DSH,
@@ -4213,4 +4243,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { HIDE_DSH, DAILY_TASKS, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

@@ -562,3 +562,52 @@ one it gives a failed answer (#149).
 An `inactive` answer is kept for the whole Beijing day: the plugin host
 gives it no recheck, and a manual refresh reads the kept one (tracked in
 [yetone/magpie#2696](https://github.com/yetone/magpie/issues/2696)).
+
+### The growth centre's daily chores
+
+Each site has a "Run the growth centre's daily chores" switch, **off by
+default**. With it on, the check-in hook does the rest of the account's day
+right after the claim, in this order, and says what it did on the same Usage
+card:
+
+1. **Tasks.** `GET /v2/activity/growth/tasks`, then `tasks/accept` in
+   batches of 20, then one `/v2/report` per unit of progress, then
+   `activity/growth/tasks/<code>/claim`. The tasks that report as `auto`
+   (a Buddy's `first_buddy`) are done first: its reward is the Buddy
+   instance every single task and the travel need, and accepting before it
+   is refused with `prerequisite not met: first_buddy`. A claim is only
+   asked after the vendor's own count, read back from the task list, has
+   reached the target — a report the vendor ignored leaves the progress
+   where it was and the claim answers 400 `task not completed`.
+2. **The streak keeper.** A missed yesterday is made up when a make-up card
+   is held (`activity/growth/heatmap`, then `makeup-cards/use` with
+   `{"target_date": "<yesterday>"}`); the one-off first-run gift and any
+   compensation are claimed; a 7/14/28 day tier that is unlocked and not
+   yet taken is redeemed (`activity/growth/redeem`, one `client_token` a
+   tier); then every lottery chance is drawn (`lottery/summary`, then
+   `lottery/draw` once each).
+3. **The Buddy's travel.** `buddy/travel/status`: `arrived` claims,
+   `traveling` waits, `idle` departs for the first destination
+   `buddy/travel/config` names (the body is `{"location_id": …}`; an empty
+   body is refused 400 `invalid request`). `no active buddy` means the
+   instance was never claimed: `first_buddy` is moved and the departure
+   tried once more.
+4. **The blind box.** `v2/activity/growth/buddy/quota` first, and nothing is
+   opened unless `affordable` says the account can pay.
+
+What it will not do: `Buddy_App`, `Buddy_App_QQ` (the vendor counts them
+only when the desktop app opens a `workbuddy://` deep link by hand), the
+WeChat-follow and donation tasks, and any task code this package has no
+event for. Those are skipped and named on the card; a faked event for them
+is ignored upstream, the progress stays 0 and the claim answers 400. The
+night task (`black_cat`) is only reported between 23:00 and 08:00, in the
+machine's own time zone.
+
+Two limits worth knowing. `/v2/report` carries no idempotency key, so the
+plugin keeps the Beijing day each account was last served and does nothing
+on a second ask that day — a *Check in now* pressed after the daily run
+does not report twice. And an enterprise (team) account has no growth
+centre, and a sign-in by API key reads none: both are left alone.
+
+Whether reporting these events on the account's behalf is something an
+account should do is not known, and it is off unless you say so.
