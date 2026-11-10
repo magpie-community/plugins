@@ -1,0 +1,6 @@
+These agent icons are the same files magpie shows for each agent. They were
+copied from the community plugin @magpie-community/page-agent-office
+(packages/agent-office/page/icons, MIT), whose SVG brand marks come from
+@lobehub/icons (https://github.com/lobehub/lobe-icons, MIT, Copyright (c) 2023
+LobeHub). Each mark remains the trademark of its owner; it is shown only to
+name the agent it belongs to.

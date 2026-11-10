@@ -1,0 +1,71 @@
+{
+  "name": "@magpie-community/page-harnessweight",
+  "version": "0.4.0",
+  "description": "HarnessWeight: a magpie page that weighs every agent harness behind your gateway, by agent rather than by model: input tokens, cache hit rate, tokens at full price, failures, latency, and the tool definitions each harness re-sends every turn",
+  "type": "module",
+  "files": [
+    "index.mjs",
+    "harnessweight.hooks.mjs",
+    "service.mjs",
+    "lib",
+    "page",
+    "app",
+    "brand/assets",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "agent-harness",
+    "harness",
+    "token-usage",
+    "claude-code",
+    "codex",
+    "cost",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "hooks": "./harnessweight.hooks.mjs",
+    "page": {
+      "title": "HarnessWeight",
+      "titles": {
+        "zh": "HarnessWeight",
+        "zh-TW": "HarnessWeight",
+        "ja": "HarnessWeight"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3496,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3496,
+      "dataDir": "",
+      "usageLog": "",
+      "agents": [],
+      "gatewayTimeoutMs": 2000,
+      "gatewayUrl": ""
+    },
+    "permissions": [],
+    "summary": {
+      "en": "Compare agent harnesses behind your gateway by input tokens, cache, failures, latency and estimated tool-definition size. Its local service reads this machine's usage ledger; a read-only hook samples tool sizes and tracks in-flight requests.",
+      "zh": "按 Agent 对比网关后面的输入 token、缓存、失败率、延迟与工具定义体积估算。本机服务读取用量记录，只读 hook 采样工具大小并追踪进行中的请求。"
+    }
+  },
+  "main": "./index.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "node service.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-harnessweight"
+  },
+  "homepage": "https://github.com/webkubor/harnessweight",
+  "author": "webkubor"
+}
