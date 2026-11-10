@@ -35,6 +35,8 @@
       "summary": { "en": "Your Qoder subscription: international (qoder.com) or Qoder CN, the China site (qoder.cn, Alibaba Cloud or phone sign-in), each its own provider. Also QwenWork (千问办公): the public cloud or the enterprise flagship with its own domain. Unofficial for QwenWork.", "zh": "用 Qoder 自己的设备登录使用 Qoder 订阅：国际版（qoder.com）与 Qoder 中国版（Qoder CN，qoder.cn，阿里云账号 / 手机号登录）各是一个订阅；也接入千问办公：公有云与企业旗舰版（输入企业自己的域名）。千问办公部分非官方。" } },
     { "package": "@magpie-community/opencode-devin-auth", "name": "Devin", "icon": "devin", "providers": ["devin"], "community": true, "replaces": "devin",
       "summary": { "en": "Devin's models with your Devin account — a browser sign-in or the devin CLI's.", "zh": "用 Devin 账号使用 Devin 的模型：浏览器登录，或沿用 devin CLI 的登录。" } },
+    { "package": "@magpie-community/opencode-antigravity-auth", "name": "Antigravity", "icon": "antigravity-color", "providers": ["antigravity"], "community": true, "replaces": "antigravity",
+      "summary": { "en": "Gemini, Claude and GPT-OSS in Antigravity, with your Google account (AI Pro, Ultra or free).", "zh": "用 Google 账号（AI Pro、Ultra 或免费）使用 Antigravity 里的 Gemini、Claude 和 GPT-OSS。" } },
     { "package": "@magpie-community/opencode-zed-auth", "name": "Zed", "icon": "zed", "providers": ["zed"], "community": true, "replaces": "zed",
       "summary": { "en": "Claude, GPT, Gemini and Grok hosted by Zed, on your Zed plan.", "zh": "用 Zed 订阅使用 Zed 托管的 Claude、GPT、Gemini 和 Grok。" } },
     { "package": "@magpie-community/opencode-factory-auth", "name": "Factory", "icon": "factory", "providers": ["factory"], "community": true, "replaces": "factory",
