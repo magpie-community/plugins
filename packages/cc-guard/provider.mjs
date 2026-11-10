@@ -80,9 +80,10 @@ export async function askJev(config, payload, signal) {
   }
   if (!response.ok || !body?.answers) {
     const detail = body?.error?.message || body?.message || `HTTP ${response.status}`;
-    throw new Error(`jev couldn't judge the action: ${detail}`);
+    throw new Error(
+      `jev couldn't judge the action: ${detail}. Set the plugin's "model" option to a decision model you have (for example a routing group id), or create the missing routing group in magpie.`,
+    );
   }
-  return body;
 }
 
 function messageID() {
@@ -157,13 +158,20 @@ export async function classify(body, config, signal) {
     return anthropicError(503, "cc-guard couldn't read the block rules from the classifier prompt, so it can't judge the action.");
   }
 
+  // The action under review is longer than the transcript budget allows:
+  // judging only its tail could hide what the command does, so fail closed.
+  const questions = questionsFor(rules, found.transcript, system);
+  if (!questions) {
+    return anthropicError(503, "cc-guard couldn't fit the action under review into its prompt budget, so it can't judge the whole action.");
+  }
+
   const key = cacheKey(system, found.transcript);
   let answers = remembered(key);
   let usage = { input_tokens: 0, output_tokens: 0 };
   if (!answers) {
     let result;
     try {
-      result = await askJev(config, questionsFor(rules, found.transcript, system), signal);
+      result = await askJev(config, questions, signal);
     } catch (error) {
       return anthropicError(503, error?.message || "jev couldn't judge the action.");
     }

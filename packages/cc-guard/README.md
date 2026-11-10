@@ -23,8 +23,27 @@ magpie plugin add @magpie-community/opencode-cc-guard-auth
 magpie plugin login cc-guard
 ```
 
-Anything typed in the key field signs in. The plugin keeps no credential of
-its own: it calls magpie's gateway with the token in its options.
+Anything typed in the key field signs in; the plugin itself keeps no
+credential of its own and calls magpie's gateway with the token in its
+options.
+
+## The decision model
+
+The plugin asks magpie's `/v1/systemone` endpoint with the model in the
+`model` option. The default, `group/jev`, names a routing group with the id
+`jev` that serves TypeSafe's jev — it does not exist until you create it. If
+you leave the default, create that group first, in magpie's models settings
+(a routing group named `jev` with at least one account that can serve jev).
+Otherwise set the option to a decision model you already have:
+
+```sh
+magpie plugin options opencode-cc-guard-auth '{"model":"group/jev"}'
+```
+
+The model has to answer System One questions through that gateway; a chat
+model answers the wrong question. While the model can't be reached or
+doesn't answer, every action that isn't read-only is denied (see below), so
+a wrong `model` value shows up as Claude Code refusing to act.
 
 Point Claude Code at it, in `~/.claude/settings.json`:
 
