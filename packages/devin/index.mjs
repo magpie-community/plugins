@@ -1000,7 +1000,7 @@ async function browserSignIn() {
   const q = new URLSearchParams({
     redirect_uri: redirect,
     state,
-    prompt: "select_account",
+    prompt: "login",
     code_challenge: challenge,
     code_challenge_method: "S256",
     cli_pkce_marker: "1",
@@ -3143,7 +3143,7 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         }
       },
       methods: [
-        { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
+        { type: "oauth", label: "Devin (browser, sign in another account)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
         {
           type: "api",
