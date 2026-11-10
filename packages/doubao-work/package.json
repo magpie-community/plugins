@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-doubao-work-auth",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "main": "./opencode.mjs",
   "files": [
@@ -13,7 +13,7 @@
     "opencode2.mjs",
     "README.md"
   ],
-  "description": "Doubao Work (豆包工作) as a model provider, by driving the Doubao desktop app the way a person does",
+  "description": "Doubao Work (豆包工作) as a model provider, by driving the 豆包工作 (or 豆包) desktop app the way a person does",
   "magpie": {
     "maxConcurrency": 1
   },

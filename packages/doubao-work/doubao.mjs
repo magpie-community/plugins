@@ -1,6 +1,9 @@
-// The Doubao adapter: what the generic driver (cdp.mjs) does in Doubao's
-// desktop app (com.bot.pc.doubao, a Chromium fork) to run one request as
-// one new 工作任务 and read its reply.
+// The Doubao adapter: what the generic driver (cdp.mjs) does in 豆包工作
+// (DoubaoWork, com.work.pc.doubao) or 豆包 (Doubao, com.bot.pc.doubao) to
+// run one request as one new 工作任务 and read its reply. Both are the same
+// Chromium 147 fork serving the same chat page under their own scheme
+// (doubaowork://doubaowork-chat/chat, doubao://doubao-chat/chat), with the
+// same 新工作任务 button, mode and model menus.
 //
 // The reply is read from the React props of the reply's node, the message
 // object Doubao itself renders from: its text blocks are the raw markdown
@@ -12,7 +15,9 @@ import os from "node:os"
 import path from "node:path"
 import { App, Page, sleep } from "./cdp.mjs"
 
-export const CHAT = "doubao-chat/chat"
+// isChat says whether a page is either app's chat page. The page reports
+// itself as chrome://doubao(work)-chat/chat from inside.
+export const isChat = (url) => /^(doubao|doubaowork|chrome):\/\/(doubao|doubaowork)-chat\/chat/.test(String(url))
 
 // Doubao has no API to ask which models it offers: the app's own model menu
 // is the list, and it changes as Doubao adds models. These are the ones the
@@ -68,24 +73,64 @@ export function tableFrom(rows) {
 // the app for the user who installs it.
 const localAppData = (home) => process.env.LOCALAPPDATA || path.win32.join(home, "AppData", "Local")
 
-// binary is Doubao's own executable. On Windows that is app\Doubao.exe:
-// Application\Doubao.exe beside it is a launcher. Doubao has no Linux
-// build (its download page offers macOS and Windows), so Linux has none.
-export function binary(platform = process.platform, home = os.homedir()) {
-  if (process.env.DOUBAO_WORK_APP) return process.env.DOUBAO_WORK_APP
-  if (platform === "darwin") return "/Applications/Doubao.app/Contents/MacOS/Doubao"
-  if (platform === "win32") return path.win32.join(localAppData(home), "Doubao", "Application", "app", "Doubao.exe")
-  return ""
+// APPS are the desktop apps the plugin drives, 豆包工作 first: it is the
+// app this plugin is named for. 豆包 has the same 工作任务 and was the only
+// one the plugin knew until 0.1.5 (#917). On Windows the exe is the one
+// under app\: Application\<name>.exe beside it is a launcher. Neither has
+// a Linux build (their download pages offer macOS and Windows).
+//   sub  the folder under dataDir() for this app's profile, port and model
+//        list; 豆包's stays at the top, where 0.1.0 to 0.1.4 kept it
+export const APPS = [
+  { name: "豆包工作", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
+  { name: "豆包", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
+]
+
+// places lists where an app can be installed: /Applications, then
+// ~/Applications on macOS; %LOCALAPPDATA% on Windows.
+export function places(app, platform = process.platform, home = os.homedir()) {
+  if (platform === "darwin") return [path.posix.join("/Applications", app.mac), path.posix.join(home, "Applications", app.mac)]
+  if (platform === "win32") return [path.win32.join(localAppData(home), ...app.win)]
+  return []
+}
+
+// choose picks the app to drive: { app, binary, dataDir }. DOUBAO_WORK_APP
+// names the binary outright. A user already signed in to 豆包 through this
+// plugin (its profile exists) stays on 豆包 while it is installed, so an
+// update never signs them out. Otherwise the first app installed, 豆包工作
+// first; with neither, 豆包工作's own place, so the error names it. On
+// Linux the binary is "".
+export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+  const P = platform === "win32" ? path.win32 : path.posix
+  const base = dataDir(platform, home)
+  const out = (app, bin) => ({ app, binary: bin, dataDir: app.sub ? P.join(base, app.sub) : base })
+  const [work, doubao] = APPS
+  if (process.env.DOUBAO_WORK_APP) {
+    const bin = process.env.DOUBAO_WORK_APP
+    return out(/doubaowork/i.test(bin) ? work : doubao, bin)
+  }
+  const found = (app) => places(app, platform, home).find((p) => exists(p))
+  const old = found(doubao)
+  if (old && exists(P.join(base, "profile"))) return out(doubao, old)
+  for (const app of APPS) {
+    const bin = found(app)
+    if (bin) return out(app, bin)
+  }
+  return out(work, places(work, platform, home)[0] ?? "")
+}
+
+// binary is the executable choose picks.
+export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+  return choose(platform, home, exists).binary
 }
 
 export function dataDir(platform = process.platform, home = os.homedir()) {
   if (process.env.DOUBAO_WORK_HOME) return process.env.DOUBAO_WORK_HOME
-  if (platform === "darwin") return path.join(home, "Library", "Application Support", "magpie-doubao-work")
+  if (platform === "darwin") return path.posix.join(home, "Library", "Application Support", "magpie-doubao-work")
   if (platform === "win32") return path.win32.join(localAppData(home), "magpie-doubao-work")
   return path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "magpie-doubao-work")
 }
 
-export const owns = (list) => list.some((t) => String(t.url).includes(CHAT) && /^(doubao|chrome):/.test(String(t.url)))
+export const owns = (list) => list.some((t) => isChat(t.url))
 
 // Page-side helpers, run through Runtime.evaluate. They read the page and
 // press its controls the way a pointer does (Radix menus open on
@@ -231,7 +276,11 @@ export class DoubaoError extends Error {
 // Doubao drives the app. One request runs at a time: there is one window.
 export class Doubao {
   constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000 } = {}) {
-    this.app = app ?? new App({ binary: binary(), dataDir: dataDir(), owns })
+    if (!app) {
+      const c = choose()
+      app = new App({ binary: c.binary, dataDir: c.dataDir, owns })
+    }
+    this.app = app
     Object.assign(this, { openPage, poll, idle, total, fresh })
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
@@ -295,7 +344,7 @@ export class Doubao {
   async connect(signal) {
     if (this.page && !this.page.closed) return this.page
     const port = await this.app.start({ signal })
-    this.page = await this.openPage(port, (t) => String(t.url).includes(CHAT))
+    this.page = await this.openPage(port, (t) => isChat(t.url))
     if (!this.page) throw new DoubaoError("豆包的对话窗口没有打开。请在豆包里打开一个对话窗口后再试。", "doubao_no_window")
     return this.page
   }

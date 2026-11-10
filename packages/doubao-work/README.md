@@ -1,15 +1,23 @@
 # 豆包工作 (Doubao Work)
 
 Doubao Work runs its agent loop in ByteDance's cloud and has no API, so
-there is no request to make on its behalf. This plugin uses the Doubao
-desktop app the way a person does instead, and gives what it reads back as
-an OpenAI chat completion:
+there is no request to make on its behalf. This plugin uses its desktop
+app, 豆包工作 (DoubaoWork), the way a person does instead, and gives what it
+reads back as an OpenAI chat completion. 豆包 (Doubao), whose 工作任务 are the
+same, works too:
 
-1. It starts Doubao from a profile of its own (`~/Library/Application
-   Support/magpie-doubao-work/profile` on macOS,
-   `%LOCALAPPDATA%\magpie-doubao-work\profile` on Windows), with Chrome
-   DevTools on a local port. Your everyday Doubao's profile is not touched; you sign in once
-   in this second window.
+1. It starts the app from a profile of its own (under
+   `~/Library/Application Support/magpie-doubao-work` on macOS,
+   `%LOCALAPPDATA%\magpie-doubao-work` on Windows; 豆包工作's in
+   `doubaowork` there), with Chrome DevTools on a local port. Your everyday
+   profile is not touched; you sign in once in this second window.
+
+   The app is 豆包工作 when it is installed (`/Applications/DoubaoWork.app` or
+   `~/Applications/DoubaoWork.app` on macOS,
+   `%LOCALAPPDATA%\DoubaoWork\Application\app\DoubaoWork.exe` on Windows),
+   else 豆包 (`Doubao.app`, `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe`).
+   If you signed in to 豆包 through the plugin before 0.1.5, it stays on 豆包
+   while 豆包 is installed.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
    (so Doubao's agent never reads or runs anything on your computer), picks
    the model, and writes the whole request (system prompt, tools, every
@@ -36,7 +44,7 @@ fallback for when the menu cannot be read.
 
 - **Unofficial.** It uses Doubao the way its own window does, but ByteDance
   may not like it. Use an account you can afford to lose.
-- **On macOS, Doubao runs one copy at a time.** If you opened Doubao
+- **On macOS, the app runs one copy at a time.** If you opened it
   yourself, quit it (⌘Q) first: the plugin's copy can't start beside it,
   and yours can't be driven (Chromium allows debugging only off the
   default profile). While the plugin's copy runs, opening Doubao brings up
@@ -52,13 +60,12 @@ fallback for when the menu cannot be read.
 - **Usage** is Doubao's own prompt count; the reply's tokens are estimated.
 - **The DevTools port** is on 127.0.0.1 only, but any program on this
   computer can drive the signed-in Doubao window through it while it runs.
-- macOS and Windows. Doubao has no Linux app.
+- macOS and Windows. Neither app has a Linux build.
 
 ## Settings
 
-- `DOUBAO_WORK_APP`: the Doubao binary, if it is not at
-  `/Applications/Doubao.app/Contents/MacOS/Doubao` (macOS) or
-  `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe` (Windows).
+- `DOUBAO_WORK_APP`: the app's binary, if it is not in one of the places
+  above. A path naming DoubaoWork is driven as 豆包工作, any other as 豆包.
 - `DOUBAO_WORK_HOME`: where the profile and port live.
 
 ## Adding another cloud agent

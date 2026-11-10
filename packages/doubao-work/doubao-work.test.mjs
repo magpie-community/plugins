@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, dataDir, owns, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, choose, dataDir, owns, isChat, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -154,28 +154,74 @@ test("on Windows a running copy of the app never blocks: Chromium keeps one copy
   }
 })
 
-test("the app is found on macOS and Windows, or where DOUBAO_WORK_APP says", () => {
+// withEnv runs fn with the variables the app lookup reads unset.
+const withEnv = (fn) => {
   const keys = ["DOUBAO_WORK_APP", "DOUBAO_WORK_HOME", "LOCALAPPDATA"]
   const was = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
   for (const k of keys) delete process.env[k]
   try {
-    expect(binary("darwin")).toBe("/Applications/Doubao.app/Contents/MacOS/Doubao")
-    // Doubao has no Linux build
-    expect(binary("linux")).toBe("")
-    // Windows: the per-user install's own exe, not Application\Doubao.exe's launcher
-    expect(binary("win32", "C:\\Users\\u")).toBe("C:\\Users\\u\\AppData\\Local\\Doubao\\Application\\app\\Doubao.exe")
-    expect(dataDir("win32", "C:\\Users\\u")).toBe("C:\\Users\\u\\AppData\\Local\\magpie-doubao-work")
-    process.env.LOCALAPPDATA = "D:\\Local"
-    expect(binary("win32", "C:\\Users\\u")).toBe("D:\\Local\\Doubao\\Application\\app\\Doubao.exe")
-    expect(dataDir("win32", "C:\\Users\\u")).toBe("D:\\Local\\magpie-doubao-work")
-    process.env.DOUBAO_WORK_APP = "/opt/doubao"
-    expect(binary("linux")).toBe("/opt/doubao")
+    return fn()
   } finally {
     for (const k of keys) {
       if (was[k] === undefined) delete process.env[k]
       else process.env[k] = was[k]
     }
   }
+}
+const only = (...paths) => (p) => paths.includes(p)
+
+test("the app is found on macOS and Windows, or where DOUBAO_WORK_APP says", () =>
+  withEnv(() => {
+    // nothing installed: 豆包工作's own place, so the error names it
+    expect(binary("darwin", "/Users/u", only())).toBe("/Applications/DoubaoWork.app/Contents/MacOS/DoubaoWork")
+    // neither app has a Linux build
+    expect(binary("linux", "/home/u", () => true)).toBe("")
+    // Windows: the per-user install's own exe, not Application\<name>.exe's launcher
+    expect(binary("win32", "C:\\Users\\u", only())).toBe("C:\\Users\\u\\AppData\\Local\\DoubaoWork\\Application\\app\\DoubaoWork.exe")
+    const old = "C:\\Users\\u\\AppData\\Local\\Doubao\\Application\\app\\Doubao.exe"
+    expect(binary("win32", "C:\\Users\\u", only(old))).toBe(old)
+    expect(dataDir("win32", "C:\\Users\\u")).toBe("C:\\Users\\u\\AppData\\Local\\magpie-doubao-work")
+    process.env.LOCALAPPDATA = "D:\\Local"
+    expect(binary("win32", "C:\\Users\\u", only())).toBe("D:\\Local\\DoubaoWork\\Application\\app\\DoubaoWork.exe")
+    expect(choose("win32", "C:\\Users\\u", only()).dataDir).toBe("D:\\Local\\magpie-doubao-work\\doubaowork")
+    expect(dataDir("win32", "C:\\Users\\u")).toBe("D:\\Local\\magpie-doubao-work")
+    process.env.DOUBAO_WORK_APP = "/opt/doubao"
+    expect(binary("linux")).toBe("/opt/doubao")
+    expect(choose("darwin", "/Users/u").app.name).toBe("豆包")
+    process.env.DOUBAO_WORK_APP = "/opt/DoubaoWork.app/Contents/MacOS/DoubaoWork"
+    expect(choose("darwin", "/Users/u").app.name).toBe("豆包工作")
+  }))
+
+// #917 (sinoyster): only 豆包工作 at its own path, no Doubao.app
+test("a Mac with only 豆包工作 drives 豆包工作 (#917)", () =>
+  withEnv(() => {
+    const work = "/Applications/DoubaoWork.app/Contents/MacOS/DoubaoWork"
+    const c = choose("darwin", "/Users/u", only(work))
+    expect(c.binary).toBe(work)
+    expect(c.app.name).toBe("豆包工作")
+    // its own profile, port and model list, apart from 豆包's
+    expect(c.dataDir).toBe("/Users/u/Library/Application Support/magpie-doubao-work/doubaowork")
+    // ~/Applications too
+    const mine = "/Users/u/Applications/DoubaoWork.app/Contents/MacOS/DoubaoWork"
+    expect(binary("darwin", "/Users/u", only(mine))).toBe(mine)
+    // with both installed, 豆包工作 is the one, until someone signed in to 豆包 through the plugin
+    const old = "/Applications/Doubao.app/Contents/MacOS/Doubao"
+    expect(binary("darwin", "/Users/u", only(work, old))).toBe(work)
+    expect(binary("darwin", "/Users/u", only(old))).toBe(old)
+    const signedIn = "/Users/u/Library/Application Support/magpie-doubao-work/profile"
+    const c2 = choose("darwin", "/Users/u", only(work, old, signedIn))
+    expect(c2.binary).toBe(old)
+    expect(c2.dataDir).toBe("/Users/u/Library/Application Support/magpie-doubao-work")
+    // a 豆包 profile with 豆包 gone: 豆包工作
+    expect(binary("darwin", "/Users/u", only(work, signedIn))).toBe(work)
+  }))
+
+test("both apps' chat pages are the plugin's", () => {
+  // 豆包工作 2.36.3's DevTools list, from the real app
+  expect(owns([{ url: "doubaowork://doubaowork-login/login?forceLogin=1" }, { url: "doubaowork://doubaowork-chat/chat" }])).toBe(true)
+  expect(owns([{ url: "doubaowork://doubaowork-launcher/chat?viewId=101" }, { url: "doubaowork://doubaowork-background/" }])).toBe(false)
+  expect(isChat("chrome://doubaowork-chat/chat")).toBe(true)
+  expect(isChat("https://doubaowork-chat/chat")).toBe(false)
 })
 
 test("owns knows Doubao's chat page", () => {
@@ -484,17 +530,19 @@ test("the plugin passes a sign-out on for re-sign-in and other failures as HTTP 
 })
 
 test("sign-in waits for the Doubao window's account", async () => {
-  const mac = () => "/Applications/Doubao.app/Contents/MacOS/Doubao"
-  const ok = I.createPlugin({ appBinary: mac, doubao: { waitSignedIn: async () => ({ signedIn: true, name: "yetone" }) } })
+  const mac = () => ({ app: { name: "豆包工作", download: "https://www.doubao.com/work" }, binary: "/Applications/DoubaoWork.app/Contents/MacOS/DoubaoWork" })
+  const ok = I.createPlugin({ pick: mac, doubao: { waitSignedIn: async () => ({ signedIn: true, name: "yetone" }) } })
   const r = await (await ok.auth.methods[0].authorize()).callback()
   expect(r).toMatchObject({ type: "success", accountId: "豆包工作 · yetone" })
-  const late = I.createPlugin({ appBinary: mac, doubao: { waitSignedIn: async () => null } })
+  const late = I.createPlugin({ pick: mac, doubao: { waitSignedIn: async () => null } })
   expect(await (await late.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("五分钟") })
-  const busy = I.createPlugin({ appBinary: mac, doubao: { waitSignedIn: async () => { throw Object.assign(Error("busy"), { code: "app_busy" }) } } })
+  const busy = I.createPlugin({ pick: mac, doubao: { waitSignedIn: async () => { throw Object.assign(Error("busy"), { code: "app_busy" }) } } })
   const b = await (await busy.auth.methods[0].authorize()).callback()
   expect(b.type).toBe("failed")
-  expect(b.error).toContain("退出豆包")
-  const linux = I.createPlugin({ appBinary: () => "", doubao: { waitSignedIn: async () => ({ signedIn: true, name: "x" }) } })
+  expect(b.error).toContain("退出豆包工作")
+  const gone = I.createPlugin({ pick: mac, doubao: { waitSignedIn: async () => { throw Object.assign(Error("gone"), { code: "app_missing" }) } } })
+  expect(await (await gone.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: "没有找到豆包工作，请先安装：https://www.doubao.com/work" })
+  const linux = I.createPlugin({ pick: () => ({ app: { name: "豆包工作" }, binary: "" }), doubao: { waitSignedIn: async () => ({ signedIn: true, name: "x" }) } })
   expect(await (await linux.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("没有 Linux 版") })
 })
 
