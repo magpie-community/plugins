@@ -81,7 +81,7 @@
       "summary": { "en": "Unofficial: Huawei Cloud CodeArts (码道) coding plans and OfficeAce (AgentArts), each signed in with Huawei Cloud OAuth on its own card — GLM, DeepSeek, openPangu and OfficeAce's MaaS models, live models and credit rates, credit usage by bucket and the daily check-in. Replaces officeace-auth; accounts signed in there keep working.", "zh": "非官方：华为云码道（CodeArts）编码套餐与 OfficeAce（AgentArts），两张卡各自用华为云 OAuth 登录；GLM、DeepSeek、openPangu 与 OfficeAce 的 MaaS 模型，实时模型与积分倍率、分桶积分用量和每日签到。取代 officeace-auth，原已登录的账号继续可用。" } },
     { "package": "@magpie-community/opencode-gcp-ai-auth", "name": "GCP AI", "providers": ["gcp-ai"], "community": true,
       "summary": { "en": "Vertex AI models and Google Cloud promotional credits, signed with your own gcloud or ADC login. Lists only the models your project can call.", "zh": "用本机 gcloud / ADC 登录使用 Vertex AI 模型，并读取 Google Cloud 促销赠金；只列出项目实际能调用的模型。" } },
-    { "package": "magpie-review-rules", "name": "Review & Model Rules", "kind": "middleware",
+    { "package": "magpie-review-rules", "name": "Claude Desktop Review & Model Rules", "kind": "middleware",
       "icon": "https://raw.githubusercontent.com/youyouhdhd/magpie-review-rules/main/page/icon.svg",
       "summary": {"en":"Pin Claude Desktop auto-mode action reviews to a chosen Magpie model, independently of the conversation model. Configure per-model Claude compatibility presets and sandboxed JavaScript request rules in a native settings page. No request changes until configured.","zh":"固定 Claude Desktop 自动模式的操作审核模型，不随对话模型切换；通过原生设置页配置逐模型 Claude 兼容预设与沙箱 JavaScript 请求规则。首次安装不改写请求。"} },
     { "package": "@magpie-community/middleware-param-override", "name": "Param Override", "kind": "middleware", "community": true,
