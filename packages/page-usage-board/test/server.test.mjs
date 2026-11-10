@@ -575,7 +575,8 @@ test('the dashboard asks the local service for attribution', () => {
 test('registry draft summary matches package.json verbatim (three-text rule)', () => {
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   const doc = readFileSync(path.join(root, 'docs', 'community-submission.md'), 'utf8');
-  const block = doc.match(/```json\n([\s\S]*?)```/);
+  // \r?\n：Windows 检出（core.autocrlf）下这份文件是 CRLF，写死 \n 会假红
+  const block = doc.match(/```json\r?\n([\s\S]*?)```/);
   assert.ok(block, 'registry json block present in community-submission.md');
   const reg = JSON.parse(block[1]);
   assert.equal(reg.package, pkg.name);
