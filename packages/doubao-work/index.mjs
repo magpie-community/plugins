@@ -20,9 +20,9 @@ const json = (status, message, type) =>
 // models are named as Doubao's menu names them: magpie adds the
 // provider's name. Each says it takes text only, or magpie would ask
 // models.dev about another vendor's model of the same id ("auto").
-function models() {
+function models(table = MODELS) {
   const out = {}
-  for (const [id, m] of Object.entries(MODELS))
+  for (const [id, m] of Object.entries(table))
     out[id] = {
       name: m.name,
       limit: { context: 256000, output: 32768 },
@@ -34,6 +34,10 @@ function models() {
   return out
 }
 
+// modelTable is the list the plugin offers: Doubao's menu as discover read
+// it (never opening the app here), or the built-in fallback.
+const modelTable = (doubao) => (typeof doubao?.modelList === "function" ? doubao.modelList() : MODELS)
+
 export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary } = {}) {
   const failed = (e) => {
     if (e?.signIn) throw e
@@ -44,7 +48,19 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
-      cfg.provider[ID] ??= { name: "豆包工作", npm: "@ai-sdk/openai-compatible", api: BASE, models: models() }
+      // the list comes from Doubao's menu, so it is merged in on every load
+      // instead of being frozen in the declaration; a model the user
+      // declared themselves keeps their settings
+      cfg.provider[ID] ??= { name: "豆包工作", npm: "@ai-sdk/openai-compatible", api: BASE }
+      cfg.provider[ID].models = { ...models(modelTable(doubao)), ...(cfg.provider[ID].models ?? {}) }
+    },
+    // each account is offered the models its own menu shows (the cache
+    // discover() writes; no app is opened from here)
+    provider: {
+      id: ID,
+      async models() {
+        return models(modelTable(doubao))
+      },
     },
     auth: {
       provider: ID,
@@ -68,6 +84,11 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
                 return { type: "failed", error: "打开豆包失败：" + String(e?.message ?? e) }
               }
               if (!s) return { type: "failed", error: "五分钟内没有在豆包窗口里登录，请再试一次。" }
+              // read the model menu now that the window is open and signed
+              // in, so the models it shows are listed at once
+              if (typeof doubao.discover === "function") {
+                try { await doubao.discover({ signal: AbortSignal.timeout(20000) }) } catch {}
+              }
               return { type: "success", access: "doubao-desktop", refresh: "", expires: 0, accountId: "豆包工作 · " + s.name, name: s.name }
             },
           }),
@@ -90,7 +111,7 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
           const model = String(body.model ?? "auto").replace(/^doubao-work\//, "")
-          if (!MODELS[model]) return json(404, `没有模型 ${model}。`, "model_not_found")
+          if (!modelTable(doubao)[model]) return json(404, `没有模型 ${model}。`, "model_not_found")
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = (r) => usageOf(r?.usage) || Math.ceil(prompt.length / 3)

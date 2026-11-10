@@ -7,15 +7,61 @@
 // (the page's text loses code fences), a text block under a thinking block
 // is the reasoning, ext.is_finish says it is done, and
 // ext.context_window_usage counts the prompt's tokens.
+import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, sleep } from "./cdp.mjs"
 
 export const CHAT = "doubao-chat/chat"
+
+// Doubao has no API to ask which models it offers: the app's own model menu
+// is the list, and it changes as Doubao adds models. These are the ones the
+// menu showed when the plugin was written; they are only the fallback for
+// when the menu cannot be read. The real list is read from the menu (see
+// Doubao#discover) and kept in models.json under DOUBAO_WORK_HOME.
 export const MODELS = {
   auto: { label: "自动", name: "自动" },
   "doubao-2.1-lite": { label: "豆包 2.1 Lite", name: "豆包 2.1 Lite" },
   "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包 2.1 Pro" },
+}
+
+// idFor turns the first line of a menu row into the model id a client
+// writes as doubao-work/<id>: "DeepSeek V4.1 Flash" -> "deepseek-v4.1-flash",
+// "豆包 2.1 Lite" -> "doubao-2.1-lite", "自动" -> "auto". A label with no
+// Latin letters or digits gets a stable hash instead.
+export function idFor(label) {
+  const text = String(label ?? "").trim()
+  if (!text || text === "自动") return "auto"
+  let id = text
+    .replace(/豆包/g, "doubao ")
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+  if (!id) {
+    let h = 0
+    for (const ch of text) h = (h * 31 + ch.codePointAt(0)) >>> 0
+    id = "model-" + h.toString(36)
+  } else if (!/^[a-z]/.test(id)) {
+    id = "model-" + id
+  }
+  return id
+}
+
+// tableFrom builds the model table ({ id: {label, name} }) from the rows
+// read off the menu. Nothing read means the fallback stays.
+export function tableFrom(rows) {
+  const out = {}
+  for (const r of rows ?? []) {
+    const label = String(r?.label ?? "").trim()
+    if (!label) continue
+    const id = idFor(label)
+    if (out[id]) continue
+    out[id] = { label, name: label }
+  }
+  if (!Object.keys(out).length) return { ...MODELS }
+  if (out.auto) out.auto = { ...MODELS.auto }
+  return out
 }
 
 // localAppData is %LOCALAPPDATA%, where Doubao's Windows installer puts
@@ -111,6 +157,29 @@ export const pickModel = (label) =>
   return "";
 `)
 
+// MENU reads the model list off the app's own menu: press the model button,
+// wait for the menu that has rows, and take the first line of each row.
+// Rows that open a submenu ("推理强度", a "more models" entry) are not
+// models and are left out. The menu is closed again with Escape.
+export const MENU = js(`
+  const b = $("[data-testid=chat_input_action_model]");
+  if (!b) return { error: "no model button" };
+  press(b);
+  let menu;
+  for (let i = 0; i < 30 && !menu; i++) {
+    await wait(100);
+    menu = $$("[role=menu]").find((m) => $$("[role=menuitem]", m).length);
+  }
+  if (!menu) return { error: "no model menu" };
+  await wait(250);
+  const rows = $$("[role=menuitem]", menu)
+    .filter((e) => e.getAttribute("aria-haspopup") !== "menu")
+    .map((e) => ({ label: e.innerText.split("\\n")[0].trim(), upgrade: e.innerText.includes("升级") }))
+    .filter((r) => r.label);
+  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  return { rows };
+`)
+
 // fill puts the prompt in the editor, one paragraph a line: that is how
 // Doubao sends newlines (a hard break is dropped).
 export const fill = (text) =>
@@ -161,11 +230,66 @@ export class DoubaoError extends Error {
 
 // Doubao drives the app. One request runs at a time: there is one window.
 export class Doubao {
-  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000 } = {}) {
+  constructor({ app, openPage = Page.open, poll = 150, idle = 180000, total = 900000, fresh = 6 * 60 * 60 * 1000 } = {}) {
     this.app = app ?? new App({ binary: binary(), dataDir: dataDir(), owns })
-    Object.assign(this, { openPage, poll, idle, total })
+    Object.assign(this, { openPage, poll, idle, total, fresh })
+    this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
+    this.table = null
+    this.tableAt = 0
     this.page = null
     this.queue = Promise.resolve()
+  }
+
+  // modelList is what the plugin offers: the menu read last time, or the
+  // fallback before the menu has ever been read. It never opens the app —
+  // the menu is read by discover(), on sign-in and on a stale request.
+  modelList() {
+    if (this.table) return this.table
+    try {
+      const d = JSON.parse(fs.readFileSync(this.cacheFile, "utf8"))
+      if (d?.models && typeof d.at === "number" && Object.keys(d.models).length) {
+        this.table = d.models
+        this.tableAt = d.at
+        return this.table
+      }
+    } catch {}
+    this.table = { ...MODELS }
+    this.tableAt = 0
+    return this.table
+  }
+
+  stale() {
+    this.modelList()
+    return !this.tableAt || Date.now() - this.tableAt > this.fresh
+  }
+
+  #save(table) {
+    this.table = table
+    this.tableAt = Date.now()
+    if (!this.cacheFile) return
+    try {
+      fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true })
+      const tmp = this.cacheFile + ".tmp"
+      fs.writeFileSync(tmp, JSON.stringify({ at: this.tableAt, models: table }, null, 1))
+      fs.renameSync(tmp, this.cacheFile)
+    } catch {}
+  }
+
+  // discover reads Doubao's model menu and keeps the result. It opens a
+  // new task first when the current page has no model button (the app can
+  // sit on 技能 or another page); nothing is sent, so no task runs.
+  async discover({ signal } = {}) {
+    const page = await this.connect(signal)
+    let read = await page.eval(MENU)
+    if (read?.error === "no model button") {
+      const why = await page.eval(NEW_TASK)
+      if (why) throw new DoubaoError("豆包读取模型列表失败：" + why, "doubao_ui")
+      read = await page.eval(MENU)
+    }
+    if (read?.error) throw new DoubaoError("豆包读取模型列表失败：" + read.error, "doubao_ui")
+    const table = tableFrom(read?.rows)
+    this.#save(table)
+    return table
   }
 
   async connect(signal) {
@@ -215,7 +339,11 @@ export class Doubao {
     }
     await step(NEW_TASK, "新建任务")
     await step(CLOUD, "切换到云电脑")
-    const label = (MODELS[model] ?? MODELS.auto).label
+    // the menu is open anyway to pick a model: refresh the list while here
+    // when it has not been read for a while
+    if (this.cacheFile && this.stale()) { try { await this.discover({ signal }) } catch {} }
+    const table = this.modelList()
+    const label = (table[model] ?? table.auto ?? MODELS.auto).label
     const picked = await page.eval(pickModel(label))
     if (picked === "upgrade") throw new DoubaoError(`${label} 需要升级豆包会员。`, "doubao_upgrade", { status: 403 })
     if (picked) throw new DoubaoError(`豆包选择模型失败：${picked}`, "doubao_ui")
