@@ -25478,6 +25478,64 @@
       "latest": "0.2.3",
       "readme": "# Magpie Fingerprint\n\n[简体中文](README.zh-CN.md) · [Magpie](https://github.com/yetone/magpie) · [lm-detector](https://github.com/Ikaleio/lm-detector)\n\nInvestigate suspected model substitution directly in Magpie. Compare numeric\nresponse fingerprints across providers or repeat a run after a service changes.\nThe page reuses Magpie’s configured models and gateway; the pinned\n`lmfpd-sdk` detector ranks nearby reference-bank models. Rankings are evidence\nfor investigation, not proof of model identity.\n\n![Fingerprint workspace (explicit demo data)](docs/preview.png)\n\n- Select up to 24 models across providers, with the same three challenges per batch.\n- Reuse Magpie authentication and native endpoint metadata; optionally pin an account.\n- Follow live sample counts, cancel work, and inspect the actual response route.\n- Compare ranked candidates, including partial and unscorable outcomes.\n- Keep raw replies and data versions in local history; export or copy JSON.\n- Magpie's native page bridge, controls and design tokens; follows the host's theme and language.\n- Compact model lists, keyboard-accessible view tabs, and narrow-screen layouts.\n\n## Install\n\nInstall **Fingerprint** from **Plugins → Discover**, or use the CLI. Requires\na current Magpie release with `page.service` support and Bun 1.4.2+:\n\n```sh\nmagpie plugin add @magpie-community/page-fingerprint\n```\n\nOpen **Fingerprint** in the sidebar, or choose **Fingerprint** from a provider's menu.\nStarting a detection sends three requests per selected model and uses that provider's quota.\n\n## Development\n\nRun these commands from `packages/fingerprint/`. Source, tests and the built\n`dist/` assets are checked in. Installation and the offline tests do not need\npackage downloads: `vendor/lmfpd-sdk` pins the MIT SDK at 0.2.0. Only rebuilding\nthe UI and running the type checker require the development dependencies.\nDirect build-tool versions are exact in `package.json`; `bun.lock` fixes the\ncomplete dependency graph using `registry.npmjs.org`. Builds use Bun 1.4.4.\nThere are no install/pack lifecycle scripts. After a source change, rebuild\nand commit the resulting `dist/` files.\n\nThe standalone project and release history are at\n[KaranocaVe/magpie-fingerprint](https://github.com/KaranocaVe/magpie-fingerprint).\n\n```sh\nbun run rebuild\nbun start\n```\n\n`rebuild` installs with `--frozen-lockfile --ignore-scripts` in an isolated\ncopy, runs typecheck/tests/build, and copies `dist/` back. This avoids Bun\nresolving the parent monorepo's workspaces; its temporary directory is removed\non completion. In a standalone copy of this package, `bun install\n--frozen-lockfile --registry https://registry.npmjs.org` and `bun run check`\nproduce the same build.\n\nThe plugin page service listens on `3488` by default and uses Magpie's gateway\nat `http://127.0.0.1:3425`. Opening or refreshing the page never downloads\nreference data. **Download reference data** explicitly fetches a fresh snapshot;\nstarting a run downloads one only when no usable snapshot is cached. There is\nno background refresh. The default primary source is\n`https://lm.ikale.io/data/`; its fallback is\n`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client's\nIP address. Reference downloads carry no provider credentials, model ids,\nprompts or replies. Only an explicitly started job sends sampling prompts\nthrough the configured gateway. See [integration.md](integration.md) for gateway\nauthentication, `magpie web`, environment variables, local reference sources,\nand the explicit `--demo` fixture.\n\n## Scope and limits\n\nThe first release supports numeric fingerprinting. Each run retains its loaded\nreference snapshot and records its `builtAt` value. The remote reference data\nis not version-pinned or authenticated by a locally pinned hash; the fallback\nuses `@latest`. Runs use three shared challenges per batch, bounded work, and\ncancellation. It records proposed, observed, and failed evidence separately;\nit does not prove provider identity, authenticate a model, or infer hidden\ntokenizers. `--demo` runs an isolated illustrative workflow without model calls.\n\nMagpie middleware and protocol adapters still apply. A changed actual provider/model\ninvalidates that target's aggregate score. Account pinning is optional; it does not\nturn a routed channel into an upstream identity guarantee. Tokenizer probing is deferred.\n\nMIT licensed. Third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).\n"
     },
+    "@magpie-community/page-free-tokens": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-page-free-tokens-0.1.0.tgz",
+          "integrity": "sha512-nAUjmsR2RtkceqaiSQ0qn1fjBSW/JozOlU0Ex9tqQyDkSFlVebW14dQdv1WZlDX0DIyjHZtk/c2rPONuQ9BVSQ==",
+          "time": "2026-11-10T01:33:58.295Z",
+          "manifest": {
+            "name": "@magpie-community/page-free-tokens",
+            "version": "0.1.0",
+            "description": "AIHOT Token 羊毛：在 magpie 里看哪些羊毛已配置可用、哪些差个插件、哪些还没插件。",
+            "type": "module",
+            "main": "./index.js",
+            "files": [
+              "index.js",
+              "src/",
+              "page/",
+              "!page/data.js",
+              "README.md",
+              "NOTICE",
+              "LICENSE",
+              "test/"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-page",
+              "magpie-plugin",
+              "free-tokens",
+              "aihot",
+              "token"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/free-tokens"
+            },
+            "magpie": {
+              "name": "Token 羊毛",
+              "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlRva2VuIOe+iuavmyI+CiAgPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTYiIGZpbGw9IiM0ZjQ2ZTUiLz4KICA8Y2lyY2xlIGN4PSIyOS41IiBjeT0iMzUuNSIgcj0iMTUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzLjQiLz4KICA8cGF0aCBkPSJNMjMuOCAyOS4yIEwyOS41IDM2LjIgTDM1LjIgMjkuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgogIDxwYXRoIGQ9Ik0yOS41IDM2LjIgVjQ0LjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNMjQuNiAzOS4yIEgzNC40IE0yNC42IDQyLjQgSDM0LjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNNDcgMTEuNSBsMiA1LjEgNS4xIDIgLTUuMSAyIC0yIDUuMSAtMiAtNS4xIC01LjEgLTIgNS4xIC0yIHoiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
+              "summary": {
+                "en": "AIHOT Token freebies: which you can use now, which need a magpie plugin, which have none.",
+                "zh": "AIHOT 的 Token 羊毛：哪些已能用、哪些差个插件、哪些还没插件。"
+              },
+              "page": {
+                "title": "Token 羊毛",
+                "file": "page/index.html",
+                "icon": "page/icon.svg",
+                "titles": {
+                  "en": "Token Freebies"
+                }
+              }
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/page-free-tokens\n\nAIHOT「Token 羊毛」页面：在 magpie 窗口里分三档看各家大模型的免费额度——**已配置可用** / **有插件待配置** / **暂无插件**，并对每条给出该装的插件或登录路径。\n\n数据来自 [AIHOT · Token 羊毛](https://aihot.news/free-tokens)，每个用户在自己的电脑上打开页面时直连读一次（不代理、不镜像、不随包分发、不后台轮询）。只展示官方厂商额度（`src/allowlist.js`）；图标用 magpie 自带品牌图标，其余首字母色块。页脚署名「数据源：AIHOT」并链回。\n\n> 已取得 AIHOT 书面授权（2026-11-10）：免费、不接广告/赞助、每用户本机打开时读一次、不做代理/镜像/数据分发。\n\n安装：`magpie plugin add @magpie-community/page-free-tokens`。测试：`bun test`（100% 行覆盖）。\n"
+    },
     "@magpie-community/page-usage": {
       "versions": {
         "0.1.0": {
