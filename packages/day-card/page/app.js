@@ -3,11 +3,12 @@
 // PNG to magpie.image to copy or save.
 (async () => {
   const V = globalThis.DayView;
+  const B = globalThis.DayBackgrounds;
   const $ = (id) => document.getElementById(id);
   const theme = await magpie.ready;
   let lang = theme.lang;
   const zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })();
-  const state = { date: "", day: null, icons: new Map(), loading: 0 };
+  const state = { date: "", day: null, icons: new Map(), loading: 0, drawn: 0, bg: B.norm(null) };
 
   // ---- words ----
   function words() {
@@ -117,10 +118,7 @@
 
   // ---- the receipt ----
   const PW = 440; // the paper
-  const PAD = 30; // the paper's margin
-  const SIDE = 207; // the backdrop either side, and above and below
-  const TOP = 48;
-  const BOTTOM = 52;
+  const PAD = 30; // the paper's margin; the backdrop's is the reader's (state.bg.pad)
   const TOOTH = 5; // the torn edge's teeth
 
   const f = (w, px) => `${w} ${px}px ${MONO}`;
@@ -321,18 +319,24 @@
   async function draw() {
     const day = state.day;
     if (!day) return;
+    const n = ++state.drawn;
+    const bg = state.bg;
     await fonts;
     const c = V.card(day, lang);
     const icons = new Map();
-    await Promise.all([...new Set(c.agents.flatMap((a) => [a.icon, ...a.models.map((m) => m.icon)]))].map(async (n) => icons.set(n, await picture(n))));
-    if (state.day !== day) return;
+    const [img] = await Promise.all([
+      backdrop(bg),
+      ...[...new Set(c.agents.flatMap((a) => [a.icon, ...a.models.map((m) => m.icon)]))].map(async (n) => icons.set(n, await picture(n))),
+    ]);
+    if (state.day !== day || n !== state.drawn) return;
     const scale = Math.max(2, Math.min(3, Math.ceil(window.devicePixelRatio || 1)));
 
     // measure, then draw
     const ph = slip(document.createElement("canvas").getContext("2d"), c, new Map(), 1) + TOOTH;
-    const W = PW + SIDE * 2;
-    const H = Math.max(TOP + ph + BOTTOM, Math.round(W * 4 / 3));
-    const top = Math.round((H - ph) / 2.15);
+    const side = bg.pad;
+    const W = PW + side * 2;
+    const H = ph + side * 2;
+    const top = side;
     const cv = $("card");
     cv.width = W * scale;
     cv.height = H * scale;
@@ -340,21 +344,12 @@
     const ctx = cv.getContext("2d");
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
-    // the backdrop: teal at the top left to mint at the bottom right
-    const g = ctx.createLinearGradient(0, 0, W * 0.35, H);
-    g.addColorStop(0, "#1dd8d1");
-    g.addColorStop(1, "#92ecc6");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    const g2 = ctx.createLinearGradient(0, 0, W, 0);
-    g2.addColorStop(0, "rgba(255, 255, 255, 0)");
-    g2.addColorStop(1, "rgba(255, 255, 255, .14)");
-    ctx.fillStyle = g2;
-    ctx.fillRect(0, 0, W, H);
+    // the backdrop the reader picked
+    B.paint(ctx, W, H, scale, bg, img);
 
     // the paper, torn along its foot, and its shadow
     ctx.save();
-    ctx.translate(SIDE, top);
+    ctx.translate(side, top);
     const paper = new Path2D();
     paper.moveTo(0, 0);
     paper.lineTo(PW, 0);
@@ -366,7 +361,7 @@
       paper.lineTo(i * tw, ph - TOOTH);
     }
     paper.closePath();
-    ctx.shadowColor = "rgba(0, 60, 55, .28)";
+    ctx.shadowColor = B.meta(bg.bg).shadow;
     ctx.shadowBlur = 36;
     ctx.shadowOffsetY = 12;
     ctx.fillStyle = PAPER;
@@ -453,6 +448,235 @@
   $("next").addEventListener("click", () => state.date && state.day && state.date < state.day.today && load(V.shift(state.date, 1)));
   $("today").addEventListener("click", () => load(""));
 
+  // ---- the backdrop: a pattern, a photo from bg/, or the reader's picture ----
+  const images = new Map();
+  function image(src) {
+    if (!images.has(src)) {
+      images.set(src, new Promise((ok) => {
+        const img = new Image();
+        img.onload = () => ok(img);
+        img.onerror = () => ok(null);
+        img.src = src;
+      }));
+    }
+    return images.get(src);
+  }
+  // a script of the page's own (bg/<id>.js, bg/thumbs.js): the photos come
+  // as data: so the canvas they're drawn on can still be saved
+  const scripts = new Map();
+  function script(file) {
+    if (!scripts.has(file)) {
+      scripts.set(file, new Promise((ok) => {
+        const s = document.createElement("script");
+        s.src = file;
+        s.onload = () => ok(true);
+        s.onerror = () => { scripts.delete(file); ok(false); };
+        document.head.append(s);
+      }));
+    }
+    return scripts.get(file);
+  }
+  async function photoSrc(id) {
+    if (!globalThis.DayPhotos?.[id]) await script(`bg/${id}.js`);
+    return globalThis.DayPhotos?.[id] || "";
+  }
+  // the picture under bg, loaded; null for a pattern
+  async function backdrop(bg) {
+    if (!B.meta(bg.bg).photo) return null;
+    const src = bg.bg === "custom" ? bg.image : await photoSrc(bg.bg);
+    return src ? image(src) : null;
+  }
+
+  // the reader's pick, kept in the plugin's options; magpie takes a write a
+  // second at most, so a slider's run is saved once it settles
+  let saveTimer = 0;
+  function keep() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try {
+        await magpie.options.set({ ...state.bg });
+      } catch (e) {
+        if (/429|too many/i.test(String(e?.message || e))) keep();
+        else status(`${V.text(lang).keepFailed}: ${e?.message || e}`, true);
+      }
+    }, 1100);
+  }
+  function pick(o) {
+    state.bg = B.norm({ ...state.bg, ...o });
+    paintPicker();
+    keep();
+    draw();
+  }
+
+  const pop = $("bg-pop");
+  const grid = $("bg-grid");
+  function swatch(id) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sw";
+    b.dataset.bg = id;
+    b.setAttribute("role", "radio");
+    return b;
+  }
+  // a pattern's swatch, drawn by the code that draws the card
+  function patternCanvas(id, size) {
+    const cv = document.createElement("canvas");
+    const s = Math.max(1, Math.min(3, Math.ceil(window.devicePixelRatio || 1)));
+    cv.width = cv.height = size * s;
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(s, 0, 0, s, 0, 0);
+    B.paint(ctx, size, size, s, { ...state.bg, bg: id }, null);
+    return cv;
+  }
+  async function buildGrid() {
+    await script("bg/thumbs.js");
+    const t = V.text(lang);
+    const list = B.list.map((m) => {
+      const b = swatch(m.id);
+      if (m.photo) {
+        const img = document.createElement("img");
+        img.alt = "";
+        img.src = globalThis.DayThumbs?.[m.id] || "";
+        b.append(img);
+      } else {
+        b.append(patternCanvas(m.id, 60));
+      }
+      return b;
+    });
+    if (state.bg.image) {
+      const b = swatch("custom");
+      const img = document.createElement("img");
+      img.alt = "";
+      img.src = state.bg.image;
+      b.append(img);
+      list.push(b);
+    }
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "sw add";
+    add.id = "bg-add";
+    add.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
+    add.setAttribute("aria-label", t.upload);
+    add.title = t.upload;
+    list.push(add);
+    grid.replaceChildren(...list);
+    paintPicker();
+  }
+  function paintPicker() {
+    const t = V.text(lang);
+    const bg = state.bg;
+    grid.querySelectorAll(".sw[data-bg]").forEach((b) => {
+      const name = t[`bg-${b.dataset.bg}`];
+      b.setAttribute("aria-label", name);
+      b.title = name;
+      b.setAttribute("aria-checked", String(b.dataset.bg === bg.bg));
+    });
+    $("pad").value = bg.pad;
+    $("blur").value = bg.blur;
+    $("dim").value = bg.dim;
+    pop.classList.toggle("photo", B.meta(bg.bg).photo);
+    paintChip();
+  }
+  async function paintChip() {
+    const cv = $("bg-chip");
+    const s = Math.max(1, Math.min(3, Math.ceil(window.devicePixelRatio || 1)));
+    cv.width = cv.height = 14 * s;
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(s, 0, 0, s, 0, 0);
+    const bg = state.bg;
+    const img = await backdrop(bg);
+    if (bg !== state.bg) return;
+    B.paint(ctx, 14, 14, s, bg, img);
+  }
+
+  function openPop() {
+    if (!grid.childElementCount) buildGrid();
+    pop.hidden = false;
+    pop.classList.remove("closing");
+    pop.classList.add("opening");
+    $("bg").setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => pop.classList.remove("opening"));
+  }
+  function closePop() {
+    if (pop.hidden) return;
+    $("bg").setAttribute("aria-expanded", "false");
+    pop.classList.add("closing");
+    setTimeout(() => { if (pop.classList.contains("closing")) { pop.hidden = true; pop.classList.remove("closing"); } }, 120);
+  }
+  $("bg").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (pop.hidden || pop.classList.contains("closing")) openPop(); else closePop();
+  });
+  grid.addEventListener("click", (e) => {
+    const b = e.target.closest(".sw");
+    if (!b) return;
+    if (b.id === "bg-add") $("file").click();
+    else pick({ bg: b.dataset.bg });
+  });
+  for (const id of ["pad", "blur", "dim"]) $(id).addEventListener("input", (e) => pick({ [id]: e.target.value }));
+  document.addEventListener("click", (e) => { if (!e.target.closest(".bgpick")) closePop(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePop(); });
+
+  // the reader's own picture, made small enough for the options magpie
+  // keeps (64KB a plugin): a JPEG of at most ~44KB as data:
+  const readFile = (file) => new Promise((ok, no) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result));
+    r.onerror = () => no(r.error);
+    r.readAsDataURL(file);
+  });
+  async function usePicture(file) {
+    if (!file || !/^image\//.test(file.type)) return;
+    try {
+      const img = await image(await readFile(file));
+      if (!img) throw new Error(file.name || "?");
+      const iw = img.naturalWidth, ih = img.naturalHeight;
+      let out = "";
+      for (const edge of [960, 800, 640, 520, 400]) {
+        const k = Math.min(1, edge / Math.max(iw, ih));
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(iw * k));
+        cv.height = Math.max(1, Math.round(ih * k));
+        const ctx = cv.getContext("2d");
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        for (const q of [0.82, 0.72, 0.62]) {
+          out = cv.toDataURL("image/jpeg", q);
+          if (out.length <= 44000) break;
+        }
+        if (out.length <= 44000) break;
+      }
+      if (out.length > 44000) throw new Error(file.name || "?");
+      pick({ bg: "custom", image: out });
+      buildGrid();
+    } catch (e) {
+      status(`${V.text(lang).imageFailed}: ${e?.message || e}`, true);
+    }
+  }
+  $("file").addEventListener("change", (e) => {
+    usePicture(e.target.files?.[0]);
+    e.target.value = "";
+  });
+  // a picture dropped on the page or pasted works as well as the picker
+  const main = document.querySelector("main");
+  document.addEventListener("dragover", (e) => {
+    if (![...(e.dataTransfer?.items || [])].some((i) => i.kind === "file")) return;
+    e.preventDefault();
+    main.classList.add("drop");
+  });
+  document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) main.classList.remove("drop"); });
+  document.addEventListener("drop", (e) => {
+    main.classList.remove("drop");
+    const f = [...(e.dataTransfer?.files || [])].find((f) => /^image\//.test(f.type));
+    if (!f) return;
+    e.preventDefault();
+    usePicture(f);
+  });
+  document.addEventListener("paste", (e) => {
+    const f = [...(e.clipboardData?.files || [])].find((f) => /^image\//.test(f.type));
+    if (f) usePicture(f);
+  });
+
   // ---- sharing ----
   const png = () => new Promise((ok, no) => $("card").toBlob((b) => (b ? ok(b) : no(new Error("no picture"))), "image/png"));
   $("copy").addEventListener("click", async () => {
@@ -481,10 +705,16 @@
     }
   });
 
-  magpie.onTheme((t) => { lang = t.lang; words(); paintBar(); draw(); });
+  magpie.onTheme((t) => { lang = t.lang; words(); paintBar(); if (grid.childElementCount) paintPicker(); draw(); });
   // today's numbers keep coming while the page is open
   setInterval(() => { if (state.day && state.date === state.day.today && document.visibilityState !== "hidden") load(state.date); }, 60_000);
   words();
   paintBar();
+  try {
+    state.bg = B.norm(await magpie.options.get());
+  } catch {
+    // the default backdrop, until the reader picks one
+  }
+  paintPicker();
   await load("");
 })();

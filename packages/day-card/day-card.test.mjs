@@ -213,3 +213,37 @@ test("the receipt's face comes with the page, as data the frame can load", () =>
   expect(html.indexOf('src="fonts.js"')).toBeLessThan(html.indexOf('src="app.js"'))
   expect(read("fonts.LICENSE.txt")).toContain("SIL OPEN FONT LICENSE")
 })
+
+// backgrounds.js, as the page loads it
+const bgScope = {}
+new Function("globalThis", read("backgrounds.js"))(bgScope)
+const B = bgScope.DayBackgrounds
+
+test("every backdrop has a name in every language, and its picture comes with the page", () => {
+  const ids = [...B.list.map((b) => b.id), "custom"]
+  expect(new Set(ids).size).toBe(ids.length)
+  for (const [lang, t] of Object.entries(V.TEXT)) for (const id of ids) expect([lang, id, typeof t[`bg-${id}`]]).toEqual([lang, id, "string"])
+  const thumbs = {}
+  new Function("globalThis", read("bg/thumbs.js"))(thumbs)
+  for (const b of B.list.filter((b) => b.photo)) {
+    // data:, so the canvas a photo is drawn on can still be copied and saved
+    const photos = {}
+    new Function("globalThis", read(`bg/${b.id}.js`))(photos)
+    expect(photos.DayPhotos[b.id]).toMatch(/^data:image\/jpeg;base64,\/9j\//)
+    expect(thumbs.DayThumbs[b.id]).toMatch(/^data:image\/jpeg;base64,\/9j\//)
+  }
+  const html = read("index.html")
+  expect(html.indexOf('src="backgrounds.js"')).toBeLessThan(html.indexOf('src="app.js"'))
+})
+
+test("a saved backdrop is made sound before it is drawn", () => {
+  expect(B.norm(null)).toEqual({ bg: "teal", pad: 76, blur: 0, dim: 0, image: "" })
+  expect(B.norm({ bg: "seigaiha", pad: 500, blur: -3, dim: "40" })).toEqual({ bg: "seigaiha", pad: 160, blur: 0, dim: 40, image: "" })
+  expect(B.norm({ bg: "nope", pad: "x" })).toMatchObject({ bg: "teal", pad: 76 })
+  // a custom backdrop needs its picture, and only a picture as data:
+  expect(B.norm({ bg: "custom" }).bg).toBe("teal")
+  expect(B.norm({ bg: "custom", image: "https://example.com/a.jpg" })).toMatchObject({ bg: "teal", image: "" })
+  expect(B.norm({ bg: "custom", image: "data:image/jpeg;base64,AAAA", pad: 24 })).toEqual({ bg: "custom", pad: 24, blur: 0, dim: 0, image: "data:image/jpeg;base64,AAAA" })
+  expect(B.meta("custom").photo).toBe(true)
+  expect(B.meta("nope").id).toBe("teal")
+})
