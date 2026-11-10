@@ -41,7 +41,7 @@ const words = {
     emptyModels: "No quota window can be estimated yet. Let magpie record some usage, or wait until a window has a few readings.",
     emptyPools: "No quota window can be estimated yet.",
     exhausted: (w) => `Exhausted (${w})`,
-    historical: "from past rounds",
+    historical: "(from past rounds)",
     hoursUnit: "h",
     daysUnit: "d",
     over: "> 1000 d",
@@ -91,7 +91,7 @@ const words = {
     emptyModels: "还没有可估算的额度窗口。先让 magpie 记录一些用量，或等额度读数攒够几个点。",
     emptyPools: "没有可估算的额度窗口。",
     exhausted: (w) => `已用完（${w}）`,
-    historical: "按历史轮次估",
+    historical: "（按历史轮次估）",
     hoursUnit: "小时",
     daysUnit: "天",
     over: "> 1000 天",
@@ -171,6 +171,7 @@ function labels() {
   $("th-round-calls").textContent = t.roundCalls;
   $("th-reset").textContent = t.reset;
   document.title = t.heading;
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
 }
 
 function render(report) {
@@ -264,7 +265,7 @@ function render(report) {
     row.appendChild(el("td", "num", pool.tpp ? fmtTokens(pool.tpp) : "—"));
     const tokens = el("td", "num");
     if (pool.blocked) tokens.textContent = t.exhausted(pool.blockedBy || "");
-    else if (pool.lowConfidence) tokens.textContent = fmtTokens(pool.tokens) + "（" + t.historical + "）";
+    else if (pool.lowConfidence) tokens.textContent = fmtTokens(pool.tokens) + t.historical;
     else tokens.textContent = fmtTokens(pool.tokens);
     if (pool.blocked) tokens.classList.add("warn");
     row.appendChild(tokens);

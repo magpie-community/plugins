@@ -176,7 +176,9 @@ export function tokensPerPercent(points, acc, sliceStats) {
 
   return {
     tpp: med,
-    method: usable.length > 1 ? `多轮中位数（${usable.length} 轮）` : usable.length === 1 ? "单轮" : "记录不足",
+    // 语言无关的取值，页面自己翻译：median 用多轮中位数，single 只有一轮，sparse 记录不足。
+    method: usable.length > 1 ? "median" : usable.length === 1 ? "single" : "sparse",
+    usableRounds: usable.length,
     start: pool[0].start,
     end: pool[pool.length - 1].end,
     drop: pool[pool.length - 1].drop,
@@ -313,7 +315,7 @@ export function buildReport({ quotaRecords, history, usage, now = Date.now() }) 
       const shortExhausted = p.mode === "longest"
         ? p.wins.filter((x) => x !== binding && x.remaining <= 1).map((x) => x.name)
         : []
-      const poolKey = `${group.provider}/${group.user || "（无账号）"}·${p.label}`
+      const poolKey = group.user ? `${group.provider}/${group.user}·${p.label}` : `${group.provider}·${p.label}`
       const row = {
         pool: poolKey,
         provider: group.provider,
@@ -340,7 +342,7 @@ export function buildReport({ quotaRecords, history, usage, now = Date.now() }) 
       if (blockedWin) {
         skipped.blockedWindows++
         if (!blockedAccounts.find((a) => a.account === key)) {
-          blockedAccounts.push({ account: key, reason: `${blockedWin.name} 已用完` })
+          blockedAccounts.push({ account: key, window: blockedWin.name })
         }
         pools.push(row)
         continue
@@ -370,8 +372,8 @@ export function buildReport({ quotaRecords, history, usage, now = Date.now() }) 
           })
         }
       } else {
-        addModel(models, "", tokens, poolKey, "（未分模型）")
-        row.models.push({ id: "", name: "（未分模型）", share: 1, tokens })
+        addModel(models, "", tokens, poolKey, "")
+        row.models.push({ id: "", name: "", share: 1, tokens })
         pushDetail(modelPoolDetail, "", {
           pool: poolKey, provider: group.provider, user: group.user, window: p.label,
           remaining: binding ? binding.remaining : 0, resetsAt: shown.resetsAt, poolTokens: tokens, tokens, share: 1,
