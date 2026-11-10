@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-free-tokens",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AIHOT Token 羊毛：在 magpie 里看哪些羊毛已配置可用、哪些差个插件、哪些还没插件。",
   "type": "module",
   "main": "./index.js",
