@@ -801,8 +801,6 @@ function whoOfStatus(u = {}) {
   }
 }
 
-const accountIdOf = (who) => who?.orgId || who?.teamId || who?.user || "Devin"
-
 // whoByKey is whose key it is, as GetUserStatus (usage's) says, asked with
 // the key itself: {user, plan, orgId?, teamId?}, null when Devin refuses
 // the key, undefined when it can't tell.
@@ -935,18 +933,18 @@ async function exchange(code, verifier, redirect) {
 // folder of the plugin's own: never by the CLI alone, which on Windows
 // names its own account whatever key it is given (#17). A key Devin or the
 // CLI says nobody is signed in with fails it; with neither able to tell,
-// the account is just "Devin".
+// the account has no identity metadata.
 async function success(key, server) {
   let who = await whoByKey(key, server)
   if (who === undefined) who = await identity(await homeFor(key, server))
   if (who === null) throw new Error("Devin didn't take the sign-in: nobody is signed in with the token it gave")
-  const metadata = { email: who?.user || "Devin" }
+  const metadata = who?.user ? { email: who.user } : {}
   if (who?.plan) metadata.plan = who.plan
   const orgId = who?.orgId || who?.teamId
   if (orgId) metadata.orgId = orgId
   if (who?.teamId) metadata.teamId = who.teamId
   if (server && server !== SERVER) metadata.server = server
-  return { type: "success", provider: ID, key, accountId: accountIdOf(who), metadata }
+  return { type: "success", provider: ID, key, metadata }
 }
 
 // browserSignIn is `devin auth login`'s round, run by the plugin: PKCE
@@ -3147,7 +3145,27 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
       methods: [
         { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
-        { type: "api", label: "Devin session token (another account)", placeholder: "devin-session-token$…" },
+        {
+          type: "api",
+          label: "Devin session token",
+          prompts: [
+            {
+              type: "password",
+              key: "token",
+              message: "Devin session token",
+              placeholder: "devin-session-token$…",
+              validate: (value) =>
+                String(value ?? "").trim().startsWith("devin-session-token$")
+                  ? undefined
+                  : "the token starts with devin-session-token$",
+            },
+          ],
+          async authorize(inputs) {
+            const key = String(inputs?.token ?? "").trim()
+            if (!key.startsWith("devin-session-token$")) return { type: "failed", error: "the token starts with devin-session-token$" }
+            return await success(key, SERVER)
+          },
+        },
       ],
       // magpie's own switches (OpenCode never reads auth.options)
       options: [
@@ -3210,7 +3228,6 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         name: "Devin",
         npm: CHAT,
         api: BASE,
-        maxAccounts: 0,
         ...was,
         models: { ...Object.fromEntries(listed(familiesOf(SNAPSHOT), [], SNAPSHOT_IMAGES).map((m) => [m.id, configModel(m)])), ...(was.models ?? {}) },
       }
@@ -3234,4 +3251,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, accountIdOf, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
