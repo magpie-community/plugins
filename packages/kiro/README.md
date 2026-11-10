@@ -257,9 +257,13 @@ its own with its count and when it lapses. Bonus windows are shown only.
 Kiro spends the plan's credits first, so a month used up while a bonus has
 credits left is shown only too, and the account isn't taken for spent.
 
-With overage on (`overageConfiguration.overageStatus` `ENABLED`), the
-month's window counts against the overage cap (`overageCap`), which is the
-month's whole limit; with it off, against the plan's credits.
+With overage on (`overageConfiguration.overageStatus` `ENABLED`), the month
+is two windows, as the Kiro IDE shows it: the plan's credits, shown only
+(using them up doesn't stop the account), then the overage
+(`currentOveragesWithPrecision`) against the overage cap (`overageCap`),
+which counts the overage alone, not the plan's credits with it. A Power
+account that used 12589.24 shows `10000 / 10000` and `2589.24 / 37500`.
+With overage off, the plan's credits are the month.
 
 Each request's cost is what Kiro's `meteringEvent`s say, in credits, summed
 over the request (a web search's turns included). Kiro has already applied
@@ -287,8 +291,9 @@ again.
 - With every enabled region used up, the answer is a 429 naming them, and a
   region not enabled, so magpie goes on to another account.
 - `auth.usage` reads both regions: a window for each, shown only, and their
-  sum, which magpie weighs the account by. From 80% of the sum, a region
-  not enabled is pointed out in its text.
+  sum, which magpie weighs the account by. With overage on, the plans' sum
+  comes first, shown only, and the overages' sum is the one magpie weighs.
+  From 80% of the sum, a region not enabled is pointed out in its text.
 
 Builder ID, Google, GitHub and API key sign-ins keep one region.
 

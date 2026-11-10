@@ -494,18 +494,28 @@ function goG(x) {
 // first, then these, so a month used up while a bonus has credits left
 // is set aside too, and the account isn't taken for spent.
 //
-// With overage on, Kiro goes on past the plan's credits up to the overage
-// cap, which is the month's whole limit (a 2000-credit plan used 4104, of
-// them 2104 overage, under a cap of 10000), so the month's window counts
-// against the cap. With overage off the cap Kiro still sends means nothing.
+// With overage on, Kiro goes on past the plan's credits, billed as post-paid
+// credits, until those reach the overage cap. The cap counts the overage
+// alone, not the plan's credits with it: it is the profile's "maximum
+// allowed overage" quota (in USD, $0.04 a credit; $400 is 10000 credits).
+// So with overage on the month is two windows, as the Kiro IDE shows it:
+// the plan's credits (12589.24 used of a 10000 plan is "10000 / 10000"),
+// shown only, as using them up doesn't stop the account, and the overage
+// (2589.24 / 37500), which does (wizcheu on X). With overage off the cap Kiro
+// still sends means nothing, and the plan's credits are the month.
 const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
+const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
 const overageOn = (l) =>
   String(l?.overageConfiguration?.overageStatus ?? "").toUpperCase() === "ENABLED" || l?.overageConfiguration?.overageEnabled === true
-function usageOf(l, now = Date.now()) {
+
+// readUsage is usageOf with the month's windows named: plan, the plan's
+// credits, and stop, the window that stops the account (the overage's
+// with overage on, else plan itself).
+function readUsage(l, now = Date.now()) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
-  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
   const overage = overageOn(l)
   const windows = []
+  let plan, stop
   for (const u of l?.usageBreakdownList ?? []) {
     const t = u?.freeTrialInfo
     if (t && String(t.freeTrialStatus ?? "").toUpperCase() === "ACTIVE" && num(t.usageLimitWithPrecision) > 0) {
@@ -521,36 +531,53 @@ function usageOf(l, now = Date.now()) {
       bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
         amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
     }
-    const used = num(u?.currentUsageWithPrecision)
-    const limit = Math.max(num(u?.usageLimitWithPrecision), overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0)
-    if (limit > 0) {
-      const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
-      const carried = used >= limit && bonuses.some((b) => b.amount < b.limit)
-      windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
-        display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600, ...(carried ? { aside: true } : {}) })
+    const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
+    const cap = overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0
+    const reset = at(num(u?.nextDateReset) || num(l?.nextDateReset))
+    const month = { resetsAt: reset, unit: "credits", span: 30 * 24 * 3600 }
+    const name = u?.displayNamePlural || u?.displayName || "Credits"
+    const left = bonuses.some((b) => b.amount < b.limit)
+    if (cap > 0) {
+      // what Kiro says of the overage, else what is past the plan
+      const said = typeof u?.currentOveragesWithPrecision === "number" ? u.currentOveragesWithPrecision : u?.currentOverages
+      const over = typeof said === "number" && Number.isFinite(said) ? said : Math.max(0, used - limit)
+      const inPlan = Math.min(used, limit)
+      plan = limit > 0 ? { name, used: (100 * inPlan) / limit, display: count(inPlan, limit), amount: inPlan, limit, ...month, aside: true } : undefined
+      stop = { name: "Overage", used: (100 * over) / cap, display: count(over, cap), amount: over, limit: cap, ...month,
+        ...(over >= cap && left ? { aside: true } : {}) }
+      windows.push(...(plan ? [plan] : []), stop)
+      plan ??= stop
+    } else if (limit > 0) {
+      plan = stop = { name, used: (100 * used) / limit, display: count(used, limit), amount: used, limit, ...month,
+        ...(used >= limit && left ? { aside: true } : {}) }
+      windows.push(plan)
     }
     windows.push(...bonuses)
   }
   const email = l?.userInfo?.email
-  return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
+  const usage = { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
+  return { usage, plan, stop }
 }
+
+const usageOf = (l, now = Date.now()) => readUsage(l, now).usage
 
 // regionsUsage is an Identity Center account's credits from each region's
 // read (reads: { region, l } read, { region, error } not, { region,
 // missing } with no profile, not enabled): each region's month shown only,
 // and their sum the window magpie weighs the account by, used up only when
-// every region read is. A free trial or bonus credits are the first read
-// region's. regions says, of each region read, whether it is used up and
-// when it resets. Regions read come first, then those that couldn't be read,
-// then those not enabled: a card that shows only the first few windows then
-// shows the credits an account has.
+// every region read is. With overage on, the plans' sum comes first, shown
+// only, then the overages' sum weighs the account. A free trial or bonus
+// credits are the first read region's. regions says, of each region read,
+// whether it is used up and when it resets. Regions read come first, then
+// those that couldn't be read, then those not enabled: a card that shows
+// only the first few windows then shows the credits an account has.
 function regionsUsage(reads, now = Date.now()) {
   const shown = []
   const failed = []
   const off = []
   const regions = []
   const missing = []
-  let amount = 0, limit = 0, resets = 0, first, monthName
+  let amount = 0, limit = 0, inPlan = 0, ofPlan = 0, resets = 0, first, monthName, anyOver = false, allOver = true
   for (const r of reads) {
     const name = `Credits (${r.region})`
     if (r.error) {
@@ -562,23 +589,32 @@ function regionsUsage(reads, now = Date.now()) {
       off.push({ name, display: "not enabled", aside: true })
       continue
     }
-    const u = usageOf(r.l, now)
+    const { usage: u, plan, stop } = readUsage(r.l, now)
     first ??= u
-    const month = u.windows.find((w) => w.span)
-    if (!month) continue
-    monthName ??= month.name
-    amount += month.amount
-    limit += month.limit
-    const at = Date.parse(month.resetsAt ?? "")
+    if (!stop) continue
+    const over = stop !== plan
+    anyOver ||= over
+    allOver &&= over
+    monthName ??= plan.name
+    amount += stop.amount
+    limit += stop.limit
+    inPlan += plan.amount
+    ofPlan += plan.limit
+    const at = Date.parse(stop.resetsAt ?? "")
     if (at > 0 && (!resets || at < resets)) resets = at
-    shown.push({ ...month, name: `${month.name} (${r.region})`, aside: true })
-    regions.push({ region: r.region, full: month.amount >= month.limit, resetsAt: at > 0 ? at : 0 })
+    shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
+    if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+    regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: at > 0 ? at : 0 })
   }
   const windows = []
+  const resetsAt = resets ? { resetsAt: new Date(resets).toISOString() } : {}
   if (limit > 0) {
+    if (anyOver && ofPlan > 0)
+      windows.push({ name: monthName, used: (100 * inPlan) / ofPlan, ...resetsAt, display: count(inPlan, ofPlan), amount: inPlan, limit: ofPlan,
+        unit: "credits", span: 30 * 24 * 3600, aside: true })
     let display = count(amount, limit)
     if (missing.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${missing.join(", ")} not enabled: ask your admin to enable it`
-    windows.push({ name: monthName, used: (100 * amount) / limit, ...(resets ? { resetsAt: new Date(resets).toISOString() } : {}),
+    windows.push({ name: allOver ? "Overage" : monthName, used: (100 * amount) / limit, ...resetsAt,
       display, amount, limit, unit: "credits", span: 30 * 24 * 3600 })
   }
   windows.push(...shown, ...failed, ...off, ...(first?.windows ?? []).filter((w) => !w.span))
