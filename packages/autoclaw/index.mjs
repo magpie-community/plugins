@@ -70,7 +70,19 @@ const FLAGGED = [
   // a sentence, not "assistant.." or "Anthropic's the agent framework".
   [/You are a Claude agent, built on Anthropic's Claude Agent SDK\.?/gi, "You are a coding assistant."],
   [/(?:Anthropic's |the )?Claude Agent SDK/gi, "the agent framework"],
-  [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
+  // DeepSeek Harness (dsh) opens "You are an AI agent powered by DeepSeek
+  // Harness." (dsh-system-prompt's harness:identity section), and its dev
+  // context names the product again further down: "The runtime context names
+  // the DeepSeek Harness implementation checkout.", "...through the DeepSeek
+  // Harness Web GUI whose URL...", "Current DeepSeek Harness implementation
+  // checkout: ...". The gateway 406s while the name is anywhere in system, not
+  // only on the first line (#924: the reporter's replay, five sends each,
+  // was 406 with the identity line alone rewritten and 200 x5 with every
+  // occurrence masked). The comma before "powered by" is optional, as the
+  // reporter saw it with one. The identity rule runs first so that line
+  // reads as a sentence; the bare name is masked everywhere after it.
+  [/You are an AI agent,?\s+powered by DeepSeek\s+Harness\.?/gi, "You are an AI agent powered by a local coding harness."],
+  [/\bDeepSeek\s+Harness\b/gi, "DeepSeek"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
   // 11-05: subagent prompts (fork/Explore) open "You are an agent for Claude
   // Code, …" — ten 406 dumps that afternoon, all the same one line; the plain
@@ -96,6 +108,13 @@ const FLAGGED = [
   // 4.6-turbo") is not one the gateway has been seen to refuse.
   [/This conversation is powered by GLM-([\w-]+(?:\.[\w-]+)*)/gi, "This conversation is powered by the GLM-$1 model"],
   [/(powered by )the model GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?/gi, "$1the GLM-$2 model"],
+  // #924: "You are a coding agent powered by the glm-5.3-flash model." (a
+  // lowercase name, the version before "model") was reported refused; the
+  // form the two rules above write, "powered by the GLM-5.3-flash model",
+  // is the one probed to pass on 11-03. So every "powered by the glm-<x>
+  // model" sentence, in any case, comes out in that one form. Only that
+  // sentence: a glm-5.3 in a path, a model id or code elsewhere is left.
+  [/(powered by )the GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?(\s+model\b)/gi, "$1the GLM-$2$4"],
   // WorkBuddy's CLI template still opens "You are CodeBuddy Code." (#466);
   // "You are CodeBuddy" alone passes.
   [/You are CodeBuddy Code/gi, "You are the CodeBuddy Code CLI"],

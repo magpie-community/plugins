@@ -233,6 +233,91 @@ test("WorkBuddy's GLM opening line and CodeBuddy Code's identity line are rewrit
   expect(messages[1].content).toBe("This conversation is powered by GLM-5.3")
 })
 
+// #924 (connoryang331): DeepSeek Harness names itself three times in system,
+// and the gateway 406s while any one is left; the reporter's replay was 200
+// five of five once every occurrence was masked. The fixtures are dsh's own
+// strings byte for byte (@deepseek-ai/dsh 0.2.1-rc.2: dsh-system-prompt's
+// harness:identity section, dsh-harness-dev-context's HARNESS_SOURCE_PROMPT,
+// WEB_SURFACE_PROMPT's opening and its runtime-context line), plus the
+// reporter's comma form and their lowercase GLM sentence.
+const DSH_IDENTITY = "You are an AI agent powered by DeepSeek Harness."
+const DSH_SOURCE = "The runtime context names the DeepSeek Harness implementation checkout. The checkout location and current working directory are separate values and may differ; never infer the working directory from the checkout path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself."
+const DSH_WEB = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI."
+const DSH_RUNTIME = 'Current DeepSeek Harness implementation checkout: "/Users/me/dsh".'
+const DSH_SYSTEM = [DSH_IDENTITY, "# Tools\nUse the tools to complete the task.", DSH_SOURCE, DSH_WEB, DSH_RUNTIME].join("\n\n")
+
+test("DeepSeek Harness is masked everywhere in system, not only its identity line", () => {
+  const out = unflagged(DSH_SYSTEM)
+  expect(out).not.toMatch(/DeepSeek\s+Harness/i)
+  expect(out).toBe([
+    "You are an AI agent powered by a local coding harness.",
+    "# Tools\nUse the tools to complete the task.",
+    DSH_SOURCE.replace("DeepSeek Harness", "DeepSeek"),
+    DSH_WEB.replace("DeepSeek Harness", "DeepSeek"),
+    'Current DeepSeek implementation checkout: "/Users/me/dsh".',
+  ].join("\n\n"))
+  // the reporter's identity line carries a comma
+  expect(unflagged("You are an AI agent, powered by DeepSeek Harness.")).toBe("You are an AI agent powered by a local coding harness.")
+  expect(unflagged("you are an ai agent, powered by deepseek harness")).toBe("You are an AI agent powered by a local coding harness.")
+  expect(unflagged(unflagged(DSH_SYSTEM))).toBe(out)
+  // a hyphenated name, a package or a path is not the product name
+  for (const t of ["@deepseek-ai/dsh-system-prompt", "deepseek-harness", "DeepSeek is a model."]) expect(unflagged(t)).toBe(t)
+})
+
+test("a lowercase glm powered-by sentence comes out in the GLM form the gateway takes", () => {
+  expect(unflagged("You are a coding agent powered by the glm-5.3-flash model.")).toBe("You are a coding agent powered by the GLM-5.3-flash model.")
+  expect(unflagged("Powered by the glm-4.5-air[1m] model, you help.")).toBe("Powered by the GLM-4.5-air model, you help.")
+  // the reporter's other sentence was already rewritten before #924
+  expect(unflagged("You are powered by the model glm-5.3-flash.")).toBe("You are powered by the GLM-5.3-flash model.")
+  // the form written is left as it is
+  expect(unflagged("You are powered by the GLM-5.3-flash model.")).toBe("You are powered by the GLM-5.3-flash model.")
+  // only the powered-by sentence: model ids, paths and code are left
+  for (const t of [
+    "Set model: glm-5.3-flash in config.yaml.",
+    "~/models/the glm-5.3-flash model/weights.bin is large",
+    "const m = 'glm-5.3-flash' // the glm-5.3 model",
+    "built by the glm-5.3-flash model.",
+  ]) expect(unflagged(t)).toBe(t)
+})
+
+test("the loader masks DeepSeek Harness in system and developer text only, on both gateways", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(JSON.parse(String(init?.body ?? "{}")))
+    return new Response("{}")
+  }
+  try {
+    for (const Plugin of [AutoclawAuthPlugin, AutoclawCnAuthPlugin]) {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      const toolArgs = JSON.stringify({ query: "DeepSeek Harness powered by the glm-5.3-flash model." })
+      const body = JSON.stringify({
+        model: "zai_glm-5.3-flash",
+        messages: [
+          { role: "system", content: [{ type: "text", text: DSH_SYSTEM }] },
+          { role: "developer", content: DSH_WEB },
+          { role: "user", content: "Is DeepSeek Harness powered by the glm-5.3-flash model?" },
+          { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "search", arguments: toolArgs } }] },
+          { role: "tool", tool_call_id: "c1", content: "DeepSeek Harness docs" },
+        ],
+      })
+      expect((await loader.fetch("x", { method: "POST", body })).status).toBe(200)
+      const sent = calls.at(-1)
+      const sys = sent.messages.find((m) => m.role === "system")
+      const dev = sent.messages.find((m) => m.role === "developer")
+      expect(JSON.stringify(sys)).not.toMatch(/DeepSeek\s+Harness/i)
+      expect(JSON.stringify(sys)).toContain("You are an AI agent powered by a local coding harness.")
+      expect(dev.content).toBe(DSH_WEB.replace("DeepSeek Harness", "DeepSeek"))
+      expect(sent.messages.find((m) => m.role === "user").content).toBe("Is DeepSeek Harness powered by the glm-5.3-flash model?")
+      expect(sent.messages.find((m) => m.role === "assistant").tool_calls[0].function.arguments).toBe(toolArgs)
+      expect(sent.messages.find((m) => m.role === "tool").content).toBe("DeepSeek Harness docs")
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 // Hermes Agent 0.22.1 (Discord, 01huadalang, 10-30): every chat through
 // AutoClaw 国内 was a 406. The fixtures are Hermes' own strings byte for
 // byte: DEFAULT_SOUL_MD (hermes_cli/default_soul.py, the SOUL.md every
@@ -302,7 +387,10 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["an agent for Claude Code CLI, ask it", "an agent for Claude Code CLI, ask it"],
     ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
     ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
-    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
+    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by a local coding harness."],
+    ["You are an AI agent, powered by DeepSeek Harness.", "You are an AI agent powered by a local coding harness."],
+    ["The runtime context names the DeepSeek Harness implementation checkout.", "The runtime context names the DeepSeek implementation checkout."],
+    ["You are a coding agent powered by the glm-5.3-flash model.", "You are a coding agent powered by the GLM-5.3-flash model."],
     ["You are Codex, OpenAI's coding agent.", "You are the Codex agent, OpenAI's coding agent."],
     ["Codex CLI is the tool you run.", "Codex command-line tool is the tool you run."],
     ["You are opencode, an AI coding agent.", "You are the opencode agent, an AI coding agent."],
