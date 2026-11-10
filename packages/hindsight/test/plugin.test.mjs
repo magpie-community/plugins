@@ -72,11 +72,15 @@ test("a turn recalls once; tool-loop replays are sticky and history is re-attach
 
   // Turn 1: single user message.
   const first = await plugin.onRequest(request(), ctx);
+  const firstState = ctx.state.hindsight;
+  assert.ok(firstState);
   const injectedText = first.messages[0].content;
   assert.equal(calls.length, 1);
 
   // Tool loop: the agent resends the ORIGINAL (uninjected) conversation.
   const second = await plugin.onRequest(request(), ctx);
+  assert.ok(ctx.state.hindsight);
+  assert.notEqual(ctx.state.hindsight, firstState);
   assert.equal(calls.length, 1, "no second recall for the same turn");
   assert.equal(second.messages[0].content, injectedText, "same block, byte for byte");
 
@@ -184,26 +188,35 @@ test("origin guard refuses remote, gateway-key and missing origin with no fetch"
   assert.equal(calls.length, 0);
 });
 
-test("an already-injected turn is passed through without a new recall", async () => {
+test("an already-injected turn skips recall but still captures with fresh state", async () => {
   const calls = [];
   const plugin = createPlugin({ fetcher: mockHindsight(calls) });
-  const ctx = context();
+  const ctx = context({ capture: true });
   const body = request();
   body.messages[0].content += `\n\n${OPEN}\n previously recalled \n</hindsight-memories>`;
   const changed = await plugin.onRequest(body, ctx);
   assert.ok(changed);
   assert.equal(calls.length, 0);
+  assert.ok(ctx.state.hindsight);
   assert.ok(ctx.reports.some(r => r.code === "skipped"));
+  await plugin.onResponse(reply, ctx);
+  assert.equal(calls.filter(c => c.url.endsWith("/memories")).length, 1);
 });
 
 test("capture survives the tool loop's final request", async () => {
   const calls = [];
   const plugin = createPlugin({ fetcher: mockHindsight(calls) });
-  const ctx = context({ capture: true });
-  await plugin.onRequest(request(), ctx);
-  await plugin.onResponse({ choices: [{ finish_reason: "tool_calls", message: { content: "working" } }] }, ctx);
-  await plugin.onRequest(request(), ctx); // sticky replay of the same turn
-  await plugin.onResponse(reply, ctx);
-  const retains = calls.filter(c => c.url.endsWith("/memories"));
-  assert.equal(retains.length, 1, "the turn's final stop still captures");
+  const c1 = context({ capture: true });
+  await plugin.onRequest({ messages: [{ role: "user", content: "What is the codeword?" }] }, c1);
+  assert.ok(c1.state.hindsight);
+  await plugin.onResponse({ choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ id: "t", type: "function", function: { name: "f", arguments: "{}" } }] } }] }, c1);
+  const c2 = context({ capture: true });
+  await plugin.onRequest({ messages: [
+    { role: "user", content: "What is the codeword?" },
+    { role: "assistant", content: null, tool_calls: [{ id: "t", type: "function", function: { name: "f", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "t", content: "ok" }
+  ] }, c2);
+  assert.ok(c2.state.hindsight);
+  await plugin.onResponse(reply, c2);
+  assert.equal(calls.filter(c => c.url.endsWith("/memories")).length, 1);
 });
