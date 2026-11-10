@@ -63,16 +63,26 @@ Each model is served on the one API droid uses for it:
 
 | API | Models |
 |---|---|
-| Anthropic Messages (`/api/llm/a`) | Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
-| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (each also in Fast Mode), Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
+| Anthropic Messages (`/api/llm/a`) | Fable 5.2, Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
+| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Beam 1.0 |
 | Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
-Flash (1017 too), Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop
-thinking.
+Flash (1017 too), Kimi K3 and GLM-5.2 (GLM-5.2 Fast too) have `none`, droid's
+"off": they stop thinking.
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
+
+droid 1.7.0's new models are included where droid 1.7.0 lists them for an
+account with no special access, at its registry's limits, efforts and
+multipliers. Fable 5.2 asks for the same data-retention terms as Fable 5.1
+in droid; it is placed after the other non-Fast models so magpie's first 24
+stay as they were (#119). Muse Spark 1.2 is on Fireworks but in droid's
+standard pool, so Droid Core's windows don't count it. GPT-6.1 Terra and
+Muse Spark Open (feature-flagged), GPT-6.1 Sol Ultra Fast (high-cost terms)
+and Muse Spark 1.3 (Responses on Google, which the plugin doesn't send) are
+not included.
 
 DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
 entry, with droid 0.251.0's 1,040,000-token context, 131,072-token output,
@@ -87,8 +97,9 @@ A model's price is its token multiplier in droid's registry
 (`0.8×`), so a cheap one is picked without opening droid. A promotion running
 comes off it, with the multiplier before the discount struck through beside
 the price (`rateWas`): Mistral Large 4's launch discount, Gemini 4 Argon's,
-Gemini 3.8/3.7 Flash's and GPT-5.6 Sol's, each while droid's own dates for it
-hold. A promotion that has ended is no discount at all.
+Gemini 3.8/3.7 Flash's and GPT-5.6 Sol's (its Fast Mode too), each while
+droid's own dates for it hold. A promotion that has ended is no discount at
+all.
 
 Gemini's requests go to Factory's generate route with the model in the
 body, droid's line opening the system instruction. Gemini 4 Argon is behind
@@ -102,8 +113,9 @@ beta on Anthropic's API, at `service_tier: "priority"` on OpenAI's. A request
 that asks the base model for fast (Claude Code's `speed: "fast"`, a
 Responses request's `service_tier: "priority"`) is sent to its Fast Mode
 model, as droid's own fast toggle does: asked of the base model, Factory
-answered at standard speed (#119). Opus 4.6/4.7 Fast, GPT-5.4 Mini Fast, GPT-5.6 Sol Fast (unreleased)
-and GLM-5.2 Fast (behind a feature flag) are not included.
+answered at standard speed (#119). GLM-5.2 Fast is a model of its own on
+chat completions, at droid's 524,288-token context, and isn't sent for fast
+asked of GLM-5.2. Opus 4.6/4.7 Fast and GPT-5.4 Mini Fast are not included.
 
 auto is not included: droid picks it on the client side.
 
