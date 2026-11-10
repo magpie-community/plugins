@@ -207,7 +207,9 @@ function server(_input, options) {
       methods: [
         {
           type: "api",
-          label: "本地 magpie 网关密钥（默认即可，与 Claude Code 的 ANTHROPIC_AUTH_TOKEN 相同）",
+          // 此字段不作登录：authorize() 丢弃输入值，token 真正来自 options.token（settings.json）。
+          // en: not a sign-in — the typed value is discarded; the gateway token comes from options.token.
+          label: "未使用 / unused — the gateway token comes from options.token (settings.json), not this field",
           placeholder: "magpie",
           async authorize() {
             return { type: "success", key: "local" };
