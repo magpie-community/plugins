@@ -275,6 +275,8 @@
     { "package": "opencode-xfyun-maas-auth", "name": "讯飞星辰 MaaS", "icon": "https://raw.githubusercontent.com/linjicong/opencode-xfyun-maas-auth/main/icon.svg", "providers": ["xfyun-maas", "xfyun-coding", "xfyun-token"],
       "summary": { "en": "iFlytek Xfyun MaaS: Spark, GLM, DeepSeek, Kimi, Qwen and more — pay-as-you-go, Coding Plan and Token Plan.", "zh": "讯飞星辰 MaaS:星火、GLM、DeepSeek、Kimi、Qwen 等模型,按量付费与 Coding/Token 套餐。" } },
     { "package": "@magpie-community/page-usage-board", "name": "Usage Board", "kind": "page", "community": true,
-      "summary": { "en": "A quota card wall with expiry tiers, daily/per-provider charts, 24h cache-hit and token curves, optional remote attribution and account detail. Runs its own zero-dependency local service reading this machine's Magpie usage data; optional remote attribution queries the configured remote magpie.", "zh": "额度到期卡片墙 + 每日与 provider 用量图表 + 24 小时缓存命中与 token 曲线，可选远端归因与账号明细。自带零依赖本机服务，读本机 Magpie 用量数据；远端归因会查询所配置的远端 magpie。" } }
+      "summary": { "en": "A quota card wall with expiry tiers, daily/per-provider charts, 24h cache-hit and token curves, optional remote attribution and account detail. Runs its own zero-dependency local service reading this machine's Magpie usage data; optional remote attribution queries the configured remote magpie.", "zh": "额度到期卡片墙 + 每日与 provider 用量图表 + 24 小时缓存命中与 token 曲线，可选远端归因与账号明细。自带零依赖本机服务，读本机 Magpie 用量数据；远端归因会查询所配置的远端 magpie。" } },
+    { "package": "magpie-muse-auth", "name": "Muse (Meta)", "providers": ["muse"], "community": true,
+      "summary": { "en": "Muse (Meta) subscription for Magpie and OpenCode: device-code sign-in, minted API key, Wonder and Spark models with reasoning efforts. Unofficial.", "zh": "使用 Muse (Meta) 订阅：设备码登录，自动换取 API 密钥，提供 Wonder 和 Spark 模型及推理强度设置。（非官方）" } }
   ]
 }
