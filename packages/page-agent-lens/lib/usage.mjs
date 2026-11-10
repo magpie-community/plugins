@@ -12,7 +12,7 @@ export const KEEP_MS = 31 * 24 * 60 * 60 * 1000
 // person works in. They are hidden by default and can be shown.
 const CLIENTS = new Set([
   "gateway-probe", "python-urllib", "curl", "go-http-client", "openai", "node",
-  "asyncopenai", "bun", "anthropic", "magpie", "axios", "python-requests", "httpx", "wget",
+  "asyncopenai", "bun", "anthropic", "magpie", "ai", "vercel-ai", "langchain", "litellm", "axios", "python-requests", "httpx", "wget",
 ])
 export function kindOf(agent) {
   const a = String(agent || "").toLowerCase()

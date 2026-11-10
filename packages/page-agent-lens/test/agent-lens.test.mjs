@@ -28,7 +28,7 @@ test("usage lines: protocol, failure, cancel, clients", () => {
   const c = parseUsageLine(JSON.stringify({ t: 1, agent: "a", status: 499 }))
   assert.equal(c.failed, false); assert.equal(c.cancelled, true)
   assert.equal(parseUsageLine("{broken"), null)
-  assert.equal(kindOf("curl"), "client"); assert.equal(kindOf("magpie"), "client"); assert.equal(kindOf("dsh"), "agent")
+  assert.equal(kindOf("curl"), "client"); assert.equal(kindOf("ai"), "client"); assert.equal(kindOf("magpie"), "client"); assert.equal(kindOf("dsh"), "agent")
 })
 
 test("summarize groups by agent, hides clients, computes cache rate", () => {
