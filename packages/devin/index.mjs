@@ -801,6 +801,8 @@ function whoOfStatus(u = {}) {
   }
 }
 
+const accountIdOf = (who) => who?.orgId || who?.teamId || who?.user || "Devin"
+
 // whoByKey is whose key it is, as GetUserStatus (usage's) says, asked with
 // the key itself: {user, plan, orgId?, teamId?}, null when Devin refuses
 // the key, undefined when it can't tell.
@@ -944,7 +946,7 @@ async function success(key, server) {
   if (orgId) metadata.orgId = orgId
   if (who?.teamId) metadata.teamId = who.teamId
   if (server && server !== SERVER) metadata.server = server
-  return { type: "success", provider: ID, key, metadata }
+  return { type: "success", provider: ID, key, accountId: accountIdOf(who), metadata }
 }
 
 // browserSignIn is `devin auth login`'s round, run by the plugin: PKCE
@@ -3145,6 +3147,7 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
       methods: [
         { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
+        { type: "api", label: "Devin session token (another account)", placeholder: "devin-session-token$…" },
       ],
       // magpie's own switches (OpenCode never reads auth.options)
       options: [
@@ -3207,6 +3210,7 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         name: "Devin",
         npm: CHAT,
         api: BASE,
+        maxAccounts: 0,
         ...was,
         models: { ...Object.fromEntries(listed(familiesOf(SNAPSHOT), [], SNAPSHOT_IMAGES).map((m) => [m.id, configModel(m)])), ...(was.models ?? {}) },
       }
