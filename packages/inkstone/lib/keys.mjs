@@ -76,6 +76,28 @@ export async function keyCount(token) {
 }
 
 /**
+ * 名字为 `name` 的孤儿 Key（软风控 -15100 吞了明文但 POST 实际建成）：
+ * 按名字找到就删掉，别留在账号上（#847 blocking 3——孤儿不是死胡同，
+ * 删掉换名重试，不是让用户去粘贴）。
+ * 返回是否**真的删掉了一把**：调用方只有在 true 时才能说「已移除」
+ * （第三轮 review：列表读不到时这里只记日志返回，不能对外宣称删了）。
+ */
+async function deleteKeyByName(token, name, log) {
+  try {
+    const listed = await listKeys(token)
+    const match = keyItems(listed).find((k) => k.name === name)
+    if (!match) return false
+    await deleteKey(token, match.id)
+    log?.("warn", "inkstone: deleted the refused key by name to retry with a fresh one")
+    return true
+  } catch (e) {
+    // 列表读不到（同一风控）：孤儿留给下次 prune，重试继续
+    log?.("warn", "inkstone: could not list the keys to delete the refused one (" + (e?.message ?? e) + ")")
+    return false
+  }
+}
+
+/**
  * 删掉本机本账号的旧 `ink-…` Key。
  * freeSlots = 0：保留最新两把；freeSlots > 0：为新 Key 腾出位置，最旧先删。
  * `protectName`（本轮刚创建的那把的名字）永远不删。正在使用的 Key 一定是
@@ -120,7 +142,7 @@ export async function pruneKeys(token, username, { freeSlots = 0, keep = 2, prot
  *   - 没粘且允许创建 → 数一下，满了先清理（可选），再创建并探活。
  * 抛错时带 `code`：`key_limit`（满了且没开清理）、`refused`（Key 被平台拒）。
  */
-export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log, probeDelays } = {}) {
+export async function ensureKey(token, username, { apiKey = "", create = true, prune = false, log, probeDelays, softRetryDelays = [2500, 2500] } = {}) {
   const pasted = String(apiKey ?? "").trim()
   if (pasted) {
     await probeWithRetry(pasted, log)
@@ -147,11 +169,28 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
 
   let name = keyNameFor(username)
   let reply
+  // 「建成了但明文没给」：-15108（平台明确答"创建成功、明文拿不到"）与
+  // -15100 软风控（吞掉明文）是同一个情形——账号上多了一把拿不到明文的
+  // 孤儿 Key。重试换新名，孤儿先删；耗尽后如实说，且只有真删掉了才说
+  // 「已移除」（第三轮 review：最后一轮的孤儿也要删，文案不能谎报）。
+  const plaintextLost = (err) =>
+    err?.code === -15108 || /fetch failed, refresh page/i.test(String(err?.message ?? ""))
+  const noPlaintextError = (removed) =>
+    Object.assign(
+      new Error(
+        removed
+          ? "the console created an API key but did not return its plaintext; the orphan key was removed — please try the sign-in again."
+          : "the console created an API key but did not return its plaintext, and the orphan could not be deleted from here — please check the console's API key page.",
+      ),
+      { code: "no_plaintext" },
+    )
+  let removed = false // 最后一次删孤儿是否真的删掉了
   try {
     reply = await createKey(token, name, randomUUID())
   } catch (e) {
     // 幂等冲突（-15109）：换一个 Idempotency-Key 和一个新名字再试（名字也
-    // 可能撞），最多三次；-15108 是另一回事：创建成功但明文拿不到了。
+    // 可能撞），最多三次。这个循环里也可能撞上 -15108/软风控：同样先删
+    // 孤儿再换名重试（第三轮 review：不能裸抛）。
     if (e?.code === -15109) {
       let last = e
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -161,45 +200,69 @@ export async function ensureKey(token, username, { apiKey = "", create = true, p
           last = null
           break
         } catch (e2) {
+          if (plaintextLost(e2)) {
+            removed = await deleteKeyByName(token, name, log)
+            last = e2
+            continue
+          }
           if (e2?.code !== -15109) throw e2
           last = e2
         }
       }
-      if (last) throw last
+      if (last) {
+        if (last?.code === -15108) throw noPlaintextError(removed)
+        throw last
+      }
     }
-    // -15108：创建成功但明文拿不到了，这把 Key 已无法使用，直接说明。
-    else if (e?.code === -15108) {
-      throw new Error(
-        "the console created an API key but did not return it (the plaintext is shown only once). " +
-          "Create one in the console and paste it instead.",
-      )
-    }
-    // 「API Key fetch failed, refresh page and retry」：登录窗口刚关、
-    // headless 刚读完 cookie 就建 Key 时的软风控（真机实测，2026-11-07——
-    // 同一枚 cookie 稍后重试就成功）。稍等重试两次，换名字换幂等键。
-    else if (/fetch failed, refresh page/i.test(String(e?.message ?? ""))) {
+    // 「建成了但明文没给」（同上）：删孤儿、换新名重试，耗尽后按真实删除
+    // 结果说话；-15100 的原文照旧透传（宿主认它）。
+    else if (plaintextLost(e)) {
+      await deleteKeyByName(token, name, log)
       let last = e
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await new Promise((r) => setTimeout(r, 2500))
+      for (let attempt = 0; attempt < softRetryDelays.length; attempt++) {
+        if (softRetryDelays[attempt]) await new Promise((r) => setTimeout(r, softRetryDelays[attempt]))
         try {
           name = keyNameFor(username)
           reply = await createKey(token, name, randomUUID())
           last = null
           break
         } catch (e2) {
+          if (plaintextLost(e2)) removed = await deleteKeyByName(token, name, log)
           last = e2
         }
       }
-      if (last) throw last
+      if (last) {
+        if (last?.code === -15108) throw noPlaintextError(removed)
+        throw last
+      }
     } else throw e
   }
-  const created = String(reply?.data?.key ?? "").trim()
+  let created = String(reply?.data?.key ?? "").trim()
+  // 回复成功却没有明文（罕见）：同上——删上一轮的孤儿、换名重试，最多两次。
+  // 最后一轮的孤儿在 continue 之后没有下一轮顶部的删除，所以循环外再补删
+  // 一次，并按那次删除的真实结果说话（第三轮 review）。
+  for (let attempt = 0; !created && attempt < 2; attempt++) {
+    await deleteKeyByName(token, name, log)
+    // 每轮重置：`removed` 只描述「本轮这把孤儿」的删除结果，不继承前几轮
+    // 的。中间一轮 -15108 删过、最后一轮又是「成功但没明文」时，陈旧的
+    // true 会让循环外的补删被跳过——孤儿留下、文案却声称已移除（第四轮
+    // review：按轮设，不按整函数设）。
+    removed = false
+    try {
+      name = keyNameFor(username)
+      reply = await createKey(token, name, randomUUID())
+    } catch (e2) {
+      if (plaintextLost(e2)) {
+        removed = await deleteKeyByName(token, name, log)
+        continue
+      }
+      throw e2
+    }
+    created = String(reply?.data?.key ?? "").trim()
+  }
   if (!created) {
-    // -15108：创建成功但明文拿不到了，这把 Key 已无法使用，直接说明。
-    throw new Error(
-      "the console created an API key but did not return it (the plaintext is shown only once). " +
-        "Create one in the console and paste it instead.",
-    )
+    if (!removed) removed = await deleteKeyByName(token, name, log)
+    throw noPlaintextError(removed)
   }
   try {
     await probeWithRetry(created, log, probeDelays)

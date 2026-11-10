@@ -162,6 +162,13 @@ test("with no Chromium browser the browser sign-in fails at authorize and names 
     // the names it gives are the other methods' own labels
     expect(p.auth.methods[2].label).toStartWith("API key only")
     expect(p.auth.methods[3].label).toStartWith("API key + console token")
+    // the reuse-a-key method goes through the same browserAuthorize path:
+    // it fails at authorize too, never with a window it cannot open
+    const reuse = p.auth.methods[1].authorize({})
+    expect(reuse.type).toBe("failed")
+    expect(reuse.opened).toBeUndefined()
+    expect(reuse.callback).toBeUndefined()
+    expect(reuse.error).toContain("Microsoft Edge, Google Chrome or Chromium")
     if (process.platform === "darwin") expect(result.error).toContain("Safari can't be used")
     else expect(result.error).not.toContain("Safari")
   } finally {
@@ -275,15 +282,24 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
   expect("reasoning" in received).toBe(false)
   expect(received.messages[0].content[1].image_url.detail).toBe("auto")
 
-  // ④ /keys 的 cookie + 无分页 query（真机修复的回归防线——query 加回去会红）
+  // ④ /keys 的 cookie + 无分页 query（#839 的回归防线）。走 ensureKey 驱动
+  // 而不是直接调 protocol.listKeys：query 由 lib/keys.mjs 的调用点传入，
+  // 直调永远看不到它（作者 B05：query 加回 keys.mjs 时 101/101 依然绿）。
+  // fake 对带 page/page_size 的 /keys 回 -15100——keys.mjs 的任何调用点把
+  // query 加回来，这里立刻红。
   const seen = { query: "", cookie: "" }
   f.route("GET /api/tokenplan/v1/keys", (r) => {
     seen.query = r.url
     seen.cookie = r.headers.get("cookie") ?? ""
+    if (/[?&]page(size)?=/.test(r.url)) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
     return json({ code: 0, data: { total: 0, items: [] } })
   })
-  const { listKeys } = await import("./lib/protocol.mjs")
-  await listKeys("fake-token")
+  const { ensureKey } = await import("./lib/keys.mjs")
+  // keyCount is ensureKey's first call on the create path: the list request
+  // this drives is the one whose query the fix removed
+  f.route("POST /api/tokenplan/v1/keys", () => ok({ key: "sk-wiring" }))
+  const wiringKey = await ensureKey("fake-token", "acct", { create: true, prune: false, log: () => {} })
+  expect(wiringKey).toBe("sk-wiring")
   expect(seen.cookie).toContain("uaa-token=fake-token")
   expect(seen.query).not.toContain("page=")
   expect(seen.query).not.toContain("page_size=")
@@ -295,11 +311,54 @@ test("the fetch wiring is the request path — each piece breaks it in a way the
     if (attempts.length === 1) return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
     return ok({ key: "sk-retried" })
   })
-  const { ensureKey } = await import("./lib/keys.mjs")
-  const key = await ensureKey("fake-token", "acct", { create: true, log: () => {} })
+  const key = await ensureKey("fake-token", "acct2", { create: true, log: () => {} })
   expect(key).toBe("sk-retried")
   expect(attempts.length).toBe(2)
   expect(attempts[0]).not.toBe(attempts[1])
+
+  // ⑥ N2：input 是 Request 且 body 非 JSON 时，读完要原样交回上游——
+  // 否则 fetch 带上一个已被 text() 消费的流。fake 的 r.text 就是收到的原文。
+  let gotRaw = null
+  f.route("POST /v1/chat/completions", (r) => {
+    gotRaw = r.text
+    return json({ ok: true })
+  })
+  const req = new Request(`${f.origin}/v1/chat/completions`, {
+    method: "POST",
+    body: "not json at all",
+    headers: { "content-type": "text/plain" },
+  })
+  const r4 = await loader.fetch(req)
+  expect(r4.status).toBe(200)
+  expect(gotRaw).toBe("not json at all")
+
+  // ⑥b 第四轮 review 备忘：Request 的流被读掉后，交给上游的是「url 字符串 +
+  // 完整 init」，不是那个已读空的 Request。装一个一次性包装 fetch 钉住
+  // 这一半——只把 init 原样转发的包装层（catpaw 泄漏那类）也照样能跑。
+  const realFetch = globalThis.fetch
+  let sawSpentRequest = false
+  let sawUrl = ""
+  globalThis.fetch = (input2, init2 = {}) => {
+    if (String(init2?.method ?? "").toUpperCase() === "POST" && String(input2 ?? "").includes("/chat/completions")) {
+      if (typeof input2 !== "string") sawSpentRequest = true
+      else sawUrl = input2
+    }
+    return realFetch(input2, init2)
+  }
+  try {
+    const r5 = await loader.fetch(
+      new Request(`${f.origin}/v1/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    expect(r5.status).toBe(200)
+    expect(sawSpentRequest).toBe(false)
+    expect(sawUrl).toBe(`${f.origin}/v1/chat/completions`)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
@@ -311,4 +370,35 @@ test("cleanDetail masks real uaa-token, sk-, Bearer and JWT runs", async () => {
   expect(cleanDetail("jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig")).toBe("jwt: ***")
   // diagnostic words must stay
   expect(cleanDetail("error: token expired")).toBe("error: token expired")
+})
+
+test("a soft refusal leaves no orphan key behind - each made one is deleted before the retry", async () => {
+  // -15100 有时吞掉的是已成功的 POST 的明文（真机：孤儿曾留下）。blocking 3：
+  // 每个建成的孤儿按名字删掉，重试换新名；耗尽后如实报错。账号上零孤儿。
+  f = fakeInkStone()
+  const created = []
+  let deleted = 0
+  f.route("GET /api/tokenplan/v1/keys", () => json({ code: 0, data: { total: created.length, items: created } }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const id = `ak_${created.length + 1}`
+    created.push({ id, name: r.json?.name, status: "active", created_at: new Date().toISOString() })
+    // fake.mjs 只认精确字符串路由键——DELETE 按这把 Key 的真实 id 注册，
+    // 这样「按名字删孤儿」才真的能命中（正则键永远匹配不上）。
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => (deleted++, json({ code: 0 })))
+    // 平台建成了，但软风控把回复换成 -15100（明文没给）
+    return json({ code: -15100, msg: "API Key fetch failed, refresh page and retry" })
+  })
+  const { ensureKey } = await import("./lib/keys.mjs")
+  let said = ""
+  try {
+    await ensureKey("fake-token", "acct7", { create: true, log: () => {}, softRetryDelays: [0, 0] })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  // 三次尝试（1 首发重试 2），每次建成即删：账号上零孤儿
+  expect(created.length).toBe(3)
+  expect(deleted).toBe(3)
+  expect(created.length - deleted).toBe(0)
+  // 耗尽后如实报 -15100
+  expect(said).toContain("refresh page and retry")
 })

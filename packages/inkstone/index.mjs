@@ -29,7 +29,7 @@ import {
 import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/models.mjs"
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
-import { precheckImages, rewriteBody, translateError } from "./lib/preflight.mjs"
+import { precheckImages, rewriteBodyChanged, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
 import {
   readUaaToken,
   requireBrowser,
@@ -52,21 +52,33 @@ const apiBase = () => ENDPOINTS.api
  * 剥无效参数）→ 真发 → 错误翻译（端砚的图片错误宿主读不对，见 preflight.mjs）。
  * 只认 chat/completions 和 models 两个端点；别的原样透传。
  */
-function chatFetch(key, log = () => {}) {
+function chatFetch(log = () => {}) {
   const upstream = (...args) => globalThis.fetch(...args)
   return async (input, init = {}) => {
     const url = typeof input === "string" ? input : input?.url ?? ""
     const method = (init.method ?? (typeof input === "object" ? input?.method : undefined) ?? "GET").toUpperCase()
     const isChat = url.includes("/chat/completions") && method === "POST"
     if (!isChat) return upstream(input, init)
+    // N2: a Request whose body is not JSON is read (its stream is consumed by
+    // text()) and must be handed back, or upstream(input, init) sends a spent
+    // body. A plain string/ArrayBuffer body needs no such thing.
+    const isRequest = typeof input === "object" && typeof input?.text === "function" && init.body === undefined
     const raw = init.body
     let text = ""
     if (typeof raw === "string") text = raw
     else if (raw instanceof ArrayBuffer) text = new TextDecoder().decode(raw)
     else if (ArrayBuffer.isView(raw)) text = new TextDecoder().decode(raw)
-    else if (typeof input === "object" && typeof input?.text === "function" && init.body === undefined) text = await input.text().catch(() => "")
+    else if (isRequest) text = await input.text().catch(() => "")
+    if (isRequest) {
+      // 第三轮 review blocking 1：Request 的流已被 text() 读掉，url/method/
+      // headers/signal 必须由 init 显式携带——宿主进程里可能有别的 fetch 包装
+      // 层只读 (url, init)（catpaw 的泄漏，#877），一个不带 method 的重挂
+      // body 会被它当成 GET 发出去（"GET/HEAD cannot have body"）。
+      // ...init 在后：调用方显式给的设置仍然优先。
+      init = { method: input.method, headers: input.headers, signal: input.signal, ...init }
+    }
     if (text) {
-      // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
+      // 解析一次，预检与改写共用同一个对象（近 40MB 的 body 解析两遍是浪费）
       let body
       try {
         body = JSON.parse(text)
@@ -74,6 +86,7 @@ function chatFetch(key, log = () => {}) {
         body = null
       }
       if (body) {
+        // ①预检：超限不发请求，直接给宿主认得的"换下家"形状。
         const refusal = precheckImages(body)
         if (refusal) {
           return new Response(refusal.body, {
@@ -81,17 +94,17 @@ function chatFetch(key, log = () => {}) {
             headers: { "content-type": "application/json" },
           })
         }
+        // ②③改写：补 detail、剥无效参数。一字未动就保留原字节（review N1，
+        // 不再无条件重新序列化）；改过才原地改写后重新序列化。Request 的
+        // method/headers 已在上面带进 init，这条路同样成立。
+        const rewritten = rewriteBodyObj(body)
+        if (rewriteBodyChanged(rewritten)) init = { ...init, body: JSON.stringify(rewritten) }
       }
-      // ②③改写：补 detail、剥无效参数。
-      init = { ...init, body: rewriteBody(text) }
     }
-    // 真发。
-    let res
-    try {
-      res = await upstream(input, init)
-    } catch (e) {
-      throw e
-    }
+    // N2: 若是 Request 且上面没重挂 body，把读到的字节原样交回去。
+    if (isRequest && init.body === undefined) init = { ...init, body: text }
+    // 真发。Request 时 url 也一起显式化（不再传被读空的对象）。
+    const res = await upstream(isRequest ? input.url : input, init)
     // ④错误翻译：端砚的图片错误码宿主读不对，换成宿主认得的形状。
     if (!res.ok && res.status !== 429) {
       let said = ""
@@ -380,7 +393,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       instructions:
         process.platform === "win32"
           ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
-          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code), then quit that browser yourself — Cmd+Q on macOS (closing its last window is not enough), or close its last window on Linux. The plugin then reads the session from the profile and finishes. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin watches the profile's cookie store and closes the window itself within about half a minute of the console session landing (Chrome writes cookies to disk on a timer) — you can leave the window open. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
       method: "auto",
       async callback(_code, { signal } = {}) {
         let token = ""
@@ -664,7 +677,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         const auth = await getAuth()
         const key = apiKeyOf(auth)
         if (!key) return {}
-        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(key, log) }
+        return { baseURL: apiBase(), apiKey: key, fetch: chatFetch(log) }
       },
 
       /**

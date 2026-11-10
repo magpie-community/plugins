@@ -29,6 +29,17 @@ function serveKeys(initial = []) {
     keys.push({ id: `id-${keys.length + 1}`, name, status: "active", created_at: now(keys.length + 1) })
     return ok({ key: "sk-new" })
   })
+  // the delete path too: the refused-key flow deletes its orphan by id, and
+  // that call goes through the same strict /keys fake (a query added there
+  // would hit -15100, a bearer-only request -10002)
+  for (let i = 1; i <= 6; i++) {
+    f.route(`DELETE /api/tokenplan/v1/keys/id-${i}`, (r) => {
+      const id = r.url.split("/").pop()
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+  }
   return keys
 }
 
@@ -183,9 +194,125 @@ test("pruneKeys with a protected name really deletes the others when it should",
 test("a key created without a plaintext is a clear failure, not a silent empty key", async () => {
   f = fakeInkStone()
   f.route("GET /v1/models", () => json({ object: "list", data: [] }))
-  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: 0, items: [] }))
+  // -15108（建成了但明文拿不到）与软风控同类：孤儿不能留在账号上，
+  // ensureKey 删掉它再换名重试，耗尽后如实报错（#847 blocking 3）。
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })).rejects.toThrow(/plaintext/i)
+  // 每把拿不到明文的孤儿都被删干净
+  expect(keys.length).toBe(0)
+})
+
+test("a successful reply without a plaintext deletes the LAST orphan too", async () => {
+  // 第三轮 review：这个循环的最后一轮 continue 之后没有下一轮顶部的删除，
+  // 所以退出循环时必须再补删一次。若缺了这一步，keys 会剩一把，测试变红。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    // 建成了，但回复里没有明文（没有 key 字段）
+    return ok({})
+  })
+  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext/i)
+  expect(keys.length).toBe(0)
+})
+
+test("-15108 inside the -15109 retry is cleaned up and reported clearly, not thrown raw", async () => {
+  // 第三轮 review：幂等重试里撞上 -15108 时，孤儿也要删、文案也要清楚。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  let posts = 0
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    posts += 1
+    if (posts === 1) return fail(-15109, "name clash")
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext/i)
+  expect(keys.length).toBe(0)
+})
+
+test("when the orphan list fails, the error does not claim it was removed", async () => {
+  // 第三轮 review：deleteKeyByName 在列表读不到时只记日志返回——对外不能
+  // 说「已移除」。这里第一次 list（keyCount）成功，之后的 list 全部失败。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  let lists = 0
+  f.route("GET /api/tokenplan/v1/keys", () => {
+    lists += 1
+    if (lists === 1) return ok({ total: 0, items: [] })
+    return fail(-10002, "request is not authenticated")
+  })
   f.route("POST /api/tokenplan/v1/keys", () => fail(-15108, "created but hidden"))
-  await expect(ensureKey("uaa", "u", { create: true })).rejects.toThrow(/plaintext|did not return/i)
+  let said = ""
+  try {
+    await ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  expect(said).toMatch(/plaintext/i)
+  expect(said).toContain("could not be deleted")
+  expect(said).not.toContain("was removed")
+})
+
+test("a stale removed does not spare the last orphan (-15108 mid, no-plaintext success last)", async () => {
+  // 第四轮 review 的序列：①成功但没给明文 → ②-15108（删掉，removed=true）
+  // → ③又「成功但没给明文」。陈旧的 removed 会让循环外的补删被跳过：最后
+  // 那把留在账号上，文案却声称已移除。修好后最后那把也删——账号零孤儿。
+  f = fakeInkStone()
+  f.route("GET /v1/models", () => json({ object: "list", data: [] }))
+  const keys = []
+  f.route("GET /api/tokenplan/v1/keys", () => ok({ total: keys.length, items: keys }))
+  let posts = 0
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    posts += 1
+    const id = `k${keys.length + 1}`
+    keys.push({ id, name: r.json?.name, status: "active" })
+    f.route(`DELETE /api/tokenplan/v1/keys/${id}`, () => {
+      const at = keys.findIndex((k) => k.id === id)
+      if (at >= 0) keys.splice(at, 1)
+      return ok({})
+    })
+    if (posts === 2) return fail(-15108, "created but hidden")
+    return ok({}) // 建成了，但回复里没有明文
+  })
+  let said = ""
+  try {
+    await ensureKey("uaa", "u", { create: true })
+  } catch (e) {
+    said = String(e?.message ?? e)
+  }
+  expect(said).toMatch(/plaintext/i)
+  // 最后那把（③）也删了：账号零孤儿
+  expect(keys.length).toBe(0)
+  // 且它确实被删掉了，所以这句是实话
+  expect(said).toContain("was removed")
 })
 
 test("an idempotency clash retries with a FRESH name and returns the key string", async () => {
@@ -245,4 +372,20 @@ test("a refused new key is deleted by name - the cleanup listKeys carries no que
   await expect(ensureKey("[REDACTED_VALUE]", "u", { create: true, probeDelays: [0] })).rejects.toMatchObject({ status: 401 })
   expect(keys.some((k) => k.id === "id-new")).toBe(false)
   expect(keys).toHaveLength(1)
+})
+
+test("the orphan-deleting listKeys carries no query either - the shared strict fake holds it", async () => {
+  // #847 blocking 3 + blocking 2 together: the refused-key flow lists the keys
+  // to find its orphan, and that call goes through the same serveKeys() fake.
+  // A pagination query put back on it answers -15100, the orphan is not found,
+  // it survives on the account, and this goes red.
+  f = fakeInkStone()
+  const keys = serveKeys([])
+  f.route("POST /api/tokenplan/v1/keys", (r) => {
+    keys.push({ id: `id-${keys.length + 1}`, name: r.json?.name, status: "active", created_at: now(keys.length + 1) })
+    return fail(-15108, "created but hidden")
+  })
+  await expect(ensureKey("uaa", "u", { create: true, softRetryDelays: [0, 0] })).rejects.toThrow(/plaintext/i)
+  // every orphan was found and deleted through the strict list
+  expect(keys).toHaveLength(0)
 })
