@@ -28,7 +28,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [grok](packages/grok) | Grok (SuperGrok / X Premium+), through the Grok Build CLI's sign-in | `grok` |
 | [inkstone](packages/inkstone) | (Unofficial) 书生·端砚 Token Plan: browser sign-in gives the ink-credit balance, the 5-hour and 7-day windows and the credit packs, and creates an `ink-*` API key to serve the plan's models for chat | `intern-inkstone` |
 | [joycode](packages/joycode) | JoyCode IDE credits with JD account browser sign-in, live models and credit multipliers (unofficial) | `joycode` |
-| [doubao-work](packages/doubao-work) | Doubao Work (豆包工作), whose agent runs in the cloud with no API, through the Doubao desktop app driven the way a person uses it (macOS) | `doubao-work` |
+| [doubao-work](packages/doubao-work) | Doubao Work (豆包工作), whose agent runs in the cloud with no API, through the Doubao desktop app driven the way a person uses it (macOS, Windows) | `doubao-work` |
 | [kimi-work](packages/kimi-work) | Ordinary Kimi desktop Work subscription, through the desktop app's local sign-in; separate from Kimi Code | `kimi-work` |
 | [kiro](packages/kiro) | Kiro (Free, Pro, Pro+, Power), with Kiro's sign-in, kiro-cli's or the IDE's, or an API key | `kiro` |
 | [loomy](packages/loomy) | iFlytek's Loomy (loomyad.xunfei.cn), with SMS sign-in | `loomy` |
@@ -179,6 +179,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 | Package | Page | Reads |
 |---|---|---|
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
+| [free-tokens](packages/free-tokens) | AIHOT's Token freebies in three tiers (already configured and usable / needs one more plugin / no plugin yet), with the plugin to install or the exact login step for each | none; its host part reads magpie's folder (providers/checkin) and fetches aihot.news/free-tokens.data once each time the plugin host starts |
 | [day-card](packages/day-card) | Day card: a day of your usage drawn as a card (tokens, cost, each agent and its models, streak, average day), copied as a picture or saved as a PNG | `usage:day` |
 | [powercontext](packages/powercontext) | Connection settings for an independently deployed PowerContext service | None |
 | [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, a real connection test, and the scope of what is sent | None |

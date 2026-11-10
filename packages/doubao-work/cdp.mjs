@@ -51,8 +51,11 @@ export async function targets(port, fetchImpl = fetch) {
 }
 
 // copies lists the command lines of the processes running binary itself
-// (not its helpers), or none where ps can't tell (Windows).
-export function copies(binary) {
+// (not its helpers), or none where ps can't tell. On Windows it is none:
+// there, Chromium keeps one copy per profile, not per app, so a copy the
+// user opened doesn't keep this one from starting beside it.
+export function copies(binary, platform = process.platform) {
+  if (platform === "win32") return []
   let out = ""
   try {
     out = execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })

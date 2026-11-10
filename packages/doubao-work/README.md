@@ -6,8 +6,9 @@ desktop app the way a person does instead, and gives what it reads back as
 an OpenAI chat completion:
 
 1. It starts Doubao from a profile of its own (`~/Library/Application
-   Support/magpie-doubao-work/profile`), with Chrome DevTools on a local
-   port. Your everyday Doubao's profile is not touched; you sign in once
+   Support/magpie-doubao-work/profile` on macOS,
+   `%LOCALAPPDATA%\magpie-doubao-work\profile` on Windows), with Chrome
+   DevTools on a local port. Your everyday Doubao's profile is not touched; you sign in once
    in this second window.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
    (so Doubao's agent never reads or runs anything on your computer), picks
@@ -18,18 +19,29 @@ an OpenAI chat completion:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
-Models: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`) and 豆包 2.1 Pro
-(`doubao-2.1-pro`, needs a paid Doubao plan).
+Models: the plugin reads Doubao's own model menu, so whatever the app offers
+is what magpie lists. The menu row text becomes the id: 自动 (`auto`), 豆包 2.1
+Lite (`doubao-2.1-lite`), 豆包 2.1 Pro (`doubao-2.1-pro`, needs a paid Doubao
+plan), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3 (`glm-5.3`) and so
+on. Rows that open a submenu (推理强度) are not models and are skipped.
+
+The list is read when you sign in, and again on a request once the cached list
+is more than six hours old; it is kept in `models.json` under
+`DOUBAO_WORK_HOME` (`~/Library/Application Support/magpie-doubao-work` on
+macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
+anything else. The three models the plugin was written with stay as the
+fallback for when the menu cannot be read.
 
 ## What it costs
 
 - **Unofficial.** It uses Doubao the way its own window does, but ByteDance
   may not like it. Use an account you can afford to lose.
-- **Doubao runs one copy at a time.** If you opened Doubao yourself,
-  quit it (⌘Q) first: the plugin's copy can't start beside it, and yours
-  can't be driven (Chromium allows debugging only off the default
-  profile). While the plugin's copy runs, opening Doubao brings up its
-  window, which you can use as well.
+- **On macOS, Doubao runs one copy at a time.** If you opened Doubao
+  yourself, quit it (⌘Q) first: the plugin's copy can't start beside it,
+  and yours can't be driven (Chromium allows debugging only off the
+  default profile). While the plugin's copy runs, opening Doubao brings up
+  its window, which you can use as well. On Windows the plugin's copy runs
+  beside yours, in a second window.
 - **One request at a time.** There is one window.
 - **Every request is a new task** in your Doubao history.
 - **A request the client stops** stops being read, but Doubao finishes
@@ -40,12 +52,13 @@ Models: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`) and 豆包 2.1 Pro
 - **Usage** is Doubao's own prompt count; the reply's tokens are estimated.
 - **The DevTools port** is on 127.0.0.1 only, but any program on this
   computer can drive the signed-in Doubao window through it while it runs.
-- macOS only for now.
+- macOS and Windows. Doubao has no Linux app.
 
 ## Settings
 
 - `DOUBAO_WORK_APP`: the Doubao binary, if it is not at
-  `/Applications/Doubao.app/Contents/MacOS/Doubao`.
+  `/Applications/Doubao.app/Contents/MacOS/Doubao` (macOS) or
+  `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe` (Windows).
 - `DOUBAO_WORK_HOME`: where the profile and port live.
 
 ## Adding another cloud agent
