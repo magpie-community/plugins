@@ -29,7 +29,7 @@ Magpie manages **one complete object**, `providers.magpie`, inside `models.json`
 | `name` | `Magpie` |
 | `baseUrl` | The gateway's supplied `/v1` address |
 | `apiKey` | The key supplied by Magpie for PiG; normally `magpie-pig` on loopback |
-| `api` | `openai-completions` |
+| `api` | `openai-responses` |
 | `models` | The catalog Magpie exposes to PiG |
 
 Magpie stashes the previous object and restores it on **agent disconnect**. If no `magpie` provider existed, the entire provider is removed. An empty top-level `providers` map or file can remain, but a provider object with no settings of its own must not.
@@ -38,7 +38,7 @@ Other provider IDs, unrelated top-level keys, and document comments outside the 
 
 The plugin does not change `auth.json` or PiG's credential precedence. A stored credential for the reserved `magpie` ID can take precedence over the injected key; use a distinct ID for an independently configured manual service.
 
-The plugin preserves catalog IDs (including slashes), names, image input capability, positive context/output limits, and supported Pi thinking levels. A known output limit is capped at the known context window, matching Magpie's Pi adapter. Unknown limits are omitted so PiG applies its own defaults. The public Agent hook does not provide a model's native protocol, prices, or a separate reasoning flag: all models use Magpie's documented Chat Completions endpoint, and reasoning is advertised when `efforts` is nonempty. Magpie handles upstream protocol translation. This is not the full native-protocol behavior of Magpie's built-in Pi adapter.
+The plugin preserves catalog IDs (including slashes), names, image input capability, positive context/output limits, and supported Pi thinking levels. A known output limit is capped at the known context window, matching Magpie's Pi adapter. Unknown limits are omitted so PiG applies its own defaults. All models and routing groups use Magpie's Responses endpoint. PiG can carry reasoning items and their `encrypted_content` back on subsequent requests, including OpenAI reasoning and Claude signed thinking carried by Magpie. Magpie relays Responses where supported and translates for other upstream protocols; reasoning preservation depends on the selected provider. The public Agent hook does not provide a model's native protocol, prices, or a separate reasoning flag, so reasoning is advertised when `efforts` is nonempty.
 
 It reads no credentials, installs no PiG extension, runs no daemon, and provides no Library integration. Requests use Magpie's supplied key, so usage can be attributed to `pig` without claiming Pi's User-Agent.
 
@@ -50,7 +50,7 @@ For a custom directory, make a local copy of `pig.agent.js`, change `agent.confi
 
 ## Platform support
 
-The same `pig.agent.js` was tested on native Linux and Windows with Magpie 0.1.1294 and PiG 0.5.1+1.3.0.1402973a using an external real-binary harness (not shipped in this package): 8 end-to-end tests and 3 lifecycle tests per platform. They cover fresh connect/disconnect/reconnect with a real PiG parse afterwards, a pre-existing manually configured API-key service used before, during and after injection, and restoration of a prior same-name provider. On Windows the default path resolves to `%USERPROFILE%\.pig\agent\models.json`, including when the test workspace and home paths contain spaces.
+Configuration injection and restoration were tested on native Linux and Windows with Magpie 0.1.1294 and PiG 0.5.1+1.3.0.1402973a using an external real-binary harness (not shipped in this package): 8 end-to-end tests and 3 lifecycle tests per platform. They cover fresh connect/disconnect/reconnect with a real PiG parse afterwards, a pre-existing manually configured API-key service used before, during and after injection, and restoration of a prior same-name provider. On Windows the default path resolves to `%USERPROFILE%\.pig\agent\models.json`, including when the test workspace and home paths contain spaces.
 
 Magpie owns native home expansion, path separators, command detection, file edits and restoration. The plugin has no platform branches or platform-specific dependencies. macOS and WSL have not been tested on real machines.
 
