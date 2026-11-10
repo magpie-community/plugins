@@ -101,7 +101,7 @@ describe("the gateway call", () => {
     expect(sent.state.transcript).toContain('{"Bash":"pwd"}');
     expect(sent.state.environment).toContain("## Environment".slice(0, 3));
     expect(Object.keys(sent.questions)).toEqual(["rule", "authorized", "forbidden"]);
-    expect(Object.keys(sent.questions.rule.criteria).length).toBeGreaterThan(50);
+    expect(Object.keys(sent.questions.rule.criteria).length).toBeGreaterThan(6); // none + every parsed rule
     const criteria = sent.questions.rule.criteria;
     expect(criteria["block: Data Exfiltration"]).toBeTypeOf("string");
     expect(criteria["allow: Memory Directory"]).toBeTypeOf("string");

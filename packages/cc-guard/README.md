@@ -61,6 +61,15 @@ Point Claude Code at it, in `~/.claude/settings.json`:
 never send a classifier request, so the model is never asked. Restart Claude
 Code after changing either.
 
+**Choosing `SERVER=0` is a real trade-off, and it is yours to make.** When
+Claude Code talks to a Claude model through magpie at the same time, the
+server-side review stays on unless this env var turns it off — setting `"0"`
+replaces Anthropic's review with this plugin's local one for those sessions.
+If you leave `CLAUDE_CODE_AUTO_MODE_SERVER` unset while the server review is
+on, Claude Code ignores the env model entirely and this plugin is never
+asked. Pick one: server review, or cc-guard — not both at once, and know
+which one you dropped.
+
 To check which model reviewed, start a session with `claude --permission-mode
 auto --debug-file classifier-debug.log`, have it run something that isn't
 read-only, and look for `classifier_request_started`: `model=` should be
@@ -85,7 +94,10 @@ explicitly forbid it.
 When the decision model can't be reached, or the prompt carries no rule
 section, the plugin answers 503. Claude Code treats that as a classifier that
 couldn't judge the action and denies it, so a broken guard blocks rather than
-lets the action through.
+lets the action through. The user sees the denial as a permission prompt or a
+refusal message naming the classifier failure; magpie itself neither retries
+the classifier nor falls back to another model for it — the next action asks
+again.
 
 A request that isn't a classifier request gets a 400. The model isn't for
 chat.

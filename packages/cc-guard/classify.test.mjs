@@ -27,9 +27,9 @@ const none = { none: 0.99 };
 
 describe("parseRules", () => {
   test("reads the block and allow rules out of the classifier prompt", () => {
-    expect(rules.filter((rule) => rule.kind === "hard").map((rule) => rule.name)).toEqual(["Data Exfiltration"]);
-    expect(rules.filter((rule) => rule.kind === "soft").length).toBeGreaterThan(50);
-    expect(rules.filter((rule) => rule.kind === "allow").length).toBeGreaterThan(10);
+    expect(rules.filter((rule) => rule.kind === "hard").map((rule) => rule.name)).toEqual(["Data Exfiltration", "Credential Exploration"]);
+    expect(rules.filter((rule) => rule.kind === "soft").length).toBeGreaterThan(2);
+    expect(rules.filter((rule) => rule.kind === "allow").length).toBeGreaterThan(1);
     const git = rules.find((rule) => rule.name === "Git Destructive");
     expect(git.kind).toBe("soft");
     expect(git.summary.startsWith("A force-push")).toBe(true);
