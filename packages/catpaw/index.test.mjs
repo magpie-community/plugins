@@ -8,6 +8,7 @@ import { fakeCatPaw } from "./fake.mjs"
 import capturedRound from "./testdata/captured-round.json"
 import capturedTurn from "./testdata/captured-turn.json"
 import issue605 from "./testdata/issue-605.json"
+import issue933 from "./testdata/issue-933.json"
 
 // every test runs against the fake upstream in fake.mjs: no network, no real
 // token ever leaves this process. The upstream base is monkey-patched because
@@ -982,5 +983,143 @@ describe("helpers", () => {
     expect(_internal.modelTypeOf("longcat-2.0")).toBe(77)
     expect(_internal.modelTypeOf("kimi-k3")).toBe(83)
     expect(_internal.modelTypeOf("unknown")).toBe(77)
+  })
+})
+
+describe("out of credits (plugins#933)", () => {
+  const GATE = "当前余额不足以完成本次操作。[去购买更多](https://credit.catpaw.meituan.com/#/plan)，即可继续使用全部功能。"
+  const literal = issue933.sse.join("\n\n") + "\n\n"
+  const ask = async (body) => {
+    const loader = await plugin.auth.loader(getAuth)
+    return loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "glm-5.3-flash", messages: [{ role: "user", content: "hi" }], ...body }),
+    })
+  }
+  const tools = [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }]
+  const expectOutOfCredit = async (res) => {
+    expect(res.status).toBe(402)
+    const { error } = await res.json()
+    expect(error.type).toBe("insufficient_quota")
+    expect(error.code).toBe("insufficient_credits")
+    expect(error.help_url).toBe("https://credit.catpaw.meituan.com/#/plan")
+    expect(error.message).toBe("当前余额不足以完成本次操作。去购买更多 (https://credit.catpaw.meituan.com/#/plan)，即可继续使用全部功能。")
+    expect(error.upstream_message).toBe(GATE)
+  }
+  // a stream's text as the agent reads it
+  const streamed = async (res) => {
+    let text = ""
+    for (const line of (await res.text()).split("\n")) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue
+      const j = JSON.parse(line.slice(6))
+      if (j.error) throw new Error(j.error.message)
+      text += j.choices[0].delta.content ?? ""
+    }
+    return text
+  }
+
+  test("the reporter's frames are a 402, not an answer (non-stream)", async () => {
+    fake.state.turnRaw = literal
+    await expectOutOfCredit(await ask({ stream: false }))
+  })
+
+  test("the reporter's frames are a 402 before anything streams", async () => {
+    fake.state.turnRaw = literal
+    await expectOutOfCredit(await ask({ stream: true }))
+  })
+
+  test("with tools, a 402 and no second turn (no forced-tool retry)", async () => {
+    fake.state.turnRaw = literal
+    await expectOutOfCredit(await ask({ stream: false, tools, tool_choice: "required" }))
+    expect(fake.state.turns).toBe(1)
+    fake.state.reset()
+    fake.state.turnRaw = literal
+    await expectOutOfCredit(await ask({ stream: true, tools }))
+    expect(fake.state.turns).toBe(1)
+  })
+
+  test("the sentence split over frames is still the gate", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { type: "assistant", content: [{ type: "text", text: "" }] } },
+        { message: { type: "assistant", content: [{ type: "text", text: "当前余额" }] } },
+        { message: { type: "assistant", content: [{ type: "text", text: "当前余额不足以完成" }] } },
+        { message: { type: "assistant", content: [{ type: "text", text: GATE }] }, finished: true },
+      ],
+    ]
+    await expectOutOfCredit(await ask({ stream: true }))
+  })
+
+  test("a model's answer quoting the sentence is an answer", async () => {
+    const m = issue933.modelAnswer
+    fake.state.turnFramesQueue = [
+      [
+        { message: { type: "assistant", ...m, content: [{ type: "text", text: "当前余额不足" }] } },
+        { message: { type: "assistant", ...m, content: [{ type: "text", text: GATE }] } },
+        { message: { type: "assistant", ...m, content: [{ type: "text", text: GATE + " 这是妙手的提示文案。" }] }, finished: true },
+      ],
+    ]
+    const res = await ask({ stream: true })
+    expect(res.status).toBe(200)
+    expect(await streamed(res)).toBe(GATE + " 这是妙手的提示文案。")
+    fake.state.turnFramesQueue = [[{ message: { type: "assistant", ...m, content: [{ type: "text", text: GATE }] }, finished: true }]]
+    const res2 = await ask({ stream: false })
+    expect(res2.status).toBe(200)
+    expect((await res2.json()).choices[0].message.content).toBe(GATE)
+  })
+
+  test("a head held as maybe the gate streams whole when it isn't", async () => {
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: "当前" }] } },
+        { message: { content: [{ type: "text", text: "当前余" }] } },
+        { message: { content: [{ type: "text", text: "当前余下三项任务" }] } },
+        { message: { content: [{ type: "text", text: "当前余下三项任务，先做第一项。" }] }, finished: true },
+      ],
+    ]
+    const res = await ask({ stream: true })
+    expect(res.status).toBe(200)
+    expect(await streamed(res)).toBe("当前余下三项任务，先做第一项。")
+    // a reply that is only such a head still goes out
+    fake.state.turnFramesQueue = [[{ message: { content: [{ type: "text", text: "当前" }] }, finished: true }]]
+    const res2 = await ask({ stream: true })
+    expect(await streamed(res2)).toBe("当前")
+  })
+
+  test("a bare 429 is a 429 with a wait and a sentence", async () => {
+    fake.state.roundStatus = 429
+    const res = await ask({ stream: true })
+    expect(res.status).toBe(429)
+    expect(res.headers.get("retry-after")).toBe("45")
+    const { error } = await res.json()
+    expect(error.type).toBe("rate_limit_error")
+    expect(error.message).toContain("妙手限流")
+    fake.state.reset()
+    fake.state.turnStatus = 429
+    expect((await ask({ stream: false })).status).toBe(429)
+  })
+
+  test("a bare 401 says the sign-in is gone", async () => {
+    fake.state.turnStatus = 401
+    const res = await ask({ stream: true, tools })
+    expect(res.status).toBe(401)
+    expect((await res.json()).error.message).toContain("请在妙手桌面端重新登录")
+  })
+
+  test("primed lets a slow turn stream as before", async () => {
+    async function* slow() {
+      await new Promise((r) => setTimeout(r, 50))
+      yield 1
+      yield 2
+    }
+    const got = []
+    for await (const v of await _internal.primed(slow(), 10)) got.push(v)
+    expect(got).toEqual([1, 2])
+    async function* lateFail() {
+      await new Promise((r) => setTimeout(r, 50))
+      throw new Error("late")
+    }
+    const it = await _internal.primed(lateFail(), 10)
+    await expect(it.next()).rejects.toThrow("late")
   })
 })
