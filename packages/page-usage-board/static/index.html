@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8IS0tIFVzYWdlIGJvYXJkOiBkYXJrIHJvdW5kZWQgcGxhdGUsIGJsdWUgdXNhZ2UgbGluZSwgb25lIGFtYmVyIGJhciAtLT4KICA8cmVjdCB4PSI0IiB5PSI0IiB3aWR0aD0iOTIiIGhlaWdodD0iOTIiIHJ4PSIyMCIgZmlsbD0iIzFlMjQzMCIvPgogIDwhLS0gYW1iZXIgYmFyIChxdW90YSB0b2RheSkgLS0+CiAgPHJlY3QgeD0iMjQiIHk9IjU2IiB3aWR0aD0iMTAiIGhlaWdodD0iMjQiIHJ4PSIzIiBmaWxsPSIjZjVhNjIzIi8+CiAgPCEtLSBibHVlIHVzYWdlIGxpbmUgb3ZlciB0aGUgbGFzdCBob3VycyAtLT4KICA8cG9seWxpbmUgcG9pbnRzPSIyMiw2NiAzNiw1MiA1MCw1OCA2NCwzOCA3OCwzMCIKICAgIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRjOWZmZSIgc3Ryb2tlLXdpZHRoPSI3IgogICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPCEtLSBlbmRwb2ludCBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNS41IiBmaWxsPSIjNGM5ZmZlIi8+Cjwvc3ZnPgo=">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<script>
+// 主题在 CSS 生效前定稿（无闪变）：带路页从 magpie 桥接读到宿主的深浅色经 ?theme= 传来
+//（magpie 自己的设置优先于系统）；没有参数时跟随 prefers-color-scheme。
+(function () {
+  var t = new URLSearchParams(location.search).get('theme');
+  if (t !== 'dark' && t !== 'light') {
+    t = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+:root{
+  --bg:#0e1116;--card:#161b22;--card2:#1c2330;--line:#2a3140;--txt:#d7dde6;--dim:#8b93a1;
+  --acc:#4da3ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;
+  --heat0:#161b22;--tipbg:#1c2330;--tipline:#2a3140;--tiptxt:#d7dde6;
+  --lineh:#2c3547;--barbg:#232a36;--tdline:#1d2430;--trhov:#1a2130;
+  --skelc1:rgba(255,255,255,.05);--skelc2:rgba(255,255,255,.13);--segused:rgba(255,255,255,.18);
+  color-scheme:dark;
+}
+/* 浅色：data-theme 由上面的内联脚本定稿（?theme= 来自 magpie 桥接，否则跟随系统），
+   图表颜色在渲染时经 cssVar() 读取这些变量 */
+:root[data-theme="light"]{
+  --bg:#f5f7fa;--card:#ffffff;--card2:#eef1f5;--line:#d5dae2;--txt:#24292f;--dim:#57606a;
+  --heat0:#eaeef2;--tipbg:#ffffff;--tipline:#d5dae2;--tiptxt:#24292f;
+  --lineh:#b9c2ce;--barbg:#e3e8ee;--tdline:#e3e8ee;--trhov:#f0f3f7;
+  --skelc1:rgba(0,0,0,.05);--skelc2:rgba(0,0,0,.12);--segused:rgba(0,0,0,.15);
+  color-scheme:light;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:16px 18px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto}
+h1{font-size:18px;font-weight:650;margin-bottom:2px}
+.sub{color:var(--dim);font-size:11.5px;margin-bottom:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2{font-size:13.5px;font-weight:650;margin:22px 0 10px;display:flex;align-items:center;gap:8px}
+h2 .pill{font-size:11px;color:var(--dim);font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;min-width:0;box-shadow:0 10px 26px -16px rgba(0,0,0,.25)}
+.card .hd{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.card img{width:18px;height:18px;border-radius:4px;flex:none}
+.card .nm{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .exp{margin-left:auto;font-size:11px;padding:1px 8px;border-radius:999px;background:var(--card2);color:var(--dim);white-space:nowrap}
+.exp.d3{background:#3a1518;color:#ff7b72}.exp.d7{background:#3a2a10;color:#e3b341}.exp.d30{background:#123047;color:#79c0ff}
+.win{margin-top:6px}
+.win .row{display:flex;align-items:baseline;gap:6px;font-size:12.5px}
+.win .wn{color:var(--dim);flex:none;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.win .wv{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+.win .disp{color:var(--dim);font-size:11.5px}
+.bar{height:5px;border-radius:3px;background:var(--barbg);margin-top:3px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .5s}
+.bar i.w{background:var(--warn)}.bar i.b{background:var(--bad)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.kpi .l{font-size:11px;color:var(--dim);letter-spacing:.02em}
+.kpi .v{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px;white-space:nowrap}
+.kpi .s{font-size:11.5px;color:var(--dim);line-height:1.45;height:1.45em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.kpi .s .roll{display:block;height:1.45em;line-height:1.45em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .s .roll span{display:block;height:1.45em;line-height:1.45em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .22s ease,transform .22s ease}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.chart{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:0 10px 26px -16px rgba(0,0,0,.25)}
+.chart h3{font-size:13.5px;font-weight:650;margin:0 0 8px;color:var(--txt)}
+.cbody{height:300px}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th{color:var(--dim);text-align:left;font-weight:500;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:5px 8px;border-bottom:1px solid var(--tdline);white-space:nowrap}
+tr:hover td{background:var(--trhov)}
+.st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+.st.ok{background:var(--ok)}.st.bad{background:var(--bad)}.st.retry{background:var(--warn)}
+.tbtn{background:var(--card2);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:3px 12px;font-size:12px;cursor:pointer}
+.tbtn.on{background:var(--acc);border-color:var(--acc);color:#06131f;font-weight:600}
+.err{color:var(--bad);font-size:12px;padding:8px}
+@media(max-width:900px){.charts{grid-template-columns:1fr}}
+th.num,td.num{text-align:right}
+.card .hd .pill{min-width:0;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#remoteAcctTable table{table-layout:fixed}
+#remoteAcctTable th{position:sticky;top:0;background:var(--card);z-index:1}
+#remoteAcctTable td{overflow:hidden;text-overflow:ellipsis}
+#remoteAcctTable th:nth-child(2),#remoteAcctTable td:nth-child(2){width:36%}
+.win .disp{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+*{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+/* 额度卡片 v2：圆形 logo 垂直居中 + 双行（快过期/总积分）+ 迷你进度条（方案B） */
+.q2card{display:flex;gap:12px;align-items:center}
+.q2logo{flex:0 0 auto;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;color:hsl(var(--h),70%,68%);background:hsl(var(--h),40%,20%);border:1px solid hsl(var(--h),35%,30%);position:relative}
+.q2logo img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff;border-radius:50%}
+.q2days{position:absolute;bottom:-3px;right:-6px;font-size:10px;font-style:normal;padding:1px 5px;border-radius:999px;color:#fff;background:#3d4553;border:1px solid #0e1116}
+.q2days.d1{background:#f85149}
+.q2days.d7{background:#e78c08}
+.q2body{flex:1;min-width:0}
+.q2head{display:flex;align-items:baseline;gap:8px;min-width:0}
+.q2name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.q2user{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;max-width:45%}
+.q2row{display:flex;align-items:baseline;gap:8px;font-size:12.5px;margin-top:5px;min-width:0}
+.q2label{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+.q2val{font-weight:600;font-variant-numeric:tabular-nums}
+.q2exp{margin-left:auto;color:var(--dim);font-size:11.5px;white-space:nowrap}
+.q2exp.hot{color:#f85149;font-weight:600}
+.q2exp.warm{color:#e78c08}
+.q2bar{height:4px;border-radius:2px;background:rgba(255,255,255,.07);margin-top:3px;overflow:hidden}
+.q2bar i{display:block;height:100%;border-radius:2px;background:#4da3ff}
+.q2seg{display:flex;gap:1px}
+.q2seg i{border-radius:0;min-width:0}
+.q2err{color:#f85149;font-size:11.5px;margin-top:4px}
+/* 美化层：骨架屏 / 空状态覆盖层 / 卡片 hover / 额度条入场 / reduced-motion */
+.cbody{position:relative}
+.cover{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px;pointer-events:none}
+.cover.skel{flex-direction:column;gap:9px}
+.cover.skel i{display:block;height:9px;border-radius:5px;background:linear-gradient(90deg,var(--skelc1),var(--skelc2),var(--skelc1));background-size:200% 100%;animation:skel 1.3s linear infinite}
+.cover.skel i:nth-child(1){width:58%}
+.cover.skel i:nth-child(2){width:38%;animation-delay:.15s}
+.cover.skel i:nth-child(3){width:48%;animation-delay:.3s}
+@keyframes skel{from{background-position:200% 0}to{background-position:-200% 0}}
+.kpi,.chart,.card{transition:border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+.kpi:hover,.chart:hover,.card:hover{border-color:var(--lineh);transform:translateY(-1px)}
+.q2bar i{animation:barin .55s cubic-bezier(.22,.61,.36,1)}
+@keyframes barin{from{width:0}}
+@media (prefers-reduced-motion: reduce){
+  .cover.skel i{animation:none}
+  .q2bar i{animation:none}
+  .bar i{transition:none}
+  .kpi,.chart,.card{transition:none}
+  .kpi .s .roll{transition:none}
+}
+/* 手机端额度卡：收起次要信息（账号名），数值过长省略，不再竖排堆叠 */
+@media (max-width:640px){
+  .q2user{display:none}
+  .q2row{font-size:12px}
+  .q2val{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 data-i18n="pageTitle"></h1>
+  <div class="sub"><span data-i18n="subTitle"></span> · <span id="updated" data-i18n="loading"></span> · <button class="tbtn" id="refresh" data-i18n="refresh"></button>
+    <span id="periodBtns" style="margin-left:6px"></span><span id="buildTag"></span></div>
+
+  <h2 data-i18n="hOverview"></h2>
+  <div class="kpis" id="kpis"></div>
+  <div class="charts">
+    <div class="chart" style="grid-column:1/-1"><h3 data-i18n="chartDaily" data-i18n-title="dailyTip"></h3><div class="cbody" style="height:340px" id="cDaily"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartModels"></h3><div class="cbody" id="cModelsPie"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartProv"></h3><div class="cbody" id="cProv"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart" id="remoteTtftWrap" style="display:none"><h3 data-i18n="chartTtft" data-i18n-title="ttftTip"></h3><div class="err" id="remoteTtftErr" style="display:none;margin:80px 20px;text-align:center"></div><div class="cbody" id="cRemoteTtft"></div></div>
+    <div class="chart" id="remoteAcctWrap" style="display:none"><h3><span data-i18n="chartAcct"></span><span class="pill" id="remotePill"></span></h3><div class="err" id="remoteAcctErr" style="display:none"></div><div id="remoteAcctTable" style="max-height:320px;overflow:auto"></div></div>
+    <div class="chart" style="grid-column:1/-1"><h3 data-i18n="chartCache24"></h3><div class="cbody" id="cCache24"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart" id="flowWrap"><h3 data-i18n="chartFlow" data-i18n-title="flowTip"></h3><div class="cbody" id="cFlow"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+    <div class="chart"><h3 data-i18n="chartHeat"></h3><div class="cbody" id="cHeat"><div class="cover skel"><i></i><i></i><i></i></div></div></div>
+
+  </div>
+
+  <h2><span data-i18n="hQuotas"></span> <span class="pill" id="quotaPill"></span></h2>
+  <div class="grid" id="quotaGrid"></div>
+
+  <h2><span data-i18n="hRecent"></span> <span class="pill" data-i18n="recentPill"></span></h2>
+  <div class="card" style="overflow:auto">
+    <table>
+      <thead><tr><th data-i18n="time"></th><th>agent</th><th>provider</th><th data-i18n="modelServed"></th><th class="num" data-i18n="input"></th><th class="num" data-i18n="output"></th><th class="num">TTFT</th><th class="num" data-i18n="duration"></th><th data-i18n="status"></th></tr></thead>
+      <tbody id="recentBody"></tbody>
+    </table>
+  </div>
+</div>
+<script src="static/echarts.min.js?v=20261107"></script>
+<script>
+// CF 链路抖动时这 1MB 可能拉挂（服务端 no-store 不缓存）：阻塞式重试两次，第二次换旧路径
+if(typeof echarts==='undefined')document.write('<scr'+'ipt src="static/echarts.min.js?v=20261107"><\/scr'+'ipt>');
+if(typeof echarts==='undefined')document.write('<scr'+'ipt src="echarts.min.js?v=20261107"><\/scr'+'ipt>');
+</script>
+<script>
+// ---- 界面文案词典 + 取词：zh=页面现有中文原文（一字未改），en=英文对照 ----
+// 语言来源：落地页 ?lang= 优先，其次浏览器语言，兜底英文。上游数据（provider/账号/模型/窗口名等）不译。
+const LANG = (new URLSearchParams(location.search).get('lang') || (navigator.language || 'en')).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+const T = {
+  zh: {
+    // 顶栏 / 全局
+    pageTitle:'magpie 用量',
+    subTitle:'额度与调用量总览',
+    loading:'加载中…',
+    refresh:'刷新',
+    updatedAt:'更新于 ',
+    // 分区 / 图表标题
+    hOverview:'用量总览',
+    chartDaily:'每日 Token 消耗量',
+    dailyTip:'本地直连与远端归因按 provider 合并（品牌拆分名已归并）；图例为全期前 10，柱内画当天 ≥1万 Token 的量',
+    chartModels:'模型用量',
+    chartProv:'供应商用量',
+    chartTtft:'响应速度',
+    ttftTip:'首 Token 延迟分位数：P50 一半请求快于此 · P90 九成请求快于此',
+    chartAcct:'账号明细',
+    chartCache24:'缓存命中率与 Token 用量（24h）',
+    chartFlow:'流量归属',
+    flowTip:'按调用方拆分 VPS 上的流量占比：本机直连 / 经 remote / 其它调用方（hermes 等）',
+    chartHeat:'活跃时段',
+    hQuotas:'额度条目',
+    hRecent:'最近请求',
+    recentPill:'网关日志 · 最近 40 条',
+    // 表格列头
+    time:'时间',
+    modelServed:'模型(served)',
+    input:'输入',
+    output:'输出',
+    duration:'耗时',
+    status:'状态',
+    account:'账号',
+    calls:'调用',
+    errors:'错误',
+    // KPI 卡
+    kpiTotalTokens:'总 Token（含 cache 读）',
+    kpiCost:'费用',
+    kpiCostNote:'按 magpie 价格表折算，非实际支出',
+    kpiTtft:'平均 TTFT',
+    kpiCacheHit:'缓存命中率',
+    kpiSpeed:'平均速度',
+    stDirect:'直连',
+    stRemote:'远端',
+    cacheReadPre:'cache 读',
+    tokPerSec:' Token/秒',
+    unpricedSuf:' 次未计价',
+    timedSuf:' 次有计时',
+    // 通用词 / 单位 / 时间
+    noData:'暂无数据',
+    noWindows:'无窗口数据',
+    noQuotaData:'没有额度数据',
+    noRequests:'没有请求记录（usage.jsonl 不可用）',
+    sec:'秒',
+    secSp:' 秒',
+    avg:'平均',
+    hitRate:'命中率',
+    hit:'命中',
+    timesUnit:' 次',
+    retryPre:' · 重试',
+    today:'今天',
+    tomorrow:'明天',
+    expToday:'今天到期',
+    expTomorrow:'明天到期',
+    voidInPre:'',
+    voidInSuf:'天作废',
+    voidDatePre:'',
+    voidDateSuf:' 作废',
+    dayUnit:'天',
+    hrUnit:'时',
+    minUnit:'分',
+    hourAxis:'时',
+    weekPre:'周',
+    weekChars:'日一二三四五六',
+    wd0:'周日',
+    wd1:'周一',
+    wd2:'周二',
+    wd3:'周三',
+    wd4:'周四',
+    wd5:'周五',
+    wd6:'周六',
+    lparen:'（',
+    rparen:'）',
+    colonFull:'：',
+    pillPre:'（',
+    pillSuf:'）',
+    p7d:'7天',
+    p30d:'30天',
+    pAll:'全部',
+    unknown:'未知',
+    uYi:'亿',
+    uWan:'万',
+    uB:'',
+    uM:'',
+    uK:'',
+    remainPct:'剩余 ',
+    remPre:'剩 ',
+    remSuf:'',
+    ofTotal:' / 共 ',
+    totalPre:'共 ',
+    totalSuf:'',
+    totalQuota:'总额度',
+    pointsBalance:'积分余额',
+    winTotalPoints:'总积分',
+    winRemPoints:'剩余积分',
+    permRight:'永久',
+    perm:'长期',
+    tempRem:'临时剩余',
+    tempUsed:'临时已用',
+    avail:'可用',
+    usedLbl:'已用',
+    unitMoli:'魔粒',
+    unitPoints:'积分',
+    callerNone:'(无)',
+    resetDone:'已重置',
+    // 图表系列 / 空态 / 错误提示
+    pieOther:'其它',
+    flowDirect:'本机直连',
+    flowViaRemote:'本机→remote',
+    flowOtherPre:'其它·',
+    otherCallersPre:'其它调用方（',
+    otherCallersSuf:' 个）',
+    lineDirectUnattr:'直连线路（未归因）',
+    lineProxyUnattr:'代理线路（未归因）',
+    logReadFail:'日志读取失败：',
+    attrTimeout:'归因请求超时（45 秒）',
+    attrApiErr:'归因接口 ',
+    remoteUnavail:'远端归因不可用：',
+    remoteUnavailTail:' —— 远端 magpie 或链路故障，恢复后刷新即恢复',
+    dataUnavail:'数据不可用',
+    needKey:'口令校验失败（刷新页面重新获取服务端注入的口令）',
+    renderFail:'渲染失败：',
+    loadFail:'加载失败：',
+    quotaApiErr:'额度接口异常：',
+    quotaApiErrTail:' —— 并非额度清零',
+    quotaLoadFail:'额度加载失败：',
+    noteTail:' —— 以下数值可能不完整',
+    holdsTitle:'网关 holds 状态：',
+    holdsWarnPre:'⚠ 有 key 被 holds（',
+    holdsWarnSuf:'）',
+  },
+  en: {
+    // top bar / global
+    pageTitle:'magpie usage',
+    subTitle:'Quota & usage overview',
+    loading:'Loading…',
+    refresh:'Refresh',
+    updatedAt:'Updated at ',
+    // section / chart titles
+    hOverview:'Usage overview',
+    chartDaily:'Daily token usage',
+    dailyTip:'Local direct + remote attribution merged by provider (brand-split names merged); legend shows all-time top 10, bars also include days with ≥10k tokens',
+    chartModels:'Model usage',
+    chartProv:'Provider usage',
+    chartTtft:'Response speed',
+    ttftTip:'TTFT percentiles: P50 — half of requests are faster · P90 — 90% of requests are faster',
+    chartAcct:'Account breakdown',
+    chartCache24:'Cache hit rate & token usage (24h)',
+    chartFlow:'Traffic attribution',
+    flowTip:'Share of VPS traffic by caller: local direct / via remote / other callers (hermes etc.)',
+    chartHeat:'Active hours',
+    hQuotas:'Quotas',
+    hRecent:'Recent requests',
+    recentPill:'Gateway log · last 40',
+    // table headers
+    time:'Time',
+    modelServed:'Model (served)',
+    input:'Input',
+    output:'Output',
+    duration:'Duration',
+    status:'Status',
+    account:'Account',
+    calls:'Calls',
+    errors:'Errors',
+    // KPI cards
+    kpiTotalTokens:'Total tokens (incl. cache read)',
+    kpiCost:'Cost',
+    kpiCostNote:'Estimated from the magpie price list, not actual spend',
+    kpiTtft:'Avg TTFT',
+    kpiCacheHit:'Cache hit rate',
+    kpiSpeed:'Avg speed',
+    stDirect:'Direct',
+    stRemote:'Remote',
+    cacheReadPre:'cache read',
+    tokPerSec:' Token/s',
+    unpricedSuf:' unpriced',
+    timedSuf:' timed',
+    // common words / units / time
+    noData:'No data yet',
+    noWindows:'No window data',
+    noQuotaData:'No quota data',
+    noRequests:'No request records (usage.jsonl unavailable)',
+    sec:'s',
+    secSp:'s',
+    avg:'avg',
+    hitRate:'Hit rate',
+    hit:'hit',
+    timesUnit:' calls',
+    retryPre:' · retry',
+    today:'Today',
+    tomorrow:'Tomorrow',
+    expToday:'Expires today',
+    expTomorrow:'Expires tomorrow',
+    voidInPre:'Void in ',
+    voidInSuf:'d',
+    voidDatePre:'expires ',
+    voidDateSuf:'',
+    dayUnit:'d',
+    hrUnit:'h',
+    minUnit:'m',
+    hourAxis:':00',
+    weekPre:'',
+    weekChars:'',
+    wd0:'Sun',
+    wd1:'Mon',
+    wd2:'Tue',
+    wd3:'Wed',
+    wd4:'Thu',
+    wd5:'Fri',
+    wd6:'Sat',
+    lparen:' (',
+    rparen:')',
+    colonFull:': ',
+    pillPre:'(',
+    pillSuf:')',
+    p7d:'7d',
+    p30d:'30d',
+    pAll:'All',
+    unknown:'unknown',
+    uYi:'',
+    uWan:'',
+    uB:'B',
+    uM:'M',
+    uK:'K',
+    remainPct:'Remaining ',
+    remPre:'',
+    remSuf:' left',
+    ofTotal:' / ',
+    totalPre:'',
+    totalSuf:' total',
+    totalQuota:'Total quota',
+    pointsBalance:'Points balance',
+    winTotalPoints:'Total points',
+    winRemPoints:'Remaining points',
+    permRight:'Never expires',
+    perm:'permanent',
+    tempRem:'temp remaining',
+    tempUsed:'temp used',
+    avail:'Available',
+    usedLbl:'Used',
+    unitMoli:'Moli',
+    unitPoints:'points',
+    callerNone:'(none)',
+    resetDone:'Reset',
+    // chart series / empty states / errors
+    pieOther:'Other',
+    flowDirect:'Local direct',
+    flowViaRemote:'Local→remote',
+    flowOtherPre:'Other · ',
+    otherCallersPre:'Other callers (',
+    otherCallersSuf:')',
+    lineDirectUnattr:'Direct line (unattributed)',
+    lineProxyUnattr:'Proxy line (unattributed)',
+    logReadFail:'Failed to read logs: ',
+    attrTimeout:'Attribution request timed out (45s)',
+    attrApiErr:'Attribution API ',
+    remoteUnavail:'Remote attribution unavailable: ',
+    remoteUnavailTail:' — remote magpie or link failure; refresh to recover once restored',
+    dataUnavail:'Data unavailable',
+    needKey:'Key check failed (reload the page to pick up the freshly injected key)',
+    renderFail:'Render failed: ',
+    loadFail:'Load failed: ',
+    quotaApiErr:'Quota API error: ',
+    quotaApiErrTail:' — not a zero balance',
+    quotaLoadFail:'Failed to load quotas: ',
+    noteTail:' — figures below may be incomplete',
+    holdsTitle:'Gateway holds status: ',
+    holdsWarnPre:'⚠ key on holds (',
+    holdsWarnSuf:')',
+  }
+};
+// 取词：当前语言 → 英文 → 键名。不用 || 链：部分词条（前后缀）合法为空串，会被 || 吞掉
+const t = (k) => { const v = (T[LANG] || {})[k]; return v != null ? v : (T.en[k] != null ? T.en[k] : k); };
+// 静态 HTML 里的文案已抽进词典，这里回填（title/h1/h2/h3/表头/按钮）
+document.title = t('pageTitle');
+for(const el of document.querySelectorAll('[data-i18n]'))el.textContent = t(el.dataset.i18n);
+for(const el of document.querySelectorAll('[data-i18n-title]'))el.title = t(el.dataset.i18nTitle);
+const $=s=>document.querySelector(s);
+const fmt=n=>{if(n==null)return'—';const a=Math.abs(n);
+  // zh 沿用 亿/万；en 按英文习惯改用 K/M/B 分级
+  if(LANG==='zh'){
+    if(a>=1e8)return((n/1e8).toFixed(2).replace(/\.?0+$/,''))+t('uYi');
+    if(a>=1e4)return((n/1e4).toFixed(1).replace(/\.0$/,''))+t('uWan');
+  }else{
+    if(a>=1e9)return((n/1e9).toFixed(2).replace(/\.?0+$/,''))+t('uB');
+    if(a>=1e6)return((n/1e6).toFixed(1).replace(/\.0$/,''))+t('uM');
+    if(a>=1e3)return((n/1e3).toFixed(1).replace(/\.0$/,''))+t('uK');
+  }
+  return n.toLocaleString('en-US')};
+// magpie 计价的原始单位是美元；内置页的人民币（settings currency=cny）是它按内部汇率换算的展示口径
+const fmtCNY=n=>n==null?'—':('$'+(n>=100?n.toFixed(0):n>=1?n.toFixed(2):n.toFixed(3)));
+const fmtAxis=(v)=>LANG==='zh'
+  ?(v>=1e8?((v/1e8).toFixed(1).replace(/\.0$/,''))+t('uYi'):v>=1e4?((v/1e4).toFixed(1).replace(/\.0$/,''))+t('uWan'):String(Math.round(v)))
+  :(v>=1e9?((v/1e9).toFixed(1).replace(/\.0$/,''))+t('uB'):v>=1e6?((v/1e6).toFixed(1).replace(/\.0$/,''))+t('uM'):v>=1e3?((v/1e3).toFixed(1).replace(/\.0$/,''))+t('uK'):String(Math.round(v)));
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const evalPieTotal=(arr)=>arr.reduce((s2,x)=>s2+(x.value||0),0)||1;
+const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const TIP={backgroundColor:cssVar('--tipbg'),borderColor:cssVar('--tipline'),borderWidth:1,textStyle:{color:cssVar('--tiptxt'),fontSize:12}};
+const PALETTE=['#4da3ff','#3fb950','#d29922','#f85149','#bc8cff','#39c5cf','#ff7b72','#79c0ff','#e3b341','#8b949e','#f778ba','#7ee787'];
+
+// ---- 远端 magpie 归因：本机发起的流量，实际花在远端哪些 provider 上 ----
+// 本地 usage.jsonl 只能看到 provider=magpie-direct/magpie-cf 这一个出口；
+// 真实归属（provider / providerAccount）只有远端日志有，所以由本机服务去问远端 magpie。
+let remoteSeq = 0, remoteCtrl = null;
+async function loadRemote() {
+  // 归因统一走本机 /api/attribution：有 remote provider 时由本机 server 去问远端 magpie
+  // 的 usage/requests（按 caller 过滤），没有则返回 source:"local"，远端卡片保持隐藏。
+  // 竞态守卫：启动即 abort 上一次请求（最长 45 秒才超时），响应回来时若序号已过期
+  // 则整体丢弃——旧区间的慢响应不得覆盖新视图（不渲染、不置 remoteFailed）。
+  if (remoteCtrl) try { remoteCtrl.abort(); } catch {}
+  const seq = ++remoteSeq;
+  const ctrl = remoteCtrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error(t('attrTimeout'))), 45000);
+  try {
+    const r = await fetch(auth('api/attribution?period=' + period), { signal: ctrl.signal, headers: hf() });
+    if (seq !== remoteSeq) return; // 过期响应：直接丢弃
+    if (!r.ok) {
+      let msg = t('attrApiErr') + r.status;
+      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    const jd = await r.json();
+    if (seq !== remoteSeq) return; // 过期响应：直接丢弃
+    if (jd.source !== 'remote') {
+      remoteFailed = true;
+      hideRemoteCards();
+      renderDaily(lastDetail || {}); renderProv(lastModels); renderFlow();
+      return;
+    }
+    try { renderRemote(jd); } catch (re) { console.error('[usage-board] renderRemote threw:', re); throw new Error('renderRemote: ' + re.message); }
+  } catch (e) {
+    if (seq !== remoteSeq) return; // 自己被新请求 abort：静默丢弃，不算失败
+    remoteFailed = true; renderDaily(lastDetail || {}); renderProv(lastModels); // 真不可用：此刻才允许线路名兜底
+    console.warn('[usage-board] attribution failed:', e && e.message || e);
+    // 归因不可用时显示卡片+错误说明（而不是无声消失）
+    const msg = t('remoteUnavail') + esc(String(e && e.message || e)) + t('remoteUnavailTail');
+    const tw = document.getElementById("remoteTtftWrap");
+    if (tw) {
+      tw.style.display = "";
+      const te = document.getElementById("remoteTtftErr");
+      te.textContent = msg; te.style.display = "";
+      document.getElementById("cRemoteTtft").style.display = "none";
+    }
+    const aw = document.getElementById("remoteAcctWrap");
+    if (aw) {
+      aw.style.display = "";
+      const ae = document.getElementById("remoteAcctErr");
+      ae.textContent = msg; ae.style.display = "";
+      document.getElementById("remoteAcctTable").innerHTML = "";
+    }
+    const p = document.getElementById("remotePill");
+    if (p) p.textContent = t('dataUnavail');
+    renderFlow();
+  } finally {
+    clearTimeout(timer);
+    if (remoteCtrl === ctrl) remoteCtrl = null;
+  }
+}
+
+function hideRemoteCards() {
+  for (const id of ["remoteTtftWrap", "remoteAcctWrap"]) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  }
+  const p = document.getElementById("remotePill");
+  if (p) p.textContent = "";
+}
+
+function renderRemote(d) {
+  if (!d) return;
+  $("#remoteTtftWrap").style.display = "";
+  $("#remoteAcctWrap").style.display = "";
+  // 上一次可能处于「归因不可用」错误态：先清掉，再画图
+  const te = document.getElementById("remoteTtftErr");
+  if (te) te.style.display = "none";
+  document.getElementById("cRemoteTtft").style.display = "";
+  const ae = document.getElementById("remoteAcctErr");
+  if (ae) ae.style.display = "none";
+  const provs = d.providers || [];
+
+  $("#remotePill").textContent = t('pillPre') + ({ "7d": t('p7d'), "30d": t('p30d'), "all": t('pAll') }[d.period] || d.period || "") + t('pillSuf');
+
+  // provider 响应速度（TTFT P50 / P90）
+  const speed = provs.filter((p) => p.ttft_p50 != null).slice(0, 10).reverse();
+  const ttft = initChart("cRemoteTtft");
+  ttft.setOption({
+    tooltip:{...TIP,
+      trigger: "axis", axisPointer: { type: "shadow" },
+      formatter: (ps) => {
+        const p = speed[ps[0].dataIndex];
+        if (!p) return "";
+        return `<b>${esc(p.provider)}</b><br/>P50 ${(p.ttft_p50 / 1000).toFixed(1)}${t('secSp')} · P90 ${(p.ttft_p90 / 1000).toFixed(1)}${t('secSp')}`
+          + `<br/>${t('avg')} ${((p.ttft_avg || 0) / 1000).toFixed(1)}${t('secSp')} · ${p.timed}${t('timedSuf')}`;
+      },
+    },
+    legend: { textStyle: { color: "#8b93a1", fontSize: 11 }, top: 0 },
+    grid: { left: 104, right: 58, top: 34, bottom: 24 },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: "#8b93a1", fontSize:11, formatter: (v) => (v / 1000).toFixed(0) + t('sec') },
+      splitLine: { lineStyle: { color: "#1d2430" } },
+    },
+    yAxis: { type: "category", data: speed.map((p) => p.provider), axisLabel: { color: "#8b93a1", fontSize: 11 } },
+    series: [
+      {
+        name: "P50", type: "bar", data: speed.map((p) => p.ttft_p50),
+        itemStyle: { color: "#3fb950", borderRadius: 3 },
+      },
+      {
+        name: "P90", type: "bar", data: speed.map((p) => p.ttft_p90),
+        itemStyle: { color: "#d29922", borderRadius: 3 },
+      },
+    ],
+  }, true);
+  ttft.resize();
+
+  const rows = (d.accounts || []).map((a) => `<tr><td>${esc(a.provider)}</td><td>${esc(a.account)}</td>
+    <td class="num">${fmt(a.calls)}</td><td class="num">${fmt(a.input)}</td>
+    <td class="num">${fmt(a.output)}</td><td class="num">${a.errors || 0}</td></tr>`).join("");
+  remoteFailed=false;
+  lastRemote = d;
+  renderProv(lastModels);
+  renderFlow();
+  renderHourly();
+  if (lastDetail) renderDaily(lastDetail);
+  $("#remoteAcctTable").innerHTML = '<table><thead><tr><th>provider</th><th>'+t('account')+'</th>'
+    + '<th class="num">'+t('calls')+'</th><th class="num">'+t('input')+'</th><th class="num">'+t('output')+'</th><th class="num">'+t('errors')+'</th>'
+    + "</tr></thead><tbody>" + rows + "</tbody></table>";
+}
+
+
+let period='30d';
+const charts={};
+
+// 图表容器覆盖层：null=揭掉（数据到位），字符串=显示「暂无数据」等占位；骨架屏直接写在初始 HTML 里
+function cover(id,html){
+  const el=$('#'+id);if(!el)return;
+  let c=el.querySelector('.cover');
+  if(!html){if(c)c.remove();return;}
+  if(!c){c=document.createElement('div');el.appendChild(c);}
+  c.className='cover';c.innerHTML=html;
+}
+function initChart(id){
+  if(charts[id]&&!charts[id].__stub)return charts[id];
+  // echarts 拉挂时不抛错：给个空壳，KPI/额度卡照常渲染，图表等下一次刷新补上（骨架屏此时保留）
+  if(typeof echarts==='undefined')return charts[id]={__stub:1,setOption(){},resize(){},getDom(){return $('#'+id)},getOption(){return{dataZoom:[]}},dispatchAction(){},group:''};
+  delete charts[id];
+  charts[id]=echarts.init($('#'+id),null,{renderer:'canvas'});
+  cover(id,null);
+  return charts[id];
+}
+window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c.resize()));
+// 浏览器页面缩放（Ctrl +/-）不会触发 window resize 的尺寸变化？会。但视觉宽度变了要重画。
+new ResizeObserver(()=>Object.values(charts).forEach(c=>c.resize())).observe(document.body);
+// 图表颜色在渲染时读取 CSS 变量：系统切换明暗后整页重载一次，全部按新主题重画
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>location.reload());
+// 双击每日图回到最近 17 天视图
+document.addEventListener('dblclick',(e)=>{
+  const c=charts['cDaily']; if(!c) return;
+  if(!c.getDom().contains(e.target)) return;
+  const opt=c.getOption(); const dz=opt.dataZoom&&opt.dataZoom[0];
+  if(!dz) return;
+  const total=daysLenGlobal||dz.end-dz.start;
+  const start=daysLenGlobal>18?100*(1-17/daysLenGlobal):0;
+  c.dispatchAction({type:'dataZoom',start,end:100});
+});
+
+function winVal(w){
+  if(w.unit&&w.unit!=='%'){
+    const amt=w.amount!=null?fmt(w.amount):'';
+    const lim=w.limit?' / '+fmt(w.limit):'';
+    return amt+lim;
+  }
+  return t('remainPct')+fmt(w.remaining??0)+'%';
+}
+function winExp(w){
+  for(const k of ['runsOutAt','expiresAt','expireAt','expires','until','validUntil']){
+    if(w[k]){const t=Date.parse(w[k]);if(Number.isFinite(t))return t;}
+  }
+  const d=w.display||'';let m;
+  if((m=d.match(/最早\s*(\d{4}-\d{2}-\d{2})/))||(m=d.match(/(\d{4}-\d{2}-\d{2})\s*作废/)))return Date.parse(m[1]+'T23:59:59+08:00');
+  if((m=d.match(/(\d{4}-\d{2}-\d{2})\s*到期/)))return Date.parse(m[1]+'T23:59:59+08:00');
+  if((m=d.match(/(\d{2}-\d{2})\s*到期/)))return Date.parse(new Date().getFullYear()+'-'+m[1]+'T23:59:59+08:00');
+  // 重置时间也算到期：每日/5h 窗口未用完的额度在重置时作废，否则英文命名窗口（Daily grant、
+  // General Pool · 5h window）会整个漏掉、排到垫底区。超过 1h 的过去时间视为陈旧数据忽略。
+  if(w.resetsAt){const t=Date.parse(w.resetsAt);if(Number.isFinite(t)&&t>Date.now()-36e5)return t;}
+  // 插件没给 resetsAt 的每日额度（MonkeyCode 的「每日 Token 额度」）按次日 00:00 估；
+  // 签到/领取类窗口不是额度池，排除，免得把「每日签到」也当成临期。
+  const nm=(w.name||'')+' '+(w.display||'');
+  // 签到类按窗口名排除（display 里常带「09:34 领取」这类字样，不能用来判断）
+  if(!/签到|签|check|已签/.test(w.name||'')&&/每日|今日|daily|today/i.test(nm)
+     &&!/消耗|本轮|累计/.test(nm)&&(w.limit||w.amount||w.unit))return nextResetCN();
+  return null;
+}
+// 下一个北京时间 00:00（每日额度重置点）
+function nextResetCN(){
+  const off=8*36e5,now=Date.now(),d=new Date(now+off);
+  d.setUTCHours(0,0,0,0);
+  let t=d.getTime()+864e5-off;
+  if(t<=now)t+=864e5;
+  return t;
+}
+function winRemain(w){
+  if(w.runsOut!=null)return w.runsOut;
+  if(w.limit&&w.amount!=null)return Math.max(0,w.limit-w.amount);
+  return null;
+}
+// 还有余额可作废：卡片首行/排序都不该拿「已用空」的窗口当临期信号（如 5 小时额度 剩 0%）
+function winAlive(w){
+  if(w.runsOut!=null)return w.runsOut>0;
+  // 先看实际余额再看百分比：Loomy 的 Daily grant 会报 remaining 0% 但还剩 16 credits
+  if(w.limit&&w.amount!=null)return w.limit-w.amount>0;
+  if(w.remaining!=null)return w.remaining>0;
+  return true;
+}
+function soonWin(wins){
+  // 显式命名的临时池优先（麦吉的「限时积分」就是临期额度，别被「积分余额」上的 runsOut 抢走）
+  const named=wins.filter(w=>/限时|临时/.test(w.name||'')&&winAlive(w));
+  for(const pool of [named,wins.filter(winAlive),wins]){
+    let win=null,t=Infinity;
+    for(const w of pool){
+      const e=winExp(w);if(e!=null&&e<t){t=e;win=w;}
+    }
+    if(win)return [win,t];
+  }
+  return [null,Infinity];
+}
+// 总积分：优先用插件给的余额字段（“6800 积分”“248 魔粒可用”是聚合总量），
+// 其次取积分类窗口的总额（limit，或 display 里「已用 / 总量」的后者）。
+// 金额（$）不算积分；欠费表示可用为 0（“已欠费 1 积分” → 0，明细仍在首行显示）。
+const fmtPts=n=>fmt(Number.isInteger(n)?n:Math.round(n*100)/100);
+function pointTotal(q,wins){
+  const b=String(q.balance||'').replace(/,/g,'');
+  if(b&&!/[$¥]/.test(b)){
+    const m=b.match(/\d+(?:\.\d+)?/);
+    const n=m?(/欠费/.test(b)?0:+m[0]):null;
+    if(n!=null){
+      const u=/魔粒/.test(b)?t('unitMoli'):/credits/i.test(b)?'credits':/积分/.test(b)?t('unitPoints'):/points/i.test(b)?'points':'';
+      return {n,u};
+    }
+  }
+  let best=null;
+  for(const w of wins){
+    const nm=(w.name||'')+' '+(w.unit||'');
+    if(!/积分|魔粒|credits|points/i.test(nm))continue;
+    let tot=w.limit!=null?w.limit:null;
+    if(tot==null){
+      // display 里取「剩余 9.57 积分」「92 / 2200 credits」这类总量：先剔掉日期时间，再取最大值
+      const disp=String(w.display||'').replace(/\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2}|\d{1,2}:\d{2}/g,' ');
+      const nums=(disp.match(/\d+(?:\.\d+)?/g)||[]).map(Number).filter(n=>n>0);
+      if(nums.length)tot=Math.max(...nums);
+    }
+    if(tot==null||!(tot>0))continue;
+    if(!best||tot>best.n)best={n:tot,u:/魔粒/.test(nm)?t('unitMoli'):/credits/i.test(nm)?'credits':t('unitPoints'),exp:winExp(w)};
+  }
+  return best;
+}
+function fmtDaysLeft(ts){
+  // 用原始剩余时长判断，不用 ceil(天)：剩 6 小时不能显示「明天到期」，要和角标的「今天」一致
+  const d=(ts-Date.now())/864e5;
+  if(d<1)return t('expToday');
+  if(d<2)return t('expTomorrow');
+  if(d<=7)return t('voidInPre')+Math.ceil(d)+t('voidInSuf');
+  return t('voidDatePre')+new Date(ts).toLocaleDateString(LANG==='zh'?'zh-CN':'en-US',{month:'2-digit',day:'2-digit'})+t('voidDateSuf');
+}
+// 到期由近到远：≤3 天红、≤7 天橙、≤14 天黄、更远绿（角标/进度条/右侧到期文字共用）
+function expColor(d){return d<=3?'#f85149':d<=7?'#e78c08':d<=14?'#c9a227':'#3fb950';}
+// 总积分构成：长期（不会作废的部分）+ 临时剩余 + 临时已用。
+// 临时池只取「带到期时间、有剩余量」的那一个积分窗口（临期额度/总额度可能互为子集，不能相加），
+// 长期 = 总积分 - 临时剩余；已用取自 amount，缺失时用 limit-剩余。
+function dispNum(w){
+  const cleaned=String(w.display||'').replace(/,/g,'').replace(/\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2}|\d{1,2}:\d{2}/g,' ');
+  const m=cleaned.match(/\d+(?:\.\d+)?/);
+  return m?+m[0]:null;
+}
+function pointSplit(q,wins,tot){
+  if(!tot)return null;
+  // 插件给了显式命名池（麦吉：限时积分 / 永久积分）就直接按它拆，不去猜 runsOut
+  let tempN=null,permN=null;
+  for(const w of wins){
+    const n=w.name||'';
+    if(/限时|临时/.test(n)){const v=dispNum(w);if(v!=null&&v>0)tempN=v;}
+    else if(/永久|长期/.test(n)){const v=dispNum(w);if(v!=null)permN=v;}
+  }
+  if(tempN!=null){
+    const perm=permN!=null?permN:Math.max(0,tot.n-tempN);
+    const sum=perm+tempN;
+    if(sum>0)return {perm,tempR:tempN,used:0,sum};
+  }
+  let tw=null,t=Infinity;
+  for(const w of wins){
+    const nm=(w.name||'')+' '+(w.unit||'');
+    if(!/积分|魔粒|credits|points/i.test(nm))continue;
+    const e=winExp(w);let rem=winRemain(w);
+    if(rem==null&&w.limit!=null&&w.remaining!=null)rem=w.limit*w.remaining/100;
+    if(e==null||rem==null)continue;
+    if(e<t){t=e;tw=w;}
+  }
+  if(!tw)return null;
+  const tempR=Math.max(0,winRemain(tw)||0);
+  // 临时剩余不可能超过总积分：个别插件把 token 池标成 credits（SenseNova 120000），量级对不上就不画
+  if(tot.n>0&&tempR>tot.n*1.001)return null;
+  const used=tw.amount!=null?Math.max(0,tw.amount):(tw.limit!=null?Math.max(0,tw.limit-tempR):0);
+  const perm=Math.max(0,tot.n-tempR);
+  const sum=perm+tempR+used;
+  return sum>0?{perm,tempR,used,sum}:null;
+}
+// 额度池的 可用/已用（无积分拆分时给主池画分段条用）；美元类额度不画
+function poolSplit(w){
+  if(!w||w.limit==null||/usd|美元|\$/i.test(w.unit||''))return null;
+  let rem=winRemain(w);
+  if(rem==null&&w.remaining!=null)rem=w.limit*w.remaining/100;
+  if(rem==null)return null;
+  rem=Math.max(0,rem);
+  const used=w.amount!=null?Math.max(0,w.amount):Math.max(0,w.limit-rem);
+  return {rem,used};
+}
+function segBar(name,rem,used){
+  const all=rem+used;
+  if(!(all>0))return '';
+  const w1=(100*rem/all).toFixed(1),w2=(100*used/all).toFixed(1);
+  return `<div class="q2bar q2seg" title="${esc(name)}${t('colonFull')}${t('avail')} ${fmt(rem)} · ${t('usedLbl')} ${fmt(used)}"><i style="width:${w1}%;background:#4da3ff"></i>${used>0?`<i style="width:${w2}%;background:var(--segused)"></i>`:''}</div>`;
+}
+function quotaCard(q){
+  const wins=q.windows||[];
+  // 快过期行：全部窗口里到期最早的；第二行：总积分（余额字段 > 积分类窗口总量 > 原窗口行）
+  const [expWin,expT]=soonWin(wins);
+  const tot=pointTotal(q,wins);
+  const sp=pointSplit(q,wins,tot);
+  let totWin=tot?null:(wins.find(w=>/积分余额|总额度|余额/.test(w.name||'')&&w!==expWin)
+    ||wins.filter(w=>w!==expWin).sort((a,b)=>(b.limit||0)-(a.limit||0))[0]);
+  const nameStr=String(q.name||q.provider||'?');
+  const hue=[...nameStr].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7)%360;
+  const initial=[...nameStr].find(c=>c.trim())||'?';
+  const days=expWin?(expT-Date.now()):null;
+  const badge=days!=null?`<i class="q2days" style="background:${expColor(days/864e5)}">${days<864e5?t('today'):days<2*864e5?t('tomorrow'):Math.ceil(days/864e5)+t('dayUnit')}</i>`:'';
+  const iconFile=brandIcon(q);
+  const logo=iconFile
+    ?`<div class="q2logo" style="--h:${hue}">${esc(initial)}<img src="${esc(iconFile.replace(/^\//,''))}" onerror="this.remove()">${badge}</div>`
+    :`<div class="q2logo" style="--h:${hue}">${esc(initial)}${badge}</div>`;
+  const err=q.error?`<div class="q2err">${esc(q.error)}</div>`:'';
+  const rows=[];
+  if(expWin){
+    const rem=winRemain(expWin);
+    const val=rem!=null?(t('remPre')+fmt(rem)+(expWin.limit?(t('ofTotal')+fmt(expWin.limit)):'')+t('remSuf'))
+      :(/欠费/.test(expWin.display||'')?esc(expWin.display)
+      :(expWin.text?(t('remPre')+fmt(dispNum(expWin)||0)+t('remSuf'))
+      :(expWin.remaining!=null?(expWin.limit&&!/usd|美元|\$/i.test(expWin.unit||'')?(t('remPre')+fmt(expWin.limit*expWin.remaining/100)+t('ofTotal')+fmt(expWin.limit)+t('remSuf')):(t('remPre')+Math.round(expWin.remaining)+'%'+t('remSuf'))):(expWin.display?esc(expWin.display):'—'))));
+    const left=(expT-Date.now())/864e5;
+    const frac=(expWin.runsOut!=null&&expWin.limit)?expWin.runsOut/expWin.limit:(expWin.remaining!=null?expWin.remaining/100:null);
+    // 窗口本身就叫「总积分」时，第一行讲剩余、第二行讲总量，避免两个同名标签（比较对象是上游中文名，走 T.zh）
+    const expLabel=(expWin.name===T.zh.winTotalPoints)?t('winRemPoints'):expWin.name;
+    const bar1=frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%;background:${expColor(days/864e5)}"></i></div>`:'';
+    rows.push(`<div class="q2row"><span class="q2label" title="${esc(expWin.name)}">${esc(expLabel)}</span><span class="q2val">${val}</span><span class="q2exp" style="color:${expColor(left)}${left<=7?';font-weight:600':''}">${fmtDaysLeft(expT)}</span></div>`
+      +bar1);
+  }
+  if(tot){
+    rows.push(`<div class="q2row"><span class="q2label">${t('winTotalPoints')}</span><span class="q2val">${fmtPts(tot.n)}</span><span class="q2exp">${esc(tot.u)}${tot.exp&&(!expWin||Math.abs(tot.exp-expT)>6e4)?(' · '+fmtDaysLeft(tot.exp)):''}</span></div>`);
+    if(sp){
+      // 可用（长期+临时剩余）与已消耗两段；两者相加=发放总量
+      const avail=sp.perm+sp.tempR, all=avail+sp.used;
+      const w2=x=>Math.max(0,100*x/all).toFixed(1);
+      const seg=[`<i style="width:${w2(avail)}%;background:#4da3ff"></i>`];
+      if(sp.used>0)seg.push(`<i style="width:${w2(sp.used)}%;background:rgba(255,255,255,.18)"></i>`);
+      rows.push(`<div class="q2bar q2seg" title="${t('avail')} ${fmtPts(avail)}${t('lparen')}${t('perm')} ${fmtPts(sp.perm)} + ${t('tempRem')} ${fmtPts(sp.tempR)}${t('rparen')} · ${t('tempUsed')} ${fmtPts(sp.used)}">${seg.join('')}</div>`);
+    }else{
+      const p2=poolSplit(expWin);
+      if(p2)rows.push(segBar(expWin.name,p2.rem,p2.used));
+    }
+    // 没有积分分段条时，把容量最大的那个池子也画一条（SenseNova 的本周额度这类）
+    if(!sp){
+      let bw=null;
+      for(const w of wins){
+        if(w===expWin||w.limit==null)continue;
+        if(expWin&&expWin.limit!=null&&w.limit<=expWin.limit)continue;
+        if(winRemain(w)==null&&w.remaining==null&&w.amount==null)continue;
+        if(!bw||w.limit>bw.limit)bw=w;
+      }
+      if(bw){
+        const rem2=winRemain(bw);
+        const frac2=(rem2!=null&&bw.limit)?rem2/bw.limit:(bw.remaining!=null?bw.remaining/100:null);
+        const e2=winExp(bw), d2=e2!=null?(e2-Date.now())/864e5:null;
+        const right2=d2!=null?fmtDaysLeft(e2):(bw.unit?esc(bw.unit):'');
+        rows.push(`<div class="q2row"><span class="q2label" title="${esc(bw.name)}">${esc(bw.name)}</span><span class="q2val">${rem2!=null?(t('remPre')+fmt(rem2)+(bw.limit?(t('ofTotal')+fmt(bw.limit)):'')+t('remSuf')):'—'}</span><span class="q2exp"${d2!=null?` style="color:${expColor(d2)}${d2<=7?';font-weight:600':''}"`:''}>${right2}</span></div>`
+          +(frac2!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac2*100)).toFixed(1)}%;background:${d2!=null?expColor(d2):'#4da3ff'}"></i></div>`:''));
+      }
+    }  }else if(totWin){
+    const rem=winRemain(totWin);
+    const val=rem!=null?fmt(rem):(totWin.remaining!=null?Math.round(totWin.remaining)+'%':esc(totWin.display||'—'));
+    let right;
+    if(/永久/.test(totWin.name||''))right=t('permRight');
+    else if(rem!=null&&totWin.limit)right='/ '+fmt(totWin.limit);
+    else if(totWin.remaining!=null&&totWin.limit)right=t('totalPre')+fmt(totWin.limit)+t('totalSuf');
+    else right='';
+    const frac=(totWin.runsOut!=null&&totWin.limit)?totWin.runsOut/totWin.limit:(totWin.remaining!=null?totWin.remaining/100:null);
+    rows.push(`<div class="q2row"><span class="q2label" title="${esc(totWin.name)}">${esc(totWin.name)}</span><span class="q2val">${val}</span><span class="q2exp">${right}</span></div>`
+      +(frac!=null?`<div class="q2bar"><i style="width:${Math.max(2,Math.min(100,frac*100)).toFixed(1)}%"></i></div>`:''));
+  }else if(!totWin&&!q.balance&&expWin&&expWin.limit){
+    const p3=poolSplit(expWin);
+    rows.push(`<div class="q2row"><span class="q2label">${t('totalQuota')}</span><span class="q2val">${t('totalPre')+fmt(expWin.limit)+t('totalSuf')}</span><span class="q2exp">${esc(expWin.unit||'')}</span></div>`
+      +(p3?segBar(expWin.name,p3.rem,p3.used):''));
+  }else if(q.balance){
+    const m=String(q.balance).match(/^([\d,.]+)\s*(.*)$/);
+    rows.push(`<div class="q2row"><span class="q2label">${t('pointsBalance')}</span><span class="q2val">${m?fmt(Number(m[1].replace(/,/g,''))):esc(q.balance)}</span><span class="q2exp">${m?esc(m[2]):''}</span></div>`);
+  }
+  if(!rows.length)rows.push('<div class="q2row"><span class="q2label">'+t('noWindows')+'</span></div>');
+  const user=(q.user&&q.user!=='None'&&q.user!==nameStr)?`<span class="q2user" title="${esc(q.user)}">${esc(q.user)}</span>`:'';
+  return `<div class="card q2card">${logo}<div class="q2body">
+    <div class="q2head"><span class="q2name" title="${esc(nameStr)}">${esc(nameStr)}</span>${user}</div>
+    ${err}${rows.join('')}</div></div>`;
+}
+
+function countdown(iso){
+  if(!iso)return'';
+  const ms=new Date(iso)-Date.now();
+  if(ms<=0)return t('resetDone');
+  const h=Math.floor(ms/36e5),m=Math.floor(ms%36e5/6e4);
+  return h>=24?Math.floor(h/24)+t('dayUnit')+h%24+t('hrUnit'):h+t('hrUnit')+m+t('minUnit');
+}
+
+let gwLimit=null; // 最近一次 /v1/magpie/limit：网关短暂缺席时沿用旧值；此前未声明，首绘读到未定义标识符 → 「渲染失败: gwLimit is not defined」红条闪现
+function renderQuotas(list,limitInfo){
+  gwLimit=limitInfo||gwLimit||null;
+  // 同一订阅会因「直连/代理两条线路」和「本地/VPS 两个实例」出多张卡：
+  // 按（归一化订阅 + 账号）分组，每组只留一张卡——同一上游额度池没必要显示两遍；
+  // 双账号（不同 user/key）是真实的不同额度，照常分开。
+  const groups=new Map();
+  for(const q of (list||[])){
+    const key=normSub(q.provider)+'\0'+(q.user||'');
+    let g=groups.get(key); if(!g){g=[];groups.set(key,g);}
+    g.push(q);
+  }
+  const pref=q=>((q.error?1:0)<<1)|(String(q.provider||'').startsWith('magpie-')?1:0);
+  const arr=[];
+  for(const g of groups.values()){
+    g.sort((a,b)=>pref(a)-pref(b));
+    g.forEach(q=>{if(q.name)q.name=String(q.name).replace(/ · Magpie (直连|代理)\s*$/,'');});
+    arr.push(g[0]);
+  }
+  // 排序=临期积分：每池取"最快过期窗口"的到期日，从快到慢；无任何到期信息的垫底。
+  // 与卡片首行同一套 soonWin（跳过已用空的窗口），保证看到的日期和排位一致。
+  const soonExp=q=>soonWin(q.windows||[])[1];
+  arr.sort((a,b)=>{
+    const ta=soonExp(a),tb=soonExp(b);
+    const fa=ta===Infinity,fb=tb===Infinity;
+    if(fa&&fb)return (a.name||'').localeCompare(b.name||'');
+    if(fa)return 1;
+    if(fb)return -1;
+    return (ta-tb)||(a.name||'').localeCompare(b.name||'');
+  });
+  $('#quotaGrid').innerHTML=arr.map(quotaCard).join('')||'<div class="err">'+t('noQuotaData')+'</div>';
+  // magpie 0.1.2981+ /v1/magpie/limit：caller key 被限（holds）时在段落标题旁亮提示
+  const hl=gwLimit;
+  const pill=$('#quotaPill');
+  if(pill)pill.title=t('holdsTitle')+(hl?('key='+JSON.stringify(hl.key||'')+' limited='+hl.limited):t('unknown'));
+  if(pill&&hl&&hl.limited){pill.style.color='#f85149';const base=pill.textContent.replace(/ · .*/,'');pill.textContent=(base?base+' · ':'')+t('holdsWarnPre')+String(hl.key||'').slice(0,20)+t('holdsWarnSuf');}
+  else if(pill)pill.style.color='';
+}
+
+const prevK={};
+// KPI 数值滚动：新旧都是有限数字才滚动（380ms ease-out），否则直接落值；尊重系统「减少动效」
+function animNum(el,label,raw,f){
+  const old=prevK[label];prevK[label]=raw;
+  const put=()=>{el.textContent=f(raw);};
+  if(typeof raw!=='number'||!isFinite(raw)||typeof old!=='number'||!isFinite(old)||raw===old
+    ||matchMedia('(prefers-reduced-motion: reduce)').matches){put();return;}
+  const t0=performance.now(),D=380;
+  const step=t=>{const p=Math.min(1,(t-t0)/D),e=1-Math.pow(1-p,3);el.textContent=f(old+(raw-old)*e);if(p<1)requestAnimationFrame(step);};
+  requestAnimationFrame(step);
+}
+let rotors=[];
+// KPI 第三行竖向轮播（两段式）：旧段上滑淡出→新段下滑入，任一时刻只有一条完整可见；
+// 单段静止；后台页签不空转。系统开了「减少动效」时内容照常轮换、只去掉滑动动画
+// （部分手机浏览器/省电模式/防指纹设置会置位 reduced-motion——不滚动的症状即来自它）
+function startRotors(){
+  rotors.forEach(r=>clearInterval(r.t));rotors=[];
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelectorAll('#kpis .roll').forEach(roll=>{
+    if(roll.children.length<2)return;
+    const segs=[...roll.children].map(x=>x.textContent);
+    let i=0;
+    rotors.push({t:setInterval(()=>{
+      i=(i+1)%segs.length;
+      const sp=roll.firstElementChild;
+      if(!sp)return;
+      if(reduce){sp.textContent=segs[i];return;}
+      sp.style.transition='opacity .22s ease, transform .22s ease';
+      sp.style.opacity='0';sp.style.transform='translateY(-0.5em)';
+      setTimeout(()=>{
+        if(!roll.isConnected)return;
+        sp.textContent=segs[i];
+        sp.style.transition='none';sp.style.transform='translateY(0.5em)';
+        void sp.offsetHeight;
+        sp.style.transition='opacity .25s ease, transform .25s ease';
+        sp.style.opacity='1';sp.style.transform='translateY(0)';
+      },230);
+    },3000)});
+  });
+}
+// iOS Safari 会冻结后台页/iframe 的定时器：回到可见立即重新点火（startRotors 自身幂等）
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)startRotors();});
+window.addEventListener('pageshow',()=>startRotors());
+function renderKpis(u){
+  // 直连 / 远端 两个口径：远端出口的费用与 tokens 由本地网关计价记账。
+  // 没有远端流量的用户不铺「直连/远端」占位——细分只在两条路都存在时才有信息量。
+  const mine=(u.models||[]).filter(m=>!REMOTE_ENTRY.has(m.provider||''));
+  const rem=(u.models||[]).filter(m=>REMOTE_ENTRY.has(m.provider||''));
+  const sm=(arr,f)=>arr.reduce((s2,m)=>s2+(m[f]||0),0);
+  const hasRemote=sm(rem,'calls')>0;
+  const k=[
+    [t('calls'),u.calls,x=>fmt(x),hasRemote
+      ?`${t('stDirect')} ${fmt(sm(mine,'calls'))} · ${t('stRemote')} ${fmt(sm(rem,'calls'))}`+(u.errors?` · ${t('errors')} ${u.errors}`:'')
+      :(u.errors?`${t('errors')} ${u.errors}`:'')],
+    [t('kpiTotalTokens'),(u.input||0)+(u.output||0)+(u.cache_read||0),x=>fmt(x),
+      hasRemote
+      ?`${t('stDirect')} ${fmt(sm(mine,'input')+sm(mine,'output')+sm(mine,'cache_read'))}`
+        +` · ${t('stRemote')} ${fmt(sm(rem,'input')+sm(rem,'output')+sm(rem,'cache_read'))}`
+      :''],
+    [t('kpiCost'),u.cost,x=>fmtCNY(x),(hasRemote?`${t('stDirect')} ${fmtCNY(sm(mine,'cost'))} · ${t('stRemote')} ${fmtCNY(sm(rem,'cost'))}`:'')
+      +(u.unpriced?(hasRemote?' · ':'')+`${u.unpriced}${t('unpricedSuf')}`:'')
+      ,t('kpiCostNote')],
+    [t('kpiTtft'),u.timed?u.ttft_ms/u.timed:null,x=>x==null?'—':(x/1000).toFixed(1)+t('secSp'),u.timed?`${u.timed}${t('timedSuf')}`:''],
+    [t('kpiCacheHit'),(u.input||0)+(u.cache_read||0)
+      ?Math.round(100*(u.cache_read||0)/((u.input||0)+(u.cache_read||0))):0,x=>x+'%',
+      `${t('cacheReadPre')} ${fmt(u.cache_read)} Token`],
+    [t('kpiSpeed'),u.decode_n&&u.decode_ms?u.decode_out/u.decode_ms*1000:null,x=>x==null?'—':Math.round(x)+t('tokPerSec'),`${t('output')} ${fmt(u.output)} Token`],
+  ];
+  $('#kpis').innerHTML=k.map(([l,,f,s,vt])=>{
+    const segs=s?s.split(' · '):[];
+    const inner=segs.length>1?`<span class="roll">${segs.map(x=>'<span>'+esc(x)+'</span>').join('')}</span>`:esc(s||'');
+    return `<div class="kpi"><div class="l">${l}</div><div class="v"></div><div class="s" title="${esc(s)}">${inner}</div></div>`;
+  }).join('');
+  k.forEach((it,i)=>{const el=$('#kpis').children[i].querySelector('.v');el.title=it[4]||it[2](it[1]);animNum(el,it[0],it[1],it[2]);});
+  startRotors();
+}
+
+function provColor(name){
+  if(!provColor.m)provColor.m=new Map();
+  if(!provColor.m.has(name))provColor.m.set(name,PALETTE[provColor.m.size%PALETTE.length]);
+  return provColor.m.get(name);
+}
+
+let hourlyLocal=[], hourlyRemote=[], hourlyErr='';
+
+function renderHourly(){
+  fetch(auth('api/hourly'),{headers:hf()}).then(r=>{if(!r.ok)throw new Error('hourly '+r.status);return r.json()}).then(d=>{ hourlyErr=''; hourlyLocal=(d&&d.hours)||[]; drawHourly(); })
+    .catch(e=>{ hourlyLocal=[]; hourlyErr=e&&e.message?String(e.message):String(e); drawHourly(); });
+}
+
+function drawHourly(){
+  const el1=document.getElementById('cCache24');
+  if(!el1) return;
+  const rem=(lastRemote&&lastRemote.hourly)||[];
+  const rowsD=hourlyLocal.map(x=>({hour:x.hour,rows:[x.d||{}]}));
+  const rowsR=rem.map(x=>({hour:x.hour,rows:[x.r||{}]}));
+  const daysX=[...new Set([...rowsD.map(x=>x.hour),...rowsR.map(x=>x.hour)])].sort();
+  if(!daysX.length){const c=initChart('cCache24');c.clear();cover('cCache24',hourlyErr?'<span style="color:var(--bad)">'+t('logReadFail')+esc(hourlyErr)+'</span>':'<span>'+t('noData')+'</span>');return;}
+  cover('cCache24',null);
+  const rate=rows=>{const i2=rows.reduce((s2,x)=>s2+(x.input||0),0),c2=rows.reduce((s2,x)=>s2+(x.cache_read||0),0);
+    return (i2+c2)?+(100*c2/(i2+c2)).toFixed(1):0;};
+  const tok=rows=>rows.reduce((s2,x)=>s2+(x.input||0)+(x.output||0)+(x.cache_read||0),0);
+  // 单口径：全部流量（直连+远端）合并
+  const rowsAll=daysX.map(h2=>{
+    const a=rowsD.find(y=>y.hour===h2), b=rowsR.find(y=>y.hour===h2);
+    return {rows:[...((a&&a.rows)||[]),...((b&&b.rows)||[])]};
+  });
+  const AMBER='#e78c08';
+  const c1=initChart('cCache24');
+  c1.setOption({
+    tooltip:{...TIP,trigger:'axis',
+      formatter:ps=>{
+        const h2=daysX[ps[0].dataIndex];
+        const rr=rowsAll[ps[0].dataIndex].rows;
+        return `<b>${esc(h2)}</b><br/>${t('hitRate')} ${rate(rr)}%${t('lparen')}${t('hit')} ${fmt(rr.reduce((s2,x)=>s2+(x.cache_read||0),0))} / ${t('input')} ${fmt(rr.reduce((s2,x)=>s2+(x.input||0),0))}${t('rparen')}<br/>Token ${fmt(tok(rr))}`;
+      }},
+    legend:{textStyle:{color:cssVar('--dim'),fontSize:11},top:0},
+    grid:{left:48,right:60,top:32,bottom:26},
+    xAxis:{type:'category',data:daysX,axisLabel:{color:cssVar('--dim'),fontSize:11,hideOverlap:true},
+      axisLine:{lineStyle:{color:cssVar('--line')}},axisTick:{show:false}},
+    yAxis:[
+      {type:'value',min:0,max:100,name:t('hitRate'),nameTextStyle:{color:'#4da3ff',fontSize:11},
+        axisLabel:{color:'#4da3ff',formatter:'{value}%'},splitLine:{lineStyle:{color:'#1d2430'}}},
+      {type:'value',name:'Token',nameTextStyle:{color:AMBER,fontSize:11},
+        axisLabel:{color:AMBER,fontSize:11,formatter:fmtAxis},splitLine:{show:false}},
+    ],
+    series:[
+      // 平滑双线：蓝=命中率（左轴），琥珀=token（右轴）——同「远端每天 tokens」的平滑风格
+      {name:t('hitRate'),type:'line',yAxisIndex:0,smooth:true,symbol:'circle',symbolSize:5,
+        data:daysX.map((h2,i2)=>rate(rowsAll[i2].rows)),
+        itemStyle:{color:'#4da3ff'},lineStyle:{width:2,color:'#4da3ff'},connectNulls:true},
+      {name:'Token',type:'line',yAxisIndex:1,smooth:true,symbol:'circle',symbolSize:5,
+        data:daysX.map((h2,i2)=>tok(rowsAll[i2].rows)),
+        itemStyle:{color:AMBER},lineStyle:{width:2,color:AMBER},connectNulls:true,
+        areaStyle:{color:'rgba(231,140,8,.08)'}},
+    ],
+  },true);
+}
+function renderDaily(detail){
+  lastDetail=detail||{};
+  const c=initChart('cDaily');
+  const days=(detail.daily||[]);
+  if(detail.error){c.clear();cover('cDaily','<span style="color:var(--bad)">'+esc(detail.error)+'</span>');return;}
+  if(!days.length){c.clear();cover('cDaily','<span>'+t('noData')+'</span>');return;}
+  cover('cDaily',null);
+  const dayKey=d=>String(d).slice(5);
+  // 真实 provider 视图（token 口径）：本机直连（去掉出口名）+ 远端归因，同名 provider 合并成一根柱。
+  // 出口名只是线路；有归因时出口的量不进图（以远端归因为准），
+  // 归因不可用时出口按线路细分兜底（直连线路（未归因）/ 代理线路（未归因））。
+  const localDay=new Map(); // day -> Map(provider -> {calls,tok})，名字已按 MERGE 归并
+  for(const d of days){
+    const m=new Map();
+    for(const p0 of d.providers){
+      let pn;
+      if(REMOTE_ENTRY.has(p0.provider)){
+        if(lastRemote||!remoteFailed) continue; // 归因未返回时先不出口行，防止线路名闪现；真不可用才按线路兜底
+        pn=LINE_OF[p0.provider]?t(LINE_OF[p0.provider]):p0.provider;
+      }else pn=nameOf(p0.provider);
+      const a=m.get(pn)||{calls:0,tok:0};
+      a.calls+=p0.calls||0; a.tok+=(p0.inp||0)+(p0.out||0)+(p0.cache||0);
+      m.set(pn,a);
+    }
+    localDay.set(d.day,m);
+  }
+  const remDays=(lastRemote&&lastRemote.days)||[];
+  const remByDay=new Map(); // day -> {provider -> {input,output,cache_read}}，名字已归并
+  for(const r of remDays){
+    const m={};
+    for(const [pn0,a] of Object.entries(r.providers||{})){
+      const pn=nameOf(pn0);
+      const t=m[pn]||(m[pn]={input:0,output:0,cache_read:0});
+      t.input+=a.input||0; t.output+=a.output||0; t.cache_read+=a.cache_read||0;
+    }
+    remByDay.set(r.day,m);
+  }
+  for(const r of remDays) if(!localDay.has(r.day)) localDay.set(r.day,new Map());
+  const allDays=[...localDay.keys()].sort();
+  const remTokOf=a=>(a.input||0)+(a.output||0)+(a.cache_read||0);
+  const dayTok=(day,pn)=>{
+    const l=(localDay.get(day)||new Map()).get(pn);
+    const r=(remByDay.get(day)||{})[pn];
+    return (l?l.tok:0)+(r?remTokOf(r):0);
+  };
+  // 图例 = 全期 token 量前 10；非前 10 但当天 ≥1万 tokens 的也画进柱子（不进图例）
+  const names=new Set();
+  for(const m of localDay.values()) for(const pn of m.keys()) names.add(pn);
+  for(const m of remByDay.values()) for(const pn of Object.keys(m)) names.add(pn);
+  const totTok=new Map();
+  for(const pn of names){ let s=0; for(const d of allDays) s+=dayTok(d,pn); totTok.set(pn,s); }
+  const ranked=[...totTok.entries()].filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
+  const named=ranked.slice(0,10).map(x=>x[0]);
+  const namedSet=new Set(named);
+  const extras=ranked.slice(10).map(x=>x[0]).filter(pn=>allDays.some(d=>dayTok(d,pn)>=10000));
+  const seriesNames=[...named,...extras];
+  const tokSerie=seriesNames.map(pn=>({name:pn,type:'bar',stack:'tok',
+    data:allDays.map(d=>{const v=dayTok(d,pn);return (namedSet.has(pn)||v>=10000)?v:0;})}));
+  // 柱顶合计 = 图上画出来的部分
+  const tokenByDay={};
+  for(const d of allDays){
+    let s=0;
+    for(const pn of seriesNames){const v=dayTok(d,pn); if(namedSet.has(pn)||v>=10000) s+=v;}
+    tokenByDay[dayKey(d)]=s;
+  }
+  // 柱顶合计用透明兜底系列挂标签，保证任何 provider 数量下位置都正确
+  tokSerie.push({name:'_top',type:'bar',stack:'tok',silent:true,data:allDays.map(()=>0),
+    itemStyle:{color:'transparent'},
+    // 只是为了把「当天 token 合计」标到堆叠柱顶，不参与图例与 tooltip
+    tooltip:{show:false},
+    legendHoverLink:false,
+    label:{show:true,position:'top',color:cssVar('--txt'),fontSize:11,fontWeight:700,
+      formatter:p=>fmt(tokenByDay[p.name]||0)},
+    labelLayout:{hideOverlap:true}});
+  daysLenGlobal=allDays.length;
+  // 默认窗口：桌面最近 17 天，手机（≤640px）最近 7 天——想看更早拖动/捏合即可
+  const defDays=window.innerWidth<=640?7:17;
+  const startPct=allDays.length>defDays?100*(1-defDays/allDays.length):0;
+  c.setOption({
+    tooltip:{...TIP,trigger:'axis',axisPointer:{type:'shadow'},
+      // 悬停列出各 provider 当天 tokens；「其它」展开成员明细
+      formatter:ps=>{
+        if(!Array.isArray(ps))ps=[ps];
+        const day=ps[0]&&ps[0].axisValue;
+        let html='<b>'+esc(day)+'</b>';
+        for(const p of ps){
+          if(p.seriesName==='_top')continue;
+          html+='<br/>'+p.marker+esc(p.seriesName)+' '+fmt(p.value);
+        }
+        return html;
+      }},
+    legend:{textStyle:{color:cssVar('--dim'),fontSize:11},top:0,type:'scroll',
+      data:named},
+    grid:{left:56,right:22,top:46,bottom:54},
+    xAxis:{type:'category',data:allDays.map(dayKey),axisLabel:{color:cssVar('--dim'),fontSize:11,hideOverlap:true}},
+    yAxis:{type:'value',axisLabel:{color:cssVar('--dim'),formatter:fmtAxis},
+      splitLine:{lineStyle:{color:'#232a36'}}},
+    dataZoom:[
+      // zoomLock+insideMoveOnly：滚轮/触摸只平移不缩放；滑条用于跳转
+      // ≤640px 隐藏滑条（触摸用 inside 平移），给主图腾出高度
+      ...(window.innerWidth>640?[{type:'slider',xAxisIndex:0,height:22,bottom:8,start:startPct,end:100,
+        zoomLock:true,brushSelect:false,
+        backgroundColor:cssVar('--card2'),borderColor:'transparent',
+        fillerColor:'rgba(77,163,255,.18)',
+        handleStyle:{color:'#4da3ff',borderColor:'transparent',width:10,borderRadius:5},
+        moveHandleStyle:{color:cssVar('--line'),borderColor:'transparent',borderRadius:5},
+        emphasis:{handleStyle:{borderColor:'#4da3ff'},moveHandleStyle:{color:'#4da3ff'}},
+        dataBackground:{lineStyle:{color:'rgba(139,147,161,.4)'},areaStyle:{color:'rgba(139,147,161,.15)'}},
+        selectedDataBackground:{lineStyle:{color:'#4da3ff'},areaStyle:{color:'rgba(77,163,255,.12)'}},
+        textStyle:{color:cssVar('--dim'),fontSize:11}}]:[]),
+      {type:'inside',xAxisIndex:0,start:startPct,end:100,zoomOnMouseWheel:false,moveOnMouseMove:true,moveOnMouseWheel:true},
+    ],
+    series:tokSerie,
+  },true);
+  drawHourly();
+}
+const baseModel=(id)=>{const s0=String(id||'').split(' @ ')[0];const parts=s0.split('/');return parts[parts.length-1]||s0;};
+
+function pieWithLegend(id, arr, nameFn){
+  if(!arr||!arr.length){const c=initChart(id);c.clear();cover(id,'<span>'+t('noData')+'</span>');return;}
+  cover(id,null);
+  // 前 10 + 其它；>5% 的片直接在片内标百分比（白字），<5% 不标；
+  // 图例小字号、自动换行展示全部条目
+  const top=arr.slice(0,10);
+  const tail=arr.slice(10).reduce((s2,x)=>s2+(x.value||0),0);
+  const data=tail>0?[...top.map(x=>({name:nameFn(x),value:x.value})),{name:t('pieOther'),value:tail}]
+    :top.map(x=>({name:nameFn(x),value:x.value}));
+  const c=initChart(id);
+  c.setOption({
+    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+t('timesUnit')+' ('+pp.percent+'%)'},
+    legend:{bottom:0,left:'center',type:'plain',
+      itemWidth:10,itemHeight:10,itemGap:8,
+      textStyle:{color:cssVar('--dim'),fontSize:10.5},
+      // <3% 的片不进图例（信息密度太低），hover 图上仍可看
+      data:data.filter(x=>(100*x.value/evalPieTotal(data))>=3).map(x=>x.name),
+      formatter:name2=>{const d=data.find(x=>x.name===name2);if(!d)return name2;
+        return name2+' '+(100*d.value/evalPieTotal(data)).toFixed(0)+'%';}},
+    series:[{type:'pie',radius:['38%','64%'],center:['50%','42%'],
+      data:data.map((d,i)=>({...d,
+        itemStyle:{color:PALETTE[i%PALETTE.length]},
+        label:{show:(d.value/evalPieTotal(data))>=0.05,position:'inside',
+          formatter:pp=>pp.percent.toFixed(0)+'%',
+          color:'#fff',fontSize:11,fontWeight:600},
+        labelLine:{show:false},
+        emphasis:{label:{show:true,formatter:pp=>pp.name+' '+pp.percent+'%'},
+          itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.4)'}}}))}],
+  },true);
+}
+
+function renderModels(models){
+  const agg=new Map();
+  for(const m of (models||[])){
+    const name=baseModel(m.id);
+    let a=agg.get(name); if(!a){a={name,calls:0};agg.set(name,a);}
+    a.calls+=m.calls||0;
+  }
+  const arr=[...agg.values()].sort((a,b)=>b.calls-a.calls).map(x=>({name:x.name,value:x.calls}));
+  pieWithLegend('cModelsPie',arr,x=>x.name);
+}
+let lastModels=[], lastRemote=null, lastDetail=null, remoteFailed=false;
+let daysLenGlobal=0;
+// 出口名只代表线路（两条现役 + 两条已退役的旧线），不代表真实 provider；
+// 真实花销以远端归因（VPS 侧 provider/providerAccount）为准
+const REMOTE_ENTRY=new Set(['magpie-direct','magpie-cf','magpie-2','remote-magpie']);
+// 归因不可用时的兜底细分：出口按线路归并展示（链路恢复后由远端归因接管，归到真实 provider）
+// 值为词典键，展示时经 t() 取词（上游出口名固定为英文，与 UI 语言无关）
+const LINE_OF={'magpie-direct':'lineDirectUnattr','remote-magpie':'lineDirectUnattr','magpie-cf':'lineProxyUnattr','magpie-2':'lineProxyUnattr'};
+// 品牌拆分名归并（同一家的不同端点命名，2026-11-01 用户拍板）
+// 品牌名按 provider 原名展示（不再做个人化的归并映射）
+const nameOf=pn=>String(pn||'');
+// 线路前缀剥离（直连/代理两线路+旧出口名，归一化到同一订阅）
+const normSub=p=>String(p||'').replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//,'');
+// 品牌 logo 映射 = window.QLOGOS（deploy 部署时由 logos/manifest.json 注入；
+// manifest 由 tools/sync-plugin-logos.mjs 从插件包生成——新 provider 装好后重跑该脚本即自动点亮）
+// provider 会带线路/地区/变体后缀（qoder-cn、monkeycode-intl、trae-global、hub-magicrew…），
+// 按「精确 → 去 #实例id → 别名 → 去 hub- 前缀 → 去变体后缀」依次兜底，未命中用首字色块。
+const LOGO_ALIAS={'opencode-2-free':'zen','opencode-zen-free':'zen','msmoli':'modelscope','msmoli-ai':'modelscope','~keys':'magpie'};
+function brandIcon(q){
+  const map=window.QLOGOS||{};
+  const s=normSub(q.provider).replace(/#.*$/,'');
+  const base=s.replace(/^hub-/,'');
+  const cands=[s,LOGO_ALIAS[s],base,base.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/,'')];
+  for(const c of cands){if(c&&map[c])return map[c];}
+  return '';
+}
+function renderFlow(){
+  const c=initChart('cFlow');
+  const direct=lastModels.filter(m=>!REMOTE_ENTRY.has(m.provider||'')).reduce((s,m)=>s+(m.calls||0),0);
+  const data=[{name:t('flowDirect'),value:direct,itemStyle:{color:'#4da3ff'}}];
+  const cb=(lastRemote&&lastRemote.callerBreakdown)||[];
+  const mine=new Set(['cloud','Magpie']);
+  let remote=0;
+  for(const x of cb){ if(mine.has(x.name)) remote+=x.calls||0; }
+  if(lastRemote) data.push({name:t('flowViaRemote'),value:remote,itemStyle:{color:'#bc8cff'}});
+  if(!direct&&!lastRemote&&!cb.length){c.clear();cover('cFlow','<span>'+t('noData')+'</span>');return;}
+  cover('cFlow',null);
+  const total=(data.reduce((s2,x)=>s2+(x.value||0),0)||0)+cb.reduce((s2,x)=>s2+(mine.has(x.name)?0:(x.calls||0)),0)||1;
+  const rest=[];
+  for(const x of cb){
+    if(mine.has(x.name)) continue;
+    const item={name:t('flowOtherPre')+x.name,value:x.calls||0};
+    // 「(无)」是没带 caller key 的内部流量，不值得单独成片（比较对象是上游数据值，走 T.zh）
+    if(x.name!==T.zh.callerNone && item.value/total>=0.02) data.push(item); else rest.push(item);
+  }
+  if(rest.length){
+    const sum=rest.reduce((s2,x)=>s2+x.value,0);
+    if(sum>0) data.push({name:t('otherCallersPre')+rest.length+t('otherCallersSuf'),value:sum});
+  }
+  c.setOption({
+    tooltip:{...TIP,trigger:'item',formatter:pp=>esc(pp.name)+': '+pp.value+t('timesUnit')+' ('+pp.percent+'%)'},
+    legend:{bottom:0,left:'center',textStyle:{color:cssVar('--dim'),fontSize:11},type:'scroll'},
+    series:[{type:'pie',radius:['40%','66%'],center:['50%','42%'],
+      data:data.map((d,i)=>d.itemStyle?d:({...d,itemStyle:{color:PALETTE[i%PALETTE.length]}})),
+      label:{show:true,position:'outside',color:cssVar('--txt'),fontWeight:600,
+        textBorderColor:'transparent',textBorderWidth:0,shadowBlur:0,shadowColor:'transparent',
+        formatter:pp=>pp.percent>=5?pp.name+' '+pp.percent.toFixed(0)+'%':''},
+      labelLine:{length:8,length2:6},labelLayout:{hideOverlap:true},
+      emphasis:{label:{show:true,formatter:pp=>pp.name+' '+pp.percent+'%',color:cssVar('--txt')}}}],
+  },true);
+}
+
+function renderProv(models){
+  lastModels=models||[];
+  const agg=new Map();
+  const push=(name,calls)=>{let a=agg.get(name); if(!a){a={calls:0};agg.set(name,a);} a.calls+=calls;};
+  for(const m of lastModels){
+    const p=m.provider||'other';
+    if(REMOTE_ENTRY.has(p)&&(lastRemote||!remoteFailed)) continue;
+    push(REMOTE_ENTRY.has(p)?(LINE_OF[p]?t(LINE_OF[p]):p):nameOf(p),m.calls||0);
+  }
+  // 有归因时按真实 provider 合并（本地直连与远端落地的同名 provider 加在一起）
+  if(lastRemote) for(const rp of (lastRemote.providers||[])) push(nameOf(rp.provider),rp.calls||0);
+  const arr=[...agg.entries()].map(([name,a])=>({name,value:a.calls})).sort((x,y)=>y.value-x.value);
+  pieWithLegend('cProv',arr,x=>x.name);
+}
+function renderHeat(heat){
+  const c=initChart('cHeat');
+  heat=heat||[];
+  if(!heat.length){c.clear();cover('cHeat','<span>'+t('noData')+'</span>');return;}
+  cover('cHeat',null);
+  const data=[];
+  for(let d=0;d<7;d++)for(let h=0;h<24;h++)data.push([h,d,heat[d*24+h]||0]);
+  const max=Math.max(1,...heat);
+  c.setOption({
+    tooltip:{...TIP,formatter:p=>(LANG==='zh'
+      ?t('weekPre')+t('weekChars')[p.value[1]]
+      :['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][p.value[1]])+' '+p.value[0]+':00 · '+p.value[2]+t('timesUnit')},
+    grid:{left:44,right:16,top:8,bottom:52},
+    xAxis:{type:'category',data:[...Array(24).keys()].map(h=>h+t('hourAxis')),axisLabel:{color:cssVar('--dim'),fontSize:11}},
+    yAxis:{type:'category',data:['wd0','wd1','wd2','wd3','wd4','wd5','wd6'].map(t),axisLabel:{color:cssVar('--dim'),fontSize:11}},
+    visualMap:{min:0,max,calculable:false,orient:'horizontal',left:'center',bottom:0,
+      inRange:{color:[cssVar('--heat0'),'#1a3a6b','#2563c4','#4da3ff','#a5d8ff']},textStyle:{color:cssVar('--dim'),fontSize:11}},
+    series:[{type:'heatmap',data,itemStyle:{borderColor:cssVar('--bg'),borderWidth:2,borderRadius:3},
+      emphasis:{itemStyle:{shadowBlur:6,shadowColor:'rgba(0,0,0,.5)'}}}],
+  },true);
+}
+
+function renderRecent(rows){
+  $('#recentBody').innerHTML=(rows||[]).map(r=>{
+    const ok=r.status===200;
+    const retry=(r.tries||1)>1;
+    const st=ok&&!retry?'ok':ok&&retry?'retry':'bad';
+    const tm=r.t?r.t.slice(5,16).replace('T',' '):'';
+    return `<tr><td>${esc(tm)}</td><td>${esc(r.agent||'')}</td><td>${esc(r.provider||'')}</td><td>${esc(r.model||'')}</td>
+      <td class="num">${fmt(r.in)}</td><td class="num">${fmt(r.out)}</td><td class="num">${r.ttft!=null?(r.ttft/1000).toFixed(1)+t('secSp'):'—'}</td>
+      <td class="num">${r.ms!=null?(r.ms/1000).toFixed(1)+t('secSp'):'—'}</td>
+      <td><span class="st ${st}"></span>${esc(String(r.status))}${retry?t('retryPre')+esc(String(r.tries-1)):''}</td></tr>`;
+  }).join('')||'<tr><td colspan="9" class="err">'+t('noRequests')+'</td></tr>';
+}
+
+// key 只由服务端注入 HTML（window.__KEY__），走 x-dash-key 请求头；?key= 已废除，
+// 代理/访问日志/书签里都不再出现 key。static/ 资源免鉴权。
+const PKEY=window.__KEY__||'';
+const auth=(u)=>u;
+const hf=()=>PKEY?{'x-dash-key':PKEY}:undefined;
+// 部署时由 deploy.sh 注入 window.__BUILD__（时间+短哈希）；不常显，挂在「更新于」的悬浮提示里
+if(window.__BUILD__){const up=document.getElementById('updated');if(up)up.title='build '+window.__BUILD__;}
+// 页面级错误可见化：__errs 非空时红字显示在标题行（magpie webview 无 devtools 时的排障窗口），无错误时不占位
+setInterval(function(){
+  var bt=document.getElementById('buildTag');if(!bt)return;
+  var e=window.__errs||[];
+  var t=e.length?('⚠'+e.length+':'+String(e[e.length-1]).slice(0,120)):'';
+  if(bt.dataset.err!==t){bt.dataset.err=t;bt.title=e.join(String.fromCharCode(10));bt.innerHTML=t?t.replace(/&/g,'&amp;').replace(/</g,'&lt;'):'';bt.style.display=t?'':'none';bt.style.color=t?'#f85149':'';}
+},1500);
+
+// 上游采集异常必须可见（静默显 0 会误导，data-semantics 红线）：首屏用 __NOTE__，刷新用响应里的 note。
+// 幂等：无 note 移除横幅（恢复后降级提示不残留），note 变化时原位更新
+function showNote(msg){
+  let n=document.getElementById('noteBanner');
+  if(!msg){ if(n)n.remove(); return; }
+  if(!n){ n=document.createElement('div'); n.id='noteBanner'; n.className='err'; document.querySelector('.sub').after(n); }
+  n.textContent='⚠ '+msg+t('noteTail');
+}
+function paint(d){
+  showNote(window.__NOTE__);
+  const u=d.usage||{};
+  lastModels=u.models||[];
+  renderKpis(u);
+  renderDaily(d.detail||{});
+  renderModels(u.models||[]);
+  renderProv(u.models||[]);
+  renderHeat((d.detail&&d.detail.heat)||[]);
+  renderRecent((d.detail&&d.detail.recent)||[]);
+  renderQuotas(d.quotas||[], d.limit);
+  loadRemote(); // 归因到达后 renderRemote 会重画 daily/prov/flow/hourly；在此之前线路名不出现（见 remoteFailed）
+  renderHourly();
+  $('#updated').textContent=t('updatedAt')+new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'en-US',{hour12:false});
+}
+
+async function load(){
+  $('#updated').textContent=t('loading');
+  // 首屏用服务端内联的 window.__DATA__（插件页在沙盒 frame 里，跨源 fetch 不可靠），
+  // 刷新和切区间才走接口。
+  const pre=window.__DATA__;
+  if(pre){ window.__DATA__=null; try{ paint(pre); return; }catch(e){ $('#updated').innerHTML='<span style="color:var(--bad)">'+t('renderFail')+esc(e.message||e)+'</span>'; } }
+  try{
+    const r=await fetch(auth('api/overview?period='+period),{headers:hf()});
+    if(r.status===401)throw new Error(t('needKey'));
+    const jd=await r.json();
+    if(jd.note)showNote(jd.note); // 网关异常时刷新路径也要可见，不能静默显 0
+    const d=jd;
+    if(d.error)throw new Error(typeof d.error==='string'?d.error:(d.error.message||JSON.stringify(d.error)));
+    const u=d.usage;
+    lastModels=u.models||[];
+    renderKpis(u);
+    renderDaily(d.detail);
+    renderModels(u.models||[]);
+    renderProv(u.models||[]);
+    renderHeat(d.detail.heat||[]);
+    renderRecent(d.detail.recent||[]);
+    $('#updated').textContent=t('updatedAt')+new Date().toLocaleTimeString(LANG==='zh'?'zh-CN':'en-US',{hour12:false});
+  }catch(e){
+    $('#updated').innerHTML='<span style="color:var(--bad)">'+t('loadFail')+esc(e.message||e)+'</span>';
+  }
+  try{
+    const q=await (await fetch(auth('api/quotas'),{headers:hf()})).json();
+    if(q.error){ $('#quotaGrid').innerHTML='<div class="err">'+t('quotaApiErr')+esc(String(q.error).slice(0,80))+t('quotaApiErrTail')+'</div>'; return; }
+    renderQuotas(q.data||[], q.limit);
+  }catch(e){
+    $('#quotaGrid').innerHTML='<div class="err">'+t('quotaLoadFail')+esc(e.message||e)+'</div>';
+  }
+  loadRemote();
+  renderHourly();
+}
+
+// period 按钮
+for(const p of ['7d','30d','all']){
+  const b=document.createElement('button');
+  b.className='tbtn'+(p===period?' on':'');
+  b.textContent=p;
+  b.onclick=()=>{period=p;document.querySelectorAll('#periodBtns .tbtn').forEach(x=>x.classList.toggle('on',x.textContent===p));load();};
+  $('#periodBtns').appendChild(b);
+}
+$('#refresh').onclick=load;
+load();
+setInterval(load,5*60*1000);
+</script>
+</body>
+</html>
