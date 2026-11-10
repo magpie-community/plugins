@@ -18,8 +18,7 @@ three ways to get one:
   `~/.local/share/devin/`; `%APPDATA%\devin\` on Windows). The file is only
   read, never changed.
 - **Devin session token**: paste a session token from
-  another Devin account. This adds a separate account slot instead of
-  replacing the existing sign-in.
+  another machine, for example.
 
 The plugin names the account as Devin does when asked with the token
 (`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI
@@ -38,9 +37,9 @@ and the usage read marks the account signed out (`signIn: "expired"`), so
 magpie passes over it and offers Sign in again on its row. A clean read
 takes the mark off.
 
-Magpie keeps separate account slots for this provider. Each successful
+magpie keeps separate account slots for this provider. Each successful
 sign-in is stored as its own account, and the account label uses Devin's
-email and, when available, organization name. Magpie can try another
+email and, when available, organization name. magpie can try another
 signed-in account after a retryable failure.
 
 ## Requests
