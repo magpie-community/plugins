@@ -63,6 +63,19 @@ describe("transcriptOf", () => {
     expect(found.stage).toBe(2);
   });
 
+  test("the stage-1 instruction line alone picks stage 1", () => {
+    // M4: the stop sequence alone can't be the signal; some stage-1 calls
+    // reach the plugin with the instruction line only.
+    const found = transcriptOf({ content: "<transcript>\nx\n</transcript>\n\nStage 1 does NOT apply user intent." });
+    expect(found.stage).toBe(1);
+  });
+
+  test("the stop sequence alone picks stage 1 over a stage-2-looking body", () => {
+    // M3: the instruction line alone can't be the signal either.
+    const found = transcriptOf({ content: "<transcript>\nx\n</transcript>\n\nApply user intent.", stop_sequences: ["</block>"] });
+    expect(found.stage).toBe(1);
+  });
+
   test("a plain chat message isn't a classifier request", () => {
     expect(transcriptOf({ content: "hello" })).toBeNull();
   });
