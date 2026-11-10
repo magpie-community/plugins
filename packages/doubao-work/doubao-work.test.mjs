@@ -456,6 +456,11 @@ test("the plugin lists the models models.json has, not only the built-in ones", 
   const cfg = {}
   await p.config(cfg)
   expect(Object.keys(cfg.provider["doubao-work"].models)).toEqual(["auto", "glm-5.3"])
+  // a model the user declared keeps their settings
+  const own = { provider: { "doubao-work": { models: { "glm-5.3": { name: "mine", limit: { context: 1000, output: 10 } } } } } }
+  await p.config(own)
+  expect(own.provider["doubao-work"].models["glm-5.3"].name).toBe("mine")
+  expect(own.provider["doubao-work"].models.auto.name).toBe("自动")
   expect(Object.keys(await p.provider.models({}, {}))).toEqual(["auto", "glm-5.3"])
   const loader = await p.auth.loader(async () => ({}))
   expect((await loader.fetch(req({ model: "glm-5.3", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)

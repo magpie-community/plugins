@@ -49,9 +49,10 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
     config: async (cfg) => {
       cfg.provider ??= {}
       // the list comes from Doubao's menu, so it is merged in on every load
-      // instead of being frozen in the declaration
+      // instead of being frozen in the declaration; a model the user
+      // declared themselves keeps their settings
       cfg.provider[ID] ??= { name: "豆包工作", npm: "@ai-sdk/openai-compatible", api: BASE }
-      cfg.provider[ID].models = { ...(cfg.provider[ID].models ?? {}), ...models(modelTable(doubao)) }
+      cfg.provider[ID].models = { ...models(modelTable(doubao)), ...(cfg.provider[ID].models ?? {}) }
     },
     // each account is offered the models its own menu shows (the cache
     // discover() writes; no app is opened from here)
