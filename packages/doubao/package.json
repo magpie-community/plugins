@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-doubao-auth",
-  "version": "0.1.2",
-  "description": "Doubao (doubao.com) daily web check-in for experience credits, ported from CreditDaddy.",
+  "version": "0.2.0",
+  "description": "Doubao (doubao.com) web account: chat through the page's own endpoint, daily check-in for experience credits, and the campaign panel's balance on magpie's usage board.",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
@@ -11,6 +11,9 @@
   },
   "files": [
     "index.mjs",
+    "lib/",
+    "ensure-doubao.mjs",
+    "tasks.mjs",
     "icon.svg",
     "README.md"
   ],
@@ -18,7 +21,9 @@
     "opencode",
     "opencode-plugin",
     "doubao",
-    "checkin"
+    "checkin",
+    "chat",
+    "doubao-web"
   ],
   "license": "MIT",
   "repository": {
