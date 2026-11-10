@@ -282,6 +282,8 @@
       "summary": { "en": "Muse (Meta) subscription for Magpie and OpenCode: device-code sign-in, minted API key, Wonder and Spark models with reasoning efforts. The -contributor models use Meta's Contributor lane (data may be used for training). Unofficial.", "zh": "使用 Muse (Meta) 订阅：设备码登录，自动换取 API 密钥，提供 Wonder 和 Spark 模型及推理强度设置；以 -contributor 结尾的模型走 Meta 的 Contributor 通道（数据可能用于训练）。（非官方）" } },
     { "package": "magpie-model-quota", "kind": "page", "name": "Model Quota",
       "icon": "https://raw.githubusercontent.com/1sh1ro/magpie-model-quota/main/assets/icon.svg",
-      "summary": { "en": "Estimate how many tokens each model has left, merged across every account and provider. Runs entirely on magpie's local usage history; no telemetry or network requests.", "zh": "把所有账号、所有供应商的额度换算成 token，按模型合并估算还剩多少。完全基于 magpie 本地用量历史，不联网。" } }
+      "summary": { "en": "Estimate how many tokens each model has left, merged across every account and provider. Runs entirely on magpie's local usage history; no telemetry or network requests.", "zh": "把所有账号、所有供应商的额度换算成 token，按模型合并估算还剩多少。完全基于 magpie 本地用量历史，不联网。" } },
+    { "package": "@magpie-community/page-harnessweight", "name": "HarnessWeight", "kind": "page", "community": true,
+      "summary": { "en": "Compare agent harnesses behind your gateway by input tokens, cache, failures, latency and estimated tool-definition size. Its local service reads this machine's usage ledger; a read-only hook samples tool sizes and tracks in-flight requests.", "zh": "按 Agent 对比网关后面的输入 token、缓存、失败率、延迟与工具定义体积估算。本机服务读取用量记录，只读 hook 采样工具大小并追踪进行中的请求。" } }
   ]
 }
