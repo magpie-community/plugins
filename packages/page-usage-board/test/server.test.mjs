@@ -27,8 +27,17 @@ let port;
 let publicChild;
 let publicPort;
 
+// 所有包共用一个 bun test 进程：别的包的测试会设 MAGPIE_CONFIG_DIR / USAGE_JSONL
+// （mail-watch 设 MAGPIE_CONFIG_DIR），继承下来会盖过本包要测的探测顺序。
+function hostEnv() {
+  const env = { ...process.env };
+  delete env.MAGPIE_CONFIG_DIR;
+  delete env.USAGE_JSONL;
+  return env;
+}
+
 const baseEnv = (dir = os.tmpdir()) => ({
-  ...process.env,
+  ...hostEnv(),
   PAGE_KEY: TEST_KEY,
   USAGE_JSONL: path.join(dir, 'usage.jsonl'),
   GATEWAY: 'http://127.0.0.1:9',
@@ -358,7 +367,7 @@ test('config dir: the host cwd carrying magpie markers wins (portable installs)'
   const c = spawn(RUNTIME, [path.join(root, 'server.mjs')], {
     cwd: realDir,
     env: {
-      ...process.env,
+      ...hostEnv(),
       PAGE_KEY: TEST_KEY,
       GATEWAY: 'http://127.0.0.1:9',
       ATTRIBUTION: 'local',
