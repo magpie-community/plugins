@@ -12,6 +12,15 @@
   const fmt = (n) => nf.format(Math.round(n))
   const pct = (n) => `${Math.round(n * 100)}%`
 
+  // Follow magpie's window theme (its own setting, which may differ from
+  // the OS). Outside magpie there is no bridge and the CSS falls back to
+  // prefers-color-scheme.
+  const applyTheme = (t) => { if (t) document.documentElement.dataset.theme = t.dark ? "dark" : "light" }
+  if (globalThis.magpie) {
+    magpie.onTheme?.(applyTheme)
+    magpie.ready?.then(applyTheme, () => {})
+  }
+
   function paintBar(fill, value, max, output) {
     fill.style.width = `${Math.max(1.5, Math.round((value / (max || 1)) * 100))}%`
     output.textContent = fmt(value)
@@ -30,7 +39,7 @@
 
   const report = globalThis.FoveaReport
   if (report) {
-    $("source").textContent = report.source || "synthetic"
+    $("source").textContent = ({ synthetic: "示例数据", measured: "实测数据" })[report.source] || report.source || "示例数据"
     paintSummary(report.request)
     const c = report.consecutive
     const maxPrefix = Math.max(c.baseline_prefix_share, c.fovea_prefix_share)

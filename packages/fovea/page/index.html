@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fovea · 对照证据</title>
   <link rel="stylesheet" href="style.css">
+  <!-- magpie serves this beside every page: it answers the window's hello
+       and hands over its theme. Opened outside magpie it is simply absent. -->
+  <script src="_magpie/bridge.js"></script>
   <script src="report.js"></script>
   <script src="live.js"></script>
   <script src="measure.js"></script>
@@ -13,12 +16,7 @@
 <body>
   <main>
     <header class="hero">
-      <svg class="eye" viewBox="0 0 128 128" aria-hidden="true">
-        <circle cx="64" cy="64" r="58" fill="none" stroke="currentColor" stroke-opacity=".16" stroke-width="6"/>
-        <circle cx="64" cy="64" r="42" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="7"/>
-        <circle cx="64" cy="64" r="25" fill="none" stroke="currentColor" stroke-opacity=".8" stroke-width="8"/>
-        <circle cx="64" cy="64" r="10" class="dot"/>
-      </svg>
+      <img class="eye" src="icon.svg" width="46" height="46" alt="">
       <div class="hero-text">
         <h1>fovea <span>对照证据</span></h1>
         <p>同一份请求，裁剪前后放在一起看。</p>
@@ -40,7 +38,7 @@
         <i class="m old"></i><i class="m old"></i>
         <i class="m win"></i><i class="m win"></i><i class="m win"></i>
       </div>
-      <p class="cap">浅色是旧消息（只剩头尾），深色是最近窗口（逐字保留）。省下的就是中间那段省略号。</p>
+      <p class="cap">虚线框是旧消息（只剩头尾），紫色块是最近窗口（逐字保留）。省下的就是中间那段省略号。</p>
     </section>
 
     <section class="panel" aria-labelledby="size-title">

@@ -1,16 +1,25 @@
-:root{
-  color-scheme: light dark;
-  --bg:#f4f6f9; --surface:#ffffff; --text:#13202e; --sub:#64748b;
-  --line:#e3e9f0; --ink:#2f63a2; --soft:#ecf3fb; --raw:#b6c2ce;
-  --shadow:0 10px 34px rgba(19,32,46,.06);
+/* Brand pigments stay exact in the icon. UI ink is adjusted for AA on each theme. */
+:root{color-scheme:light;
+  --bg:#F4F3FA; --surface:#FFFFFF; --text:#19162E; --sub:#59546D;
+  --line:#DAD6E8; --ink:#006674; --soft:#E6F3F5; --raw:#7D7894;
+  --violet:#5934C7; --magenta:#AC007F; --error:#AD2447;
+  --shadow:0 6px 24px rgba(25,22,46,.04);
 }
-@media (prefers-color-scheme: dark){
-  :root{ --bg:#0f151d; --surface:#18212c; --text:#eef3f8; --sub:#9db0c2;
-    --line:#2b3a4a; --ink:#8dbbf5; --soft:#21334a;
-    --raw:#5d738a; --shadow:0 10px 34px rgba(0,0,0,.22); }
+:root[data-theme="dark"]{color-scheme:dark;
+  --bg:#05060B; --surface:#101320; --text:#EEF0FF; --sub:#AFB5D0;
+  --line:#30364D; --ink:#00F0FF; --soft:#142B39; --raw:#747B9B;
+  --violet:#B6A4FF; --magenta:#FF70E3; --error:#FF91AB;
+  --shadow:0 6px 24px rgba(0,0,0,.15);
 }
+@media(prefers-color-scheme:dark){:root:not([data-theme]){color-scheme:dark;
+  --bg:#05060B; --surface:#101320; --text:#EEF0FF; --sub:#AFB5D0;
+  --line:#30364D; --ink:#00F0FF; --soft:#142B39; --raw:#747B9B;
+  --violet:#B6A4FF; --magenta:#FF70E3; --error:#FF91AB;
+  --shadow:0 6px 24px rgba(0,0,0,.15);
+}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
+/* the bridge's base sheet pads body; main already centres itself */
+body{margin:0;padding:0;background:var(--bg);color:var(--text);
   font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
   -webkit-font-smoothing:antialiased}
 main{width:min(840px,calc(100% - 32px));margin:0 auto;padding:26px 0 56px}
@@ -18,14 +27,15 @@ main{width:min(840px,calc(100% - 32px));margin:0 auto;padding:26px 0 56px}
 /* ── hero ─────────────────────────────────────────── */
 .hero{display:flex;align-items:center;gap:16px;margin:6px 0 22px}
 .eye{width:46px;height:46px;color:var(--ink);flex:none}
-.eye .dot{fill:var(--ink)}
+
 .hero-text h1{margin:0;font-size:21px;letter-spacing:-.02em}
 .hero-text h1 span{color:var(--sub);font-weight:500}
 .hero-text p{margin:0;color:var(--sub);font-size:13px}
 .pill{margin-left:auto;background:var(--soft);color:var(--ink);padding:5px 11px;
   border-radius:999px;font-size:12px;white-space:nowrap;flex:none}
 .pill.bad{background:#f6e3e3;color:#a04040}
-@media (prefers-color-scheme: dark){.pill.bad{background:#3d2426;color:#e2a2a2}}
+:root[data-theme="dark"] .pill.bad{background:#3d2426;color:#e2a2a2}
+@media (prefers-color-scheme: dark){:root:not([data-theme]) .pill.bad{background:#3d2426;color:#e2a2a2}}
 
 /* ── stat cards ───────────────────────────────────── */
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px}
@@ -35,7 +45,7 @@ main{width:min(840px,calc(100% - 32px));margin:0 auto;padding:26px 0 56px}
 .stat strong{font-size:30px;line-height:1.25;font-variant-numeric:tabular-nums;
   letter-spacing:-.03em}
 .stat small{font-size:12px;color:var(--sub)}
-.stat.accent{background:var(--soft);border-color:transparent}
+.stat.accent{background:var(--soft);border-color:var(--ink)}
 .stat.accent strong{color:var(--ink)}
 
 /* ── panels ───────────────────────────────────────── */
@@ -45,7 +55,7 @@ main{width:min(840px,calc(100% - 32px));margin:0 auto;padding:26px 0 56px}
 .head h2,.note h2{font-size:15px;margin:0;font-weight:650}
 .hint{color:var(--sub);font-size:12px}
 .cap{color:var(--sub);font-size:12px;margin:12px 0 0}
-.note{border-left:3px solid var(--ink)}
+.note{border-left:3px solid var(--magenta)}
 .note p{margin:10px 0 0;color:var(--sub)}
 .note p:last-child{margin-bottom:0}
 code{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--soft);
@@ -55,7 +65,7 @@ code{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--s
 .strip{display:flex;align-items:center;gap:6px;padding:6px 2px}
 .m{height:26px;border-radius:6px}
 .m.old{flex:1;background:var(--soft);border:1px dashed var(--line)}
-.m.win{flex:1;background:var(--ink);opacity:.92}
+.m.win{flex:1;background:var(--violet)}
 .dots{display:flex;gap:5px;padding:0 6px}
 .dots b{width:5px;height:5px;border-radius:50%;background:var(--sub);opacity:.6}
 
@@ -65,7 +75,7 @@ code{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--s
 .track{height:12px;background:var(--bg);border-radius:8px;flex:1;overflow:hidden}
 .fill{display:block;height:100%;width:100%;border-radius:8px;transition:width .3s ease}
 .fill.raw{background:var(--raw)}
-.fill.slim{background:var(--ink)}
+.fill.slim{background:linear-gradient(90deg,var(--violet),var(--ink))}
 .bar output{width:86px;text-align:right;font-variant-numeric:tabular-nums}
 
 /* ── try-it form ──────────────────────────────────── */
@@ -76,12 +86,18 @@ select,input,textarea{background:var(--bg);color:var(--text);border:1px solid va
 input{width:104px}
 textarea{width:100%;min-height:120px;resize:vertical;
   font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
-textarea:focus,select:focus,input:focus{outline:2px solid var(--soft);border-color:var(--ink)}
+textarea:focus,select:focus,input:focus{outline:none;border-color:var(--ink);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 28%,transparent)}
 .actions{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 button{border:0;border-radius:9px;background:var(--ink);color:var(--bg);padding:9px 16px;
   font:inherit;font-weight:600;cursor:pointer}
 button.quiet{background:var(--soft);color:var(--ink)}
-#error{color:#a04040;font-size:12px}
+button{transition:filter .15s ease,transform .08s ease}
+button:hover:not(:disabled){filter:brightness(1.08)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+#error{color:var(--error);font-size:12px}
 
 /* ── live cards ───────────────────────────────────── */
 .live-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
@@ -102,3 +118,6 @@ button.quiet{background:var(--soft);color:var(--ink)}
   .live-grid{grid-template-columns:1fr}
   .pill{display:none}
 }
+
+textarea::placeholder{color:var(--sub);opacity:1}
+@media(prefers-reduced-motion:reduce){.fill,button{transition:none}}
