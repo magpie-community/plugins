@@ -58,7 +58,7 @@ export function createPlugin({ doubao = new Doubao(), newId, appBinary = binary 
             method: "auto",
             instructions: "将打开一个单独的豆包窗口（不影响你平时用的豆包）。请在其中登录，登录后回到这里。",
             callback: async () => {
-              if (!appBinary()) return { type: "failed", error: "豆包工作插件目前只支持 macOS 上的豆包桌面版。" }
+              if (!appBinary()) return { type: "failed", error: "豆包工作插件只支持 macOS 和 Windows 上的豆包桌面版：豆包没有 Linux 版。" }
               let s
               try {
                 s = await doubao.waitSignedIn()

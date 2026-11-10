@@ -18,15 +18,24 @@ export const MODELS = {
   "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包 2.1 Pro" },
 }
 
-export function binary(platform = process.platform) {
+// localAppData is %LOCALAPPDATA%, where Doubao's Windows installer puts
+// the app for the user who installs it.
+const localAppData = (home) => process.env.LOCALAPPDATA || path.win32.join(home, "AppData", "Local")
+
+// binary is Doubao's own executable. On Windows that is app\Doubao.exe:
+// Application\Doubao.exe beside it is a launcher. Doubao has no Linux
+// build (its download page offers macOS and Windows), so Linux has none.
+export function binary(platform = process.platform, home = os.homedir()) {
   if (process.env.DOUBAO_WORK_APP) return process.env.DOUBAO_WORK_APP
   if (platform === "darwin") return "/Applications/Doubao.app/Contents/MacOS/Doubao"
+  if (platform === "win32") return path.win32.join(localAppData(home), "Doubao", "Application", "app", "Doubao.exe")
   return ""
 }
 
 export function dataDir(platform = process.platform, home = os.homedir()) {
   if (process.env.DOUBAO_WORK_HOME) return process.env.DOUBAO_WORK_HOME
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "magpie-doubao-work")
+  if (platform === "win32") return path.win32.join(localAppData(home), "magpie-doubao-work")
   return path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "magpie-doubao-work")
 }
 

@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, READ, STATE, binary, owns, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, READ, STATE, binary, dataDir, owns, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -141,18 +141,40 @@ test("usageOf adds Doubao's prompt counts", () => {
   expect(usageOf("nope")).toBe(0)
 })
 
-test("the app is found on macOS only, or where DOUBAO_WORK_APP says", () => {
-  const was = process.env.DOUBAO_WORK_APP
-  delete process.env.DOUBAO_WORK_APP
+test("on Windows a running copy of the app never blocks: Chromium keeps one copy per profile there", async () => {
+  if (process.platform === "win32") return expect(copies("C:\\x.exe")).toEqual([])
+  const child = Bun.spawn(["/bin/sleep", "30"])
+  try {
+    let seen = []
+    for (let i = 0; i < 50 && !seen.length; i++) { seen = copies("/bin/sleep"); if (!seen.length) await Bun.sleep(20) }
+    expect(seen.length).toBeGreaterThan(0)
+    expect(copies("/bin/sleep", "win32")).toEqual([])
+  } finally {
+    child.kill()
+  }
+})
+
+test("the app is found on macOS and Windows, or where DOUBAO_WORK_APP says", () => {
+  const keys = ["DOUBAO_WORK_APP", "DOUBAO_WORK_HOME", "LOCALAPPDATA"]
+  const was = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
+  for (const k of keys) delete process.env[k]
   try {
     expect(binary("darwin")).toBe("/Applications/Doubao.app/Contents/MacOS/Doubao")
+    // Doubao has no Linux build
     expect(binary("linux")).toBe("")
-    expect(binary("win32")).toBe("")
+    // Windows: the per-user install's own exe, not Application\Doubao.exe's launcher
+    expect(binary("win32", "C:\\Users\\u")).toBe("C:\\Users\\u\\AppData\\Local\\Doubao\\Application\\app\\Doubao.exe")
+    expect(dataDir("win32", "C:\\Users\\u")).toBe("C:\\Users\\u\\AppData\\Local\\magpie-doubao-work")
+    process.env.LOCALAPPDATA = "D:\\Local"
+    expect(binary("win32", "C:\\Users\\u")).toBe("D:\\Local\\Doubao\\Application\\app\\Doubao.exe")
+    expect(dataDir("win32", "C:\\Users\\u")).toBe("D:\\Local\\magpie-doubao-work")
     process.env.DOUBAO_WORK_APP = "/opt/doubao"
     expect(binary("linux")).toBe("/opt/doubao")
   } finally {
-    if (was === undefined) delete process.env.DOUBAO_WORK_APP
-    else process.env.DOUBAO_WORK_APP = was
+    for (const k of keys) {
+      if (was[k] === undefined) delete process.env[k]
+      else process.env[k] = was[k]
+    }
   }
 })
 
@@ -291,6 +313,7 @@ test("App says at once that a copy the user opened keeps it from starting", asyn
 
 test("copies lists the binary's own processes only", () => {
   expect(copies("/no/such/binary-" + Date.now())).toEqual([])
+
 })
 
 test("waitSignedIn says the app not starting at once, and waits for a window still loading", async () => {
@@ -402,7 +425,7 @@ test("sign-in waits for the Doubao window's account", async () => {
   expect(b.type).toBe("failed")
   expect(b.error).toContain("退出豆包")
   const linux = I.createPlugin({ appBinary: () => "", doubao: { waitSignedIn: async () => ({ signedIn: true, name: "x" }) } })
-  expect(await (await linux.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("macOS") })
+  expect(await (await linux.auth.methods[0].authorize()).callback()).toMatchObject({ type: "failed", error: expect.stringContaining("没有 Linux 版") })
 })
 
 test("an abort between two polls stops the ask too", async () => {
