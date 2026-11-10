@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, READ, STATE, binary, dataDir, owns, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, dataDir, owns, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -183,6 +183,58 @@ test("owns knows Doubao's chat page", () => {
   expect(owns([{ url: "chrome://newtab" }, { url: "https://doubao-chat/chat" }])).toBe(false)
 })
 
+// ---- models ----
+
+test("idFor names a model from what its menu row says", () => {
+  expect(idFor("自动")).toBe("auto")
+  expect(idFor("豆包 2.1 Lite")).toBe("doubao-2.1-lite")
+  expect(idFor("豆包 2.2 Turbo")).toBe("doubao-2.2-turbo")
+  expect(idFor("DeepSeek V4.1 Flash")).toBe("deepseek-v4.1-flash")
+  expect(idFor("Kimi K3.1 Pro")).toBe("kimi-k3.1-pro")
+  expect(idFor("GLM 5.3")).toBe("glm-5.3")
+  expect(idFor("星火 4.0")).toBe("model-4.0")
+  expect(idFor("")).toBe("auto")
+  expect(idFor("纯中文模型").startsWith("model-")).toBe(true)
+})
+
+test("tableFrom keeps every model row, and falls back when nothing was read", () => {
+  const t = tableFrom([{ label: "自动" }, { label: "GLM 5.3" }, { label: "GLM 5.3" }, { label: "" }])
+  expect(Object.keys(t)).toEqual(["auto", "glm-5.3"])
+  expect(Object.keys(tableFrom([])).sort()).toEqual(Object.keys(MODELS).sort())
+})
+
+test("models.json is read first, and discover rewrites it", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  const file = path.join(dir, "models.json")
+  fs.writeFileSync(file, JSON.stringify({
+    at: Date.now(),
+    models: { auto: MODELS.auto, "glm-5.3": { label: "GLM 5.3", name: "GLM 5.3" } },
+  }))
+  const page = fakePage([], { steps: { menu: { rows: [{ label: "自动" }, { label: "DeepSeek V4.1 Flash" }] } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  // the file wins over the built-in list, without opening the app
+  expect(Object.keys(d.modelList())).toEqual(["auto", "glm-5.3"])
+  const table = await d.discover()
+  expect(Object.keys(table)).toEqual(["auto", "deepseek-v4.1-flash"])
+  expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).models)).toEqual(["auto", "deepseek-v4.1-flash"])
+  // and the rewritten file is what the next start reads
+  expect(Object.keys(new Doubao({ app: { start: async () => 1, dataDir: dir } }).modelList())).toEqual(["auto", "deepseek-v4.1-flash"])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("ask picks a model that only the menu knows about", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+    at: Date.now(),
+    models: { auto: MODELS.auto, "glm-5.3": { label: "GLM 5.3", name: "GLM 5.3" } },
+  }))
+  const page = fakePage([{ sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }])
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  await d.ask("x", { model: "glm-5.3" })
+  expect(page.calls.some((c) => c.includes('"GLM 5.3"'))).toBe(true)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
 function fakePage(reads, { signedIn = true, steps = {} } = {}) {
   const calls = []
   const keys = []
@@ -195,6 +247,7 @@ function fakePage(reads, { signedIn = true, steps = {} } = {}) {
       if (expr === STATE) return { signedIn, name: "yetone", sends: 0 }
       if (expr === NEW_TASK) return steps.newTask ?? ""
       if (expr === CLOUD) return steps.cloud ?? ""
+      if (expr === MENU) return steps.menu ?? { rows: [] }
       if (expr === READ) return reads.length > 1 ? reads.shift() : reads[0]
       if (expr.includes("chat_input_action_model")) return steps.model ?? ""
       if (expr.includes("insertContent")) return 10
@@ -395,6 +448,18 @@ test("the plugin serves chat completions through Doubao, whole and streamed", as
   expect(streamed.filter((e) => e.choices?.[0]?.delta?.content).map((e) => e.choices[0].delta.content).join("")).toBe("Hi there")
   expect((await loader.fetch(req({ model: "gpt-9", messages: [] }))).status).toBe(404)
   expect((await loader.fetch(new Request("https://elsewhere.example/v1/chat/completions", { method: "POST", body: "{}" }))).status).toBe(404)
+})
+
+test("the plugin lists the models models.json has, not only the built-in ones", async () => {
+  const table = { auto: MODELS.auto, "glm-5.3": { label: "GLM 5.3", name: "GLM 5.3" } }
+  const p = I.createPlugin({ doubao: { modelList: () => table, ask: async () => ({ text: "ok", reasoning: "" }) } })
+  const cfg = {}
+  await p.config(cfg)
+  expect(Object.keys(cfg.provider["doubao-work"].models)).toEqual(["auto", "glm-5.3"])
+  expect(Object.keys(await p.provider.models({}, {}))).toEqual(["auto", "glm-5.3"])
+  const loader = await p.auth.loader(async () => ({}))
+  expect((await loader.fetch(req({ model: "glm-5.3", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  expect((await loader.fetch(req({ model: "gpt-9", messages: [] }))).status).toBe(404)
 })
 
 test("the plugin passes a sign-out on for re-sign-in and other failures as HTTP errors", async () => {

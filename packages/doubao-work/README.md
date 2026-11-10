@@ -19,8 +19,18 @@ an OpenAI chat completion:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
-Models: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`) and 豆包 2.1 Pro
-(`doubao-2.1-pro`, needs a paid Doubao plan).
+Models: the plugin reads Doubao's own model menu, so whatever the app offers
+is what magpie lists. The menu row text becomes the id: 自动 (`auto`), 豆包 2.1
+Lite (`doubao-2.1-lite`), 豆包 2.1 Pro (`doubao-2.1-pro`, needs a paid Doubao
+plan), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3 (`glm-5.3`) and so
+on. Rows that open a submenu (推理强度) are not models and are skipped.
+
+The list is read when you sign in, and again on a request once the cached list
+is more than six hours old; it is kept in `models.json` under
+`DOUBAO_WORK_HOME` (`~/Library/Application Support/magpie-doubao-work` on
+macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
+anything else. The three models the plugin was written with stay as the
+fallback for when the menu cannot be read.
 
 ## What it costs
 
