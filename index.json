@@ -1,6 +1,46 @@
 {
   "version": 1,
   "packages": {
+    "@magpie-community/agent-agy": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-agent-agy-0.1.0.tgz",
+          "integrity": "sha512-ASeKr5KzNZsgIuixGIse1aHO4PhdEJ8vACOM1OdnpCTj6EMuqN6XTwVky0fEnDPpzU2OgR1v3liFcGFiA/DFoQ==",
+          "time": "2026-11-10T19:53:14.590Z",
+          "manifest": {
+            "name": "@magpie-community/agent-agy",
+            "version": "0.1.0",
+            "description": "Antigravity CLI (agy) as a magpie agent: pick one of magpie's models for it on the Agents page, and agy starts on magpie's gateway",
+            "type": "module",
+            "files": [
+              "agy.agent.js",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-agent",
+              "antigravity",
+              "agy",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/agent-agy"
+            },
+            "scripts": {
+              "test": "bun test"
+            },
+            "magpie": {
+              "agent": "./agy.agent.js"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/agent-agy\n\n[Antigravity CLI](https://antigravity.google) (`agy`) as a magpie agent.\n\n```sh\nmagpie plugin add @magpie-community/agent-agy\n```\n\nPick one of magpie's models in the Antigravity CLI row. magpie writes into\n`~/.gemini/antigravity-cli/settings.json`:\n\n```json\n{\n  \"model\": \"magpie/deepseek/pro\",\n  \"modelProvider\": \"gemini\",\n  \"customModelsConfig\": {\n    \"customModels\": {\n      \"magpie/deepseek/pro\": { \"apiProvider\": \"API_PROVIDER_GOOGLE_GEMINI\", \"modelName\": \"deepseek/pro\" }\n    }\n  }\n}\n```\n\nYour own custom models stay beside magpie's. agy takes the address and key\nof a Gemini endpoint only from how it is started, so magpie adds a function\n`agy` to your shells' profiles: it runs `magpie agy run`, which starts the\nagy on your PATH with `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL` and\n`--model` while its model is one of magpie's, and as it is otherwise.\n`magpie agy env` prints what it starts agy with.\n\nPicking agy's own model again, or switching it off, puts every key back as\nit was and takes the function out. agy in a WSL distro is set up the same\nway, from Windows.\n\nThis plugin takes the place of the Antigravity CLI magpie shipped with: what\nthat one set up is handed over as it is.\n\nHow agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).\n"
+    },
     "@magpie-community/agent-aider": {
       "versions": {
         "0.1.1": {
