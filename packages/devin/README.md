@@ -17,7 +17,7 @@ three ways to get one:
   its `credentials.toml` (`$XDG_DATA_HOME/devin/`, by default
   `~/.local/share/devin/`; `%APPDATA%\devin\` on Windows). The file is only
   read, never changed.
-- **Devin session token (another account)**: paste a session token from
+- **Devin session token**: paste a session token from
   another Devin account. This adds a separate account slot instead of
   replacing the existing sign-in.
 
@@ -39,10 +39,9 @@ magpie passes over it and offers Sign in again on its row. A clean read
 takes the mark off.
 
 Magpie keeps separate account slots for this provider. Each successful
-sign-in returns a stable `accountId`, preferring Devin's organization or
-team id and falling back to the account identity. The provider declares
-unlimited account slots, and Magpie can try another signed-in account after
-a retryable failure.
+sign-in is stored as its own account, and the account label uses Devin's
+email and, when available, organization name. Magpie can try another
+signed-in account after a retryable failure.
 
 ## Requests
 
