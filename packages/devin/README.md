@@ -1,13 +1,13 @@
 # @magpie-community/opencode-devin-auth
 
-Signs in to a [Devin](https://devin.ai) subscription, the account the
-`devin` CLI uses, and makes its requests, in OpenCode and in magpie.
+Signs in to a [Devin](https://devin.ai) subscription, the accounts the
+`devin` CLI uses, and makes their requests, in OpenCode and in magpie.
 Provider id: `devin`.
 
 ## Signing in
 
-An account is the CLI's session token (`devin-session-token$…`). There are
-two ways to get one:
+Each account is the CLI's session token (`devin-session-token$…`). There are
+three ways to get one:
 
 - **Devin (browser)**: the CLI's own `devin auth login`, run by the
   plugin. It is a PKCE sign-in through `app.devin.ai/auth/cli/continue`
@@ -17,6 +17,9 @@ two ways to get one:
   its `credentials.toml` (`$XDG_DATA_HOME/devin/`, by default
   `~/.local/share/devin/`; `%APPDATA%\devin\` on Windows). The file is only
   read, never changed.
+- **Devin session token (another account)**: paste a session token from
+  another Devin account. This adds a separate account slot instead of
+  replacing the existing sign-in.
 
 The plugin names the account as Devin does when asked with the token
 (`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI
@@ -34,6 +37,12 @@ when it is refused, requests fail with a 401 saying to sign in again,
 and the usage read marks the account signed out (`signIn: "expired"`), so
 magpie passes over it and offers Sign in again on its row. A clean read
 takes the mark off.
+
+Magpie keeps separate account slots for this provider. Each successful
+sign-in returns a stable `accountId`, preferring Devin's organization or
+team id and falling back to the account identity. The provider declares
+unlimited account slots, and Magpie can try another signed-in account after
+a retryable failure.
 
 ## Requests
 
@@ -182,5 +191,4 @@ takes models.dev's word.
 magpie's built-in Devin account does more than this plugin:
 
 - **Usage**: the plan's quota windows.
-- **Several accounts** at once.
 - **Web search**: its stand-in for Anthropic's server-side web search tool.
