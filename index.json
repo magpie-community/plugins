@@ -26297,6 +26297,88 @@
       "latest": "0.1.1",
       "readme": "# @magpie-community/page-free-tokens\n\nAIHOT「Token 羊毛」页面：在 magpie 窗口里分三档看各家大模型的免费额度——**已配置可用** / **有插件待配置** / **暂无插件**，并对每条给出该装的插件或登录路径。\n\n数据来自 [AIHOT · Token 羊毛](https://aihot.news/free-tokens)，每个用户在自己的电脑上直连读一次：magpie 的插件宿主启动时（打开 magpie、装或改插件之后），不是每次打开页面时（不代理、不镜像、不随包分发、不后台轮询）。只展示官方厂商额度（`src/allowlist.js`）；图标用 magpie 自带品牌图标，其余首字母色块。页脚署名「数据源：AIHOT」并链回。\n\n> 已取得 AIHOT 书面授权（2026-11-10）：免费、不接广告/赞助、每用户本机打开时读一次、不做代理/镜像/数据分发。\n\n安装：`magpie plugin add @magpie-community/page-free-tokens`。测试：`bun test`（100% 行覆盖）。\n"
     },
+    "@magpie-community/page-harnessweight": {
+      "versions": {
+        "0.4.0": {
+          "file": "tgz/magpie-community-page-harnessweight-0.4.0.tgz",
+          "integrity": "sha512-MiFinETju41scMlwjv3TG9ZyrCttSrZmHOPNvu2jrV0ohvDm24wJ9h60sJx5mmvc4Fcdxhzt20/vtFVHmEHUcA==",
+          "time": "2026-11-10T09:43:37.672Z",
+          "manifest": {
+            "name": "@magpie-community/page-harnessweight",
+            "version": "0.4.0",
+            "description": "HarnessWeight: a magpie page that weighs every agent harness behind your gateway, by agent rather than by model: input tokens, cache hit rate, tokens at full price, failures, latency, and the tool definitions each harness re-sends every turn",
+            "type": "module",
+            "files": [
+              "index.mjs",
+              "harnessweight.hooks.mjs",
+              "service.mjs",
+              "lib",
+              "page",
+              "app",
+              "brand/assets",
+              "README.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-plugin",
+              "agent-harness",
+              "harness",
+              "token-usage",
+              "claude-code",
+              "codex",
+              "cost",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "magpie": {
+              "hooks": "./harnessweight.hooks.mjs",
+              "page": {
+                "title": "HarnessWeight",
+                "titles": {
+                  "zh": "HarnessWeight",
+                  "zh-TW": "HarnessWeight",
+                  "ja": "HarnessWeight"
+                },
+                "file": "page/index.html",
+                "icon": "page/icon.svg",
+                "service": {
+                  "port": 3496,
+                  "option": "port"
+                }
+              },
+              "options": {
+                "port": 3496,
+                "dataDir": "",
+                "usageLog": "",
+                "agents": [],
+                "gatewayTimeoutMs": 2000,
+                "gatewayUrl": ""
+              },
+              "permissions": [],
+              "summary": {
+                "en": "Compare agent harnesses behind your gateway by input tokens, cache, failures, latency and estimated tool-definition size. Its local service reads this machine's usage ledger; a read-only hook samples tool sizes and tracks in-flight requests.",
+                "zh": "按 Agent 对比网关后面的输入 token、缓存、失败率、延迟与工具定义体积估算。本机服务读取用量记录，只读 hook 采样工具大小并追踪进行中的请求。"
+              }
+            },
+            "main": "./index.mjs",
+            "scripts": {
+              "test": "node --test test/*.test.mjs",
+              "dev": "node service.mjs"
+            },
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/page-harnessweight"
+            },
+            "homepage": "https://github.com/webkubor/harnessweight",
+            "author": "webkubor"
+          }
+        }
+      },
+      "latest": "0.4.0",
+      "readme": "# HarnessWeight\n\nA magpie page for comparing the agents behind your gateway: requests, input and output tokens, cache reads, failures, latency and estimated tool-definition size. The dashboard groups requests by agent, not model. A read-only gateway hook records tool counts and JSON sizes after each response and observes in-flight request counts in memory.\n\n[Project, screenshots and demo](https://github.com/webkubor/harnessweight)\n\n## Install\n\n```sh\nmagpie plugin add @magpie-community/page-harnessweight\n```\n\nOpen **HarnessWeight** in magpie. Usage history is read from magpie's existing local ledger; tool-size samples accumulate after installation. The service listens on loopback, port **3496** by default. Change the `port` plugin option if that port is in use.\n\n## Reading the dashboard\n\n- **Input** includes fresh input, cache reads and cache writes. Cache rates and input tokens are usage measurements, not a currency amount; pricing depends on the model and provider.\n- **Tool-definition tokens** are an estimate: the serialized JSON byte count divided by 3.5. They are not measured with the model's tokenizer. Tool definitions may be cached; their size is not a direct bill.\n- **In flight** is derived from hook start and response callbacks. Missing callbacks may leave counts visible until expiry (15 minutes). It does not reflect activity outside the gateway.\n- **Session duration** is the span between the first and last recorded request for a session in the chosen period, including idle time. Sessions longer than six hours are excluded from duration aggregates; a missing session ID cannot be measured.\n- Protocols are inferred from recorded endpoints for the selected period. They are not a list of the agent's current configuration.\n\n## Data and security\n\nThe sandboxed page asks for no bridge reads; it navigates to the plugin's local service. The service reads magpie's local usage ledger and queries its local gateway for agent display names and icon keys. The hook writes request metadata, tool names, counts and sizes locally. It does not store prompts, tool arguments or credentials and does not modify the request.\n\nThe local service validates Host and Origin and requires a per-process random token on data APIs. No telemetry is sent by this plugin.\n\nConfiguration options include `port`, `usageLog`, `dataDir`, `gatewayUrl` and `agents`; see the [project documentation](https://github.com/webkubor/harnessweight) for details.\n\n## Development\n\n```sh\nbun test\n```\n\nAgent icons are from the community page-agent-office icon collection and LobeHub; see [app/icons/NOTICE](app/icons/NOTICE). Brand marks belong to their respective owners.\n\nMIT © webkubor\n"
+    },
     "@magpie-community/page-usage": {
       "versions": {
         "0.1.0": {
