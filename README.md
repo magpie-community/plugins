@@ -179,6 +179,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 | Package | Page | Reads |
 |---|---|---|
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
+| [free-tokens](packages/free-tokens) | AIHOT's Token freebies in three tiers (already configured and usable / needs one more plugin / no plugin yet), with the plugin to install or the exact login step for each | none; its host part reads ~/.config/magpie (providers/checkin) on open and fetches aihot.news/free-tokens.data |
 | [day-card](packages/day-card) | Day card: a day of your usage drawn as a card (tokens, cost, each agent and its models, streak, average day), copied as a picture or saved as a PNG | `usage:day` |
 | [powercontext](packages/powercontext) | Connection settings for an independently deployed PowerContext service | None |
 | [nowledge-mem](packages/nowledge-mem) | Connection settings, recall and capture switches, a real connection test, and the scope of what is sent | None |
