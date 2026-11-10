@@ -1286,23 +1286,15 @@ for (const change of ["tools", "model"]) {
 {
   const firstBody = { model, messages: [{ role: "user", content: "TOOL extra text" }], tools: [echoTool] }
   const firstEvents = (await readSSE(await callFetch(firstBody))).events
-  const invalidBody = continuation(firstBody, firstEvents, "result", { extraText: true })
-  invalidBody.messages.at(-1).content.at(-1).text += "\n<task-notification>background completed</task-notification>"
-  const beforeResult = continuation(firstBody, firstEvents, "result")
-  beforeResult.messages.at(-1).content.unshift({ type: "text", text: "<task-notification>too early</task-notification>" })
-  const hookAndUser = continuation(firstBody, firstEvents, "result")
-  hookAndUser.messages.at(-1).content.push({ type: "text", text: "PreToolUse:Read hook additional context: hook output\n\nThe user sent a new message while you were working:\nstop now" })
-  const systemBeforeResult = continuation(firstBody, firstEvents, "result")
-  systemBeforeResult.messages.at(-1).content.unshift({ type: "text", text: "<system-update>too early</system-update>" })
-  const systemAndUser = continuation(firstBody, firstEvents, "result")
-  systemAndUser.messages.at(-1).content.push({ type: "text", text: "<system-update>catalog changed</system-update>\n\nordinary user instruction" })
   const unclosedSystem = continuation(firstBody, firstEvents, "result")
   unclosedSystem.messages.at(-1).content.push({ type: "text", text: "<system-update>not a complete protocol notice" })
-  const rejected = await Promise.all([invalidBody, beforeResult, hookAndUser, systemBeforeResult, systemAndUser, unclosedSystem].map(body => callFetch(body)))
-  check("unsupported user text and malformed or pre-result notices return 400", rejected.every(response => response.status === 400), rejected.map(response => response.status).join(","))
+  const rejected = await callFetch(unclosedSystem)
+  check("unclosed protocol notices beside tool results still return 400", rejected.status === 400, `got ${rejected.status}`)
+  if (rejected.status !== 200) await rejected.text()
   const validBody = continuation(firstBody, firstEvents, "result")
-  const validEvents = (await readSSE(await callFetch(validBody))).events
-  check("valid result can continue after rejected extra text", stopOf(validEvents) === "end_turn")
+  const validRes = await callFetch(validBody)
+  const validEvents = validRes.status === 200 ? (await readSSE(validRes)).events : []
+  check("valid result can continue after rejected malformed notice", validRes.status === 200 && stopOf(validEvents) === "end_turn")
 }
 
 for (const location of ["inline", "system", "developer", "user"]) {
@@ -2037,6 +2029,32 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("turn after client-normalized tool_use.input reuses the same live session",
     hThirdRes.status === 200 && inits().length === beforeHookInits && lastOf("user").convId === hConv)
 
+  // Some harnesses (including Claude Science) put a new user instruction in
+  // the same message as a live tool_result, before or after the result block.
+  for (const placement of ["before", "after"]) {
+    const mixedFirst = {
+      model,
+      messages: [{ role: "user", content: `ESCCALL mixed tool text ${placement}` }],
+      tools: [echoTool],
+    }
+    const mixedEvents = (await readSSE(await callFetch(mixedFirst))).events
+    const oldSession = inits().at(-1).convId
+    const mixedSecond = continuation(mixedFirst, mixedEvents, "MIXED_RESULT")
+    const resultBlock = mixedSecond.messages.at(-1).content[0]
+    const newInstruction = { type: "text", text: `MIXED_USER_INSTRUCTION_${placement}` }
+    mixedSecond.messages.at(-1).content = placement === "before"
+      ? [newInstruction, resultBlock] : [resultBlock, newInstruction]
+    const mixedResponse = await callFetch(mixedSecond)
+    const mixedFinal = mixedResponse.status === 200 ? (await readSSE(mixedResponse)).events : []
+    if (mixedResponse.status !== 200) await mixedResponse.text()
+    const replay = lastOf("user")
+    check(`ordinary user text ${placement} tool_result is replayed as a user instruction`,
+      mixedResponse.status === 200 && stopOf(mixedFinal) === "end_turn" &&
+      replay.convId !== oldSession && replay.text.includes(newInstruction.text) &&
+      replay.text.includes("MIXED_RESULT"),
+      `status=${mixedResponse.status}`)
+  }
+
   // User rejects tool call in TUI and enters a new prompt merged into the same user message by Claude Code aLe().
   const rFirst = { model, messages: [{ role: "user", content: "ESCCALL user rejected tool" }], tools: [echoTool] }
   const rEvents = (await readSSE(await callFetch(rFirst))).events
@@ -2129,14 +2147,25 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const skillTool = { name: 'Skill', description: 'Skill', input_schema: { type: 'object' } }
   const first = { model, messages: [{ role: 'user', content: 'SKILLCALL ordinary user steering regression' }], tools: [skillTool] }
   const events = (await readSSE(await callFetch(first))).events
+  const oldSession = inits().at(-1).convId
   const second = continuation(first, events, 'Launching skill: archive')
   second.messages.at(-1).content.push({ type: 'text', text: 'Stop this task and explain something else' })
   const response = await callFetch(second)
-  check('plain user instructions are not treated as a Skill prompt body', response.status === 400, `got ${response.status}`)
-  if (response.status === 400) {
+  if (response.status === 200) {
+    const final = (await readSSE(response)).events
+    const replay = lastOf('user')
+    const skillResult = logs().filter(event => event.type === 'mcpResult' && event.convId === oldSession).at(-1)
+    const skillOutput = skillResult?.result?.content?.map(part => part.text || '').join('') || ''
+    check('plain user instructions beside Skill results replay separately from the MCP result',
+      replay.convId !== oldSession &&
+      replay.text.includes('Stop this task and explain something else') &&
+      !skillOutput.includes('Stop this task and explain something else'))
+    if (stopOf(final) === 'tool_use') await drive(second, final, 'finish replayed skill')
+  } else {
+    check('plain user instructions beside Skill results replay separately from the MCP result', false, `got ${response.status}`)
     await response.text()
     await drive(first, events, 'cleanup ordinary Skill text')
-  } else await readSSE(response)
+  }
 }
 
 {

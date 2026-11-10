@@ -3449,7 +3449,9 @@ function inspectToolTurn(results, body) {
       }
       const rawText = blockText(block)
       if (!seenResult && message.role === "user" && rawText.trim()) {
-        throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")
+        // A user can steer a pending tool turn from either side of a tool_result.
+        // Replay the instruction as a user prompt, never as an MCP tool response.
+        userSteered = true
       }
       const text = stripMagpiePlaceholderNotice(rawText)
       if (text !== rawText && !notices.includes(MAGPIE_PLACEHOLDER_NOTICE)) {
@@ -3520,7 +3522,8 @@ function inspectToolTurn(results, body) {
       } else if (!isNoise(rest)) {
         if ((hookOutput.test(rest) || claudeMetaFeedback.test(rest)) && !userInterruption.test(rest)) {
           notices.push(rest)
-        } else if (userSteered || stoppedByHookOrUser || notices.some((item) => hookStoppedContinuation.test(item))) {
+        } else if (message.role === "user" || userSteered || stoppedByHookOrUser ||
+          notices.some((item) => hookStoppedContinuation.test(item))) {
           userSteered = true
         } else {
           throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")

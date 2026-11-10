@@ -46,6 +46,22 @@ test("a companion cannot attach to a different preceding tool", () => {
   }
 })
 
+test("ordinary user text beside live tool results steers a replay without becoming a tool response", () => {
+  const call = result("call_read", "Read", "file contents")
+  const instruction = { type: "text", text: "Continue reviewing the image pipeline" }
+  for (const blocks of [[call.block, instruction], [instruction, call.block]]) {
+    const body = bodyFor(blocks)
+    const inspected = inspectToolTurn([call], body)
+    assert.equal(inspected.userSteered, true, "mixed user text requires a fresh user prompt")
+    assert.deepEqual(inspected.results[0].result.content, call.result.content,
+      "user instructions must not be attached to an MCP function response")
+    const replay = renderInitialPromptParts(body, null, true).map(part => part.text || "").join("")
+    assert.ok(replay.includes("Continue reviewing the image pipeline"),
+      "the replay must carry the original user instruction")
+    assert.ok(replay.includes("file contents"), "the replay must retain the real tool result")
+  }
+})
+
 test("a partial ID rename maps by full history without discarding the live ID anchor", () => {
   const original = [
     { type: "tool_use", id: "original_a", name: "Read", input: { path: "a" } },
