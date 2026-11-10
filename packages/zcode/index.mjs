@@ -2004,12 +2004,46 @@ const BUSY_HINT =
 // the queue. A wait that runs out is answered startQueueAnswer's 429,
 // nothing sent. The gate lives in this process's memory alone, by account
 // (gateKey).
-const startGate = { inflight: 3, wait: 120_000, lanes: new Map() }
+//
+// An account ZCode serves fewer than that (plugins#438: one account, one
+// agent, never more than two in flight, and refused at two) is narrowed:
+// a request refused again at its 1s re-ask while others of this computer
+// were in flight beside it (busyCap) tells the cap is below the gate, and
+// the account's gate goes down to one fewer than were in flight, at least
+// one, for NARROW_FOR. Such a cap is this computer asking too much at once,
+// which the narrowed gate now stops, so it counts toward no firewall hold.
+// narrow is kept apart from lanes, which go when idle; now is its clock,
+// injectable for tests.
+const NARROW_FOR = 5 * 60_000
+const startGate = { inflight: 3, wait: 120_000, lanes: new Map(), narrow: new Map(), now: () => Date.now() }
+
+// limitOf is how many of the account's Start Plan requests go at once: the
+// gate's number, or less while the account is narrowed.
+function limitOf(key) {
+  const n = startGate.narrow.get(key)
+  if (!n) return startGate.inflight
+  if (startGate.now() >= n.until) {
+    startGate.narrow.delete(key)
+    return startGate.inflight
+  }
+  return Math.min(startGate.inflight, n.limit)
+}
+
+// narrowed lowers the account's gate below the requests that were in flight
+// when one was refused again (busy, its own included), and says whether it
+// did: a lone request refused again is not this computer's doing.
+function narrowed(key) {
+  const busy = startGate.lanes.get(key)?.busy ?? 0
+  if (busy < 2) return false
+  const limit = Math.max(1, Math.min(limitOf(key), busy - 1))
+  startGate.narrow.set(key, { limit, until: startGate.now() + NARROW_FOR })
+  return true
+}
 
 // startFull says the account's Start Plan slots are all taken, or others wait.
 const startFull = (key) => {
   const l = startGate.lanes.get(key)
-  return !!l && (l.busy >= startGate.inflight || l.queue.length > 0)
+  return !!l && (l.busy >= limitOf(key) || l.queue.length > 0)
 }
 
 // startSlot waits for one of the account's Start Plan slots: { release },
@@ -2019,7 +2053,7 @@ function startSlot(key, signal) {
   let l = lanes.get(key)
   if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
   const next = () => {
-    while (l.busy < startGate.inflight && l.queue.length) l.queue.shift()()
+    while (l.busy < limitOf(key) && l.queue.length) l.queue.shift()()
     if (!l.busy && !l.queue.length && lanes.get(key) === l) lanes.delete(key)
   }
   const take = () => {
@@ -2035,7 +2069,7 @@ function startSlot(key, signal) {
     }
   }
   if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"))
-  if (l.busy < startGate.inflight && !l.queue.length) return Promise.resolve(take())
+  if (l.busy < limitOf(key) && !l.queue.length) return Promise.resolve(take())
   return new Promise((resolve, reject) => {
     const leave = () => {
       clearTimeout(timer)
@@ -2103,10 +2137,11 @@ function released(res, slot, signal) {
 // startQueueAnswer is a request that waited its whole turn behind the
 // account's others and was never sent: a 429 magpie reads as a rate limit,
 // so it tries the next account, and a short Retry-After.
-function startQueueAnswer() {
+function startQueueAnswer(key) {
+  const n = limitOf(key)
   const error = {
     type: "rate_limit_error",
-    message: `ZCode's free Start Plan serves this account ${startGate.inflight} requests at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+    message: `ZCode's free Start Plan serves this account ${n} request${n === 1 ? "" : "s"} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
   }
   return new Response(JSON.stringify({ type: "error", error }), {
     status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
@@ -2124,7 +2159,14 @@ function startQueueAnswer() {
 // busy or another client on the account; a request refused on its first ask
 // and again a second later (busyCap) is that, sustained, and BUSY_N of them
 // in one minute hold the Start Plan (zcode.z.ai only, process-wide, every
-// account) off BUSY_HOLD. A cap the 1s re-ask got past counts for nothing:
+// account) off BUSY_HOLD. A sustained cap of a request with others of the
+// same account in flight beside it counts for nothing either: it narrows the
+// account's gate (startGate), which then sends no more than ZCode serves
+// (plugins#438: an account served one at a time, two in flight from one
+// agent, held again and again at ~5 requests/min). #801's caps came with up
+// to ~10 in flight, which the gate now never sends, and an account whose
+// slots are taken elsewhere is narrowed to one within a few caps and then
+// refused alone, which counts as before. A cap the 1s re-ask got past counts for nothing:
 // on 0.1.55 every capped request counted, a lone late slot as much as a
 // saturated address, and busy afternoons held users for nothing. Replay of
 // both days: N=5, H=3min froze 2–7 minutes before the first 405 and spared
@@ -2147,7 +2189,8 @@ const busyHeld = () => busyHold.now() < busyHold.until
 // Only a run arms a hold; the window is cleared on arming, and a cap that
 // lands while the hold is on counts toward nothing — the hold's own 429s and
 // the first caps after it cannot keep re-arming it.
-function busyCap() {
+function busyCap(key) {
+  if (key != null && narrowed(key)) return
   if (busyHeld()) return
   const now = busyHold.now()
   busyHold.hits.push(now)
@@ -2789,7 +2832,11 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
           }
           const id = giftID(raw)
           if (out[id]) continue
-          out[id] = model({ ...about(raw), id }, url)
+          // a trial entry is the gift's, which costs nothing: marked free,
+          // so magpie reads a GLM Coding Plan model's weekly or monthly
+          // limit (1310) as that model's, and the account's trial entries,
+          // spent from the gift's own buckets, are still asked (plugins#438)
+          out[id] = { ...model({ ...about(raw), id }, url), free: true }
         }
         // a fallback tells magpie to keep the list it was told last, which
         // predates the gift read just made: an account whose gift lists
@@ -2980,7 +3027,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             if (start) {
               own.slot = await startSlot(gateKey, opts.signal)
               own.signal = opts.signal
-              if (!own.slot) return kept(startQueueAnswer())
+              if (!own.slot) return kept(startQueueAnswer(gateKey))
               // a hold may have armed while it waited
               if (edgeHeld()) return kept(edgeHeldAnswer())
               if (busyHeld()) return kept(busyHeldAnswer())
@@ -3029,7 +3076,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               // Only Start Plan caps count toward the firewall hold: the
               // coding plan is served by another host and was never refused
               // with the IP's 405.
-              res = await askBusy(url, opts, h, start ? busyCap : undefined)
+              res = await askBusy(url, opts, h, start ? () => busyCap(gateKey) : undefined)
             } catch (e) {
               // free first moved the request onto the gift, so a gift that
               // cannot be asked at all — the network, the host — is answered
@@ -3239,4 +3286,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, busyHold, startGate, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

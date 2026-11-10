@@ -144,6 +144,14 @@ plan's own in-flight cap (3008/3009/3010) does not: such a request is asked
 again instead (see [A few at once](#a-few-at-once)). A stream's body is
 never read or buffered on the way.
 
+Since 0.1.58 the trial entries are marked free in the model list: they
+spend the gift, which costs nothing. magpie then reads a coding plan
+model's weekly or monthly limit (code 1310) as that model's, not the
+account's, so the account's `-Trial` entries are still asked while the
+plan's model rests (plugins#438). In magpie's pickers the trial entries
+carry the Free mark, and a routing group that prefers free models picks
+them first.
+
 **Free first.** Picking `-Trial` by hand keeps the choice the user's,
 but an agent that always asks the plain model never sees the gift.
 `freeFirst`, on by default since 0.1.42, turns the preference around:
@@ -250,6 +258,20 @@ already refused needs; when both are on, the 405 hold's answer wins.
 `inflight.test.mjs` replays the two days at 20× speed against a fake that
 refuses past three in flight: 0.1.55 drew 24 refusals in it, this version
 none.
+
+Some accounts are served fewer than three at a time (plugins#438: one
+account, one agent, refused at two in flight). Since 0.1.58 a request
+refused again at its 1s re-ask while others of the same account were in
+flight beside it narrows that account's gate to one fewer than were in
+flight, at least one, for five minutes, after which it is back to three.
+Such a refusal is this computer asking too much at once, which the
+narrowed gate now stops, so it counts toward no hold; up to 0.1.57 those
+refusals armed the hold at about five requests a minute, and armed it
+again within a minute of its end. A request refused again alone, nothing
+else of its account in flight, still counts as before: someone else holds
+the slots. An account whose slots are taken elsewhere is narrowed to one
+within a few refusals and then refused alone, so the firewall hold still
+comes before the 405.
 
 ## Two accounts at once
 

@@ -43,6 +43,8 @@ beforeEach(async () => {
   _internal.busyHold.now = () => Date.now()
   // a reply a test leaves unread keeps its Start Plan slot (startGate)
   _internal.startGate.lanes.clear()
+  _internal.startGate.narrow.clear()
+  _internal.startGate.now = () => Date.now()
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -421,12 +423,14 @@ test("a busy hold's answer through a -Trial entry is passed on and arms no quota
       caps++
       return new Response(JSON.stringify({ code: "3008", msg: "user concurrency limit exceeded" }), { status: 429, headers: { "content-type": "application/json" } })
     }
+    // one at a time, as an account ZCode serves one request at a time is
+    // narrowed to (plugins#438): each refused again alone is one count
+    _internal.startGate.inflight = 1
     const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
     const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
-    // five asks in flight: the first ask of each caps once (one signal per
-    // request), the re-ask of each caps again — the fifth distinct cap hit
-    // arms the hold, and every ask that wakes after it comes home the
-    // hold's 429
+    // five asks, queued behind each other: the first ask of each caps once
+    // (one signal per request), the re-ask of each caps again — the fifth's
+    // arms the hold while it is in flight, and it comes home the hold's 429
     const all = await Promise.all([1, 2, 3, 4, 5].map(() => ask("GLM-5.3-Flash-Trial")))
     expect(all.map((r) => r.status)).toEqual([429, 429, 429, 429, 429])
     expect(_internal.busyHold.until).toBeGreaterThan(Date.now())
@@ -450,6 +454,7 @@ test("a busy hold's answer through a -Trial entry is passed on and arms no quota
   } finally {
     _internal.BUSY_WAITS.length = 0
     _internal.BUSY_WAITS.push(...waits)
+    _internal.startGate.inflight = 3
   }
 })
 

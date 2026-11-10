@@ -58,6 +58,21 @@ test("real balance data adds a gift model absent from the coding catalog", async
   expect(Object.keys(models).filter((id) => id.endsWith("-Trial"))).toEqual([alias])
 })
 
+// plugins#438 (takomitkm): a GLM Coding Plan model's weekly limit (1310)
+// rested the whole account, -Trial entries too, which the gift's own
+// buckets serve. The trial entries are marked free, as they are: magpie
+// then rests a refused coding plan model alone and still asks the trial
+// entries. The plan's own models are not free, and an account with no gift
+// lists nothing free, so its quota refusal rests it as before.
+test("a dual account's trial entries are free, its coding plan models are not (plugins#438)", async () => {
+  const h = await hooks()
+  const plan = await h.provider.models({ models: {} }, { auth: { type: "api", key: state.key } })
+  const models = await h.provider.models({ models: {} }, { auth })
+  expect(models[alias].free).toBe(true)
+  for (const [id, m] of Object.entries(models)) expect(m.free === true).toBe(id.endsWith("-Trial"))
+  expect(Object.values(plan).some((m) => m.free)).toBe(false)
+})
+
 test("an exhausted but active limited grant remains discoverable", async () => {
   Object.assign(balance.balances[0], { used_units: 100, remaining_units: 0 })
   const models = await (await hooks()).provider.models({ models: {} }, { auth })

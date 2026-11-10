@@ -55,6 +55,8 @@ afterEach(() => {
   BUSY_WAITS.splice(0, BUSY_WAITS.length, ...WAITS)
   // a reply a test leaves unread keeps its Start Plan slot (startGate)
   _internal.startGate.lanes.clear()
+  _internal.startGate.narrow.clear()
+  _internal.startGate.now = () => Date.now()
 })
 
 const jwt = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"

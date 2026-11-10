@@ -53,6 +53,8 @@ afterEach(() => {
   _internal.busyHold.now = () => Date.now()
   // a reply a test leaves unread keeps its Start Plan slot (startGate)
   _internal.startGate.lanes.clear()
+  _internal.startGate.narrow.clear()
+  _internal.startGate.now = () => Date.now()
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -689,8 +691,10 @@ test("the busy hold reads its clock: a spread run holds nothing, caps during the
 
 // The hold's guard is the one the serial tests cannot see: requests already
 // in flight when the hold arms get their counted cap after it. Hold the
-// clock still, put 12 Start Plan requests in flight at once — four accounts,
-// three each, as startGate lets them — and answer them all 3008 after they
+// clock still, put 12 Start Plan requests in flight at once — twelve
+// accounts, one each, so each cap is a lone request's, the kind that counts
+// (two or more of one account's narrow its gate instead, plugins#438) — and
+// answer them all 3008 after they
 // have all reached the fake. No first cap counts; the 1s re-asks are
 // refused again and the fifth of those arms the hold. With the guard gone,
 // the seven after it count toward a second hold.
@@ -702,7 +706,7 @@ test("caps that land after the hold armed change neither hits nor until (request
     let clock = 1_000_000_000_000
     _internal.busyHold.now = () => clock
     const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-    const accounts = [1, 2, 3, 4].map((n) => {
+    const accounts = Array.from({ length: 12 }, (_, i) => i + 1).map((n) => {
       const own = ["{}", JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, n })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".sig"
       const s = { site: "zai", device: DEVICE, jwt: own, plan: "Start Plan" }
       return { type: "oauth", access: own, refresh: JSON.stringify(s), expires: 0 }
@@ -716,7 +720,7 @@ test("caps that land after the hold armed change neither hits nor until (request
       return Response.json({ code: "3008", msg: "user concurrency limit exceeded" }, { status: 429 })
     }
     const all = loaders.flatMap((opts) =>
-      Array.from({ length: 3 }, () =>
+      Array.from({ length: 1 }, () =>
         opts.fetch("https://api.z.ai/api/anthropic/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": "zcode" }, body: agentText })))
     // every request is in flight (reached the fake) before any answer comes
     while (got.filter((r) => r.path.endsWith("/messages")).length < 12) await Bun.sleep(5)

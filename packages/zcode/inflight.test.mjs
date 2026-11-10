@@ -11,7 +11,7 @@ import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 
 const { BUSY_WAITS, startGate, busyHold } = _internal
 const WAITS = [...BUSY_WAITS]
-const GATE = { ...startGate, lanes: undefined }
+const GATE = { ...startGate, lanes: undefined, narrow: undefined }
 
 let server
 const got = [] // every request the fake took: when, whose
@@ -61,6 +61,8 @@ afterEach(() => {
   startGate.inflight = GATE.inflight
   startGate.wait = GATE.wait
   startGate.lanes.clear()
+  startGate.narrow.clear()
+  startGate.now = () => Date.now()
   busyHold.until = 0
   busyHold.hits.length = 0
   busyHold.now = () => Date.now()
@@ -353,3 +355,95 @@ test("replay with the account saturated elsewhere: the hold still trips within a
   // and the upstream asks stayed within three per request
   expect(messages().length).toBeLessThanOrEqual(3 * rs.length)
 }, 30_000)
+
+// plugins#438 (takomitkm, 0.1.57, default settings): one account, one agent,
+// never more than two requests in flight, about five a minute — and the
+// hold armed, and armed again a minute after it ended. ZCode served that
+// account one request at a time: the second of each pair was refused, and
+// again at its re-ask, while the first was still in flight. A cap this
+// computer brought on itself by sending two at once narrows the account's
+// gate to one instead of counting toward the firewall hold; the pairs after
+// it go one at a time and are all served.
+test("an account ZCode serves one at a time is narrowed to one, and no hold arms (plugins#438)", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  let clock = 1_000_000_000_000
+  busyHold.now = () => clock
+  startGate.now = () => clock
+  answer = async ({ flight }) => {
+    if (flight >= 2) return CAP()
+    await sleep(100)
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  const pairs = []
+  for (let i = 0; i < 5; i++) {
+    clock += 12_000
+    pairs.push(await Promise.all([one(opts), sleep(10).then(() => one(opts))]))
+  }
+  expect(busyHold.until).toBe(0)
+  expect(busyHold.hits.length).toBe(0)
+  const [key] = startGate.narrow.keys()
+  expect(_internal.limitOf(key)).toBe(1)
+  // the first pair's second request was refused through its re-asks; every
+  // pair after it went one at a time and was served
+  expect(pairs.slice(1).flat().every((r) => r.status === 200)).toBe(true)
+  const after = got.filter((r) => r.path.endsWith("/messages")).slice(4)
+  expect(Math.max(...after.map((r) => r.flight))).toBe(1)
+})
+
+// The narrowing ends by its own clock: NARROW_FOR on, the account's gate is
+// back to three, and two go at once again.
+test("a narrowed account's gate is back to three after NARROW_FOR", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  let clock = 1_000_000_000_000
+  busyHold.now = () => clock
+  startGate.now = () => clock
+  let capAt = 2
+  answer = async ({ flight }) => {
+    if (flight >= capAt) return CAP()
+    await sleep(100)
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  await Promise.all([one(opts), sleep(10).then(() => one(opts))])
+  expect(startGate.narrow.size).toBe(1)
+  const [key] = startGate.narrow.keys()
+  expect(_internal.limitOf(key)).toBe(1)
+  clock += _internal.NARROW_FOR - 1
+  expect(_internal.limitOf(key)).toBe(1)
+  clock += 1
+  expect(_internal.limitOf(key)).toBe(3)
+  expect(startGate.narrow.size).toBe(0)
+  capAt = 4
+  got.length = 0
+  now.peak.clear()
+  const rs = await Promise.all([one(opts), sleep(10).then(() => one(opts))])
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(Math.max(...now.peak.values())).toBe(2)
+  expect(busyHold.until).toBe(0)
+})
+
+// Narrowed to one and still refused, alone: the account's slots are taken
+// elsewhere (the ZCode app, another computer), and those caps count toward
+// the hold as before. Three at once first narrow the account down (3 → 2 →
+// 1); the lone caps after it arm the hold.
+test("an account refused even one at a time still arms the hold", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  let clock = 1_000_000_000_000
+  busyHold.now = () => clock
+  startGate.now = () => clock
+  answer = async () => {
+    await sleep(20)
+    return CAP()
+  }
+  const opts = await loader(startAuth())
+  const rs = []
+  for (let i = 0; i < 6 && !busyHold.until; i++) {
+    clock += 1_000
+    rs.push(...(await Promise.all([one(opts), one(opts), one(opts)])))
+  }
+  expect(rs.every((r) => r.status === 429)).toBe(true)
+  expect(busyHold.until).toBeGreaterThan(clock)
+  const [key] = startGate.narrow.keys()
+  expect(_internal.limitOf(key)).toBe(1)
+})
