@@ -125,6 +125,8 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 - 账号被封不算登录失效：上游以 `403` + `{"code":410004,"message":"The account has been banned"}` 回答时（或 code/message 字段说 banned / 封禁 / 账号异常 / 账号被冻结等），对话、刷新、积分与签到都原样带上游文案，对话转成 `403 permission_error`，登录保留（`X-Magpie-Sign-In: kept`），不再换 host 重试。其他 401/403 仍按登录失效处理。
 - 请求过大不算登录失效（plugins#891）：国内网关会对约 200k tokens 的请求回 `401 AutoClaw 登录状态失效`，而同一凭据前后几秒的小请求都是 200。请求体比本进程见过的最大成功请求还大时遇到 401/403，插件先用积分接口确认登录：登录有效就转成 `413 request_too_large`（登录保留），magpie 换一条路由或让 agent 压缩对话；登录也被拒、确认失败，或请求不比已成功的大，仍按登录失效处理。不猜阈值，只拿已成功的最大请求作比较。
 - DeepSeek Harness 在 system 全文遮蔽，不只改身份句（plugins#924）：网关只要在 system / developer 文本任意位置看到这个名字就拒绝，所以其中每处 `DeepSeek Harness` 都改成 `DeepSeek`，身份句（有无逗号均可）改成 `You are an AI agent powered by a local coding harness.`；任意大小写的 `powered by the glm-<x> model` 句式统一写成 `GLM-<x>` 形式。用户消息与工具参数从不改动。
+- 两个 host 都回 401 时，插件用 refresh token 刷新一次再试（并发请求只触发一次刷新）。刷新成功继续对话（`X-Magpie-Sign-In: renewed`）；刷新被拒（密码改了/授权撤销）或账号被封时按上游语义处理——封禁保留登录状态（`kept`），死授权标记失效（`expired`）。
+
 - 上游模型白名单随版本变化，模型下线时上游返回 `400 非法模型`（原样透传错误消息）。
 - refresh token 与 AutoClaw 桌面端**共用会互踢**（双方都轮换），插件账号请勿同时在桌面端登录。
 - 上游偶发改协议时，`CLIENT_VERSION` / 端点路径可能需要随官方客户端更新。

@@ -3068,3 +3068,90 @@ test("signInHolds: taken on any host is true, refused everywhere false, otherwis
     globalThis.fetch = realFetch
   }
 })
+
+// ---- #217 review：401 反应式刷新的三条边界 ----
+
+// 两个并发请求都吃 401 时，只允许一个 refresh 在飞：refresh token 是轮换的，
+// 第二个并发 refresh 会花掉第一个已轮换的 token。两个请求都应被同一个
+// 单飞刷新救回，且 /userapi/v1/refresh 只被调用一次。
+test("concurrent 401s refresh once (single-flight), both requests succeed", async () => {
+  const realFetch = globalThis.fetch
+  const refreshCalls = []
+  let chatPhase = "fail" // fail: chat 401；ok: chat 200
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh")) {
+      refreshCalls.push(url)
+      return Response.json({ code: 0, data: { access_token: "Bearer new-access", refresh_token: "new-refresh", expires_in: 3600 } })
+    }
+    if (url.includes("/chat/completions")) {
+      // 刷新后的请求（Bearer new-access）总是成功；旧 token 的前两轮 401
+      const auth = new Headers(init?.headers).get("X-Authorization")
+      if (auth === "Bearer new-access") return new Response("ok")
+      return new Response("{}", { status: 401 })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await makePlugin("autoclaw")({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "Bearer a1", refresh: jwt({ device_id: "dev1" }) }))
+    // 两个并发请求：旧 token 两轮 401 → 共享同一次单飞刷新 → 新 token 重试成功
+    const [r1, r2] = await Promise.all([loader.fetch("x", { headers: {} }), loader.fetch("x", { headers: {} })])
+    expect(refreshCalls.length).toBe(1)
+    expect(r1.status).toBe(200)
+    expect(r2.status).toBe(200)
+  } finally { globalThis.fetch = realFetch }
+})
+
+// auth.set 保存失败时不能用新 token 继续请求：refresh token 已轮换，保存失败
+// = 下次启动无凭据。必须报 expired 并说明原因，且不把新 token 发给上游。
+test("a failed auth.set keeps the new token unused and answers expired", async () => {
+  const realFetch = globalThis.fetch
+  const chatAuth = []
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh")) {
+      return Response.json({ code: 0, data: { access_token: "Bearer fresh", refresh_token: "rotated", expires_in: 3600 } })
+    }
+    if (url.includes("/chat/completions")) {
+      chatAuth.push(new Headers(init?.headers).get("X-Authorization"))
+      return new Response("{}", { status: 401 })
+    }
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => { throw new Error("disk full") } } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "Bearer a1", refresh: jwt({ device_id: "dev2" }) }))
+    const res = await loader.fetch("x", { headers: {} })
+    expect(res.status).toBe(401)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    const body = await res.text()
+    expect(body).toMatch(/保存|刷新失败|disk full|refresh/)
+    // 新 token 不应被用于重试（refresh 成功后若无保存失败会重试 chat；
+    // 这里保存失败 → 直接 expired，不再发 chat）
+    expect(chatAuth.every((t) => t !== "Bearer fresh")).toBe(true)
+  } finally { globalThis.fetch = realFetch }
+})
+
+// 刷新时上游说账号被封：signIn 透传为 kept（封禁是账号状态，不是登录失效），
+// 错误文案带上游的话。
+test("a banned refresh surfaces kept, not expired", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes("/userapi/v1/refresh")) {
+      return new Response(JSON.stringify({ code: 410004, message: "The account has been banned" }), { status: 403 })
+    }
+    if (url.includes("/chat/completions")) return new Response("{}", { status: 401 })
+    return Response.json({ code: 0, data: {} })
+  }
+  try {
+    const hooks = await makePlugin("autoclaw")({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "Bearer a1", refresh: jwt({ device_id: "dev3" }) }))
+    const res = await loader.fetch("x", { headers: {} })
+    expect(res.status).toBe(401)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    const body = await res.text()
+    expect(body).toMatch(/banned|封禁/)
+  } finally { globalThis.fetch = realFetch }
+})
