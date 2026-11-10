@@ -3,3 +3,6 @@ node_modules/
 *.log
 .env
 .DS_Store
+
+# runtime state written by package tests
+atomcode-state.json

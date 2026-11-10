@@ -18,6 +18,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
+| [cc-guard](packages/cc-guard) | Claude Code's auto mode classifier, answered by a decision model through magpie's gateway | `cc-guard` |
 | [cline](packages/cline) | Cline (cline.bot): usage-billed models, ClinePass's and Cline's free ones, with Cline's device sign-in or an API key | `cline` |
 | [codearts](packages/codearts) | Huawei Cloud CodeArts (码道) coding plans (Trial, personal and enterprise credits), with Huawei Cloud OAuth sign-in (unofficial) | `codearts` |
 | [commandcode](packages/commandcode) | Command Code plans (Pro, GOAT, Max, Ultra, Go, Teams Pro) | `commandcode-plan` |
