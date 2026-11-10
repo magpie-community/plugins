@@ -105,8 +105,8 @@ test("the lines Antigravity turns away are broken up", () => {
   const out = cloak(sys)
   expect(out).not.toBe(sys)
   expect(out.replaceAll("​", "")).toBe(sys)
-  expect(out).toContain("x​-anthropic-billing-header:")
-  expect(out).toContain("b​uilt on Anthropic's")
+  expect(out).toContain("x-a\u200bn\u200bthropic-b\u200bi\u200blling-h\u200be\u200bader:")
+  expect(out).toContain("b\u200bu\u200bilt on A\u200bn\u200bthropic's C\u200bl\u200baude A\u200bg\u200bent S\u200bD\u200bK")
   // twice is the same as once, and other text is left alone
   expect(cloak(out)).toBe(out)
   expect(cloak("be brief")).toBe("be brief")

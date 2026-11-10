@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-antigravity-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sign in to Antigravity with a Google account from OpenCode or magpie: Gemini, and the Claude and GPT-OSS models Google hosts for it",
   "type": "module",
   "main": "./opencode.mjs",

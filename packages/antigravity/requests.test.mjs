@@ -87,7 +87,8 @@ test("a 429 to a turned-away system prompt is a 400, not a quota", async () => {
     const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask("hi", { systemInstruction: { parts: [{ text: sys }] } }) })
     expect(res.status).toBe(400)
     const j = await res.json()
-    expect(j.error.message).toContain("unapproved channel")
+    expect(j.error.message).toContain("answered 429 to this system prompt")
+    expect(j.error.message).not.toContain("unapproved channel")
     expect(j.error.message).toContain(says)
   }
   // any other prompt's 429 is the quota it says

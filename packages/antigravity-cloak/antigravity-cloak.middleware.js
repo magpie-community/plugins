@@ -73,11 +73,16 @@ function parts(list, text) {
   return list
 }
 
-// cloaker breaks every word of list where it appears, whatever its case
+// cloaker breaks every word of list where it appears, whatever its case:
+// a zero-width space after the first and after the second character of each
+// run of three or more letters or digits in it. One after the first letter
+// only stopped working on 11-11, when Google turned
+// "x\u200b-anthropic-billing-header" and "C\u200blaude Agent SDK" away again.
 function cloaker(list) {
   const res = list.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"))
+  const two = (m) => m.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + zwsp + w[1] + zwsp + w.slice(2))
   return (s) => {
-    for (const re of res) s = s.replace(re, (m) => m[0] + zwsp + m.slice(1))
+    for (const re of res) s = s.replace(re, two)
     return s
   }
 }

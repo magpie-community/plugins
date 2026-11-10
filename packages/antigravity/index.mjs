@@ -863,7 +863,8 @@ function plainSchema(root) {
 
 // TURNED_AWAY are the lines, lower-cased, Antigravity answers a 429 to
 // whatever quota is left. Each is broken up before it goes by a zero-width
-// space after its first letter, which Google lets through.
+// space after its first and second character of each word, which Google
+// lets through.
 const TURNED_AWAY = [
   "x-anthropic-billing-header:",
   "built on anthropic's claude agent sdk",
@@ -881,23 +882,32 @@ const turnsAway = (system) => {
 
 const asciiLower = (s) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
 
+// breakUp puts a zero-width space after the first and after the second
+// character of every run of three or more letters or digits in a line.
+// One after the first letter only stopped working on 11-11: Google turned
+// "x\u200b-anthropic-billing-header:" and "b\u200built on Anthropic's Claude
+// Agent SDK" away again, and answered each word broken twice.
+const breakUp = (line) => line.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + ZW + w[1] + ZW + w.slice(2))
+
 function cloak(system) {
   if (!turnsAway(system)) return system
   const low = asciiLower(system)
-  const at = new Set()
+  const at = []
   for (const line of TURNED_AWAY) {
     for (let i = 0; ; ) {
       const j = low.indexOf(line, i)
       if (j < 0) break
-      at.add(j + 1)
+      at.push([j, j + line.length])
       i = j + line.length
     }
   }
+  at.sort((a, b) => a[0] - b[0])
   let out = ""
   let prev = 0
-  for (const i of [...at].sort((a, b) => a - b)) {
-    out += system.slice(prev, i) + ZW
-    prev = i
+  for (const [from, to] of at) {
+    if (from < prev) continue
+    out += system.slice(prev, from) + breakUp(system.slice(from, to))
+    prev = to
   }
   return out + system.slice(prev)
 }
@@ -1182,8 +1192,9 @@ async function complete(s, url, init) {
     if (res.status === 404) return errorResponse(404, `model ${sent} not found`)
     if (res.status === 429 && /resource has been exhausted/i.test(text) && turnsAway(system)) {
       // the system prompt turned away, not a quota: a 400 the next member
-      // of a group is asked after, and the agent doesn't retry
-      return errorResponse(400, `Antigravity turned this request away as from an unapproved channel: ${msg} — ${hint(system)}`)
+      // of a group is asked after, and the agent doesn't retry. It says
+      // what Antigravity answered (a 429), not that this is a channel
+      return errorResponse(400, `Antigravity answered 429 to this system prompt: ${msg} — ${hint(system)}`)
     }
     return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } })
   }
