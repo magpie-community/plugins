@@ -38,7 +38,7 @@
     { "package": "@magpie-community/opencode-zed-auth", "name": "Zed", "icon": "zed", "providers": ["zed"], "community": true, "replaces": "zed",
       "summary": { "en": "Claude, GPT, Gemini and Grok hosted by Zed, on your Zed plan.", "zh": "用 Zed 订阅使用 Zed 托管的 Claude、GPT、Gemini 和 Grok。" } },
     { "package": "@magpie-community/opencode-factory-auth", "name": "Factory", "icon": "factory", "providers": ["factory"], "community": true, "replaces": "factory",
-      "summary": { "en": "Factory's Droid subscription: 30 models from Anthropic, OpenAI, xAI and open labs.", "zh": "Factory Droid 订阅：Anthropic、OpenAI、xAI 及开源模型共 30 个。" } },
+      "summary": { "en": "Factory's Droid subscription: models from Anthropic, OpenAI, xAI and open labs.", "zh": "Factory Droid 订阅：Anthropic、OpenAI、xAI 及开源模型。" } },
     { "package": "@magpie-community/opencode-grok-auth", "name": "Grok", "icon": "xai", "providers": ["grok"], "community": true, "replaces": "grok",
       "summary": { "en": "SuperGrok and X Premium+, through the Grok Build CLI's sign-in.", "zh": "通过 Grok Build CLI 的登录使用 SuperGrok 和 X Premium+。" } },
     { "package": "@magpie-community/opencode-commandcode-auth", "name": "Command Code", "icon": "commandcode", "providers": ["commandcode-plan"], "community": true, "replaces": "commandcode-plan",
