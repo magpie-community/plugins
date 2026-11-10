@@ -714,6 +714,14 @@ async function queryUsage(token) {
     if (grantedFromBills >= avail) break
     grantedFromBills += g.pts
   }
+  // A balance a little over every grant the bills list (plugins #936: 9,623
+  // against 9,600 of grants, none expired) holds credits that come back
+  // outside income bills. That remainder is counted into the window, so
+  // the card still shows one. A balance far over the bills is left
+  // balance-only: the bills don't explain it.
+  if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
+    grantedFromBills = avail
+  }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
 

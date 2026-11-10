@@ -513,6 +513,38 @@ test("expired grants that cannot make up the balance leave it balance-only (plug
   expect(u.windows).toEqual([])
 })
 
+// plugins #936's second reply: the reporter's income bills, as pasted
+// (three grants with no expire_at, none expired), sum to 9,600 while the
+// balance is 9,623.
+test("a balance a little over every listed grant keeps the Credits window (plugins #936)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    "GET /api/web/points/v1/balance": forbidden,
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: { office: { pro_enable: false } } }),
+    "GET /api/web/office/v3/setting_info": () => Response.json({ code: 0, data: { available_points: 9623 } }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        message: "success",
+        data: {
+          items: [
+            { biz_id: "19966029", points: 3000 },
+            { biz_id: "19692994", points: 300, expire_at: "2099-11-15T23:59:59+08:00" },
+            { biz_id: "19659600", points: 3000 },
+            { biz_id: "19659491", points: 300, expire_at: "2099-11-14T23:59:59+08:00" },
+            { biz_id: "activity:1", points: 3000 },
+          ],
+          has_more: false,
+          next_cursor: "",
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.balance).toBeUndefined()
+  expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 0, limit: 9623, display: "0 / 9623", runsOut: 300 })
+})
+
 test("a readable balance asks setting_info nothing (plugins #520)", async () => {
   const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
   let asked = 0
