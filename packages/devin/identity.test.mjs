@@ -159,6 +159,17 @@ test("pasted session tokens are trimmed, validated, and checked with Devin", asy
   })
 }, SLOW)
 
+test("browser sign-in uses Devin's account chooser", async () => {
+  const signIn = await _internal.browserSignIn()
+  const authorize = new URL(signIn.url)
+  expect(authorize.searchParams.get("prompt")).toBe("select_account")
+  const state = authorize.searchParams.get("state")
+  const redirect = authorize.searchParams.get("redirect_uri")
+  const result = signIn.callback()
+  await fetch(`${redirect}?state=${encodeURIComponent(state)}&error=cancelled`)
+  expect(await result).toEqual({ type: "failed", error: "cancelled" })
+})
+
 test.if(unix)("a CLI that reads its own account's folder isn't asked for the key's models", async () => {
   devin(() => statusOf("b@x.dev"))
   const fams = await _internal.familiesFor("key-models-b", "https://server.codeium.com")
