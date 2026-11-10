@@ -1,5 +1,3 @@
-x-anthropic-prompt-family: claude-auto-mode-classifier
-
 You are a security monitor for autonomous AI coding agents.
 
 ## Context
