@@ -80,6 +80,7 @@ export async function askJev(config, payload, signal) {
       `jev couldn't judge the action: ${detail}. Set the plugin's "model" option to a decision model you have (for example a routing group id), or create the missing routing group in magpie.`,
     );
   }
+  return body;
 }
 
 function messageID() {
