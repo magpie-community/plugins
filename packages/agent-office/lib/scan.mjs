@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
-import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
+import { createSessionReader, finalizeUsage, readClaude, readCodex, readCopilot, readCursor, readDsh, readGemini, readGrok, readKimi, readPi } from "./readers.mjs"
 
 const READ_CHUNK = 64 * 1024
 const GUARD_BYTES = 64 // bounded prefix/end witnesses catch truncate-and-regrow between ticks
@@ -30,6 +30,9 @@ const RACY_MS = 2500
 // ends before a turn-ending event: `claude -p` killed from another agent.
 const GONE_AFTER = 10e3
 const MIDTURN = new Set(["thinking", "tool", "approval", "ask"])
+// The Cursor editor's transcripts have no end-of-turn line (cursor-agent's
+// do): a chat whose last line is the agent's words, quiet this long, is done.
+const CURSOR_QUIET = 30e3
 
 function env(k) { return (process.env[k] || "").trim() }
 function home(...p) { return join(env("HOME") || homedir(), ...p) }
@@ -53,6 +56,71 @@ function ompProfiles(omp) {
   return out
 }
 
+// Cursor's CLI config folder, which keeps chats/<md5 of cwd>/<chat>/meta.json:
+// $CURSOR_CONFIG_DIR, else cursor in $XDG_CONFIG_HOME, else ~/.cursor
+function cursorConfig() {
+  if (env("CURSOR_CONFIG_DIR")) return expand(env("CURSOR_CONFIG_DIR"))
+  if (env("XDG_CONFIG_HOME")) return join(expand(env("XDG_CONFIG_HOME")), "cursor")
+  return home(".cursor")
+}
+
+// a Cursor chat's meta.json, which only cursor-agent writes: found by the
+// chat's id under chats/*/, the folders listed again at most every 5s while
+// an id is missing (a chat's meta.json can come a moment after its transcript)
+function cursorMetas(config) {
+  const found = new Map()
+  let listed = 0
+  const missing = join(config, "chats", "-", "-", "meta.json")
+  return (p) => {
+    const id = cursorChat(p)
+    if (found.has(id)) return found.get(id)
+    if (Date.now() - listed >= 5000) {
+      listed = Date.now()
+      let dirs = []
+      try { dirs = readdirSync(join(config, "chats"), { withFileTypes: true }) } catch {}
+      for (const d of dirs) {
+        if (!d.isDirectory()) continue
+        let chats = []
+        try { chats = readdirSync(join(config, "chats", d.name)) } catch { continue }
+        for (const c of chats) if (!found.has(c) && existsSync(join(config, "chats", d.name, c, "meta.json"))) found.set(c, join(config, "chats", d.name, c, "meta.json"))
+      }
+    }
+    return found.get(id) || missing
+  }
+}
+
+// the chat a Cursor transcript is of: <chat>/<chat>.jsonl or <chat>.jsonl
+function cursorChat(p) { return basename(p).replace(/\.jsonl$/, "") }
+
+// A Cursor project folder is the cwd as a slug, every run of characters
+// other than letters and digits one "-" (/Users/me/my app -> Users-me-my-app),
+// which can't be read back alone: it is matched against the folders that
+// exist, a few hundred looked at at most. Remembered per slug.
+const SLUGS = new Map()
+const slugOf = (name) => String(name).replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+export function cursorFolder(slug, root = "/") {
+  if (SLUGS.has(slug)) return SLUGS.get(slug)
+  let budget = 400
+  const find = (dir, rest) => {
+    if (--budget < 0) return ""
+    let names = []
+    try { names = readdirSync(dir, { withFileTypes: true }) } catch { return "" }
+    for (const e of names) {
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue
+      const sl = slugOf(e.name)
+      if (!sl) continue
+      if (rest === sl) return join(dir, e.name)
+      if (rest.startsWith(sl + "-")) { const got = find(join(dir, e.name), rest.slice(sl.length + 1)); if (got) return got }
+    }
+    return ""
+  }
+  // Windows: C-Users-me-x is C:\Users\me\x
+  const drive = process.platform === "win32" && /^[a-zA-Z]-/.test(slug) ? slug[0] + ":\\" : ""
+  const got = drive ? find(drive, slug.slice(2)) : find(root, slug)
+  SLUGS.set(slug, got)
+  return got
+}
+
 // where each agent keeps its sessions: { agent, kind, root, depth, match }
 // depth: how many folders down from root the files sit
 export function sources() {
@@ -69,6 +137,8 @@ export function sources() {
   const qodercn = home(".qoder-cn")
   const workbuddy = home(".workbuddy")
   const codebuddy = home(".codebuddy")
+  const cursorData = agentHome("CURSOR_DATA_DIR", ".cursor")
+  const cursorMeta = cursorMetas(cursorConfig())
   const jsonl = (n) => n.endsWith(".jsonl")
   const srcs = [
     { agent: "claude", kind: "claude", root: join(claude, "projects"), depth: 1, match: jsonl, live: join(claude, "sessions") },
@@ -88,6 +158,10 @@ export function sources() {
     { agent: "qoder-cn", kind: "claude", root: join(qodercn, "projects"), depth: 1, match: jsonl, live: join(qodercn, "sessions") },
     { agent: "workbuddy", kind: "claude", root: join(workbuddy, "projects"), depth: 1, match: jsonl, live: join(workbuddy, "sessions") },
     { agent: "codebuddy", kind: "claude", root: join(codebuddy, "projects"), depth: 1, match: jsonl, live: join(codebuddy, "sessions") },
+    // Cursor: the editor's chats ("cursor-app") and cursor-agent's ("cursor",
+    // told by its meta.json) both write projects/<slug>/agent-transcripts/
+    { agent: "cursor-app", kind: "cursor", root: join(cursorData, "projects"), depth: 3, match: (n, p) => n.endsWith(".jsonl") && basename(dirname(p)) === n.slice(0, -6) && basename(dirname(dirname(p))) === "agent-transcripts", meta: cursorMeta },
+    { agent: "cursor-app", kind: "cursor", root: join(cursorData, "projects"), depth: 2, match: (n, p) => n.endsWith(".jsonl") && basename(dirname(p)) === "agent-transcripts", meta: cursorMeta },
   ]
   return srcs
 }
@@ -274,6 +348,7 @@ function readerFor(kind, agent, src = {}) {
     case "copilot": return (t, id, meta, now) => readCopilot(t, id, { now })
     case "kimi": return (t, id, meta, now) => readKimi(t, id, meta, { now })
     case "grok": return (t, id, meta, now, usage) => readGrok(t, id, meta, { now, usage })
+    case "cursor": return (t, id, meta, now) => readCursor(t, id, meta, { now })
   }
 }
 
@@ -283,6 +358,7 @@ function idOf(src, path) {
   if (src.kind === "codex") { const m = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:_[^.]*)?\.jsonl$/i.exec(name); return m ? m[1] : name }
   // the session folder names the session: ~/.grok/sessions/<project>/<session>
   if (src.kind === "grok" || src.kind === "copilot") return basename(dirname(path))
+  if (src.kind === "cursor") return cursorChat(path)
   if (src.kind === "kimi") {
     const child = basename(dirname(path)) // …/<session>/agents/<agent>/wire.jsonl
     const session = basename(dirname(dirname(dirname(path))))
@@ -432,6 +508,10 @@ export function createScanner(opts = {}) {
         const ids = running.get(f.src.live)
         if (ids && !ids.has(s.id)) { out.push({ ...s, phase: "aborted", pending: [], gone: true }); continue }
       }
+      if (f.src.kind === "cursor" && s.agent === "cursor-app" && !s.cursorEnds && s.cursorLast === "text" && s.phase === "thinking" && now - f.mtime >= CURSOR_QUIET) {
+        out.push({ ...s, phase: "done" })
+        continue
+      }
       out.push(s)
     }
     return out
@@ -458,7 +538,7 @@ export function createScanner(opts = {}) {
       reader: createSessionReader(f.src.kind, f.src.agent, id, { subagent: !!f.src.subagent }),
       cursor: cursor(),
     }
-    const changes = { now }
+    const changes = { now, mtime: f.mtime }
     // Do not retain a whole usage.json snapshot or re-aggregate it on each
     // append. The reader keeps its daily totals; re-read only a new revision.
     if (!reusable || !sameSidecar(before?.[0], sig[0])) changes.meta = readMeta(f.src, f.path)
@@ -467,7 +547,7 @@ export function createScanner(opts = {}) {
     catch (error) {
       if (!(error instanceof ExtendedTail) || !reusable) throw error
       c = { reader: createSessionReader(f.src.kind, f.src.agent, id, { subagent: !!f.src.subagent }), cursor: cursor() }
-      c.reader.update(readAppended(f, c.cursor, readBytes), { meta: readMeta(f.src, f.path), usage: readMeta(f.src, f.path, "usage"), now })
+      c.reader.update(readAppended(f, c.cursor, readBytes), { meta: readMeta(f.src, f.path), usage: readMeta(f.src, f.path, "usage"), now, mtime: f.mtime })
     }
     Object.assign(c, { size: f.size, mtime: f.mtime, ctime: f.ctime, dev: f.dev, ino: f.ino, birthtime: f.birthtime, decodedAt: now })
     c.session = finish({ ...c.reader.session, path: f.path }, f)
@@ -482,6 +562,15 @@ export function createScanner(opts = {}) {
     }
     if (f.src.kind === "kimi" && s.subagent && !s.parent) s.parent = parentOf(f.src, f.path, s.id)
     if (f.src.profile) s.profile = f.src.profile
+    if (f.src.kind === "cursor" && !s.cwd) {
+      // projects/<slug>/agent-transcripts/[<chat>/]<chat>.jsonl
+      let d = dirname(f.path)
+      if (basename(d) !== "agent-transcripts") d = dirname(d)
+      const slug = basename(dirname(d))
+      const cwd = cursorFolder(slug)
+      if (cwd) { s.cwd = cwd; s.project = basename(cwd) }
+      else s.project = slug.slice(slug.lastIndexOf("-") + 1)
+    }
     if (!s.updated) s.updated = f.mtime
     // the file's own time: a line being written is the session at work
     s.touched = f.mtime

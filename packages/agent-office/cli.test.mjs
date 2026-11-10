@@ -29,7 +29,7 @@ function homeWithSession() {
 function envFor(home) {
   const cfg = tmp()
   const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: join(home, ".cache") }
-  for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "OMP_HOME", "OMP_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_CONFIG_DIR", "GROK_HOME", "GROK_CONFIG_DIR", "COPILOT_HOME", "COPILOT_CONFIG_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "MAGPIE_AGENT_OFFICE_PAGE", "WMAD_OMP_SESSIONS_DIR"]) delete env[k]
+  for (const k of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "DSH_HOME", "PI_CODING_AGENT_DIR", "OMP_HOME", "OMP_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_CONFIG_DIR", "GROK_HOME", "GROK_CONFIG_DIR", "COPILOT_HOME", "COPILOT_CONFIG_DIR", "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR", "CURSOR_DATA_DIR", "CURSOR_CONFIG_DIR", "MAGPIE_AGENT_OFFICE_PAGE", "WMAD_OMP_SESSIONS_DIR"]) delete env[k]
   return env
 }
 
@@ -119,7 +119,7 @@ test("the authenticated standalone page, bridge, live data and JSON options work
   try {
     const ping = await (await fetch(s.url + "api/ping")).json()
     expect(ping.name).toBe("agent-office")
-    expect(ping.version).toBe("0.3.4")
+    expect(ping.version).toBe("0.3.5")
     const page = await fetch(s.url)
     expect(page.status).toBe(200)
     expect(await page.text()).toContain('src="_magpie/bridge.js"')

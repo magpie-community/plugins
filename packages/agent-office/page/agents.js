@@ -92,6 +92,11 @@ globalThis.AgentOfficeAgents = {
   "icon": "cursor.svg",
   "color": "#334155"
  },
+ "cursor-app": {
+  "name": "Cursor",
+  "icon": "cursor.svg",
+  "color": "#334155"
+ },
  "devin": {
   "name": "Devin",
   "icon": "devin.svg",

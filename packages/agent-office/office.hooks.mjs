@@ -3,12 +3,13 @@
 //
 //  1. Every second and a half it reads the session files the agents write
 //     themselves — Claude Code's, Codex's, DeepSeek Harness's, Gemini CLI's,
-//     Qwen Code's, Pi's, omp's, Qoder's, WorkBuddy's, CodeBuddy's — and so
+//     Qwen Code's, Pi's, omp's, Qoder's, WorkBuddy's, CodeBuddy's, Cursor's
+//     (its editor and cursor-agent) — and so
 //     knows what each one is really doing, whatever model it talks to:
 //     thinking, running a tool, waiting for an approval or an answer, done,
 //     stopped, failed (lib/scan.mjs, lib/readers.mjs).
 //  2. As an asynchronous gateway hook it also sees the requests that pass
-//     magpie, so an agent whose files it can't read (Cursor, OpenCode,
+//     magpie, so an agent whose files it can't read (OpenCode,
 //     Copilot, Kimi, …) still shows while it works through magpie
 //     (lib/track.mjs). It returns no body: no request changes.
 //

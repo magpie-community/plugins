@@ -1,7 +1,7 @@
 // What each agent is really doing, read from the session files the agents
 // themselves write, as they write them: Claude Code's, Codex's, DeepSeek
 // Harness's, Gemini CLI's, Qwen Code's, Pi's and omp's, GitHub Copilot CLI's,
-// Kimi Code's, Grok Build's, and any agent that keeps Claude Code's format
+// Kimi Code's, Grok Build's, Cursor's (editor and CLI), and any agent that keeps Claude Code's format
 // (Qoder, WorkBuddy, CodeBuddy). Every agent's own record, whatever model it
 // talks to: one that never passes magpie's gateway is seen as well as one
 // that does.
@@ -725,10 +725,79 @@ function grokEvents(s, opts) {
   }
 }
 
+// ---- Cursor (cursor-agent and the editor's agent) --------------------------
+// <CURSOR_DATA_DIR or ~/.cursor>/projects/<cwd as a slug>/agent-transcripts/
+// <chat>/<chat>.jsonl (older builds: agent-transcripts/<chat>.jsonl). One
+// line a message, {role, message: {content: [{type: "text"|"tool_use", …}]}},
+// with no time of its own and no tool results: the next assistant line is
+// the tool answered. A user line wraps what was typed in <user_query>, after
+// a <timestamp> ("Tuesday, Nov 10, 2026, 1:18 PM (UTC+8)"). cursor-agent ends
+// each turn with {type: "turn_ended", status: "success"|"error", error}.
+// The requests go to Cursor's servers, which keep the tokens: none here.
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 }
+export function cursorStamp(text) {
+  const m = /<timestamp>[^<]*?([A-Z][a-z]{2})[a-z]* (\d{1,2}), (\d{4}),? (\d{1,2}):(\d{2})(?::(\d{2}))? ?([AP]M)?\s*\((?:UTC|GMT)(?:([+-])(\d{1,2})(?::?(\d{2}))?)?\)/.exec(String(text ?? ""))
+  if (!m) return 0
+  const month = MONTHS[m[1].toLowerCase()]
+  if (month === undefined) return 0
+  let h = Number(m[4]) % (m[7] ? 12 : 24)
+  if (m[7] === "PM") h += 12
+  const off = m[8] ? (m[8] === "-" ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10] || 0)) : 0
+  return Date.UTC(Number(m[3]), month, Number(m[2]), h, Number(m[5]), Number(m[6] || 0)) - off * 60e3
+}
+// what was typed: the <user_query> blocks, else the words outside Cursor's
+// own tags; "" for a line Cursor wrote itself
+export function cursorTyped(text) {
+  const all = String(text ?? "")
+  const qs = [...all.matchAll(/<user_query>([\s\S]*?)<\/user_query>/g)].map((m) => m[1].trim()).filter(Boolean)
+  if (qs.length) return qs.join("\n")
+  const rest = all.replace(/<(timestamp|user_info|rules|system_reminder|attached_files|open_and_recently_viewed_files|git_status|project_layout)>[\s\S]*?<\/\1>/g, "").trim()
+  if (rest.startsWith("<") || /^Your previous response was interrupted/.test(rest)) return ""
+  return rest
+}
+function cursorEvents(s, opts) {
+  return (d) => {
+    // the file's own time when this part of it was read: lines carry none
+    const t = opts.at || 0
+    if (d.type === "turn_ended") {
+      s.cursorEnds = true
+      const st = String(d.status || "")
+      if (st === "success") s.phase = "done"
+      else if (st === "error") { s.phase = "error"; s.error = clip(d.error, 160) }
+      else s.phase = "aborted"
+      s.pending = []
+      touch(s, t)
+      return
+    }
+    const m = d.message
+    if (!m || (d.role !== "user" && d.role !== "assistant")) return
+    const blocks = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : []
+    const txt = blocks.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
+    if (d.role === "user") {
+      const at = cursorStamp(txt) || t
+      const typed = cursorTyped(txt)
+      if (typed) { prompted(s, typed, at); s.cursorLast = "user" }
+      else { s.phase = "thinking"; touch(s, at) }
+      return
+    }
+    // an assistant line after a tool call: the call has been answered
+    if (s.pending.length) answered(s, "", t)
+    s.pending = []
+    const said = txt.trim()
+    if (said) { s.reply = clip(said, TEXT_MAX); message(s, "assistant", said, t) }
+    const tools = blocks.filter((b) => b?.type === "tool_use")
+    for (const b of tools) called(s, b.id, b.name, b.input, t)
+    if (!tools.length) s.phase = "thinking"
+    s.cursorLast = tools.length ? "tool" : "text"
+    touch(s, t)
+  }
+}
+
 // A reader owns only its live parsing state, bounded text, and usage/dedupe
 // indexes. update receives newly appended complete lines, never a replay.
 const PROCESSORS = { claude: claudeEvents, codex: codexEvents, dsh: dshEvents,
-  gemini: geminiEvents, pi: piEvents, copilot: copilotEvents, kimi: kimiEvents, grok: grokEvents }
+  gemini: geminiEvents, pi: piEvents, copilot: copilotEvents, kimi: kimiEvents, grok: grokEvents,
+  cursor: cursorEvents }
 
 function refreshMetadata(s, kind, meta) {
   if (!meta || typeof meta !== "object") return
@@ -751,6 +820,13 @@ function refreshMetadata(s, kind, meta) {
       s.subagent = meta.session_kind.startsWith("subagent")
       s.parent = s.subagent && meta.parent_session_id ? String(meta.parent_session_id) : ""
     }
+  } else if (kind === "cursor") {
+    // cursor-agent's chats/<md5 of cwd>/<chat>/meta.json: the chat is the
+    // CLI's, not the editor's, and it names its folder and title
+    s.agent = "cursor"
+    if (typeof meta.cwd === "string" && meta.cwd) { s.cwd = meta.cwd; s.project = base(meta.cwd) }
+    if (typeof meta.title === "string" && meta.title.trim() && meta.title !== "New Agent") s.title = clip(meta.title.trim(), TITLE_MAX)
+    touch(s, ms(meta.createdAtMs))
   }
 }
 
@@ -760,7 +836,7 @@ export function createSessionReader(kind, agent = kind, id = "", opts = {}) {
   const session = fresh(agent, id)
   // Sidecars describe the current snapshot, not events. Keep their values out
   // of parser state so removing them restores facts already read from the log.
-  const exposed = kind === "kimi" || kind === "grok" ? fresh(agent, id) : session
+  const exposed = kind === "kimi" || kind === "grok" || kind === "cursor" ? fresh(agent, id) : session
   const days = new Map()
   BUCKETS.set(session, days)
   BUCKETS.set(exposed, days) // cached scans finalize usage on the exposed object
@@ -800,6 +876,8 @@ export function createSessionReader(kind, agent = kind, id = "", opts = {}) {
   function update(input, changes = {}) {
     const { usage, now } = changes
     if (Object.hasOwn(changes, "meta")) metadata = changes.meta
+    // the file's time for this read, for a format whose lines carry none
+    if (changes.mtime) state.at = changes.mtime
     for (const d of lines(input)) {
       if (kind === "gemini") {
         if (d.sessionId && !session.id) session.id = d.sessionId
@@ -850,5 +928,9 @@ export function readGrok(text, id = "", meta = {}, opts = {}) {
   return createSessionReader("grok", "grok", id, { ...opts, meta }).update(text)
 }
 
-export const READERS = { claude: readClaude, codex: readCodex, dsh: readDsh, gemini: readGemini, pi: readPi,
+export function readCursor(text, id = "", meta = null, opts = {}) {
+  return createSessionReader("cursor", "cursor-app", id, { ...opts, meta }).update(text, { mtime: opts.mtime })
+}
+
+export const READERS = { cursor: readCursor, claude: readClaude, codex: readCodex, dsh: readDsh, gemini: readGemini, pi: readPi,
   copilot: readCopilot, kimi: readKimi, grok: readGrok }
