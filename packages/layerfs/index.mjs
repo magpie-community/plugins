@@ -51,7 +51,10 @@ const callingAgent = (ctx) => {
 
 export const LayerfsTools = async (ctx = {}, options = {}) => {
   let backendPromise
-  const backend = () => (backendPromise ??= createBackend(process.env, options))
+  const backend = () => (backendPromise ??= createBackend(process.env, options).catch((error) => {
+    backendPromise = undefined
+    throw error
+  }))
   const execEnabled = () => options?.exec === true || process.env.MAGPIE_LAYERFS_EXEC === "1"
   // A call touches only the state its own operation needs. Reads (history,
   // resolve, status) change nothing and start nothing.
@@ -59,20 +62,82 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
     const b = await backend()
     return fn(b)
   }
-  // The page's service, started once: the gates above, then a listen on
-  // the configured port (options.pagePort, MAGPIE_LAYERFS_PAGE_PORT,
-  // else the default). A second call while the first service lives is
-  // a no-op; a failed start stays failed for this instance, quietly.
+  // A new host may start before the retired host releases this port.
+  // Keep one start in flight, and remember a service only after it
+  // actually listens. Retry while a real store exists, without keeping
+  // an otherwise finished host alive or polling before the first project.
   let service = null
-  const ensureService = async () => {
-    if (service) return
-    let hasEntries = false
-    try { hasEntries = readdirSync(join(storeHome(), "projects")).length > 0 } catch { /* no store yet */ }
-    if (!hasEntries) return
-    let data
-    try { data = await (await backend()).trajectory() } catch { return }
-    if (!data.projects.length) return
-    service = startPageService({ backend: await backend(), port: resolvePagePort(options) })
+  let starting = null
+  let retryTimer = null
+  let retryDelay = 1000
+  let storeVersion = 0
+  let recheck = false
+  let hasStore = false
+  const retry = () => {
+    if (!hasStore || retryTimer || service?.server.listening) return
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      ensureService().catch(() => { /* the page never blocks a tool */ })
+    }, retryDelay)
+    retryTimer.unref?.()
+    retryDelay = Math.min(retryDelay * 2, 30000)
+  }
+  const ensureService = () => {
+    if (service?.server.listening) return Promise.resolve()
+    if (starting) {
+      recheck = true
+      return starting
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+    const version = storeVersion
+    recheck = false
+    starting = (async () => {
+      let hasEntries
+      try {
+        hasEntries = readdirSync(join(storeHome(), "projects")).length > 0
+      } catch (error) {
+        hasStore = false
+        return
+      }
+      if (!hasEntries) {
+        hasStore = false
+        return
+      }
+      const b = await backend()
+      const data = await b.trajectory()
+      if (!data.projects.length) {
+        hasStore = false
+        return
+      }
+      hasStore = true
+      const candidate = startPageService({ backend: b, port: resolvePagePort(options) })
+      const stopped = () => {
+        if (service !== candidate || candidate.server.listening) return
+        service = null
+        retry()
+      }
+      candidate.server.once("close", stopped)
+      candidate.server.on("error", stopped)
+      if (!await candidate.listening || !candidate.server.listening) {
+        retry()
+        return
+      }
+      service = candidate
+      retryDelay = 1000
+    })().catch(() => {
+      retry()
+    }).finally(() => {
+      starting = null
+      if ((recheck || storeVersion !== version) &&
+          !service?.server.listening && !retryTimer) {
+        recheck = false
+        queueMicrotask(() => ensureService().catch(() => { /* the tools stay usable */ }))
+      }
+    })
+    return starting
   }
   ensureService().catch(() => { /* no service: the tools are untouched */ })
   // A mutating call may have created the store's first project: offer
@@ -80,6 +145,9 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
   const mutate = async (fn) => {
     const b = await backend()
     const out = await fn(b)
+    // The first mutation may race the factory's empty-store check. Let the
+    // in-flight check finish, then run one more against the new store.
+    storeVersion++
     ensureService().catch(() => { /* never on the tool call's path */ })
     return out
   }
