@@ -820,15 +820,38 @@ function stripTrailingEnvelope(text) {
       .trim()
     try {
       const obj = JSON.parse(tail)
-      if (isActionEnvelope(obj) && raw.slice(0, idx).trim()) return raw.slice(0, idx)
+      if (isActionEnvelope(obj) && raw.slice(0, idx).trim()) return proseWithTrailingEnvelope(raw.slice(0, idx), tail)
     } catch {
       // not JSON from here: it is still the envelope when its answer was
       // written with bare line breaks or quotes (#564); else try an earlier
       // opening
-      if (looseEnvelopeAnswer(tail) !== null && raw.slice(0, idx).trim()) return raw.slice(0, idx)
+      if (looseEnvelopeAnswer(tail) !== null && raw.slice(0, idx).trim()) {
+        return proseWithTrailingEnvelope(raw.slice(0, idx), tail)
+      }
     }
   }
   return raw
+}
+
+/**
+ * What a reply leaves when a trailing envelope is taken off it: the prose, and,
+ * when the envelope is an ask, the question it asks.
+ *
+ * A completion's envelope is the model's own bookkeeping for the prose in front
+ * of it, and is dropped, as it always was. An ask's is not bookkeeping: the
+ * question is what the user has to answer, and dropping it left the user with
+ * prose and no way to reply (found in review).
+ */
+function proseWithTrailingEnvelope(prose, tail) {
+  let asked = null
+  try {
+    const obj = JSON.parse(tail)
+    asked = isActionEnvelope(obj) ? askAnswer(obj) : null
+  } catch {
+    if (/^\{\s*"action"\s*:\s*"ask"\s*,/i.test(tail)) asked = looseEnvelopeAnswer(tail)
+  }
+  if (!asked) return prose
+  return prose.endsWith("\n") ? prose + asked : `${prose}\n${asked}`
 }
 
 /**
@@ -875,7 +898,14 @@ function unwrapAnswer(text) {
   const action = obj.action ?? obj.Action
   if (typeof action !== "string") return raw
   const completion = obj.taskCompletion ?? obj.TaskCompletion
-  return typeof completion === "string" ? completion : raw
+  if (typeof completion === "string") return completion
+  // An ask carries its answer in `question`, with the choices the client shows
+  // under it. Only `taskCompletion` was read here, so the whole object went out
+  // as the reply. Only an `ask` is read this way: another action's `question` is
+  // a note rather than an answer, and taking it for one would turn a reply into
+  // half of itself.
+  if (action.toLowerCase() !== "ask") return raw
+  return askAnswer(obj) ?? raw
 }
 
 /** JSON string escapes, for reading the envelope's answer as it arrives. */
@@ -887,6 +917,123 @@ const JSON_ESCAPES = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n"
  * enough that a reply starting to stream is not visibly delayed.
  */
 const ENVELOPE_TAIL = 48
+
+// ---- a tool call the model wrote into its text -------------------------------
+// The request goes up with no tools at all (`tools: []`, see toUpstreamBody), yet
+// the models behind the assistant write calls into the text anyway: DeepSeek's
+// `<｜｜DSML｜｜ invoke name="…">` blocks, and the `<tool_call>` shape the other
+// providers' packages already read. Nothing here can run one, so a block that
+// reaches the client is not an answer — it is the raw protocol, which the agent
+// reads as prose and the user sees as garbage (measured 2026-11-11: three turns
+// of `auto/deepseek-v4.1-flash` via orcaterm, one of them 2477 characters).
+//
+// So the answer is cut at the first opening tag and the turn ends as an error,
+// the same way trae (plugins#38) and qoder (plugins#132) treat a call that
+// cannot be honoured: a 200 with the block as text is something nothing can fail
+// over on.
+//
+// What magpie can do with that error depends on when it arrives, which is worth
+// knowing before choosing this over sending the block on: the gateway holds a
+// stream for another account only until the first content has gone out. A reply
+// that opens with the call therefore fails over; one that streamed prose first
+// reaches the agent as a mid-stream error, with no failover at all, and the same
+// prompt tends to produce the same call on the next account too.
+const TEXT_CALL_OPEN = new RegExp(
+  [
+    // DeepSeek's, with the bars on each side counted once or twice (the
+    // observed reply wrote <｜｜DSML｜｜).
+    String.raw`<\s*\/?\s*[|｜][\s|｜]*DSML[\s|｜]*`,
+    // <tool_call> and <toolcall>. `<tool_call_id>` is not one: `_` is a word
+    // character, so the boundary fails there.
+    String.raw`<tool_?call\b`,
+    String.raw`<function_calls>`,
+    String.raw`<function=\w`,
+    String.raw`<antml:function_calls>`,
+    String.raw`<antml:invoke\s+name\s*=`,
+  ].join("|"),
+  "i",
+)
+
+/**
+ * Where the first text-form tool call begins in `s`, or -1.
+ *
+ * `s` is what has arrived, and while the reply is still streaming that is the
+ * reply minus its tail, so it can end on any character. A match ending exactly
+ * there is not trusted: `<tool_call` is what `<tool_calls>` looks like on its
+ * way in, and `\b` fires at the end of any string, so latching on one would cut
+ * an answer that merely mentions the tag. A tag with text after it is one; at
+ * `final` the text as it stands is all there will be, and an opener the stream
+ * ended inside is a call cut short rather than prose.
+ */
+function textCallAt(s, final = false) {
+  const m = s.match(TEXT_CALL_OPEN)
+  if (!m) return -1
+  return final || m.index + m[0].length < s.length ? m.index : -1
+}
+
+/**
+ * Whether `s` ends inside a code fence or inline code: a tag there is being
+ * shown, not written. The rule is trae's (packages/trae), so a client that
+ * quotes a file, a log or a page about the format is not answered with an error.
+ */
+function quoted(s) {
+  if ((s.match(/```/g)?.length ?? 0) % 2) return true
+  const line = s.slice(s.lastIndexOf("\n") + 1).replace(/```/g, "")
+  return (line.match(/`/g)?.length ?? 0) % 2 === 1
+}
+
+/** Where a call begins in a reply whose text is all here, or -1 when it is prose. */
+function textCallIn(s) {
+  const at = textCallAt(s, true)
+  return at >= 0 && !quoted(s.slice(0, at)) ? at : -1
+}
+
+/**
+ * The openers as literal text, for the one thing a regex can't answer while the
+ * reply is still arriving: whether the `<` that just came in is the start of one.
+ * Every opener begins with `<`, so a tail running from the last `<` that is a
+ * prefix of any of these is held back rather than sent. Without that, the two
+ * bars opening a DSML tag go out and the block behind it is cut off halfway:
+ * the turn then reads as prose that stops mid-tag, the worst of both.
+ */
+const TEXT_CALL_MARKS = [
+  "<|DSML|",
+  "<\uFF5CDSML\uFF5C",
+  "<||DSML||",
+  "<\uFF5C\uFF5CDSML\uFF5C\uFF5C",
+  "</|DSML|",
+  "</\uFF5CDSML\uFF5C",
+  "</||DSML||",
+  "</\uFF5C\uFF5CDSML\uFF5C\uFF5C",
+  "<tool_call",
+  "<toolcall",
+  "<function_calls>",
+  "<function=",
+  "<antml:function_calls>",
+  "<antml:invoke ",
+]
+
+/**
+ * How much of the tail from the last `<` has to be held back because it may be
+ * the start of an opener: `-1` when the tail can go out as it stands.
+ *
+ * Two cases. The tail can still grow into one (a prefix of a mark: `<`, `<|`,
+ * `<tool_cal`), or it already is one with nothing after it yet -- a DSML opener
+ * whose trailing blanks take the space, so there is no settled match and sending
+ * it would put the opener itself out as prose.
+ */
+function textCallHold(s) {
+  const at = s.lastIndexOf("<")
+  if (at < 0) return -1
+  const tail = s.slice(at)
+  if (textCallAt(tail, true) === 0) return at
+  const low = tail.toLowerCase()
+  return TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(low)) ? at : -1
+}
+
+/** A call the model wrote as text, with nothing left to send. */
+const TEXT_CALL =
+  "the model wrote a tool call as text; OrcaTerm was sent no tools, so it can't be run, and it is not sent on as the answer"
 
 /**
  * The answer inside the assistant's action envelope, for a reply that is still
@@ -910,13 +1057,56 @@ const ENVELOPE_TAIL = 48
  * Plain prose falls out of the same rule — its answer is itself.
  */
 
-/** The `"taskCompletion"` value's opening quote in `s`, or -1 while it hasn't shown up. */
-function answerStart(s) {
+/**
+ * The field a reply's answer is in, once its verb is known.
+ *
+ * A completion and a review answer in `taskCompletion`; an ask answers in
+ * `question`, with the choices in `options`. Reading only `taskCompletion` is
+ * what sent whole ask objects out as replies, and what sent a cut-short ask out
+ * raw as well: `answerStart`, `looseEnvelopeAnswer` and `stripTrailingEnvelope`
+ * all followed that one field.
+ */
+function answerField(s) {
+  const m = /"action"\s{0,8}:\s{0,8}"([A-Za-z_]+)"/i.exec(String(s ?? ""))
+  return m && m[1].toLowerCase() === "ask" ? "question" : "taskCompletion"
+}
+
+/**
+ * An ask's answer: its question, and the choices it offers one per line.
+ *
+ * Prose is what an OpenAI client has room for, and the question is the part the
+ * user has to answer. `null` when the object carries no question of its own; an
+ * empty string answers nothing, so it counts as none.
+ */
+function askAnswer(obj) {
+  const question = obj.question ?? obj.Question
+  if (typeof question !== "string" || !question.trim()) return null
+  const raw = obj.options ?? obj.Options
+  const choices = (Array.isArray(raw) ? raw : [])
+    .map((o) => {
+      if (typeof o === "string") return o.trim()
+      // an option the client shows as a button arrives as an object sometimes;
+      // its label is the part worth showing
+      if (o && typeof o === "object") {
+        for (const k of ["label", "text", "title", "value"]) {
+          if (typeof o[k] === "string" && o[k].trim()) return o[k].trim()
+        }
+      }
+      return ""
+    })
+    .filter(Boolean)
+    .map((o) => `- ${o}`)
+  const q = question.trimEnd()
+  return choices.length ? `${q}\n\n${choices.join("\n")}` : q
+}
+
+/** The `answerField` value's opening quote in `s`, or -1 while it hasn't shown up. */
+function answerStart(s, field = answerField(s)) {
   // The field name, matched the way the client matches it — case-insensitively —
   // and with only the small amount of whitespace the assistant actually emits.
   // It is checked only after the reply has been established to be an envelope,
   // so a reply that merely quotes the field name is never read as one.
-  const m = /"taskCompletion"\s{0,8}:\s{0,8}/i.exec(s)
+  const m = new RegExp(`"${field}"\\s{0,8}:\\s{0,8}`, "i").exec(s)
   if (!m) return -1
   const j = m.index + m[0].length
   if (s[j] !== '"') return -1
@@ -1091,6 +1281,8 @@ function createAnswerExtractor() {
   let closed = false
   /** Nothing more will arrive: stop holding a tail back. */
   let final = false
+  /** Where the call the model wrote as text begins, once one is seen. */
+  let callAt = -1
 
   /**
    * What the answer should be, given everything received so far.
@@ -1108,7 +1300,9 @@ function createAnswerExtractor() {
       if (loose !== null) return loose
       // Preserve the decoded prefix if upstream ended inside the answer string.
       // A closed string followed by prose is an example, so keep it verbatim.
-      const start = answerStart(raw)
+      // The field is the verb's: a cut-short ask ends inside `question`, and
+      // reading only `taskCompletion` sent the raw object out instead.
+      const start = answerStart(raw, answerField(raw))
       if (start >= 0) {
         const decoded = decodeJsonString(raw.slice(start))
         if (!decoded.ended) return decoded.text
@@ -1116,7 +1310,17 @@ function createAnswerExtractor() {
       return stripTrailingEnvelope(raw)
     }
     const appended = appendedEnvelopeAt(raw)
-    if (appended > 0) return raw.slice(0, appended)
+    if (appended > 0) {
+      // A completion after prose is bookkeeping; an ask after prose is the
+      // question, and dropping it left the user with prose and nothing to answer.
+      const tail = raw
+        .slice(appended)
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "")
+        .trim()
+      return proseWithTrailingEnvelope(raw.slice(0, appended), tail)
+    }
 
     // A trailing object is still arriving and could be the envelope: hold from
     // there rather than show `{"action":` as prose. Once it parses and turns out
@@ -1131,8 +1335,34 @@ function createAnswerExtractor() {
     return raw.slice(0, Math.max(0, raw.length - ENVELOPE_TAIL))
   }
 
-  const emit = () => {
+  /**
+   * The answer, cut where a tool call the model wrote as text begins.
+   *
+   * Nothing after that point is the answer: it is the call, and OrcaTerm was
+   * sent no tools for it to be a call to. Holding it back is also what keeps a
+   * half-arrived tag from going out: the whole point is that the client never
+   * sees the opening bars of a DSML invoke as prose.
+   *
+   * What is in a code fence or in backticks is being shown, not written, so a
+   * quoted tag is ordinary text and the reply goes on (trae's rule).
+   */
+  const answerCut = () => {
     const want = answerSoFar()
+    const at = textCallAt(want, final)
+    if (at >= 0 && !quoted(want.slice(0, at))) {
+      callAt = at
+      return want.slice(0, at)
+    }
+    // Still arriving: the `<` at the tail may be the start of one, so hold it.
+    // At the end there is nothing more to wait for, and the text as it stands is
+    // the answer — `the answer is a < b` must not lose its ` < b`.
+    if (final) return want
+    const hold = textCallHold(want)
+    return hold >= 0 ? want.slice(0, hold) : want
+  }
+
+  const emit = () => {
+    const want = answerCut()
     if (want.length <= sent) return ""
     const out = want.slice(sent)
     sent = want.length
@@ -1160,6 +1390,15 @@ function createAnswerExtractor() {
       const out = emit()
       closed = true
       return out
+    },
+    /**
+     * The call the model wrote as text, once the stream is over: an error string
+     * when there was one, "" when the reply was an answer. Read after `finish()`,
+     * so the answer up to the call has already gone out and nothing of the call
+     * itself has.
+     */
+    textCall() {
+      return callAt >= 0 ? TEXT_CALL : ""
     },
   }
 }
@@ -1206,16 +1445,33 @@ function looseEnvelopeAnswer(s) {
     .replace(/\s*```$/, "")
     .trim()
   if (!/^\{\s*"action"\s*:\s*"[A-Za-z_]+"\s*,/i.test(t)) return null
-  const start = answerStart(t)
+  const field = answerField(t)
+  const start = answerStart(t, field)
   if (start < 0) return null
   let body = t.slice(start)
   const close = /\s*\}$/.exec(body)
   if (!close) return null
   body = body.slice(0, close.index)
-  const field = /\s*,\s*"[A-Za-z_]\w*"\s*:\s*(?:"[^"\n\\]*"|[-\w.]+)\s*$/
-  for (let m; (m = field.exec(body)); ) body = body.slice(0, m.index)
+  // Fields written after the answer are not part of it: a short "ph_2": "--",
+  // and behind an ask's question the "options": [...] when the question was
+  // written with its bare line breaks and its string never closed.
+  const after = /\s*,\s*"[A-Za-z_]\w*"\s*:\s*(?:"[^"\n\\]*"|[-\w.]+|\[[^\[\]]*\]|\{[^{}]*\})\s*$/
+  for (let m; (m = after.exec(body)); ) body = body.slice(0, m.index)
   if (!body.endsWith('"')) return null
-  return decodeLooseString(body.slice(0, -1))
+  const answer = decodeLooseString(body.slice(0, -1))
+  if (field !== "question") return answer
+  // The choices are behind the question, still as written: read them when the
+  // array parses, and answer with both as usual.
+  const opts = /\s*"options"\s*:\s*(\[[^\[\]]*\])\s*\}/i.exec(t)
+  let choices = []
+  if (opts) {
+    try {
+      choices = JSON.parse(opts[1])
+    } catch {
+      choices = []
+    }
+  }
+  return askAnswer({ question: answer, options: choices })
 }
 
 /** A JSON string's body as written by hand: escapes decoded, a bare quote or line break kept. */
@@ -1242,8 +1498,23 @@ function decodeLooseString(s) {
 
 /** The answer in a whole reply: the envelope's, or the reply itself when it is prose. */
 function answerOf(text) {
+  return answerAndCall(text).text
+}
+
+/**
+ * The answer in a whole reply, and whether a call written as text was cut out of
+ * it.
+ *
+ * The call has to come from the extractor that did the cutting: answerOf returns
+ * the prose in front of the block, so scanning that output again for a tag
+ * always says no. A call carried only as thinking was then handed over as a
+ * normal answer with a 200, which is the harm this reading exists to stop
+ * (found in review).
+ */
+function answerAndCall(text) {
   const ex = createAnswerExtractor()
-  return ex.push(String(text ?? "")) + ex.finish()
+  const body = ex.push(String(text ?? "")) + ex.finish()
+  return { text: body, call: ex.textCall() }
 }
 
 /**
@@ -1454,20 +1725,41 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
         // has to go out before the "thinking but no text" fallback decides there
         // was no text at all.
         const held = skipReasoningFallback ? "" : answer.finish()
-        if (held) {
-          push(chunk({ content: held }))
-          emitText += held.length
-        }
+        // A tool call the model wrote as text: the answer stops where it begins
+        // and the turn ends as an error frame, so magpie asks again or of another
+        // account. Sent on as text it would be prose that runs into a DSML
+        // invoke block: neither an answer nor a call (plugins#38, plugins#132;
+        // orcaterm had no reader at all).
+        let written = skipReasoningFallback ? "" : answer.textCall()
+        let tail = held
         // Upstream sent thinking but no text: turn the thinking into text
         // before closing, so the client doesn't show a blank answer.
         // The error path (skipReasoningFallback) must not — otherwise the error
         // text is pushed out by the thinking, and what the user finally sees is
         // "let me think" instead of "quota used up".
-        // Thinking can be the envelope too (#564): its answer is the text.
-        if (!skipReasoningFallback && emitText === 0 && sentReasoning) {
-          const text = answerOf(sentReasoning) || sentReasoning
-          push(chunk({ content: text }))
-          emitText = text.length
+        // Thinking can be the envelope too (#564): its answer is the text, and
+        // it can carry the call as well, so it passes the same guard. The call
+        // is read from the extractor that finds it, not from its own cut output:
+        // scanning that always said no, so a call behind a line of thinking went
+        // out as the answer with a 200.
+        if (!skipReasoningFallback && emitText === 0 && !written && !tail && sentReasoning) {
+          const ans = answerAndCall(sentReasoning)
+          if (ans.call) {
+            tail = ans.text
+            written = TEXT_CALL
+          } else {
+            tail = ans.text || sentReasoning
+          }
+        }
+        if (tail) {
+          push(chunk({ content: tail }))
+          emitText += tail.length
+        }
+        if (written) {
+          closed = true
+          push(`data: ${JSON.stringify({ error: { message: `OrcaTerm: ${written}`, type: "api_error", code: "text_tool_call" } })}\n\n`)
+          controller.close()
+          return
         }
         closed = true
         push(chunk({}, reason))
@@ -1642,9 +1934,20 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
   // by the same extractor the streaming path uses, so the two can't drift apart.
   const extractor = createAnswerExtractor()
   const visible = extractor.push(content) + extractor.finish()
-  // An empty text can't go up blank: the thinking is used first, then a note
+  // A tool call the model wrote as text, the same as in the streamed path: a 502
+  // magpie asks again on, not a 200 whose answer is the raw protocol.
+  const written = extractor.textCall()
+  if (written) return openaiError(502, `OrcaTerm: ${written}`, "text_tool_call")
+  // An empty text can't go up blank: the thinking is used first, then a note.
+  // The thinking carries the call too, and the call is read from the extractor
+  // that finds it: scanning its cut output always said no, and a thinking-only
+  // call went out as a 200 with the answer.
   let finalContent = visible.trimEnd()
-  if (!finalContent && reasoning) finalContent = answerOf(reasoning).trimEnd() || reasoning
+  if (!finalContent && reasoning) {
+    const ans = answerAndCall(reasoning)
+    if (ans.call) return openaiError(502, `OrcaTerm: ${TEXT_CALL}`, "text_tool_call")
+    finalContent = (ans.text || reasoning).trimEnd()
+  }
   if (!finalContent) finalContent = "(OrcaTerm returned an empty reply)"
   const message = { role: "assistant", content: finalContent }
   if (reasoning) message.reasoning_content = reasoning
@@ -2387,6 +2690,11 @@ export const _internal = {
   answerOf,
   stripTrailingEnvelope,
   createAnswerExtractor,
+  textCallAt,
+  textCallHold,
+  textCallIn,
+  quoted,
+  TEXT_CALL,
   csrfCode,
   parseTicket,
   cookieHeader,

@@ -121,3 +121,97 @@ test("the answer is unwrapped from the action envelope, alone or after prose", (
   // and a reply that is not an envelope is left alone
   expect(_internal.unwrapAnswer("用 {花括号} 表示集合")).toBe("用 {花括号} 表示集合")
 })
+
+// An `ask` keeps its answer in `question`, not `taskCompletion`, so the whole
+// object used to go out as the reply — braces, `ph_1` and all (seen live
+// 2026-11-11, the model asking which of five options to take).
+test("an ask is unwrapped to its question and choices", () => {
+  const ask = JSON.stringify({
+    action: "ask",
+    ph_1: "--",
+    question: "要处理哪个目标？",
+    options: ["检查运行状态", "排查服务异常", ""],
+  })
+  expect(_internal.unwrapAnswer(ask)).toBe("要处理哪个目标？\n\n- 检查运行状态\n- 排查服务异常")
+  // no choices to show: the question alone
+  expect(_internal.unwrapAnswer(JSON.stringify({ action: "ask", question: "继续吗？", options: [] }))).toBe("继续吗？")
+  // an ask with no question is not an answer to unwrap
+  const empty = JSON.stringify({ action: "ask", ph_1: "--" })
+  expect(_internal.unwrapAnswer(empty)).toBe(empty)
+  // another action's `question` is not one: only an ask is read this way
+  const review = JSON.stringify({ action: "review", question: "这是审查的备注", tool: {} })
+  expect(_internal.unwrapAnswer(review)).toBe(review)
+})
+
+// And it holds while the ask streams in, one character at a time: the answer
+// the client builds out of the deltas is the same one, and no brace of it goes
+// out.
+test("a streamed ask reaches the client as its answer, not as its JSON", async () => {
+  const ask = JSON.stringify({
+    action: "ask",
+    ph_1: "--",
+    question: "要处理哪个目标？",
+    options: ["检查运行状态", "排查服务异常"],
+  })
+  const resp = _internal.upstreamToOpenAI(
+    new ReadableStream({
+      start(c) {
+        const all = `data: ${JSON.stringify({ content: ask, reasoningContent: "", type: "ai", code: 0 })}\n\ndata: [DONE]\n\n`
+        for (const ch of all) c.enqueue(new TextEncoder().encode(ch))
+        c.close()
+      },
+    }),
+    { model: "m" },
+  )
+  let content = ""
+  for (const line of (await resp.text()).split("\n")) {
+    if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") continue
+    content += JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? ""
+  }
+  expect(content).toBe("要处理哪个目标？\n\n- 检查运行状态\n- 排查服务异常")
+  expect(content).not.toContain("{")
+})
+
+// The three shapes the reviewer listed as still going out raw.
+const streamedAsk = async (raw, size = 3) => {
+  const all = `data: ${JSON.stringify({ content: raw, reasoningContent: "", type: "ai", code: 0 })}\n\ndata: [DONE]\n\n`
+  const pieces = []
+  for (let i = 0; i < all.length; i += size) pieces.push(all.slice(i, i + size))
+  const resp = _internal.upstreamToOpenAI(
+    new ReadableStream({
+      start(c) {
+        for (const p of pieces) c.enqueue(new TextEncoder().encode(p))
+        c.close()
+      },
+    }),
+    { model: "m" },
+  )
+  let content = ""
+  for (const line of (await resp.text()).split("\n")) {
+    if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") continue
+    content += JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? ""
+  }
+  return content
+}
+
+// 1. Written by hand, with a bare line break in the question, the way a long
+//    answer comes (#564). Only `taskCompletion` was read this loosely.
+test("a hand-written ask with a bare line break still comes out as its answer", async () => {
+  const raw = '{"action": "ask", "ph_1": "--", "question": "Which one?\nPick:", "options": ["a", "b"]}'
+  expect(await streamedAsk(raw)).toBe("Which one?\nPick:\n\n- a\n- b")
+})
+
+// 2. The stream ends inside the question: a completion keeps its decoded prefix,
+//    and the ask must do the same.
+test("an ask the stream ended inside keeps its question", async () => {
+  const raw = '{"action":"ask","ph_1":"--","question":"Which target?","options":["a"]}'
+  const cut = raw.slice(0, raw.indexOf("target?") + "target?".length)
+  expect(await streamedAsk(cut)).toBe("Which target?")
+})
+
+// 3. Prose, then the ask appended: dropping the envelope is right for a
+//    completion, and wrong for an ask — the question is what the user answers.
+test("an ask appended after prose keeps the question", async () => {
+  const raw = 'I found two targets.\n{"action":"ask","ph_1":"--","question":"Which target?","options":["a","b"]}'
+  expect(await streamedAsk(raw)).toBe("I found two targets.\nWhich target?\n\n- a\n- b")
+})
