@@ -25,7 +25,9 @@ for (const [name, mocks] of [
   ["conversation-key.mjs", false],
 ]) {
   test(`test/${name}`, () => {
-    const { code, output } = run(["test", ...(mocks ? ["--preload", hook] : []), `./${name}`], 240_000)
+    // bun's 5s default per test is a fixed wait these process-spawning tests
+    // overrun on a loaded machine; the 240s run bounds a real hang.
+    const { code, output } = run(["test", "--timeout", "120000", ...(mocks ? ["--preload", hook] : []), `./${name}`], 240_000)
     expect(output).toMatch(/\b[1-9]\d* pass\b/)
     expect(code).toBe(0)
   }, 250_000)

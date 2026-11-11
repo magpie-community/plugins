@@ -78,7 +78,10 @@ test("requires a successful usage command with at least one enabled measured buc
   }
 })
 
-async function waitForPidExit(pid, timeoutMs = 1000) {
+// Polls until the pid is gone. The bound is generous: a SIGKILLed child is
+// reaped only when the kernel and this event loop get to it, which takes
+// longer on a loaded machine.
+async function waitForPidExit(pid, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
@@ -89,6 +92,57 @@ async function waitForPidExit(pid, timeoutMs = 1000) {
     await new Promise(resolve => setTimeout(resolve, 25))
   }
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
+}
+
+// Polls until a descendant that was killed no longer runs code. A dead orphan
+// can stay a zombie on Linux until its new parent reaps it.
+async function waitForNotRunning(pid, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  let state
+  while (Date.now() < deadline) {
+    state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()
+    if (!state || state.startsWith("Z")) return
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  assert.fail(`descendant ${pid} still runs (${state})`)
+}
+
+// Runs fetchUsage against a hanging fixture and returns the children it
+// spawned. The timeout covers both children, and a loaded machine can spend
+// all of it starting the version child, so the budget doubles until the
+// timeout lands while the child under test runs (the report child, or with
+// version: true the version child). With onTaskkill, taskkill calls are
+// recorded and handed to it instead of being run.
+async function timedOut(f, { version = false, onTaskkill } = {}) {
+  const originalSpawn = childProcess.spawn
+  for (let timeoutMs = 600; ; timeoutMs *= 2) {
+    const children = []
+    const kills = []
+    try {
+      childProcess.spawn = (file, args, options) => {
+        if (file === "taskkill" && onTaskkill) {
+          kills.push({ args, options })
+          onTaskkill(args)
+          return { unref() {} }
+        }
+        const child = originalSpawn(file, args, options)
+        children.push({ pid: child.pid })
+        return child
+      }
+      syncBuiltinESMExports()
+      await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs }), /timed out/)
+    } finally {
+      childProcess.spawn = originalSpawn
+      syncBuiltinESMExports()
+    }
+    // The version child is spawned first, the report child second.
+    const target = children[version ? 0 : 1]
+    if (target || timeoutMs >= 20_000) {
+      assert.ok(target, `the ${version ? "version" : "report"} child never started within ${timeoutMs}ms`)
+      return { children, kills, target }
+    }
+    for (const pid of await f.pids(children)) await waitForPidExit(pid)
+  }
 }
 
 async function fixture(t, extraEnv = {}) {
@@ -108,6 +162,9 @@ import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 const args = process.argv.slice(2)
+// A slow start on a loaded machine; set TEST_START_DELAY_MS to reproduce one.
+const startDelay = Number(process.env.TEST_START_DELAY_MS) || 0
+if (startDelay > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, startDelay)
 const version = args[0] === "--version"
 const guardRun = process.platform === "win32"
   ? spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "\"" + process.env.BROWSER + "\""], { windowsHide: true })
@@ -156,6 +213,14 @@ else if (version) {
     executable, env,
     options: { env, tempRoot: directory },
     async logs() { return (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line)) },
+    // Every pid to see gone after a kill: the spawned children, and the agy
+    // each one ran that got as far as logging (on Windows a grandchild under
+    // cmd.exe).
+    async pids(children) {
+      let logs = []
+      try { logs = await this.logs() } catch (error) { if (error?.code !== "ENOENT") throw error }
+      return [...new Set([...children.map(child => child.pid), ...logs.map(log => log.pid)])]
+    },
     async assertClean() { assert.deepEqual((await fs.readdir(directory)).filter(name => name.startsWith("magpie-agy-usage-")), []) },
   }
 }
@@ -279,34 +344,22 @@ test("simulated Windows fetches usage with hidden, attached children and a cmd b
 test("simulated Windows timeouts kill the whole tree via taskkill /T /F /PID", { skip: process.platform === "win32" }, async t => {
   const f = await fixture(t, { TEST_MODE: "hang" })
   const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-  const originalSpawn = childProcess.spawn
-  const kills = []
+  let run
   try {
     Object.defineProperty(process, "platform", { ...descriptor, value: "win32" })
-    childProcess.spawn = (file, args, options) => {
-      if (file === "taskkill") {
-        kills.push({ args, options })
-        // Emulate taskkill termination so the killed child releases its pipes on this POSIX host.
-        try { process.kill(Number(args[3]), "SIGKILL") } catch {}
-        return { unref() {} }
-      }
-      return originalSpawn(file, args, options)
-    }
-    syncBuiltinESMExports()
-    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 600 }), /timed out/)
+    run = await timedOut(f, {
+      // Emulate taskkill termination so the killed child releases its pipes on this POSIX host.
+      onTaskkill(args) { try { process.kill(Number(args[3]), "SIGKILL") } catch {} },
+    })
   } finally {
     Object.defineProperty(process, "platform", descriptor)
-    childProcess.spawn = originalSpawn
-    syncBuiltinESMExports()
   }
-  const logs = await f.logs()
-  const treeKills = kills.filter(kill => kill.args[3] === String(logs[1].pid))
+  const treeKills = run.kills.filter(kill => kill.args[3] === String(run.target.pid))
   assert.equal(treeKills.length, 1)
-  assert.deepEqual(treeKills[0].args, ["/T", "/F", "/PID", String(logs[1].pid)])
+  assert.deepEqual(treeKills[0].args, ["/T", "/F", "/PID", String(run.target.pid)])
   assert.equal(treeKills[0].options.windowsHide, true)
   // The runner must actually stop both children, not just stop waiting for them.
-  await new Promise(resolve => setTimeout(resolve, 20))
-  for (const log of logs) assert.throws(() => process.kill(log.pid, 0), { code: "ESRCH" })
+  for (const pid of await f.pids(run.children)) await waitForPidExit(pid)
   await f.assertClean()
 })
 
@@ -340,11 +393,7 @@ test("simulated Windows tree-kills pipe-holding descendants after the CLI parent
   const treeKills = kills.filter(kill => kill.args[3] === String(logs[1].pid))
   assert.equal(treeKills.length, 1)
   assert.deepEqual(treeKills[0].args, ["/T", "/F", "/PID", String(logs[1].pid)])
-  const pid = Number(await fs.readFile(f.env.TEST_DESCENDANT, "utf8"))
-  await new Promise(resolve => setTimeout(resolve, 50))
-  // A dead orphan can briefly be a zombie on Linux, which has no running code.
-  const status = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" })
-  assert.ok(!status.stdout.trim() || status.stdout.trim().startsWith("Z"))
+  await waitForNotRunning(Number(await fs.readFile(f.env.TEST_DESCENDANT, "utf8")))
   await f.assertClean()
 })
 
@@ -463,11 +512,9 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
 test("version/report hangs time out, terminate the process, and leave no workspace", async t => {
   for (const mode of ["version-hang", "hang"]) {
     const f = await fixture(t, { TEST_MODE: mode })
-    await assert.rejects(fetchUsage(f.executable, { ...f.options, timeoutMs: 600 }), /timed out/)
+    const run = await timedOut(f, { version: mode === "version-hang" })
     // The runner must actually stop the child, not just stop waiting for it.
-    for (const log of await f.logs()) {
-      await waitForPidExit(log.pid)
-    }
+    for (const pid of await f.pids(run.children)) await waitForPidExit(pid)
     await f.assertClean()
   }
 })
@@ -493,10 +540,7 @@ test("terminates owned pipe-inheriting descendants even when the CLI parent alre
   if (process.platform === "win32") {
     await waitForPidExit(pid)
   } else {
-    await new Promise(resolve => setTimeout(resolve, 50))
-    // A dead orphan can briefly be a zombie on Linux, which has no running code.
-    const status = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" })
-    assert.ok(!status.stdout.trim() || status.stdout.trim().startsWith("Z"))
+    await waitForNotRunning(pid)
   }
   await f.assertClean()
 })
