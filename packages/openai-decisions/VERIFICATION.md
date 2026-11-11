@@ -1,58 +1,57 @@
-# Verification — 2026-11-05
+# Verification
 
-Validated locally with Magpie 0.1.3039, Node 26.3.0 and Magpie's Bun 1.4.4.
-The community package harness was read from magpie-community/plugins
-commit `808f7a184d3a88db69691f4838deee46f64560b1`, then rechecked for
-submission against `41e90a18d3affc7487460d032b0cdc5e09b20ebb`.
+## Maintainer-requested revision — 2026-11-11
 
-## Automated checks
+The revision addresses the six requests in
+[the maintainer's review](https://github.com/magpie-community/plugins/pull/762#issuecomment-6662604576).
 
-- `npm test`: 18 pass, 0 fail.
-- Community `bun scripts/check.mjs openai-decisions`: registry and provider checks pass.
-- Community `bun test packages/openai-decisions`: 18 pass, 0 fail.
-- OpenCode compatibility bridge matches the community's canonical file byte for byte.
+- Authentication uses only the host's selected-account `getAuth` callback.
+  The saved-key reader, keyless method and disk credential fixtures are removed.
+- Per-question refusals are omitted, while ordinary answers and usage are retained.
+  Duplicate, missing and unrequested answers still fail validation.
+- Omitted, null and blank System One instructions receive a non-empty default.
+- The package is `@magpie-community/opencode-openai-decisions-auth`, with an
+  HTTPS icon, a single-line registry entry and English code comments.
+- README, registry summaries, changelog and notice reflect the API-key-only
+  behavior. Third-party provider repository references are removed.
 
-## Documentation and source installation
+### Regression evidence
 
-- Root README provider table, package README, bilingual registry summary
-  and changelog describe the same provider and authentication methods.
-- Package Markdown links and the JSON request example were checked against
-  the checked-in files and adapter.
-- Community `scripts/try.sh openai-decisions` installed and listed the
-  provider under `.sandbox/openai-decisions`, with one decision model
-  and no sign-in. No OpenAI request or real account was used.
-- This follow-up changes documentation and registry descriptions only;
-  the runtime, package version and dependencies are unchanged.
+The revised tests first ran against the previous implementation:
+**16 passed, 7 failed**. Failures included blank upstream instructions,
+per-question refusals turning a successful response into HTTP 502, the extra
+keyless sign-in, and the old package metadata. They then passed after the fix:
+**23 passed, 0 failed** on Node and Bun.
 
-The full community repository test suite was not run locally. It remains
-a separate upstream CI requirement; focused package tests and sandbox
-installation do not establish a full-suite pass. Live OpenCode decision
-workflows and Windows/Linux execution were not tested.
+The package tests are offline. Credentials and responses are synthetic and
+in-memory; no test creates a credential file or a `.data/` directory.
+They cover all three question types, partial/all refusals, missing or invalid
+ordinary answers, structured evidence, defaults, account changes, sign-out,
+errors, cancellation and loader compatibility.
 
-## Real local gateway
+Full community checks and current-main integration are recorded in the revision
+commit body and PR description. A package-only test run does not establish a
+full-repository pass. Live OpenCode decision workflows and Windows/Linux
+execution have not been verified.
 
-The same synthetic text/JSON case exercised choice, noul and score:
+## Earlier local gateway checks — 2026-11-05
+
+The earlier revision used Magpie 0.1.3039, Node 26.3.0 and Bun 1.4.4.
 
 | Request model | Result | Actual model |
 | --- | --- | --- |
-| `typesafe/jev-latest` | HTTP 200; all three answers and distributions present | `jev-1.14.0` |
-| `openai-decisions/gpt-6-luna` | HTTP 200; all three answers and distributions present | `gpt-6-luna` |
-| `group/decisions` | HTTP 200; all three answers and distributions present | `jev-1.14.0`, first in the group's order |
+| `typesafe/jev-latest` | HTTP 200; choice/noul/score answers present | `jev-1.14.0` |
+| `openai-decisions/gpt-6-luna` | HTTP 200; choice/noul/score answers present | `gpt-6-luna` |
+| `group/decisions` | HTTP 200; all three answers present | `jev-1.14.0`, first in group order |
 
-A temporary chat group with `classifier=openai-decisions/gpt-6-luna` and
-`effort=auto` returned HTTP 200 with `OK`. Magpie's usage record separately
-confirmed a real `kind=routing`, provider `openai-decisions`, HTTP 200
-classification call. Its downstream chat model was the catalog's
-`openai/gpt-5.6-luna`; the temporary group was then removed.
+A temporary chat group used `classifier=openai-decisions/gpt-6-luna` and
+`effort=auto`. Magpie recorded a real `kind=routing`, HTTP 200 classifier
+call before its downstream `openai/gpt-5.6-luna` chat returned `OK`.
+The temporary group was removed.
 
-The optional saved-key sign-in was exercised against the real gateway.
-Ordinary API-key sign-in is covered by the auth hook tests; it does not
-require an existing built-in OpenAI provider.
-
-Live rate-limit/quota failures were not forced. Their status/body/header
-handling is covered by fixtures, while cross-provider failover remains
-Magpie's native responsibility. Image and box decisions are outside this
-adapter's declared capabilities. Different vendors' confidence fields
-retain their original calibration.
-
-These local checks do not represent community review or acceptance.
+Those calls predate removal of the saved-key method and are historical protocol
+and gateway evidence. They do not establish a live standard-key sign-in check
+for the current revision. Live upstream quota failures and safety refusals were
+not forced; their status and per-question handling are verified with fixtures.
+Images and box decisions are outside the adapter's declared capabilities.
+Confidence values retain their vendor's original calibration.

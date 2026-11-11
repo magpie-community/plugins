@@ -5,6 +5,4 @@ under that repository's MIT license. Keep it byte-identical to that copy.
 Upstream: https://github.com/magpie-community/plugins
 
 The implementation follows the public provider/auth/decision contracts.
-Reference implementations: the community River provider, AgentCompass's
-decision-provider registration, and lesnolie/magpie-free-gateways' System
-One integration. Their application logic is not bundled here.
+No third-party provider application logic is bundled here.

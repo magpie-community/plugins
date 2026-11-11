@@ -1,5 +1,4 @@
 import { createDecisionFetch, MODEL } from "./adapter.mjs";
-import { keyFromAuth, readOpenAIKey, SAVED_OPENAI } from "./credentials.mjs";
 
 const ID = "openai-decisions";
 const BASE = "https://api.openai.com/v1";
@@ -14,7 +13,7 @@ const model = {
   cost: { input: 0.1, output: 0 },
 };
 
-// 入口只导出插件函数；Magpie 会把导出的函数逐一作为插件加载。
+// Export only the plugin function; Magpie invokes each exported function as a plugin.
 export const OpenAIDecisionsPlugin = async () => ({
   async config(config) {
     config.provider ??= {};
@@ -24,19 +23,18 @@ export const OpenAIDecisionsPlugin = async () => ({
     provider: ID,
     methods: [
       { type: "api", label: "OpenAI API key", placeholder: "sk-…" },
-      {
-        type: "api", keyless: true,
-        label: "Use the OpenAI key already saved in Magpie",
-        async authorize() {
-          readOpenAIKey();
-          return { type: "success", key: SAVED_OPENAI };
-        },
-      },
     ],
     async loader(getAuth) {
       const auth = await getAuth();
-      if (auth?.type !== "api" || !auth.key) return {};
-      return { baseURL: BASE, apiKey: keyFromAuth(auth), fetch: createDecisionFetch({ getKey: async () => keyFromAuth(await getAuth()) }) };
+      if (auth?.type !== "api" || typeof auth.key !== "string" || !auth.key.trim()) return {};
+      return {
+        baseURL: BASE,
+        apiKey: auth.key,
+        fetch: createDecisionFetch({ getKey: async () => {
+          const current = await getAuth();
+          return current?.type === "api" ? current.key : undefined;
+        } }),
+      };
     },
   },
   provider: {

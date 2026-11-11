@@ -17,10 +17,12 @@ function description(value) {
 }
 
 function questionInstructions(question) {
+  const supplied = question.instructions == null ? "" : description(question.instructions);
+  const instructions = supplied.trim() ? supplied : "Answer this question using the supplied input and criteria.";
   if (question.type === "noul" && record(question.criteria)) {
-    return JSON.stringify({ instructions: question.instructions ?? null, criteria: question.criteria });
+    return JSON.stringify({ instructions, criteria: question.criteria });
   }
-  return question.instructions == null ? "" : description(question.instructions);
+  return instructions;
 }
 
 function choiceEntries(question) {
@@ -99,8 +101,11 @@ export function fromOpenAIResponse(upstream, source) {
   requireValue(Array.isArray(upstream.answers) && upstream.answers.length === request.questions.length, "Incomplete upstream answers");
   const byName = new Map(request.questions.map((question) => [question.name, question]));
   const answers = new Map();
+  const seen = new Set();
   for (const answer of upstream.answers) {
-    requireValue(record(answer) && byName.has(answer.name) && !answers.has(answer.name), "Unexpected or duplicate upstream answer");
+    requireValue(record(answer) && byName.has(answer.name) && !seen.has(answer.name), "Unexpected or duplicate upstream answer");
+    seen.add(answer.name);
+    if (answer.type === "refusal") continue;
     const question = byName.get(answer.name);
     requireValue(answer.type === question.type, "Wrong upstream answer type");
     let result;
@@ -121,8 +126,8 @@ export function fromOpenAIResponse(upstream, source) {
     }
     answers.set(answer.name, result);
   }
-  // 按请求顺序组织答案；供应商可以按不同顺序返回命名问题。
-  return { ...upstream, answers: Object.fromEntries(request.questions.map(({ name }) => [name, answers.get(name)])) };
+  // Keep request order, omitting refused questions without manufacturing answers.
+  return { ...upstream, answers: Object.fromEntries(request.questions.filter(({ name }) => answers.has(name)).map(({ name }) => [name, answers.get(name)])) };
 }
 
 function responseHeaders(response) {
@@ -153,9 +158,9 @@ export function createDecisionFetch({ getKey, fetchImpl = globalThis.fetch }) {
     let key;
     try {
       key = await getKey();
-      requireValue(typeof key === "string" && key.length > 0 && !/[\r\n]/.test(key), "Missing OpenAI API key");
+      requireValue(typeof key === "string" && key.trim().length > 0 && !/[\r\n]/.test(key), "Missing OpenAI API key");
     } catch {
-      return refused(503, "OpenAI credentials unavailable; check this provider's sign-in or its saved OpenAI key");
+      return refused(503, "OpenAI credentials unavailable; check this provider's API-key sign-in");
     }
     const headers = new Headers({ "content-type": "application/json", accept: "application/json", authorization: `Bearer ${key}` });
     let upstream;

@@ -57,6 +57,23 @@ test("retains structured instructions and criteria, including predicate definiti
   assert.deepEqual(out.questions[2].levels, [{ label: "0", description: "1" }, { label: "1", description: '{"label":"higher"}' }, { label: "2" }]);
 });
 
+test("supplies non-empty instructions for omitted, null and blank System One instructions", () => {
+  for (const instructions of [undefined, null, "", " \n\t"]) {
+    const source = body();
+    for (const question of Object.values(source.questions)) question.instructions = instructions;
+    for (const question of toOpenAIRequest(source).questions) {
+      assert.equal(typeof question.instructions, "string");
+      assert.ok(question.instructions.trim().length > 0);
+    }
+    assert.equal(source.questions.intent.instructions, instructions);
+    source.questions.levels.criteria = { true: "Matches", false: "Does not match" };
+    const predicate = toOpenAIRequest(source).questions[2];
+    const combined = JSON.parse(predicate.instructions);
+    assert.ok(combined.instructions.trim().length > 0);
+    assert.deepEqual(combined.criteria, source.questions.levels.criteria);
+  }
+});
+
 test("restores named answers independent of order and preserves probabilities, confidence and usage", () => {
   const out = fromOpenAIResponse(reply(), body());
   assert.equal(out.answers.intent.choice, "question");
@@ -67,6 +84,36 @@ test("restores named answers independent of order and preserves probabilities, c
   assert.deepEqual(out.answers.levels, { type: "noul", noul: 0.9 });
   assert.deepEqual(out.usage, { input_tokens: 42, output_tokens: 0 });
   assert.equal(out.id, "decision-test");
+});
+
+test("omits a per-question refusal while preserving the other answers and usage", () => {
+  for (const name of ["intent", "effort", "levels"]) {
+    const upstream = reply();
+    upstream.answers = upstream.answers.map((answer) => answer.name === name ? { name, type: "refusal" } : answer);
+    const out = fromOpenAIResponse(upstream, body());
+    assert.deepEqual(Object.keys(out.answers), Object.keys(body().questions).filter((key) => key !== name));
+    assert.equal(Object.hasOwn(out.answers, name), false);
+    assert.deepEqual(out.usage, upstream.usage);
+    for (const [key, answer] of Object.entries(fromOpenAIResponse(reply(), body()).answers)) {
+      if (key !== name) assert.deepEqual(out.answers[key], answer);
+    }
+  }
+});
+
+test("an all-refusal response keeps empty answers instead of inventing probabilities", () => {
+  const upstream = reply();
+  upstream.answers = upstream.answers.map(({ name }) => ({ name, type: "refusal" }));
+  const out = fromOpenAIResponse(upstream, body());
+  assert.deepEqual(out.answers, {});
+  assert.deepEqual(out.usage, upstream.usage);
+});
+
+test("refusals still reject duplicate, unknown and missing question answers", () => {
+  for (const answers of [
+    [{ name: "intent", type: "refusal" }, { name: "intent", type: "refusal" }, reply().answers[2]],
+    [{ name: "unknown", type: "refusal" }, reply().answers[1], reply().answers[2]],
+    [{ name: "intent", type: "refusal" }],
+  ]) assert.throws(() => fromOpenAIResponse({ ...reply(), answers }, body()));
 });
 
 test("does not treat prototype-named choices or question IDs as object properties", () => {
@@ -161,6 +208,17 @@ test("preserves upstream 401/429/503 status, error body and retry headers", asyn
 test("an incomplete successful upstream response becomes 502", async () => {
   const fetcher = createDecisionFetch({ getKey: () => "fixture", fetchImpl: async () => Response.json({ model: "gpt-6-luna", answers: [] }) });
   assert.equal((await fetcher("https://api.openai.com/v1/systemone", { method: "POST", body: JSON.stringify(body()) })).status, 502);
+});
+
+test("a successful response with a per-question refusal remains HTTP 200", async () => {
+  const upstream = reply();
+  upstream.answers[0] = { name: "levels", type: "refusal" };
+  const fetcher = createDecisionFetch({ getKey: () => "fixture", fetchImpl: async () => Response.json(upstream) });
+  const response = await fetcher("https://api.openai.com/v1/systemone", { method: "POST", body: JSON.stringify(body()) });
+  assert.equal(response.status, 200);
+  const out = await response.json();
+  assert.deepEqual(Object.keys(out.answers), ["intent", "effort"]);
+  assert.equal(out.answers.intent.choice, "question");
 });
 
 test("cancellation reaches the upstream without retries or a manufactured answer", async () => {
