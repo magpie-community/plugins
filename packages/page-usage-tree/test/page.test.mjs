@@ -24,6 +24,9 @@ const summary = {
   input: 1200000,
   output: 300000,
   cache: 900000,
+  cacheRead: 900000,
+  cacheWrite: 0,
+  cacheUnknown: 0,
   tokens: 1500000,
   cost: 42.5,
   unpriced: 2,
@@ -89,6 +92,10 @@ test("the page reads nothing of magpie and reaches no network", () => {
     );
   }
   assert.deepEqual([...reads], []);
+  for (const file of readdirSync(uiDir).filter((f) => f.endsWith(".js"))) {
+    const source = read(uiDir, file);
+    assert.doesNotMatch(source, /\.read\(\s*"usage:day"|\bread\(\s*"usage:day"/);
+  }
 });
 
 test("plugin metadata speaks Chinese and English", () => {
@@ -132,12 +139,30 @@ test("the launcher only navigates to the local service", () => {
 
 test("the launcher forwards currency and unit options", () => {
   const boot = read(pageDir, "boot.js");
+  assert.doesNotMatch(boot, /usage:day|magpie\?\.read\(/);
   assert.match(boot, /query\.set\("currency", display\.currency\)/);
   assert.match(boot, /query\.set\("chineseUnits", display\.chineseUnits \? "1" : "0"\)/);
   assert.match(boot, /followDisplay\(options\)/);
+  assert.match(boot, /query\.set\("settings", "1"\)/);
   assert.equal(pkg.magpie.options.currency, "usd");
   assert.equal(pkg.magpie.options.chineseUnits, false);
   assert.equal(pkg.magpie.options.usdCny, 0);
+});
+
+test("the launcher does not invent official display settings from a theme-only hello", () => {
+  const source = read(pageDir, "boot.js");
+  const start = source.indexOf("  let officialDisplay = false;");
+  const end = source.indexOf("  function followLanguage", start);
+  const helpers = source.slice(start, end);
+  const run = new Function("display", `${helpers}; return followDisplay;`);
+  const display = { currency: "cny", chineseUnits: true, usdCny: 7.2 };
+  const followDisplay = run(display);
+  followDisplay({ dark: true, lang: "zh" }, true);
+  assert.deepEqual(display, { currency: "cny", chineseUnits: true, usdCny: 7.2 });
+  followDisplay({ currency: "cny", chineseUnits: false, usdCny: 7.3 }, true);
+  assert.deepEqual(display, { currency: "cny", chineseUnits: false, usdCny: 7.3 });
+  followDisplay({ currency: "usd", chineseUnits: true, usdCny: 8 }, false);
+  assert.deepEqual(display, { currency: "cny", chineseUnits: false, usdCny: 7.3 });
 });
 
 test("the summary says accounts, calls, tokens and cost", () => {
@@ -161,6 +186,48 @@ test("cache can be included or excluded from token totals", () => {
   assert.equal(V.tokenTotal({ tokens: 150, allTokens: 220, cache: 50 }, true), 220);
   assert.equal(V.tiles(summary, "zh", "usd", 6.6696, true)[2].value, "240万");
   assert.equal(V.tiles(summary, "zh", "usd", 6.6696, false)[2].value, "150万");
+});
+
+test("cache hit text follows Magpie's own cache-aware denominator", () => {
+  assert.equal(V.cacheHitRate({ input: 120, cacheRead: 180, cacheWrite: 20 }), 0.5625);
+  assert.equal(V.cacheHitRate({ input: 200, cacheRead: 0, cacheWrite: 0, cacheUnknown: 200 }), null);
+  assert.equal(V.cacheHitRate({ input: 200, cacheRead: 0, cacheWrite: 0 }), null);
+  assert.equal(V.cacheHitRate({ input: 200, cacheRead: 0 }), null);
+  assert.equal(V.cacheHitRate({ input: 0, cacheRead: 0 }), null);
+  assert.equal(V.cacheHitText(summary, "zh"), "缓存命中率 43%");
+  assert.equal(V.cacheHitText(summary, "en"), "Cache hit 43%");
+  assert.equal(
+    V.cacheHitText({ input: 200, cacheRead: 0, cacheWrite: 0, cacheUnknown: 200, cacheUnknownCalls: 1 }, "zh"),
+    "1 次未统计缓存",
+  );
+  assert.equal(
+    V.cacheHitText({ input: 120, cacheRead: 180, cacheWrite: 20, cacheUnknownCalls: 2 }, "zh"),
+    "缓存命中率 56% · 2 次未统计缓存",
+  );
+  assert.equal(
+    V.cacheHitText({ input: 120, cacheRead: 180, cacheWrite: 20, cacheUnknownCalls: 2 }, "en"),
+    "Cache hit 56% · 2 cache-uncounted calls",
+  );
+  assert.equal(V.cacheHitText({ input: 0, cacheRead: 0, cacheWrite: 0 }, "en"), "");
+  assert.equal(V.cacheHitSuffix({ input: 0, cacheRead: 0 }, "en"), "");
+  assert.match(V.tiles(summary, "zh", "usd", 0)[2].sub, / · 缓存命中率 43%$/);
+  assert.match(V.tiles(summary, "en", "usd", 0)[2].sub, / · Cache hit 43%$/);
+});
+
+test("cache hit percentages use Magpie's rounding", () => {
+  assert.equal(V.hitPercent(0), "0%");
+  assert.equal(V.hitPercent(1), "100%");
+  assert.equal(V.hitPercent(0.43), "43%");
+  assert.equal(V.hitPercent(0.996), "99.6%");
+  assert.equal(V.hitPercent(0.99999), "99.99%");
+  assert.equal(V.hitPercent(1e-7), "0.01%");
+  assert.equal(V.hitPercent(0.056), "6%");
+  assert.equal(V.hitPercent(0.001), "0.1%");
+  assert.equal(V.hitPercent(0.0001), "0.01%");
+  assert.equal(
+    V.cacheHitText({ input: 4, cacheRead: 996, cacheWrite: 0 }, "zh"),
+    "缓存命中率 99.6%",
+  );
 });
 
 test("an account shows the name the user gave it", () => {
@@ -277,6 +344,18 @@ test("the model table has one column per value and follows the cache switch", ()
   assert.doesNotMatch(head, /el\("span", "", "Token"\)/);
   assert.equal(scope.UsageI18n.get("zh").token, "Token");
   assert.equal(scope.UsageI18n.get("en").token, "Token");
+  assert.match(read(uiDir, "app.js"), /V\.cacheHitSuffix\(model, lang\)/);
+});
+
+test("the cache hit detail wraps at intermediate and phone widths", () => {
+  const css = read(uiDir, "style.css");
+  const base = css.slice(0, css.indexOf("@media (max-width: 900px)"));
+  const narrow = css.slice(css.indexOf("@media (max-width: 700px)"));
+  assert.match(base, /\.summary-sub \{[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
+  assert.match(base, /\.model-split \{[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
+  assert.match(narrow, /\.model-row \.model-split \{[\s\S]*?display: block;/);
+  assert.doesNotMatch(narrow, /grid-column: 1 \/ -1;/);
+  assert.doesNotMatch(narrow, /\.model-row \.model-provider,\s*\.model-row \.model-split,/);
 });
 
 test("model calls sit under the right-aligned calls header", () => {
@@ -288,14 +367,20 @@ test("model calls sit under the right-aligned calls header", () => {
 
 test("the 900 px grid keeps every visible cell in its own column", () => {
   const css = read(uiDir, "style.css");
-  const block = css.slice(css.indexOf("@media (max-width: 900px)"), css.indexOf("@media (max-width: 620px)"));
+  const block = css.slice(css.indexOf("@media (max-width: 900px)"), css.indexOf("@media (max-width: 700px)"));
+  const columns = "minmax\\(150px, 1fr\\) 60px 74px minmax\\(80px, 0\\.7fr\\) 44px 74px 20px";
+  assert.match(block, new RegExp(`\\.account-main \\{\\s+grid-template-columns: ${columns};`));
+  assert.match(block, new RegExp(`\\.provider-main \\{\\s+grid-template-columns: ${columns};`));
+  assert.match(
+    block,
+    /\.model-head,\s*\.model-row \{\s+grid-template-columns: minmax\(150px, 1fr\) 92px 74px minmax\(80px, 0\.7fr\) 46px 74px;/,
+  );
   assert.match(block, /\.provider-main \.errors-cell/);
-  assert.match(block, /grid-template-columns: minmax\(150px, 1fr\) 92px 74px minmax\(80px, 0\.7fr\) 46px 74px;/);
 });
 
 test("the narrow summary wraps its token split instead of cutting it", () => {
   const css = read(uiDir, "style.css");
-  const block = css.slice(css.indexOf("@media (max-width: 620px)"));
+  const block = css.slice(css.indexOf("@media (max-width: 700px)"));
   assert.match(block, /\.summary-sub \{[\s\S]*?white-space: normal;/);
 });
 
@@ -337,7 +422,7 @@ test("the token-cache switch is native-looking, persistent and default-on", () =
   assert.match(source, /store\.get\("usage-tree\.include-cache"\) !== "0"/);
   assert.match(source, /store\.set\("usage-tree\.include-cache", state\.includeCache \? "1" : "0"\)/);
   assert.match(source, /V\.tokenTotal\(item, state\.includeCache\)/);
-  assert.match(source, /summary\.cache[\s\S]*?provider\.cache[\s\S]*?account\.cache[\s\S]*?model\.cache/);
+  assert.match(source, /item\.cache,\s*item\.allTokens,/);
   const providerSort = source.slice(
     source.indexOf("function visibleProviders"),
     source.indexOf("function providersOf", source.indexOf("function visibleProviders")),
@@ -348,7 +433,7 @@ test("the token-cache switch is native-looking, persistent and default-on", () =
 
 test("the page follows magpie's language without a reload", () => {
   const source = read(uiDir, "app.js");
-  assert.match(source, /function applyDisplay\(display\)/);
+  assert.match(source, /function applyDisplay\(display, source = "options"\)/);
   assert.match(source, /W = globalThis\.UsageI18n\.get\(lang\)/);
   // Nothing is polled: the theme message carries the language.
   assert.doesNotMatch(source, /setInterval/);
@@ -359,26 +444,192 @@ test("the page follows magpie's language without a reload", () => {
   assert.match(source, /getAttribute\("content"\) \|\| "en"/);
 });
 
+test("official display preferences win over plugin options when the bridge provides them", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /let officialDisplay = false;/);
+  assert.match(source, /const hasOfficialDisplay =[\s\S]*?display\.currency === "cny"/);
+  assert.match(source, /if \(hasOfficialDisplay\) applyDisplay\(display, "magpie"\)/);
+  assert.match(source, /if \(officialDisplay\) return;/);
+  assert.match(source, /else if \(officialDisplay && source !== "magpie"\) \{\s*return false;\s*\}/);
+  assert.match(source, /Number\(display\.fx\?\.rate\)/);
+  const boot = read(pageDir, "boot.js");
+  assert.match(boot, /function hasOfficialDisplay\(value\)/);
+  assert.match(boot, /followDisplay\(current, true\)/);
+  assert.match(boot, /followDisplay\(next, true\)/);
+  assert.match(boot, /followDisplay\(options\);/);
+});
+
+test("warnings can explain incomplete model details in both languages", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /item\.code === "model-details"[\s\S]*?W\.modelDetails/);
+  assert.match(scope.UsageI18n.get("zh").modelDetails(2), /2 个账号的模型明细/);
+  assert.match(scope.UsageI18n.get("en").modelDetails(1), /1 account is/);
+  assert.match(scope.UsageI18n.get("en").modelDetails(2), /2 accounts are/);
+});
+
+test("plugin options are re-read on callbacks, never polled", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /onVisibility\?\.\(\(visible\) =>/);
+  assert.doesNotMatch(source, /usage:day|bridge\.read\(/);
+  assert.match(source, /await bridge\.options\.get\(\)/);
+  assert.match(source, /if \(!options \|\| typeof options !== "object"\) return;/);
+  assert.match(source, /if \(options\.currency === "cny" \|\| options\.currency === "usd"\)/);
+  assert.match(source, /meta\("settings"\) === "1"/);
+  assert.match(source, /message\.event !== "theme"[\s\S]*?syncDisplaySettings\(window\.magpie\)/);
+  assert.doesNotMatch(source, /setInterval|setTimeout\(\s*\(\)\s*=>\s*void syncDisplaySettings/);
+  assert.match(read(pageDir, "boot.js"), /query\.set\("settings", "1"\)/);
+});
+
+test("slow usage reads get more than one gateway request to finish", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /const REQUEST_TIMEOUT_MS = 30_000;/);
+  assert.match(source, /const SERVICE_TIMEOUT_MS = REQUEST_TIMEOUT_MS \+ 1_000;/);
+  assert.match(source, /AbortSignal\.timeout\(REQUEST_TIMEOUT_MS\)/);
+  assert.match(source, /\}, SERVICE_TIMEOUT_MS\);/);
+  assert.match(source, /error\?\.name === "TimeoutError"[\s\S]*?state\.error = W\.serviceTimeout/);
+  assert.match(source, /addEventListener\("pagehide", \(\) => clearTimeout\(serviceTimer\)/);
+});
+
+test("only the newest settings read can repaint display settings", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /let displaySettingsRequest = 0;/);
+  assert.match(source, /const requestId = \+\+displaySettingsRequest;/);
+  assert.match(source, /await bridge\.options\.get\(\);\s*if \(requestId !== displaySettingsRequest\) return;/);
+});
+
+test("a newer load owns the refresh UI after an older request settles", () => {
+  const source = read(uiDir, "app.js");
+  assert.match(source, /function isCurrentLoad\(requestId, requestedPeriod\)/);
+  assert.match(source, /requestId === state\.requestId && requestedPeriod === state\.period/);
+  assert.match(source, /if \(state\.controller === controller\) state\.controller = null;/);
+  assert.match(source, /if \(!isCurrentLoad\(requestId, requestedPeriod\)\) return;/);
+});
+
 test("a retry can repaint and fingerprints cover displayed metrics", () => {
   const source = read(uiDir, "app.js");
   assert.match(source, /function renderError\(\) \{\s+state\.rendered = false;/);
   for (const field of [
-    "summary.errors",
-    "summary.unpriced",
-    "summary.input",
-    "summary.output",
+    "item.calls",
+    "item.errors",
+    "item.unpriced",
+    "item.input",
+    "item.output",
+    "item.tokens",
+    "item.cache",
+    "item.allTokens",
+    "item.cacheRead",
+    "item.cacheWrite",
+    "item.cacheUnknown",
+    "item.cacheUnknownCalls",
     "account.lastAt",
-    "model.errors",
+    "model.hostNotes",
   ]) {
     assert.match(source, new RegExp(field.replace(".", "\\.")), field);
   }
   assert.match(source, /const delay = attempt === 1 \? 1200 : attempt === 2 \? 2500 : 5000;/);
 });
 
+test("a quiet refresh repaints when only the cache hit composition changes", () => {
+  const source = read(uiDir, "app.js");
+  const start = source.indexOf("function fingerprint(data) {");
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  let end = -1;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) {
+      end = index + 1;
+      break;
+    }
+  }
+  assert.ok(end > start, "fingerprint body was found");
+  const fingerprint = new Function(`${source.slice(start, end)}; return fingerprint;`)();
+  const sample = () => {
+    const stats = {
+      period: "today",
+      calls: 1,
+      input: 200,
+      output: 10,
+      tokens: 210,
+      cache: 200,
+      allTokens: 410,
+      cacheRead: 200,
+      cacheWrite: 0,
+      cacheUnknown: 0,
+      cacheUnknownCalls: 0,
+      cost: 1,
+    };
+    return {
+      period: "today",
+      summary: { ...stats, accounts: 1, providers: 1, models: 1 },
+      providers: [{
+        id: "p",
+        providerName: "P",
+        ...stats,
+        accounts: [{
+          id: "a",
+          account: "a",
+          alias: "",
+          providerName: "P",
+          ...stats,
+          lastAt: "",
+          models: [{
+            id: "m",
+            model: "m",
+            provider: "p",
+            providerName: "P",
+            ...stats,
+            hostNotes: [],
+          }],
+        }],
+      }],
+    };
+  };
+
+  const before = fingerprint(sample());
+  for (const path of [
+    ["summary"],
+    ["providers", 0],
+    ["providers", 0, "accounts", 0],
+    ["providers", 0, "accounts", 0, "models", 0],
+  ]) {
+    const changed = sample();
+    let item = changed;
+    for (const key of path) item = item[key];
+    item.cacheRead = 150;
+    item.cacheWrite = 50;
+    item.cacheUnknownCalls = 1;
+    assert.notEqual(fingerprint(changed), before, `fingerprint changed at ${path.join(".")}`);
+  }
+  const legacy = () => ({
+    period: "today",
+    summary: sample().summary,
+    accounts: [{
+      ...sample().providers[0].accounts[0],
+      cacheRead: 200,
+      cacheWrite: 0,
+      cacheUnknown: 0,
+      cacheUnknownCalls: 0,
+    }],
+  });
+  const changedLegacy = legacy();
+  changedLegacy.accounts[0].cacheRead = 150;
+  changedLegacy.accounts[0].cacheWrite = 50;
+  assert.notEqual(fingerprint(legacy()), fingerprint(changedLegacy));
+});
+
 test("a failed follow-up keeps the period already on screen", () => {
   const source = read(uiDir, "app.js");
   assert.match(source, /state\.data\?\.period === requestedPeriod/);
-  assert.match(source, /warning\.textContent = W\.refreshFailed/);
+  assert.match(source, /let refreshFailed = false;/);
+  assert.match(source, /function showRefreshWarning\(\)/);
+  assert.match(source, /function clearRefreshWarning\(\)/);
+  assert.match(source, /showRefreshWarning\(\);/);
+  assert.match(source, /renderWarnings\(state\.data\?\.warnings \|\| \[\]\)/);
+  assert.match(source, /renderWarnings\(body\.warnings \|\| \[\]\)/);
+  assert.match(source, /x-usage-tree-refresh/);
+  assert.match(source, /if \(!options\.quiet\) clearRefreshWarning\(\)/);
   assert.match(scope.UsageI18n.get("en").refreshFailed, /previous data/);
 });
 

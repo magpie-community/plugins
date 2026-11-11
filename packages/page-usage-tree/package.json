@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-usage-tree",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "在 Magpie 窗口中按供应商 -> 账号 -> 模型查看用量，逐级展开调用、错误、Token 与费用。A page in Magpie's window: usage as provider -> account -> model, each level expandable, with calls, errors, tokens and cost from Magpie's local usage API.",
   "type": "module",
   "main": "./index.mjs",
@@ -60,6 +60,7 @@
       },
       "icon": "page/icon.svg"
     },
+    "permissions": [],
     "options": {
       "port": 3494,
       "currency": "usd",

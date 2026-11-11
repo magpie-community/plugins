@@ -343,8 +343,10 @@ input, select {
   margin-top: 3px;
   color: var(--magpie-muted);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* The hit rate is part of this sentence, not an optional tail. */
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .summary-card.loading {
@@ -713,8 +715,10 @@ input, select {
   overflow: hidden;
   color: var(--magpie-faint);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .bar {
@@ -923,7 +927,9 @@ input, select {
   }
 }
 
-@media (max-width: 620px) {
+/* The fixed columns need about 680px. Switch to the compact tree before
+   the expanding model rows can push their values out of the viewport. */
+@media (max-width: 700px) {
   .cols {
     grid-template-columns: minmax(0, 1fr) 48px 82px 18px;
     gap: 8px;
@@ -1012,9 +1018,13 @@ input, select {
   }
 
   .model-row .model-provider,
-  .model-row .model-split,
   .model-row .metric-detail {
     display: none;
+  }
+
+  .model-row .model-split {
+    display: block;
+    padding-bottom: 2px;
   }
 
   /* A 420 px tile is too narrow for one line of "In ... · Out ... ·
