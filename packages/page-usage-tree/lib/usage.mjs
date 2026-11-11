@@ -53,6 +53,8 @@ function blankStats() {
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
+    cacheUnknown: 0,
+    cacheUnknownCalls: 0,
     reasoning: 0,
     cost: 0,
     unpriced: 0,
@@ -83,6 +85,8 @@ function gatewayStats(item) {
     ["output", "output"],
     ["cacheRead", "cache_read"],
     ["cacheWrite", "cache_write"],
+    ["cacheUnknown", "cache_unknown"],
+    ["cacheUnknownCalls", "cache_unknown_calls"],
     ["reasoning", "reasoning"],
     ["cost", "cost"],
     ["unpriced", "unpriced"],
@@ -108,6 +112,8 @@ function addTotals(total, item) {
     "output",
     "cacheRead",
     "cacheWrite",
+    "cacheUnknown",
+    "cacheUnknownCalls",
     "reasoning",
     "cost",
     "unpriced",
@@ -220,6 +226,7 @@ function modelRows(requests, account) {
 // GET /v1/magpie/usage/requests?account=...
 export function aggregateGatewayUsage(usage, requestsByAccount = {}, options = {}) {
   const period = PERIODS.has(options.period) ? options.period : "today";
+  const missingModelAccounts = Math.max(0, Number(options.missingModelAccounts) || 0);
   const accountItems = Array.isArray(usage?.accounts) ? usage.accounts : [];
   const accounts = [];
   let apiKeyGroups = 0;
@@ -328,7 +335,10 @@ export function aggregateGatewayUsage(usage, requestsByAccount = {}, options = {
     summary,
     providers,
     accounts,
-    warnings: summary.calls ? [] : [{ code: "no-usage" }],
+    warnings: [
+      ...(summary.calls ? [] : [{ code: "no-usage" }]),
+      ...(missingModelAccounts ? [{ code: "model-details", count: missingModelAccounts }] : []),
+    ],
     source: "Magpie gateway usage",
   };
 }

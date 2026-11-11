@@ -30,6 +30,17 @@ test("the page's service routes", { concurrency: false }, async (t) => {
     assert.match(htmlBody, /meta name="usage-tree-token"/);
     assert.match(htmlBody, /<main class="view">/);
     assert.match(htmlBody, /usage-tree-currency" content="usd"/);
+    assert.match(htmlBody, /usage-tree-settings" content="0"/);
+    assert.match(htmlBody, /<script src="bridge\.js">/);
+
+    const bridge = await fetch(`http://127.0.0.1:${info.port}/bridge.js`);
+    assert.equal(bridge.status, 200);
+    const bridgeBody = await bridge.text();
+    assert.doesNotMatch(bridgeBody, /read: \(name, params\)|call\("read"/);
+    assert.match(bridgeBody, /call\("hello"\)/);
+    assert.match(bridgeBody, /onTheme\(fn\)/);
+    assert.match(bridgeBody, /if \(parent === window\) return Promise\.resolve\(undefined\)/);
+    assert.match(bridgeBody, /call\("hello"\)\.then\(\(hello = \{\}\) => \{/);
 
     const configured = await fetch(
       `http://127.0.0.1:${info.port}/?lang=zh&theme=dark&currency=cny&chineseUnits=1&usdCny=7.2`,
@@ -39,6 +50,10 @@ test("the page's service routes", { concurrency: false }, async (t) => {
     assert.match(configuredBody, /usage-tree-currency" content="cny"/);
     assert.match(configuredBody, /usage-tree-chinese-units" content="true"/);
     assert.match(configuredBody, /usage-tree-usd-cny" content="7.2"/);
+    assert.match(configuredBody, /usage-tree-settings" content="0"/);
+
+    const settingsEnabled = await fetch(`http://127.0.0.1:${info.port}/?settings=1`);
+    assert.match(await settingsEnabled.text(), /usage-tree-settings" content="1"/);
 
     const denied = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`);
     assert.equal(denied.status, 401);
@@ -105,6 +120,18 @@ test("the page's service routes", { concurrency: false }, async (t) => {
     assert.equal(fresh.headers.get("x-usage-tree-cache"), "stale");
     assert.equal(body.stale, true);
     assert.equal(body.revision, 1);
+
+    // A quiet follow-up must still see the stale mark and retry. Previously
+    // the failure was written to an object the cache had already replaced.
+    const followUp = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`, {
+      headers: { "x-usage-tree-token": token },
+    });
+    const followUpBody = await followUp.json();
+    assert.equal(followUp.headers.get("x-usage-tree-cache"), "stale");
+    assert.equal(followUpBody.stale, true);
+    assert.equal(followUp.headers.get("x-usage-tree-refresh"), "failed");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(calls >= 3, "the next stale read starts another refresh");
   });
 
   await t.test("rejects a non-loopback host", async (t) => {

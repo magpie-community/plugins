@@ -11,6 +11,80 @@ const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
 const CACHE_MS = 25_000;
 export const PLUGIN_NAME = "magpie-usage-tree";
 
+// The service page runs inside Magpie's plugin frame. Its own bridge lives
+// in the launcher document; this small registered bridge serves subsequent
+// plugin-option and visibility calls from the same parent window.
+const BRIDGE_SHIM = `(() => {
+  const waiting = new Map();
+  let next = 0;
+  const themed = [];
+  const watched = [];
+  function call(method, params) {
+    // Opening the service directly has no Magpie parent to answer. Leave the
+    // optional bridge inert instead of posting a request to the page itself.
+    if (parent === window) return Promise.resolve(undefined);
+    const id = ++next;
+    return new Promise((resolve, reject) => {
+      waiting.set(id, { resolve, reject });
+      parent.postMessage({ magpie: 1, id, method, params }, "*");
+    });
+  }
+  function paint(theme) {
+    if (!theme) return;
+    const root = document.documentElement;
+    root.dataset.theme = theme.dark ? "dark" : "light";
+    root.style.colorScheme = theme.dark ? "dark" : "light";
+    if (theme.lang) root.lang = theme.lang;
+    for (const [key, value] of Object.entries(theme.tokens || {})) {
+      if (typeof value === "string") root.style.setProperty("--magpie-" + key, value);
+    }
+  }
+  addEventListener("message", (event) => {
+    const message = event.data;
+    if (!message || message.magpie !== 1 || event.source !== parent) return;
+    if (message.event === "theme") {
+      api.theme = message.data;
+      paint(message.data);
+      for (const fn of themed) {
+        try { fn(message.data); } catch { /* a page listener cannot break the bridge */ }
+      }
+      return;
+    }
+    if (message.event === "visibility") {
+      for (const fn of watched) fn(!!message.data?.visible);
+      return;
+    }
+    const wait = waiting.get(message.id);
+    if (!wait) return;
+    waiting.delete(message.id);
+    if (message.error) wait.reject(new Error(message.error));
+    else wait.resolve(message.result);
+  });
+  const api = {
+    theme: null,
+    context: {},
+    service: "",
+    onTheme(fn) { themed.push(fn); },
+    options: {
+      get: () => call("options.get"),
+      set: (options) => call("options.set", { options }),
+    },
+    onVisibility(fn) { watched.push(fn); },
+  };
+  api.ready = call("hello").then((hello = {}) => {
+    const { context, service, ...theme } = hello;
+    api.theme = theme;
+    api.context = context || {};
+    api.service = "";
+    if (service) {
+      try { api.service = new URL(service, location.href).href; } catch { /* none */ }
+    }
+    paint(theme);
+    return theme;
+  });
+  window.magpie = api;
+})();`;
+
 // The build's own version, so an older service on the port is told apart
 // from this one.
 export function version() {
@@ -101,6 +175,7 @@ function allowNullOrigin(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "null");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "x-usage-tree-token");
+    res.setHeader("Access-Control-Expose-Headers", "x-usage-tree-cache, x-usage-tree-refresh");
     res.setHeader("Vary", "Origin");
   }
 }
@@ -185,6 +260,11 @@ export async function startServer(options = {}) {
   const cache = new Map();
   let boundPort = requestedPort;
 
+  function refreshFailedFor(period) {
+    const entry = cache.get(period);
+    return entry?.refreshFailed === true || entry?.data?.stale === true;
+  }
+
   async function dataFor(period, options = {}) {
     const wanted = PERIODS.has(period) ? period : "7d";
     const hit = cache.get(wanted);
@@ -199,19 +279,28 @@ export async function startServer(options = {}) {
       return {
         data: { ...hit.data, stale },
         cache: stale ? "stale" : "fresh",
+        refreshFailed: refreshFailedFor(wanted),
       };
     }
     // A read is already running behind the page: what was read last is
     // still the best answer to give now.
     if (hit?.pending) {
       if (hit.data && !options.fresh) {
-        return { data: { ...hit.data, stale: true }, cache: "stale" };
+        return {
+          data: { ...hit.data, stale: true },
+          cache: "stale",
+          refreshFailed: refreshFailedFor(wanted),
+        };
       }
-      return { data: await hit.pending, cache: "shared" };
+      return { data: await hit.pending, cache: "shared", refreshFailed: refreshFailedFor(wanted) };
     }
 
     const loaded = await refreshInBackground(wanted, { wait: true, fresh: options.fresh });
-    return { data: loaded, cache: loaded?.stale ? "stale" : "miss" };
+    return {
+      data: loaded,
+      cache: loaded?.stale ? "stale" : "miss",
+      refreshFailed: refreshFailedFor(wanted),
+    };
   }
 
   function refreshInBackground(wanted, options = {}) {
@@ -219,20 +308,28 @@ export async function startServer(options = {}) {
     if (hit?.pending) {
       return options.wait ? hit.pending : Promise.resolve(hit.data);
     }
+    const entry = { at: hit?.at || 0, data: hit?.data, pending: null, refreshFailed: false };
 
     const pending = loader(wanted, { fresh: Boolean(options.fresh) })
       .then((data) => {
-        cache.set(wanted, { at: Date.now(), data, ttl: CACHE_MS });
+        cache.set(wanted, {
+          at: Date.now(),
+          data,
+          ttl: CACHE_MS,
+          refreshFailed: false,
+        });
         return data;
       })
       .catch((error) => {
-        if (hit?.data) {
-          hit.error = error;
+        if (entry.data) {
+          entry.refreshFailed = true;
+          entry.error = error;
           // Keep the last good answer, but never let the page mistake it for
           // a successful fresh read. Marking it stale also keeps the next
           // request retrying instead of accepting the cache as current.
-          hit.data = { ...hit.data, stale: true };
-          return hit.data;
+          entry.data = { ...entry.data, stale: true };
+          if (cache.get(wanted) === entry) cache.set(wanted, entry);
+          return entry.data;
         }
         throw error;
       })
@@ -241,10 +338,11 @@ export async function startServer(options = {}) {
         if (current?.pending === pending) current.pending = null;
       });
 
-    cache.set(wanted, { at: hit?.at || 0, data: hit?.data, pending });
+    entry.pending = pending;
+    cache.set(wanted, entry);
     if (!options.wait) {
       void pending.catch(() => {});
-      return Promise.resolve(hit?.data);
+      return Promise.resolve(entry.data);
     }
     return pending;
   }
@@ -279,6 +377,7 @@ export async function startServer(options = {}) {
       ) {
         allowNullOrigin(req, res);
         res.writeHead(204, {
+          "Access-Control-Expose-Headers": "x-usage-tree-cache, x-usage-tree-refresh",
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
         });
@@ -292,15 +391,16 @@ export async function startServer(options = {}) {
           return;
         }
         const template = await readFile(join(UI_DIR, "app.html"), "utf8");
+        const hasUnits = url.searchParams.has("chineseUnits");
         const boot = {
           tokens: parseTokens(url.searchParams.get("tokens")),
           ...displaySettings({
             theme: url.searchParams.get("theme") === "dark" ? "dark" : "light",
             lang: url.searchParams.get("lang") || "",
             currency: url.searchParams.get("currency") || options.currency || "",
-            chineseUnits:
-              url.searchParams.get("chineseUnits") === "1" ||
-              (options.chineseUnits === true && !url.searchParams.has("chineseUnits")),
+            chineseUnits: hasUnits
+              ? url.searchParams.get("chineseUnits") === "1"
+              : options.chineseUnits === true,
             usdCny: url.searchParams.get("usdCny") || options.usdCny || 0,
           }),
         };
@@ -313,6 +413,7 @@ export async function startServer(options = {}) {
           .replaceAll("__USAGE_TREE_CURRENCY__", escHTML(boot.currency))
           .replaceAll("__USAGE_TREE_USD_CNY__", escHTML(String(boot.usdCny)))
           .replaceAll("__USAGE_TREE_CHINESE_UNITS__", String(boot.chineseUnits))
+          .replaceAll("__USAGE_TREE_SETTINGS__", url.searchParams.get("settings") === "1" ? "1" : "0")
           .replaceAll(
             "__USAGE_TREE_TITLE__",
             escHTML(lang.toLowerCase().startsWith("zh") ? "账号用量" : "Account usage"),
@@ -326,6 +427,18 @@ export async function startServer(options = {}) {
           "Referrer-Policy": "no-referrer",
         });
         res.end(req.method === "HEAD" ? undefined : html);
+        return;
+      }
+
+      // A small same-page bridge keeps plugin-option and visibility messages
+      // working after the launcher navigates to the service.
+      if (url.pathname === "/bridge.js") {
+        res.writeHead(200, {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "X-Content-Type-Options": "nosniff",
+        });
+        res.end(req.method === "HEAD" ? undefined : BRIDGE_SHIM);
         return;
       }
 
@@ -346,6 +459,7 @@ export async function startServer(options = {}) {
         }
         const loaded = await dataFor(period, { fresh: url.searchParams.get("fresh") === "1" });
         res.setHeader("X-Usage-Tree-Cache", loaded.cache);
+        res.setHeader("X-Usage-Tree-Refresh", loaded.refreshFailed ? "failed" : "ok");
         json(res, 200, loaded.data);
         return;
       }
