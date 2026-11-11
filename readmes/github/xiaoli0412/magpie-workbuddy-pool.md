@@ -1,0 +1,332 @@
+# magpie-workbuddy-pool
+
+把 **WorkBuddy / CodeBuddy 账号池**导入 [magpie（喜鹊）](https://usemagpie.ai)，落成 magpie **原生**登录态，按 **大陆 / 港澳台 / 国际** 分区管理；带**健康检测**、**自动续期**、**页面内直接导入**；与「成长计划 / 任务签到」积分插件共用同一份登录态。
+
+不新造供应商、不写第二个网关、不碰别人的插件。
+
+---
+
+## 它解决的问题
+
+magpie 的一个 provider 本来就能挂多个账号：第一个存键 `<provider>`，第二个起存键 `<provider>#<摘要>`。
+所以账号池该做的只有一件事——**按这个形状写进 magpie 自己的登录态库**。
+
+```
+~/.config/magpie/plugin-auth.json
+  workbuddy#adcf2e8   { accountId: "CN-181****2421",  domain: "www.codebuddy.cn" }
+  workbuddy#c5ea34a   { accountId: "HMT-519****4    domain: "www.codebuddy.cn" }
+  workbuddy-ai#…      { accountId: "INTL-…",          domain: "www.workbuddy.ai" }
+```
+
+于是：
+
+* magpie 的供应商页把它们当**原生账号**显示、轮换、限额、失败转移；
+* 任何读同一份登录态的插件（成长计划、任务签到）自动看到它们；
+* 不改别人的插件，也不怕社区插件升级覆盖。
+
+实测：
+
+```
+$ magpie plugin list
+  workbuddy (WorkBuddy, 19 models)  signed in as CN-181****2003
+  page  WorkBuddy 账号池 (reads nothing)
+  tools magpie-workbuddy-growth-_wb_growth
+
+$ magpie provider test workbuddy
+  ✓ chat       4374 ms · hy4-preview
+
+$ magpie tool …_wb_growth --action daily
+  账号 a1b2c3d4… 每日活跃：已上报（连登 1 天）      ← 10 个账号全部上报成功
+```
+
+---
+
+## 区域：先说清楚哪部分是真的
+
+WorkBuddy 服务端只有**两套构建**，magpie 里就是两个 provider：
+
+| provider | 构建 | API |
+|---|---|---|
+| `workbuddy` | 中国构建（CodeBuddy 计划） | `https://copilot.tencent.com/v2` |
+| `workbuddy-ai` | 国际构建 WorkBuddy AI | `https://www.workbuddy.ai/v2` |
+
+**大陆与港澳台走的是同一套中国构建。** 这一点有实测依据，不是推断：
+
+```
+POST /v2/billing/meter/get-user-resource   （唯一暴露地理字段的接口）
+大陆池账号  → Region=ap-others  Zone=ap-others-4  RegionId=47
+港澳台池账号 → Region=ap-others  Zone=ap-others-4  RegionId=47     ← 完全相同
+```
+
+所以本插件的三档是这么定义的，且**在界面里如实标注依据**：
+
+| 分区 | 含义 | 判定依据（按可靠度） |
+|---|---|---|
+| **大陆** | 中国大陆构建账号 | 导出 `domain` 是 `*.codebuddy.cn` / `*.workbuddy.cn`；11 位 `13x–19x` 手机号 |
+| **港澳台** | 中国构建、港澳台号段或港澳台池导出 | 导出里的池标签（如 `origin: "wb852"`）；8 位号码（港澳）；10 位 `09…`（台湾） |
+| **国际** | 国际构建账号 | 探针被 `www.workbuddy.ai` 接受；`domain` 是 `*.workbuddy.ai` / `*.codebuddy.ai` |
+
+> **"港澳台"是账号归属标签，不是独立服务区域。** 目前没有任何公开实现（含 4 个主流 2API 项目）建模过港澳台区域；积分包的 `Zone` 也只有 `ap-others` 一类。本插件把它作为**可核对、可手工修正**的标签，而不是编造一个不存在的端点。
+> 判不出来时给 **未知**，不硬塞进大陆——判错的代价比留白大。
+
+详细视图里每个账号都能看到它的 `origin / domain / 来源文件`，以及检测时间。
+
+---
+
+## 安装
+
+```bash
+# 从 GitHub（本仓库即插件）
+magpie plugin add github:xiaoli0412/magpie-workbuddy-pool
+
+# 或本地目录
+magpie plugin add D:\path\to\magpie-workbuddy-pool
+
+# 成长计划的工具本体（若还没装，入口包不会自动带出工具）
+magpie plugin add npm:magpie-workbuddy-growth-core
+```
+
+装好后侧栏 **插件 → WorkBuddy 账号池**。
+
+---
+
+## 用
+
+### 1. 页面里直接导入（推荐）
+
+打开页面 → 展开「导入账号」→ 粘贴导出 JSON，或选择文件（可多选）→ **导入到喜鹊**。
+
+页面把这次导入写进本插件的 options（页面唯一被允许的写通道），插件在下次加载时应用、清空滞留项、刷新快照，页面自动重载显示结果。全程不需要 AI 介入，也不需要命令行。
+
+> 首次打开页面若显示「还没有导入账号」，是因为快照 page/data.js 由插件生成、不进仓库；插件下次加载（打开 magpie 即会）就会写入。
+
+> 页面运行在沙盒 iframe（`connect-src 'none'`，无网络、无文件系统），所以数据来自插件生成的 `page/data.js`——**只有元数据，不含任何令牌**。
+
+### 2. 命令行导入
+
+```bash
+bun tools/import.mjs              # 导入并实测每个账号
+bun tools/import.mjs --dry        # 只看结果，不落盘
+bun tools/import.mjs --no-probe   # 离线，仅按导出信息判区域
+```
+
+把导出文件丢进 `%USERPROFILE%\.config\magpie\workbuddy-pool\` 也可以，CLI 与页面共享同一套导入逻辑（`lib/importer.mjs`）。
+不限文件数、不限每文件账号数；数组 / `{accounts:[…]}` / 单对象都认；同 `uid` 多份只留活得最久的那份。
+
+**幂等**：重复导入不多出账号；token 变了原地更新；池里已消失的账号会被清理——**只清理本插件写的**，别人的登录态一根汗毛不动（有测试覆盖）。
+写盘前自动备份 `plugin-auth.json.pool.bak`。
+
+### 3. 检测与续期
+
+* **健康检测**：插件加载时（3 小时节流）逐个向 WorkBuddy 验证，结果写进快照；页面用「可用 / 失效 / 登录态缺失 / 检测失败 / 待实测」呈现，过期时间临近会变琥珀色。
+* **自动续期**：剩余 < 36 小时的账号用 `POST /v2/plugin/auth/token/refresh` 续期并写回（6 小时节流 + 进程锁，避免重复花掉同一个 refresh token）。WorkBuddy 的 access token 是 **28 天**，日常开着 magpie 就不会掉线。
+* `bun tools/verify.mjs [--refresh]` 可随时手动核对全部账号。
+
+### 4. 和成长计划插件
+
+`magpie-workbuddy-growth-core` 直接读 `plugin-auth.json`，筛选条件是：
+
+```js
+key.startsWith("workbuddy") && !key.startsWith("workbuddy-ai") && auth.access && !auth.enterpriseId
+```
+
+本插件写的键名、字段、以及"不写 `enterpriseId`"完全符合，所以导入后立即可用：
+
+```
+wb_growth {action:"status"}   盘点任务树
+wb_growth {action:"task"}     点亮并领取
+wb_growth {action:"daily"}    每日活跃（点亮连登）
+wb_growth {action:"travel"}   猫猫旅行
+wb_growth {action:"streak"}   连登补签 / 兑换 / 抽奖
+```
+
+只想跑部分账号用 `--uid <前缀>`。
+
+---
+
+## 关于签到，需要如实说明的三件事
+
+| 供应商 | 状态 | 原因 |
+|---|---|---|
+| WorkBuddy（大陆） | ✅ 可用 | 成长计划插件覆盖任务/连登/旅行/每日活跃；已实测 10/10 账号上报成功 |
+| CodeArts / MiniMax / Qoder CN / Trae CN / 商汤小浣熊 | ✅ 可用 | magpie 内置签到，`plugin-checkin.json` 有成功记录 |
+| **Qoder** | ⚠️ 厂商限制 | `ineligible`：Qoder 只给「它自己客户端识别到的设备」发积分。装了 Qoder 桌面/CLI 或设置 `QODER_RUNTIME_INFO` 才能签到。本机有 Qoder 数据目录但无 runtime-info 可执行文件 |
+| **商汤 SenseNova** | ⚠️ 无可修 | 上游没有每日签到接口，插件也未实现 `auth.checkin`；额度不显示同理（该插件未实现 `auth.usage`） |
+| **JoyCode** | ⚠️ 账号问题 | `provider test joycode` → `403 访问受限，请联系管理员开通`：账号未被京东侧开通，与本插件无关 |
+
+本插件不谎称修好了这些：它们不在本插件的写入路径上，改它们要 patch 第三方插件。
+
+---
+
+## 不做什么（以免变成第二个网关）
+
+* 不新造 provider id、不改模型名（`cn:` 前缀那套是网关做法，会污染模型选择器）。
+* 不自己实现账号轮换 / 冷却 / 限额——magpie 的 Routing 页已经在做，重复实现会与它的 rests/sticks 打架。
+* 不接管会话头、不改写提示词——那是社区 `workbuddy` 插件的地盘。
+
+---
+
+## 文件
+
+```
+index.mjs              插件入口：消费页面导入 → 健康检测 → 续期 → 刷新快照（不声明 provider，故零冲突）
+lib/pools.mjs          读池、归一化、去重、账号键名
+lib/region.mjs         区域判定（构建 → 大陆/港澳台/国际）
+lib/importer.mjs       唯一的导入实现（CLI 与插件共用）+ 健康判定
+lib/store.mjs          登录态读写（原子写 + 备份）
+lib/wb.mjs             WorkBuddy API：探针 / 续期 / 积分 / 模型
+lib/snapshot.mjs       快照（仅元数据）
+lib/options.mjs        页面 → 插件的信箱（plugins.json 的 pendingImport）
+tools/import.mjs       导入 CLI
+tools/verify.mjs       验证 CLI
+tools/test-*.mjs       四套测试
+page/                  界面
+```
+
+## 测试
+
+```bash
+bun run test
+```
+
+* `test-import` — 区域归属、幂等、所有权隔离、秒→毫秒、accountId 必须 ASCII（否则 HTTP 头无法 pin 账号）
+* `test-page` — 快照解析、分组、健康折叠、搜索、双语、无令牌外泄
+* `test-assets` — 页面完整性、沙盒合规（无内联脚本/样式/外部源）、清单与入口
+* `test-roundtrip` — **页面 → options → 插件** 真实往返
+
+## 回滚
+
+```bash
+copy %USERPROFILE%\.config\magpie\plugin-auth.json.pool.bak  %USERPROFILE%\.config\magpie\plugin-auth.json
+magpie plugin rm github:xiaoli0412/magpie-workbuddy-pool
+```
+
+## 许可
+
+MIT
+
+---
+
+## v2.0：实测、用量、分流
+
+### 1. 「可用」是真发一次请求
+
+旧版只问 `GET /v2/plugin/accounts`（token 是否被接受）。这不等于模型能用。
+
+`lib/health.mjs` 改成**模型级**探测：
+
+1. `GET /v3/config?agent=cli` 取该账号可用模型，优先挑 `free` / `flash` / `mini` / `auto`（省钱）；
+2. 真发一条 `POST /v2/chat/completions`，`stream: true`、`max_tokens: 1`、内容就一个 `ping`；
+3. **收到第一个 SSE 分块就立刻断开**，不等完整回复；
+4. 解析上游错误码给人话：`10085` UA 被拒 / `11128` 提示词被判定非批准渠道 / `11140` 账号被限制 / `11158` 无权用此模型 / `12153` refresh token 已被消费 …
+
+实测（10 个账号）：
+
+```
+CN-181****2421  ok=true model=deepseek-v4-flash 1365ms
+CN-156****7796  ok=true model=deepseek-v4-flash 1278ms
+CN-196****9217  ok=true model=deepseek-v4-flash 1611ms
+… 10/10 answered
+```
+
+结果写进 `state.json`（`health` / `healthModel` / `healthMs` / `checkedAt`），界面显示「可用 / 失效 / 登录态缺失」和**用的哪个模型、多快**。
+
+### 2. 用量：读 magpie 自己的账
+
+`lib/usage.mjs` 直接读 `~/.config/magpie/usage.jsonl`，按 `providerAccount`（就是账号名）聚合：请求数、输入/输出 token、缓存读取、错误数、最近活跃、每个账号的主力模型。**不二次记账**，所以页面数字不会和 magpie 的「用量」页打架。
+
+### 3. 分流：哪个模型由谁扛
+
+同一个文件按 `model` 聚合出「模型 → 账号」分布，界面用占比条显示。这就是账号分流/模型分流的真实分布，不是配置推测。
+
+### 4. 启动不再拖慢 magpie
+
+magpie 会 `await` 每个插件的函数才服务请求。v2 把它拆开：
+
+| 阶段 | 内容 | 耗时 |
+|---|---|---|
+| 同步返回前 | 消费页面导入（文件写）、写 `page/data.js`（本地读） | ~9ms |
+| 之后（后台） | 模型级实测、token 续期 | 不阻塞 |
+
+实测 `plugin init` 从「联网探测 10 个账号」变成 **9ms**。
+
+---
+
+## v3.0：扫描、冷却、批量与单号检测
+
+### 1. 先测再导（`tools/scan.mjs`）
+
+```bash
+bun tools/scan.mjs [--dir <池目录>] [--models 4] [--concurrency 3] [--limit N] [--force] [--retry-failed]
+```
+
+每个账号：拉它可用的模型 → 按厂商挑 **3~4 个**（free / flash / claude / glm / deepseek / kimi 各取其一，故意覆盖不同通道）→ 每个模型真发一次 `max_tokens:1` 的流式请求 → **收到首块即断开**。
+
+判读规则：
+
+| 结果 | 含义 |
+|---|---|
+| `✓ 4/4 模型可用` | 账号健康，且四类模型都通 |
+| `✗ 账号被限制 (11140)` | 账号被上游限制，真死 |
+| `✗ HTTP 401` | token 失效（扫描器会先尝试一次 refresh 再判） |
+| `✗ 限流（并发太高，稍后重试）` | **不算死**，加 `--retry-failed` 低并发补扫 |
+
+结果写 `scan-result.json`，支持断点续跑；同一个账号重扫会**替换**而不是追加。
+
+### 2. 导入按扫描结果走（`tools/import.mjs`）
+
+```bash
+bun tools/import.mjs --dir <池目录>      # 自动读同目录的 scan-result.json
+```
+
+- 只导入扫出**可用**的账号；
+- 导入时不再重复探测（扫描已给出结论），受影响的只是区域判定；
+- 每个账号带初始健康状态与冷却，池子一建立就是诚实的。
+
+### 3. 冷却与自动关闭（`lib/lifecycle.mjs`）
+
+| 事件 | 处理 |
+|---|---|
+| 成功回包 | 失败计数清零、解除冷却、重新启用 |
+| `429` 限流 | 冷却 **10 分钟**，不计入失败次数（不是账号的错） |
+| 401 / 403 / 11140 / 11158 | 失败 +1，冷却 **30 分钟起，逐次翻倍**（最长 24 小时） |
+| 连续失败 **3** 次 | **自动关闭**：从 magpie 登录态移除，凭证留底可一键恢复 |
+| 手动关闭 | 同上，但不会被自动重测拉起 |
+
+被关闭的账号不会再拖累喜鹊的加载速度，也不会被路由到。
+
+### 4. 单号 / 批量检测
+
+**页面**（账号页）：
+
+- 每行三个按钮：`测`（只测这个号）/ `停`（停用，凭证留底）/ `删`（移出账号池）
+- 顶部：`批量检测全部` / `检测当前筛选` / `清理失效`
+
+页面不能直接联网或读库，所以按钮把动作写进插件的 options，插件下次加载时执行并回填结果，页面自动刷新。
+
+**命令行**：
+
+```bash
+bun tools/scan.mjs --dir <池目录> --models 4   # 批量
+bun tools/scan.mjs --dir <池目录> --limit 1 --force  # 单个
+```
+
+### 5. 池隔离（修掉一个会丢数据的 bug）
+
+早先的实现里，从 A 目录导入会把 B 目录导入的账号当成"已不存在"删掉。
+现在每个账号记录自己来自哪个池目录（`poolDir`），清理只作用于**同一个目录**：
+
+- 换目录导入不会清空别的池；
+- 页面导入的账号（`poolDir=page`）也不会被目录导入扫掉；
+- 只有同目录内真的消失的账号才被清理。
+
+`tools/test-isolation.mjs` 覆盖了这个行为。
+
+### 6. 活跃上限（可选提速）
+
+喜鹊会为**每个账号**拉一次模型列表，账号越多冷加载越慢（122 个账号实测约 17 秒）。
+
+`magpie plugin options github:xiaoli0412/magpie-workbuddy-pool '{"maxActive":40}'`
+
+设上限后，超出部分中**已经判定失败**的账号会被移出登录态（健康的永不动），把它们放回用页面上的「启」按钮。
+默认 `0`（不限制）——账号是你的，不替你偷偷关。

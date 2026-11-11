@@ -1,0 +1,112 @@
+# magpie-cliproxyapi-plugin
+
+[English](README.en.md)
+
+将 CLIProxyAPI（CPA）提供的模型接入 Magpie，并可选通过 CPA 管理接口查询凭据额度和 Claude 思考等级。目前额度适配器仅支持 Claude 的五小时、总周限已用百分比。无需额外 shim；OAuth 登录、Token 刷新和上游凭据选择均由 CPA 负责。
+
+已验证 Magpie 0.1.2790 / 0.1.2826 与 CPA 8.0.51 的 Claude 链路。多供应商扩展仅经 mock 测试，非 Claude 后端的实际能力仍需自行验证。
+
+插件内置 [router-for-me](https://github.com/router-for-me) 组织头像作为统一图标，缩放为 128×128 并嵌入元数据，显示时无需额外网络请求。
+
+## 安装与登录
+
+需有可用的 CPA 后端、业务 API key，以及支持 provider 插件的 Magpie。Magpie 会准备 Bun 运行时；插件本身没有外部运行时依赖。
+
+```sh
+magpie plugin add https://github.com/zhdsmy/magpie-cliproxyapi-plugin
+magpie plugin login cpa
+```
+
+仅通过 GitHub 分发，不发布 npm 包。开发时可用 `magpie plugin add /absolute/path/to/magpie-cliproxyapi-plugin` 安装本地目录。
+
+Magpie 服务运行中执行登录后，请运行 `magpie plugin on <安装时使用的包名或路径>`（本地开发示例为 `magpie plugin on /absolute/path/to/magpie-cliproxyapi-plugin`），或重启 Magpie 服务，使新账号生效。
+
+登录时填写：
+
+| 字段 | 含义 |
+| --- | --- |
+| CPA Base URL | 必填，例如 `https://cpa.example.invalid`。允许尾部 `/v1`，会自动去掉；不允许 URL 用户信息、query 或 fragment。 |
+| Management key | 可选，密码输入；用于额度和 Claude 思考等级。不填仍可推理，但不查询管理接口，也不显示思考等级。 |
+| Management URL | 可选，**完整管理入口**，例如 `http://127.0.0.1:8317/v8/management`；默认 `<CPA Base URL>/v8/management`。 |
+| CPA credential | 可选，按 CPA 凭据的 `name` 或 `auth_index` 精确选择。 |
+| Business API key | Magpie 随后要求输入的 CPA 业务 key，用于模型发现与推理。 |
+
+业务 key 与管理 key 分开使用，同存于 Magpie 的 `plugin-auth.json`，由宿主以 0600 权限保存。插件不读取 CPA 的 OAuth 文件。
+
+模型名称为 `cpa/<CPA 模型 ID>`，例如 `cpa/claude-sonnet-4-6`。发给 CPA 的模型 ID 保持原样。插件通过 CPA 的 Anthropic 兼容接口转发 Messages、SSE、工具往返和 count_tokens。发现保留所有有效模型 ID，仅排除 `claude-fable-5-dd-` 开头的 cloaking 编码 ID；实际暴露范围由 Magpie 的模型选择与白名单控制。
+
+已有名为 `cpa` 的自定义 provider 时，Magpie 会把插件的**生效 ID** 改为 `cpa-plugin`，模型变为 `cpa-plugin/<ID>`。用 `magpie providers`、`magpie models` 或网关模型目录确认；`magpie plugin --json` 仍可能只显示插件自报的 `cpa`。
+
+## 管理访问与额度
+
+管理 key 拥有 **CPA 完整管理权限，绝非只读额度 key**。插件只将其作为 Bearer 发送到指定管理入口，拒绝跳转；不会将其发往业务端点或直接发往 Anthropic。仅使用你信任的管理入口和传输链路。
+
+CPA 只把其看到的 `127.0.0.1` / `::1` 视为本机。通常需要 Magpie 与 CPA 处于同一网络命名空间并使用回环地址；否则需由你开启 CPA `allow-remote`；建议配合来源防火墙、隧道或私网限制访问。同机不同 Docker 容器、私网或 Tailscale 地址通常仍算远程。插件不修改这些设置，**不建议公开管理接口到公网**。
+
+额度按所选上游**凭据账号**计算，不是按模型计算，也不代表整个 CPA 凭据池。适配器按管理接口返回的凭据 `provider` 分派；目前只有 `claude`，仅输出 `5 hours` / `7 days` 百分比、跨度和重置时间，不显示金额或账户资料。管理接口还提供 Claude 频道的模型思考等级；插件把有等级定义的模型标为 reasoning 并显示等级。等级请求路径为 `GET <管理基址>/routing/model-definitions/claude`。如果管理接口前有反向代理白名单，必须放行此路径，否则不会显示等级。管理接口不可达、返回错误或没有管理 key 时，模型仍正常发现但不带等级。发现非 Claude 模型不代表支持其额度或思考等级。
+
+| 凭据选择 | 行为 |
+| --- | --- |
+| 未指定，没有启用且受支持的凭据 | 显示“暂不支持额度”或没有启用凭据的错误，不输出窗口。 |
+| 未指定，唯一启用且受支持的凭据 | 自动选择；总共只有一个启用凭据时参与额度路由，否则仅展示。 |
+| 未指定，多个启用且受支持的凭据 | 显示要求指定凭据的错误。 |
+| 指定并唯一匹配受支持凭据 | 查询该账号；多个启用凭据时带标签，全部为 `aside`，**只展示、不参与路由**。 |
+| 指定凭据的 provider 尚无适配器 | 只报“该供应商暂不支持额度”，不调用上游额度接口，不改查 Claude。 |
+| 选择不存在、已禁用或不唯一 | 显示错误，不回退到其他凭据。 |
+
+启用凭据总数包括尚不支持额度的供应商。多凭据时，即使只有一个可查询，也不能保证 CPA 的业务请求使用它，因此仍只展示其窗口。
+
+可用 `magpie quota --json` 查看读数。宿主报告 JSON 不输出 `aside` 字段，这不表示多凭据窗口参与路由。
+
+## 鉴权失败与恢复
+
+CPA 对同一来源 IP 的管理鉴权失败累计 5 次会封禁 30 分钟，包括回环地址。插件遇到管理端 401/403 后，会停止对该管理入口和 key 的自动请求；改凭据选择不会解除停试。业务推理和业务账号状态不因额度错误而失效。
+
+先修正管理 key 和远程访问设置，再恢复查询：更换管理 key 或管理入口并重新登录，或在配置修好后重启运行插件的 Magpie 宿主进程。**仅修复 CPA 侧设置，然后以相同 key/入口重新登录，不会清除原进程的停试状态。** 停试状态仅在当前插件进程内维护；新 CLI 进程或重启可能重新尝试，因此不要用错误 key 反复启动查询。
+
+其他临时错误退避 300 秒；成功读数缓存 300 秒，并发调用合并。插件最多沿用 900 秒内的旧读数，缺失或错误额度不会填成 0%。整次管理读取最多 15 秒。
+
+## 宿主行为与限制
+
+- 插件不增加推理重试。Magpie 宿主会对普通 429 重试同一 CPA 账号，隔离实测约 **8 次、37 秒**，实际策略随宿主版本和响应而变。
+- Magpie 0.1.2738 发往 CPA 的业务 UA 为 `magpie/0.1.2738`。此插件被宿主视为账号，正式命令 `magpie provider set cpa user-agent=agent` 会被拒绝，GUI 也不提供该选项；本版本没有已验证的客户端 UA 透传方式。CPA 会将其视为非 Claude Code 客户端，可能按凭据的 cloak 配置改写请求。如需透传行为，应按 CPA 文档显式配置该凭据的 cloak 模式并验证；插件不自动调整，也不伪造 Claude CLI UA。
+- 管理 api-call 内的 OAuth usage 请求使用固定 UA `claude-cli/2.1.280 (external, cli)` 及 beta 头；Anthropic 调整要求时可能需要更新插件。
+- Magpie 额度卡片有约一分钟缓存；即时重复读取可能不调用插件，GUI 卡片的刷新按钮可强制重新读取。
+- Magpie 会把良好额度落盘，在某些临时错误时继续回显并标记 `asOf`，重启后也可能保留。**插件的 900 秒上限不约束宿主这层旧值保留**，请留意读数时间。
+- 目前额度适配器只有 Claude；不输出 Opus/Sonnet 等模型专属窗口，也不把单凭据额度当作整个池的额度。
+- 非 Claude 模型的工具、思考、prompt 缓存和计数等能力取决于 CPA 转换与实际后端，需自行验证；模型发现成功不等于这些能力已验收。
+- 不提供 OAuth 登录、Token 刷新、模型改写或自定义故障切换。count_tokens 的同模型故障切换与恢复仍取决于宿主，尚未验收。
+
+- Magpie 0.1.2790 的插件账号实测不会在额度报告中产生 `last` / `lastServedAt`；外部工具不应依赖这些字段判断当前账号。
+
+## 修改配置与卸载
+
+重新运行 `magpie plugin login cpa` 修改地址或 key。宿主按 `cpa@host:port` 标签识别账号：同一 host:port 只保留一个，即使 URL 路径不同；重新登录会替换原记录。
+
+以下命令已对照 Magpie 0.1.2738 的 CLI：
+
+```sh
+magpie plugin logout cpa       # 删除插件登录信息
+magpie plugin                 # 查看安装项，确认名称
+magpie plugin rm '<installed-plugin-name>'
+```
+
+卸载前同步调整使用 `cpa/` 或 `cpa-plugin/` 的客户端、模型组等配置。注销和移除插件不等于撤销 CPA 端的 key。
+
+## 如何新增供应商
+
+1. 在 `index.mjs` 的 `usageAdapters` 表新增一项，键必须与 CPA `/credentials` 返回的 `files[].provider` 完全一致。当前首项为 `claude`；无需新增登录字段、子插件或依赖。
+2. `request` 提供 CPA management api-call 的内层 `method`、`url`、`header` 模板。上游凭据用 `$TOKEN$` 占位，由 CPA 替换；公共流程添加 `auth_index`，管理 key 不进入这个模板。
+3. `parse(body)` 接收成功内层响应的 JSON，返回原生窗口数组，例如 `{ name: "Window", used: 25, span: 18000, resetsAt: "2026-11-04T00:00:00.000Z" }`。`used` 是已用百分比，`span` 单位为秒；仅输出能证实的字段，无有效读数时抛错，不能填成 0 或输出账户资料。
+4. 继续使用公共的管理鉴权、15 秒预算、响应大小限制、封禁停试、缓存、单飞、退避和多凭据 `aside` 规则。适配器不自行重试、登录或刷新 OAuth。
+5. 在 `test/` 增加虚构响应与 key 的 mock 用例，覆盖模板、解析、选择和失败分支，再运行 `npm test`。新增供应商的真实业务能力需另行验证。
+
+## 开发与致谢
+
+```sh
+npm test
+```
+
+测试使用虚构 key 和本机 mock，不需要真实账号。当前 46 项显式测试；官方宿主联调另有隔离证据，不能代替真实 CPA 验收。
+
+参考了 MIT 项目 [sub2api-magpie-plugin](https://github.com/FischelChern/sub2api-magpie-plugin) 的 Magpie 接入方式；本项目运行时代码独立实现，未复制其代码段。MIT 许可证见 [LICENSE](LICENSE)。
