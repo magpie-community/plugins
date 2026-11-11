@@ -639,9 +639,19 @@ function regionsUsage(reads, now = Date.now(), only = "") {
       windows.push({ name: monthName, used: (100 * inPlan) / ofPlan, ...resetsAt, display: count(inPlan, ofPlan), amount: inPlan, limit: ofPlan,
         unit: "credits", span: 30 * 24 * 3600, aside: true })
     let display = count(amount, limit)
-    if (missing.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${missing.join(", ")} not enabled: ask your admin to enable it`
+    // a region the user said not to use is not asked to be enabled
+    const ask = only ? missing.filter((r) => r === only) : missing
+    if (ask.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${ask.join(", ")} not enabled: ask your admin to enable it`
     windows.push({ name: allOver ? "Overage" : monthName, used: (100 * amount) / limit, ...resetsAt,
       display, amount, limit, unit: "credits", span: 30 * 24 * 3600 })
+  } else if (only) {
+    // the region the account is pinned to is not enabled or couldn't be read:
+    // no window to weigh, so magpie would go on asking an account every
+    // request of which is a 429. A window that is used up leaves it out of
+    // routing, and says why.
+    const why = reads.find((r) => r.region === only)?.error ? `${only} couldn't be read` : `${only} is not enabled`
+    windows.push({ name: monthName ?? "Credits", used: 100, display: `${why}, and the ${onlyOption(only)} switch is on: no other region is used`,
+      span: 30 * 24 * 3600 })
   }
   windows.push(...shown, ...failed, ...off, ...(first?.windows ?? []).filter((w) => !w.span))
   const { windows: _w, ...who } = first ?? {}
@@ -3208,9 +3218,9 @@ export async function KiroAuthPlugin({ client, magpie } = {}) {
           return {
             key: onlyOption(region),
             label: `Use ${region} only`,
-            description: `An Identity Center account sends every request to ${region} and none to ${other}, whatever its credits there, and its Usage counts ${region} alone. With ${region} not enabled for the account, or its credits used up, the answer is a 429 and magpie goes on to another account. Both switches off, the account uses us-east-1 first and eu-central-1 when it is used up. Both on is the same as both off. Credits past a region's plan are overage, billed at $0.04 each, twice a Power plan's $0.02 (10000 credits for $200), and plan credits do not roll over to the next month. So when one region is already in its overage and the other still has plan credits, pin the other: its plan credits are cheaper than more overage here.`,
+            description: `Send every request to ${region}, none to ${other}; with it not enabled or used up, magpie moves to another account.`,
             labels: { zh: `只使用 ${region}` },
-            descriptions: { zh: `IAM Identity Center 账号的请求全部发往 ${region}，不发往 ${other}，不论后者还有多少额度，额度合计也只算 ${region}。该区域未开通或额度用完时返回 429，由 magpie 换下一个账号。两个开关都关闭时先用 us-east-1，用完再用 eu-central-1。两个都开与都关相同。超出区域套餐的部分按超额计费，每个 credit $0.04，是 Power 套餐（$200 含 10000 credits，每个 $0.02）的两倍，且套餐额度不结转到下月。所以一个区域已经进入超额、另一个区域还有套餐额度时，请锁定后者：用它的套餐额度比继续超额便宜。` },
+            descriptions: { zh: `所有请求发往 ${region}，不发往 ${other}；该区域未开通或额度用完时，magpie 换下一个账号。` },
           }
         }),
       ],
