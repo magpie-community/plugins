@@ -7,6 +7,7 @@ const {
   createPlugin,
   rowFromCatalogEntry,
   bootstrapRows,
+  creditWindowScopes,
   readDesktopCredential,
   waitForDesktopCredential,
   readAcodeConfigToken,
@@ -468,6 +469,24 @@ test("buildCookieHeader mirrors the desktop client", () => {
 
 const jsonRes = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
+const ROUTING_PROVIDER = {
+  models: {
+    "astronclaw-auto": { id: "astronclaw-auto" },
+    "spark-x2.6": { id: "spark-x2.6" },
+    "spark-x2.6-4b": { id: "spark-x2.6-4b", free: true },
+    "xopdsv4flash0731in": { id: "xopdsv4flash0731in" },
+  },
+}
+
+const windowCounts = (window, model) => {
+  if (window.models?.length) return window.models.includes(model)
+  if (window.notModels?.length) return !window.notModels.includes(model)
+  return true
+}
+
+const stoppedByBalance = (windows, model) =>
+  windows.some((window) => !window.aside && window.balance <= 0 && windowCounts(window, model))
+
 test("studioJson unwraps the envelope and flags dead sessions", async () => {
   const session = { token: "T", ssoSessionId: "S", accountId: "A" }
   const data = await studioJson("points/balance", {
@@ -514,12 +533,26 @@ test("studioJson via usage: balance and membership map to quota windows", async 
       throw new Error(`unexpected ${url}`)
     },
   })
-  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }))
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }), ROUTING_PROVIDER)
   assert.equal(out.plan, "体验版")
   assert.equal(out.user, "18800000000")
-  assert.deepEqual(out.windows[0], { name: "通用积分", balance: 7900, aside: false, runsOutAt: "2026-11-03T06:11:12", runsOut: 7900 })
+  assert.deepEqual(out.windows[0], {
+    name: "通用积分",
+    balance: 7900,
+    aside: false,
+    notModels: ["spark-x2.6", "spark-x2.6-4b"],
+    runsOutAt: "2026-11-03T06:11:12",
+    runsOut: 7900,
+  })
   // 星火到期从入账流水推（balance 接口不给星火到期时间）。
-  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, runsOutAt: "2026-11-22T13:34:30.000Z", runsOut: 35000 })
+  assert.deepEqual(out.windows[1], {
+    name: "星火积分",
+    balance: 35000,
+    aside: false,
+    models: ["spark-x2.6"],
+    runsOutAt: "2026-11-22T13:34:30.000Z",
+    runsOut: 35000,
+  })
 })
 
 test("usage spark window omits expiry when the ledger query fails", async () => {
@@ -539,9 +572,64 @@ test("usage spark window omits expiry when the ledger query fails", async () => 
       throw new Error(`unexpected ${url}`)
     },
   })
-  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }))
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }), ROUTING_PROVIDER)
   // 到期推算失败不塌方：星火窗口退回无 runsOut 形态。
-  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false })
+  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, models: ["spark-x2.6"] })
+})
+
+test("usage scopes independent balances to the models that spend them", async () => {
+  const session = { token: "T", ssoSessionId: "S", accountId: "A" }
+  const usage = async (totalBalance, sparkTotalBalance, provider = ROUTING_PROVIDER) => {
+    const plugin = createPlugin({
+      fetchImpl: async (input) => {
+        const url = String(input)
+        if (url.includes("points/balance")) {
+          return jsonRes({ flag: true, code: 0, data: { totalBalance, activityBalance: totalBalance, sparkTotalBalance } })
+        }
+        if (url.includes("membership/me")) {
+          return jsonRes({ flag: true, code: 0, data: { uid: 18800000000, planName: "体验版" } })
+        }
+        if (url.includes("points/details")) {
+          return jsonRes({ flag: true, code: 0, data: { total: 0, items: [] } })
+        }
+        throw new Error(`unexpected ${url}`)
+      },
+    })
+    return await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }), provider)
+  }
+
+  const generalOnly = await usage(1500, 0)
+  assert.equal(stoppedByBalance(generalOnly.windows, "xopdsv4flash0731in"), false)
+  assert.equal(stoppedByBalance(generalOnly.windows, "astronclaw-auto"), false)
+  assert.equal(stoppedByBalance(generalOnly.windows, "spark-x2.6"), true)
+  assert.equal(stoppedByBalance(generalOnly.windows, "spark-x2.6-4b"), false)
+
+  const sparkOnly = await usage(0, 500)
+  assert.equal(stoppedByBalance(sparkOnly.windows, "xopdsv4flash0731in"), true)
+  assert.equal(stoppedByBalance(sparkOnly.windows, "astronclaw-auto"), true)
+  assert.equal(stoppedByBalance(sparkOnly.windows, "spark-x2.6"), false)
+  assert.equal(stoppedByBalance(sparkOnly.windows, "spark-x2.6-4b"), false)
+
+  const noPaidSpark = await usage(0, 0, {
+    models: {
+      "spark-x2.6-4b": { id: "spark-x2.6-4b", free: true },
+      "xopdsv4flash0731in": { id: "xopdsv4flash0731in" },
+    },
+  })
+  assert.deepEqual(noPaidSpark.windows[1], { name: "星火积分", balance: 0, aside: true })
+  assert.equal(stoppedByBalance(noPaidSpark.windows, "spark-x2.6-4b"), false)
+})
+
+test("credit scopes fall back to the bootstrap catalogue without making an empty model scope global", () => {
+  const fallback = creditWindowScopes()
+  assert.deepEqual(fallback.spark.models, ["spark-x2.6", "spark-x2.5"])
+  assert.ok(fallback.general.notModels.includes("spark-x2.6-4b"))
+  assert.equal(fallback.general.notModels.includes("astronclaw-auto"), false)
+
+  assert.deepEqual(
+    creditWindowScopes({ models: { "xopglm52": { id: "xopglm52" } } }),
+    { general: {}, spark: { aside: true } },
+  )
 })
 
 const checkinFetch = (balanceSequence, { popups = [], identityAssert, popupFails = false, onComplete, completeFails = false, ledger, ledgerSequence, ledgerFails = false, sparkLedger, sparkPages } = {}) => {

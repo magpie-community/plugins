@@ -143,6 +143,29 @@ function bootstrapRows() {
   )
 }
 
+// AStudio has two independent balances. Paid Spark models spend the Spark
+// balance; every other paid model spends the general balance. Models marked
+// free spend neither, so an empty paid pool must not take them out of routing.
+// `models: []` means unscoped to magpie, therefore a catalogue without paid
+// Spark models makes that display-only window aside instead.
+function creditWindowScopes(provider) {
+  const live = provider?.models
+  const catalog = live && typeof live === "object" && Object.keys(live).length ? live : bootstrapRows()
+  const sparkModels = []
+  const notGeneralModels = []
+  for (const [id, model] of Object.entries(catalog)) {
+    if (!id) continue
+    const spark = id.toLowerCase().startsWith("spark-")
+    const free = model?.free === true
+    if (spark || free) notGeneralModels.push(id)
+    if (spark && !free) sparkModels.push(id)
+  }
+  return {
+    general: notGeneralModels.length ? { notModels: notGeneralModels } : {},
+    spark: sparkModels.length ? { models: sparkModels } : { aside: true },
+  }
+}
+
 // registryDataRoots 读注册表里登记的各 profile 数据根目录（Windows）。
 function registryDataRoots(registryQuery = defaultRegistryQuery) {
   const roots = []
@@ -693,7 +716,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
       },
       // 有 Cookie 会话时显示真实积分余额与会员档；只有模型凭据时退回目录
       // 连通性检查。读取均不计费。
-      async usage(getAuth) {
+      async usage(getAuth, provider) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         const session = auth.metadata?.session
@@ -731,12 +754,14 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         if (!balance && !membership) {
           return { error: "AStudio 账号信息读取失败", windows: [] }
         }
+        const scopes = creditWindowScopes(provider)
         const windows = []
         if (balance && typeof balance.totalBalance === "number") {
           windows.push({
             name: "通用积分",
             balance: balance.totalBalance,
             aside: false,
+            ...scopes.general,
             ...(balance.activityNextExpireTime && balance.activityBalance > 0
               ? { runsOutAt: balance.activityNextExpireTime, runsOut: balance.activityBalance }
               : {}),
@@ -750,6 +775,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
             name: "星火积分",
             balance: balance.sparkTotalBalance,
             aside: false,
+            ...scopes.spark,
             ...(sparkExpiry && balance.sparkTotalBalance > 0 ? sparkExpiry : {}),
           })
         }
@@ -913,6 +939,7 @@ export const _internal = {
   createPlugin,
   rowFromCatalogEntry,
   bootstrapRows,
+  creditWindowScopes,
   readDesktopCredential,
   probeDesktopCredential,
   waitForDesktopCredential,
