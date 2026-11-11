@@ -4,7 +4,9 @@
 // test can check it; paint draws on a canvas.
 (() => {
   // shadow: the paper's shadow on that ground
+  // none: the paper alone, on nothing (a transparent PNG), with no margin
   const LIST = [
+    { id: "none", shadow: "transparent" },
     { id: "teal", shadow: "rgba(0, 60, 55, .28)" },
     { id: "gingham", shadow: "rgba(90, 30, 20, .22)" },
     { id: "grid", shadow: "rgba(30, 50, 90, .2)" },
@@ -219,10 +221,19 @@
   function paint(ctx, W, H, scale, o, img) {
     ctx.save();
     const m = meta(o.bg);
-    if (m.photo && img) photo(ctx, W, H, scale, img, o.blur, o.dim);
+    if (o.bg === "none") ctx.clearRect(0, 0, W, H);
+    else if (m.photo && img) photo(ctx, W, H, scale, img, o.blur, o.dim);
     else (PATTERNS[o.bg] || PATTERNS.teal)(ctx, W, H, scale);
     ctx.restore();
   }
 
-  globalThis.DayBackgrounds = { list: LIST, meta, norm, paint, PAD, BLUR, DIM };
+  // the size the card is drawn at on the page: as wide as the page allows
+  // (up to max), and no taller than the room it has, so a day's card is on
+  // one screen; never below min
+  function fit(availW, availH, W, H, max, min) {
+    const w = Math.min(max, availW, availH > 0 ? availH * W / H : Infinity);
+    return Math.max(Math.min(min, availW), Math.floor(Number.isFinite(w) ? w : max));
+  }
+
+  globalThis.DayBackgrounds = { list: LIST, meta, norm, paint, fit, PAD, BLUR, DIM };
 })();

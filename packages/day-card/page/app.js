@@ -333,7 +333,8 @@
 
     // measure, then draw
     const ph = slip(document.createElement("canvas").getContext("2d"), c, new Map(), 1) + TOOTH;
-    const side = bg.pad;
+    const none = bg.bg === "none";
+    const side = none ? 0 : bg.pad;
     const W = PW + side * 2;
     const H = ph + side * 2;
     const top = side;
@@ -361,7 +362,7 @@
       paper.lineTo(i * tw, ph - TOOTH);
     }
     paper.closePath();
-    ctx.shadowColor = B.meta(bg.bg).shadow;
+    ctx.shadowColor = none ? "transparent" : B.meta(bg.bg).shadow;
     ctx.shadowBlur = 36;
     ctx.shadowOffsetY = 12;
     ctx.fillStyle = PAPER;
@@ -370,7 +371,25 @@
     slip(ctx, c, icons, scale);
     ctx.restore();
     $("copy").disabled = $("save").disabled = !magpie.image;
+    state.size = [W, H];
+    fitCard();
   }
+
+  // The card is drawn as large as the page allows, but no taller than the
+  // room under the bar, so a whole day is on one screen. The bitmap (and
+  // the picture copied or saved) is unchanged: only its size on the page.
+  function fitCard() {
+    if (!state.size) return;
+    const [W, H] = state.size;
+    const m = $("main");
+    const cs = getComputedStyle(document.body);
+    const availW = m.clientWidth;
+    const availH = window.innerHeight - m.getBoundingClientRect().top - (parseFloat(cs.paddingBottom) || 0);
+    $("card").style.width = `${B.fit(availW, availH, W, H, 760, 160)}px`;
+  }
+  addEventListener("resize", fitCard);
+  new ResizeObserver(fitCard).observe(document.querySelector("header"));
+  new ResizeObserver(fitCard).observe($("status"));
 
   // ---- reading a day ----
   async function load(date) {
@@ -525,6 +544,12 @@
     cv.width = cv.height = size * s;
     const ctx = cv.getContext("2d");
     ctx.setTransform(s, 0, 0, s, 0, 0);
+    if (id === "none") {
+      // nothing, shown the way a picture editor shows it: a chequerboard
+      const q = size / 6;
+      for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) { ctx.fillStyle = (x + y) % 2 ? "#cfcfd4" : "#fafafa"; ctx.fillRect(x * q, y * q, q, q); }
+      return cv;
+    }
     B.paint(ctx, size, size, s, { ...state.bg, bg: id }, null);
     return cv;
   }
@@ -575,6 +600,7 @@
     $("blur").value = bg.blur;
     $("dim").value = bg.dim;
     pop.classList.toggle("photo", B.meta(bg.bg).photo === true);
+    pop.classList.toggle("none", bg.bg === "none");
     paintChip();
   }
   async function paintChip() {
@@ -586,7 +612,8 @@
     const bg = state.bg;
     const img = await backdrop(bg);
     if (bg !== state.bg) return;
-    B.paint(ctx, 14, 14, s, bg, img);
+    if (bg.bg === "none") ctx.drawImage(patternCanvas("none", 14), 0, 0, 14, 14);
+    else B.paint(ctx, 14, 14, s, bg, img);
   }
 
   function openPop() {

@@ -236,6 +236,24 @@ test("every backdrop has a name in every language, and its picture comes with th
   expect(html.indexOf('src="backgrounds.js"')).toBeLessThan(html.indexOf('src="app.js"'))
 })
 
+test("no background is the first choice, and the card fits the room it has", () => {
+  expect(B.list[0].id).toBe("none")
+  expect(B.norm({ bg: "none" }).bg).toBe("none")
+  expect(B.meta("none").photo).toBe(false)
+  // nothing is drawn under the paper, so what was there is cleared
+  const calls = []
+  const ctx = { save() {}, restore() {}, clearRect: (...a) => calls.push(a), fillRect() { throw new Error("drew") } }
+  B.paint(ctx, 440, 900, 2, B.norm({ bg: "none" }), null)
+  expect(calls).toEqual([[0, 0, 440, 900]])
+  // fit: wide room, short screen -> the height rules; narrow room -> the width
+  expect(B.fit(900, 500, 592, 1100, 760, 160)).toBe(269)
+  expect(B.fit(300, 2000, 592, 1100, 760, 160)).toBe(300)
+  expect(B.fit(2000, 2000, 592, 1100, 760, 160)).toBe(760)
+  expect(B.fit(900, 10, 592, 1100, 760, 160)).toBe(160)
+  expect(B.fit(100, 10, 592, 1100, 760, 160)).toBe(100)
+  expect(read("app.js")).toContain("fitCard")
+})
+
 test("a saved backdrop is made sound before it is drawn", () => {
   expect(B.norm(null)).toEqual({ bg: "teal", pad: 76, blur: 0, dim: 0, image: "" })
   expect(B.norm({ bg: "seigaiha", pad: 500, blur: -3, dim: "40" })).toEqual({ bg: "seigaiha", pad: 160, blur: 0, dim: 40, image: "" })
