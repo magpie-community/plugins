@@ -1,0 +1,58 @@
+{
+  "name": "@magpie-community/page-amp-usage",
+  "version": "0.1.0",
+  "description": "An Amp usage board in Magpie's window, with a local background service that can sync Amp usage into Magpie's usage ledger.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "page",
+    "ui",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "magpie": ">=0.1.3681",
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/amp-usage"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "amp",
+    "usage"
+  ],
+  "magpie": {
+    "page": {
+      "title": "Amp usage",
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3497,
+        "option": "port"
+      }
+    },
+    "permissions": [],
+    "options": {
+      "port": 3497,
+      "sync": true,
+      "gatewayURL": "http://127.0.0.1:3425",
+      "intervalSeconds": 300,
+      "settleSeconds": 120,
+      "ampPath": "",
+      "threadDirs": [],
+      "excludedThreadIds": [],
+      "excludedModels": []
+    }
+  }
+}

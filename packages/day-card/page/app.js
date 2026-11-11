@@ -49,7 +49,7 @@
 
   // ---- logos: data: pictures from the read, each drawn in the ink ----
   function picture(name) {
-    const ic = state.day?.icons?.[name];
+    const ic = globalThis.DayIcons?.[name] || state.day?.icons?.[name];
     if (!ic?.src) return Promise.resolve(null);
     if (!state.icons.has(ic.src)) {
       state.icons.set(ic.src, new Promise((ok) => {
@@ -77,7 +77,9 @@
     const off = document.createElement("canvas");
     off.width = off.height = px;
     const o = off.getContext("2d");
-    o.drawImage(ic.img, 0, 0, px, px);
+    const ratio = Math.min(px / ic.img.naturalWidth, px / ic.img.naturalHeight);
+    const w = ic.img.naturalWidth * ratio, h = ic.img.naturalHeight * ratio;
+    o.drawImage(ic.img, (px - w) / 2, (px - h) / 2, w, h);
     let clear = ic.mono;
     if (!clear) {
       try {

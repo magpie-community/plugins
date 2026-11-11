@@ -11,6 +11,7 @@ const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))
 const scope = {}
 new Function("globalThis", read("view.js"))(scope)
 const V = scope.DayView
+new Function("globalThis", read("icons.js"))(scope)
 
 // usage:day as magpie answers it (internal/gui/pageday.go, usageapi.DayOf)
 const day = {
@@ -46,6 +47,27 @@ test("asks for one read, usage:day, and nothing else", () => {
     expect(read(f)).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|importScripts/)
   }
   expect([...reads]).toEqual(["usage:day"])
+})
+
+test("Amp uses its bundled official logo only when the host supplies no Amp icon", () => {
+  const host = { src: "data:image/svg+xml;base64,PHN2Zy8+" }
+  const amp = (icon, icons = {}) =>
+    V.card({ ...day, icons, agents: [{ id: "amp", name: "Amp", icon, cost: 3.69, models: [] }] }, "en")
+  expect(amp("amp", { amp: host }).agents[0].icon).toBe("amp")
+  expect(amp("generic", { generic: host }).agents[0].icon).toBe("amp-official")
+  for (const icon of [undefined, "", "generic", "amp"]) {
+    const c = amp(icon)
+    expect(c.agents[0].icon).toBe("amp-official")
+    const mark = scope.DayIcons[c.agents[0].icon]
+    expect(mark.mono).toBe(true)
+    expect(mark.src).toStartWith("data:image/svg+xml;base64,")
+    const svg = Buffer.from(mark.src.split(",")[1], "base64").toString("utf8")
+    expect(svg).toContain('viewBox="0 0 281 144"')
+    expect(svg).toContain("<path ")
+    expect(svg).not.toMatch(/<(?:script|image|foreignObject)\b/)
+  }
+  const html = read("index.html")
+  expect(html.indexOf('src="icons.js"')).toBeLessThan(html.indexOf('src="app.js"'))
 })
 
 test("is a page magpie serves: its files in page/, scripts as files", () => {
