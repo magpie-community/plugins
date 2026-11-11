@@ -510,6 +510,7 @@ async function codingUsage(s) {
   const level = typeof d.level === "string" ? d.level : ""
   if (level) out.plan = "GLM Coding " + level[0].toUpperCase() + level.slice(1)
   out.windows = limitWindows(d)
+  notePlan(s.key, out.windows)
   const resets = personalResets(root, s.key)
   let subs = null
   try {
@@ -1211,6 +1212,7 @@ async function teamUsage(s, key) {
   const headers = teamHeaders(s.base, s.org, s.project)
   const d = (await call("GET", root + "/api/monitor/usage/quota/limit?type=2", { auth: key, headers })) ?? {}
   const out = { windows: limitWindows(d) }
+  notePlan(key, out.windows)
   if (!s.token) return out
   const resets = teamResets(root, s.token, headers)
   try {
@@ -1675,27 +1677,99 @@ function ownLocation(store, key) {
 // its key: the secret of the key it names, read as ZCode lists the
 // project's keys (BigModel's token bare, Z.ai's as a Bearer). Nothing is
 // made: a location whose key is gone (404) leaves the sign-in keyless, as
-// before; any other failure is said. A key read is kept for the token.
+// before; any other failure is said. A key read is kept for the token, and
+// the last key read for the location (lastKeys) serves while a read can't
+// reach Z.ai, so a network that drops one read keeps the plan's key; an
+// answer that refused the read (a 401, a 500) is said as before. The read
+// is bounded (KEY_READ_MS): an ask that hung for minutes
+// held the request with it (#1020, takomitkm). A read that never reached
+// Z.ai — the socket (ECONNRESET), a timeout, the name — with no key read
+// before is thrown marked unreached, which serve answers as a wall
+// (wallAnswer): it is the network, not the sign-in, so it says nothing of
+// signing in again.
 const locatedKeys = new Map()
+const lastKeys = new Map()
+const KEY_READ_MS = 20_000
 async function located(s) {
   if (!s || s.key || !s.loc || !s.token) return s
   const l = s.loc
-  const id = [s.token, l.origin, l.org, l.project, l.apiKeyId].join("\0")
+  const at = [s.site, l.origin, l.org, l.project, l.apiKeyId].join("\0")
+  const id = s.token + "\0" + at
   let got = locatedKeys.get(id)
   if (!got || (got.err && Date.now() - got.at >= 60_000)) {
     const auth = s.site === "zai" ? "Bearer " + s.token : s.token
     try {
-      const secret = first((await call("GET", `${keysURL(l.origin, l.org, l.project)}/copy/${encodeURIComponent(l.apiKeyId)}`, { auth }))?.secretKey)
+      const secret = first((await call("GET", `${keysURL(l.origin, l.org, l.project)}/copy/${encodeURIComponent(l.apiKeyId)}`, { auth, signal: AbortSignal.timeout(KEY_READ_MS) }))?.secretKey)
       got = secret ? { key: `${l.apiKeyId}.${secret}` } : { err: new Error("no secret for the key") }
     } catch (e) {
       got = e?.status === 404 ? { key: "" } : { err: e }
     }
+    if (got.err && unreached(got.err) && lastKeys.get(at)) got.key = lastKeys.get(at)
+    else if (!got.err) lastKeys.set(at, got.key)
     got.at = Date.now()
     locatedKeys.set(id, got)
   }
-  if (got.err) throw new Error(`ZCode's ${SITES[s.site].name} coding plan key: ${got.err.message} — sign in to ZCode again`)
+  if (got.err && !got.key) {
+    const name = SITES[s.site].name
+    if (unreached(got.err)) {
+      const e = new Error(`ZCode's ${name} coding plan key: ${got.err.message} — ${name} could not be reached, so the request was not sent`)
+      e.unreached = true
+      throw e
+    }
+    throw new Error(`ZCode's ${name} coding plan key: ${got.err.message} — sign in to ZCode again`)
+  }
   if (got.key) s.key = got.key
   return s
+}
+
+// unreached says whether a fetch failed before any answer: the socket
+// closed or refused, a timeout, a name that didn't resolve. An answer with
+// a status (ZError) never is, nor is a caller's abort.
+const UNREACHED = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|socket connection was closed|ConnectionRefused|ConnectionClosed|FailedToOpenSocket|fetch failed|timed out/i
+function unreached(e) {
+  if (!e || e instanceof ZError || e.name === "AbortError") return false
+  if (e.name === "TimeoutError") return true
+  return [e.code, e.message, e.cause?.code, e.cause?.message].some((x) => typeof x === "string" && UNREACHED.test(x))
+}
+
+// wallAnswer is a lane that can't serve the request now — not reached, or
+// its plan known full — told to magpie as a wall: a 429 whose error.code
+// is one of magpie's wallCodes (yetone/magpie@067e4c484), which it sends
+// once, never again in place, and rests as a rate limit, a minute at
+// first, while the next account is asked. A thrown error was a 502 that
+// magpie asked again eight times (#1020). The words are kept off magpie's
+// quota and credit words, so the rest stays a brief one.
+function wallAnswer(message) {
+  const error = { type: "rate_limit_error", code: "user_model_rate_limited", message }
+  return new Response(JSON.stringify({ type: "error", error }), { status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json" } })
+}
+
+// planFull is a coding plan key whose last usage read showed a window
+// counted full with its reset ahead: until then (and for PLAN_FULL_TRUST
+// after the read at most) free first's replay doesn't send to it.
+const planFull = new Map()
+const PLAN_FULL_TRUST = 30 * 60_000
+function notePlan(key, windows) {
+  if (!key) return
+  let until = 0
+  for (const w of windows ?? []) {
+    if (w.aside) continue
+    const full = (isNum(w.amount) && isNum(w.limit) && w.limit > 0 && w.amount >= w.limit) || (isNum(w.used) && w.used >= 100)
+    const t = Date.parse(w.resetsAt ?? "")
+    if (full && t > Date.now()) until = Math.max(until, t)
+  }
+  if (until) planFull.set(key, { until, at: Date.now() })
+  else planFull.delete(key)
+}
+function planFullUntil(key) {
+  const f = key && planFull.get(key)
+  if (!f) return 0
+  const now = Date.now()
+  if (now >= f.until || now - f.at >= PLAN_FULL_TRUST) {
+    planFull.delete(key)
+    return 0
+  }
+  return f.until
 }
 
 // ownSignIn is what ZCode is signed in to now: the account, its coding
@@ -2959,7 +3033,15 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         }
         async function serve(input, init, own) {
             const auth = await getAuth()
-            const s = await located(stateOf(auth))
+            let s
+            try {
+              s = await located(stateOf(auth))
+            } catch (e) {
+              // the plan's key couldn't be read for the network: a wall,
+              // sent once (wallAnswer), not a 502 asked again (#1020)
+              if (e?.unreached) return kept(wallAnswer(e.message))
+              throw e
+            }
             if (!s) throw new Error("not signed in to ZCode")
             // the account a Start Plan slot belongs to: its user id, which a
             // renewed session keeps, before the key or session itself
@@ -3082,7 +3164,18 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               h2.delete("content-length")
               opts.body = marked(JSON.stringify({ ...JSON.parse(orig), model: asked }), s.device, sid)
               delete opts.duplex
-              return askBusy(u, opts, h2)
+              // a plan the last usage read showed full isn't sent to: it
+              // would only refuse (#1020)
+              const full = planFullUntil(key)
+              if (full) return wallAnswer(`ZCode's ${SITES[s.site].name} GLM Coding Plan was full at its last read, until ${new Date(full).toISOString()}, so the request was not sent to it`)
+              try {
+                return await askBusy(u, opts, h2)
+              } catch (e) {
+                // a plan that can't be reached is a wall too, sent once; a
+                // caller's abort stays an abort
+                if (opts.signal?.aborted || !unreached(e)) throw e
+                return wallAnswer(`ZCode's ${SITES[s.site].name} GLM Coding Plan: ${e.message} — it could not be reached, so the request was not sent`)
+              }
             }
             // a block page held this computer off zcode.z.ai (edge): the
             // Start Plan and a picked gift are answered here; free first
@@ -3358,4 +3451,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
