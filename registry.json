@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
+      "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "https://atomgit.com/favicon.ico", "providers": ["atomcode"], "community": true,
