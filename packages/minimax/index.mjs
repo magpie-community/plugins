@@ -159,12 +159,32 @@ function limits(id, context, output) {
 
 // MiniMax Code's own list, for when the live one can't be had.
 // thinking: "switchable" (on or off), "forced_on" (always on, at an effort)
+// inputs: what its modalities.input says the model takes (#985)
 const MODELS = [
-  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 1048576, output: 524288, images: true, thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
-  { id: "MiniMax-M3", name: "MiniMax-M3", context: 1048576, output: 524288, images: true, thinking: "switchable", efforts: [] },
-  { id: "MiniMax-M2.7", name: "MiniMax-M2.7", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
-  { id: "MiniMax-M2.7-highspeed", name: "MiniMax-M2.7-highspeed", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
+  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 1048576, output: 524288, inputs: ["text", "image", "video"], thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "MiniMax-M3", name: "MiniMax-M3", context: 1048576, output: 524288, inputs: ["text", "image", "video"], thinking: "switchable", efforts: [] },
+  { id: "MiniMax-M2.7", name: "MiniMax-M2.7", context: 200000, output: 128000, inputs: ["text"], thinking: "on", efforts: [] },
+  { id: "MiniMax-M2.7-highspeed", name: "MiniMax-M2.7-highspeed", context: 200000, output: 128000, inputs: ["text"], thinking: "on", efforts: [] },
 ]
+
+// MODALITIES are the input kinds a model can be said to take, in
+// OpenCode's order.
+const MODALITIES = ["text", "image", "audio", "video", "pdf"]
+
+// inputsOf is what the model takes as this host can send it (#985). In
+// magpie the gateway writes the Anthropic body itself and the fetch below
+// sends it on as it is, so a video or audio block reaches MiniMax. In
+// OpenCode the body is @ai-sdk/anthropic's, which throws on a file part
+// that isn't an image, a PDF or text ("media type: video/mp4"), so there
+// they are left out and OpenCode tells the user the model can't read it.
+function inputsOf(m, magpie) {
+  const said = m.inputs ?? ["text"]
+  return MODALITIES.filter((k) => k === "text" || (said.includes(k) && (magpie || (k !== "video" && k !== "audio"))))
+}
+
+// attachment is whether the model takes files: as its config says when it
+// says, else whether it takes anything but text.
+const attachment = (m, inputs) => (typeof m.attachment === "boolean" ? m.attachment : inputs.length > 1)
 
 // variants are a model's reasoning levels as @ai-sdk/anthropic options,
 // sent as MiniMax Code sends them: adaptive thinking at an effort
@@ -179,20 +199,24 @@ function variants(m) {
 
 const reasons = (m) => m.thinking !== "off"
 
-function configModels() {
-  return Object.fromEntries(MODELS.map((m) => [m.id, {
-    name: m.name,
-    reasoning: reasons(m),
-    tool_call: true,
-    attachment: !!m.images,
-    modalities: { input: m.images ? ["text", "image"] : ["text"], output: ["text"] },
-    limit: limits(m.id, m.context, m.output),
-    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-    variants: variants(m),
-  }]))
+function configModels(magpie) {
+  return Object.fromEntries(MODELS.map((m) => {
+    const inputs = inputsOf(m, magpie)
+    return [m.id, {
+      name: m.name,
+      reasoning: reasons(m),
+      tool_call: true,
+      attachment: attachment(m, inputs),
+      modalities: { input: inputs, output: ["text"] },
+      limit: limits(m.id, m.context, m.output),
+      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+      variants: variants(m),
+    }]
+  }))
 }
 
-function modelOf(site, provider, m) {
+function modelOf(site, provider, m, magpie) {
+  const inputs = inputsOf(m, magpie)
   return {
     id: m.id,
     providerID: provider.id,
@@ -206,9 +230,9 @@ function modelOf(site, provider, m) {
     capabilities: {
       temperature: true,
       reasoning: reasons(m),
-      attachment: !!m.images,
+      attachment: attachment(m, inputs),
       toolcall: true,
-      input: { text: true, image: !!m.images, audio: false, video: false, pdf: false },
+      input: Object.fromEntries(MODALITIES.map((k) => [k, inputs.includes(k)])),
       output: { text: true, image: false, audio: false, video: false, pdf: false },
       interleaved: false,
     },
@@ -229,7 +253,10 @@ function parseModels(body) {
   for (const id of ids) {
     const d = obj(ms[id])
     if (!d || !id.trim()) continue
-    const input = Array.isArray(d.modalities?.input) ? d.modalities.input : []
+    const input = (Array.isArray(d.modalities?.input) ? d.modalities.input : [])
+      .filter((k) => typeof k === "string").map((k) => k.toLowerCase())
+    // a model said to take attachments takes images, as before #985
+    if (d.attachment === true && !input.includes("image")) input.push("image")
     const mode = str(d.thinking_config, "mode")
     const efforts = (d.thinking?.effortOptions ?? d.thinking?.effort_options ?? d.effort_options ?? [])
       .filter((e) => typeof e === "string" && e && e !== "default" && e !== "none")
@@ -238,7 +265,8 @@ function parseModels(body) {
       name: str(d, "name") ?? id,
       context: num(d.limit?.context) ?? 0,
       output: num(d.limit?.output) ?? 0,
-      images: input.includes("image") || d.attachment === true,
+      inputs: ["text", ...input.filter((k) => k !== "text")],
+      ...(typeof d.attachment === "boolean" ? { attachment: d.attachment } : {}),
       thinking: mode === "switchable" ? "switchable"
         : mode === "forced_off" ? "off"
         : mode === "forced_on" ? "forced_on"
@@ -989,8 +1017,10 @@ function accountSession(site, client, accountID = site.id) {
 }
 
 function makePlugin(site) {
-  return async ({ client }) => {
+  return async ({ client, magpie } = {}) => {
     const fresh = accountSession(site, client)
+    // magpie's host (OpenCode has no magpie): see inputsOf
+    const host = Boolean(magpie)
 
     // one conversation id for requests that come with none of their own
     const session = randomUUID()
@@ -1003,7 +1033,7 @@ function makePlugin(site) {
         p.name ??= site.name
         p.npm ??= NPM
         p.api ??= api(site)
-        p.models = { ...configModels(), ...(p.models ?? {}) }
+        p.models = { ...configModels(host), ...(p.models ?? {}) }
       },
       // the conversation's id, which MiniMax Code sends with each request
       "chat.headers": async (input, output) => {
@@ -1020,7 +1050,7 @@ function makePlugin(site) {
             const { a } = await fresh(async () => auth)
             const ms = await liveModels(site, a.access)
             if (!ms.length) return provider.models
-            return Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m)]))
+            return Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m, host)]))
           } catch (e) {
             if (e instanceof SignInExpired) throw e
             return provider.models
