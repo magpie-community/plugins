@@ -15,7 +15,7 @@
 // is imported before index.mjs, so the plugin gets that one. Other packages'
 // tests in the same run see Node's behaviour, the started HOME unless a test
 // changed it.
-import { mock } from "bun:test"
+import { afterAll, mock } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import * as os from "node:os"
 import { delimiter, join } from "node:path"
@@ -27,8 +27,10 @@ mock.module("node:os", () => ({ ...os, default: { ...os, homedir }, homedir }))
 const system = process.platform === "win32" ? [] : ["/usr/bin", "/bin"].filter((d) => !existsSync(join(d, "grok")))
 const root = mkdtempSync(join(os.tmpdir(), "grok-nocli-"))
 process.on("exit", () => rmSync(root, { recursive: true, force: true }))
+const isolated = ["PATH", "GROK_BIN_DIR", "GROK_HOME", "HOME", "USERPROFILE"]
 
 export function noRealGrok() {
+  const inherited = Object.fromEntries(isolated.map((key) => [key, process.env[key]]))
   const home = join(root, "home")
   mkdirSync(home, { recursive: true })
   mkdirSync(join(root, "grok-home"), { recursive: true })
@@ -37,6 +39,10 @@ export function noRealGrok() {
   process.env.GROK_HOME = join(root, "grok-home")
   process.env.HOME = home
   process.env.USERPROFILE = home
+  afterAll(() => {
+    for (const key of isolated) {
+      if (inherited[key] === undefined) delete process.env[key]
+      else process.env[key] = inherited[key]
+    }
+  })
 }
-
-noRealGrok()
