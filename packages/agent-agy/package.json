@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-agy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Antigravity CLI (agy) as a magpie agent: pick one of magpie's models for it on the Agents page, and agy starts on magpie's gateway",
   "type": "module",
   "files": ["agy.agent.js", "README.md"],
