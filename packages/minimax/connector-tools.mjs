@@ -7,9 +7,12 @@
 //
 // The bundled matrix-tools.json is a copy of the catalog's real schemas,
 // taken from mcode-tools (connector tool <name>) on 2026-11-03, so loading
-// this plugin never asks the network. The live catalog still routes every
-// call (provider/provider_tool_name/runtime_tool_name), and is re-read on
-// each operation: another signed-in account may connect different tools.
+// this plugin never asks the network. It is what agents are shown, never
+// what a call is held to: the live catalog, re-read on each operation,
+// routes every call (provider/provider_tool_name/runtime_tool_name) and its
+// input_schema_json checks the arguments. The copy goes stale as MiniMax
+// adds parameters (#955: area, n, output_format, reference_images), and
+// another signed-in account may connect different tools.
 import { readFileSync } from "node:fs"
 
 const LIST_PATH = "/minimax-cloud/api/v1/connectors/connected-tools/list"
@@ -106,11 +109,13 @@ const same = (a, b) => a === b || (obj(a) && obj(b) && JSON.stringify(a) === JSO
 // checked(schema, args) validates a tool call's own arguments (site and
 // account already stripped) against its input_schema; a failure means the
 // call never left, which for a priced generation is the point.
-function checked(schema, args) {
+// against, when given, names the schema in the error, so a refusal says
+// whose rule it was.
+function checked(schema, args, against) {
   if (!obj(args)) throw new Error("tool arguments must be an object")
   const errs = []
   check(schema, args, "arguments", errs)
-  if (errs.length) throw new Error("bad arguments: " + errs.join("; "))
+  if (errs.length) throw new Error("bad arguments: " + errs.join("; ") + (against ? " (checked against " + against + ")" : ""))
   return args
 }
 
@@ -213,9 +218,15 @@ function routing(args, callCtx) {
   return { site, account: a.account, args: rest, signal: callCtx?.abort }
 }
 
+// routingOnly is what a direct tool's call is checked against before its
+// catalog is read: the two routing fields, and nothing about the tool's
+// own arguments, which the catalog's schema judges in execute.
+const routingOnly = { type: "object", properties: { site: siteArg, account: accountArg } }
+const DIRECT = new WeakSet()
+
 function directTool(request, name, def) {
   const inner = def.input_schema ?? { type: "object", properties: {} }
-  return {
+  const t = {
     description: def.description,
     args: {
       ...inner,
@@ -228,10 +239,14 @@ function directTool(request, name, def) {
       const r = routing(args, callCtx)
       const cat = await catalog(request, r.site, r.signal, r.account)
       const entry = find(cat, MATRIX + name)
-      const checkedArgs = checked(entry.input_schema_json ? parseSchema(entry.input_schema_json) : inner, r.args)
+      const checkedArgs = entry.input_schema_json
+        ? checked(parseSchema(entry.input_schema_json), r.args, "the account's catalog schema for " + entry.runtime_tool_name)
+        : checked(inner, r.args, "the bundled schema for " + entry.runtime_tool_name + " (the catalog gave none)")
       return invoke(request, r.site, entry, checkedArgs, r.signal, LONG.has(name) ? GEN_MS : CALL_MS, r.account)
     },
   }
+  DIRECT.add(t)
+  return t
 }
 function parseSchema(json) {
   try {
@@ -329,10 +344,14 @@ export function createConnectorTools(request) {
     },
   }
 
+  // A direct tool's advertised args are the bundled copy, which can be
+  // behind the catalog; holding a call to them refused area on a catalog
+  // that accepts it (#955). Its own arguments are checked in execute.
   for (const t of Object.values(tool)) {
     const execute = t.execute
+    const pre = DIRECT.has(t) ? routingOnly : t.args
     t.execute = async (args, ctx) => {
-      checked(t.args, args)
+      checked(pre, args)
       ctx?.abort?.throwIfAborted()
       return execute(args, ctx)
     }

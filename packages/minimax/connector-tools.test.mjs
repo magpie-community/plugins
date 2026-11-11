@@ -5,6 +5,7 @@
 // they could be sent, abort propagation, and the matrix-only call guard.
 import "./nonet.mjs"
 import { expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { createConnectorTools } from "./connector-tools.mjs"
 
 const LIST = "/minimax-cloud/api/v1/connectors/connected-tools/list"
@@ -159,7 +160,7 @@ test("a broken result_json is an error, not a silent null", async () => {
   ).rejects.toThrow(/result_json is not valid JSON/)
 })
 
-test("bad arguments are refused before any request leaves", async () => {
+test("bad arguments are refused before the call leaves", async () => {
   const t = transport({
     [LIST]: catalog([entry("generate_image", {
       input_schema_json: JSON.stringify({ type: "object", properties: { requests: { type: "array" } }, required: ["requests"], additionalProperties: false }),
@@ -168,7 +169,52 @@ test("bad arguments are refused before any request leaves", async () => {
   const { tool } = createConnectorTools(t.request)
   // 'requests' is required by the catalog schema
   await expect(tool.generate_image.execute({ prompt: "x" }, {})).rejects.toThrow(/bad arguments/)
-  expect(t.sent).toHaveLength(0) // bundled schema catches it before reading the catalog
+  // the catalog is read to judge them; the priced call never goes out
+  expect(t.sent.map((r) => r.path)).toEqual([LIST])
+})
+
+// #955: the catalog's generate_image schema as hokaii6990-boop's
+// `magpie tool minimax_tool_schema --tool_name connector__matrix__generate_image --json`
+// printed it on a CN-site account on 2026-11-11.
+const liveImage = readFileSync(new URL("./testdata/generate-image-schema-955.json", import.meta.url), "utf8")
+
+test("generate_image takes the catalog's area, n, output_format and reference_images (#955)", async () => {
+  const t = transport({
+    [LIST]: catalog([entry("generate_image", { input_schema_json: liveImage })]),
+    [CALL]: { result_json: JSON.stringify({ success_items: [{ node_id: "n1", file_name: "image_1.png" }] }) },
+  })
+  const { tool } = createConnectorTools(t.request)
+  const request = { prompt: "a fox, as 图1", aspect_ratio: "21:9", area: "2K", n: 2, output_format: "png", reference_images: [{ url: "https://upload.example/a.png", mime_type: "image/png" }] }
+  await tool.generate_image.execute({ requests: [request] }, {})
+  const calls = t.sent.filter((r) => r.path === CALL)
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0].body.arguments_json)).toEqual({ requests: [request] })
+})
+
+test("generate_image is refused by the catalog's schema, and says so (#955)", async () => {
+  const t = transport({ [LIST]: catalog([entry("generate_image", { input_schema_json: liveImage })]) })
+  const { tool } = createConnectorTools(t.request)
+  // resolution is the old name; the catalog took it away
+  await expect(tool.generate_image.execute({ requests: [{ prompt: "x", resolution: "2K" }] }, {}))
+    .rejects.toThrow("arguments.requests[0].resolution is not an accepted argument (checked against the account's catalog schema for connector__matrix__generate_image)")
+  expect(t.sent.filter((r) => r.path === CALL)).toHaveLength(0)
+})
+
+test("a tool the catalog gives no schema is held to the bundled copy, and says so", async () => {
+  const t = transport({ [LIST]: catalog([entry("generate_image", { input_schema_json: "" })]) })
+  const { tool } = createConnectorTools(t.request)
+  await expect(tool.generate_image.execute({ requests: [{ prompt: "x", model: "image-01" }] }, {}))
+    .rejects.toThrow("(checked against the bundled schema for connector__matrix__generate_image (the catalog gave none))")
+  expect(t.sent.filter((r) => r.path === CALL)).toHaveLength(0)
+})
+
+test("the bundled generate_image schema is the catalog's of 2026-11-11 (#955)", () => {
+  const { tool } = createConnectorTools(async () => ({}))
+  const shown = tool.generate_image.args
+  expect(shown.properties.requests).toEqual(JSON.parse(liveImage).properties.requests)
+  expect(Object.keys(shown.properties.requests.items.properties)).not.toContain("resolution")
+  expect(Object.keys(shown.properties.requests.items.properties)).not.toContain("input_urls")
+  expect(tool.generate_image.description).not.toContain("input_urls")
 })
 
 test("video validation follows the per-model allOf rules", async () => {

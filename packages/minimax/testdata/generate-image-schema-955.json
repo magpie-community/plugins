@@ -1,0 +1,63 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "requests": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "area": {
+            "description": "Output size tier used with aspect_ratio; defaults to 4K.",
+            "enum": ["1K", "2K", "4K"],
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "description": "\"auto\" or \"X:Y\" with integers 1-300 between 1:3 and 3:1, for example 16:9. Use with optional area.",
+            "type": "string"
+          },
+          "n": {
+            "description": "Number of images for this request; defaults to 1. Each delivered image is charged once.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "output_file": {
+            "description": "Optional downloaded base filename. Directory components are ignored.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "output_format": {
+            "description": "Defaults to jpeg. jpg is the same as jpeg.",
+            "enum": ["png", "jpeg", "jpg"],
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Image description. With reference_images, refer to them as 图1, 图2, ... in the order given.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "reference_images": {
+            "description": "Optional 1-16 reference images to edit or combine. JPG, JPEG, PNG, WEBP, HEIC or HEIF; each at most 64 MB, 128-8192 px per side, aspect ratio at most 4:1.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "mime_type": { "enum": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"], "type": "string" },
+                "url": { "description": "temp_url from a completed upload_temp_url upload (upload local files first), or an existing upload URL from this environment.", "type": "string" }
+              },
+              "required": ["url"],
+              "type": "object"
+            },
+            "maxItems": 16,
+            "type": "array"
+          }
+        },
+        "required": ["prompt"],
+        "type": "object"
+      },
+      "maxItems": 10,
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": ["requests"],
+  "type": "object"
+}

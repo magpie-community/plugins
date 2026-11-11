@@ -85,6 +85,11 @@ On the combined MCP server these are named `minimax_generate_image`,
 `minimax_submit_video_generation`, and so on. In the Library's routed server,
 the separator is `minimax__generate_image`.
 
+Each named tool shows a schema bundled with the plugin, so loading it asks
+no network. A call is checked against the schema in the account's live
+catalog, read on each call, so a parameter MiniMax added since the bundled
+copy still goes through. `tool_schema` prints the live schema.
+
 Webpage reading is available through Magpie's search MCP server, whose
 `web_fetch` protects loopback and private network addresses.
 
