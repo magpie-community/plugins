@@ -83,6 +83,7 @@ test("a 429 to a turned-away system prompt is a 400, not a quota", async () => {
     ["x-anthropic-billing-header: cc_version=2.1", "Claude Code and the Claude Agent SDK"],
     ["You are Codex, a coding agent based on GPT-5.", "Codex's own system prompt"],
     ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "Hermes Agent's earlier default persona"],
+    ["RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\n§ Role", "oh-my-pi (omp)'s system prompt"],
   ]) {
     const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask("hi", { systemInstruction: { parts: [{ text: sys }] } }) })
     expect(res.status).toBe(400)

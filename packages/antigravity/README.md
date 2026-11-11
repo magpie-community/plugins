@@ -82,7 +82,7 @@ requestType: "agent", requestId, request}`):
 The plugin also changes the request itself, as the built-in did:
 
 - **System prompt:** lines Antigravity turns away (Claude Code's billing
-  header, Codex's and Hermes Agent's own prompts) are broken up with a
+  header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a
   zero-width space.
 - **Tool calls:**
   - Tool call ids are reduced to `[A-Za-z0-9_-]`.

@@ -100,6 +100,16 @@ test("a tool's images follow every response, for Claude", () => {
   expect(shape(g, "gemini-3-flash", "", "").contents[2].parts.length).toBe(5)
 })
 
+test("omp's RFC 2119 line is broken up, as the real account turned it away", () => {
+  const line = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
+  const sys = line + " `NEVER` = `MUST NOT`; `AVOID` = `SHOULD NOT`.\n\n§ Role"
+  const out = cloak(sys)
+  expect(out).not.toBe(sys)
+  expect(out.replaceAll("\u200b", "")).toBe(sys)
+  expect(out).toContain("R\u200bF\u200bC 2\u200b1\u200b19 k\u200be\u200bywords: M\u200bU\u200bST,")
+  expect(cloak("RFC 2119 keywords: MUST")).toBe("RFC 2119 keywords: MUST")
+})
+
 test("the lines Antigravity turns away are broken up", () => {
   const sys = "x-anthropic-billing-header: cc_version=2\nYou are Claude Code, built on Anthropic's Claude Agent SDK.\nhi"
   const out = cloak(sys)

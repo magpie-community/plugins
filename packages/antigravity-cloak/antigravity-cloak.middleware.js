@@ -9,6 +9,8 @@
 //   "You are Codex, a coding agent based on GPT-5"   for its GPT-5 models
 //   "Hermes Agent, an intelligent AI assistant created by Nous Research"
 //                    Hermes Agent's earlier default persona (its SOUL.md)
+//   "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
+//                    the first line of oh-my-pi (omp)'s system prompt
 //
 // (a Codex thread begun on a GPT model keeps its prompt after /model or a
 // fork onto an Antigravity one)
@@ -26,7 +28,7 @@
 // After hexiaolv's magpie-antigravity-cloak (MIT), which does the same to
 // every request whatever provider it goes to.
 
-export const words = ["x-anthropic-billing-header", "Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research"]
+export const words = ["x-anthropic-billing-header", "Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."]
 
 const zwsp = "​"
 
