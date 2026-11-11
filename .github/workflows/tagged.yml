@@ -1,0 +1,44 @@
+# Builds tagged.json on the `dist` branch every half hour: the repositories
+# tagged magpie-plugin, which magpie's Plugins page lists under Discover.
+# magpie reads it through usemagpie.ai/api/plugins/tagged, so a desktop that
+# can't reach GitHub, or is rate-limited there, still has the list.
+name: tagged
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write # pushes the dist branch
+
+concurrency: dist-branch
+
+jobs:
+  tagged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth=1 origin dist; then
+            git worktree add -B dist "$RUNNER_TEMP/dist" FETCH_HEAD
+          else
+            git worktree add --orphan -b dist "$RUNNER_TEMP/dist"
+          fi
+          node scripts/tagged.mjs "$RUNNER_TEMP/dist"
+          cd "$RUNNER_TEMP/dist"
+          git add tagged.json
+          if git diff --cached --quiet; then
+            echo "tagged.json is current"
+          else
+            git commit -q -m "tagged: $(date -u +%FT%H:%MZ)"
+            git push origin dist
+          fi
