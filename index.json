@@ -27049,6 +27049,86 @@
       "latest": "0.4.0",
       "readme": "# HarnessWeight\n\nA magpie page for comparing the agents behind your gateway: requests, input and output tokens, cache reads, failures, latency and estimated tool-definition size. The dashboard groups requests by agent, not model. A read-only gateway hook records tool counts and JSON sizes after each response and observes in-flight request counts in memory.\n\n[Project, screenshots and demo](https://github.com/webkubor/harnessweight)\n\n## Install\n\n```sh\nmagpie plugin add @magpie-community/page-harnessweight\n```\n\nOpen **HarnessWeight** in magpie. Usage history is read from magpie's existing local ledger; tool-size samples accumulate after installation. The service listens on loopback, port **3496** by default. Change the `port` plugin option if that port is in use.\n\n## Reading the dashboard\n\n- **Input** includes fresh input, cache reads and cache writes. Cache rates and input tokens are usage measurements, not a currency amount; pricing depends on the model and provider.\n- **Tool-definition tokens** are an estimate: the serialized JSON byte count divided by 3.5. They are not measured with the model's tokenizer. Tool definitions may be cached; their size is not a direct bill.\n- **In flight** is derived from hook start and response callbacks. Missing callbacks may leave counts visible until expiry (15 minutes). It does not reflect activity outside the gateway.\n- **Session duration** is the span between the first and last recorded request for a session in the chosen period, including idle time. Sessions longer than six hours are excluded from duration aggregates; a missing session ID cannot be measured.\n- Protocols are inferred from recorded endpoints for the selected period. They are not a list of the agent's current configuration.\n\n## Data and security\n\nThe sandboxed page asks for no bridge reads; it navigates to the plugin's local service. The service reads magpie's local usage ledger and queries its local gateway for agent display names and icon keys. The hook writes request metadata, tool names, counts and sizes locally. It does not store prompts, tool arguments or credentials and does not modify the request.\n\nThe local service validates Host and Origin and requires a per-process random token on data APIs. No telemetry is sent by this plugin.\n\nConfiguration options include `port`, `usageLog`, `dataDir`, `gatewayUrl` and `agents`; see the [project documentation](https://github.com/webkubor/harnessweight) for details.\n\n## Development\n\n```sh\nbun test\n```\n\nAgent icons are from the community page-agent-office icon collection and LobeHub; see [app/icons/NOTICE](app/icons/NOTICE). Brand marks belong to their respective owners.\n\nMIT © webkubor\n"
     },
+    "@magpie-community/page-model-quota": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-page-model-quota-0.1.0.tgz",
+          "integrity": "sha512-x+okNW5Sejcq77ChNiyNnYoCxu6KsoS3Y/dCLwTpQE6V5d9JlAAcRUZ8D4JlyekeZqNANY0u178q+cLQA3PKBA==",
+          "time": "2026-11-11T03:02:15.445Z",
+          "manifest": {
+            "name": "@magpie-community/page-model-quota",
+            "version": "0.1.0",
+            "description": "把所有账号、所有供应商的额度窗口换算成 token，按模型合并估算还剩多少。A page in Magpie's window that estimates how many tokens each model has left, merged across every account and provider, from the local usage history.",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "index.mjs",
+              "serve.mjs",
+              "lib",
+              "page",
+              "ui",
+              "assets",
+              "LICENSE",
+              "README.md"
+            ],
+            "scripts": {
+              "start": "node serve.mjs",
+              "test": "node --test test/*.test.mjs"
+            },
+            "engines": {
+              "magpie": ">=0.1.1340"
+            },
+            "keywords": [
+              "magpie",
+              "magpie-page",
+              "magpie-plugin",
+              "quota",
+              "usage",
+              "tokens",
+              "models"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/page-model-quota"
+            },
+            "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-model-quota",
+            "bugs": {
+              "url": "https://github.com/magpie-community/plugins/issues"
+            },
+            "magpie": {
+              "name": "Model Quota",
+              "summary": {
+                "en": "How many tokens each model has left, merged across every account and provider: each quota window is turned into tokens from your own usage history and split by the model's share in it.",
+                "zh": "每个模型在所有账号、所有供应商的池子里还剩多少 token：用你自己的用量历史把每个额度窗口换算成 token，再按模型在窗口里的占比摊开。"
+              },
+              "page": {
+                "title": "Model Quota",
+                "titles": {
+                  "en": "Model Quota",
+                  "zh": "模型剩余额度",
+                  "zh-TW": "模型剩餘額度"
+                },
+                "file": "page/index.html",
+                "icon": "page/icon.svg",
+                "service": {
+                  "port": 3496,
+                  "option": "port"
+                }
+              },
+              "options": {
+                "port": 3496
+              },
+              "permissions": [],
+              "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwZjE3MmEiLz48ZyBmaWxsPSJub25lIiBzdHJva2U9IiMzOGJkZjgiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNMTQgMjJoMzZNMTQgMzJoMzZNMTQgNDJoMjIiLz48L2c+PC9zdmc+"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "## 中文说明\n\n在 Magpie 窗口里看到**每个模型在所有账号、所有供应商的池子里还剩多少 token**。\n它把每个额度窗口换算成 token，再按模型在窗口内的占比摊开，最后跨账号、跨供应商合并。\n\n```sh\nmagpie plugin add @magpie-community/page-model-quota\n```\n\n# @magpie-community/page-model-quota\n\n## English\n\nA page in Magpie's window that answers one question: **how many tokens does each\nmodel have left, across every account and every provider at once**.\n\nEvery quota window Magpie tracks — a 5-hour window, a 7-day window, a month of\ncredits, a token package — is turned into tokens using your own usage history,\nsplit by each model's share inside that window, and then added up per model\nacross accounts and providers.\n\n```sh\nmagpie plugin add @magpie-community/page-model-quota\n```\n\n## How the number is made\n\n1. **Tokens per 1% of a window.** For each account and window, the page takes the\n   readings in `quota-history.json`, cuts them into rounds (a round ends where the\n   percentage jumps back up), and divides the tokens spent during a round by the\n   percentage that round dropped. The median over the complete rounds is that\n   window's tokens per 1%. Rounds with fewer than five calls are left out, so one\n   oversized request cannot define a window.\n2. **Tokens left in the window.** Remaining percentage × tokens per 1%.\n3. **Split by model.** The usage rows inside that same round carry a model, so the\n   window's tokens are split by the share each model had in it. Model names are\n   normalized: `grok-4.7@500k` and `grok-4.7@256k` are one model.\n4. **Merge.** The same model's share from every account and provider is added up.\n\nNested rate windows are handled as one allowance: a 5-hour window only throttles\nspeed, so the longest window of an account (7 days, Month, Weekly) is what counts\nas its remaining allowance. If that longest window is spent, the account counts as\nused up, and its shorter windows are not counted as available either.\n\nCredit windows (`Credits`, `Extra credits`, token packages, trials) are counted one\nby one; a window named `Total credits` or `总积分` is the sum of the others, so it\nreplaces them instead of adding to them. Windows measured in something other than\ncredits or tokens (requests, questions) are skipped.\n\n## Where the data comes from\n\n- `usage.jsonl` — one line per request, with `in`, `out`, `cache_read`,\n  `cache_write` and `reasoning`. Tokens are their sum.\n- `quota-history.json` — the remaining percentage Magpie recorded for each account\n  and window, with the time of the reading.\n- `quotas.json` — the current quota snapshot, used when the gateway does not answer.\n- `GET /v1/magpie/quotas?kept=1` on the local gateway — the current remaining\n  percentage, preferred over the snapshot.\n\nNothing leaves the machine. The service asks the local gateway and reads the files\nabove; there is no telemetry and no other request.\n\n## Architecture\n\n- `page/index.html` and `page/boot.js` are the launcher Magpie sandboxes. They read\n  the theme, the language and this plugin's options, then navigate the frame to the\n  local service. They never probe it: a plugin page's CSP is `connect-src 'none'`.\n- `lib/server.mjs` is that service, started from `index.mjs` by Magpie's Bun host\n  and stopped with the plugin. It serves `ui/` and `/api/report`.\n- `lib/report.mjs` holds the estimation itself and has no I/O, so the tests can call\n  it directly.\n\nThe service binds `127.0.0.1` only, on port 3496 by default; set `port` in the\nplugin's options to change it. `Host` must be `127.0.0.1:<port>` or\n`localhost:<port>`. Every `/api` route except `/api/ping` needs a key generated at\neach start and injected into the HTML this instance serves; that HTML is returned\nonly to navigation requests, so another page cannot fetch it to read the key. A\nsandboxed frame's `Origin: null` is accepted only together with the key.\n\n## What it does not do\n\n- It does not ask providers for quota. Magpie's own plugin does that; this page\n  reads what Magpie recorded.\n- It cannot estimate a window with no history: no readings, or no usage to line up\n  with them, means no number, and the window is named in the footer.\n- A window whose latest round has far fewer records than its history is marked\n  \"from past rounds\" — the number is still shown, with that caveat.\n\n## Tests\n\n```sh\nnode --test test/*.test.mjs\n```\n\nThey build a small config directory in a temp folder, start the service on port 0\nand check the guards (host, origin, key) and the estimate itself.\n"
+    },
     "@magpie-community/page-usage": {
       "versions": {
         "0.1.0": {
