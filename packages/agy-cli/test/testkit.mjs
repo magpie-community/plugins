@@ -32,7 +32,6 @@ export const INDEX_FILE = process.env.AGY_BRIDGE_TEST_INDEX || path.join(REPO_DI
 export const USAGE_FILE = path.join(REPO_DIR, "usage.mjs")
 export const PLATFORM_FILE = path.join(REPO_DIR, "platform.mjs")
 export const ARRAY_ITEMS_FILE = path.join(REPO_DIR, "array-items.mjs")
-export const TOOL_BUDGET_FILE = path.join(REPO_DIR, "tool-budget.mjs")
 export const CLOAK_FILE = path.join(REPO_DIR, "cloak.mjs")
 export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
 export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
@@ -491,7 +490,6 @@ export async function createBridgeKit(options = {}) {
   const usageUrl = pathToFileURL(USAGE_FILE).href
   const platformUrl = pathToFileURL(PLATFORM_FILE).href
   const arrayItemsUrl = pathToFileURL(ARRAY_ITEMS_FILE).href
-  const toolBudgetUrl = pathToFileURL(TOOL_BUDGET_FILE).href
   const cloakUrl = pathToFileURL(CLOAK_FILE).href
   const loginUrl = pathToFileURL(LOGIN_FILE).href
   const re2Url = pathToFileURL(RE2_PATTERN_FILE).href
@@ -504,7 +502,6 @@ export async function createBridgeKit(options = {}) {
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
     else if (key === "./array-items.mjs") module = sourceModule(ARRAY_ITEMS_FILE, "", arrayItemsUrl)
-    else if (key === "./tool-budget.mjs") module = sourceModule(TOOL_BUDGET_FILE, "", toolBudgetUrl)
     else if (key === "./cloak.mjs") module = sourceModule(CLOAK_FILE, "", cloakUrl)
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
     else if (key === "./re2-pattern.mjs") module = sourceModule(RE2_PATTERN_FILE, "", re2Url)

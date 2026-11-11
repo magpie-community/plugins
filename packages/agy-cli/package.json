@@ -21,7 +21,6 @@
     "NOTICE.md",
     "re2-pattern.mjs",
     "array-items.mjs",
-    "tool-budget.mjs",
     "cloak.mjs"
   ],
   "keywords": [

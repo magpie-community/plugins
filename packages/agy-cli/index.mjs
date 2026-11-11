@@ -11,7 +11,6 @@ import { createUsageReader } from "./usage.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
-import { fitTools } from "./tool-budget.mjs"
 import { cloak, hint, turnsAway } from "./cloak.mjs"
 
 const PROVIDER_ID = "agy-cli"
@@ -3298,19 +3297,6 @@ function sanitizeInputSchema(schema) {
   return out
 }
 
-// A tool shrunk (or still too big) to stay in agy's function list is said on
-// stderr every time; agy itself drops an oversized tool without a word (#989).
-function reportToolFit(row) {
-  try {
-    process.stderr.write("[agy-bridge] " + JSON.stringify({
-      event: "agy_bridge_tool_shrunk", ts: Date.now(), ...row,
-      note: row.stillOver || row.dropped.length
-        ? "agy may not show this tool to the model, or some parameters were left out"
-        : "tool declaration shortened so agy keeps it in the model's function list",
-    }) + "\n")
-  } catch {}
-}
-
 function normalizeTools(body) {
   if (!Array.isArray(body.tools) || !body.tools.length) return []
   const choice = body.tool_choice
@@ -4823,7 +4809,7 @@ export const AntigravityBridgePlugin = async () => {
             const instructions = sessionInstructions(body, callerWorkDir)
 
             try {
-              const tools = fitTools(normalizeTools(body), { report: reportToolFit })
+              const tools = normalizeTools(body)
               for (const message of body.messages) {
                 if (message.role !== "assistant" || !Array.isArray(message.content)) continue
                 for (const block of message.content) {
