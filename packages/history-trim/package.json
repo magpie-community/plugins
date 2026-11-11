@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-history-trim",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Send a request's history smaller: blank-line runs folded, a system prompt written twice and a message repeated right after itself dropped, a past tool result longer than maxToolLength cut, as magpie gateway middleware",
   "type": "module",
   "files": ["history-trim.middleware.js", "README.md", "LICENSE", "PROVENANCE.json"],

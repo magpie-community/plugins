@@ -58,8 +58,26 @@ function turnStart(messages) {
 //    trailing spaces and tabs on a line go. Words are untouched.
 // ---------------------------------------------------------------------------
 
+// Trailing spaces and tabs go before every line end that /[ \t]+$/gm sees:
+// \n, \r, U+2028, U+2029 and the end of the text. One pass, so a long run of
+// spaces costs its length, not its square.
+function trimLineEnds(text) {
+  let out = "", start = 0
+  for (let i = 0; i <= text.length; i++) {
+    const c = i < text.length ? text.charCodeAt(i) : -1
+    if (c === -1 || c === 10 || c === 13 || c === 0x2028 || c === 0x2029) {
+      let end = i
+      while (end > start && (text.charCodeAt(end - 1) === 32 || text.charCodeAt(end - 1) === 9)) end--
+      out += text.slice(start, end)
+      if (c !== -1) out += text[i]
+      start = i + 1
+    }
+  }
+  return out
+}
+
 function foldText(text) {
-  return text.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+$/gm, "")
+  return trimLineEnds(text.replace(/\n{3,}/g, "\n\n"))
 }
 
 function foldWhitespace(messages, preserveSystemPrompt) {
