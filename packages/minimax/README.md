@@ -81,6 +81,38 @@ that server to your agent to use the tools with any of its chat models.
 | `get_asset_url` | Get a fresh download URL for a generated asset's `node_id` |
 | `list_tools`, `tool_schema`, `call_tool` | Discover and call the account's current Matrix tools and read their live schemas |
 
+## Native Magpie image, video, and web search
+
+This plugin also registers MiniMax Code as a backend for Magpie's built-in
+media and search, so you can use them from Settings and drop the named tools
+from an agent's catalog if you only need those three capabilities. The named
+tools above stay available.
+
+Once you are signed in to MiniMax Code (China) or MiniMax Code (Global):
+
+- **Image generation** (Settings → Models → Images → Image generation, served
+  at `/mcp/magpie/image`): choose **MiniMax Image**. Text-to-image uses the
+  same Matrix `generate_image` API as the named tool (a `requests` array, then
+  `get_asset_url` for the download URL). Reference images must already be
+  HTTPS URLs; data URIs and local paths are not uploaded.
+- **Video generation** (Settings → Models → Images → Video generation, served
+  through Magpie's videos API): choose **MiniMax H3**, **MiniMax H3 Max**, or
+  **MiniMax Hailuo 2.3**. A job is submitted with `submit_video_generation` and
+  polled with `query_video_generation`, using those real model ids. Text-to-video
+  works out of the box; a first or last frame must be an HTTPS URL.
+- **Web search** (Settings → Models → Web search → Search APIs, served at
+  `/mcp/magpie/web-search`): enable **MiniMax Code** or **MiniMax Code (Global)**
+  in the search API list. Searches use `/mavis/api/v1/mcp/web_search` with the
+  signed-in account, the same API as the `web_search` tool. No separate API key
+  is needed.
+
+The image and video models also appear on the MiniMax Code provider's model
+list (they give images or video, not chat). Leave chat on M3 / M2.7.
+
+Magpie's Library can already give skills to the **MiniMax Code** desktop app
+when Magpie detects that app on the machine. That target lives in Magpie
+itself, not in this plugin.
+
 On the combined MCP server these are named `minimax_generate_image`,
 `minimax_submit_video_generation`, and so on. In the Library's routed server,
 the separator is `minimax__generate_image`.

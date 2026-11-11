@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { "./server": "./magpie.mjs", ".": "./opencode2.mjs" },
-  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "magpie.mjs", "connector-tools.mjs", "matrix-tools.json", "web-tools.mjs", "README.md"],
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "magpie.mjs", "connector-tools.mjs", "native.mjs", "matrix-tools.json", "web-tools.mjs", "README.md"],
   "keywords": ["opencode", "opencode-plugin", "minimax", "mcode", "minimax-code"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax" },

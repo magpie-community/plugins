@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { compactToolsOn, createConnectorTools } from "./connector-tools.mjs"
 import { createWebTools } from "./web-tools.mjs"
+import { mediaConfigModels, withMediaModels, createSearchHook, handleMediaFetch } from "./native.mjs"
 
 const CLIENT_ID = "mcode-public"
 const SCOPE = "agent.default"
@@ -200,19 +201,22 @@ function variants(m) {
 const reasons = (m) => m.thinking !== "off"
 
 function configModels(magpie) {
-  return Object.fromEntries(MODELS.map((m) => {
-    const inputs = inputsOf(m, magpie)
-    return [m.id, {
-      name: m.name,
-      reasoning: reasons(m),
-      tool_call: true,
-      attachment: attachment(m, inputs),
-      modalities: { input: inputs, output: ["text"] },
-      limit: limits(m.id, m.context, m.output),
-      cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-      variants: variants(m),
-    }]
-  }))
+  return {
+    ...Object.fromEntries(MODELS.map((m) => {
+      const inputs = inputsOf(m, magpie)
+      return [m.id, {
+        name: m.name,
+        reasoning: reasons(m),
+        tool_call: true,
+        attachment: attachment(m, inputs),
+        modalities: { input: inputs, output: ["text"] },
+        limit: limits(m.id, m.context, m.output),
+        cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        variants: variants(m),
+      }]
+    })),
+    ...mediaConfigModels(),
+  }
 }
 
 function modelOf(site, provider, m, magpie) {
@@ -1035,6 +1039,8 @@ function makePlugin(site) {
         p.api ??= api(site)
         p.models = { ...configModels(host), ...(p.models ?? {}) }
       },
+      // Magpie lists this beside Tavily and the rest, signed in as this site
+      search: createSearchHook(site, (access, path, body, opts) => postTool(site, access, path, body, opts)),
       // the conversation's id, which MiniMax Code sends with each request
       "chat.headers": async (input, output) => {
         const id = input?.model?.providerID ?? input?.provider?.info?.id
@@ -1050,7 +1056,7 @@ function makePlugin(site) {
             const { a } = await fresh(async () => auth)
             const ms = await liveModels(site, a.access)
             if (!ms.length) return provider.models
-            return Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m, host)]))
+            return withMediaModels(Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m, host)])), site, provider)
           } catch (e) {
             if (e instanceof SignInExpired) throw e
             return provider.models
@@ -1087,6 +1093,7 @@ function makePlugin(site) {
               const req = input instanceof Request ? input : null
               let body = init?.body
               if (body === undefined && req) body = await req.clone().text()
+              const url = req ? req.url : input instanceof URL ? input.href : input
               const send = (a) => {
                 const headers = new Headers(init?.headers ?? req?.headers)
                 headers.delete("content-length")
@@ -1103,11 +1110,23 @@ function makePlugin(site) {
                 // waits for the last. Asked uncompressed, it sends the
                 // events as they come.
                 headers.set("accept-encoding", "identity")
-                return siteFetch(site, req ? req.url : input instanceof URL ? input.href : input, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
+                return siteFetch(site, url, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
               }
+              const media = (access) => handleMediaFetch(url, {
+                method: init?.method ?? req?.method ?? "POST",
+                body,
+                signal: init?.signal ?? req?.signal,
+              }, { request: makeTokenRequest(site, access), siteId: site.id })
               let { a, renewed: did } = await fresh(getAuth)
               let res
               try {
+                res = await media(a.access)
+                if (res?.status === 401) {
+                  ;({ a } = await fresh(getAuth, a.access))
+                  did = true
+                  res = await media(a.access)
+                }
+                if (res) return answer(res, did)
                 res = await send(a)
                 if (res.status === 401) {
                   // the token was turned away before its end: a newer one
@@ -1248,6 +1267,47 @@ function makePlugin(site) {
 
 // Tools run outside a chat account's scope. Read the explicitly selected
 // account afresh for each call; the site's first stored account is the default.
+async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } = {}) {
+  const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+  abort.throwIfAborted()
+  const res = await siteFetch(site, new URL(path, site.llm).href, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + access },
+    body: JSON.stringify(body ?? {}),
+    signal: abort,
+  }, site.name + " tool API")
+  if (!res.ok) throw new Error(site.name + " tool API: HTTP " + res.status)
+  let env
+  try { env = obj(JSON.parse(await res.text())) } catch {
+    abort.throwIfAborted()
+    throw new Error("MiniMax tool API: invalid JSON response")
+  }
+  if (!env) throw new Error("MiniMax tool API: expected a JSON object")
+  if (env.code !== undefined) {
+    const { code: rawCode, message, ...payload } = env
+    const code = num(rawCode)
+    if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
+    if (code !== 0) throw new Error("MiniMax tool API: " + (str(env, "message") ?? "status " + code))
+    if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
+  }
+  if (env.base_resp !== undefined) {
+    const br = obj(env.base_resp)
+    const code = br && num(br.status_code)
+    if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
+    if (code !== 0) throw new Error("MiniMax tool API: " + (str(br, "status_msg") ?? "status " + code))
+  }
+  checked(env, "MiniMax tool API")
+  abort.throwIfAborted()
+  return env
+}
+
+function makeTokenRequest(site, access) {
+  return (siteID, path, body, opts = {}) => {
+    if (siteID !== site.id) throw new Error("account must belong to the selected MiniMax Code site")
+    return postTool(site, access, path, body, opts)
+  }
+}
+
 function createToolRequest({ client, directory }) {
   const sessions = new Map()
   return async (siteID, path, body, { signal, timeoutMs = 30000, account } = {}) => {
@@ -1360,4 +1420,4 @@ export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, createToolRequest, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }
+export const _internal = { SITES, MODELS, createToolRequest, postTool, makeTokenRequest, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

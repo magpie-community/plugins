@@ -264,6 +264,17 @@ export function compactToolsOn(options) {
   return options?.compactTools === true
 }
 
+// callMatrixTool runs one Matrix tool on the live catalog, the way the
+// named tools do: list, route, then call. Native Magpie image/video
+// generation uses this so it talks to the same connector APIs.
+export async function callMatrixTool(request, site, name, args, { signal, timeoutMs, account } = {}) {
+  if (typeof request !== "function") throw new Error("callMatrixTool needs the request transport")
+  const short = name.startsWith(MATRIX) ? name.slice(MATRIX.length) : name
+  const cat = await catalog(request, site, signal, account)
+  const entry = find(cat, MATRIX + short)
+  return invoke(request, site, entry, args ?? {}, signal, timeoutMs ?? (LONG.has(short) ? GEN_MS : CALL_MS), account)
+}
+
 export function createConnectorTools(request, options = {}) {
   if (typeof request !== "function") throw new Error("createConnectorTools needs the request transport")
   const tool = {}
