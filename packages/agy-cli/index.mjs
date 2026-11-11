@@ -3449,7 +3449,11 @@ function inspectToolTurn(results, body) {
       }
       if (block?.type === "image") {
         if (!seenResult) {
-          throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")
+          // Same replay path as ordinary text before a live tool_result.
+          // Keep the image on the request body so the new prompt can carry it;
+          // never splice it into an MCP function response that has no result yet.
+          userSteered = true
+          continue
         }
         out = appendResultPart(out, resultIndex, parseUserImage(block))
         continue

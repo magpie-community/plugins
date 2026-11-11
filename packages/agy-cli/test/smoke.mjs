@@ -2055,6 +2055,54 @@ for (const location of ["inline", "system", "developer", "user"]) {
       `status=${mixedResponse.status}`)
   }
 
+  // Text plus an image before a live tool_result must also replay (not 400).
+  {
+    const imgFirst = { model, messages: [{ role: "user", content: "ESCCALL mixed image before result" }], tools: [echoTool] }
+    const imgEvents = (await readSSE(await callFetch(imgFirst))).events
+    const imgOld = inits().at(-1).convId
+    const imgSecond = continuation(imgFirst, imgEvents, "MIXED_IMAGE_RESULT")
+    const resultBlock = imgSecond.messages.at(-1).content[0]
+    imgSecond.messages.at(-1).content = [
+      { type: "text", text: "look at this" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "cmVwbGF5aW1hZ2U=" } },
+      resultBlock,
+    ]
+    const imgRes = await callFetch(imgSecond)
+    const imgFinal = imgRes.status === 200 ? (await readSSE(imgRes)).events : []
+    if (imgRes.status !== 200) await imgRes.text()
+    const imgReplay = lastOf("user")
+    check("text plus an image before a live tool_result is replayed as a user prompt",
+      imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
+      imgReplay.convId !== imgOld &&
+      imgReplay.text.includes("look at this") &&
+      imgReplay.text.includes("MIXED_IMAGE_RESULT") &&
+      imgReplay.content.some(part => part.type === "image" && part.data === "cmVwbGF5aW1hZ2U="),
+      `status=${imgRes.status}`)
+  }
+
+  // An image with no text before a live tool_result must also set userSteered.
+  {
+    const imgFirst = { model, messages: [{ role: "user", content: "ESCCALL image only before result" }], tools: [echoTool] }
+    const imgEvents = (await readSSE(await callFetch(imgFirst))).events
+    const imgOld = inits().at(-1).convId
+    const imgSecond = continuation(imgFirst, imgEvents, "ONLY_IMAGE_RESULT")
+    const resultBlock = imgSecond.messages.at(-1).content[0]
+    imgSecond.messages.at(-1).content = [
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "b25seWltYWdl" } },
+      resultBlock,
+    ]
+    const imgRes = await callFetch(imgSecond)
+    const imgFinal = imgRes.status === 200 ? (await readSSE(imgRes)).events : []
+    if (imgRes.status !== 200) await imgRes.text()
+    const imgReplay = lastOf("user")
+    check("an image alone before a live tool_result is replayed as a user prompt",
+      imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
+      imgReplay.convId !== imgOld &&
+      imgReplay.text.includes("ONLY_IMAGE_RESULT") &&
+      imgReplay.content.some(part => part.type === "image" && part.data === "b25seWltYWdl"),
+      `status=${imgRes.status}`)
+  }
+
   // User rejects tool call in TUI and enters a new prompt merged into the same user message by Claude Code aLe().
   const rFirst = { model, messages: [{ role: "user", content: "ESCCALL user rejected tool" }], tools: [echoTool] }
   const rEvents = (await readSSE(await callFetch(rFirst))).events
