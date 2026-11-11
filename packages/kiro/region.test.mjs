@@ -72,7 +72,10 @@ function kiro({ profiles = { "us-east-1": [US], "eu-central-1": [EU] }, usage = 
   return seen
 }
 
-const hooks = (saves = []) => plugin({ client: { auth: { set: async (r) => void saves.push(r.body) } } })
+// switches are the provider's "<region>-only" switches as the user has them
+// in magpie, read live: changing the object changes the next request
+const hooks = (saves = [], switches = {}) =>
+  plugin({ client: { auth: { set: async (r) => void saves.push(r.body) } }, magpie: { option: (id, key) => (id === "kiro" ? switches[key] : undefined) } })
 const ask = async (h, a) => {
   const l = await h.auth.loader(async () => a)
   const res = await l.fetch("https://kiro.invalid/v1/messages", { method: "POST",
@@ -256,4 +259,83 @@ test("a social sign-in keeps one region", async () => {
   expect(seen.profiles).toBe(0)
   expect(seen.usage).toEqual([["us-east-1", US]])
   expect(u.windows.map((w) => w.name)).toEqual(["Credits", "Overage"])
+})
+
+// The "<region>-only" switches: an account uses the one region its switch
+// names and never the other.
+test("each region's switch sends every request to that region alone", async () => {
+  for (const [key, region, arn] of [["us-east-1-only", "us-east-1", US], ["eu-central-1-only", "eu-central-1", EU]]) {
+    const seen = kiro()
+    const h = await hooks([], { [key]: true })
+    await ask(h, auth())
+    await ask(h, auth())
+    expect(seen.chat).toEqual([[region, arn], [region, arn]])
+  }
+})
+
+test("both switches off, or both on, is the regions in turn", async () => {
+  for (const sw of [{}, { "us-east-1-only": true, "eu-central-1-only": true }]) {
+    const seen = kiro({ chat: { "us-east-1": USED_UP } })
+    await ask(await hooks([], sw), auth())
+    expect(seen.chat).toEqual([["us-east-1", US], ["eu-central-1", EU]])
+  }
+})
+
+test("a switch changed between two requests applies to the next, with no restart", async () => {
+  const seen = kiro()
+  const sw = {}
+  const h = await hooks([], sw)
+  await ask(h, auth())
+  sw["eu-central-1-only"] = true
+  await ask(h, auth())
+  sw["eu-central-1-only"] = false
+  sw["us-east-1-only"] = true
+  await ask(h, auth())
+  expect(seen.chat).toEqual([["us-east-1", US], ["eu-central-1", EU], ["us-east-1", US]])
+})
+
+test("a region used up under its switch is a 429, and the other region is not asked", async () => {
+  const seen = kiro({ chat: { "us-east-1": USED_UP } })
+  const r = await ask(await hooks([], { "us-east-1-only": true }), auth())
+  expect(r.status).toBe(429)
+  expect(r.message).toContain("used up in us-east-1")
+  expect(r.message).toContain("us-east-1-only")
+  expect(seen.chat).toEqual([["us-east-1", US]])
+})
+
+test("a region not enabled under its switch is a 429 with nothing sent to the other", async () => {
+  const seen = kiro({ profiles: { "us-east-1": [US] } })
+  const r = await ask(await hooks([], { "eu-central-1-only": true }), auth())
+  expect(r.status).toBe(429)
+  expect(r.message).toContain("eu-central-1 is not enabled")
+  expect(seen.chat).toEqual([])
+})
+
+test("an account set to one region counts that region alone, the other shown only", async () => {
+  // the window magpie weighs the account by is the one not shown only
+  const weighed = (u) => u.windows.find((w) => !w.aside && w.span)
+  // the plan is 2000 credits and the overage cap 10000: eu-central-1 has used
+  // 5000 of its overage, us-east-1 all of it
+  kiro({ usage: { "us-east-1": limits(2000 + 10000), "eu-central-1": limits(2000 + 5000) } })
+  const u = await (await hooks([], { "eu-central-1-only": true })).auth.usage(async () => auth())
+  expect(weighed(u)).toMatchObject({ name: "Overage", amount: 5000, limit: 10000, used: 50 })
+  const us = u.windows.filter((w) => /us-east-1/.test(w.name))
+  expect(us.length).toBeGreaterThan(0)
+  expect(us.every((w) => w.aside)).toBe(true)
+  // without the switch both regions are counted
+  kiro({ usage: { "us-east-1": limits(2000 + 10000), "eu-central-1": limits(2000 + 5000) } })
+  const both = await (await hooks()).auth.usage(async () => auth())
+  expect(weighed(both)).toMatchObject({ amount: 15000, limit: 20000, used: 75 })
+  // the pinned region used up makes the account used up, however much the other has
+  kiro({ usage: { "us-east-1": limits(2000), "eu-central-1": limits(2000 + 10000) } }) // us-east-1 has all its overage left
+  const v = await (await hooks([], { "eu-central-1-only": true })).auth.usage(async () => auth())
+  expect(weighed(v).used).toBe(100)
+})
+
+test("a social sign-in, one region only, ignores the switches", async () => {
+  const seen = kiro()
+  const a = { type: "oauth", access: "t", refresh: "r", expires: later(), method: "social", loginProvider: "Github", region: "us-east-1",
+    profileArn: US, accountId: "me@example.com (GitHub)" }
+  await ask(await hooks([], { "eu-central-1-only": true }), a)
+  expect(seen.chat).toEqual([["us-east-1", US]])
 })
