@@ -928,17 +928,23 @@ async function exchange(code, verifier, redirect) {
   return { key, webapp: r.devinWebappHost, api: r.devinApiUrl }
 }
 
+// unknownAccount names a credential without revealing it. The same key on
+// the same server keeps its slot, while two unreadable accounts don't both
+// become "Devin" and replace each other in magpie (#931).
+const unknownAccount = (key, server) =>
+  `Devin · ${createHash("sha256").update(server || SERVER).update("\0").update(key).digest("hex").slice(0, 12)}`
+
 // success names a key's account as Devin does when asked with the key
 // (GetUserStatus), or, when Devin can't tell, as the CLI does in a data
 // folder of the plugin's own: never by the CLI alone, which on Windows
 // names its own account whatever key it is given (#17). A key Devin or the
 // CLI says nobody is signed in with fails it; with neither able to tell,
-// the account is just "Devin".
+// a stable fingerprint keeps that credential apart from another (#931).
 async function success(key, server) {
   let who = await whoByKey(key, server)
   if (who === undefined) who = await identity(await homeFor(key, server))
   if (who === null) throw new Error("Devin didn't take the sign-in: nobody is signed in with the token it gave")
-  const metadata = { email: who?.user || "Devin" }
+  const metadata = { email: who?.user || unknownAccount(key, server) }
   if (who?.plan) metadata.plan = who.plan
   const orgId = who?.orgId || who?.teamId
   if (orgId) metadata.orgId = orgId
