@@ -834,5 +834,45 @@
         }
       ]
     }
+  },
+  {
+    "name": "a space before CRLF is trimmed without changing the newline",
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a \r\nb" }, { "role": "assistant", "content": "ok" }]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a\r\nb" }, { "role": "assistant", "content": "ok" }]
+    }
+  },
+  {
+    "name": "whitespace-only lines do not become new blank lines before folding",
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a\n \n \n \nb" }, { "role": "assistant", "content": "ok" }]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a\n\n\n\nb" }, { "role": "assistant", "content": "ok" }]
+    }
+  },
+  {
+    "name": "a space before a Unicode line separator is trimmed",
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a  b" }, { "role": "assistant", "content": "ok" }]
+    },
+    "expect_request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "a b" }, { "role": "assistant", "content": "ok" }]
+    }
+  },
+  {
+    "name": "a long trailing space run before a word is left whole",
+    "request": {
+      "model": "m",
+      "messages": [{ "role": "user", "content": "                                        a" }, { "role": "assistant", "content": "ok" }]
+    }
   }
 ]
