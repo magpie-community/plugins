@@ -297,6 +297,28 @@ again.
 
 Builder ID, Google, GitHub and API key sign-ins keep one region.
 
+Two switches in the provider's editor, "Use us-east-1 only" and "Use
+eu-central-1 only" (`us-east-1-only`, `eu-central-1-only`), pin an Identity
+Center account to one region. They are read at each request, so a change
+needs no restart:
+
+- With one on, every request goes to that region and none to the other,
+  whatever credits the other has. The region not enabled for the account, or
+  used up, is a 429 naming the switch, and magpie goes on to another
+  account. The other region is never tried.
+- `auth.usage` counts the pinned region alone in the window magpie weighs
+  the account by; the other region's windows are shown only. So the account
+  is used up for magpie when the pinned region is, not when both are.
+- Both off, or both on, is the default: the regions in turn.
+
+Credits past a region's plan are overage, billed at $0.04 each: twice what
+a plan's credits cost (a Power plan is $200 for 10000, $0.02 each), and a
+plan's credits do not roll over to the next month. So when one region is
+already in its overage and the other still has plan credits, pinning the
+account to the other spends the cheaper credits first. Left on the first,
+the account goes on into overage while the other region's plan credits
+expire unused.
+
 ## Not included
 
 - Switching between several accounts. OpenCode keeps one sign-in per

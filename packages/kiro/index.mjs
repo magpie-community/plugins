@@ -423,6 +423,21 @@ async function profileOf(c) {
 // only with every enabled region used up is it used up for magpie.
 const CREDIT_REGIONS = ["us-east-1", "eu-central-1"]
 const twoRegions = (c) => c.method === "idc" && !c.builderID
+// magpie's switches for the provider (auth.options), one for each credit
+// region: with one on, an Identity Center account uses that region alone.
+// They are read at each request, so a change needs no restart. A request is
+// never sent to the other region: this one not enabled for the account, or
+// used up, is a 429 for magpie to go on to another account. Both off is the
+// default, the regions in turn; both on says nothing, and is the default too.
+const onlyOption = (region) => region + "-only"
+const onlyRegion = (magpie) => {
+  try {
+    const on = CREDIT_REGIONS.filter((r) => magpie?.option?.(ID, onlyOption(r)) === true)
+    return on.length === 1 ? on[0] : ""
+  } catch {
+    return ""
+  }
+}
 const SPENT_MS = 60 * 60 * 1000 // a region Kiro said is used up, with no reset known, rests this long
 const PROBE_MS = 10 * 60 * 1000 // a region with no profile is asked for one again at most this often
 const REMIND_SHARE = 80 // the share at which a region not enabled is pointed out
@@ -571,7 +586,7 @@ const usageOf = (l, now = Date.now()) => readUsage(l, now).usage
 // whether it is used up and when it resets. Regions read come first, then
 // those that couldn't be read, then those not enabled: a card that shows
 // only the first few windows then shows the credits an account has.
-function regionsUsage(reads, now = Date.now()) {
+function regionsUsage(reads, now = Date.now(), only = "") {
   const shown = []
   const failed = []
   const off = []
@@ -593,9 +608,20 @@ function regionsUsage(reads, now = Date.now()) {
     first ??= u
     if (!stop) continue
     const over = stop !== plan
-    anyOver ||= over
-    allOver &&= over
+    // an account set to one region counts that region alone, the other
+    // shown only: its credits are not the account's to spend
+    const counted = !only || r.region === only
+    if (counted) {
+      anyOver ||= over
+      allOver &&= over
+    }
     monthName ??= plan.name
+    if (!counted) {
+      shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
+      if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+      regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: Date.parse(stop.resetsAt ?? "") > 0 ? Date.parse(stop.resetsAt) : 0 })
+      continue
+    }
     amount += stop.amount
     limit += stop.limit
     inPlan += plan.amount
@@ -613,9 +639,19 @@ function regionsUsage(reads, now = Date.now()) {
       windows.push({ name: monthName, used: (100 * inPlan) / ofPlan, ...resetsAt, display: count(inPlan, ofPlan), amount: inPlan, limit: ofPlan,
         unit: "credits", span: 30 * 24 * 3600, aside: true })
     let display = count(amount, limit)
-    if (missing.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${missing.join(", ")} not enabled: ask your admin to enable it`
+    // a region the user said not to use is not asked to be enabled
+    const ask = only ? missing.filter((r) => r === only) : missing
+    if (ask.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${ask.join(", ")} not enabled: ask your admin to enable it`
     windows.push({ name: allOver ? "Overage" : monthName, used: (100 * amount) / limit, ...resetsAt,
       display, amount, limit, unit: "credits", span: 30 * 24 * 3600 })
+  } else if (only) {
+    // the region the account is pinned to is not enabled or couldn't be read:
+    // no window to weigh, so magpie would go on asking an account every
+    // request of which is a 429. A window that is used up leaves it out of
+    // routing, and says why.
+    const why = reads.find((r) => r.region === only)?.error ? `${only} couldn't be read` : `${only} is not enabled`
+    windows.push({ name: monthName ?? "Credits", used: 100, display: `${why}, and the ${onlyOption(only)} switch is on: no other region is used`,
+      span: 30 * 24 * 3600 })
   }
   windows.push(...shown, ...failed, ...off, ...(first?.windows ?? []).filter((w) => !w.span))
   const { windows: _w, ...who } = first ?? {}
@@ -647,7 +683,7 @@ async function credOf(auth) {
 // sign-in read with that token (its save failed, or magpie hasn't yet
 // saved what auth.refresh gave) goes on with the newer one rather than
 // spending the replaced refresh token again.
-function account(client) {
+function account(client, magpie) {
   let held = null // { id, c }
   const after = new Map()
   const newest = (c) => {
@@ -766,9 +802,13 @@ function account(client) {
       if (!twoRegions(c) || st.builderID || !c.profiles) return a
       // the first enabled region with credits left, in CREDIT_REGIONS' order
       const now = Date.now()
-      const open = CREDIT_REGIONS.filter((r) => c.profiles[r])
+      const only = onlyRegion(magpie)
+      const open = CREDIT_REGIONS.filter((r) => c.profiles[r] && (!only || r === only))
       const pick = open.find((r) => !(st.spent[r] > now))
       if (pick) Object.assign(a, { region: pick, profile: c.profiles[pick] })
+      // pinned to a region this account lacks, or has used up: no region to
+      // send to, which ask() answers as every region used up
+      else if (only) return { ...a, region: only, profile: "", key, profiles: { ...c.profiles }, open, pinned: only }
       return { ...a, key, profiles: { ...c.profiles }, open }
     })
   // spend marks a region of an account used up till until (0: SPENT_MS from
@@ -2594,6 +2634,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
   } catch (e) {
     return { status: 401, message: e.message }
   }
+  if (a.pinned) return { status: 429, message: pinnedUnavailable(a) }
   let res
   try {
     res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
@@ -2631,6 +2672,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
     } catch (e) {
       return { status: 401, message: e.message }
     }
+    if (next.pinned) return { status: 429, message: pinnedUnavailable(next) + f.message, wait: f.wait }
     if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message, wait: f.wait }
     a = next
     try {
@@ -2646,6 +2688,16 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
     return { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
   }
   return { res, a }
+}
+
+// pinnedUnavailable heads the 429 of an account set to one region (a
+// "<region>-only" switch) whose region is not enabled or used up: the other
+// region is not tried, as the switch says.
+function pinnedUnavailable(a) {
+  const enabled = a.open?.includes(a.pinned)
+  return enabled
+    ? `Kiro credits used up in ${a.pinned}, the only region this account is set to use (magpie's ${onlyOption(a.pinned)} switch is on). `
+    : `${a.pinned} is not enabled for this account, and magpie's ${onlyOption(a.pinned)} switch is on, so no other region is used: ask your admin to enable it. `
 }
 
 // regionsUsedUp heads the 429 of an account with every enabled region used
@@ -3086,8 +3138,8 @@ async function bodyOf(input, init) {
   return JSON.parse(typeof b === "string" ? b : new TextDecoder().decode(b))
 }
 
-export async function KiroAuthPlugin({ client } = {}) {
-  const creds = account(client)
+export async function KiroAuthPlugin({ client, magpie } = {}) {
+  const creds = account(client, magpie)
   return {
     auth: {
       provider: ID,
@@ -3145,7 +3197,7 @@ export async function KiroAuthPlugin({ client } = {}) {
               }
             }))
             if (reads.every((r) => r.error || !r.l)) throw reads.find((r) => r.error)?.error ?? new Error("Kiro read no credits")
-            const got = regionsUsage(reads)
+            const got = regionsUsage(reads, Date.now(), onlyRegion(magpie))
             for (const r of got.regions) creds.spend(a.key, r.region, r.full ? r.resetsAt || 0 : -1)
             u = got.usage
           } else u = usageOf(await usageLimits(a, true))
@@ -3158,6 +3210,20 @@ export async function KiroAuthPlugin({ client } = {}) {
       },
       // labels, messages and hints are magpie's own fields: the same words
       // by the window's language (OpenCode shows the English)
+      // magpie's switches for the provider (#2038): shown in its editor, read
+      // with input.magpie.option at each request
+      options: [
+        ...CREDIT_REGIONS.map((region, i) => {
+          const other = CREDIT_REGIONS[1 - i]
+          return {
+            key: onlyOption(region),
+            label: `Use ${region} only`,
+            description: `Send every request to ${region}, none to ${other}; with it not enabled or used up, magpie moves to another account.`,
+            labels: { zh: `只使用 ${region}` },
+            descriptions: { zh: `所有请求发往 ${region}，不发往 ${other}；该区域未开通或额度用完时，magpie 换下一个账号。` },
+          }
+        }),
+      ],
       methods: [
         { type: "oauth", label: "Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)", labels: WORDS.browser,
           prompts: [{ type: "select", key: "loginMethod", message: "Choose a sign-in method", messages: WORDS.choose, options: [
