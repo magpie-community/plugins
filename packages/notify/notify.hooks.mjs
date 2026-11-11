@@ -51,6 +51,7 @@ let cancel = (t) => clearTimeout(t)
 let pending = new Set()
 
 export const defaults = {
+  enabled: true,
   channels: [],
   minMinutes: 3,
   cooldownSeconds: 30,
@@ -93,6 +94,9 @@ export function options(raw) {
   o.cooldownSeconds = Math.max(0, Number(o.cooldownSeconds) || 0)
   o.failureHoldSeconds = Math.max(0, Math.min(600, Number(o.failureHoldSeconds ?? defaults.failureHoldSeconds) || 0))
   o.maxTextLength = Math.max(0, Math.min(2000, Number(o.maxTextLength) || 0))
+  o.enabled = o.enabled !== false
+  // the page's switch: off sends nothing, whatever the channels
+  if (!o.enabled) o.channels = []
   o.accounts = o.accounts !== false
   o.accountCooldownMinutes = Math.max(0, Number(o.accountCooldownMinutes ?? defaults.accountCooldownMinutes) || 0)
   if (!words[o.lang]) o.lang = "en"

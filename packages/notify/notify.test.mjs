@@ -885,3 +885,21 @@ test("a webhook gets the sign-in event", async () => {
     event: { kind: "signed-out", provider: "codex", account: "me@example.com" },
   })
 })
+
+// meili145 on X: the page's switch turns every push off without touching channels
+test("enabled: false sends no turn push and no sign-in push, enabled by default", async () => {
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0, enabled: false } })
+  onSignIn(signedOut, signInCtx({ enabled: false }))
+  await settled()
+  expect(calls.length).toBe(0)
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0 } })
+  expect(calls.length).toBe(1)
+})
+
+// the page ships with the package and keeps what it doesn't edit
+test("the page is declared and shipped", () => {
+  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+  expect(pkg.magpie.page.file).toBe("page/index.html")
+  for (const f of ["index.html", "app.js", "i18n.js", "style.css"]) expect(readdirSync(new URL("./page/", import.meta.url))).toContain(f)
+  expect(pkg.files).toEqual(expect.arrayContaining(["page/*.html", "page/*.js", "page/*.css"]))
+})

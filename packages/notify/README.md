@@ -46,10 +46,15 @@ A Claude sign-in that ends within days is pushed the same way ("sign-in ends in 
 
 The hook changes nothing in a request, and sending never holds one up: it returns at once and posts in the background, with a 10-second limit per channel.
 
+## The page
+
+The plugin has a page in magpie's sidebar (Plugins group): add, edit and pause channels, set when it sends, and turn every push on or off, without editing a file. The switch at the top is the `enabled` option; the rest of the page edits the options below and saves them whole, so a field it has no box for (a webhook's `headers`, a Gotify channel's `extras`) is kept. Pushes are never sent from the page itself.
+
 ## Options
 
 ```jsonc
 {
+  "enabled": true,                 // false: nothing is sent, channels stay
   "channels": [                    // one or more; each sends the same push
     { "type": "ntfy", "topic": "…", "server": "https://ntfy.sh", "token": "…", "priority": 3 },
     { "type": "bark", "key": "…", "server": "https://api.day.app", "group": "magpie", "sound": "…" },
