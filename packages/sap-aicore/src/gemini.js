@@ -162,7 +162,9 @@ function responseShape(value) {
     isObject(candidate) && (candidate.index === undefined || nonnegative(candidate.index)) &&
     (candidate.finishReason === undefined || (typeof candidate.finishReason === "string" && !!candidate.finishReason && candidate.finishReason !== "FINISH_REASON_UNSPECIFIED")) &&
     (candidate.content === undefined ? typeof candidate.finishReason === "string" :
-      isObject(candidate.content) && (candidate.content.role === undefined || candidate.content.role === "model") && Array.isArray(candidate.content.parts) && candidate.content.parts.every(isObject)))
+      isObject(candidate.content) && (candidate.content.role === undefined || candidate.content.role === "model") &&
+      (candidate.content.parts === undefined ? typeof candidate.finishReason === "string" :
+        Array.isArray(candidate.content.parts) && candidate.content.parts.every(isObject))))
 }
 
 function relayGemini(upstream, signal, secrets) {

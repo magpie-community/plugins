@@ -6,6 +6,7 @@ import path from "node:path"
 import { resolveDeployment, projectModels } from "../src/discovery.js"
 import { SAPAICorePlugin } from "../src/index.js"
 import { validateRequest, dispatch } from "../src/gemini.js"
+import { readJSONRequest, nativeRequestJSON } from "../src/transport.js"
 
 const cleanups = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -321,4 +322,50 @@ test("native safety blocks remain distinct from malformed or truncated answers",
   assert.equal(await (await dispatch(args(base({ stream: true })))).text(), frames([blocked]))
   mockFetch(async () => streamReply(frames([{ usageMetadata: { totalTokenCount: -1 } }])))
   assert.match(await (await dispatch(args(base({ stream: true })))).text(), /"error"/)
+})
+
+test("finished candidates without parts succeed whole and streamed", async () => {
+  const roleOnly = { candidates: [{ content: { role: "model" }, finishReason: "MAX_TOKENS", index: 0 }], usageMetadata: { promptTokenCount: 3, totalTokenCount: 19, thoughtsTokenCount: 16 } }
+  const absentContent = { candidates: [{ finishReason: "STOP", index: 0 }], usageMetadata: { totalTokenCount: 5 } }
+  for (const payload of [roleOnly, absentContent]) {
+    mockFetch(async () => json(payload))
+    const whole = await dispatch(args(base()))
+    assert.equal(whole.status, 200)
+    assert.deepEqual(await whole.json(), payload)
+    mockFetch(async () => streamReply(frames([payload]).replaceAll("\n", "\r\n")))
+    const sse = await dispatch(args(base({ stream: true })))
+    assert.equal(await sse.text(), frames([payload]))
+  }
+  mockFetch(async () => json({ candidates: [{ content: { role: "model" } }] }))
+  await assert.rejects(dispatch(args(base())), { code: "inference-response" })
+  mockFetch(async () => json({ candidates: [{ content: { role: "model", parts: "oops" }, finishReason: "STOP" }] }))
+  await assert.rejects(dispatch(args(base())), { code: "inference-response" })
+})
+
+test("raw native requests reject duplicate decoded keys and retain unique-key bytes", async () => {
+  const native = raw => readJSONRequest(ROOT, { body: raw }, undefined, MODEL)
+  for (const raw of [
+    '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"googleSearch":{}}],"tools":[{"functionDeclarations":[{"name":"f"}]}]}',
+    '{"outer":{"a":1,"a":2}}',
+    '{"a":1,"\\u0061":2}',
+    '{"__proto__":1,"__proto__":2}',
+    '{"list":[{"k":1},{"k":2}],"k":1,"k":2}',
+  ]) await assert.rejects(native(raw), { code: "invalid-request" }, raw)
+  for (const raw of [
+    '{"text":"a=1,b=2,c:3"}',
+    '{"s":"he said \\"a\\":1"}',
+    '{"arr":[1,1,1]}',
+    '{"a":{"k":1},"b":{"k":2}}',
+    '{"path":"c:\\\\temp\\\\a"}',
+  ]) assert.equal(nativeRequestJSON(await native(raw)), raw, raw)
+  const signedUnique = '{"contents":[{"role":"model","parts":[{"functionCall":{"id":"x","name":"m","args":{"n":9007199254740993,"neg":-9007199254740993,"z":-0,"e":1e3}}}]}]}'
+  assert.equal(nativeRequestJSON(await native(signedUnique)), signedUnique)
+  const f = await pluginFixture()
+  const response = await f.loaded.fetch(ROOT + "/models/" + MODEL + ":generateContent", {
+    method: "POST",
+    body: '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"googleSearch":{}}],"tools":[{"functionDeclarations":[{"name":"f"}]}]}',
+  })
+  assert.equal(response.status, 400)
+  assert.equal((await response.json()).error.code, "invalid-request")
+  assert.equal(f.calls.filter(call => call.url.includes("/v2/inference/")).length, 0)
 })

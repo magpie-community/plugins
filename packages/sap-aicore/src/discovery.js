@@ -650,6 +650,12 @@ const selectionShape = e =>
     e.metadata ?? null, e.requestPolicy ?? null])
 const compatibleSelection = (a, b) => selectionShape(a) === selectionShape(b)
 
+function preferDeployment(prior, entry) {
+  const byVersion = entry.activeVersion.localeCompare(prior.activeVersion, "en", { numeric: true })
+  if (byVersion > 0 || (byVersion === 0 && entry.deploymentID < prior.deploymentID)) return entry
+  return prior
+}
+
 async function resolveRow(context, aiRoot, configs, catalogMemo, row) {
   const deployment = await candidate(context, row)
   if (deployment === null) return null
@@ -664,29 +670,23 @@ async function resolveRow(context, aiRoot, configs, catalogMemo, row) {
 async function enrich(context, aiRoot, rows) {
   const configs = new Map()
   const catalogMemo = {}
-  const chosen = new Map()
-  // Rows are resolved concurrently but reduced in input order, so duplicate
-  // selection (lowest deployment ID) and conflict detection stay deterministic.
   const entries = await mapBounded(rows, ENRICH_CONCURRENCY, row => resolveRow(context, aiRoot, configs, catalogMemo, row))
+  const groups = new Map()
   for (const entry of entries) {
     if (entry === null) continue
-    const prior = chosen.get(entry.canonicalID)
-    if (prior === undefined) { chosen.set(entry.canonicalID, entry); continue }
-    // GPT versions share a model ID; select the lowest eligible deployment ID.
-    // Claude duplicates still require the same active version.
-    const sameConcrete = prior.modelName === entry.modelName &&
-      ((prior.protocol === "responses" && entry.protocol === "responses") || prior.activeVersion === entry.activeVersion)
-    // Distinct raw SAP identities may share one canonical ID only when both were
-    // established from authoritative display metadata and select a compatible
-    // model. A fallback-only equivalence, or any incompatibility (version,
-    // protocol, capability, policy, metadata), is an observable identity
-    // conflict rather than a guessed merge.
-    if (!sameConcrete) {
-      const equivalent = IDENTITY_AUTHORITATIVE.get(prior) === true &&
-        IDENTITY_AUTHORITATIVE.get(entry) === true && compatibleSelection(prior, entry)
-      if (!equivalent) throw failure("conflict")
+    const group = groups.get(entry.canonicalID)
+    if (group === undefined) groups.set(entry.canonicalID, [entry])
+    else group.push(entry)
+  }
+  const chosen = new Map()
+  for (const [canonicalID, group] of groups) {
+    const first = group[0]
+    if (group.some(e => e.modelName !== first.modelName || e.protocol !== first.protocol)) {
+      for (const e of group) {
+        if (IDENTITY_AUTHORITATIVE.get(e) !== true || !compatibleSelection(first, e)) throw failure("conflict")
+      }
     }
-    if (entry.deploymentID < prior.deploymentID) chosen.set(entry.canonicalID, entry)
+    chosen.set(canonicalID, group.reduce(preferDeployment))
   }
   const registry = Object.create(null)
   for (const canonicalID of [...chosen.keys()].sort()) registry[canonicalID] = chosen.get(canonicalID)

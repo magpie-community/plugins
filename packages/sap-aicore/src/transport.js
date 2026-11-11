@@ -191,6 +191,38 @@ export async function readBytes(input, init, signal) {
 const NATIVE_REQUESTS = new WeakMap()
 export const nativeRequestJSON = body => NATIVE_REQUESTS.get(body)
 
+// Already-valid JSON can hide duplicate keys from validation while retaining
+// them in raw bytes. Decode only keys to preserve signed numeric values.
+function assertUniqueObjectKeys(text) {
+  const stack = []
+  for (let i = 0; i < text.length; ) {
+    const ch = text[i]
+    if (ch === "\"") {
+      let j = i + 1
+      while (j < text.length) {
+        if (text[j] === "\\") { j += 2; continue }
+        if (text[j] === "\"") break
+        j++
+      }
+      const token = text.slice(i, j + 1)
+      i = j + 1
+      const top = stack[stack.length - 1]
+      if (top !== undefined && top.keys !== undefined && top.expectingKey) {
+        const key = JSON.parse(token)
+        if (top.keys.has(key)) throw invalid("The request body contains a duplicate object key.")
+        top.keys.add(key)
+        top.expectingKey = false
+      }
+      continue
+    }
+    if (ch === "{") stack.push({ keys: new Set(), expectingKey: true })
+    else if (ch === "[") stack.push({})
+    else if (ch === "}" || ch === "]") stack.pop()
+    else if (ch === ",") { const top = stack[stack.length - 1]; if (top !== undefined && top.keys !== undefined) top.expectingKey = true }
+    i++
+  }
+}
+
 /** Parse bounded JSON; Gemini's URL model supplies its internal routing envelope. */
 export async function readJSONRequest(input, init, signal, pathModel = undefined) {
   if (signal?.aborted) throw abortReason(signal)
@@ -203,7 +235,10 @@ export async function readJSONRequest(input, init, signal, pathModel = undefined
   catch { throw invalid("The request body is not valid JSON.") }
   if (!isObject(body)) throw invalid("The request body must be a JSON object.")
   if (pathModel !== undefined) {
-    if (!("model" in body) && !("stream" in body)) NATIVE_REQUESTS.set(body, text)
+    if (!("model" in body) && !("stream" in body)) {
+      assertUniqueObjectKeys(text)
+      NATIVE_REQUESTS.set(body, text)
+    }
     if ("model" in body && body.model !== pathModel) throw invalid("The body model must match the URL model.")
     body.model = pathModel
   }
