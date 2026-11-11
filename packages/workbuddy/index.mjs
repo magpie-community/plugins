@@ -2550,7 +2550,7 @@ function tokensShort(n) {
 let ledgerParsed = null
 
 // routingParsed is the WorkBuddy refusals read from a routing file, keyed by
-// that file alone (and the build whose models are being asked about). The
+// that file, provider and model. The
 // usage ledger beside it changes on every request; the routing files need not
 // be read — least of all the gzip days — merely because usage did.
 const routingParsed = new Map()
@@ -2593,8 +2593,11 @@ function freeWindowRouting(base, now = Date.now()) {
   } catch {
     return []
   }
-  const found = [...days].map((day) => (names.includes(`${day}.jsonl.gz`) ? `${day}.jsonl.gz` : names.includes(`${day}.jsonl`) ? `${day}.jsonl` : null)).filter(Boolean)
-  return found.map((name) => join(base, "routing", name))
+  const found = []
+  for (const day of days) {
+    for (const name of [`${day}.jsonl`, `${day}.jsonl.gz`]) if (names.includes(name)) found.push(join(base, "routing", name))
+  }
+  return found
 }
 
 // restIdentity reads the gateway rest key's exact shape,
@@ -2602,7 +2605,7 @@ function freeWindowRouting(base, now = Date.now()) {
 // the model starts at the last slash, and the account is everything before it,
 // so an account may itself contain @ or /.
 function restIdentity(rest, win) {
-  if (typeof rest?.key !== "string" || typeof rest.until !== "string" || !Number.isFinite(Date.parse(rest.until))) return null
+  if (typeof rest?.key !== "string") return null
   if (!rest.key.startsWith(win.provider + "@")) return null
   const tail = rest.key.slice(win.provider.length + 1)
   const modelAt = tail.lastIndexOf("/")
@@ -2614,12 +2617,14 @@ function restIdentity(rest, win) {
 // routingRefusals turns a routing trace's failed WorkBuddy attempts into the
 // same shape as a usage row, so freeWindowOf can read the vendor reset an
 // ordinary usage read never saw. An attempt is named either by order[]'s who
-// or, when the gateway rest carries an until, by rest.key's exact account and
-// model; where both name different accounts the attempt is left out rather
+// or, when the gateway rest carries a reset, by rest.key's account and model;
+// keyed accounts are compared case-insensitively, and an order's spelling is
+// kept. Where both name different accounts the attempt is left out rather
 // than guessed onto one of them.
 function routingRefusals(win, text) {
   const rows = []
   for (const line of text.split("\n")) {
+    if (!/"status"\s*:\s*429/.test(line)) continue
     if (!line.includes(win.provider)) continue
     let event
     try {
@@ -2631,11 +2636,12 @@ function routingRefusals(win, text) {
     const named = new Map()
     const ambiguous = new Set()
     for (const order of orders) {
-      if (order?.provider !== win.provider || typeof order.id !== "string" || typeof order.who !== "string") continue
+      if (order?.provider !== undefined && order.provider !== win.provider) continue
+      if (typeof order.id !== "string" || typeof order.who !== "string") continue
       if (ambiguous.has(order.id)) continue
       const was = named.get(order.id)
       if (was === undefined) named.set(order.id, order.who)
-      else if (was !== order.who) {
+      else if (was.toLowerCase() !== order.who.toLowerCase()) {
         named.delete(order.id)
         ambiguous.add(order.id)
       }
@@ -2645,18 +2651,19 @@ function routingRefusals(win, text) {
       if (attempt.provider !== undefined && attempt.provider !== win.provider) continue
       if (!windowModel(attempt.model, win)) continue
       const error = typeof attempt.error === "string" ? attempt.error : typeof attempt.error?.message === "string" ? attempt.error.message : ""
+      const keyed = restIdentity(attempt.rest, win)
       let reset = windowReset(error)
       let restUntil = NaN
       if (!Number.isFinite(reset)) {
-        restUntil = Date.parse(typeof attempt.rest?.until === "string" ? attempt.rest.until : "")
+        restUntil = keyed && attempt.rest.by === "resets" ? Date.parse(typeof attempt.rest.until === "string" ? attempt.rest.until : "") : NaN
         if (Number.isFinite(restUntil)) reset = restUntil
       }
       if (!Number.isFinite(reset)) continue
       const ordered = named.get(String(attempt.id ?? ""))
-      const keyed = restIdentity(attempt.rest, win)
-      if (ordered !== undefined && keyed && ordered !== keyed.account) continue
-      const account = keyed?.account ?? ordered
+      if (ordered !== undefined && keyed && ordered.toLowerCase() !== keyed.account.toLowerCase()) continue
+      const account = ordered ?? keyed?.account
       if (typeof account !== "string" || !account) continue
+      const keyedOnly = ordered === undefined
       rows.push({
         provider: win.provider,
         providerAccount: account,
@@ -2664,6 +2671,7 @@ function routingRefusals(win, text) {
         t: attempt.start ?? event?.time,
         status: 429,
         err: error,
+        ...(keyedOnly ? { keyedOnly: true } : {}),
         ...(Number.isFinite(windowReset(error)) ? {} : { restUntil }),
       })
     }
@@ -2678,20 +2686,20 @@ function readRoutingRefusals(path, compressed, win) {
   } catch {
     return []
   }
-  const key = `${path}|${st.mtimeMs}:${st.size}|${win.provider}|${win.model}`
-  if (routingParsed.has(key)) return routingParsed.get(key)
+  const key = `${path}|${win.provider}|${win.model}`
+  const held = routingParsed.get(key)
+  const fingerprint = `${st.mtimeMs}:${st.size}`
+  if (held?.fingerprint === fingerprint) return held.rows
   routingReads.count++
-  const old = `${path}|${st.mtimeMs}:${st.size}|${win.provider}|`
-  for (const held of routingParsed.keys()) if (held !== key && held.startsWith(old)) routingParsed.delete(held)
   let text
   try {
     text = compressed ? gunzipSync(readFileSync(path)).toString("utf8") : readFileSync(path, "utf8")
   } catch {
-    routingParsed.set(key, [])
+    routingParsed.set(key, { key, path, fingerprint, rows: [] })
     return []
   }
   const rows = routingRefusals(win, text)
-  routingParsed.set(key, rows)
+  routingParsed.set(key, { key, path, fingerprint, rows })
   return rows
 }
 
@@ -2702,8 +2710,8 @@ function routingRefusalRows(path, compressed, now, account, win = FREE_WINDOW_AI
   for (const attempt of parsed) {
     const t = Date.parse(attempt.t)
     if (!Number.isFinite(t) || t < oldest || t > now) continue
-    if (attempt.providerAccount !== account) continue
-    rows.push(attempt)
+    if (attempt.providerAccount.toLowerCase() !== account.toLowerCase()) continue
+    rows.push({ ...attempt, providerAccount: attempt.keyedOnly ? account : attempt.providerAccount })
   }
   return rows
 }
@@ -2762,7 +2770,10 @@ function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = pr
     }
     ledgerParsed = { key, rows: got.rows }
   }
-  const refused = freeWindowRouting(dirname(path), now).flatMap((route) => routingRefusalRows(route, route.endsWith(".gz"), now, account, win))
+  const routes = freeWindowRouting(dirname(path), now)
+  const current = new Set(routes)
+  for (const [key, held] of routingParsed) if (!current.has(held.path)) routingParsed.delete(key)
+  const refused = routes.flatMap((route) => routingRefusalRows(route, route.endsWith(".gz"), now, account, win))
   const rows = [...got.rows, ...refused].sort((a, b) => Date.parse(a.t) - Date.parse(b.t))
   return rows
 }
@@ -4396,4 +4407,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads }
+export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }
