@@ -284,6 +284,7 @@
     { "package": "@magpie-community/page-model-quota", "name": "Model Quota", "kind": "page", "community": true,
       "summary": { "en": "How many tokens each model has left, merged across every account and provider: each quota window is turned into tokens from your own usage history and split by the model's share in it.", "zh": "每个模型在所有账号、所有供应商的池子里还剩多少 token：用你自己的用量历史把每个额度窗口换算成 token，再按模型在窗口里的占比摊开。" } },
     { "package": "@magpie-community/page-harnessweight", "name": "HarnessWeight", "kind": "page", "community": true,
-      "summary": { "en": "Compare agent harnesses behind your gateway by input tokens, cache, failures, latency and estimated tool-definition size. Its local service reads this machine's usage ledger; a read-only hook samples tool sizes and tracks in-flight requests.", "zh": "按 Agent 对比网关后面的输入 token、缓存、失败率、延迟与工具定义体积估算。本机服务读取用量记录，只读 hook 采样工具大小并追踪进行中的请求。" } }
+      "summary": { "en": "Compare agent harnesses behind your gateway by input tokens, cache, failures, latency and estimated tool-definition size. Its local service reads this machine's usage ledger; a read-only hook samples tool sizes and tracks in-flight requests.", "zh": "按 Agent 对比网关后面的输入 token、缓存、失败率、延迟与工具定义体积估算。本机服务读取用量记录，只读 hook 采样工具大小并追踪进行中的请求。" } },
+    { "package": "@magpie-community/agent-wave", "name": "Wave", "kind": "agent", "community": true, "icon": "https://github.com/wavetermdev.png", "summary": {"en": "Wave Terminal (waveterm) on magpie's Agents page: pick one of magpie's models for it, and switch it off to put its config back.", "zh": "把 Wave Terminal（waveterm）加到 magpie 的 Agent 页：给它选 magpie 的模型，关掉即恢复它原来的配置。"}}
   ]
 }
