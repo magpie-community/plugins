@@ -1449,6 +1449,27 @@ class Proc {
     return historyKey(stripToolUseInputs(expectedAssistant)) === historyKey(stripToolUseInputs(actualAssistant))
   }
 
+  // Answers the pending calls with the results the client sent, cancels what
+  // agy was doing next, and leaves the session at `history`, ready for the
+  // steer's prompt. False when anything is off; the caller then replays in a
+  // new session, as before.
+  async steerInSession(turn, results, history) {
+    if (this.dead || this.stopping || this.retiring || this.turn !== turn || turn.done || turn.finalized ||
+      !Array.isArray(history)) return false
+    // An image in a result is replayed in the prompt, as before.
+    if (results.some((item) => item.result.content.some((part) => part.type !== "text"))) return false
+    try {
+      this.continueWith(results)
+    } catch {
+      return false
+    }
+    if (!this.cancelTurn(turn, [])) return false
+    await Promise.race([turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
+    if (!turn.finalized || this.dead || this.stopping || this.historyInvalid || this.turn) return false
+    this.expectedMessages = history.map((message) => ({ ...message }))
+    return true
+  }
+
   recordToolResults(turn, messages) {
     if (this.turn === turn) this.expectedMessages = messages.map((message) => ({ ...message }))
   }
@@ -4639,14 +4660,23 @@ function streamResponse(proc, turn, body, signal) {
   })
 }
 
-async function beginTurn(proc, history, body, callerWorkDir, model, selection) {
+// Tool results a kept session already holds (answered to its live MCP calls
+// when the user steered) are not sent again in the steer's prompt.
+function withoutAnswered(messages, answered) {
+  if (!answered?.size) return messages
+  return messages.map((message) => message.role === "user" && Array.isArray(message.content)
+    ? { ...message, content: message.content.filter((block) => !(block?.type === "tool_result" && answered.has(block.tool_use_id))) }
+    : message)
+}
+
+async function beginTurn(proc, history, body, callerWorkDir, model, selection, answered) {
   const reminder = outputFormatReminder(body)
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const baseParts = proc.hasSentFirstTurn
     ? renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
-      : body.messages.slice(history.length))
+      : withoutAnswered(body.messages.slice(history.length), answered))
     : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
   const contentParts = mergePromptParts(baseParts, reminder)
@@ -4783,7 +4813,9 @@ export const AntigravityBridgePlugin = async () => {
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "" }
-              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection)
+              let answeredIds = null
+              const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
+              let keptSession = false
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks)
                 const found = matches.filter((item) => item.match)
@@ -4825,7 +4857,15 @@ export const AntigravityBridgePlugin = async () => {
                   const historyMatches = directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
                     : proc.matchesHistory(trailingMessages(body).history)
-                  if (interrupted || !historyMatches || proc.toolsGrew(tools) ||
+                  // A steer keeps the live session, so agy's prompt cache holds: the
+                  // calls are answered with their real results, the step is
+                  // cancelled, and the steer goes in as the next prompt.
+                  if (interrupted && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                    sameInstructions(proc.instructions, instructions) &&
+                    await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
+                    keptSession = true
+                    answeredIds = new Set(rawResults.map((item) => item.block.tool_use_id))
+                  } else if (interrupted || !historyMatches || proc.toolsGrew(tools) ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
@@ -4891,7 +4931,7 @@ export const AntigravityBridgePlugin = async () => {
                 convKey,
                 acquireOpts,
                 isFresh,
-                resultBlocks.length > 0,
+                resultBlocks.length > 0 && !keptSession,
               )
               const turn = await begin(proc, history)
               return streamResponse(proc, turn, body, init.signal)

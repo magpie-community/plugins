@@ -510,6 +510,7 @@ function logs() {
 
 const inits = () => logs().filter(event => event.type === "init")
 const lastOf = type => logs().filter(event => event.type === type).at(-1)
+const mcpResultText = convId => logs().filter(event => event.type === "mcpResult" && event.convId === convId).map(event => (event.result?.content || []).map(part => part.text || "").join("")).join("\n")
 
 function textOf(events) {
   return events.filter(event => event.event === "content_block_delta")
@@ -1799,6 +1800,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const first = { model, messages: [{ role: "user", content: "ESCCALL interrupted by user" }], tools: [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
   const old = inits().at(-1)
+  const initsBefore = inits().length
   const second = continuation(first, events, "partial tool output")
   second.messages.at(-1).content.push(
     { type: "text", text: "[Request interrupted by user]\n" },
@@ -1807,13 +1809,15 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const response = await callFetch(second)
   const final = (await readSSE(response)).events
   const replay = lastOf("user")
-  check("user-interrupted tool turn abandons old process and starts new turn cleanly",
-    response.status === 200 && stopOf(final) === "end_turn" && replay.convId !== old.convId &&
-    replay.text.includes("New instruction after Esc") && !fs.existsSync(old.cwd), `got ${response.status}`)
+  check("a user-interrupted tool turn keeps the live agy session: no session/new, the steer is the next prompt",
+    response.status === 200 && stopOf(final) === "end_turn" && replay.convId === old.convId &&
+    inits().length === initsBefore && replay.text.includes("New instruction after Esc") &&
+    !replay.text.includes("partial tool output") && fs.existsSync(old.cwd),
+    `got ${response.status} ${JSON.stringify({ replay: replay.convId, old: old.convId, n: inits().length, before: initsBefore })} ${replay.text}`)
   const third = nextTurn(second, final, "MEMORY after interrupted tool turn")
   const thirdRes = await callFetch(third)
   await readSSE(thirdRes)
-  check("turn after user-interrupted replay reuses the new session",
+  check("turn after a user-interrupted tool turn reuses the same session",
     thirdRes.status === 200 && lastOf("user").convId === replay.convId)
 }
 
@@ -1985,6 +1989,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const first = { model, messages: [{ role: "user", content: "ESCCALL queued command mid-turn" }], tools: [echoTool] }
   const events = (await readSSE(await callFetch(first))).events
   const old = inits().at(-1)
+  const initsBefore = inits().length
   const second = continuation(first, events, "file-output")
   second.messages.at(-1).content.push(
     { type: "text", text: "<ide_opened_file>/project/a.ts</ide_opened_file>" },
@@ -2001,8 +2006,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const secondRes = await callFetch(second)
   const secondFinal = (await readSSE(secondRes)).events
   const steeredUser = lastOf("user")
-  check("Claude Code mid-turn queued_command and tool_addition replay as clean user prompt",
-    secondRes.status === 200 && stopOf(secondFinal) === "end_turn" && steeredUser.convId !== old.convId &&
+  check("Claude Code mid-turn queued_command and tool_addition steer the same session with a clean user prompt",
+    secondRes.status === 200 && stopOf(secondFinal) === "end_turn" && steeredUser.convId === old.convId && inits().length === initsBefore &&
     steeredUser.text.includes("Remove invalid freejev accounts now") &&
     !steeredUser.text.includes("This is how Claude Code surfaces"),
     JSON.stringify(steeredUser))
@@ -2011,12 +2016,13 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const wFirst = { model, messages: [{ role: "user", content: "ESCCALL wedged follow-up" }], tools: [echoTool] }
   const wEvents = (await readSSE(await callFetch(wFirst))).events
   const wOld = inits().at(-1)
+  const wBefore = inits().length
   const wedged = continuation(wFirst, wEvents, "tool-output-before-abort")
   wedged.messages.push({ role: "user", content: "Standalone follow-up user instruction" })
   const wRes = await callFetch(wedged)
   const wFinal = (await readSSE(wRes)).events
-  check("standalone follow-up user message after aborted tool turn replays instead of wedging with 400",
-    wRes.status === 200 && stopOf(wFinal) === "end_turn" && lastOf("user").convId !== wOld.convId &&
+  check("standalone follow-up user message after aborted tool turn steers the same session instead of wedging with 400",
+    wRes.status === 200 && stopOf(wFinal) === "end_turn" && lastOf("user").convId === wOld.convId && inits().length === wBefore &&
     lastOf("user").text.includes("Standalone follow-up user instruction"),
     `status=${wRes.status}`)
 }
@@ -2071,6 +2077,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     }
     const mixedEvents = (await readSSE(await callFetch(mixedFirst))).events
     const oldSession = inits().at(-1).convId
+    const mixedBefore = inits().length
     const mixedSecond = continuation(mixedFirst, mixedEvents, "MIXED_RESULT")
     const resultBlock = mixedSecond.messages.at(-1).content[0]
     const newInstruction = { type: "text", text: `MIXED_USER_INSTRUCTION_${placement}` }
@@ -2080,11 +2087,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const mixedFinal = mixedResponse.status === 200 ? (await readSSE(mixedResponse)).events : []
     if (mixedResponse.status !== 200) await mixedResponse.text()
     const replay = lastOf("user")
-    check(`ordinary user text ${placement} tool_result is replayed as a user instruction`,
+    check(`ordinary user text ${placement} tool_result steers the live session as a user instruction`,
       mixedResponse.status === 200 && stopOf(mixedFinal) === "end_turn" &&
-      replay.convId !== oldSession && replay.text.includes(newInstruction.text) &&
-      replay.text.includes("MIXED_RESULT"),
-      `status=${mixedResponse.status}`)
+      replay.convId === oldSession && inits().length === mixedBefore &&
+      replay.text.includes(newInstruction.text) && !replay.text.includes("MIXED_RESULT") &&
+      mcpResultText(oldSession).includes("MIXED_RESULT"),
+      `status=${mixedResponse.status} ${replay.convId === oldSession} ${inits().length === mixedBefore} ${JSON.stringify(replay.text)} ${JSON.stringify(mcpResultText(oldSession))}`)
   }
 
   // Text plus an image before a live tool_result must also replay (not 400).
@@ -2092,6 +2100,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgFirst = { model, messages: [{ role: "user", content: "ESCCALL mixed image before result" }], tools: [echoTool] }
     const imgEvents = (await readSSE(await callFetch(imgFirst))).events
     const imgOld = inits().at(-1).convId
+    const imgBefore = inits().length
     const imgSecond = continuation(imgFirst, imgEvents, "MIXED_IMAGE_RESULT")
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
@@ -2103,11 +2112,11 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgFinal = imgRes.status === 200 ? (await readSSE(imgRes)).events : []
     if (imgRes.status !== 200) await imgRes.text()
     const imgReplay = lastOf("user")
-    check("text plus an image before a live tool_result is replayed as a user prompt",
+    check("text plus an image before a live tool_result steers the live session as a user prompt",
       imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
-      imgReplay.convId !== imgOld &&
+      imgReplay.convId === imgOld && inits().length === imgBefore &&
       imgReplay.text.includes("look at this") &&
-      imgReplay.text.includes("MIXED_IMAGE_RESULT") &&
+      !imgReplay.text.includes("MIXED_IMAGE_RESULT") && mcpResultText(imgOld).includes("MIXED_IMAGE_RESULT") &&
       imgReplay.content.some(part => part.type === "image" && part.data === "cmVwbGF5aW1hZ2U="),
       `status=${imgRes.status}`)
   }
@@ -2117,6 +2126,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgFirst = { model, messages: [{ role: "user", content: "ESCCALL image only before result" }], tools: [echoTool] }
     const imgEvents = (await readSSE(await callFetch(imgFirst))).events
     const imgOld = inits().at(-1).convId
+    const imgBefore = inits().length
     const imgSecond = continuation(imgFirst, imgEvents, "ONLY_IMAGE_RESULT")
     const resultBlock = imgSecond.messages.at(-1).content[0]
     imgSecond.messages.at(-1).content = [
@@ -2127,10 +2137,10 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const imgFinal = imgRes.status === 200 ? (await readSSE(imgRes)).events : []
     if (imgRes.status !== 200) await imgRes.text()
     const imgReplay = lastOf("user")
-    check("an image alone before a live tool_result is replayed as a user prompt",
+    check("an image alone before a live tool_result steers the live session as a user prompt",
       imgRes.status === 200 && stopOf(imgFinal) === "end_turn" &&
-      imgReplay.convId !== imgOld &&
-      imgReplay.text.includes("ONLY_IMAGE_RESULT") &&
+      imgReplay.convId === imgOld && inits().length === imgBefore &&
+      !imgReplay.text.includes("ONLY_IMAGE_RESULT") && mcpResultText(imgOld).includes("ONLY_IMAGE_RESULT") &&
       imgReplay.content.some(part => part.type === "image" && part.data === "b25seWltYWdl"),
       `status=${imgRes.status}`)
   }
@@ -2139,6 +2149,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const rFirst = { model, messages: [{ role: "user", content: "ESCCALL user rejected tool" }], tools: [echoTool] }
   const rEvents = (await readSSE(await callFetch(rFirst))).events
   const rOld = inits().at(-1)
+  const rBefore = inits().length
   const rSecond = continuation(
     rFirst,
     rEvents,
@@ -2148,8 +2159,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
   rSecond.messages.at(-1).content.push({ type: "text", text: "Write to /tmp/safe instead" })
   const rRes = await callFetch(rSecond)
   const rFinal = (await readSSE(rRes)).events
-  check("rejected tool_result merged with follow-up user prompt replays cleanly without 400",
-    rRes.status === 200 && stopOf(rFinal) === "end_turn" && lastOf("user").convId !== rOld.convId &&
+  check("rejected tool_result merged with follow-up user prompt steers the same session without 400",
+    rRes.status === 200 && stopOf(rFinal) === "end_turn" && lastOf("user").convId === rOld.convId && inits().length === rBefore &&
     lastOf("user").text.includes("Write to /tmp/safe instead"),
     `status=${rRes.status}`)
 
@@ -2228,6 +2239,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const first = { model, messages: [{ role: 'user', content: 'SKILLCALL ordinary user steering regression' }], tools: [skillTool] }
   const events = (await readSSE(await callFetch(first))).events
   const oldSession = inits().at(-1).convId
+  const skillBefore = inits().length
   const second = continuation(first, events, 'Launching skill: archive')
   second.messages.at(-1).content.push({ type: 'text', text: 'Stop this task and explain something else' })
   const response = await callFetch(second)
@@ -2236,13 +2248,13 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const replay = lastOf('user')
     const skillResult = logs().filter(event => event.type === 'mcpResult' && event.convId === oldSession).at(-1)
     const skillOutput = skillResult?.result?.content?.map(part => part.text || '').join('') || ''
-    check('plain user instructions beside Skill results replay separately from the MCP result',
-      replay.convId !== oldSession &&
+    check('plain user instructions beside Skill results steer separately from the MCP result',
+      replay.convId === oldSession && inits().length === skillBefore &&
       replay.text.includes('Stop this task and explain something else') &&
       !skillOutput.includes('Stop this task and explain something else'))
     if (stopOf(final) === 'tool_use') await drive(second, final, 'finish replayed skill')
   } else {
-    check('plain user instructions beside Skill results replay separately from the MCP result', false, `got ${response.status}`)
+    check('plain user instructions beside Skill results steer separately from the MCP result', false, `got ${response.status}`)
     await response.text()
     await drive(first, events, 'cleanup ordinary Skill text')
   }
@@ -2253,13 +2265,14 @@ for (const location of ["inline", "system", "developer", "user"]) {
     const first = { model, messages: [{ role: 'user', content: `ESCCALL queued envelope ${suffix.length}` }], tools: [echoTool] }
     const events = (await readSSE(await callFetch(first))).events
     const oldId = inits().at(-1).convId
+    const queuedBefore = inits().length
     const second = continuation(first, events, 'queued tool output')
     second.messages.at(-1).content.push({ type: 'text', text: 'The user sent a new message while you were working:\nQUEUED_STEERING_MARKER' + suffix })
     const response = await callFetch(second)
     check(`queued prompt suffix ${suffix.length} is accepted beside a tool result`, response.status === 200, `got ${response.status}`)
     if (response.status === 200) {
       await readSSE(response)
-      check(`queued prompt suffix ${suffix.length} replays as user context in a new session`, lastOf('user').convId !== oldId && lastOf('user').text.includes('QUEUED_STEERING_MARKER'))
+      check(`queued prompt suffix ${suffix.length} steers the live session as user context`, lastOf('user').convId === oldId && inits().length === queuedBefore && lastOf('user').text.includes('QUEUED_STEERING_MARKER'))
     } else {
       await response.text()
       await drive(first, events, 'cleanup queued envelope')
