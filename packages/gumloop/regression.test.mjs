@@ -8,6 +8,11 @@ import { createInterface } from "node:readline"
 import { GumloopPlugin, _internal } from "./index.mjs"
 import { LOCK_STALE_MS, LOCK_WAIT_MS, Store } from "./gumloop.mjs"
 
+// Node's absolute path, found once on the PATH this file started with, so a
+// later change to process.env.PATH can't hide it from the Node children.
+// Not found, the Node tests fail as before ("node" not on PATH): no skip.
+const node = Bun.which("node") ?? "node"
+
 const auth = { type: "api", key: "mock-regression-key", metadata: { userId: "regression-user" } }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 const dirs = []
@@ -218,9 +223,9 @@ describe("exclusive ledger updates", () => {
     expect(storeB.remaining("u")).toBe(99)
   })
 
-  for (const runtime of ["node", process.execPath]) {
+  for (const runtime of [node, process.execPath]) {
     for (const phase of ["held", "partial", "choosing"]) {
-      test(`${runtime === "node" ? "Node" : "Bun"} crash at ${phase} recovers without manual cleanup`, async () => {
+      test(`${runtime === node ? "Node" : "Bun"} crash at ${phase} recovers without manual cleanup`, async () => {
         const directory = tempDir()
         const file = join(directory, "gumloop-ledger.json")
         new Store(file).anchor(auth.metadata.userId, 5000, "initial", 1)
@@ -272,7 +277,7 @@ describe("exclusive ledger updates", () => {
     expect(readFileSync(file, "utf8")).toBe("keep")
   })
 
-  for (const [name, runtime] of [["Node", "node"], ["Bun", process.execPath]]) {
+  for (const [name, runtime] of [["Node", node], ["Bun", process.execPath]]) {
     test(`${name}: two independent overlapping processes preserve all 200 chat charges`, async () => {
       const directory = tempDir()
       const file = join(directory, "gumloop-ledger.json")

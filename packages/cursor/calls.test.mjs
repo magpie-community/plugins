@@ -8,12 +8,16 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const data = mkdtempSync(join(tmpdir(), "cursor-calls-"))
+const outside = process.env.XDG_DATA_HOME // put back when the file ends: bun test runs every file in one process
 process.env.XDG_DATA_HOME = data
 const { CursorAuthPlugin, _internal } = await import("./index.mjs")
 
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
-afterAll(() => rmSync(data, { recursive: true, force: true }))
+afterAll(() => {
+  rmSync(data, { recursive: true, force: true })
+  outside === undefined ? delete process.env.XDG_DATA_HOME : (process.env.XDG_DATA_HOME = outside)
+})
 
 const jwt = (exp) => ["e30", Buffer.from(JSON.stringify({ exp, sub: "calls-" + Math.random() })).toString("base64url"), "sig"].join(".")
 const auth = () => ({ type: "oauth", access: jwt(Math.floor(Date.now() / 1000) + 3600), refresh: "", expires: 0 })
