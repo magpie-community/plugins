@@ -117,6 +117,8 @@ const MODELS = [
   // after the rest, as the Fast Mode models are: first, it would push
   // GLM-5.3-Flash out of magpie's first 24 (#119)
   ["claude-fable-5.2", "Fable 5.2", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 3.2],
+  // Droid 1.7.1 adds Carbon behind Factory's Gemini4Carbon feature flag.
+  ["gemini-4-carbon", "Gemini 4 Carbon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -195,6 +197,7 @@ const PROMOTIONS = [
   { id: "gpt-5.6-sol-fast", discount: 0.2, from: "2026-08-22T00:00:00Z", to: "2026-11-22T00:00:00Z" },
   { id: "mistral-large-4", discount: 0.5, from: "2026-10-06T00:00:00Z", to: "2026-10-20T00:00:00Z" },
   { id: "gemini-4-argon", discount: 0.5, from: "2026-10-13T16:00:00Z", to: "2026-12-01T08:00:00Z" },
+  { id: "gemini-4-carbon", discount: 0.5, from: "2026-11-10T16:00:00Z", to: "2026-12-01T08:00:00Z" },
   { id: "gemini-3.8-flash", discount: 0.5, from: "2026-08-17T21:10:19Z", to: "2027-01-01T08:00:00Z" },
   { id: "gemini-3.7-flash", discount: 0.5, from: "2026-08-17T21:10:19Z", to: "2027-01-01T08:00:00Z" },
 ]
