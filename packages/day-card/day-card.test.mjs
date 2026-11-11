@@ -49,9 +49,14 @@ test("asks for one read, usage:day, and nothing else", () => {
   expect([...reads]).toEqual(["usage:day"])
 })
 
-test("Amp uses its bundled official logo even when the host supplies no brand icon", () => {
+test("Amp uses its bundled official logo only when the host supplies no Amp icon", () => {
+  const host = { src: "data:image/svg+xml;base64,PHN2Zy8+" }
+  const amp = (icon, icons = {}) =>
+    V.card({ ...day, icons, agents: [{ id: "amp", name: "Amp", icon, cost: 3.69, models: [] }] }, "en")
+  expect(amp("amp", { amp: host }).agents[0].icon).toBe("amp")
+  expect(amp("generic", { generic: host }).agents[0].icon).toBe("amp-official")
   for (const icon of [undefined, "", "generic", "amp"]) {
-    const c = V.card({ ...day, agents: [{ id: "amp", name: "Amp", icon, cost: 3.69, models: [] }] }, "en")
+    const c = amp(icon)
     expect(c.agents[0].icon).toBe("amp-official")
     const mark = scope.DayIcons[c.agents[0].icon]
     expect(mark.mono).toBe(true)
