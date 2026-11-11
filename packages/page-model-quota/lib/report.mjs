@@ -178,7 +178,6 @@ export function tokensPerPercent(points, acc, sliceStats) {
     tpp: med,
     // 语言无关的取值，页面自己翻译：median 用多轮中位数，single 只有一轮，sparse 记录不足。
     method: usable.length > 1 ? "median" : usable.length === 1 ? "single" : "sparse",
-    usableRounds: usable.length,
     start: pool[0].start,
     end: pool[pool.length - 1].end,
     drop: pool[pool.length - 1].drop,

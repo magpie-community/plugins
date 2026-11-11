@@ -120,7 +120,7 @@ function appendUsage(state) {
 
 async function gatewayQuotas() {
   const res = await fetch(`${GATEWAY()}/v1/magpie/quotas?kept=1`, { signal: AbortSignal.timeout(8000) })
-  if (!res.ok) throw new Error("网关额度接口 HTTP " + res.status)
+  if (!res.ok) throw new Error("gateway quota endpoint HTTP " + res.status)
   const body = await res.json()
   return body.data ?? []
 }

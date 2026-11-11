@@ -14,7 +14,11 @@ test("the report carries no prose for the page to print", () => {
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*)/.test(line))
     .join("\n");
-  const literals = [...code.matchAll(/"([^"\\\n]*[\u4e00-\u9fff][^"\\\n]*)"/g)].map((m) => m[1]);
+  // 双引号字符串和模板字符串都要查：任何一种带上中文，英文页面就会显示中文。
+  const literals = [
+    ...[...code.matchAll(/"([^"\\\n]*[\u4e00-\u9fff][^"\\\n]*)"/g)].map((m) => m[1]),
+    ...[...code.matchAll(/`([^`\\\n]*[\u4e00-\u9fff][^`\\\n]*)`/g)].map((m) => m[1]),
+  ];
   // 只有识别窗口名字用的正则里允许中文，字符串字面量一个都不该有。
   assert.deepEqual(literals, []);
 });
@@ -29,7 +33,7 @@ test("an unassigned model and an account with no user have no words in them", ()
 
 test("the low-confidence word brings its own brackets", () => {
   const app = read("ui/app.js");
-  assert.match(app, /historical: "\(from past rounds\)"/);
+  assert.match(app, /historical: " \(from past rounds\)"/);
   assert.match(app, /historical: "（按历史轮次估）"/);
   assert.match(app, /fmtTokens\(pool\.tokens\) \+ t\.historical/);
   assert.doesNotMatch(app, /"（" \+ t\.historical/);

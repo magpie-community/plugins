@@ -41,7 +41,7 @@ const words = {
     emptyModels: "No quota window can be estimated yet. Let magpie record some usage, or wait until a window has a few readings.",
     emptyPools: "No quota window can be estimated yet.",
     exhausted: (w) => `Exhausted (${w})`,
-    historical: "(from past rounds)",
+    historical: " (from past rounds)",
     hoursUnit: "h",
     daysUnit: "d",
     over: "> 1000 d",
