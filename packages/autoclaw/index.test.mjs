@@ -1135,11 +1135,9 @@ test("usage: the credit balance and its wallets are the balance, never a window 
   }
 })
 
-// #367 (menhouran): the overseas gateway refuses X-Tm "linux" only beside a
-// non-official fingerprint. The official AutoClaw 2.0.3 client sends "linux"
-// (managedPlatform() in its main.cjs: darwin mac, win32 win, else
-// process.platform) with channel "official", version 2.0.3 and a signed
-// X-Auth-*; 0.2.7's "linux-x64" was a bypass, not what it sends.
+// #367 (menhouran, freebai, Casper-Sun): the official AutoClaw client says
+// "linux", but the overseas WAF still rejects that exact X-Tm for plugin-only
+// Linux accounts. Omitting it is accepted and does not pretend to be mac/win.
 test("X-Tm is the official client's platform id: mac, win, and linux as is", () => {
   const { platformTm, bizHeaders } = _internal
   expect(platformTm("darwin")).toBe("mac")
@@ -1168,7 +1166,7 @@ test("the overseas chat carries the official AutoClaw 2.0.3 fingerprint", async 
     expect(sent[0].url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/v1/chat/completions")
     expect(h.get("X-Channel")).toBe("official")
     expect(h.get("X-Version")).toBe("2.0.3")
-    expect(h.get("X-Tm")).toBe(platformTm(process.platform))
+    expect(h.get("X-Tm")).toBe(process.platform === "linux" ? null : platformTm(process.platform))
     expect(h.get("X-Product")).toBe("autoclaw")
     expect(h.get("X-Lang")).toBe("en")
     expect(h.get("X-Client-Type")).toBe("pc")
@@ -1205,11 +1203,11 @@ test("the overseas chat carries the official AutoClaw 2.0.3 fingerprint", async 
   }
 })
 
-test("on Linux the official fingerprint says linux, x64 and arm64 alike", () => {
+test("on Linux overseas chat omits the WAF-rejected X-Tm, x64 and arm64 alike", () => {
   const { setOfficialChatHeaders } = _internal
   for (const arch of ["x64", "arm64"]) {
     const h = setOfficialChatHeaders(new Headers(), { accessToken: "a1", model: "m", sessionId: "s", platform: "linux", arch })
-    expect(h.get("X-Tm")).toBe("linux")
+    expect(h.get("X-Tm")).toBeNull()
     expect(h.get("X-Stainless-OS")).toBe("Linux")
     expect(h.get("X-Stainless-Arch")).toBe(arch)
     expect(h.get("X-Channel")).toBe("official")
@@ -1271,12 +1269,50 @@ test("overseas chat: a spent quota on the first host isn't asked of the second, 
     expect(spent.headers.get("X-Magpie-Sign-In")).toBe("kept")
     expect(urls.length).toBe(1)
 
-    // both hosts refusing the token is still the sign-in
+    // a real token refusal on both hosts is still the sign-in
     urls.length = 0
-    answer = () => new Response("forbidden", { status: 403 })
+    answer = () => new Response('{"code":401,"message":"token invalid"}', { status: 403 })
     const dead = await loader.fetch("x", { method: "POST", body })
     expect(dead.status).toBe(401)
     expect(dead.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    expect(urls.length).toBe(2)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: bare 403 forbidden is a fingerprint refusal, not an expired sign-in", async () => {
+  const realFetch = globalThis.fetch
+  const urls = []
+  let answers = [
+    () => Response.json({ message: "forbidden" }, { status: 403 }),
+    () => new Response("forbidden", { status: 403 }),
+  ]
+  globalThis.fetch = async (input) => {
+    urls.push(String(input))
+    return answers.shift()()
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const refused = await loader.fetch("x", { method: "POST", body })
+    expect(refused.status).toBe(403)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    const error = (await refused.json()).error
+    expect(error.message).toContain("forbidden")
+    expect(error.message).toContain("登录仍然有效")
+    expect(error.type).toBe("permission_error")
+    expect(urls.length).toBe(2)
+
+    // A second host that accepts the same request still wins.
+    urls.length = 0
+    answers = [
+      () => Response.json({ message: "forbidden" }, { status: 403 }),
+      () => Response.json({ choices: [] }),
+    ]
+    const recovered = await loader.fetch("x", { method: "POST", body })
+    expect(recovered.status).toBe(200)
     expect(urls.length).toBe(2)
   } finally {
     globalThis.fetch = realFetch

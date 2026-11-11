@@ -335,6 +335,34 @@ async function accountRefusal(res) {
   });
 }
 
+/**
+ * fingerprintRefusal is the overseas WAF's bare request-fingerprint rejection.
+ * The same token still reads wallets and works when Linux's X-Tm is omitted
+ * (#367), so this must not make magpie discard a healthy sign-in.
+ */
+async function fingerprintRefusal(res) {
+  if (res.status !== 403) return null;
+  const text = await res.clone().text().catch(() => "");
+  let message = "";
+  try {
+    const fields = said(JSON.parse(text));
+    if (fields.code != null) return null;
+    message = fields.message;
+  } catch {
+    message = text.trim();
+  }
+  if (message.toLowerCase() !== "forbidden") return null;
+  try { res.body?.cancel?.(); } catch {}
+  return new Response(JSON.stringify({ error: {
+    message: "AutoClaw: forbidden — 上游拒绝了当前客户端指纹，登录仍然有效",
+    type: "permission_error",
+    code: null,
+  } }), {
+    status: 403,
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+  });
+}
+
 /** refusedNotSignIn is a 401/403 that is the account's (quota or ban), not its sign-in, or null. */
 async function refusedNotSignIn(res) {
   return (await quotaRefusal(res)) ?? (await accountRefusal(res));
@@ -594,7 +622,11 @@ function setOfficialChatHeaders(headers, { accessToken, model, sessionId, now = 
   headers.set("X-Stainless-Runtime", "node");
   headers.set("X-Stainless-Runtime-Version", OFFICIAL_NODE_VERSION);
   headers.set("X-Version", OFFICIAL_CLIENT_VERSION);
-  headers.set("X-Tm", platformTm(platform));
+  // The official client says "linux", but the overseas WAF still rejects that
+  // exact value for plugin-only accounts even after user-info (#367). Omission
+  // is accepted and does not pretend to be another OS; macOS/Windows stay exact.
+  if (platform === "linux") headers.delete("X-Tm");
+  else headers.set("X-Tm", platformTm(platform));
   headers.set("X-Product", PRODUCT);
   headers.set("X-Auth-Appid", APP_ID);
   headers.set("X-Auth-TimeStamp", ts);
@@ -1424,10 +1456,17 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
+              const fingerprint1 = await fingerprintRefusal(res1);
               try { res1.body?.cancel?.(); } catch {}
               const res2 = await tryFetch(hosts[1]);
               const spent2 = await refusedNotSignIn(res2);
               if (spent2) return spent2;
+              const fingerprint2 = await fingerprintRefusal(res2);
+              if (fingerprint2) return fingerprint2;
+              if (fingerprint1 && (res2.status === 401 || res2.status === 403)) {
+                try { res2.body?.cancel?.(); } catch {}
+                return fingerprint1;
+              }
               if (res2.status === 401 || res2.status === 403) {
                 try { res2.body?.cancel?.(); } catch {}
                 const tooBig = await sizeRefusal(providerId, sentBytes, res2.status, accessToken, hosts);
@@ -2182,7 +2221,7 @@ export const AutoclawCnAuthPlugin = makeAutoclawPlugin({
 
 /** 测试辅助（magpie/OpenCode 不会把它当插件调用）。 */
 export const _internal = {
-  quotaRefusal, accountRefusal, bannedSaid,
+  quotaRefusal, accountRefusal, fingerprintRefusal, bannedSaid,
   signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
