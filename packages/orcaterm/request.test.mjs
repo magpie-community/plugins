@@ -171,3 +171,47 @@ test("a streamed ask reaches the client as its answer, not as its JSON", async (
   expect(content).toBe("要处理哪个目标？\n\n- 检查运行状态\n- 排查服务异常")
   expect(content).not.toContain("{")
 })
+
+// The three shapes the reviewer listed as still going out raw.
+const streamedAsk = async (raw, size = 3) => {
+  const all = `data: ${JSON.stringify({ content: raw, reasoningContent: "", type: "ai", code: 0 })}\n\ndata: [DONE]\n\n`
+  const pieces = []
+  for (let i = 0; i < all.length; i += size) pieces.push(all.slice(i, i + size))
+  const resp = _internal.upstreamToOpenAI(
+    new ReadableStream({
+      start(c) {
+        for (const p of pieces) c.enqueue(new TextEncoder().encode(p))
+        c.close()
+      },
+    }),
+    { model: "m" },
+  )
+  let content = ""
+  for (const line of (await resp.text()).split("\n")) {
+    if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") continue
+    content += JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? ""
+  }
+  return content
+}
+
+// 1. Written by hand, with a bare line break in the question, the way a long
+//    answer comes (#564). Only `taskCompletion` was read this loosely.
+test("a hand-written ask with a bare line break still comes out as its answer", async () => {
+  const raw = '{"action": "ask", "ph_1": "--", "question": "Which one?\nPick:", "options": ["a", "b"]}'
+  expect(await streamedAsk(raw)).toBe("Which one?\nPick:\n\n- a\n- b")
+})
+
+// 2. The stream ends inside the question: a completion keeps its decoded prefix,
+//    and the ask must do the same.
+test("an ask the stream ended inside keeps its question", async () => {
+  const raw = '{"action":"ask","ph_1":"--","question":"Which target?","options":["a"]}'
+  const cut = raw.slice(0, raw.indexOf("target?") + "target?".length)
+  expect(await streamedAsk(cut)).toBe("Which target?")
+})
+
+// 3. Prose, then the ask appended: dropping the envelope is right for a
+//    completion, and wrong for an ask — the question is what the user answers.
+test("an ask appended after prose keeps the question", async () => {
+  const raw = 'I found two targets.\n{"action":"ask","ph_1":"--","question":"Which target?","options":["a","b"]}'
+  expect(await streamedAsk(raw)).toBe("I found two targets.\nWhich target?\n\n- a\n- b")
+})

@@ -138,6 +138,44 @@ test("and the same sentence is not cut by the non-streamed path", async () => {
   expect((await res.json()).choices[0].message.content).toBe(MENTIONS)
 })
 
+// The same sentence without backticks, which is what the guard actually turns
+// on: with them it is "quoted" and shown for that reason, so the boundary rule
+// was never tested (yetone's review: breaking it left 0 red).
+const PLAIN = "The response carries a <tool_calls> array, and the client reads it before it dispatches anything."
+for (const size of [1, 3, 47, 4096]) {
+  test(`an unquoted tag-shaped word survives ${size}-character frames`, async () => {
+    const res = _internal.upstreamToOpenAI(sse(pieces(PLAIN, size).map((c) => frame(c))), { model: "m" })
+    const { content, error } = read(await res.text())
+    expect(content).toBe(PLAIN)
+    expect(error).toBeNull()
+  })
+}
+
+test("and so does <tool_call_id>, which is not a call at all", async () => {
+  const text = "Each message has a <tool_call_id> field beside its role, as the schema says.\n"
+  const { content, error } = await asked(text)
+  expect(content).toBe(text)
+  expect(error).toBeNull()
+})
+
+// The tag is written in whatever case the model felt like; the hold list is
+// compared lowercased, so the reader must be too.
+test("an upper-case <TOOL_CALL> block is refused", async () => {
+  const { content, error } = await asked('Sure.\n<TOOL_CALL>{"name":"read"}</TOOL_CALL>')
+  expect(content).toBe("Sure.\n")
+  expect(error?.code).toBe("text_tool_call")
+})
+
+test("an upper-case <Tool_Call> block split across frames is refused", async () => {
+  const res = _internal.upstreamToOpenAI(
+    sse(pieces('<Tool_Call>{"name":"read"}</Tool_Call>', 1).map((c) => frame(c))),
+    { model: "m" },
+  )
+  const { content, error } = read(await res.text())
+  expect(content).toBe("")
+  expect(error?.code).toBe("text_tool_call")
+})
+
 // A call being shown, not written: inside a code fence or inline code it is
 // prose, and trae's reader has always treated it that way (yetone's review).
 const FENCED = [
@@ -179,6 +217,39 @@ test("a call that arrives only as thinking still ends the turn", async () => {
   const { content, error } = read(await res.text())
   expect(content).toBe("")
   expect(error?.code).toBe("text_tool_call")
+})
+
+// And it does so whatever the call sits behind. `answerOf` runs its own
+// extractor, which already cuts at the call, so scanning its output for a tag
+// said no and the call went out as the answer — the exact harm this change is
+// for (yetone's review, must-fix 1).
+test("a call behind a line of thinking still ends the turn", async () => {
+  const res = _internal.upstreamToOpenAI(sse([frame("", "Let me look at the files.\n" + CALL)]), { model: "m" })
+  const { content, error } = read(await res.text())
+  expect(content).toBe("Let me look at the files.\n")
+  expect(error?.code).toBe("text_tool_call")
+})
+
+test("the same thinking-only call is a 502 when the request isn't streamed", async () => {
+  const res = await _internal.upstreamToJSON(sse([frame("", "Let me look at the files.\n" + CALL)]), { model: "m" })
+  expect(res.status).toBe(502)
+})
+
+test("a call inside a thinking envelope is refused too", async () => {
+  const envelope = '{"action":"completion","ph_1":"--","taskCompletion":"Reading.\n' + CALL + '"}'
+  const res = _internal.upstreamToOpenAI(sse([frame("", envelope)]), { model: "m" })
+  const { content, error } = read(await res.text())
+  expect(content).toBe("Reading.\n")
+  expect(error?.code).toBe("text_tool_call")
+})
+
+// A fenced call in the thinking is being shown, not written: the quoted rule
+// holds on this path as well, so it is turned into the answer as usual.
+test("a fenced call in the thinking is shown, not refused", async () => {
+  const res = _internal.upstreamToOpenAI(sse([frame("", FENCED)]), { model: "m" })
+  const { content, error } = read(await res.text())
+  expect(content).toBe(FENCED)
+  expect(error).toBeNull()
 })
 
 // The whole reply as one non-streamed body: magpie asks again on a 502.

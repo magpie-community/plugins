@@ -273,6 +273,12 @@ A call being shown rather than written — inside a code fence or in backticks �
 and the reply goes on. The rule is trae's, so a client quoting a file, a log or a page about the
 format is not answered with an error.
 
+An `ask` is unwrapped the same way, to its `question` with the `options` under it one per line, and
+in every shape it arrives in: a complete object, a hand-written one with a bare line break inside the
+question, one the stream ended inside, and one appended after prose — where a `completion`'s envelope
+is dropped as bookkeeping but an ask's is the part the user has to answer. Only an `ask` is read this
+way; another action's `question` is a note, not an answer.
+
 Token counts are not reported: the upstream returns none, and an estimate passed off as real usage
 would make both cost and context accounting wrong. A caller that asks for `include_usage` gets the
 answer without a usage block.
