@@ -122,7 +122,7 @@ const zcodeSystem = (powered, where, own = []) => [
     type: "text",
     text:
       "\n\n" +
-      [PROMPT.dynamicBehavior, environment(where), ...(powered ? [poweredBy(powered)] : []), PROMPT.contextManagement, ...own].join("\n\n"),
+      [PROMPT.dynamicBehavior, environment(where), ...(powered ? [poweredBy(powered)] : []), PROMPT.contextManagement, PROMPT.totalTokens, ...own].join("\n\n"),
     cache_control: eph,
   },
 ]
@@ -175,8 +175,8 @@ test("a Start Plan request's system is ZCode's three blocks, the agent's text at
     expect(b.system).toEqual(zcodeSystem("zai-api/GLM-5.3", undefined, own))
     // the first two are ZCode's byte for byte; the third ends with the agent's
     expect(sha(b.system[0].text)).toBe("7779642ea44a4696")
-    expect(sha(b.system[1].text)).toBe("8eaf38ce3f1f2f15")
-    expect(b.system[2].text.endsWith(PROMPT.contextManagement + "\n\n" + own.join("\n\n"))).toBe(true)
+    expect(sha(b.system[1].text)).toBe("33f046d23b72a7e0")
+    expect(b.system[2].text.endsWith(PROMPT.contextManagement + "\n\n" + PROMPT.totalTokens + (own.length ? "\n\n" + own.join("\n\n") : ""))).toBe(true)
   }
   // with no system of the agent's, the third block ends where ZCode's does
   got.length = 0
@@ -214,7 +214,7 @@ test("an agent's system goes out as the shape zcode.z.ai lets through (plugins#3
     expect(b.system[1].text).toBe(PROMPT.stableSections.join("\n\n"))
     expect(b.system[2].text.startsWith("\n\n" + PROMPT.dynamicBehavior)).toBe(true)
     const own = system === undefined ? [] : typeof system === "string" ? [system] : system.map((x) => x.text)
-    expect(b.system[2].text.endsWith(PROMPT.contextManagement + (own.length ? "\n\n" + own.join("\n\n") : ""))).toBe(true)
+    expect(b.system[2].text.endsWith(PROMPT.contextManagement + "\n\n" + PROMPT.totalTokens + (own.length ? "\n\n" + own.join("\n\n") : ""))).toBe(true)
     for (const k of Object.keys(extra)) expect(b[k]).toEqual(extra[k])
   }
 })
@@ -225,16 +225,18 @@ test("the prompt texts are the plugin's, byte for byte", () => {
   expect(PROMPT.stableSections.length).toBe(2)
   expect(sha(PROMPT.stableSections[0])).toBe("aac4ba4cc7b555b3")
   expect(PROMPT.stableSections[0].length).toBe(1229)
-  expect(sha(PROMPT.stableSections[1])).toBe("86e0396775d5ed0e")
-  expect(PROMPT.stableSections[1].length).toBe(1377)
-  expect(sha(PROMPT.stableSections.join("\n\n"))).toBe("8eaf38ce3f1f2f15")
-  expect(PROMPT.stableSections.join("\n\n").length).toBe(2608)
+  expect(sha(PROMPT.stableSections[1])).toBe("39a1e86c93452c01")
+  expect(PROMPT.stableSections[1].length).toBe(1100)
+  expect(sha(PROMPT.stableSections.join("\n\n"))).toBe("33f046d23b72a7e0")
+  expect(PROMPT.stableSections.join("\n\n").length).toBe(2331)
   expect(sha(PROMPT.dynamicBehavior)).toBe("7d843753f3adae93")
   expect(PROMPT.dynamicBehavior.length).toBe(975)
   expect(sha(PROMPT.sessionGuidance)).toBe("6596a0131800c779")
   expect(PROMPT.sessionGuidance.length).toBe(163)
   expect(sha(PROMPT.contextManagement)).toBe("406a0480d88086cd")
   expect(PROMPT.contextManagement.length).toBe(559)
+  expect(sha(PROMPT.totalTokens)).toBe("2b7db5539346e950")
+  expect(PROMPT.totalTokens).toBe("<total_tokens>15000000 tokens left</total_tokens>")
 })
 
 test("a Start Plan request carries ZCode's headers, and only those", async () => {
@@ -336,11 +338,11 @@ test("a Start Plan request's body is dressed as ZCode's", async () => {
   })
   // the blocks' texts, by the plugin's hashes
   expect(sha(b.system[0].text)).toBe("7779642ea44a4696")
-  expect(sha(b.system[1].text)).toBe("8eaf38ce3f1f2f15")
+  expect(sha(b.system[1].text)).toBe("33f046d23b72a7e0")
   const dyn = b.system[2].text
   expect(dyn.startsWith("\n\n" + PROMPT.dynamicBehavior + "\n\n# Environment\n")).toBe(true)
-  expect(dyn.includes("\n\n" + poweredBy("zai-api/GLM-5.3-Flash") + "\n\n" + PROMPT.contextManagement)).toBe(true)
-  expect(dyn.endsWith("\n\n" + PROMPT.contextManagement + "\n\nYou are opencode, an agent.\n\nProject instructions.")).toBe(true)
+  expect(dyn.includes("\n\n" + poweredBy("zai-api/GLM-5.3-Flash") + "\n\n" + PROMPT.contextManagement + "\n\n" + PROMPT.totalTokens + "\n\nYou are opencode, an agent.")).toBe(true)
+  expect(dyn.endsWith("\n\nYou are opencode, an agent.\n\nProject instructions.")).toBe(true)
   expect(sha(dyn.slice(2, 2 + PROMPT.dynamicBehavior.length))).toBe("7d843753f3adae93")
   // no slash-skill guidance without a Skill tool in the request
   expect(dyn.includes(PROMPT.sessionGuidance)).toBe(false)

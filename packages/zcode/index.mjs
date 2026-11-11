@@ -2730,9 +2730,10 @@ function dress(text, site, device, place, session) {
   // one too, with "\n\n" into that one block: ZCode never sends more than
   // three. zcode.z.ai turns a fourth block away with 405/3012 (#343), and
   // the first two must stay byte for byte ZCode's. The third's own
-  // sections are 3.17.2's dynamic ones — the unheaded behavior paragraphs,
+  // sections are 3.18.0's dynamic ones — the unheaded behavior paragraphs,
   // the slash-skill guidance when the request has a Skill tool, the
-  // environment and the model, then context management.
+  // environment and the model, then context management and the
+  // total-tokens reminder.
   const own = []
   if (typeof b.system === "string") {
     if (b.system.trim()) own.push(b.system)
@@ -2746,6 +2747,7 @@ function dress(text, site, device, place, session) {
     environment(place),
     ...(model ? [PROMPT.poweredBy.replace("{provider}", provider).replace("{model}", model)] : []),
     PROMPT.contextManagement,
+    PROMPT.totalTokens,
     ...own,
   ]
   b.system = [cached(PROMPT.cliPrefix), cached(PROMPT.stableSections.join("\n\n")), cached("\n\n" + dynamic.join("\n\n"))]
