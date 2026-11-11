@@ -6,8 +6,8 @@
 // tagged.json holds {version: 1, generated, plugins: [Tagged...]}, most
 // starred first. A repository whose package.json can't be read this time
 // stays as the last file had it; a search that fails writes nothing.
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
-import { join, resolve, posix } from "node:path"
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join, resolve, posix } from "node:path"
 
 const TOPIC = "magpie-plugin"
 const pkgName = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
@@ -177,6 +177,55 @@ if (!plugins.length) {
   console.error("no plugin read; keeping the last file")
   process.exit(1)
 }
+// Each listed plugin's README, kept as readmes/<key>.md beside tagged.json
+// (<key> is the npm name, or github/owner/repo for one installed from the
+// repository: internal/plugin/readme_cache.go's readmeKey), so the Discover
+// page's README comes from usemagpie.ai and not from npm, whose human check
+// stands in front of some networks (River_WLan on X). Read again when the
+// repository was pushed to or the file is missing; a read that fails keeps
+// the file there was.
+const keyOf = (t) => (t.spec.startsWith("github:") ? "github/" + t.repo : t.spec)
+const branches = new Map(items.map((it) => [it.full_name.toLowerCase(), it.default_branch || "HEAD"]))
+const readmes = join(out, "readmes")
+const wanted = new Set()
+const MOST = 200 << 10
+async function keep(t) {
+  const key = keyOf(t)
+  if (key.includes("..") || key.split("/").some((p) => !p)) return
+  const f = join(readmes, key + ".md")
+  wanted.add(posix.normalize(key + ".md"))
+  const was = before.get(t.repo.toLowerCase())
+  if (existsSync(f) && was && was.pushed === t.pushed) return
+  const branch = encodeURIComponent(branches.get(t.repo.toLowerCase()) ?? "HEAD")
+  for (const name of ["README.md", "readme.md", "Readme.md", "README"]) {
+    let r
+    try {
+      r = await get(`https://raw.githubusercontent.com/${t.repo}/${branch}/${name}`)
+    } catch (e) {
+      if (e instanceof NotFound) continue
+      console.error(`${t.repo} README: ${e.message}`)
+      return
+    }
+    const buf = Buffer.from(await r.arrayBuffer()).subarray(0, MOST)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, buf)
+    return
+  }
+  rmSync(f, { force: true }) // it has none now
+}
+const todo = [...plugins]
+await Promise.all(Array.from({ length: 8 }, async () => { for (let t; (t = todo.shift()); ) await keep(t) }))
+// a plugin no longer listed leaves no README behind
+const sweep = (dir, rel) => {
+  if (!existsSync(dir)) return
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const r = rel ? rel + "/" + e.name : e.name
+    if (e.isDirectory()) sweep(join(dir, e.name), r)
+    else if (!wanted.has(r)) rmSync(join(dir, e.name), { force: true })
+  }
+}
+sweep(readmes, "")
+
 const same = JSON.stringify(last.map((t) => t.repo).sort()) === JSON.stringify(plugins.map((t) => t.repo).sort())
 writeFileSync(file, JSON.stringify({ version: 1, generated: new Date().toISOString(), plugins }))
 console.log(`${plugins.length} plugins, ${failed} unread${same ? "" : ", list changed"}`)

@@ -1,7 +1,9 @@
 # Builds tagged.json on the `dist` branch every half hour: the repositories
 # tagged magpie-plugin, which magpie's Plugins page lists under Discover.
 # magpie reads it through usemagpie.ai/api/plugins/tagged, so a desktop that
-# can't reach GitHub, or is rate-limited there, still has the list.
+# can't reach GitHub, or is rate-limited there, still has the list. Each
+# listed plugin's README is kept beside it (readmes/), read through
+# usemagpie.ai/api/plugins/readme, so npm's human check can't hold it back.
 name: tagged
 
 on:
@@ -35,7 +37,7 @@ jobs:
           fi
           node scripts/tagged.mjs "$RUNNER_TEMP/dist"
           cd "$RUNNER_TEMP/dist"
-          git add tagged.json
+          git add -A tagged.json readmes
           if git diff --cached --quiet; then
             echo "tagged.json is current"
           else
