@@ -35,8 +35,9 @@ const PLATFORM = process.platform === "darwin" ? "mac" : process.platform === "w
 /** X-Tm as the official AutoClaw 2.0.3 client builds it (managedPlatform()
  * in its main.cjs): darwin is "mac", win32 is "win", anything else is
  * process.platform as is, so Linux is "linux" on x64 and arm64 alike.
- * The overseas gateway refuses "linux" only beside a non-official
- * fingerprint (#367), so the overseas chat sends the official one. */
+ * The overseas gateway still refuses "linux" for plugin-only accounts even
+ * with the official fingerprint (#367), so overseas chat omits it on Linux;
+ * other routes keep the official platform value. */
 function platformTm(platform = process.platform) {
   return platform === "darwin" ? "mac" : platform === "win32" ? "win" : platform;
 }
@@ -336,9 +337,9 @@ async function accountRefusal(res) {
 }
 
 /**
- * fingerprintRefusal is the overseas WAF's bare request-fingerprint rejection.
- * The same token still reads wallets and works when Linux's X-Tm is omitted
- * (#367), so this must not make magpie discard a healthy sign-in.
+ * fingerprintRefusal reads the overseas WAF's exact bare request-fingerprint
+ * rejection, or null. It only identifies the response shape; the wallets route
+ * must still confirm whether the sign-in holds before magpie keeps it (#367).
  */
 async function fingerprintRefusal(res) {
   if (res.status !== 403) return null;
@@ -352,15 +353,11 @@ async function fingerprintRefusal(res) {
     message = text.trim();
   }
   if (message.toLowerCase() !== "forbidden") return null;
-  try { res.body?.cancel?.(); } catch {}
-  return new Response(JSON.stringify({ error: {
-    message: "AutoClaw: forbidden — 上游拒绝了当前客户端指纹，登录仍然有效",
-    type: "permission_error",
-    code: null,
-  } }), {
-    status: 403,
-    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
-  });
+  return {
+    text,
+    statusText: res.statusText,
+    contentType: res.headers.get("content-type"),
+  };
 }
 
 /** refusedNotSignIn is a 401/403 that is the account's (quota or ban), not its sign-in, or null. */
@@ -395,8 +392,9 @@ function noteServed(providerId, bytes) {
 
 /** signInHolds is true when a host's wallets route takes the token, false when every answer refused it, null when unknown. */
 async function signInHolds(accessToken, hosts) {
-  let refused = false;
-  for (const host of dedupe(hosts)) {
+  let refused = 0;
+  const uniqueHosts = dedupe(hosts);
+  for (const host of uniqueHosts) {
     try {
       const res = await fetch(host + WALLETS_PATH, {
         method: "GET",
@@ -405,7 +403,7 @@ async function signInHolds(accessToken, hosts) {
         signal: AbortSignal.timeout(10_000),
       });
       if (res.status === 401 || res.status === 403) {
-        refused = true;
+        refused++;
         try { res.body?.cancel?.(); } catch {}
         continue;
       }
@@ -417,7 +415,7 @@ async function signInHolds(accessToken, hosts) {
       if (payload && payload.code === 0) return true;
     } catch {}
   }
-  return refused ? false : null;
+  return refused === uniqueHosts.length ? false : null;
 }
 
 /** sizeRefusal is a 401/403 for a body larger than any answered, its sign-in holding, as a 413; or null. */
@@ -1440,8 +1438,8 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   routeModel = String(sent?.model ?? "");
                 } catch {}
               }
-              // the official 2.0.3 fingerprint: with it the gateway takes X-Tm
-              // "linux"; with the old AutoClaw4/1.18.1 one it refuses it (#367)
+              // The official 2.0.3 fingerprint, except Linux omits X-Tm because
+              // the gateway still refuses its official "linux" value (#367).
               setOfficialChatHeaders(headers, { accessToken, model: routeModel, sessionId: conversationSessionId(sent) });
 
               const tryFetch = (host) =>
@@ -1462,10 +1460,32 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               const spent2 = await refusedNotSignIn(res2);
               if (spent2) return spent2;
               const fingerprint2 = await fingerprintRefusal(res2);
-              if (fingerprint2) return fingerprint2;
-              if (fingerprint1 && (res2.status === 401 || res2.status === 403)) {
+              const fingerprint = fingerprint2 ?? fingerprint1;
+              if (fingerprint && (res2.status === 401 || res2.status === 403)) {
                 try { res2.body?.cancel?.(); } catch {}
-                return fingerprint1;
+                const holds = await signInHolds(accessToken, hosts);
+                if (holds === true) {
+                  return new Response(JSON.stringify({ error: {
+                    message: "AutoClaw: forbidden — 上游拒绝了当前客户端指纹，登录仍然有效",
+                    type: "permission_error",
+                    code: null,
+                  } }), {
+                    status: 403,
+                    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+                  });
+                }
+                if (holds === null) {
+                  const response = new Response(fingerprint.text, {
+                    status: 403,
+                    statusText: fingerprint.statusText,
+                    headers: fingerprint.contentType ? { "Content-Type": fingerprint.contentType } : undefined,
+                  });
+                  return response;
+                }
+                return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                  status: 401,
+                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+                });
               }
               if (res2.status === 401 || res2.status === 403) {
                 try { res2.body?.cancel?.(); } catch {}

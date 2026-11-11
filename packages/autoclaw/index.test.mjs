@@ -1281,16 +1281,41 @@ test("overseas chat: a spent quota on the first host isn't asked of the second, 
   }
 })
 
-test("overseas chat: bare 403 forbidden is a fingerprint refusal, not an expired sign-in", async () => {
+test("overseas chat: only an exact uncoded forbidden enters the fingerprint path", async () => {
+  const realFetch = globalThis.fetch
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const cases = [
+      () => new Response("", { status: 403 }),
+      () => Response.json({ message: "some other refusal" }, { status: 403 }),
+      () => Response.json({ code: 401, message: "forbidden" }, { status: 403 }),
+    ]
+    for (const answer of cases) {
+      let calls = 0
+      globalThis.fetch = async () => { calls++; return answer() }
+      const expired = await loader.fetch("x", { method: "POST", body })
+      expect(expired.status).toBe(401)
+      expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls).toBe(2)
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: plain-text forbidden is kept only after wallets confirms the sign-in", async () => {
   const realFetch = globalThis.fetch
   const urls = []
-  let answers = [
-    () => Response.json({ message: "forbidden" }, { status: 403 }),
-    () => new Response("forbidden", { status: 403 }),
-  ]
-  globalThis.fetch = async (input) => {
+  let chats = 0
+  globalThis.fetch = async (input, init) => {
     urls.push(String(input))
-    return answers.shift()()
+    if (init?.method === "GET") return Response.json({ code: 0 })
+    chats++
+    return chats === 1
+      ? new Response("forbidden", { status: 403, headers: { "content-type": "text/plain" } })
+      : Response.json({ code: 401, message: "token invalid" }, { status: 403 })
   }
   try {
     const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
@@ -1303,17 +1328,72 @@ test("overseas chat: bare 403 forbidden is a fingerprint refusal, not an expired
     expect(error.message).toContain("forbidden")
     expect(error.message).toContain("登录仍然有效")
     expect(error.type).toBe("permission_error")
-    expect(urls.length).toBe(2)
+    expect(urls.length).toBe(3)
+    expect(urls[2]).toContain("/wallets")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
 
-    // A second host that accepts the same request still wins.
-    urls.length = 0
-    answers = [
-      () => Response.json({ message: "forbidden" }, { status: 403 }),
-      () => Response.json({ choices: [] }),
-    ]
+test("overseas chat: bare forbidden expires when wallets refuses the token", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (_input, init) => {
+    calls++
+    if (init?.method === "GET") return new Response("", { status: 401 })
+    return Response.json({ message: "forbidden" }, { status: 403 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const expired = await loader.fetch("x", { method: "POST", body })
+    expect(expired.status).toBe(401)
+    expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    expect(calls).toBe(4)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: bare forbidden stays unknown when wallets cannot check the sign-in", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (_input, init) => {
+    calls++
+    if (init?.method === "GET") return new Response("", { status: calls === 3 ? 401 : 500 })
+    return Response.json({ message: "forbidden" }, { status: 403 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const unknown = await loader.fetch("x", { method: "POST", body })
+    expect(unknown.status).toBe(403)
+    expect(unknown.headers.get("X-Magpie-Sign-In")).toBeNull()
+    expect(await unknown.json()).toEqual({ message: "forbidden" })
+    expect(calls).toBe(4)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: a second host that accepts after bare forbidden still wins", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls++
+    return calls === 1
+      ? Response.json({ message: "forbidden" }, { status: 403 })
+      : Response.json({ choices: [] })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
     const recovered = await loader.fetch("x", { method: "POST", body })
     expect(recovered.status).toBe(200)
-    expect(urls.length).toBe(2)
+    expect(calls).toBe(2)
   } finally {
     globalThis.fetch = realFetch
   }
