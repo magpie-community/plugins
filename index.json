@@ -3694,10 +3694,72 @@
               "test": "bun test"
             }
           }
+        },
+        "0.2.2": {
+          "file": "tgz/magpie-community-middleware-output-strategy-0.2.2.tgz",
+          "integrity": "sha512-8hA8bYd8SSOrWscYLn2PT2sWTzcW91oJ04VBt3qvt/LFLKOcO20qnVfvBluiZIc1DXF9fe3qDAgc2Wp+0cSr4Q==",
+          "time": "2026-11-11T07:24:04.931Z",
+          "manifest": {
+            "name": "@magpie-community/middleware-output-strategy",
+            "version": "0.2.2",
+            "description": "Composable output-style instructions injected before the model call, with a small selection panel",
+            "type": "module",
+            "license": "MIT",
+            "author": "manjughosa (https://github.com/manjughosa)",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/output-strategy"
+            },
+            "files": [
+              "output-strategy.middleware.js",
+              "apply.js",
+              "catalog.js",
+              "scripts/gen-page-catalog.mjs",
+              "page/*.html",
+              "page/*.js",
+              "page/*.css",
+              "README.md",
+              "LICENSE",
+              "PROVENANCE.json",
+              "LICENSES/"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-middleware",
+              "output-styles",
+              "prompt"
+            ],
+            "magpie": {
+              "middleware": "./output-strategy.middleware.js",
+              "page": {
+                "title": "Output Strategy",
+                "titles": {
+                  "zh": "输出策略"
+                },
+                "file": "page/index.html"
+              },
+              "options": {
+                "styles": {
+                  "terse-prose": false,
+                  "less-code": false,
+                  "ponytail": false,
+                  "i-have-adhd": false,
+                  "terse-cjk": false,
+                  "antislop-ui": false,
+                  "antislop-copy": false
+                }
+              }
+            },
+            "scripts": {
+              "build:catalog": "node scripts/gen-page-catalog.mjs",
+              "test": "bun test"
+            }
+          }
         }
       },
-      "latest": "0.2.1",
-      "readme": "# output-strategy\n\nComposable output-style instructions injected before a model call. Seven styles are available in a small selection panel; **every style is off by default**.\n\nThe style texts and the original request-injection design are adapted from OmniRoute's Output Styles, caveman, ponytail, i-have-adhd and 9router. Exact sources, revisions, licenses and adaptations are recorded in `PROVENANCE.json`; upstream license files are in `LICENSES/`.\n\n## Styles\n\n- **Terse prose** — remove filler, ceremony and hedging without losing technical content.\n- **Less code** — YAGNI and the smallest working change.\n- **Ponytail** — lazy senior-developer discipline: reuse, root causes and a complete minimal diff.\n- **I have ADHD** — action first, numbered steps and one concrete next action.\n- **Terse CJK** — ultra-terse Classical Chinese, with technical identifiers kept verbatim. Unlike OmniRoute's zh-only automatic use, this is an explicit style available for any locale.\n- **Antislop UI** — purpose-tested visuals rather than template decoration and dead controls.\n- **Antislop copy** — honest, specific copy with accessibility and complete UI states.\n\nSelect any combination in the **Output Strategy** panel and save. Styles are combined in catalog order and duplicate boundaries are included only once.\n\n## Options\n\n```json\n{\n  \"styles\": {\n    \"terse-prose\": false,\n    \"less-code\": false,\n    \"ponytail\": true,\n    \"i-have-adhd\": false,\n    \"terse-cjk\": false,\n    \"antislop-ui\": false,\n    \"antislop-copy\": false\n  }\n}\n```\n\nNo options, an empty options object, or all styles off leaves a request unchanged.\n\n## Request behavior\n\n- **Anthropic and Chat Completions:** append one static style block to the existing system prompt, or create the protocol-appropriate system field when none exists.\n- **Responses:** leave `instructions` completely untouched, including Codex's identity and base instructions. Add the style block as a separate `developer` input item.\n- **An existing `[Output Strategy]` marker:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced. If an agent replays that marker in its history, the saved style remains part of that conversation; turning a style off does not rewrite history. Start a new conversation to begin without the old style block.\n- **Cache stability:** a selected style injects consistently across turns. The former `autoClarity` and media-history bypasses are removed because they made the cached system prefix appear and disappear.\n- **Unknown or unsupported shapes:** pass through unchanged. Middleware errors fail open.\n\nThis package has no Bun gateway hook, telemetry, prompt logging, or writes to the plugin installation folder. The panel reads and writes only `magpie.options` and follows `magpie.theme.lang`.\n\n## Verification\n\n```sh\nbun test\nnode scripts/gen-page-catalog.mjs\n```\n\n`page/catalog.js` is generated from `catalog.js`. From the community repository, `output-strategy.test.mjs` runs the same `cases.json` through `../../scripts/middleware.mjs`.\n\n## 中文摘要\n\n7 种输出样式可以自由组合，全部默认关闭。启用后在请求发送前注入固定规则；Responses 不修改 Codex 的 `instructions`，而是另加 developer 输入项。已有 `[Output Strategy]` 标记的请求原样通过。为避免提示缓存失效，已移除 autoClarity 和媒体历史绕过；不再提供统计 hook，不保存请求或响应正文，也不写插件安装目录。页面跟随 Magpie 的语言设置。\n"
+      "latest": "0.2.2",
+      "readme": "# output-strategy\n\nAn (unofficial) output-style plugin for magpie, developed and maintained by manjughosa.\n\nSeven composable output styles with a selection panel; **every style is off by default**.\n\n本插件由 manjughosa 独立开发并维护，非官方出品。七种输出样式可以自由组合，全部默认关闭。\n\nThe style texts and the original request-injection design are adapted from OmniRoute's Output Styles, caveman, ponytail, i-have-adhd and 9router. Exact sources, revisions, licenses and adaptations are recorded in `PROVENANCE.json`; upstream license files are in `LICENSES/`.\n\n## Styles\n\n- **Terse prose** — remove filler, ceremony and hedging without losing technical content.\n- **Less code** — YAGNI and the smallest working change.\n- **Ponytail** — lazy senior-developer discipline: reuse, root causes and a complete minimal diff.\n- **I have ADHD** — action first, numbered steps and one concrete next action.\n- **Terse CJK** — ultra-terse Classical Chinese, with technical identifiers kept verbatim. Unlike OmniRoute's zh-only automatic use, this is an explicit style available for any locale.\n- **Antislop UI** — purpose-tested visuals rather than template decoration and dead controls.\n- **Antislop copy** — honest, specific copy with accessibility and complete UI states.\n\nSelect any combination in the **Output Strategy** panel and save. Styles are combined in catalog order and duplicate boundaries are included only once.\n\n## Options\n\n```json\n{\n  \"styles\": {\n    \"terse-prose\": false,\n    \"less-code\": false,\n    \"ponytail\": true,\n    \"i-have-adhd\": false,\n    \"terse-cjk\": false,\n    \"antislop-ui\": false,\n    \"antislop-copy\": false\n  }\n}\n```\n\nNo options, an empty options object, or all styles off leaves a request unchanged.\n\n## Request behavior\n\n- **Anthropic and Chat Completions:** append one static style block to the existing system prompt, or create the protocol-appropriate system field when none exists.\n- **Responses:** leave `instructions` completely untouched, including Codex's identity and base instructions. Add the style block as a separate `developer` input item.\n- **An existing `[Output Strategy]` marker in system/developer instructions:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced. Quoting the marker in user or assistant messages does not trigger this skip. If an agent replays that marker in system/developer instructions, the saved style remains part of that conversation; turning a style off does not rewrite history. Start a new conversation to begin without the old style block.\n- **Cache stability:** a selected style injects consistently across turns. The former `autoClarity` and media-history bypasses are removed because they made the cached system prefix appear and disappear.\n- **Unknown or unsupported shapes:** pass through unchanged. Middleware errors fail open.\n\nThis package has no Bun gateway hook, telemetry, prompt logging, or writes to the plugin installation folder. The panel reads and writes only `magpie.options` and follows `magpie.theme.lang`.\n\n## Verification\n\n```sh\nbun test\nnode scripts/gen-page-catalog.mjs\n```\n\n`page/catalog.js` is generated from `catalog.js`. From the community repository, `output-strategy.test.mjs` runs the same `cases.json` through `../../scripts/middleware.mjs`.\n\n## 中文摘要\n\n7 种输出样式可以自由组合，全部默认关闭。启用后在请求发送前注入固定规则；Responses 不修改 Codex 的 `instructions`，而是另加 developer 输入项。系统/开发者指令中已有 `[Output Strategy]` 标记的请求原样通过；用户或助手消息中引用标记不会触发跳过。切换或关闭样式不会改写已有会话历史，要完整应用新配置请新建会话。为避免提示缓存失效，已移除 autoClarity 和媒体历史绕过；不再提供统计 hook，不保存请求或响应正文，也不写插件安装目录。页面跟随 Magpie 的语言设置。\n"
     },
     "@magpie-community/middleware-param-override": {
       "versions": {
