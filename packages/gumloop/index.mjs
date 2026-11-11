@@ -340,6 +340,8 @@ function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.
   }
 
   function charge(uid, model, usage, cut) {
+    // A change can wait for a busy peer: the call is dated when it ended.
+    const at = now()
     store.change(uid, (a) => {
       if (!usage) {
         // Gumloop bills the tokens a stopped stream produced, but its usage
@@ -348,7 +350,7 @@ function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.
         return
       }
       const entry = store.price(model)
-      const rec = { at: now(), model }
+      const rec = { at, model }
       if (entry) {
         const c = usageCost(entry, usage)
         rec.credits = creditsFor(c.usd)
@@ -412,8 +414,9 @@ function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.
     if (!res.ok) {
       const text = await res.clone().text().catch(() => "")
       if (isCreditRefusal(res.status, text)) {
+        const at = now()
         store.change(cred.userId, (a) => {
-          a.exhaustedAt = now()
+          a.exhaustedAt = at
         })
         await res.body?.cancel().catch(() => {})
         // 429 so magpie moves the request to the next account; the sign-in is fine.

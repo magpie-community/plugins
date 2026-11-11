@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-gumloop-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Gumloop (gumloop.com) with your API key and user id in OpenCode and magpie: per-account models, and a credit estimate Gumloop's API doesn't give",
   "homepage": "https://www.gumloop.com/",
   "type": "module",

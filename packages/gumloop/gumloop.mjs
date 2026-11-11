@@ -1,7 +1,7 @@
 // Gumloop's API: what an account can use, what a call costs, and what this
 // plugin has spent. Nothing here signs in or holds a key; index.mjs does.
 import { randomUUID } from "node:crypto"
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
 export const API = "https://api.gumloop.com/api/v1"
@@ -225,8 +225,19 @@ export function monthKey(t) {
 let seq = 0
 export const LOCK_WAIT_MS = 250
 export const LOCK_STALE_MS = 30_000
+// A change that waited LOCK_WAIT_MS for a peer, or found the ledger
+// unreadable, hasn't run: it is kept and tried again from a timer, and once
+// more, waiting up to EXIT_WAIT_MS, when the process exits.
+export const EXIT_WAIT_MS = 2000
+// A retry runs on the event loop, so it waits for a peer only briefly; the
+// next change this store makes, at full LOCK_WAIT_MS, takes the kept ones too.
+const RETRY_WAIT_MS = 25
+const RETRY_FIRST_MS = 25
+const RETRY_MAX_MS = 5000
+const PENDING_MAX = 1000
 const lockWait = new Int32Array(new SharedArrayBuffer(4))
 const ownedLocks = new Set()
+const waitingStores = new Set()
 // Windows can temporarily reject opening/deleting a name being renamed or
 // replacing a file another process is reading. Retry the filesystem operation,
 // never the caller's mutation, within a monotonic deadline.
@@ -249,6 +260,9 @@ const remove = (path, deadline) => {
   }
 }
 process.once("exit", () => {
+  for (const store of waitingStores) {
+    try { store.flush(EXIT_WAIT_MS) } catch {}
+  }
   for (const path of ownedLocks) {
     try { remove(path) } catch {}
   }
@@ -264,7 +278,7 @@ process.once("exit", () => {
 // unique files can be removed by any number of recoverers without touching a
 // later acquisition. ESRCH from kill(pid, 0) recovers immediately; otherwise a
 // record older than LOCK_STALE_MS recovers even when the OS reused its PID.
-function ledgerLock(file, onChoosing = undefined) {
+function ledgerLock(file, onChoosing = undefined, waitMs = LOCK_WAIT_MS) {
   const directory = dirname(file)
   const base = basename(file)
   const prefix = `${base}.lock.`
@@ -272,7 +286,7 @@ function ledgerLock(file, onChoosing = undefined) {
   const name = `${process.pid}.${randomUUID()}`
   const participant = join(directory, `${prefix}${name}.json`)
   const temporary = join(directory, `${prefix}${name}.tmp`)
-  const deadline = performance.now() + LOCK_WAIT_MS
+  const deadline = performance.now() + waitMs
   const release = () => {
     for (const path of [participant, temporary]) {
       try {
@@ -373,6 +387,10 @@ export class Store {
     this.onChoosing = onChoosing
     this.mem = { accounts: {} }
     this.readable = true
+    // Changes that haven't run yet, oldest first (see EXIT_WAIT_MS).
+    this.pending = []
+    this.timer = undefined
+    this.retryMs = RETRY_FIRST_MS
   }
 
   withLock(fn) {
@@ -385,6 +403,101 @@ export class Store {
     } finally {
       release()
     }
+  }
+
+  // update runs fn(d) on a fresh read under the lock and writes d. When the
+  // lock or the read fails, fn hasn't run: it is kept, and runs once, after
+  // the changes kept before it, the next time this store holds the lock and
+  // can read the ledger. A busy peer delays a change; it never loses it.
+  update(fn) {
+    if (!this.file) {
+      const d = this.read()
+      const result = fn(d)
+      this.write(d)
+      return result
+    }
+    const release = ledgerLock(this.file, this.onChoosing)
+    if (!release) {
+      this.keep(fn)
+      return undefined
+    }
+    try {
+      const d = this.read()
+      if (!this.readable) {
+        this.keep(fn)
+        return undefined
+      }
+      const kept = this.runPending(d)
+      const before = kept ? structuredClone(d) : undefined
+      let result
+      try {
+        result = fn(d)
+      } catch (e) {
+        // A throwing callback leaves the disk as it was, but not the kept
+        // changes that ran before it.
+        if (before) this.write(before)
+        throw e
+      }
+      this.write(d)
+      return result
+    } finally {
+      release()
+    }
+  }
+
+  keep(fn) {
+    this.pending.push(fn)
+    // An unreadable ledger that never heals must not grow without bound.
+    if (this.pending.length > PENDING_MAX) this.pending.shift()
+    waitingStores.add(this)
+    this.schedule()
+  }
+
+  schedule() {
+    if (this.timer || this.pending.length === 0) return
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      this.flush(RETRY_WAIT_MS)
+    }, this.retryMs)
+    this.timer.unref?.()
+    this.retryMs = Math.min(RETRY_MAX_MS, this.retryMs * 2)
+  }
+
+  runPending(d) {
+    const fns = this.pending.splice(0)
+    waitingStores.delete(this)
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+    this.retryMs = RETRY_FIRST_MS
+    for (const fn of fns) {
+      try { fn(d) } catch {} // ran once, as it would have the first time
+    }
+    return fns.length > 0
+  }
+
+  // flush writes the kept changes; it returns false when they're still kept.
+  flush(waitMs = LOCK_WAIT_MS) {
+    if (this.pending.length === 0) return true
+    if (!existsSync(dirname(this.file))) {
+      // The config directory is gone: there is no ledger to keep them for.
+      this.runPending({ accounts: {} })
+      return true
+    }
+    const release = ledgerLock(this.file, undefined, waitMs)
+    if (release) {
+      try {
+        const d = this.read()
+        if (this.readable) {
+          this.runPending(d)
+          this.write(d)
+          return true
+        }
+      } finally {
+        release()
+      }
+    }
+    this.schedule()
+    return false
   }
 
   read() {
@@ -444,14 +557,7 @@ export class Store {
   }
 
   change(uid, fn) {
-    return this.withLock(() => {
-      const d = this.read()
-      if (this.file && !this.readable) return undefined
-      const a = Store.account(d, uid, this.now())
-      const result = fn(a, d)
-      this.write(d)
-      return result
-    })
+    return this.update((d) => fn(Store.account(d, uid, this.now()), d))
   }
 
   account(uid) {
@@ -465,9 +571,7 @@ export class Store {
   anchor(uid, balance, source, at = this.now()) {
     const b = Number(balance)
     if (!Number.isFinite(b) || b < 0) return false
-    return this.withLock(() => {
-      const d = this.read()
-      if (this.file && !this.readable) return false
+    return this.update((d) => {
       const a = Store.account(d, uid, this.now())
       if (a.applied.includes(source)) return false
       a.anchor = { balance: Math.round(b), at }
@@ -477,7 +581,6 @@ export class Store {
       if (!(a.exhaustedAt > at)) delete a.exhaustedAt
       delete a.unbilledStops
       a.applied = [...a.applied, source].slice(-20)
-      this.write(d)
       return true
     })
   }
@@ -499,11 +602,9 @@ export class Store {
   }
 
   setPrices(table, ids = Object.keys(table)) {
-    this.withLock(() => {
-      const d = this.read()
-      if (this.file && !this.readable) return
-      d.prices = { at: this.now(), table, ids, version: 2 }
-      this.write(d)
+    const at = this.now()
+    this.update((d) => {
+      d.prices = { at, table, ids, version: 2 }
     })
   }
 

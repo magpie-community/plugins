@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync,
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
+import { pathToFileURL } from "node:url"
 import { GumloopPlugin, _internal } from "./index.mjs"
 import { LOCK_STALE_MS, LOCK_WAIT_MS, Store } from "./gumloop.mjs"
 
@@ -49,8 +50,13 @@ async function holdLock(directory, runtime = process.execPath, phase = "held") {
   } else if (phase === "choosing") {
     source = source.replace("publish(0)", `publish(0); ${pause}`)
   }
-  const module = phase === "held" ? new URL("./gumloop.mjs", import.meta.url).href
-    : `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`
+  // A file, not a data: URL on the command line: Windows caps that at 32K.
+  let module = new URL("./gumloop.mjs", import.meta.url).href
+  if (phase !== "held") {
+    const copy = join(tempDir(), "gumloop.mjs")
+    writeFileSync(copy, source)
+    module = pathToFileURL(copy).href
+  }
   const script = `
     const { Store } = await import(${JSON.stringify(module)});
     new Store(${JSON.stringify(join(directory, "gumloop-ledger.json"))}).withLock(() => { ${pause} });
@@ -79,7 +85,7 @@ async function holdLock(directory, runtime = process.execPath, phase = "held") {
 }
 
 describe("exclusive ledger updates", () => {
-  test("a live old owner bounds waiting; after forced death the next chat recovers", async () => {
+  test("a live old owner bounds waiting; after its forced death every waiting change lands once", async () => {
     const directory = tempDir()
     const file = join(directory, "gumloop-ledger.json")
     const store = new Store(file)
@@ -91,7 +97,7 @@ describe("exclusive ledger updates", () => {
     const start = performance.now()
     try {
       expect(store.change(auth.metadata.userId, () => callbacks++)).toBeUndefined()
-      expect(store.anchor(auth.metadata.userId, 1, "blocked")).toBeUndefined()
+      expect(store.anchor(auth.metadata.userId, 6000, "blocked")).toBeUndefined()
       store.setPrices({ "gpt-6-sol": { p: [99, 99] } })
       const p = _internal.createPlugin({ directory, magpie: true, fetchImpl: fake })
       expect((await chat(p)).res.status).toBe(200)
@@ -104,10 +110,21 @@ describe("exclusive ledger updates", () => {
       await owner.stop()
     }
     expect(() => process.kill(owner.child.pid, 0)).toThrow()
+    // The changes that waited past LOCK_WAIT_MS haven't run; they land from
+    // their stores' retry timers once the owner is gone, without a new call.
+    const landed = () => callbacks === 1 && store.account(auth.metadata.userId).month.calls === 1
+      && store.account(auth.metadata.userId).applied.includes("blocked") && store.prices().table["gpt-6-sol"]?.p?.[0] === 99
+    for (const until = performance.now() + 10_000; !landed() && performance.now() < until;) await new Promise((r) => setTimeout(r, 10))
+    expect(callbacks).toBe(1)
+    expect(store.account(auth.metadata.userId).month.calls).toBe(1)
+    expect(store.account(auth.metadata.userId).applied).toEqual(["initial", "blocked"])
+    expect(store.prices().table).toEqual({ "gpt-6-sol": { p: [99, 99] } })
     const recovered = _internal.createPlugin({ directory, magpie: true, fetchImpl: fake })
     expect((await chat(recovered)).res.status).toBe(200)
-    expect(store.remaining(auth.metadata.userId)).toBe(4999)
-    expect(store.account(auth.metadata.userId).month).toMatchObject({ calls: 1, credits: 1 })
+    const account = store.account(auth.metadata.userId)
+    expect(account.month.calls).toBe(2)
+    expect(account.charges).toHaveLength(2)
+    expect(store.remaining(auth.metadata.userId)).toBe(6000 - account.spent)
     expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
   }, 15000)
 
@@ -134,7 +151,9 @@ describe("exclusive ledger updates", () => {
     expect((await chat(p)).res.status).toBe(200)
     expect(performance.now() - t1).toBeLessThan(200)
     expect(existsSync(lockPath)).toBe(false)
-    expect(store.remaining(auth.metadata.userId)).toBe(4999)
+    // The charge that waited out the fresh record was kept, not dropped.
+    expect(store.remaining(auth.metadata.userId)).toBe(4998)
+    expect(store.account(auth.metadata.userId).month.calls).toBe(2)
     expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
   })
 
@@ -191,7 +210,9 @@ describe("exclusive ledger updates", () => {
     let ran = false
     expect(futureStore.change("u", () => { ran = true })).toBeUndefined()
     expect(ran).toBe(false)
+    expect(futureStore.pending).toHaveLength(1)
     expect(existsSync(lockPath)).toBe(true)
+    futureStore.pending.length = 0
   })
 
   test("waits for a peer in ticket 0 (choosing) state before entering critical section", () => {
@@ -221,6 +242,12 @@ describe("exclusive ledger updates", () => {
     expect(enteredA).toBe(true)
     expect(enteredB).toBe(false)
     expect(storeB.remaining("u")).toBe(99)
+    // storeB's change waited, and runs once A is done.
+    expect(storeB.flush()).toBe(true)
+    expect(enteredB).toBe(true)
+    expect(storeB.remaining("u")).toBe(89)
+    expect(storeB.flush()).toBe(true)
+    expect(storeB.remaining("u")).toBe(89)
   })
 
   for (const runtime of [node, process.execPath]) {
@@ -278,6 +305,54 @@ describe("exclusive ledger updates", () => {
   })
 
   for (const [name, runtime] of [["Node", node], ["Bun", process.execPath]]) {
+    test(`${name}: a host that exits while its charge waits for a busy peer still writes it`, async () => {
+      const directory = tempDir()
+      const file = join(directory, "gumloop-ledger.json")
+      new Store(file).anchor(auth.metadata.userId, 5000, "initial", 1)
+      const owner = await holdLock(directory, runtime)
+      const source = `
+        const { _internal } = await import(${JSON.stringify(new URL("./index.mjs", import.meta.url).href)});
+        const p = _internal.createPlugin({
+          directory: ${JSON.stringify(directory)}, magpie: true,
+          fetchImpl: async (url) => url.includes("openrouter.ai") ? new Response('{"data":[]}')
+            : url.includes("/models") ? new Response('{"model_groups":[]}')
+            : new Response(JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } }))
+        });
+        const loaded = await p.auth.loader(async () => (${JSON.stringify(auth)}));
+        const res = await loaded.fetch(loaded.baseURL + "/chat/completions", {
+          method: "POST", body: JSON.stringify({ model: "gpt-6-sol", messages: [] })
+        });
+        await res.text();
+        console.log(JSON.stringify({ status: res.status }));
+        // Exit at once: no retry timer gets to run, only the exit hook.
+        process.stdin.once("data", () => process.exit(0));
+      `
+      const child = spawn(runtime, ["--input-type=module", "--eval", source], { stdio: ["pipe", "pipe", "pipe"] })
+      const lines = createInterface({ input: child.stdout })
+      const done = once(child, "exit")
+      let stderr = ""
+      child.stderr.on("data", (chunk) => { stderr += chunk })
+      try {
+        expect(JSON.parse((await once(lines, "line"))[0])).toEqual({ status: 200 })
+        expect(new Store(file).account(auth.metadata.userId).month.calls).toBe(0)
+        await owner.stop()
+        child.stdin.end("go\n")
+        expect((await done)[0]).toBe(0)
+        expect(stderr).toBe("")
+        const account = new Store(file).account(auth.metadata.userId)
+        expect(account.month).toMatchObject({ calls: 1, credits: 1 })
+        expect(account.charges).toHaveLength(1)
+        expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
+      } finally {
+        if (child.exitCode === null) {
+          child.kill()
+          await done
+        }
+        lines.close()
+        await owner.stop()
+      }
+    }, 15000)
+
     test(`${name}: two independent overlapping processes preserve all 200 chat charges`, async () => {
       const directory = tempDir()
       const file = join(directory, "gumloop-ledger.json")

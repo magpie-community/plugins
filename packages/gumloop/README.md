@@ -118,12 +118,16 @@ requires a coherent local filesystem; network filesystems and simultaneous
 hosts using the old lock protocol are not supported.
 
 Acquisition waits up to 250 ms in 5 ms intervals. Windows sharing errors
-on reads, renames and cleanup are retried within bounded 250 ms deadlines;
-the mutation callback itself is never retried. Waiting blocks the plugin host's
-JavaScript thread. A timeout or unrecoverable filesystem error skips that
-estimate update without failing the chat, so the estimate may be too high.
-A host killed before its ledger rename may likewise lose its final update;
-the previous complete ledger remains available and later requests recover.
+on reads, renames and cleanup are retried within bounded 250 ms deadlines.
+Waiting blocks the plugin host's JavaScript thread. When the wait runs out
+(another host holds the lock), or the ledger can't be read or acquired, the
+change hasn't run: the host keeps it in memory, without failing the chat, and
+runs it once, in order, the next time it holds the lock and can read the
+ledger: on its next update, from a retry timer (25 ms, doubling to 5 s, each
+waiting 25 ms), or on normal exit, which waits up to 2 s. A busy peer delays a
+charge; it doesn't lose it. A host killed (not exited) with changes kept, or
+before its ledger rename, loses them; the previous complete ledger remains
+available and later requests recover.
 
 Short-lived hosts may terminate immediately after receiving a completion.
 The plugin therefore finishes accounting before releasing terminal SSE frames
