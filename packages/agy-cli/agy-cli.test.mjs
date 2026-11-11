@@ -30,6 +30,13 @@ for (const [name, mocks] of [
   }, 250_000)
 }
 
+
+test("test/re2-pattern-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "re2-pattern-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)
+
 test("test/smoke.mjs against a fake agy", () => {
   const { code, output } = run([path.join(dir, "smoke.mjs")], 240_000)
   expect(output).toMatch(/ALL OK \(\d+ checks\)/)

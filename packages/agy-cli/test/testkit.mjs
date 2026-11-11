@@ -1,8 +1,8 @@
 // magpie-agy 插件的受控加载夹具（仅供仓内 test-catalog / test-usage-settlement /
 // test-repeat-batch 使用）。源自 configs 仓 scripts/continuity/tests/agy_bridge_testkit.mjs。
 //
-// 用 vm.SourceTextModule 在当前上下文里加载**真实**仓内 index.mjs，相对的 ./usage.mjs
-// 与 ./platform.mjs 链接到同目录的真实文件；生产文件只读，不落盘任何副本。
+// 用 vm.SourceTextModule 在当前上下文里加载**真实**仓内 index.mjs，相对的 ./usage.mjs、
+// ./platform.mjs、./login.mjs 与 ./re2-pattern.mjs 链接到同目录的真实文件；生产文件只读，不落盘任何副本。
 // 边界替身：
 //   - node:child_process 的 spawn：`agy models` 与 `agy acp` 都换成进程内假子进程，
 //     后者讲真实 ACP JSON-RPC（initialize / session/new / set_model / prompt / cancel）。
@@ -32,6 +32,7 @@ export const INDEX_FILE = process.env.AGY_BRIDGE_TEST_INDEX || path.join(REPO_DI
 export const USAGE_FILE = path.join(REPO_DIR, "usage.mjs")
 export const PLATFORM_FILE = path.join(REPO_DIR, "platform.mjs")
 export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
+export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -476,6 +477,7 @@ export async function createBridgeKit(options = {}) {
   const usageUrl = pathToFileURL(USAGE_FILE).href
   const platformUrl = pathToFileURL(PLATFORM_FILE).href
   const loginUrl = pathToFileURL(LOGIN_FILE).href
+  const re2Url = pathToFileURL(RE2_PATTERN_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -485,6 +487,7 @@ export async function createBridgeKit(options = {}) {
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
+    else if (key === "./re2-pattern.mjs") module = sourceModule(RE2_PATTERN_FILE, "", re2Url)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)
