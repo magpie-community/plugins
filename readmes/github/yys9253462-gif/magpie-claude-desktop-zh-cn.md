@@ -1,4 +1,4 @@
-# Claude Desktop 中文 · Windows 独立版 / Magpie 插件
+# Claude Desktop 中文 · Windows / macOS / Magpie 插件
 
 把 [javaht/claude-desktop-zh-cn](https://github.com/javaht/claude-desktop-zh-cn) 的 Windows 中文补丁包装成**双击即用的 Windows 程序**和可分享的 Magpie 页面插件。为**第三方 API / Gateway 模式**添加简体中文、繁體中文（台灣）与繁體中文（香港）。
 
@@ -23,7 +23,25 @@
 powershell -ExecutionPolicy Bypass -File .\standalone\publish.ps1
 ```
 
-产物：`artifacts/standalone/ClaudeDesktop-ZH-CN.exe`。`--self-test` 验证内嵌资源与恢复调用链，不用于跳过安装流程。
+产物：`artifacts/standalone/ClaudeDesktop-ZH-CN.exe`。当前 `--self-test` 仅检查内嵌资源与只读调用链，不执行真实安装或恢复，也不会关闭 Claude。
+
+**Windows 当前验证边界：** 0.3.2 已通过构建、26 项测试和只读自检；Claude `5.1231.2.0` 上的真实汉化尚未成功完成。运行中测到的文件占用不能证明先前失败也是占用造成，先前写入失败的底层错误仍需在安装当时采集。
+
+## macOS 便携版（实验版）
+
+下载：[macOS 0.1.0 实验版](https://github.com/yys9253462-gif/magpie-claude-desktop-zh-cn/releases/tag/macos-v0.1.0)。附件包含 ZIP 与 SHA-256 校验文件。
+
+Mac 包内提供 `.app` 启动入口与 `.command` 备用入口。先选择语言，再明确确认执行；只有确认后才关闭 Claude 并修改资源。提供原应用备份恢复与本机日志，不需要 Magpie。
+
+**需要预先安装 Python 3.10 或更新版本，不是免运行时版本。** 同一脚本包面向 Apple Silicon / Intel；当前仅在 Windows 完成资源、语法与打包校验，尚未在 Mac 上实际验收。启动器没有 Apple 签名或公证。详细说明见 [macos/README.md](macos/README.md)。
+
+构建 ZIP：
+
+```bash
+python -I macos/package.py
+```
+
+产物：`artifacts/macos/ClaudeDesktop-ZH-CN-macOS-0.1.0.zip`。解压后双击 `ClaudeDesktop-ZH-CN.app`，按提示选择语言并确认；安装期间会关闭 Claude Desktop，包括正在进行的 Code 对话。
 
 ## Magpie 插件版
 

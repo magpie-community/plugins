@@ -22,6 +22,10 @@ Gemini、Claude、GPT-OSS 全系可用。
 - **异常防重发**：同一逻辑 Prompt 在提交后失败、取消或进程退出时，不会因客户端
   自动重试再次交给 agy。
 - **流式输出 + 思考摘要 + 图片输入**：文本、思考过程、图片按顺序完整呈现。
+  agy 内部的会话标题摘要也在同一思考流里，其提示词回显不再转发到客户端
+  （诊断时可设 `AGY_BRIDGE_KEEP_SUMMARY_THOUGHTS=1` 恢复）。
+  过滤依据已知提示词签名：未验证原生来源标记；任意分片可能漏过，合法思考若回显相同签名
+  也可能被过滤。
 - **Claude Code 兼容**：支持尾随 system/developer 上下文、hooks、Skill /
   ToolSearch 工具附加内容和用户排队消息，兼容非流式 Messages 响应。
 - **工具调用零损耗**：客户端工具以 MCP 原生工具的形式出现在模型面前，
@@ -57,19 +61,22 @@ Prompt caching 由 Google 后端决定，本插件让请求前缀尽量稳定：
 前置要求：
 
 - 已安装 [magpie](https://github.com/yetone/magpie)，支持 OpenCode 风格插件
-- 已安装 [Antigravity CLI](https://antigravity.google)（`agy`）并至少交互式
-  登录过一次 Google 账号（实测版本 1.4.12 / 1.5.0）
+- 已安装 [Antigravity CLI](https://antigravity.google)（`agy`）；可在 Magpie 中添加
+  独立 Google 登录，也可复用已有 CLI 登录。UI 登录要求 `agy acp --login`
+  （已核对 1.5.4 的授权链接与输入流程）
 
 ```sh
 # 1. 安装插件（本地 checkout，尚未发布 npm）
 magpie plugin add ./opencode-antigravity-bridge
 
-# 2. 交互式运行一次 agy 完成 Google 登录
-agy
-
-# 3. 在 Magpie 中：Providers → Antigravity Bridge → Sign in
-# 4. 选一个模型（可选思考等级），开始对话
+# 2. 在 Magpie 中：Providers → Antigravity Bridge → Sign in
+#    选择「Sign in a new agy account with Google / 登录新的 agy 账号」
+# 3. 填写名称（例如 work），在浏览器完成 Google 登录，
+#    把最终回调页面的完整 URL 或授权码粘贴回 Magpie
+# 4. 选择 work/<模型>（可选思考等级），开始对话
 ```
+
+已有默认 CLI 登录时，仍可选择「Sign in with the agy CLI」直接验证并使用。
 
 客户端侧零配置：不需要改全局 MCP 配置，插件为每个 agy 进程创建隔离的临时
 agent。ACP `clientInfo` 固定使用 `zed / 0.0.0`，兼容 agy 的非 Gemini 模型 allowlist。
@@ -97,9 +104,27 @@ Google Code Assist 后端
 **切换模型 / 思考等级**：在 magpie 的模型选择器中切换即可，会话不中断，
 历史保留。
 
-**多账号**：在 `~/.config/magpie-agy-bridge/accounts/<名称>/` 下为每个额外账号
-准备一个完整的 Gemini 配置目录（可用 `AGY_BRIDGE_ACCOUNTS_DIR` 覆盖根目录），
-并在该目录里交互式登录一次：
+**在 Magpie 中登录新账号**：在 Bridge 的登录列表选择「Sign in a new agy account
+with Google / 登录新的 agy 账号」，输入唯一名称。Magpie 打开 Google 授权链接；
+完成后把浏览器最终停留的 `https://antigravity.google/oauth-callback?...` 完整地址
+粘贴回 Magpie（推荐，也可只粘贴页面显示的授权码）。当前官方 CLI 使用这个网页回调，
+需要手动粘贴，没有本机自动回调。远程 Magpie 也使用相同流程。
+
+插件在隐藏临时目录里运行官方 `agy acp --login`，完整回调 URL 会先校验来源、路径
+及本次登录的 state，授权码再通过 stdin 交给原 agy 进程。PKCE、换取 token 和之后
+的刷新均由 agy 处理。只有 agy 成功退出、保存了含 refresh token 的文件、且独立
+`agy models` 检查通过，才通过导入后端发布账号并清除模型缓存。选择 `<名称>/<模型>`
+即可使用该账号独立的 ACP 进程池。
+
+凭据仅保存在 Bridge 的账号目录，Magpie 账户存储里仍是 `agy` 标记；不会切换全局
+登录态或覆写已有同名账号。登录进程强制使用文件存储，POSIX 上目录为 `0700`、
+发布的 token 为 `0600`；Windows 的文件权限要求见下方。一次登录最多等待 10 分钟；
+新的登录会清理上次未完成的流程。取消开始或完成步骤会立即清理；关闭等待粘贴的
+界面后，插件会在到期或下次登录时清理隐藏目录和进程。失败后请重新开始，使用新回调。
+
+**多账号**：新 UI 登录会自动创建
+`~/.config/magpie-agy-bridge/accounts/<名称>/`（可用 `AGY_BRIDGE_ACCOUNTS_DIR`
+覆盖根目录）。也可手动准备一个完整的 Gemini 配置目录，并在该目录里登录一次：
 
 ```sh
 agy --gemini_dir=~/.config/magpie-agy-bridge/accounts/work
@@ -110,6 +135,23 @@ agy --gemini_dir=~/.config/magpie-agy-bridge/accounts/work
 选择器里，选哪个就走哪个账号；会话、进程、快照和额度都按账号隔离。默认账号
 （agy 自己的全局登录态，模型不带前缀）始终保留。要求 agy 支持 `--gemini_dir`
  且账号使用文件 token 登录态——钥匙串/ADC 登录态是整机全局的，无法按目录隔离。
+
+**导入账号**：除了在配置目录里登录，也可以导入已有的 agy 登录——在 Magpie 登录列表选
+"Import an agy account / 导入 agy 账号"（或批量导入），或用随包 CLI。路径是运行
+Magpie 那台机器上的路径，两者调用同一个后端：
+
+```sh
+agy-bridge accounts import work ~/.config/agy-work             # 配置目录
+agy-bridge accounts import work ~/token/antigravity-oauth-token   # token 文件
+agy-bridge accounts import --manifest accounts.json             # [{"name","source"}]
+agy-bridge accounts list
+```
+
+导入只复制 `antigravity-cli/antigravity-oauth-token`（`0600`，目录 `0700`）到
+`<账号根目录>/<名称>/`，之后仍由 agy 自己刷新。已存在的账号绝不覆盖（换个名称即可）；
+清单会先整体校验再写入，批量导入要么全成功要么全不变；token 不会被打印。导入后刷新
+模型目录。Magpie 自带的 `magpie accounts import antigravity` 是另一套内置账号存储，
+不会流入本插件。
 刷新模型目录会重新扫描账号目录。
 
 **Windows 文件登录态**：原生 Windows 上 agy 把默认登录放在 Windows 凭据管理器
@@ -203,6 +245,35 @@ GPT-OSS 的声明始终取配置值与 131,072 中的较小值。
 窗口声明只改变客户端收到的元数据，扩容效果仍取决于 AGY 本身。
 每次提交的 1 MiB 文本预算另由 `AGY_BRIDGE_MAX_PROMPT_TEXT_BYTES` 控制。
 
+#### 可选上下文解锁（默认关闭）
+
+agy 没有原生参数可以放大上下文窗口或解除单条消息 64K 截断，唯一已知办法是与版本、
+架构绑定的机器码补丁，因此它是显式、可恢复的可选项，绝不会自动运行：
+
+```sh
+agy-bridge context status
+agy-bridge context unlock     # 需要 Python 3.8+；复制 agy，只补丁副本
+agy-bridge context disable [--purge]
+```
+
+`unlock` 把官方 `agy` 复制到 `~/.config/magpie-agy-bridge/context-unlock/`
+（`AGY_BRIDGE_CONTEXT_DIR`），用固定且校验 SHA-256 的
+[`agy-patch.py`](https://github.com/lili-luo/dsh-plugin-bundle/tree/0a90ec37c69430608084e33ebc2f891e328c9e89/agy-context-unlock)
+（MIT，Copyright (c) 2026 lili-luo，见 `vendor/agy-context-unlock`）**只补丁副本**，
+复查全部六个 gate，并把来源/补丁脚本/补丁后三者的 SHA-256、版本和架构写入 manifest。
+官方安装从不被修改。若构建未知、gate 不匹配，或官方 agy 之后变化（如 `agy update`），
+桥继续使用官方 agy 和默认 256K；更新后请重新 `unlock`。`unlock`/`disable` 后重启
+Magpie：agy 二进制在启动时选定，运行中的会话不会切换上下文模式。只有选中已校验的副本
+时，桥才向客户端声明 512K（仍可用 `AGY_BRIDGE_CONTEXT_WINDOW` 覆盖，GPT-OSS 仍为
+131,072），并只应用 `AGY_BRIDGE_MAX_PROMPT_TEXT_BYTES`，不再套用官方 agy 的
+180,000 字节上限。该声明只是客户端压缩策略，不是已验证的上限。**限制：**上游仅验证
+agy 1.4.12–1.5.3；对 1.5.4（macOS arm64）副本的 dry-run 命中全部六个 gate，但
+1.5.4 及其他平台均未做端到端长上下文运行。
+
+选择副本时会校验官方源文件和副本的 SHA-256。已发布副本按哈希复用，发布失败保留旧的
+manifest；旧副本留到显式 `context disable --purge` 才删除。普通 `disable` 仅关闭选择。
+使用 `--purge` 前请停止仍使用副本的 Magpie 进程。
+
 生成级用量日志 `agy_bridge_model_usage` 包含账单来源 `gen_metadata` 或 `steps`、
 实际输入、缓存读写、输出、思考量及 `context_tokens`。生成记录提供的
 `local_context_estimate` 是发送前的本地估算，可与实际输入对照排查上下文变化。
@@ -251,7 +322,7 @@ GPT-OSS 的声明始终取配置值与 131,072 中的较小值。
 - **用量**：ACP 一轮只给一次累计值、agy 不推 `usage_update`；插件从 agy 本地会话库
   （`~/.gemini/antigravity-cli/conversations/<sessionId>.db`）优先读 `gen_metadata`，
   生成结束即能读取，工具等待期间也可得到真实用量。旧版或未使用该表的会话使用完成的
-  `steps` 记录，同一回合固定一个来源。每个响应报自己覆盖的调用（含缓存读），最终与
+  `steps` 记录，同一回合固定一个来源。每个响应报自己覆盖的调用（含缓存读），同一模型生成拆出的后续并行工具子步报 `0` 增量用量并保留游标，最终与
   ACP 累计输入核对。运行时无 `node:sqlite` / `bun:sqlite` 或读不到完整记录时回落估算；
   `AGY_BRIDGE_STEP_USAGE=0` 可完全关闭会话库读取。
 - **长输出续写**：撞 `max_tokens` 时在同一会话、同一响应里自动续写，最多 3 次

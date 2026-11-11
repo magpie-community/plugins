@@ -60,6 +60,8 @@ magpie provider test venice
 
 Without cloning, install straight from the repository: `magpie plugin add https://github.com/Tomahawkd/opencode-venice-auth`.
 
+From npm, install the published package: `magpie plugin add opencode-venice-auth`.
+
 The package is also an OpenCode v1 plugin and can be used as an OpenCode plugin.
 
 ## Development

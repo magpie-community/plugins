@@ -4,6 +4,8 @@
 
 A web search API for [magpie](https://github.com/yetone/magpie) that asks two or more search APIs at once and gives the agent their pages together: taken in turn from each, a page they both found kept once.
 
+Two mixed are often more accurate than one alone: DeepSeek, for example, may do better on Chinese pages, and Tavily or You.com on the rest. In [a small test](#how-many-pages), DeepSeek and You.com in turn scored higher than either alone.
+
 An unofficial community plugin by mdwsk88. It is not part of magpie.
 
 magpie v0.1.3199 and later can also mix search APIs by itself. See [magpie's own mix mode](#magpies-own-mix-mode) for how the two differ.

@@ -17,12 +17,13 @@ Unofficial; the protocol was reverse-engineered from free-pi-cli (same shape as 
 ## Install
 
 ```sh
-magpie plugin add github:aqiu817/magpie-freepi   # or a local folder path
+magpie plugin add magpie-freepi-auth              # from npm
+magpie plugin add github:aqiu817/magpie-freepi    # or from GitHub, or a local folder path
 magpie plugin login freepi                        # finish the GitHub device flow in your browser
 magpie provider test freepi
 ```
 
-In the app: Plugins → Add → enter the path/repo → sign in on the freepi row.
+In the app: Plugins → Add → enter the package name / repo / path → sign in on the freepi row.
 
 ## Models
 

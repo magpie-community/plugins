@@ -69,6 +69,19 @@ magpie plugin options magpie-zszapi '{"modelProtocols":{"my-alias":"anthropic_me
 
 可用值：`anthropic_messages`、`openai_responses`、`openai_chat_completions`、`gemini_generate_content`。
 
+## 切换线路
+
+站点有两个接入点，账号、Key、余额和模型完全一样，只是网络路径不同：
+
+| 线路 | 地址 | 适合 |
+| --- | --- | --- |
+| 直连（默认） | `https://zszapi.com` | 海外，以及直连本来就快的网络 |
+| 国内优化线路 | `https://kr.zszapi.com` | 国内部分网络（如移动），晚高峰更稳 |
+
+在 Magpie 的 **供应商 → 执算者AI** 里，账号下方有一个「国内优化线路（kr.zszapi.com）」开关，打开后点「保存」即可。切换后下一个请求就走新线路，正在用的 Agent 不用重启，**不用重新登录**，所有账号一起切换。
+
+开关关闭时使用 `baseURL` 选项的地址（默认 `https://zszapi.com`）。早期版本里用 `baseURL` 切到 `kr.zszapi.com` 的，升级后请清除这个选项（`magpie plugin options magpie-zszapi off`），改用开关。
+
 ## 余额和额度
 
 插件读取 `GET /v1/usage`，在 Magpie 的用量卡片显示：
@@ -91,7 +104,7 @@ magpie plugin options magpie-zszapi '{"currency":"USD"}'
 | --- | --- | --- |
 | `currency` | 余额显示单位：`CNY` 或 `USD` | `CNY` |
 | `modelProtocols` | 按模型 ID 指定协议 | 无 |
-| `baseURL` | 站点地址，仅用于测试环境 | `https://zszapi.com` |
+| `baseURL` | 站点地址，仅用于测试或自建环境；切换官方线路请用上面的「国内优化线路」开关 | `https://zszapi.com` |
 | `name` | 提供商显示名 | `执算者AI` |
 
 多个选项写在同一个 JSON 里：`magpie plugin options magpie-zszapi '{"currency":"USD","name":"ZSZ"}'`。清除选项：`magpie plugin options magpie-zszapi off`。
@@ -99,7 +112,7 @@ magpie plugin options magpie-zszapi '{"currency":"USD"}'
 ## 凭据与安全
 
 - Key 由 Magpie 保存在它的 `plugin-auth.json`，插件不另建凭据文件。
-- 模型和用量查询只访问 Key 所属站点；发送请求时替换调用方的认证头，只允许发往当前账号的四个对话接口，禁止跟随重定向。
+- 模型和用量查询只访问 Key 所属站点；发送请求时替换调用方的认证头，只允许发往当前账号的对话和生图接口，禁止跟随重定向。切换线路时，请求只会发往 `zszapi.com` 或 `kr.zszapi.com` 中当前选中的那个。
 - 查询错误不回显服务端响应正文；账号名只显示 Key 尾号四位，过短的 Key 不显示尾号。
 - 模型列表缓存 30 秒、用量缓存 5 秒；返回 401 时立即清除该账号的缓存。
 

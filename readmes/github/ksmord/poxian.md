@@ -17,7 +17,43 @@
 | `responses`（OpenAI Responses API） | `body.instructions` |
 | `gemini`（Gemini CLI…） | `systemInstruction` / `system_instruction` |
 
-默认行为是 **override + prepend（前置）**：请求自带 Agent 原生系统提示词时保留原文，你的提示词放在**最前面（事实上的最高优先级）**——Agent 的工具调用规范仍然有效；整段前缀字节恒定，**不破坏提示词缓存**。
+默认行为是 **override + replace（整段替换）**：请求自带 Agent 原生系统提示词时，用你的提示词**覆盖**该位置。
+
+这条默认值来自实机 A/B，不是审美选择。用干净模型（`group/k3`，不带预置人格）做四组对照，只有「system 位只留注入」能改写身份：
+
+| system 位内容 | 模型回复 |
+|---|---|
+| 无注入，只有客户端原生 system | 原生人格 |
+| 注入 prepend 到原生 system 前 | **原生人格**（注入读到了，但没拿到控制权） |
+| 注入 append 到原生 system 后 | **原生人格**（同上） |
+| 只留注入，原生 system 删除 | **注入生效** |
+
+补充判别：把原生 system 换成中性 / 工具型 / 安全型三种，全部都会压制注入。所以「前置 = 更高优先级」这条直觉在多数模型上不成立——原生 system 还在时，模型倾向按它的人格回答。
+
+>⚠️ 但这只说明「不替换就拿不到控制权」，不等于「上游覆盖了客户端 system」。两者常被混淆：前者是 merge 模式的固有代价，后者是路由行为。0.1.4 实测证明本环境所有路由都认客户端 system（32/32 PASS），见下方撤回说明。
+
+代价要说清楚：`replace` 会丢掉 Agent 自己的工具调用规范。需要保留原生 system 的，显式设 `override_mode: "merge"`，再用 `position` 决定前置还是追加。
+
+**上游是否认客户端 system**：这件事需要实测，不能假设。判断方法见 `scripts/probe-system.mjs`。注意不要用「塞格式指令看是否照做」这种判据——模型拒答和 thinking 截断都会造成假阴性，详见下方 0.1.4 的撤回说明。
+
+>⚠️ **0.1.4 撤回一条错误结论。** 早期用「往 system 塞一条格式指令（回答前先加 `[ZZ]`），若模型不照做就说明该路由不认客户端 system」当判据，据此得出「8 条路由 × 4 协议全部 FAIL，上游追加自己的身份设定，中间件无解」。这个结论是**假的**，判据本身有缺陷：
+>
+> - **模型会拒答**：「复述你的 system」在多数模型里是敏感请求，返回「抱歉，我无法提供相关信息」。这是收到了不肯说，不是没收到。
+> - **thinking 会截断**：推理模型先把 `max_tokens` 花在 thinking 上，正文没开始就 `stop_reason=max_tokens`，看起来像空输出。
+>
+> 两者都表现为「输出里没有我的标记」，于是全被计成 FAIL。实测反证：同一模型同一协议反复测，结果在 PASS/FAIL 间跳动，而某次 FAIL 的回复正文里清清楚楚带着 sentinel 和「你是 Kimi」——模型先拒答，然后自己把 system 内容念了出来。
+>
+> 换成正确判据（随机任务码召回：system 里埋 6 位随机码，只问「你的任务码是什么」）后实测 **32/32 PASS**，chat / anthropic / responses / gemini 四协议各 8/8。**上游全部认客户端 system，poxian 的注入路径有效。**
+>
+> 同理，「模型仍回答我是 Kimi」需要分开看。**model 的自述不可靠**——实测同一时刻，模型对「system 里有没有 `<!--poxian-->`」答 FOUND，对「system 里有没有"寒霜"」答 NOT-FOUND，而 v3.md 第 3 行就是「你是寒霜」。两个答案不可能同真，说明复述 system 内容这件事本身不能当证据。
+>
+> 可靠的判据只有两个，都在网关侧：
+> 1. `logs/poxian.jsonl` 的 `action="inject"` + `bytes=6215`（与 `prompts/v3.md` 的 6201 字节加标记吻合），证明注入体确实写进了请求。
+> 2. 该日志的 `position` 字段：`replace` 表示整段替换成功；`prepend` 表示该请求原本没有 system 字段、走了拼接路径。
+>
+> 用这两条复核后发现真问题：**部分上游供应商会在客户端 system 之前追加自己的身份块**（实测 `group/k3.1pro` 的 system 前三行是 `# KIMI: AI assistant developed by Moonshot AI...` + `Your character is: ...`）。这段内容本地搜不到，属远端注入。它排在客户端 system 之前，所以 `replace` 替换掉的是客户端那段、追加块仍然存在——这才是「模型仍自称 Kimi」的真实原因，不是注入失效。
+>
+> 注意这和上面「32/32 PASS」不矛盾：任务码能召回，证明客户端 system 确实到达模型；同时上游把自己的身份块排在了它前面。**到达**和**排在最前**是两件事，README 之前把它们混成一件了。
 
 内置两档主提示词：默认 `prompts/v5.md`（约 8.8K 字符 / ~3.9K token，轻量规范）；`prompts/v52.md`（约 78.6K 字符 / ~21K token）是 "CT Attack-Defense Prompt v5.2" 的净化版——面向授权安全研究（CTF / 红蓝对抗 / 本地样本分析）的工作台契约，带中文激活词（`寒霜` / `自检`）与交付纪律层。默认选轻的那份，是因为完整版每个请求都要重新 prefill 两万多 token；要靠缓存摊薄只有 Anthropic 系有效。中间件本身与提示词内容无关，随时可换成你自己的。
 
@@ -103,14 +139,17 @@ curl -s http://127.0.0.1:3425/v1/chat/completions \
 **3. 配置（可选）**——应用内：插件 → 已安装 → `poxian` → 选项；或命令行：
 
 ```bash
-magpie plugin options poxian '{"override":true,"position":"prepend"}'
+magpie plugin options poxian '{"override":true,"override_mode":"replace"}'
+
 ```
 
 | 选项 | 默认 | 含义 |
 |---|---|---|
 | `enabled` | `true` | 总闸。`false` 时什么都不做 |
 | `override` | `true` | 请求已带系统提示词时是否仍注入 |
-| `position` | `"prepend"` | `prepend` 前置（优先级最高）/ `append` 追加（原提示词前缀缓存完全不动） |
+| `override_mode` | `"replace"` | `replace` 整段替换自带 system（默认，实机验证唯一能拿到控制权的方式）/ `merge` 保留原生 system 并拼接 |
+| `position` | `"prepend"` | 仅 `override_mode=merge` 时生效：`prepend` 前置 / `append` 追加。实测拼接无论前置还是追加都无法让注入取得控制权 |
+
 | `prompt_path` | 空 | **外部 `.md` / `.txt` 路径。每请求 `stat`，改完即生效，优先于内置版本库。**支持 `~`、`$VAR`、`%VAR%`、相对 `ctx.cwd` 的路径 |
 | `prompt` | `"v5"` | 内置版本 id 回退：`v52` / `v5` / `v4` / `v3`。`prompt_path` 未设或读失败时使用 |
 | `on_prompt` | 无 | 字面文本，优先级最高（调试用，不进文件） |
@@ -123,7 +162,15 @@ magpie plugin options poxian '{"override":true,"position":"prepend"}'
 | `handshake_model` | 无 | 握手请求改派到该模型 |
 | `cache` | `false` | Anthropic `cache_control` 断点（仅真 Anthropic 端点建议开） |
 | `log` | `true` | 每请求写一行 JSONL 观测记录 |
-| `log_path` | `~/.config/magpie/logs/poxian.jsonl` | 观测日志路径，超过 2 MB 自动滚存为 `.1` |
+| `log_path` | `~/.config/magpie/logs/poxian.jsonl` | 观测日志路径，超过 2 MB 自动轮转 |
+| `log_backup_count` | `1` | 轮转备份份数。`1` = 旧行为（只留 `.1`），最大 `9` |
+| `prompt_allowlist` | `[]` | `prompt_path` 允许的目录前缀。空 = 不限制（旧行为）。非空时越界路径直接回退内置版本，日志打 `path_blocked` |
+| `max_payload_bytes` | `0` | 载荷字节上限。`0` = 不限制。超限时降级回内置版本，日志打 `oversize` + `requested_bytes` |
+| `skip_stream` | `false` | `true` 时流式请求直接跳过。识别 `body.stream`，以及 Gemini 的 `:streamGenerateContent` |
+| `dry_run` | `false` | 全流程照跑（含日志与 `payload_sha256`），但原请求一个字节不改。用来看"如果注入会发生什么" |
+| `enable_message_filter` | `false` | **报文清洗总开关**。开 = 注入前先删掉请求自带的冲突 system 与拒绝式 assistant 历史。默认关，旧行为不变 |
+| `strip_safety_system` | `true` | 清洗的子项：删命中关键词的 system 位。四种协议都认（chat 的 `system`/`developer` 消息、Anthropic 的 `system`、Responses 的 `instructions`、Gemini 的 `systemInstruction` / `system_instruction`） |
+| `strip_deny_assistant` | `false` | 清洗的子项：删历史里「抱歉 / 不能 / 无法」一类整条 assistant 回复。删完会合并相邻同角色消息，否则 Anthropic 要求 `user`/`assistant` 交替会直接 400 |
 
 **4. 换成你自己的提示词**——指向一个外部文件即可，**不需要重新构建、不需要重启**：
 
@@ -210,6 +257,7 @@ sequenceDiagram
     M->>H: body, ctx (protocol, agent, model, options)
     H->>H: agents / models 过滤？
     H->>H: 幂等标记检查
+    H->>H: 报文清洗？<br/>(enable_message_filter，排在幂等之后)
     H->>H: 激活词？→ 握手，否则选版本
     H->>H: 按协议选位置<br/>(system · messages[system] · instructions · systemInstruction)
     H-->>M: 已注入的 body
@@ -226,13 +274,14 @@ sequenceDiagram
 ## 测试
 
 ```bash
-node poxian.test.mjs        # 中间件行为：22 个用例，零依赖
-node scripts/check-page.mjs # 页面一致性：SCHEMA ↔ 中间件选项 ↔ HTML 元素，脏检测 12 项
+node poxian.test.mjs        # 声明式用例（cases.json）：33 条，零依赖
+node --test test/           # 单元 + 全链路：hooks 28 + filter 26 + chain 9 = 63 条
+node scripts/check-page.mjs # 页面一致性：SCHEMA ↔ 中间件选项 ↔ HTML 元素，脏检测 17 项
 ```
 
 `cases.json` 采用 magpie-community 的声明式用例格式（每个协议 `request` → `expect_request`），可直接并入任何兼容跑测器。
 
-`check-page.mjs` 是重构后新增的护栏：控制台表单字段由 `page/app.js` 顶部的 `SCHEMA` 数组声明，读表单 / 写表单 / 脏检测三处都遍历它。这个脚本扫源码，确认 SCHEMA 覆盖了中间件实际读取的每一个 `options.*` 键、每个 `el` 在 HTML 里都存在，并跑 12 条脏检测语义用例（缺省键、显式默认值、键序不同都不该被判为"有未保存修改"）。加选项忘了改页面，这一条会红。
+`check-page.mjs` 是重构后新增的护栏：控制台表单字段由 `page/app.js` 顶部的 `SCHEMA` 数组声明，读表单 / 写表单 / 脏检测三处都遍历它。这个脚本扫源码，确认 SCHEMA 覆盖了中间件实际读取的每一个 `options.*` 键、每个 `el` 在 HTML 里都存在，并跑 17 条脏检测语义用例（缺省键、显式默认值、键序不同都不该被判为"有未保存修改"）。加选项忘了改页面，这一条会红。
 
 ## 性能
 
@@ -266,7 +315,8 @@ poxian/
 ├── poxian.hooks.mjs          # 入口：异步钩子（magpie.hooks）· 有 fs · 空转/超时一律放行
 ├── poxian.middleware.js      # 兼容壳：同步中间件（magpie.middleware）· 无 fs · 已弃用
 ├── src/
-│   ├── core.mjs              # 纯逻辑：过滤 → 幂等 → 握手 → 注入（不碰 fs）
+│   ├── core.mjs              # 纯逻辑：过滤 → 幂等 → 清洗 → 握手 → 注入（不碰 fs）
+│   ├── filter.mjs            # 报文清洗：四协议 system 形状 + 拒绝历史合并（纯函数）
 │   ├── payload.mjs           # 外部文件读取 / BOM / UTF-16 / frontmatter / mtime 缓存
 │   ├── options.mjs           # 选项归一 + ~ $VAR %VAR% 路径展开
 │   ├── observe.mjs           # 每请求一行 JSONL

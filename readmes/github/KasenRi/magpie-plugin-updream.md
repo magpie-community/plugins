@@ -1,268 +1,158 @@
-# opencode-updream — UPdream 视频生成 Magpie / OpenCode 工具插件
+# opencode-updream — UPdream 视频生成 Magpie / OpenCode 多账号与全模型插件
 
-[中文说明](#-中文说明) | [English Documentation](#-english-documentation) | [API Reverse-Engineering Reference (docs/API.md)](./docs/API.md)
+[中文说明](#-中文说明) | [English Documentation](#-english-documentation) | [API Reverse-Engineering Reference (docs/API.md)](./docs/API.md) | [Agent Skill (`skills/updream/`)](./skills/updream/SKILL.md)
 
 ---
 
-> 📌 **状态 / Status**：v0.1.1 已用真实账号端到端验证（2026-11-10，经 magpie v0.1.3563 的 MCP 端点调用）：`account`、`list_video_models live`、`estimate_credits`、`create_video`（Seedance 2.5 样片模式 480p 4s 文生视频，预估与实扣均为 340 积分）、`wait_task`（约 1 分钟出片，854×480 / 4.04s mp4）以及 token 刷新轮换均正常。
-> Verified end-to-end against a live account on 2026-11-10 through magpie's MCP endpoint: account, live model list, credit estimate, create_video (Seedance 2.5 draft, 480p, 4 s, t2v: 340 credits estimated = 340 charged), wait_task (~1 min, 854×480 4.04 s mp4) and refresh-token rotation.
->
-> 实测与静态表的差异 / Live vs static table: live `GET /ai/video-models` returns `value` ids `sed2`, `sed2-5`, `sed2-fast`, `sed2-mini` (plus non-Seedance models); `sed2-5-draft` is a web-side variant (sent as `sed2-5` + `draft:true`); `wonder-ultra` / `wonder-pro` (导演专属) only appear for eligible accounts. Live config also lists `1080p` for `sed2-5` (the web UI only reaches it by promoting a draft) and `min_tier` (`pro` for sed2 / sed2-5 / sed2-mini, `origin` for sed2-fast). Use `list_video_models {"live": true}` to see what your account has.
+> 📌 **状态 / Status**：
+> - **v0.2.0（2026-11-11）**：新增 **Magpie「模型 → 供应商」页面多账号导入与切换**（`config` + `auth` 钩子，0 聊天模型暴露，OAuth 槽位独立轮换续期）、全工具 `account` 参数与任务归属槽位自动回绑，以及 **23 个非 Seedance 平台模型完整适配**（Kling 4.0 / v3.0 Omni / v3.0 Std / v3.0 Turbo / O1 / 2.5 Turbo、Wan 3.0 / 2.7 / 2.6 / 2.5 / 2.2、VIDU Q4 / Q2 Pro、PixVerse V6 Max、Hailuo H3 / MiniMax H3 Max / Hailuo 2.3、Happyhorse 1.1 / 1.0、Omni 1.1 Flash / Omni Flash、Veo 3.1），并通过线上只读 `/ai/video-models` 与免费 `/credit/estimate` 校验（未调用付费生成接口）。仓库内同步附带脱敏版 `/updream` Agent Skill（[`skills/updream/`](./skills/updream/)）。
+> - **v0.1.1（2026-11-10）**：已用真实账号端到端验证 Seedance 生成链路（`account`、`list_video_models live`、`estimate_credits`、`create_video` Seedance 2.5 样片模式 480p 4s 预估=实扣 340 积分、`wait_task` 及 Token 刷新轮换）。
 
 ## 🇨🇳 中文说明
 
-`opencode-updream` 是一个非官方的 **Magpie / OpenCode 工具插件（Tools Plugin）**，将你的 **UPdream（`https://www.updream.cn`，哔哩哔哩 AI 视频创作平台）** 网页端账号封装为标准 MCP 工具（通过 Magpie 的 `http://127.0.0.1:3425/mcp/magpie/tools` 暴露给 Claude Code、Codex、OpenCode、Cursor 等任意 Agent）。
+`opencode-updream` 是一个非官方的 **Magpie / OpenCode 工具与供应商认证插件**，将你的一个或多个 **UPdream（`https://www.updream.cn`，哔哩哔哩 AI 视频创作平台）** 网页端账号接入 Magpie「模型 → 供应商」管理页，并通过 Magpie 的 `http://127.0.0.1:3425/mcp/magpie/tools` 暴露标准 MCP 工具（`updream_*`）给 Claude Code、Codex、OpenCode、Cursor 等任意 Agent。
 
 > ⚠️ **免责声明（DISCLAIMER — 请务必在使用前阅读）**
-> 1. **非官方项目**：本项目为社区独立开发的非官方插件，与 **UPdream**、**哔哩哔哩（Bilibili）** 或 **字节跳动（Seedance）** 无任何隶属、合作或官方背书关系。
+> 1. **非官方项目**：本项目为社区独立开发的非官方插件，与 **UPdream**、**哔哩哔哩（Bilibili）** 或各视频模型厂商无任何隶属、合作或官方背书关系。
 > 2. **逆向接口不稳定性**：本插件基于对 UPdream 网页端前端代码的逆向工程（详见 [`docs/API.md`](./docs/API.md)）实现，未经过官方开放平台授权，网页端 API 可能随时变更或失效。
 > 3. **服务条款与封号风险**：使用自动化工具调用网页端接口可能违反 UPdream 的用户服务协议（Terms of Service）。请自行承担账号受限、封禁或积分损失等全部风险（**Use at your own risk**）。
-> 4. **积分消耗提醒**：调用 `updream_create_video` 会真实消耗你 UPdream 账号内的通用积分或模型专属积分，建议先用 `updream_estimate_credits` 或 `sed2-5-draft`（样片模式）测试。
-> 5. **凭据安全**：请妥善保管你的 `access_token`、`refresh_token` 及本地持久化文件 `~/.config/magpie/updream-tokens.json`，切勿将其提交到 Git 仓库或分享给他人。
+> 4. **积分消耗提醒**：调用 `updream_create_video` 会真实消耗你 UPdream 账号内的通用积分或模型专属积分，建议先用 `updream_estimate_credits` 核算成本。
+> 5. **凭据安全**：请妥善保管你的 `access_token`、`refresh_token`、Magpie `plugin-auth.json` 及本地 `~/.config/magpie/updream-tokens.json`，切勿将其提交到 Git 仓库或分享给他人。
 
 ### ✨ 核心功能
 
-- **零依赖原生实现**：纯 Node.js / Bun ES Module，JSON Schema 参数定义，无任何第三方运行时依赖。
-- **全系列 Seedance 模型支持**：内置 Seedance 2.5、Seedance 2.5 样片模式（Draft）、Seedance 2.5 导演专属（`wonder-ultra`）、Seedance 2.0、Seedance 2.0 导演专属（`wonder-pro`）、Seedance 2.0 Fast、Seedance 2.0 Mini 的完整参数校验表。
-- **多种生成模式**：支持文生视频（`t2v`）、图生视频（`i2v`）、首尾帧视频（`firstlast`）、多模态参考生视频（`ref2v`，支持在提示词中引用 `[@图片1]`、`[@视频1]`、`[@音频1]`）、视频编辑（`video_edit`）与视频延长（`clip2v`）。
-- **智能 Token 续期与持久化**：
-  - 请求前若 `access_token` 距离过期不足 60 秒自动刷新；遇到 HTTP `401` 自动单飞（Single-flight）刷新并重试一次。
-  - 由于 `/api/auth/refresh` 会轮换（Rotate）Refresh Token，插件会自动将最新 `{access_token, refresh_token, project_id}` 以 `0600` 权限持久化到 `~/.config/magpie/updream-tokens.json`，并在重启后优先使用更新的持久化凭据（无写权限环境下自动降级为内存模式）。
-- **画布项目与节点自动管理**：自动复用或创建名为 `magpie-updream` 的画布项目与视频节点，无需手动在网页端建项目。
-- **本地图片自动上传**：`first_frame`、`last_frame`、`reference_images` 若传入本地文件路径或 Base64，会自动调用 `/upload/image` 上传至 UPdream BOSS 图床。
-- **隐私与凭据脱敏**：所有错误消息自动脱敏 Token/Cookie；`updream_account` 自动脱敏手机号与邮箱。
+- **Magpie「模型 → 供应商」多账号管理**：
+  - 在「模型 → 供应商 → + 添加供应商 → 来自插件」中直接看到 **UPdream**，粘贴 `access_token` + `refresh_token` + 可选备注名即可导入多个账号。
+  - **故意声明 0 个模型**（`/v1/models` 保持纯净），不污染聊天模型路由或 `/v1/videos`。
+  - 每个页面账号独立以 OAuth 结构保存在 `plugin-auth.json`（`updream`、`updream#<hash>`），支持 Magpie 后台自动续期与工具内单飞刷新写回对应槽位，**绝不混写 `~/.config/magpie/updream-tokens.json`**。
+- **确定性账号路由与任务回绑**：
+  - 所有工具支持可选 `account` 参数（可匹配备注名、自定义别名、槽位键、Token 末 4 位，或 `"options"` 指定旧版配置）。
+  - 优先级：`args.account` > `task_id` 历史提交槽位 > 页面置顶启用账号（`first: true`）> `plugins.json` `options` > `UPDREAM_*` 环境变量（页面未添加账号时零中断回退到现有配置；严禁按次轮换账号）。
+  - `create_video` 成功后自动记住 `task_id → slot`，后续 `get_task` / `wait_task` / `cancel_task` 即使未传 `account` 甚至中途切换了默认账号，也会精准回到原账号查询；历史未绑定任务遇到 `404` 自动遍历其余启用账号兜底。
+- **Seedance + 非 Seedance 全平台模型覆盖（共 30 个可用生成模型）**：
+  - Seedance 2.5 / 2.0 全家族（7 个模型）+ 可灵 Kling、通义万相 Wan、生数 VIDU、海螺 MiniMax/Hailuo、拍我 PixVerse、Happyhorse、Omni、Google Veo 等 23 个非 Seedance 模型，涵盖 `t2v`、`i2v`、`firstlast`、`multiframe`（智能多帧）、`ref2v`、`video_edit`、`clip2v`。
 
 ---
 
-### 🎬 支持的 Seedance 模型参数一览
+### 🔑 在 Magpie 供应商页面添加与管理多账号（推荐）
 
-| 模型 ID (`model`) | 名称 | 实际发送 `model_name` | 支持模式 (`mode`) | 时长 (`duration`) | 画面比例 (`aspect_ratio`) | 分辨率 (`resolution`) | 音频 (`audio`) | 专属参数 |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `sed2-5` *(默认)* | Seedance 2.5 | `sed2-5` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit`, `clip2v` | `4`–`30`s（默认 `5`；`video_edit` 为 `-1`；`clip2v` 为 `4`–`180`s） | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive`（`i2v`/`firstlast` 强制 `adaptive`） | `480p`, `720p`（默认 `720p`） | 默认开启 (`true`) | `output_format`: `mp4` / `mov` |
-| `sed2-5-draft` | Seedance 2.5 (样片模式) | `sed2-5` + `draft: true` | 同 `sed2-5` | `4`–`30`s（默认 `5`；`video_edit` 为 `-1`） | 同 `sed2-5` | 仅 `480p`（默认 `480p`） | 默认开启 (`true`) | `draft: true`, `output_format`: `mp4` / `mov` |
-| `wonder-ultra` | Seedance 2.5 (导演专属) | `wonder-ultra` | 同 `sed2-5` | 同 `sed2-5` | 同 `sed2-5` | `720p`, `1080p`（默认 `720p`） | 默认开启 (`true`) | `output_format`: 仅 `mp4` |
-| `sed2` | Seedance 2.0 | `sed2` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `4`–`15`s（默认 `5`） | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` | `480p`, `720p`, `1080p`, `4k`（默认 `720p`） | 默认开启 (`true`) | `bitrate_mode`: `high` / `standard` |
-| `wonder-pro` | Seedance 2.0 (导演专属) | `wonder-pro` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `4`–`15`s（默认 `5`） | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9` *(不支持 `adaptive`)* | `720p`, `1080p`（默认 `720p`） | 默认开启 (`true`) | `bitrate_mode`: `high` / `standard` |
-| `sed2-fast` | Seedance 2.0 Fast | `sed2-fast` | 同 `sed2` | `4`–`15`s（默认 `5`） | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` | `480p`, `720p`, `1080p`, `2k`, `4k`（默认 `720p`） | 默认开启 (`true`) | `bitrate_mode`: `high` / `standard` |
-| `sed2-mini` | Seedance 2.0 Mini | `sed2-mini` | 同 `sed2`（`ref2v` 最多 12 张参考图） | `4`–`15`s（默认 `5`） | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` *(不支持 `adaptive`)* | `480p`, `720p`（默认 `720p`） | 默认开启 (`true`) | `bitrate_mode`: `high` / `standard` |
+#### 1. 从浏览器获取 `access_token` 与 `refresh_token`
+1. 登录 [https://www.updream.cn](https://www.updream.cn)，按 `F12` 打开 **开发者工具（DevTools）**。
+2. 打开 **Application（应用） → Storage → Local Storage → `https://www.updream.cn`**。
+3. 复制 `access_token`（`eyJhbGciOi...`）和 `refresh_token`。
 
----
+#### 2. 在 Magpie Web 页面导入账号
+1. 打开 Magpie 控制台（默认 `http://127.0.0.1:3430`）→ **模型（Models） → 供应商（Providers）**。
+2. 点击 **+ 添加供应商（Add provider） → 来自插件（From plugins） → UPdream**。
+3. 依次粘贴 `access_token`、`refresh_token`，并填写便于识别的 **账号备注名称**（例如 `主号`、`二号机`；留空则自动从 JWT 提取 `uid-xxx`）。
+4. 如需导入第二个账号，在已出现的 **UPdream** 供应商卡片上点击 **添加账号（Add account）** 即可。
+5. 在卡片上将常用账号设为默认（置顶），或随时开关单个账号；工具未传 `account` 时始终使用当前置顶且启用的账号。
 
-### 📦 安装
+#### 3. 兼容旧版 `plugins.json` `options` 与环境变量（自动兜底）
 
-使用 Magpie CLI 安装远程 GitHub 仓库或本地目录：
-
-```bash
-# 从 GitHub 安装
-magpie plugin add github:KasenRi/magpie-plugin-updream
-
-# 或者从本地目录安装
-magpie plugin add /path/to/magpie-plugin-updream
-```
-
----
-
-### 🔑 获取凭据与配置
-
-#### 1. 如何从浏览器获取 `access_token` 与 `refresh_token`
-1. 在浏览器中打开并登录 [https://www.updream.cn](https://www.updream.cn)。
-2. 按 `F12`（或右键 → 检查）打开 **开发者工具（DevTools）**。
-3. 切换到 **Application（应用）** 面板 → 左侧展开 **Storage → Local Storage → `https://www.updream.cn`**。
-4. 复制以下两个键的值：
-   - `access_token`（形如 `eyJhbGciOi...` 的 JWT 字符串）
-   - `refresh_token`（用于自动续期与轮换的刷新令牌）
-
-#### 2. 在 Magpie `plugins.json` 中配置（推荐）
-
-在 Magpie 的 `plugins.json` 中为插件添加 `options`：
-
-```json
-{
-  "plugins": [
-    {
-      "spec": "opencode-updream",
-      "options": {
-        "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-        "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-        "workspace": "personal",
-        "projectId": ""
-      }
-    }
-  ]
-}
-```
-
-#### 3. 环境变量配置（备选，优先级：`options` > 环境变量）
+若未在供应商页面登录任何账号（或将整个供应商卡片设为 Off），插件会自动回退读取 `plugins.json` 的 `options` 与环境变量：
 
 | `options` 字段 | 环境变量名 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `accessToken` | `UPDREAM_ACCESS_TOKEN` | — | UPdream 网页端 JWT `access_token` |
-| `refreshToken` | `UPDREAM_REFRESH_TOKEN` | — | UPdream 网页端 `refresh_token`（支持自动刷新轮换） |
-| `cookie` | `UPDREAM_COOKIE` | — | 可选的原始 `Cookie` 请求头 |
-| `baseUrl` | `UPDREAM_BASE_URL` | `https://www.updream.cn/api` | API 基础地址 |
-| `projectId` | `UPDREAM_PROJECT_ID` | 自动查找/创建 `magpie-updream` | 存放生成视频节点的画布项目 ID |
-| `tokenFile` | `UPDREAM_TOKEN_FILE` | `~/.config/magpie/updream-tokens.json` | 轮换后最新 Token 与 `project_id` 的持久化路径（权限 `0600`） |
-| `workspace` | `UPDREAM_WORKSPACE` | `personal` | `X-Workspace` 请求头（个人为 `personal`，团队为 `team:<id>`） |
+| `accessToken` | `UPDREAM_ACCESS_TOKEN` | — | 旧版单账号 JWT `access_token` |
+| `refreshToken` | `UPDREAM_REFRESH_TOKEN` | — | 旧版单账号 `refresh_token` |
+| `tokenFile` | `UPDREAM_TOKEN_FILE` | `~/.config/magpie/updream-tokens.json` | 仅在 `options` 单账号兜底模式下读写（页面多账号槽位强制隔离不读写此文件） |
+| `baseUrl` | `UPDREAM_BASE_URL` | `https://www.updream.cn/api` | API 基础地址（对所有账号生效） |
+| `workspace` | `UPDREAM_WORKSPACE` | `personal` | `X-Workspace` 请求头（`personal` 或 `team:<id>`） |
+| `projectId` | `UPDREAM_PROJECT_ID` | 自动查找/创建 `magpie-updream` | 画布项目 ID |
 
 ---
 
-### 🔌 在 Claude Code / Codex 中接入使用
+### 🎬 支持的视频生成模型一览
 
-Magpie 启动后会将所有工具插件聚合到 `http://127.0.0.1:3425/mcp/magpie/tools`。由于包名为 `opencode-updream`，Magpie 会剥离 `opencode-` 前缀，将工具暴露为 `updream_<tool>`：
+#### 1. Seedance 系列（7 个模型）
 
-```bash
-# 在 Claude Code 中添加 Magpie 工具 MCP 服务
-claude mcp add --transport http magpie-tools http://127.0.0.1:3425/mcp/magpie/tools
-```
+| 模型 ID (`model`) | 名称 | 支持模式 (`mode`) | 时长 (`duration`) | 画面比例 (`aspect_ratio`) | 分辨率 (`resolution`) | 音频 (`audio`) | 专属参数 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `sed2-5` *(默认)* | Seedance 2.5 | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit`, `clip2v` | `4`–`30`s（`video_edit`: `-1`；`clip2v`: `4`–`180`s） | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive`（`i2v`/`firstlast` 强制 `adaptive`） | `480p`, `720p` | `supports_audio`（默认 `true`） | `output_format`: `mp4`/`mov` |
+| `sed2-5-draft` | Seedance 2.5 (样片) | 同 `sed2-5` | `4`–`30`s（`video_edit`: `-1`） | 同 `sed2-5` | `480p` | `supports_audio` | 发送 `sed2-5` + `draft: true` |
+| `wonder-ultra` | Seedance 2.5 (导演专属) | 同 `sed2-5` | 同 `sed2-5` | 同 `sed2-5` | `720p`, `1080p` | `supports_audio` | `output_format`: `mp4` |
+| `sed2` | Seedance 2.0 | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `4`–`15`s | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` | `480p`, `720p`, `1080p`, `4k` | `supports_audio` | `bitrate_mode`: `high`/`standard` |
+| `wonder-pro` | Seedance 2.0 (导演专属) | 同 `sed2` | `4`–`15`s | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9` *(无 `adaptive`)* | `720p`, `1080p` | `supports_audio` | `bitrate_mode`: `high`/`standard` |
+| `sed2-fast` | Seedance 2.0 Fast | 同 `sed2` | `4`–`15`s | 同 `sed2` | `480p`, `720p`, `1080p`, `2k`, `4k` | `supports_audio` | `bitrate_mode`: `high`/`standard` |
+| `sed2-mini` | Seedance 2.0 Mini | 同 `sed2`（`ref2v` 最多 12 图） | `4`–`15`s | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` *(无 `adaptive`)* | `480p`, `720p` | `supports_audio` | `bitrate_mode`: `high`/`standard` |
+
+#### 2. 非 Seedance 系列（23 个已适配模型）
+
+| 模型 ID (`model`) | 名称 | 线上 `/ai/video-models` 在售 | 支持模式 (`mode`) | 时长 (`duration`) | 分辨率 / `quality_mode` | 比例 (`aspect_ratio`) | 原生音频 (`audio`) | 额外支持参数 / 约束 |
+| :--- | :--- | :---: | :--- | :--- | :--- | :--- | :---: | :--- |
+| `kling-v4` | Kling 4.0 | ✅ | `t2v`, `i2v`, `firstlast`, `multiframe`, `ref2v`, `video_edit` | `3`–`30`s（默认 `10`） | `720p`, `1080p`（默认 `1080p`） | `21:9`, `16:9`, `9:16`, `1:1`, `adaptive`（`t2v` 无 `adaptive`） | 无（`ref2v` 支持参考音频） | `multiframe` 3–10 图；`ref2v` 至少 1 图或视频 |
+| `kling-v3-omni` | Kling v3.0 Omni | ✅ | `t2v`, `i2v`, `firstlast`, `ref2v` | `3`–`15`s（默认 `5`） | `quality_mode`: `std`(720P), `pro`(1080P), `4k` | `16:9`, `9:16`, `1:1` | `sound`（带参考视频时自动关） | `negative_prompt`, `keep_original_sound`；带视频时参考图 ≤4 |
+| `kling-v3.0-std` | Kling v3.0 Standard | ✅ | `t2v`, `i2v`, `firstlast` | `3`–`15`s（默认 `5`） | `quality_mode`: `std`, `pro`, `4k` | `16:9`, `9:16`, `1:1` | `sound` | `negative_prompt`, `cfg_scale` (`0`–`1`) |
+| `kling-v3.0-turbo` | Kling 3.0 Turbo | ✅ | `t2v`, `i2v` | `3`–`15`s（默认 `5`） | `720P`, `1080P`（大小写不敏感） | `16:9`, `9:16`, `1:1` | 无 | — |
+| `kling-o1` | Kling-o1 | ✅ | `t2v`, `i2v`, `firstlast`, `ref2v` | `5`–`10`s（默认 `5`） | `quality_mode`: `std`, `pro` | `16:9`, `9:16`, `1:1` | 无 | 带参考视频时参考图 ≤4 |
+| `kling-v2-5-turbo` | Kling 2.5 Turbo | ✅ | `t2v`, `i2v` | `5`, `10`s | `quality_mode`: `std`, `pro` | `16:9`, `9:16`, `1:1` | 无 | `negative_prompt` |
+| `wan-3.0` | Wan 3.0 | ✅ | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `2`–`30`s（默认 `5`） | `480P`, `720P`, `1080P` + `quality_mode`: `standard`/`prime` | `adaptive`, `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` | `sound` | `prompt_extend`（默认 `true`） |
+| `vidu-q4` | VIDU Q4 Preview | ✅ | `i2v`, `ref2v` *(无 `t2v`)* | `3`–`16`s（默认 `5`） | `540p`, `720p`, `1080p`, `2k`, `4k` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `supports_audio` | `ref2v` 支持 0–15 图 + 0–3 音频 |
+| `vidu-q2-pro` | VIDU Q2 Pro | ✅ | `i2v`, `firstlast`, `multiframe`, `ref2v` *(无 `t2v`)* | `1`–`10`s（默认 `5`） | `540p`, `720p`, `1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`（仅 `ref2v`） | `supports_audio` | `multiframe` 3–10 图，`ref2v` 1–20 图 |
+| `paiwo-v6max` | PixVerse V6 Max | ✅ | `t2v`, `i2v` | `1`–`15`s（默认 `5`） | `360p`, `540p`, `720p`, `1080p` | `16:9`, `9:16`, `4:3`, `3:4`, `1:1`, `2:3`, `3:2`, `21:9` | `supports_audio` | — |
+| `hailuo-h3` | Hailuo H3 | ✅ | `t2v`, `i2v`, `firstlast`, `ref2v` | `5`–`15`s（默认 `5`） | `768P`, `2K`（默认 `2K`） | `adaptive`, `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` | 无（`ref2v` 支持参考音频） | `ref2v` 至少 1 图或视频 |
+| `minimax-h3-max` | MiniMax H3 Max | ✅ | `t2v`, `i2v` | `5`–`15`s（默认 `5`） | `480P`, `768P`（默认 `768P`） | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` | 无 | — |
+| `hailuo-2.3` | Hailuo 2.3 | ✅ | `t2v`, `i2v` | `6`, `10`s（默认 `6`） | `768P`, `1080P`（`10s` 仅限 `768P`） | 固定 `16:9`（自动省略） | 无 | — |
+| `happyhorse-1.1` | Happyhorse 1.1 | ✅ | `t2v`, `i2v`, `ref2v`, `video_edit` | `3`–`15`s（默认 `5`） | `720P`, `1080P`（默认 `1080P`） | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | 无 | `ref2v` 1–9 图，`video_edit` 1 视频 + 0–5 图 |
+| `happyhorse` | Happyhorse | ✅ | `t2v`, `i2v`, `ref2v`, `video_edit` | `3`–`15`s（默认 `5`） | `720P`, `1080P`（默认 `1080P`） | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | 无 | 同 `happyhorse-1.1` |
+| `gemini-omni-1.1-flash` | Omni 1.1 Flash | ✅ | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit`, `clip2v` | `3`–`10`s（默认 `10`） | `360p`, `720p`, `1080p`, `4k` | `16:9`, `9:16`（`i2v` 同样支持） | 无 | `clip2v` 支持 1 参考视频 + 可选尾帧 |
+| `gemini-omni-flash` | Omni Flash | ✅ | `t2v`, `i2v`, `ref2v`, `video_edit` | `10`s | `720p` | `16:9`, `9:16` | 无 | `ref2v` 1–4 图 |
+| `veo-3.1-preview` | Veo 3.1 | 仅前端/计价表 | `t2v`, `i2v` | `4`, `6`, `8`s（默认 `8`） | `720p`, `1080p` | `16:9`, `9:16` | `sound` | `negative_prompt`, `enhance_prompt` |
+| `wan-2.7` | Wan 2.7 | `/ai/supported-models` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `5`, `10`, `15`s | `720p`, `1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | 无 | `negative_prompt`, `keep_original_sound` |
+| `wan-2.6` | Wan 2.6 | `/ai/supported-models` | `t2v`, `i2v` | `5`, `10`, `15`s | `720p`, `1080p`（`t2v` 自动转 `size`） | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `sound` | `negative_prompt`, `shot_type` (`single`/`multi`) |
+| `wan-2.6-ref2v` | Wan 2.6 参考生视频 | 仅前端静态表 | `ref2v` | `5`, `10`s | `720p`, `1080p`（自动转 `size`） | `16:9`, `9:16`, `1:1` | `sound` | `negative_prompt`, `shot_type` |
+| `wan-2.5-preview` | Wan 2.5 Preview | `/ai/supported-models` | `t2v`, `i2v` | `5`, `10`s | `t2v`: `720p`/`1080p` (`size`)；`i2v`: `480p`/`720p`/`1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `sound` | `negative_prompt` |
+| `wan-2.2` | Wan 2.2 | `/ai/supported-models` | `t2v`, `i2v` | `5`s | `t2v`: `720p`/`1080p` (`size`)；`i2v`: `480p`/`1080p` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | 无 | `negative_prompt` |
+
+> 注：`test` 为前端内部 Mock 模型，`video-enhance-standard` / `video-enhance-pro` / `subtitle-erase-pro` 为画质增强/去字幕后处理接口，均不属于 `create_video` 生成模型，调用时会返回明确提示。
 
 ---
 
 ### 🛠️ 工具参考（MCP Tools）
 
+所有工具均接受可选参数 `account`（指定已登录账号备注名/别名/槽位键/末 4 位，或 `"options"`）：
+
 | MCP 工具名 | 插件内部名 | 功能说明与主要参数 |
 | :--- | :--- | :--- |
-| `updream_account` | `account` | 查询账号 ID/昵称（手机号与邮箱自动脱敏）、积分余额明细（总余额/永久/临时/今日消耗/本月消耗）与会员状态。无参数。 |
-| `updream_list_video_models` | `list_video_models` | 返回 Seedance 全系列模型参数规格表。可选参数：`all_models` (`boolean`，返回全部 31 个平台模型)、`live` (`boolean`，请求 `/ai/video-models` 获取实时可用状态)。 |
-| `updream_upload_image` | `upload_image` | 上传参考图或首尾帧图片到 UPdream BOSS 图床（最大 20 MB）。参数：`url` \| `path` \| `base64`（三选一），可选 `filename`、`folder`。返回 `{ url, filename, mime_type, size }`。 |
-| `updream_estimate_credits` | `estimate_credits` | 预估视频生成所需积分（`GET /credit/estimate`）。接受与 `create_video` 相同的模型与参数（`model`, `mode`, `duration`, `resolution`, `audio`, `first_frame`, `reference_images`, `reference_videos`, `ref_video_seconds`, `num_videos`）。 |
-| `updream_create_video` | `create_video` | 创建异步视频生成任务（`POST /ai/generate-video/async`）。必填：`prompt`；可选：`model`、`mode`/`generate_type`、`duration`、`aspect_ratio`、`resolution`、`audio`、`output_format`、`bitrate_mode`、`first_frame`、`last_frame`、`reference_images`、`reference_videos`、`reference_audios`、`num_videos` (1–4)、`project_id`、`wait_seconds` (0–40)。 |
-| `updream_get_task` | `get_task` | 查询单次任务状态与结果视频（`GET /ai/task/{id}`，传入 `node_id` 时同步检查画布节点是否处于 `waiting_asset_review` 或失败）。参数：`task_id`（必填）、`node_id`（推荐传入）。 |
-| `updream_wait_task` | `wait_task` | 轮询等待任务完成或失败（默认最长等待 40 秒，上限 45 秒，轮询间隔 5 秒）。参数：`task_id`、`node_id`、`timeout_seconds`、`interval_seconds`。若返回 `timed_out: true`，请再次调用 `updream_wait_task`。 |
-| `updream_cancel_task` | `cancel_task` | 取消排队或进行中的任务（`POST /ai/task/{id}/cancel`）。参数：`task_id`（必填）。 |
-
----
-
-### 🔄 Agent 调用流程示例
-
-1. **创建任务（`updream_create_video`）**：
-   ```json
-   {
-     "prompt": "赛博朋克雨夜霓虹街道，镜头缓慢向前推进，电影感灯光反射",
-     "model": "sed2-5",
-     "duration": 5,
-     "aspect_ratio": "16:9",
-     "resolution": "720p",
-     "audio": true
-   }
-   ```
-   返回：
-   ```json
-   {
-     "task_id": "9f8e7d6c-...",
-     "status": "pending",
-     "project_id": 102400,
-     "node_id": 508912,
-     "model": "sed2-5"
-   }
-   ```
-2. **轮询等待完成（`updream_wait_task`）**：
-   ```json
-   {
-     "task_id": "9f8e7d6c-...",
-     "node_id": "508912",
-     "timeout_seconds": 40
-   }
-   ```
-   - 若视频仍在生成（通常需要 1–3 分钟），工具会在 40 秒后返回 `timed_out: true` 和当前 `progress`，Agent 只需继续调用 `updream_wait_task` 即可。
-   - 生成完成后返回：
-   ```json
-   {
-     "task_id": "9f8e7d6c-...",
-     "node_id": "508912",
-     "status": "completed",
-     "progress": 100,
-     "timed_out": false,
-     "videos": [
-       {
-         "video_url": "https://boss.hdslb.com/updream/video/.../output.mp4",
-         "cover_url": "https://boss.hdslb.com/updream/image/.../cover.jpg"
-       }
-     ]
-   }
-   ```
-
-### ⚠️ 已知限制（Limitations）
-- **单次工具调用超时上限**：Magpie 对每次工具调用设有 55 秒硬超时，因此 `updream_wait_task` 单次最多等待 45 秒。对于耗时较长的视频生成任务，Agent 需多次调用 `updream_wait_task` 直到 `status` 变为 `completed` 或 `failed`。
-- **真人素材审核**：Seedance 系列模型对包含真人面部特写的参考图/首帧可能会触发资产审核（`waiting_asset_review`）或拦截。
-- **单点登录互踢**：若在网页端退出登录或触发 `session_expired`，刷新令牌将失效，需重新从浏览器获取 Token。
+| `updream_account` | `account` | 查询当前选中账号信息、积分余额与会员状态（返回含 `selected: { slot, label }`）。传 `all_accounts: true` 可一次列出所有已导入账号及各自余额。 |
+| `updream_list_video_models` | `list_video_models` | 返回 Seedance 模型表及 `non_seedance_models` / `supported_model_ids`；`all_models: true` 在 `models` 中返回全部 31 个模型；`live: true` 请求 `/ai/video-models` 获取实时开放列表。 |
+| `updream_upload_image` | `upload_image` | 上传参考素材到指定账号对应的 UPdream BOSS 存储（最大 20 MB）。参数：`url` \| `path` \| `base64`（三选一），可选 `filename`、`folder`、`account`。 |
+| `updream_estimate_credits` | `estimate_credits` | 免费预估视频生成积分（`GET /credit/estimate`），支持全部已适配模型及 `quality_mode`、`ref_video_seconds`、`account`。 |
+| `updream_create_video` | `create_video` | 创建异步视频生成任务（`POST /ai/generate-video/async`），自动将 `task_id` 绑定到本次使用的账号槽位。 |
+| `updream_get_task` | `get_task` | 查询单次任务状态与结果视频；未传 `account` 时自动回绑提交账号，历史任务遇 404 自动遍历其余启用账号。 |
+| `updream_wait_task` | `wait_task` | 轮询等待任务完成（单次最长 45 秒，适配 Magpie 55 秒工具硬超时）；自动回绑提交账号。 |
+| `updream_cancel_task` | `cancel_task` | 取消排队或进行中的任务（`POST /ai/task/{id}/cancel`）；自动回绑提交账号。 |
 
 ---
 
 ## 🌐 English Documentation
 
-`opencode-updream` is an unofficial **Magpie / OpenCode tools plugin** that turns your **UPdream (`https://www.updream.cn`, Bilibili's AI video generation platform)** web account into MCP tools exposed through Magpie's MCP server (`/mcp/magpie/tools`). Because the package is named `opencode-updream`, Magpie exposes its tools with the `updream_` prefix (e.g., `updream_create_video`, `updream_wait_task`).
+`opencode-updream` (v0.2.0) is an unofficial **Magpie / OpenCode tools & multi-account provider plugin** for **UPdream (`https://www.updream.cn`)**. It integrates with Magpie's **Models → Providers** UI for multi-account sign-in (declaring **0 chat/video models** so `/v1/models` stays untouched) while exposing 8 `updream_*` MCP tools via `/mcp/magpie/tools`.
 
-> ⚠️ **DISCLAIMER — READ BEFORE USE**
-> 1. **Unofficial & Unaffiliated**: This project is an independent, unofficial community plugin and is **not** affiliated with, endorsed by, or sponsored by **UPdream**, **Bilibili**, or **ByteDance (Seedance)**.
-> 2. **Reverse-Engineered Web API**: This plugin interacts with UPdream's undocumented web API (documented in [`docs/API.md`](./docs/API.md)), which may change or break at any time without notice.
-> 3. **Terms of Service & Account Risk**: Automated access to the web API may violate UPdream's Terms of Service. Use this plugin entirely at your own risk.
-> 4. **Credit Consumption**: Calling `updream_create_video` spends real credits from your UPdream account. Use `updream_estimate_credits` or `sed2-5-draft` (480p draft mode) to test at lower cost.
-> 5. **Keep Tokens Secret**: Never commit your `access_token`, `refresh_token`, or `updream-tokens.json` file to version control.
+### ✨ Highlights in v0.2.0
 
-### ✨ Features
+- **Multi-Account Provider UI (`config` + `auth` + `MagpieAccountPool`)**:
+  - Sign in multiple UPdream accounts under **Models → Providers → + Add provider → From plugins → UPdream** by pasting `access_token`, `refresh_token`, and an optional account label.
+  - Each UI account is stored as an isolated `oauth` slot (`updream`, `updream#<hash>`) in `plugin-auth.json` with automatic background & single-flight JWT rotation via `client.auth.set` (never touching `~/.config/magpie/updream-tokens.json`).
+  - **Credential Precedence**: explicit `account` arg (`"options"` selects legacy config) > `task_id` bound slot > top enabled UI account (`first: true`) > `plugins.json` `options` > `UPDREAM_*` env vars. Never round-robins across accounts.
+  - `updream_account` supports `all_accounts: true` to inspect all configured slots and credit balances at once.
+- **Full Platform Video Model Support (30 Generative Models)**:
+  - **Seedance 2.5 & 2.0 (7 models)**: `sed2-5`, `sed2-5-draft`, `wonder-ultra`, `sed2`, `wonder-pro`, `sed2-fast`, `sed2-mini`.
+  - **Non-Seedance (23 adapted models)**: `kling-v4`, `kling-v3-omni`, `kling-v3.0-std`, `kling-v3.0-turbo`, `kling-o1`, `kling-v2-5-turbo`, `wan-3.0`, `wan-2.7`, `wan-2.6`, `wan-2.6-ref2v`, `wan-2.5-preview`, `wan-2.2`, `vidu-q4`, `vidu-q2-pro`, `paiwo-v6max`, `hailuo-h3`, `minimax-h3-max`, `hailuo-2.3`, `happyhorse-1.1`, `happyhorse`, `gemini-omni-1.1-flash`, `gemini-omni-flash`, `veo-3.1-preview`.
+  - Supports model-specific payload rules including `supports_audio` vs `sound`, `quality_mode` (`std`/`pro`/`4k`/`standard`/`prime`), `WAN_SIZE_MAP` `size` conversion, `multiframe` keyframe splitting, `ref_video` vs `ref_videos`, `negative_prompt`, `cfg_scale`, `prompt_extend`, `enhance_prompt`, `shot_type`, and `keep_original_sound`.
+- **Bundled `/updream` Agent Skill**: See [`skills/updream/`](./skills/updream/) for a portable Claude Code / Agent workflow skill with CLI helper (`scripts/updream.py`), QA inspection (`scripts/qa_clip.py`), lipsync alignment (`scripts/lipsync_align.py`), and credit ledger tracking.
 
-- **Zero Runtime Dependencies**: Pure ES modules running on Node.js >= 20 and Bun, using plain JSON Schema tool definitions.
-- **Full Seedance 2.5 & 2.0 Schema Validation**: Validates modes (`t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit`, `clip2v`), durations, aspect ratios, resolutions, audio flags, output formats, bitrate modes, and reference media counts locally before sending requests.
-- **Automatic Token Rotation & Persistence**: Proactively refreshes JWT access tokens expiring within 60 seconds, retries once on HTTP `401` (single-flight), and persists rotated `{access_token, refresh_token, project_id}` to `~/.config/magpie/updream-tokens.json` with `0600` file permissions (gracefully falling back to in-memory state if the filesystem is read-only).
-- **Automatic Canvas Project & Node Lifecycle**: Automatically reuses or creates the `magpie-updream` project and a video canvas node required by UPdream's generation pipeline.
-- **Local Frame Auto-Upload**: Local file paths or base64 data URIs passed to `first_frame`, `last_frame`, or `reference_images` are automatically uploaded via `/upload/image`.
-
-### 🎬 Supported Seedance Models
-
-| Model ID (`model`) | Display Name | API `model_name` Sent | Modes (`mode`) | Duration (`duration`) | Aspect Ratios (`aspect_ratio`) | Resolutions (`resolution`) | Audio (`audio` -> `supports_audio`) | Extra Params |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `sed2-5` *(default)* | Seedance 2.5 | `sed2-5` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit`, `clip2v` | `4`–`30`s (def `5`; `-1` for `video_edit`; `4`–`180`s for `clip2v`) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` (forced to `adaptive` on `i2v`/`firstlast`) | `480p`, `720p` (def `720p`) | `true` / `false` (def `true`) | `output_format`: `mp4`, `mov` |
-| `sed2-5-draft` | Seedance 2.5 (Draft / 样片模式) | `sed2-5` + `draft: true` | Same as `sed2-5` | `4`–`30`s (def `5`; `-1` for `video_edit`) | Same as `sed2-5` | `480p` only (def `480p`) | `true` / `false` (def `true`) | `draft: true`, `output_format`: `mp4`, `mov` |
-| `wonder-ultra` | Seedance 2.5 (Director / 导演专属) | `wonder-ultra` | Same as `sed2-5` | Same as `sed2-5` | Same as `sed2-5` | `720p`, `1080p` (def `720p`) | `true` / `false` (def `true`) | `output_format`: `mp4` only |
-| `sed2` | Seedance 2.0 | `sed2` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `4`–`15`s (def `5`) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` | `480p`, `720p`, `1080p`, `4k` (def `720p`) | `true` / `false` (def `true`) | `bitrate_mode`: `high`, `standard` |
-| `wonder-pro` | Seedance 2.0 (Director / 导演专属) | `wonder-pro` | `t2v`, `i2v`, `firstlast`, `ref2v`, `video_edit` | `4`–`15`s (def `5`) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9` *(no `adaptive`)* | `720p`, `1080p` (def `720p`) | `true` / `false` (def `true`) | `bitrate_mode`: `high`, `standard` |
-| `sed2-fast` | Seedance 2.0 Fast | `sed2-fast` | Same as `sed2` | `4`–`15`s (def `5`) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, `adaptive` | `480p`, `720p`, `1080p`, `2k`, `4k` (def `720p`) | `true` / `false` (def `true`) | `bitrate_mode`: `high`, `standard` |
-| `sed2-mini` | Seedance 2.0 Mini | `sed2-mini` | Same as `sed2` (up to 12 ref images) | `4`–`15`s (def `5`) | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` *(no `adaptive`)* | `480p`, `720p` (def `720p`) | `true` / `false` (def `true`) | `bitrate_mode`: `high`, `standard` |
-
-### 📦 Installation & Configuration
+### 📦 Installation & Verification
 
 ```bash
-# Install from GitHub or a local folder
 magpie plugin add github:KasenRi/magpie-plugin-updream
-# or
+# or from local path:
 magpie plugin add /path/to/magpie-plugin-updream
-```
 
-To grab your tokens:
-1. Sign in at `https://www.updream.cn`.
-2. Open Browser **DevTools → Application → Local Storage → `https://www.updream.cn`**.
-3. Copy `access_token` (`eyJ...`) and `refresh_token` (`eyJ...`).
-
-Configure in Magpie's `plugins.json`:
-
-```json
-{
-  "plugins": [
-    {
-      "spec": "opencode-updream",
-      "options": {
-        "accessToken": "eyJ...",
-        "refreshToken": "eyJ...",
-        "workspace": "personal"
-      }
-    }
-  ]
-}
-```
-
-Or via environment variables: `UPDREAM_ACCESS_TOKEN`, `UPDREAM_REFRESH_TOKEN`, `UPDREAM_COOKIE`, `UPDREAM_BASE_URL`, `UPDREAM_PROJECT_ID`, `UPDREAM_TOKEN_FILE`, `UPDREAM_WORKSPACE`.
-
-### 🔌 Connecting Claude Code / Codex
-
-```bash
-claude mcp add --transport http magpie-tools http://127.0.0.1:3425/mcp/magpie/tools
-```
-
-### 🧪 Running Tests
-
-```bash
+# Run syntax check & unit tests:
 node --check index.mjs
 node --test tests/
 ```
 
-For complete protocol details and bundle citations, see [`docs/API.md`](./docs/API.md).
+For reverse-engineered protocol details, see [`docs/API.md`](./docs/API.md).

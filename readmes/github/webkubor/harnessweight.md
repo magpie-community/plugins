@@ -99,6 +99,57 @@ magpie usage.jsonl ─────────────┐
 
 数据只在本机读取，不上传，没有遥测。本地服务只监听 127.0.0.1，并且：每次启动生成随机口令，只写进界面 HTML（该 HTML 不带 CORS 头，其他网页读不到），所有 `/api/` 请求都要带上它；校验 Host（防 DNS 重绑定）和 Origin；只接受 GET。hook 写下的每一行只有名字和数字；测试里专门断言了提示词内容不会落盘。
 
+## 任务平均完成时间
+
+Harness 卡片、总览表和详情会显示任务平均完成时间，以及旁边的**有效完成任务数**。较低值为绿色，较高值为红色；只有一个有效值、全部并列或没有有效样本时不标极值。不同任务的复杂度可能不同，这个均值不是统一题目的性能跑分。
+
+- **任务边界**：一次用户提示触发的执行周期，从开始信号到成功完成信号，包含期间的模型请求、工具执行和等待。它不代表业务验收，也不等于单次 HTTP/LLM 响应或会话总寿命。
+- **计算方式**：有效完成任务的完整墙钟耗时之和 ÷ 有效完成任务数。重复事件去重，并行任务按独立关联 ID 隔离；未完成、失败、取消、缺失开始或结束、时间倒置及冲突事件不计入平均值。
+- **周期**：按任务完成时间归入所选窗口。沿用页面现有口径：“今天”为过去 24 小时，7 天/30 天为滚动窗口；跨窗口开始、窗口内完成的任务保留完整耗时。
+- **空态**：“未接入或本周期无任务数据”表示没有观测到该窗口的任务边界，不能仅凭它断言 hook 没安装；“无有效完成样本”表示有任务事件但没有可计入的成功任务。两者均显示 `—` 和 0 个有效完成任务，API 平均值为 `null`。没有网关请求的 Harness 仍可展示任务遥测。
+- **保存范围**：本机 `tasks.jsonl` 及上一代轮转日志，最多保留 30 天，两个日志总计最多约 16 MiB。容量轮转也可能提前丢失边界，因此这是已观测完整样本的均值，不保证所有任务都被采集。不会回填历史使用日志。
+
+### Codex 自动读取
+
+自动只读 `~/.codex/sessions/` 的 `rollout-*.jsonl`，不安装 hook、不修改 Codex 日志，也不保存提示词或响应。只计入可核实为用户主会话、触发来源为 `user` 或 `composer`，且有 `task_started` 和无错误 `task_complete` 的 turn；子 agent、自动触发、未知来源、中止和未完成 turn 均排除。样本单位是用户 turn，不能证明包含提交前排队时间，也不代表用户目标完成。
+
+优先采用 Codex 的 `duration_ms`；缺失时使用同一 turn 的 `started_at` / `completed_at` 秒级差值，API 的 `precision` 给出精度计数。按秒级 `completed_at` 归入周期，不用外层日志写入时间；周期边界的时间精度为秒。历史回放按原 turn 去重，冲突边界或任一失败记录排除整个 turn；合成导入 ID 按 session 区分。需要可核验的会话来源和 turn 归因，旧版或导入日志缺失这些字段时不计入，因此覆盖并非完整历史。读取器按文件增量读取，定期发现文件，并合并并发页面的读取。损坏 JSONL、过长单行（超过 8 MiB）或权限等读取错误会令 Codex 任务计时显示暂不可用；API 的 `sources.codexReadIssues` 仅记录错误种类和数量，其他指标继续显示。不保存或返回错误正文。24 小时、7 天和 30 天均为从当前时刻向前的滚动窗口，页面日期使用本地时区。
+
+2026-11-11 真实本机验证：近 7 天共 53 个有效用户 turn，平均 655,763 ms（约 10 分 56 秒）。[总览截图](docs/task-duration/codex-real-local-7d.png)与[详情截图](docs/task-duration/codex-real-local-detail.png)均标注真实来源和排除口径；[验证记录](docs/task-duration/validation.json)的 `codexRealLocalReview` 保存三周期数值。截图服务仅读取本机 Codex 日志，其余日志源隔离为空，未向用户日志写入样本。
+
+### Cursor 可选接入
+
+当前提供 Cursor 的 `beforeSubmitPrompt` → `stop` 适配器，依据 [Cursor 官方 hook 规范](https://cursor.com/docs/hooks)；按 `conversation_id` + `generation_id` 关联一次执行周期。只有 `status=completed` 计入，`aborted` / `error` 排除；自动续跑 `loop_count>0` 的终止信号标为不明确并排除。时间取本地命令实际观测 hook 的时间，包含命令调度误差。不会通过 SessionStart/SessionEnd 或空闲间隔猜测任务结束。
+
+安装 HarnessWeight **不会自动修改 Cursor 配置**。先确认目标 Cursor 版本支持这些 hook，并核对它在 Magpie 中的实际 agent ID，以及 HarnessWeight 正在使用的 `dataDir`。不能把 CLI 可执行文件名直接当成网关 ID。没有可核实的 ID 时应保留未接入状态。
+
+采集命令位于安装包的 `bin/task-event.js`。它也提供只读配置预览：读取现有 JSON，保留其他事件、命令和字段，幂等追加开始/结束命令，输出合并后的配置；不会安装或写回配置。示例中的三个变量需先填写实际值：
+
+```bash
+# 在最终安装的 HarnessWeight 目录执行；不要使用稍后会删除的临时 worktree 路径。
+node bin/task-event.js \
+  --print-cursor-config "$CURSOR_PROJECT_DIR/.cursor/hooks.json" \
+  --agent "$CURSOR_GATEWAY_ID" \
+  --data-dir "$HARNESSWEIGHT_DATA_DIR" \
+  > /tmp/harnessweight-cursor-hooks.review.json
+```
+
+审阅预览后，将新增 hook 与目标配置合并；**不要把标准输出直接重定向覆盖输入的 hooks.json**。优先明确目标项目范围；用户级或受管 hook 会影响其他任务，应由用户决定。预览使用绝对 Node 和脚本路径，安装位置变化后需重新生成。停止 hook 的 `loop_limit: null` 确保续跑事件也能被观测，采集器本身不请求续跑。已有 hook、异步设置、插件与自动续跑策略仍需结合实际环境确认。
+
+正常 hook 执行无标准输出，采集失败会跳过并保持任务运行；不保存提示词、响应、文件路径或原始会话 ID，只记录哈希关联键、阶段和时间。服务或采集命令重启后仍可读取已落盘边界；新执行不能重用旧任务 ID。启用后等待自然发生的真实用户任务验证，不需要为指标触发付费测试任务。
+
+### 其他 Harness 与 API
+
+Claude Code、Grok 等尚未提供内置任务生命周期适配器；这不代表它们没有 hook 能力。通用 `task-events-v1` 协议可以由已核实的真实生命周期接入：
+
+```json
+{"version":1,"agent":"gateway-agent-id","runId":"unique-execution-id","taskId":"unique-task-id","event":"started","atMs":1794391200000}
+```
+
+向 `node bin/task-event.js --source protocol --data-dir /absolute/data/path` 的标准输入发送该结构；阶段为 `started`、`completed`、`failed`、`cancelled`。`atMs` 必须是原始事件的 Unix 毫秒时间；重试保留原 ID 与原时间戳，新执行使用新 `runId`，同一执行中的每个任务使用不同 `taskId`。只有确为同一任务的恢复执行才可继续用原 ID。每个执行周期使用一种采集来源，避免人为重复接入。不能把网关请求开始/结束事件映射为任务。
+
+`GET /api/summary` 的 `agents[].taskDuration` 提供 `averageMs`、`totalMs`、`samples`、`available`、`coverage`、`reason`、`sources` 与 `excluded`。顶层 `taskTiming` 给出执行周期边界、按完成时间筛选的口径、实际时间窗口、保留限制和支持的适配器。没有有效完成样本时 `averageMs` / `totalMs` 为 `null`；采集文件读取失败单独降级为 `reason=read-error`，不影响请求指标。
+
 ## 开发
 
 ```sh
@@ -186,6 +237,8 @@ MIT © webkubor
 「逐项对比」按列标出极值：缓存命中率越高越优；输入消耗、失败率、耗时和工具重量越低越优。最优为绿、最差为红，并带文字标记。请求量、输出量和会话跨度只标最大/最小；并列同色，全列相同及缺失测量不标色。
 
 「供应商 × Harness 稳定性」读取用量日志的 `provider`，可选择供应商和模型，查看各 Harness 的请求数、失败数、失败率、取消数与最常见错误。点击 Harness 名称查看错误分类及其占失败请求的比例，再点「全部 Harness」回到供应商总览。缺少供应商字段的旧记录归入「供应商未知」。
+
+供应商品牌优先沿用当前 magpie 数据目录里的 `providers.json` / `plugin-providers.json` 显示名称与图标配置。自定义 `file:` 图标从同目录的 `icons/` 读取并内嵌到本机页面；配置更新或图标删除在下一次数据刷新时生效。只把当前报告中的供应商名称和图标传给页面，不传凭据、上游地址或其他配置，不请求外部图标 URL。没有有效本地图标时使用内置品牌兜底，仍没有则显示首字母。自定义图标不打包进公共仓库。
 
 错误分类覆盖限流、额度、鉴权、模型不可用、上下文超限、超时、服务端、请求参数和网络错误；分类根据状态码及错误文本推断，原始错误消息、账户和主机信息不会进入报告。失败率沿用总览口径：失败次数 / 所有请求，499 主动取消单列且保留在分母中。
 
