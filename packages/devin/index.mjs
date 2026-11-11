@@ -3042,12 +3042,14 @@ async function usage(key, server, onStatus) {
   }
   // with Devin's word on its models unread, which are free is unknown, so
   // the day and the week count them all (a used-up quota then holds SWE-2
-  // too): a row says so and why, instead of nothing
+  // too). Ask in the background so a slow model list doesn't hide quota
+  // GetUserStatus already returned; a later refresh adds free models or
+  // says why the list couldn't be read.
   if (out.windows.length) {
-    const free = await freeIDs(key, server)
+    const free = await freeIDs(key, server, false)
     if (free.length) for (const w of out.windows) w.notModels = free
     else {
-      const c = await configsFor(key, server)
+      const c = await configsFor(key, server, false)
       if (c.error && !c.at) out.windows.push({ name: "Free models", display: "unknown: Devin's model list couldn't be read (" + c.error + ")", aside: true })
     }
   }
@@ -3065,8 +3067,8 @@ async function usage(key, server, onStatus) {
 // may ask for them: each variant's own, and each entry of the list that
 // stands for free variants alone (swe-2 for swe-2-high, -medium and -max).
 // None when Devin hasn't said.
-async function freeIDs(key, server) {
-  const c = await configsFor(key, server)
+async function freeIDs(key, server, wait = true) {
+  const c = await configsFor(key, server, wait)
   if (!c.free?.size) return []
   const ids = new Set(c.free)
   for (const m of listed(c.families ?? [], [], {}, c.free)) if (m.free) ids.add(m.id)
