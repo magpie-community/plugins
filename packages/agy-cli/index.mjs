@@ -1088,7 +1088,9 @@ class Proc {
     // Learned from settled single-model-call responses; scales the local input
     // estimate used for tool-step responses that carry no exact usage.
     this.inputTokenScale = 1
-    this.lastCacheRatio = 0
+    // Unset until recordPromptUsage or a final calibrated response teaches
+    // it, including a recorded 0. Distinct from a calibrated miss.
+    this.lastCacheRatio = undefined
     this.configOptions = []
     this.configMethodUnsupported = false
     this.currentSelectionKey = null
@@ -1404,7 +1406,17 @@ class Proc {
   matchesHistory(messages) {
     if (this.historyInvalid) return false
     if (this.expectedMessages == null) return !this.turn && !this.hasSentFirstTurn
-    return historyKey(this.expectedMessages) === historyKey(messages)
+    if (historyKey(this.expectedMessages) === historyKey(messages)) return true
+    // Clients such as Claude Code canonicalize tool_use.input when they
+    // persist history (e.g. filling default replace_all: false). The live
+    // session still has the model-issued arguments. historyKey already
+    // ordinalizes tool ids, so this loose path (reached only after an exact
+    // historyKey miss) requires the raw tool_use id+name sequence to line
+    // up before ignoring input values. An exact match can still succeed if
+    // only ids changed and inputs did not.
+    return sameToolUseIdentities(this.expectedMessages, messages) &&
+      historyKey(stripToolUseInputs(this.expectedMessages)) ===
+        historyKey(stripToolUseInputs(messages))
   }
 
   // Clients such as Claude Code normalize tool_use inputs when recording an
@@ -1429,15 +1441,7 @@ class Proc {
       !call.id || call.id !== expectedCalls[index].id || call.name !== expectedCalls[index].name)) {
       return false
     }
-    const stripToolInputs = (messages) => messages.map((message) => ({
-      ...message,
-      content: Array.isArray(message.content)
-        ? message.content.map((block) => block?.type === "tool_use"
-          ? { type: "tool_use", id: block.id, name: block.name, input: {} }
-          : block)
-        : message.content,
-    }))
-    return historyKey(stripToolInputs(expectedAssistant)) === historyKey(stripToolInputs(actualAssistant))
+    return historyKey(stripToolUseInputs(expectedAssistant)) === historyKey(stripToolUseInputs(actualAssistant))
   }
 
   recordToolResults(turn, messages) {
@@ -2051,6 +2055,8 @@ function park(proc) {
     key: proc.convKey,
     sessionId: proc.sessionId,
     historyHash: digest(historyKey(proc.expectedMessages)),
+    historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
+    toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
     instructionsHash: digest(compactIdentity(proc.instructions)),
     workDir: proc.workDir,
     at: Date.now(),
@@ -2067,8 +2073,16 @@ function takeParked(convKey, opts) {
   unparked.add(convKey)
   saveParked()
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(compactIdentity(opts.instructions)) ||
-    entry.historyHash !== digest(historyKey(opts.history))) return null
+    entry.instructionsHash !== digest(compactIdentity(opts.instructions))) return null
+  const incoming = digest(historyKey(opts.history))
+  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history }
+  // Sans-inputs resume needs the hashes written by current park(). Old
+  // entries without them still resume on an exact historyHash match only.
+  const incomingSans = digest(historyKey(stripToolUseInputs(opts.history)))
+  const incomingIds = toolUseIdentitiesKey(opts.history)
+  const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
+  const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
+  if (!idsOk || !sansOk) return null
   return { sessionId: entry.sessionId, expectedMessages: opts.history }
 }
 
@@ -2501,6 +2515,40 @@ const MAGPIE_PLACEHOLDER_NOTICE_RE = /(?:^|\n\n)Values written like \{\{NAME_ab1
 function stripMagpiePlaceholderNotice(text) {
   if (typeof text !== "string" || !text.includes("{{NAME_ab12cd34}}")) return text
   return text.replace(MAGPIE_PLACEHOLDER_NOTICE_RE, "")
+}
+
+// Clear tool_use.input values so a later history comparison can ignore
+// client-canonicalized arguments after raw tool_use ids and names match.
+function stripToolUseInputs(messages) {
+  if (!Array.isArray(messages)) return messages
+  return messages.map((message) => ({
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((block) => block?.type === "tool_use"
+        ? { type: "tool_use", id: block.id, name: block.name, input: {} }
+        : block)
+      : message.content,
+  }))
+}
+
+function toolUseIdentitiesKey(messages) {
+  if (!Array.isArray(messages)) return null
+  const rows = []
+  for (const message of messages) {
+    const blocks = Array.isArray(message.content) ? message.content : []
+    for (const block of blocks) {
+      if (block?.type !== "tool_use") continue
+      if (!block.id) return null
+      rows.push({ id: block.id, name: block.name || "" })
+    }
+  }
+  return stableJSON(rows)
+}
+
+function sameToolUseIdentities(left, right) {
+  const a = toolUseIdentitiesKey(left)
+  const b = toolUseIdentitiesKey(right)
+  return a != null && a === b
 }
 
 // Compare conversation content, not transport metadata or client-assigned IDs.
@@ -3768,6 +3816,31 @@ function responseUsage(proc, turn, step, content, result) {
     const bounded = Math.min(tokenCount(estimate * 1.5), combined)
     write = combined > 0 ? Math.min(bounded, tokenCount(bounded * (write / combined))) : 0
     input = bounded - write
+  } else if (!Number.isFinite(proc.lastCacheRatio)) {
+    // Intermediate HTTP steps of one still-open session/prompt have no ACP
+    // usage yet. c27ba5f already teaches lastCacheRatio from each finished
+    // prompt's ACP cachedReadTokens when input > 0 (including cancelled
+    // prompts and a recorded 0). This branch runs only while
+    // lastCacheRatio is still unset — typically a fresh process whose
+    // first prompt has not recorded usage, and also a later prompt if no
+    // earlier usage had input > 0. Later tool-round estimates would
+    // otherwise rebill the already-sent prefix as uncached. Treat earlier
+    // settled steps of this turn as the implicit-cache prefix; the first
+    // step stays uncached. This is a bounded step estimate, not
+    // ACP-reported usage. A finite ratio already learned from
+    // recordPromptUsage, including a calibrated 0, is left unchanged.
+    //
+    // prior sums each earlier step's full window (input + cache_read +
+    // cache_creation). Overlap already counted as cache_read on step 2 is
+    // counted again in step 3's prior, so a long tool loop clamps to 100%
+    // quickly. The bound is per-step, not a precise prefix length.
+    const prior = turn.responseSteps.reduce((total, item) => {
+      if (item === step || !item.settled || !item.usage) return total
+      return total + tokenCount(item.usage.input_tokens) +
+        tokenCount(item.usage.cache_read_input_tokens) +
+        tokenCount(item.usage.cache_creation_input_tokens)
+    }, 0)
+    if (prior > 0) cacheRatio = Math.min(1, prior / input)
   }
   const read = Math.min(input, tokenCount(input * cacheRatio))
   const emitted = responseOutputEstimate(content)
