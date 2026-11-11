@@ -1939,6 +1939,33 @@ for (const location of ["inline", "system", "developer", "user"]) {
 }
 
 {
+  // plugins#989: agy leaves a tool with a large declaration out of the model's
+  // function list without a word, so the bridge shortens it and says so.
+  const bigTool = {
+    name: "big_bash",
+    description: "Run a command. " + "Long usage guidance. ".repeat(150),
+    input_schema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "The command. " + "More detail. ".repeat(60), default: "ls" },
+        timeout: { type: "number", description: "Timeout. " + "Seconds. ".repeat(60) },
+        description: { type: "string", description: "What it does. " + "Words. ".repeat(60) },
+      },
+      required: ["command"],
+    },
+  }
+  const bigRes = await callFetch({ model, stream: false, tools: [bigTool], messages: [{ role: "user", content: "big tool turn" }] })
+  await bigRes.text()
+  const sent = inits().at(-1)?.tools?.[0]
+  const sentSize = JSON.stringify({ name: sent?.name, description: sent?.description, inputSchema: sent?.inputSchema }).length
+  check("a tool over the size budget is shortened but kept, with its required parameter",
+    bigRes.status === 200 && sent?.name === "big_bash" && sentSize <= 2000 &&
+    JSON.stringify(sent.inputSchema.required) === JSON.stringify(["command"]) &&
+    !!sent.inputSchema.properties.command && !!sent.inputSchema.properties.description,
+    String(sentSize))
+}
+
+{
   // Tool schema sanitization, stream: false JSON response, promptCapabilities.image, text/PDF documents, and clean refusal.
   process.env.FAKE_AGY_PROMPT_IMAGE = "1"
   const trickyTool = {
