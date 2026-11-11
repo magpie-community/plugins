@@ -12,6 +12,35 @@ const site = _internal.SITES.workbuddy
 const later = () => Date.now() + 3600_000
 const config = '{"code":0,"data":{"agents":[{"name":"cli","models":["m"]}],"models":[{"id":"m","name":"M"}]}}'
 
+const enterpriseModelsConfig = ({
+  agentModels = ["custom:claude-opus-5-5|claude-opus-5-5", "custom:gpt-5.6-sol|gpt-5.6-sol"],
+  detailIds = ["claude-opus-5-5", "gpt-5.6-sol"],
+} = {}) => {
+  const names = {
+    "claude-opus-5-5": "Claude Opus 5.5",
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+    "custom:claude-opus-5-5|claude-opus-5-5": "Claude Opus 5.5",
+  }
+  const meta = {
+    "claude-opus-5-5": { context: 200000, output: 64000, images: true, price: 3 },
+    "gpt-5.6-sol": { context: 272000, output: 100000, images: true, price: 2 },
+  }
+  const details = detailIds.map((id) => {
+    const bare = String(id).replace(/^custom:([^|]+)\|[^|]+$/, "$1")
+    return {
+      id,
+      name: names[id],
+      maxInputTokens: meta[bare].context,
+      maxOutputTokens: meta[bare].output,
+      supportsImages: meta[bare].images,
+      credits: meta[bare].price,
+      supportsReasoning: true,
+      reasoning: { supportedEfforts: ["low", "high"], effort: "high" },
+    }
+  })
+  return JSON.stringify({ code: 0, data: { agents: [{ name: "cli", models: agentModels }], models: details } })
+}
+
 const seen = (into) => async (url, init) => {
   into.push({ url: String(url), headers: new Headers(init?.headers) })
   return new Response(config)
@@ -32,6 +61,65 @@ test("a personal account's list carries no enterprise", async () => {
   await _internal.liveModels(site, { access: "a", uid: "u" })
   expect(got[0].headers.has("X-Enterprise-Id")).toBe(false)
   expect(got[0].headers.has("X-Tenant-Id")).toBe(false)
+})
+
+test("enterprise custom models keep their full ids and take their details (#1015)", async () => {
+  globalThis.fetch = async () => new Response(enterpriseModelsConfig())
+  const out = await _internal.liveModels(site, { access: "a", uid: "u", enterpriseId: "ent-1" })
+  const byId = Object.fromEntries(out.map((m) => [m.id, m]))
+
+  expect(byId["custom:claude-opus-5-5|claude-opus-5-5"]).toMatchObject({
+    name: "Claude Opus 5.5",
+    context: 200000,
+    output: 64000,
+    images: true,
+    rate: 3,
+    efforts: ["none", "low", "high"],
+    effort: "high",
+  })
+  expect(byId["custom:gpt-5.6-sol|gpt-5.6-sol"]).toMatchObject({
+    name: "GPT-5.6 Sol",
+    context: 272000,
+    output: 100000,
+    images: true,
+    rate: 2,
+    efforts: ["none", "low", "high"],
+    effort: "high",
+  })
+  expect(_internal.nativeOf(site, "custom:claude-opus-5-5|claude-opus-5-5")).toBe(false)
+  expect(_internal.modelOf(site, { id: site.id }, byId["custom:claude-opus-5-5|claude-opus-5-5"]).api).toMatchObject({
+    npm: "@ai-sdk/openai-compatible",
+    url: "https://copilot.tencent.com/v2",
+  })
+})
+
+test("a bare enterprise model id takes its custom detail's full id (#1015)", async () => {
+  globalThis.fetch = async () => new Response(enterpriseModelsConfig({
+    agentModels: ["claude-opus-5-5"],
+    detailIds: ["custom:claude-opus-5-5|claude-opus-5-5"],
+  }))
+  const out = await _internal.liveModels(site, { access: "a", uid: "u", enterpriseId: "ent-1" })
+  expect(out).toHaveLength(1)
+  expect(out[0]).toMatchObject({
+    id: "custom:claude-opus-5-5|claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    context: 200000,
+    output: 64000,
+    images: true,
+    efforts: ["none", "low", "high"],
+    effort: "high",
+  })
+})
+
+test("an unmatched enterprise custom model stays listed, and exact standard ids stay exact", async () => {
+  globalThis.fetch = async () => new Response(enterpriseModelsConfig({
+    agentModels: ["custom:other-model|other-model", "claude-opus-5-5"],
+    detailIds: ["claude-opus-5-5"],
+  }))
+  const out = await _internal.liveModels(site, { access: "a", uid: "u", enterpriseId: "ent-1" })
+  expect(out.map((m) => m.id)).toEqual(["custom:other-model|other-model", "claude-opus-5-5"])
+  expect(out[0].name).toBe("custom:other-model|other-model")
+  expect(out[0]).not.toHaveProperty("context")
 })
 
 test("an enterprise account's chats carry the enterprise too", async () => {

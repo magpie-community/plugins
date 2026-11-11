@@ -264,6 +264,11 @@ is used. Since 0.2.9 its models take images, as the config says of every
 model, except WorkBuddy AI's GLM models, whose images WorkBuddy AI drops
 (#572).
 
+An enterprise model's cli-agent id and its detail-list id may differ as
+`custom:<name>|<name>` and bare `<name>`. Since 0.2.28 the list keeps the
+full custom id a request takes (#1015), joins the two sides only by their
+exact ids or exact custom/bare alias, and never by a model's display name.
+
 `workbuddy`:
 - Auto
 - Hy4 preview, Hy3, Hy3-X

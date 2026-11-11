@@ -3426,20 +3426,33 @@ async function liveModels(site, a) {
   if (env.code) throw new Error(`${site.name}'s config: ${env.msg} (${env.code})`)
   const cfg = env.data ?? {}
   const out = []
+  // An enterprise config names a custom model on its cli agent and in its
+  // detail list with either the full custom id or the bare model name. Exact
+  // ids win; only a custom id's own bare name, or a bare id's own custom
+  // alias, is tried next — never a model's display name.
+  const detailOf = (models, id) => {
+    const exact = models.find((x) => x.id === id)
+    if (exact) return exact
+    const custom = /^custom:([^|]+)\|[^|]+$/.exec(String(id))
+    if (custom) return models.find((x) => x.id === custom[1])
+    if (String(id).startsWith("custom:")) return undefined
+    return models.find((x) => x.id === `custom:${id}|${id}`)
+  }
   for (const agent of cfg.agents ?? []) {
     if (agent.name !== "cli") continue
     for (const id of agent.models ?? []) {
-      const d = (cfg.models ?? []).find((x) => x.id === id)
-      const m = { id, name: d?.name || id }
+      const d = detailOf(cfg.models ?? [], id)
+      const listedId = id.startsWith("custom:") ? id : d?.id || id
+      const m = { id: listedId, name: d?.name || listedId }
       if (d) {
         m.context = d.maxInputTokens
         m.output = d.maxOutputTokens
-        m.images = d.supportsImages === true && !textOnly(site, id)
+        m.images = d.supportsImages === true && !textOnly(site, listedId)
         Object.assign(m, priceOf(d, cfg.modelPromotions))
-        const es = effortsOf(d, site, id)
+        const es = effortsOf(d, site, listedId)
         if (es.length) {
           const canOff = d.reasoning?.canDisableThinking
-          const off = (!d.onlyReasoning && (canOff == null || canOff)) || OFF_TAKEN.has(id)
+          const off = (!d.onlyReasoning && (canOff == null || canOff)) || OFF_TAKEN.has(listedId)
           m.efforts = [...(off ? ["none"] : []), ...es]
           const def = defaultEffortOf(d, es)
           if (def) m.effort = def
