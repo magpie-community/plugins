@@ -257,6 +257,13 @@ Two consequences worth knowing:
   written into the conversation as text so nothing is lost, but the agent does the calling itself.
 - **No images.** `image_url` parts become an `[image]` note.
 
+The models still write calls into the answer text sometimes — DeepSeek's `｜DSML｜invoke name="…">`
+blocks, or the `<tool_call>` shape — because the request declares no tools for them to be a call to.
+That block is not an answer: the text stops where it begins, and the turn ends with an error frame
+(the stream) or a 502 (a request that isn't streamed), so magpie asks again or of another account.
+Sending it on as prose is what the agent then reads as its reply, and what the user sees as a turn
+that stops inside a tag.
+
 Token counts are not reported: the upstream returns none, and an estimate passed off as real usage
 would make both cost and context accounting wrong. A caller that asks for `include_usage` gets the
 answer without a usage block.

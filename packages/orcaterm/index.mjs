@@ -888,6 +888,83 @@ const JSON_ESCAPES = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n"
  */
 const ENVELOPE_TAIL = 48
 
+// ---- a tool call the model wrote into its text -------------------------------
+// The request goes up with no tools at all (`tools: []`, see toUpstreamBody), yet
+// the models behind the assistant write calls into the text anyway: DeepSeek's
+// `｜DSML｜invoke name="…"` blocks, and the `<tool_call>` shape the other
+// providers' packages already read. Nothing here can run one, so a block that
+// reaches the client is not an answer — it is the raw protocol, which the agent
+// reads as prose and the user sees as garbage (measured 2026-11-11: three turns
+// of `auto/deepseek-v4.1-flash` via orcaterm, one of them 2477 characters).
+//
+// So the answer is cut at the first opening tag and the turn ends as an error,
+// the same way trae (plugins#38) and qoder (plugins#132) treat a call that
+// cannot be honoured: a 200 with the block as text is something nothing can fail
+// over on.
+const TEXT_CALL_OPEN = new RegExp(
+  [
+    // DeepSeek's, with one or two bars on each side (the observed reply wrote
+    // <｜｜DSML｜｜).
+    String.raw`<\s*\/?\s*[|｜][\s|｜]*DSML[\s|｜]*`,
+    String.raw`<tool_?call\b`,
+    String.raw`<toolcall\b`,
+    String.raw`<function_calls>`,
+    String.raw`<function=\w`,
+    String.raw`<antml:function_calls>`,
+    String.raw`<antml:invoke\s+name\s*=`,
+  ].join("|"),
+)
+
+/**
+ * Where the first text-form tool call begins in `s`, or -1. An opening tag is
+ * enough: a block cut short is still a call, never prose.
+ */
+function textCallAt(s) {
+  const m = s.match(TEXT_CALL_OPEN)
+  return m ? m.index : -1
+}
+
+/**
+ * The openers as literal text, for the one thing a regex can't answer while the
+ * reply is still arriving: whether the `<` that just came in is the start of one.
+ * Every opener begins with `<`, so a tail running from the last `<` that is a
+ * prefix of any of these is held back rather than sent. Without that, `＜｜｜DS`
+ * goes out and the block behind it is cut off halfway — the turn then reads as
+ * prose that stops mid-tag, which is the worst of both.
+ */
+const TEXT_CALL_MARKS = [
+  "<|DSML|",
+  "<\uFF5CDSML\uFF5C",
+  "<||DSML||",
+  "<\uFF5C\uFF5CDSML\uFF5C\uFF5C",
+  "</|DSML|",
+  "</\uFF5CDSML\uFF5C",
+  "</||DSML||",
+  "</\uFF5C\uFF5CDSML\uFF5C\uFF5C",
+  "<tool_call",
+  "<toolcall",
+  "<function_calls>",
+  "<function=",
+  "<antml:function_calls>",
+  "<antml:invoke ",
+  "<invoke name=",
+]
+
+/**
+ * How much of the tail from the last `<` has to be held back because it may be
+ * the start of an opener: `-1` when the tail can go out as it stands.
+ */
+function textCallHold(s) {
+  const at = s.lastIndexOf("<")
+  if (at < 0) return -1
+  const tail = s.slice(at).toLowerCase()
+  return TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(tail)) ? at : -1
+}
+
+/** A call the model wrote as text, with nothing left to send. */
+const TEXT_CALL =
+  "the model wrote a tool call as text; OrcaTerm was sent no tools, so it can't be run, and it is not sent on as the answer"
+
 /**
  * The answer inside the assistant's action envelope, for a reply that is still
  * arriving.
@@ -1091,6 +1168,8 @@ function createAnswerExtractor() {
   let closed = false
   /** Nothing more will arrive: stop holding a tail back. */
   let final = false
+  /** Where the call the model wrote as text begins, once one is seen. */
+  let callAt = -1
 
   /**
    * What the answer should be, given everything received so far.
@@ -1131,8 +1210,31 @@ function createAnswerExtractor() {
     return raw.slice(0, Math.max(0, raw.length - ENVELOPE_TAIL))
   }
 
-  const emit = () => {
+  /**
+   * The answer, cut where a tool call the model wrote as text begins.
+   *
+   * Nothing after that point is the answer: it is the call, and OrcaTerm was
+   * sent no tools for it to be a call to. Holding it back is also what keeps a
+   * half-arrived tag from going out — the whole point is that the client never
+   * sees `＜｜｜DSML｜｜` as prose.
+   */
+  const answerCut = () => {
     const want = answerSoFar()
+    const at = textCallAt(want)
+    if (at >= 0) {
+      callAt = at
+      return want.slice(0, at)
+    }
+    // Still arriving: the `<` at the tail may be the start of one, so hold it.
+    // At the end there is nothing more to wait for, and the text as it stands is
+    // the answer — `the answer is a < b` must not lose its ` < b`.
+    if (final) return want
+    const hold = textCallHold(want)
+    return hold >= 0 ? want.slice(0, hold) : want
+  }
+
+  const emit = () => {
+    const want = answerCut()
     if (want.length <= sent) return ""
     const out = want.slice(sent)
     sent = want.length
@@ -1160,6 +1262,15 @@ function createAnswerExtractor() {
       const out = emit()
       closed = true
       return out
+    },
+    /**
+     * The call the model wrote as text, once the stream is over: an error string
+     * when there was one, "" when the reply was an answer. Read after `finish()`,
+     * so the answer up to the call has already gone out and nothing of the call
+     * itself has.
+     */
+    textCall() {
+      return callAt >= 0 ? TEXT_CALL : ""
     },
   }
 }
@@ -1458,6 +1569,18 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
           push(chunk({ content: held }))
           emitText += held.length
         }
+        // A tool call the model wrote as text: the answer stops where it begins
+        // and the turn ends as an error frame, so magpie asks again or of another
+        // account. Sent on as text it would be prose that runs into
+        // `＜｜｜DSML｜｜ invoke …` — neither an answer nor a call (plugins#38,
+        // plugins#132; orcaterm had no reader at all).
+        const written = skipReasoningFallback ? "" : answer.textCall()
+        if (written) {
+          closed = true
+          push(`data: ${JSON.stringify({ error: { message: `OrcaTerm: ${written}`, type: "api_error", code: "text_tool_call" } })}\n\n`)
+          controller.close()
+          return
+        }
         // Upstream sent thinking but no text: turn the thinking into text
         // before closing, so the client doesn't show a blank answer.
         // The error path (skipReasoningFallback) must not — otherwise the error
@@ -1642,6 +1765,10 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
   // by the same extractor the streaming path uses, so the two can't drift apart.
   const extractor = createAnswerExtractor()
   const visible = extractor.push(content) + extractor.finish()
+  // A tool call the model wrote as text, the same as in the streamed path: a 502
+  // magpie asks again on, not a 200 whose answer is the raw protocol.
+  const written = extractor.textCall()
+  if (written) return openaiError(502, `OrcaTerm: ${written}`, "text_tool_call")
   // An empty text can't go up blank: the thinking is used first, then a note
   let finalContent = visible.trimEnd()
   if (!finalContent && reasoning) finalContent = answerOf(reasoning).trimEnd() || reasoning
@@ -2387,6 +2514,9 @@ export const _internal = {
   answerOf,
   stripTrailingEnvelope,
   createAnswerExtractor,
+  textCallAt,
+  textCallHold,
+  TEXT_CALL,
   csrfCode,
   parseTicket,
   cookieHeader,
