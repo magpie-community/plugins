@@ -574,7 +574,7 @@
     $("pad").value = bg.pad;
     $("blur").value = bg.blur;
     $("dim").value = bg.dim;
-    pop.classList.toggle("photo", B.meta(bg.bg).photo);
+    pop.classList.toggle("photo", B.meta(bg.bg).photo === true);
     paintChip();
   }
   async function paintChip() {
