@@ -60,6 +60,62 @@ async function runTurn(kit, body, { stream = true, resultFor } = {}) {
   throw new Error("工具回合超过 64 次仍未收尾")
 }
 
+
+function editTool() {
+  return [{
+    name: "Edit",
+    description: "edit a file",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        old_string: { type: "string" },
+        new_string: { type: "string" },
+        replace_all: { type: "boolean" },
+      },
+    },
+  }]
+}
+
+function followUpAfter(first, userText, { fillDefaults = false, rewriteIds = false } = {}) {
+  const completed = first.bodies.at(-1)
+  const followMessages = [
+    ...JSON.parse(JSON.stringify(completed.messages)),
+    { role: "assistant", content: plain(first.responses.at(-1).content) },
+    { role: "user", content: userText },
+  ]
+  const idMap = new Map()
+  let mutated = 0
+  for (const message of followMessages) {
+    if (!Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (block?.type === "tool_use" && block.input) {
+        if (fillDefaults && block.input.replace_all === undefined) {
+          block.input = { ...block.input, replace_all: false }
+          mutated++
+        }
+        if (rewriteIds && block.id) {
+          const next = `${block.id}_rewritten`
+          idMap.set(block.id, next)
+          block.id = next
+          mutated++
+        }
+      }
+    }
+  }
+  if (rewriteIds) {
+    for (const message of followMessages) {
+      if (!Array.isArray(message.content)) continue
+      for (const block of message.content) {
+        if (block?.type === "tool_result" && idMap.has(block.tool_use_id)) {
+          block.tool_use_id = idMap.get(block.tool_use_id)
+        }
+      }
+    }
+  }
+  return { followMessages, mutated }
+}
+
 // ----------------------------------------------------------------------------- 单步
 
 test("单步回合精确透传 ACP usage 并原样保留原始对象", async () => {
@@ -645,5 +701,245 @@ test("取消的 prompt 也教会缓存占比：下一回合的工具步沿用 ag
     assert.equal(responses[0].stopReason, "tool_use")
     const ratio = toolStep.cache_read_input_tokens / usageTotal(toolStep)
     assert.ok(Math.abs(ratio - 0.75) < 0.02, `工具步缓存占比 ${ratio}，期望沿用取消 prompt 的 0.75`)
+  })
+})
+
+
+test("同一会话未校准 Proc 上，工具环第二步起把已结算前缀计为读缓存（估算，非 ACP 回传）", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/one" })
+      await agent.tool("Read", { path: "/two" })
+      await agent.tool("Read", { path: "/three" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 8000, outputTokens: 5 } }
+    })
+    const body = await padBodyToTokens(kit, baseBody({ messages: [{ role: "user", content: "start tool loop" }] }), 4000)
+    const { responses } = await runTurn(kit, body)
+    assert.equal(responses.length, 4, "应为三次 tool_use + 一次收尾")
+    const first = responses[0].usage
+    const second = responses[1].usage
+    const third = responses[2].usage
+    assert.equal(first.cache_read_input_tokens, 0, "第一步尚无前缀缓存可沿用")
+    const firstTotal = usageTotal(first)
+    const secondTotal = usageTotal(second)
+    const thirdTotal = usageTotal(third)
+    assert.ok(firstTotal > 0 && secondTotal > 0 && thirdTotal > 0)
+    assert.ok(second.cache_read_input_tokens >= firstTotal - 2,
+      `第二步读缓存 ${second.cache_read_input_tokens} 应覆盖第一步窗口 ${firstTotal}`)
+    assert.ok(second.input_tokens <= Math.max(1, secondTotal - firstTotal + 2),
+      `第二步未缓存 input ${second.input_tokens} 不应再包含全部前缀`)
+    // Step 3's prior sums step 1+2 full windows, so the estimate clamps
+    // to 100% cache rather than a precise new-prefix length.
+    assert.ok(third.cache_read_input_tokens >= secondTotal - 2,
+      `第三步读缓存 ${third.cache_read_input_tokens} 应至少覆盖第二步窗口 ${secondTotal}`)
+    assert.ok(third.cache_read_input_tokens >= thirdTotal - 1,
+      `第三步读缓存 ${third.cache_read_input_tokens} 应对该步窗口 ${thirdTotal} 夹到约 100%`)
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
+test("回合结束后，客户端补上的历史 tool_use.input 默认字段仍复用同一 Proc", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Edit", { path: "/f", old_string: "a", new_string: "b" })
+      await agent.text("edited")
+      return { stopReason: "end_turn", usage: { inputTokens: 4000, outputTokens: 5 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("ok")
+      return { stopReason: "end_turn", usage: { inputTokens: 4100, cachedReadTokens: 3000, outputTokens: 3 } }
+    })
+    const body = baseBody({ messages: [{ role: "user", content: "please edit" }], tools: editTool() })
+    const first = await runTurn(kit, body)
+    assert.equal(first.responses[0].stopReason, "tool_use")
+    assert.equal(first.responses.at(-1).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+
+    // Mid-turn tool_result kept the model-issued input. Only the next user
+    // turn fills a default, which is how some clients persist history.
+    const { followMessages, mutated } = followUpAfter(first, "thanks, continue", { fillDefaults: true })
+    assert.ok(mutated >= 1, "没有改到历史 tool_use.input")
+    const second = await runTurn(kit, { ...body, messages: followMessages })
+    assert.equal(kit.acpSpawns.length, 1, "补默认字段后应复用会话，而不是 retire 后新开进程")
+    assert.equal(second.responses[0].stopReason, "end_turn")
+  })
+})
+
+test("回合结束后改写历史 tool_use id 时不得因忽略 input 而复用会话", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Edit", { path: "/f", old_string: "a", new_string: "b" })
+      await agent.text("edited")
+      return { stopReason: "end_turn", usage: { inputTokens: 4000, outputTokens: 5 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("ok")
+      return { stopReason: "end_turn", usage: { inputTokens: 4100, outputTokens: 3 } }
+    })
+    const body = baseBody({ messages: [{ role: "user", content: "please edit" }], tools: editTool() })
+    const first = await runTurn(kit, body)
+    assert.equal(kit.acpSpawns.length, 1)
+    const { followMessages, mutated } = followUpAfter(first, "thanks, continue", { fillDefaults: true, rewriteIds: true })
+    assert.ok(mutated >= 2, "没有同时改到 input 与 id")
+    const second = await runTurn(kit, { ...body, messages: followMessages })
+    assert.equal(kit.acpSpawns.length, 2, "改写 tool_use id 后应新开进程，不能只靠去 input 的 historyKey 复用")
+    assert.equal(second.responses[0].stopReason, "end_turn")
+  })
+})
+
+test("上一 prompt 已把缓存比例校准为 0 时，下一回合工具步不再把前缀估成读缓存", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.text("no cache this turn")
+      return { stopReason: "end_turn", usage: { inputTokens: 5000, cachedReadTokens: 0, outputTokens: 5 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/a" })
+      await agent.tool("Read", { path: "/b" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 8000, cachedReadTokens: 0, outputTokens: 5 } }
+    })
+    const tools = [{ name: "Read", description: "read", input_schema: { type: "object", properties: { path: { type: "string" } } } }]
+    const firstBody = await padBodyToTokens(kit, baseBody({ messages: [{ role: "user", content: "first prompt" }], tools }), 4000)
+    const first = await runTurn(kit, firstBody)
+    assert.equal(first.responses.length, 1)
+    assert.equal(first.responses[0].usage.cache_read_input_tokens, 0)
+    const next = {
+      ...firstBody,
+      messages: [
+        ...firstBody.messages,
+        { role: "assistant", content: plain(first.responses[0].content) },
+        { role: "user", content: "now use tools" },
+      ],
+    }
+    const { responses } = await runTurn(kit, next)
+    assert.equal(kit.acpSpawns.length, 1, "同一会话应复用 Proc")
+    assert.equal(responses[0].stopReason, "tool_use")
+    assert.equal(responses[1].stopReason, "tool_use")
+    // c27ba5f already taught lastCacheRatio = 0 from the first prompt.
+    // The in-turn prefix estimate must not override that calibrated miss.
+    assert.equal(responses[0].usage.cache_read_input_tokens, 0)
+    assert.equal(responses[1].usage.cache_read_input_tokens, 0,
+      "已校准为零后，第二步也不应再把已结算前缀估成读缓存")
+  })
+})
+
+test("LRU 淘汰后，补默认字段的 follow-up 仍能 resume 原 session", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROCS: "1" }, sessionResume: true }, async (kit) => {
+    let sessionA
+    kit.prompts.push(async (agent) => {
+      sessionA = agent.sessionId
+      await agent.tool("Edit", { path: "/f", old_string: "a", new_string: "b" })
+      await agent.text("edited")
+      return { stopReason: "end_turn", usage: { inputTokens: 4000, outputTokens: 5 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("filler")
+      return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("resumed")
+      return { stopReason: "end_turn", usage: { inputTokens: 4100, cachedReadTokens: 3000, outputTokens: 3 } }
+    })
+    const bodyA = baseBody({ messages: [{ role: "user", content: "please edit conversation A" }], tools: editTool() })
+    const first = await runTurn(kit, bodyA)
+    assert.ok(sessionA, "未记下会话 A 的 sessionId")
+    assert.equal(kit.acpSpawns.length, 1)
+
+    const bodyB = baseBody({ messages: [{ role: "user", content: "unrelated filler conversation B" }] })
+    const filler = await runTurn(kit, bodyB)
+    assert.equal(filler.responses[0].stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "第二会话应挤掉会话 A")
+
+    const { followMessages, mutated } = followUpAfter(first, "thanks, continue", { fillDefaults: true })
+    assert.ok(mutated >= 1)
+    const second = await runTurn(kit, { ...bodyA, messages: followMessages })
+    assert.equal(second.responses[0].stopReason, "end_turn")
+    const resumes = kit.acpLog.filter((item) => item.method === "session/resume")
+    assert.equal(resumes.length, 1, "补默认字段后应 session/resume，而不是新开 session")
+    assert.equal(resumes[0].params.sessionId, sessionA)
+    const news = kit.acpLog.filter((item) => item.method === "session/new")
+    assert.equal(news.length, 2, "只有 A 的首回合与 filler B 应 session/new")
+  })
+})
+
+test("取消 prompt 把缓存比例校准为 0 后，下一回合工具步也不再把前缀估成读缓存", async () => {
+  await withKit({}, async (kit) => {
+    const cancelled = { inputTokens: 5000, cachedReadTokens: 0, outputTokens: 3 }
+    kit.prompts.push(async (agent) => {
+      await agent.text("partial")
+      await agent.waitCancel()
+      return { stopReason: "cancelled", usage: cancelled }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/a" })
+      await agent.tool("Read", { path: "/b" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 8000, cachedReadTokens: 0, outputTokens: 5 } }
+    })
+    const tools = [{ name: "Read", description: "read", input_schema: { type: "object", properties: { path: { type: "string" } } } }]
+    const body = await padBodyToTokens(kit, baseBody({ messages: [{ role: "user", content: "first prompt" }], tools }), 4000)
+    const controller = new AbortController()
+    const response = await kit.request(body, { signal: controller.signal })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let seen = ""
+    while (!seen.includes("text_delta")) {
+      const { value, done } = await reader.read()
+      if (done) break
+      seen += decoder.decode(value, { stream: true })
+    }
+    controller.abort()
+    await reader.read().then(() => {}, () => {})
+    for (let i = 0; i < 200 && !kit.turns[0]?.finalized; i++) await sleep(5)
+    assert.ok(kit.turns[0].finalized)
+
+    const next = {
+      ...body,
+      messages: [...body.messages, { role: "assistant", content: [{ type: "text", text: "partial" }] }, { role: "user", content: "now use tools" }],
+    }
+    const { responses } = await runTurn(kit, next)
+    assert.equal(kit.acpSpawns.length, 1, "同一会话应复用 Proc")
+    assert.equal(responses[0].stopReason, "tool_use")
+    assert.equal(responses[1].stopReason, "tool_use")
+    assert.equal(responses[0].usage.cache_read_input_tokens, 0)
+    assert.equal(responses[1].usage.cache_read_input_tokens, 0,
+      "取消 prompt 已校准为零后，第二步也不应再把已结算前缀估成读缓存")
+  })
+})
+
+test("LRU 淘汰后，改写历史 tool_use id 的 follow-up 不得 session/resume", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROCS: "1" }, sessionResume: true }, async (kit) => {
+    let sessionA
+    kit.prompts.push(async (agent) => {
+      sessionA = agent.sessionId
+      await agent.tool("Edit", { path: "/f", old_string: "a", new_string: "b" })
+      await agent.text("edited")
+      return { stopReason: "end_turn", usage: { inputTokens: 4000, outputTokens: 5 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("filler")
+      return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("fresh")
+      return { stopReason: "end_turn", usage: { inputTokens: 4100, outputTokens: 3 } }
+    })
+    const bodyA = baseBody({ messages: [{ role: "user", content: "please edit conversation A" }], tools: editTool() })
+    const first = await runTurn(kit, bodyA)
+    assert.ok(sessionA)
+    const bodyB = baseBody({ messages: [{ role: "user", content: "unrelated filler conversation B" }] })
+    await runTurn(kit, bodyB)
+    assert.equal(kit.acpSpawns.length, 2)
+
+    const { followMessages, mutated } = followUpAfter(first, "thanks, continue", { fillDefaults: true, rewriteIds: true })
+    assert.ok(mutated >= 2)
+    const second = await runTurn(kit, { ...bodyA, messages: followMessages })
+    assert.equal(second.responses[0].stopReason, "end_turn")
+    const resumes = kit.acpLog.filter((item) => item.method === "session/resume")
+    assert.equal(resumes.length, 0, "改写 tool_use id 后不应 resume 已淘汰会话")
+    const news = kit.acpLog.filter((item) => item.method === "session/new")
+    assert.equal(news.length, 3, "应新开 session，而不是 resume 会话 A")
   })
 })

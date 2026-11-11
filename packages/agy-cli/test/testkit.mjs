@@ -237,10 +237,20 @@ class FakeAgy {
     const { id, method, params } = message
     this.kit.acpLog.push({ method, params, sessionId: this.sessionId })
     if (method === "initialize") {
-      this.respond(id, { protocolVersion: 1, agentInfo: { name: "fake-agy", version: this.kit.agentVersion }, agentCapabilities: {} })
+      this.respond(id, {
+        protocolVersion: 1,
+        agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
+        agentCapabilities: this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {},
+      })
     } else if (method === "session/new" && this.kit.sessionNewError) {
       // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
       this.send({ id, error: this.kit.sessionNewError })
+    } else if (method === "session/resume" && this.kit.sessionResume && params?.sessionId) {
+      this.sessionId = params.sessionId
+      if (this.token) this.control({ kind: "list" })
+      const models = { currentModelId: this.kit.initialAgyModel }
+      if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
+      this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/new") {
       this.sessionId = `fake-session-${++this.kit.sessionSerial}`
       // Only the bridge's own processes carry a control token; the catalog's
@@ -404,6 +414,7 @@ export async function createBridgeKit(options = {}) {
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    sessionResume: options.sessionResume ?? false,
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
     acpLog: [],
