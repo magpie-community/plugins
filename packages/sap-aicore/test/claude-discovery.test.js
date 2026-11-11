@@ -390,6 +390,70 @@ test("authoritative equivalent names still conflict when version or capability m
   }
 })
 
+test("same raw Claude model with two backend versions keeps the higher version, lowest id only breaks ties", async () => {
+  const v1Id = "d0000000000000a1"
+  const v2Id = "d0000000000000f2"
+  const catalog = { count: 1, resources: [{
+    model: OPUS_SAP, executableId: "aws-bedrock", provider: "Anthropic", displayName: "Claude 4.8 Opus",
+    allowedScenarios: [{ scenarioId: "foundation-models", executableId: "aws-bedrock" }],
+    versions: [
+      { name: "1", contextLength: 1000000, inputTypes: ["text", "image"], deprecated: false, retirementDate: "", streamingSupported: true },
+      { name: "2", contextLength: 2000000, inputTypes: ["text"], deprecated: false, retirementDate: "", streamingSupported: true },
+    ],
+  }] }
+  const deployments = [
+    bedrockDeployment(v1Id, OPUS_SAP, "1", "cfg-v1"),
+    bedrockDeployment(v2Id, OPUS_SAP, "2", "cfg-v2"),
+  ]
+  const configs = { "cfg-v1": bedrockConfig(OPUS_SAP, "1", "cfg-v1"), "cfg-v2": bedrockConfig(OPUS_SAP, "2", "cfg-v2") }
+  for (const order of [deployments, [...deployments].reverse()]) {
+    installFetch(mixedRouter({ deployments: order, configs, catalog }))
+    const registry = await discover(base)
+    assert.deepEqual(Object.keys(registry), ["claude-opus-4-8"])
+    const entry = registry["claude-opus-4-8"]
+    assert.equal(entry.activeVersion, "2")
+    assert.equal(entry.deploymentID, v2Id)
+    assert.equal(entry.modelName, OPUS_SAP)
+    assert.equal(entry.metadata.contextLength, 2000000)
+    assert.equal(entry.capabilities.image, false)
+    assert.equal(entry.requestPolicy, undefined, "version 2 never inherits the baseline request policy")
+  }
+})
+
+function permutations(items) {
+  if (items.length <= 1) return [items]
+  return items.flatMap((item, i) =>
+    permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(rest => [item, ...rest]))
+}
+
+test("distinct authoritative Claude aliases conflict with a same-raw version bump in every order", async () => {
+  const rawB = "opaque-opus-key"
+  const catalog = { count: 2, resources: [
+    { model: OPUS_SAP, executableId: "aws-bedrock", provider: "Anthropic", displayName: "Claude 4.8 Opus",
+      allowedScenarios: [{ scenarioId: "foundation-models", executableId: "aws-bedrock" }],
+      versions: [
+        { name: "1", contextLength: 1000000, inputTypes: ["text", "image"], deprecated: false, retirementDate: "", streamingSupported: true },
+        { name: "2", contextLength: 2000000, inputTypes: ["text", "image"], deprecated: false, retirementDate: "", streamingSupported: true },
+      ] },
+    bedrockCatalog(rawB, "1", { displayName: "Claude Opus 4.8" }).resources[0],
+  ] }
+  const configs = {
+    "cfg-a1": bedrockConfig(OPUS_SAP, "1", "cfg-a1"),
+    "cfg-b1": bedrockConfig(rawB, "1", "cfg-b1"),
+    "cfg-a2": bedrockConfig(OPUS_SAP, "2", "cfg-a2"),
+  }
+  const all = [
+    bedrockDeployment("d0000000000000a1", OPUS_SAP, "1", "cfg-a1"),
+    bedrockDeployment("d0000000000000b1", rawB, "1", "cfg-b1"),
+    bedrockDeployment("d0000000000000c2", OPUS_SAP, "2", "cfg-a2"),
+  ]
+  for (const order of permutations(all)) {
+    installFetch(mixedRouter({ deployments: order, configs, catalog }))
+    await assert.rejects(discover(base), { code: "conflict" },
+      "order " + order.map(d => d.id).join(",") + " must conflict")
+  }
+})
+
 test("duplicate deployments of the same Claude model/version select deterministically by lowest ID", async () => {
   const lowId = "d0000000000000a1"
   installFetch(mixedRouter({

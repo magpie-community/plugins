@@ -167,29 +167,46 @@ test("after eligibility the lexicographically smallest id wins and an invalid lo
   assert.equal(registry["gpt-6-astra"].deploymentID, higher)
 })
 
-test("eligible GPT versions share the lowest-id selection without mixing version metadata", async () => {
+test("eligible GPT versions keep the highest backend version, not the lowest deployment id", async () => {
   const model = "gpt-6.2-mini"
   const catalog = catalogFor([model, "2027-01-01"])
   catalog.resources[0].versions.push({ name: "2027-02-01", contextLength: 200000 })
   const deployments = { resources: [
-    row("deployment-b", model, "2027-01-01", "config-b"),
-    row("deployment-a", model, "2027-02-01", "config-a"),
+    row("deployment-a", model, "2027-01-01", "config-a"),
+    row("deployment-b", model, "2027-02-01", "config-b"),
   ] }
   installFetch(router({
     deployments,
     configs: {
-      "config-a": config(model, "2027-02-01", "config-a"),
-      "config-b": config(model, "2027-01-01", "config-b"),
+      "config-a": config(model, "2027-01-01", "config-a"),
+      "config-b": config(model, "2027-02-01", "config-b"),
     },
     catalog,
   }))
   const registry = await discover(base())
   assert.deepEqual(Object.keys(registry), [model])
-  assert.equal(registry[model].deploymentID, "deployment-a")
+  assert.equal(registry[model].deploymentID, "deployment-b")
   assert.equal(registry[model].activeVersion, "2027-02-01")
   assert.deepEqual(registry[model].metadata, { contextLength: 200000 })
   deployments.resources.reverse()
   assert.deepEqual(await discover(base()), registry)
+})
+
+test("GPT backend versions compare numerically, so 10 outranks 2 on the larger id", async () => {
+  const model = "gpt-6.3-mini"
+  const catalog = catalogFor([model, "2"])
+  catalog.resources[0].versions.push({ name: "10", contextLength: 999 })
+  installFetch(router({
+    deployments: { resources: [
+      row("d0000000000000a2", model, "2", "cfg-2"),
+      row("d0000000000000f9", model, "10", "cfg-10"),
+    ] },
+    configs: { "cfg-2": config(model, "2", "cfg-2"), "cfg-10": config(model, "10", "cfg-10") },
+    catalog,
+  }))
+  const registry = await discover(base())
+  assert.equal(registry[model].activeVersion, "10")
+  assert.equal(registry[model].deploymentID, "d0000000000000f9")
 })
 
 test("a later configuration failure rejects the whole result with no partial registry", async () => {
@@ -420,3 +437,103 @@ test("the deadline wins while a configuration lookup hangs and cancels its reade
   await assert.rejects(pending, { code: "timeout" })
   assert.equal(cancelled, true)
 })
+
+const geminiConfig = (version, id) => ({ id, scenarioId: "foundation-models", executableId: "gcp-vertexai", parameterBindings: [{ key: "modelName", value: "gemini-3.8-flash" }, { key: "modelVersion", value: version }] })
+
+function geminiVersionEntry(v) {
+  return { name: v.version, contextLength: v.contextLength, inputTypes: v.inputTypes, deprecated: false, retirementDate: "", streamingSupported: true }
+}
+
+function geminiCatalog(versions) {
+  const byName = new Map()
+  for (const v of versions) if (!byName.has(v.version)) byName.set(v.version, geminiVersionEntry(v))
+  return {
+    count: 2,
+    resources: [
+      { model: "gpt-6-astra", executableId: "azure-openai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "azure-openai" }], versions: [{ name: "2026-09-03", contextLength: 1050000, inputTypes: ["text"], deprecated: false, retirementDate: "", streamingSupported: true }] },
+      { model: "gemini-3.8-flash", provider: "Google", executableId: "gcp-vertexai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "gcp-vertexai" }], versions: [...byName.values()] },
+    ],
+  }
+}
+
+function geminiDeployments(versions) {
+  return { resources: [
+    row("d0000000000000a0", "gpt-6-astra", "2026-09-03", "cfg-gpt"),
+    ...versions.map(v => row(v.id, "gemini-3.8-flash", v.version, "cfg-" + v.id)),
+  ] }
+}
+
+function geminiConfigs(versions) {
+  const configs = { "cfg-gpt": config("gpt-6-astra", "2026-09-03", "cfg-gpt") }
+  for (const v of versions) configs["cfg-" + v.id] = geminiConfig(v.version, "cfg-" + v.id)
+  return configs
+}
+
+const GEMINI_SELECTION = [
+  {
+    label: "higher leading-zero numeric version beats lower id",
+    versions: [
+      { version: "001", id: "d0000000000000a1", contextLength: 111, inputTypes: ["text"] },
+      { version: "002", id: "d0000000000000b2", contextLength: 222, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "002", id: "d0000000000000b2" },
+  },
+  {
+    label: "numeric 10 outranks 2 rather than comparing lexically",
+    versions: [
+      { version: "2", id: "d0000000000000a2", contextLength: 200, inputTypes: ["text"] },
+      { version: "10", id: "d0000000000000f9", contextLength: 1000, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "10", id: "d0000000000000f9" },
+  },
+  {
+    label: "later date-style version wins",
+    versions: [
+      { version: "2027-01-01", id: "d0000000000000a3", contextLength: 300, inputTypes: ["text"] },
+      { version: "2027-02-01", id: "d0000000000000c3", contextLength: 400, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "2027-02-01", id: "d0000000000000c3" },
+  },
+  {
+    label: "identical versions fall back to the lowest deployment id",
+    versions: [
+      { version: "5", id: "d0000000000000d1", contextLength: 500, inputTypes: ["text", "image"] },
+      { version: "5", id: "d0000000000000d0", contextLength: 500, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "5", id: "d0000000000000d0" },
+  },
+  {
+    label: "leading-zero padded versions compare equal, lowest id breaks the tie",
+    versions: [
+      { version: "1", id: "d0000000000000e1", contextLength: 600, inputTypes: ["text"] },
+      { version: "01", id: "d0000000000000e0", contextLength: 601, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "01", id: "d0000000000000e0" },
+  },
+  {
+    label: "very large beyond-safe-integer numeric segments order without coercion",
+    versions: [
+      { version: "90071992547409920", id: "d0000000000000f1", contextLength: 700, inputTypes: ["text"] },
+      { version: "90071992547409921", id: "d0000000000000f2", contextLength: 800, inputTypes: ["text", "image"] },
+    ],
+    winner: { version: "90071992547409921", id: "d0000000000000f2" },
+  },
+]
+
+for (const { label, versions, winner } of GEMINI_SELECTION) {
+  test(`Gemini selection: ${label}, in both incoming orders, with GPT intact`, async () => {
+    const win = versions.find(v => v.id === winner.id)
+    const expectedMetadata = { contextLength: win.contextLength, inputTypes: win.inputTypes, streamingSupported: true, deprecated: false }
+    for (const order of [versions, [...versions].reverse()]) {
+      installFetch(router({ deployments: geminiDeployments(order), configs: geminiConfigs(order), catalog: geminiCatalog(order) }))
+      const registry = await discover(base())
+      assert.deepEqual(Object.keys(registry).sort(), ["gemini-3.8-flash", "gpt-6-astra"])
+      assert.equal(registry["gpt-6-astra"].deploymentID, "d0000000000000a0")
+      const g = registry["gemini-3.8-flash"]
+      assert.equal(g.activeVersion, winner.version)
+      assert.equal(g.deploymentID, winner.id)
+      assert.equal(g.capabilities.image, win.inputTypes.includes("image"))
+      assert.deepEqual(g.metadata, expectedMetadata)
+    }
+  })
+}
