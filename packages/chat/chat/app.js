@@ -889,11 +889,24 @@ function positionPop(pop, btn) {
   left = Math.max(8, Math.min(left, host.width - width - 8));
   pop.style.left = Math.round(left) + "px";
 
-  // 向上展开：输入区上缘以上能有多高，就用多高
-  var above = r.top - 10;
-  pop.style.bottom = "calc(100% + 6px)";
-  pop.style.top = "auto";
-  pop.style.maxHeight = Math.max(220, Math.round(above)) + "px";
+  // 菜单的下缘贴着输入区上缘（bottom: 100% + 6px），所以上面能有多高要从输入区算，
+  // 不是从按钮算：按钮在输入区里面，从它算会多出一截，菜单顶部就伸出窗口、
+  // 被页面框裁掉，最前面的模型滚不到。不留 220px 的下限，窗口矮就矮着，菜单自己滚。
+  var pad = 8, gap = 6;
+  pop.style.maxHeight = "";
+  var natural = pop.scrollHeight + 2;
+  var above = host.top - gap - pad;
+  var below = innerHeight - r.bottom - gap - pad;
+  if (natural > above && below > above) {
+    // 上面放不下、下面更宽裕：从按钮下面往下展开
+    pop.style.top = Math.round(r.bottom - host.top + gap) + "px";
+    pop.style.bottom = "auto";
+    pop.style.maxHeight = Math.max(0, Math.floor(below)) + "px";
+  } else {
+    pop.style.bottom = "calc(100% + " + gap + "px)";
+    pop.style.top = "auto";
+    pop.style.maxHeight = Math.max(0, Math.floor(above)) + "px";
+  }
 }
 
 function openPop(id, btn) {
