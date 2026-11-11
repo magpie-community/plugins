@@ -134,6 +134,88 @@ test("the page's service routes", { concurrency: false }, async (t) => {
     assert.ok(calls >= 3, "the next stale read starts another refresh");
   });
 
+  await t.test("an older disk cache is stale without being a failed refresh", async (t) => {
+    let calls = 0;
+    const info = await startServer({
+      port: 0,
+      load: async () => {
+        calls += 1;
+        return calls === 1
+          ? { ...data, cached: true, stale: true }
+          : { ...data, revision: calls };
+      },
+    });
+    t.after(async () => {
+      await info.close();
+    });
+
+    const html = await (await fetch(`http://127.0.0.1:${info.port}/`)).text();
+    const token = html.match(/name="usage-tree-token" content="([^"]+)"/)?.[1];
+    assert.ok(token);
+    const headers = { "x-usage-tree-token": token };
+
+    const first = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`, { headers });
+    const firstBody = await first.json();
+    assert.equal(first.headers.get("x-usage-tree-refresh"), "ok");
+    assert.equal(firstBody.stale, true);
+    assert.equal(firstBody.cached, true);
+
+    // The first stale read starts a real refresh behind the page. Once it
+    // succeeds, the service stops reporting a failure and serves good data.
+    await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`, { headers });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const recovered = await fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d`, { headers });
+    const recoveredBody = await recovered.json();
+    assert.equal(recovered.headers.get("x-usage-tree-refresh"), "ok");
+    assert.notEqual(recoveredBody.stale, true);
+    assert.ok(calls >= 2);
+  });
+
+  await t.test("a failed refresh stays failed until the loader really recovers", async (t) => {
+    let calls = 0;
+    const info = await startServer({
+      port: 0,
+      load: async (_period, options) => {
+        calls += 1;
+        if (options.fresh && calls <= 3) throw new Error("gateway down");
+        return { ...data, revision: calls };
+      },
+    });
+    t.after(async () => {
+      await info.close();
+    });
+
+    const html = await (await fetch(`http://127.0.0.1:${info.port}/`)).text();
+    const token = html.match(/name="usage-tree-token" content="([^"]+)"/)?.[1];
+    assert.ok(token);
+    const headers = { "x-usage-tree-token": token };
+    const tree = (query = "") => fetch(`http://127.0.0.1:${info.port}/api/tree?period=7d${query}`, { headers });
+
+    const initial = await tree();
+    await initial.json();
+    assert.equal(initial.headers.get("x-usage-tree-refresh"), "ok");
+
+    const firstFailure = await tree("&fresh=1");
+    const firstFailureBody = await firstFailure.json();
+    assert.equal(firstFailure.headers.get("x-usage-tree-refresh"), "failed");
+    assert.equal(firstFailureBody.stale, true);
+    assert.equal(firstFailureBody.revision, 1);
+
+    // A follow-up while the gateway is still down must not accidentally
+    // clear the failure, even though a new retry now owns the cache entry.
+    const secondFailure = await tree("&fresh=1");
+    const secondFailureBody = await secondFailure.json();
+    assert.equal(secondFailure.headers.get("x-usage-tree-refresh"), "failed");
+    assert.equal(secondFailureBody.stale, true);
+    assert.equal(secondFailureBody.revision, 1);
+
+    const recovered = await tree("&fresh=1");
+    const recoveredBody = await recovered.json();
+    assert.equal(recovered.headers.get("x-usage-tree-refresh"), "ok");
+    assert.notEqual(recoveredBody.stale, true);
+    assert.equal(recoveredBody.revision, 4);
+  });
+
   await t.test("rejects a non-loopback host", async (t) => {
     const info = await startServer({
       port: 0,

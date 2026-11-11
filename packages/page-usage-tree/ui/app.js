@@ -394,14 +394,14 @@
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       if (!isCurrentLoad(requestId, requestedPeriod)) return;
-      if (res.headers.get("x-usage-tree-refresh") === "failed") refreshFailed = true;
-      else if (!options.quiet) refreshFailed = false;
+      const serverFailed = res.headers.get("x-usage-tree-refresh") === "failed";
+      const warningStateChanged = serverFailed !== refreshFailed;
+      refreshFailed = serverFailed;
       const next = fingerprint(body);
-      const changed = next !== state.fingerprint || !state.rendered || (refreshFailed && warning.hidden);
+      const changed = next !== state.fingerprint || !state.rendered || warningStateChanged;
       state.data = body;
       state.fingerprint = next;
       state.loadedAt = Date.now();
-      if (!refreshFailed) clearRefreshWarning();
       // The service answers with the numbers it had and reads again behind
       // the page; ask for them again in a moment, so the page catches up
       // without the reader asking.
@@ -425,6 +425,7 @@
         render();
       } else {
         renderFoot();
+        renderWarnings(body.warnings || []);
       }
     } catch (error) {
       if (!isCurrentLoad(requestId, requestedPeriod) || error?.name === "AbortError") return;
@@ -608,22 +609,29 @@
   }
 
   function renderWarnings(warnings) {
-    if (!warnings.length) {
-      warning.hidden = !refreshFailed;
-      if (refreshFailed) warning.textContent = W.refreshFailed;
-      return;
-    }
-    warning.hidden = false;
-    warning.textContent = warnings
+    const list = Array.isArray(warnings) ? warnings : [];
+    const parts = list
       .map((item) => {
         if (typeof item === "string") return item;
         if (item.code === "no-usage") return W.noUsage;
         if (item.code === "model-details") return W.modelDetails(Math.max(1, Number(item.count) || 1));
         return "";
       })
-      .filter(Boolean)
-      .join(" ");
-    if (refreshFailed) warning.textContent += ` ${W.refreshFailed}`;
+      .filter(Boolean);
+    // Chinese warnings are full sentences; join them with semicolons rather
+    // than leaving "。；" or a bare space before the refresh note.
+    const details = lang === "zh"
+      ? parts.map((item) => item.replace(/[\u3002\uFF1B]\s*$/u, "").trim()).filter(Boolean).join("\uFF1B")
+      : parts.join(" ");
+    if (!details) {
+      warning.hidden = !refreshFailed;
+      warning.textContent = refreshFailed ? W.refreshFailed : "";
+      return;
+    }
+    warning.hidden = false;
+    warning.textContent = refreshFailed
+      ? `${details}${lang === "zh" ? "\uFF1B" : " "}${W.refreshFailed}`
+      : lang === "zh" ? `${details}\u3002` : details;
   }
 
   function showRefreshWarning() {

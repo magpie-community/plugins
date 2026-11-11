@@ -261,8 +261,9 @@ export async function startServer(options = {}) {
   let boundPort = requestedPort;
 
   function refreshFailedFor(period) {
-    const entry = cache.get(period);
-    return entry?.refreshFailed === true || entry?.data?.stale === true;
+    // A stale answer can simply be an older disk cache. Only a loader that
+    // actually threw makes this a failed refresh.
+    return cache.get(period)?.refreshFailed === true;
   }
 
   async function dataFor(period, options = {}) {
@@ -308,7 +309,15 @@ export async function startServer(options = {}) {
     if (hit?.pending) {
       return options.wait ? hit.pending : Promise.resolve(hit.data);
     }
-    const entry = { at: hit?.at || 0, data: hit?.data, pending: null, refreshFailed: false };
+    // A retry started from a failed entry must keep that failure visible
+    // until a loader actually succeeds; otherwise a quiet read would report
+    // success while another failed refresh is still in flight.
+    const entry = {
+      at: hit?.at || 0,
+      data: hit?.data,
+      pending: null,
+      refreshFailed: hit?.refreshFailed === true,
+    };
 
     const pending = loader(wanted, { fresh: Boolean(options.fresh) })
       .then((data) => {

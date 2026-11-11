@@ -627,7 +627,7 @@ test("a failed follow-up keeps the period already on screen", () => {
   assert.match(source, /function clearRefreshWarning\(\)/);
   assert.match(source, /showRefreshWarning\(\);/);
   assert.match(source, /renderWarnings\(state\.data\?\.warnings \|\| \[\]\)/);
-  assert.match(source, /if \(refreshFailed\) warning\.textContent \+= ` \$\{W\.refreshFailed\}`/);
+  assert.match(source, /renderWarnings\(body\.warnings \|\| \[\]\)/);
   assert.match(source, /x-usage-tree-refresh/);
   assert.match(source, /if \(!options\.quiet\) clearRefreshWarning\(\)/);
   assert.match(scope.UsageI18n.get("en").refreshFailed, /previous data/);
