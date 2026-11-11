@@ -3141,8 +3141,15 @@ function endOf(p) {
 // the account whose credits expire first. Only packages the summary
 // counts, with credits left, and not the daily slice; null when none.
 // only narrows it to the packages of one window (the split's, usageOf).
-function runsOutOf(sum, packages, now = Date.now(), only = () => true) {
+//
+// A reward the summary doesn't list but the detail lists do (a daily
+// check-in's credits, each with its own end) is counted too when site is
+// given, as WorkBuddy's own panel counts them (see listedExtra): the
+// account serves them like any others, so an account whose check-in
+// credits lapse first is spent first (cdredfox on X).
+function runsOutOf(sum, packages, now = Date.now(), only = () => true, site = null) {
   const counted = new Set((sum?.Packages ?? []).map((p) => p?.PackageCode))
+  if (site) for (const c of site.ai ? [...EXTRA_CODES, ...EXTRA_AI] : EXTRA_CODES) counted.add(c)
   let at = 0, amount = 0
   for (const p of packages ?? []) {
     if (!counted.has(p?.PackageCode) || !only(p?.PackageCode) || p?.PackageCode === DAILY_CODE || String(p?.CapacityType) === SLICE) continue
@@ -4035,10 +4042,9 @@ function makePlugin(site) {
                 // split by the summary (usageOf): each says its own
                 // packages' soonest lapse, the whole the soonest of both
                 Object.assign(credits, runsOutOf(sum, packages, Date.now(), ofPlan) ?? {})
-                Object.assign(extra, runsOutOf(sum, packages, Date.now(), (code) => !ofPlan(code)) ?? {})
+                Object.assign(extra, runsOutOf(sum, packages, Date.now(), (code) => !ofPlan(code), site) ?? {})
                 out.windows.splice(out.windows.findIndex((w) => w.name === "Total credits"), 1, totalOf(credits, extra))
               } else {
-                Object.assign(credits, runsOutOf(sum, packages) ?? {})
                 // the summary of the plan's credits alone: the extra ones
                 // only the detail lists have (listedExtra) are their window,
                 // and the whole stops the account, as with the summary's
@@ -4046,6 +4052,8 @@ function makePlugin(site) {
                 // account at "500 / 500" on its extra credits)
                 const kinds = kindsOf(sum, site)
                 const more = kinds.plan.total > 0 && kinds.extra.total === 0 ? listedExtra(sum, packages, site) : null
+                // with no window of their own, their lapse is the one window's
+                Object.assign(credits, runsOutOf(sum, packages, Date.now(), () => true, more ? null : site) ?? {})
                 if (more) {
                   const { runsOutAt, runsOut, ...counts } = more
                   const w = { ...creditWindow("Extra credits", counts), ...(runsOutAt ? { runsOutAt, runsOut } : {}) }
