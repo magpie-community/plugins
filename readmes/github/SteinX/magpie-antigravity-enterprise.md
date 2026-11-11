@@ -65,6 +65,24 @@ Nonsecret principal fingerprints, the compiled helper, and its lock are stored u
 
 License availability is checked during sign-in; administrator restrictions and upstream authorization errors remain visible. Upstream pricing is not included in this catalog, so the plugin does not claim that a model is free or that an enterprise quota is unused.
 
+## Quota
+
+The plugin implements Magpie's `auth.usage` hook using the native `retrieveUserQuotaSummary` endpoint and the bound account's selected project. The saved license supplies the plan name. Read the provider's quota card or use:
+
+```sh
+magpie quota antigravity-enterprise --json
+magpie quota refresh antigravity-enterprise --json
+magpie quota history antigravity-enterprise --days 7 --json
+```
+
+Magpie also exposes these readings through `GET /v1/magpie/quotas` and records history at `GET /v1/magpie/quotas/history?provider=antigravity-enterprise&days=7`. Its refresh command may reuse a reading less than 30 seconds old.
+
+Each reported bucket becomes a separate percentage window. Its exact bucket ID scopes the window to the matching model; equal percentages and the `All Models` heading do not establish a shared pool. Magpie's CLI JSON omits this internal routing matcher. Invalid IDs produce display-only windows. Positive remaining fractions stay below complete exhaustion, including very small fractions; missing or invalid fractions remain unknown.
+
+The observed response reports the limit closest to being reached for each model, without reset timestamps, absolute limits, or monetary balances. The plugin does not invent these values. Models absent from the response retain unknown quota. The live account returned 25 buckets matching 25 of its 31 catalog models, each with 100% remaining, and the plan `Gemini Enterprise Plus`; those figures describe that reading and can change. Authentication expiry requires sign-in; permission, network, and malformed-response errors preserve the sign-in and remain visible.
+
+Catalog capability flags also recognize explicit video input and adaptive thinking support when MIME types or the older thinking flag are absent. This corrects picker metadata; it does not establish entitlement to a model.
+
 ## Checks
 
 ```sh
@@ -73,7 +91,7 @@ npm test
 
 The deterministic suite covers effective authentication selection, renewal ownership and cancellation, token replacement races, rotation lineage, per-account configuration preservation, Fetch input semantics, regional routing, complex tool schemas, fragmented SSE, signatures, tool calls, upstream errors, and cancellation. Error-event fixtures exercise the generic Google RPC/SSE contract; they are not captured App responses. Live model checks consume the selected enterprise account's allowance.
 
-Validated with Magpie 0.1.3673 and its Bun 1.4.4 runtime, Antigravity App 2.31.0, and official CLI 1.5.5: all 198 deterministic checks passed. Integration exercised native renewal, Gemini SSE generation, signed tool-call/result continuation, complex JSON Schema, OpenAI Chat SSE/tools, and Responses translation. The installed daily gateway completed a complex-schema tool call and its result continuation. The same schema containing `$defs`, `$ref`, union types, and `additionalProperties` was rejected by the enterprise API in `parameters` with HTTP 400 and accepted unchanged in `parametersJsonSchema` with HTTP 200. US/EU routing has deterministic coverage; the live license used global.
+Validated with Magpie 0.1.3673 and its Bun 1.4.4 runtime, Antigravity App 2.31.0, and official CLI 1.5.5. All 220 Node deterministic checks passed, including quota fractions, exact model scopes, unknown values, error handling, cancellation, and deadlines. The live Magpie quota refresh returned 25 windows with zero percent used and the expected plan; the scoped gateway history endpoint returned HTTP 200. Earlier integration exercised native renewal, Gemini SSE generation, signed tool-call/result continuation, complex JSON Schema, OpenAI Chat SSE/tools, and Responses translation. The installed daily gateway completed a complex-schema tool call and its result continuation. The same schema containing `$defs`, `$ref`, union types, and `additionalProperties` was rejected by the enterprise API in `parameters` with HTTP 400 and accepted unchanged in `parametersJsonSchema` with HTTP 200. US/EU routing has deterministic coverage; the live license used global.
 
 ### Decrypted CLI reference
 

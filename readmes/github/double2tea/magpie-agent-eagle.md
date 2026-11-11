@@ -1,7 +1,7 @@
 # magpie-agent-eagle
 
-v0.3.4 将 Magpie 插件、Agent 条目和 Eagle 配套插件的显示名称统一为
-**magpie-agent-eagle**（原名 Eagle / Magpie 桥接），原安装 ID 和本机配置目录不变。
+v0.3.5 为 Magpie 的 Agent 条目补上官方 Eagle 图标，并修正视觉模型被重置后的
+“重新同步”恢复；插件显示名仍为 **magpie-agent-eagle**，原安装 ID 和本机配置目录不变。
 
 An unofficial **Magpie agent plugin + companion Eagle plugin**. Choose Eagle's
 language model in Magpie; choose its vision model from a dropdown in the Eagle
@@ -36,8 +36,8 @@ restores the Eagle provider and defaults that the bridge replaced.
 
 ## 第一步：安装 Eagle 配套插件
 
-1. 打开 [v0.3.4 下载页](https://github.com/double2tea/magpie-agent-eagle/releases/tag/v0.3.4)。
-2. 下载 `magpie-agent-eagle-0.3.4.eagleplugin`，双击文件并按 Eagle 提示完成安装。
+1. 打开 [v0.3.5 下载页](https://github.com/double2tea/magpie-agent-eagle/releases/tag/v0.3.5)。
+2. 下载 `magpie-agent-eagle-0.3.5.eagleplugin`，双击文件并按 Eagle 提示完成安装。
 3. 从 Eagle 顶部菜单 **插件 → magpie-agent-eagle** 打开面板。
    此时显示“等待 Magpie”是正常的，继续下一步即可。
 
@@ -45,8 +45,8 @@ restores the Eagle provider and defaults that the bridge replaced.
 
 | 文件 | 用途 |
 | --- | --- |
-| `magpie-agent-eagle-0.3.4.eagleplugin` | 安装到 Eagle，必需 |
-| `magpie-agent-eagle-0.3.4.tgz` | Magpie 插件包；按下面的 GitHub 安装方式操作时，无需另外下载 |
+| `magpie-agent-eagle-0.3.5.eagleplugin` | 安装到 Eagle，必需 |
+| `magpie-agent-eagle-0.3.5.tgz` | Magpie 插件包；按下面的 GitHub 安装方式操作时，无需另外下载 |
 | `SHA256SUMS.txt` | 两个安装包的 SHA-256 校验值，可选 |
 | `Source code` | 开发用源码，普通安装无需下载 |
 
@@ -134,15 +134,15 @@ Eagle 面板的 **“恢复原配置并暂停”** 只暂停本次插件运行�
 | 提示官方 AI 模型套件未就绪 | 在 Eagle 启用官方「AI 模型套件」，待其启动后点击“重新同步” |
 | 提示缺少原语言或视觉默认模型 | 首次连接前，先在官方「AI 模型套件」设置好两个默认值，再重新同步 |
 | 视觉下拉框为空或读取失败 | 确认 Magpie 正在运行，模型目录包含支持图片输入的模型，再点击“重新同步”刷新列表 |
-| 显示“配置已被其他操作修改” | 桥接已为保护配置而停止。先核对官方设置；按面板提示使用本机 `provider.eac` 备份在官方「AI 模型套件」导入恢复，不要删除状态文件强行重连 |
+| 显示“配置已被其他操作修改” | 先点击“重新同步”。仅视觉默认值被改为上次语言模型、且连接输入和其他受管理配置完全一致时，会恢复已保存的视觉选择；其他冲突仍停止同步，需核对官方设置并按提示使用本机 `provider.eac` 备份恢复，不要删除状态文件强行重连 |
 | 面板模型正确，但其他 Eagle 插件仍使用旧模型 | 重新打开使用模型的插件；第三方插件可能缓存了原设置 |
 
 ## English quick start
 
 1. On the same Mac, run Eagle and Magpie. Enable Eagle's official AI model suite
    1.0.0 and set both language and vision defaults before connecting.
-2. Download `magpie-agent-eagle-0.3.4.eagleplugin` from
-   [Releases](https://github.com/double2tea/magpie-agent-eagle/releases/tag/v0.3.4),
+2. Download `magpie-agent-eagle-0.3.5.eagleplugin` from
+   [Releases](https://github.com/double2tea/magpie-agent-eagle/releases/tag/v0.3.5),
    install it in Eagle, then open **Plugins → magpie-agent-eagle**.
 3. Add this repository on Magpie's plugins page, or run
    `magpie plugin add github:double2tea/magpie-agent-eagle`.
@@ -207,8 +207,8 @@ python3 build.py
 
 Build outputs:
 
-- `dist/magpie-agent-eagle-0.3.4.eagleplugin` — Eagle companion runtime
-- `dist/magpie-agent-eagle-0.3.4.tgz` — Magpie agent plugin package
+- `dist/magpie-agent-eagle-0.3.5.eagleplugin` — Eagle companion runtime
+- `dist/magpie-agent-eagle-0.3.5.tgz` — Magpie agent plugin package
 
 SDK tests load the separately installed
 `~/Library/Application Support/Eagle/Plugins/ai-sdk/ai-sdk.cjs`, but use temporary

@@ -171,6 +171,39 @@ magpie plugin options poxian '{"override":true,"override_mode":"replace"}'
 | `enable_message_filter` | `false` | **报文清洗总开关**。开 = 注入前先删掉请求自带的冲突 system 与拒绝式 assistant 历史。默认关，旧行为不变 |
 | `strip_safety_system` | `true` | 清洗的子项：删命中关键词的 system 位。四种协议都认（chat 的 `system`/`developer` 消息、Anthropic 的 `system`、Responses 的 `instructions`、Gemini 的 `systemInstruction` / `system_instruction`） |
 | `strip_deny_assistant` | `false` | 清洗的子项：删历史里「抱歉 / 不能 / 无法」一类整条 assistant 回复。删完会合并相邻同角色消息，否则 Anthropic 要求 `user`/`assistant` 交替会直接 400 |
+| `probe_echo` | `false` | **回显探针**。载荷末尾追加一枚 6 位随机标记，要求模型回复首行原样吐出。回显到 = 注入真的拿到了控制权，而不只是字节写进去了。约 +20 token，会改请求体，故默认关 |
+| `probe_refusal` | `false` | **拒答探针**。只读回复前 200 字符判是否拒答，不改请求、零 token 成本。单用只能知道「这次拒了」，配上回显探针才能区分「没送到」与「送到了不认」 |
+
+### 探针：区分「注入进去了」和「注入生效了」
+
+`action=inject` 只证明载荷写进了请求体，不证明模型读了、更不证明它服从。实测反例（同一份 v3 载荷、同一句请求）：
+
+| 路由 | 结果 |
+|---|---|
+| `group/glm5.3f` · `group/hy4` · `group/muse` | 完整交付 |
+| `group/k3.1pro` | 拒绝 |
+| `group/dp4.1f` | 5 次测 4 拒 1 过（组内多上游，权重轮询随机漂移） |
+
+所以「注入生效」这四个字里混着两种事实：**载荷到达了模型**（A）和 **载荷拿到了控制权**（B）。不拆开，任何调优都是在猜。
+
+打开两个开关后，每次请求产生一条 `action=probe` 的日志行：
+
+```json
+{"action":"probe","probe_nonce":"SSXDLL","probe_hit":true,"refusal":true,"refusal_why":"phrase"}
+```
+
+`probe_hit` / `refusal` 都可能是 `null`——那表示**判不了**（回复里抽不出正文、或上一轮没注入），不是「没命中」。这个区分写进了 `src/probe.mjs` 与单元测试。
+
+聚合看成败率：
+
+```bash
+node scripts/probe-report.mjs            # 读 ~/.config/magpie/logs/poxian.jsonl
+node scripts/probe-report.mjs --json
+```
+
+输出按 `(agent, model)` 分组，`hit%` 是回显率（= 真正取得控制权的比例），`verdict` 给出四种判断：`✅ 可用` / `⚠️ 到达但拒答` / `⚠️ 未回显但没拒` / `❌ 无效`。
+
+> **写不了的一层**：magpie 的钩子契约里 `onResponse` 的返回值被丢弃（`plugin-host host.js:1707`），且请求钩子禁止改 `model` / `stream`。所以「检测到拒答 → 自动换路由重试」这种中转站标配手法，在 magpie 上做不到。探针能做到的是把路由质量量化出来，让你自己选对路。
 
 **4. 换成你自己的提示词**——指向一个外部文件即可，**不需要重新构建、不需要重启**：
 

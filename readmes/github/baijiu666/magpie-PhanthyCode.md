@@ -40,13 +40,53 @@ provider   phanthycode（模型名 phanthycode/<id>）
 | DeepSeek | `deepseek-v4.1-flash-1017` |
 | GLM（智谱） | `glm-5.2` · `glm-5.3` · `glm-5.3-flash` |
 | Kimi（月之暗面） | `kimi-k2.7-code` · `kimi-k3` |
-| Phana / Phano | `Phana-5.5o` · `Phana-5.5s` · `Phano-6.1s` · `Phano-6a` |
+| Phana / Phano | `Phana-5.2f` · `Phana-5.5o` · `Phana-5.5s` · `Phano-6.1s` · `Phano-6a` |
 
 上下文窗口、倍率、思考档位一律由云端目录下发（README 不抄，抄了就过期）；装好以后
 `magpie plugin list` 拿到的才是这个账号真实的全部。
 
 **倍率** = `input_credits_per_million_tokens / 3000`，与官方客户端逐条一致（`0.04x` ~ `1.67x`）。
 计费**按 token**（小请求会抹零：画一张 1247 token 的图实测 0 积分），无条件免费的只有 `Phanthy-fast`。
+
+## 模型不可用？先分清「套餐」和「积分」
+
+服务端把两类完全不同的拒绝都放在 402 / 403 里，插件按**正文**把它们分开，
+不会把「套餐不含这个模型」误报成「账号没额度」：
+
+| 上游原文（正文里出现即可） | 插件回给 magpie | 含义 | 你要做的 |
+|---|---|---|---|
+| `model_not_allowed` / `model_not_entitled` / `not allowed for this plan` | **404** `model_not_found` | 这个模型**不在当前账号的套餐内**，积分再多也不能用 | 换一个模型，或升级套餐；账号不会被停用 |
+| `model_not_found` / 模型不存在 | **404** `model_not_found` | 上游不认识这个 id | 重新拉一次模型列表 |
+| `plan_required` / `missing_or_expired_plan` / `no active plan` | **403** `plan_required` | 套餐到期 / 未订阅 | 续费；账号不会被停用 |
+| `insufficient_credits` | **402** `quota_exhausted` | 积分真的用尽 | 充值或等重置 |
+| `device_binding_conflict`（409） | **409** `device_binding_conflict` | 该 installation id 已绑定官方桌面端公钥，服务端不接受第二台设备 | 换号或换设备；数据面（目录 / 额度 / 签到只读）仍可用 |
+
+**「积分到账」不等于「模型能用」**：积分只决定付不付得起；某个模型能不能调，由**套餐**决定。
+视频里说的 6,300 分（注册 3,000 + 邀请 3,000 + 签到 300/天）是活动积分口径，以后端钱包为准 ——
+它不会把一个套餐外的模型变成可用。
+
+如果**所有**模型都不可用，按顺序看三层：
+
+1. **登录**：卡片上账号名还在不在；不在就重登。
+2. **设备身份**：错误里出现 `device_binding_conflict` 说明这个号已绑在官方桌面端；
+   出现 `PHANTHY_ALLOW_DEVICE_REGISTER` 说明你显式关掉了注册。首次对话会自动注册（约 1 秒，零额外配置）。
+3. **套餐**：出现 `model_not_found`（正文带 `model_not_allowed`）或 `plan_required` 都是套餐范围问题，
+   不是插件配置问题。
+
+## 数据处理
+
+- **只发官方端点**：提示词、补全、模型目录、额度、签到全部直连 `https://code.phanthy.com`；
+  插件不中转、不经第三方、不把对话写进日志或缓存。云端如何留存 / 使用数据由官方服务条款决定
+  （运营方：范式万神殿（北京）控股有限公司，见 [NOTICE.md](./NOTICE.md)），插件无法代它承诺。
+- **本地落盘只有这几类（都不含对话）**：
+  - OAuth `access` / `refresh`：magpie 自己的 `~/.config/magpie/plugin-auth.json`，插件不另存；
+  - 设备身份：`~/.cache/magpie/phanthycode-device-<账号>.json`，三把 ed25519 私钥，权限 `0600`；
+  - 目录 / 额度快照：`~/.cache/magpie/phanthycode-catalog-*` 等，只含模型元数据与额度窗口；
+  - 邀请缓存：`~/.cache/magpie/phanthycode-invite*.json`，只有邀请码、`referral_state` 与账号索引。
+- **没有遥测**：插件不收集、不上报任何使用统计；除 `code.phanthy.com` 外没有出站请求
+  （邀请码采集也只打同一个官方 origin）。
+- **「从本机导入」是只读的**：只读官方桌面端已经刷好的**短效 access token**，不复制
+  `refresh_token`、推理令牌或设备私钥，也不会把桌面端顶下线。
 
 ## 签到
 

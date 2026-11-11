@@ -17,12 +17,12 @@ credentials, and never blocks a model call.
 
 ## Requirements
 
-A running [approval-bridge](https://github.com/Echo-Smith/ai-passport) hub on the
+A running [passport-gateway](https://github.com/Echo-Smith/passport-gateway) hub on the
 same machine (or any host reachable over the network). The bridge is what talks
 to the device over Wi-Fi; this plugin only pushes data to it over HTTP.
 
 ```bash
-cd ~/Codex/AI-Passport/approval-bridge
+cd ~/Codex/AI-Passport/passport-gateway
 python3 bridge.py hub --token test123 --lan
 ```
 
