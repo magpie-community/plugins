@@ -18,6 +18,7 @@ let fake
 let plugin
 let saved = {}
 let tmpDir
+let realFetch
 const client = { auth: { set: async ({ body }) => (saved = body) } }
 const getAuth = async () => saved
 
@@ -34,23 +35,47 @@ beforeAll(async () => {
   // the plugin reads ORIGIN at call time only inside gatewayHeaders/fetch, so
   // monkey-patching the global fetch to route to the fake works: we swap the
   // global fetch for one that rewrites the URL host to the fake server
-  const realFetch = globalThis.fetch
+  realFetch = globalThis.fetch
   globalThis.fetch = (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
     const patched = url.replace("https://ai.catpaw.meituan.com", fake.url).replace("https://catx.nocode.cn", fake.url)
-    return realFetch(patched, init)
+    return realFetch(input instanceof Request ? new Request(patched, input) : patched, init)
   }
   plugin = await CatPawAuthPlugin({ client })
 })
 
 afterAll(() => {
-  fake.server.stop(true)
-  rmSync(tmpDir, { recursive: true, force: true })
+  try {
+    fake.server.stop(true)
+    rmSync(tmpDir, { recursive: true, force: true })
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })
 
 beforeEach(() => {
   fake.state.reset()
   saved = { type: "oauth", access: fake.state.token, expires: 0, source: "desktop", accountId: "Tester" }
+})
+
+describe("test fetch isolation", () => {
+  test("rewriting a Request keeps its method, headers and body", async () => {
+    const response = await globalThis.fetch(new Request("https://ai.catpaw.meituan.com/api/agent/maas/model-types", {
+      method: "POST",
+      headers: {
+        cookie: `X-Passport-Token=${fake.state.token}`,
+        "content-type": "application/json",
+        "m-appkey": "com.sankuai.mcopilot.cli",
+        "x-test-marker": "kept",
+      },
+      body: JSON.stringify({ probe: true }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(fake.state.modelTypeRequests).toEqual([
+      { method: "POST", marker: "kept", body: { probe: true } },
+    ])
+  })
 })
 
 describe("config", () => {
