@@ -4027,7 +4027,26 @@ function inspectToolTurn(results, body) {
       }
       const rest = withoutNotices.replace(SYSTEM_REMINDER_RE, "").trim()
       if (UNCLOSED_NOTICE_RE.test(rest)) {
-        throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")
+        // Text that merely names a notice tag it does not close (a developer
+        // message that quotes <system-reminder>, a user typing one, a hook's
+        // context) is routed by who wrote it, never refused and never dropped.
+        // A notice that opens and is cut short is still turned away.
+        const wrapped = /^<system-reminder(?:\s[^>]*)?>\s*([\s\S]*?)\s*<\/system-reminder>$/.exec(trimmed)
+        if (!wrapped && PROTOCOL_NOTICE_START_RE.test(rest)) {
+          // a protocol notice that starts and is cut short: not a mention
+          throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")
+        }
+        if (wrapped || message.role === "system" || message.role === "developer") {
+          // the gateway's wrapper for a developer message, or a system one
+          const inner = wrapped ? wrapped[1] : rest
+          if (extractQueuedPrompt(inner) !== null || userInterruption.test(inner)) userSteered = true
+          else if (!isNoise(inner)) notices.push(cloak(inner))
+        } else if (message.role === "user") {
+          userSteered = true
+        } else if (!isNoise(rest)) {
+          notices.push(cloak(rest))
+        }
+        continue
       }
       if (message.role === "system" || message.role === "developer") {
         if (extractQueuedPrompt(rest) !== null || userInterruption.test(rest)) {
@@ -4042,7 +4061,9 @@ function inspectToolTurn(results, body) {
           notices.some((item) => hookStoppedContinuation.test(item))) {
           userSteered = true
         } else {
-          throw new UnsupportedContent("text beside a live tool_result; send it after the tool response completes")
+          // text from neither the user nor the system (an assistant message
+          // that landed after the result): the model is told it, as a notice
+          notices.push(cloak(rest))
         }
       }
     }

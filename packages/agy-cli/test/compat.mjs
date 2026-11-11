@@ -246,3 +246,29 @@ test("execOnce still collects synchronous and asynchronous spawn failures", asyn
     }, mode)
   }
 })
+
+test("text that names a notice tag it never closes is routed by its writer, not refused", () => {
+  const call = result("call_shell", "shell", "done")
+  const wrap = text => ({ type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` })
+  // the gateway wraps a Codex developer message, which here quotes a reminder tag
+  const developer = wrap("Hook context: output is wrapped in <system-reminder> blocks.")
+  const nested = wrap("<system-reminder>earlier note</system-reminder> and more")
+  for (const block of [developer, nested]) {
+    const inspected = inspectToolTurn([call], bodyFor([call.block, block]))
+    assert.equal(inspected.userSteered, false, "a developer message is not the user steering")
+    const text = inspected.results[0].result.content.map(part => part.text || "").join("\n")
+    assert.ok(text.includes("earlier note") || text.includes("Hook context"), "the developer text reaches the model")
+  }
+  // a user typing the tag name steers, and the replay carries the words
+  const typed = { type: "text", text: "why does the <system-reminder tag show up in my chat?" }
+  for (const blocks of [[call.block, typed], [typed, call.block]]) {
+    const body = bodyFor(blocks)
+    const inspected = inspectToolTurn([call], body)
+    assert.equal(inspected.userSteered, true)
+    assert.deepEqual(inspected.results[0].result.content, call.result.content)
+    const replay = renderInitialPromptParts(body, null, true).map(part => part.text || "").join("")
+    assert.ok(replay.includes("why does the"), "the user's words are replayed")
+  }
+  // a notice that opens and is cut short is still turned away
+  assert.throws(() => inspectToolTurn([call], bodyFor([call.block, { type: "text", text: "<system-update>cut short" }])), /text beside a live tool_result/)
+})
