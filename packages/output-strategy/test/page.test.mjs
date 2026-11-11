@@ -255,17 +255,16 @@ describe("host language", () => {
     expect(sandbox.document.documentElement.lang).toBe("en")
   })
 
-  test("shows author attribution and conversation guidance in both languages", () => {
+  test("shows conversation guidance in both languages without a panel byline", () => {
     const html = readFileSync(new URL("../page/index.html", import.meta.url), "utf8")
-    const author = "An (unofficial) output-style plugin for magpie, developed and maintained by manjughosa."
     const note = "Saving does not rewrite conversation history. Existing conversations may retain previously injected rules; start a new conversation to fully switch or turn off styles."
-    expect(html).toContain(author)
     expect(html).toContain(note)
+    expect(html.toLowerCase()).not.toContain("manjughosa")
     const sandbox = { document: { documentElement: {}, body: null }, magpie: { theme: { lang: "zh-CN" } } }
     vm.createContext(sandbox)
     vm.runInContext(i18nSource, sandbox)
-    expect(sandbox.OutputStrategyI18n.t(author)).toBe("本插件由 manjughosa 独立开发并维护，非官方出品。")
     expect(sandbox.OutputStrategyI18n.t(note)).toBe("保存不会改写会话历史。已有会话可能保留先前注入的规则；要完整切换或关闭样式，请新建会话。")
+    expect(i18nSource.toLowerCase()).not.toContain("manjughosa")
   })
 
   test("ships English HTML and no private stats or local language switch", () => {
