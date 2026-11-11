@@ -167,7 +167,7 @@ test("standard usage only is a switch magpie shows, off by default, read at each
   }
   const p = await plugin(account(), (path) => (path === "/api/billing/limits" ? json(LIMITS) : new Response("", { status: 404 })), magpie)
   // declared as magpie's host keeps a switch: a key of [a-z0-9_-], a label, off unless said
-  const o = p.hooks.auth.options
+  const o = p.hooks.auth.options.filter((option) => option.key === "standard_only")
   expect(o).toEqual([{ key: "standard_only", label: "Standard usage only", description: expect.any(String) }])
   expect(o[0].key).toMatch(/^[a-z0-9_-]{1,40}$/)
   expect(o[0].label.length).toBeLessThanOrEqual(60)

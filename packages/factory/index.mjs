@@ -137,6 +137,31 @@ const MODELS = [
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
+// Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
+const MODEL_FAMILIES = [
+  "claude-fable-", "claude-opus-", "claude-sonnet-", "claude-haiku-",
+  "gpt-", "gemini-", "grok-", "glm-", "kimi-", "deepseek-", "qwen",
+  "minimax-", "mistral-", "nemotron-", "muse-", "inkling", "beam-",
+]
+const MODEL_ORDER = "group_models_by_company"
+function groupedModels(models) {
+  const family = (id) => {
+    const index = MODEL_FAMILIES.findIndex((prefix) => id.startsWith(prefix))
+    return index < 0 ? MODEL_FAMILIES.length : index
+  }
+  const base = (id) => id.replace(/-fast$/, "")
+  return Object.fromEntries(Object.entries(models).sort(([a], [b]) => {
+    const group = family(a) - family(b)
+    if (group) return group
+    const aa = base(a), bb = base(b)
+    if (aa === bb) return Number(a.endsWith("-fast")) - Number(b.endsWith("-fast"))
+    // Carbon succeeded Argon; their names have no comparable version number.
+    if (aa === "gemini-4-carbon" && bb === "gemini-4-argon") return -1
+    if (aa === "gemini-4-argon" && bb === "gemini-4-carbon") return 1
+    return bb.localeCompare(aa, "en", { numeric: true })
+  }))
+}
+
 const byId = new Map(MODELS.map((m) => [m.id, m]))
 
 // A Fast Mode model is its base model served faster for more credits.
@@ -1782,6 +1807,14 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
       return false
     }
   }
+  const orderModels = (models) => {
+    try {
+      if (magpie?.option?.(PROVIDER, MODEL_ORDER) === true) return groupedModels(models)
+    } catch {
+      // Hosts without plugin options keep the existing picker order.
+    }
+    return models
+  }
   // the session id this process's requests carry
   const session = crypto.randomUUID()
   // serializes checking, rotating and saving tokens: WorkOS rotates the
@@ -2004,7 +2037,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
     provider: {
       id: PROVIDER,
       async models(provider) {
-        return providerModels(provider)
+        return orderModels(providerModels(provider))
       },
     },
     config: async (config) => {
@@ -2015,7 +2048,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
         npm: CHAT.npm,
         api: CHAT.api,
         ...was,
-        models: { ...configModels(), ...(was.models ?? {}) },
+        models: orderModels({ ...configModels(), ...(was.models ?? {}) }),
       }
     },
     auth: {
@@ -2032,6 +2065,11 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
       // magpie's own switches (input.magpie.option), read at each usage
       // reading
       options: [
+        {
+          key: MODEL_ORDER,
+          label: "Group models by company",
+          description: "Groups models by maker: Anthropic, OpenAI, Google, then others. Newer versions come first within each family, with Fast Mode beside its base model. Off preserves the default order and first 24 models. Refresh the model list after changing this option.",
+        },
         {
           key: STANDARD_ONLY,
           label: "Standard usage only",
