@@ -62,6 +62,36 @@ test("ordinary user text beside live tool results steers a replay without becomi
   }
 })
 
+test("text plus an image before a live tool_result steers a replay and keeps the image off the MCP result", () => {
+  const call = result("call_read", "Read", "file contents")
+  const instruction = { type: "text", text: "look at this" }
+  const body = bodyFor([instruction, image, call.block])
+  const inspected = inspectToolTurn([call], body)
+  assert.equal(inspected.userSteered, true)
+  assert.deepEqual(inspected.results[0].result.content, call.result.content,
+    "images before a result must not be spliced into the MCP function response")
+  const parts = renderInitialPromptParts(body, null, true)
+  const replay = parts.map(part => part.text || "").join("")
+  assert.ok(replay.includes("look at this"))
+  assert.ok(replay.includes("file contents"))
+  assert.ok(parts.some(part => part.type === "image" && part.data === image.source.data),
+    "the replay must carry the original image bytes")
+})
+
+test("an image alone before a live tool_result steers a replay and keeps the image off the MCP result", () => {
+  const call = result("call_read", "Read", "file contents")
+  const body = bodyFor([image, call.block])
+  const inspected = inspectToolTurn([call], body)
+  assert.equal(inspected.userSteered, true, "an image with no preceding text must still set userSteered")
+  assert.deepEqual(inspected.results[0].result.content, call.result.content,
+    "images before a result must not be spliced into the MCP function response")
+  const parts = renderInitialPromptParts(body, null, true)
+  assert.ok(parts.some(part => part.type === "image" && part.data === image.source.data),
+    "the replay must carry the original image bytes")
+  assert.ok(parts.map(part => part.text || "").join("").includes("file contents"),
+    "the replay must retain the real tool result")
+})
+
 test("a partial ID rename maps by full history without discarding the live ID anchor", () => {
   const original = [
     { type: "tool_use", id: "original_a", name: "Read", input: { path: "a" } },
