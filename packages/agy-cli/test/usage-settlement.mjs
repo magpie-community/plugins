@@ -705,7 +705,7 @@ test("取消的 prompt 也教会缓存占比：下一回合的工具步沿用 ag
 })
 
 
-test("同一会话未校准 Proc 上，工具环第二步起把已结算前缀计为读缓存（估算，非 ACP 回传）", async () => {
+test("同一会话未校准 Proc 上，工具环第二步起把上一步窗口计为读缓存、新增部分计为 input（估算，非 ACP 回传）", async () => {
   await withKit({}, async (kit) => {
     kit.prompts.push(async (agent) => {
       await agent.tool("Read", { path: "/one" })
@@ -729,12 +729,15 @@ test("同一会话未校准 Proc 上，工具环第二步起把已结算前缀�
       `第二步读缓存 ${second.cache_read_input_tokens} 应覆盖第一步窗口 ${firstTotal}`)
     assert.ok(second.input_tokens <= Math.max(1, secondTotal - firstTotal + 2),
       `第二步未缓存 input ${second.input_tokens} 不应再包含全部前缀`)
-    // Step 3's prior sums step 1+2 full windows, so the estimate clamps
-    // to 100% cache rather than a precise new-prefix length.
+    // Step 3 reads step 2's window from the cache and bills what was added
+    // since (the second tool result) as input, never its whole window.
     assert.ok(third.cache_read_input_tokens >= secondTotal - 2,
       `第三步读缓存 ${third.cache_read_input_tokens} 应至少覆盖第二步窗口 ${secondTotal}`)
-    assert.ok(third.cache_read_input_tokens >= thirdTotal - 1,
-      `第三步读缓存 ${third.cache_read_input_tokens} 应对该步窗口 ${thirdTotal} 夹到约 100%`)
+    assert.ok(thirdTotal > secondTotal, "第三步窗口应比第二步大")
+    assert.ok(third.input_tokens >= thirdTotal - secondTotal - 2,
+      `第三步未缓存 input ${third.input_tokens} 应覆盖第二步之后新增的 ${thirdTotal - secondTotal}`)
+    assert.ok(third.cache_read_input_tokens <= secondTotal + 2,
+      `第三步读缓存 ${third.cache_read_input_tokens} 不应超过第二步窗口 ${secondTotal}`)
     assert.equal(kit.acpSpawns.length, 1)
   })
 })

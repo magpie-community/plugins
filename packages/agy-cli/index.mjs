@@ -3830,15 +3830,16 @@ function responseUsage(proc, turn, step, content, result) {
     // ACP-reported usage. A finite ratio already learned from
     // recordPromptUsage, including a calibrated 0, is left unchanged.
     //
-    // prior sums each earlier step's full window (input + cache_read +
-    // cache_creation). Overlap already counted as cache_read on step 2 is
-    // counted again in step 3's prior, so a long tool loop clamps to 100%
-    // quickly. The bound is per-step, not a precise prefix length.
-    const prior = turn.responseSteps.reduce((total, item) => {
-      if (item === step || !item.settled || !item.usage) return total
-      return total + tokenCount(item.usage.input_tokens) +
+    // prior is the largest earlier settled step's full window (input +
+    // cache_read + cache_creation): each step's window already holds every
+    // step before it, so that is the prefix sent before. Summing the
+    // windows counted the prefix once per step, and from the third step on
+    // billed the tool result just added as cached too.
+    const prior = turn.responseSteps.reduce((largest, item) => {
+      if (item === step || !item.settled || !item.usage) return largest
+      return Math.max(largest, tokenCount(item.usage.input_tokens) +
         tokenCount(item.usage.cache_read_input_tokens) +
-        tokenCount(item.usage.cache_creation_input_tokens)
+        tokenCount(item.usage.cache_creation_input_tokens))
     }, 0)
     if (prior > 0) cacheRatio = Math.min(1, prior / input)
   }
