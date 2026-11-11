@@ -1183,6 +1183,102 @@ function unwrap(body) {
 
 const RESPONSE_HEADERS = { "content-type": "text/event-stream", "cache-control": "no-cache" }
 
+// ---- Gemini 4's rejected calls --------------------------------------------------------------
+
+const RETRY_BAD_CALL = 2
+// floorMs is how long a 400 must have taken to count as the backend's own
+// rejection of what the model made: a request that is wrong in itself is
+// refused at once, and isn't sent again
+const retry400 = { floorMs: 3000, pauseMs: 300, holdMax: 512 * 1024 }
+const isGemini4 = (id) => /^gemini-4/i.test(String(id ?? ""))
+
+// badCall is whether a reply's body is Google's INVALID_ARGUMENT
+function badCall(text) {
+  const j = parse(text)
+  const e = isObj(j) ? (isObj(j.error) ? j.error : isObj(j.response?.error) ? j.response.error : undefined) : undefined
+  if (e) return e.status === "INVALID_ARGUMENT" || (e.code === 400 && /invalid argument/i.test(String(e.message ?? "")))
+  return /INVALID_ARGUMENT|request contains an invalid argument/i.test(String(text))
+}
+
+// showsAnswer is whether a stream chunk carries something the client shows
+// beyond thinking: text, a call, a file
+function showsAnswer(j) {
+  const c = isObj(j?.response) ? j.response : j
+  for (const p of c?.candidates?.[0]?.content?.parts ?? []) {
+    if (!isObj(p) || p.thought) continue
+    if (p.functionCall || p.inlineData || p.fileData || p.executableCode || (typeof p.text === "string" && p.text !== "")) return true
+  }
+  return false
+}
+
+// holdThoughts reads a stream until it shows its first non-thinking part,
+// and holds what it read back until then. An INVALID_ARGUMENT error that
+// comes first sends nothing to the client, so the caller can ask again
+// ({bad: true}). Once an answer has begun the client has it, and the
+// stream goes through as it is: a reply can't be taken back.
+async function holdThoughts(res, signal) {
+  const rd = res.body.getReader()
+  const dec = new TextDecoder()
+  const held = []
+  let size = 0
+  let buf = ""
+  let done = false
+  let release = false
+  let bad = false
+  let failure
+  const scan = (final) => {
+    let i
+    while (!release && ((i = buf.indexOf("\n")) >= 0 || (final && buf))) {
+      const l = i >= 0 ? buf.slice(0, i) : buf
+      buf = i >= 0 ? buf.slice(i + 1) : ""
+      if (!l.startsWith("data:")) continue
+      const j = parse(l.slice(5).trim())
+      if (!isObj(j)) continue
+      if ((j.error || j.response?.error) && badCall(JSON.stringify(j))) bad = true
+      else if (showsAnswer(j)) release = true
+    }
+  }
+  try {
+    while (!release && !bad) {
+      const r = await rd.read()
+      if (r.done) {
+        done = true
+        break
+      }
+      held.push(r.value)
+      size += r.value.length
+      buf += dec.decode(r.value, { stream: true })
+      scan(false)
+      if (size > retry400.holdMax) release = true
+    }
+    if (done && !bad && !release) scan(true)
+  } catch (e) {
+    if (signal?.aborted) throw e
+    failure = e
+  }
+  if (bad) {
+    await rd.cancel().catch(() => {})
+    return { bad: true }
+  }
+  let i = 0
+  const body = new ReadableStream({
+    async pull(ctl) {
+      if (i < held.length) return ctl.enqueue(held[i++])
+      if (failure) return ctl.error(failure)
+      if (done) return ctl.close()
+      try {
+        const r = await rd.read()
+        if (r.done) ctl.close()
+        else ctl.enqueue(r.value)
+      } catch (e) {
+        ctl.error(e)
+      }
+    },
+    cancel: (r) => rd.cancel(r),
+  })
+  return { bad: false, body }
+}
+
 // complete sends a Gemini request at url (…/models/<id>:<method>) to
 // Antigravity for the account s
 async function complete(s, url, init, magpie) {
@@ -1223,29 +1319,60 @@ async function complete(s, url, init, magpie) {
       body: JSON.stringify(envelope(req, sent, l.project.id, credits, init?.headers)),
       signal: init?.signal,
     })
-  let res = await send(false)
-  let refusal
-  if (res.status === 429 && l.project.credits && usesCredits(magpie) && !turnsAway(system)) {
-    // the plan's quota is used up: the app asks before it spends AI
-    // credits, and the switch is that answer. Credits are asked for only
-    // after a refusal, so a request the plan covers never spends one.
-    //
-    // The refusal is read before the second ask: when that ask fails too,
-    // the refusal is what the agent is told. Its body can't be read after
-    // it was cancelled ("Body already used", a 502 on every retry).
-    refusal = await res.text()
-    let again
-    try {
-      again = await send(true)
-    } catch (e) {
-      if (init?.signal?.aborted) throw e
+  const attempt = async () => {
+    let res = await send(false)
+    let refusal
+    if (res.status === 429 && l.project.credits && usesCredits(magpie) && !turnsAway(system)) {
+      // the plan's quota is used up: the app asks before it spends AI
+      // credits, and the switch is that answer. Credits are asked for only
+      // after a refusal, so a request the plan covers never spends one.
+      //
+      // The refusal is read before the second ask: when that ask fails too,
+      // the refusal is what the agent is told. Its body can't be read after
+      // it was cancelled ("Body already used", a 502 on every retry).
+      refusal = await res.text()
+      let again
+      try {
+        again = await send(true)
+      } catch (e) {
+        if (init?.signal?.aborted) throw e
+      }
+      if (again?.ok) {
+        res = again
+        refusal = undefined
+      } else {
+        await again?.body?.cancel().catch(() => {})
+      }
     }
-    if (again?.ok) {
-      res = again
-      refusal = undefined
-    } else {
-      await again?.body?.cancel().catch(() => {})
+    return { res, refusal }
+  }
+  // Gemini 4 now and then fails a request the same request later passes:
+  // its backend rejects a call the model built itself (a 400
+  // INVALID_ARGUMENT after the model ran, or in the stream after thinking).
+  // Such a reply is asked again, up to RETRY_BAD_CALL times. A 400 that
+  // comes back fast is the request's own fault and is returned as it is.
+  const again400 = isGemini4(sent) || isGemini4(model)
+  let res, refusal
+  for (let n = 0; ; n++) {
+    const t0 = Date.now()
+    ;({ res, refusal } = await attempt())
+    const left = again400 && n < RETRY_BAD_CALL && !init?.signal?.aborted
+    if (!left) break
+    if (!res.ok) {
+      if (res.status !== 400) break
+      const text = refusal ?? (await res.text())
+      refusal = text
+      if (!badCall(text) || Date.now() - t0 < retry400.floorMs) break
+      await sleep(retry400.pauseMs)
+      continue
     }
+    const held = await holdThoughts(res, init?.signal)
+    if (held.bad) {
+      await sleep(retry400.pauseMs)
+      continue
+    }
+    res = new Response(held.body, { status: 200, headers: res.headers })
+    break
   }
   if (!res.ok) {
     const text = refusal ?? (await res.text())
@@ -1755,6 +1882,8 @@ export const _internal = {
   creditsOf,
   entitlements,
   complete,
+  retry400,
+  badCall,
   usage,
   tokens,
   projects,

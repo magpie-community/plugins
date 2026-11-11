@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { AntigravityAuthPlugin, _internal } from "./index.mjs"
 import { auth, fake, real, reset } from "./fake.mjs"
 
-beforeEach(reset)
+beforeEach(() => { reset(); _internal.retry400.pauseMs = 0; _internal.retry400.floorMs = 3000 })
 afterEach(() => (globalThis.fetch = real))
 
 const URL_ = (m, method = "streamGenerateContent") => `https://daily-cloudcode-pa.googleapis.com/v1beta/models/${m}:${method}?alt=sse`
@@ -257,4 +257,80 @@ test("host session headers reach the envelope's sessionId without leaking upstre
   expect(calls.length).toBe(2)
   expect(calls[0].json.request.sessionId).not.toBe(calls[1].json.request.sessionId)
   expect(calls[0].headers["x-magpie-session"]).toBeUndefined()
+})
+
+// ---- Gemini 4's rejected calls ----------------------------------------------------------
+
+const G4 = { models: { "gemini-4-carbon": { displayName: "Gemini 4 Carbon" }, "gemini-3-flash": { displayName: "Gemini 3 Flash" } } }
+const bad400 = () => new Response(JSON.stringify({ error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } }), { status: 400, headers: { "content-type": "application/json" } })
+const think = { candidates: [{ content: { role: "model", parts: [{ text: "hmm", thought: true }] } }] }
+const answer = { candidates: [{ content: { role: "model", parts: [{ functionCall: { name: "ls", args: {} } }] }, finishReason: "STOP" }] }
+const raw = (...lines) => new Response(lines.join("\r\n\r\n") + "\r\n\r\n", { status: 200, headers: { "content-type": "text/event-stream" } })
+const errChunk = "data: " + JSON.stringify({ error: { code: 400, message: "Request contains an invalid argument.", status: "INVALID_ARGUMENT" } })
+const dataOf = (c) => "data: " + JSON.stringify({ response: c })
+const calls = (seen) => seen.filter((s) => s.name === "streamGenerateContent").length
+
+test("gemini-4's slow 400 INVALID_ARGUMENT is asked again, and the retry's reply comes back", async () => {
+  _internal.retry400.floorMs = 0
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? bad400() : sse(answer)) })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  expect(await res.text()).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("a gemini-4 400 that keeps coming is asked twice more, then returned", async () => {
+  _internal.retry400.floorMs = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(400)
+  expect((await res.json()).error.status).toBe("INVALID_ARGUMENT")
+  expect(calls(seen)).toBe(3)
+})
+
+test("a fast 400 is the request's own and isn't asked again; nor is another model's", async () => {
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const f = await loaderFetch(auth())
+  _internal.retry400.floorMs = 3000
+  expect((await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).status).toBe(400)
+  expect(calls(seen)).toBe(1)
+  _internal.retry400.floorMs = 0
+  expect((await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })).status).toBe(400)
+  expect(calls(seen)).toBe(2)
+})
+
+test("an INVALID_ARGUMENT in the stream after thinking only is asked again, and no thinking is sent twice", async () => {
+  _internal.retry400.floorMs = 3000
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), dataOf(think), errChunk) : sse(think, answer)) })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  const text = await res.text()
+  expect(text).not.toContain("INVALID_ARGUMENT")
+  expect(text.split("hmm").length - 1).toBe(1)
+  expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("once an answer has begun the stream is not asked again, and its error goes through", async () => {
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), dataOf({ candidates: [{ content: { role: "model", parts: [{ text: "Hel" }] } }] }), errChunk) : sse(answer)) })
+  const f = await loaderFetch(auth())
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(text).toContain("Hel")
+  expect(text).toContain("INVALID_ARGUMENT")
+  expect(calls(seen)).toBe(1)
+})
+
+test("a generateContent reply is asked again the same way", async () => {
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), errChunk) : sse(answer)) })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon", "generateContent"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  expect(JSON.stringify(await res.json())).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
 })
