@@ -9,6 +9,9 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import path from "node:path"
+import { createRequire } from "node:module"
 import {
   baseBody, continueWithToolResults, createBridgeKit, padBodyToTokens, readJson, readSse, sleep,
   usageTotal,
@@ -282,7 +285,7 @@ test("并行工具调用合并为一次响应，只结算一次", async () => {
 test("跨事件循环的 13 个并行 MCP 调用合并：旧版 14 次 HTTP，新版 2 次", async () => {
   const observe = async (legacy, stream) => withKit({
     ...(legacy ? { indexTransform: (source) => {
-      const pattern = /            const emittedIds = new Set\(\[event.call.id\]\)[\s\S]*?(?=            stopMessage\("tool_use")/
+      const pattern = /            const emittedIds = new Set\(\[event.call.id\]\)[\s\S]*?(?=            const usage = await settleUsage)/
       assert.match(source, pattern, "旧版对照必须只恢复原来的即时队列排空逻辑")
       return source.replace(pattern, '            while (turn.events[0]?.type === "tool") emitToolUse(turn.events.shift().call)\n')
     } } : {}),
@@ -944,5 +947,727 @@ test("LRU 淘汰后，改写历史 tool_use id 的 follow-up 不得 session/resu
     assert.equal(resumes.length, 0, "改写 tool_use id 后不应 resume 已淘汰会话")
     const news = kit.acpLog.filter((item) => item.method === "session/new")
     assert.equal(news.length, 3, "应新开 session，而不是 resume 会话 A")
+  })
+})
+
+// ------------------------------------------------ agy 1.5.1+ 独立字段与 SQLite 步级真实计费
+
+test("agy 1.5.1+ 独立 inputTokens（未含读缓存）按 totalTokens 完整保留 cachedReadTokens 并校准真实缓存占比", async () => {
+  await withKit({}, async (kit) => {
+    const cancelled = {
+      inputTokens: 2133,
+      cachedReadTokens: 6399,
+      cachedWriteTokens: 0,
+      outputTokens: 30,
+      thoughtTokens: 10,
+      totalTokens: 2133 + 6399 + 30 + 10,
+    }
+    kit.prompts.push(async (agent) => {
+      await agent.text("partial answer")
+      await agent.waitCancel()
+      return { stopReason: "cancelled", usage: cancelled }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/after-cancel" })
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 2133,
+          cachedReadTokens: 28_610,
+          cachedWriteTokens: 120,
+          outputTokens: 45,
+          thoughtTokens: 15,
+          totalTokens: 2133 + 28_610 + 120 + 45 + 15,
+        },
+      }
+    })
+    const body = baseBody()
+    const controller = new AbortController()
+    const response = await kit.request(body, { signal: controller.signal })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let seen = ""
+    while (!seen.includes("text_delta")) {
+      const { value, done } = await reader.read()
+      if (done) break
+      seen += decoder.decode(value, { stream: true })
+    }
+    controller.abort()
+    await reader.read().then(() => {}, () => {})
+    for (let i = 0; i < 200 && !kit.turns[0]?.finalized; i++) await sleep(5)
+
+    // 取消的 agy 1.5.1+ prompt 应教会 6399 / (2133 + 6399) = 0.75，而不是把 6399 / 2133 截断成 1.0
+    const next = {
+      ...body,
+      messages: [...body.messages, { role: "assistant", content: [{ type: "text", text: "partial answer" }] }, { role: "user", content: "continue" }],
+    }
+    const second = await runTurn(kit, next)
+    const toolRatio = second.responses[0].usage.cache_read_input_tokens / usageTotal(second.responses[0].usage)
+    assert.ok(Math.abs(toolRatio - 0.75) < 0.03, `agy 1.5.1+ 取消后工具步缓存率 ${toolRatio}，期望约 0.75（不应误算为 1.0）`)
+  })
+
+  await withKit({}, async (kit) => {
+    const raw = {
+      inputTokens: 2133,
+      cachedReadTokens: 28_610,
+      cachedWriteTokens: 120,
+      outputTokens: 45,
+      thoughtTokens: 15,
+      totalTokens: 2133 + 28_610 + 120 + 45 + 15,
+    }
+    kit.prompts.push(async (agent) => {
+      await agent.text("answer with high cache hit")
+      return { stopReason: "end_turn", usage: raw }
+    })
+    const { responses } = await runTurn(kit, baseBody({ tools: [] }))
+    assert.deepEqual(plain(responses[0].usage), {
+      input_tokens: 2133,
+      cache_read_input_tokens: 28_610,
+      cache_creation_input_tokens: 120,
+      output_tokens: 60,
+      output_tokens_details: { thinking_tokens: 15 },
+    })
+  })
+})
+
+const localRequire = createRequire(import.meta.url)
+let openSqlite = null
+try {
+  const { Database } = localRequire("bun:sqlite")
+  openSqlite = (file) => {
+    const db = new Database(file)
+    return {
+      exec: (sql) => db.exec(sql),
+      run: (sql, ...args) => {
+        const stmt = db.prepare(sql)
+        try {
+          return stmt.run(...args)
+        } finally {
+          stmt.finalize()
+        }
+      },
+      close: () => db.close(),
+    }
+  }
+} catch {
+  try {
+    const { DatabaseSync } = localRequire("node:sqlite")
+    openSqlite = (file) => {
+      const db = new DatabaseSync(file)
+      return {
+        exec: (sql) => db.exec(sql),
+        run: (sql, ...args) => db.prepare(sql).run(...args),
+        close: () => db.close(),
+      }
+    }
+  } catch {}
+}
+
+test("SQLite gen_metadata 步级落盘：tool_use 中间步直接读取真实缓存命中并即时校准缓存率", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, write = 0, read = 0, thinking = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+    ...(thinking ? [0x48, ...varint(thinking)] : []),
+  ])))
+
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 1800, read: 18_200, write: 0, output: 32, thinking: 8 }))
+      } finally {
+        db.close()
+      }
+      await agent.tool("Read", { path: "/step1.ts" })
+      const db2 = openSqlite(dbFile)
+      try {
+        db2.run("INSERT INTO gen_metadata VALUES (2, ?)", genBlob({ input: 2100, read: 19_900, write: 0, output: 50, thinking: 10 }))
+      } finally {
+        db2.close()
+      }
+      await agent.text("done reading")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 3900,
+          cachedReadTokens: 38_100,
+          cachedWriteTokens: 0,
+          outputTokens: 82,
+          thoughtTokens: 18,
+          totalTokens: 3900 + 38_100 + 82 + 18,
+        },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.equal(responses.length, 2)
+    assert.deepEqual(plain(responses[0].usage), {
+      input_tokens: 1800,
+      cache_read_input_tokens: 18_200,
+      cache_creation_input_tokens: 0,
+      output_tokens: 40,
+      output_tokens_details: { thinking_tokens: 8 },
+    })
+    assert.deepEqual(plain(responses[1].usage), {
+      input_tokens: 2100,
+      cache_read_input_tokens: 19_900,
+      cache_creation_input_tokens: 0,
+      output_tokens: 60,
+      output_tokens_details: { thinking_tokens: 10 },
+    })
+  })
+})
+
+test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账单、不清空游标，后续步完整读取真实高命中率", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, write = 0, read = 0, thinking = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+    ...(thinking ? [0x48, ...varint(thinking)] : []),
+  ])))
+
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let secondToolElapsedMs = 0
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const writeGen = (idx, stats) => {
+        const db = openSqlite(dbFile)
+        try {
+          db.run("PRAGMA journal_mode = WAL")
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+          db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+        } finally {
+          db.close()
+        }
+      }
+      // Generation 0 一次生成 3 个工具，但 agy 串行逐个调用 MCP tools/call
+      writeGen(0, { input: 31_609, read: 22_528, output: 1255, thinking: 850 })
+      await agent.tool("Read", { path: "/a.ts" })
+      const t0 = performance.now()
+      await agent.tool("Read", { path: "/b.ts" })
+      secondToolElapsedMs = performance.now() - t0
+      await agent.tool("Read", { path: "/c.ts" })
+
+      // Generation 1 高缓存命中
+      writeGen(1, { input: 12_852, read: 54_133, output: 509, thinking: 171 })
+      await agent.tool("Read", { path: "/d.ts" })
+
+      // Generation 2 收尾高缓存命中
+      writeGen(2, { input: 2243, read: 66_986, output: 640, thinking: 283 })
+      await agent.text("all done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 31_609 + 12_852 + 2243,
+          cachedReadTokens: 22_528 + 54_133 + 66_986,
+          cachedWriteTokens: 0,
+          outputTokens: 1255 + 509 + 640,
+          thoughtTokens: 850 + 171 + 283,
+          totalTokens: 31_609 + 12_852 + 2243 + 22_528 + 54_133 + 66_986 + 1255 + 509 + 640 + 850 + 171 + 283,
+        },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.equal(responses.length, 5)
+    assert.ok(secondToolElapsedMs < 500, `同次生成续接工具耗时 ${secondToolElapsedMs.toFixed(0)}ms，不应空转等待 1000ms`)
+    assert.deepEqual(plain(responses.map((r) => r.usage)), [
+      { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 2105, output_tokens_details: { thinking_tokens: 850 } },
+      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+      { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 680, output_tokens_details: { thinking_tokens: 171 } },
+      { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 923, output_tokens_details: { thinking_tokens: 283 } },
+    ])
+  })
+})
+
+test("SQLite 空表回退（.pb 冷启动）+ maxInitialPromptBytes（112KiB）历史裁剪：窗口按送达裁剪值封顶，且次轮记住空库不再空等 1s", { skip: !openSqlite }, async () => {
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      // 模拟 agy 冷启动偶发创建空 SQLite 表并将轨迹写入 .pb
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("CREATE TABLE IF NOT EXISTS steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, metadata BLOB)")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+      } finally {
+        db.close()
+      }
+      for (let i = 0; i < 6; i++) {
+        await agent.tool("Read", { path: `/repo/chunk-${i}.ts` })
+      }
+      await agent.text("done after replay clip")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 75_000,
+          cachedReadTokens: 380_000,
+          cachedWriteTokens: 0,
+          outputTokens: 400,
+          totalTokens: 455_400,
+        },
+      }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/repo/turn2.ts" })
+      await agent.text("turn 2 done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 12_000,
+          cachedReadTokens: 88_000,
+          cachedWriteTokens: 0,
+          outputTokens: 40,
+          totalTokens: 100_040,
+        },
+      }
+    })
+
+    // 构造约 1.5MB 未裁剪历史（~360k tokens），但经 maxInitialPromptBytes()（112KiB）与单块 12KiB 裁剪后送入 agy 的窗口仅 ~100k tokens
+    const historyTurn = "historical context line for replay trimming verification. ".repeat(900)
+    const messages = []
+    for (let i = 0; i < 11; i++) {
+      messages.push({ role: "user", content: `turn ${i}: ${historyTurn}` })
+      messages.push({ role: "assistant", content: `ack ${i}: ${historyTurn}` })
+    }
+    messages.push({ role: "user", content: "continue investigating the current module" })
+    const body = await padBodyToTokens(kit, baseBody({ messages }), 360_000)
+    const rawEstimate = await kit.countTokens(body)
+    assert.equal(rawEstimate, 360_000)
+
+    const firstTurn = await runTurn(kit, body, {
+      resultFor: (_block, index) => "tool output line ".repeat(200) + `#${index}`,
+    })
+    const { responses } = firstTurn
+    assert.equal(responses.length, 7)
+    const toolSteps = responses.slice(0, 6)
+
+    // 第 1 步按实际送入 agy 的裁剪后窗口结算，绝不报未裁剪的 ~360k
+    const firstWindow = usageTotal(toolSteps[0].usage)
+    assert.ok(firstWindow < 120_000, `裁剪后首步窗口 ${firstWindow} 仍按未裁剪全量估算`)
+    assert.equal(toolSteps[0].usage.cache_read_input_tokens, 0)
+
+    // 第 2..6 步：前序已发送前缀转入 cache_read，uncached input 只计本步新增增量
+    for (let i = 1; i < toolSteps.length; i++) {
+      const prevWindow = usageTotal(toolSteps[i - 1].usage)
+      const curr = toolSteps[i].usage
+      assertCleanUsage(curr, `裁剪回退工具步 #${i + 1}`)
+      assert.ok(curr.cache_read_input_tokens >= prevWindow - 1, `工具步 #${i + 1} 未命中前序前缀缓存`)
+      assert.ok(curr.input_tokens < 5_000, `工具步 #${i + 1} uncached input=${curr.input_tokens} 重复计入全量窗口`)
+    }
+
+    const sumIn = toolSteps.reduce((s, r) => s + r.usage.input_tokens, 0)
+    const sumRead = toolSteps.reduce((s, r) => s + r.usage.cache_read_input_tokens, 0)
+    const hitRate = sumRead / (sumIn + sumRead)
+    assert.ok(sumIn < 130_000, `6 步累计 uncached input=${sumIn} 远超单次裁剪窗口（旧缺陷：6 × 360k = 2.16M）`)
+    assert.ok(hitRate > 0.75, `回退多步命中率 ${(hitRate * 100).toFixed(1)}% 过低`)
+
+    // 第 2 回合复用同一 Proc：已记住该会话 SQLite 无可用行，首步 tool_use 不再白等 1000ms
+    const turn2Messages = [
+      ...firstTurn.bodies.at(-1).messages,
+      { role: "assistant", content: plain(responses.at(-1).content) },
+      { role: "user", content: "follow up on the same cold-started session" },
+    ]
+    const t0 = performance.now()
+    const firstToolResp = await readSse(await kit.request({ ...body, messages: turn2Messages }))
+    const turn2FirstStepMs = performance.now() - t0
+    assert.equal(kit.acpSpawns.length, 1, "第 2 回合应复用同一 Proc")
+    assert.equal(firstToolResp.stopReason, "tool_use")
+    assert.ok(turn2FirstStepMs < 500, `第 2 回合首步耗时 ${turn2FirstStepMs.toFixed(0)}ms，不应再次轮询等待 1000ms`)
+    const finishBody = continueWithToolResults({ ...body, messages: turn2Messages }, firstToolResp, () => "ok")
+    const finalResp = await readSse(await kit.request(finishBody))
+    assert.equal(finalResp.stopReason, "end_turn")
+  })
+})
+
+test("跨回合隔离：上一回合被取消或超时回退后延迟落盘的 SQLite 行绝不串入下一回合", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, write = 0, read = 0, thinking = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+    ...(thinking ? [0x48, ...varint(thinking)] : []),
+  ])))
+
+  // 场景 1：第 1 回合取消，150ms 后延迟落盘 {input: 50000, output: 900}；第 2 回合首步绝不能把这 900 output 算进来
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    const writeGen = (sessionId, idx, stats) => {
+      const db = openSqlite(path.join(convDir, `${sessionId}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+      } finally {
+        db.close()
+      }
+    }
+
+    let lateTimer = null
+    kit.prompts.push(async (agent) => {
+      const db = openSqlite(path.join(convDir, `${agent.sessionId}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+      } finally {
+        db.close()
+      }
+      await agent.text("partial")
+      await agent.waitCancel()
+      lateTimer = setTimeout(() => {
+        try { writeGen(agent.sessionId, 1, { input: 50_000, read: 0, output: 900 }) } catch {}
+      }, 150)
+      return { stopReason: "cancelled", usage: { inputTokens: 50_000, cachedReadTokens: 0, outputTokens: 900, totalTokens: 50_900 } }
+    })
+    kit.prompts.push(async (agent) => {
+      await sleep(220)
+      writeGen(agent.sessionId, 2, { input: 1000, read: 49_000, output: 20 })
+      await agent.tool("Read", { path: "/after-cancel.ts" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 1000, cachedReadTokens: 49_000, outputTokens: 25, totalTokens: 50_025 } }
+    })
+
+    try {
+      const body = baseBody()
+      const controller = new AbortController()
+      const response = await kit.request(body, { signal: controller.signal })
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let seen = ""
+      while (!seen.includes("text_delta")) {
+        const { value, done } = await reader.read()
+        if (done) break
+        seen += decoder.decode(value, { stream: true })
+      }
+      controller.abort()
+      await reader.read().then(() => {}, () => {})
+      for (let i = 0; i < 200 && !kit.turns[0]?.finalized; i++) await sleep(5)
+
+      const next = {
+        ...body,
+        messages: [...body.messages, { role: "assistant", content: [{ type: "text", text: "partial" }] }, { role: "user", content: "next turn" }],
+      }
+      const { responses } = await runTurn(kit, next)
+      assert.equal(kit.acpSpawns.length, 1, "同一会话复用 Proc")
+      assert.ok(responses[0].usage.output_tokens < 200,
+        `第 2 回合首步 output_tokens=${responses[0].usage.output_tokens} 误吞入了上一取消回合延迟写入的 900 token`)
+    } finally {
+      clearTimeout(lateTimer)
+    }
+  })
+
+  // 场景 2：第 1 回合超时回退（SQLite 行在第 1 回合结束后才落盘），第 2 回合同样不得误计该晚到行
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let sessionId
+    const writeGen = (id, idx, stats) => {
+      const db = openSqlite(path.join(convDir, `${id}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+      } finally {
+        db.close()
+      }
+    }
+
+    kit.prompts.push(async (agent) => {
+      sessionId = agent.sessionId
+      const db = openSqlite(path.join(convDir, `${sessionId}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+      } finally {
+        db.close()
+      }
+      await agent.text("short reply")
+      return { stopReason: "end_turn", usage: { inputTokens: 3000, cachedReadTokens: 0, outputTokens: 10, totalTokens: 3010 } }
+    })
+    kit.prompts.push(async (agent) => {
+      writeGen(agent.sessionId, 2, { input: 1000, read: 2000, output: 15 })
+      await agent.tool("Read", { path: "/turn2.ts" })
+      await agent.text("ok")
+      return { stopReason: "end_turn", usage: { inputTokens: 1000, cachedReadTokens: 2000, outputTokens: 20, totalTokens: 3020 } }
+    })
+
+    const body = baseBody()
+    const turn1 = await runTurn(kit, body)
+    // 第 1 回合已回退结算后，其延迟行（output: 900）才写入 SQLite
+    writeGen(sessionId, 1, { input: 3000, read: 0, output: 900 })
+    const next = {
+      ...body,
+      messages: [...body.messages, { role: "assistant", content: plain(turn1.responses[0].content) }, { role: "user", content: "turn 2" }],
+    }
+    const turn2 = await runTurn(kit, next)
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(turn2.responses[0].usage.output_tokens < 200,
+      `第 2 回合首步 output_tokens=${turn2.responses[0].usage.output_tokens} 误计入了回退回合的晚到行`)
+  })
+})
+
+test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预写慢行在后续步合并 output 且单步窗口只取最新一笔", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, write = 0, read = 0, thinking = 0 }, context = 24_000) => {
+    const stats = [
+      0x10, ...varint(input), 0x18, ...varint(output),
+      ...(write ? [0x20, ...varint(write)] : []),
+      ...(read ? [0x28, ...varint(read)] : []),
+      ...(thinking ? [0x48, ...varint(thinking)] : []),
+    ]
+    return new Uint8Array(field(1, [...field(4, stats), ...field(9, field(10, [8, ...varint(context)]))]))
+  }
+
+  // 子场景 1：gen_metadata 先有 pre-send 估算行（pending: true），真实计费 150ms（>75ms）后才写入 -> 当步必须等齐并精确上报
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let lateTimer = null
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const upsertGen = (idx, stats) => {
+        const db = openSqlite(dbFile)
+        try {
+          db.exec("PRAGMA journal_mode = WAL")
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+          db.run("INSERT OR REPLACE INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+        } finally {
+          db.close()
+        }
+      }
+      upsertGen(1, { input: 1800, read: 18_200, output: 32, thinking: 8 })
+      await agent.tool("Read", { path: "/step1.ts" })
+
+      // 第 2 步先写入 0 计费的 pre-send 行（触发 pending: true），150ms 后才落盘真实计费
+      upsertGen(2, { input: 0, read: 0, output: 0, thinking: 0 })
+      lateTimer = setTimeout(() => {
+        try { upsertGen(2, { input: 2100, read: 19_900, output: 50, thinking: 10 }) } catch {}
+      }, 150)
+      await agent.tool("Read", { path: "/step2.ts" })
+
+      upsertGen(3, { input: 2400, read: 22_000, output: 40, thinking: 5 })
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 1800 + 2100 + 2400,
+          cachedReadTokens: 18_200 + 19_900 + 22_000,
+          cachedWriteTokens: 0,
+          outputTokens: 32 + 50 + 40,
+          thoughtTokens: 8 + 10 + 5,
+          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40 + 8 + 10 + 5,
+        },
+      }
+    })
+    try {
+      const { responses } = await runTurn(kit, baseBody())
+      assert.equal(responses.length, 3)
+      assert.deepEqual(plain(responses[1].usage), {
+        input_tokens: 2100,
+        cache_read_input_tokens: 19_900,
+        cache_creation_input_tokens: 0,
+        output_tokens: 60,
+        output_tokens_details: { thinking_tokens: 10 },
+      })
+    } finally {
+      clearTimeout(lateTimer)
+    }
+  })
+
+  // 子场景 2：无 pre-send 行且无文本块，第 2 步的整行在 150ms（>75ms）后才首次落盘：
+  // 钉死行为：第 2 步按 75ms 超时先结 0；第 3 步看到 [Gen 2, Gen 3] 两笔调用时，
+  // 必须只报最新一笔调用的上下文窗口（严禁累加翻倍），并合并两笔的 output_tokens。
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let lateTimer = null
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const writeGen = (idx, stats) => {
+        const db = openSqlite(dbFile)
+        try {
+          db.exec("PRAGMA journal_mode = WAL")
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+          db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+        } finally {
+          db.close()
+        }
+      }
+      writeGen(1, { input: 1800, read: 18_200, output: 32, thinking: 8 })
+      await agent.tool("Read", { path: "/s1.ts" })
+
+      lateTimer = setTimeout(() => {
+        try { writeGen(2, { input: 2582, read: 83_270, output: 453, thinking: 0 }) } catch {}
+      }, 150)
+      await agent.tool("Read", { path: "/s2.ts" })
+
+      await sleep(120)
+      writeGen(3, { input: 2355, read: 83_803, output: 100, thinking: 15 })
+      await agent.text("completed")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 1800 + 2582 + 2355,
+          cachedReadTokens: 18_200 + 83_270 + 83_803,
+          cachedWriteTokens: 0,
+          outputTokens: 32 + 453 + 100,
+          thoughtTokens: 8 + 15,
+          totalTokens: 1800 + 2582 + 2355 + 18_200 + 83_270 + 83_803 + 32 + 453 + 100 + 8 + 15,
+        },
+      }
+    })
+    try {
+      const { responses } = await runTurn(kit, baseBody())
+      assert.equal(responses.length, 3)
+      assert.deepEqual(plain(responses.map((r) => r.usage)), [
+        { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 40, output_tokens_details: { thinking_tokens: 8 } },
+        { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
+        { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 568, output_tokens_details: { thinking_tokens: 15 } },
+      ])
+    } finally {
+      clearTimeout(lateTimer)
+    }
+  })
+
+  // 子场景 3：无 pre-send 行，但第 2 步在 tool_use 前已流出文本块（必为新生成，不可共享上一生成）：
+  // 即使整行在 150ms（>75ms）后才首次落盘，也必须按 1000ms 等待并在第 2 步当步精确上报。
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let lateTimer = null
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const writeGen = (idx, stats) => {
+        const db = openSqlite(dbFile)
+        try {
+          db.exec("PRAGMA journal_mode = WAL")
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+          db.run("INSERT INTO gen_metadata VALUES (?, ?)", idx, genBlob(stats))
+        } finally {
+          db.close()
+        }
+      }
+      writeGen(1, { input: 1800, read: 18_200, output: 32, thinking: 8 })
+      await agent.tool("Read", { path: "/t1.ts" })
+
+      lateTimer = setTimeout(() => {
+        try { writeGen(2, { input: 2100, read: 19_900, output: 50, thinking: 10 }) } catch {}
+      }, 150)
+      await agent.text("inspecting next file ")
+      await agent.tool("Read", { path: "/t2.ts" })
+
+      writeGen(3, { input: 2400, read: 22_000, output: 40, thinking: 5 })
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 1800 + 2100 + 2400,
+          cachedReadTokens: 18_200 + 19_900 + 22_000,
+          cachedWriteTokens: 0,
+          outputTokens: 32 + 50 + 40,
+          thoughtTokens: 8 + 10 + 5,
+          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40 + 8 + 10 + 5,
+        },
+      }
+    })
+    try {
+      const { responses } = await runTurn(kit, baseBody())
+      assert.equal(responses.length, 3)
+      assert.deepEqual(plain(responses[1].usage), {
+        input_tokens: 2100,
+        cache_read_input_tokens: 19_900,
+        cache_creation_input_tokens: 0,
+        output_tokens: 60,
+        output_tokens_details: { thinking_tokens: 10 },
+      })
+    } finally {
+      clearTimeout(lateTimer)
+    }
+  })
+})
+
+test("SQLite 异常保护：超额失真行触发回退，EXCLUSIVE 锁库立即停止轮询不阻塞", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, write = 0, read = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+  ])))
+
+  // 子场景 1：SQLite 记录的累计 prompt 远超 ACP 终态上报（> expected + max(16, 1%)），必须拒信并回退到有界估算
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      const db = openSqlite(path.join(convDir, `${agent.sessionId}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 45_000, read: 45_000, output: 30 }))
+      } finally {
+        db.close()
+      }
+      await agent.text("short answer")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 1500, cachedReadTokens: 4500, cachedWriteTokens: 0, outputTokens: 30, totalTokens: 6030 },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.ok(usageTotal(responses[0].usage) <= 6000,
+      `超额失真的 SQLite 行（90000）未被拦截，实际返回窗口=${usageTotal(responses[0].usage)}`)
+  })
+
+  // 子场景 2：数据库被 EXCLUSIVE 锁住（SQLITE_BUSY）时立即放弃轮询，不耗满 1000ms
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let locker = null
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      locker = openSqlite(dbFile)
+      locker.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+      locker.exec("BEGIN EXCLUSIVE")
+      locker.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 2000, read: 4000, output: 20 }))
+      await agent.text("checking ")
+      await agent.tool("Read", { path: "/locked.ts" })
+      locker.exec("ROLLBACK")
+      locker.close()
+      locker = null
+      await agent.text("unlocked done")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 2000, cachedReadTokens: 4000, cachedWriteTokens: 0, outputTokens: 25, totalTokens: 6025 },
+      }
+    })
+    try {
+      const body = baseBody()
+      const t0 = performance.now()
+      const toolResp = await readSse(await kit.request(body))
+      const toolElapsedMs = performance.now() - t0
+      assert.equal(toolResp.stopReason, "tool_use")
+      assert.ok(toolElapsedMs < 500, `SQLITE_BUSY 时首步耗时 ${toolElapsedMs.toFixed(0)}ms，不应重复轮询阻塞至 1000ms`)
+      const finalResp = await readSse(await kit.request(continueWithToolResults(body, toolResp, () => "ok")))
+      assert.equal(finalResp.stopReason, "end_turn")
+    } finally {
+      try { locker?.exec("ROLLBACK") } catch {}
+      try { locker?.close() } catch {}
+    }
   })
 })

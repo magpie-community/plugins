@@ -20,6 +20,7 @@ for (const [name, mocks] of [
   ["prefill.mjs", false],
   ["usage.mjs", true],
   ["catalog.mjs", false],
+  ["step-usage.mjs", false],
   ["usage-settlement.mjs", false],
   ["repeat-batch.mjs", false],
   ["conversation-key.mjs", false],
