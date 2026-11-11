@@ -31,6 +31,7 @@ export const REPO_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)
 export const INDEX_FILE = process.env.AGY_BRIDGE_TEST_INDEX || path.join(REPO_DIR, "index.mjs")
 export const USAGE_FILE = path.join(REPO_DIR, "usage.mjs")
 export const PLATFORM_FILE = path.join(REPO_DIR, "platform.mjs")
+export const ARRAY_ITEMS_FILE = path.join(REPO_DIR, "array-items.mjs")
 export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
@@ -475,6 +476,7 @@ export async function createBridgeKit(options = {}) {
   const indexUrl = pathToFileURL(path.join(REPO_DIR, "index.mjs")).href
   const usageUrl = pathToFileURL(USAGE_FILE).href
   const platformUrl = pathToFileURL(PLATFORM_FILE).href
+  const arrayItemsUrl = pathToFileURL(ARRAY_ITEMS_FILE).href
   const loginUrl = pathToFileURL(LOGIN_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
@@ -484,6 +486,7 @@ export async function createBridgeKit(options = {}) {
     let module
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
+    else if (key === "./array-items.mjs") module = sourceModule(ARRAY_ITEMS_FILE, "", arrayItemsUrl)
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)

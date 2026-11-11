@@ -9,6 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
 import { startLogin } from "./login.mjs"
+import { ensureGeminiArrayItems } from "./array-items.mjs"
 
 const PROVIDER_ID = "agy-cli"
 // Client tools reach the session through a private `nc` placed first on agy's
@@ -2715,6 +2716,7 @@ function appendSchemaHint(node, hint) {
   }
 }
 
+
 // Sanitize JSON Schema constructs that agy's ACP -> Google Code Assist translator
 // converts into invalid Schema protos (e.g. union types leaving stale array/object
 // keywords, or non-string/empty enum entries producing `enum[0]: cannot be empty`).
@@ -2839,7 +2841,7 @@ function normalizeTools(body) {
     if (!rawSchema || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }
-    const inputSchema = sanitizeInputSchema(rawSchema)
+    const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(rawSchema))
     tools.push({
       name: tool.name,
       description: typeof tool.description === "string" ? tool.description : "",
@@ -4487,3 +4489,4 @@ process.once("exit", () => {
 })
 
 export default { id: PROVIDER_ID, server: AntigravityBridgePlugin }
+

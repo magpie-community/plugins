@@ -1853,6 +1853,14 @@ for (const location of ["inline", "system", "developer", "user"]) {
         union_arr: { type: ["object", "array"], items: { type: "string" } },
         stale_items: { type: ["string", "number"], items: { type: "string" }, properties: { bad: { type: "string" } } },
         num_enum: { type: "integer", enum: [0, 1, 2] },
+        input_images: {
+          type: "array",
+          anyOf: [
+            { type: "array", items: { type: "string" } },
+            { type: "null" },
+          ],
+        },
+        bare_list: { type: "array" },
       },
       required: ["union_arr", "missing_field"],
     },
@@ -1884,6 +1892,30 @@ for (const location of ["inline", "system", "developer", "user"]) {
     /Allowed values: 0, 1, 2/.test(initTool?.inputSchema?.properties?.num_enum?.description || "") &&
     JSON.stringify(initTool?.inputSchema?.required) === JSON.stringify(["union_arr"]),
     JSON.stringify(initTool?.inputSchema))
+
+  const filledImages = initTool?.inputSchema?.properties?.input_images
+  const filledBare = initTool?.inputSchema?.properties?.bare_list
+  const bareDepth = (() => {
+    let depth = 0
+    let node = filledBare?.items
+    while (node?.anyOf) {
+      const arrayBranch = node.anyOf.find(branch => branch && branch.type === "array")
+      if (!arrayBranch) break
+      depth++
+      node = arrayBranch.items
+    }
+    return depth
+  })()
+  check("request-path array items fills production input_images and a bare array",
+    filledImages?.items?.type === "string" &&
+    Array.isArray(filledImages?.anyOf) &&
+    filledImages.anyOf.some(branch => branch && branch.type === "null") &&
+    (filledBare?.description || "").includes("array items were untyped") &&
+    !/gemini/i.test(JSON.stringify(initTool?.inputSchema || {})),
+    JSON.stringify({ input_images: filledImages, bare_list: filledBare }))
+  check("request-path permissive items have a fixed depth of 8",
+    bareDepth === 8,
+    String(bareDepth))
 
   const pdfRes = await callFetch({
     model,
