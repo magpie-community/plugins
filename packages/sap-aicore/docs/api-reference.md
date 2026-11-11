@@ -23,15 +23,17 @@ curl "$MAGPIE_GATEWAY/v1/responses" \
 
 ## Request fields
 
-Supported fields include `model`, native text/history `input`, `instructions`, positive integer `max_output_tokens`, string `prompt_cache_key`, function `tools`, `tool_choice`, `stream`, and `include:["reasoning.encrypted_content"]`. When the selected model's catalog version advertises image input (`inputTypes` contains `image`), user-message `input_image` parts carrying a `data:` or `https:` `image_url` (optional `detail:auto|low|high`) are accepted and forwarded verbatim; text-only versions reject them. Live-verified: `gpt-6-astra` read a base64 PNG through `/responses`.
+GPT requests are transparently forwarded to the selected AI Core deployment: every top-level field, including `client_metadata`, `text`, `parallel_tool_calls`, `truncation`, and unknown protocol extensions, is retained. Generation controls, tool definitions, nested history/content, image detail, and model-specific combinations are validated by AI Core rather than local allowlists. The plugin does not strip telemetry, convert Chat fields, or execute tools; only the Codex tool surface (`namespace` flattening, `custom`/non-function tool drop, `tool_choice` adaptation, and orphaned custom-tool history removal) is translated before dispatch. Forwarding a shape does not advertise backend support or guarantee that the client/gateway can execute its complete tool loop. Model discovery still advertises image capability only when the catalog reports it; GPT image requests are not rejected locally based on that advertisement.
 
-Reasoning accepts `effort:low`, `medium`, or `high`, optionally with `summary:auto`. Cache-key acceptance does not guarantee cache hits. Output budgets of 1024 and 128000 were accepted; this is not a maximum-length generation guarantee.
+Earlier live probes accepted reasoning `effort:low|medium|high` with optional `summary:auto`, cache keys, and output budgets of 1024 and 128000. These are observations, not local restrictions or a maximum-generation guarantee. Other values reach backend validation unchanged; cache-key acceptance does not guarantee cache hits.
 
-`store:false` is supplied when omitted. Explicit `background:false` is accepted. Stateful storage, `previous_response_id`, conversation references, background jobs, lifecycle requests, compaction, hosted tools, non-image multimodal input (audio, video, file references), and Chat request fields are unsupported. Unsupported fields fail rather than being silently removed.
+Local guards still require a JSON-object body, a non-empty routing `model`, and boolean `stream` when supplied. `store:false` is supplied when omitted; any other explicit `store` value is rejected. Explicit `background:false` is accepted; other values, `previous_response_id`, and `conversation` are rejected. Lifecycle routes, separate compaction routes, and WebSocket transport remain unsupported. Chat Completions routes remain unsupported at the plugin; fields received on `/responses` are forwarded without conversion, including `prompt` references and unknown fields. Native backend failures retain their status and error details with existing credential redaction, without inference retries.
 
 ## Function tools and history
 
-Tools use native Responses function definitions with `name`, `parameters`, and supported `strict:true`. The agent executes tools; the plugin does not. A `function_call_output` requires a non-empty string `call_id`; its `output` may be a string or an array of `input_text` / `input_image` parts. Image parts use the same model-capability gate and URL/detail validation as user attachments. Image tool results are covered by mocked transport tests, not a live SAP round-trip.
+Native function tools and their call/output history are forwarded unchanged. For richer client harnesses such as Codex, each `namespace` container is flattened to qualified native functions: `collaboration.spawn_agent` is sent as `collaboration__spawn_agent`. Functions with the same bare name in different namespaces remain distinct; native names are reserved unchanged. Identical repeated declarations of the same namespaced function emit one tool; conflicting definitions or malformed namespaces are rejected before dispatch. Ambiguous or overly long qualified names use deterministic bounded aliases. A per-request reverse map restores the original `name` and `namespace` in JSON output, SSE output items and terminal responses, including incomplete and failed output. Argument-completion events also restore their name/namespace when their item ID and alias match a restored call in that stream. Restored calls receive an empty `encrypted_function_args` list when absent so Codex treats arguments as plaintext. Replayed namespaced calls and forced function choices use the same mapping; replay removes namespace fields and empty plaintext markers before SAP dispatch. Call IDs, arguments and opaque reasoning remain unchanged.
+
+`custom`/freeform and other non-function tools are dropped, along with orphaned `custom_tool_call`/`custom_tool_call_output` history. Native `tool_choice` restrictions, unknown shapes and undeclared targets remain unchanged for backend validation. Choices referencing translated functions are qualified. For `allowed_tools`, only entries referencing declared dropped tools are removed; surviving entries, `mode` and extension fields are preserved. A choice left with no supported target becomes `"auto"` when function tools remain, otherwise it is omitted. When all declared tools are dropped, `tools` and a `"required"` choice are removed; unrelated choices remain intact. This translation is stateless and does not execute tools. The agent executes surviving functions and must preserve `call_id` separately from the output item's `id`.
 
 Continuation must preserve original input and every returned output item in order, including reasoning items and exact argument strings. Pair results using `call_id`, not the output item's `id`:
 
@@ -70,13 +72,67 @@ Supported fields: `model`, `messages`, string or text-block `system`, required n
 
 The discovered Opus 4.8 version `1` rejects explicit `temperature`, `top_p`, and enabled/fixed-budget thinking locally. Sonnet 4.6 version `1` rejects combined `temperature` plus `top_p`, and enabled thinking with forced tool use; either sampling setting individually and fixed-budget thinking are retained. Both baseline versions advertise and enforce `max_tokens <= 128000`; this is not a maximum-length generation guarantee. Newer releases or active versions do not inherit these restrictions or limits: structurally valid recognized controls reach upstream validation. No sampling defaults are injected. Unknown body/tool fields, non-image multimodal content, and hosted tools are rejected; base64 image blocks are accepted only when the matched catalog version advertises image input. Client-only `metadata` (including `metadata.user_id` session tracking) is accepted and silently removed before both whole-reply and streaming Bedrock dispatch; it is not forwarded upstream. Two explicit boolean client-only tool hints, `eager_input_streaming` and `defer_loading`, are accepted and removed before Bedrock dispatch; they are not native tool capabilities.
 
-`context_management` and `anthropic_beta` are opaque native fields. The plugin does not validate their contents; SAP and Bedrock own that. Both reach the Bedrock body unchanged, including unknown edit types, keep policies, extra fields, multiple edits, and future beta strings. When `context_management` is present and the caller sends no `anthropic_beta`, the plugin adds the known default `anthropic_beta:["context-management-2025-06-27"]`. An explicit `anthropic_beta` is forwarded verbatim and overrides that default, including an empty list or null; SAP rejects an invalid format. Without `context_management`, the plugin adds no default beta; an explicit beta still passes through. SAP can reject novel or malformed directives, and its errors surface without retries or silent dropping.
-
-Live-verified through SAP deployments from Lima: Opus 4.8, Opus 4.6, and Sonnet 4.6 accept the literal `{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}` directive with adaptive thinking for whole replies and streaming. Sonnet 4.6 also accepts enabled thinking and continuation with real signed prior thinking blocks. Without the beta, SAP returns 400 `context_management: Extra inputs are not permitted`. Opus 4.8 also accepts `keep:{"type":"thinking_turns","value":2}` for whole replies and streaming. Unknown edit types and a future beta identifier reached SAP and returned native 400 errors, with one inference attempt per request. Default retention without the directive was not compared; the plugin preserves the requested policy rather than silently dropping it.
-
 Agent-executed continuation resends the original messages, the complete returned assistant `content` array in order (text, `tool_use`, signed `thinking` including empty text, `redacted_thinking`), and a user message of `tool_result` blocks paired by the original `tool_use.id`. The agent executes tools; the plugin neither executes them nor repairs reasoning. Each `tool_result.content` may be a string or an array of text/base64-image blocks, with images subject to the same model-capability gate and source validation as user attachments. Other nested content types remain unsupported. Image tool results are covered by mocked transport tests, not a live SAP round-trip. A rejected signature or mismatched result surfaces as an upstream error.
 
 Streaming is accepted only when the matched catalog version explicitly reports support. SAP's data-only Anthropic SSE (`message_start`, `content_block_*`, `message_delta`, `message_stop`, `error`; no `event:` or `[DONE]` required) is relayed one bounded frame at a time. Text and `input_json_delta` tool arguments arrive incrementally. Successful completion requires a valid `message_start`, a `message_delta` carrying a non-empty `stop_reason`, and `message_stop`; a bare stop frame, malformed terminal state, or missing terminal is a failure.
+
+## Gemini (native Vertex AI)
+
+Gemini models are projected as `@ai-sdk/google`. Native clients put the model in the URL, not the request body:
+
+```sh
+curl "$MAGPIE_GATEWAY/v1beta/models/sap-aicore/gemini-3.8-flash:generateContent" \
+  -H "Authorization: Bearer $MAGPIE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [{"role":"user","parts":[{"text":"Reply with GEMINI_OK."}]}],
+    "systemInstruction": {"parts":[{"text":"Be concise."}]},
+    "generationConfig": {"maxOutputTokens":1024}
+  }'
+```
+
+For SSE, use `:streamGenerateContent?alt=sse` and `curl -N`. The plugin receives `/models/<model>:generateContent` or `/models/<model>:streamGenerateContent?alt=sse` on the account root and appends the same model/action to the validated SAP deployment URL. Only the streaming action accepts the exact `alt=sse` query. Conflicting body `model`/`stream` selectors fail locally; both routing fields are removed before SAP dispatch. No Vertex project/location path or API-version query is added. Omit body `model`/`stream` fields for verbatim native request forwarding: validated model-in-path JSON is retained without re-encoding signed numeric arguments. Successful whole replies and SSE frames are likewise relayed without re-encoding their signed parts; explicit routing envelopes are serialized after their routing fields are stripped.
+
+Supported native camelCase fields: `contents` (user/model roles with parts), text-only `systemInstruction`, `generationConfig`, function `tools`, `toolConfig.functionCallingConfig`, and `safetySettings`. Parts may carry text, opaque `thoughtSignature`, model-only boolean `thought`, `functionCall`, user `functionResponse`, or base64 image `inlineData` when the matched catalog version advertises image input. Function response text belongs in its JSON `response` object; optional image `parts` use the same eligibility gate. PNG, JPEG, WebP, HEIC and HEIF MIME types are recognized; audio/video and remote `fileData` references are rejected. The plugin never treats a thought summary as final answer text.
+
+Generation configuration supports positive integer `maxOutputTokens`, `topK` and `candidateCount`, integer `seed`, finite `temperature`/`topP`/penalties, string `stopSequences`, `responseMimeType` (`text/plain` or `application/json`), one of `responseSchema`/`responseJsonSchema`, and `thinkingConfig`. Schemas and user-defined argument/result keys are preserved, not normalized. Thinking accepts `includeThoughts`, either integer `thinkingBudget >= -1` or `thinkingLevel: MINIMAL|LOW|MEDIUM|HIGH` (SDK lowercase forms are accepted and preserved too). These are structural checks, not promises that every model/version accepts each setting. SAP's native rejection is preserved; no inference fallback or retry is added.
+
+Function declarations preserve `name`, optional `description`, one of `parameters`/`parametersJsonSchema` and one of `response`/`responseJsonSchema`. Calling modes are `AUTO`, `ANY`, `NONE`, or `VALIDATED`, with optional `allowedFunctionNames`.
+
+### Gemini tool history
+
+The agent executes the declared function locally. Send the original returned model content back unchanged, including every signed part and original function-call ID; append native function responses. Do not reconstruct signed parts, concatenate them, move signatures or discard opaque thought parts:
+
+```js
+const modelContent = reply.candidates[0].content
+const results = modelContent.parts.filter(part => part.functionCall).map(part => {
+  const call = part.functionCall
+  return {
+    functionResponse: {
+      ...(call.id === undefined ? {} : { id: call.id }),
+      name: call.name,
+      response: executeFunction(call.name, call.args ?? {}), // JSON object
+    },
+  }
+})
+const continuation = {
+  ...request,
+  contents: [...request.contents, modelContent, { role: "user", parts: results }],
+  toolConfig: { functionCallingConfig: { mode: "NONE" } },
+}
+```
+
+For SSE, retain native signed parts in order while gathering the model turn. Native `candidates`, `finishReason`, `promptFeedback`, `usageMetadata`, `modelVersion`, signatures and other response metadata pass through at plugin fetch. Gemini finishes at a framed EOF after each observed candidate has a finish reason (or a native prompt block); it has no `[DONE]` marker. Usage-only frames after `finishReason` are retained. Missing finish reasons, partial trailing frames, invalid UTF-8/JSON, network failures and oversized frames yield a native Gemini error frame, never fabricated successful completion. Consumer cancellation cancels the owned upstream reader.
+
+### Gemini gateway prerequisite and evidence
+
+**Magpie `0.1.2990` does not preserve all signed Gemini parts:** streamed signed text becomes unsigned text followed by an empty signed part; signed thought history is dropped. A targeted host fix is required for the mandatory signed tool loop. The [source compatibility notes and patch](https://github.com/caikn/magpie-plugin-aicore/blob/main/docs/gemini-support-spec.md) cover the isolated fixed build. The plugin does not repair the host's history or replace the installed binary.
+
+Synthetic gateway checks cover restored mixed GPT/Claude/Gemini accounts, streamed and whole native Gemini tool turns with signed text/thought parts and original IDs, local multiplication and correct continuation, text, inline images and structured JSON. Those checks pass on the isolated patched host. Thinking controls/UI and exact schemas/usage metadata can still be adapted by the gateway; native plugin fidelity is not a byte-for-byte gateway guarantee. Authorized live gateway runs passed whole text, SSE, inline PNG input and a signed function-call loop on `gemini-3.8-flash` version `001` with the isolated patched build. A JSON-key-order comparison bug in the first observer was fixed offline; the separately authorized two-generation recheck verified the original signed function-call part and provided ID at SAP, and local multiplication produced final answer `437`. A separately requested single-generation image check preserved a generated PNG as native `inlineData` and correctly identified its blue-left/red-right halves. A subsequent eight-generation batch passed both schema inputs, parallel signed calls, lowercase `low`/`includeThoughts:true` and original signed text replay. The host emitted native `responseJsonSchema` for both client schema formats. No thought-summary or signed-thought parts were returned. The image function-result reached SAP unchanged in bytes/signature/ID but was flattened into adjacent content by the host; SAP returned HTTP 400. A native Gemini 3+ `functionResponse.parts` preservation fix passes offline Go/race and gateway checks. Its separately approved two-generation live recheck also passed: the original PNG remained nested, the original signed call/ID were preserved, and the model identified the correct colors. Other image formats, genuine signed-thought replay, visible summaries and renewal remain unverified. See the [dated live record](https://github.com/caikn/magpie-plugin-aicore/blob/main/docs/gemini-support-spec.md#live-verification-status--2026-11-08).
+
+Built-in `codeExecution`, `urlContext`, `googleSearch`, token counting, caching, audio/video and remote file input are outside this coding-agent milestone. They are rejected locally, not advertised as available. Native SAP HTTP errors for supported requests preserve status and message with credential echoes redacted. The direct-SAP observations in issue #38 (including model-specific Search/countTokens rejections) are not plugin/gateway acceptance or universal model capability claims.
+
+References: [SAP native Vertex AI](https://github.com/SAP-docs/sap-artificial-intelligence/blob/main/docs/sap-ai-core/generativeAI/vertex-ai-8bb3519.md), [Google inference](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference), [Google function calling](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/function-calling).
 
 ## Discovery and versions
 
@@ -88,7 +144,7 @@ The two GPT baseline versions report catalog context length 1050000; the two Cla
 
 ## Upstream transport and streaming
 
-Each model is accepted only on its own protocol's account-root route (GPT `/responses`, Claude `/messages`), POST only, with no query or fragment; a model addressed through the wrong route fails before any inference credential is sent. Dispatch uses the validated returned deployment URL — plus `/responses` for GPT, or `/invoke`/`/invoke-with-response-stream` for Claude — without an API-version query. Accepted deployment URLs must have the selected AI Core origin and `/v2/inference/deployments/<id>` path. SAP Bearer authentication and the selected resource group replace incoming SDK credentials; Magpie-only headers are stripped.
+Each model is accepted only on its own protocol's account-root route (GPT `/responses`, Claude `/messages`, Gemini `/models/<model>:generateContent` or `:streamGenerateContent?alt=sse`), POST only, with no fragment and no query except Gemini's exact streaming `alt=sse`; a model addressed through the wrong route fails before any inference credential is sent. Dispatch uses the validated returned deployment URL — plus `/responses` for GPT, `/invoke`/`/invoke-with-response-stream` for Claude, or `/models/<model>:generateContent`/`:streamGenerateContent?alt=sse` for Gemini — without an API-version query. Accepted deployment URLs must have the selected AI Core origin and `/v2/inference/deployments/<id>` path. SAP Bearer authentication and the selected resource group replace incoming SDK credentials; Magpie-only headers are stripped.
 
 Native output items, identity, usage, status, error, and incomplete details remain distinct. SSE carries output text, function-argument, output-item, and completed/incomplete/failed events; no `[DONE]` marker is required. Individual bounded frames are decoded incrementally across UTF-8/network boundaries, not accumulated as a whole reply.
 

@@ -21,7 +21,7 @@ const ERRORS = {
   cancelled: "SAP AI Core: deployment discovery was cancelled.",
   exhausted: "SAP AI Core: deployment listing exceeded its bounds.",
   identity: "SAP AI Core: a Claude deployment's model identity could not be resolved.",
-  conflict: "SAP AI Core: distinct Claude deployments resolved to the same model identity.",
+  conflict: "SAP AI Core: distinct deployments resolved to the same model identity.",
 }
 
 const OWNED = new WeakSet()
@@ -164,7 +164,7 @@ async function collect(context) {
     if (pages >= MAX_PAGES) throw failure("exhausted")
     const resources = pageRows(await requestJSON(context, "/v2/lm/deployments", {
       scenarioId: "foundation-models",
-      executableIds: "azure-openai,aws-bedrock",
+      executableIds: "azure-openai,aws-bedrock,gcp-vertexai",
       status: "RUNNING",
       $top: String(PAGE_SIZE),
       $skip: String(skip),
@@ -237,7 +237,7 @@ function deploymentUrl(raw, origin, id) {
   return raw
 }
 
-const EXECUTABLES = new Set(["azure-openai", "aws-bedrock"])
+const EXECUTABLES = new Set(["azure-openai", "aws-bedrock", "gcp-vertexai"])
 
 function resolveIdentity(deployment, configuration) {
   if (!isObject(configuration)) return null
@@ -441,6 +441,28 @@ function resolveAnthropic(deployment, identity, model, url) {
   return entry
 }
 
+// Native Gemini generation only: exclude embeddings, without a release allowlist.
+export function isGeminiModel(name) {
+  return typeof name === "string" && /^gemini-\d+(?:\.\d+)*(?:-[a-z0-9]+)+$/.test(name)
+}
+
+function resolveGemini(deployment, identity, model, url) {
+  if (!isGeminiModel(identity.modelName)) return null
+  const activeVersion = resolveActive(deployment, identity.modelName, identity.configuredVersion)
+  if (activeVersion === null) return null
+  const metadata = resolveMetadata(model, activeVersion, "gcp-vertexai")
+  if (metadata === null || metadata.streamingSupported !== true) return null
+  if (model.provider !== undefined && (typeof model.provider !== "string" || model.provider.toLowerCase() !== "google")) return null
+  return freezeEntry(deployment, identity, url, activeVersion, metadata, {
+    protocol: "gemini",
+    canonicalID: identity.modelName,
+    displayLabel: identity.modelName,
+    apiNpm: "@ai-sdk/google",
+    routePolicy: Object.freeze({ generate: ":generateContent", stream: ":streamGenerateContent?alt=sse" }),
+    capabilities: Object.freeze({ text: true, functionTool: true, streaming: true, image: metadata.inputTypes?.includes("image") === true }),
+  })
+}
+
 /** @param {{deployment?: any, configuration?: any, catalog?: any, aiRoot?: string}} request */
 export function resolveDeployment({ deployment, configuration, catalog, aiRoot } = {}) {
   const origin = rootOrigin(aiRoot)
@@ -458,6 +480,7 @@ export function resolveDeployment({ deployment, configuration, catalog, aiRoot }
 
   if (identity.executableId === "azure-openai") return resolveResponses(deployment, identity, model, url)
   if (identity.executableId === "aws-bedrock") return resolveAnthropic(deployment, identity, model, url)
+  if (identity.executableId === "gcp-vertexai") return resolveGemini(deployment, identity, model, url)
   return null
 }
 

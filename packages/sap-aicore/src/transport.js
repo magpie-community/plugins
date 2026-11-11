@@ -1,6 +1,6 @@
 // Shared, protocol-agnostic transport primitives.
 //
-// Both the GPT Responses transport and the Claude Messages transport build on
+// The GPT Responses, Claude Messages and Gemini transports build on
 // these: credential-safe bounded body reading, secret redaction, locally-owned
 // safe errors, and standard response rendering. Token management stays in the
 // plugin factory and protocol semantics stay in each transport; this module
@@ -186,8 +186,13 @@ export async function readBytes(input, init, signal) {
   throw invalid("The request body type is not supported.")
 }
 
-/** Parse the bounded JSON routing envelope before protocol-specific validation. */
-export async function readJSONRequest(input, init, signal) {
+// Keep native Gemini JSON bytes when its model/action came only from the path.
+// Re-encoding signed parts can round large numeric function arguments.
+const NATIVE_REQUESTS = new WeakMap()
+export const nativeRequestJSON = body => NATIVE_REQUESTS.get(body)
+
+/** Parse bounded JSON; Gemini's URL model supplies its internal routing envelope. */
+export async function readJSONRequest(input, init, signal, pathModel = undefined) {
   if (signal?.aborted) throw abortReason(signal)
   const bytes = await readBytes(input, init, signal)
   let text
@@ -197,6 +202,11 @@ export async function readJSONRequest(input, init, signal) {
   try { body = JSON.parse(text) }
   catch { throw invalid("The request body is not valid JSON.") }
   if (!isObject(body)) throw invalid("The request body must be a JSON object.")
+  if (pathModel !== undefined) {
+    if (!("model" in body) && !("stream" in body)) NATIVE_REQUESTS.set(body, text)
+    if ("model" in body && body.model !== pathModel) throw invalid("The body model must match the URL model.")
+    body.model = pathModel
+  }
   if (typeof body.model !== "string" || !body.model || /[\x00-\x1f\x7f]/.test(body.model)) throw invalid("The \"model\" parameter must be a non-empty string.")
   return /** @type {{model: string} & Record<string, unknown>} */ (body)
 }
@@ -308,10 +318,10 @@ export const SSE_ENCODER = new TextEncoder()
  *   errorEvent(code) -> the serialized protocol error frame for a local failure.
  * @param {ReadableStream<Uint8Array>} upstream
  * @param {AbortSignal | undefined} signal
- * @param {{ classify: (event: any, name: string) => { terminal: boolean, redacted: any, name?: string }, errorEvent: (code: string) => string }} hooks
+ * @param {{ classify: (event: any, name: string) => { terminal: boolean, redacted: any, name?: string }, errorEvent: (code: string) => string, complete?: () => boolean }} hooks
  * @returns {ReadableStream<Uint8Array>}
  */
-export function sseRelay(upstream, signal, { classify, errorEvent }) {
+export function sseRelay(upstream, signal, { classify, errorEvent, complete }) {
   const reader = upstream.getReader()
   const decoder = new TextDecoder("utf-8", { fatal: true })
   let chunk = new Uint8Array(0)
@@ -431,6 +441,13 @@ export function sseRelay(upstream, signal, { classify, errorEvent }) {
           }
           if (finished) return
           if (next.done) {
+            // Gemini may send usage after finishReason; validate completion at EOF.
+            if (complete?.() === true && frameBytes === 0) {
+              finished = true
+              release()
+              output.close()
+              return
+            }
             // EOF without a valid, fully framed terminal is truncation, not
             // completion. This also rejects any trailing partial UTF-8/frame.
             fail(output, "inference-response")

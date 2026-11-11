@@ -55,7 +55,7 @@ function assertInvariants(call) {
   assert.equal(url.origin, AI_ROOT)
   assert.equal(url.pathname, "/v2/lm/deployments")
   assert.equal(url.searchParams.get("scenarioId"), "foundation-models")
-  assert.equal(url.searchParams.get("executableIds"), "azure-openai,aws-bedrock")
+  assert.equal(url.searchParams.get("executableIds"), "azure-openai,aws-bedrock,gcp-vertexai")
   assert.equal(url.searchParams.get("status"), "RUNNING")
   assert.equal(url.searchParams.get("$top"), "100")
   assert.equal(call.init.method, "GET")
