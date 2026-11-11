@@ -256,12 +256,22 @@ function parseSchema(json) {
   } catch { throw new Error("MiniMax connector list: malformed input_schema_json") }
 }
 
-export function createConnectorTools(request) {
+// compactTools is opt-in and off by default. Only an explicit true hides
+// the sixteen named Matrix tools from the advertised list; their
+// descriptions are not rewritten. list_tools, tool_schema and call_tool
+// are always advertised, built by the same path either way.
+export function compactToolsOn(options) {
+  return options?.compactTools === true
+}
+
+export function createConnectorTools(request, options = {}) {
   if (typeof request !== "function") throw new Error("createConnectorTools needs the request transport")
   const tool = {}
 
-  // the named matrix tools, each its own first-class magpie tool
-  for (const [name, def] of Object.entries(MATRIX_TOOLS)) tool[name] = directTool(request, name, def)
+  // the named matrix tools, each its own first-class magpie tool,
+  // omitted from the advertised list when compactTools is on
+  if (!compactToolsOn(options))
+    for (const [name, def] of Object.entries(MATRIX_TOOLS)) tool[name] = directTool(request, name, def)
 
   tool.list_tools = {
     description:
@@ -359,4 +369,4 @@ export function createConnectorTools(request) {
   return { tool }
 }
 
-export const _internal = { check, checked, catalog, find, invoke, routing, MATRIX_TOOLS, SITES }
+export const _internal = { check, checked, catalog, find, invoke, routing, MATRIX_TOOLS, SITES, compactToolsOn }
