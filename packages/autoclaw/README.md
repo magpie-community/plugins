@@ -108,7 +108,7 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 - **删除 max_tokens**：网关拒收 `max_tokens` / `max_completion_tokens`，插件会在发送前自动剔除
 - **不发送 X-Harness-Type**：上游收到 `X-Harness-Type` 即报 406，已删除该残留请求头
 - **改写外部 Harness 身份声明**：上游拦截 system 中包含的外部 agent 身份句（如 `You are Codex`、`You are Claude Code` 等），插件的 `unflag` 会自动将其替换为兼容措辞，避免 406 拦截
-- **官方客户端指纹（国际版对话）**：国际版对话请求带官方 AutoClaw 2.0.3 桌面端（`official` 渠道）的整套请求头，取自其 AppImage 的 `dist/main.cjs`：`X-Channel: official`、`X-Version: 2.0.3`、`X-Lang: en`、`X-Client-Type: pc`、`X-Product: autoclaw`、`x_trace_id: autoclaw-desktop`、`X-Auth-Appid/X-Auth-TimeStamp/X-Auth-Sign`（`md5("100003&<秒级时间戳>&<appKey>")`，与登录/积分接口同一签名）、`X-Request-Id` = `X-Trace-Id`（每次请求一个 UUID）、`X-Session-Id`（同一对话不变的 UUID，插件由对话首条消息导出）、OpenAI SDK 6.26.0 的 `User-Agent` 与 `X-Stainless-*`。`X-Tm` 与官方 `managedPlatform()` 一致：macOS `mac`、Windows `win`、Linux `linux`（x64/arm64 相同）。网关只在**非官方指纹**旁拒收 `X-Tm: linux`（403 `forbidden`，#367）；0.2.7–0.2.11 发的 `linux-x64` 只是绕过，不是官方值。
+- **官方客户端指纹（国际版对话）**：国际版对话请求带官方 AutoClaw 2.0.3 桌面端（`official` 渠道）的整套请求头，取自其 AppImage 的 `dist/main.cjs`：`X-Channel: official`、`X-Version: 2.0.3`、`X-Lang: en`、`X-Client-Type: pc`、`X-Product: autoclaw`、`x_trace_id: autoclaw-desktop`、`X-Auth-Appid/X-Auth-TimeStamp/X-Auth-Sign`（`md5("100003&<秒级时间戳>&<appKey>")`，与登录/积分接口同一签名）、`X-Request-Id` = `X-Trace-Id`（每次请求一个 UUID）、`X-Session-Id`（同一对话不变的 UUID，插件由对话首条消息导出）、OpenAI SDK 6.26.0 的 `User-Agent` 与 `X-Stainless-*`。macOS / Windows 的 `X-Tm` 与官方 `managedPlatform()` 一致（`mac` / `win`）；Linux 国际版省略该头，因为网关仍会对插件账号精确拒收 `X-Tm: linux`（x64/arm64 都是 403 `forbidden`，#367），而省略已由报告者验证可用，也不会伪装成别的系统。
 
 国内版 `autoclaw-cn` 走 AutoClaw 2.1.0 managed gateway（`autoglm-acceleration-api.zhipuai.cn`）；国际版 `autoclaw` 走海外直连网关（`autoglm-api.autoglm.ai`）。两者均已通过真实调用与推理验证。
 
@@ -120,7 +120,7 @@ AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 No
 
 ## 已知行为
 
-- 手机号账号只认国内 host（走 managed gateway，401/403 标记登录失效）；z.ai/Google 账号只认国际 host（401/403 自动换侧重试，均拒绝时标记失效）。
+- 手机号账号只认国内 host（走 managed gateway，401/403 标记登录失效）；z.ai/Google 账号只认国际 host（401/403 自动换侧重试，均拒绝时标记失效）。例外：国际网关精确返回裸 `403 forbidden` 时，插件用积分接口确认登录：凭据有效则按客户端指纹拒绝显示上游错误并保留登录；凭据也被拒则标记失效；确认失败则原样透传 403，不猜登录状态。
 - 额度用完不算登录失效：上游以 `403` + `{"code":810000,"message":"GLM-5.3 免费额度已用完,…"}` 回答时（或 403 正文说额度/余额已用完），插件转成 `429`，原样带上游文案，登录保留（`X-Magpie-Sign-In: kept`），国际版也不再换 host 重试（plugins#274）。
 - 账号被封不算登录失效：上游以 `403` + `{"code":410004,"message":"The account has been banned"}` 回答时（或 code/message 字段说 banned / 封禁 / 账号异常 / 账号被冻结等），对话、刷新、积分与签到都原样带上游文案，对话转成 `403 permission_error`，登录保留（`X-Magpie-Sign-In: kept`），不再换 host 重试。其他 401/403 仍按登录失效处理。
 - 请求过大不算登录失效（plugins#891）：国内网关会对约 200k tokens 的请求回 `401 AutoClaw 登录状态失效`，而同一凭据前后几秒的小请求都是 200。请求体比本进程见过的最大成功请求还大时遇到 401/403，插件先用积分接口确认登录：登录有效就转成 `413 request_too_large`（登录保留），magpie 换一条路由或让 agent 压缩对话；登录也被拒、确认失败，或请求不比已成功的大，仍按登录失效处理。不猜阈值，只拿已成功的最大请求作比较。
