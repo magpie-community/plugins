@@ -604,3 +604,46 @@ test("SSE 与 stream:false 经同一流生成/消费路径得到相同内容与 
   assert.equal(results[0].length, 2)
   assert.deepEqual(results[1], results[0])
 })
+
+test("取消的 prompt 也教会缓存占比：下一回合的工具步沿用 agy 报告的读缓存比例", async () => {
+  await withKit({}, async (kit) => {
+    // 形状取自 agy 的 session/prompt 结果：inputTokens 含缓存读，一次取消后无校准。
+    const cancelled = { inputTokens: 520_000, cachedReadTokens: 390_000, cachedWriteTokens: 0, outputTokens: 900, thoughtTokens: 40 }
+    kit.prompts.push(async (agent) => {
+      await agent.text("partial answer")
+      await agent.waitCancel()
+      return { stopReason: "cancelled", usage: cancelled }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/a" })
+      await agent.text("done")
+      return { stopReason: "end_turn", usage: { inputTokens: 9000, cachedReadTokens: 6000, outputTokens: 5 } }
+    })
+    const body = baseBody({ tools: [{ name: "Read", description: "read", input_schema: { type: "object", properties: { path: { type: "string" } } } }] })
+    const controller = new AbortController()
+    const response = await kit.request(body, { signal: controller.signal })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let seen = ""
+    while (!seen.includes("text_delta")) {
+      const { value, done } = await reader.read()
+      if (done) break
+      seen += decoder.decode(value, { stream: true })
+    }
+    controller.abort()
+    await reader.read().then(() => {}, () => {})
+    for (let i = 0; i < 200 && !kit.turns[0]?.finalized; i++) await sleep(5)
+    assert.ok(kit.turns[0].finalized)
+
+    const next = {
+      ...body,
+      messages: [...body.messages, { role: "assistant", content: [{ type: "text", text: "partial answer" }] }, { role: "user", content: "go on" }],
+    }
+    const { responses } = await runTurn(kit, next)
+    assert.equal(kit.acpSpawns.length, 1, "同一会话没有复用 Proc")
+    const toolStep = responses[0].usage
+    assert.equal(responses[0].stopReason, "tool_use")
+    const ratio = toolStep.cache_read_input_tokens / usageTotal(toolStep)
+    assert.ok(Math.abs(ratio - 0.75) < 0.02, `工具步缓存占比 ${ratio}，期望沿用取消 prompt 的 0.75`)
+  })
+})

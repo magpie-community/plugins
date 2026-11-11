@@ -906,6 +906,13 @@ class Turn {
       this.accountedPrompts.add(number)
       this.rawAcpUsages.push(usage)
       this.rawUsage = addUsage(this.rawUsage, usage)
+      // agy reports what each prompt read from the cache, cancelled or not.
+      // Tool steps of the next prompt (or of a late one in this response) have
+      // no usage of their own until it ends, so they take this ratio. Only a
+      // final, uncancelled response used to teach it, so a fresh or cancelled
+      // conversation reported every tool step as a full cache miss.
+      const input = tokenCount(usage?.inputTokens)
+      if (input > 0) this.proc.lastCacheRatio = Math.min(1, Math.min(input, tokenCount(usage.cachedReadTokens)) / input)
     }
     return this.rawUsage
   }
