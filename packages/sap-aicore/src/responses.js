@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
+
 import {
   AI_HOST, SAFE_TEXT, MAX_BODY_BYTES, isObject,
   safeError, invalid, abortReason, drain, secretsOf,
@@ -9,193 +12,174 @@ export { responseError } from "./transport.js"
 
 const DEPLOYMENT_PATH = /^\/v2\/inference\/deployments\/[A-Za-z0-9_-]+$/
 
-const ALLOWED = new Set([
-  "model", "input", "instructions", "max_output_tokens", "prompt_cache_key",
-  "reasoning", "include", "tools", "tool_choice",
-  "store", "stream", "background",
-])
+// Translate only the client tool surface. Keep the reverse map off the wire so
+// both direct plugin clients and Magpie receive calls under their declared identity.
+const DROPPED_HISTORY = new Set(["custom_tool_call", "custom_tool_call_output"])
+/** @typedef {{ namespace: string, name: string }} ToolIdentity */
+/** @typedef {{ forward: Map<string, string>, back: Map<string, ToolIdentity>, dropped: Record<string, unknown>[] }} ToolTranslation */
+/** @type {WeakMap<object, ToolTranslation>} */
+const translations = new WeakMap()
+const identityKey = (namespace, name) => JSON.stringify([namespace, name])
+const namespaced = item => isObject(item) && typeof item.namespace === "string" && item.namespace && typeof item.name === "string" && item.name
 
-// --- strict stateless parameter validation --------------------------------
-
-const MESSAGE_PART = new Set(["input_text", "output_text"])
-const FUNCTION_OUTPUT_PART = new Set(["input_text"])
-
-/**
- * Validate message content: a string or an array of parts. Text parts are
- * always accepted; `input_image` parts are accepted only when the selected
- * model advertises image input. Other multimodal parts are rejected.
- * @param {unknown} content
- * @param {boolean} allowImage
- * @param {Set<string>} [textTypes]
- */
-function validateMessageContent(content, allowImage, textTypes = MESSAGE_PART) {
-  if (typeof content === "string") return
-  if (!Array.isArray(content)) throw invalid("Message content must be a string or an array of text parts.")
-  for (const part of content) {
-    if (!isObject(part) || typeof part.type !== "string") throw invalid("Only text message content is supported.")
-    if (part.type === "input_image") {
-      if (!allowImage) throw invalid("Image content is not supported for this model.")
-      validateInputImage(part)
-      continue
+/** @param {Record<string, unknown>} body @returns {ToolTranslation} */
+function toolTranslation(body) {
+  /** @type {Map<string, ToolIdentity>} */
+  const identities = new Map()
+  const reserved = new Set()
+  const dropped = []
+  const add = (namespace, name) => {
+    if (typeof namespace === "string" && namespace && typeof name === "string" && name) {
+      identities.set(identityKey(namespace, name), { namespace, name })
     }
-    if (!textTypes.has(part.type) || typeof part.text !== "string") throw invalid("Only text message content is supported.")
   }
+  for (const tool of Array.isArray(body.tools) ? body.tools : []) {
+    if (!isObject(tool)) { continue }
+    if (tool.type === "function") { reserved.add(tool.name); continue }
+    if (tool.type === "namespace") {
+      if (typeof tool.name !== "string" || !tool.name || !Array.isArray(tool.tools)) throw invalid("A namespace tool must have a non-empty string name and a tools array.")
+      for (const nested of tool.tools) {
+        if (!isObject(nested)) continue
+        if (nested.type === "function") add(tool.name, nested.name)
+        else dropped.push({ ...nested, namespace: tool.name })
+      }
+    } else dropped.push(tool)
+  }
+  for (const item of Array.isArray(body.input) ? body.input : []) {
+    if (!isObject(item) || item.type !== "function_call") continue
+    if (namespaced(item)) add(item.namespace, item.name)
+    else reserved.add(item.name)
+  }
+  const nativeNames = new Set(reserved)
+  const counts = new Map()
+  for (const { namespace, name } of identities.values()) {
+    const flat = namespace + "__" + name
+    counts.set(flat, (counts.get(flat) ?? 0) + 1)
+  }
+  const forward = new Map()
+  const back = new Map()
+  // Reserve all ordinary qualified names before allocating fallback aliases.
+  for (const { namespace, name } of identities.values()) {
+    const flat = namespace + "__" + name
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(flat) && counts.get(flat) === 1 && !reserved.has(flat)) reserved.add(flat)
+  }
+  for (const [key, identity] of identities) {
+    const flat = identity.namespace + "__" + identity.name
+    const qualified = /^[A-Za-z0-9_-]{1,64}$/.test(flat) && counts.get(flat) === 1 && !nativeNames.has(flat)
+    const alias = qualified ? flat : "mp_ns_" + createHash("sha256").update(key).digest("hex").slice(0, 56)
+    if ((!qualified && reserved.has(alias)) || back.has(alias)) throw invalid("Namespaced function tools have conflicting translated names.")
+    reserved.add(alias)
+    forward.set(key, alias)
+    back.set(alias, identity)
+  }
+  return { forward, back, dropped }
 }
 
-const IMAGE_DETAIL = new Set(["auto", "low", "high"])
-const INPUT_IMAGE_KEYS = new Set(["type", "image_url", "detail"])
+/** @param {unknown[]} tools @param {ToolTranslation} translation */
+function translateTools(tools, translation) {
+  const out = []
+  const emitted = new Map()
+  let changed = false
+  for (const tool of tools) {
+    if (isObject(tool) && tool.type === "function") { out.push(tool); continue }
+    if (isObject(tool) && tool.type === "namespace" && Array.isArray(tool.tools)) {
+      for (const nested of tool.tools) {
+        if (!isObject(nested) || nested.type !== "function") continue
+        const alias = translation.forward.get(identityKey(tool.name, nested.name))
+        if (!alias) throw invalid("A namespaced function tool must have a non-empty string name.")
+        const translated = { ...nested, name: alias }
+        if (emitted.has(alias)) {
+          if (!isDeepStrictEqual(emitted.get(alias), translated)) throw invalid("Repeated namespaced function tools must have identical definitions.")
+          continue
+        }
+        emitted.set(alias, translated)
+        out.push(translated)
+      }
+    }
+    changed = true
+  }
+  return { tools: out, changed }
+}
 
-/**
- * Validate an `input_image` part: a data or https `image_url` string with an
- * optional `detail`. Stateful file references and unknown fields are rejected.
- * @param {Record<string, unknown>} part
+/** @param {Record<string, unknown>} reference @param {ToolTranslation} translation */
+function translateReference(reference, translation) {
+  if (reference.type === "function" && namespaced(reference)) {
+    const alias = translation.forward.get(identityKey(reference.namespace, reference.name))
+    if (alias) {
+      const { namespace: _, ...rest } = reference
+      return { ...rest, name: alias }
+    }
+  }
+  return reference
+}
+
+/** Only declared, dropped targets justify relaxing a caller's choice. */
+function droppedReference(reference, translation) {
+  if (!isObject(reference) || typeof reference.type !== "string") return false
+  return translation.dropped.some(tool => tool.type === reference.type &&
+    (tool.name === undefined || tool.name === reference.name) &&
+    ((tool.namespace ?? "") === (reference.namespace ?? "")) &&
+    (tool.server_label === undefined || tool.server_label === reference.server_label))
+}
+
+/** @param {unknown} choice @param {ToolTranslation} translation @param {boolean} hasTools */
+function translateChoice(choice, translation, hasTools) {
+  if (!isObject(choice)) return choice
+  if (choice.type === "allowed_tools" && Array.isArray(choice.tools)) {
+    const tools = choice.tools.filter(tool => !droppedReference(tool, translation))
+      .map(tool => isObject(tool) ? translateReference(tool, translation) : tool)
+    const changed = tools.length !== choice.tools.length || tools.some((tool, i) => tool !== choice.tools[i])
+    if (!changed) return choice
+    if (!tools.length) return hasTools ? "auto" : undefined
+    return { ...choice, tools }
+  }
+  if (droppedReference(choice, translation)) return hasTools ? "auto" : undefined
+  return translateReference(choice, translation)
+}
+
+/** @param {*} item @param {ToolTranslation | undefined} translation @param {Map<string, ToolIdentity>} [calls] */
+function restoreCall(item, translation, calls = undefined) {
+  if (!isObject(item) || item.type !== "function_call" || !translation) return item
+  const identity = translation.back.get(/** @type {string} */ (item.name))
+  if (!identity || item.namespace) return item
+  if (typeof item.id === "string") calls?.set(item.id, identity)
+  return { ...item, ...identity, ...(!("encrypted_function_args" in item) ? { encrypted_function_args: [] } : {}) }
+}
+
+/** Restore only protocol call positions, never arguments or arbitrary metadata.
+ * @param {*} response @param {ToolTranslation | undefined} translation @param {Map<string, ToolIdentity>} [calls]
  */
-function validateInputImage(part) {
-  for (const key of Object.keys(part)) if (!INPUT_IMAGE_KEYS.has(key)) throw invalid("Unsupported field in an input_image part.")
-  if (typeof part.image_url !== "string" || !/^(?:data:|https:\/\/)/i.test(part.image_url)) throw invalid("An input_image requires an \"image_url\" data or https URL string.")
-  if ("detail" in part && (typeof part.detail !== "string" || !IMAGE_DETAIL.has(part.detail))) throw invalid("An input_image \"detail\" must be \"auto\", \"low\" or \"high\".")
+function restoreResponse(response, translation, calls = undefined) {
+  if (!isObject(response) || response.object !== "response" || !Array.isArray(response.output) || !translation?.back.size) return response
+  return { ...response, output: response.output.map(item => restoreCall(item, translation, calls)) }
+}
+
+function restoreEvent(event, translation, calls) {
+  if (!translation?.back.size) return event
+  const identity = event.type === "response.function_call_arguments.done" ? calls.get(event.item_id) : undefined
+  const matches = identity && translation.back.get(event.name) === identity
+  return { ...event,
+    ...(matches ? identity : {}),
+    ...("item" in event ? { item: restoreCall(event.item, translation, calls) } : {}),
+    ...("response" in event ? { response: restoreResponse(event.response, translation, calls) } : {}),
+  }
 }
 
 /**
- * Validate one input item: supported stateless message / function_call /
- * function_call_output / reasoning history only. Stateful references and
- * unverified item types are rejected.
- * @param {unknown} item
- * @param {boolean} allowImage
- */
-function validateInputItem(item, allowImage) {
-  if (!isObject(item)) throw invalid("Each input item must be an object.")
-  const type = item.type
-  if (type === undefined || type === "message") {
-    if (!["user", "assistant", "system", "developer"].includes(String(item.role))) throw invalid("A message requires a supported role.")
-    validateMessageContent(item.content, allowImage)
-    return
-  }
-  if (type === "function_call") {
-    if (typeof item.call_id !== "string" || !item.call_id || typeof item.name !== "string" || !item.name || typeof item.arguments !== "string") throw invalid("A function call requires call_id, name and string arguments.")
-    return
-  }
-  if (type === "function_call_output") {
-    if (typeof item.call_id !== "string" || !item.call_id) throw invalid("A function result requires a non-empty string call_id.")
-    // Pi returns input_text/input_image arrays for image-producing tools.
-    validateMessageContent(item.output, allowImage, FUNCTION_OUTPUT_PART)
-    return
-  }
-  if (type === "reasoning") {
-    if (!Array.isArray(item.summary) || !item.summary.every(part => isObject(part) && part.type === "summary_text" && typeof part.text === "string") ||
-        (item.encrypted_content !== undefined && typeof item.encrypted_content !== "string")) throw invalid("A reasoning item requires a native summary and optional encrypted content.")
-    return
-  }
-  throw invalid("Unsupported input item type.")
-}
-
-const TOOL_KEYS = new Set(["type", "name", "description", "parameters", "strict"])
-
-/**
- * Validate a function tool definition. Hosted tools and unverified fields are
- * rejected; parameter schema contents are left to upstream validation.
- * @param {unknown} tool
- */
-function validateTool(tool) {
-  if (!isObject(tool) || tool.type !== "function") throw invalid("Only function tools are supported in the \"tools\" parameter.")
-  for (const key of Object.keys(tool)) if (!TOOL_KEYS.has(key)) throw invalid("Unsupported field in a function tool definition.")
-  if (typeof tool.name !== "string" || !tool.name) throw invalid("A function tool requires a non-empty string \"name\".")
-  if ("description" in tool && typeof tool.description !== "string") throw invalid("A function tool \"description\" must be a string.")
-  if ("parameters" in tool && !isObject(tool.parameters)) throw invalid("A function tool \"parameters\" must be an object.")
-  if ("strict" in tool && typeof tool.strict !== "boolean") throw invalid("A function tool \"strict\" must be a boolean.")
-}
-
-/**
+ * Enforce routing, framing and stateless transport requirements only. AI Core
+ * validates generation controls, tool definitions and native history shapes.
  * @param {unknown} body
- * @param {*} [entry] selected deployment entry; its capabilities gate image input.
  * @returns {{ model: string, store: false, stream?: boolean } & Record<string, unknown>}
  */
-export function validateRequest(body, entry) {
-  const allowImage = entry?.capabilities?.image === true
+export function validateRequest(body) {
   if (!isObject(body)) throw invalid("The request body must be a JSON object.")
   const b = /** @type {Record<string, unknown>} */ (body)
 
-  // Stateful / unsupported keys get specific, non-echoing messages.
   if ("previous_response_id" in b) throw invalid("The \"previous_response_id\" parameter is not supported; responses are stateless.")
   if ("conversation" in b) throw invalid("The \"conversation\" parameter is not supported; responses are stateless.")
-
-  for (const key of Object.keys(b)) {
-    if (ALLOWED.has(key)) continue
-    if (key === "messages" || key === "prompt" || key === "functions" || key === "function_call") {
-      throw invalid("Chat Completions fields are not supported; use the Responses \"input\" parameter.")
-    }
-    throw invalid("The request includes an unsupported parameter.")
-  }
-
-  // model — structural only; identity (verified vs unavailable) is owned by discovery.
-  const model = b.model
-  if (typeof model !== "string" || model.length < 1 || /[\x00-\x1f\x7f]/.test(model)) {
+  if (typeof b.model !== "string" || !b.model || /[\x00-\x1f\x7f]/.test(b.model)) {
     throw invalid("The \"model\" parameter must be a non-empty string.")
   }
-
-  // input — a string or an array of supported stateless history items.
-  const input = b.input
-  let reasoningHistory = false
-  if (typeof input !== "string") {
-    if (!Array.isArray(input)) throw invalid("The \"input\" parameter must be a string or an array of input items.")
-    for (const item of input) {
-      validateInputItem(item, allowImage)
-      if (item.type === "reasoning") reasoningHistory = true
-    }
-  }
-
-  if ("instructions" in b && typeof b.instructions !== "string") {
-    throw invalid("The \"instructions\" parameter must be a string.")
-  }
-
-  if ("max_output_tokens" in b) {
-    const n = b.max_output_tokens
-    // Positive integer only. No invented minimum — upstream validates values (1 failed live).
-    if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) {
-      throw invalid("The \"max_output_tokens\" parameter must be a positive integer.")
-    }
-  }
-
-  if ("prompt_cache_key" in b && typeof b.prompt_cache_key !== "string") {
-    throw invalid("The \"prompt_cache_key\" parameter must be a string.")
-  }
-
-  if ("reasoning" in b) {
-    const r = b.reasoning
-    // Live GPT-6 probes verified low/medium/high with optional summary:"auto".
-    const bad = () => invalid("The \"reasoning\" parameter requires \"effort\" set to \"low\", \"medium\" or \"high\", with optional \"summary\" set to \"auto\".")
-    if (!isObject(r)) throw bad()
-    for (const key of Object.keys(r)) if (key !== "effort" && key !== "summary") throw bad()
-    if ((r.effort !== "low" && r.effort !== "medium" && r.effort !== "high") || ("summary" in r && r.summary !== "auto")) throw bad()
-  }
-
-  if ("include" in b) {
-    const inc = b.include
-    // Only the verified encrypted-reasoning include is supported.
-    if (!Array.isArray(inc) || !inc.every(v => v === "reasoning.encrypted_content")) {
-      throw invalid("The \"include\" parameter may only contain \"reasoning.encrypted_content\".")
-    }
-  }
-
-  if ("tools" in b) {
-    const tools = b.tools
-    if (!Array.isArray(tools)) throw invalid("The \"tools\" parameter must be an array of function tools.")
-    for (const tool of tools) validateTool(tool)
-  }
-
-  if ("tool_choice" in b) {
-    const tc = b.tool_choice
-    const ok = tc === "auto" || tc === "none" || tc === "required" || (isObject(tc) && tc.type === "function")
-    if (!ok) throw invalid("The \"tool_choice\" parameter must be \"auto\", \"none\", \"required\" or a function tool choice.")
-    if (tc === "required" || isObject(tc)) {
-      if (!Array.isArray(b.tools) || !b.tools.length) throw invalid("A forced function choice requires declared tools.")
-      if (isObject(tc) && (Object.keys(tc).some(key => key !== "type" && key !== "name") || typeof tc.name !== "string" || !b.tools.some(tool => tool.name === tc.name))) throw invalid("The selected function must match a declared tool.")
-    }
-  }
-
-  // Installed magpie may force stream true/false before the plugin sees the
-  // request. The native boolean is preserved verbatim (true → incremental SSE,
-  // false/omitted → whole JSON); only its type is checked.
   if ("stream" in b && typeof b.stream !== "boolean") {
     throw invalid("The \"stream\" parameter must be a boolean.")
   }
@@ -206,19 +190,47 @@ export function validateRequest(body, entry) {
     throw invalid("The \"store\" parameter must be false; stateful responses are not supported.")
   }
 
-  // Preserve supported fields; this transport forces stateless responses and
-  // relays the native stream flag unchanged.
+  // Copy every field, including client_metadata and future protocol extensions.
   /** @type {Record<string, unknown>} */
-  const out = {}
-  for (const key of ALLOWED) {
-    if (key === "store") continue
-    if (key in b) out[key] = b[key]
+  const out = { ...b, store: false }
+  const translation = toolTranslation(b)
+  if (translation.back.size) translations.set(out, translation)
+  let allDropped = false
+  if (Array.isArray(b.tools)) {
+    const { tools, changed } = translateTools(b.tools, translation)
+    if (changed) {
+      if (tools.length > 0) out.tools = tools
+      else { delete out.tools; allDropped = true }
+    }
   }
-  out.store = false
-  // Stateless reasoning continuity: when the caller omits "include", request the
-  // opaque encrypted reasoning that keeps function-tool and reasoning history
-  // replayable across stateless turns. An explicit include (even []) is kept.
-  if (!("include" in b) && (reasoningHistory || "reasoning" in b || (Array.isArray(b.tools) && b.tools.length > 0))) {
+  const hasTools = Array.isArray(out.tools) && out.tools.length > 0
+  const choice = allDropped && out.tool_choice === "required" ? undefined : translateChoice(out.tool_choice, translation, hasTools)
+  if (choice === undefined) delete out.tool_choice
+  else out.tool_choice = choice
+  if (Array.isArray(b.input)) {
+    const needsClean = b.input.some(item => isObject(item) && (
+      (typeof item.type === "string" && DROPPED_HISTORY.has(item.type)) ||
+      (item.type === "function_call" && namespaced(item))
+    ))
+    if (needsClean) {
+      out.input = b.input
+        .filter(item => !(isObject(item) && typeof item.type === "string" && DROPPED_HISTORY.has(item.type)))
+        .map(item => {
+          if (isObject(item) && item.type === "function_call" && namespaced(item)) {
+            const { namespace, ...rest } = item
+            const alias = translation.forward.get(identityKey(namespace, item.name))
+            if (Array.isArray(rest.encrypted_function_args) && !rest.encrypted_function_args.length) delete rest.encrypted_function_args
+            return { ...rest, name: alias }
+          }
+          return item
+        })
+    }
+  }
+  // Preserve the existing stateless continuity default without rewriting an
+  // explicit include value or altering nested tools/history.
+  if (!("include" in b) && ("reasoning" in b ||
+      (Array.isArray(out.tools) && out.tools.length > 0) ||
+      (Array.isArray(out.input) && out.input.some(item => isObject(item) && item.type === "reasoning")))) {
     out.include = ["reasoning.encrypted_content"]
   }
   return /** @type {{ model: string, store: false, stream?: boolean } & Record<string, unknown>} */ (out)
@@ -335,15 +347,18 @@ function redactEvent(event, secrets) {
  * @param {ReadableStream<Uint8Array>} upstream
  * @param {AbortSignal | undefined} signal
  * @param {string[]} secrets
+ * @param {ToolTranslation | undefined} translation
  * @returns {ReadableStream<Uint8Array>}
  */
-function sseRelay(upstream, signal, secrets) {
+function sseRelay(upstream, signal, secrets, translation) {
+  // Output-item IDs belong to this reply, not to the request-wide tool-name map.
+  const calls = new Map()
   const classify = (event, name) => {
     if (!isObject(event) || typeof event.type !== "string" || (name && name !== event.type)) throw safeError("inference-response")
     const status = RESPONSE_TERMINALS.get(event.type)
     if (status && (!isObject(event.response) || !isResponseShape(event.response) || event.response.status !== status)) throw safeError("inference-response")
     const terminal = Boolean(status) || event.type === "error" || event.type === "response.error"
-    return { terminal, redacted: redactEvent(event, secrets) }
+    return { terminal, redacted: restoreEvent(redactEvent(event, secrets), translation, calls) }
   }
   return relay(upstream, signal, { classify, errorEvent })
 }
@@ -409,7 +424,7 @@ export async function dispatch({ entry, body, credentials, token, signal, extraS
       void response.body?.cancel().catch(() => {})
       throw safeError("inference-response")
     }
-    const stream = sseRelay(response.body, signal, secretsOf(credentials, token, extraSecrets))
+    const stream = sseRelay(response.body, signal, secretsOf(credentials, token, extraSecrets), translations.get(body))
     return new Response(stream, { status: response.status, headers: streamHeaders() })
   }
 
@@ -430,11 +445,11 @@ export async function dispatch({ entry, body, credentials, token, signal, extraS
   // A 2xx reply must be a terminal native Responses object.
   if (response.ok && !isResponseShape(native)) throw safeError("inference-response")
 
-  // Preserve native output verbatim; redact secrets only from failed responses.
+  // Restore translated tool identities; redact secrets only from failed responses.
   const failed = !response.ok || (isObject(native) && (native.error != null || native.status === "failed"))
   const serialized = failed
-    ? JSON.stringify(redactFailure(native, secretsOf(credentials, token, extraSecrets)))
-    : JSON.stringify(native)
+    ? JSON.stringify(restoreResponse(redactFailure(native, secretsOf(credentials, token, extraSecrets)), translations.get(body)))
+    : JSON.stringify(restoreResponse(native, translations.get(body)))
 
   return new Response(serialized, { status: response.status, headers: safeHeaders(response) })
 }

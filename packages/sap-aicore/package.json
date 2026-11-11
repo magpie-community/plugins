@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-sap-aicore-auth",
-  "version": "0.3.2",
-  "description": "SAP AI Core deployments in Magpie with credential-file sign-in, account-scoped discovery and native Responses / Messages transport",
+  "version": "0.4.1",
+  "description": "SAP AI Core deployments in Magpie with credential-file sign-in, account-scoped discovery and native Responses / Messages / Gemini transport",
   "license": "MIT",
   "type": "module",
   "main": "opencode.mjs",
