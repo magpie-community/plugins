@@ -3425,27 +3425,47 @@ async function liveModels(site, a) {
   if (!res.ok) throw new Error(`${site.name}'s config: HTTP ${res.status}`)
   if (env.code) throw new Error(`${site.name}'s config: ${env.msg} (${env.code})`)
   const cfg = env.data ?? {}
+  const models = Array.isArray(cfg.models) ? cfg.models : []
   const out = []
+  const seen = new Set()
+  const add = (id, d) => {
+    seen.add(id)
+    const m = { id, name: d?.name || id }
+    if (d) {
+      m.context = d.maxInputTokens
+      m.output = d.maxOutputTokens
+      m.images = d.supportsImages === true && !textOnly(site, id)
+      Object.assign(m, priceOf(d, cfg.modelPromotions))
+      const es = effortsOf(d, site, id)
+      if (es.length) {
+        const canOff = d.reasoning?.canDisableThinking
+        const off = (!d.onlyReasoning && (canOff == null || canOff)) || OFF_TAKEN.has(id)
+        m.efforts = [...(off ? ["none"] : []), ...es]
+        const def = defaultEffortOf(d, es)
+        if (def) m.effort = def
+      }
+    }
+    out.push(m)
+  }
+  let cli = false
   for (const agent of cfg.agents ?? []) {
     if (agent.name !== "cli") continue
-    for (const id of agent.models ?? []) {
-      const d = (cfg.models ?? []).find((x) => x.id === id)
-      const m = { id, name: d?.name || id }
-      if (d) {
-        m.context = d.maxInputTokens
-        m.output = d.maxOutputTokens
-        m.images = d.supportsImages === true && !textOnly(site, id)
-        Object.assign(m, priceOf(d, cfg.modelPromotions))
-        const es = effortsOf(d, site, id)
-        if (es.length) {
-          const canOff = d.reasoning?.canDisableThinking
-          const off = (!d.onlyReasoning && (canOff == null || canOff)) || OFF_TAKEN.has(id)
-          m.efforts = [...(off ? ["none"] : []), ...es]
-          const def = defaultEffortOf(d, es)
-          if (def) m.effort = def
-        }
-      }
-      out.push(m)
+    cli = true
+    for (const id of agent.models ?? []) add(id, models.find((x) => x.id === id))
+  }
+  // An enterprise's own models ("custom:<name>|<name>", modelType
+  // "enterprise") come in the config's models, not in the cli agent's
+  // list: WorkBuddy's CLI (as bundled in WorkBuddy 5.5.6, read from its
+  // AgentManager.computeModels) appends every model whose id starts with
+  // "custom:" to the agent's list itself, after the ones the agent names,
+  // in the config's order (plugins#1015). The id is sent as it is, "|" and
+  // all: WorkBuddy serves a chat to it. The CLI
+  // appends models tagged "custom" or "chat" too; those in a desktop's
+  // config are its own local models, with their own url and apiKey, and
+  // aren't WorkBuddy's to serve, so they stay out.
+  if (cli) {
+    for (const d of models) {
+      if (typeof d?.id === "string" && d.id.startsWith("custom:") && !seen.has(d.id)) add(d.id, d)
     }
   }
   // tell apart models the config names alike: deepseek-v4.1-flash and

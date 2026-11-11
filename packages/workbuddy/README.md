@@ -61,6 +61,11 @@ as WorkBuddy's own client sends them; without them WorkBuddy answers as the
 personal account, with the personal plan's models. A browser sign-in made
 before 0.1.13 has no enterprise id kept: sign in again.
 
+An enterprise's own models (`custom:<name>|<name>`) are listed after the
+plan's, as WorkBuddy's own client lists them, with their context, output,
+images and efforts; the id goes to WorkBuddy as it is. Before 0.2.28 they
+were left out of the list.
+
 Which account a browser sign-in gives is chosen on WorkBuddy's own sign-in
 page. After a phone sign-in it lists the person's accounts (personal, a
 team, 「WorkBuddy 教育公益版」…) and binds the one picked to the sign-in, so
