@@ -11,6 +11,8 @@ const usage = {
   output: 100,
   cache_read: 500,
   cache_write: 0,
+  cache_unknown: 200,
+  cache_unknown_calls: 1,
   reasoning: 10,
   cost: 0.5,
   unpriced: 2,
@@ -26,6 +28,8 @@ const usage = {
       input: 800,
       output: 50,
       cache_read: 500,
+      cache_unknown: 200,
+      cache_unknown_calls: 1,
       cost: 0.5,
       unpriced: 0,
     },
@@ -88,6 +92,8 @@ test("builds provider, account and model from the gateway's own totals", () => {
   assert.equal(data.summary.errors, 1);
   assert.equal(data.summary.tokens, 1100);
   assert.equal(data.summary.cache, 500);
+  assert.equal(data.summary.cacheUnknown, 200);
+  assert.equal(data.summary.cacheUnknownCalls, 1);
   assert.equal(data.summary.cost, 0.5);
   assert.equal(data.summary.unpriced, 2);
   assert.equal(data.summary.accounts, 2);
@@ -100,6 +106,7 @@ test("builds provider, account and model from the gateway's own totals", () => {
   const alice = data.accounts.find((account) => account.account === "alice@example.com");
   assert.equal(alice.alias, "10月学生Plus");
   assert.equal(alice.calls, 3);
+  assert.equal(alice.cacheUnknown, 200);
   assert.equal(alice.models.length, 1);
   assert.equal(alice.models[0].model, "gpt-a");
   assert.equal(alice.models[0].errors, 1);
@@ -215,8 +222,30 @@ test("an empty gateway answer is an empty tree with a note", () => {
   assert.deepEqual(data.warnings, [{ code: "no-usage" }]);
 });
 
+test("a failed per-account model read is reported without losing account totals", () => {
+  const data = aggregateGatewayUsage(usage, requests, {
+    period: "today",
+    missingModelAccounts: 2,
+  });
+  assert.equal(data.summary.calls, 5);
+  assert.equal(data.accounts.length, 2);
+  assert.deepEqual(data.warnings, [{ code: "model-details", count: 2 }]);
+});
+
 test("a read from before the three-level shape is not served as current", () => {
+  const fields = {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheUnknown: 0,
+    cacheUnknownCalls: 0,
+  };
   assert.equal(cacheUsable({ summary: {}, accounts: [{ id: "a" }] }), false);
-  assert.equal(cacheUsable({ summary: {}, providers: [], accounts: [] }), true);
+  assert.equal(cacheUsable({ summary: fields, providers: [], accounts: [] }), true);
+  assert.equal(cacheUsable({ summary: {}, providers: [], accounts: [] }), false);
+  assert.equal(cacheUsable({
+    summary: fields,
+    providers: [{ ...fields, accounts: [{ ...fields, models: [{ cacheRead: 0 }] }] }],
+    accounts: [],
+  }), false);
   assert.equal(cacheUsable(null), false);
 });

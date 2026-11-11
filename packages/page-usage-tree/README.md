@@ -25,9 +25,9 @@ magpie plugin add @magpie-community/page-usage-tree
 ## Architecture
 
 - `page/index.html` and `page/boot.js` are the launcher Magpie sandboxes. They
-  read the theme, language, page options and theme tokens, then navigate the
-  frame to the local service. They never probe it first: a plugin page's CSP
-  uses `connect-src 'none'`.
+  read the theme, language, theme tokens and this plugin's own options, then
+  navigate the frame to the local service. They never probe the service first:
+  a plugin page's CSP uses `connect-src 'none'`.
 - `ui/app.html`, `ui/app.js`, `ui/view.js`, `ui/i18n.js` and `ui/style.css` are
   the page, served by the local service. It uses Magpie's own `--magpie-*`
   colours, font and control shapes.
@@ -52,10 +52,17 @@ magpie plugin add @magpie-community/page-usage-tree
 ## Currency and units
 
 The gateway reports cost in USD, Magpie's default. The page shows `$` unless
-the page options explicitly set `currency: "cny"` and a `usdCny` rate; only
-then does it convert for display. Token counts use `K`, `M` and `B`; Chinese
-`万` and `亿` are used only when the language is Chinese and
-`chineseUnits` is on.
+Magpie's page bridge supplies its own display settings (for example
+`currency`, `chineseUnits` and an exchange rate), or this plugin's options
+explicitly set `currency: "cny"` and a `usdCny` rate. Only then does it
+convert for display. Token counts use `K`, `M` and `B`; Chinese `万` and `亿`
+are used only when the language is Chinese and `chineseUnits` is on.
+
+The current Magpie page bridge exposes language and theme, but not the global
+Settings preferences. Until those fields are supplied by the bridge, the
+plugin's own options remain the supported fallback. Theme and visibility
+callbacks re-read those options once; no Magpie settings file is read, no
+configuration read is declared, and nothing is polled.
 
 ## Token measure
 
@@ -63,6 +70,14 @@ then does it convert for display. Token counts use `K`, `M` and `B`; Chinese
 writes are part of the token measure used by the summary, row values, token
 shares and token sorting. Turning it off leaves the input + output total
 visible while keeping cache in the detail line. The page remembers the choice.
+The detail line also shows Magpie's cache hit rate: cache reads over the counted
+prompt, with calls whose vendor reports no cache left out of the denominator.
+As in Magpie's own usage view, a row with no cache reads omits the rate; a row
+with cache-uncounted calls says how many calls were left out. A mixed row shows
+both notes. Hit-rate percentages use Magpie's rounding rule, so a rate below
+100% is never displayed as a misleading `100%`. If an account's per-model
+request read fails, the page keeps its account totals and says that model
+details are temporarily incomplete.
 
 ## Security
 

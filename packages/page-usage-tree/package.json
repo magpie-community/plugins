@@ -60,6 +60,7 @@
       },
       "icon": "page/icon.svg"
     },
+    "permissions": [],
     "options": {
       "port": 3494,
       "currency": "usd",

@@ -30,10 +30,18 @@
   const theme = meta("theme") || "light";
   let lang = metaLang();
   let currency = meta("currency") === "cny" ? "cny" : "usd";
-  let usdCny = Number(meta("usd-cny")) || 0;
-  let chineseUnits = meta("chinese-units") === "true";
+  const rateMeta = meta("usd-cny");
+  const unitsMeta = meta("chinese-units");
+  let usdCny = rateMeta === "" ? 0 : Number(rateMeta) || 0;
+  let chineseUnits = unitsMeta === "" ? false : unitsMeta === "true";
   V.setLang(lang);
+  const settingsBridge = meta("settings") === "1";
   V.setChineseUnits(chineseUnits && lang === "zh");
+  const REQUEST_TIMEOUT_MS = 30_000;
+  const SERVICE_TIMEOUT_MS = REQUEST_TIMEOUT_MS + 1_000;
+  let displaySettingsRequest = 0;
+  let officialDisplay = false;
+  let refreshFailed = false;
   const saved = {
     period: store.get("usage-tree.period") || "today",
     sort: store.get("usage-tree.sort") || "tokens",
@@ -95,6 +103,20 @@
   // once, without a reload.
   function applyThemeEvent(data) {
     if (!data) return;
+    const display = {
+      ...data,
+      ...(data.context && typeof data.context === "object" ? data.context : {}),
+    };
+    const hasOfficialDisplay =
+      display.currency === "cny" ||
+      display.currency === "usd" ||
+      typeof display.chineseUnits === "boolean" ||
+      (Number.isFinite(Number(display.usdCny)) && Number(display.usdCny) > 0) ||
+      (Number.isFinite(Number(display.fx?.rate)) && Number(display.fx.rate) > 0);
+    // Today's bridge sends language and theme only. If a future bridge also
+    // sends Magpie's display preferences, those win over plugin options.
+    if (hasOfficialDisplay) applyDisplay(display, "magpie");
+    else if (typeof display.lang === "string") applyDisplay({ lang: display.lang });
     if (data.tokens && typeof data.tokens === "object") {
       for (const [key, value] of Object.entries(data.tokens)) {
         if (typeof value === "string") {
@@ -105,7 +127,33 @@
     if (typeof data.dark === "boolean") {
       document.documentElement.dataset.theme = data.dark ? "dark" : "light";
     }
-    if (typeof data.lang === "string") applyDisplay({ lang: data.lang });
+  }
+
+  async function syncDisplaySettings(bridge = window.magpie) {
+    if (!bridge?.options?.get) return;
+    const requestId = ++displaySettingsRequest;
+    try {
+      const options = await bridge.options.get();
+      if (requestId !== displaySettingsRequest) return;
+      if (officialDisplay) return;
+      // An absent option keeps the launcher's value; only a real option can
+      // replace it. Opening the service directly has no bridge answer.
+      if (!options || typeof options !== "object") return;
+      const display = {};
+      if (options.currency === "cny" || options.currency === "usd") display.currency = options.currency;
+      if (typeof options.chineseUnits === "boolean") display.chineseUnits = options.chineseUnits;
+      if (options.usdCny !== undefined && options.usdCny !== "" && options.usdCny !== null) {
+        display.usdCny = options.usdCny;
+      }
+      applyDisplay(display, "options");
+    } catch {
+      // Keep the values the launcher supplied.
+    }
+  }
+
+  function paintSettings() {
+    const root = document.documentElement;
+    root.dataset.chineseUnits = (chineseUnits && lang === "zh") ? "on" : "off";
   }
 
   window.addEventListener("message", (event) => {
@@ -114,15 +162,36 @@
     // Only the window that frames this page may change its language.
     if (event.source !== window.parent || event.source === window) return;
     applyThemeEvent(message.data);
-    // The theme message carries the language and the window colours. This
-    // page's own presentation options are read once from the launcher URL;
-    // nothing is polled.
+    // Magpie pushes a theme message after a Settings change. Re-read this
+    // plugin's own options on the callback; there is still no timer.
+    if (settingsBridge) void syncDisplaySettings(window.magpie);
+  });
+
+  // Returning to the page is a visibility event: re-read plugin options once.
+  window.magpie?.onVisibility?.((visible) => {
+    if (visible && settingsBridge) void syncDisplaySettings(window.magpie);
   });
 
   // What the window sends lands here: the page redraws in place, without a
   // reload.
-  function applyDisplay(display) {
+  function applyDisplay(display, source = "options") {
     if (!display) return false;
+    const hasOfficialFields =
+      display.currency === "cny" ||
+      display.currency === "usd" ||
+      typeof display.chineseUnits === "boolean" ||
+      (Number.isFinite(Number(display.usdCny)) && Number(display.usdCny) > 0) ||
+      (Number.isFinite(Number(display.fx?.rate)) && Number(display.fx.rate) > 0);
+    if (source === "magpie" && (officialDisplay || hasOfficialFields)) {
+      if (!officialDisplay) {
+        currency = "usd";
+        chineseUnits = false;
+        usdCny = 0;
+        officialDisplay = true;
+      }
+    } else if (officialDisplay && source !== "magpie") {
+      return false;
+    }
     let changed = false;
 
     const wanted = String(display.lang || "").toLowerCase();
@@ -138,19 +207,24 @@
         changed = true;
       }
     }
-    if (typeof display.currency === "string") {
-      const nextCurrency = display.currency === "cny" ? "cny" : "usd";
+    if (display.currency === "cny" || display.currency === "usd") {
+      const nextCurrency = display.currency;
       if (nextCurrency !== currency) {
         currency = nextCurrency;
         changed = true;
       }
     }
-    if (Number.isFinite(Number(display.usdCny))) {
+    if (display.usdCny !== undefined && display.usdCny !== "" && display.usdCny !== null) {
       const nextRate = Number(display.usdCny);
-      if (nextRate !== usdCny) {
+      if (Number.isFinite(nextRate) && nextRate >= 0 && nextRate !== usdCny) {
         usdCny = nextRate;
         changed = true;
       }
+    }
+    const fxRate = Number(display.fx?.rate);
+    if (Number.isFinite(fxRate) && fxRate > 0 && fxRate !== usdCny) {
+      usdCny = fxRate;
+      changed = true;
     }
     if (typeof display.chineseUnits === "boolean") {
       const nextUnits = display.chineseUnits === true;
@@ -167,6 +241,7 @@
     }
 
     if (changed) {
+      paintSettings();
       applyI18n();
       if (state.data) render();
       else applyTheme();
@@ -176,6 +251,7 @@
 
   applyI18n();
   applyTheme();
+  paintSettings();
   buildSummarySkeleton();
   bind();
   load();
@@ -287,6 +363,7 @@
     clearTimeout(state.spinTimer);
     clearTimeout(state.staleTimer);
     state.controller = new AbortController();
+    const controller = state.controller;
     state.loading = true;
     state.error = "";
     const spinStarted = Date.now();
@@ -296,7 +373,7 @@
       progress.hidden = false;
       progress.setAttribute("aria-hidden", "false");
     }
-    warning.hidden = true;
+    if (!options.quiet) clearRefreshWarning();
     if (!state.data) {
       stateCard.hidden = true;
       accounts.hidden = true;
@@ -310,18 +387,21 @@
         headers: { "x-usage-tree-token": token },
         cache: "no-store",
         signal: AbortSignal.any([
-          state.controller.signal,
-          AbortSignal.timeout(10000),
+          controller.signal,
+          AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         ]),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      if (requestId !== state.requestId || requestedPeriod !== state.period) return;
+      if (!isCurrentLoad(requestId, requestedPeriod)) return;
+      if (res.headers.get("x-usage-tree-refresh") === "failed") refreshFailed = true;
+      else if (!options.quiet) refreshFailed = false;
       const next = fingerprint(body);
-      const changed = next !== state.fingerprint || !state.rendered;
+      const changed = next !== state.fingerprint || !state.rendered || (refreshFailed && warning.hidden);
       state.data = body;
       state.fingerprint = next;
       state.loadedAt = Date.now();
+      if (!refreshFailed) clearRefreshWarning();
       // The service answers with the numbers it had and reads again behind
       // the page; ask for them again in a moment, so the page catches up
       // without the reader asking.
@@ -347,24 +427,36 @@
         renderFoot();
       }
     } catch (error) {
-      if (requestId !== state.requestId || error?.name === "AbortError") return;
+      if (!isCurrentLoad(requestId, requestedPeriod) || error?.name === "AbortError") return;
+      if (error?.name === "TimeoutError") {
+        state.error = W.serviceTimeout;
+        if (state.data?.period === requestedPeriod) {
+          showRefreshWarning();
+          renderFoot();
+          return;
+        }
+        renderError();
+        return;
+      }
       state.error = `${error?.name || "Error"}: ${error?.message || W.readFailed}`;
       if (state.data?.period === requestedPeriod) {
-        warning.hidden = false;
-        warning.textContent = W.refreshFailed;
+        showRefreshWarning();
         renderFoot();
         return;
       }
       renderError();
     } finally {
-      if (requestId !== state.requestId) return;
+      if (!isCurrentLoad(requestId, requestedPeriod)) {
+        if (state.controller === controller) state.controller = null;
+        return;
+      }
       // A cached answer is over in tens of ms: hold the spin for a beat so
       // a press reads as a refresh. A slow read keeps it until it is done.
       const elapsed = Date.now() - spinStarted;
       const settle = () => {
-        if (requestId !== state.requestId) return;
+        if (!isCurrentLoad(requestId, requestedPeriod)) return;
         state.loading = false;
-        state.controller = null;
+        if (state.controller === controller) state.controller = null;
         refresh.classList.remove("busy");
         refresh.disabled = false;
         progress.hidden = true;
@@ -380,8 +472,14 @@
     }
   }
 
-  setTimeout(() => {
-    if (!state.data && state.loading) {
+  // A newer request owns the loading UI even if an older request finishes
+  // after the period has already changed.
+  function isCurrentLoad(requestId, requestedPeriod) {
+    return requestId === state.requestId && requestedPeriod === state.period;
+  }
+
+  const serviceTimer = setTimeout(() => {
+    if (!state.data && state.loading && !state.error) {
       clearTimeout(state.spinTimer);
       state.error = W.serviceTimeout;
       renderError();
@@ -391,57 +489,50 @@
       progress.hidden = true;
       progress.setAttribute("aria-hidden", "true");
     }
-  }, 10500);
+  }, SERVICE_TIMEOUT_MS);
+  addEventListener("pagehide", () => clearTimeout(serviceTimer), { once: true });
 
   // What the page reads: if a read came back the same, nothing is redrawn.
   function fingerprint(data) {
     const summary = data?.summary || {};
     const cost = (value) => Number(value || 0).toFixed(6);
+    const partsFor = (item, extra = []) => [
+      item.calls,
+      item.errors,
+      item.unpriced,
+      item.input,
+      item.output,
+      item.tokens,
+      item.cache,
+      item.allTokens,
+      item.cacheRead,
+      item.cacheWrite,
+      item.cacheUnknown,
+      item.cacheUnknownCalls,
+      cost(item.cost),
+      ...extra,
+    ];
     const parts = [
       data?.period,
+      data?.stale === true,
+      JSON.stringify(data?.warnings || []),
       summary.accounts,
       summary.providers,
       summary.models,
-      summary.calls,
-      summary.errors,
-      summary.unpriced,
-      summary.input,
-      summary.output,
-      summary.tokens,
-      summary.cache,
-      summary.allTokens,
-      cost(summary.cost),
+      ...partsFor(summary),
     ];
-    for (const provider of data?.providers || []) {
-      parts.push(
-        provider.id,
-        provider.providerName,
-        provider.calls,
-        provider.errors,
-        provider.unpriced,
-        provider.input,
-        provider.output,
-        provider.tokens,
-        provider.cache,
-        provider.allTokens,
-        cost(provider.cost),
-      );
+    const providers = Array.isArray(data?.providers) && data.providers.length
+      ? data.providers
+      : Array.isArray(data?.accounts) ? [{ accounts: data.accounts }] : [];
+    for (const provider of providers) {
+      parts.push(provider.id, provider.providerName, ...partsFor(provider.id ? provider : {}));
       for (const account of provider.accounts || []) {
         parts.push(
           account.id,
           account.account,
           account.alias,
           account.providerName,
-          account.calls,
-          account.errors,
-          account.unpriced,
-          account.input,
-          account.output,
-          account.tokens,
-          account.cache,
-          account.allTokens,
-          cost(account.cost),
-          account.lastAt,
+          ...partsFor(account, [account.lastAt]),
         );
         for (const model of account.models || []) {
           parts.push(
@@ -449,16 +540,7 @@
             model.model,
             model.provider,
             model.providerName,
-            model.calls,
-            model.errors,
-            model.unpriced,
-            model.input,
-            model.output,
-            model.tokens,
-            model.cache,
-            model.allTokens,
-            cost(model.cost),
-            JSON.stringify(model.hostNotes || []),
+            ...partsFor(model, [JSON.stringify(model.hostNotes || [])]),
           );
         }
       }
@@ -527,7 +609,8 @@
 
   function renderWarnings(warnings) {
     if (!warnings.length) {
-      warning.hidden = true;
+      warning.hidden = !refreshFailed;
+      if (refreshFailed) warning.textContent = W.refreshFailed;
       return;
     }
     warning.hidden = false;
@@ -535,10 +618,23 @@
       .map((item) => {
         if (typeof item === "string") return item;
         if (item.code === "no-usage") return W.noUsage;
+        if (item.code === "model-details") return W.modelDetails(Math.max(1, Number(item.count) || 1));
         return "";
       })
       .filter(Boolean)
       .join(" ");
+    if (refreshFailed) warning.textContent += ` ${W.refreshFailed}`;
+  }
+
+  function showRefreshWarning() {
+    refreshFailed = true;
+    warning.hidden = false;
+    renderWarnings(state.data?.warnings || []);
+  }
+
+  function clearRefreshWarning() {
+    refreshFailed = false;
+    warning.hidden = true;
   }
 
   function renderError() {
@@ -591,6 +687,10 @@
           tokens: 0,
           cache: 0,
           allTokens: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cacheUnknown: 0,
+          cacheUnknownCalls: 0,
           cost: 0,
           errors: 0,
           unpriced: 0,
@@ -601,6 +701,10 @@
       provider.calls += account.calls || 0;
       provider.tokens += account.tokens || 0;
       provider.cache += account.cache || 0;
+      provider.cacheRead += account.cacheRead || 0;
+      provider.cacheWrite += account.cacheWrite || 0;
+      provider.cacheUnknown += account.cacheUnknown || 0;
+      provider.cacheUnknownCalls += account.cacheUnknownCalls || 0;
       provider.allTokens +=
         Number(account.allTokens) || (Number(account.tokens) || 0) + (Number(account.cache) || 0);
       provider.cost += account.cost || 0;
@@ -824,7 +928,7 @@
       );
       const share = shareCell(model, totalForSort(account.models), account.models);
       const split = el("div", "model-split",
-        `${W.input} ${compact(model.input)} · ${W.output} ${compact(model.output)} · ${W.cache} ${compact(model.cache)}`);
+        `${W.input} ${compact(model.input)} · ${W.output} ${compact(model.output)} · ${W.cache} ${compact(model.cache)}${V.cacheHitSuffix(model, lang)}`);
       who.append(split);
 
       const cost = metric(
