@@ -57,11 +57,10 @@ test("max_tokens is required; zero is accepted; negative and non-integer are rej
 })
 
 test("out-of-scope parameters, multimodal content, and unrecognized fields are rejected", async () => {
-  await assert.rejects(parse(base({ metadata: { user_id: "u" } })), { code: "invalid-request" })
   await assert.rejects(parse(base({ mcp_servers: [] })), { code: "invalid-request" })
   await assert.rejects(parse(base({ messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })), { code: "invalid-request" })
   // Unrecognized top-level fields fail explicitly rather than reaching upstream.
-  for (const field of ["anthropic_beta", "top_logprobs", "functions", "tool_Calls", "stream_options"]) {
+  for (const field of ["top_logprobs", "functions", "tool_Calls", "stream_options"]) {
     await assert.rejects(parse(base({ [field]: field === "top_logprobs" ? 1 : [] })), { code: "invalid-request" }, field)
   }
 })
@@ -89,6 +88,29 @@ test("an image-capable model still rejects non-base64 sources and malformed imag
     { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" }, detail: "high" },
   ]
   for (const block of bad) await assert.rejects(parseWith(withImage(block), IMAGE_CAPABLE), { code: "invalid-request" }, JSON.stringify(block))
+})
+
+test("tool results accept text and images without allowing other nested content", async () => {
+  const bodyFor = content => base({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "tool_image", content }] }] })
+  for (const content of ["", "tool text", [], [{ type: "text", text: "tool text" }]]) {
+    assert.deepEqual(await parse(bodyFor(content)), bodyFor(content))
+  }
+  for (const content of [[imageBlock], [{ type: "text", text: "Read image file [image/png]" }, imageBlock]]) {
+    await assert.rejects(parseWith(bodyFor(content)), { code: "invalid-request" })
+    await assert.rejects(parseWith(bodyFor(content), { capabilities: { image: false } }), { code: "invalid-request" })
+    assert.deepEqual(await parseWith(bodyFor(content), IMAGE_CAPABLE), bodyFor(content))
+  }
+  const badContents = [
+    undefined, null, 7, {}, [null], [{ type: "text" }],
+    [{ type: "image", source: { type: "url", url: "https://example.invalid/i.png" } }],
+    [{ type: "image", source: { type: "base64", media_type: "image/png" } }],
+    [{ ...imageBlock, extra: true }],
+    [{ type: "tool_use", id: "nested", name: "read", input: {} }],
+    [{ type: "tool_result", tool_use_id: "nested", content: "ok" }],
+    [{ type: "thinking", thinking: "x", signature: "sig" }],
+    [{ type: "document", source: {} }],
+  ]
+  for (const content of badContents) await assert.rejects(parseWith(bodyFor(content), IMAGE_CAPABLE), { code: "invalid-request" })
 })
 
 test("tools, tool_choice and a forced tool name are validated against declared tools", async () => {
@@ -135,6 +157,25 @@ test("native thinking controls validate structurally: enabled budget, adaptive/d
   await assert.rejects(parse(base({ thinking: { type: "adaptive", budget_tokens: 1024 } })), { code: "invalid-request" })
   await assert.rejects(parse(base({ thinking: { type: "enabled", budget_tokens: 1024, unknown: 1 } })), { code: "invalid-request" })
   await assert.rejects(parse(base({ output_config: { effort: 5 } })), { code: "invalid-request" })
+})
+
+test("context_management and anthropic_beta pass through validation unchanged as opaque native fields", async () => {
+  const shapes = [
+    { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    { edits: [{ type: "clear_tool_uses_20250919", keep: 5, future_field: true }] },
+    { edits: [{ type: "clear_thinking_20251015", keep: "all" }, { type: "clear_tool_uses_20250919", keep: "all" }] },
+    { edits: [], trigger: { type: "input_tokens", value: 100000 } },
+  ]
+  for (const context_management of shapes) {
+    const body = base({ context_management })
+    assert.deepEqual(await parse(body), body)
+  }
+  for (const anthropic_beta of [["context-management-2025-06-27"], ["some-future-beta"], [], null]) {
+    const body = base({ context_management: shapes[0], anthropic_beta })
+    assert.deepEqual(await parse(body), body)
+  }
+  const beta = base({ anthropic_beta: ["x"] })
+  assert.deepEqual(await parse(beta), beta)
 })
 
 // --- whole-reply dispatch through the plugin loader ------------------------
@@ -194,6 +235,106 @@ test("a whole Claude reply reaches /invoke and returns native Anthropic JSON", a
   assert.equal("stream" in call.body, false, "stream selector is omitted from the body")
   assert.deepEqual(call.body.stop_sequences, ["STOP"], "explicit native fields are forwarded, not dropped")
   assert.deepEqual(call.body.messages, [{ role: "user", content: "hi" }])
+})
+
+test("session metadata is accepted without changing the Bedrock request or native reply", async () => {
+  const { post, sent } = await fixture()
+  const body = base({ max_tokens: 256, system: "be terse", stop_sequences: ["STOP"] })
+  const baseline = await post("/messages", body)
+  assert.equal(baseline.status, 200)
+  assert.deepEqual(await baseline.json(), MESSAGE)
+  const upstream = sent.at(-1).body
+
+  const response = await post("/messages", { ...body, metadata: { user_id: '{"session_id":"synthetic-session"}' } })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), MESSAGE)
+  assert.equal("metadata" in sent.at(-1).body, false)
+  assert.deepEqual(sent.at(-1).body, upstream)
+})
+
+test("agent thinking context management reaches Bedrock with its beta and preserves the whole native reply", async () => {
+  const reply = { ...MESSAGE, context_management: { applied_edits: [] } }
+  const { post, sent } = await fixture(() => new Response(JSON.stringify(reply)))
+  const body = base({
+    max_tokens: 256,
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+    messages: [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: [{ type: "thinking", thinking: "earlier reasoning", signature: "signed-history" }, { type: "text", text: "first answer" }] },
+      { role: "user", content: "next question" },
+    ],
+  })
+  const response = await post("/messages", body)
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), reply)
+  assert.equal(sent.at(-1).url, OPUS_URL + "/invoke")
+  assert.deepEqual(sent.at(-1).body.context_management, body.context_management)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+  assert.deepEqual(sent.at(-1).body.thinking, body.thinking)
+  assert.deepEqual(sent.at(-1).body.messages, body.messages)
+  assert.equal("anthropic_beta" in body, false)
+})
+
+test("the known beta defaults for a bare directive, an explicit beta overrides it verbatim, and an absent directive leaks neither on the same loader", async () => {
+  const { post, sent } = await fixture()
+  const context_management = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
+
+  const defaulted = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" }, context_management }))
+  assert.equal(defaulted.status, 200)
+  assert.deepEqual(sent.at(-1).body.context_management, context_management)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+
+  for (const anthropic_beta of [["context-management-2025-06-27", "future-beta"], [], null]) {
+    const overridden = await post("/messages", base({ max_tokens: 64, context_management, anthropic_beta }))
+    assert.equal(overridden.status, 200)
+    assert.deepEqual(sent.at(-1).body.anthropic_beta, anthropic_beta, JSON.stringify(anthropic_beta))
+    assert.deepEqual(sent.at(-1).body.context_management, context_management)
+  }
+
+  const future = { edits: [{ type: "clear_tool_uses_20250919", keep: 3, future_field: true }] }
+  const futured = await post("/messages", base({ max_tokens: 64, context_management: future }))
+  assert.equal(futured.status, 200)
+  assert.deepEqual(sent.at(-1).body.context_management, future)
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["context-management-2025-06-27"])
+
+  const ok = await post("/messages", base({ max_tokens: 64, thinking: { type: "adaptive" } }))
+  assert.equal(ok.status, 200)
+  assert.equal("context_management" in sent.at(-1).body, false)
+  assert.equal("anthropic_beta" in sent.at(-1).body, false, "thinking alone adds no beta")
+})
+
+test("a novel context_management or anthropic_beta the plugin does not model reaches inference, and its native rejection surfaces once with redaction and no retry", async () => {
+  const upstream = { type: "error", error: { type: "invalid_request_error", message: "context_management: unknown edit " + CREDS.clientSecret } }
+  const { post, sent } = await fixture(() => new Response(JSON.stringify(upstream), { status: 400 }))
+  const mark = sent.length
+  const response = await post("/messages", base({
+    max_tokens: 64,
+    context_management: { edits: [{ type: "clear_tool_uses_20250919", keep: "all" }] },
+    anthropic_beta: ["some-unrecognized-beta"],
+  }))
+  assert.equal(response.status, 400)
+  assert.equal(sent.length, mark + 1, "the request reached inference exactly once, with no retry")
+  assert.deepEqual(sent.at(-1).body.anthropic_beta, ["some-unrecognized-beta"], "the explicit beta reached upstream verbatim")
+  const text = await response.text()
+  assert.equal(text.includes(CREDS.clientSecret), false)
+  assert.ok(text.includes("[redacted]"))
+})
+
+test("image tool-result content reaches Bedrock verbatim with call identity and cache controls intact", async () => {
+  const { post, sent } = await fixture()
+  const cache_control = { type: "ephemeral" }
+  const toolUse = { type: "tool_use", id: "tool_image", name: "read", input: { path: "image.png" } }
+  for (const content of [[imageBlock], [{ type: "text", text: "Read image file [image/png]", cache_control }, { ...imageBlock, cache_control }]]) {
+    const messages = [
+      { role: "user", content: "Read image.png" },
+      { role: "assistant", content: [toolUse] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: toolUse.id, content, is_error: false, cache_control }] },
+    ]
+    const response = await post("/messages", base({ messages }))
+    assert.equal(response.status, 200)
+    assert.deepEqual(sent.at(-1).body.messages, messages)
+  }
 })
 
 test("pi's non-native tool hints are stripped from the Bedrock invoke body", async () => {

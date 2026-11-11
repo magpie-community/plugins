@@ -11,7 +11,7 @@ AStudio 在 registry 里有两个入口，都保留（[#614](https://github.com/
 | 登录 | 浏览器登录（推荐，可多账号）、读取本机 AStudio 桌面端的登录态，或粘贴 `modelBearerToken` | 本机打开一个登录页：手机验证码、账号密码或微信扫码（含极验验证），不依赖桌面端 |
 | 适合 | 装了桌面端就复用登录态；没装也可以用浏览器登录（可多账号）；两者都不方便时粘贴凭据 | 任何平台，没装桌面端也行 |
 | 模型端点 | `…/model-gateway/v1/responses`（OpenAI Responses，与桌面端一致） | `…/model-gateway/v1/chat/completions` |
-| 每日积分 | 先读当日获得流水（与网页后台「获得明细」同源）：有当日 GRANT 行即已发放，此时一个写请求都不发；流水为空才做一次会话活跃再读流水，流水不可用才退回余额差 + `client-popups/pending` 弹窗观测；不调用领取接口 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
+| 每日积分 | 先读当日获得流水（与网页后台「获得明细」同源）：有当日 GRANT 行即零写；没有才 `POST client-popups/complete` 领取 `DAILY_REWARD_DIALOG` 那一条，再以流水认定 | 调用 `client-popups` 领取每日奖励和新人礼包弹窗 |
 
 两者用同一个 AStudio 账号时，读的是同一个 `points/balance`，模型调用也扣同一份积分：**每日登录积分是一个池子，装两个不会多一份。** 同一账号两边都登录只会重复显示同一笔余额。
 
@@ -54,11 +54,13 @@ same daily points balance.
 
 ## 每日签到（每日登录积分）
 
-AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效），客户端弹窗只做通知、没有领取接口。
+AStudio 有「每日登录积分」：账号面 `client-popups/pending` 里的 `DAILY_REWARD_DIALOG` 是**待领取的每日奖励**，桌面端点「知道了」时发 `POST client-popups/complete`，服务端随后记一笔「每日登录赠送」GRANT 流水（体验版 100 分/天，标准版 200，高级/畅享 400；活动期 31 天有效）。
 
-插件为此提供 magpie 的 `auth.checkin`，**先读当日获得流水**（`points/details?direction=CREDIT`，与网页后台「获得明细」同源，时间窗口按北京时间算）：有 `GRANT` 且 reason 为「每日登录赠送」的入账即已发放——此时**一个写请求都不发**，连会话活跃也不做。流水为空才替账号做一次会话活跃（`POST tenant-app/v2/init-app`，带桌面端 `clientType` / `studioVersion` 身份头；缺 `clientType` 会被服务端以 `11001001` 拒绝），再读一次流水：新出现的 GRANT 行记为本次领取；流水接口不可用时退回余额差 + `client-popups/pending` 的 `DAILY_REWARD_DIALOG` 弹窗观测。余额涨了但流水还没入账也记领取（流水滞后）；流水通畅、余额没涨、也没有当日弹窗则如实报「未观测到新发放」，**不谎称已签**。
+插件为此提供 magpie 的 `auth.checkin`，**先读当日获得流水**（`points/details?direction=CREDIT`，与网页后台「获得明细」同源，时间窗口按北京时间算）：有 `GRANT` 且 reason 为「每日登录赠送」的入账即已发放——此时**零写**，连弹窗都不读。流水为空才去 pending 里精确筛选 `componentType === "DAILY_REWARD_DIALOG"`、`popupId` 为正整数、`instanceKey` 非空的条目，只对这一条 `POST client-popups/complete`（带桌面端 `clientType` / `studioVersion` 身份头；缺 `clientType` 会被服务端以 `11001001` 拒绝），再以流水认定结果：出现 GRANT 行记 `claimed`；流水尚未出现时短延迟复读一次，仍未出现就报 `failed`，**不拿余额差或弹窗文案当证据**。没有待领取弹窗则记 `inactive`。下载奖励、新人礼包、引导等非每日奖励弹窗一律不碰。
 
-签到**不调用** `client-popups/complete`：桌面端的「知道了」是桌面端的交互，插件只读弹窗、不替用户点掉。除 init-app 外，签到发出的都是只读请求。发放由服务端按账号会话判定，插件不能代替桌面端登录，也不保证某天一定有积分到账。签到需要账号带网页会话（浏览器登录与桌面端登录态方式默认有）。
+整个过程只用已保存的网页会话 Cookie，**不启动 AStudio 客户端、不启动浏览器、不发送模型对话**。签到需要账号带网页会话（浏览器登录与桌面端登录态方式默认有）；会话过期会提示重新登录。
+
+**实测记录（2026-11-09）**：两个 magpie 保存的账号（一个来自桌面端登录态、一个来自浏览器登录）当日 `points/details` 均为空、pending 各有 1 条 `DAILY_REWARD_DIALOG`；只发一次 `client-popups/complete` 后 2 秒内都出现 `GRANT 每日登录赠送 100`（余额 7900→8000、1100→1200），pending 清空。全程未启动 AStudio 客户端、浏览器或模型对话。仅验证了当天单次领取，跨日/重复领取等边界未宣称已验收。
 
 ## 用量
 
@@ -68,7 +70,7 @@ AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃
 
 - 模型调用：`POST https://astronstudio-api-volces-prod.xf-yun.com/model-gateway/v1/responses`（OpenAI Responses，`Authorization: Bearer`）——与 AStudio 桌面端写进 acode 内核的 `base_url` / `wire_api` 完全一致。
 - 模型目录：`GET https://astronstudio-api-volces-prod.xf-yun.com/api/v1/model-manager/models`。
-- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`、`points/summary`、`client-popups/pending`，Cookie 会话鉴权 + `clientType` / `studioVersion` 身份头）。
+- 账号面：`https://agent.xfyun.cn/xingchen-studio/`（`points/balance`、`membership/me`、`membership/plan-config`、`points/summary`、`client-popups/pending`、`client-popups/complete`，Cookie 会话鉴权 + `clientType` / `studioVersion` 身份头）。
 
 ## 风险提示
 

@@ -2,6 +2,8 @@
 
 An (unofficial) output-style plugin for magpie, developed and maintained by manjughosa.
 
+Seven composable output styles with a selection panel; **every style is off by default**.
+
 本插件由 manjughosa 独立开发并维护，非官方出品。七种输出样式可以自由组合，全部默认关闭。
 
 The style texts and the original request-injection design are adapted from OmniRoute's Output Styles, caveman, ponytail, i-have-adhd and 9router. Exact sources, revisions, licenses and adaptations are recorded in `PROVENANCE.json`; upstream license files are in `LICENSES/`.
@@ -40,7 +42,7 @@ No options, an empty options object, or all styles off leaves a request unchange
 
 - **Anthropic and Chat Completions:** append one static style block to the existing system prompt, or create the protocol-appropriate system field when none exists.
 - **Responses:** leave `instructions` completely untouched, including Codex's identity and base instructions. Add the style block as a separate `developer` input item.
-- **An existing `[Output Strategy]` marker:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced. If an agent replays that marker in its history, the saved style remains part of that conversation; turning a style off does not rewrite history. Start a new conversation to begin without the old style block.
+- **An existing `[Output Strategy]` marker in system/developer instructions:** the body is already considered injected and is left unchanged; old blocks are never stripped or replaced. Quoting the marker in user or assistant messages does not trigger this skip. If an agent replays that marker in system/developer instructions, the saved style remains part of that conversation; turning a style off does not rewrite history. Start a new conversation to begin without the old style block.
 - **Cache stability:** a selected style injects consistently across turns. The former `autoClarity` and media-history bypasses are removed because they made the cached system prefix appear and disappear.
 - **Unknown or unsupported shapes:** pass through unchanged. Middleware errors fail open.
 
@@ -57,4 +59,4 @@ node scripts/gen-page-catalog.mjs
 
 ## 中文摘要
 
-7 种输出样式可以自由组合，全部默认关闭。启用后在请求发送前注入固定规则；Responses 不修改 Codex 的 `instructions`，而是另加 developer 输入项。已有 `[Output Strategy]` 标记的请求原样通过。为避免提示缓存失效，已移除 autoClarity 和媒体历史绕过；不再提供统计 hook，不保存请求或响应正文，也不写插件安装目录。页面跟随 Magpie 的语言设置。
+7 种输出样式可以自由组合，全部默认关闭。启用后在请求发送前注入固定规则；Responses 不修改 Codex 的 `instructions`，而是另加 developer 输入项。系统/开发者指令中已有 `[Output Strategy]` 标记的请求原样通过；用户或助手消息中引用标记不会触发跳过。切换或关闭样式不会改写已有会话历史，要完整应用新配置请新建会话。为避免提示缓存失效，已移除 autoClarity 和媒体历史绕过；不再提供统计 hook，不保存请求或响应正文，也不写插件安装目录。页面跟随 Magpie 的语言设置。

@@ -802,7 +802,7 @@ function rejectOrBlank(body, ctx, block, opts) {
 // Guide policy: withhold bytes, keep enough metadata for the model to choose a tool
 // ---------------------------------------------------------------------------
 
-function guideMime(node) {
+function guideMimeCandidate(node) {
   var candidates = [
     node.media_type, node.mediaType, node.mime_type, node.mimeType,
     node.source && (node.source.media_type || node.source.mediaType),
@@ -813,8 +813,7 @@ function guideMime(node) {
   ];
   for (var i = 0; i < candidates.length; i++) {
     if (typeof candidates[i] === 'string' && candidates[i].length > 0) {
-      var candidate = candidates[i].slice(0, 100);
-      if (/^[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(candidate)) return candidate;
+      return candidates[i];
     }
   }
   var url = typeof node.image_url === 'string' ? node.image_url : node.image_url && node.image_url.url;
@@ -822,11 +821,33 @@ function guideMime(node) {
   if (typeof url === 'string' && url.indexOf('data:') === 0) {
     var comma = url.indexOf(',');
     if (comma > 5) {
-      var mime = url.slice(5, comma).split(';')[0].slice(0, 100);
-      if (/^[A-Za-z0-9][A-Za-z0-9.+-]*\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(mime)) return mime;
+      var mime = url.slice(5, comma).split(';')[0];
+      if (mime.length > 0) return mime;
     }
   }
   return '';
+}
+
+// The guide prompt only needs a coarse class. Never echo raw media_type: it is
+// untrusted metadata and exact subtypes/parameters are not useful for tool choice.
+function guideMediaClass(node, kind) {
+  var candidate = guideMimeCandidate(node);
+  // Do not normalize an unbounded untrusted string outside the scan budget.
+  // 256 is above the longest usable type/subtype+parameters prefix and keeps
+  // this step O(1) for oversized metadata.
+  if (candidate.length > 256) candidate = '';
+  candidate = candidate.split(';')[0].trim().toLowerCase();
+  if (candidate.indexOf('image/') === 0) return 'image';
+  if (candidate === 'application/pdf' || candidate === 'application/x-pdf') return 'pdf';
+  if (candidate === 'application/msword' || candidate === 'application/vnd.ms-excel' ||
+    candidate === 'application/vnd.ms-powerpoint' ||
+    candidate.indexOf('application/vnd.openxmlformats-officedocument.') === 0) return 'office';
+  if (candidate.indexOf('audio/') === 0) return 'audio';
+  if (candidate.indexOf('video/') === 0) return 'video';
+  if (kind === 'image' || kind === 'image_url' || kind === 'input_image') return 'image';
+  if (kind === 'audio' || kind === 'input_audio') return 'audio';
+  if (kind === 'video' || kind === 'input_video') return 'video';
+  return 'unknown';
 }
 
 function guideBytes(node) {
@@ -848,10 +869,10 @@ function guideBytes(node) {
 }
 
 function guideText(node, kind, opts) {
-  var mime = guideMime(node);
+  var media = guideMediaClass(node, kind);
   var bytes = guideBytes(node);
   var bits = ['type ' + kind];
-  if (mime !== '') bits.push('mime ' + mime);
+  bits.push('media ' + media);
   if (bytes !== null) bits.push('bytes ' + bytes);
   var text = '[A binary attachment was withheld locally and was NOT sent to you (' + bits.join('; ') +
     '). Do not claim to have seen it. First ask how the user/agent can process or read it locally';

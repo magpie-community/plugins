@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-cowork",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tuanjie Cowork (codely) as a magpie agent: magpie cowork <model> switches the model it chats with",
   "type": "module",
   "files": [

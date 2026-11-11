@@ -1427,6 +1427,7 @@ function completionFromChunks(events) {
   const content = []
   const reasoning = []
   const toolCalls = []
+  const open = new Map() // upstream index -> the call being written there
   let finish = null
   let usage = null
   let model = first.model
@@ -1440,7 +1441,17 @@ function completionFromChunks(events) {
     if (typeof delta.content === "string") content.push(delta.content)
     if (typeof delta.reasoning_content === "string") reasoning.push(delta.reasoning_content)
     for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const slot = (toolCalls[num(call.index)] ??= { id: "", type: "function", function: { name: "", arguments: "" } })
+      // a new id at an index in use is a new call, not more of the open
+      // one: two calls at one index ran together as {"a"}{"b"}
+      // (plugins#930). No id, or the same one, goes on with it.
+      let slot = open.get(num(call.index))
+      const id = typeof call.id === "string" ? call.id : ""
+      if (!slot || (id && slot.id && id !== slot.id)) {
+        slot = { id: "", type: "function", function: { name: "", arguments: "" } }
+        if (toolCalls[num(call.index)]) toolCalls.push(slot)
+        else toolCalls[num(call.index)] = slot
+        open.set(num(call.index), slot)
+      }
       if (typeof call.id === "string" && call.id) slot.id = call.id
       if (typeof call.type === "string" && call.type) slot.type = call.type
       if (typeof call.function?.name === "string") slot.function.name += call.function.name
@@ -1859,6 +1870,13 @@ async function signedFetch(cred, input, init, context) {
         body = utf8(JSON.stringify(chat.body))
         continue
       }
+      // The account has no free channel at all (`InferHub.APIG.0101.404`, #905):
+      // the same model without the header is its plain one.
+      if (extra && /InferHub\.APIG\.0101\.404/i.test(code || text)) {
+        context.state?.noBenefit.add(model)
+        extra = undefined
+        continue
+      }
       if (extra && /InferHub\.400[45]\.200|benefit not found/i.test(code || text)) {
         // A new Beijing day whose benefit isn't claimed yet: claim it, as the
         // agent does each day, and send it again as the free model.
@@ -1896,15 +1914,31 @@ async function signedFetch(cred, input, init, context) {
 
 /** A signed GET returning the response text, or undefined on any failure. */
 async function signedGet(url, cred, fetcher, extraUnsignedHeaders) {
+  const answer = await signedRead(url, cred, fetcher, extraUnsignedHeaders)
+  return answer?.ok ? answer.text : undefined
+}
+
+/** A signed GET's answer whatever its status (`{ ok, status, text }`), undefined when the vendor wasn't reached. */
+async function signedRead(url, cred, fetcher, extraUnsignedHeaders) {
   try {
     const headers = await signFor(cred, "GET", url, new Uint8Array())
     for (const [k, v] of Object.entries(extraUnsignedHeaders ?? {})) headers.set(k, v)
     const res = await fetcher(url, { method: "GET", headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-    if (!res.ok) return undefined
-    return await res.text()
+    return { ok: res.ok, status: res.status, text: await res.text() }
   } catch {
     return undefined
   }
+}
+
+/**
+ * gateway/config's own answer that the account has no free channel
+ * (`{"error_code":"4000","error_msg":"invalid channel, group not found"}`,
+ * #905): a list of no free models, not a failed read.
+ */
+function isNoBenefitChannel(text) {
+  const raw = safeJson(text)
+  if (!raw || typeof raw !== "object") return false
+  return String(raw.error_code ?? "") === "4000" || /group not found/i.test(String(raw.error_msg ?? ""))
 }
 
 /** A failed answer as one line: the gateway's own code and words, not just the status. */
@@ -2333,8 +2367,14 @@ async function fetchRemoteModels(cred, fetcher, state) {
   const seen = new Set()
   const benefitIds = []
 
-  const gatewayText = await signedGet(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher)
-  const gateway = gatewayText === undefined ? undefined : extractArray(gatewayText, ["result", "models"])
+  const gatewayAnswer = await signedRead(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher)
+  const gateway = !gatewayAnswer
+    ? undefined
+    : isNoBenefitChannel(gatewayAnswer.text)
+      ? []
+      : gatewayAnswer.ok
+        ? extractArray(gatewayAnswer.text, ["result", "models"])
+        : undefined
   const claimed = gateway?.length ? (state ? await ensureBenefitClaimed(cred, fetcher, state) : true) : false
   for (const item of claimed ? gateway : []) {
     if (typeof item !== "object" || item === null) continue

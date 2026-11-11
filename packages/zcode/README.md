@@ -31,7 +31,10 @@ over Anthropic's Messages API. Provider id: `zcode`.
     picks by it, so without it the cache is mostly missed (#387). An
     account known only by its key gets a device id made from the key, the
     same on every start. Every request also carries the `x-session-id`
-    header below. zcode.z.ai also
+    header below. ZCode's headers are the desktop app's (3.17.2):
+    `X-Title: Z Code@electron`, and an `x-query-id` per user turn, a UUID
+    that stays the same through the turn's tool results and is new with
+    the next user message, as ZCode makes one per query. zcode.z.ai also
     answers 405 code 3012 to every request of an account its risk control
     blocked, ZCode's own app's included (plugins#348). That answer comes
     back as ZCode's words, then "ZCode's risk control blocked this account
@@ -137,9 +140,17 @@ becomes a 429 and keeps the entry off for a minute. Any other gift
 answer (its 405, its 401, its 5xx) goes on as it came: the user picked
 the gift, so the coding plan is not spent behind their back. Every other
 429 counts as spent — Z.ai's 1302/1303 rate limits among them — while the
-plan's own in-flight cap (3008/3009) does not: such a request is asked
+plan's own in-flight cap (3008/3009/3010) does not: such a request is asked
 again instead (see [A few at once](#a-few-at-once)). A stream's body is
 never read or buffered on the way.
+
+Since 0.1.58 the trial entries are marked free in the model list: they
+spend the gift, which costs nothing. magpie then reads a coding plan
+model's weekly or monthly limit (code 1310) as that model's, not the
+account's, so the account's `-Trial` entries are still asked while the
+plan's model rests (plugins#438). In magpie's pickers the trial entries
+carry the Free mark, and a routing group that prefers free models picks
+them first.
 
 **Free first.** Picking `-Trial` by hand keeps the choice the user's,
 but an agent that always asks the plain model never sees the gift.
@@ -153,6 +164,8 @@ options, just above Advanced (since 0.1.49). It is on by default; off
 keeps the plain models on the plan. The JSON below still works, and a
 `freeFirst: false` there keeps it off whatever the switch says. Turn it
 off for the whole plugin in magpie's Plugins › Options
+
+Since 0.1.59 a reply the gift answered says its model as the picker lists it (`GLM-5.3-Flash-Trial`), whether free first or a `-Trial` pick sent the request, so the Usage page, the sessions and the request log show which route spent the turn; a reply the coding plan answered, a free-first replay among them, keeps the plan's name.
 
 ```json
 { "freeFirst": false }
@@ -192,26 +205,75 @@ a spent one answers 429 with freeFirst on, as it does without it.
 ## A few at once
 
 A plan serves one account a few requests at a time; past that, ZCode
-answers 429 with code 3008 "user concurrency limit exceeded", or 3009
-"model concurrency limit exceeded". magpie funnels every agent's and every
-session's requests of one computer through this one plugin process, so
-magpie's own queue spaces an account's requests by the number this plugin
-declares — `maxConcurrency` on the auth hook, and `magpie.maxConcurrency`
-in its `package.json`, both three. A request the vendor refuses anyway
-waits a moment (a quarter of a second, then longer — about ten seconds of
-waits in all) and asks again, the same request byte for byte. A cap that
-outlasts the waits goes on as a 429, ZCode's words followed by what they
+answers 429 with code 3008 "user concurrency limit exceeded", 3009
+"model concurrency limit exceeded" or 3010. magpie funnels every agent's
+and every session's requests of one computer through this one plugin
+process, so magpie's own queue spaces an account's requests by the number
+this plugin declares — `maxConcurrency` on the auth hook, and
+`magpie.maxConcurrency` in its `package.json`, both three. A request the
+vendor refuses anyway is asked again after 1s and once more after 2s, the
+same request byte for byte, as ZCode's own client (3.17.2) does. A cap
+that outlasts both goes on as a 429, ZCode's words followed by what they
 mean, so the agent reads why. magpie still reads it as a rate limit: the
 account rests a minute and the request goes to the next member of its
-routing group, as it did before.
+routing group.
 
-Three is a default, not a cap the plugin enforces. A plan's real cap
-follows its tier — Z.ai serves a Max plan more at once than a Pro, and a
-Lite fewer — and is higher off-peak
+For a coding plan three is a default, not a cap the plugin enforces. A
+plan's real cap follows its tier — Z.ai serves a Max plan more at once
+than a Pro, and a Lite fewer — and is higher off-peak
 ([Z.ai's usage policy](https://docs.z.ai/devpack/usage-policy)), so a
 number written into the plugin would hold a Max account to a Lite one's
 with no way to raise it. A user who knows their plan's cap sets it on the
 account or the provider in magpie, and magpie's queue follows that.
+
+The free Start Plan is one tier, measured at about three in flight
+(plugins#395), so there the plugin keeps its own gate too: an account's
+fourth Start Plan request waits in the plugin, in arrival order, until
+one of the three has been read to its end (or its agent went away), and
+is not sent to be refused. That covers what magpie's queue cannot see —
+a `maxConcurrency` raised past three, two magpie providers on one ZCode
+account, an older host. A request that has waited two minutes is answered
+here with a 429 that says it was not sent and why. Free first skips the
+gift while its account's gate is full, so the plain model goes to the
+coding plan rather than queueing.
+
+A run of caps is also the edge firewall's countdown: two days of logs
+(11-05 and 11-06) show ~18 requests/min on the Start Plan, up to ten in
+flight on one account, bringing 3008 caps in a run, then 3–7 minutes
+later a 405 block page that refuses the whole IP for 1–2 hours. Up to
+0.1.55 the plugin itself added to that run: it sent every request magpie
+passed it, asked a capped one again up to six times over about ten
+seconds, and counted every capped request toward the hold, so busy agents
+tripped the hold on refusals it had caused. With the gate the plugin's
+own requests stay under the cap, and a request counts only when ZCode
+refuses it again at the 1s re-ask, the sign that someone else (the ZCode
+app, another computer on the account) holds the slots. Five such
+requests in one minute hold Start Plan requests off `zcode.z.ai` for
+three minutes, process-wide and for every account, and answer them here
+with a 429 and `Retry-After` that say what happened and what to do, so
+magpie still rests the account and asks the group's next provider. A
+coding plan, served by another host, is never held. The window clears
+when the hold is armed, so the hold's own 429s cannot keep it armed, and
+a request already in flight or queued stops asking too. This is distinct
+from the network's 405 block page hold (plugins#649), which is what an IP
+already refused needs; when both are on, the 405 hold's answer wins.
+`inflight.test.mjs` replays the two days at 20× speed against a fake that
+refuses past three in flight: 0.1.55 drew 24 refusals in it, this version
+none.
+
+Some accounts are served fewer than three at a time (plugins#438: one
+account, one agent, refused at two in flight). Since 0.1.58 a request
+refused again at its 1s re-ask while others of the same account were in
+flight beside it narrows that account's gate to one fewer than were in
+flight, at least one, for five minutes, after which it is back to three.
+Such a refusal is this computer asking too much at once, which the
+narrowed gate now stops, so it counts toward no hold; up to 0.1.57 those
+refusals armed the hold at about five requests a minute, and armed it
+again within a minute of its end. A request refused again alone, nothing
+else of its account in flight, still counts as before: someone else holds
+the slots. An account whose slots are taken elsewhere is narrowed to one
+within a few refusals and then refused alone, so the firewall hold still
+comes before the 405.
 
 ## Two accounts at once
 
@@ -309,6 +371,13 @@ the body's code, not the HTTP status:
   read is *failed*, never nothing to claim;
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
+- ZCode's own client config (`GET /api/v1/client/configs`, read at most
+  every ten minutes) says whether a claim needs its security check
+  (`captcha.enabled`). While it does, which is so since 11-07, nothing is
+  posted: every plan answers *captcha*, "claim it in the ZCode app", since
+  a claim without the app's proof only spends one of ZCode's refusals. A
+  config that doesn't read answers *failed*, and nothing is posted then
+  either;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in
   the ZCode app — the claim is gated on the Aliyun captcha the app's
   renderer answers, and a claim from outside the app is refused it

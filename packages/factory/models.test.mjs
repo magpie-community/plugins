@@ -3,7 +3,7 @@
 // 0.240.0's own registry entries, saved byte for byte in testdata.
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { FactoryAuthPlugin } from "./index.mjs"
+import { FactoryAuthPlugin, _internal } from "./index.mjs"
 
 const DROID = readFileSync(new URL("./testdata/droid-0.240.0-models.txt", import.meta.url), "utf8")
 
@@ -62,7 +62,7 @@ test("every model in droid 0.240.0's picker is offered, or left out for a reason
     // droid picks these itself, client side
     auto: "router", "auto-fast": "router",
     // not released (unreleased:!0) or not in the registry
-    "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased", inkling: "unreleased",
+    "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
     // asks the user to accept Factory's high-cost terms first
     "gpt-6-astra-ultrafast": "opt-in",
     // older generations the plugin has never offered, as before
@@ -71,15 +71,90 @@ test("every model in droid 0.240.0's picker is offered, or left out for a reason
     "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older", "grok-4.5": "older", "kimi-k2.5": "older",
     "glm-5.1": "older", "glm-5": "older", "glm-4.7": "older",
     "deepseek-v4-flash-0731": "older", "deepseek-v4-pro": "older",
-    // Fast Mode models whose base model isn't offered, unreleased, or
-    // behind a feature flag (fast.test.mjs)
+    // Fast Mode models whose base model isn't offered (fast.test.mjs)
     "claude-opus-4-7-fast": "older", "claude-opus-4-6-fast": "older", "gpt-5.4-mini-fast": "older",
-    "gpt-5.6-sol-fast": "unreleased", "glm-5.2-fast": "flag",
   }
   const missing = picker.filter((id) => !got[id] && !reason[id])
   expect(missing).toEqual([])
   expect(entry("gpt-6-astra-ultrafast")).toContain('explicitOptInRequirement:{kind:"high_cost"')
   expect(got["gpt-6-astra-ultrafast"]).toBeUndefined()
+})
+
+// droid 1.7.0 offers models the plugin didn't: Fable 5.2, Kimi K3.1 Pro,
+// MiniMax M3.1 Flash, Beam 1.0 and more. The cases are 1.7.0's entries.
+const DROID_170 = readFileSync(new URL("./testdata/droid-1.7.0-models.txt", import.meta.url), "utf8")
+
+// entry170 is a model's 1.7.0 entry; Inkling's key is unquoted there.
+function entry170(id) {
+  const line = DROID_170.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`) || l.startsWith(`${id}:{id:"${id}",`))
+  if (!line) throw new Error(`${id} is not in the fixture`)
+  return line
+}
+
+const NEW_170 = ["claude-fable-5.2", "kimi-k3.1-pro", "nemotron-3.5-super", "minimax-m3.1-flash", "inkling", "muse-spark-1.2", "beam-1.0", "gpt-6-sol-fast", "gpt-6-luna-fast", "gpt-5.6-sol-fast", "glm-5.2-fast"]
+
+test("droid 1.7.0's new models are offered as droid has them", async () => {
+  const got = await models()
+  for (const id of NEW_170) {
+    const text = entry170(id)
+    const m = got[id]
+    const row = _internal.MODELS.find((r) => r.id === id)
+    expect(m).toBeDefined()
+    expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+    // Factory routes a request to the entry's first upstream
+    // (x-provider-routing-source: registry_default)
+    expect(row.upstream).toBe(JSON.parse(text.match(/apiProviders:(\[[^\]]*\])/)[1])[0])
+    const chat = text.includes('apiModelProvider:"generic-chat-completion-api"')
+    expect(m.provider.npm).toBe(chat ? "@ai-sdk/openai-compatible" : text.includes('provider:"anthropic"') ? "@ai-sdk/anthropic" : "@ai-sdk/openai")
+    const g = text.match(/contextLimits:g\((\d+e\d+|\d+),(\d+)\)/)
+    if (g) expect(m.limit).toEqual({ context: Number(g[1]), output: Number(g[2]) })
+    // droid takes images unless an entry says images:!1
+    expect(m.attachment).toBe(!text.includes("images:!1"))
+    // droid's "off" is none where a model's base takes it (GLM-5.2's), else left out
+    const efforts = JSON.parse(text.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+    expect(Object.keys(m.variants).filter((e) => e !== "none")).toEqual(efforts.filter((e) => e !== "off" && e !== "none"))
+    if (!efforts.includes("off") && !efforts.includes("none")) expect(m.variants.none).toBeUndefined()
+  }
+  // Fable 5.2's opt-in is the data retention terms Fable 5.1, offered, asks too
+  expect(DROID_170).toContain('So={kind:"data_retention",modelFamily:"Fable",tosVersion:e4H}')
+  expect(entry170("claude-fable-5.2")).toContain("explicitOptInRequirement:So,")
+  expect(entry170("claude-fable-5.1")).toContain("explicitOptInRequirement:So,")
+  expect(DROID_170).toContain("b=Ee({thinkingConsumesContext:!1,maxInputTokens:867000,maxOutputTokens:128000})")
+  expect(entry170("claude-fable-5.2")).toContain("contextLimits:b,")
+  expect(got["claude-fable-5.2"].limit).toEqual({ context: 867000, output: 128000 })
+})
+
+test("Droid Core's windows count droid 1.7.0's core pool, not Muse Spark 1.2", () => {
+  for (const id of NEW_170) {
+    expect(_internal.CORE.includes(id)).toBe(entry170(id).includes('billingPool:"core"'))
+  }
+  expect(_internal.MODELS.find((m) => m.id === "muse-spark-1.2").upstream).toBe("fireworks")
+})
+
+test("every model in droid 1.7.0's picker is offered, or left out for a reason", async () => {
+  const got = await models()
+  const picker = JSON.parse(DROID_170.match(/^var ee=(\[[^\]]*\]);/m)[1])
+  const reason = {
+    auto: "router", "auto-fast": "router",
+    "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
+    "gpt-6-astra-ultrafast": "opt-in", "gpt-6.1-sol-ultrafast": "opt-in",
+    // listed only once their feature flag is on for an account
+    "gpt-6.1-terra": "flag", "muse-spark-open": "flag",
+    // Responses on Google: no wire of the plugin's goes there
+    "muse-spark-1.3": "wire",
+    "claude-opus-4-7": "older", "claude-opus-4-6": "older", "claude-opus-4-5-20251101": "older",
+    "claude-sonnet-4-5-20250929": "older", "gpt-5.5-pro": "older", "gpt-5.4-mini": "older", "gpt-5.2": "older",
+    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older", "grok-4.5": "older", "kimi-k2.5": "older",
+    "glm-5.1": "older", "glm-5": "older", "glm-4.7": "older",
+    "deepseek-v4-flash-0731": "older", "deepseek-v4-pro": "older",
+    "claude-opus-4-7-fast": "older", "claude-opus-4-6-fast": "older", "gpt-5.4-mini-fast": "older",
+  }
+  expect(picker.filter((id) => !got[id] && !reason[id])).toEqual([])
+  expect(Object.keys(reason).filter((id) => got[id])).toEqual([])
+  expect(entry170("gpt-6.1-sol-ultrafast")).toContain('explicitOptInRequirement:{kind:"high_cost"')
+  expect(entry170("gpt-6.1-terra")).toContain("featureFlag:k.Gpt61Terra,")
+  expect(entry170("muse-spark-open")).toContain("featureFlag:k.MuseSparkOpen,")
+  expect(entry170("muse-spark-1.3")).toContain('apiEndpoint:"responses",apiProviders:["google"]')
 })
 
 // yetone/magpie#2080: droid 0.241.1 offers Gemini 4 Argon; the plugin

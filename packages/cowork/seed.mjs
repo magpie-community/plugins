@@ -54,7 +54,42 @@ export function provider(baseUrl) {
   }
 }
 
+// The reasoning efforts a catalog model takes, as magpie's /v1/models lists
+// them: `supported_reasoning_levels` as {effort} objects, `reasoning_levels` as
+// plain names. null when it names none.
+export function efforts(m) {
+  const raw = Array.isArray(m.supported_reasoning_levels) && m.supported_reasoning_levels.length
+    ? m.supported_reasoning_levels
+    : Array.isArray(m.reasoning_levels) ? m.reasoning_levels : []
+  const names = raw
+    .map((l) => (typeof l === "string" ? l : l && typeof l.effort === "string" ? l.effort : ""))
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const options = [...new Set(names)]
+  return options.length ? options : null
+}
+
+// The effort shown before the user picks one. magpie names no default, and
+// leaving reasoning_effort out lets the vendor choose; the nearest level to
+// that is the middle one most vendors default to, not the dearest.
+export function defaultEffort(options, m = {}) {
+  const named = typeof m.default_reasoning_level === "string" ? m.default_reasoning_level.trim() : ""
+  if (named && options.includes(named)) return named
+  for (const e of ["medium", "high"]) if (options.includes(e)) return e
+  const thinking = options.filter((e) => e !== "none")
+  return thinking.length ? thinking[thinking.length - 1] : options[0]
+}
+
+// Cowork's picker draws its Reasoning row from a model's
+// extras.thinkingEfforts {default, options} (it checks `"default" in` and an
+// options array).
+export function thinkingEfforts(m) {
+  const options = efforts(m)
+  return options ? { default: defaultEffort(options, m), options } : null
+}
+
 export function entry(m) {
+  const te = thinkingEfforts(m)
   return {
     id: `${PROVIDER_ID}:${m.id}`,
     model: m.id,
@@ -68,7 +103,21 @@ export function entry(m) {
     wireApi: "chat",
     contextLength: m.context_length || 8192,
     supportsMultimodal: !!(m.modalities && (m.modalities.input || []).includes("image")),
+    ...(te ? { extras: { thinkingEfforts: te } } : {}),
   }
+}
+
+// A recorded entry of ours with the catalog's current efforts; the same
+// object when nothing changes. Other extras keys are left as they are, and an
+// extras that isn't an object is not ours to replace.
+export function withEfforts(x, m) {
+  if (x.extras !== undefined && (!x.extras || typeof x.extras !== "object" || Array.isArray(x.extras))) return x
+  const want = thinkingEfforts(m)
+  const { thinkingEfforts: have, ...rest } = x.extras || {}
+  if (JSON.stringify(have ?? null) === JSON.stringify(want)) return x
+  const extras = want ? { ...rest, thinkingEfforts: want } : rest
+  const { extras: _, ...base } = x
+  return Object.keys(extras).length ? { ...base, extras } : base
 }
 
 export function seedFile(storePath) {
@@ -174,17 +223,24 @@ export function plan(store, catalog, baseUrl, seeded = new Set(), opts = {}) {
   }))
 
   let relabeled = 0
+  let refreshed = 0
   let renamed = null
   const dropped = new Set(pruned)
+  const byId = new Map(catalog.map((m) => [m.id, m]))
   const kept = models
     .filter((m) => !(m && dropped.has(m.id)))
     .map((m) => {
+      if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id)) return m
+      // a recorded entry follows the catalog's reasoning efforts, so a store
+      // seeded before they were written gets them on the next run
+      let x = byId.has(m.model) ? withEfforts(m, byId.get(m.model)) : m
+      if (x !== m) refreshed++
       // only entries we wrote, and only ones we recorded: a name the user chose in
       // Cowork is theirs, and renaming it would leave their selection pointing nowhere
-      if (!m || m.providerId !== PROVIDER_ID || !seeded.has(m.id) || m.displayName === m.model) return m
+      if (x.displayName === x.model) return x
       relabeled++
-      if (m.displayName === selected) renamed = m.model
-      return { ...m, displayName: m.model }
+      if (x.displayName === selected) renamed = x.model
+      return { ...x, displayName: x.model }
     })
   const added = []
   for (const m of catalog) {
@@ -202,13 +258,13 @@ export function plan(store, catalog, baseUrl, seeded = new Set(), opts = {}) {
   for (const m of catalog) if (added.includes(m.id)) nextSeeded.add(`${PROVIDER_ID}:${m.id}`)
   const providerMissing = at === -1
   const providerMoved = before !== null && before.baseUrl !== baseUrl
-  const changed = added.length > 0 || pruned.length > 0 || relabeled > 0 || providerMissing || providerMoved
+  const changed = added.length > 0 || pruned.length > 0 || relabeled > 0 || refreshed > 0 || providerMissing || providerMoved
   // --check reports drift even when a normal run would write nothing: entries
   // held back for --prune are still a difference from the catalog.
-  const drift = added.length > 0 || droppable.length > 0 || relabeled > 0 || providerMissing || providerMoved
+  const drift = added.length > 0 || droppable.length > 0 || relabeled > 0 || refreshed > 0 || providerMissing || providerMoved
   return {
     next: { ...store, customModels: kept, customModelProviders: providers },
-    added, pruned, held, relabeled, renamed, unreachable, seeded: [...nextSeeded], changed, drift,
+    added, pruned, held, relabeled, refreshed, renamed, unreachable, seeded: [...nextSeeded], changed, drift,
     provider: providerMissing ? "add" : providerMoved ? "repoint" : null,
   }
 }
@@ -388,7 +444,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   if (seeded === null) seeded = new Set()
 
-  const { next, added, pruned, held, relabeled, renamed, unreachable, provider, seeded: nextSeeded, changed, drift } =
+  const { next, added, pruned, held, relabeled, refreshed, renamed, unreachable, provider, seeded: nextSeeded, changed, drift } =
     plan(store, catalog, `${gateway}/v1`, seeded, { prune: flag("prune"), selected: selected.value })
 
   if (unreachable.length) console.log(unreachableNote(unreachable))
@@ -399,6 +455,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (added.length) parts.push(`+${added.length} to add`)
       if (pruned.length + held.length) parts.push(`-${pruned.length + held.length} to drop${held.length ? ` (${held.length} held until --prune)` : ""}`)
       if (relabeled) parts.push(`~${relabeled} to relabel`)
+      if (refreshed) parts.push(`~${refreshed} reasoning levels to update`)
       if (provider) parts.push(`provider to ${provider}`)
       console.log(`drift: ${parts.join(", ")}`)
     } else {
@@ -417,6 +474,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (renamed && writeTitle(renamed)) {
     console.log(`Cowork was on the entry we just renamed; its selection now says ${renamed}`)
   }
-  console.log(`wrote ${storePath}: +${added.length} magpie models, -${pruned.length} stale, ~${relabeled} relabelled, ${next.customModels.length} total`)
+  console.log(`wrote ${storePath}: +${added.length} magpie models, -${pruned.length} stale, ~${relabeled} relabelled, ~${refreshed} reasoning levels updated, ${next.customModels.length} total`)
   if (held.length) console.log(heldNote(held.length))
 }

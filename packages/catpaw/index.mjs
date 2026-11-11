@@ -21,6 +21,29 @@ const ORIGIN = "https://ai.catpaw.meituan.com"
 // usage() — sending the cookie here marks the account signed out).
 const balanceUrl = () => process.env.CATPAW_BALANCE_URL || "https://catx.nocode.cn/api/gateway/credit/balance"
 
+// refreshAt reads the balance's `userPlan.nextRefreshTime`, when the plan's
+// credits are next refreshed: a ms epoch, as a string ("1796054400000") or
+// a number. Anything else — missing, empty, not all digits, or too small
+// to be ms (a seconds value would land in 1970) — is not known: null.
+function refreshAt(v) {
+  const s = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : ""
+  if (!/^\d{13,}$/.test(s)) return null
+  const t = new Date(Number(s))
+  return Number.isNaN(t.getTime()) ? null : t
+}
+
+// creditWindow is the balance as magpie's window. The vendor gives what is
+// left, not what was spent or the plan's size, so `used` stays 0 (a
+// difference of balances would be made up). With the refresh time known it
+// is the window's reset, and Smart routing spends the account whose credits
+// refresh first (plugins#867); without it the window stays aside, as
+// nothing about it can rank the account.
+function creditWindow(credit, nextRefreshTime) {
+  const w = { name: "可用积分", used: 0, display: `${credit} credit` }
+  const at = refreshAt(nextRefreshTime)
+  return at ? { ...w, resetsAt: at.toISOString() } : { ...w, aside: true }
+}
+
 // the passport domain the web sign-in runs on (login-config / poll-token /
 // current-user, none of them authenticated; the vendor serves them from
 // catx.nocode.cn while the conversation gateway is ai.catpaw.meituan.com)
@@ -152,8 +175,80 @@ const configModel = (id, m) => ({
 
 // ── small helpers ──────────────────────────────────────────────────────────
 
-const errorResponse = (status, message) =>
-  new Response(JSON.stringify({ error: { message } }), { status, headers: { "content-type": "application/json" } })
+const errorResponse = (status, message, fields = {}, headers = {}) =>
+  new Response(JSON.stringify({ error: { message, ...fields } }), { status, headers: { "content-type": "application/json", ...headers } })
+
+// Refused is a failure with the status the agent should see: out of credit
+// a 402 (magpie rests the account for credit, not as broken), a rate limit
+// a 429 with its wait, a lost sign-in a 401 — each with a sentence to read
+class Refused extends Error {
+  constructor(status, message, fields = {}, headers = {}) {
+    super(message)
+    this.status = status
+    this.fields = fields
+    this.headers = headers
+  }
+}
+
+// the credit gate (plugins#933): out of credits, the gateway answers the turn
+// HTTP 200 with this sentence as the assistant's text, in frames that name no
+// model (every model's frame carries model / modelDisplayName)
+const QUOTA_GATE = "当前余额不足以完成本次操作"
+const PLAN_URL = "https://credit.catpaw.meituan.com/#/plan"
+const modelless = (msg) => msg.model == null && msg.modelDisplayName == null
+
+// the gate's sentence as a 402: markdown links spelled out, since most
+// agents print the message as plain text and "[去购买更多](…)" loses its link
+function outOfCredit(said) {
+  const upstream = String(said ?? "").trim()
+  const message = upstream.replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)") || "妙手余额不足"
+  const help = upstream.match(/https?:\/\/[^)\s]+/)?.[0] ?? PLAN_URL
+  return new Refused(402, message, { type: "insufficient_quota", code: "insufficient_credits", help_url: help, upstream_message: upstream })
+}
+
+// a step's HTTP refusal, readable: the gateway's 401 and 429 come bare
+function stepRefused(step, status, text) {
+  const said = String(text ?? "").trim().slice(0, 500)
+  const head = `妙手 ${step} 失败：HTTP ${status}${said ? ` ${said}` : ""}`
+  if (status === 401) return new Refused(401, `${head}。妙手登录态已过期，请在妙手桌面端重新登录`, { type: "authentication_error" })
+  // the gateway's cool-down after about six conversations in a row was
+  // seen at ~41s (plugins#933)
+  if (status === 429)
+    return new Refused(429, `${head}。妙手限流：请求过于频繁，请稍等约 45 秒再试`, { type: "rate_limit_error", code: "rate_limited" }, { "retry-after": "45" })
+  if (status === 402 || said.includes("余额不足")) return outOfCredit(said || `妙手余额不足（${step} HTTP ${status}）`)
+  return new Error(/^\s*</.test(said) ? head + NOT_JSON : head)
+}
+
+// the response for a failed conversation: a Refused as itself, anything
+// else a 502 (a 401 when its words say so, as before)
+function failResponse(e) {
+  if (e instanceof Refused) return errorResponse(e.status, e.message, e.fields, e.headers)
+  const message = friendlyUpstreamMessage(e)
+  return errorResponse(message.includes("401") ? 401 : 502, message)
+}
+
+// primed waits for a conversation's first event, up to ms, before the agent
+// is answered: a refusal there (the credit gate, a 429) goes out as its own
+// status instead of an error inside a 200 stream. A turn slower than that
+// streams as before, and a later failure is an error chunk.
+const PRIME_MS = 10_000
+async function primed(gen, ms = PRIME_MS) {
+  const first = gen.next().then(
+    (v) => ({ v }),
+    (e) => ({ e }),
+  )
+  let timer
+  const won = await Promise.race([first, new Promise((r) => (timer = setTimeout(() => r(null), ms)))])
+  clearTimeout(timer)
+  if (won?.e) throw won.e
+  return (async function* () {
+    const r = won ?? (await first)
+    if (r.e) throw r.e
+    if (r.v.done) return
+    yield r.v.value
+    yield* gen
+  })()
+}
 
 async function bodyText(input, init) {
   const b = init.body ?? (input instanceof Request ? await input.clone().text() : undefined)
@@ -469,10 +564,11 @@ function toolCallsFromText(text, tools, toolChoice) {
 
 // the gateway sometimes answers with an HTML page (a WAF or a rate limit);
 // surface that as what it is instead of a bare JSON parse error
+const NOT_JSON = "（妙手网关返回了非 JSON 页面 —— 多为限流或临时故障；超大 prompt 也可能触发，稍等重试）"
 function friendlyUpstreamMessage(e) {
   const m = String(e?.message ?? e)
   return /JSON Parse error|Unrecognized token|Unexpected token '<'/i.test(m) || /^\s*</.test(m)
-    ? m + "（妙手网关返回了非 JSON 页面 —— 多为限流或临时故障；超大 prompt 也可能触发，稍等重试）"
+    ? m + NOT_JSON
     : m
 }
 
@@ -503,9 +599,14 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
     { "m-spanid": "0.2", "m-spanname": "conversation.round" },
     signal,
   )
+  // the status first: a 429 or a WAF page is no JSON to parse
+  if (r1.status !== 200) throw stepRefused("round", r1.status, r1.text)
   const r1j = JSON.parse(r1.text || "{}")
-  if (r1.status !== 200 || r1j.code !== 0)
-    throw new Error(`妙手 round 失败：HTTP ${r1.status} code=${r1j.code ?? "?"} msg=${r1j.msg ?? r1j.message ?? ""}`)
+  if (r1j.code !== 0) {
+    const said = String(r1j.msg ?? r1j.message ?? "")
+    if (said.includes("余额不足")) throw outOfCredit(said)
+    throw new Error(`妙手 round 失败：HTTP ${r1.status} code=${r1j.code ?? "?"} msg=${said}`)
+  }
 
   // ② event: mark the conversation as running
   const r2 = await gatewayPost(
@@ -515,7 +616,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
     { "m-spanid": "0.3", "m-spanname": "conversation.event" },
     signal,
   )
-  if (r2.status !== 200) throw new Error(`妙手 event 失败：HTTP ${r2.status}`)
+  if (r2.status !== 200) throw stepRefused("event", r2.status, r2.text)
 
   // ③ turn: the SSE answer. Every frame's content is the whole text so far,
   // so each is diffed against the last; the reply is yielded as deltas.
@@ -546,7 +647,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
     // a shorter cap would cut them off mid-answer
     signal: signal ?? AbortSignal.timeout(15 * 60e3),
   })
-  if (res.status !== 200) throw new Error(`妙手 turn 失败：HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 500)}`)
+  if (res.status !== 200) throw stepRefused("turn", res.status, await res.text().catch(() => ""))
   if (!res.body) throw new Error("妙手 turn 返回了空流")
 
   const decoder = new TextDecoder()
@@ -557,6 +658,14 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   let finalText = ""
   let finalReasoning = ""
   let frameCount = 0
+  // a head held as maybe the credit gate that never became it goes out
+  // before the end
+  function* held() {
+    if (finalText.length > prevText.length && finalText.startsWith(prevText)) {
+      yield { delta: finalText.slice(prevText.length) }
+      prevText = finalText
+    }
+  }
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
@@ -567,6 +676,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
       if (!line.startsWith("data:")) continue
       const data = line.slice(5).trim()
       if (data === "[DONE]") {
+        yield* held()
         yield { done: true, text: finalText, reasoning: finalReasoning }
         return
       }
@@ -577,12 +687,28 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
         continue
       }
       frameCount++
-      if (frame.error) throw new Error(`妙手 SSE 错误：code=${frame.error.code} msg=${frame.error.message || ""}`)
+      if (frame.error) {
+        const said = String(frame.error.message || "")
+        if (said.includes("余额不足")) throw outOfCredit(said)
+        throw new Error(`妙手 SSE 错误：code=${frame.error.code} msg=${said}`)
+      }
       const msg = frame.message
       if (!msg || !Array.isArray(msg.content)) continue
       for (const c of msg.content) {
         if (c.type !== "text") continue
         const curText = c.text || ""
+        // the credit gate (plugins#933), judged only before any text went
+        // out and only in a frame that names no model: a model's answer
+        // quoting the sentence names its model. A head that could still
+        // grow into the sentence is held until it either does or doesn't.
+        if (prevText === "" && modelless(msg)) {
+          const head = curText.trimStart()
+          if (head.startsWith(QUOTA_GATE)) throw outOfCredit(curText)
+          if (head !== "" && QUOTA_GATE.startsWith(head)) {
+            finalText = curText
+            continue
+          }
+        }
         if (curText.length > prevText.length) {
           yield { delta: curText.slice(prevText.length) }
           prevText = curText
@@ -599,6 +725,7 @@ async function* runConversation(token, chat, signal, modelType = modelTypeOf(cha
   }
   // the stream ended without [DONE]
   if (finalText === "" && frameCount === 0) throw new Error("妙手 SSE 流结束但没有任何帧")
+  yield* held()
   yield { done: true, text: finalText, reasoning: finalReasoning }
 }
 
@@ -732,8 +859,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                     }
                   }
                 } catch (e) {
-                  const message = friendlyUpstreamMessage(e)
-                  return errorResponse(message.includes("401") ? 401 : 502, message)
+                  return failResponse(e)
                 }
                 const message = {
                   role: "assistant",
@@ -759,6 +885,12 @@ export async function CatPawAuthPlugin({ client } = {}) {
               // and prose flushes and streams live. The hold matters because
               // a tool call split into content deltas can't be un-sent.
               const forced = wantsTools && isToolChoiceRequired(chat.tool_choice)
+              let events
+              try {
+                events = await primed(runConversation(token, { ...chat, messages: baseMessages }, init.signal, spec?.type))
+              } catch (e) {
+                return failResponse(e)
+              }
               const encoder = new TextEncoder()
               const sse = (delta, finish, reasoningDelta) => {
                 const choices = [{ index: 0, delta: {}, finish_reason: finish ?? null }]
@@ -809,7 +941,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                   let fullText = ""
                   let calls = []
                   try {
-                    for await (const ev of runConversation(token, { ...chat, messages: baseMessages }, init.signal, spec?.type)) {
+                    for await (const ev of events) {
                       if (closed) return
                       if (ev.reasoningDelta) push(sse(null, null, ev.reasoningDelta))
                       if (ev.delta) {
@@ -860,7 +992,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                       push(sse(null, "stop"))
                     }
                   } catch (e) {
-                    push(encoder.encode(`data: ${JSON.stringify({ error: { message: friendlyUpstreamMessage(e) } })}\n\n`))
+                    push(encoder.encode(`data: ${JSON.stringify({ error: { message: friendlyUpstreamMessage(e), ...(e instanceof Refused ? e.fields : {}) } })}\n\n`))
                     push(doneFrame)
                     stop()
                     return
@@ -873,6 +1005,12 @@ export async function CatPawAuthPlugin({ client } = {}) {
             }
 
             if (chat.stream) {
+              let events
+              try {
+                events = await primed(runConversation(token, chat, init.signal, spec?.type))
+              } catch (e) {
+                return failResponse(e)
+              }
               const encoder = new TextEncoder()
               const chunk = (delta, finish, reasoningDelta) => {
                 const choices = [{ index: 0, delta: {}, finish_reason: finish ?? null }]
@@ -886,7 +1024,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 async start(controller) {
                   controller.enqueue(chunk(null, null)) // the role frame
                   try {
-                    for await (const ev of runConversation(token, chat, init.signal, spec?.type)) {
+                    for await (const ev of events) {
                       if (ev.delta) controller.enqueue(chunk(ev.delta, null))
                       if (ev.reasoningDelta) controller.enqueue(chunk(null, null, ev.reasoningDelta))
                       if (ev.done) {
@@ -896,7 +1034,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                     }
                   } catch (e) {
                     controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify({ error: { message: String(e?.message ?? e) } })}\n\n`),
+                      encoder.encode(`data: ${JSON.stringify({ error: { message: String(e?.message ?? e), ...(e instanceof Refused ? e.fields : {}) } })}\n\n`),
                     )
                     controller.enqueue(encoder.encode("data: [DONE]\n\n"))
                   }
@@ -916,7 +1054,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
                 }
               }
             } catch (e) {
-              return errorResponse(e?.message?.includes("401") ? 401 : 502, String(e?.message ?? e))
+              return failResponse(e)
             }
             return new Response(
               JSON.stringify({
@@ -990,7 +1128,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
         return {
           plan: plan.planName || (plan.pro ? "妙手 CatPaw Pro" : NAME),
           user: a?.type === "oauth" && a.source !== "desktop" ? a.name || a.accountId || "妙手网页登录" : authAccount(),
-          windows: [{ name: "可用积分", used: 0, display: `${credit} credit`, aside: true }],
+          windows: [creditWindow(credit, plan.nextRefreshTime)],
         }
       },
       // CatPaw has no check-in (confirmed: no such activity in its client)
@@ -1155,4 +1293,4 @@ export async function CatPawAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, forgetLive: () => liveLists.clear() }
+export const _internal = { ID, BODY_IDENTITY, NAME, MODELS, modelTypeOf, buildPrompt, gatewayHeaders, gatewayHeadersForTest: gatewayHeaders, readAuth, authPath, configModel, liveModels, liveListFor, primed, forgetLive: () => liveLists.clear() }

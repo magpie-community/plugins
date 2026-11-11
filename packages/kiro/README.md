@@ -22,6 +22,12 @@ Callback URL field. The page need not load on the browser's computer. Local
 browsers that can reach the plugin's listener finish automatically. Direct
 AWS sign-in still uses authorization code + PKCE, not device authorization.
 
+In magpie, each way, question and choice shows in the window's language
+(Chinese, Traditional Chinese, Japanese, German): `labels`, `messages` and
+`hints` beside the English, which OpenCode shows. A Kiro subscription in
+magpie opens the question above first; its other ways, the API key among
+them, are under "Other ways to sign in…".
+
 
 - **Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)**: the Kiro
   IDE's own sign-in.
@@ -237,8 +243,10 @@ own search used instead.
 The `config` hook declares `auto` (Kiro picks the model). Once signed in,
 the `provider.models` hook replaces it with the account's own list from
 `List-Available-Models`, with the default first. Each model carries its
-context window, output limit and whether it takes images. Claude models
-and Auto have the thinking variants.
+context window, output limit and whether it takes images, and its credit
+multiplier as `rate` (Kiro's `rateMultiplier` when `rateUnit` is `Credit`:
+1.3 for claude-sonnet-4.5, 0.4 for claude-haiku-4.5), which magpie shows
+beside the model. Claude models and Auto have the thinking variants.
 
 ## Usage in magpie
 
@@ -248,6 +256,68 @@ credits, a promotion's) while it is `ACTIVE` and not expired, as a window of
 its own with its count and when it lapses. Bonus windows are shown only.
 Kiro spends the plan's credits first, so a month used up while a bonus has
 credits left is shown only too, and the account isn't taken for spent.
+
+With overage on (`overageConfiguration.overageStatus` `ENABLED`), the month
+is two windows, as the Kiro IDE shows it: the plan's credits, shown only
+(using them up doesn't stop the account), then the overage
+(`currentOveragesWithPrecision`) against the overage cap (`overageCap`),
+which counts the overage alone, not the plan's credits with it. A Power
+account that used 12589.24 shows `10000 / 10000` and `2589.24 / 37500`.
+With overage off, the plan's credits are the month.
+
+Each request's cost is what Kiro's `meteringEvent`s say, in credits, summed
+over the request (a web search's turns included). Kiro has already applied
+the model's multiplier to it, so it isn't multiplied again. It goes on as
+`usage.credit` in the last `message_delta`, or in the message's `usage`, for
+magpie's ledger (yetone/magpie#4328). Kiro gives no token counts, so the
+input is reckoned from how full the context is, and the cache is unknown
+(`magpie_cache_unknown`).
+
+### Identity Center credit regions
+
+An IAM Identity Center account has a profile, and its own month of credits
+with its own overage cap, in each of Kiro's regions its organization enabled
+(`us-east-1`, `eu-central-1`). The plugin lists the profiles in both and
+keeps them with the account (`profiles`, by region; `profileArn` is the
+first). A region with no profile is not enabled, and is asked for again at
+most every 10 minutes, so one an admin enables is used without signing in
+again.
+
+- A request goes to the first enabled region with credits left. When Kiro
+  answers that its credits are used up (`MONTHLY_REQUEST_COUNT`,
+  `USAGE_LIMIT`), the region rests till its reset (an hour when none is
+  known) and the request is sent again in the other. A rate limit is passed
+  on as it is.
+- With every enabled region used up, the answer is a 429 naming them, and a
+  region not enabled, so magpie goes on to another account.
+- `auth.usage` reads both regions: a window for each, shown only, and their
+  sum, which magpie weighs the account by. With overage on, the plans' sum
+  comes first, shown only, and the overages' sum is the one magpie weighs.
+  From 80% of the sum, a region not enabled is pointed out in its text.
+
+Builder ID, Google, GitHub and API key sign-ins keep one region.
+
+Two switches in the provider's editor, "Use us-east-1 only" and "Use
+eu-central-1 only" (`us-east-1-only`, `eu-central-1-only`), pin an Identity
+Center account to one region. They are read at each request, so a change
+needs no restart:
+
+- With one on, every request goes to that region and none to the other,
+  whatever credits the other has. The region not enabled for the account, or
+  used up, is a 429 naming the switch, and magpie goes on to another
+  account. The other region is never tried.
+- `auth.usage` counts the pinned region alone in the window magpie weighs
+  the account by; the other region's windows are shown only. So the account
+  is used up for magpie when the pinned region is, not when both are.
+- Both off, or both on, is the default: the regions in turn.
+
+Credits past a region's plan are overage, billed at $0.04 each: twice what
+a plan's credits cost (a Power plan is $200 for 10000, $0.02 each), and a
+plan's credits do not roll over to the next month. So when one region is
+already in its overage and the other still has plan credits, pinning the
+account to the other spends the cheaper credits first. Left on the first,
+the account goes on into overage while the other region's plan credits
+expire unused.
 
 ## Not included
 

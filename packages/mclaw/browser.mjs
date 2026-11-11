@@ -11,6 +11,7 @@
  * 用 --headless=new 复开该账号自己的 profile，网页应用自己会刷新会话。
  */
 import { spawn } from 'node:child_process'
+import { constants } from 'node:fs'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash, randomBytes } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
@@ -263,8 +264,10 @@ function launch(executable, args, { timeout = 30000 } = {}) {
   const failed = new Promise((_, reject) => {
     child.once('error', (error) => {
       connection.shut('Chrome could not be started')
+      // 常规「没装浏览器」已被 requireBrowser 的预检挡在前面；这里的 ENOENT
+      // 只剩竞态 / 坏软链等罕见情形，文案仍复用同一份，避免多处漂移。
       reject(error.code === 'ENOENT'
-        ? new Error('找不到 Chrome；请安装 Google Chrome 或用 MCLAW_CHROME_PATH 指到可执行文件')
+        ? new Error(noBrowserMessage)
         : new Error(`Chrome 无法启动：${error.message}`))
     })
     child.once('exit', (code) => {
@@ -279,23 +282,76 @@ function launch(executable, args, { timeout = 30000 } = {}) {
 
 // ---------------------------------------------------------------- Chrome 定位
 
-export async function chromeExecutable() {
-  const override = process.env.MCLAW_CHROME_PATH
-  if (override) return resolve(override.startsWith('~') ? join(homedir(), override.slice(2)) : override)
-  const candidates = process.platform === 'win32'
-    ? [
-      process.env.PROGRAMFILES && join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Chromium', 'Application', 'chrome.exe'),
+/** 各平台的 Chromium 内核浏览器候选（按优先级）。只驱动自己 spawn 的浏览器，
+ *  所以不查 PATH、不用系统默认浏览器：Edge / Brave / Chromium 与 Chrome 同一套
+ *  --remote-debugging-pipe flags 即可工作，都列进来。platform/env 可注入，测试
+ *  不必依赖测试机装了什么浏览器。 */
+export function browserCandidates({ platform = process.platform, env = process.env } = {}) {
+  const pf = env.PROGRAMFILES
+  const pf86 = env['PROGRAMFILES(X86)']
+  const local = env.LOCALAPPDATA
+  if (platform === 'win32') {
+    return [
+      pf && join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      pf86 && join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      local && join(local, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      pf && join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      pf86 && join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      local && join(local, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      local && join(local, 'Chromium', 'Application', 'chrome.exe'),
     ].filter(Boolean)
-    : process.platform === 'darwin'
-      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', join(homedir(), 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome')]
-      : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium']
-  for (const path of candidates) {
-    try { await access(path); return path } catch {}
   }
-  throw new Error('找不到 Chrome；请安装 Google Chrome 或用 MCLAW_CHROME_PATH 指到可执行文件')
+  if (platform === 'darwin') {
+    const home = join(homedir(), 'Applications')
+    return [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      join(home, 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      join(home, 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    ]
+  }
+  return [
+    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge', '/snap/bin/chromium',
+    '/opt/google/chrome/chrome',
+  ]
+}
+
+const noBrowserMessage = '找不到可用的 Chrome / Edge / Chromium。MClaw 的浏览器登录需要本机安装 Chromium 内核浏览器，且 magpie 运行在有图形界面的本地会话里（远程 / SSH / 容器 / 无头环境不支持弹窗）。请安装 Google Chrome，或设置 MCLAW_CHROME_PATH=/path/to/chrome 指向可执行文件。'
+
+/** 唯一的浏览器定位入口：authorize 预检、登录、续期都走它，文案只此一份，
+ *  不会在多处漂移。override 会先校验存在/可执行，写错路径给专属报错而不是
+ *  误导性的「找不到 Chrome」。返回可执行文件路径，找不到就抛。
+ *  candidates 是测试缝：注入后不依赖测试机装了什么浏览器。 */
+export async function requireBrowser({ platform = process.platform, env = process.env, candidates } = {}) {
+  const override = env.MCLAW_CHROME_PATH
+  // Windows 上 X_OK 等同 F_OK（可执行位无意义），别用它误判。
+  const mode = platform === 'win32' ? constants.F_OK : constants.X_OK
+  if (override) {
+    const path = resolve(override.startsWith('~') ? join(homedir(), override.slice(2)) : override)
+    try { await access(path, mode); return path } catch {}
+    throw new Error(`MCLAW_CHROME_PATH 指向的浏览器不存在或不可执行：${path}。请改成 Chrome / Edge / Chromium 的可执行文件，或 unset 该变量让插件自动探测。`)
+  }
+  for (const path of candidates ?? browserCandidates({ platform, env })) {
+    try { await access(path, mode); return path } catch {}
+  }
+  throw new Error(noBrowserMessage)
+}
+
+/** 兼容入口：openMclawBrowser（登录与 headless 续期）用它拿真实环境的浏览器。 */
+export const chromeExecutable = () => requireBrowser()
+
+/** 登录（有头窗口）的前提检查：Linux 无图形界面先明确拒绝，再查浏览器。
+ *  只在 authorize 里调用——续期是 headless，没有界面也能跑，不该被这条挡住。
+ *  candidates 透传给 requireBrowser，方便测试注入。 */
+export async function assertBrowserSigninPrerequisites({ platform = process.platform, env = process.env, candidates } = {}) {
+  if (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
+    throw new Error('当前 Linux 会话没有图形界面（未设置 DISPLAY / WAYLAND_DISPLAY），MClaw 的浏览器登录无法弹出窗口；请在有图形界面的本地会话里运行 magpie。')
+  }
+  return requireBrowser({ platform, env, candidates })
 }
 
 // ---------------------------------------------------------------- 打开/收割

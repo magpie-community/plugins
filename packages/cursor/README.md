@@ -328,6 +328,22 @@ reaching its included allowance doesn't count the account as used up.
 On-demand also shows the team's spend when known, with its limit when it
 has one. A reached on-demand limit counts the account as used up.
 
+### Calls outside magpie
+
+`auth.calls` gives magpie the account's own calls made outside it (Cursor's
+editor, `cursor-agent`, anything else), so its Usage page counts them. They
+come from the dashboard's usage events
+(`DashboardService/GetFilteredUsageEvents`, read page by page from the time
+magpie asks for): each event's id, time, model, tokens (input is the
+uncached part; cache reads and writes are apart) and cost in USD
+(`tokenUsage.totalCents`). On a team, other members' events are left out
+(`owningUser` against `GetMe`'s `userId`). So are the events of the
+conversations this plugin ran itself, which magpie counted already: their
+ids are kept for 40 days in
+`$XDG_DATA_HOME/opencode-cursor-auth/conversations.json`
+(`~/.local/share/…` without it). Cursor's events don't say which client
+made them, so the editor and `cursor-agent` are counted together.
+
 ### Included usage only (optional)
 
 In magpie, open the Cursor provider, turn on **Included usage only** under

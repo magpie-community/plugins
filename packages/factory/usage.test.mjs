@@ -20,7 +20,7 @@ const LIMITS = {
   extraUsageAllowed: true,
 }
 
-const CORE = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "qwen3.8-max", "minimax-m3", "minimax-m2.7", "mistral-large-4", "mistral-medium-3.5", "nemotron-3-ultra"]
+const CORE = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3.1-pro", "kimi-k3", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017", "qwen3.8-max", "minimax-m3.1-flash", "minimax-m3", "minimax-m2.7", "mistral-large-4", "mistral-medium-3.5", "nemotron-3.5-super", "nemotron-3-ultra", "inkling", "beam-1.0", "glm-5.2-fast"]
 
 const account = (over = {}) => ({
   type: "oauth",
@@ -167,7 +167,7 @@ test("standard usage only is a switch magpie shows, off by default, read at each
   }
   const p = await plugin(account(), (path) => (path === "/api/billing/limits" ? json(LIMITS) : new Response("", { status: 404 })), magpie)
   // declared as magpie's host keeps a switch: a key of [a-z0-9_-], a label, off unless said
-  const o = p.hooks.auth.options
+  const o = p.hooks.auth.options.filter((option) => option.key === "standard_only")
   expect(o).toEqual([{ key: "standard_only", label: "Standard usage only", description: expect.any(String) }])
   expect(o[0].key).toMatch(/^[a-z0-9_-]{1,40}$/)
   expect(o[0].label.length).toBeLessThanOrEqual(60)

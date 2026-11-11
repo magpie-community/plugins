@@ -1,4 +1,5 @@
-// Tabbit's own HTTP API, as the web app (web.tabbit.com) calls it.
+// Tabbit's own HTTP API, as the web app calls it: web.tabbit.com for the
+// Chinese site, web.tabbit.ai for the international one (see SITES).
 //
 // Everything here was measured against a live signed-in session:
 //
@@ -14,7 +15,52 @@
 // `managed` ride along because the app sends them, not because the server
 // needs them to authenticate.
 
-export const BASE = "https://web.tabbit.com"
+// Tabbit runs two sites with the same API and two account bases. A token
+// from one is refused on the other (#833: an international token gets 401
+// "invalid bearer" on web.tabbit.com's usage and is accepted on
+// web.tabbit.ai), so each account is served by the site its token belongs to.
+// BASE comes first and stays the default: a token it accepts never asks the
+// other site anything.
+export const SITES = ["https://web.tabbit.com", "https://web.tabbit.ai"]
+export const BASE = SITES[0]
+
+// siteOfValue reads a site from what an account recorded ("web.tabbit.ai",
+// "https://web.tabbit.ai/…"); anything that is not one of SITES is unknown.
+export function siteOfValue(value) {
+  if (typeof value !== "string" || !value.trim()) return null
+  let host = value.trim()
+  try {
+    host = new URL(host.includes("://") ? host : `https://${host}`).host
+  } catch {
+    return null
+  }
+  return SITES.find((site) => new URL(site).host === host.toLowerCase()) ?? null
+}
+
+// learned is the site each token turned out to belong to, for tokens whose
+// account didn't record one (a pasted token). It is this process's memory
+// only, and capped: a token lives seven days, so a long-running host sees a
+// new one each week per account.
+const learned = new Map()
+const LEARNED_LIMIT = 64
+
+function learn(token, site) {
+  learned.delete(token)
+  learned.set(token, site)
+  while (learned.size > LEARNED_LIMIT) learned.delete(learned.keys().next().value)
+}
+
+// siteOf is where a request for these credentials goes: the account's own
+// record, else what was learned for the token, else BASE.
+export function siteOf(creds) {
+  return creds?.site || learned.get(creds?.token) || BASE
+}
+
+// siteKnown says whether siteOf is settled for these credentials, rather
+// than BASE by default.
+export function siteKnown(creds) {
+  return Boolean(creds?.site || learned.has(creds?.token))
+}
 
 // A browser User-Agent is what the app sends and what the proxy answers.
 // Nothing else is required: the version gate that refuses
@@ -68,7 +114,8 @@ export function credsOf(auth) {
   const token = header.match(/(?:^|;\s*)token=([^;]+)/)?.[1]
   if (!token) return null
   const fromCookie = header.match(/(?:^|;\s*)user_id=([^;]+)/)?.[1] || ""
-  return { header, token, uid: uid || fromCookie || uidOfClaims(claimsOf(token)) }
+  const site = siteOfValue(auth?.metadata?.site)
+  return { header, token, uid: uid || fromCookie || uidOfClaims(claimsOf(token)), ...(site ? { site } : {}) }
 }
 
 // claimsOf reads the JWT payload without verifying it: the fields name the
@@ -106,13 +153,19 @@ export function stale(auth, skewMs = 60_000) {
   return claims.exp * 1000 - skewMs <= Date.now()
 }
 
-function headersFor(creds, extra) {
+function headersFor(creds, site, extra) {
   return {
     cookie: creds.header,
     accept: "application/json",
     "user-agent": UA,
-    origin: BASE,
-    referer: `${BASE}/newtab`,
+    // web.tabbit.ai's browser sign-in gate (429 code 492 "Welcome to Tabbit
+    // Browser") refuses a turn whose request carries no `unique-uuid`: the
+    // browser sends a fresh uuid on every API call, and the gate accepts any
+    // well-formed one. Measured against a live signed-in session on .ai;
+    // .com ignores the header.
+    "unique-uuid": crypto.randomUUID(),
+    origin: site,
+    referer: `${site}/newtab`,
     ...extra,
   }
 }
@@ -125,39 +178,95 @@ function safeJSON(text) {
   }
 }
 
-async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}) {
+// refusalOf reads a 401/403 once: Tabbit's code, and whether it is the
+// paywall (the account is fine) or the sign-in being refused.
+async function refusalOf(res) {
+  let body = ""
+  try {
+    body = await res.text()
+  } catch {
+    /* the status is enough */
+  }
+  const parsed = safeJSON(body)
+  // The refusal nests the code two ways: {"detail":{"message","details":{"code"}}}
+  // on /api/v3, {"code"...} at the top on some routes.
+  const detail = parsed?.detail ?? parsed?.details ?? parsed
+  const code = Number(detail?.details?.code ?? detail?.code ?? parsed?.details?.code ?? parsed?.code)
+  const action = detail?.details?.action ?? detail?.action ?? parsed?.action
+  // 403 with code 492 is a paywall, not a lost sign-in: the account is
+  // still signed in, the model just isn't on its plan. Measured with
+  // Kimi-K3.1-Pro on a free account.
+  const paywalled = res.status === 403 && code === 492
+  return { res, body, parsed, detail, code, action, paywalled }
+}
+
+const refused = (res) => res.status === 401 || res.status === 403
+
+async function call(creds, path, init = {}, signal, { totalTimeout = true, settles = true } = {}) {
   // A streamed turn may run for minutes; Bun's fetch applies this signal to
   // reading the body too, so a total timeout would cut a slow answer in half.
   // `join` therefore passes its own signal only and lets STREAM_TIMEOUT bound
   // the turn; every other call keeps the total timeout.
-  const bound = totalTimeout
-    ? signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs())])
-      : AbortSignal.timeout(timeoutMs())
-    : signal
-  const res = await fetch(BASE + path, {
-    ...init,
-    headers: headersFor(creds, init.headers),
-    ...(bound ? { signal: bound } : {}),
-    redirect: "error",
-  })
-  if (res.status === 401 || res.status === 403) {
-    let body = ""
-    try {
-      body = await res.text()
-    } catch {
-      /* the status is enough */
+  const bound = () =>
+    totalTimeout
+      ? signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs())])
+        : AbortSignal.timeout(timeoutMs())
+      : signal
+  const send = (site) => {
+    const b = bound()
+    return fetch(site + path, {
+      ...init,
+      headers: headersFor(creds, site, init.headers),
+      ...(b ? { signal: b } : {}),
+      redirect: "error",
+    })
+  }
+
+  // `settles: false` is for a call that answers any token (the catalog):
+  // its answer says nothing about which site the token belongs to.
+  const known = !settles || siteKnown(creds)
+  let site = siteOf(creds)
+  let res = await send(site)
+  let refusal = refused(res) ? await refusalOf(res) : null
+
+  // A token whose site isn't known yet and that this site refuses may be the
+  // other site's: ask it once. Its answer settles the token's site either
+  // way — accepted there, or refused by both (an expired token, which then
+  // stays on BASE and is reported as before). A failure to reach the other
+  // site settles nothing, and the first refusal stands.
+  if (!known && refusal && !refusal.paywalled) {
+    let settled = true
+    for (const other of SITES) {
+      if (other === site) continue
+      let again
+      try {
+        again = await send(other)
+      } catch (error) {
+        if (signal?.aborted) throw error
+        settled = false
+        continue
+      }
+      if (!refused(again)) {
+        site = other
+        res = again
+        refusal = null
+        break
+      }
+      try {
+        await again.body?.cancel()
+      } catch {
+        /* nothing to release */
+      }
     }
-    const parsed = safeJSON(body)
-    // The refusal nests the code two ways: {"detail":{"message","details":{"code"}}}
-    // on /api/v3, {"code"...} at the top on some routes.
-    const detail = parsed?.detail ?? parsed?.details ?? parsed
-    const code = Number(detail?.details?.code ?? detail?.code ?? parsed?.details?.code ?? parsed?.code)
-    const action = detail?.details?.action ?? detail?.action ?? parsed?.action
-    // 403 with code 492 is a paywall, not a lost sign-in: the account is
-    // still signed in, the model just isn't on its plan. Measured with
-    // Kimi-K3.1-Pro on a free account.
-    const paywalled = res.status === 403 && code === 492
+    if (settled) learn(creds.token, refusal ? BASE : site)
+  } else if (!known && res.ok) {
+    // Accepted: this is the token's site. A 429 or 5xx settles nothing.
+    learn(creds.token, site)
+  }
+
+  if (refusal) {
+    const { body, parsed, detail, code, action, paywalled } = refusal
     const error = new TabbitError(
       paywalled
         ? detail?.details?.message || detail?.message || parsed?.message || "This model needs a paid Tabbit plan."
@@ -186,9 +295,19 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true } = {}
 
 // listModels is the live catalog. It answers without a valid token too —
 // the same 22 models came back with a deliberately broken cookie — so a
-// failure here means the network or the service, never the sign-in.
+// failure here means the network or the service, never the sign-in. For the
+// same reason it can't tell which site a token belongs to, so a token whose
+// site isn't settled yet is first put to a call that checks the sign-in
+// (the cycle's usage); the catalog then comes from that token's own site.
 export async function listModels(creds, { scene = "chat", signal } = {}) {
-  const res = await call(creds, `/proxy/v1/model_config/models?a=0&scene=${encodeURIComponent(scene)}`, {}, signal)
+  if (!siteKnown(creds)) {
+    try {
+      await usage(creds, signal)
+    } catch {
+      /* the catalog is asked anyway; a refusal shows on the calls that check */
+    }
+  }
+  const res = await call(creds, `/proxy/v1/model_config/models?a=0&scene=${encodeURIComponent(scene)}`, {}, signal, { settles: false })
   const body = await res.json()
   const models = Array.isArray(body?.models) ? body.models : []
   return models.filter((m) => clean(m?.display_name))

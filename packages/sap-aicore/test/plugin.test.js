@@ -828,12 +828,14 @@ describe("regression: malformed and edge responses", () => {
     const plugin = await SAPAICorePlugin()
     const p = writeCredFile(dir, "late-fail-newer.json")
 
+    const firstStarted = Promise.withResolvers()
+    const firstFailure = Promise.withResolvers()
     let callCount = 0
     const racingFetch = async (url, init) => {
       callCount++
-      const n = callCount
-      if (n === 1) {
-        await new Promise(r => setTimeout(r, 50))
+      if (callCount === 1) {
+        firstStarted.resolve()
+        await firstFailure.promise
         return makeErrResponse(500, {}, url)
       }
       return makeOkResponse(TOKEN_RESPONSE, url)
@@ -841,13 +843,16 @@ describe("regression: malformed and edge responses", () => {
 
     const [r1, r2] = await withFetch(racingFetch, async () => {
       const p1 = plugin.auth.methods[0].authorize({ credentialFile: p })
-      await new Promise(r => setTimeout(r, 10))
+      await firstStarted.promise
       const p2 = plugin.auth.methods[0].authorize({ credentialFile: p })
+      // Release the old failure only after the newer candidate is registered.
+      firstFailure.resolve()
       return Promise.all([p1, p2])
     })
 
-    const successes = [r1, r2].filter(r => r.type === "success")
-    assert.ok(successes.length >= 1, "newer candidate must succeed despite late first failure")
+    assert.equal(r1.type, "failed")
+    assert.equal(r2.type, "success", "newer candidate must succeed despite late first failure")
+    assert.equal(callCount, 2)
   })
 
 })

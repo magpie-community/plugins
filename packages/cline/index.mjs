@@ -787,6 +787,15 @@ function usageOf(me, balance, limits) {
 // deepseek-v4.1-flash-1017 go through Vercel. An exact entry is a model
 // name; the others match a name's start, the first match winning. magpie's
 // built-in ClinePass has the same table (internal/provider/cline.go).
+//
+// Since 2026-11-06 Cline answers a client-supplied providerOptions routing
+// field with 403 "client-supplied \"providerOptions\" model routing is not
+// supported" (magpie#5442). A providerOptions pin is therefore attempted
+// only when pinUpstream is on; an exact 403 is reported with a hint to turn
+// it off, never retried unpinned. The top-level provider.only path
+// (glm-5.3-flash) is not rejected, but Cline currently ignores it: in live
+// replies routing.finalProvider stayed "openai-compatible-private", so the
+// request works without being actually pinned.
 const MAKERS = [
 	{ name: "glm-5.3-flash", exact: true, upstream: "z-ai", openRouter: true },
 	{ name: "deepseek", upstream: "deepseek" },
@@ -794,13 +803,15 @@ const MAKERS = [
 ]
 
 // pinned is where a DeepSeek or GLM model of Cline's is pinned when the
-// pinUpstream option is on (magpie's built-in ClinePass has the same tick):
+// pinUpstream option is on (magpie's Upstream tick is its own, not this option):
 // { upstream, openRouter }, DeepSeek's own API for DeepSeek's, Z.ai's for
 // GLM, openRouter true for a model Cline sends through OpenRouter. Cline's
 // routers otherwise pick among the providers serving the model, and some
 // answer worse than the maker's own API, which also keeps the prompt cache.
-// A cline-free/ model is left to Cline, as is every other maker's model:
-// null.
+// Cline currently ignores the top-level provider field (live replies kept
+// routing.finalProvider "openai-compatible-private"), so the openRouter path
+// is sent without error but does not pin. A cline-free/ model is left to
+// Cline, as is every other maker's model: null.
 function pinned(on, model) {
 	if (!on || typeof model !== "string" || model.startsWith("cline-free/")) return null
 	const name = model.slice(model.lastIndexOf("/") + 1).toLowerCase()
@@ -811,8 +822,8 @@ function pinned(on, model) {
 // PASS_DEEPSEEK is a ClinePass DeepSeek model: cline-pass/deepseek-…
 const PASS_DEEPSEEK = /^cline-pass\/deepseek/i
 
-// passPin is where a ClinePass DeepSeek request is pinned by default:
-// DeepSeek's own API, with the gateway's capability filter beside it
+// passPin is where a ClinePass DeepSeek request is pinned when pinUpstream
+// is on: DeepSeek's own API, with the gateway's capability filter beside it
 // (hy125245 on X, 10-23). On ClinePass the server's own routing for the
 // model wins over gateway.only alone, and a fake upstream in only was
 // served all the same; with has beside it, the request went to DeepSeek
@@ -820,22 +831,21 @@ const PASS_DEEPSEEK = /^cline-pass\/deepseek/i
 // matching upstream". has names what the upstream must do: cache a
 // repeated prefix by itself ("implicit-caching") and, for a model that
 // takes images, take them ("vision") — never for a text-only model
-// (deepseek-v4-pro), whose upstreams it would all rule out.
+// (deepseek-v4-pro), whose upstreams it would all rule out. Cline now
+// refuses providerOptions; the fetch path reports that refusal with a hint.
 const passPin = (images) => ({ gateway: { only: ["deepseek"], has: [...(images ? ["vision"] : []), "implicit-caching"] } })
 
-// pinOf is the field a request for model is pinned by, or null: a
-// ClinePass DeepSeek model always (unless pinUpstream is set off), with
-// fallback true when it is magpie's default rather than the user's
-// pinUpstream, so a request the pin can't be served under goes again as
-// sent; and, with pinUpstream on, the makers' table above.
-function pinOf(on, model, images, off = false) {
-	if (typeof model !== "string") return null
-	if (PASS_DEEPSEEK.test(model) && !off) return { key: "providerOptions", value: passPin(images), fallback: !on }
+// pinOf is the field a request for model is pinned by, or null: with
+// pinUpstream on, a ClinePass DeepSeek model asks for DeepSeek with the
+// gateway's capability filter, and the makers' table above; off, nothing.
+function pinOf(on, model, images) {
+	if (!on || typeof model !== "string") return null
+	if (PASS_DEEPSEEK.test(model)) return { key: "providerOptions", value: passPin(images) }
 	const pin = pinned(on, model)
 	if (!pin) return null
 	return pin.openRouter
-		? { key: "provider", value: { only: [pin.upstream] }, fallback: false }
-		: { key: "providerOptions", value: { gateway: { only: [pin.upstream] } }, fallback: false }
+		? { key: "provider", value: { only: [pin.upstream] } }
+		: { key: "providerOptions", value: { gateway: { only: [pin.upstream] } } }
 }
 
 // withField is body with "key":value written in at the end, so the rest of
@@ -856,8 +866,8 @@ const ownsRouting = (chat) => chat?.providerOptions !== undefined || chat?.provi
 
 // pinBody is the request's body with its pin written in (pinOf), or the
 // body as sent
-function pinBody(body, chat, on, images = false, off = false) {
-	const pin = ownsRouting(chat) ? null : pinOf(on, chat?.model, images, off)
+function pinBody(body, chat, on, images = false) {
+	const pin = ownsRouting(chat) ? null : pinOf(on, chat?.model, images)
 	return pin ? withField(body, pin.key, pin.value) : body
 }
 
@@ -865,19 +875,21 @@ function pinBody(body, chat, on, images = false, off = false) {
 // a bare image part)
 const hasImages = (body) => /"type"\s*:\s*"(?:image_url|image|input_image)"/.test(body)
 
-// NO_UPSTREAM is the gateway saying no upstream meets the pin
-const NO_UPSTREAM = /no (?:matching|available|eligible) (?:upstream|provider|endpoint)s?|no upstream/i
-
-// unpinWorthy is a pinned request's failure that the same request unpinned
-// may well not meet: no upstream matching the pin, or the pinned upstream
-// failing (a 5xx). An account's refusal (401, 402, 403, 429) is the
-// account's, whatever the pin.
-const unpinWorthy = (status, text) => status >= 500 || NO_UPSTREAM.test(String(text ?? ""))
+// routingRejected is Cline refusing a client-supplied providerOptions
+// routing field. The field is read from the error envelope when there is
+// one, so a JSON-escaped message reads the same as a plain one.
+const ROUTING_REJECTION = /^(?:Error\s+403:\s*)?client-supplied\s+["“]providerOptions["”]\s+model routing is not supported\.?$/i
+function routingRejected(status, text) {
+	if (status !== 403) return false
+	let msg = String(text ?? "")
+	const j = safeJson(msg)
+	if (typeof j?.error?.message === "string") msg = j.error.message
+	else if (typeof j?.message === "string") msg = j.message
+	return ROUTING_REJECTION.test(msg.trim())
+}
 
 // isOn is whether an option is set: true, or "true" in a config written by hand
 const isOn = (v) => v === true || v === "true"
-// isOff is an option set off in so many words: false, or "false"
-const isOff = (v) => v === false || v === "false"
 
 export const ClinePlugin = async ({ client } = {}, options = {}) => {
 	// the accounts fresh renewed this run: the sign-in mark comes off on the
@@ -1088,9 +1100,6 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 				// pinUpstream: the plugin's own option, or the provider's in
 				// OpenCode's config (provider.cline.options.pinUpstream)
 				const pin = isOn(options?.pinUpstream) || isOn(provider?.options?.pinUpstream)
-				// set off in so many words, nothing is pinned, ClinePass's
-				// DeepSeek models included
-				const unpinned = isOff(options?.pinUpstream) || isOff(provider?.options?.pinUpstream)
 				if (a?.type !== "oauth" && a?.type !== "api") return {}
 				return {
 					baseURL: API,
@@ -1102,18 +1111,16 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						if (!/\/chat\/completions$/.test(new URL(url).pathname))
 							return errorResponse({ status: 404, message: "only chat completions are served" })
 						let body
-						// sent is the body as the client sent it; fallback is a
-						// default pin's way back to it
-						let sent
-						let fallback = false
+						// appliedPin is the pin this request carries, if any
+						let appliedPin = null
 						try {
-							body = sent = await bodyText(input, init)
+							body = await bodyText(input, init)
 							const chat = JSON.parse(body)
 							if (!chat || typeof chat !== "object" || Array.isArray(chat)) throw new Error("not a chat completion")
-							const p = ownsRouting(chat) ? null : pinOf(pin, chat.model, images.get(chat.model) || hasImages(body), unpinned)
+							const p = ownsRouting(chat) ? null : pinOf(pin, chat.model, images.get(chat.model) || hasImages(body))
 							if (p) {
 								body = withField(body, p.key, p.value)
-								fallback = p.fallback
+								appliedPin = p
 							}
 						} catch {
 							return errorResponse({ status: 400, message: "a request that isn't a chat completion" })
@@ -1139,22 +1146,22 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 						} catch (e) {
 							return signed(errorResponse({ status: 502, message: String(e?.message ?? e) }), renewed(cred))
 						}
-						// a default pin never fails a request that would have
-						// worked: no upstream matching it, or the pinned one
-						// down, and the request goes once more as sent
-						if (!res.ok && fallback) {
+						if (!res.ok) {
 							const text = (await res.text()).slice(0, 1 << 20)
-							if (!unpinWorthy(res.status, text)) return signed(errorResponse(failure(res.status, text)), renewed(cred))
-							try {
-								res = await fetch(url, { ...init, method: init?.method ?? "POST", headers, body: sent, signal })
-							} catch (e) {
-								return signed(errorResponse({ status: 502, message: String(e?.message ?? e) }), renewed(cred))
-							}
+							// Cline now refuses client-supplied providerOptions
+							// routing. A pin the user asked for stays a failure;
+							// the message says how to let Cline route instead.
+							if (appliedPin?.key === "providerOptions" && routingRejected(res.status, text))
+								return signed(
+									errorResponse({
+										status: 403,
+										message:
+												`Cline refused the providerOptions pin (HTTP 403: client-supplied "providerOptions" model routing is not supported). Turn off the plugin's pinUpstream option (in magpie: magpie plugin options @magpie-community/opencode-cline-auth '{"pinUpstream": false}'; in OpenCode: the plugin's or provider.cline's options) and let Cline route the model itself; glm-5.3-flash still works, but Cline ignores its top-level provider field, so it is not actually pinned.`,
+									}),
+									renewed(cred),
+								)
+							return signed(errorResponse(failure(res.status, text)), renewed(cred))
 						}
-						// a renewed token cleared the lapse mark whatever the
-						// request then met, a refused one included (qoder's
-						// renewed()): the failure is reported, the mark stays off
-						if (!res.ok) return signed(errorResponse(failure(res.status, (await res.text()).slice(0, 1 << 20))), renewed(cred))
 						return signed(await unwrapped(res), renewed(cred))
 					},
 				}
@@ -1212,7 +1219,7 @@ export const _internal = {
 	pinned,
 	pinOf,
 	pinBody,
-	unpinWorthy,
+	routingRejected,
 	hasImages,
 	unwrapped,
 	clientHeaders,

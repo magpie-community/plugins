@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import plugin from "../src/plugin";
-import { alreadyServing, insideDir, startService, type ServiceHandle } from "../src/server";
+import { alreadyServing, insideDir, loadOrCreateToken, startService, TOKEN_FILE, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
 
 const services: ServiceHandle[] = [];
@@ -266,6 +266,61 @@ test("完整 CRUD 与立即发送往返", async () => {
   expect(state.runs).toEqual([]);
   expect((await api(`/api/tasks/${task.id}`, { method: "DELETE" })).status).toBe(404);
 });
+
+test("口令持久化：初次生成并写入 token 文件，重启服务复用已有口令，损坏自动重置", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sm-token-test-"));
+  dirs.push(dir);
+  const t1 = await loadOrCreateToken(dir);
+  expect(t1).toMatch(/^[0-9a-f]{64}$/);
+  const saved = (await readFile(join(dir, TOKEN_FILE), "utf8")).trim();
+  expect(saved).toBe(t1);
+
+  // 再次调用必须复用同一个口令
+  const t2 = await loadOrCreateToken(dir);
+  expect(t2).toBe(t1);
+
+  // 文件带换行符也能正常读取
+  await writeFile(join(dir, TOKEN_FILE), `${t1}\n\n`);
+  expect(await loadOrCreateToken(dir)).toBe(t1);
+
+  // 嵌套新目录也能自动创建
+  const nested = join(dir, "sub", "dir");
+  const tNested = await loadOrCreateToken(nested);
+  expect(tNested).toMatch(/^[0-9a-f]{64}$/);
+  expect((await readFile(join(nested, TOKEN_FILE), "utf8")).trim()).toBe(tNested);
+
+  // 同一个 dir 重启服务：前后实例 token 完全一致（模拟插件宿主重启）
+  const gw = fakeGateway({ models: MODELS });
+  gateways.push(gw);
+  const s1 = await startService({ port: 0, dir, base: gw.base });
+  const html1 = await (await fetch(`http://127.0.0.1:${s1.port}/`)).text();
+  const token1 = JSON.parse(/id="boot"[^>]*>([\s\S]*?)<\/script>/.exec(html1)![1]).token;
+  expect(token1).toBe(t1);
+  await s1.stop();
+
+  const s2 = await startService({ port: 0, dir, base: gw.base });
+  const html2 = await (await fetch(`http://127.0.0.1:${s2.port}/`)).text();
+  const token2 = JSON.parse(/id="boot"[^>]*>([\s\S]*?)<\/script>/.exec(html2)![1]).token;
+  expect(token2).toBe(t1);
+  await s2.stop();
+
+  // 口令错误时 401 响应必须带 reload: true
+  const s3 = await startService({ port: 0, dir, base: gw.base });
+  services.push(s3);
+  const unauth = await fetch(`http://127.0.0.1:${s3.port}/api/state`, {
+    headers: { "x-window-warmup-token": "wrong" },
+  });
+  expect(unauth.status).toBe(401);
+  const unauthBody = (await unauth.json()) as { error: string; reload?: boolean };
+  expect(unauthBody.reload).toBe(true);
+
+  // token 内容被破坏时重新生成合法口令
+  await writeFile(join(dir, TOKEN_FILE), "corrupted");
+  const t3 = await loadOrCreateToken(dir);
+  expect(t3).toMatch(/^[0-9a-f]{64}$/);
+  expect(t3).not.toBe(t1);
+});
+
 
 test("发送进行中重复 run → 409", async () => {
   const gw = fakeGateway({

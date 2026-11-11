@@ -510,14 +510,22 @@ export async function LoomyAuthPlugin({ client } = {}) {
           // limit/remaining pair alone is enough (remaining IS its number);
           // with only dailyBalance it is an amount without a limit; with
           // neither, no daily wallet at all — a missing one is not 0
+          // In magpie's window, `used` is the share spent (0–100) and
+          // `amount` the credits spent of `limit` (plugins#889): sent as a
+          // count and as what was left, a percentage cap read 800 spent as
+          // 800% and an amount cap compared the credits left with the cap
+          const dailySpent = dailyLimit != null && dailyRemaining != null ? Math.min(dailyLimit, Math.max(0, dailyLimit - dailyRemaining)) : null
           const dailyWallet =
             dailyLimit != null && dailyRemaining != null
-              ? { name: "每日赠送积分", used: Math.max(0, dailyLimit - dailyRemaining), amount: dailyRemaining, limit: dailyLimit, unit: "credits", resetsAt: beijingMidnight(), span: 86400 }
+              ? { name: "每日赠送积分", used: dailyLimit > 0 ? (100 * dailySpent) / dailyLimit : 0, amount: dailySpent, limit: dailyLimit, unit: "credits", resetsAt: beijingMidnight(), span: 86400 }
               : daily != null
                 ? { name: "每日赠送积分", used: 0, display: `${daily} credits`, aside: true }
                 : null
           const windows = [
             ...(dailyWallet ? [dailyWallet] : []),
+            // the permanent wallet comes back as a balance alone, with no
+            // total and nothing spent, so there is no share or spent amount
+            // a cap could read: it stays an amount shown aside
             ...(permanent != null ? [{ name: "永久积分", used: 0, display: `${permanent} credits`, aside: true }] : []),
           ]
           // no `signIn` on a clean read: that absence is how magpie takes an

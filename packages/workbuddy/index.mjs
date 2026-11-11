@@ -21,15 +21,21 @@ const EARLY_MS = 60 * 1000 // a token this close to its end is refreshed before 
 const LEAD_MS = 5 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const KEEP_RENEWED_MS = 60 * 1000 // how long a refresh's result answers for the old refresh token
 
-// [id, name, context, efforts]
+// [id, name, context, efforts, output]
+//
+// output is the config's maxOutputTokens, where a config read from the site
+// gave it (testdata/config-561.json, config-efforts.json); without it magpie
+// fills in models.dev's, which for deepseek-v4.1-flash is 384000 where
+// WorkBuddy's own config says 128000 (sayagoodbyeplz on Discord). A model
+// with none here is left to models.dev, as before.
 const CN_MODELS = [
   ["auto", "Auto", 168000],
   ["hy4-preview-f", "Hy4 preview", 1000000, ["high"]],
   ["hy3", "Hy3", 192000, ["low", "high"]],
   ["hy3-x", "Hy3-X", 192000, ["low", "high"]],
-  ["deepseek-v4.1-flash", "Deepseek-V4.1-Flash", 1000000, ["none", "low", "high", "max"]],
+  ["deepseek-v4.1-flash", "Deepseek-V4.1-Flash", 1000000, ["none", "low", "high", "max"], 128000],
   ["glm-5.3", "GLM-5.3", 1000000, ["low", "high", "max"]],
-  ["glm-5.3-flash", "GLM-5.3-Flash", 1000000, ["low", "high", "max"]],
+  ["glm-5.3-flash", "GLM-5.3-Flash", 1000000, ["low", "high", "max"], 131072],
   ["glm-5.2", "GLM-5.2", 1000000, ["high", "xhigh"]],
   ["glm-5.1", "GLM-5.1", 200000],
   ["glm-5v-turbo", "GLM-5v-Turbo", 200000],
@@ -37,24 +43,24 @@ const CN_MODELS = [
   ["kimi-k3-1", "Kimi-K3", 1000000, ["low", "high", "xhigh"]],
   ["kimi-k2.7", "Kimi-K2.7-Code", 256000],
   ["kimi-k2.6", "Kimi-K2.6", 256000],
-  ["deepseek-v4-pro", "Deepseek-V4-Pro", 1000000, ["none", "high", "xhigh"]],
+  ["deepseek-v4-pro", "Deepseek-V4-Pro", 1000000, ["none", "high", "xhigh"], 128000],
 ]
 
 const AI_MODELS = [
-  ["default-model", "Default", 176000],
-  ["fast-model", "Fast", 200000],
+  ["default-model", "Default", 176000, undefined, 24000],
+  ["fast-model", "Fast", 200000, undefined, 32000],
   ["balanced-model", "Balanced", 256000],
-  ["primary-model", "Primary", 272000],
+  ["primary-model", "Primary", 272000, undefined, 72000],
   ["deep-model", "Deep", 176000],
   ["gpt-5.5", "GPT-5.5", 1000000],
   ["gpt-5.4", "GPT-5.4", 272000],
   ["gpt-5.3-codex", "GPT-5.3-Codex", 272000],
   ["gemini-3.1-pro", "Gemini-3.1-Pro", 400000],
-  ["gemini-3.5-flash", "Gemini-3.5-Flash", 1000000],
+  ["gemini-3.5-flash", "Gemini-3.5-Flash", 1000000, undefined, 65536],
   ["glm-5.3", "GLM-5.3", 1000000, ["low", "high", "max"]],
-  ["glm-5.2", "GLM-5.2", 1000000, ["high", "xhigh"]],
-  ["hy3", "Hy3", 192000, ["low", "high"]],
-  ["kimi-k3", "Kimi-K3", 1000000],
+  ["glm-5.2", "GLM-5.2", 1000000, ["high", "xhigh"], 48000],
+  ["hy3", "Hy3", 192000, ["low", "high"], 64000],
+  ["kimi-k3", "Kimi-K3", 1000000, undefined, 32000],
   ["kimi-k2.6", "Kimi-K2.6", 256000],
   ["minimax-m3", "MiniMax-M3", 512000],
 ]
@@ -3135,8 +3141,15 @@ function endOf(p) {
 // the account whose credits expire first. Only packages the summary
 // counts, with credits left, and not the daily slice; null when none.
 // only narrows it to the packages of one window (the split's, usageOf).
-function runsOutOf(sum, packages, now = Date.now(), only = () => true) {
+//
+// A reward the summary doesn't list but the detail lists do (a daily
+// check-in's credits, each with its own end) is counted too when site is
+// given, as WorkBuddy's own panel counts them (see listedExtra): the
+// account serves them like any others, so an account whose check-in
+// credits lapse first is spent first (cdredfox on X).
+function runsOutOf(sum, packages, now = Date.now(), only = () => true, site = null) {
   const counted = new Set((sum?.Packages ?? []).map((p) => p?.PackageCode))
+  if (site) for (const c of site.ai ? [...EXTRA_CODES, ...EXTRA_AI] : EXTRA_CODES) counted.add(c)
   let at = 0, amount = 0
   for (const p of packages ?? []) {
     if (!counted.has(p?.PackageCode) || !only(p?.PackageCode) || p?.PackageCode === DAILY_CODE || String(p?.CapacityType) === SLICE) continue
@@ -3204,9 +3217,9 @@ function variants(efforts) {
 // kimi-k3 with a two-colour PNG named both colours (plugins#572). Declared
 // text-only, as before, every model read as one that can't see.
 function configModels(site) {
-  return Object.fromEntries(site.models.map(([id, name, context, efforts]) => [id, {
+  return Object.fromEntries(site.models.map(([id, name, context, efforts, output]) => [id, {
     name,
-    limit: { context, output: 0 },
+    limit: { context, output: output ?? 0 },
     tool_call: true,
     attachment: !textOnly(site, id),
     modalities: { input: textOnly(site, id) ? ["text"] : ["text", "image"], output: ["text"] },
@@ -3498,18 +3511,38 @@ function replyAfterToolsOn(b) {
 // URIs (dsh-session:) and skills the agent calls, stays, as does a tool's
 // result, which is what a file or command said. Case counts, so the name
 // in an identifier (DSH_HOME) is left too.
+//
+// The bare name is taken out only where dsh wrote it: the system prompt and
+// the tools' descriptions (DSH_PROSE). The user's and the assistant's text
+// get dsh's own lines alone (DSH_LINES: its runtime context comes as a user
+// message, and the model can quote a line back); a bare DSH or "DeepSeek
+// Harness" there is the user's own word. liby233 on Discord: a user asked
+// for "/root/DSH/Work/OC-182.92.66.95/" word for word and got
+// "/root/the agent harness/Work/…" back. Even in the system prompt a name
+// in a path or a file name (/root/DSH/, C:\DSH\, DSH.md) is never prose
+// (IN_PATH_BEFORE, IN_PATH_AFTER), so a working directory dsh writes there stays as it is.
 const HIDE_DSH = "hide_dsh"
-const DSH_NAMED = [
+const DSH_LINES = [
   [/You are an AI agent,? powered by DeepSeek Harness\.?/g, "You are an AI agent."],
   [/DeepSeek Harness (Web GUI)/g, "$1"],
   [/DeepSeek Harness (implementation checkout)/g, "agent $1"],
   [/\bDSH itself\b/g, "the agent itself"],
-  [/\b([Tt]he )?DeepSeek Harness\b/g, (_, the) => (the ?? "the ") + "agent harness"],
-  [/\bDSH\b(?!_)/g, "the agent harness"],
+]
+// before and after a name, what makes it part of a path, a file's name or
+// an identifier rather than a word of prose
+const IN_PATH_BEFORE = String.raw`(?<![\w/\\.~:@-])`
+const IN_PATH_AFTER = String.raw`(?![\w/\\@-]|\.\w)`
+const DSH_PROSE = [
+  ...DSH_LINES,
+  [new RegExp(IN_PATH_BEFORE + "([Tt]he )?DeepSeek Harness" + IN_PATH_AFTER, "g"), (_, the) => (the ?? "the ") + "agent harness"],
+  [new RegExp(IN_PATH_BEFORE + "DSH" + IN_PATH_AFTER, "g"), "the agent harness"],
 ]
 
-function dshHidden(text) {
-  for (const [re, to] of DSH_NAMED) text = text.replace(re, to)
+// dshHidden takes the name out of text dsh wrote (the system prompt, a
+// tool's description); in the user's or the assistant's text (said) only
+// dsh's own lines are reworded.
+function dshHidden(text, said = false) {
+  for (const [re, to] of said ? DSH_LINES : DSH_PROSE) text = text.replace(re, to)
   return text
 }
 
@@ -3520,24 +3553,25 @@ function dshHidden(text) {
 function hideDsh(chat) {
   if (!chat || typeof chat !== "object") return false
   let changed = false
-  const parts = (content) => {
+  const parts = (content, said) => {
     if (typeof content === "string") {
-      const t = dshHidden(content)
+      const t = dshHidden(content, said)
       if (t !== content) changed = true
       return t
     }
     if (!Array.isArray(content)) return content
     return content.map((p) => {
       if (!p || typeof p.text !== "string" || (p.type !== undefined && p.type !== "text")) return p
-      const t = dshHidden(p.text)
+      const t = dshHidden(p.text, said)
       if (t === p.text) return p
       changed = true
       return { ...p, text: t }
     })
   }
   if (Array.isArray(chat.messages))
-    for (const m of chat.messages) if (m && typeof m === "object" && m.role !== "tool") m.content = parts(m.content)
-  if (chat.system !== undefined) chat.system = parts(chat.system)
+    for (const m of chat.messages)
+      if (m && typeof m === "object" && m.role !== "tool") m.content = parts(m.content, m.role !== "system" && m.role !== "developer")
+  if (chat.system !== undefined) chat.system = parts(chat.system, false)
   const described = (o) => {
     if (!o || typeof o !== "object") return
     if (Array.isArray(o)) return o.forEach(described)
@@ -4008,10 +4042,9 @@ function makePlugin(site) {
                 // split by the summary (usageOf): each says its own
                 // packages' soonest lapse, the whole the soonest of both
                 Object.assign(credits, runsOutOf(sum, packages, Date.now(), ofPlan) ?? {})
-                Object.assign(extra, runsOutOf(sum, packages, Date.now(), (code) => !ofPlan(code)) ?? {})
+                Object.assign(extra, runsOutOf(sum, packages, Date.now(), (code) => !ofPlan(code), site) ?? {})
                 out.windows.splice(out.windows.findIndex((w) => w.name === "Total credits"), 1, totalOf(credits, extra))
               } else {
-                Object.assign(credits, runsOutOf(sum, packages) ?? {})
                 // the summary of the plan's credits alone: the extra ones
                 // only the detail lists have (listedExtra) are their window,
                 // and the whole stops the account, as with the summary's
@@ -4019,6 +4052,8 @@ function makePlugin(site) {
                 // account at "500 / 500" on its extra credits)
                 const kinds = kindsOf(sum, site)
                 const more = kinds.plan.total > 0 && kinds.extra.total === 0 ? listedExtra(sum, packages, site) : null
+                // with no window of their own, their lapse is the one window's
+                Object.assign(credits, runsOutOf(sum, packages, Date.now(), () => true, more ? null : site) ?? {})
                 if (more) {
                   const { runsOutAt, runsOut, ...counts } = more
                   const w = { ...creditWindow("Extra credits", counts), ...(runsOutAt ? { runsOutAt, runsOut } : {}) }

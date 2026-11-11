@@ -1,22 +1,25 @@
 {
   "name": "@magpie-community/gateway-notify",
-  "version": "0.1.2",
-  "description": "A push to your phone or team chat when an agent's turn is done: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook",
+  "version": "0.1.4",
+  "description": "A push to your phone or team chat when an agent's turn is done or an account is signed out: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook",
   "type": "module",
-  "files": ["notify.hooks.mjs", "turn.mjs", "channels.mjs", "README.md"],
+  "files": ["notify.hooks.mjs", "turn.mjs", "channels.mjs", "page/*.html", "page/*.js", "page/*.css", "README.md"],
   "keywords": ["magpie", "magpie-gateway", "magpie-hooks", "notification", "ntfy", "bark", "gotify", "feishu", "dingtalk", "telegram"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/notify" },
   "magpie": {
     "hooks": "./notify.hooks.mjs",
+    "page": { "title": "Notify", "titles": { "zh": "通知", "zh-TW": "通知", "ja": "通知", "de": "Benachrichtigungen" }, "file": "page/index.html" },
     "options": {
+      "enabled": true,
       "channels": [{ "type": "ntfy", "topic": "" }],
       "minMinutes": 3,
       "cooldownSeconds": 30,
       "errors": true,
       "agents": [],
       "includeText": false,
-      "lang": "en"
+      "lang": "en",
+      "accounts": true
     }
   },
   "engines": { "bun": ">=1.4.2" }

@@ -93,3 +93,38 @@ test("a reply whose metadataEvent counts tokens tells them, cache included", asy
     expect(u).toEqual({ input_tokens: 120, output_tokens: 3, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0 })
   }
 })
+
+// What a request cost is the one figure Kiro gives: its meteringEvent, in
+// credits (yetone/magpie#4328). It goes on as usage.credit, which magpie's
+// ledger reads as the plan's credits.
+test("Kiro's meteringEvent goes on as the request's credit, buffered and streamed", async () => {
+  for (const s of [false, true]) {
+    const u = await finalUsage(await ask(kiroReply(), s), s)
+    expect(u.credit).toBe(0.09107998018242124)
+  }
+})
+
+test("several meteringEvents are summed; none, or one not in credits, says no credit", async () => {
+  for (const s of [false, true]) {
+    const two = stream(
+      ev("assistantResponseEvent", { content: "OK" }),
+      ev("meteringEvent", { unit: "credit", unitPlural: "credits", usage: 0.25 }),
+      ev("meteringEvent", { unit: "credit", unitPlural: "credits", usage: 0.5 }),
+    )
+    expect((await finalUsage(await ask(two, s), s)).credit).toBe(0.75)
+    const none = stream(ev("assistantResponseEvent", { content: "OK" }), ev("metadataEvent", { stopReason: "END_TURN" }))
+    expect(await finalUsage(await ask(none, s), s)).not.toHaveProperty("credit")
+    const odd = stream(
+      ev("assistantResponseEvent", { content: "OK" }),
+      ev("meteringEvent", { unit: "token", usage: 900 }),
+      ev("meteringEvent", { unit: "credit", usage: "0.3" }),
+      ev("meteringEvent", { unit: "credit", usage: -1 }),
+    )
+    expect(await finalUsage(await ask(odd, s), s)).not.toHaveProperty("credit")
+  }
+})
+
+test("a request Kiro says cost nothing says credit 0", async () => {
+  const free = stream(ev("assistantResponseEvent", { content: "OK" }), ev("meteringEvent", { unit: "credit", usage: 0 }))
+  expect((await finalUsage(await ask(free, false), false)).credit).toBe(0)
+})

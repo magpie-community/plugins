@@ -6,6 +6,8 @@
   var ZH = {
     "Output Strategy": "输出策略",
     "Inject selected writing rules into model requests. Combine freely; all off by default.": "把选中的写作规则注入模型请求。可自由组合，全部默认关闭。",
+    "An (unofficial) output-style plugin for magpie, developed and maintained by manjughosa.": "本插件由 manjughosa 独立开发并维护，非官方出品。",
+    "Saving does not rewrite conversation history. Existing conversations may retain previously injected rules; start a new conversation to fully switch or turn off styles.": "保存不会改写会话历史。已有会话可能保留先前注入的规则；要完整切换或关闭样式，请新建会话。",
     "selected": "已选择",
     "Style combinations": "样式组合",
     "Reading catalog…": "正在读取目录…",
@@ -15,6 +17,7 @@
     "Reading settings…": "正在读取设置…",
     "Pick styles and save.": "选择样式后保存。",
     "Unsaved changes.": "有未保存的更改。",
+    "No unsaved changes.": "没有未保存的更改。",
     "Saved.": "已保存。",
     "Could not save. Nothing was written; try again.": "保存失败。更改尚未写入，请重试。",
     "Could not read settings; reopen the page.": "设置读取失败，请重新打开页面。",

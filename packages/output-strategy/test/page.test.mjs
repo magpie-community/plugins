@@ -103,7 +103,7 @@ async function boot({ catalog = sampleCatalog, current, lang = "en", failGet = f
 
 describe("generated page catalog", () => {
   test("is current and exposes only style metadata", () => {
-    const source = readFileSync(new URL("../page/catalog.js", import.meta.url), "utf8")
+    const source = readFileSync(new URL("../page/catalog.js", import.meta.url), "utf8").replace(/\r\n/g, "\n")
     expect(source).toBe(renderPageCatalog())
     const sandbox = {}
     vm.createContext(sandbox)
@@ -139,6 +139,52 @@ describe("page save flow", () => {
     }])
     expect(document.nodes.formMessage.textContent).toBe("Saved.")
     expect(document.nodes.saveButton.disabled).toBe(true)
+  })
+
+  test("clears dirty state when a disabled style is restored", async () => {
+    const { document, writes } = await boot({ current: { styles: {} } })
+    const inputs = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    inputs[0].checked = true
+    inputs[0].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(false)
+    inputs[0].checked = false
+    inputs[0].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(true)
+    expect(document.nodes.formMessage.textContent).toBe("No unsaved changes.")
+    expect(writes).toHaveLength(0)
+  })
+
+  test("clears dirty state when an enabled style is restored", async () => {
+    const { document, writes } = await boot({ current: { styles: { "terse-prose": true } }, lang: "zh-CN" })
+    const inputs = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    inputs[0].checked = false
+    inputs[0].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(false)
+    inputs[0].checked = true
+    inputs[0].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(true)
+    expect(document.nodes.formMessage.textContent).toBe("没有未保存的更改。")
+    expect(writes).toHaveLength(0)
+  })
+
+  test("stays dirty until every changed style is restored", async () => {
+    const { document, setLang } = await boot({ current: { styles: {} } })
+    let inputs = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    inputs[0].checked = true
+    inputs[0].dispatch("change")
+    inputs[1].checked = true
+    inputs[1].dispatch("change")
+    inputs[0].checked = false
+    inputs[0].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(false)
+    expect(document.nodes.formMessage.textContent).toBe("Unsaved changes.")
+    setLang("zh-CN")
+    inputs = descendants(document.nodes.stylesList).filter(node => node.tagName === "INPUT")
+    expect(inputs[1].checked).toBe(true)
+    inputs[1].checked = false
+    inputs[1].dispatch("change")
+    expect(document.nodes.saveButton.disabled).toBe(true)
+    expect(document.nodes.formMessage.textContent).toBe("没有未保存的更改。")
   })
 
   test("renders without catalog and fails closed for editing", async () => {
@@ -194,7 +240,7 @@ describe("host language", () => {
   })
 
   test("closes each responsive media block and increments the shipping version", () => {
-    const css = readFileSync(new URL("../page/style.css", import.meta.url), "utf8")
+    const css = readFileSync(new URL("../page/style.css", import.meta.url), "utf8").replace(/\r\n/g, "\n")
     const opens = (css.match(/{/g) || []).length
     const closes = (css.match(/}/g) || []).length
     expect(closes).toBe(opens)
@@ -207,6 +253,19 @@ describe("host language", () => {
     vm.createContext(sandbox)
     expect(() => vm.runInContext(i18nSource, sandbox)).not.toThrow()
     expect(sandbox.document.documentElement.lang).toBe("en")
+  })
+
+  test("shows author attribution and conversation guidance in both languages", () => {
+    const html = readFileSync(new URL("../page/index.html", import.meta.url), "utf8")
+    const author = "An (unofficial) output-style plugin for magpie, developed and maintained by manjughosa."
+    const note = "Saving does not rewrite conversation history. Existing conversations may retain previously injected rules; start a new conversation to fully switch or turn off styles."
+    expect(html).toContain(author)
+    expect(html).toContain(note)
+    const sandbox = { document: { documentElement: {}, body: null }, magpie: { theme: { lang: "zh-CN" } } }
+    vm.createContext(sandbox)
+    vm.runInContext(i18nSource, sandbox)
+    expect(sandbox.OutputStrategyI18n.t(author)).toBe("本插件由 manjughosa 独立开发并维护，非官方出品。")
+    expect(sandbox.OutputStrategyI18n.t(note)).toBe("保存不会改写会话历史。已有会话可能保留先前注入的规则；要完整切换或关闭样式，请新建会话。")
   })
 
   test("ships English HTML and no private stats or local language switch", () => {

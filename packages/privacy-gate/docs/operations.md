@@ -89,12 +89,6 @@ A long hash, minified line or base64-ish text can exceed the 400-character
 threshold. Raise `blobBase64Chars` / `blobHexChars` deliberately and understand
 that a larger document can then pass. Do not disable the gate.
 
-### Guide mode returns a MIME-looking string that is not a MIME
-
-Known open issue [#795](https://github.com/magpie-community/plugins/issues/795):
-the guide prompt may carry a clipped long `media_type` prefix. The binary bytes
-are still withheld; this is metadata-only.
-
 ### The request went through even though the gate is on
 
 Check the Magpie log for `onRequest: took too long`. Magpie drops a hook after
@@ -125,4 +119,3 @@ the same gateway.
 - [Design](./design.md)
 - [Brand assets](../BRAND.md)
 - Magpie engine timeout: [magpie#5305](https://github.com/yetone/magpie/issues/5305)
-- Guide MIME issue: [#795](https://github.com/magpie-community/plugins/issues/795)

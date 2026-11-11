@@ -678,18 +678,22 @@ async function queryUsage(token) {
   const plan = !entitlement ? undefined : proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
   const expireAt = office?.pro_expired_time || office?.active_plan?.subscription_expired_at || null
 
-  // Sum only what the vendor actually reports as granted in unexpired bills.
+  // Sum only what the vendor actually reports as granted in bills.
   // If bills don't account for the current balance, report the balance with no window.
   let grantedFromBills = 0
   let soonestExpMs = 0
   let expiringPts = 0
+  const expired = []
   const now = Date.now()
   for (const item of Array.isArray(bills?.items) ? bills.items : []) {
     const pts = Math.floor(Number(item?.points) || 0)
     if (pts <= 0) continue
     const expStr = typeof item?.expire_at === "string" ? item.expire_at : ""
     const expMs = expStr ? Date.parse(expStr) : 0
-    if (expMs > 0 && expMs <= now) continue
+    if (expMs > 0 && expMs <= now) {
+      expired.push({ pts, expMs })
+      continue
+    }
     grantedFromBills += pts
     if (expMs > now) {
       if (!soonestExpMs || expMs < soonestExpMs) {
@@ -699,6 +703,24 @@ async function queryUsage(token) {
         expiringPts += pts
       }
     }
+  }
+  // A grant past its expire_at can still be in the balance: the vendor takes
+  // what is left of it some time later, not at expire_at (plugins #936: a
+  // 9,623 balance against 9,600 of unexpired grants). Until then the balance
+  // is made of it too, so the latest expired grants are counted back in, the
+  // newest first, only as far as the balance needs them.
+  expired.sort((a, b) => b.expMs - a.expMs)
+  for (const g of expired) {
+    if (grantedFromBills >= avail) break
+    grantedFromBills += g.pts
+  }
+  // A balance a little over every grant the bills list (plugins #936: 9,623
+  // against 9,600 of grants, none expired) holds credits that come back
+  // outside income bills. That remainder is counted into the window, so
+  // the card still shows one. A balance far over the bills is left
+  // balance-only: the bills don't explain it.
+  if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
+    grantedFromBills = avail
   }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0

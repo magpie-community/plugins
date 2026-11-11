@@ -304,11 +304,38 @@ describe("usage", () => {
     expect(usage.signIn).toBeUndefined()
     const daily = usage.windows.find((w) => w.name === "每日赠送积分")
     // the vendor's own numbers: spent = dailyLimitPoints - dailyRemainingPoints
+    // magpie reads `used` as the share spent (0–100) and `amount` as the
+    // credits spent of `limit` (plugins#889)
     expect(daily.limit).toBe(5000)
-    expect(daily.amount).toBe(fake.state.dailyBalance)
+    expect(daily.amount).toBe(5000 - fake.state.dailyBalance)
+    expect(daily.used).toBe((100 * (5000 - fake.state.dailyBalance)) / 5000)
+    expect(daily.unit).toBe("credits")
     expect(daily.resetsAt).toBeGreaterThan(Date.now())
     const permanent = usage.windows.find((w) => w.name === "永久积分")
     expect(permanent.display).toBe("5000 credits")
+  })
+
+  test("a fresh daily wallet reads as nothing spent, and an empty one as all of it (plugins#889)", async () => {
+    const realFetch = globalThis.fetch
+    const reply = (limit, remaining) => (input, init) => {
+      const url = typeof input === "string" ? input : String(input?.url ?? input)
+      if (String(url).includes("/api/v2/points/records"))
+        return new Response(JSON.stringify({ code: "000000", desc: "ok", data: { balance: 5000, dailyBalance: remaining, dailyLimitPoints: limit, dailyRemainingPoints: remaining, list: [], total: 0 } }), { status: 200 })
+      return realFetch(input, init)
+    }
+    const daily = async (limit, remaining) => {
+      globalThis.fetch = reply(limit, remaining)
+      return (await plugin.auth.usage(getAuth)).windows.find((w) => w.name === "每日赠送积分")
+    }
+    try {
+      // a cap of 4 credits must not hold an account that has spent none
+      expect(await daily(5000, 5000)).toMatchObject({ used: 0, amount: 0, limit: 5000 })
+      expect(await daily(5000, 0)).toMatchObject({ used: 100, amount: 5000, limit: 5000 })
+      // a zero allowance is no share spent, never NaN
+      expect(await daily(0, 0)).toMatchObject({ used: 0, amount: 0, limit: 0 })
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 
   test("a daily wallet without the limit pair is an amount without a limit", async () => {
@@ -336,8 +363,10 @@ describe("usage", () => {
         const pairOnly = await plugin.auth.usage(getAuth)
         const dw = pairOnly.windows.find((w) => w.name === "每日赠送积分")
         expect(dw).toBeTruthy()
-        expect(dw.used).toBe(800)
-        expect(dw.amount).toBe(4200)
+        // 800 spent of 5,000: 16% used, 800 credits spent (plugins#889) —
+        // not 800% and not the 4,200 left
+        expect(dw.used).toBe(16)
+        expect(dw.amount).toBe(800)
         expect(dw.limit).toBe(5000)
         expect(pairOnly.windows.find((w) => w.name === "永久积分")).toBeUndefined()
       } finally {

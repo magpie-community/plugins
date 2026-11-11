@@ -1,7 +1,7 @@
 # Tabbit for magpie
 
 [Tabbit](https://web.tabbit.com) as a provider in [magpie](https://usemagpie.ai)
-(and OpenCode). It signs in with the Tabbit Browser account already on this
+(and OpenCode). It signs in with the Tabbit account already on this
 computer, lists the account's real model catalog, and answers turns through
 Tabbit's own chat API — so an agent behind magpie can pick `tabbit/Default`,
 `tabbit/DeepSeek-V4.1-Flash`, `tabbit/GLM-5.3-Flash` and the rest like any
@@ -12,7 +12,7 @@ other provider, with the account's allowance, fallbacks and usage card.
 ```sh
 magpie plugin add @magpie-community/opencode-tabbit-auth   # from the community list
 # from this source tree instead:   magpie plugin add .
-magpie plugin login tabbit                                 # pick “Read Tabbit Browser sign-in (macOS)”
+magpie plugin login tabbit                                 # pick “Read the Tabbit app's sign-in (macOS)”
 magpie provider test tabbit                                # ✓ chat · Default
 ```
 
@@ -42,12 +42,27 @@ Tabbit's sign-in is a `token` cookie: an RS256 JWT issued by
 
 | Method | What it does |
 |---|---|
-| **Read Tabbit Browser sign-in** (macOS) | Finds the cookie store Tabbit Browser keeps (`~/Library/Application Support/Tabbit Browser/Default/Cookies`), reads the `token` cookie, and decrypts it with the password in the login keychain under `Tabbit Browser Safe Storage`. Nothing is copied by hand; the browser does not have to be closed — the database is copied before it is read. |
-| **Paste Tabbit token** | For anything the first method can't reach (Windows or Linux, a browser profile kept somewhere else). In Tabbit Browser, open `web.tabbit.com` and read the `token` cookie from the developer tools; paste it whole. |
+| **Read the Tabbit app's sign-in** (macOS) | Finds the cookie store Tabbit keeps, reads the `token` cookie, and decrypts it with the password in the login keychain. The international build (Tabbit.app) keeps its store in `~/Library/Application Support/Tabbit` and the password under `Tabbit Safe Storage`; the China build (Tabbit Browser.app) in `~/Library/Application Support/Tabbit Browser`, under `Tabbit Browser Safe Storage`. Each store is read with its own build's item first, then the other's. macOS asks once for Keychain access: click Allow (or Always Allow). Nothing is copied by hand; the browser does not have to be closed — the database is copied before it is read. |
+| **Paste Tabbit token** | For anything the first method can't reach (Windows or Linux, a browser profile kept somewhere else). In Tabbit Browser, open `web.tabbit.com` (or `web.tabbit.ai` for an international account) and read the `token` cookie from the developer tools; paste it whole. |
 
 A pasted value may be the bare JWT or a whole `name=value; name=value` cookie
 string. The account id is read out of the token itself, so nothing else has to
 be pasted.
+
+**Two sites.** Tabbit runs `web.tabbit.com` and, for international accounts,
+`web.tabbit.ai`: the same API, but a token from one is refused on the other
+(#833). Nothing is set by hand. The desktop method records the site whose
+cookie it found. A pasted token goes to `web.tabbit.com` first; when that
+refuses it, `web.tabbit.ai` is asked once, and the site that accepts it serves
+that token from then on (a token both refuse is an expired sign-in, as
+before). A `web.tabbit.com` token never asks `web.tabbit.ai` anything.
+
+> **International site, chat turns:** `web.tabbit.ai` answers a turn's
+> `runs` call with `429`, code `492` ("Welcome to Tabbit Browser...") unless
+> the request carries a `unique-uuid` header — the browser sends a fresh
+> uuid on every API call, and the gate accepts any well-formed one (a
+> net-export capture of Tabbit Browser's own traffic showed the header on
+> `runs`, `join` and `usage`). The plugin sends one per call (#834).
 
 There is no refresh endpoint. When the token runs out (7 days), magpie shows
 the account as needing a sign-in again and the first method takes one more

@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-privacy-gate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Structural egress gate for Magpie: withholds or rejects image/file/audio parts, encoded blobs and disallowed models, and guides agents toward local extraction when Magpie cannot mask text. Companion to ShyPie for DeepSeek Harness.",
   "type": "module",
   "files": [

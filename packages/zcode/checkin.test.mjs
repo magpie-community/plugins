@@ -11,10 +11,10 @@ import { test, expect, afterAll, beforeAll, beforeEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, _internal, resetRateWait
+let ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin, _internal, resetRateWait } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal, resetRateWait, resetClientConfigs } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
 const real = globalThis.fetch
@@ -23,17 +23,25 @@ beforeEach(() => {
   globalThis.fetch = offline
   _internal.routes.clear()
   resetRateWait() // each test starts with no hold of its own (they share an account key)
+  resetClientConfigs() // and reads client/configs from its own fake
 })
 
 // serve is the fake zcode.z.ai: route answers each request, and a request
-// it doesn't answer is a 404
+// it doesn't answer is a 404, but client/configs, which says whether a
+// claim wants ZCode's captcha: unless route answers it, configs with no
+// captcha, as they were before 11-07
+const CONFIGS = "/api/v1/client/configs"
+const NO_CAPTCHA = { code: 0, msg: "", data: { configs: { builtin_provider_config_json: "https://cdn-zcode.z.ai/zcode/config/zcode-builtin-production-43.json" } } }
+// 11-07's configs as zcode.z.ai answered 3.17.2 (cut to the two keys the
+// plugin reads): claims want the captcha, Start Plan requests are spared
+const CAPTCHA_ON = JSON.parse(readFileSync(new URL("./testdata/client-configs-1107.json", import.meta.url), "utf8"))
 function serve(route) {
   const calls = []
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(String(url))
     const c = { url: u, method: init.method ?? "GET", headers: init.headers ?? {}, body: init.body }
     calls.push(c)
-    return (await route(c)) ?? new Response("", { status: 404 })
+    return (await route(c)) ?? (u.pathname === CONFIGS ? Response.json(NO_CAPTCHA) : new Response("", { status: 404 }))
   }
   return calls
 }
@@ -475,4 +483,63 @@ test("the feed is asked in zh-CN or en-US only, as the app asks it", async () =>
   } finally {
     Intl.DateTimeFormat = realDTF
   }
+})
+
+// young02036 on Discord (11-07): the check-in asked for a captcha every
+// day while the ZCode app showed none. zcode.z.ai's client/configs had
+// switched its captcha on (testdata/client-configs-1107.json), and the
+// app passes that check (Aliyun's, invisibly) before each claim, sending
+// the proof as X-Aliyun-Captcha-Verify-Param (3.17.2's
+// requestVerificationClaimHeaders). The plugin can't, so it posts no
+// claim: the plans are named, to claim in the app.
+test("a claim ZCode guards with its captcha is not posted, and the plan is named for the app", async () => {
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(CAPTCHA_ON)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+    if (url.pathname === CLAIM) return json(CAPTCHA, 400)
+  })
+  const r = await checkin()
+  expect(r.outcome).toBe("captcha")
+  expect(r.message).toBe("ZCODE WEEKEND BUILD: claim it in the ZCode app: ZCode asks its security check before a claim, which only the app passes, so the daily check-in leaves it to the app")
+  expect(r.until).toBeUndefined() // settled for the day, as a captcha was
+  expect(claims(calls)).toEqual([])
+})
+
+test("captcha switched off in the configs: the claim is posted as before", async () => {
+  const off = structuredClone(CAPTCHA_ON)
+  off.data.configs.captcha.enabled = false
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(off)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+    if (url.pathname === CLAIM && method === "POST") return json(CLAIMED_WEEKEND)
+  })
+  expect((await checkin()).outcome).toBe("claimed")
+  expect(claims(calls)).toHaveLength(1)
+})
+
+// a failed read is unknown, never "no captcha": nothing is posted, and
+// the failed is asked again by magpie later
+test("configs that don't read: no claim posted, failed", async () => {
+  for (const configs of [() => json("", 500), () => json({ code: 0, data: { configs: { captcha: "on" } } })]) {
+    resetClientConfigs()
+    const calls = serve(({ url, method }) => {
+      if (url.pathname === CONFIGS) return configs()
+      if (url.pathname === TOUCH && method === "GET") return json(TOUCH_REAL)
+      if (url.pathname === CLAIM && method === "POST") return json(CLAIMED_WEEKEND)
+    })
+    const r = await checkin()
+    expect(r.outcome).toBe("failed")
+    expect(r.message).toContain("ZCODE WEEKEND BUILD: not claimed, ZCode's security check for claims can't be read")
+    expect(claims(calls)).toEqual([])
+  }
+})
+
+// nothing to claim asks no config at all: the feed alone, as before
+test("nothing in the feed: client/configs is not asked", async () => {
+  const calls = serve(({ url, method }) => {
+    if (url.pathname === CONFIGS) return json(CAPTCHA_ON)
+    if (url.pathname === TOUCH && method === "GET") return json(TOUCH_NONE)
+  })
+  expect((await checkin()).outcome).toBe("inactive")
+  expect(calls.filter((c) => c.url.pathname === CONFIGS)).toEqual([])
 })

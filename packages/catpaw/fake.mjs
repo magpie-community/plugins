@@ -22,6 +22,11 @@ export function fakeCatPaw() {
     // cumulative frames (the tools tests use it to script a reply, then a
     // forced-retry reply); empty → the default 你好 frames
     turnFramesQueue: [],
+    // a turn's raw SSE body, played as is (plugins#933's literal frames)
+    turnRaw: null,
+    // bare statuses the real gateway answers with an empty body (429, 401)
+    roundStatus: 0,
+    turnStatus: 0,
     // per-turn delay before the SSE starts (the keep-alive teardown test
     // uses it to keep the stream open while the agent cancels)
     turnDelayMs: 0,
@@ -31,6 +36,7 @@ export function fakeCatPaw() {
     disabledSources: new Set(["CatPawCLI"]),
     turnBodies: [],
     balanceCalls: 0,
+    balancePlan: null, // extra userPlan fields a test sets (nextRefreshTime)
     // POST /api/agent/maas/model-types, the list the desktop client asks for
     // (items as its renderer reads them: modelTypeId, modelTypeName, provider,
     // supportImage). The ids here are the table's own, plus one the table has
@@ -50,10 +56,14 @@ export function fakeCatPaw() {
       state.turns = 0
       state.turnError = null
       state.turnFramesQueue = []
+      state.turnRaw = null
+      state.roundStatus = 0
+      state.turnStatus = 0
       state.turnDelayMs = 0
       state.disabledSources = new Set(["CatPawCLI"])
       state.turnBodies = []
       state.balanceCalls = 0
+      state.balancePlan = null
       state.modelTypes = defaultModelTypes()
       state.modelTypeCalls = []
       state.modelTypesFail = false
@@ -77,7 +87,7 @@ export function fakeCatPaw() {
         return json(200, {
           code: 0,
           message: "success",
-          data: { availableCredits: "1134.67", userPlan: { planId: "plan_free", planName: "体验版", pro: false, status: "active" } },
+          data: { availableCredits: "1134.67", userPlan: { planId: "plan_free", planName: "体验版", pro: false, status: "active", ...state.balancePlan } },
           errorCode: null,
         })
       }
@@ -122,6 +132,7 @@ export function fakeCatPaw() {
 
       if (url.pathname === "/api/agent/conversation/round") {
         state.rounds++
+        if (state.roundStatus) return new Response("", { status: state.roundStatus })
         if (state.disabledSources.has(body.source)) return json(200, { code: 400, msg: `source 不存在或未启用: ${body.source}` })
         if (body.source !== "CatX" || body.mode !== "CATX_APP") return json(400, { code: 400, msg: `source/mode wrong: ${body.source}/${body.mode}` })
         state.conversations.push({ id: body.conversationId, modelType: body.modelType, prompt: body.message?.content?.[0]?.text ?? "", token: (req.headers.get("cookie") ?? "").match(/X-Passport-Token=([^;]+)/)?.[1] ?? "", permissionMode: body.permissionMode, source: body.source, mode: body.mode })
@@ -140,6 +151,8 @@ export function fakeCatPaw() {
         const conv = state.conversations.at(-1)
         if (body.source !== conv?.source || body.mode !== conv?.mode) return json(400, { code: 400, msg: `turn source/mode ${body.source}/${body.mode} differ from the round's` })
         if (body.conversationId !== conv?.id) return json(400, { code: 400, msg: "turn for unknown conversation" })
+        if (state.turnStatus) return new Response("", { status: state.turnStatus })
+        if (state.turnRaw) return new Response(state.turnRaw, { headers: { "content-type": "text/event-stream" } })
         if (state.turnError === "sse-error")
           return new Response(`data: ${JSON.stringify({ error: { code: 500, message: "vendor broke" } })}\n\n`, { headers: { "content-type": "text/event-stream" } })
         if (state.turnDelayMs) await new Promise((r) => setTimeout(r, state.turnDelayMs))

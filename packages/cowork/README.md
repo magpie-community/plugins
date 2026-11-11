@@ -108,6 +108,17 @@ Cowork 找不到同名条目，会退回自己原来的模型。这是这条路�
 
 改动生效的时机：Cowork 启动时读这个文件，所以重启 Cowork 或新开一个会话才用新模型。
 
+### 思考等级
+
+magpie 的 `/v1/models` 给某个模型列了思考等级（`supported_reasoning_levels` / `reasoning_levels`）时，
+`seed.mjs` 把它写成条目的 `extras.thinkingEfforts {default, options}`——Cowork 模型菜单画 Reasoning 那一行
+读的就是这个形状。magpie 不报默认等级，所以 `default` 取 `medium`，没有就 `high`，再没有就最高的那档；
+之前 seed 过的条目下次运行时补上（`--check` 里显示为「reasoning levels to update」）。
+
+**但 Cowork 2.1.6-stable 自己不读它**：自定义模型的 `extras` 是 Cowork 每次从头拼的，思考等级只取自那条
+模型 Extra Body 里的 `reasoning_effort`，而且只有那一个选项。所以在这一版里写进去的等级不会变成可切换的
+下拉。想固定一个等级，就在 Cowork 的自定义模型设置里把 Extra Body 填成 `{"reasoning_effort": "high"}`。
+
 ## 装完怎么确认
 
 ```sh

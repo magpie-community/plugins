@@ -1,0 +1,10 @@
+This package bundles brand icons copied from magpie's own assets
+(magpie: https://github.com/yetone/magpie, MIT License).
+
+Those icons originate from lobe-icons (https://github.com/lobehub/lobe-icons),
+MIT License, Copyright (c) 2023 LobeHub.
+License: https://github.com/lobehub/lobe-icons/blob/master/LICENSE
+
+The token freebies shown at runtime come from AIHOT (https://aihot.news/free-tokens),
+fetched directly on each user's machine at runtime. No AIHOT data is bundled with
+this package.

@@ -1,0 +1,18 @@
+{
+  "name": "@magpie-community/agent-wave",
+  "version": "0.1.0",
+  "description": "Wave Terminal (waveterm) as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "files": ["wave.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "wave", "waveterm", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/wave"
+  },
+  "magpie": {
+    "agent": "./wave.agent.js",
+    "icon": "https://github.com/wavetermdev.png"
+  }
+}

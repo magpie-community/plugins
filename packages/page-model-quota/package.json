@@ -1,0 +1,69 @@
+{
+  "name": "@magpie-community/page-model-quota",
+  "version": "0.1.0",
+  "description": "把所有账号、所有供应商的额度窗口换算成 token，按模型合并估算还剩多少。A page in Magpie's window that estimates how many tokens each model has left, merged across every account and provider, from the local usage history.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "serve.mjs",
+    "lib",
+    "page",
+    "ui",
+    "assets",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "quota",
+    "usage",
+    "tokens",
+    "models"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-model-quota"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-model-quota",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "magpie": {
+    "name": "Model Quota",
+    "summary": {
+      "en": "How many tokens each model has left, merged across every account and provider: each quota window is turned into tokens from your own usage history and split by the model's share in it.",
+      "zh": "每个模型在所有账号、所有供应商的池子里还剩多少 token：用你自己的用量历史把每个额度窗口换算成 token，再按模型在窗口里的占比摊开。"
+    },
+    "page": {
+      "title": "Model Quota",
+      "titles": {
+        "en": "Model Quota",
+        "zh": "模型剩余额度",
+        "zh-TW": "模型剩餘額度"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3496,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3496
+    },
+    "permissions": [],
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwZjE3MmEiLz48ZyBmaWxsPSJub25lIiBzdHJva2U9IiMzOGJkZjgiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIj48cGF0aCBkPSJNMTQgMjJoMzZNMTQgMzJoMzZNMTQgNDJoMjIiLz48L2c+PC9zdmc+"
+  }
+}

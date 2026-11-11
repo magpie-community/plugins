@@ -64,23 +64,35 @@ try {
   ;({ MODELS: before } = await import(pathToFileURL(TARGET).href))
 } catch {}
 
-const input = (m) => {
-  const said = Array.isArray(m?.architecture?.input_modalities) ? m.architecture.input_modalities : []
-  return said.filter((x) => typeof x === "string" && x !== "text")
+// input is the catalog's kinds and the seed's together, as the plugin serves
+// them (withSeed in index.mjs, #829): a catalog entry that leaves image out
+// doesn't take it from a model the seed declares it for. A kind kept that way
+// is printed, so removing it is a choice made in models.mjs, not a refresh's.
+const kinds = (l) => (Array.isArray(l) ? l.filter((x) => typeof x === "string" && x !== "text") : [])
+const input = (id, m) => {
+  const said = kinds(m?.architecture?.input_modalities)
+  const kept = kinds(before[id]?.input).filter((x) => !said.includes(x))
+  if (kept.length) console.log(`${id}: kept ${kept.join(", ")} from models.mjs; the catalog doesn't list it`)
+  return [...new Set([...kinds(before[id]?.input), ...said])]
 }
+const positive = (n) => Number.isFinite(n) && n > 0
 const lines = []
 for (const m of catalog) {
   const id = m.id.trim()
   const meta = m.metadata ?? {}
   const facts = []
-  const context = Number(meta.context_limit)
-  const output = Number(meta.context_budget)
-  if (Number.isFinite(context) && context > 0) facts.push(`context: ${context}`)
-  if (Number.isFinite(output) && output > 0) facts.push(`output: ${output}`)
-  const extra = input(m)
+  // what the catalog leaves out is the seed's, as the plugin serves it
+  const was = before[id] ?? {}
+  const context = positive(Number(meta.context_limit)) ? Number(meta.context_limit) : Number(was.context)
+  const output = positive(Number(meta.context_budget)) ? Number(meta.context_budget) : Number(was.output)
+  if (positive(context)) facts.push(`context: ${context}`)
+  if (positive(output)) facts.push(`output: ${output}`)
+  const extra = input(id, m)
   if (extra.length) facts.push(`input: [${extra.map((x) => JSON.stringify(x)).join(", ")}]`)
-  if (typeof meta.cost === "string") facts.push(`cost: ${JSON.stringify(meta.cost)}`)
-  if (typeof meta.capability === "string") facts.push(`capability: ${JSON.stringify(meta.capability)}`)
+  const cost = typeof meta.cost === "string" && meta.cost.trim() ? meta.cost : was.cost
+  const capability = typeof meta.capability === "string" && meta.capability.trim() ? meta.capability : was.capability
+  if (typeof cost === "string") facts.push(`cost: ${JSON.stringify(cost)}`)
+  if (typeof capability === "string") facts.push(`capability: ${JSON.stringify(capability)}`)
   const efforts = before[id]?.efforts
   if (Array.isArray(efforts)) facts.push(`efforts: [${efforts.map((x) => JSON.stringify(x)).join(", ")}]`)
   const name = before[id]?.name ?? id

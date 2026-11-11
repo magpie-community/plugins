@@ -3,7 +3,8 @@
 // (amr-api.open-design.ai), which answers with two keys — a control key
 // (vela_ctrl_…) for the account's plan and its Design Plan allowance, and a
 // runtime key (sk-amr-…) that the model plane (amr-link.open-design.ai)
-// takes. Model requests are the OpenAI Responses API at the runtime key;
+// takes. Model requests go there at the runtime key, on each model's own API
+// (WIRE below) or any other of the three amr-link serves it on;
 // the model list, the plan and the 5-hour and 7-day allowance windows all
 // come from the control plane.
 //
@@ -41,6 +42,37 @@ const MODEL_WIRE = {
   "glm-5.3-flash": "anthropic",
 }
 const wireOf = (id) => WIRE[MODEL_WIRE[id]] ?? WIRE.chat
+// The API a model is declared on is only its default: amr-link serves
+// every model on all three (keyblues, plugins#888: each of the fourteen
+// answered on chat completions and Responses at /v1 and on Anthropic's
+// messages at the bare host, which the AI SDK asks at /v1/messages). A
+// request can reach the plugin on another API than the declared one — magpie
+// sends it there when the model is set to be asked on it — and the key
+// rides as that API takes it, not as the declared package sends it: the
+// host signs with the declared package's header (x-api-key for
+// @ai-sdk/anthropic, Bearer for the others), so a chat model asked on
+// /messages went with a Bearer and glm-5.3-flash asked on /chat/completions
+// with an x-api-key. signFor reads the API off the request's path.
+const MESSAGES = /\/messages(\/count_tokens)?\/?$/
+const signFor = (key) => async (input, init = {}) => {
+  const url = input instanceof Request ? input.url : String(input)
+  const h = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined))
+  let path = ""
+  try {
+    path = new URL(url).pathname
+  } catch {}
+  if (MESSAGES.test(path)) {
+    h.delete("authorization")
+    h.set("x-api-key", key)
+    if (!h.has("anthropic-version")) h.set("anthropic-version", "2023-06-01")
+  } else {
+    h.delete("x-api-key")
+    h.set("authorization", `Bearer ${key}`)
+  }
+  // the global fetch as it is when the request is sent: the host's own,
+  // with its proxy and redirect rules, never one captured at load
+  return globalThis.fetch(input, { ...init, headers: h })
+}
 // the provider's own default: a model this plugin doesn't name is asked on
 // chat completions, where ten of the eleven thought
 const NPM = WIRE.chat
@@ -280,6 +312,18 @@ function levelsOf(m) {
   return Array.isArray(m?.efforts) ? m.efforts.filter((e) => typeof e === "string" && e) : []
 }
 
+// CAP is the most output a model may be asked for where amr-link's catalog
+// (metadata.context_budget) says more than its API takes. Asking for more is
+// a 400 "Open Design: The request could not be completed." that names no
+// field, so nothing can lower it and retry. A client that names no limit
+// (Codex) is given the published one by magpie, so every turn would fail
+// (#827, Gitleonan, measured 2026-11-09 on two accounts): glm-5.3-flash took
+// 131072 and refused 132000 (one account took 232000), and gemini-3.8-flash
+// took 65536 and refused 65537 on both. The cap is applied here, not in
+// models.mjs: the live catalog's number overrides the seed's (withSeed), and
+// refresh-models.mjs writes the vendor's number back into the seed.
+const CAP = { "glm-5.3-flash": 131072, "gemini-3.8-flash": 65536 }
+
 // modelOf turns one model's facts — models.mjs's, or amr-link's catalog
 // read again — into the model magpie shows, as the provider's config has
 // it. A model reasons when it has levels, or else when the vendor calls it
@@ -305,7 +349,7 @@ function modelOf(id, m) {
     ...(rate && { rate }),
     limit: {
       context: Number.isFinite(context) && context > 0 ? context : 200_000,
-      output: Number.isFinite(output) && output > 0 ? output : 32_000,
+      output: Math.min(Number.isFinite(output) && output > 0 ? output : 32_000, CAP[id] ?? Infinity),
     },
     modalities: { input: ["text", ...input], output: ["text"] },
   }
@@ -366,16 +410,48 @@ function seed() {
   return Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, modelOf(id, m)]))
 }
 
+// withSeed() is a catalog entry's facts with the seed's filling what the
+// entry leaves out: a limit, a cost or capability word the catalog doesn't
+// give is the seed's, not modelOf's 200K/32K fallback or no word at all.
+//
+// input is the seed's and the catalog's together (#829). The seed's input is
+// what amr-link's own catalog listed when models.mjs was last refreshed
+// (refresh-models.mjs writes only what is listed), and DeepSeek V4.1 Flash
+// Eco took an image on amr-link while the live entry left image out. The two
+// mistakes don't cost the same: a kind listed that the model refuses is the
+// vendor's visible error, while a kind dropped is silent, as magpie hands the
+// image to another model for a description, at that account's cost, and
+// sends this one text. So a catalog that lists text only takes nothing away
+// from a kind the seed declares; refresh-models.mjs says when it does, and
+// removing a kind is a change to models.mjs. A model the seed doesn't know,
+// or a kind it doesn't declare, is the catalog's alone.
+function withSeed(id, f) {
+  const s = MODELS[id] ?? {}
+  const positive = (n) => Number.isFinite(n) && n > 0
+  const seedInput = Array.isArray(s.input) ? s.input.filter((x) => typeof x === "string" && x !== "text") : []
+  return {
+    ...f,
+    context: positive(f.context) ? f.context : s.context,
+    output: positive(f.output) ? f.output : s.output,
+    input: [...new Set([...seedInput, ...f.input])],
+    cost: f.cost || text(s.cost),
+    capability: f.capability || text(s.capability),
+    name: s.name ?? id,
+    efforts: s.efforts,
+  }
+}
+
 // modelsOf() shapes amr-link's live catalog as magpie's models: the list an
 // account's plan entitles it to right now, as provider.models gives them. A
-// model the seed knows keeps its name and its measured levels; the catalog
-// carries ids only.
+// model the seed knows keeps its name and its measured levels, which the
+// catalog doesn't carry, and what the seed says of it that the catalog
+// doesn't (withSeed).
 function modelsOf(catalog) {
   const out = {}
   for (const m of catalog?.data ?? []) {
     const id = text(m?.id)
     if (!id) continue
-    out[id] = servedOf(id, { ...facts(m), name: MODELS[id]?.name ?? id, efforts: MODELS[id]?.efforts })
+    out[id] = servedOf(id, withSeed(id, facts(m)))
   }
   return out
 }
@@ -448,7 +524,11 @@ export const OpenDesignAuthPlugin = async () => {
       const models = { ...seed(), ...(was.models ?? {}) }
       for (const [id, m] of Object.entries(models)) {
         const rate = RATES[id] === undefined ? undefined : "x" + RATES[id]
-        models[id] = { ...m, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
+        // a kept copy's limit is capped too: an earlier version wrote the
+        // catalog's 232000 for glm-5.3-flash, which amr-link refuses (CAP)
+        const out = Number(m.limit?.output)
+        const limit = CAP[id] && !(out > 0 && out <= CAP[id]) ? { limit: { ...(m.limit ?? {}), output: CAP[id] } } : {}
+        models[id] = { ...m, ...limit, api: { ...(m.api ?? {}), npm: wireOf(id) }, provider: { ...(m.provider ?? {}), npm: wireOf(id) }, ...(rate && { rate }) }
       }
       cfg.provider[ID] = {
         name: "Open Design",
@@ -480,7 +560,7 @@ export const OpenDesignAuthPlugin = async () => {
       loader: async (getAuth) => {
         const key = runtimeKeyOf(await getAuth().catch(() => null))
         if (!key) return {}
-        return { baseURL: LINK, apiKey: key }
+        return { baseURL: LINK, apiKey: key, fetch: signFor(key) }
       },
       methods: [
         {
@@ -518,4 +598,4 @@ export const OpenDesignAuthPlugin = async () => {
 
 // _internal is what the tests read through; magpie calls every exported
 // function as a plugin, so only the plugin itself is exported bare.
-export const _internal = { authOf, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }
+export const _internal = { authOf, signFor, allowances, controlKeyOf, credits, modelsOf, money, rateOf, runtimeKeyOf, said, startDevice, thePlan, usedPercent, waitForDevice, windowName, when, workspaceOf }

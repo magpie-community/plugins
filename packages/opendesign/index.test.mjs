@@ -284,6 +284,65 @@ test("a kept model's rate is re-declared, so a charge an earlier version wrote c
   expect(models["brand-new-9"].rate).toBe("x1")
 })
 
+// #827 (Gitleonan): amr-link's catalog publishes more output than its API
+// takes for two models, and asking for the published number is a 400 that
+// names no field. The catalog entries are the reporter's numbers; the caps
+// are what they measured on 2026-11-09 (131072 and 65536 taken, one more
+// refused).
+test("a model's output is capped where amr-link takes less than its catalog says (#827)", async () => {
+  const models = I.modelsOf({
+    data: [
+      { id: "glm-5.3-flash", architecture: { input_modalities: ["text", "image", "video"] }, metadata: { cost: "low", capability: "advanced", context_limit: 1048000, context_budget: 232000 } },
+      { id: "gemini-3.8-flash", architecture: { input_modalities: ["text"] }, metadata: { cost: "low", capability: "standard", context_limit: 1048576, context_budget: 264000 } },
+      // a catalog that says less than the cap is taken as it says
+      { id: "deepseek-v4.1-flash", metadata: { context_limit: 1048000, context_budget: 232000 } },
+    ],
+  })
+  expect(models["glm-5.3-flash"].limit).toEqual({ context: 1048000, output: 131072 })
+  expect(models["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(models["deepseek-v4.1-flash"].limit.output).toBe(232000)
+  expect(I.modelsOf({ data: [{ id: "glm-5.3-flash", metadata: { context_budget: 100000 } }] })["glm-5.3-flash"].limit.output).toBe(100000)
+
+  // the seed, and a copy an earlier version kept with the catalog's number
+  const cfg = { provider: { opendesign: { models: { "gemini-3.8-flash": { id: "gemini-3.8-flash", name: "gemini-3.8-flash", limit: { context: 1048576, output: 264000 } } } } } }
+  await (await OpenDesignAuthPlugin({})).config(cfg)
+  const served = cfg.provider.opendesign.models
+  expect(served["glm-5.3-flash"].limit.output).toBe(131072)
+  expect(served["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(served["deepseek-v4.1-flash"].limit.output).toBe(232000)
+})
+
+// #829 (exposir): the signed-in catalog's DeepSeek V4.1 Flash Eco entry
+// left image out, so it was served text-only and magpie sent another model's
+// description of the image instead, while amr-link took the image itself
+test("a kind the seed declares stays when the catalog leaves it out (#829)", () => {
+  const models = I.modelsOf({
+    data: [
+      // listed, text only
+      { id: "deepseek-v4.1-flash-eco", architecture: { input_modalities: ["text"] }, metadata: { cost: "low", capability: "advanced", context_limit: 1048000, context_budget: 232000 } },
+      // no architecture at all, nor limits or words
+      { id: "glm-5.3-flashx" },
+      // the catalog's own kinds add to the seed's
+      { id: "kimi-k2.7-code", architecture: { input_modalities: ["text", "image", "video"] } },
+      // a model the seed says takes text only stays text only
+      { id: "deepseek-v4-pro", architecture: { input_modalities: ["text"] } },
+      // a model the seed doesn't know is the catalog's alone
+      { id: "brand-new-9", architecture: { input_modalities: ["text"] } },
+    ],
+  })
+  const input = (id) => Object.entries(models[id].capabilities.input).filter(([, on]) => on).map(([k]) => k)
+  expect(asMagpieReads(models["deepseek-v4.1-flash-eco"]).image).toBe(true)
+  expect(input("deepseek-v4.1-flash-eco")).toEqual(["text", "image"])
+  expect(input("glm-5.3-flashx")).toEqual(["text", "image", "video"])
+  expect(input("kimi-k2.7-code")).toEqual(["text", "image", "video"])
+  expect(input("deepseek-v4-pro")).toEqual(["text"])
+  expect(input("brand-new-9")).toEqual(["text"])
+  // the limits and words the catalog leaves out are the seed's, not 200K/32K
+  expect(models["glm-5.3-flashx"].limit).toEqual({ context: 1000000, output: 232000 })
+  expect(models["glm-5.3-flashx"].rate).toBe("x2")
+  expect(models["brand-new-9"].limit).toEqual({ context: 200000, output: 32000 })
+})
+
 test("an empty catalog is no models", () => {
   expect(I.modelsOf({ data: [] })).toEqual({})
   expect(I.modelsOf(null)).toEqual({})
@@ -346,9 +405,46 @@ test("the plugin declares the provider and answers its methods", async () => {
 
 test("the loader hands the runtime key to the model plane", async () => {
   const hooks = await OpenDesignAuthPlugin({})
-  expect(await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" })))
-    .toEqual({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  const o = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  expect(o).toMatchObject({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  expect(typeof o.fetch).toBe("function")
   expect(await hooks.auth.loader(async () => null)).toEqual({})
+})
+
+// keyblues (plugins#888): amr-link serves every model on chat completions,
+// Responses and Anthropic's messages. The host signs a request with the
+// header of the package the model is declared on, so a model asked on
+// another API than its own must be signed for the API it is asked on.
+test("a model asked on any of the three APIs is signed as that API takes the key (plugins#888)", async () => {
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    const h = new Headers(init?.headers)
+    seen.push({ url: url instanceof Request ? url.url : String(url), auth: h.get("authorization"), xkey: h.get("x-api-key"), version: h.get("anthropic-version"), body: init?.body })
+    return new Response("{}", { status: 200 })
+  }
+  const hooks = await OpenDesignAuthPlugin({})
+  const { fetch: send } = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  const base = "https://amr-link.open-design.ai/v1"
+  // kimi-k2.7-code is declared on chat completions, so the host sent the
+  // Bearer header: asked on Anthropic's messages it goes with x-api-key
+  await send(base + "/messages", { method: "POST", headers: { authorization: "Bearer sk-amr-b", "content-type": "application/json" }, body: '{"model":"kimi-k2.7-code"}' })
+  await send(base + "/messages/count_tokens", { method: "POST", headers: { authorization: "Bearer sk-amr-b" }, body: "{}" })
+  // glm-5.3-flash is declared on Anthropic's messages: asked on chat
+  // completions or Responses it goes with the Bearer
+  await send(base + "/chat/completions", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2023-06-01" }, body: '{"model":"glm-5.3-flash"}' })
+  await send(new Request(base + "/responses", { method: "POST", headers: { "x-api-key": "sk-amr-b" }, body: "{}" }))
+  expect(seen.map(({ url, auth, xkey }) => [url.replace(base, ""), auth, xkey])).toEqual([
+    ["/messages", null, "sk-amr-b"],
+    ["/messages/count_tokens", null, "sk-amr-b"],
+    ["/chat/completions", "Bearer sk-amr-b", null],
+    ["/responses", "Bearer sk-amr-b", null],
+  ])
+  // Anthropic's messages carry a version, the client's own when it sent one
+  expect(seen[0].version).toBe("2023-06-01")
+  expect(seen[0].body).toBe('{"model":"kimi-k2.7-code"}')
+  // the declared API's own requests go as they did
+  await send(base + "/messages", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2024-01-01" }, body: "{}" })
+  expect([seen[4].auth, seen[4].xkey, seen[4].version]).toEqual([null, "sk-amr-b", "2024-01-01"])
 })
 
 test("the account's models are read at its own key", async () => {

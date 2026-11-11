@@ -35,6 +35,8 @@ const turns = new Map()
 const latest = new Map()
 // last notification by conversation, for the cooldown
 const sentAt = new Map()
+// last sign-in push by provider, account and state, for its cooldown
+const accountSentAt = new Map()
 const MAX_TURNS = 500
 const STALE = 24 * 3600 * 1000
 // a conversation unseen this long no longer makes a new one nested: the agent
@@ -49,6 +51,7 @@ let cancel = (t) => clearTimeout(t)
 let pending = new Set()
 
 export const defaults = {
+  enabled: true,
   channels: [],
   minMinutes: 3,
   cooldownSeconds: 30,
@@ -59,11 +62,23 @@ export const defaults = {
   includeText: false,
   maxTextLength: 200,
   lang: "en",
+  accounts: true,
+  accountCooldownMinutes: 60,
 }
 
 const words = {
-  en: { done: "done", failed: "failed", took: "took", model: "Model", h: "h", min: "min", s: "s" },
-  zh: { done: "完成", failed: "失败", took: "用时", model: "模型", h: "小时", min: "分钟", s: "秒" },
+  en: {
+    done: "done", failed: "failed", took: "took", model: "Model", h: "h", min: "min", s: "s",
+    signedOut: (p, a) => `${p} account ${a} signed out`,
+    ending: (p, a, d) => `${p} account ${a}: sign-in ends in ${d} day${d === 1 ? "" : "s"}`,
+    signInAgain: "Sign in again in magpie.",
+  },
+  zh: {
+    done: "完成", failed: "失败", took: "用时", model: "模型", h: "小时", min: "分钟", s: "秒",
+    signedOut: (p, a) => `${p} 账号 ${a} 已登出`,
+    ending: (p, a, d) => `${p} 账号 ${a} 的登录将在 ${d} 天后失效`,
+    signInAgain: "请在 magpie 中重新登录。",
+  },
 }
 
 const names = {
@@ -79,6 +94,11 @@ export function options(raw) {
   o.cooldownSeconds = Math.max(0, Number(o.cooldownSeconds) || 0)
   o.failureHoldSeconds = Math.max(0, Math.min(600, Number(o.failureHoldSeconds ?? defaults.failureHoldSeconds) || 0))
   o.maxTextLength = Math.max(0, Math.min(2000, Number(o.maxTextLength) || 0))
+  o.enabled = o.enabled !== false
+  // the page's switch: off sends nothing, whatever the channels
+  if (!o.enabled) o.channels = []
+  o.accounts = o.accounts !== false
+  o.accountCooldownMinutes = Math.max(0, Number(o.accountCooldownMinutes ?? defaults.accountCooldownMinutes) || 0)
   if (!words[o.lang]) o.lang = "en"
   return o
 }
@@ -234,16 +254,54 @@ export function onResponse(reply, ctx) {
   return
 }
 
+// onSignIn: magpie (0.1.3443 and newer) tells its hooks when a
+// subscription account has to be signed in again (a revoked or refused
+// sign-in), or when a Claude sign-in ends within three days. magpie says
+// each once until the account works again; the cooldown keeps an account
+// that flaps between the two from pushing every few minutes.
+export function onSignIn(ev, ctx) {
+  try {
+    const o = options(ctx?.options)
+    if (!o.accounts || !o.channels.length || !ev || typeof ev !== "object") return
+    if (ev.state !== "signed-out" && ev.state !== "ending") return
+    const key = `signin:${ev.provider ?? ""}|${String(ev.account ?? "").toLowerCase()}|${ev.state}`
+    if (now() - (accountSentAt.get(key) ?? -Infinity) < o.accountCooldownMinutes * 60_000) return
+    accountSentAt.set(key, now())
+    for (const [k, v] of accountSentAt) if (now() - v > STALE) accountSentAt.delete(k)
+    dispatch(o, signInMessage(ev, o))
+  } catch {}
+}
+
+export function signInMessage(ev, o) {
+  const w = words[o.lang]
+  const provider = String(ev.providerName || ev.provider || "magpie")
+  const account = String(ev.account ?? "")
+  let days = 0
+  if (ev.state === "ending") {
+    const at = Date.parse(ev.endsAt ?? "")
+    days = Number.isFinite(at) ? Math.max(1, Math.ceil((at - now()) / 86_400_000)) : 1
+  }
+  const title = `⚠️ ${days ? w.ending(provider, account, days) : w.signedOut(provider, account)}`
+  return {
+    title, body: w.signInAgain, ok: false, tag: "warning",
+    event: { kind: ev.state, provider: ev.provider ?? "", account, ...(ev.endsAt ? { endsAt: ev.endsAt } : {}) },
+  }
+}
+
+function dispatch(o, m) {
+  const job = Promise.all(o.channels.map((c) => send(c, m)))
+    .catch(() => {})
+    .finally(() => pending.delete(job))
+  pending.add(job)
+}
+
 function notify(key, turn, t, ok, text, o) {
   const ms = t - turn.start
   if (ms < o.minMinutes * 60_000) return
   if (now() - (sentAt.get(key) ?? -Infinity) < o.cooldownSeconds * 1000) return
   sentAt.set(key, now())
   const m = message(turn, ms, ok, text, o)
-  const job = Promise.all(o.channels.map((c) => send(c, m)))
-    .catch(() => {})
-    .finally(() => pending.delete(job))
-  pending.add(job)
+  dispatch(o, m)
 }
 
 export function duration(ms, w) {
@@ -276,7 +334,7 @@ export function message(turn, ms, ok, text, o) {
 // sends in flight
 export function reset(clock, timers) {
   for (const k of [...turns.keys()]) forget(k)
-  latest.clear(); sentAt.clear(); pending = new Set()
+  latest.clear(); sentAt.clear(); accountSentAt.clear(); pending = new Set()
   now = clock ?? (() => Date.now())
   later = timers?.later ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t })
   cancel = timers?.cancel ?? ((t) => clearTimeout(t))

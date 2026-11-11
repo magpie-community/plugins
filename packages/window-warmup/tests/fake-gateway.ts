@@ -13,7 +13,12 @@ export interface FakeChatReply {
   body?: unknown;
   /** 延迟应答毫秒数，用于模拟超时与外部取消 */
   delayMs?: number;
-  /** 模拟 2xx 响应体不完整：truncate=半截 JSON；reset=流中途断开（客户端收到 ECONNRESET） */
+  /**
+   * 模拟 2xx 响应体不完整：truncate=半截 JSON；reset=请求已收到、应答前网关掉线
+   * （连接被强制关闭，客户端收到 ECONNRESET；此后假网关不再应答）。
+   * reset 不用 ReadableStream 的 controller.error：Bun.serve 会把它当未处理错误打印
+   * （error 回调收不到），测试全绿时日志里也出现「error: 连接中断」（#902）。
+   */
   breakBody?: "truncate" | "reset";
 }
 
@@ -105,12 +110,15 @@ export function fakeGateway(opts: FakeGatewayOpts = {}): FakeGateway {
         const conf =
           typeof opts.chat === "function" ? await opts.chat(entry.body, req) : (opts.chat ?? {});
         if (conf.delayMs) await Bun.sleep(conf.delayMs);
+        if (conf.breakBody === "reset") {
+          queueMicrotask(() => server.stop(true));
+          return new Promise<Response>(() => {});
+        }
         if (conf.breakBody) {
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(new TextEncoder().encode('{"id":"chatcmpl-fake"'));
-              if (conf.breakBody === "reset") controller.error(new Error("连接中断"));
-              else controller.close();
+              controller.close();
             },
           });
           return new Response(stream, {

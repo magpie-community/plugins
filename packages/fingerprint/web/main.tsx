@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowClockwise,
+  ArrowSquareOut,
   CaretDown,
+  Check,
   CheckCircle,
   CircleNotch,
   Clipboard,
   ClockCounterClockwise,
   DownloadSimple,
+  GithubLogo,
   Lightning,
   List,
   MagnifyingGlass,
@@ -49,6 +52,7 @@ type Text = {
   locale: Locale;
   detect: string;
   history: string;
+  about: string;
   settings: string;
   ready: string;
   offline: string;
@@ -85,6 +89,7 @@ const zh: Text = {
   locale: 'zh-Hans',
   detect: '指纹检测',
   history: '检测历史',
+  about: '关于',
   settings: '运行设置',
   ready: '服务已连接',
   offline: '服务离线',
@@ -121,6 +126,7 @@ const zhHant: Text = {
   locale: 'zh-Hant',
   detect: '指紋檢測',
   history: '檢測歷史',
+  about: '關於',
   settings: '執行設定',
   ready: '服務已連線',
   offline: '服務離線',
@@ -157,6 +163,7 @@ const en: Text = {
   locale: 'en',
   detect: 'Fingerprint',
   history: 'History',
+  about: 'About',
   settings: 'Run settings',
   ready: 'Service connected',
   offline: 'Service offline',
@@ -240,7 +247,7 @@ function App() {
   });
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [error, setError] = useState('');
-  const [section, setSection] = useState<'detect' | 'history'>('detect');
+  const [section, setSection] = useState<'detect' | 'history' | 'about'>('detect');
   const [job, setJob] = useState<Job | null>(null);
   const [history, setHistory] = useState<Job[]>([]);
   const [query, setQuery] = useState('');
@@ -454,26 +461,25 @@ function App() {
       setStarting(false);
     }
   };
-  const cancel = async () => {
-    if (!job) return;
+  const cancel = async (id: string) => {
     try {
-      const x = await api<Job>(`api/jobs/${job.id}/cancel`, { method: 'POST' });
-      setJob(x);
+      const x = await api<Job>(`api/jobs/${id}/cancel`, { method: 'POST' });
+      setJob((current) => (current?.id === id ? x : current));
+      setHistory((list) => list.map((item) => (item.id === id ? x : item)));
     } catch (e) {
       setError(String(e));
     }
   };
-  const download = async () => {
-    if (!job) return;
+  const download = async (id: string) => {
     try {
-      const r = await fetch(apiUrl(`api/jobs/${job.id}/export`), {
+      const r = await fetch(apiUrl(`api/jobs/${id}/export`), {
         headers: token() ? { Authorization: `Bearer ${token()}` } : {},
       });
       if (!r.ok) throw new Error('Export failed');
       const blob = await r.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `fingerprint-${job.id}.json`;
+      a.download = `fingerprint-${id}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } catch (e) {
@@ -500,14 +506,14 @@ function App() {
           onKeyDown={(e) => {
             if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
               e.preventDefault();
+              const tabs = ['detect', 'history', 'about'] as const;
+              const index = tabs.indexOf(section);
               const next =
                 e.key === 'Home'
-                  ? 'detect'
+                  ? tabs[0]
                   : e.key === 'End'
-                    ? 'history'
-                    : section === 'detect'
-                      ? 'history'
-                      : 'detect';
+                    ? tabs[2]
+                    : tabs[(index + (e.key === 'ArrowRight' ? 1 : 2)) % tabs.length];
               setSection(next);
               document.getElementById(`tab-${next}`)?.focus();
             }
@@ -535,6 +541,17 @@ function App() {
           >
             {t.history}
             {history.length > 0 && <span className="tab-count">{history.length}</span>}
+          </button>
+          <button
+            className={`opt ${section === 'about' ? 'on' : ''}`}
+            id="tab-about"
+            role="tab"
+            aria-selected={section === 'about'}
+            aria-controls="fingerprint-panel"
+            tabIndex={section === 'about' ? 0 : -1}
+            onClick={() => setSection('about')}
+          >
+            {t.about}
           </button>
         </nav>
         <div className="page-status">
@@ -613,13 +630,12 @@ function App() {
           <History
             history={history}
             t={t}
-            onSelect={(j) => {
-              setJob(j);
-              setExpanded(j.results[0]?.id || null);
-              setSection('detect');
-            }}
+            onCancel={cancel}
+            onDownload={download}
             onDelete={deleteJob}
           />
+        ) : section === 'about' ? (
+          <About t={t} />
         ) : (
           <>
             <div className="intro">
@@ -955,8 +971,8 @@ function App() {
                 t={t}
                 expanded={expanded}
                 setExpanded={setExpanded}
-                onCancel={cancel}
-                onDownload={download}
+                onCancel={() => cancel(job.id)}
+                onDownload={() => download(job.id)}
               />
             )}
           </>
@@ -1284,14 +1300,18 @@ function ResultRow({
 function History({
   history,
   t,
-  onSelect,
+  onCancel,
+  onDownload,
   onDelete,
 }: {
   history: Job[];
   t: Text;
-  onSelect: (j: Job) => void;
+  onCancel: (id: string) => void;
+  onDownload: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <div className="history-page">
       <div className="history-tools">
@@ -1307,31 +1327,59 @@ function History({
       <div className="list history-list">
         {history.length ? (
           history.map((j) => (
-            <div className="history-row" key={j.id}>
-              <button onClick={() => onSelect(j)}>
-                <span className={`history-state ${j.state}`} />
-                <span>
-                  <strong>
-                    {j.config.targets[0]?.model || j.id.slice(0, 12)}
-                    {j.config.targets.length > 1 ? ` +${j.config.targets.length - 1}` : ''}
-                  </strong>
-                  <small>
-                    {new Date(j.createdAt).toLocaleString()} · {j.config.targets.length}{' '}
-                    {localize(t, '个模型', '個模型', 'models')} · {j.id.slice(0, 8)}
-                  </small>
+            <div className="history-item" key={j.id}>
+              <div className="history-row">
+                <button
+                  aria-expanded={open === j.id}
+                  aria-controls={`history-${j.id}`}
+                  onClick={() => {
+                    setOpen(open === j.id ? null : j.id);
+                    setExpanded(j.results[0]?.id || null);
+                  }}
+                >
+                  <span className={`history-state ${j.state}`} />
+                  <span>
+                    <strong>
+                      {j.config.targets[0]?.model || j.id.slice(0, 12)}
+                      {j.config.targets.length > 1 ? ` +${j.config.targets.length - 1}` : ''}
+                    </strong>
+                    <small>
+                      {new Date(j.createdAt).toLocaleString()} · {j.config.targets.length}{' '}
+                      {localize(t, '个模型', '個模型', 'models')} · {j.id.slice(0, 8)}
+                    </small>
+                  </span>
+                  <CaretDown
+                    className={open === j.id ? 'history-caret open' : 'history-caret'}
+                    size={15}
+                  />
+                </button>
+                <span className={`status ${j.state}`}>
+                  {j.demo ? t.demo : stateLabel(t, j.state)}
                 </span>
-              </button>
-              <span className={`status ${j.state}`}>
-                {j.demo ? t.demo : stateLabel(t, j.state)}
-              </span>
-              <button
-                className="icon icon-button danger-icon"
-                title={localize(t, '删除', '刪除', 'Delete')}
-                aria-label={`${localize(t, '删除检测记录', '刪除檢測紀錄', 'Delete run')} ${j.id.slice(0, 8)}`}
-                onClick={() => onDelete(j.id)}
-              >
-                <Trash size={17} />
-              </button>
+                <button
+                  className="icon icon-button danger-icon"
+                  title={localize(t, '删除', '刪除', 'Delete')}
+                  aria-label={`${localize(t, '删除检测记录', '刪除檢測紀錄', 'Delete run')} ${j.id.slice(0, 8)}`}
+                  onClick={() => {
+                    if (open === j.id) setOpen(null);
+                    onDelete(j.id);
+                  }}
+                >
+                  <Trash size={17} />
+                </button>
+              </div>
+              {open === j.id && (
+                <div className="history-detail" id={`history-${j.id}`}>
+                  <JobView
+                    job={j}
+                    t={t}
+                    expanded={expanded}
+                    setExpanded={setExpanded}
+                    onCancel={() => onCancel(j.id)}
+                    onDownload={() => onDownload(j.id)}
+                  />
+                </div>
+              )}
             </div>
           ))
         ) : (
@@ -1341,6 +1389,114 @@ function History({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function About({ t }: { t: Text }) {
+  const [copied, setCopied] = useState('');
+  const [copyFailed, setCopyFailed] = useState('');
+  const links = [
+    {
+      label: localize(t, '项目仓库', '專案儲存庫', 'Project repository'),
+      url: 'https://github.com/KaranocaVe/magpie-fingerprint',
+    },
+    {
+      label: localize(t, '上游指纹项目', '上游指紋專案', 'Upstream fingerprint project'),
+      url: 'https://github.com/Ikaleio/lm-detector',
+    },
+  ];
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(''), 2500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const copy = async (url: string, index: number) => {
+    setCopyFailed('');
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+    } catch {
+      const address = document.getElementById(`about-address-${index}`);
+      const selection = window.getSelection();
+      if (address && selection) {
+        const range = document.createRange();
+        range.selectNodeContents(address);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      let success = false;
+      try {
+        success = document.execCommand('copy');
+      } catch {
+        // Leave the address selected so it can be copied manually.
+      }
+      if (success) {
+        selection?.removeAllRanges();
+        setCopied(url);
+      } else {
+        setCopied('');
+        setCopyFailed(url);
+      }
+    }
+  };
+  return (
+    <div className="about-page">
+      <header className="about-heading">
+        <h2>Fingerprint</h2>
+        <p>
+          {localize(t, '模型响应指纹检测', '模型回應指紋檢測', 'Model response fingerprinting')}
+        </p>
+      </header>
+      <ul className="about-links">
+        {links.map((link, index) => (
+          <li className="about-link" key={link.url}>
+            <GithubLogo className="about-github" size={20} aria-hidden="true" />
+            <div className="about-link-content">
+              <strong>{link.label}</strong>
+              {embedded ? (
+                <span className="about-url" id={`about-address-${index}`}>
+                  {link.url}
+                </span>
+              ) : (
+                <a className="about-url" href={link.url} target="_blank" rel="noopener noreferrer">
+                  {link.url}
+                  <ArrowSquareOut size={14} aria-hidden="true" />
+                </a>
+              )}
+              {embedded && copyFailed === link.url && (
+                <span className="about-copy-error" role="status">
+                  {localize(t, '请复制选中的地址', '請複製選取的網址', 'Copy the selected address')}
+                </span>
+              )}
+            </div>
+            {embedded && (
+              <div className="about-copy">
+                <button
+                  className="icon icon-button"
+                  onClick={() => void copy(link.url, index)}
+                  aria-label={localize(
+                    t,
+                    `复制${link.label}地址`,
+                    `複製${link.label}網址`,
+                    `Copy ${link.label} URL`,
+                  )}
+                  title={
+                    copied === link.url
+                      ? localize(t, '已复制', '已複製', 'Copied')
+                      : localize(t, '复制地址', '複製網址', 'Copy URL')
+                  }
+                >
+                  {copied === link.url ? <Check size={16} /> : <Clipboard size={16} />}
+                </button>
+                <span className="about-copy-status" role="status">
+                  {copied === link.url && localize(t, '已复制', '已複製', 'Copied')}
+                </span>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

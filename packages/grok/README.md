@@ -17,6 +17,16 @@ run, such as a container without curl, put the binary in a folder of your
 own and set `GROK_BIN_DIR` to it. magpie installs Grok Build itself, as
 the installer does, before a sign-in that needs it.
 
+## Images and speech
+
+Images in a request (Anthropic image blocks, OpenAI `image_url`, Responses
+`input_image`) go to Grok as sent, and its models take them. Speech to text
+is the one Grok Build's voice dictation uses: magpie's
+`/v1/audio/transcriptions` (model `grok/grok-4.7`, any of the account's
+models) is sent on to xAI's `api.x.ai/v1/stt` with the account's sign-in.
+`language` is passed on; `json`, `text` and `verbose_json` are answered, and
+translations are refused.
+
 ## Sign in
 
 - **Sign in with Grok Build (device code)** runs `grok login --device-auth`
@@ -68,6 +78,17 @@ it, then reads it again:
   and sending it a message renews it. For a home of the plugin's (a second
   account, an imported one), opening Grok Build doesn't touch it: add the
   account in magpie again.
+- Not every 401 is Grok judging the token. A token it doesn't take is
+  answered at once with `Invalid or expired credentials (…)`. Another
+  401, such as `Authentication required` after a minute or more, on a
+  token the CLI left as it was and not yet ended, has passed by itself
+  within minutes. Unless the CLI failed renewing it, that is a 503 with
+  `Retry-After: 60` that keeps the sign-in and says how long Grok took:
+  magpie rests the account a moment and asks the next one. It never says
+  to sign in again.
+- A request, model list or usage read turned away waits on the CLI's
+  renewal 15 seconds at most. The run goes on, and the next one to ask
+  takes what it gave.
 - When the CLI no longer holds a sign-in in that home (`grok logout`),
   the account has to be signed in again. When it couldn't renew a token
   that has ended, magpie tries again later.
@@ -96,6 +117,18 @@ API (`@ai-sdk/openai`), signed as the CLI signs them:
 - `x-grok-doom-loop-check: 1024` and `x-grok-exact-repetition-check: 64`
   on a Responses request, as Grok Build sends them: the proxy then stops a
   reply that repeats itself after ~1K tokens instead of letting it run on.
+- A Responses stream that dies before its first byte (the connection
+  reset, with nothing sent yet) is asked again, up to three times. The
+  retry goes out before the answer is returned, so a 429 or a 401 comes
+  back as itself. Once a byte has arrived, `response.created` and
+  reasoning included, it is passed on at once. A later cut is not asked
+  again and not rewritten: the stream ends, and magpie 0.1.3298 or newer
+  closes it as `response.failed` with `created_at` and `sequence_number`.
+  The frame this plugin used to write had `created_at` and still no
+  `sequence_number`, so Grok Build reported
+  `missing field sequence_number`. An upstream `response.failed`,
+  `error` or `response.incomplete` is passed on unchanged. Cancelling
+  the turn stops the read and is not asked again.
 
 The backend turns away some of what a request may carry, so the plugin
 leaves these out:

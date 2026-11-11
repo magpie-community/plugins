@@ -1501,7 +1501,9 @@ function qoderBody(chat, m, named = "", task, site) {
   const sys = { type: "text", text: sysText }
   const budget = chat.max_completion_tokens || chat.max_tokens || 0
   const [thinking, effort] = effortFor(chat.reasoning_effort, m, typeof budget === "number" ? budget : 0)
-  const params = { enable_thinking: thinking, max_tokens: chat.max_completion_tokens || chat.max_tokens || 32000 }
+  const asked = chat.max_completion_tokens || chat.max_tokens || 32000
+  const cap = outputCap(m)
+  const params = { enable_thinking: thinking, max_tokens: cap > 0 && asked > cap ? cap : asked }
   if (effort) params.reasoning_effort = effort
   const window = windowFor(chat, m, params.max_tokens)
   if (window > 0) params.context_length = window
@@ -1528,6 +1530,42 @@ function qoderBody(chat, m, named = "", task, site) {
       function: { name: t.function.name, description: t.function.description ?? "", parameters: typedUnions(t.function.parameters) ?? { type: "object", properties: {} } },
     }))
   return body
+}
+
+// OUTPUT_CAPS are the largest max_tokens a model takes where its listing
+// entry names none: Qoder CN's QoDuck (lmodel) answers a larger one with a
+// 400 "Error in upstream response: Range of max_tokens should be [1,
+// 131072]", whatever the account (plugins#822, Gruu6y). A client asking
+// DeepSeek's 384K output was refused on every try, and each refusal rested
+// another account.
+const OUTPUT_CAPS = { lmodel: 131072 }
+// LEARNED_CAPS are the ceilings Qoder named in such a refusal, by model
+// key, for a model whose entry and OUTPUT_CAPS give none or a wrong one: the
+// refused request is asked again once at that ceiling, and later ones are
+// sent it from the start.
+const LEARNED_CAPS = new Map()
+// MAX_TOKENS_RANGE is that refusal's own words.
+const MAX_TOKENS_RANGE = /\brange of max_tokens should be \[\s*(\d+)\s*,\s*(\d+)\s*\]/i
+
+// outputCap is the largest max_tokens model m takes, 0 when none is known:
+// what a refusal named, which is Qoder's own word, else its listing
+// entry's own (max_output_tokens), else OUTPUT_CAPS. A request's max_tokens is never sent above it, and one
+// asked lower is sent as asked.
+function outputCap(m) {
+  const n = (v) => (Number.isInteger(v) && v > 0 ? v : 0)
+  const raw = m?.config ?? {}
+  return n(LEARNED_CAPS.get(m?.key)) || n(raw.max_output_tokens) || n(raw.maxOutputTokens) || n(OUTPUT_CAPS[m?.key])
+}
+
+// reclamp is whether the request body was refused for a max_tokens above
+// model m's ceiling (failure's maxTokens), lowered to it if so: the
+// ceiling is remembered for the model, and the caller asks again once.
+function reclamp(f, body, m) {
+  const cap = f?.maxTokens
+  if (!(cap > 0) || !(body?.parameters?.max_tokens > cap)) return false
+  if (m?.key) LEARNED_CAPS.set(m.key, cap)
+  body.parameters.max_tokens = cap
+  return true
 }
 
 // failure is the status and message for a Qoder failure. Qoder's own code
@@ -1598,6 +1636,11 @@ function failure(status, text) {
   }
   if (QUOTA_CODES.has(code)) return { status: 429, message: "usage limit reached: " + msg, signIn: "" }
   if (REQUEST_CODES.has(code)) return { status: 400, message: `Qoder refused the request (${code}): ${msg}`, signIn: "" }
+  // a max_tokens above the model's ceiling, said behind "Error in upstream
+  // response": the request's fault on every account, so a 400 that rests
+  // none, with the ceiling for ask to send again at (plugins#822)
+  const range = MAX_TOKENS_RANGE.exec(msg)
+  if (range) return { status: 400, message: `Qoder refused the request's max_tokens: ${msg}`, signIn: "", maxTokens: Number(range[2]) }
   if (UPSTREAM_FAILED.test(msg)) return { status: 502, message: msg, signIn: "" }
   // a refused chat is the built-in's 401, which never marked the account
   // lapsed: only a refused refresh did (errorResponse says kept). Qoder's
@@ -2181,6 +2224,7 @@ async function* events(body, tools = []) {
   const a = new Splitter(tools)
   let index = -1 // the tool call being given
   const native = new Map() // upstream index -> call and its output index
+  const begun = [] // every native call, one an index has moved past too
   // one piece of the split text as an event: a call, text, or a call that
   // can't be read, which ends the turn as a 502
   const piece = (f) =>
@@ -2238,9 +2282,14 @@ async function* events(body, tools = []) {
       const args = tc.function?.arguments ?? ""
       if (!tc.id && !name && !args) continue
       let call = native.get(i)
-      if (!call) {
+      // A new id at an index already in use is a new call: Qoder Ultimate
+      // has sent two calls at index 0, and the second's arguments ran
+      // into the first's as {"a"}{"b"} (plugins#930). No id, or the same
+      // one, is the open call going on.
+      if (!call || (tc.id && call.id && tc.id !== call.id)) {
         call = { id: "", args: "" }
         native.set(i, call)
+        begun.push(call)
       }
       if (tc.id) call.id = tc.id
       if (call.index === undefined) {
@@ -2288,7 +2337,7 @@ async function* events(body, tools = []) {
   // text, reasoning and named calls already given are kept: qoder-cn's
   // qfmodel did this now and then, and the whole turn failed with an
   // error the client didn't retry (plugins#579).
-  const nameless = [...native.values()].filter((call) => call.index === undefined).length
+  const nameless = begun.filter((call) => call.index === undefined).length
   if (nameless && !said) {
     yield { error: { status: 502, message: NAMELESS, nameless: true } }
     return
@@ -2564,10 +2613,16 @@ async function campaignRuntime({ home = homedir(), platform = process.platform, 
   const cache = join(config, ".bin")
   const entries = await readdir(cache, { withFileTypes: true }).catch(() => [])
   const found = []
+  // qodercli 1.1.66 cached it on Windows as a folder umid-win32-<arch>-<hash>
+  // holding runtime-info.exe and sgsdk.dll; qodercli 1.21.2 caches the file
+  // itself, runtime-info-win32-<arch>-<hash>.exe, beside sgsdk.dll in .bin,
+  // as elsewhere (plugins#879). Either is taken, the newest first.
   for (const d of entries) {
     let path
-    if (platform === "win32") {
-      if (d.isDirectory() && d.name.startsWith(`umid-win32-${arch}-`)) path = join(cache, d.name, name)
+    if (platform === "win32" && d.isDirectory()) {
+      if (d.name.startsWith(`umid-win32-${arch}-`)) path = join(cache, d.name, name)
+    } else if (platform === "win32") {
+      if (d.isFile() && d.name.startsWith(`runtime-info-win32-${arch}-`) && d.name.toLowerCase().endsWith(".exe")) path = join(cache, d.name)
     } else if (d.isFile() && d.name.startsWith(`runtime-info-${platform}-${arch}-`) && !d.name.endsWith(".tmp")) {
       path = join(cache, d.name)
     }
@@ -2767,6 +2822,31 @@ function when(v) {
 // they have left together: a plan used up beside add-on credits is no
 // account used up (magpie-community/plugins#454).
 const SPENT_IN_TURN = new Set(["Credits", "Add-on credits", "Shared credits"])
+
+// spentOf is the credits a usage envelope says the account has used of
+// what it has ("800 / 800 credits") when the pools spent in turn
+// (SPENT_IN_TURN) have none left together, and "" when they have some, or
+// when it says no pool at all. A free account's pools of 0 have none.
+function spentOf(env) {
+  const u = env?.qoderUsage
+  if (env?.displayMode !== "qoder" || !u || typeof u !== "object" || Array.isArray(u)) return ""
+  let used = 0
+  let total = 0
+  let pools = 0
+  for (const [a, b] of [["userQuota", "user_quota"], ["addOnQuota", "add_on_quota"], ["orgResourcePackage", "org_resource_package"]]) {
+    const p = u[a] !== undefined ? u[a] : u[b]
+    if (p === null || typeof p !== "object" || Array.isArray(p)) continue
+    const t = p.total ?? p.cap
+    if (typeof t !== "number" || !Number.isFinite(t) || t < 0) continue
+    const n = typeof p.used === "number" ? p.used : typeof p.remaining === "number" ? t - p.remaining : NaN
+    if (t > 0 && !Number.isFinite(n)) return ""
+    pools++
+    total += t
+    used += t > 0 ? Math.min(Math.max(n, 0), t) : 0
+  }
+  if (!pools || used < total) return ""
+  return `${gfmt(used)} / ${gfmt(total)} credits`
+}
 
 // parseUsage is the plan and each pool of credits the envelope tells. When
 // more than one of the pools spent in turn holds credits, "Total credits"
@@ -3209,11 +3289,16 @@ const makePlugin = (site) => async ({ client }) => {
     if (!l || again) {
       const s = siteOf(site, cred)
       const listing = await fetchListing(s, cred)
+      const off = new Set()
       for (const m of s.modelScene ? (Array.isArray(listing?.[s.modelScene]) ? listing[s.modelScene] : []) : sceneModels(listing)) {
         const k = String(m?.key ?? "").trim()
         if (k) served.add(k)
+        if (k && !m.enable) off.add(k)
       }
       l = modelInfos(listing, s)
+      // the keys this listing names and has off (ask tells a model off for
+      // the credits apart by them)
+      l.off = off
       if (!s.modelScene) l.freeView = freeView(sceneModels(listing))
       listings.set(key, l)
     }
@@ -3307,16 +3392,37 @@ const makePlugin = (site) => async ({ client }) => {
         const env = await fetchUsage(siteOf(site, cred), cred.access)
         return { ...(await spareFree(cred, parseUsage(env))), signIn, ...who }
       }
-      let env
-      try {
-        env = await fetchUsage(siteOf(site, cred), cred.deviceToken)
-      } catch (e) {
-        if (!(e instanceof UsageStatus) || (e.status !== 401 && e.status !== 403)) throw e
-        env = await fetchUsage(siteOf(site, cred), await deviceToken(getAuth, cred.deviceToken))
-      }
-      return { ...(await spareFree(cred, parseUsage(env))), signIn, ...who }
+      return { ...(await spareFree(cred, parseUsage(await usageEnv(getAuth, cred)))), signIn, ...who }
     } catch (e) {
       return { error: e?.message ?? String(e), signIn: e?.expired ? "expired" : signIn }
+    }
+  }
+
+  // usageEnv is the account's usage envelope on its device token, rotated
+  // once when refused, as usage reads it
+  const usageEnv = async (getAuth, cred) => {
+    try {
+      return await fetchUsage(siteOf(site, cred), cred.deviceToken)
+    } catch (e) {
+      if (!(e instanceof UsageStatus) || (e.status !== 401 && e.status !== 403)) throw e
+      return fetchUsage(siteOf(site, cred), await deviceToken(getAuth, cred.deviceToken))
+    }
+  }
+
+  // creditsSpent is the credits the account has used of what it has
+  // ("800 / 800 credits") when its usage says none are left (spentOf), and
+  // "" when some are, or when it can't be read. Qoder and Qoder CN only:
+  // QwenWork reads its usage elsewhere. A PAT account's is read on its job
+  // token, as usage reads it.
+  const creditsSpent = async (getAuth) => {
+    if (site.usagePath) return ""
+    try {
+      const cred = await fresh(getAuth)
+      if (cred.lingma) return ""
+      if (cred.patAuth && !cred.deviceToken) return spentOf(await fetchUsage(siteOf(site, cred), cred.access))
+      return spentOf(await usageEnv(getAuth, cred))
+    } catch {
+      return ""
     }
   }
 
@@ -3458,6 +3564,7 @@ const makePlugin = (site) => async ({ client }) => {
     let m
     let relogged = false
     let renamed = false
+    let reclamped = false
     const listed = (ms) => ms.find((x) => x.key === chat.model)
     try {
       m = listed(await models(cred)) ?? listed(await models(cred, true))
@@ -3470,6 +3577,26 @@ const makePlugin = (site) => async ({ client }) => {
       // could be refused and renew it. An id Qoder has never served is said
       // unknown at once, with no renewal spent on it.
       if (!m && getAuth && knows(chat.model)) {
+        // Off because the credits are used up (plugins#880): on an
+        // international personal_professional_trial account Qoder's listing
+        // had dfmodel off once the 800 credits were spent, and on again
+        // when the daily credits came back. That is the account's quota,
+        // not the request's fault, so it is said as Qoder's own quota codes
+        // are (429 usage limit reached), which a routing group fails over
+        // on and rests the account for. Only a model the live listing names
+        // and has off, on an account whose usage read says no credits are
+        // left; a usage that can't be read says nothing, and the model goes
+        // on to the renewal and the 400 below as before.
+        if ((await models(cred)).off?.has(chat.model)) {
+          const spent = await creditsSpent(getAuth)
+          if (spent) {
+            return errorResponse({
+              status: 429,
+              message: `usage limit reached: the account's credits are used up (${spent}), and Qoder lists "${chat.model}" off for it until they refresh`,
+              signIn: "",
+            })
+          }
+        }
         relogged = true
         const next = await relogin(getAuth, cred.access)
         if (next) {
@@ -3552,6 +3679,11 @@ const makePlugin = (site) => async ({ client }) => {
           renamed = true
           continue
         }
+        // a max_tokens above the model's ceiling: asked again once at it
+        if (!reclamped && reclamp(f, body, m)) {
+          reclamped = true
+          continue
+        }
         // an answered call moves its task on, as Qoder's client moves it
         if (!f) task.answered = true
         // with another account, provider or group member after this one
@@ -3592,6 +3724,7 @@ const makePlugin = (site) => async ({ client }) => {
     const task = taskOf(sessionOf(chat, named), chat)
     const tools = chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : []
     let relogged = false
+    let reclamped = false
     for (let i = 0; ; ) {
       const m = order[i]
       const s = siteOf(site, cred)
@@ -3629,6 +3762,10 @@ const makePlugin = (site) => async ({ client }) => {
           }
         }
         return errorResponse({ status: 401, message: `the sign-in lapsed — open Qoder CN IDE so it signs in again (${String(f.message).slice(0, 300)})` })
+      }
+      if (!reclamped && reclamp(f, body, m)) {
+        reclamped = true
+        continue
       }
       if (f && LINGMA_NOT_HERE.test(f.message) && i + 1 < order.length) {
         console.warn(`qoder-cn: ${s.dedicated} doesn't serve ${m.key}; asking ${order[i + 1].key}`)
@@ -3945,4 +4082,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }

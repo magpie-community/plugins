@@ -1,0 +1,19 @@
+{
+  "name": "@magpie-community/page-day-card",
+  "version": "0.2.1",
+  "description": "A page in magpie's window that draws a day of your AI usage as a card: tokens, cost, each agent and its models, your streak and your average day. Copy it as a picture or save it as a PNG",
+  "files": ["page", "README.md"],
+  "keywords": ["magpie", "magpie-page", "usage", "tokens", "cost", "card"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/day-card" },
+  "engines": { "magpie": ">=0.1.3427" },
+  "magpie": {
+    "page": {
+      "title": "Day card",
+      "titles": { "zh": "每日用量卡", "zh-TW": "每日用量卡", "ja": "1日の使用量カード", "de": "Tageskarte" },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    },
+    "permissions": ["usage:day"]
+  }
+}

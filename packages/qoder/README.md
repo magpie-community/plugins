@@ -162,6 +162,9 @@ itself.
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
   Tool calls it sends the OpenAI way keep Qoder's id.
+- Two calls sent the OpenAI way at one index, each with its own id, are
+  two calls (since 0.2.65, #930). A piece with no id, or the open call's
+  id, is more of the open call.
 - A call sent the OpenAI way that never gets its function name is never
   sent on, and its arguments go nowhere (since 0.2.51, #579). If nothing
   of the answer came before it, the request is sent once more; a second
@@ -189,9 +192,11 @@ itself.
 |---|---|
 | A refused sign-in (no code, or code 105) | 401 |
 | A quota (codes 110, 112–119, 122) | 429 |
+| A model the account's listing has off while its usage says no credits are left (since 0.2.64, #880) | 429 usage limit reached, with the credits used and the model; a model off with credits left, or whose usage can't be read, stays 400 `unknown or disabled model`, and an id Qoder never served is that 400 at once |
 | Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
+| "Range of max_tokens should be [1, N]" behind "Error in upstream response" (since 0.2.63) | Asked again once with max_tokens N, which later requests for that model are sent from the start; refused again, 400 with Qoder's words, the sign-in untouched. QoDuck (`lmodel`) is never sent more than 131072, and a model whose listing entry names `max_output_tokens` never more than that; a smaller max_tokens goes as asked |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 
@@ -483,7 +488,8 @@ the account's credentials.
   (`Qoder.app` on macOS, `%LOCALAPPDATA%\Programs\Qoder` or, since
   0.2.26, `%ProgramFiles%\Qoder` on Windows, `/opt/Qoder` on Linux) or the runtime the CLI caches in `~/.qoder/.bin`
   (`runtime-info-<platform>-<arch>-*` on macOS and Linux,
-  `umid-win32-x64-*\runtime-info.exe` on Windows; `QODER_CONFIG_DIR`,
+  `umid-win32-x64-*\runtime-info.exe` or, as qodercli 1.21.2 caches it
+  since 0.2.64, `runtime-info-win32-x64-*.exe` on Windows; `QODER_CONFIG_DIR`,
   `QODER_CLI_HOME` and `QODER_CONFIG_DIR_NAME` move it as they move the
   CLI's folder).
 - For another installation location, set `QODER_RUNTIME_INFO` to the

@@ -2105,6 +2105,63 @@ test("a benefit the account can't claim: no free models, and no benefit header",
   assert.deepEqual(sent, [null])
 })
 
+for (const status of [200, 400]) {
+  test(`gateway/config's "group not found" (HTTP ${status}) is an account with no free models, not an unread list (#905)`, async () => {
+    const cred = await makeCred()
+    const list = modelsFetcher([])
+    const sent = []
+    const fetcher = async (url, init) => {
+      if (String(url) === CHAT_URL) {
+        sent.push(new Headers(init.headers).get("maas_type"))
+        return sseResponse(okStream)
+      }
+      if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) {
+        return new Response('{"error_code":"4000","error_msg":"invalid channel, group not found","result":null}', { status })
+      }
+      return list(url, init)
+    }
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+    await plugin.provider.models({ models: {} }, { auth: makeAuth(cred) })
+    const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+    await (await loaded.fetch(CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }))).text()
+    // The fallback list would have sent it as a free model.
+    assert.deepEqual(sent, [null])
+  })
+}
+
+test("a gateway/config that fails to answer keeps the fallback list", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set() }
+  const fetcher = async (url, init) => {
+    if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) return new Response("busy", { status: 503 })
+    return modelsFetcher([])(url, init)
+  }
+  await x.fetchRemoteModels(signedCred, fetcher, state)
+  assert.equal(state.benefit, null)
+  assert.equal(x.isBenefitModel("glm-5.3-flash", state), true)
+})
+
+test("InferHub.APIG.0101.404 to the benefit header: sent again as the plain model (#905)", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set(), claim: { day: x.beijingDay(), ok: false, at: Date.now() }, claiming: null }
+  const sent = []
+  const fetcher = async (url, init) => {
+    const benefit = new Headers(init.headers).get("maas_type")
+    sent.push(benefit)
+    // The reporter's bytes: a 200 whose first frame is the error.
+    return benefit
+      ? sseResponse('data:{"text":"[DONE]","error_code":"InferHub.APIG.0101.404","error_msg":"The API does not exist or has not been published in the environment"}\n\n')
+      : sseResponse(okStream)
+  }
+  const context = { ...(await x.accountSessionIds(signedCred)), gate: x.createConcurrencyGate(3), state, fetcher }
+  const res = await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).choices[0].message.content, "你好")
+  assert.deepEqual(sent, ["benefit", null])
+  // And the next request goes without it from the start.
+  sent.length = 0
+  await (await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)).text()
+  assert.deepEqual(sent, [null])
+})
+
 test("benefit not found on a day not yet claimed claims it, and sends the free model again", async () => {
   const state = {
     benefit: new Set(["deepseek-v4.1-flash"]), regular: new Set(["deepseek-v4.1-flash"]), noBenefit: new Set(),
@@ -3816,4 +3873,24 @@ test("a removed OfficeAce record is not written back when no restart separates t
   const ca2 = await CodeArtsAuthPlugin({ client }, { fetch: caSts.fetcher, ledgerPath })
   await ca2.auth.refresh(store.get(keyOf("codearts")))
   assert.equal(store.has(keyOf("officeace")), false, "a single removed record must stay removed without a restart")
+})
+
+// plugins#930: a streamed reply folded into one for a client that asked for
+// it whole. Two calls with their own ids at one index are two calls, not
+// one with {"a"}{"b"} arguments; fragments with no id, or the same id, go on
+// with the open call.
+test("folding a stream keeps two ids at one index as two calls", () => {
+  const ev = (call) => ({ id: "c1", model: "GLM-5.2", choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }] })
+  const A = { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":"A"}' } }
+  const B = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":"B"}' } })
+  const fold = (calls) => x.completionFromChunks([...calls.map(ev), { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }])
+    .choices[0].message.tool_calls.map((c) => [c.id, c.function.name, c.function.arguments])
+  const both = [["call_fixture_A", "fixture_alpha", '{"key":"A"}'], ["call_fixture_B", "fixture_beta", '{"key":"B"}']]
+  assert.deepEqual(fold([A, B(0)]), both)
+  assert.deepEqual(fold([A, B(1)]), both)
+  assert.deepEqual(fold([
+    { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"ke' } },
+    { index: 0, function: { arguments: 'y":' } },
+    { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
+  ]), [["call_fixture_A", "fixture_alpha", '{"key":"A"}']])
 })

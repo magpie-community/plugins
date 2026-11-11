@@ -141,7 +141,11 @@ test("unstreamed, what was said before an exception is the answer", async () => 
 // Failing before any of the answer, a request is answered with the built-in's
 // status (internal/gateway/kiro.go askKiro), and X-Magpie-Sign-In: kept,
 // as the built-in marked no Kiro account lapsed, even one Kiro refused.
-const { generate, refresh, failure } = _internal
+const { generate, refresh, failure, timing, TRIES } = _internal
+// a throttle's pauses (paced) are counted here, not waited
+const pauses = []
+const realSleep = timing.sleep
+timing.sleep = async (ms) => void pauses.push(ms)
 const msgReq = { model: "claude-sonnet-4.5", messages: [{ role: "user", content: "hi" }] }
 const gone = (msg) => Object.assign(new Error(msg), { gone: true })
 
@@ -240,17 +244,167 @@ test("Kiro's wait before asking again goes on as Retry-After", async () => {
     [{}, JSON.stringify({ message: "Too many requests", reason: "USER_REQUEST_RATE_EXCEEDED", retryAfterMilliseconds: 20000 }), "20"],
     [{ "retry-after": "7" }, limited, "7"],
     [{ "retry-after": new Date(Date.now() + 30_000).toUTCString() }, limited, null],
-    [{}, limited, null],
-    [{ "x-amzn-kiro-ratelimit-retry-after": "soon" }, limited, null],
+    [{}, limited, "30"],
+    [{ "x-amzn-kiro-ratelimit-retry-after": "soon" }, limited, "30"],
+    [{}, JSON.stringify({ message: "Too many requests", reason: "SERVICE_REQUEST_RATE_EXCEEDED" }), null],
   ]
   for (const [headers, body, want] of cases) {
     await withFetch(() => new Response(body, { status: 429, headers }), async () => {
       const res = await generate(creds(), {}, msgReq)
       expect(res.status).toBe(429)
-      expect((await res.json()).error.message).toBe(JSON.parse(body).message + " (USER_REQUEST_RATE_EXCEEDED)")
+      expect((await res.json()).error.message).toContain(JSON.parse(body).message + " (" + JSON.parse(body).reason + ")")
       const got = res.headers.get("Retry-After")
       if (headers["retry-after"]?.includes("GMT")) expect(Number(got)).toBeWithin(28, 32)
       else expect(got).toBe(want)
     })
   }
+})
+
+// onemezao on Discord: through pi, every request of one Kiro account was
+// refused with Kiro's "Too many requests, please wait before trying
+// again. (USER_REQUEST_RATE_EXCEEDED)", 42s each, while the Kiro IDE
+// answered on the same account. The words said neither whose limit it
+// was nor what to do, and with no wait said magpie asked the same
+// account again at 1, 2 and 4s, the whole request each time.
+test("an account's request rate says whose limit it is, what to do and the request ID", async () => {
+  const body = JSON.stringify({ message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })
+  await withFetch(
+    () => new Response(body, { status: 429, headers: { "x-amzn-requestid": "3f1c-req" } }),
+    async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).toBe(429)
+      // past magpie's same-account retries (longestPause, 8s)
+      expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(8)
+      const b = await res.json()
+      expect(b.error.type).toBe("rate_limit_error")
+      const m = b.error.message
+      expect(m).toContain("Kiro is limiting how often this Kiro account sends requests")
+      expect(m).toContain("(USER_REQUEST_RATE_EXCEEDED)")
+      expect(m).toContain("Wait a minute")
+      expect(m).toContain("Kiro support")
+      expect(m).toContain("request ID 3f1c-req")
+      // magpie's creditWords would take it for money owed, never retried
+      expect(m).not.toMatch(/balance|credit|billing|payment|suspended/i)
+    },
+  )
+})
+
+test("an account's request rate in the stream is the same plain 429, with a wait", async () => {
+  for (const s of [true, false]) {
+    const res = await ask(
+      stream(frame({ ":message-type": "exception", ":exception-type": "ThrottlingException" },
+        { message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })),
+      s,
+    )
+    expect(res.status).toBe(429)
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(8)
+    const m = (await res.json()).error.message
+    expect(m).toMatch(/^rate limited: Kiro is limiting how often this Kiro account sends requests/)
+    expect(m).toContain("(USER_REQUEST_RATE_EXCEEDED)")
+  }
+})
+
+// onemezao on Discord: a "hi" answered, and the next message straight
+// after was Kiro's 429 USER_REQUEST_RATE_EXCEEDED, while the Kiro IDE on
+// the same account and model took two messages in a row. The IDE doesn't
+// get fewer of these: its client (agent 1.1.787, QClientRetryStrategy)
+// waits a throttle out, 1s then 2s or Kiro's retryAfterMilliseconds, and
+// tries again, up to 3 tries. The plugin sent the first 429 back at once.
+const limitedBody = JSON.stringify({ message: "Too many requests, please wait before trying again.", reason: "USER_REQUEST_RATE_EXCEEDED" })
+const answered = () =>
+  new Response(new ReadableStream({ start(c) { c.enqueue(text("hello")); c.close() } }), { status: 200 })
+const lower = (h) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]))
+
+test("a throttle is waited out and tried again, as the Kiro IDE does, each try counted under one invocation", async () => {
+  pauses.length = 0
+  const tries = []
+  await withFetch((url, init) => {
+    tries.push(lower(init.headers))
+    return tries.length === 1 ? new Response(limitedBody, { status: 429 }) : answered()
+  }, async () => {
+    const res = await generate(creds(), {}, msgReq)
+    expect(res.status).toBe(200)
+    expect(JSON.stringify(await res.json())).toContain("hello")
+  })
+  expect(tries.length).toBe(2)
+  expect(tries.map((h) => h["amz-sdk-request"])).toEqual(["attempt=1; max=3", "attempt=2; max=3"])
+  expect(tries.map((h) => h["x-amzn-kiro-attempt"])).toEqual(["1;max=3", "2;max=3"])
+  expect(tries[1]["amz-sdk-invocation-id"]).toBe(tries[0]["amz-sdk-invocation-id"])
+  // the IDE's throttling pause: 1s, 20% either way
+  expect(pauses.length).toBe(1)
+  expect(pauses[0]).toBeWithin(800, 1200.001)
+})
+
+test("a throttle that outlasts the IDE's tries is the plain 429, after 1s and 2s", async () => {
+  for (const reason of ["USER_REQUEST_RATE_EXCEEDED", "CREDIT_CONSUMPTION_RATE_EXCEEDED", "SERVICE_REQUEST_RATE_EXCEEDED"]) {
+    pauses.length = 0
+    let n = 0
+    await withFetch(() => (n++, new Response(JSON.stringify({ message: "Too many requests", reason }), { status: 429 })), async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).toBe(429)
+      expect((await res.json()).error.message).toContain(reason)
+    })
+    expect(n).toBe(TRIES)
+    expect(pauses.length).toBe(2)
+    expect(pauses[0]).toBeWithin(800, 1200.001)
+    expect(pauses[1]).toBeWithin(1600, 2400.001)
+  }
+})
+
+test("Kiro's own wait is the pause, and one past 20s goes back to magpie untried", async () => {
+  pauses.length = 0
+  let n = 0
+  const said = JSON.stringify({ message: "Too many requests", reason: "USER_REQUEST_RATE_EXCEEDED", retryAfterMilliseconds: 3500 })
+  await withFetch(() => (n++ ? answered() : new Response(said, { status: 429 })), async () => {
+    expect((await generate(creds(), {}, msgReq)).status).toBe(200)
+  })
+  expect(pauses).toEqual([3500])
+
+  pauses.length = 0
+  n = 0
+  await withFetch(() => (n++, new Response(limitedBody, { status: 429, headers: { "x-amzn-kiro-ratelimit-retry-after": "45000" } })), async () => {
+    const res = await generate(creds(), {}, msgReq)
+    expect(res.status).toBe(429)
+    expect(res.headers.get("Retry-After")).toBe("45")
+  })
+  expect(n).toBe(1)
+  expect(pauses).toEqual([])
+})
+
+test("a usage limit, a model's capacity or another 4xx is not tried again", async () => {
+  const cases = [
+    [429, { message: "Monthly limit", reason: "MONTHLY_REQUEST_COUNT" }],
+    [429, { message: "Daily limit", reason: "DAILY_REQUEST_COUNT" }],
+    [429, { message: "busy", reason: "INSUFFICIENT_MODEL_CAPACITY" }],
+    [400, { message: "Improperly formed request." }],
+  ]
+  for (const [status, body] of cases) {
+    pauses.length = 0
+    let n = 0
+    await withFetch(() => (n++, new Response(JSON.stringify(body), { status })), async () => {
+      const res = await generate(creds(), {}, msgReq)
+      expect(res.status).not.toBe(200)
+    })
+    expect(n).toBe(1)
+    expect(pauses).toEqual([])
+  }
+})
+
+test("a request cancelled while a throttle is waited out ends at once, and isn't sent again", async () => {
+  let n = 0
+  const ctl = new AbortController()
+  timing.sleep = (ms, signal) => {
+    queueMicrotask(() => ctl.abort())
+    return realSleep(60_000, signal)
+  }
+  try {
+    await withFetch(() => (n++, new Response(limitedBody, { status: 429 })), async () => {
+      const t0 = Date.now()
+      await expect(generate(creds(), {}, msgReq, ctl.signal)).rejects.toThrow("cancelled")
+      expect(Date.now() - t0).toBeLessThan(5000)
+    })
+  } finally {
+    timing.sleep = async (ms) => void pauses.push(ms)
+  }
+  expect(n).toBe(1)
 })

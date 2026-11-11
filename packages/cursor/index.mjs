@@ -36,7 +36,7 @@ import { gunzipSync } from "node:zlib"
 import { Duplex } from "node:stream"
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
-import { readFile, stat, readdir, realpath } from "node:fs/promises"
+import { readFile, stat, readdir, realpath, writeFile, mkdir, rename } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -2748,11 +2748,128 @@ function nativeTransport(req, close, fail, limits = NATIVE_LIMITS) {
   }
 }
 
+// ---- the account's calls, for magpie's Usage page ---------------------------
+
+// mine are the conversation_ids this plugin's own Runs used, with when each
+// was last used: their usage events are calls magpie's gateway counted
+// already, so calls leaves them out. They are kept OWN_KEEP, in a file of
+// the plugin's own, so a restart still knows them.
+const OWN_KEEP = 40 * 86_400_000
+const mine = { ids: new Map(), read: null, timer: null, file: () => join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode-cursor-auth", "conversations.json") }
+function readMine() {
+  mine.read ??= readFile(mine.file(), "utf8")
+    .then((t) => {
+      const kept = JSON.parse(t)
+      for (const [id, at] of Object.entries(kept && typeof kept === "object" ? kept : {}))
+        if (typeof at === "number" && !mine.ids.has(id)) mine.ids.set(id, at)
+    })
+    .catch(() => {})
+  return mine.read
+}
+function saveMine() {
+  if (mine.timer) return
+  mine.timer = setTimeout(async () => {
+    mine.timer = null
+    await readMine()
+    const now = Date.now()
+    for (const [id, at] of mine.ids) if (now - at > OWN_KEEP) mine.ids.delete(id)
+    const file = mine.file()
+    try {
+      await mkdir(dirname(file), { recursive: true })
+      const tmp = file + "." + process.pid + ".tmp"
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(mine.ids)))
+      await rename(tmp, file)
+    } catch {}
+  }, 1000)
+  mine.timer.unref?.()
+}
+function ownConversation(cid) {
+  mine.ids.set(cid, Date.now())
+  saveMine()
+}
+
+// mes are each token's account id (GetMe's userId), asked once an hour: a
+// team's events can be other members', which calls leaves out
+const mes = new Map()
+async function meOf(tok) {
+  const had = mes.get(tok)
+  if (had && Date.now() - had.at < 3600_000) return had.id
+  try {
+    const me = await unary(API, "aiserver.v1.DashboardService/GetMe", tok)
+    const id = me?.userId == null ? "" : String(me.userId)
+    mes.set(tok, { id, at: Date.now() })
+    return id
+  } catch {
+    return had?.id ?? ""
+  }
+}
+
+// CALLS_PAGE is how many events one GetFilteredUsageEvents page asks for,
+// and CALLS_PAGES how many pages one reading reads at most
+const CALLS_PAGE = 100
+const CALLS_PAGES = 50
+
+// callsOf are the account's own usage events from since on, as the
+// dashboard's Usage page lists them (GetFilteredUsageEvents), less the ones
+// of this plugin's own conversations: the calls the account made from
+// Cursor's editor, cursor-agent or anything else not through magpie. Each
+// has its event id (rid), time, model, tokens (in is the uncached rest, as
+// magpie counts it), its cost in USD and its conversation. A page Cursor
+// won't give fails the reading: magpie asks again from the same time.
+async function callsOf(tok, since, signal) {
+  await readMine()
+  const me = await meOf(tok)
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+  const out = []
+  const end = Date.now()
+  for (let page = 1; page <= CALLS_PAGES; page++) {
+    const res = await fetch(API + "/aiserver.v1.DashboardService/GetFilteredUsageEvents", {
+      method: "POST",
+      headers: await headersFor(tok),
+      body: JSON.stringify({ ...await teamBody(tok), startDate: String(since), endDate: String(end), page, pageSize: CALLS_PAGE }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      const f = failure(res.status, text)
+      const e = new Error(f.message)
+      e.status = f.status
+      throw e
+    }
+    const body = JSON.parse(text || "{}")
+    const evs = body?.usageEventsDisplay ?? []
+    for (const ev of evs) {
+      const t = ev?.tokenUsage
+      const at = num(ev?.timestamp)
+      if (!t || !at || at < since) continue
+      if (me && ev.owningUser != null && String(ev.owningUser) !== me) continue
+      if (ev.conversationId && mine.ids.has(ev.conversationId)) continue
+      const rid = String(ev.usageEventId ?? "") || `${ev.conversationId ?? ""}:${at}:${ev.model ?? ""}`
+      const cents = t.totalCents ?? ev.chargedCents
+      out.push({
+        rid,
+        t: at,
+        model: String(ev.model ?? ""),
+        in: num(t.inputTokens),
+        out: num(t.outputTokens),
+        cache_read: num(t.cacheReadTokens),
+        cache_write: num(t.cacheWriteTokens),
+        ...(cents == null ? {} : { cost: num(cents) / 100 }),
+        ...(ev.conversationId ? { session: String(ev.conversationId) } : {}),
+      })
+    }
+    const total = num(body?.totalUsageEventsCount)
+    if (evs.length < CALLS_PAGE || (total && page * CALLS_PAGE >= total)) break
+  }
+  return out.sort((a, b) => a.t - b.t)
+}
+
 // runNative opens a session-owned Run. Its background decoder survives the end
 // of each Chat segment; only terminal completion, failure, or cancellation
 // releases the transport.
 async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, params, native }) {
   const cid = convID || randomUUID()
+  ownConversation(cid)
   const since = Date.now()
   // Transport shutdown precedes final debt collection. Keep its cancellation
   // separate, and return any undelivered collection through the ledger's carry.
@@ -2919,6 +3036,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   // the Run's conversation_id, a new one when nothing names the session:
   // its usage event is found by it
   const cid = convID || randomUUID()
+  ownConversation(cid)
   const since = Date.now()
   // how its usage is counted: a debt of the conversation's is collected
   // while it goes, which only a conversation_id that names the session
@@ -3670,6 +3788,13 @@ export async function CursorAuthPlugin(input) {
         const windows = [...read.windows.filter((w) => !last(w)), ...bot, ...free, ...read.windows.filter(last)]
         return { ...read, windows, ...(plan ? { plan } : {}), signIn: "kept" }
       },
+      // magpie's: the account's calls from since (ms) on that didn't go
+      // through magpie, for its Usage page (callsOf). A failure is thrown:
+      // magpie reads them again from the same time.
+      async calls(getAuth, provider, { since = Date.now() - 30 * 86_400_000, signal } = {}) {
+        const tok = await tokenOf(await getAuth())
+        return { calls: await callsOf(tok, Math.max(0, Number(since) || 0), signal) }
+      },
     },
     // the session the request is part of, for the conversation_id
     // (conversationID): magpie and OpenCode name it here, and the loader's
@@ -3710,4 +3835,4 @@ export async function CursorAuthPlugin(input) {
 }
 
 // for tests
-export const _internal = { slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

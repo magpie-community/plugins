@@ -33,12 +33,28 @@ A *turn* starts when your own words reach the model, and ends when the model ans
 - One push per conversation per `cooldownSeconds`.
 - Only requests magpie marks as `local` by default: an agent on this computer that uses no gateway key. Requests with a named gateway key (`gateway-key`, which may be a friend's, and includes magpie's sharing key) and requests from another device (`remote`) are left out unless `allOrigins` is on.
 
+## Accounts to sign in again
+
+When a subscription account in use stops working until you sign in again — a Codex sign-in revoked or refused on refresh, a Claude or Copilot sign-in lapsed, a plugin account whose sign-in expired — magpie tells its hooks once (`onSignIn`, Magpie 0.1.3443 or newer), and this plugin pushes:
+
+```
+⚠️ Codex account me@example.com signed out
+Sign in again in magpie.
+```
+
+A Claude sign-in that ends within days is pushed the same way ("sign-in ends in 3 days"). It's on by default (`accounts`), to the same channels, in `lang`; the same account and state is pushed at most once per `accountCooldownMinutes`. The push carries the provider and the account's name as magpie shows it, nothing else: no token, no reason text from the vendor.
+
 The hook changes nothing in a request, and sending never holds one up: it returns at once and posts in the background, with a 10-second limit per channel.
+
+## The page
+
+The plugin has a page in magpie's sidebar (Plugins group): add, edit and pause channels, set when it sends, and turn every push on or off, without editing a file. The switch at the top is the `enabled` option; the rest of the page edits the options below and saves them whole, so a field it has no box for (a webhook's `headers`, a Gotify channel's `extras`) is kept. Pushes are never sent from the page itself.
 
 ## Options
 
 ```jsonc
 {
+  "enabled": true,                 // false: nothing is sent, channels stay
   "channels": [                    // one or more; each sends the same push
     { "type": "ntfy", "topic": "…", "server": "https://ntfy.sh", "token": "…", "priority": 3 },
     { "type": "bark", "key": "…", "server": "https://api.day.app", "group": "magpie", "sound": "…" },
@@ -58,11 +74,13 @@ The hook changes nothing in a request, and sending never holds one up: it return
   "allOrigins": false,             // also gateway-key and remote requests
   "includeText": false,            // add the start of the model's last answer
   "maxTextLength": 200,
+  "accounts": true,                // push an account that needs signing in again
+  "accountCooldownMinutes": 60,
   "lang": "en"                     // "en" or "zh"
 }
 ```
 
-Optional fields are shown with their defaults where they have one. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. Gotify's `priority` falls back to the application's default when omitted; its `extras` accepts an object of `namespace::action` keys (e.g. `{"client::display": {"contentType": "text/markdown"}}`). `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`.
+Optional fields are shown with their defaults where they have one. A channel missing what it needs (a topic, a key, a webhook) is skipped; `"off": true` turns one off without deleting it. Feishu's and DingTalk's `secret` is the robot's signing secret (签名校验 / 加签), used when the robot asks for it. Gotify's `priority` falls back to the application's default when omitted; its `extras` accepts an object of `namespace::action` keys (e.g. `{"client::display": {"contentType": "text/markdown"}}`). `webhook` posts `{title, body, event}` where `event` is `{kind, agent, model, project, seconds}`, or for an account `{kind: "signed-out" | "ending", provider, account, endsAt}`.
 
 ## Privacy
 

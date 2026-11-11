@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { agent } from "../cowork.agent.js"
-import { adoptSeeded, backupNeeded, codelyHome, entry, loadSeeded, opt, plan, provider, readTitleFile, seedFile, unplan, unreachableNote, PROVIDER_ID } from "../seed.mjs"
+import { adoptSeeded, backupNeeded, codelyHome, defaultEffort, efforts, entry, loadSeeded, opt, plan, provider, readTitleFile, seedFile, unplan, thinkingEfforts, unreachableNote, withEfforts, PROVIDER_ID } from "../seed.mjs"
 
 const SEED = fileURLToPath(new URL("../seed.mjs", import.meta.url))
 
@@ -816,4 +816,91 @@ test("CODELY_CLI_HOME moves the store and the record it reads with it", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// What magpie's /v1/models answers for workbuddy/deepseek-v4.1-flash
+// (internal/gateway modelObject, #828): both spellings of the same levels.
+const THINKS = {
+  id: "workbuddy/deepseek-v4.1-flash",
+  context_length: 262144,
+  reasoning: true,
+  reasoning_levels: ["none", "low", "high", "max"],
+  supported_reasoning_levels: [{ effort: "none" }, { effort: "low" }, { effort: "high" }, { effort: "max" }],
+}
+
+test("a model's reasoning levels are seeded as Cowork's extras.thinkingEfforts (#828)", () => {
+  assert.deepEqual(entry(THINKS).extras, { thinkingEfforts: { default: "high", options: ["none", "low", "high", "max"] } })
+  assert.equal("extras" in entry(TEXT), false, "a model with no levels gets no Reasoning row")
+  assert.equal("extras" in entry({ ...TEXT, reasoning: false, reasoning_levels: [], supported_reasoning_levels: [] }), false)
+})
+
+test("either spelling of the levels is read, objects first, and repeats are dropped", () => {
+  assert.deepEqual(efforts({ supported_reasoning_levels: [{ effort: "low" }, { effort: " high " }, { effort: "low" }, null, {}] }), ["low", "high"])
+  assert.deepEqual(efforts({ reasoning_levels: ["low", "medium", "high"] }), ["low", "medium", "high"])
+  assert.deepEqual(efforts({ supported_reasoning_levels: [], reasoning_levels: ["minimal", "low"] }), ["minimal", "low"],
+    "an empty object list is no answer, so the flat list is read")
+  assert.equal(efforts({ reasoning: true }), null)
+})
+
+test("the default is the catalog's when it names one, else the middle level, never the dearest by default", () => {
+  assert.equal(defaultEffort(["low", "medium", "high", "xhigh"]), "medium")
+  assert.equal(defaultEffort(["none", "low", "high", "max"]), "high")
+  assert.equal(defaultEffort(["none", "low"]), "low")
+  assert.equal(defaultEffort(["none"]), "none")
+  assert.equal(defaultEffort(["low", "medium", "high"], { default_reasoning_level: "low" }), "low")
+  assert.equal(defaultEffort(["low", "medium"], { default_reasoning_level: "max" }), "medium", "a default it doesn't offer is not used")
+  const te = thinkingEfforts(THINKS)
+  assert.ok("default" in te && Array.isArray(te.options), "the two keys Cowork's picker checks for")
+})
+
+test("an entry seeded before #828 gets the levels on the next run, and keeps its other extras", () => {
+  const id = `${PROVIDER_ID}:${THINKS.id}`
+  const old = { id, model: THINKS.id, providerId: PROVIDER_ID, displayName: THINKS.id, extras: { note: "kept" } }
+  const store = { customModelProviders: [provider(V1)], customModels: [old] }
+  const r = plan(store, [THINKS], V1, new Set([id]))
+  assert.equal(r.refreshed, 1)
+  assert.equal(r.changed, true, "a store that only lacks the levels is still written")
+  assert.equal(r.drift, true, "and --check reports it")
+  assert.deepEqual(r.next.customModels[0].extras, { note: "kept", thinkingEfforts: thinkingEfforts(THINKS) })
+  const again = plan(r.next, [THINKS], V1, new Set([id]))
+  assert.equal(again.refreshed, 0)
+  assert.equal(again.changed, false, "in step once written")
+  const gone = plan(r.next, [{ ...THINKS, reasoning_levels: [], supported_reasoning_levels: [] }], V1, new Set([id]))
+  assert.deepEqual(gone.next.customModels[0].extras, { note: "kept" }, "levels the catalog dropped are dropped too")
+})
+
+test("the levels of an entry that isn't ours are left alone", () => {
+  const theirs = { id: `custom-provider:${THINKS.id}`, model: THINKS.id, providerId: "custom-provider", displayName: THINKS.id }
+  const mine = { id: `${PROVIDER_ID}:${THINKS.id}`, model: THINKS.id, providerId: PROVIDER_ID, displayName: THINKS.id }
+  for (const m of [theirs, mine]) {
+    const r = plan({ customModelProviders: [provider(V1)], customModels: [m] }, [THINKS], V1, new Set())
+    assert.equal(r.refreshed, 0)
+    assert.equal(r.next.customModels[0], m, "the same entry, untouched")
+  }
+  const odd = { ...mine, extras: "x" }
+  assert.equal(withEfforts(odd, THINKS), odd, "an extras that isn't an object is not replaced")
+})
+
+test("a real seed run writes the levels Cowork reads, into a store seeded before them", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cowork-efforts-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const store = join(dir, "settings.json")
+  const gateway = await catalogServer(t, [THINKS, GLM])
+  const id = `${PROVIDER_ID}:${THINKS.id}`
+  writeFileSync(store, JSON.stringify({
+    customModelProviders: [provider(`${gateway}/v1`)],
+    customModels: [{ id, model: THINKS.id, providerId: PROVIDER_ID, displayName: THINKS.id, authType: "openai", roles: ["model"], wireApi: "chat" }],
+  }))
+  writeFileSync(seedFile(store), JSON.stringify([id]))
+  writeFileSync(join(dir, "ide-settings.json"), "{}")
+  const check = await runSeed(["--store", store, "--gateway", gateway, "--check"])
+  assert.equal(check.status, 1, check.stdout + check.stderr)
+  assert.match(check.stdout, /\+1 to add, ~1 reasoning levels to update/)
+  const r = await runSeed(["--store", store, "--gateway", gateway])
+  assert.equal(r.status, 0, r.stderr)
+  const models = JSON.parse(readFileSync(store, "utf8")).customModels
+  assert.deepEqual(models.find((m) => m.id === id).extras.thinkingEfforts, { default: "high", options: ["none", "low", "high", "max"] })
+  assert.equal("extras" in models.find((m) => m.model === GLM.id), false)
+  const after = await runSeed(["--store", store, "--gateway", gateway, "--check"])
+  assert.equal(after.status, 0, after.stdout)
 })
