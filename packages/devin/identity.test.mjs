@@ -137,12 +137,38 @@ test.if(unix)("a key Devin refuses fails the sign-in, whatever the CLI says", as
 test.if(unix)("when Devin can't tell, the CLI names the account only if it read the key's own folder", async () => {
   devin(() => new Response("", { status: 503 }))
   // the CLI read its own credentials.toml: not the key's account
-  expect((await _internal.success("key-c", "https://server.codeium.com")).metadata).toEqual({ email: "Devin" })
+  expect((await _internal.success("key-c", "https://server.codeium.com")).metadata).toEqual({})
   // a CLI that honours the folder answers for the key
   process.env.FAKE_HONOURS = "1"
   process.env.FAKE_EMAIL = "c@x.dev"
   expect((await _internal.success("key-c", "https://server.codeium.com")).metadata).toEqual({ email: "c@x.dev", plan: "Devin Pro" })
 }, SLOW)
+
+test("pasted session tokens are trimmed, validated, and checked with Devin", async () => {
+  devin(() => statusOf("paste@x.dev", "TEAMS_TIER_DEVIN_PRO"))
+  const method = (await DevinAuthPlugin()).auth.methods.find((m) => m.type === "api")
+  expect(await method.authorize({ token: "  devin-session-token$paste  " })).toEqual({
+    type: "success",
+    provider: "devin",
+    key: "devin-session-token$paste",
+    metadata: { email: "paste@x.dev", plan: "Devin Pro" },
+  })
+  expect(await method.authorize({ token: " wrong-token " })).toEqual({
+    type: "failed",
+    error: "the token starts with devin-session-token$",
+  })
+}, SLOW)
+
+test("browser sign-in uses Devin's account chooser", async () => {
+  const signIn = await _internal.browserSignIn()
+  const authorize = new URL(signIn.url)
+  expect(authorize.searchParams.get("prompt")).toBe("select_account")
+  const state = authorize.searchParams.get("state")
+  const redirect = authorize.searchParams.get("redirect_uri")
+  const result = signIn.callback()
+  await fetch(`${redirect}?state=${encodeURIComponent(state)}&error=cancelled`)
+  expect(await result).toEqual({ type: "failed", error: "cancelled" })
+})
 
 test.if(unix)("a CLI that reads its own account's folder isn't asked for the key's models", async () => {
   devin(() => statusOf("b@x.dev"))
