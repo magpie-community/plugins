@@ -4571,6 +4571,25 @@ test("the IDE's file rewritten in one clock tick, at the same size, is read agai
   assert.equal((await read()).cred, undefined)
 })
 
+test("the IDE's write-ahead log rewritten in one clock tick is read again", async () => {
+  const first = await ideFixture({ value: ideValue(ideOrigin()), wal: true })
+  const second = await ideFixture({ value: ideValue(ideOrigin({ accessKey: "IDEAK2" })), wal: true })
+  const t = new Date(2000000000000)
+  fs.utimesSync(first.file, t, t)
+  fs.utimesSync(`${first.file}-wal`, t, t)
+  const mainBefore = fs.readFileSync(first.file)
+  const walBefore = fs.statSync(`${first.file}-wal`)
+  const read = x.ideReader(first.file)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+
+  fs.copyFileSync(`${second.file}-wal`, `${first.file}-wal`)
+  fs.utimesSync(`${first.file}-wal`, walBefore.atime, walBefore.mtime)
+  assert.deepEqual(fs.readFileSync(first.file), mainBefore, "the main database is unchanged")
+  assert.equal(fs.statSync(`${first.file}-wal`).size, walBefore.size)
+  assert.equal(fs.statSync(`${first.file}-wal`).mtimeMs, walBefore.mtimeMs)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK2")
+})
+
 test("an international account chats, reads and renews on its own station only", async () => {
   const fx = await ideFixture({ value: ideValue(ideOrigin()) })
   const urls = []
