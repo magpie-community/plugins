@@ -46,6 +46,62 @@ test("an unknown code reads as the generic message, never as the code", () => {
     );
 });
 
+// Opens the page on a bare stand-in for the browser, answers its status poll
+// with a scan finished `ago` ms before, and returns the API paths it called.
+async function open(ago) {
+  const element = () => ({
+    children: [],
+    dataset: {},
+    style: {},
+    classList: { toggle() {} },
+    append() {},
+    replaceChildren() {},
+    setAttribute() {},
+    addEventListener() {},
+  });
+  const elements = new Map();
+  const called = [];
+  const status = {
+    phase: "idle",
+    lastScan: new Date(Date.now() - ago).toISOString(),
+    remaining: 0,
+    usage: [],
+    issues: {},
+    errors: [],
+  };
+  const page = {
+    document: {
+      documentElement: element(),
+      createElement: element,
+      getElementById: (id) =>
+        elements.get(id) || elements.set(id, element()).get(id),
+      querySelectorAll: () => [],
+      querySelector: () => ({ content: "token" }),
+    },
+    location: new URL("http://127.0.0.1:3497/?lang=en"),
+    navigator: { language: "en" },
+    matchMedia: () => ({ matches: false }),
+    atob,
+    localStorage: { getItem: () => null, setItem() {} },
+    setInterval() {},
+    AmpUsage: scope.AmpUsage,
+    fetch: async (url) => {
+      called.push(new URL(url).pathname);
+      return { ok: true, json: async () => status };
+    },
+  };
+  new Function(...Object.keys(page), await read("../ui/app.js"))(
+    ...Object.values(page),
+  );
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  return called;
+}
+
+test("with nothing kept, the open page refreshes once a scan is 5 minutes old", async () => {
+  assert.deepEqual(await open(4 * 60_000), ["/api/status"]);
+  assert.deepEqual(await open(6 * 60_000), ["/api/status", "/api/refresh"]);
+});
+
 test("the page loads its words before its script", async () => {
   const html = await read("../ui/index.html");
   assert.ok(html.indexOf('src="words.js"') < html.indexOf('src="app.js"'));
