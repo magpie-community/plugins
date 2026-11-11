@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/page-amp-usage",
   "version": "0.1.0",
-  "description": "Collect Amp usage with a local background service and report it to Magpie's existing usage ledger.",
+  "description": "An Amp usage board in Magpie's window, with a local background service that can sync Amp usage into Magpie's usage ledger.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -45,6 +45,7 @@
     "permissions": [],
     "options": {
       "port": 3497,
+      "sync": true,
       "gatewayURL": "http://127.0.0.1:3425",
       "intervalSeconds": 300,
       "settleSeconds": 120,

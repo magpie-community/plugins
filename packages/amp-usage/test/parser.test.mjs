@@ -26,12 +26,8 @@ const event = (patch = {}) => ({
   model: usage.model,
   timestamp: at,
   toMessageId: 1,
-  tokens: {
-    input: 1,
-    output: 189,
-    cacheCreationInputTokens: 661,
-    cacheReadInputTokens: 40653,
-  },
+  // Real Amp ledger events carry input/output only.
+  tokens: { input: 1, output: 189 },
   ...patch,
 });
 
@@ -82,22 +78,64 @@ test("never uses file mtime or synthetic thread dates", () => {
   assert.equal(parseThread(t).records.length, 0);
   assert.equal(parseThread(t).issues.missingTimestamp, 1);
 });
+test("a call without a time takes the moment its turn was sent", () => {
+  const bare = (id) => message(id, { timestamp: undefined });
+  const t = thread([
+    bare(1),
+    { role: "user", sentAt: Date.parse(at) },
+    bare(2),
+    { role: "user" },
+    bare(3),
+  ]);
+  const r = parseThread(t);
+  assert.deepEqual(
+    r.records.map((x) => x.t),
+    [at, at],
+  );
+  assert.equal(r.issues.missingTimestamp, 1);
+  const raw = {
+    ...t,
+    messages: [{ role: "user", meta: { sentAt: Date.parse(at) } }, bare(2)],
+  };
+  assert.equal(parseThread(projectThread(raw)).records[0].t, at);
+});
 test("identical token counts at different times are distinct calls", () => {
   const t = thread(
     [message(2, { timestamp: "2026-03-31T15:07:33.890Z" })],
-    [event({ toMessageId: undefined })],
+    [event({ id: "e1", operationType: "title-generation" })],
   );
   assert.equal(parseThread(t).records.length, 2);
 });
-test("anonymous equal ledger events remain separate", () => {
+test("equal ledger events are told apart by their own IDs, or held without one", () => {
+  const search = (id) => event({ id, operationType: "codebase-search" });
+  const r = parseThread(thread([], [search("e1"), search("e2"), search()]));
+  assert.equal(r.records.length, 2);
+  assert.notEqual(r.records[0].rid, r.records[1].rid);
+  assert.equal(r.issues.missingIdentity, 1);
+});
+test("a matched ledger event keeps the message's cache tokens", () => {
+  for (const events of [[event()], [event({ toMessageId: undefined })]]) {
+    const r = parseThread(thread([message()], events)).records;
+    assert.equal(r.length, 1);
+    assert.equal(r[0].cache_read, 40653);
+    assert.equal(r[0].cache_write, 661);
+  }
+});
+test("a subagent's calls are counted in its own thread only", () => {
   const r = parseThread(
     thread(
       [],
-      [event({ toMessageId: undefined }), event({ toMessageId: undefined })],
+      [
+        event({
+          id: "e1",
+          operationType: "subagent",
+          subagentThreadID: "T-sub",
+        }),
+      ],
     ),
-  ).records;
-  assert.equal(r.length, 2);
-  assert.notEqual(r[0].rid, r[1].rid);
+  );
+  assert.equal(r.records.length, 0);
+  assert.equal(r.issues.subagentThread, 1);
 });
 test("unfinished, fresh, invalid and zero usage do not reach the ledger", () => {
   const t = thread([
@@ -150,12 +188,14 @@ test("search and subagent ledger calls sharing a message boundary stay distinct"
       [
         event({ operationType: "inference" }),
         event({
+          id: "e2",
           operationType: "codebase-search",
           model: "gemini-3-flash-preview",
           tokens: { input: 0, output: 415 },
           timestamp: "2026-03-30T15:07:40Z",
         }),
         event({
+          id: "e3",
           operationType: "subagent",
           tokens: { input: 40, output: 497 },
           timestamp: "2026-03-30T15:08:00Z",

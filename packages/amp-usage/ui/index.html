@@ -11,102 +11,97 @@
   <body>
     <main>
       <header>
-        <div>
-          <h1>Amp usage</h1>
-          <p>Bring Amp requests into Magpie's usage history and Day card.</p>
+        <div id="periods" class="segmented" role="group">
+          <button type="button" data-period="today" data-t="today"></button>
+          <button type="button" data-period="24h" data-t="h24"></button>
+          <button type="button" data-period="7d" data-t="d7"></button>
+          <button type="button" data-period="30d" data-t="d30"></button>
+          <button type="button" data-period="all" data-t="all"></button>
+          <button type="button" data-period="custom">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M3 4.5h10v8.5H3zM3 7h10M5.5 2.5v3M10.5 2.5v3"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span data-t="custom"></span>
+          </button>
         </div>
-        <span id="mode-status" class="status">Connecting</span>
+        <div class="tools">
+          <button id="refresh" class="icon" type="button" disabled>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.4h-3.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <select id="auto"></select>
+        </div>
       </header>
-      <section aria-labelledby="source-heading">
-        <h2 id="source-heading">Collection source</h2>
-        <label for="source">Read usage from</label>
-        <select id="source" disabled>
-          <option value="cloud">Amp account via the installed CLI</option>
-          <option value="local">Legacy local thread files</option>
-        </select>
-        <p id="source-help" class="hint">
-          Uses your existing Amp sign-in. Only usage metadata is kept; prompts
-          and tool output are not saved.
-        </p>
-        <div class="actions">
-          <button id="scan" type="button" disabled>Preview usage</button
-          ><button id="toggle" class="primary" type="button" disabled>
-            Enable collection</button
-          ><button id="sync" type="button" hidden disabled>Sync now</button>
-        </div>
-        <p class="hint" id="schedule">
-          Collection starts paused. Preview first; enabling it writes records to
-          Magpie's history.
-        </p>
-      </section>
-      <section aria-labelledby="results-heading" aria-busy="false" id="results">
-        <div class="section-head">
-          <h2 id="results-heading">Latest scan</h2>
-          <span id="last-scan" class="hint">No scan yet</span>
-        </div>
-        <p id="empty">Preview your usage to check what can be imported.</p>
-        <dl id="counts" hidden>
-          <div>
-            <dt>Threads scanned</dt>
-            <dd id="threads">0</dd>
+      <div id="range" class="range" hidden>
+        <input id="from" type="date" />
+        <span class="muted">–</span>
+        <input id="to" type="date" />
+      </div>
+      <div id="errors" class="card errors" role="alert" hidden></div>
+
+      <p id="empty" class="muted" role="status" hidden></p>
+      <div id="board" hidden>
+        <dl id="tiles" class="tiles"></dl>
+
+        <section id="chart" class="card">
+          <div class="chart-head">
+            <h2 id="chart-title"></h2>
+            <span id="readout" class="muted"></span>
           </div>
-          <div>
-            <dt>Ready to import</dt>
-            <dd id="ready">0</dd>
+          <div id="bars" class="bars"></div>
+          <div class="axis muted">
+            <span id="first-tick"></span><span id="last-tick"></span>
           </div>
-          <div>
-            <dt>Waiting for stable usage</dt>
-            <dd id="pending">0</dd>
+        </section>
+
+        <section class="card">
+          <h2 data-t="byModel"></h2>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th data-t="model"></th>
+                  <th data-t="calls"></th>
+                  <th data-t="input"></th>
+                  <th data-t="output"></th>
+                  <th data-t="cacheRead"></th>
+                  <th data-t="cacheWrite"></th>
+                  <th data-t="share"></th>
+                </tr>
+              </thead>
+              <tbody id="models"></tbody>
+            </table>
           </div>
-          <div>
-            <dt>Imported in this sync</dt>
-            <dd id="imported">0</dd>
-          </div>
-          <div>
-            <dt>Already in Magpie in this sync</dt>
-            <dd id="skipped">0</dd>
-          </div>
-          <div>
-            <dt>Confirmed records across syncs</dt>
-            <dd id="total">0</dd>
-          </div>
-          <div>
-            <dt>Threads awaiting export</dt>
-            <dd id="remaining">0</dd>
-          </div>
-        </dl>
-        <p id="progress" role="status" aria-live="polite"></p>
-        <div id="errors" role="alert" hidden></div>
-        <div id="issues-box" hidden>
-          <h3>Records needing attention</h3>
-          <ul id="issues"></ul>
-        </div>
-      </section>
-      <details>
-        <summary>How records are counted</summary>
-        <p>
-          Input, output, cache reads and cache writes stay separate. Magpie
-          estimates the API-equivalent cost; Amp credits are not converted to
-          dollars.
-        </p>
-        <p>
-          Records must have a reliable timestamp and stay unchanged across scans
-          before import. Missing dates and changed records are reported here
-          instead of being silently reassigned or added again.
-        </p>
-        <p>
-          Known gateway matches are excluded. If you route Amp through Magpie
-          and the gateway cannot identify those requests, exclude the affected
-          threads or models in this plugin's options before enabling collection.
-        </p>
-        <p>
-          Pausing stops future imports. It does not remove records already
-          written to Magpie.
-        </p>
+        </section>
+      </div>
+
+      <details id="issues-box" hidden>
+        <summary id="issues-summary"></summary>
+        <ul id="issues"></ul>
       </details>
-      <footer>
-        <span id="destination"></span
-        ><span>Parser reference: Tokscale · MIT</span>
+      <details>
+        <summary data-t="howTitle"></summary>
+        <p data-t="how1"></p>
+        <p data-t="how2"></p>
+      </details>
+      <footer class="muted">
+        <span id="progress" role="status" aria-live="polite"></span>
+        <span>Parser reference: Tokscale · MIT</span>
       </footer>
     </main>
   </body>

@@ -77,11 +77,10 @@ test(
     t.after(() => collector.close());
     assert.equal((await collector.run()).pending, 1);
     now += 31000;
-    await collector.configure({ enabled: true, mode: "local" });
-    const first = await collector.run(true);
+    const first = await collector.run();
     assert.deepEqual(first.errors, []);
     assert.equal(first.imported, 1);
-    assert.equal((await collector.run(true)).imported, 0);
+    assert.equal((await collector.run()).imported, 0);
     const ledger = await (
       await fetch(`${base}/v1/magpie/usage/requests?period=all&agent=amp`)
     ).json();

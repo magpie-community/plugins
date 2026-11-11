@@ -43,9 +43,11 @@ export async function runAmp(binary, args, timeout = 30_000) {
     if (e instanceof SyntaxError)
       throw new Error("Amp returned invalid JSON. Update Amp and try again.");
     throw new Error(
-      e.killed
-        ? "Amp command timed out. Try syncing again."
-        : "Amp command failed. Check amp login and network access in your terminal.",
+      e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+        ? "An Amp thread export is too large to read; it was skipped."
+        : e.killed
+          ? "Amp command timed out. Try syncing again."
+          : "Amp command failed. Check amp login and network access in your terminal.",
     );
   }
 }
@@ -58,7 +60,7 @@ export function localDirs() {
     ),
   ];
 }
-export async function readLocal(dirs = localDirs()) {
+export async function readLocal(dirs = localDirs(), { required = true } = {}) {
   const threads = new Map();
   const errors = [];
   for (const dir of dirs) {
@@ -68,11 +70,10 @@ export async function readLocal(dirs = localDirs()) {
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch (e) {
-      errors.push(
-        e.code === "ENOENT"
-          ? "Local thread directory not found."
-          : "Cannot read local thread directory.",
-      );
+      // Amp's own legacy directory is optional; a configured one is not.
+      if (e.code !== "ENOENT")
+        errors.push("Cannot read local thread directory.");
+      else if (required) errors.push("Local thread directory not found.");
       continue;
     }
     for (const entry of entries) {
@@ -124,13 +125,10 @@ export async function readCloud({
     return invoke(args, ms);
   };
   const indexPath = join(dataDir, "cloud-index.json");
-  const index = await readJSON(indexPath, { version: 1, threads: {} });
-  if (
-    index.version !== 1 ||
-    !index.threads ||
-    typeof index.threads !== "object"
-  )
-    throw new Error("Unsupported cloud cache index.");
+  let index = await readJSON(indexPath, null);
+  // Version 1 projections carry no sent times; export those threads again.
+  if (index?.version !== 2 || typeof index.threads !== "object")
+    index = { version: 2, threads: {} };
   const listed = new Map();
   for (let offset = 0; offset < 100_000; offset += 200) {
     const page = await call([
@@ -158,7 +156,7 @@ export async function readCloud({
     }
     if (page.length < 200) break;
     if (!added || offset + 200 >= 100_000)
-      throw new Error("Amp pagination did not finish; no usage was imported.");
+      throw new Error("Amp pagination did not finish.");
   }
   const threads = [],
     errors = [];
@@ -177,25 +175,26 @@ export async function readCloud({
       /* Re-export a damaged projection. */
     }
     if (index.threads[meta.id] !== meta.updated || !cached) {
-      if (exported >= maxExports || now() >= deadline) {
-        remaining++;
-        continue;
-      }
-      exported++;
-      try {
-        const raw = await call(["threads", "export", meta.id]);
-        if (raw?.id !== meta.id)
-          throw new Error("Amp export returned a different thread.");
-        cached = projectThread(raw);
-        await writeJSON(file, cached);
-        index.threads[meta.id] = meta.updated;
-        await writeJSON(indexPath, index);
-      } catch (e) {
-        errors.push(e.message);
-        continue;
+      if (exported >= maxExports || now() >= deadline) remaining++;
+      else {
+        exported++;
+        try {
+          const raw = await call(["threads", "export", meta.id]);
+          if (raw?.id !== meta.id)
+            throw new Error("Amp export returned a different thread.");
+          cached = projectThread(raw);
+          await writeJSON(file, cached);
+          index.threads[meta.id] = meta.updated;
+          await writeJSON(indexPath, index);
+        } catch (e) {
+          errors.push(e.message);
+        }
       }
     }
-    if (cached?.id !== meta.id) {
+    // An export that failed or must wait still leaves the last good copy, so
+    // its records keep settling.
+    if (!cached) continue;
+    if (cached.id !== meta.id) {
       errors.push("Cached thread ID mismatch; cache entry excluded.");
       delete index.threads[meta.id];
       continue;

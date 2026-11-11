@@ -92,22 +92,14 @@ export async function startServer({
           if (Buffer.byteLength(raw) > 4096)
             return send(res, 413, { error: "Request too large." });
         }
-        let body;
         try {
-          body = JSON.parse(raw);
+          JSON.parse(raw);
         } catch {
           return send(res, 400, { error: "Invalid JSON." });
         }
-        if (url.pathname === "/api/settings") {
-          try {
-            return send(res, 200, await collector.configure(body));
-          } catch (e) {
-            return send(res, 409, { error: e.message });
-          }
-        }
-        if (url.pathname === "/api/scan" || url.pathname === "/api/sync") {
+        if (url.pathname === "/api/refresh") {
           // The page polls status; a long cloud export never holds its HTTP request.
-          void collector.run(url.pathname === "/api/sync").catch(() => {});
+          void collector.run().catch(() => {});
           return send(res, 202, collector.view());
         }
         return send(res, 404, { error: "Not found." });

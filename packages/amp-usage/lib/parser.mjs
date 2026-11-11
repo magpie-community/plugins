@@ -1,5 +1,6 @@
 // Amp's ledger/message reconciliation follows Tokscale's MIT-licensed parser.
-// See NOTICE. Unlike its charts, an append-only ledger must not invent dates.
+// See NOTICE. A call with no time of its own takes the moment its turn was
+// sent; nothing is dated from a thread's creation or a file's mtime.
 import { createHash } from "node:crypto";
 
 export const digest = (value) =>
@@ -57,7 +58,7 @@ export function parseThread(
   const note = (code) => {
     issues[code] = (issues[code] || 0) + 1;
   };
-  const make = (u, ledger, id, state, ordinal) => {
+  const make = (u, ledger, id, state) => {
     const tokens = counts(u, ledger);
     const model = modelOf(u.model);
     if (!model || tokens.includes(null)) {
@@ -72,35 +73,40 @@ export function parseThread(
       time: timeOf(u.timestamp),
       id,
       state,
-      ordinal,
       operation: String(u.operationType || ""),
-      from: idOf(u.fromMessageId),
     };
   };
+  let sent = null;
   const messages = (
     Array.isArray(thread.messages) ? thread.messages : []
-  ).flatMap((m, i) => {
+  ).flatMap((m) => {
+    if (m?.role === "user" && Number.isFinite(m.sentAt))
+      sent = timeOf(new Date(m.sentAt).toISOString());
     if (m?.role !== "assistant" || !m.usage) return [];
-    const r = make(m.usage, false, idOf(m.messageId), m.state?.type, i);
+    const r = make(m.usage, false, idOf(m.messageId), m.state?.type);
+    if (r) r.sent = sent;
     return r ? [r] : [];
   });
   const ledger = (
     Array.isArray(thread.usageLedger?.events) ? thread.usageLedger.events : []
-  ).flatMap((e, i) => {
+  ).flatMap((e) => {
     if (!e?.tokens) return [];
+    // The subagent's own thread reports these calls one by one, with cache.
+    if (e.operationType === "subagent" && validThread(e.subagentThreadID)) {
+      note("subagentThread");
+      return [];
+    }
     const r = make(
       {
         ...e.tokens,
         model: e.model,
         timestamp: e.timestamp,
         operationType: e.operationType,
-        fromMessageId: e.fromMessageId,
       },
       true,
       idOf(e.toMessageId),
-      undefined,
-      i,
     );
+    if (r) r.event = idOf(e.id);
     return r ? [r] : [];
   });
   const consumed = new Set();
@@ -119,10 +125,12 @@ export function parseThread(
         (r, i) =>
           !consumed.has(i) &&
           r.model === message.model &&
-          JSON.stringify(r.tokens) === JSON.stringify(message.tokens) &&
+          // Amp's ledger usually carries input/output only.
+          r.tokens.every((n, k) => n === message.tokens[k] || (k > 1 && !n)) &&
           (!r.time || !message.time || r.time === message.time),
       );
     if (index < 0) {
+      message.time ||= message.sent;
       unmatched.push(message);
       continue;
     }
@@ -131,12 +139,13 @@ export function parseThread(
     // Message identity survives a ledger appearing in a later export.
     r.id = message.id ?? r.id;
     r.matched = true;
-    r.time ||= message.time;
+    r.time ||= message.time || message.sent;
+    r.tokens[2] ||= message.tokens[2];
+    r.tokens[3] ||= message.tokens[3];
     r.state = message.state;
   }
   const records = [];
   const seen = new Map();
-  const occurrences = new Map();
   for (const r of [...ledger, ...unmatched]) {
     if (r.state && r.state !== "complete") {
       note("unfinished");
@@ -153,13 +162,11 @@ export function parseThread(
     const messageIdentity =
       r.id !== null &&
       (!r.ledger || r.matched || !r.operation || r.operation === "inference");
-    const key = messageIdentity
-      ? `message:${r.id}`
-      : `event:${digest([r.time, r.model, r.operation, r.from, r.id])}`;
-    const ordinal = occurrences.get(key) || 0;
-    occurrences.set(key, ordinal + 1);
-    // Repeated anonymous events can be distinct calls. Message IDs cannot.
-    const identity = messageIdentity ? key : `${key}:${ordinal}`;
+    if (!messageIdentity && r.event === null) {
+      note("missingIdentity");
+      continue;
+    }
+    const identity = messageIdentity ? `message:${r.id}` : `event:${r.event}`;
     const [input, output, cacheRead, cacheWrite] = r.tokens;
     const rec = {
       t: r.time,
@@ -205,22 +212,29 @@ export function projectThread(t) {
     "cacheCreationInputTokens",
   ];
   const eventKeys = [
+    "id",
     "model",
     "timestamp",
-    "fromMessageId",
     "toMessageId",
     "operationType",
+    "subagentThreadID",
   ];
   return {
     id: t.id,
-    messages: (t.messages || [])
-      .filter((m) => m?.role === "assistant" && m.usage)
-      .map((m) => ({
-        role: m.role,
-        messageId: m.messageId,
-        state: { type: m.state?.type },
-        usage: pick(m.usage, usageKeys),
-      })),
+    messages: (t.messages || []).flatMap((m) =>
+      m?.role === "assistant" && m.usage
+        ? [
+            {
+              role: m.role,
+              messageId: m.messageId,
+              state: { type: m.state?.type },
+              usage: pick(m.usage, usageKeys),
+            },
+          ]
+        : m?.role === "user" && Number.isFinite(m.meta?.sentAt)
+          ? [{ role: m.role, sentAt: m.meta.sentAt }]
+          : [],
+    ),
     usageLedger: {
       events: (t.usageLedger?.events || []).map((e) => ({
         ...pick(e, eventKeys),

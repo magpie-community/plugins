@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCollector, acquireLock, gatewayURL } from "../lib/collector.mjs";
@@ -67,28 +67,26 @@ async function setup(t, extra = {}) {
     },
   };
 }
-test("preview never imports; enabled collection settles, imports, and survives restart", async (t) => {
+test("a record settles, is imported once, and survives restart", async (t) => {
   const h = await setup(t);
-  const a = await h.collector.run(false);
+  const a = await h.collector.run();
   assert.equal(a.pending, 1);
   assert.equal(h.sent.length, 0);
   h.advance();
-  await h.collector.configure({ enabled: true, mode: "local" });
-  const b = await h.collector.run(true);
+  const b = await h.collector.run();
   assert.equal(b.imported, 1);
   assert.equal(h.rows.size, 1);
   await h.restart();
-  await h.collector.run(true);
+  await h.collector.run();
   assert.equal(h.sent.length, 1);
 });
 test("changed records are diagnosed without adding a second row", async (t) => {
   const h = await setup(t);
   await h.collector.run();
   h.advance();
-  await h.collector.configure({ enabled: true, mode: "local" });
-  await h.collector.run(true);
+  await h.collector.run();
   h.data.messages[0].usage.outputTokens = 99;
-  const s = await h.collector.run(true);
+  const s = await h.collector.run();
   assert.equal(s.issues.changedAfterImport, 1);
   assert.equal(h.sent.length, 1);
 });
@@ -111,9 +109,8 @@ test("a transport failure is retried with the same RID", async (t) => {
   });
   await h.collector.run();
   h.advance();
-  await h.collector.configure({ enabled: true, mode: "local" });
-  assert.ok((await h.collector.run(true)).errors.length);
-  assert.equal((await h.collector.run(true)).skipped, 1);
+  assert.ok((await h.collector.run()).errors.length);
+  assert.equal((await h.collector.run()).skipped, 1);
 });
 test("the gateway's matching usage is not imported again", async (t) => {
   const h = await setup(t);
@@ -128,23 +125,44 @@ test("the gateway's matching usage is not imported again", async (t) => {
     }) + "\n",
   );
   assert.equal((await h.collector.run()).issues.gatewayDuplicate, 1);
+  // Magpie rotates the ledger; the verdict must survive it.
+  await rm(join(h.dir, "usage.jsonl"));
+  h.advance();
+  await h.restart();
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, 1);
+  h.advance();
+  await h.collector.run();
   assert.equal(h.sent.length, 0);
 });
-test("paused sync is read-only and settings cannot race an active scan", async (t) => {
-  let finish;
+test("a record Magpie rejects does not block the others", async (t) => {
   const h = await setup(t, {
-    source: () =>
-      new Promise((resolve) => {
-        finish = resolve;
+    fetchImpl: async (_u, req) =>
+      Response.json({
+        records: JSON.parse(req.body).map((r) => ({
+          rid: r.rid,
+          status: r.out === 20 ? "rejected" : "accepted",
+        })),
       }),
   });
-  const run = h.collector.run(true);
-  await assert.rejects(
-    h.collector.configure({ enabled: true, mode: "local" }),
-    /Wait/,
-  );
-  finish({ threads: [thread()] });
-  await run;
+  h.data.messages.push({
+    ...h.data.messages[0],
+    messageId: 2,
+    usage: { ...h.data.messages[0].usage, outputTokens: 21 },
+  });
+  await h.collector.run();
+  h.advance();
+  const s = await h.collector.run();
+  assert.equal(s.imported, 1);
+  assert.equal(s.issues.rejected, 1);
+  assert.equal(s.totalImported, 1);
+});
+test("with sync off the collector only reads", async (t) => {
+  const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
+  await h.collector.run();
+  h.advance();
+  const s = await h.collector.run();
+  assert.equal(s.eligible, 1);
+  assert.equal(s.usage[0].calls, 1);
   assert.equal(h.sent.length, 0);
 });
 test("corrupt state fails closed", async (t) => {
@@ -163,6 +181,25 @@ test("one service owns a data directory", async (t) => {
   const release2 = await acquireLock(dir);
   await release2();
 });
+test("a torn or dead lock is taken over", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "amp-lock-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  for (const left of ["", "{broken", '{"pid":2147483646}']) {
+    await writeFile(join(dir, "collector.lock"), left);
+    await (
+      await acquireLock(dir)
+    )();
+  }
+});
+test("gateway rows are read only for undecided records", async (t) => {
+  const h = await setup(t);
+  await h.collector.run();
+  h.advance();
+  assert.equal((await h.collector.run()).imported, 1);
+  // Unreadable now, but nothing is left to decide.
+  await mkdir(join(h.dir, "usage.jsonl"));
+  assert.deepEqual((await h.collector.run()).errors, []);
+});
 test("gateway destination is loopback-only", () => {
   assert.equal(gatewayURL("http://127.0.0.1:3425/v1"), "http://127.0.0.1:3425");
   for (const s of [
@@ -180,8 +217,7 @@ test("a disappearing record must settle again before import", async (t) => {
   const m = h.data.messages.pop();
   await h.collector.run();
   h.data.messages.push(m);
-  await h.collector.configure({ enabled: true, mode: "local" });
-  const s = await h.collector.run(true);
+  const s = await h.collector.run();
   assert.equal(s.pending, 1);
   assert.equal(s.imported, 0);
 });
@@ -189,23 +225,43 @@ test("identity changes with identical usage are held rather than duplicated", as
   const h = await setup(t);
   await h.collector.run();
   h.advance();
-  await h.collector.configure({ enabled: true, mode: "local" });
-  await h.collector.run(true);
+  await h.collector.run();
   h.data.messages[0].messageId = 2;
-  const s = await h.collector.run(true);
+  const s = await h.collector.run();
   assert.equal(s.issues.identityChanged, 1);
   assert.equal(h.sent.length, 1);
 });
-test("switching source clears the previous preview but keeps confirmed records", async (t) => {
+test("the page gets usage by local hour and model", async (t) => {
   const h = await setup(t);
-  await h.collector.run();
-  h.advance();
-  await h.collector.configure({ enabled: true, mode: "cloud" });
-  await h.collector.run(true);
-  const next = await h.collector.configure({ enabled: false, mode: "local" });
-  assert.equal(next.settings.mode, "local");
-  assert.equal(next.lastScan, null);
-  assert.equal(next.eligible, 0);
-  assert.deepEqual(next.issues, {});
-  assert.equal(next.totalImported, 1);
+  h.data.messages.push({
+    ...h.data.messages[0],
+    messageId: 2,
+    usage: { ...h.data.messages[0].usage, cacheReadInputTokens: 5 },
+  });
+  const row = (await h.collector.run()).usage;
+  assert.equal(row.length, 1);
+  assert.deepEqual(
+    { ...row[0], hour: undefined },
+    {
+      hour: undefined,
+      model: "gpt-test",
+      calls: 2,
+      in: 20,
+      out: 40,
+      cache_read: 5,
+      cache_write: 0,
+    },
+  );
+  assert.match(row[0].hour, /^\d{4}-\d\d-\d\dT\d\d$/);
+});
+test("a record held by two sources is counted once, from the first", async (t) => {
+  const copy = thread();
+  copy.messages[0].usage.outputTokens = 99;
+  const h = await setup(t, {
+    source: async () => ({ threads: [thread(), copy], errors: [] }),
+  });
+  const s = await h.collector.run();
+  assert.equal(s.scannedThreads, 1);
+  assert.equal(s.usage[0].calls, 1);
+  assert.equal(s.usage[0].out, 20);
 });

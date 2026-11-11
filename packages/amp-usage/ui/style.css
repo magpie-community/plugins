@@ -1,212 +1,286 @@
+/* Magpie's own look. The launcher passes the window's real colours as
+   --magpie-* variables; the values below are only fallbacks. */
 :root {
+  --magpie-bg: #f5f6f8;
+  --magpie-card: #ffffff;
+  --magpie-fg: #23262e;
+  --magpie-muted: #6b7280;
+  --magpie-line: #e2e4e9;
+  --magpie-accent: #5b5bd6;
+  --magpie-green: #1f7a4d;
+  --magpie-red: #b3352f;
   color-scheme: light;
-  --bg: #fff;
-  --surface: #f5f5f7;
-  --fg: #242429;
-  --muted: #666670;
-  --line: #dedee4;
-  --accent: #5140bb;
-  --on-accent: #fff;
-  --error: #a51e32;
-  --focus: #705bce;
 }
 :root[data-theme="dark"] {
+  --magpie-bg: #15171c;
+  --magpie-card: #1c1f26;
+  --magpie-fg: #e8e9ee;
+  --magpie-muted: #9aa0aa;
+  --magpie-line: #2c3038;
+  --magpie-accent: #8f8ff0;
+  --magpie-green: #5ac08a;
+  --magpie-red: #e0716a;
   color-scheme: dark;
-  --bg: #202024;
-  --surface: #2c2c32;
-  --fg: #f2f2f5;
-  --muted: #b1b1bc;
-  --line: #474750;
-  --accent: #b5a6ff;
-  --on-accent: #252033;
-  --error: #ff9dac;
-  --focus: #bcafff;
 }
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font:
-    14px/1.55 -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
-  caret-color: var(--accent);
+  background: var(--magpie-bg);
+  color: var(--magpie-fg);
+  font: 13px/1.5
+    var(
+      --magpie-font,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      system-ui,
+      sans-serif
+    );
+  -webkit-font-smoothing: antialiased;
 }
 main {
-  max-width: 840px;
-  margin: 0 auto;
-  padding: 30px 28px 24px;
-}
-::selection {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-* {
-  scrollbar-color: var(--line) var(--bg);
-  scrollbar-width: thin;
-}
-header {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 26px;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+h1,
+h2,
+p {
+  margin: 0;
 }
 h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 h2 {
-  margin: 0 0 16px;
-  font-size: 16px;
-  font-weight: 650;
-}
-h3 {
-  margin: 20px 0 6px;
-  font-size: 14px;
-}
-p {
-  max-width: 72ch;
-  margin: 8px 0 14px;
-}
-header p,
-.hint,
-footer {
-  color: var(--muted);
-}
-.status {
-  white-space: nowrap;
-  font-size: 12px;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-}
-section {
-  padding: 24px 0;
-  border-top: 1px solid var(--line);
-}
-label {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: 550;
-}
-select {
-  width: 100%;
-  max-width: 440px;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 20px;
-}
-button {
-  min-height: 40px;
-  padding: 8px 15px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--fg);
-  font: inherit;
-  font-weight: 550;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-button.primary {
-  background: var(--accent);
-  color: var(--on-accent);
-  border-color: var(--accent);
-}
-button:disabled,
-select:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-@media (hover: hover) {
-  button:hover:not(:disabled) {
-    filter: brightness(0.94);
-  }
-}
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 3px;
-}
-.section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-dl {
-  margin: 4px 0 0;
-  font-variant-numeric: tabular-nums;
-}
-dl div {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 9px 0;
-}
-dl div + div {
-  border-top: 1px solid var(--line);
-}
-dt {
-  color: var(--muted);
-}
-dd {
-  margin: 0;
+  font-size: 13px;
   font-weight: 600;
 }
-#progress {
-  color: var(--muted);
-  min-height: 1.5em;
+.muted {
+  color: var(--magpie-muted);
+  font-size: 12px;
 }
-#errors {
-  color: var(--error);
+header,
+.tools,
+.range,
+.chart-head,
+.axis,
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.range {
+  justify-content: flex-start;
+}
+.card {
+  padding: 14px 16px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 10px;
+  background: var(--magpie-card);
+}
+button,
+select,
+input {
+  min-height: 30px;
+  padding: 3px 10px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 8px;
+  background: var(--magpie-card);
+  color: inherit;
+  font: inherit;
+}
+button,
+select {
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--magpie-muted);
+}
+button:disabled {
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--magpie-accent);
+  outline-offset: 1px;
+}
+svg {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+/* Magpie's own period control: one pill, the chosen period raised in it. */
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--magpie-line);
+}
+.segmented button {
+  min-height: 26px;
+  padding: 2px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--magpie-muted);
+}
+.segmented button:hover {
+  color: var(--magpie-fg);
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--magpie-card);
+  color: var(--magpie-fg);
+  font-weight: 600;
+}
+button.icon {
+  padding: 3px 6px;
+  border-color: transparent;
+  background: none;
+  color: var(--magpie-muted);
+}
+button.icon.spin svg {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  button.icon.spin svg {
+    animation: none;
+  }
+}
+.errors {
+  border-color: var(--magpie-red);
+  color: var(--magpie-red);
   overflow-wrap: anywhere;
 }
-#errors p {
-  margin: 6px 0;
+
+#board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
-ul {
-  margin: 8px 0;
-  padding-left: 20px;
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin: 0;
 }
-li {
-  margin: 6px 0;
+.tiles div {
+  padding: 12px 16px;
+  border: 1px solid var(--magpie-line);
+  border-radius: 10px;
+  background: var(--magpie-card);
 }
+dt {
+  color: var(--magpie-muted);
+  font-size: 12px;
+}
+dd {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-head {
+  margin-bottom: 12px;
+}
+#readout {
+  font-variant-numeric: tabular-nums;
+}
+.bars {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 120px;
+  border-bottom: 1px solid var(--magpie-line);
+}
+/* The whole column is the hover target, not only the painted part. */
+.bar {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+.bar i {
+  width: 100%;
+  min-height: 0;
+  border-radius: 3px 3px 0 0;
+  background: var(--magpie-accent);
+}
+.bar:hover i,
+.bar:focus-visible i {
+  filter: brightness(1.25);
+}
+.bar:focus-visible {
+  outline-offset: -1px;
+}
+.bars.dense {
+  gap: 0;
+}
+.bars.dense .bar i {
+  border-radius: 0;
+}
+.axis {
+  margin-top: 6px;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+th,
+td {
+  padding: 7px 0 7px 16px;
+  text-align: right;
+  white-space: nowrap;
+  font-weight: 400;
+}
+th:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+thead th {
+  color: var(--magpie-muted);
+  font-size: 12px;
+}
+tbody tr {
+  border-top: 1px solid var(--magpie-line);
+}
+
 details {
-  padding: 18px 0;
-  border-top: 1px solid var(--line);
+  color: var(--magpie-muted);
 }
 summary {
   cursor: pointer;
-  font-weight: 550;
 }
-details p {
-  color: var(--muted);
+details p,
+details ul {
+  max-width: 72ch;
+  margin: 8px 0 0;
+}
+ul {
+  padding-left: 18px;
 }
 footer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 22px;
-  font-size: 12px;
   overflow-wrap: anywhere;
 }
 [hidden] {
@@ -214,21 +288,6 @@ footer {
 }
 @media (max-width: 520px) {
   main {
-    padding: 20px 16px;
-  }
-  header {
-    gap: 12px;
-  }
-  h1 {
-    font-size: 22px;
-  }
-  select {
-    font-size: 16px;
-  }
-  .actions button {
-    flex: 1 1 auto;
-  }
-  .section-head {
-    display: block;
+    padding: 16px;
   }
 }

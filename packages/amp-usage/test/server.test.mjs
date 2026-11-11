@@ -14,7 +14,6 @@ test("loopback service protects every API and accepts authenticated sandbox requ
     run: async () => {
       scanned++;
     },
-    configure: async () => ({}),
     close: async () => {},
   };
   const s = await startServer({
@@ -54,7 +53,7 @@ test("loopback service protects every API and accepts authenticated sandbox requ
     req.end();
   });
   assert.equal(badHost, 403);
-  const response = await fetch(base + "/api/scan", {
+  const response = await fetch(base + "/api/refresh", {
     method: "POST",
     headers: {
       "x-amp-usage-token": token,
@@ -68,7 +67,7 @@ test("loopback service protects every API and accepts authenticated sandbox requ
   assert.equal(scanned, 1);
   assert.equal(
     (
-      await fetch(base + "/api/settings", {
+      await fetch(base + "/api/refresh", {
         method: "POST",
         headers: {
           "x-amp-usage-token": token,
