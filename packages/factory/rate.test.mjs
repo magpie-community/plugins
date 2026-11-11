@@ -79,6 +79,33 @@ test("a promotion running comes off the rate, the multiplier before it as rateWa
   expect(models["gemini-4-argon"].rateWas).toBe(1.6)
 })
 
+// The test above holds one date, so a promotion that starts after it (Gemini 4
+// Carbon's, 2026-11-10) was never checked (#954). Every promotion droid lists
+// is checked inside its own window, and after it ends. One that ended before
+// PROMOTIONS began (GPT-6 Astra's 60% off, to 2026-09-05) was never listed.
+const LISTED_SINCE = Date.parse("2026-10-01T00:00:00Z")
+test("every promotion droid lists comes off the rate in its own window, and not after", () => {
+  let seen = 0
+  for (const m of _internal.MODELS) {
+    for (const p of promotions(m.id)) {
+      if (p.to && Date.parse(p.to) < LISTED_SINCE) continue
+      const from = Date.parse(p.from)
+      const times = [from + 60_000]
+      if (p.to) times.push(Date.parse(p.to) - 60_000, Date.parse(p.to) + 60_000)
+      for (const now of times) {
+        const got = _internal.configModels(now)[m.id]
+        expect({ id: m.id, at: new Date(now).toISOString(), rate: got.rate, rateWas: got.rateWas }).toEqual({
+          id: m.id,
+          at: new Date(now).toISOString(),
+          ...price(m.id, now),
+        })
+      }
+      seen++
+    }
+  }
+  expect(seen).toBeGreaterThanOrEqual(7)
+})
+
 test("a promotion that has ended, or hasn't started, is no discount at all", () => {
   // Gemini 4 Argon's 50% off ends 2026-12-01T08:00Z; GLM-5.6 Sol's 20% starts
   // 2026-08-22T00:00Z. Either way the multiplier is the price.
