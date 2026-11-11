@@ -10,7 +10,7 @@ import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { FactoryAuthPlugin, _internal } from "./index.mjs"
 
-const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt", "droid-1.7.0-models.txt"]
+const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt", "droid-1.7.0-models.txt", "droid-1.7.1-carbon.txt"]
   .map((name) => readFileSync(new URL(`./testdata/${name}`, import.meta.url), "utf8")).join("\n")
 
 // cost is a model's cost text, as its entry keeps it (Inkling's key unquoted).

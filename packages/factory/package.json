@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-factory-auth",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "description": "Sign in to a Factory (Droid) subscription from OpenCode or magpie",
   "type": "module",
   "main": "./opencode.mjs",
