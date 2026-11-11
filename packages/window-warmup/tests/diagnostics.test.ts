@@ -10,6 +10,9 @@ import { Scheduler } from "../src/scheduler";
 import { startService, type ServiceHandle } from "../src/server";
 import type { Run, Task } from "../src/types";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
+import { pinMagpieDirsForTest } from "./test-env";
+
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 const KEY_RAW = "sk-test-SECRET-9f8e7d6c5b";
 const FP = createHash("sha256").update(KEY_RAW, "utf8").digest("hex").slice(0, 10);
@@ -74,13 +77,17 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await svc?.stop();
-  gw?.stop();
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+  try {
+    await svc?.stop();
+    gw?.stop();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(root, { recursive: true, force: true });
+  } finally {
+    restoreMagpieDirs();
   }
-  await rm(root, { recursive: true, force: true });
 });
 
 const daily = { kind: "daily", time: "06:00", timeZone: "Asia/Shanghai" };

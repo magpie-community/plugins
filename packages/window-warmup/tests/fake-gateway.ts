@@ -3,10 +3,10 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// 测试进程绝不读真实用户的 Magpie 配置：把目录推导用的 XDG 钉到临时位置
-// （fetchCatalog 与调度器的兜底读取会走 magpieDirs 的默认路径）
-process.env.XDG_CONFIG_HOME = join(tmpdir(), "window-warmup-test-magpie-config");
-process.env.XDG_CACHE_HOME = join(tmpdir(), "window-warmup-test-magpie-cache");
+export function pinMagpieDirs() {
+  process.env.XDG_CONFIG_HOME = join(tmpdir(), "window-warmup-test-magpie-config");
+  process.env.XDG_CACHE_HOME = join(tmpdir(), "window-warmup-test-magpie-cache");
+}
 
 export interface FakeChatReply {
   status?: number;
@@ -140,6 +140,7 @@ export function fakeGateway(opts: FakeGatewayOpts = {}): FakeGateway {
 
 // bun tests/fake-gateway.ts --serve：以示例数据常驻并打印地址，供页面联调与截图（长驻，勿在测试里跑）
 if (import.meta.main && process.argv.includes("--serve")) {
+  pinMagpieDirs();
   const in2h = new Date(Date.now() + 2 * 3_600_000).toISOString();
   const gw = fakeGateway({
     models: [

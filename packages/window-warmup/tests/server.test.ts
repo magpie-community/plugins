@@ -8,14 +8,21 @@ import { join, posix, win32 } from "node:path";
 import plugin from "../src/plugin";
 import { alreadyServing, insideDir, loadOrCreateToken, startService, TOKEN_FILE, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
+import { pinMagpieDirsForTest } from "./test-env";
+
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 const services: ServiceHandle[] = [];
 const gateways: FakeGateway[] = [];
 const dirs: string[] = [];
 afterAll(async () => {
-  while (services.length) await services.pop()!.stop();
-  for (const gw of gateways.splice(0)) gw.stop();
-  while (dirs.length) await rm(dirs.pop()!, { recursive: true, force: true });
+  try {
+    while (services.length) await services.pop()!.stop();
+    for (const gw of gateways.splice(0)) gw.stop();
+    while (dirs.length) await rm(dirs.pop()!, { recursive: true, force: true });
+  } finally {
+    restoreMagpieDirs();
+  }
 });
 
 const MODELS = [{ id: "p1/m1", owned_by: "p1", reasoning: false }];

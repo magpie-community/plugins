@@ -1,6 +1,6 @@
 // 调度器的失败测试：注入假时钟、假定时器与假网关函数，不发任何真实请求。
 // 单个定时器有 10 分钟封顶，跨长时段的断言一律看 snapshot().next（语义到期点）而非定时器 at。
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,15 +8,16 @@ import { join } from "node:path";
 import type { CachedModel, KeyDirectoryEntry } from "../src/magpie-files";
 import { openStore, type Store, type TaskMarks } from "../src/store";
 import { Scheduler, type TaskInput } from "../src/scheduler";
+import { pinMagpieDirsForTest } from "./test-env";
 import type { QuotaEntry, RawModel, Run, SendResult, Task } from "../src/types";
 
 // 测试进程绝不读真实用户的 Magpie 配置：把默认目录推导用的 XDG 钉到临时位置
-process.env.XDG_CONFIG_HOME = join(tmpdir(), "window-warmup-test-magpie-config");
-process.env.XDG_CACHE_HOME = join(tmpdir(), "window-warmup-test-magpie-cache");
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 const HOUR = 3_600_000;
 const T0 = "2026-10-31T05:00:00+08:00"; // 周六 05:00，上海
 const ms = (iso: string) => new Date(iso).getTime();
+afterAll(restoreMagpieDirs);
 
 /** 不思考的模型：effort 应为 null，请求不带 reasoning_effort */
 const M1: RawModel = { id: "m1", owned_by: "p1", reasoning: false };
