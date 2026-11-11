@@ -10,10 +10,10 @@
 // those of its current desktop app (see SITES' app, cli and appName).
 
 import { createHash, randomBytes } from "node:crypto"
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs"
+import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { isAbsolute, join } from "node:path"
-import { gzipSync } from "node:zlib"
+import { dirname, isAbsolute, join } from "node:path"
+import { gzipSync, gunzipSync } from "node:zlib"
 
 const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
@@ -2388,6 +2388,19 @@ function windowReset(text) {
   return Date.UTC(+at[1], +at[2] - 1, +at[3], +at[4], +at[5], +at[6]) - off * 60000
 }
 
+// resetOf is the vendor reset a row names, whether its words spell it out or
+// a routing trace handed it as the instant itself.
+function resetOf(row) {
+  const said = windowReset(row?.err)
+  if (Number.isFinite(said)) return said
+  const until = Number(row?.restUntil)
+  return Number.isFinite(until) ? until : NaN
+}
+
+function windowModel(model, win) {
+  return typeof model === "string" && (model.startsWith(win.model) || win.aliases.some((alias) => model.startsWith(alias)))
+}
+
 // freeWindowOf is the window account is in now, from rows (magpie's usage
 // records), or null when it has lapsed — the next request opens a new one.
 // now is passed in so the reading is testable; win is the build's window
@@ -2404,7 +2417,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
       r?.provider === win.provider &&
       r.providerAccount === account &&
       typeof r.model === "string" &&
-      r.model.startsWith(win.model) &&
+      windowModel(r.model, win) &&
       r.t,
   )
   if (!mine.length) return null
@@ -2423,7 +2436,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   const edges = []
   for (const r of mine) {
     if (Number(r.status) !== 429) continue
-    const t = windowReset(r.err)
+    const t = resetOf(r)
     if (Number.isFinite(t)) edges.push(t)
   }
   edges.sort((a, b) => a - b)
@@ -2500,7 +2513,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   let live = null
   for (const r of mine) {
     if (Number(r.status) !== 429) continue
-    const t = windowReset(r.err)
+    const t = resetOf(r)
     if (!Number.isFinite(t) || t <= now || t <= start) continue
     if (live === null || t > live) live = t
   }
@@ -2536,6 +2549,13 @@ function tokensShort(n) {
 // own now.
 let ledgerParsed = null
 
+// routingParsed is the WorkBuddy refusals read from a routing file, keyed by
+// that file alone (and the build whose models are being asked about). The
+// usage ledger beside it changes on every request; the routing files need not
+// be read — least of all the gzip days — merely because usage did.
+const routingParsed = new Map()
+const routingReads = { count: 0 }
+
 // ledgerBad is the number of whole lines the ledger last had that could
 // not be decoded, and the file it was read from, so that a ledger read
 // once and read again is complained about once, not on every panel open.
@@ -2556,6 +2576,136 @@ function freeWindowLedger(cwd = process.cwd(), env = process.env, home = homedir
   if (env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME)) dirs.push(join(env.XDG_CONFIG_HOME, "magpie"))
   if (home) dirs.push(join(home, ".config", "magpie"))
   return dirs.map((d) => join(d, "usage.jsonl"))
+}
+
+// freeWindowRouting is the trace files a window can need, from the same root
+// as the ledger. Magpie writes one plain file a day and gzips the days before,
+// so only the local dates a 24h window and its lead can reach are named:
+// three, from the day two days back through today.
+function freeWindowRouting(base, now = Date.now()) {
+  const days = new Set()
+  for (let at = new Date(now); days.size < 3; at.setDate(at.getDate() - 1)) {
+    days.add(`${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`)
+  }
+  let names
+  try {
+    names = readdirSync(join(base, "routing"))
+  } catch {
+    return []
+  }
+  const found = [...days].map((day) => (names.includes(`${day}.jsonl.gz`) ? `${day}.jsonl.gz` : names.includes(`${day}.jsonl`) ? `${day}.jsonl` : null)).filter(Boolean)
+  return found.map((name) => join(base, "routing", name))
+}
+
+// restIdentity reads the gateway rest key's exact shape,
+// workbuddy@<account>/<model>: the provider must be this build's whole name,
+// the model starts at the last slash, and the account is everything before it,
+// so an account may itself contain @ or /.
+function restIdentity(rest, win) {
+  if (typeof rest?.key !== "string" || typeof rest.until !== "string" || !Number.isFinite(Date.parse(rest.until))) return null
+  if (!rest.key.startsWith(win.provider + "@")) return null
+  const tail = rest.key.slice(win.provider.length + 1)
+  const modelAt = tail.lastIndexOf("/")
+  if (modelAt <= 0 || modelAt === tail.length - 1) return null
+  const model = tail.slice(modelAt + 1)
+  return windowModel(model, win) ? { account: tail.slice(0, modelAt), model } : null
+}
+
+// routingRefusals turns a routing trace's failed WorkBuddy attempts into the
+// same shape as a usage row, so freeWindowOf can read the vendor reset an
+// ordinary usage read never saw. An attempt is named either by order[]'s who
+// or, when the gateway rest carries an until, by rest.key's exact account and
+// model; where both name different accounts the attempt is left out rather
+// than guessed onto one of them.
+function routingRefusals(win, text) {
+  const rows = []
+  for (const line of text.split("\n")) {
+    if (!line.includes(win.provider)) continue
+    let event
+    try {
+      event = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const orders = Array.isArray(event?.order) ? event.order : []
+    const named = new Map()
+    const ambiguous = new Set()
+    for (const order of orders) {
+      if (order?.provider !== win.provider || typeof order.id !== "string" || typeof order.who !== "string") continue
+      if (ambiguous.has(order.id)) continue
+      const was = named.get(order.id)
+      if (was === undefined) named.set(order.id, order.who)
+      else if (was !== order.who) {
+        named.delete(order.id)
+        ambiguous.add(order.id)
+      }
+    }
+    for (const attempt of Array.isArray(event?.tries) ? event.tries : []) {
+      if (Number(attempt?.status) !== 429) continue
+      if (attempt.provider !== undefined && attempt.provider !== win.provider) continue
+      if (!windowModel(attempt.model, win)) continue
+      const error = typeof attempt.error === "string" ? attempt.error : typeof attempt.error?.message === "string" ? attempt.error.message : ""
+      let reset = windowReset(error)
+      let restUntil = NaN
+      if (!Number.isFinite(reset)) {
+        restUntil = Date.parse(typeof attempt.rest?.until === "string" ? attempt.rest.until : "")
+        if (Number.isFinite(restUntil)) reset = restUntil
+      }
+      if (!Number.isFinite(reset)) continue
+      const ordered = named.get(String(attempt.id ?? ""))
+      const keyed = restIdentity(attempt.rest, win)
+      if (ordered !== undefined && keyed && ordered !== keyed.account) continue
+      const account = keyed?.account ?? ordered
+      if (typeof account !== "string" || !account) continue
+      rows.push({
+        provider: win.provider,
+        providerAccount: account,
+        model: attempt.model,
+        t: attempt.start ?? event?.time,
+        status: 429,
+        err: error,
+        ...(Number.isFinite(windowReset(error)) ? {} : { restUntil }),
+      })
+    }
+  }
+  return rows
+}
+
+function readRoutingRefusals(path, compressed, win) {
+  let st
+  try {
+    st = statSync(path)
+  } catch {
+    return []
+  }
+  const key = `${path}|${st.mtimeMs}:${st.size}|${win.provider}|${win.model}`
+  if (routingParsed.has(key)) return routingParsed.get(key)
+  routingReads.count++
+  const old = `${path}|${st.mtimeMs}:${st.size}|${win.provider}|`
+  for (const held of routingParsed.keys()) if (held !== key && held.startsWith(old)) routingParsed.delete(held)
+  let text
+  try {
+    text = compressed ? gunzipSync(readFileSync(path)).toString("utf8") : readFileSync(path, "utf8")
+  } catch {
+    routingParsed.set(key, [])
+    return []
+  }
+  const rows = routingRefusals(win, text)
+  routingParsed.set(key, rows)
+  return rows
+}
+
+function routingRefusalRows(path, compressed, now, account, win = FREE_WINDOW_AI, text) {
+  const parsed = text === undefined ? readRoutingRefusals(path, compressed, win) : routingRefusals(win, text)
+  const rows = []
+  const oldest = now - 2 * FREE_WINDOW_SPAN
+  for (const attempt of parsed) {
+    const t = Date.parse(attempt.t)
+    if (!Number.isFinite(t) || t < oldest || t > now) continue
+    if (attempt.providerAccount !== account) continue
+    rows.push(attempt)
+  }
+  return rows
 }
 
 // freeWindowRows reads magpie's usage ledger for account, oldest row first.
@@ -2594,22 +2744,27 @@ function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = pr
   // answer for each other (the same phone number can be signed in to both),
   // and two windows of one build count different models
   const key = file + "|" + win.provider + "|" + win.model + "|" + account
-  if (ledgerParsed?.key === key) return ledgerParsed.rows
   let got
-  try {
-    got = readLedgerTail(path, st, now, undefined, account, win)
-  } catch {
-    return null
+  if (ledgerParsed?.key === key) {
+    got = ledgerParsed
+  } else {
+    try {
+      got = readLedgerTail(path, st, now, undefined, account, win)
+    } catch {
+      return null
+    }
+    if (got.bad && ledgerBad.key !== file) {
+      ledgerBad = { key: file, count: got.bad }
+      console.error(
+        `workbuddy: ${got.bad} whole line${got.bad === 1 ? "" : "s"} of ${path} could not be decoded ` +
+          `(not the last line, so not a write in progress); the free-token window may read short`,
+      )
+    }
+    ledgerParsed = { key, rows: got.rows }
   }
-  if (got.bad && ledgerBad.key !== file) {
-    ledgerBad = { key: file, count: got.bad }
-    console.error(
-      `workbuddy: ${got.bad} whole line${got.bad === 1 ? "" : "s"} of ${path} could not be decoded ` +
-        `(not the last line, so not a write in progress); the free-token window may read short`,
-    )
-  }
-  ledgerParsed = { key, rows: got.rows }
-  return got.rows
+  const refused = freeWindowRouting(dirname(path), now).flatMap((route) => routingRefusalRows(route, route.endsWith(".gz"), now, account, win))
+  const rows = [...got.rows, ...refused].sort((a, b) => Date.parse(a.t) - Date.parse(b.t))
+  return rows
 }
 
 // LEDGER_T is where a row's time sits: "t" is among the first keys
@@ -2665,7 +2820,7 @@ function ofAccount(row, account, win = FREE_WINDOW_AI) {
     row?.provider === win.provider &&
     row.providerAccount === account &&
     typeof row.model === "string" &&
-    row.model.startsWith(win.model)
+    windowModel(row.model, win)
   )
 }
 
@@ -2813,7 +2968,7 @@ function pinned(rows, account) {
   // the same job and keeps the latest.
   let denied = null
   for (let i = rows.length - 1; i >= 0; i--) {
-    const reset = Number(rows[i]?.status) === 429 ? windowReset(rows[i].err) : NaN
+    const reset = Number(rows[i]?.status) === 429 ? resetOf(rows[i]) : NaN
     if (Number.isFinite(reset)) denied = reset
   }
   if (denied !== null) return denied - FREE_WINDOW_LEAD
@@ -2869,7 +3024,7 @@ function pinning() {
     const status = Number(row?.status)
     if (status === 429) {
       if (denied === null) {
-        const reset = windowReset(row.err)
+        const reset = resetOf(row)
         if (Number.isFinite(reset)) denied = reset
       }
       return 0
@@ -4241,4 +4396,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads }
