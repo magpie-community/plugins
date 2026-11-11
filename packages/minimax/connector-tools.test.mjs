@@ -6,7 +6,7 @@
 import "./nonet.mjs"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { createConnectorTools } from "./connector-tools.mjs"
+import { createConnectorTools, _internal } from "./connector-tools.mjs"
 
 const LIST = "/minimax-cloud/api/v1/connectors/connected-tools/list"
 const CALL = "/minimax-cloud/api/v1/connectors/tools/call"
@@ -319,4 +319,50 @@ test("discovery stays scoped to Matrix and generic arguments are checked before 
   await expect(tool.list_tools.execute({ keyword: 42 })).rejects.toThrow("must be a string")
   await expect(tool.get_voice_list.execute(null)).rejects.toThrow("object")
   expect(t.sent.length).toBe(before)
+})
+
+const advertised = (tool) => JSON.stringify(Object.fromEntries(
+  Object.entries(tool).map(([name, t]) => [name, { description: t.description, args: t.args }]),
+))
+
+test("compactTools off leaves the advertised tool list byte-for-byte as today", () => {
+  const request = async () => ({})
+  const today = advertised(createConnectorTools(request).tool)
+  expect(advertised(createConnectorTools(request, {}).tool)).toBe(today)
+  expect(advertised(createConnectorTools(request, { compactTools: false }).tool)).toBe(today)
+  for (const options of [undefined, { compactTools: 0 }, { compactTools: "true" }, { compactTools: null }]) {
+    const tool = options === undefined ? createConnectorTools(request).tool : createConnectorTools(request, options).tool
+    expect(advertised(tool)).toBe(today)
+  }
+  const names = Object.keys(createConnectorTools(request).tool)
+  expect(names.slice(0, 16)).toEqual(Object.keys(_internal.MATRIX_TOOLS))
+  expect(names.slice(16)).toEqual(["list_tools", "tool_schema", "call_tool"])
+})
+
+test("compactTools on advertises only list_tools, tool_schema and call_tool, unchanged", () => {
+  const request = async () => ({})
+  const full = createConnectorTools(request).tool
+  const compact = createConnectorTools(request, { compactTools: true }).tool
+  expect(Object.keys(compact)).toEqual(["list_tools", "tool_schema", "call_tool"])
+  for (const name of Object.keys(compact)) {
+    expect(compact[name].description).toBe(full[name].description)
+    expect(JSON.stringify(compact[name].args)).toBe(JSON.stringify(full[name].args))
+  }
+  const kept = Object.fromEntries(Object.entries(full).filter(([name]) => name in compact).map(([name, t]) => [name, { description: t.description, args: t.args }]))
+  expect(advertised(compact)).toBe(JSON.stringify(kept))
+})
+
+test("call_tool still refuses bad arguments against the live schema when compactTools is on", async () => {
+  const t = transport({
+    [LIST]: catalog([entry("generate_image", {
+      input_schema_json: JSON.stringify({ type: "object", properties: { requests: { type: "array" } }, required: ["requests"], additionalProperties: false }),
+    })]),
+  })
+  const { tool } = createConnectorTools(t.request, { compactTools: true })
+  expect(tool.generate_image).toBeUndefined()
+  await expect(
+    tool.call_tool.execute({ tool_name: "connector__matrix__generate_image", arguments: { prompt: "x" } }, {}),
+  ).rejects.toThrow(/bad arguments/)
+  expect(t.sent.map((r) => r.path)).toEqual([LIST])
+  expect(t.sent.some((r) => r.path === CALL)).toBe(false)
 })

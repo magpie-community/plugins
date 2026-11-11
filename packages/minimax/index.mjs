@@ -13,7 +13,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { createConnectorTools } from "./connector-tools.mjs"
+import { compactToolsOn, createConnectorTools } from "./connector-tools.mjs"
 import { createWebTools } from "./web-tools.mjs"
 
 const CLIENT_ID = "mcode-public"
@@ -1350,9 +1350,10 @@ function createToolRequest({ client, directory }) {
   }
 }
 
-export const MiniMaxCodeToolsPlugin = async (input) => {
+export const MiniMaxCodeToolsPlugin = async (input, options = {}) => {
   const request = createToolRequest(input)
-  return { tool: { ...createConnectorTools(request).tool, ...createWebTools(request) } }
+  const compact = { compactTools: compactToolsOn(options) }
+  return { tool: { ...createConnectorTools(request, compact).tool, ...createWebTools(request) } }
 }
 
 export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])

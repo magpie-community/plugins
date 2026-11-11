@@ -85,6 +85,16 @@ On the combined MCP server these are named `minimax_generate_image`,
 `minimax_submit_video_generation`, and so on. In the Library's routed server,
 the separator is `minimax__generate_image`.
 
+The sixteen named Matrix tools are advertised by default. The plugin option
+`compactTools` (default `false`) leaves them out of the tool list when set
+to `true`, and keeps only `list_tools`, `tool_schema`, `call_tool`, and
+`web_search`, with those four descriptions and schemas unchanged. `call_tool`
+still checks arguments against the account's live catalog. Turn it on with:
+
+```sh
+magpie plugin options @magpie-community/opencode-minimax-auth '{"compactTools": true}'
+```
+
 Each named tool shows a schema bundled with the plugin, so loading it asks
 no network. A call is checked against the schema in the account's live
 catalog, read on each call, so a parameter MiniMax added since the bundled
