@@ -65,6 +65,37 @@ it, so a re-sign-in and a renewal give the same value back. The card's name is u
 which shows `user_phone` once a sign-in or renewal has read it. IAM is *not* one of the hosts the plugin signs forwarded requests for
 (`SIGNED_HOSTS`): the one phone read is made by the plugin itself, for that one URL.
 
+**Sign in from the CodeArts Agent on this machine** (since 0.3.10, #998): when the CodeArts Agent
+IDE is installed and signed in here, a second method takes its sign-in instead of a browser.
+The IDE keeps it in its VS Code-style state database, key `huaweicloud.codearts-snap`
+(`userInfoKey.originData`: AK/SK/security token, `domainId`, `expiresAt`, `stationType`):
+
+| System | File |
+|---|---|
+| macOS | `~/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb` |
+| Windows | `%APPDATA%\codearts-agent\User\globalStorage\state.vscdb` |
+| Linux | `$XDG_CONFIG_HOME/codearts-agent/User/globalStorage/state.vscdb` (else `~/.config/…`) |
+
+`MAGPIE_CODEARTS_IDE_STATE` points it elsewhere. The plugin never opens or writes the IDE's file
+with SQLite: it copies it (with its `-wal`/`-journal`) into a temporary folder, reads the copy and
+removes it. A missing, unreadable or half-written file, or one without a whole credential, is
+"unknown": the method isn't offered, or the sign-in fails saying why (never with a secret). The
+credential is checked once (`snap-manager/v1/current/user` on its station) and kept like a
+browser sign-in's, but it has no refresh token: it is renewed by reading the IDE's file again
+once the IDE has renewed it, never through STS. Until then a renewal only fails for now
+(`503`, the sign-in kept); signing in to another account in the IDE doesn't change this one.
+The account is the IDE's `domainId`.
+
+**The international station** (since 0.3.10, #998): a credential from the international
+CodeArts (`stationType: "international"`) is sent only to
+`snap-access.ap-southeast-1.myhuaweicloud.com`, and a mainland one only to the mainland hosts.
+Its token package shows as one window, `usage_token_num` of `package_token_amount` from
+`start_date` to `end_date`, and the plan is `package_name_en`. The international station has no
+`opengw` endpoints, credit batches or daily check-in, so the plugin asks none of them there
+(check-in answers "inactive"). Not tried yet with a real international account: chats go to
+`/api/v2/chat/completions` there as on the mainland, and the model list falls back to the
+built-in one when the station doesn't answer it.
+
 ## Models
 
 The account's live list: CodeArts' builtin models, plus the free models of its daily benefit
@@ -79,8 +110,9 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 ## Requests
 
 - Every request is signed with Huawei's SDK-HMAC-SHA256 using the temporary credentials, and
-  only for CodeArts' own two hosts, `snap-access.cn-north-4.myhuaweicloud.com` and
-  `opengw.developer.huaweicloud.com`: a request anywhere else (an overridden `api`) is refused
+  only for CodeArts' own hosts, `snap-access.cn-north-4.myhuaweicloud.com` and
+  `opengw.developer.huaweicloud.com` (and, for an international credential, only
+  `snap-access.ap-southeast-1.myhuaweicloud.com`): a request anywhere else (an overridden `api`) is refused
   before the credentials leave, and no signed or token request follows a redirect.
 - The gateway allows 3 concurrent sessions per account and tells them apart by
   `x-ot-session-id`; the plugin sends one stable session id per account (and a fresh trace per
@@ -251,12 +283,25 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   `access` 字段里，保存在 magpie / OpenCode 自己的账号存储中；过期前 30 分钟自动续期，请求遇到临时凭据
   过期时就地续期并重发一次。同一账号的 refresh_token 只用一次；续期只是暂时失败（如 STS 连不上）时返回
   `503` 并保留登录，只有被 STS 明确拒绝才标记需要重新登录。账号标识取自 refresh_token，重复登录不会多出账号。
+- **用本机的 CodeArts Agent 登录**（0.3.10 起，#998）：本机装了码道 IDE 且已登录时，多一个登录方式，直接用 IDE 的登录，
+  不开浏览器。IDE 把它存在自己的 `state.vscdb`（键 `huaweicloud.codearts-snap`）里：macOS 为
+  `~/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb`，Windows 为
+  `%APPDATA%\codearts-agent\User\globalStorage\state.vscdb`，Linux 为 `$XDG_CONFIG_HOME`（否则 `~/.config`）下的同一路径；
+  `MAGPIE_CODEARTS_IDE_STATE` 可改。插件只读：先把文件（连同 `-wal`/`-journal`）拷到临时目录再读拷贝，绝不打开或写 IDE 的文件。
+  文件不存在、读不了、写了一半或凭据不全都算「未知」：不提供这个方式，或登录失败并说明原因（不含任何密钥）。
+  这种登录没有 refresh token，续期是等 IDE 自己续期后重新读它的文件，绝不走 STS；IDE 还没续期时续期只是暂时失败（`503`，保留登录）。
+  账号标识是 IDE 的 `domainId`。
+- **国际站**（0.3.10 起，#998）：国际站凭据（`stationType: "international"`）只发往
+  `snap-access.ap-southeast-1.myhuaweicloud.com`，国内凭据只发往国内主机。token 套餐显示为一个窗口：
+  `start_date`–`end_date` 内 `package_token_amount` 中已用的 `usage_token_num`，套餐名取 `package_name_en`。
+  国际站没有 `opengw` 接口、积分批次和每日签到，插件在那里一概不请求（签到回答「未开通」）。尚未用真实国际站账号试过：
+  对话仍发到 `/api/v2/chat/completions`，模型列表读不到时用内置列表。
 - **模型**：账号实时的内置模型列表；领取当日免费权益成功后，再加上免费模型（每个北京自然日领一次，与
   客户端一致；当天还没领取时遇到 `benefit not found` 也会先领取再重发）。每个模型的「消耗系数」作为 magpie 的倍率上报，来自账号主智能体（`build`）的模型列表。
   0.3.2 起模型名照码道给的显示：带日期的 `deepseek-v4.1-flash-1017` 是另一个模型（错峰倍率不同），显示为
   `DeepSeek-V4.1-Flash-1017`，不再和 `DeepSeek-V4.1-Flash` 叫同一个名字（#677）。
-- **请求**：SDK-HMAC-SHA256 签名，只签给码道自己的两个主机（`snap-access.cn-north-4.myhuaweicloud.com`、
-  `opengw.developer.huaweicloud.com`），发往其他地址（如改过的 `api`）的请求在凭据发出前就被拒绝，签名请求和令牌请求都不跟随重定向；像客户端一样发送 `x-ot-session-id` 会话头（每账号一个会话），账号内
+- **请求**：SDK-HMAC-SHA256 签名，只签给码道自己的主机（`snap-access.cn-north-4.myhuaweicloud.com`、
+  `opengw.developer.huaweicloud.com`；国际站凭据只签 `snap-access.ap-southeast-1.myhuaweicloud.com`），发往其他地址（如改过的 `api`）的请求在凭据发出前就被拒绝，签名请求和令牌请求都不跟随重定向；像客户端一样发送 `x-ot-session-id` 会话头（每账号一个会话），账号内
   在途请求不超过 3 个，`TM.00001041` 退避重试，网关排队时按客户端的方式等待（0.2.3 起，magpie 在这个请求之后还有别的账号、供应商或路由组成员时（`x-magpie-fallback: 1`），排队的请求立即退出队列并以 `503` 加队列的 `Retry-After` 回答，magpie 随即改问下一个）；总是以流式请求上游（码道
   只对流式回答计量积分），调用方要非流式时折叠回 JSON；默认注入 `thinking: { type: "enabled" }`，思考与
   正文分开；200 里内嵌的错误换算为 `429` / `400` / `502` 并带厂商原话；码道只接受不超过 64 个字符的工具名，

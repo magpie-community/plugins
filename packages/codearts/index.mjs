@@ -63,10 +63,28 @@ const SNAP_STATISTICS_URL = `${SNAP_HOST}/snap-manager/v1/statistics/plugin`
 // opengw gateway config: the benefit/free-quota model set.
 const OPENGW_HOST = "https://opengw.developer.huaweicloud.com"
 const OPENGW_GATEWAY_CONFIG_URL = `${OPENGW_HOST}/api/v1/gateway/config`
-// The only hosts the account's credentials are signed for and sent to: the
-// two the plugin itself calls, by name. STS takes the refresh token, never a
-// signature, and the portal only ever opens in the browser.
-const SIGNED_HOSTS = new Set([SNAP_HOST, OPENGW_HOST].map((u) => new URL(u).host))
+// The stations an account lives on, each with the API hosts its credential is
+// signed for (#998). The mainland one is where the browser sign-in lands; the
+// international one (ap-southeast-1) answers the same snap-access paths but
+// has no opengw (its gateway/config, free pool and benefit claim are 404s), so
+// nothing of opengw's is asked there. The console of each only ever opens in
+// the browser and is never signed for.
+const STATIONS = {
+  mainland: { id: "mainland", snap: SNAP_HOST, opengw: OPENGW_HOST, console: "https://codearts.huaweicloud.com" },
+  international: {
+    id: "international",
+    snap: "https://snap-access.ap-southeast-1.myhuaweicloud.com",
+    opengw: "",
+    console: "https://console-intl.huaweicloud.com",
+  },
+}
+/** The hosts a credential of `station` is signed for: its API hosts, by name. */
+const apiHostsOf = (station) => [station.snap, station.opengw].filter(Boolean).map((u) => new URL(u).host)
+// The only hosts any account's credentials are signed for and sent to: the
+// stations' API hosts, by name, and each credential only for its own
+// station's (`stationOf`). STS takes the refresh token, never a signature,
+// and the portals and consoles only ever open in the browser.
+const SIGNED_HOSTS = new Set(Object.values(STATIONS).flatMap(apiHostsOf))
 
 // Huawei Cloud IAM: the one place an account's own phone number can be read
 // with the credentials a sign-in already carries (`GET /v3.0/OS-USER/users/
@@ -587,6 +605,8 @@ function profileOf(cred) {
  * the name (the `accountId` / `uid` rule in magpie-plugin-scaffold, #27).
  */
 function accountIdentityOf(cred) {
+  // A sign-in read from the CodeArts Agent is the account its domainId names.
+  if (cred?.source === IDE_SOURCE) return { id: firstOf(cred.domain_id), name: displayNameOf(cred.user_phone, cred.user_name) }
   const legacy = { id: firstOf(cred?.user_name, cred?.user_id), name: firstOf(cred?.user_name) }
   const profile = profileOf(cred)
   if (!profile) return { ...legacy, name: displayNameOf(cred?.user_phone, legacy.name) }
@@ -1620,7 +1640,7 @@ function queueInfoOf(headers) {
 
 /** One signed call on a queued trace: GET is where it stands, DELETE takes it out. */
 async function traceQueueCall(method, cred, traceId, context, signal) {
-  const url = TRACE_QUEUE_URL(traceId)
+  const url = onStation(TRACE_QUEUE_URL(traceId), cred)
   const headers = await signFor(cred, method, url, new Uint8Array())
   headers.set(SESSION_HEADER, context.sessionId)
   return context.fetcher(url, { method, headers, signal, redirect: "error" })
@@ -1683,18 +1703,48 @@ function hostOf(url) {
   }
 }
 
-/** Is this an https URL on one of SIGNED_HOSTS (its default port), the only ones the credentials go to? */
-function isSignedHostUrl(url) {
+/**
+ * The station a credential belongs to: what it was signed in on. Only the
+ * CodeArts Agent sign-in can carry another than the mainland one (the
+ * browser sign-in is the mainland portal's), and a credential from before
+ * stations existed is the mainland's.
+ */
+function stationOf(cred) {
+  return STATIONS[cred?.station] ?? STATIONS.mainland
+}
+
+/**
+ * `url` on the credential's own station: a mainland snap-access URL (the
+ * plugin's own constants, the config's `api`) goes to the same path on the
+ * station's snap-access host. Anything else stays as it is, and is signed or
+ * refused as it is.
+ */
+function onStation(url, cred) {
+  const station = stationOf(cred)
+  const s = String(url)
+  if (station === STATIONS.mainland) return s
+  return s === SNAP_HOST || s.startsWith(`${SNAP_HOST}/`) ? station.snap + s.slice(SNAP_HOST.length) : s
+}
+
+/** The chat base (loader `baseURL`) of the credential's station. */
+const chatBaseOf = (cred) => `${stationOf(cred).snap}/api/v2`
+
+/**
+ * Is this an https URL (default port) on one of the hosts the credentials go
+ * to: SIGNED_HOSTS, or with `cred`, its own station's API hosts only?
+ */
+function isSignedHostUrl(url, cred) {
   try {
     const u = new URL(url)
-    return u.protocol === "https:" && SIGNED_HOSTS.has(u.host)
+    const hosts = cred ? new Set(apiHostsOf(stationOf(cred))) : SIGNED_HOSTS
+    return u.protocol === "https:" && hosts.has(u.host)
   } catch {
     return false
   }
 }
 
-const refusalTo = (url) =>
-  `refusing to sign a request to ${hostOf(url) || "an unknown host"}: only CodeArts' own hosts (${[...SIGNED_HOSTS].join(", ")}) get the account's credentials`
+const refusalTo = (url, cred) =>
+  `refusing to sign a request to ${hostOf(url) || "an unknown host"}: only CodeArts' own hosts (${(cred ? apiHostsOf(stationOf(cred)) : [...SIGNED_HOSTS]).join(", ")}) get the account's credentials`
 
 /**
  * The SDK-HMAC-SHA256 headers for one request (all but `host`, which fetch
@@ -1704,7 +1754,7 @@ const refusalTo = (url) =>
  * to wherever it points.
  */
 async function signFor(cred, method, url, body, extraSigned) {
-  if (!isSignedHostUrl(url)) throw new Error(refusalTo(url))
+  if (!isSignedHostUrl(url, cred)) throw new Error(refusalTo(url, cred))
   const signed = await signRequestHuawei(
     cred.access_key_id, cred.secret_access_key, cred.security_token,
     method, url, body, extraSigned,
@@ -1745,8 +1795,10 @@ function withSignInMark(res) {
  */
 async function signedFetch(cred, input, init, context) {
   const req = typeof Request !== "undefined" && input instanceof Request ? input : null
-  const url = req ? req.url : String(input)
-  if (!isSignedHostUrl(url)) return errorResponse(400, "", refusalTo(url))
+  // A station's account goes to its own station: a mainland snap-access URL
+  // (the config's `api`) is taken to the same path there.
+  const url = onStation(req ? req.url : String(input), cred)
+  if (!isSignedHostUrl(url, cred)) return errorResponse(400, "", refusalTo(url, cred))
   const method = String(init?.method ?? req?.method ?? "GET").toUpperCase()
   const baseHeaders = new Headers(init?.headers ?? req?.headers)
   // magpie says another account, provider or group member follows this
@@ -1921,6 +1973,7 @@ async function signedGet(url, cred, fetcher, extraUnsignedHeaders) {
 
 /** A signed GET's answer whatever its status (`{ ok, status, text }`), undefined when the vendor wasn't reached. */
 async function signedRead(url, cred, fetcher, extraUnsignedHeaders) {
+  url = onStation(url, cred)
   try {
     const headers = await signFor(cred, "GET", url, new Uint8Array())
     for (const [k, v] of Object.entries(extraUnsignedHeaders ?? {})) headers.set(k, v)
@@ -1957,6 +2010,7 @@ function describeHttpFailure(status, text) {
  * Gives `{ ok: true, data }` or `{ ok: false, message }`, never throws.
  */
 async function snapRequest(method, url, cred, fetcher, payload) {
+  url = onStation(url, cred)
   const body = payload === undefined ? new Uint8Array() : utf8(JSON.stringify(payload))
   let res
   let text
@@ -2388,8 +2442,13 @@ async function fetchRemoteModels(cred, fetcher, state) {
   const seen = new Set()
   const benefitIds = []
 
-  const gatewayAnswer = await signedRead(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher)
-  const gateway = !gatewayAnswer
+  // A station without opengw (the international one) has no free channel:
+  // no free models, and nothing of opengw's is asked.
+  const station = stationOf(cred)
+  const gatewayAnswer = station.opengw ? await signedRead(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher) : undefined
+  const gateway = !station.opengw
+    ? []
+    : !gatewayAnswer
     ? undefined
     : isNoBenefitChannel(gatewayAnswer.text)
       ? []
@@ -2461,6 +2520,15 @@ const CREDIT_METRIC_LABELS = {
 }
 const TOTAL_CREDIT_METRIC = "usageTotalPackageCredit"
 
+/** Compact token counts the way an international account reads them (5000000 → "5.0M"). */
+function formatCount(n) {
+  const v = Math.max(0, Number.isFinite(n) ? n : 0)
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`
+  if (v >= 1e4) return `${(v / 1e3).toFixed(1)}K`
+  return String(Math.round(v))
+}
+
 /** Compact credit counts for the display string (12345 → "1.2万"). */
 function formatCredit(n) {
   const v = Math.max(0, Number.isFinite(n) ? n : 0)
@@ -2520,6 +2588,41 @@ function benefitWindow(raw, ids = BENEFIT_MODEL_FALLBACK) {
   }
 }
 
+/** What a token metric is called on the card. */
+const TOKEN_METRIC_LABELS = { usageTokenChatMessages: "Tokens" }
+
+/**
+ * A token plan's windows from `statistics/plugin`'s metrics: one for each
+ * metric with an allowance (`package_token_amount` > 0), used being
+ * `usage_token_num`. The period is `start_date`–`end_date`, so the window
+ * resets (or the plan ends) at `end_date`. `gated`: a credit total already
+ * gates the account, so these only show.
+ */
+function tokenWindows(metrics, data, station, gated) {
+  const end = vendorDate(data.end_date)
+  const start = vendorDate(data.start_date)
+  const format = station === STATIONS.mainland ? formatCredit : formatCount
+  const out = []
+  for (const item of metrics) {
+    const rec = asRecord(item)
+    const limit = num(rec.package_token_amount)
+    if (limit <= 0) continue
+    const used = Math.max(0, num(rec.usage_token_num))
+    out.push({
+      name: firstOf(TOKEN_METRIC_LABELS[rec.name], "Tokens"),
+      used: clamp((used / limit) * 100),
+      display: `${format(used)} / ${format(limit)}`,
+      amount: used,
+      limit,
+      unit: "tokens",
+      ...(end ? { resetsAt: new Date(end).toISOString() } : {}),
+      ...(end && start && end > start ? { span: Math.round((end - start) / 1000) } : {}),
+      ...(gated || out.length > 0 ? { aside: true } : {}),
+    })
+  }
+  return out
+}
+
 /**
  * Map the account's `statistics/plugin` (+ free pool) answer to magpie's usage
  * shape. `batches` are its credit batches with their own expiry (see
@@ -2530,7 +2633,7 @@ function benefitWindow(raw, ids = BENEFIT_MODEL_FALLBACK) {
  * `end_date`. A window's `runsOut` is only credit its own remainder holds:
  * none when that is 0, or when nothing in it lapses (#982).
  */
-function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now = Date.now() } = {}) {
+function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now = Date.now(), station = STATIONS.mainland } = {}) {
   let data = raw
   if (raw && typeof raw.code === "number") {
     if (raw.code !== 0) return { error: firstOf(raw.message, raw.msg, `CodeArts code ${raw.code}`), windows: [] }
@@ -2538,7 +2641,9 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now
   }
   if (!data || typeof data !== "object") return { error: "CodeArts could not be parsed", windows: [] }
   const pkg = asRecord(data.package)
-  const plan = firstOf(pkg.package_name_cn, pkg.package_name_en, pkg.spec_code)
+  const plan = station === STATIONS.mainland
+    ? firstOf(pkg.package_name_cn, pkg.package_name_en, pkg.spec_code)
+    : firstOf(pkg.package_name_en, pkg.package_name_cn, pkg.spec_code)
   const metrics = Array.isArray(data.metrics) ? data.metrics : []
   const known = batches ?? grantBatches(grants)
   // The plan's own batch ends when the month's allowance comes back.
@@ -2599,11 +2704,249 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now
   const totalLabel = CREDIT_METRIC_LABELS[TOTAL_CREDIT_METRIC]
   windows.sort((a, b) => (a.name === totalLabel ? -1 : b.name === totalLabel ? 1 : 0))
 
+  // A plan metered in tokens (`is_token_package`, the international
+  // station's Free plan, #998): each metric's `usage_token_num` of its
+  // `package_token_amount`, for the period to `end_date`. The first one
+  // gates the account unless a credit total already does.
+  const tokens = pkg.is_token_package === true ? tokenWindows(metrics, data, station, windows.some((w) => !w.aside)) : []
+  windows.push(...tokens)
+
   const benefit = benefitRaw ? benefitWindow(benefitRaw, benefitIds) : undefined
   if (benefit) windows.push(benefit)
 
   if (windows.length > 0) return { plan: plan || undefined, signIn: "kept", windows }
-  return { plan: plan || undefined, windows, error: "该账号无积分额度" }
+  return { plan: plan || undefined, windows, error: pkg.is_token_package === true ? "该账号无 token 额度" : "该账号无积分额度" }
+}
+
+// ---- the CodeArts Agent on this machine (#998) ------------------------------
+//
+// The CodeArts Agent IDE keeps its own sign-in in its VS Code-style state
+// database: `state.vscdb` (SQLite) in its globalStorage, table `ItemTable`,
+// key `huaweicloud.codearts-snap`, whose `userInfoKey.originData` holds the
+// STS triple (`accessKey`, `secretKey`, `securityToken`), `domainId`,
+// `expiresAt` and `stationType`. The Windows path is the one measured in the
+// issue (`%APPDATA%\codearts-agent\…`); the macOS and Linux ones follow where
+// Electron keeps an app's user data on those systems.
+//
+// The file is the IDE's: it is only ever read, by copying it (and its
+// journal) into a temporary folder of our own and opening the copy, so the
+// IDE's database is never locked, opened or written. A sign-in from it is
+// renewed by reading it again (the IDE renews its own, about every two hours);
+// nothing is written back. A file that is missing, unreadable, half-written
+// or holds no usable sign-in is unknown: nothing is offered from it, and an
+// account signed in from it keeps its sign-in until it reads well again.
+
+const IDE_SOURCE = "codearts-agent-ide"
+const IDE_STATE_KEY = "huaweicloud.codearts-snap"
+const IDE_APP_DIR = "codearts-agent"
+// A state database larger than this is not copied.
+const IDE_DB_MAX_BYTES = 256 * 1024 * 1024
+// What the IDE calls its stations; a value not here is a station this plugin
+// doesn't know, and nothing is signed in from it.
+const IDE_STATIONS = { international: "international", mainland: "mainland", china: "mainland", cn: "mainland", domestic: "mainland" }
+
+/** Where the CodeArts Agent keeps `state.vscdb` on `platform`; "" when there is no place to look. */
+function ideStatePath(platform = process.platform, env = process.env, home = os.homedir()) {
+  const tail = [IDE_APP_DIR, "User", "globalStorage", "state.vscdb"]
+  if (platform === "win32") {
+    const appData = firstOf(env?.APPDATA) || (firstOf(home) ? path.win32.join(home, "AppData", "Roaming") : "")
+    return appData ? path.win32.join(appData, ...tail) : ""
+  }
+  if (platform === "darwin") return firstOf(home) ? path.posix.join(home, "Library", "Application Support", ...tail) : ""
+  // XDG: a relative XDG_CONFIG_HOME is ignored
+  const xdg = firstOf(env?.XDG_CONFIG_HOME)
+  const config = xdg && path.posix.isAbsolute(xdg) ? xdg : firstOf(home) ? path.posix.join(home, ".config") : ""
+  return config ? path.posix.join(config, ...tail) : ""
+}
+
+/** Open a SQLite file with Bun's driver, or Node's. */
+async function openSqlite(file) {
+  try {
+    const { Database } = await import("bun:sqlite")
+    return new Database(file)
+  } catch (e) {
+    if (typeof Bun !== "undefined") throw e
+  }
+  const { DatabaseSync } = await import("node:sqlite")
+  return new DatabaseSync(file)
+}
+
+/** The station an IDE's `stationType` names; null for one this plugin doesn't know. */
+function ideStationOf(stationType) {
+  if (stationType === undefined || stationType === null || stationType === "") return STATIONS.mainland
+  const id = IDE_STATIONS[String(stationType).trim().toLowerCase()]
+  return id ? STATIONS[id] : null
+}
+
+/**
+ * The credential in the IDE's `huaweicloud.codearts-snap` value, as
+ * `{ cred }`, or `{ reason }` when it holds none. A reason never carries any
+ * of the credential's values.
+ */
+function ideCredentialFromValue(value) {
+  const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : ""
+  if (!text) return { reason: "CodeArts Agent is not signed in on this machine" }
+  const stored = safeJson(text)
+  if (!stored) return { reason: "CodeArts Agent's stored sign-in could not be read" }
+  let user = stored.userInfoKey
+  if (typeof user === "string") user = safeJson(user)
+  let origin = asRecord(user).originData
+  if (typeof origin === "string") origin = safeJson(origin)
+  origin = asRecord(origin)
+  const ak = firstOf(origin.accessKey)
+  const sk = firstOf(origin.secretKey)
+  const token = firstOf(origin.securityToken)
+  if (!ak || !sk || !token) return { reason: "CodeArts Agent is not signed in on this machine (its stored sign-in has no credential)" }
+  const domainId = firstOf(String(origin.domainId ?? ""))
+  if (!domainId) return { reason: "CodeArts Agent's stored sign-in names no account (domainId)" }
+  const station = ideStationOf(origin.stationType)
+  if (!station) {
+    const said = String(origin.stationType)
+    return { reason: `CodeArts Agent is signed in on a station this plugin doesn't know (${/^[\w.-]{1,40}$/.test(said) ? said : "unrecognised"})` }
+  }
+  const expires = vendorDate(origin.expiresAt)
+  return {
+    cred: {
+      access_key_id: ak,
+      secret_access_key: sk,
+      security_token: token,
+      ...(expires ? { expires_at: new Date(expires).toISOString() } : {}),
+      domain_id: domainId,
+      station: station.id,
+      source: IDE_SOURCE,
+    },
+  }
+}
+
+/**
+ * Read the IDE's sign-in from `file`: `{ cred }`, or `{ reason, missing? }`
+ * when there is none to use (`missing`: no file at all). Never throws, never
+ * writes or opens the IDE's own file.
+ */
+async function readIdeCredential(file, { tmp = os.tmpdir() } = {}) {
+  if (!file) return { reason: "there is no place to look for CodeArts Agent on this system", missing: true }
+  let st
+  try {
+    st = fs.statSync(file)
+  } catch (e) {
+    return e?.code === "ENOENT"
+      ? { reason: "CodeArts Agent is not installed or not signed in on this machine", missing: true }
+      : { reason: "CodeArts Agent's state.vscdb could not be read" }
+  }
+  if (!st.isFile() || st.size === 0 || st.size > IDE_DB_MAX_BYTES) return { reason: "CodeArts Agent's state.vscdb could not be read" }
+  let dir = ""
+  let db
+  try {
+    dir = fs.mkdtempSync(path.join(tmp, "codearts-ide-"))
+    const copy = path.join(dir, "state.vscdb")
+    fs.writeFileSync(copy, fs.readFileSync(file), { mode: 0o600 })
+    // What the IDE hasn't folded into the file yet: its write-ahead log, or a
+    // rollback journal a write left behind. The copy applies (or undoes) it.
+    for (const suffix of ["-wal", "-journal"]) {
+      let bytes
+      try {
+        bytes = fs.readFileSync(file + suffix)
+      } catch {
+        continue
+      }
+      fs.writeFileSync(copy + suffix, bytes, { mode: 0o600 })
+    }
+    db = await openSqlite(copy)
+    // Finalized before the close: Bun's close leaves the file open while a
+    // statement lives, and on Windows an open file can't be removed, which
+    // would leave this copy of the sign-in behind.
+    const stmt = db.prepare("SELECT value FROM ItemTable WHERE key = ?")
+    let row
+    try {
+      row = stmt.get(IDE_STATE_KEY)
+    } finally {
+      stmt.finalize?.()
+    }
+    return ideCredentialFromValue(row?.value)
+  } catch {
+    return { reason: "CodeArts Agent's state.vscdb could not be read" }
+  } finally {
+    try {
+      db?.close()
+    } catch {
+      /* gone with the folder */
+    }
+    if (dir) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
+/**
+ * A reader of the IDE's sign-in at `file`, read again only when the file
+ * changed (by its size, time and inode): a renewal that finds the IDE hasn't
+ * renewed yet asks again every half minute.
+ */
+function ideReader(file) {
+  let last = null
+  return async () => {
+    let stamp = ""
+    try {
+      const st = fs.statSync(file)
+      stamp = `${st.size}:${st.mtimeMs}:${st.ino}`
+      for (const suffix of ["-wal", "-journal"]) {
+        try {
+          const j = fs.statSync(file + suffix)
+          stamp += `|${suffix}:${j.size}:${j.mtimeMs}`
+        } catch {
+          /* none */
+        }
+      }
+    } catch {
+      stamp = ""
+    }
+    if (stamp && last?.stamp === stamp) return last.result
+    const result = await readIdeCredential(file)
+    last = stamp ? { stamp, result } : null
+    return result
+  }
+}
+
+/**
+ * Check an IDE credential with the station's `current/user` before signing in
+ * with it, and read the account's name there. `{ error }` only when CodeArts
+ * turns the credential away (401/403); a read that fails otherwise signs in
+ * all the same, without the name.
+ */
+async function checkIdeCredential(cred, fetcher) {
+  const answer = await signedRead(`${stationOf(cred).snap}/snap-manager/v1/current/user`, cred, fetcher, SNAP_EXTRA_HEADERS)
+  if (answer && (answer.status === 401 || answer.status === 403)) {
+    return { error: `CodeArts turned the CodeArts Agent's sign-in away (HTTP ${answer.status}): open CodeArts Agent so it signs in again, then try again` }
+  }
+  if (!answer?.ok) return { fields: {} }
+  const raw = asRecord(safeJson(answer.text))
+  const user = asRecord("data" in raw ? raw.data : raw)
+  const name = firstOf(user.user_name, user.userName)
+  const id = firstOf(String(user.user_id ?? user.userId ?? ""))
+  return { fields: { ...(name ? { user_name: name } : {}), ...(id ? { user_id: id } : {}) } }
+}
+
+/**
+ * The IDE's sign-in read again, in place of a renewal: the account's own,
+ * renewed by the IDE. Throws (for now, never for good) when the file can't be
+ * read, holds another account or station, or the IDE hasn't renewed it yet.
+ */
+async function renewFromIde(cred, read) {
+  const got = await read()
+  if (!got.cred) throw new Error(`CodeArts: ${got.reason}; open CodeArts Agent and sign in there`)
+  const next = got.cred
+  if (next.domain_id !== cred.domain_id) throw new Error("CodeArts: CodeArts Agent on this machine is signed in to another account now")
+  if (next.station !== stationOf(cred).id) throw new Error("CodeArts: CodeArts Agent on this machine is signed in on another station now")
+  if (next.access_key_id === cred.access_key_id && next.security_token === cred.security_token) {
+    throw new Error("CodeArts: CodeArts Agent hasn't renewed its sign-in yet; open CodeArts Agent on this machine")
+  }
+  // The account's own fields outlive the credential: its session and name.
+  const kept = Object.fromEntries(["session_id", "user_name", "user_id", "user_phone"].filter((k) => cred[k]).map((k) => [k, cred[k]]))
+  return { ...next, ...kept }
 }
 
 // ---- the plugin -------------------------------------------------------------
@@ -2648,7 +2991,16 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
   // loaders, magpie's auth.refresh): STS spends a refresh token once, so a
   // second use of it would turn the account away. Whoever comes later with
   // the same token gets what that renewal gave.
+  // The CodeArts Agent on this machine (its state.vscdb), read again only
+  // when it changed.
+  // (`ideStateFile`, or MAGPIE_CODEARTS_IDE_STATE: another file, for tests)
+  const ideFile = typeof options?.ideStateFile === "string"
+    ? options.ideStateFile
+    : firstOf(process.env.MAGPIE_CODEARTS_IDE_STATE) || ideStatePath()
+  const readIde = ideReader(ideFile)
   const renewOnce = async (cred) => {
+    // A sign-in from the IDE is renewed by the IDE: read it again, never STS.
+    if (cred.source === IDE_SOURCE) return renewFromIde(cred, readIde)
     const token = firstOf(cred.refresh_token)
     if (!token) return refreshCredential(cred, fetcher)
     const state = await stateOf(cred)
@@ -2730,6 +3082,95 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       ...(levels.length > 0 ? { variants } : {}),
       ...(!free && live.rate > 0 ? { rate: live.rate } : {}),
     }
+  }
+
+  const browserMethod = {
+    type: "oauth",
+    label: "Sign in with Huawei Cloud",
+    async authorize() {
+      const flow = await startOAuthFlow(fetcher)
+      return {
+        url: flow.loginUrl,
+        instructions: "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done.",
+        method: "auto",
+        async callback() {
+          try {
+            const outcome = await flow.result
+            const cred = safeJson(outcome.access)
+            if (!cred?.access_key_id) return { type: "failed", error: "CodeArts did not return a credential" }
+            // The card's name is the phone (one read away, best effort:
+            // a failed read still signs in), shown through usage's
+            // `user`; the credential carries it as `user_phone`.
+            const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
+            // The MaaS pair OfficeAce needs is read once here (best effort:
+            // an account that never opened MaaS signs in all the same), and
+            // kept on this credential too, so a later rotation of this
+            // record hands the other one a credential that still has it.
+            const withMaas = await withOfficeAceMaas(identified, fetcher)
+            const identity = accountIdentityOf(withMaas)
+            // `accountId` is the account's identity — the URN, as main
+            // gives it — so a re-sign-in replaces the account instead of
+            // adding a `codearts#xxxxxx`; `uid` is that same URN.
+            const record = {
+              type: "success",
+              access: JSON.stringify(withMaas),
+              refresh: cred.refresh_token,
+              expires: outcome.expires,
+              accountId: identity.id,
+              ...(identity.id ? { uid: identity.id } : {}),
+            }
+            // This sign-in writes this card's record only. A Huawei Cloud
+            // refresh token is spent once, so two records holding one
+            // token would sign each other out; the other card has its own
+            // sign-in and its own token.
+            await writeProviderRecord(client, PROVIDER, withMaas, fetcher)
+            return record
+          } catch (e) {
+            return { type: "failed", error: e?.message ?? String(e) }
+          } finally {
+            await flow.close()
+          }
+        },
+      }
+    },
+  }
+
+  // Sign in from the CodeArts Agent on this machine: its own stored sign-in,
+  // read (never written), checked once with the station, and renewed by
+  // reading it again. No browser, no refresh token, and nothing of it reaches
+  // the OfficeAce card: that one signs in on its own.
+  const ideMethod = {
+    type: "oauth",
+    label: "Use the CodeArts Agent on this machine",
+    async authorize() {
+      return {
+        url: "",
+        instructions: "Reads the sign-in of the CodeArts Agent on this computer. Keep CodeArts Agent signed in: its sign-in lasts about two hours, and the renewed one is read from there.",
+        method: "auto",
+        async callback() {
+          try {
+            const read = await readIde()
+            if (!read.cred) return { type: "failed", error: read.reason }
+            if (Date.parse(read.cred.expires_at ?? "") <= now()) {
+              return { type: "failed", error: "CodeArts Agent's sign-in has expired: open CodeArts Agent so it renews it, then try again" }
+            }
+            const checked = await checkIdeCredential(read.cred, fetcher)
+            if (checked.error) return { type: "failed", error: checked.error }
+            const cred = { ...read.cred, ...checked.fields, session_id: randomHex(16) }
+            const identity = accountIdentityOf(cred)
+            return {
+              type: "success",
+              access: JSON.stringify(cred),
+              expires: expiresFromCredential(cred),
+              accountId: identity.id,
+              uid: identity.id,
+            }
+          } catch (e) {
+            return { type: "failed", error: e?.message ?? String(e) }
+          }
+        },
+      }
+    },
   }
 
   return {
@@ -2858,6 +3299,8 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         // One account = one upstream session and one in-flight budget.
         const ids = await accountSessionIds(cred)
         const state = accountState(ids.sessionId)
+        // A station without opengw has no free models: none is sent as one.
+        if (!stationOf(cred).opengw && state.benefit === null) state.benefit = new Set()
         const context = {
           ...ids,
           gate: state.gate,
@@ -2875,7 +3318,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
           signInDead: () => signInDead,
         }
         return {
-          baseURL: CHAT_API_BASE,
+          baseURL: chatBaseOf(cred),
           async fetch(input, init = {}) {
             const c = await current()
             return signedFetch(c, input, init, context)
@@ -2891,16 +3334,19 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         const identity = accountIdentityOf(cred).id
         if (identity) noteProviderAccount(PROVIDER, identity)
         try {
+          const station = stationOf(cred)
           const text = await signedGet(SNAP_STATISTICS_URL, cred, fetcher, SNAP_EXTRA_HEADERS)
           if (text === undefined) return { error: "CodeArts answered an error", windows: [] }
           const state = await stateOf(cred)
           // The free pool only once today's benefit is the account's; best
-          // effort either way: a credit account without one is normal.
-          const free = state.benefit === null || state.benefit.size > 0
+          // effort either way: a credit account without one is normal. A
+          // station without opengw has none.
+          const free = !!station.opengw && (state.benefit === null || state.benefit.size > 0)
           const benefitText = free ? await signedGet(BENEFIT_BALANCE_URL, cred, fetcher) : undefined
           // Each batch's own expiry, read again every ten minutes (and after a
           // check-in); a failed read keeps the last one, else the ledger stands in.
-          if (!state.batchesAt || Date.now() - state.batchesAt > CREDIT_BATCHES_TTL_MS) {
+          // The international station's plans are metered in tokens: no batches.
+          if (station === STATIONS.mainland && (!state.batchesAt || Date.now() - state.batchesAt > CREDIT_BATCHES_TTL_MS)) {
             const read = await fetchCreditBatches(cred, fetcher).catch(() => undefined)
             if (read) state.batches = read
             state.batchesAt = Date.now()
@@ -2909,6 +3355,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             batches: state.batches,
             grants: readGrants(ledgerPath, await ledgerKey(cred)),
             benefitIds: state.benefit ? [...state.benefit] : BENEFIT_MODEL_FALLBACK,
+            station,
           })
           // The card names the account by its phone, not by IAM's `hw…` id or
           // its URN — read once here for an account whose credential predates
@@ -2926,6 +3373,9 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       async checkin(getAuth) {
         const cred = credentialOf(await getAuth())
         if (!cred?.access_key_id) return { outcome: "failed", message: "not signed in" }
+        // The international station has no 「每日领取」 (its ops/delivery
+        // answers 400 HDN.1000).
+        if (stationOf(cred) !== STATIONS.mainland) return { outcome: "inactive", message: "no daily check-in on this station" }
         const key = await ledgerKey(cred)
         const state = await stateOf(cred)
         const today = beijingDay()
@@ -2953,58 +3403,12 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         return r
       },
 
-      methods: [
-        {
-          type: "oauth",
-          label: "Sign in with Huawei Cloud",
-          async authorize() {
-            const flow = await startOAuthFlow(fetcher)
-            return {
-              url: flow.loginUrl,
-              instructions: "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done.",
-              method: "auto",
-              async callback() {
-                try {
-                  const outcome = await flow.result
-                  const cred = safeJson(outcome.access)
-                  if (!cred?.access_key_id) return { type: "failed", error: "CodeArts did not return a credential" }
-                  // The card's name is the phone (one read away, best effort:
-                  // a failed read still signs in), shown through usage's
-                  // `user`; the credential carries it as `user_phone`.
-                  const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
-                  // The MaaS pair OfficeAce needs is read once here (best effort:
-                  // an account that never opened MaaS signs in all the same), and
-                  // kept on this credential too, so a later rotation of this
-                  // record hands the other one a credential that still has it.
-                  const withMaas = await withOfficeAceMaas(identified, fetcher)
-                  const identity = accountIdentityOf(withMaas)
-                  // `accountId` is the account's identity — the URN, as main
-                  // gives it — so a re-sign-in replaces the account instead of
-                  // adding a `codearts#xxxxxx`; `uid` is that same URN.
-                  const record = {
-                    type: "success",
-                    access: JSON.stringify(withMaas),
-                    refresh: cred.refresh_token,
-                    expires: outcome.expires,
-                    accountId: identity.id,
-                    ...(identity.id ? { uid: identity.id } : {}),
-                  }
-                  // This sign-in writes this card's record only. A Huawei Cloud
-                  // refresh token is spent once, so two records holding one
-                  // token would sign each other out; the other card has its own
-                  // sign-in and its own token.
-                  await writeProviderRecord(client, PROVIDER, withMaas, fetcher)
-                  return record
-                } catch (e) {
-                  return { type: "failed", error: e?.message ?? String(e) }
-                } finally {
-                  await flow.close()
-                }
-              },
-            }
-          },
-        },
-      ],
+      // The browser sign-in first, always; the CodeArts Agent's second, only
+      // while the IDE's state file is there (the host picks a method by its
+      // place, so the browser one keeps its).
+      get methods() {
+        return ideFile && fs.existsSync(ideFile) ? [browserMethod, ideMethod] : [browserMethod]
+      },
     },
   }
 }
@@ -3072,6 +3476,9 @@ export const _internal = {
   isRegularModel, queueInfoOf, waitInQueue, TRACE_QUEUE_URL, SESSION_HEADER,
   snapRequest, dailyCheckin,
   parseModelInfo, extractArray, fetchRemoteModels, creditWindow, benefitWindow, usageFromStatistics,
+  STATIONS, stationOf, onStation, chatBaseOf, apiHostsOf, tokenWindows, formatCount,
+  IDE_SOURCE, IDE_STATE_KEY, ideStatePath, ideStationOf, ideCredentialFromValue, readIdeCredential, ideReader,
+  checkIdeCredential, renewFromIde, openSqlite,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

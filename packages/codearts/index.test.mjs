@@ -24,6 +24,10 @@ const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ledger-"))
 process.env.MAGPIE_CODEARTS_LEDGER = path.join(ledgerDir, "default.json")
 test.after(() => fs.rmSync(ledgerDir, { recursive: true, force: true }))
 
+// Never the real CodeArts Agent's state.vscdb: a plugin made here without an
+// `ideStateFile` of its own looks at a file that isn't there.
+process.env.MAGPIE_CODEARTS_IDE_STATE = path.join(ledgerDir, "no-ide", "state.vscdb")
+
 const buf = (s) => new TextEncoder().encode(s)
 
 // ---- crypto primitives -----------------------------------------------------
@@ -1684,7 +1688,11 @@ test("a 403 is a sign-in the account no longer has, on chats and other requests 
 })
 
 test("isSignedHostUrl takes only https URLs on the two hosts the plugin calls, by name", () => {
-  assert.deepEqual([...x.SIGNED_HOSTS].sort(), ["opengw.developer.huaweicloud.com", "snap-access.cn-north-4.myhuaweicloud.com"])
+  assert.deepEqual([...x.SIGNED_HOSTS].sort(), [
+    "opengw.developer.huaweicloud.com",
+    "snap-access.ap-southeast-1.myhuaweicloud.com",
+    "snap-access.cn-north-4.myhuaweicloud.com",
+  ])
   assert.equal(x.isSignedHostUrl(CHAT_URL), true)
   assert.equal(x.isSignedHostUrl(x.BENEFIT_CLAIM_URL), true)
   assert.equal(x.isSignedHostUrl("https://SNAP-ACCESS.cn-north-4.myhuaweicloud.com/api/v2/chat/completions"), true, "a hostname has no case")
@@ -3971,4 +3979,437 @@ test("folding a stream keeps two ids at one index as two calls", () => {
     { index: 0, function: { arguments: 'y":' } },
     { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
   ]), [["call_fixture_A", "fixture_alpha", '{"key":"A"}']])
+})
+
+// ---- the international station and the CodeArts Agent sign-in (#998) -------
+
+const INTL = "https://snap-access.ap-southeast-1.myhuaweicloud.com"
+const intlCred = { access_key_id: "IAK", secret_access_key: "ISK", security_token: "IST", domain_id: "dom1", station: "international", source: x.IDE_SOURCE, session_id: "s1" }
+
+test("the international snap-access host is signed; lookalikes and other regions are not", () => {
+  assert.equal(x.isSignedHostUrl(`${INTL}/snap-manager/v1/statistics/plugin`), true)
+  assert.equal(x.isSignedHostUrl(`${INTL}/snap-manager/v1/statistics/plugin`, intlCred), true)
+  for (const other of [
+    "https://snap-access.ap-southeast-1.myhuaweicloud.com.evil.com/api",
+    "https://evil-snap-access.ap-southeast-1.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-2.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-3.myhuaweicloud.com/api",
+    "https://snap-access.af-south-1.myhuaweicloud.com/api",
+    "https://console-intl.huaweicloud.com/devcloud/",
+    "http://snap-access.ap-southeast-1.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-1.myhuaweicloud.com:8443/api",
+  ]) {
+    assert.equal(x.isSignedHostUrl(other), false, other)
+    assert.equal(x.isSignedHostUrl(other, intlCred), false, other)
+  }
+})
+
+test("a credential is signed only for its own station's hosts", async () => {
+  // international: not the mainland's snap-access, nor opengw
+  for (const url of [CHAT_URL, x.BENEFIT_CLAIM_URL, x.OPENGW_GATEWAY_CONFIG_URL]) {
+    assert.equal(x.isSignedHostUrl(url, intlCred), false, url)
+    await assert.rejects(x.signFor(intlCred, "GET", url, new Uint8Array()), /refusing to sign/)
+  }
+  // mainland (no station said): not the international host
+  assert.equal(x.isSignedHostUrl(`${INTL}/api/v2/chat/completions`, signedCred), false)
+  await assert.rejects(x.signFor(signedCred, "GET", `${INTL}/x`, new Uint8Array()), /refusing to sign a request to snap-access\.ap-southeast-1/)
+  const ok = await x.signFor(intlCred, "GET", `${INTL}/x`, new Uint8Array())
+  assert.match(ok.get("authorization"), /^SDK-HMAC-SHA256 Access=IAK,/)
+})
+
+test("onStation takes the plugin's mainland snap URLs to the credential's station, and nothing else", () => {
+  assert.equal(x.onStation(x.SNAP_STATISTICS_URL, intlCred), `${INTL}/snap-manager/v1/statistics/plugin`)
+  assert.equal(x.onStation(CHAT_URL, intlCred), `${INTL}/api/v2/chat/completions`)
+  assert.equal(x.onStation(CHAT_URL, signedCred), CHAT_URL)
+  // a lookalike stays itself (and is then refused)
+  const look = "https://snap-access.cn-north-4.myhuaweicloud.com.evil.com/api"
+  assert.equal(x.onStation(look, intlCred), look)
+  assert.equal(x.onStation(x.BENEFIT_CLAIM_URL, intlCred), x.BENEFIT_CLAIM_URL)
+  assert.equal(x.chatBaseOf(intlCred), `${INTL}/api/v2`)
+  assert.equal(x.chatBaseOf(signedCred), x.CHAT_API_BASE)
+  assert.equal(x.stationOf({ station: "elsewhere" }), x.STATIONS.mainland)
+})
+
+// The issue's own statistics/plugin answer, as the international host gave it.
+const intlStatistics = {
+  metrics: [
+    { name: "usageDataChatMessages", value: -1, usage_token_num: 0, package_token_amount: 0, show: false },
+    { name: "usageTokenChatMessages", value: 0, usage_token_num: 131, package_token_amount: 5000000, show: true },
+  ],
+  start_date: "2026-11-11",
+  end_date: "2026-12-12",
+  package: {
+    spec_code: "codearts.agent.trial",
+    status: "normal",
+    package_name_en: "Free",
+    package_name_cn: "体验版",
+    package_url: "https://console-intl.huaweicloud.com/devcloud/?region=ap-southeast-1&locale=zh-cn#/change-new/apply?",
+    is_token_package: true,
+    is_credit_package: false,
+  },
+  is_teadmin: true,
+  is_white_list: false,
+}
+
+test("usageFromStatistics: a token package is a token window, used of package_token_amount, to end_date", () => {
+  const u = x.usageFromStatistics(intlStatistics, undefined, { station: x.STATIONS.international, batches: [] })
+  assert.equal(u.plan, "Free")
+  assert.equal(u.signIn, "kept")
+  assert.equal(u.error, undefined)
+  assert.equal(u.windows.length, 1)
+  const [w] = u.windows
+  assert.equal(w.name, "Tokens")
+  assert.equal(w.amount, 131)
+  assert.equal(w.limit, 5000000)
+  assert.equal(w.unit, "tokens")
+  assert.equal(w.display, "131 / 5.0M")
+  assert.ok(Math.abs(w.used - 0.00262) < 1e-9)
+  assert.equal(w.resetsAt, "2026-12-11T16:00:00.000Z")
+  assert.equal(w.span, 31 * 86400)
+  assert.equal(w.aside, undefined, "the token allowance gates the account")
+  // the mainland names the same plan in Chinese
+  assert.equal(x.usageFromStatistics(intlStatistics, undefined, { batches: [] }).plan, "体验版")
+  // not a token package: no token window
+  const credit = { ...intlStatistics, package: { ...intlStatistics.package, is_token_package: false } }
+  assert.equal(x.usageFromStatistics(credit, undefined, { batches: [] }).windows.length, 0)
+  // a spent allowance is 100%
+  const spent = { ...intlStatistics, metrics: [{ name: "usageTokenChatMessages", usage_token_num: 6e6, package_token_amount: 5e6 }] }
+  assert.equal(x.usageFromStatistics(spent, undefined, { station: x.STATIONS.international, batches: [] }).windows[0].used, 100)
+})
+
+// One statement, finalized: Bun keeps a file open while a statement lives.
+function sqlRun(db, sql, ...params) {
+  const stmt = db.prepare(sql)
+  try {
+    stmt.run(...params)
+  } finally {
+    stmt.finalize?.()
+  }
+}
+
+// A state.vscdb as the CodeArts Agent writes it, in a folder of the test's own.
+async function ideFixture({ value, wal = false, raw } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ide-test-"))
+  test.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, "state.vscdb")
+  if (raw !== undefined) {
+    fs.writeFileSync(file, raw)
+    return { file, dir }
+  }
+  const db = await x.openSqlite(file)
+  if (wal) db.exec("PRAGMA journal_mode=WAL")
+  db.exec("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", "workbench.other", "{}")
+  if (value !== undefined) sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
+  // with WAL the connection stays open, so the row is still only in the -wal
+  if (!wal) db.close()
+  return { file, dir, db }
+}
+
+const ideValue = (origin, { asString = false } = {}) => JSON.stringify({ userInfoKey: { originData: asString ? JSON.stringify(origin) : origin, other: 1 } })
+const ideOrigin = (over = {}) => ({
+  accessKey: "IDEAK1", secretKey: "IDESECRET1", securityToken: "IDETOKEN1", domainId: "dom1",
+  expiresAt: Date.parse("2030-01-01T00:00:00Z"), loginType: "codearts", stationType: "international", ...over,
+})
+const SECRETS = /IDEAK|IDESECRET|IDETOKEN/
+
+test("ideStatePath: each system's own place for the CodeArts Agent's state.vscdb", () => {
+  assert.equal(
+    x.ideStatePath("win32", { APPDATA: "C:\\Users\\a\\AppData\\Roaming" }, "C:\\Users\\a"),
+    "C:\\Users\\a\\AppData\\Roaming\\codearts-agent\\User\\globalStorage\\state.vscdb",
+  )
+  assert.equal(x.ideStatePath("win32", {}, "C:\\Users\\a"), "C:\\Users\\a\\AppData\\Roaming\\codearts-agent\\User\\globalStorage\\state.vscdb")
+  assert.equal(x.ideStatePath("darwin", { XDG_CONFIG_HOME: "/x" }, "/Users/a"), "/Users/a/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", {}, "/home/a"), "/home/a/.config/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/a"), "/xdg/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", { XDG_CONFIG_HOME: "rel" }, "/home/a"), "/home/a/.config/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", {}, ""), "")
+  assert.equal(x.ideStatePath("win32", {}, ""), "")
+})
+
+test("ideStatePath on this system is where this system keeps it", () => {
+  const got = x.ideStatePath()
+  if (process.platform === "win32") {
+    assert.equal(got, path.join(process.env.APPDATA, "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  } else if (process.platform === "darwin") {
+    assert.equal(got, path.join(os.homedir(), "Library", "Application Support", "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  } else {
+    const xdg = process.env.XDG_CONFIG_HOME
+    const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".config")
+    assert.equal(got, path.join(base, "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  }
+})
+
+test("readIdeCredential reads the IDE's sign-in from a copy, never touching its file", async () => {
+  for (const asString of [false, true]) {
+    const { file, dir } = await ideFixture({ value: ideValue(ideOrigin(), { asString }) })
+    const before = fs.readFileSync(file)
+    const mtime = fs.statSync(file).mtimeMs
+    const r = await x.readIdeCredential(file)
+    assert.deepEqual(r.cred, {
+      access_key_id: "IDEAK1", secret_access_key: "IDESECRET1", security_token: "IDETOKEN1",
+      expires_at: "2030-01-01T00:00:00.000Z", domain_id: "dom1", station: "international", source: x.IDE_SOURCE,
+    })
+    assert.deepEqual(fs.readFileSync(file), before, "the IDE's file is unchanged")
+    assert.equal(fs.statSync(file).mtimeMs, mtime)
+    assert.deepEqual(fs.readdirSync(dir), ["state.vscdb"], "no journal, -wal or -shm made beside it")
+  }
+  // a value stored as bytes, and a mainland one (no stationType)
+  const { file } = await ideFixture({ value: Buffer.from(ideValue(ideOrigin({ stationType: undefined, expiresAt: "2030-01-01T00:00:00Z" }))) })
+  const r = await x.readIdeCredential(file)
+  assert.equal(r.cred.station, "mainland")
+  assert.equal(r.cred.expires_at, "2030-01-01T00:00:00.000Z")
+})
+
+test("readIdeCredential leaves no copy of the sign-in behind, read or not", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ide-tmp-"))
+  test.after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+  const good = await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin()) })).file, { tmp })
+  assert.equal(good.cred?.access_key_id, "IDEAK1", good.reason)
+  await x.readIdeCredential((await ideFixture({ raw: "not a database" })).file, { tmp })
+  await x.readIdeCredential((await ideFixture({})).file, { tmp })
+  assert.deepEqual(fs.readdirSync(tmp), [])
+})
+
+test("readIdeCredential reads a row still in the IDE's write-ahead log", async () => {
+  const { file, db } = await ideFixture({ value: ideValue(ideOrigin()), wal: true })
+  try {
+    assert.ok(fs.existsSync(`${file}-wal`))
+    const r = await x.readIdeCredential(file)
+    assert.equal(r.cred?.access_key_id, "IDEAK1")
+  } finally {
+    db.close()
+  }
+})
+
+test("readIdeCredential reads while the IDE holds its database locked: it reads a copy, never the IDE's file", async () => {
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const ide = await x.openSqlite(file)
+  try {
+    ide.exec("BEGIN EXCLUSIVE")
+    const r = await x.readIdeCredential(file)
+    assert.equal(r.cred?.access_key_id, "IDEAK1", r.reason)
+  } finally {
+    ide.exec("ROLLBACK")
+    ide.close()
+  }
+})
+
+test("readIdeCredential: missing, unreadable, half-written or empty is unknown, and says no secret", async () => {
+  const cases = []
+  cases.push(["missing", await x.readIdeCredential(path.join(os.tmpdir(), `no-such-${process.pid}`, "state.vscdb"))])
+  cases.push(["no path", await x.readIdeCredential("")])
+  cases.push(["not sqlite", await x.readIdeCredential((await ideFixture({ raw: "IDEAK1 IDESECRET1 garbage" })).file)])
+  cases.push(["empty file", await x.readIdeCredential((await ideFixture({ raw: "" })).file)])
+  const whole = fs.readFileSync((await ideFixture({ value: ideValue(ideOrigin()) })).file)
+  cases.push(["half-written", await x.readIdeCredential((await ideFixture({ raw: whole.subarray(0, Math.floor(whole.length / 2)) })).file)])
+  cases.push(["a folder", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin()) })).dir)])
+  cases.push(["no row", await x.readIdeCredential((await ideFixture({})).file)])
+  cases.push(["not json", await x.readIdeCredential((await ideFixture({ value: '{"userInfoKey": IDEAK1' })).file)])
+  cases.push(["no token", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ securityToken: "" })) })).file)])
+  cases.push(["no secret", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ secretKey: undefined })) })).file)])
+  cases.push(["no domain", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ domainId: "" })) })).file)])
+  cases.push(["signed out", await x.readIdeCredential((await ideFixture({ value: JSON.stringify({ userInfoKey: {} }) })).file)])
+  cases.push(["unknown station", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ stationType: "mars" })) })).file)])
+  for (const [name, r] of cases) {
+    assert.equal(r.cred, undefined, name)
+    assert.equal(typeof r.reason, "string", name)
+    assert.ok(r.reason.length > 0, name)
+    assert.doesNotMatch(r.reason, SECRETS, name)
+  }
+  assert.equal(cases[0][1].missing, true)
+  assert.match(cases.at(-1)[1].reason, /mars/)
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    fs.chmodSync(file, 0o000)
+    try {
+      const r = await x.readIdeCredential(file)
+      assert.equal(r.cred, undefined)
+      assert.match(r.reason, /could not be read/)
+    } finally {
+      fs.chmodSync(file, 0o600)
+    }
+  }
+})
+
+test("the CodeArts Agent sign-in is offered only while its state file is there", async () => {
+  const none = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: path.join(os.tmpdir(), `no-ide-${process.pid}`, "state.vscdb") })
+  assert.equal(none.auth.methods.length, 1)
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: file })
+  assert.equal(plugin.auth.methods.length, 2)
+  assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the browser one keeps its place")
+  assert.equal(plugin.auth.methods[1].type, "oauth")
+  assert.match(plugin.auth.methods[1].label, /CodeArts Agent/)
+  fs.rmSync(file)
+  assert.equal(plugin.auth.methods.length, 1, "read again each time")
+})
+
+async function ideSignIn(plugin) {
+  const flow = await plugin.auth.methods[1].authorize()
+  assert.equal(flow.url, "")
+  assert.equal(flow.method, "auto")
+  return flow.callback()
+}
+
+test("signing in from the CodeArts Agent: checked with its station, the account its domainId", async () => {
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const calls = []
+  const fetcher = async (url, init) => {
+    calls.push({ url: String(url), auth: new Headers(init?.headers).get("authorization") })
+    return new Response(JSON.stringify({ domain_id: "dom1", user_id: "u1", user_name: "alice" }), { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: { auth: { set: async () => assert.fail("nothing is written") } } }, { fetch: fetcher, ideStateFile: file })
+  const r = await ideSignIn(plugin)
+  assert.equal(r.type, "success", r.error)
+  assert.equal(r.accountId, "dom1")
+  assert.equal(r.uid, "dom1")
+  assert.equal(r.refresh, undefined)
+  assert.equal(r.expires, Date.parse("2030-01-01T00:00:00Z"))
+  const cred = JSON.parse(r.access)
+  assert.equal(cred.station, "international")
+  assert.equal(cred.source, x.IDE_SOURCE)
+  assert.equal(cred.user_name, "alice")
+  assert.match(cred.session_id, /^[0-9a-f]{32}$/)
+  assert.deepEqual(calls.map((c) => c.url), [`${INTL}/snap-manager/v1/current/user`])
+  assert.match(calls[0].auth, /^SDK-HMAC-SHA256 Access=IDEAK1,/)
+})
+
+test("signing in from the CodeArts Agent fails, without a secret, when there is nothing good to sign in with", async () => {
+  // turned away by the station
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => new Response('{"error_code":"APIG.0301"}', { status: 401 }), ideStateFile: file })
+    const r = await ideSignIn(plugin)
+    assert.equal(r.type, "failed")
+    assert.match(r.error, /401/)
+    assert.doesNotMatch(r.error, SECRETS)
+  }
+  // expired: not even asked
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin({ expiresAt: Date.parse("2020-01-01T00:00:00Z") })) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => assert.fail("no request"), ideStateFile: file })
+    const r = await ideSignIn(plugin)
+    assert.equal(r.type, "failed")
+    assert.match(r.error, /expired/)
+  }
+  // gone between the listing and the sign-in
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => assert.fail("no request"), ideStateFile: file })
+    const flow = await plugin.auth.methods[1].authorize()
+    fs.rmSync(file)
+    const r = await flow.callback()
+    assert.equal(r.type, "failed")
+    assert.doesNotMatch(r.error, SECRETS)
+  }
+  // a vendor that can't be reached still signs in (the check is for a refusal)
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => { throw new Error("offline") }, ideStateFile: file })
+    assert.equal((await ideSignIn(plugin)).type, "success")
+  }
+})
+
+test("an IDE sign-in is renewed by reading the IDE's file again, never by STS", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  const fetcher = async (url) => {
+    assert.notEqual(String(url), x.STS_TOKEN_ENDPOINT, "no STS for an IDE sign-in")
+    return new Response("{}", { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher, ideStateFile: fx.file })
+  const signed = await ideSignIn(plugin)
+  const cred = JSON.parse(signed.access)
+  const auth = { type: "oauth", access: signed.access, expires: signed.expires, accountId: signed.accountId }
+  // the IDE hasn't renewed yet: for now, not for good
+  const unchanged = await plugin.auth.refresh(auth).then(() => null, (e) => e)
+  assert.ok(unchanged, "an unchanged file is no renewal")
+  assert.notEqual(unchanged.signIn, "expired")
+  assert.equal(x.isPermanentRefreshFailure(unchanged), false)
+  assert.doesNotMatch(unchanged.message, SECRETS)
+  // the IDE renewed: the new triple, the same account and session
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2", expiresAt: Date.parse("2031-01-01T00:00:00Z") })))
+  const r = await plugin.auth.refresh(auth)
+  const next = JSON.parse(r.access)
+  assert.equal(next.access_key_id, "IDEAK2")
+  assert.equal(next.security_token, "IDETOKEN2")
+  assert.equal(next.session_id, cred.session_id)
+  assert.equal(next.source, x.IDE_SOURCE)
+  assert.equal(r.expires, Date.parse("2031-01-01T00:00:00Z"))
+  assert.equal(r.uid, "dom1")
+  assert.equal(r.refresh, undefined)
+  // another account in the IDE now, or the file gone: for now, never for good
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK3", domainId: "dom2" })))
+  const other = await plugin.auth.refresh({ ...auth, access: r.access }).then(() => null, (e) => e)
+  assert.match(other?.message ?? "", /another account/)
+  assert.notEqual(other.signIn, "expired")
+  fs.rmSync(fx.file)
+  const gone = await plugin.auth.refresh({ ...auth, access: r.access }).then(() => null, (e) => e)
+  assert.ok(gone)
+  assert.notEqual(gone.signIn, "expired")
+  assert.doesNotMatch(gone.message, SECRETS)
+})
+
+// The IDE writes its file again: a new state.vscdb in the same place.
+async function rewriteIde(file, value) {
+  const db = await x.openSqlite(file)
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
+  db.close()
+  // a clock coarse enough to give the same mtime still sees the size or inode move
+  const t = new Date(Date.now() + 5000)
+  fs.utimesSync(file, t, t)
+}
+
+test("an international account chats, reads and renews on its own station only", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  const urls = []
+  let chats = 0
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    urls.push(u)
+    assert.ok(u.startsWith(`${INTL}/`), `only the international host: ${u}`)
+    if (u.endsWith("/current/user")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/chat/completions")) {
+      chats++
+      const auth = new Headers(init.headers).get("authorization")
+      // the first goes with a credential the vendor calls expired
+      if (chats === 1) return new Response(JSON.stringify({ error_code: "APIG.0602", error_msg: "the security token has expired" }), { status: 400 })
+      assert.match(auth, /Access=IDEAK2,/)
+      return sseResponse(okStream)
+    }
+    if (u.includes("/statistics/plugin")) return new Response(JSON.stringify(intlStatistics), { status: 200 })
+    return new Response('{"error_code":"APIG.0101"}', { status: 404 })
+  }
+  const sets = []
+  const plugin = await CodeArtsAuthPlugin({ client: { auth: { set: async (o) => sets.push(o) } } }, { fetch: fetcher, ideStateFile: fx.file })
+  const signed = await ideSignIn(plugin)
+  const auth = { type: "oauth", access: signed.access, expires: signed.expires, accountId: signed.accountId }
+  const loaded = await plugin.auth.loader(async () => auth)
+  assert.equal(loaded.baseURL, `${INTL}/api/v2`)
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2" })))
+  // the config's mainland `api` is taken to the account's station
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true }))
+  assert.equal(res.status, 200)
+  assert.equal(chats, 2)
+  assert.equal(JSON.parse(sets.at(-1).body.access).access_key_id, "IDEAK2")
+  // opengw is no host of this account
+  const refused = await loaded.fetch(x.OPENGW_GATEWAY_CONFIG_URL, { method: "GET" })
+  assert.equal(refused.status, 400)
+
+  const usage = await plugin.auth.usage(async () => auth)
+  assert.equal(usage.plan, "Free")
+  assert.equal(usage.windows.length, 1)
+  assert.equal(usage.windows[0].limit, 5000000)
+  assert.equal(usage.user, undefined, "a hw/id name is no name")
+  // its models: whatever the station answers, nothing asked of opengw
+  await plugin.provider.models({ models: {} }, { auth })
+  const checkin = await plugin.auth.checkin(async () => auth)
+  assert.equal(checkin.outcome, "inactive")
+  assert.ok(!urls.some((u) => u.includes("opengw") || u.includes("cn-north-4")))
+})
+
+test("a mainland account's loader keeps the mainland chat base", async () => {
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => sseResponse(okStream) })
+  const loaded = await plugin.auth.loader(async () => makeAuth(await makeCred()))
+  assert.equal(loaded.baseURL, x.CHAT_API_BASE)
 })
