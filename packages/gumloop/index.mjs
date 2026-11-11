@@ -11,6 +11,7 @@
 // whole credit) and takes it off a balance the user reads off gumloop.com.
 // Spend on gumloop.com itself shows only at the next calibration.
 
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import {
   API as DEFAULT_API,
@@ -18,6 +19,7 @@ import {
   OPENROUTER as DEFAULT_OPENROUTER,
   EXHAUSTED_FOR,
   FALLBACK_PRICES,
+  PRICES_RETRY_TTL,
   PRICES_TTL,
   Store,
   availableModel,
@@ -32,9 +34,20 @@ import {
 
 const ID = "gumloop"
 const NPM = "@ai-sdk/openai-compatible"
-const CREDIT_REFUSAL = /credit_limit|insufficient.credit|out of credits|credit balance|tier_limit/i
-const KEY_REFUSAL = /api.?key|auth|credential|user.?id|unauthori/i
+const KEY_REFUSAL =
+  /\b(invalid|missing|expired|revoked|malformed|bad|wrong)\s+(api[\s_-]*key|credentials?|user[\s_-]*id|x-auth-key|token)\b|\b(api[\s_-]*key|credentials?|user[\s_-]*id|x-auth-key)\s+(is\s+)?(invalid|missing|expired|revoked|required)\b/i
 const EFFORTS = Object.fromEntries(["low", "medium", "high"].map((e) => [e, { reasoningEffort: e }]))
+
+function isCreditRefusal(status, text) {
+  if (status === 402) return true
+  if (status !== 403) return false
+  try {
+    const d = JSON.parse(text)
+    const code = d?.error?.code ?? d?.error?.type ?? d?.code ?? (typeof d?.error === "string" ? d.error : "")
+    if (code === "credit_limit_exceeded") return true
+  } catch {}
+  return /\bcredit_limit_exceeded\b/i.test(text)
+}
 
 // aliasesFor gives every Gumloop id a slash-free name agents can type
 // (gumloop/glm-5p3 for accounts/fireworks/models/glm-5p3): the last path part
@@ -85,14 +98,17 @@ function row(m, alias, entry) {
 }
 
 // normalize rewrites a chat completions body the way Gumloop takes it.
-function normalize(body, { cache1h }) {
+function normalize(body, { cache1h } = {}) {
   // These upstream routes reject the empty system prompt Gumloop otherwise
-  // supplies. Preserve every nonempty caller instruction.
+  // supplies. Preserve every nonempty caller instruction (system or developer).
   if (/^(meta\/muse-|minimax\/minimax-m3\.1-flash$)/.test(String(body.model)) && Array.isArray(body.messages)) {
-    const nonempty = (content) => typeof content === "string" ? !!content.trim() :
-      Array.isArray(content) && content.some((p) => typeof p?.text === "string" && p.text.trim())
-    body.messages = body.messages.filter((m) => m.role !== "system" || nonempty(m.content))
-    if (!body.messages.some((m) => m.role === "system")) {
+    const isSystem = (role) => role === "system" || role === "developer"
+    const nonempty = (content) =>
+      typeof content === "string"
+        ? !!content.trim()
+        : Array.isArray(content) && content.some((p) => typeof p?.text === "string" && p.text.trim())
+    body.messages = body.messages.filter((m) => !isSystem(m.role) || nonempty(m.content))
+    if (!body.messages.some((m) => isSystem(m.role))) {
       body.messages.unshift({ role: "system", content: "You are a helpful assistant." })
     }
   }
@@ -104,12 +120,10 @@ function normalize(body, { cache1h }) {
   }
   delete body.store
   if (typeof body.reasoning_effort === "string") {
-    if (!isObj(body.reasoning) && body.reasoning_effort !== "none") body.reasoning = { effort: body.reasoning_effort }
+    if (!isObj(body.reasoning)) body.reasoning = { effort: body.reasoning_effort }
     delete body.reasoning_effort
   }
-  // Gumloop caches Claude prompts with Anthropic's default 5-minute TTL, so a
-  // session idle for longer rewrites its whole context. Gumloop bills the
-  // 1-hour TTL at the 5-minute write price (measured by vwfactory-dsh, 2026-10).
+  // Optional 1-hour Anthropic prompt cache TTL (opt-in via options.cache1h).
   if (cache1h && /^claude-/.test(String(body.model)) && body.cache_control === undefined) {
     body.cache_control = { type: "ephemeral", ttl: "1h" }
   }
@@ -129,7 +143,7 @@ function tapUsage(stream, isSse, signal, done) {
     if (finished) return
     finished = true
     signal?.removeEventListener("abort", aborted)
-    done(usage, cut)
+    done(usage, cut || (tooBig && !usage))
   }
   const take = (o) => {
     if (isObj(o?.usage)) usage = o.usage
@@ -205,17 +219,23 @@ function creditsOf(v) {
   return /^\d+(\.\d+)?$/.test(s) ? Math.floor(Number(s)) : undefined
 }
 
-function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, now = Date.now, env = process.env } = {}) {
+function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.fetch, now = Date.now, env = process.env } = {}) {
   const API = env.GUMLOOP_API_BASE || DEFAULT_API
   const WS = env.GUMLOOP_WS_BASE || DEFAULT_WS
   const OPENROUTER = env.GUMLOOP_OPENROUTER_BASE || DEFAULT_OPENROUTER
-  const store = new Store(directory ? join(directory, "gumloop-ledger.json") : undefined, now)
-  const cache1h = options.cache1h !== false
-  // alias -> Gumloop id, from the built-in prices and every list read since.
-  const realIds = new Map()
-  for (const [id, alias] of aliasesFor(Object.keys(FALLBACK_PRICES))) realIds.set(alias, id)
+  // In magpie, `directory` is magpie's config dir (`input.magpie` is present).
+  // In OpenCode, `directory` is the user's project tree and must not be written to.
+  const ledgerPath = directory ? join(directory, "gumloop-ledger.json") : undefined
+  const store = new Store(ledgerPath && (magpie || existsSync(ledgerPath)) ? ledgerPath : undefined, now)
+  const cache1h = options.cache1h === true
+  // alias -> Gumloop id: built-in defaults plus one map per account.
+  const defaultIds = new Map()
+  const knownIds = new Set(Object.keys(FALLBACK_PRICES))
+  for (const [id, alias] of aliasesFor(Object.keys(FALLBACK_PRICES))) defaultIds.set(alias, id)
+  const accountIds = new Map()
   const maxOut = new Map()
   let pricing
+  let pricesFailedAt = 0
 
   const credOf = (auth) => {
     if (auth?.type !== "api" || !auth.key) return undefined
@@ -231,16 +251,20 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
     })
 
   // refreshPrices re-reads OpenRouter's list at most every PRICES_TTL; a
-  // failure keeps the table there was (or the built-in prices).
+  // failure backs off for PRICES_RETRY_TTL and keeps the existing table.
   function refreshPrices() {
-    const ids = [...new Set(realIds.values())]
+    const ids = [...knownIds]
     const cached = store.prices()
     if (cached.version === 2 && now() - cached.at < PRICES_TTL && ids.every((id) => cached.ids?.includes(id))) return Promise.resolve()
+    if (pricesFailedAt && now() - pricesFailedAt < PRICES_RETRY_TTL) return Promise.resolve()
     pricing ??= (async () => {
       const table = await fetchPrices((u, i) => fetchImpl(u.replace(DEFAULT_OPENROUTER, OPENROUTER), i), ids)
+      pricesFailedAt = 0
       store.setPrices(table, ids)
     })()
-      .catch(() => {})
+      .catch(() => {
+        pricesFailedAt = now()
+      })
       .finally(() => {
         pricing = undefined
       })
@@ -304,8 +328,10 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
       for (const [k, v] of Object.entries(gumloopHeaders(cred.key, cred.userId))) headers.set(k, v)
       return fetchImpl(url, { ...init, headers })
     }
-    const model = wireModel(realIds.get(body.model) ?? body.model)
+    const perAccount = accountIds.get(cred.userId)
+    const model = wireModel(perAccount?.get(body.model) ?? defaultIds.get(body.model) ?? body.model)
     body.model = model
+    const streamRequested = body.stream === true
     normalize(body, { cache1h })
     const cap = maxOut.get(model)
     if (cap && typeof body.max_tokens === "number" && body.max_tokens > cap) body.max_tokens = cap
@@ -326,20 +352,33 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
 
     if (!res.ok) {
       const text = await res.clone().text().catch(() => "")
-      if (res.status === 402 || CREDIT_REFUSAL.test(text)) {
+      if (isCreditRefusal(res.status, text)) {
         store.change(cred.userId, (a) => {
           a.exhaustedAt = now()
         })
         await res.body?.cancel().catch(() => {})
         // 429 so magpie moves the request to the next account; the sign-in is fine.
-        return errorJson(429, `Gumloop: out of credits (${text.slice(0, 300) || `HTTP ${res.status}`})`, "insufficient_quota", {
-          "x-magpie-sign-in": "kept",
-        })
+        return errorJson(
+          429,
+          `Gumloop: out of credits (from HTTP ${res.status}: ${text.slice(0, 300) || res.statusText || "credit_limit_exceeded"})`,
+          "insufficient_quota",
+          { "x-magpie-sign-in": "kept" },
+        )
       }
-      if (res.status === 403 && KEY_REFUSAL.test(text)) {
-        const headers = new Headers(res.headers)
-        headers.set("x-magpie-sign-in", "expired")
-        return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+      if (res.status === 403) {
+        let expired = KEY_REFUSAL.test(text)
+        if (!expired) {
+          try {
+            const check = await getModels(cred)
+            await check.body?.cancel().catch(() => {})
+            if (check.status === 401 || check.status === 403) expired = true
+          } catch {}
+        }
+        if (expired) {
+          const headers = new Headers(res.headers)
+          headers.set("x-magpie-sign-in", "expired")
+          return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
+        }
       }
       return res
     }
@@ -349,7 +388,7 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
     const headers = new Headers(res.headers)
     headers.delete("content-length")
     headers.delete("content-encoding")
-    const tapped = tapUsage(res.body, ct.includes("text/event-stream"), init?.signal, (usage, cut) => {
+    const tapped = tapUsage(res.body, ct.includes("text/event-stream") || streamRequested, init?.signal, (usage, cut) => {
       try {
         charge(cred.userId, model, usage, cut)
       } catch {}
@@ -526,7 +565,13 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
           throw new Error(e?.message || "Gumloop sent no model list")
         }
         const aliases = aliasesFor(list.map((m) => m.id))
-        for (const [id, alias] of aliases) realIds.set(alias, wireModel(id))
+        const acctMap = new Map()
+        for (const [id, alias] of aliases) {
+          const wire = wireModel(id)
+          acctMap.set(alias, wire)
+          knownIds.add(wire)
+        }
+        accountIds.set(cred.userId, acctMap)
         await refreshPrices()
         return Object.fromEntries(list.map((m) => [aliases.get(m.id), row(m, aliases.get(m.id), store.price(m.id))]))
       },
@@ -536,5 +581,6 @@ function createPlugin({ directory, options = {}, fetchImpl = globalThis.fetch, n
 
 // The plugin is the only exported function; magpie calls every exported
 // function as a plugin, so tests reach the internals through this object.
-export const GumloopPlugin = async (input, options) => createPlugin({ directory: input?.directory, options: options ?? {} })
-export const _internal = { createPlugin, aliasesFor, normalize, tapUsage, row, costOf, lookup }
+export const GumloopPlugin = async (input, options) =>
+  createPlugin({ directory: input?.directory, magpie: input?.magpie, options: options ?? {} })
+export const _internal = { createPlugin, aliasesFor, normalize, tapUsage, row, costOf, lookup, isCreditRefusal }

@@ -1,6 +1,6 @@
 // Gumloop's API: what an account can use, what a call costs, and what this
 // plugin has spent. Nothing here signs in or holds a key; index.mjs does.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 
 export const API = "https://api.gumloop.com/api/v1"
@@ -10,6 +10,7 @@ export const OPENROUTER = "https://openrouter.ai/api/v1"
 // Gumloop bills $0.005 per credit and rounds every call up to a whole credit.
 export const USD_PER_CREDIT = 0.005
 export const PRICES_TTL = 12 * 60 * 60 * 1000
+export const PRICES_RETRY_TTL = 5 * 60 * 1000
 // A credit-limit refusal keeps the account shown as out of credits this long.
 export const EXHAUSTED_FOR = 12 * 60 * 60 * 1000
 
@@ -158,28 +159,42 @@ export async function fetchPrices(fetchImpl, ids) {
   if (!r.ok) throw new Error(`OpenRouter price list: HTTP ${r.status}`)
   const data = (await r.json())?.data ?? []
   const byId = new Map(data.filter((m) => typeof m?.id === "string").map((m) => [m.id, m]))
-  const table = {}
-  for (const id of ids) {
-    const ref = priceRef(id)
-    const orId = ref.orIds.find((x) => byId.has(x))
-    if (!orId) continue
-    let entry
-    if (ref.provider) {
-      try {
-        const er = await fetchImpl(`${OPENROUTER}/models/${orId}/endpoints`, { signal: AbortSignal.timeout(20000) })
-        const eps = er.ok ? ((await er.json())?.data?.endpoints ?? []) : []
-        const ep = eps.find((e) => e?.provider_name === ref.provider && priceEntry(e.pricing) &&
-          (ref.provider !== "Fireworks" || !e.tag || e.tag === "fireworks"))
-        if (ep) entry = priceEntry(ep.pricing)
-      } catch {
-        // Keep the known route's fallback, not another host's headline price.
-      }
-      if (!entry) continue
+  const endpointCache = new Map()
+  const getEndpoints = (orId) => {
+    if (!endpointCache.has(orId)) {
+      endpointCache.set(
+        orId,
+        (async () => {
+          const er = await fetchImpl(`${OPENROUTER}/models/${orId}/endpoints`, { signal: AbortSignal.timeout(20000) })
+          return er.ok ? ((await er.json())?.data?.endpoints ?? []) : []
+        })().catch(() => []),
+      )
     }
-    entry ??= priceEntry(byId.get(orId).pricing)
-    if (entry) table[id] = { ...entry, ref: orId }
+    return endpointCache.get(orId)
   }
-  return table
+  const rows = await Promise.all(
+    ids.map(async (id) => {
+      const ref = priceRef(id)
+      const orId = ref.orIds.find((x) => byId.has(x))
+      if (!orId) return undefined
+      let entry
+      if (ref.provider) {
+        const eps = await getEndpoints(orId)
+        const ep = eps.find(
+          (e) =>
+            e?.provider_name === ref.provider &&
+            priceEntry(e.pricing) &&
+            (ref.provider !== "Fireworks" || !e.tag || e.tag === "fireworks"),
+        )
+        if (ep) entry = priceEntry(ep.pricing)
+        // Keep the known route's fallback, not another host's headline price.
+        if (!entry) return undefined
+      }
+      entry ??= priceEntry(byId.get(orId).pricing)
+      return entry ? [id, { ...entry, ref: orId }] : undefined
+    }),
+  )
+  return Object.fromEntries(rows.filter(Boolean))
 }
 
 // usageCost prices one completion from its OpenAI-style usage block.
@@ -205,36 +220,90 @@ export function monthKey(t) {
 // Store keeps the ledger (calibrated balance and spend per account) and the
 // price table in one JSON file in magpie's config directory. Every terminal
 // `magpie` command runs its own plugin host beside the app's, so each change
-// re-reads the file first rather than trusting what this process holds.
+// locks and re-reads the file first rather than trusting what this process holds.
+let seq = 0
 export class Store {
   constructor(file, now = Date.now) {
     this.file = file
     this.now = now
-    this.mem = {}
+    this.mem = { accounts: {} }
+    this.readable = true
+  }
+
+  withLock(fn) {
+    if (!this.file) return fn()
+    const lock = `${this.file}.lock`
+    let fd
+    try {
+      mkdirSync(dirname(this.file), { recursive: true })
+      for (let i = 0; i < 40; i++) {
+        try {
+          fd = openSync(lock, "wx")
+          break
+        } catch (e) {
+          if (e?.code !== "EEXIST") break
+          try {
+            if (Date.now() - statSync(lock).mtimeMs > 5000) unlinkSync(lock)
+          } catch {}
+        }
+      }
+      return fn()
+    } catch {
+      return fn()
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {}
+        try {
+          unlinkSync(lock)
+        } catch {}
+      }
+    }
   }
 
   read() {
-    let d = this.mem
-    if (this.file) {
-      try {
-        d = JSON.parse(readFileSync(this.file, "utf8"))
-      } catch {
-        d = {}
-      }
+    if (!this.file) {
+      if (!isObj(this.mem)) this.mem = {}
+      if (!isObj(this.mem.accounts)) this.mem.accounts = {}
+      this.readable = true
+      return this.mem
     }
-    if (!isObj(d)) d = {}
-    if (!isObj(d.accounts)) d.accounts = {}
-    return d
+    try {
+      const parsed = JSON.parse(readFileSync(this.file, "utf8"))
+      if (!isObj(parsed)) throw new Error("invalid ledger root")
+      if (!isObj(parsed.accounts)) parsed.accounts = {}
+      this.mem = parsed
+      this.readable = true
+      return parsed
+    } catch (e) {
+      if (e?.code === "ENOENT") {
+        const fresh = { accounts: {} }
+        this.mem = fresh
+        this.readable = true
+        return fresh
+      }
+      // Keep the last good in-memory copy on partial reads, corrupt JSON or
+      // permission errors so the next write never wipes the ledger.
+      this.readable = false
+      if (!isObj(this.mem)) this.mem = {}
+      if (!isObj(this.mem.accounts)) this.mem.accounts = {}
+      return structuredClone(this.mem)
+    }
   }
 
   write(d) {
-    this.mem = d
-    if (!this.file) return
+    if (!this.file) {
+      this.mem = d
+      return
+    }
+    if (!this.readable) return
     try {
       mkdirSync(dirname(this.file), { recursive: true })
-      const tmp = `${this.file}.${process.pid}.tmp`
+      const tmp = `${this.file}.${process.pid}.${++seq}.tmp`
       writeFileSync(tmp, JSON.stringify(d, null, 2))
       renameSync(tmp, this.file)
+      this.mem = d
     } catch {
       // the ledger is an estimate; losing one write must not fail a request
     }
@@ -250,11 +319,14 @@ export class Store {
   }
 
   change(uid, fn) {
-    const d = this.read()
-    const a = Store.account(d, uid, this.now())
-    const result = fn(a, d)
-    this.write(d)
-    return result
+    return this.withLock(() => {
+      const d = this.read()
+      if (this.file && !this.readable) return undefined
+      const a = Store.account(d, uid, this.now())
+      const result = fn(a, d)
+      this.write(d)
+      return result
+    })
   }
 
   account(uid) {
@@ -268,8 +340,11 @@ export class Store {
   anchor(uid, balance, source, at = this.now()) {
     const b = Number(balance)
     if (!Number.isFinite(b) || b < 0) return false
-    if (this.account(uid).applied.includes(source)) return false
-    return this.change(uid, (a) => {
+    return this.withLock(() => {
+      const d = this.read()
+      if (this.file && !this.readable) return false
+      const a = Store.account(d, uid, this.now())
+      if (a.applied.includes(source)) return false
       a.anchor = { balance: Math.round(b), at }
       a.charges = (a.charges ?? []).filter(([t]) => t > at)
       a.spent = a.charges.reduce((s, [, c]) => s + c, 0)
@@ -277,6 +352,7 @@ export class Store {
       if (!(a.exhaustedAt > at)) delete a.exhaustedAt
       delete a.unbilledStops
       a.applied = [...a.applied, source].slice(-20)
+      this.write(d)
       return true
     })
   }
@@ -284,7 +360,7 @@ export class Store {
   // spend counts credits against the balance, remembering when for anchor.
   static spend(a, credits, at) {
     a.spent += credits
-    a.charges = [...(a.charges ?? []), [at, credits]].slice(-500)
+    a.charges = [...(a.charges ?? []), [at, credits]]
   }
 
   remaining(uid) {
@@ -298,9 +374,12 @@ export class Store {
   }
 
   setPrices(table, ids = Object.keys(table)) {
-    const d = this.read()
-    d.prices = { at: this.now(), table, ids, version: 2 }
-    this.write(d)
+    this.withLock(() => {
+      const d = this.read()
+      if (this.file && !this.readable) return
+      d.prices = { at: this.now(), table, ids, version: 2 }
+      this.write(d)
+    })
   }
 
   // price is the live entry for a model, else the built-in one.

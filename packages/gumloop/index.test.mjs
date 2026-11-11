@@ -86,11 +86,15 @@ function fake(chat = () => json(200, { choices: [], usage: { prompt_tokens: 10, 
 }
 
 const dirs = []
+function tempDir() {
+  const d = mkdtempSync(join(tmpdir(), "gumloop-test-"))
+  dirs.push(d)
+  return d
+}
 function plugin(f, extra = {}) {
-  const directory = mkdtempSync(join(tmpdir(), "gumloop-test-"))
-  dirs.push(directory)
+  const directory = tempDir()
   let t = extra.t ?? 1_800_000_000_000
-  const p = createPlugin({ directory, fetchImpl: f.fetchImpl, env, now: () => t, ...extra })
+  const p = createPlugin({ directory, magpie: true, fetchImpl: f.fetchImpl, env, now: () => t, ...extra })
   return Object.assign(p, { directory, tick: (ms) => (t += ms) })
 }
 afterEach(() => {
@@ -125,7 +129,7 @@ describe("config", () => {
     expect(g.models["claude-opus-5-5"].variants.high).toEqual({ reasoningEffort: "high" })
   })
   test("the exported plugin loads without a network", async () => {
-    const hooks = await GumloopPlugin({ directory: mkdtempSync(join(tmpdir(), "gumloop-test-")) }, undefined)
+    const hooks = await GumloopPlugin({ directory: tempDir() }, undefined)
     expect(hooks.auth.provider).toBe("gumloop")
     expect(hooks.auth.methods[0].type).toBe("api")
   })
@@ -193,7 +197,8 @@ describe("loader and requests", () => {
     expect(up.headers.get("authorization")).toBe(`Bearer ${KEY}`)
     expect(up.headers.get("x-auth-key")).toBe(USER)
     expect(up.headers.get("content-length")).toBeNull()
-    expect(up.body).toMatchObject({ max_tokens: 50, reasoning: { effort: "high" }, cache_control: { type: "ephemeral", ttl: "1h" } })
+    expect(up.body).toMatchObject({ max_tokens: 50, reasoning: { effort: "high" } })
+    expect(up.body.cache_control).toBeUndefined()
     expect(up.body.max_completion_tokens).toBeUndefined()
     expect(up.body.store).toBeUndefined()
     expect(up.body.stream_options).toBeUndefined()
@@ -204,8 +209,10 @@ describe("loader and requests", () => {
     expect(glm.body.cache_control).toBeUndefined()
     expect(glm.body.stream_options).toEqual({ include_usage: true })
   })
-  test("the 1-hour cache can be turned off", () => {
+  test("the 1-hour cache is opt-in and preserves caller cache_control", () => {
+    expect(normalize({ model: "claude-opus-5-5" }).cache_control).toBeUndefined()
     expect(normalize({ model: "claude-opus-5-5" }, { cache1h: false }).cache_control).toBeUndefined()
+    expect(normalize({ model: "claude-opus-5-5" }, { cache1h: true }).cache_control).toEqual({ type: "ephemeral", ttl: "1h" })
     expect(normalize({ model: "claude-opus-5-5", cache_control: { type: "x" } }, { cache1h: true }).cache_control).toEqual({ type: "x" })
   })
   test("learns a model's output cap from a 400 and retries once", async () => {
@@ -307,25 +314,26 @@ describe("credit estimate", () => {
     expect(card.balance).toBeUndefined()
   })
   test("a stopped stream with no usage is counted as unbilled", async () => {
-    let push
+    let cancelled = false
     const f = fake(() => {
       const body = new ReadableStream({
         start(c) {
           c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "a" } }] })}\n\n`))
-          push = c
+        },
+        cancel() {
+          cancelled = true
         },
       })
       return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } })
     })
     const p = plugin(f)
     const loaded = await p.auth.loader(async () => auth)
-    const ac = new AbortController()
-    const res = await loaded.fetch("https://gl.test/ws/chat/completions", { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", stream: true }), signal: ac.signal })
+    const res = await loaded.fetch("https://gl.test/ws/chat/completions", { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", stream: true }) })
     const reader = res.body.getReader()
     await reader.read()
-    ac.abort()
-    push.close()
-    await reader.cancel().catch(() => {})
+    await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cancelled).toBe(true)
     const card = await p.auth.usage(async () => auth)
     expect(card.windows[1].display).toContain("1 stopped without usage")
   })

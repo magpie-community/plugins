@@ -41,15 +41,14 @@ The plugin translates these to the chat endpoint's route IDs (for example,
 MiniMax M3 is temporarily omitted: on 2026-11-11 Gumloop's route rejected even
 minimal requests with `Extra inputs are not permitted, field: 'provider'`.
 MiniMax M3.1 Flash is supported. Muse and MiniMax M3.1 Flash require a nonempty
-system message; if none is supplied, the plugin adds "You are a helpful assistant."
-Existing nonempty system instructions are preserved.
+system or developer message; if none is supplied, the plugin adds "You are a
+helpful assistant." Existing nonempty instructions are preserved.
 
 Requests are rewritten the way Gumloop takes them: `max_completion_tokens` becomes
 `max_tokens`, `reasoning_effort` becomes `reasoning.effort`, streams ask for their
-usage, and a model's output cap is learned from its first refusal. Claude requests
-ask for the 1-hour prompt cache (Gumloop bills it at the 5-minute write price), so
-a session idle for more than five minutes doesn't rewrite its whole context. Turn
-that off with `{"cache1h": false}` in the plugin's options.
+usage, and a model's output cap is learned from its first refusal. Set
+`{"cache1h": true}` in the plugin's options to opt into a 1-hour Anthropic prompt
+cache TTL on Claude requests.
 
 ## Credits
 
@@ -81,10 +80,15 @@ magpie plugin options gumloop '{"balance": {"<user id or email>": 7142}, "allowa
 ```
 
 `balance` is a number for every account or an object keyed by user id or email.
+Each distinct `options.balance` number is applied once; if you top up back to the
+same number as before, sign in again with the balance prompt (which timestamps
+each calibration) or pass a different number.
 `allowance` (optional, same forms) is the plan's monthly credits; with it the card
 shows used / allowance instead of what is left.
 
-The estimate is kept in `gumloop-ledger.json` in magpie's config directory.
+In magpie, the estimate is kept in `gumloop-ledger.json` in magpie's config
+directory. In OpenCode, it is kept in memory for the session so project folders
+are never written to.
 
 ## Install
 
