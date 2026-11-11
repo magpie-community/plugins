@@ -1092,7 +1092,7 @@ function makePlugin(site) {
             async fetch(input, init) {
               const req = input instanceof Request ? input : null
               let body = init?.body
-              if (body === undefined && req) body = await req.clone().text()
+              if (body === undefined && req) body = await req.clone().arrayBuffer()
               const url = req ? req.url : input instanceof URL ? input.href : input
               const send = (a) => {
                 const headers = new Headers(init?.headers ?? req?.headers)
@@ -1115,6 +1115,7 @@ function makePlugin(site) {
               const media = (access) => handleMediaFetch(url, {
                 method: init?.method ?? req?.method ?? "POST",
                 body,
+                headers: init?.headers ?? req?.headers,
                 signal: init?.signal ?? req?.signal,
               }, { request: makeTokenRequest(site, access), siteId: site.id })
               let { a, renewed: did } = await fresh(getAuth)
@@ -1267,16 +1268,35 @@ function makePlugin(site) {
 
 // Tools run outside a chat account's scope. Read the explicitly selected
 // account afresh for each call; the site's first stored account is the default.
-async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } = {}) {
-  const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
-  abort.throwIfAborted()
-  const res = await siteFetch(site, new URL(path, site.llm).href, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + access },
-    body: JSON.stringify(body ?? {}),
-    signal: abort,
-  }, site.name + " tool API")
-  if (!res.ok) throw new Error(site.name + " tool API: HTTP " + res.status)
+function toolHttpError(site, status) {
+  return Object.assign(new Error(site.name + " tool API: HTTP " + status), { status })
+}
+
+function redactSecrets(message, secrets) {
+  let out = String(message)
+  for (const secret of secrets) if (secret) out = out.replaceAll(secret, "<redacted>")
+  return out
+}
+
+function toolRequestInit(site, access, path, body, abort) {
+  return {
+    url: new URL(path, site.llm).href,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + access },
+      body: JSON.stringify(body ?? {}),
+      signal: abort,
+    },
+    what: site.name + " tool API",
+  }
+}
+
+// parseToolEnvelope reads one tool API response: a non-OK status is
+// thrown with that status (so a 401 can be renewed), then the JSON
+// envelope and base_resp are checked the same way for chat tools and
+// the native media/search path.
+async function parseToolEnvelope(res, site, abort) {
+  if (!res.ok) throw toolHttpError(site, res.status)
   let env
   try { env = obj(JSON.parse(await res.text())) } catch {
     abort.throwIfAborted()
@@ -1299,6 +1319,19 @@ async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } 
   checked(env, "MiniMax tool API")
   abort.throwIfAborted()
   return env
+}
+
+async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } = {}) {
+  const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+  abort.throwIfAborted()
+  const req = toolRequestInit(site, access, path, body, abort)
+  const res = await siteFetch(site, req.url, req.init, req.what)
+  try {
+    return await parseToolEnvelope(res, site, abort)
+  } catch (e) {
+    e.message = redactSecrets(e.message, [access])
+    throw e
+  }
 }
 
 function makeTokenRequest(site, access) {
@@ -1353,18 +1386,10 @@ function createToolRequest({ client, directory }) {
     const fresh = sessions.get(id)
     let { a } = await wait(fresh(getAuth))
     const secrets = new Set([a.access, a.refresh].filter(Boolean))
-    const redact = (message) => {
-      let out = String(message)
-      for (const secret of secrets) out = out.replaceAll(secret, "<redacted>")
-      return out
-    }
     const send = (auth) => {
       abort.throwIfAborted()
-      const req = {
-        url: new URL(path, site.llm).href,
-        init: { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + auth.access }, body: JSON.stringify(body) },
-      }
-      return siteFetch(site, req.url, { ...req.init, signal: abort }, site.name + " tool API")
+      const req = toolRequestInit(site, auth.access, path, body, abort)
+      return siteFetch(site, req.url, req.init, req.what)
     }
     try {
       let res = await send(a)
@@ -1377,34 +1402,10 @@ function createToolRequest({ client, directory }) {
         if (a.refresh) secrets.add(a.refresh)
         res = await send(a)
       }
-      if (!res.ok) throw new Error(site.name + " tool API: HTTP " + res.status)
-      let env
-      try { env = obj(JSON.parse(await res.text())) } catch (e) {
-        abort.throwIfAborted()
-        throw new Error("MiniMax tool API: invalid JSON response")
-      }
-      if (!env) throw new Error("MiniMax tool API: expected a JSON object")
-      // The gateway may succeed while the tool payload reports a billing
-      // or execution error. Both status layers must pass independently.
-      if (env.code !== undefined) {
-        const { code: rawCode, message, ...payload } = env
-        const code = num(rawCode)
-        if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
-        if (code !== 0) throw new Error("MiniMax tool API: " + (str(env, "message") ?? "status " + code))
-        if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
-      }
-      if (env.base_resp !== undefined) {
-        const br = obj(env.base_resp)
-        const code = br && num(br.status_code)
-        if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
-        if (code !== 0) throw new Error("MiniMax tool API: " + (str(br, "status_msg") ?? "status " + code))
-      }
-      checked(env, "MiniMax tool API")
-      abort.throwIfAborted()
-      return env
+      return await parseToolEnvelope(res, site, abort)
     } catch (e) {
       abort.throwIfAborted()
-      e.message = redact(e.message)
+      e.message = redactSecrets(e.message, secrets)
       throw e
     }
   }
@@ -1420,4 +1421,4 @@ export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, createToolRequest, postTool, makeTokenRequest, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }
+export const _internal = { SITES, MODELS, createToolRequest, postTool, makeTokenRequest, parseToolEnvelope, toolHttpError, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

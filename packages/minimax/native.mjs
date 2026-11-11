@@ -12,7 +12,7 @@
 //     listed beside Tavily and the rest, signed in as this provider.
 //   - image: a model that gives images alone, spoken with
 //     @ai-sdk/openai-compatible, drawn at the OpenAI images API through this
-//     plugin's fetch (plugin://<id>/v1/images/generations).
+//     plugin's fetch (plugin://<id>/v1/images/generations and /images/edits).
 //   - video: models whose capabilities.output includes video, started at
 //     the OpenAI-shaped videos API through the same fetch
 //     (plugin://<id>/v1/videos).
@@ -20,11 +20,23 @@
 // generate_image has no model id of its own in the live catalog, so the
 // image model is listed as MiniMax-Image. Video models are the real
 // submit_video_generation enums: MiniMax-H3, MiniMax-H3-Max, MiniMax-Hailuo-2.3.
+//
+// Magpie's plugin drawer that isn't Codex or SenseNova sends edits as
+// multipart/form-data (image bytes, optional mask). A local video frame
+// arrives as a data: URL. Those bytes are uploaded through the live
+// catalog's upload_temp_url flow (a signed form, then a POST of the
+// file) before generate_image / submit_video_generation. HTTPS URLs are
+// passed through. get_asset_url is retried briefly while the URL still
+// has /visible/, the watermarked rendition reported in #974.
 
-import { callMatrixTool } from "./connector-tools.mjs"
+import { callMatrixTool, _internal as matrix } from "./connector-tools.mjs"
 
 const IMAGE_NPM = "@ai-sdk/openai-compatible"
 const MATRIX = "connector__matrix__"
+const LIST_MS = 30 * 1000
+const UPLOAD_MS = 55 * 1000
+const MAX_UPLOAD = 64 * 1024 * 1024
+const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"])
 
 export const IMAGE_MODEL_ID = "MiniMax-Image"
 export const VIDEO_MODEL_IDS = Object.freeze(["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-Hailuo-2.3"])
@@ -163,7 +175,9 @@ export function pagesFrom(payload) {
 
 // createSearchHook is the plugin search hook for one MiniMax Code site.
 // post(access, path, body, opts) POSTs a JSON body with that access token
-// and returns the parsed object (base_resp already checked).
+// and returns the parsed object (base_resp already checked). A throw from
+// post should carry a numeric status (401, 402, 403, 429) when the API
+// refused the account, so Magpie can rest it for search.
 export function createSearchHook(site, post) {
   return {
     [site.id]: {
@@ -211,8 +225,10 @@ export function mediaPath(url) {
 
 // handleMediaFetch answers an OpenAI images or videos request by calling
 // MiniMax Code's Matrix tools. It returns null when url is not a media
-// route, so the chat fetch can send the request on.
-export async function handleMediaFetch(url, { method, body, signal } = {}, { request, siteId } = {}) {
+// route, so the chat fetch can send the request on. headers must include
+// the request Content-Type when the body is multipart/form-data, as Magpie
+// sends it for /images/edits.
+export async function handleMediaFetch(url, { method, body, headers, signal } = {}, { request, siteId } = {}) {
   const route = mediaPath(url)
   if (!route) return null
   if (typeof request !== "function" || !siteId) {
@@ -222,11 +238,11 @@ export async function handleMediaFetch(url, { method, body, signal } = {}, { req
   try {
     if (route.kind === "image.generations" || route.kind === "image.edits") {
       if (verb !== "POST") return errorResponse(405, "use POST to generate an image")
-      return await generateImage(request, siteId, body, signal, route.kind === "image.edits")
+      return await generateImage(request, siteId, body, headers, signal, route.kind === "image.edits")
     }
     if (route.kind === "video.create") {
       if (verb !== "POST") return errorResponse(405, "use POST to start a video")
-      return await startVideo(request, siteId, body, signal)
+      return await startVideo(request, siteId, body, headers, signal)
     }
     if (verb !== "GET") return errorResponse(405, "use GET to read a video")
     if (route.kind === "video.get") return await getVideo(request, siteId, route.id, signal)
@@ -237,8 +253,9 @@ export async function handleMediaFetch(url, { method, body, signal } = {}, { req
   }
 }
 
-async function generateImage(request, siteId, body, signal, edits) {
-  const req = jsonBody(body)
+async function generateImage(request, siteId, body, headers, signal, edits) {
+  const input = await mediaInput(body, headers)
+  const req = input.fields
   const prompt = str(req.prompt)
   if (!prompt) throw Object.assign(new Error("prompt is required"), { status: 400 })
   const n = integer(req.n, 1)
@@ -248,7 +265,7 @@ async function generateImage(request, siteId, body, signal, edits) {
   if (aspect) item.aspect_ratio = aspect
   const area = areaOf(req)
   if (area) item.area = area
-  const refs = referenceImages(req, edits)
+  const refs = await referenceImages(request, siteId, req, input.files, signal, edits)
   if (refs) item.reference_images = refs
   const result = await callMatrixTool(request, siteId, "generate_image", { requests: [item] }, { signal, timeoutMs: GEN_MS })
   const items = Array.isArray(result?.success_items) ? result.success_items : []
@@ -262,8 +279,8 @@ async function generateImage(request, siteId, body, signal, edits) {
   return jsonResponse({ created: Math.floor(Date.now() / 1000), data })
 }
 
-async function startVideo(request, siteId, body, signal) {
-  const req = jsonBody(body)
+async function startVideo(request, siteId, body, headers, signal) {
+  const req = (await mediaInput(body, headers)).fields
   const model = str(req.model)
   if (!VIDEO_MODEL_IDS.includes(model)) {
     throw Object.assign(new Error("model must be one of " + VIDEO_MODEL_IDS.join(", ")), { status: 400 })
@@ -277,14 +294,14 @@ async function startVideo(request, siteId, body, signal) {
   if (resolution) args.resolution = resolution
   const ratio = str(req.ratio) || aspectFromSize(req.size)
   if (ratio && ratio !== "auto") args.ratio = ratio
-  const start = mediaUrl(req.input_reference ?? req.input_image)
-  const end = mediaUrl(req.last_frame ?? req.last_frame_image)
+  const start = await resolveMedia(request, siteId, req.input_reference ?? req.input_image, signal)
+  const end = await resolveMedia(request, siteId, req.last_frame ?? req.last_frame_image, signal)
   if (start) {
     args.input_image = start
     args.reference_type = "first_frame"
   }
   if (end) args.last_frame_image = end
-  const refs = urlList(req.reference_images)
+  const refs = await resolveMediaList(request, siteId, req.reference_images, signal)
   if (refs) args.reference_images = refs
   const result = await callMatrixTool(request, siteId, "submit_video_generation", args, { signal, timeoutMs: CALL_MS })
   const task = str(result?.task_id ?? result?.taskId ?? result?.id)
@@ -340,11 +357,22 @@ async function queryVideo(request, siteId, model, task, signal) {
   return callMatrixTool(request, siteId, "query_video_generation", { model, task_id: task }, { signal, timeoutMs: CALL_MS })
 }
 
+// assetUrl asks get_asset_url, and retries for a short while when the
+// answer still has /visible/ (the watermarked rendition #974 reports
+// right after a generation). If the wait runs out, the last URL is
+// returned as-is.
 async function assetUrl(request, siteId, nodeId, signal) {
-  const asset = await callMatrixTool(request, siteId, "get_asset_url", { node_id: nodeId }, { signal, timeoutMs: CALL_MS })
-  const url = str(asset?.download_url ?? asset?.url ?? asset?.temp_url)
-  if (!url) throw new Error("get_asset_url returned no download_url")
-  return url
+  const deadline = Date.now() + _native.visibleWaitMs
+  let url = ""
+  for (;;) {
+    const asset = await callMatrixTool(request, siteId, "get_asset_url", { node_id: nodeId }, { signal, timeoutMs: CALL_MS })
+    url = str(asset?.download_url ?? asset?.url ?? asset?.temp_url)
+    if (!url) throw new Error("get_asset_url returned no download_url")
+    if (!url.includes("/visible/") || Date.now() >= deadline) return url
+    const wait = Math.min(_native.visibleStepMs, Math.max(0, deadline - Date.now()))
+    if (!wait) return url
+    await _native.sleep(wait, signal)
+  }
 }
 
 export function encodeVideoId(model, task) {
@@ -371,43 +399,281 @@ export function videoStatus(result) {
   return { openai: "queued", progress: integer(result?.progress, 0) }
 }
 
-function referenceImages(req, edits) {
-  const fromList = urlList(req.reference_images)
+async function referenceImages(request, siteId, req, files, signal, edits) {
+  const parts = (files ?? []).filter((f) => f.field === "image" || f.field === "image[]" || f.field === "mask" || f.field === "markup")
+  if (parts.length) {
+    const out = []
+    for (const part of parts) out.push(await uploadBytes(request, siteId, part, signal))
+    return out
+  }
+  const fromList = await resolveMediaList(request, siteId, req.reference_images, signal)
   if (fromList) return fromList
-  const one = mediaUrl(req.image ?? req.image_url)
+  const one = await resolveMedia(request, siteId, req.image ?? req.image_url, signal)
   if (one) return [one]
-  if (edits && !one) throw Object.assign(new Error("image edits need a reference image URL (data URIs and local paths are not sent to MiniMax Code; upload first)"), { status: 400 })
+  if (edits) throw Object.assign(new Error("image edits need a reference image"), { status: 400 })
   return undefined
 }
 
-function urlList(value) {
+async function resolveMediaList(request, siteId, value, signal) {
   if (!Array.isArray(value) || !value.length) return undefined
   const out = []
   for (const item of value) {
-    const u = mediaUrl(item)
-    if (!u) throw Object.assign(new Error("reference images must be HTTPS URLs (data URIs and local paths are not sent to MiniMax Code; upload first)"), { status: 400 })
+    const u = await resolveMedia(request, siteId, item, signal)
+    if (!u) throw Object.assign(new Error("reference images must be HTTPS or data: URLs"), { status: 400 })
     out.push(u)
   }
   return out
 }
 
-function mediaUrl(value) {
+async function resolveMedia(request, siteId, value, signal) {
+  const ref = mediaRef(value)
+  if (!ref) return undefined
+  if (ref.url.startsWith("data:")) {
+    const file = parseDataUrl(ref.url)
+    if (ref.mime_type) file.mime = normalizeMime(ref.mime_type) || file.mime
+    return uploadBytes(request, siteId, file, signal)
+  }
+  return ref
+}
+
+// mediaRef reads one media argument: an HTTPS URL (kept as-is) or a
+// data: URL (uploaded later). Other schemes, including http: and file:,
+// are refused.
+export function mediaRef(value) {
   if (typeof value === "string") {
     const url = value.trim()
     if (!url) return undefined
-    if (url.startsWith("data:") || url.startsWith("file:") || /^[.]{0,2}\//.test(url) || !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
-      throw Object.assign(new Error("media must be an HTTPS URL (data URIs and local paths are not sent to MiniMax Code; upload first)"), { status: 400 })
+    if (url.startsWith("data:")) return { url }
+    if (url.startsWith("file:") || /^[.]{0,2}\//.test(url) || !/^[a-z][a-z0-9+.-]*:/i.test(url) || !/^https:/i.test(url)) {
+      throw Object.assign(new Error("media must be an HTTPS URL or a data: URL"), { status: 400 })
     }
     return { url }
   }
   if (value && typeof value === "object") {
     const url = str(value.url)
     if (!url) return undefined
-    const one = mediaUrl(url)
-    if (value.mime_type) one.mime_type = value.mime_type
+    const one = mediaRef(url)
+    const mime = maybeMime(value.mime_type)
+    if (mime) one.mime_type = mime
     return one
   }
   return undefined
+}
+
+async function uploadBytes(request, siteId, file, signal) {
+  const bytes = file?.bytes
+  if (!bytes || !bytes.length) throw Object.assign(new Error("the reference image was empty"), { status: 400 })
+  if (bytes.length > MAX_UPLOAD) throw Object.assign(new Error("the reference image is larger than 64 MB"), { status: 400 })
+  const mime = normalizeMime(file.mime) || "application/octet-stream"
+  const filename = str(file.filename) || filenameOf(mime)
+  const signed = await requestUpload(request, siteId, { bytes, mime, filename }, signal)
+  if (signed.maxBytes != null && bytes.length > signed.maxBytes) {
+    throw new Error("the reference image is larger than the upload limit (" + signed.maxBytes + " bytes)")
+  }
+  if (signed.uploadHost) await postSignedUpload(signed, { bytes, mime, filename }, signal)
+  else if (!signed.sentBytes) throw new Error("upload_temp_url returned no upload_host")
+  const url = str(signed.tempUrl)
+  if (!url) throw new Error("upload_temp_url returned no temp_url")
+  const out = { url }
+  const mt = maybeMime(mime)
+  if (mt) out.mime_type = mt
+  return out
+}
+
+async function requestUpload(request, siteId, file, signal) {
+  const cat = await matrix.catalog(request, siteId, signal)
+  const entry = findUpload(cat)
+  let schema = {}
+  if (entry.input_schema_json) {
+    try {
+      const v = JSON.parse(entry.input_schema_json)
+      if (v && typeof v === "object" && !Array.isArray(v)) schema = v
+    } catch {
+      throw new Error("MiniMax connector list: malformed input_schema_json")
+    }
+  }
+  const { args, sentBytes } = uploadArgsFromSchema(schema, file)
+  const result = await matrix.invoke(request, siteId, entry, args, signal, UPLOAD_MS)
+  return { ...parseSignedUpload(result), sentBytes }
+}
+
+function findUpload(cat) {
+  const match = cat.tools.find((t) => {
+    const run = t.runtime_tool_name ?? ""
+    const prov = t.provider_tool_name ?? ""
+    return run === MATRIX + "upload_temp_url" || run.endsWith("__upload_temp_url") || prov === "upload_temp_url" || /(?:^|_)upload_temp_url$/.test(prov)
+  })
+  if (match) return match
+  return matrix.find(cat, MATRIX + "upload_temp_url")
+}
+
+function uploadArgsFromSchema(schema, file) {
+  const props = schema && typeof schema === "object" ? schema.properties ?? {} : {}
+  const names = Object.keys(props)
+  const pick = (...cands) => cands.find((n) => names.includes(n))
+  const args = {}
+  const fn = pick("filename", "file_name", "name", "fileName")
+  if (fn) args[fn] = file.filename
+  const mt = pick("mime_type", "mimeType", "content_type", "contentType", "mime")
+  if (mt) args[mt] = file.mime
+  const sz = pick("size_bytes", "size", "bytes", "content_length")
+  if (sz) args[sz] = file.bytes.length
+  const dataKey = pick("data", "content", "content_base64", "bytes_base64", "file_base64", "base64")
+  if (dataKey) args[dataKey] = Buffer.from(file.bytes).toString("base64")
+  if (!names.length) return { args: { filename: file.filename, mime_type: file.mime }, sentBytes: false }
+  if (!Object.keys(args).length) {
+    if (pick("file_path", "path", "local_path")) {
+      throw new Error("upload_temp_url on this account takes a local path, which the plugin cannot supply")
+    }
+    return { args: { filename: file.filename, mime_type: file.mime }, sentBytes: false }
+  }
+  return { args, sentBytes: Boolean(dataKey) }
+}
+
+function parseSignedUpload(value) {
+  let raw = value
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw) } catch { raw = null }
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && typeof raw.result_json === "string") {
+    try {
+      const inner = JSON.parse(raw.result_json)
+      if (inner && typeof inner === "object") raw = inner
+    } catch {}
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("upload_temp_url returned no upload form")
+  if (raw.code !== undefined && Number(raw.code) !== 0) {
+    throw new Error("upload_temp_url: " + (str(raw.message) ?? "request failed") + " (code=" + raw.code + ")")
+  }
+  const uploadHost = str(raw.upload_host ?? raw.uploadHost ?? raw.upload_url ?? raw.uploadUrl)
+  const tempUrl = str(raw.temp_url ?? raw.tempUrl ?? raw.url)
+  const fields = raw.fields && typeof raw.fields === "object" && !Array.isArray(raw.fields) ? raw.fields : {}
+  const normalized = {}
+  for (const [key, item] of Object.entries(fields)) if (typeof item === "string") normalized[key] = item
+  const fileFieldName = str(raw.file_field_name ?? raw.fileFieldName) || "file"
+  const maxBytes = Number.isFinite(Number(raw.max_bytes ?? raw.maxBytes)) ? Number(raw.max_bytes ?? raw.maxBytes) : null
+  return { uploadHost, tempUrl, fields: normalized, fileFieldName, maxBytes }
+}
+
+async function postSignedUpload(signed, file, signal) {
+  if (!allowedUploadHost(signed.uploadHost)) {
+    throw new Error("upload_temp_url returned an upload host that is not HTTPS")
+  }
+  const form = new FormData()
+  for (const [key, item] of Object.entries(signed.fields)) form.append(key, item)
+  form.append(signed.fileFieldName, new Blob([file.bytes], { type: file.mime }), file.filename)
+  const abort = AbortSignal.any([AbortSignal.timeout(UPLOAD_MS), ...(signal ? [signal] : [])])
+  let res
+  try {
+    res = await fetch(signed.uploadHost, { method: "POST", body: form, signal: abort, redirect: "follow" })
+  } catch (e) {
+    abort.throwIfAborted?.()
+    throw new Error("MiniMax upload: " + (e?.message ?? String(e)))
+  }
+  if (!res.ok) throw new Error("MiniMax upload: HTTP " + res.status)
+}
+
+function allowedUploadHost(url) {
+  let u
+  try { u = new URL(url) } catch { return false }
+  if (u.protocol === "https:") return true
+  return u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]" || u.hostname === "::1")
+}
+
+function parseDataUrl(url) {
+  const m = /^data:([^,]*),(.*)$/s.exec(url)
+  if (!m) throw Object.assign(new Error("media data: URL is malformed"), { status: 400 })
+  const meta = m[1]
+  const payload = m[2]
+  const isB64 = /;base64(?:;|$)/i.test(";" + meta)
+  const mime = normalizeMime(meta.replace(/;base64$/i, "").replace(/;base64;/ig, ";").replace(/;charset=[^;]*/ig, "").replace(/^;|;$/g, "")) || "application/octet-stream"
+  let bytes
+  try {
+    bytes = isB64 ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload))
+  } catch {
+    throw Object.assign(new Error("media data: URL isn't valid"), { status: 400 })
+  }
+  if (!bytes.length) throw Object.assign(new Error("the reference image was empty"), { status: 400 })
+  return { bytes: new Uint8Array(bytes), mime, filename: filenameOf(mime), field: "image" }
+}
+
+async function mediaInput(body, headers) {
+  if (body && typeof FormData !== "undefined" && body instanceof FormData) return fromFormData(body)
+  const ct = getHeader(headers, "content-type")
+  const mime = ct.split(";")[0].trim().toLowerCase()
+  if (mime === "multipart/form-data") return fromMultipart(body, ct)
+  return { fields: jsonBody(body), files: [] }
+}
+
+async function fromMultipart(body, contentType) {
+  const bytes = await bytesOf(body)
+  const res = new Response(bytes, { headers: { "content-type": contentType } })
+  let form
+  try {
+    form = await res.formData()
+  } catch {
+    throw Object.assign(new Error("request body must be multipart form data"), { status: 400 })
+  }
+  return fromFormData(form)
+}
+
+async function fromFormData(form) {
+  const fields = {}
+  const files = []
+  for (const [name, value] of form.entries()) {
+    if (typeof value === "string") {
+      if (fields[name] === undefined) fields[name] = value
+      continue
+    }
+    const bytes = new Uint8Array(await value.arrayBuffer())
+    const mime = normalizeMime(value.type) || sniffMime(bytes)
+    const filename = str(value.name) || filenameOf(mime)
+    files.push({ field: name, bytes, mime, filename })
+  }
+  return { fields, files }
+}
+
+async function bytesOf(body) {
+  if (body == null || body === "") return new Uint8Array()
+  if (typeof body === "string") return new TextEncoder().encode(body)
+  if (body instanceof ArrayBuffer) return new Uint8Array(body)
+  if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+  if (typeof Blob !== "undefined" && body instanceof Blob) return new Uint8Array(await body.arrayBuffer())
+  throw Object.assign(new Error("request body must be a JSON object or multipart form data"), { status: 400 })
+}
+
+function getHeader(headers, name) {
+  if (!headers) return ""
+  if (typeof headers.get === "function") return headers.get(name) ?? ""
+  const want = name.toLowerCase()
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === want) return Array.isArray(v) ? (v[0] ?? "") : (v ?? "")
+  }
+  return ""
+}
+
+function normalizeMime(value) {
+  const v = String(value ?? "").trim().toLowerCase()
+  if (!v || v === "application/octet-stream") return ""
+  if (v === "image/jpg") return "image/jpeg"
+  return v
+}
+
+function maybeMime(value) {
+  const v = normalizeMime(value)
+  return IMAGE_MIMES.has(v) ? v : undefined
+}
+
+function filenameOf(mime) {
+  const ext = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic", "image/heif": ".heif" }[normalizeMime(mime)] ?? ""
+  return "image" + ext
+}
+
+function sniffMime(bytes) {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png"
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp"
+  return "application/octet-stream"
 }
 
 function aspectFromSize(size) {
@@ -429,7 +695,22 @@ function areaOf(req) {
   if (q === "low") return "1K"
   if (q === "medium") return "2K"
   if (q === "high" || q === "xhigh" || q === "max") return "4K"
-  return undefined
+  return areaFromSize(req.size)
+}
+
+// areaFromSize maps an OpenAI-style size (1024x1024, …) onto MiniMax's
+// area tier, so Magpie's usual square doesn't fall through to the vendor
+// 4K default.
+function areaFromSize(size) {
+  const s = str(size)
+  if (s === "1K" || s === "2K" || s === "4K") return s
+  const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec(s)
+  if (!m) return undefined
+  const long = Math.max(Number(m[1]), Number(m[2]))
+  if (!long) return undefined
+  if (long <= 1280) return "1K"
+  if (long <= 2560) return "2K"
+  return "4K"
 }
 
 function resolutionOf(size, fallback, model) {
@@ -471,7 +752,7 @@ function durationOf(seconds, fallback, model) {
 
 function jsonBody(body) {
   if (body == null || body === "") return {}
-  if (typeof body === "object" && !Array.isArray(body) && !(body instanceof Uint8Array) && !(typeof Buffer !== "undefined" && Buffer.isBuffer?.(body))) return body
+  if (typeof body === "object" && !Array.isArray(body) && !(body instanceof Uint8Array) && !(typeof Buffer !== "undefined" && Buffer.isBuffer?.(body)) && !(body instanceof ArrayBuffer)) return body
   const text = typeof body === "string" ? body : new TextDecoder().decode(body)
   if (!text.trim()) return {}
   try {
@@ -508,5 +789,23 @@ function gcd(a, b) {
   return a || 1
 }
 
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("aborted"))
+      return
+    }
+    const t = setTimeout(resolve, ms)
+    const onAbort = () => {
+      clearTimeout(t)
+      reject(signal.reason ?? new Error("aborted"))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
 // for tests
-export const _native = { IMAGE_NPM, MATRIX, mediaPath, aspectFromSize, durationOf, resolutionOf, areaOf }
+export const _native = {
+  IMAGE_NPM, MATRIX, mediaPath, aspectFromSize, durationOf, resolutionOf, areaOf, areaFromSize, mediaRef,
+  visibleWaitMs: 8000, visibleStepMs: 1000, sleep,
+}

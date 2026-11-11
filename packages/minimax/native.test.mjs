@@ -7,7 +7,7 @@ import { MiniMaxCodeAuthPlugin, MiniMaxCodeGlobalAuthPlugin, MiniMaxCodeToolsPlu
 import { callMatrixTool } from "./connector-tools.mjs"
 import {
   pagesFrom, mediaPath, handleMediaFetch, encodeVideoId, decodeVideoId, videoStatus,
-  createSearchHook, _native,
+  createSearchHook, mediaRef, _native,
 } from "./native.mjs"
 import { fakeMiniMax, json } from "./fake.mjs"
 
@@ -118,22 +118,29 @@ test("an images/generations request calls generate_image then get_asset_url", as
   expect(calls[1].body.runtime_tool_name).toBe("connector__matrix__get_asset_url")
 })
 
-test("image edits without an HTTPS reference are refused; a URL is sent on", async () => {
+test("image edits without a reference image are refused; http and ftp URLs are refused", async () => {
   const missing = await handleMediaFetch(
     "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/edits",
     { method: "POST", body: JSON.stringify({ prompt: "edit" }) },
     { request: async () => { throw new Error("no") }, siteId: "minimax-code" },
   )
   expect(missing.status).toBe(400)
-  expect((await missing.json()).error.message).toContain("reference image URL")
+  expect((await missing.json()).error.message).toContain("reference image")
 
-  const data = await handleMediaFetch(
+  const ftp = await handleMediaFetch(
     "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/generations",
-    { method: "POST", body: JSON.stringify({ prompt: "edit", image: "data:image/png;base64,xxx" }) },
+    { method: "POST", body: JSON.stringify({ prompt: "edit", image: "ftp://files.example/a.png" }) },
     { request: async () => { throw new Error("no") }, siteId: "minimax-code" },
   )
-  expect(data.status).toBe(400)
-  expect((await data.json()).error.message).toContain("HTTPS URL")
+  expect(ftp.status).toBe(400)
+  expect((await ftp.json()).error.message).toContain("HTTPS URL")
+
+  const http = await handleMediaFetch(
+    "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/generations",
+    { method: "POST", body: JSON.stringify({ prompt: "edit", image: "http://cdn.example/a.png" }) },
+    { request: async () => { throw new Error("no") }, siteId: "minimax-code" },
+  )
+  expect(http.status).toBe(400)
 })
 
 test("POST /videos submits a Hailuo or H3 task and encodes model with the task id", async () => {
@@ -259,4 +266,286 @@ test("duration and resolution follow each video model's limits", () => {
   expect(_native.resolutionOf("1920x1080", "768P", "MiniMax-Hailuo-2.3")).toBe("1080P")
   expect(_native.resolutionOf("1920x1080", "2K", "MiniMax-H3")).toBe("2K")
   expect(_native.aspectFromSize("1280x720")).toBe("16:9")
+  expect(_native.areaFromSize("1024x1024")).toBe("1K")
+  expect(_native.areaFromSize("1920x1080")).toBe("2K")
+  expect(_native.areaFromSize("3840x2160")).toBe("4K")
+  expect(_native.areaOf({ size: "1024x1024" })).toBe("1K")
+  expect(_native.areaOf({ size: "1024x1024", quality: "high" })).toBe("4K")
+})
+
+
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64")
+const UPLOAD_SCHEMA = JSON.stringify({
+  type: "object",
+  additionalProperties: false,
+  properties: { filename: { type: "string" }, mime_type: { type: "string" } },
+  required: ["filename", "mime_type"],
+})
+
+// magpieEditsBody is the multipart body draw.go builds for a plugin
+// drawer that is not Codex or SenseNova: text fields, then image file
+// part(s) named image (or image[] when there are several), optional mask.
+function magpieEditsBody({ model = "MiniMax-Image", prompt, n = 1, size, quality, images, mask }) {
+  const boundary = "----MagpieFormBoundary7MA4YWxkTrZu0gW"
+  const chunks = []
+  const field = (name, value) => {
+    if (value == null || value === "") return
+    chunks.push(Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n"))
+  }
+  field("model", model)
+  field("prompt", prompt)
+  field("n", String(n))
+  field("size", size)
+  field("quality", quality)
+  const pics = images.map((img) => ({ ...img, field: images.length > 1 ? "image[]" : "image" }))
+  if (mask) pics.push({ ...mask, field: "mask" })
+  pics.forEach((img, i) => {
+    const ext = img.mime === "image/jpeg" ? ".jpg" : img.mime === "image/webp" ? ".webp" : ".png"
+    chunks.push(Buffer.from(
+      "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + img.field + "\"; filename=\"image" + i + ext + "\"\r\nContent-Type: " + img.mime + "\r\n\r\n",
+    ))
+    chunks.push(img.bytes)
+    chunks.push(Buffer.from("\r\n"))
+  })
+  chunks.push(Buffer.from("--" + boundary + "--\r\n"))
+  return { body: Buffer.concat(chunks), headers: { "content-type": "multipart/form-data; boundary=" + boundary } }
+}
+
+test("an images/edits multipart body is uploaded through upload_temp_url, then generate_image", async () => {
+  const posted = []
+  const upload = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      const form = await req.formData()
+      posted.push({ policy: form.get("policy"), file: form.get("file") })
+      return new Response("ok")
+    },
+  })
+  try {
+    const t = transport({
+      [LIST]: catalog([
+        entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }),
+        entry("generate_image"),
+        entry("get_asset_url"),
+      ]),
+      [CALL]: (r) => {
+        const name = r.body.runtime_tool_name
+        const args = JSON.parse(r.body.arguments_json)
+        if (name.endsWith("upload_temp_url")) {
+          expect(args).toEqual({ filename: "image0.png", mime_type: "image/png" })
+          return {
+            result_json: JSON.stringify({
+              upload_host: `http://127.0.0.1:${upload.port}/put`,
+              temp_url: "https://temp.example/a.png",
+              fields: { policy: "sig" },
+              file_field_name: "file",
+            }),
+          }
+        }
+        if (name.endsWith("generate_image")) {
+          expect(args).toEqual({
+            requests: [{
+              prompt: "make it night",
+              n: 1,
+              aspect_ratio: "1:1",
+              area: "1K",
+              reference_images: [{ url: "https://temp.example/a.png", mime_type: "image/png" }],
+            }],
+          })
+          return { result_json: JSON.stringify({ success_items: [{ node_id: "n-edit", file_name: "out.png" }] }) }
+        }
+        if (name.endsWith("get_asset_url")) return { result_json: JSON.stringify({ download_url: "https://cdn.example/out.png" }) }
+        throw new Error("unexpected " + name)
+      },
+    })
+    const form = await magpieEditsBody({
+      prompt: "make it night",
+      n: 1,
+      size: "1024x1024",
+      images: [{ bytes: PNG, mime: "image/png" }],
+    })
+    const res = await handleMediaFetch(
+      "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/edits",
+      { method: "POST", body: form.body, headers: form.headers },
+      { request: t.request, siteId: "minimax-code" },
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ data: [{ url: "https://cdn.example/out.png" }] })
+    expect(posted).toHaveLength(1)
+    expect(posted[0].policy).toBe("sig")
+    expect(posted[0].file).toBeInstanceOf(Blob)
+    expect(Buffer.from(await posted[0].file.arrayBuffer()).equals(PNG)).toBe(true)
+  } finally {
+    upload.stop(true)
+  }
+})
+
+test("a video data: input_reference is uploaded; an https URL is passed through", async () => {
+  const posted = []
+  const upload = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      posted.push(await req.formData())
+      return new Response("ok")
+    },
+  })
+  try {
+    const t = transport({
+      [LIST]: catalog([
+        entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }),
+        entry("submit_video_generation"),
+      ]),
+      [CALL]: (r) => {
+        const name = r.body.runtime_tool_name
+        const args = JSON.parse(r.body.arguments_json)
+        if (name.endsWith("upload_temp_url")) {
+          return {
+            result_json: JSON.stringify({
+              upload_host: `http://127.0.0.1:${upload.port}/put`,
+              temp_url: "https://temp.example/frame.png",
+              fields: {},
+            }),
+          }
+        }
+        if (name.endsWith("submit_video_generation")) {
+          expect(args.input_image).toEqual({ url: "https://temp.example/frame.png", mime_type: "image/png" })
+          expect(args.reference_type).toBe("first_frame")
+          return { result_json: JSON.stringify({ task_id: "task-data" }) }
+        }
+        throw new Error("unexpected " + name)
+      },
+    })
+    const res = await handleMediaFetch(
+      "https://agent.minimax.cn/mavis/api/v1/llm/v1/videos",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "MiniMax-H3",
+          prompt: "a wave from this frame",
+          input_reference: "data:image/png;base64," + PNG.toString("base64"),
+        }),
+      },
+      { request: t.request, siteId: "minimax-code" },
+    )
+    expect(res.status).toBe(200)
+    expect((await res.json()).id).toBe("MiniMax-H3::task-data")
+    expect(posted).toHaveLength(1)
+  } finally {
+    upload.stop(true)
+  }
+
+  const t2 = transport({
+    [LIST]: catalog([entry("submit_video_generation")]),
+    [CALL]: { result_json: JSON.stringify({ task_id: "task-https" }) },
+  })
+  const kept = await handleMediaFetch(
+    "https://agent.minimax.cn/mavis/api/v1/llm/v1/videos",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        model: "MiniMax-H3",
+        prompt: "a wave",
+        input_reference: "https://cdn.example/frame.png",
+      }),
+    },
+    { request: t2.request, siteId: "minimax-code" },
+  )
+  expect(kept.status).toBe(200)
+  expect(JSON.parse(t2.sent.filter((s) => s.path === CALL)[0].body.arguments_json)).toMatchObject({
+    input_image: { url: "https://cdn.example/frame.png" },
+    reference_type: "first_frame",
+  })
+})
+
+test("get_asset_url is asked again while the URL still has /visible/", async () => {
+  const previous = { visibleWaitMs: _native.visibleWaitMs, visibleStepMs: _native.visibleStepMs, sleep: _native.sleep }
+  const sleeps = []
+  _native.visibleWaitMs = 5000
+  _native.visibleStepMs = 1000
+  _native.sleep = async (ms) => { sleeps.push(ms) }
+  try {
+    const t = transport({
+      [LIST]: catalog([entry("generate_image"), entry("get_asset_url")]),
+      [CALL]: [
+        { result_json: JSON.stringify({ success_items: [{ node_id: "n-w", file_name: "w.png" }] }) },
+        { result_json: JSON.stringify({ download_url: "https://cdn.example/visible/w.png" }) },
+        { result_json: JSON.stringify({ download_url: "https://cdn.example/original/w.png" }) },
+      ],
+    })
+    const res = await handleMediaFetch(
+      "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/generations",
+      { method: "POST", body: JSON.stringify({ prompt: "a cat" }) },
+      { request: t.request, siteId: "minimax-code" },
+    )
+    expect(res.status).toBe(200)
+    expect((await res.json()).data).toEqual([{ url: "https://cdn.example/original/w.png" }])
+    expect(t.sent.filter((s) => s.path === CALL && s.body.runtime_tool_name.endsWith("get_asset_url"))).toHaveLength(2)
+    expect(sleeps).toEqual([1000])
+  } finally {
+    Object.assign(_native, previous)
+  }
+})
+
+test("a 401 on the media path is renewed and the second ask succeeds", async () => {
+  let f
+  try {
+    f = fakeMiniMax()
+    let lists = 0
+    f.route("POST /oauth2/token", () => json({ access_token: "tok-2", refresh_token: "r2", expires_in: 3600 }))
+    f.route("POST " + LIST, (r) => {
+      lists++
+      if (r.headers.get("authorization") === "Bearer tok") return json({ error: "expired" }, 401)
+      return json(catalog([entry("generate_image"), entry("get_asset_url")]))
+    })
+    f.route("POST " + CALL, (r) => {
+      const name = r.json.runtime_tool_name
+      if (name.endsWith("generate_image")) return json({ result_json: JSON.stringify({ success_items: [{ node_id: "n2", file_name: "b.png" }] }) })
+      if (name.endsWith("get_asset_url")) return json({ result_json: JSON.stringify({ download_url: "https://cdn.example/b.png" }) })
+      return json({ error: "unexpected " + name }, 500)
+    })
+    const hooks = await MiniMaxCodeAuthPlugin({ client: { auth: { set: async () => true } } })
+    const auth = { type: "oauth", access: "tok", refresh: "r", expires: Date.now() + 3600_000 }
+    const out = await hooks.auth.loader(async () => auth)
+    const res = await out.fetch(f.origin + "/mavis/api/v1/llm/v1/images/generations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a tree" }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+    expect(await res.json()).toMatchObject({ data: [{ url: "https://cdn.example/b.png" }] })
+    expect(lists).toBe(3) // failed list, then generate_image list + get_asset_url list
+    const tokens = f.seen.filter((s) => s.path === LIST || s.path === CALL).map((s) => s.headers.get("authorization"))
+    expect(tokens[0]).toBe("Bearer tok")
+    expect(tokens.slice(1).every((h) => h === "Bearer tok-2")).toBe(true)
+  } finally {
+    f?.close()
+  }
+})
+
+test("the search hook carries a numeric status when the API refuses the account", async () => {
+  let f
+  try {
+    f = fakeMiniMax()
+    f.route("POST " + SEARCH, () => json({ error: "slow down" }, 429))
+    const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+    const err = await hooks.search["minimax-code"].execute(
+      { query: "MiniMax" },
+      { getAuth: async () => ({ access: "tok-1", type: "oauth" }) },
+    ).catch((e) => e)
+    expect(err.status).toBe(429)
+    expect(err.message).toContain("HTTP 429")
+  } finally {
+    f?.close()
+  }
+})
+
+test("mediaRef accepts https and data: only", () => {
+  expect(mediaRef("https://cdn.example/a.png")).toEqual({ url: "https://cdn.example/a.png" })
+  expect(mediaRef("data:image/png;base64,xx")).toEqual({ url: "data:image/png;base64,xx" })
+  expect(() => mediaRef("http://cdn.example/a.png")).toThrow("HTTPS URL")
+  expect(() => mediaRef("ftp://files.example/a.png")).toThrow("HTTPS URL")
+  expect(() => mediaRef("/tmp/a.png")).toThrow("HTTPS URL")
 })
