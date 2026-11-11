@@ -1,12 +1,12 @@
 # magpie-community plugins
 
 [OpenCode](https://opencode.ai) provider plugins for coding-plan
-subscriptions, and [gateway middleware](#gateway-middleware),
+subscriptions and decision APIs, and [gateway middleware](#gateway-middleware),
 [gateway hooks](#gateway-hooks), [routing strategies](#routing-strategies), [tools for every
 agent](#tools-for-every-agent), [pages](#pages) and [agents](#agents) for
 magpie, maintained by the community. To make one, see
-[Write your own](#write-your-own). Each package signs in to one
-subscription and makes its requests. The packages work in OpenCode and in
+[Write your own](#write-your-own). Each provider package signs in to its
+vendor service and makes its requests. The packages work in OpenCode and in
 [magpie](https://usemagpie.ai), which runs OpenCode's provider plugins.
 
 | Package | Signs in to | Provider id |
@@ -38,6 +38,7 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [minimax](packages/minimax) | MiniMax Code (international): account credits and M Plan, with MiniMax Code's device sign-in | `minimax-code-global` |
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
+| [openai-decisions](packages/openai-decisions) | OpenAI's native Decisions API as System One for magpie's classifiers and decision groups, with standard API-key sign-in and per-question refusal handling | `openai-decisions` |
 | [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
@@ -51,6 +52,9 @@ subscription and makes its requests. The packages work in OpenCode and in
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |
 | [zed](packages/zed) | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed | `zed` |
 | [zen-free](packages/zen-free) | OpenCode Zen free models with the public credential | `opencode-zen-free` |
+
+Decision providers are used through magpie's classifiers and `/v1/systemone`;
+see their package READMEs for client compatibility.
 
 ## Gateway middleware
 
@@ -361,6 +365,8 @@ Each package is a folder under `packages/<name>/`:
     - `loader(getAuth, provider)` returns what the AI SDK is given:
       `baseURL`, `apiKey`, `headers` and a `fetch` that signs each request
       and refreshes the token (saving it with `client.auth.set`).
+    - Keep Magpie's provider credentials owned by the host: use `getAuth`
+      for the selected account.
   - A provider that models.dev doesn't list is declared in a `config` hook
     that sets `config.provider[<id>] = { name, npm, api, models }`. The npm
     field names the AI SDK package the models speak:
