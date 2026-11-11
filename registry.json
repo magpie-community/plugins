@@ -1,6 +1,9 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-freepi-auth", "name": "FreePi", "icon": "https://freepi.ai/icon.svg", "providers": ["freepi"], "community": true,
+      "summary": { "en": "free-pi's ad-supported free coding gateway with your GitHub sign-in: live model catalog with usage rates, your daily credits and reset time, and automatic banner-impression reporting (impressions only, never clicks). Unofficial.",
+                   "zh": "用 GitHub 登录使用 free-pi（看广告换算力的免费编码网关）：实时模型目录与倍率、每日额度与重置时间；插件自动上报横幅广告曝光（仅曝光、不点击）。非官方。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
       "summary": { "en": "Agnes AI international with Chrome browser sign-in: live OpenAI-compatible text models, Token Plan and Agent Plan usage, and the USD wallet balance.", "zh": "通过 Chrome 浏览器登录 Agnes AI 国际版：动态发现 OpenAI 兼容文本模型，显示 Token Plan、Agent Plan 用量与美元余额，无需手动复制会话 token。" } },
     { "package": "@magpie-community/opencode-atomcode-auth", "name": "AtomCode", "icon": "https://atomgit.com/favicon.ico", "providers": ["atomcode"], "community": true,
