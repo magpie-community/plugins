@@ -59,6 +59,16 @@ see [Claude Code through magpie](#claude-code-through-magpie) below.
 
 ## Models
 
+In magpie's Factory plugin options, enable **Group models by company** to
+list Anthropic's Fable, Opus, Sonnet and Haiku families together, followed
+by OpenAI, Google and the other model makers. Versions within each family
+sort newest first; Fast Mode follows its base model. This groups by model
+maker, not the API hosting company. Refresh the model list after changing
+the option. It is off by default, preserving the existing order and default
+first 24 models; enabling it also changes which models occupy those slots.
+Names with the same version sort in descending natural name order, for
+example GPT-5.6 Terra before Sol and GLM-5.3-Flash before GLM-5.3.
+
 Each model is served on the one API droid uses for it:
 
 | API | Models |
