@@ -165,6 +165,8 @@ keeps the plain models on the plan. The JSON below still works, and a
 `freeFirst: false` there keeps it off whatever the switch says. Turn it
 off for the whole plugin in magpie's Plugins › Options
 
+Since 0.1.59 a reply the gift answered says its model as the picker lists it (`GLM-5.3-Flash-Trial`), whether free first or a `-Trial` pick sent the request, so the Usage page, the sessions and the request log show which route spent the turn; a reply the coding plan answered, a free-first replay among them, keeps the plan's name.
+
 ```json
 { "freeFirst": false }
 ```

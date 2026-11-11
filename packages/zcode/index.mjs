@@ -2575,6 +2575,69 @@ function searchNamed(res) {
   })
 }
 
+// trialNamed is a gift's answer with its model said as the picker lists it
+// (GLM-5.3-Flash-Trial): the gift answers under the plain name, as the coding
+// plan does, so the Usage page, the sessions and the request log named the
+// plan's model whichever route served it, and a user with free first on
+// could not tell whether the free quota was spent (WJaunita45604 on X). A
+// failed answer, or a body that is not JSON or an event stream, goes on as it
+// came.
+function trialNamed(res, name) {
+  if (!res.body || res.status >= 400) return res
+  const type = res.headers.get("content-type") ?? ""
+  const set = (d) => {
+    if (d && typeof d === "object") {
+      if (typeof d.model === "string") d.model = name
+      if (typeof d.message?.model === "string") d.message.model = name
+      return true
+    }
+    return false
+  }
+  const line = (l) => {
+    if (!l.startsWith("data:") || !l.includes('"model"')) return l
+    try {
+      const d = JSON.parse(l.slice(5))
+      return set(d) ? "data: " + JSON.stringify(d) : l
+    } catch {
+      return l
+    }
+  }
+  const h = new Headers(res.headers)
+  if (type.includes("text/event-stream")) {
+    const dec = new TextDecoder()
+    const enc = new TextEncoder()
+    let held = ""
+    const body = res.body.pipeThrough(
+      new TransformStream({
+        transform(chunk, ctl) {
+          held += dec.decode(chunk, { stream: true })
+          const i = held.lastIndexOf("\n")
+          if (i < 0) return
+          ctl.enqueue(enc.encode(held.slice(0, i + 1).split("\n").map(line).join("\n")))
+          held = held.slice(i + 1)
+        },
+        flush(ctl) {
+          held += dec.decode()
+          if (held) ctl.enqueue(enc.encode(line(held)))
+        },
+      }),
+    )
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: h })
+  }
+  if (!type.includes("json")) return res
+  return res.text().then((text) => {
+    let out = text
+    if (text.includes('"model"')) {
+      try {
+        const v = JSON.parse(text)
+        if (set(v)) out = JSON.stringify(v)
+      } catch {}
+    }
+    h.delete("content-length")
+    return new Response(out, { status: res.status, statusText: res.statusText, headers: h })
+  })
+}
+
 // startURL is a Start Plan request's URL without the query the agent put
 // on it: Claude Code asks /v1/messages?beta=true, which magpie passes on,
 // and ZCode asks /v1/messages alone.
@@ -2917,9 +2980,15 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
             let orig, forcedGift = false, freeGift = false
+            // the gift's -Trial name while the gift is the route that answers
+            // (a free-first request replayed on the plan clears it)
+            let giftName = ""
             let asked = ""
             let renamed = false
-            const done = (res) => (renamed ? searchNamed(res) : res)
+            const done = (res) => {
+              if (giftName) res = trialNamed(res, giftName)
+              return renamed ? searchNamed(res) : res
+            }
             if (opts.body != null) {
               orig = opts.body = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
               delete opts.duplex
@@ -2943,6 +3012,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 forcedGift = true
+                giftName = giftID(raw)
               } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
@@ -2962,6 +3032,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
                 m = raw
                 freeGift = true
+                giftName = giftID(raw)
               }
               start = alone || forcedGift || freeGift
             }
@@ -2994,6 +3065,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             const replayOnPlan = async () => {
               // the gift is done with: its slot goes to the next request
               own.slot?.release()
+              giftName = ""
               let u = askedUrl
               for (const b of [START_BASE, ZAI_BASE, BIGMODEL_BASE]) {
                 if (u.startsWith(b)) {

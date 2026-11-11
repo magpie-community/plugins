@@ -977,3 +977,48 @@ test("a card read reads the route again", async () => {
   expect(u.windows[0].used).toBe(10)
   expect(_internal.routes.get(id)).toMatchObject({ start: false, gift: { models: ["glm-5.3-flash"] } })
 })
+
+// The gift answers under the plain model's name, as the coding plan does, so
+// the Usage page, the sessions and the request log named the plan's model
+// whichever route served the turn. The gift's answer says the -Trial entry
+// the picker lists; the plan's stays as it came (WJaunita45604 on X).
+const msg = (model) => ({ id: "msg_1", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 1, output_tokens: 1 } })
+const json = (v) => new Response(JSON.stringify(v), { status: 200, headers: { "content-type": "application/json" } })
+const sse = (model) =>
+  new Response(
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: msg(model) })}\n\n` +
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "a \"model\" word" } })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )
+
+test("free first's answer from the gift names the -Trial entry, in a whole reply and in a stream", async () => {
+  planAndBalance()
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = () => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const whole = await ask()
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+  expect((await whole.json()).model).toBe("GLM-5.3-Flash-Trial")
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = sse("GLM-5.3-Flash")
+  const text = await (await ask()).text()
+  expect(text).toContain('"model":"GLM-5.3-Flash-Trial"')
+  // the model's own words are not touched
+  expect(text).toContain('a \\"model\\" word')
+})
+
+test("a -Trial pick's answer names the -Trial entry too", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const res = await sendTo(MSG, body("GLM-5.3-Flash-Trial"))
+  expect((await res.json()).model).toBe("GLM-5.3-Flash-Trial")
+})
+
+test("free first's answer from the coding plan keeps the plan's model name", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "nope" } }), { status: 500, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  expect((await res.json()).model).toBe("glm-5.3-flash")
+})
