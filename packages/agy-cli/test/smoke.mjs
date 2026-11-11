@@ -889,6 +889,37 @@ let nativeConv
 }
 
 {
+  // #989: agy left tools with larger schemas (the reporter's bash at ~1005
+  // tokens, grep at ~691) out of the model's function list and loaded them on
+  // demand, while small ones (read at ~561 and below) were listed. The report
+  // gives sizes, not the schemas, so these are sized to match.
+  const words = n => Array.from({ length: n }, (_, i) => `word${i}`).join(" ")
+  const bigTool = {
+    name: "bash",
+    description: words(600),
+    input_schema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: words(200) },
+        timeout: { type: "number", description: words(40) },
+        workdir: { type: "string", description: words(40) },
+        description: { type: "string", description: words(60) },
+      },
+      required: ["command", "description"],
+    },
+  }
+  const smallTool = { name: "read", description: "Read a file", input_schema: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } }
+  const res = await callFetch({ model, messages: [{ role: "user", content: "large tool schema listed" }], tools: [bigTool, smallTool, echoTool] })
+  await readSSE(res)
+  const listed = inits().at(-1)?.tools || []
+  check("every client tool is listed always loaded, a large schema too (#989)",
+    res.status === 200 && listed.length === 3 &&
+    listed.every(tool => tool._meta?.["antigravity/alwaysLoad"] === true) &&
+    listed.find(tool => tool.name === "bash")?.inputSchema?.properties?.command?.type === "string",
+    JSON.stringify(listed.map(tool => [tool.name, tool._meta, JSON.stringify(tool).length])))
+}
+
+{
   const secondBody = continuation(nativeBody, nativeEvents, "native-result")
   const assistant = secondBody.messages[1]
   secondBody.messages[1] = {

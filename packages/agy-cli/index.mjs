@@ -47,6 +47,8 @@ const AGENT_NAME = "magpie-bridge"
 const MCP_SERVER_PATH = fileURLToPath(new URL("./mcp-server.mjs", import.meta.url))
 // agy exposes tools from the --ide-mcp-port server as direct functions with this prefix.
 const IDE_TOOL_PREFIX = "mcp_ide-tools_"
+// agy 1.3.5+: a tools/list entry with this _meta key is never deferred.
+const ALWAYS_LOAD = "antigravity/alwaysLoad"
 const IDLE_MS = positiveTimeout(process.env.AGY_BRIDGE_IDLE_MS, 10 * 60 * 1000)
 // Read at call time so a host (or a test) can size the pool without a reload.
 function maxProcs() {
@@ -1320,7 +1322,11 @@ class Proc {
       waiter.resolve()
     }
     this.listWaiters = this.listWaiters.filter((item) => item.version > this.listedVersion)
-    return this.tools
+    // agy loads an MCP tool on demand, out of the model's function list, unless
+    // the server marks it always loaded; tools with larger schemas were left out
+    // and the model could not reach them (#989). Every client-declared tool is
+    // one the client means the model to see.
+    return this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } }))
   }
 
   addWatcher(socket) {

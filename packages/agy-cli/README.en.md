@@ -57,6 +57,9 @@ MCP server. The control port listens on loopback only, with a token per process.
   and says to update.
 - The private `nc` applies only to the agy processes the plugin starts, but for
   those it stands in for every `nc` agy runs.
+- Every client tool is listed with `_meta: {"antigravity/alwaysLoad": true}`.
+  Without it agy loads larger tools on demand, out of the model's function
+  list, and the model cannot reach them (#989).
 
 ## Features
 
