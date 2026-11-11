@@ -74,8 +74,10 @@ requestType: "agent", requestId, request}`):
 
 - The User-Agent is `antigravity/hub/<version> <os>/<arch>`. The version is
   read from the app's update manifest every 6 hours.
-- The session id is a number made from the conversation's first user
-  message, so every turn of one conversation is one session.
+- The session id is a number made from the host's session header when named,
+  else the conversation's first real user prompt (skipping injected
+  `AGENTS.md` and environment preambles), so unrelated conversations that
+  share a preamble don't collide on one session.
 - Each reply chunk (`{response: …}`) is unwrapped back into Gemini's own.
 - A `generateContent` request gets the stream read whole.
 

@@ -63,6 +63,8 @@ const VERSION_TTL = 6 * 60 * 60 * 1000
 
 // the header magpie names a request's effort in
 const EFFORT = "x-magpie-effort"
+const SESSION = "x-magpie-session"
+const SUBAGENT = "x-magpie-subagent"
 
 // ---- small helpers ------------------------------------------------------------------
 
@@ -1081,27 +1083,37 @@ function shape(req, sent, at, effort) {
   return req
 }
 
-// sessionOf is the session id the app gives a conversation: a number
-// made of its first thing said
-function sessionOf(req) {
-  let text = ""
+const INJECTED_USER_TEXT = /^(?:# AGENTS\.md\b|<(?:environment_context|permissions instructions|system-reminder|external_codex_apps_|subagent[-_]notification|turn_aborted)\b|\{"page_id":|Companion Page snapshot\b)/
+
+function firstUserText(req) {
+  let first = ""
   for (const c of req.contents ?? []) {
     if (c?.role !== "user") continue
     for (const p of c.parts ?? []) {
-      if (typeof p?.text === "string" && p.text !== "") {
-        text = p.text
-        break
-      }
+      if (typeof p?.text !== "string" || p.text === "") continue
+      const trimmed = p.text.trimStart()
+      if (!trimmed) continue
+      if (!first) first = p.text
+      if (!INJECTED_USER_TEXT.test(trimmed)) return p.text
     }
-    break
   }
+  return first
+}
+
+// sessionOf is the session id the app gives a conversation: from the host's
+// session header when named, else the conversation's first real user prompt
+function sessionOf(req, headers) {
+  const rawSession = headerOf(headers, SESSION).trim()
+  const session = /^magpie-[0-9a-f]{24}$/.test(rawSession) ? "" : rawSession.slice(0, 128)
+  const subagent = headerOf(headers, SUBAGENT).trim().slice(0, 64)
+  let text = session && !subagent ? session : [session, subagent, firstUserText(req)].filter(Boolean).join("\0")
   if (!text) text = crypto.randomBytes(16).toString("hex")
   const h = crypto.createHash("sha256").update(text).digest()
   const n = h.readBigUInt64BE(0) & 0x7fffffffffffffffn
   return "-" + n.toString()
 }
 
-function envelope(req, sent, projectID, credits = false) {
+function envelope(req, sent, projectID, credits = false, headers = undefined) {
   return {
     model: sent,
     project: projectID,
@@ -1109,7 +1121,7 @@ function envelope(req, sent, projectID, credits = false) {
     userAgent: "antigravity",
     requestType: "agent",
     requestId: "agent-" + crypto.randomBytes(6).toString("hex"),
-    request: { ...req, sessionId: sessionOf(req) },
+    request: { ...req, sessionId: sessionOf(req, headers) },
   }
 }
 
@@ -1208,7 +1220,7 @@ async function complete(s, url, init, magpie) {
     fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": ua },
-      body: JSON.stringify(envelope(req, sent, l.project.id, credits)),
+      body: JSON.stringify(envelope(req, sent, l.project.id, credits, init?.headers)),
       signal: init?.signal,
     })
   let res = await send(false)
@@ -1641,6 +1653,11 @@ async function importAccount(inputs) {
 
 export async function AntigravityAuthPlugin({ client, magpie } = {}) {
   return {
+    async "chat.headers"(input, output) {
+      if (input?.model?.providerID !== PROVIDER && input?.provider?.info?.id !== PROVIDER) return
+      const s = String(input?.sessionID ?? "").trim()
+      if (s && !/^magpie-[0-9a-f]{24}$/.test(s)) output.headers[SESSION] = s.slice(0, 128)
+    },
     config: async (cfg) => {
       cfg.provider ??= {}
       const was = cfg.provider[PROVIDER] ?? {}

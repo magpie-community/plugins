@@ -242,3 +242,19 @@ test("the plugin offers the switch, off unless set", async () => {
   expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "10", minimumCreditAmountForUsage: "50" }] } })).toBe(false)
   expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", minimumCreditAmountForUsage: "50" }] } })).toBe(true)
 })
+
+test("host session headers reach the envelope's sessionId without leaking upstream", async () => {
+  const seen = fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
+  const p = await AntigravityAuthPlugin({})
+  const outA = { headers: {} }
+  const outB = { headers: {} }
+  await p["chat.headers"]({ sessionID: "sess-alpha", model: { providerID: "antigravity" } }, outA)
+  await p["chat.headers"]({ sessionID: "sess-beta", model: { providerID: "antigravity" } }, outB)
+  const l = await p.auth.loader(async () => auth())
+  await l.fetch(URL_("gemini-3-flash"), { method: "POST", headers: outA.headers, body: ask("# AGENTS.md instructions\nshared") })
+  await l.fetch(URL_("gemini-3-flash"), { method: "POST", headers: outB.headers, body: ask("# AGENTS.md instructions\nshared") })
+  const calls = seen.filter((s) => s.name === "streamGenerateContent")
+  expect(calls.length).toBe(2)
+  expect(calls[0].json.request.sessionId).not.toBe(calls[1].json.request.sessionId)
+  expect(calls[0].headers["x-magpie-session"]).toBeUndefined()
+})
