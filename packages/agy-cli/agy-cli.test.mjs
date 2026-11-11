@@ -22,6 +22,7 @@ for (const [name, mocks] of [
   ["catalog.mjs", false],
   ["usage-settlement.mjs", false],
   ["repeat-batch.mjs", false],
+  ["conversation-key.mjs", false],
 ]) {
   test(`test/${name}`, () => {
     const { code, output } = run(["test", ...(mocks ? ["--preload", hook] : []), `./${name}`], 240_000)
