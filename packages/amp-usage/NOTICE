@@ -1,0 +1,12 @@
+Amp usage collection references Tokscale (MIT), Copyright (c) 2025 Junho Yeo.
+https://github.com/junhoyeo/tokscale
+Reference revision: b0991187b0af99614b48230f17d13a1fe06f28fa
+
+Sources consulted:
+- crates/tokscale-core/src/sessions/amp.rs
+- crates/tokscale-cli/src/amp.rs
+
+This package independently implements CLI export caching in JavaScript and
+adapts the ledger/message reconciliation approach. It intentionally omits
+Tokscale's fallback timestamps and does not convert Amp credits to USD.
+The MIT permission notice is included in LICENSE.

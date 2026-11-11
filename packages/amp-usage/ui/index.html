@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="service-token" content="__SERVICE_TOKEN__" />
+    <title>Amp usage</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Amp usage</h1>
+          <p>Bring Amp requests into Magpie's usage history and Day card.</p>
+        </div>
+        <span id="mode-status" class="status">Connecting</span>
+      </header>
+      <section aria-labelledby="source-heading">
+        <h2 id="source-heading">Collection source</h2>
+        <label for="source">Read usage from</label>
+        <select id="source" disabled>
+          <option value="cloud">Amp account via the installed CLI</option>
+          <option value="local">Legacy local thread files</option>
+        </select>
+        <p id="source-help" class="hint">
+          Uses your existing Amp sign-in. Only usage metadata is kept; prompts
+          and tool output are not saved.
+        </p>
+        <div class="actions">
+          <button id="scan" type="button" disabled>Preview usage</button
+          ><button id="toggle" class="primary" type="button" disabled>
+            Enable collection</button
+          ><button id="sync" type="button" hidden disabled>Sync now</button>
+        </div>
+        <p class="hint" id="schedule">
+          Collection starts paused. Preview first; enabling it writes records to
+          Magpie's history.
+        </p>
+      </section>
+      <section aria-labelledby="results-heading" aria-busy="false" id="results">
+        <div class="section-head">
+          <h2 id="results-heading">Latest scan</h2>
+          <span id="last-scan" class="hint">No scan yet</span>
+        </div>
+        <p id="empty">Preview your usage to check what can be imported.</p>
+        <dl id="counts" hidden>
+          <div>
+            <dt>Threads scanned</dt>
+            <dd id="threads">0</dd>
+          </div>
+          <div>
+            <dt>Ready to import</dt>
+            <dd id="ready">0</dd>
+          </div>
+          <div>
+            <dt>Waiting for stable usage</dt>
+            <dd id="pending">0</dd>
+          </div>
+          <div>
+            <dt>Imported in this sync</dt>
+            <dd id="imported">0</dd>
+          </div>
+          <div>
+            <dt>Already in Magpie in this sync</dt>
+            <dd id="skipped">0</dd>
+          </div>
+          <div>
+            <dt>Confirmed records across syncs</dt>
+            <dd id="total">0</dd>
+          </div>
+          <div>
+            <dt>Threads awaiting export</dt>
+            <dd id="remaining">0</dd>
+          </div>
+        </dl>
+        <p id="progress" role="status" aria-live="polite"></p>
+        <div id="errors" role="alert" hidden></div>
+        <div id="issues-box" hidden>
+          <h3>Records needing attention</h3>
+          <ul id="issues"></ul>
+        </div>
+      </section>
+      <details>
+        <summary>How records are counted</summary>
+        <p>
+          Input, output, cache reads and cache writes stay separate. Magpie
+          estimates the API-equivalent cost; Amp credits are not converted to
+          dollars.
+        </p>
+        <p>
+          Records must have a reliable timestamp and stay unchanged across scans
+          before import. Missing dates and changed records are reported here
+          instead of being silently reassigned or added again.
+        </p>
+        <p>
+          Known gateway matches are excluded. If you route Amp through Magpie
+          and the gateway cannot identify those requests, exclude the affected
+          threads or models in this plugin's options before enabling collection.
+        </p>
+        <p>
+          Pausing stops future imports. It does not remove records already
+          written to Magpie.
+        </p>
+      </details>
+      <footer>
+        <span id="destination"></span
+        ><span>Parser reference: Tokscale · MIT</span>
+      </footer>
+    </main>
+  </body>
+</html>
