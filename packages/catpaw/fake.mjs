@@ -43,6 +43,7 @@ export function fakeCatPaw() {
     // never heard of (type 120 is a fixture, not the vendor's number).
     modelTypes: defaultModelTypes(),
     modelTypeCalls: [],
+    modelTypeRequests: [],
     modelTypesFail: false,
     // the web sign-in: sids awaiting their token, like the real vendor
     webSids: new Map(), // sid -> token to hand out
@@ -66,6 +67,7 @@ export function fakeCatPaw() {
       state.balancePlan = null
       state.modelTypes = defaultModelTypes()
       state.modelTypeCalls = []
+      state.modelTypeRequests = []
       state.modelTypesFail = false
       state.webSids = new Map()
       state.webTokens = new Set()
@@ -126,6 +128,7 @@ export function fakeCatPaw() {
 
       if (url.pathname === "/api/agent/maas/model-types") {
         state.modelTypeCalls.push(body)
+        state.modelTypeRequests.push({ method: req.method, marker: req.headers.get("x-test-marker"), body })
         if (state.modelTypesFail) return json(500, { code: 500, msg: "boom" })
         return json(200, { code: 0, message: "success", data: state.modelTypes, errorCode: null })
       }
