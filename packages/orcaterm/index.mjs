@@ -875,7 +875,24 @@ function unwrapAnswer(text) {
   const action = obj.action ?? obj.Action
   if (typeof action !== "string") return raw
   const completion = obj.taskCompletion ?? obj.TaskCompletion
-  return typeof completion === "string" ? completion : raw
+  if (typeof completion === "string") return completion
+  // An `ask` carries its answer in `question`, with the choices the client shows
+  // under it. Only `taskCompletion` was read, so the whole object went out as the
+  // reply — braces, `ph_1`, the lot — and the agent read the protocol instead of
+  // the question (seen live 2026-11-11: the model asked which of five options to
+  // take, and the answer was five lines of JSON).
+  //
+  // The question is the answer and the options are its tail, one per line,
+  // because prose is what an OpenAI client has room for. Only an `ask` is read
+  // this way: another action's `question` is not an answer, and taking it for one
+  // would turn a reply into half of itself.
+  if (action.toLowerCase() !== "ask") return raw
+  const question = obj.question ?? obj.Question
+  if (typeof question !== "string") return raw
+  const choices = (Array.isArray(obj.options) ? obj.options : [])
+    .filter((o) => typeof o === "string" && o.trim())
+    .map((o) => `- ${o.trim()}`)
+  return choices.length ? `${question}\n\n${choices.join("\n")}` : question
 }
 
 /** JSON string escapes, for reading the envelope's answer as it arrives. */
