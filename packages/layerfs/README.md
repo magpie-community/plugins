@@ -192,6 +192,15 @@ serves its chat page:
   refused-to-connect page until the first project is provisioned;
   a store with no recorded checkpoints yet shows the page's honest
   empty state.
+- **The service recovers after a host handover.** A retired plugin
+  host may still hold the page port while finishing a request. The
+  replacement retries a failed bind automatically, starting after
+  one second and backing off to at most 30 seconds. A closed listener
+  is retried too; concurrent tool calls share one startup attempt.
+  Retries begin only after a project store exists, write no extra
+  checkpoints, and do not keep an otherwise finished host alive.
+  An already refused frame may need a reload after the listener
+  recovers; neither the gateway nor an agent task needs restarting.
 - **The service is closed to other sites.** It emits no CORS
   headers and refuses any request carrying an Origin (a sandboxed
   iframe's fetch sends `Origin: null`); it serves no `.js` data
@@ -227,6 +236,17 @@ node tools/gen-trajectory.mjs   # regenerate the page's bundled sample trajector
 
 Zero runtime dependencies; the arguments are JSON Schema, like the other
 tools packages. MIT.
+
+## Changes in 0.10.1
+
+The page service now survives Magpie replacing its plugin host. A
+retired host can keep port 43717 until its in-flight request finishes;
+the replacement now retries a failed bind with bounded backoff instead
+of remembering a server that never listened. Once the port is free,
+the page recovers without another tool call or a gateway restart. A
+closed listener is restarted too, and concurrent calls share one
+startup check. Retries only begin after a project exists, so an empty
+store still writes nothing and starts no polling.
 
 ## Changes in 0.10.0
 
