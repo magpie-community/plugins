@@ -264,7 +264,7 @@ process.once("exit", () => {
 // unique files can be removed by any number of recoverers without touching a
 // later acquisition. ESRCH from kill(pid, 0) recovers immediately; otherwise a
 // record older than LOCK_STALE_MS recovers even when the OS reused its PID.
-function ledgerLock(file, now = Date.now, onChoosing = undefined) {
+function ledgerLock(file, onChoosing = undefined) {
   const directory = dirname(file)
   const base = basename(file)
   const prefix = `${base}.lock.`
@@ -299,9 +299,9 @@ function ledgerLock(file, now = Date.now, onChoosing = undefined) {
   }
   const isStale = (path) => {
     try {
-      return Math.max(Date.now(), now()) - statSync(path).mtimeMs > LOCK_STALE_MS
-    } catch (e) {
-      return e?.code === "ENOENT"
+      return Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS
+    } catch {
+      return false
     }
   }
   const peers = () => {
@@ -321,12 +321,7 @@ function ledgerLock(file, now = Date.now, onChoosing = undefined) {
       }
       const match = /^([1-9]\d*)\.([a-f0-9-]{36})\.(json|tmp)$/.exec(entry.slice(prefix.length))
       const pid = match ? Number(match[1]) : NaN
-      if (!match || !Number.isSafeInteger(pid)) {
-        if (isStale(join(directory, entry))) {
-          try { remove(join(directory, entry), deadline) } catch {}
-        }
-        continue
-      }
+      if (!match || !Number.isSafeInteger(pid)) continue
       const path = join(directory, entry)
       if (path === participant || path === temporary) continue
       if (!isAlive(pid, alive) || isStale(path)) {
@@ -357,8 +352,10 @@ function ledgerLock(file, now = Date.now, onChoosing = undefined) {
     publish(0)
     const ticket = Math.max(0, ...peers().map((p) => p.ticket)) + 1
     if (!Number.isSafeInteger(ticket)) throw new Error("Ledger lock ticket overflow")
-    onChoosing?.()
-    deadline = performance.now() + LOCK_WAIT_MS
+    if (onChoosing) {
+      onChoosing()
+      deadline = performance.now() + LOCK_WAIT_MS
+    }
     publish(ticket)
     while (performance.now() < deadline) {
       const blocked = peers().some((p) => p.ticket === 0 || (p.ticket > 0 && (p.ticket < ticket || (p.ticket === ticket && p.name < name))))
@@ -381,7 +378,7 @@ export class Store {
 
   withLock(fn) {
     if (!this.file) return fn()
-    const release = ledgerLock(this.file, this.now, this.onChoosing)
+    const release = ledgerLock(this.file, this.onChoosing)
     if (!release) return undefined
     // A callback runs exactly once; its error propagates after release.
     try {

@@ -145,13 +145,29 @@ describe("exclusive ledger updates", () => {
     writeFileSync(deadTmp, "{}")
     writeFileSync(staleLiveTmp, "{}")
     const old = new Date(Date.now() - LOCK_STALE_MS - 2000)
+    utimesSync(strayLock, old, old)
     utimesSync(staleLiveTmp, old, old)
 
     const p = _internal.createPlugin({ directory, magpie: true, fetchImpl: fake })
     expect((await chat(p)).res.status).toBe(200)
     expect(store.remaining(auth.metadata.userId)).toBe(4999)
+    expect(existsSync(strayLock)).toBe(true)
     expect(existsSync(deadTmp)).toBe(false)
     expect(existsSync(staleLiveTmp)).toBe(false)
+  })
+
+  test("an advanced injected Store clock does not treat a fresh live lock record as stale", () => {
+    const directory = tempDir()
+    const file = join(directory, "gumloop-ledger.json")
+    new Store(file).anchor("u", 100, "initial")
+    const uuid = "00000000-0000-4000-8000-000000000002"
+    const lockPath = join(directory, `gumloop-ledger.json.lock.${process.ppid}.${uuid}.json`)
+    writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, name: `${process.ppid}.${uuid}`, ticket: 1 }))
+    const futureStore = new Store(file, () => Date.now() + LOCK_STALE_MS + 60_000)
+    let ran = false
+    expect(futureStore.change("u", () => { ran = true })).toBeUndefined()
+    expect(ran).toBe(false)
+    expect(existsSync(lockPath)).toBe(true)
   })
 
   test("waits for a peer in ticket 0 (choosing) state before entering critical section", () => {
