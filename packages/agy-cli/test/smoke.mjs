@@ -178,10 +178,20 @@ async function invoke(name, args) {
 const textOf = result => (result.content || []).map(part => part.text || "").join("")
 
 function finish(reply, extra = {}) {
+  const cached = extra.cached || 0
+  const thought = extra.thought || 0
+  const input = extra.input ?? 10
   log({ type: "result", convId: session.id, prompt: session.prompts, response: reply })
   return {
     stopReason: "end_turn",
-    usage: { inputTokens: extra.input ?? 10 + (extra.cached || 0), outputTokens: reply.length, cachedReadTokens: extra.cached || 0, cachedWriteTokens: 0, thoughtTokens: extra.thought || 0, totalTokens: 10 + reply.length },
+    usage: {
+      inputTokens: extra.exclusive ? input : input + cached,
+      outputTokens: reply.length,
+      cachedReadTokens: cached,
+      cachedWriteTokens: 0,
+      thoughtTokens: thought,
+      totalTokens: input + cached + reply.length + thought,
+    },
   }
 }
 

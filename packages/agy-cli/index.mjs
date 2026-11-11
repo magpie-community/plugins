@@ -12,6 +12,7 @@ import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { cloak, hint, turnsAway } from "./cloak.mjs"
+import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
 // Client tools reach the session through a private `nc` placed first on agy's
@@ -92,6 +93,10 @@ const ACP_LINE_LIMIT = 64 * 1024 * 1024
 const LOG_TAIL_BYTES = 256 * 1024
 const NPM_ANTHROPIC = "@ai-sdk/anthropic"
 const PING_INTERVAL_MS = 15_000
+// agy commits a model call to its conversation store just after the call ends.
+const STEP_USAGE_WAIT_MS = 1_000
+const STEP_USAGE_SAME_GEN_WAIT_MS = 75
+const STEP_USAGE_POLL_MS = 25
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
 const AGENT_ERROR_MARKER = "\n⚠ Agent execution terminated due to error.\n"
 const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
@@ -845,13 +850,15 @@ class Turn {
     this.rawAcpUsages = []
     this.rawUsage = null
     this.accountedPrompts = new Set()
+    this.stepUsageReconciled = false
+    this.sawGenerationOutput = false
     let settle
     this.settled = new Promise((resolve) => { settle = resolve })
     this.settle = settle
   }
 
   registerResponse(body) {
-    const estimate = estimateInputTokens(body)
+    const estimate = this.proc.estimatePromptTokens(body)
     const pending = this.pendingPromptStep
     const step = {
       body,
@@ -884,7 +891,7 @@ class Turn {
       const results = extractToolResults(body)
       const alreadyInHistory = lateCalls?.length && lateCalls.every((call) =>
         results.some((block) => block.tool_use_id === call.id))
-      const estimate = estimateInputTokens({
+      const estimate = this.proc.estimatePromptTokens({
         ...body,
         messages: [
           ...history,
@@ -916,8 +923,8 @@ class Turn {
       // no usage of their own until it ends, so they take this ratio. Only a
       // final, uncancelled response used to teach it, so a fresh or cancelled
       // conversation reported every tool step as a full cache miss.
-      const input = tokenCount(usage?.inputTokens)
-      if (input > 0) this.proc.lastCacheRatio = Math.min(1, Math.min(input, tokenCount(usage.cachedReadTokens)) / input)
+      const parts = promptUsage(usage)
+      if (parts.promptInput > 0) this.proc.lastCacheRatio = Math.min(1, parts.read / parts.promptInput)
     }
     return this.rawUsage
   }
@@ -1099,6 +1106,8 @@ class Proc {
     // Unset until recordPromptUsage or a final calibrated response teaches
     // it, including a recorded 0. Distinct from a calibrated miss.
     this.lastCacheRatio = undefined
+    this.omittedHistoryTokens = 0
+    this.stepUsageTrusted = true
     this.configOptions = []
     this.configMethodUnsupported = false
     this.currentSelectionKey = null
@@ -1392,11 +1401,21 @@ class Proc {
     if (turn.cancelRequested) return
     if (update.sessionUpdate === "agent_message_chunk") {
       const text = update.content?.type === "text" ? update.content.text : ""
-      if (text) turn.pushText(text)
+      if (text) {
+        turn.sawGenerationOutput = true
+        turn.pushText(text)
+      }
     } else if (update.sessionUpdate === "agent_thought_chunk") {
       const text = update.content?.type === "text" ? update.content.text : ""
-      if (text) turn.push({ type: "thinking", text })
+      if (text) {
+        turn.sawGenerationOutput = true
+        turn.push({ type: "thinking", text })
+      }
     }
+  }
+
+  estimatePromptTokens(body) {
+    return Math.max(1, estimateInputTokens(body) - this.omittedHistoryTokens)
   }
 
   startTurn(content, messages, model, selection) {
@@ -1491,6 +1510,11 @@ class Proc {
     try {
       turn.arm()
       if (model) await this.#setModel(model, selection)
+      const stepUsageEnabled = this.stepUsageTrusted &&
+        !/^(?:0|false|off|no|disabled)$/i.test(process.env.AGY_BRIDGE_STEP_USAGE || "")
+      turn.stepsFile = stepUsageEnabled ? sessionDbPath(this.sessionId) : null
+      turn.stepCursor = turn.stepsFile ? modelUsageCursor(turn.stepsFile) : null
+      if (turn.stepsFile && turn.stepCursor === null) this.stepUsageTrusted = false
       // Content a cancelled turn never delivered still belongs to the session.
       let promptParts = mergePromptParts(this.unsentPrompt, toPromptParts(content))
       this.unsentPrompt = null
@@ -1768,6 +1792,9 @@ class Proc {
   finalizeTurn(turn) {
     if (turn.finalized) return
     turn.finalized = true
+    if (turn.stepsFile && turn.promptCount > 0 && !turn.stepUsageReconciled) {
+      this.stepUsageTrusted = false
+    }
     turn.detach()
     clearTimeout(turn.timer)
     for (const waiter of turn.waiters.splice(0)) {
@@ -4178,18 +4205,45 @@ function tokenCount(value) {
 }
 
 // ACP usage accumulates the internal model calls of one session/prompt.
-// Gemini includes read-cache input and excludes thought output in its totals.
+// agy 1.5.1+ reports inputTokens as the uncached prompt tokens; cached reads and
+// writes are separate and totalTokens includes all of them (measured:
+// 2133 input + 4899 cache read + 6 output = 7038 total). Some earlier builds
+// folded cached reads into inputTokens. totalTokens tells the two shapes apart,
+// so both report the same uncached input and cache numbers.
+function promptUsage(usage) {
+  if (!usage || typeof usage !== "object") usage = {}
+  const rawInput = tokenCount(usage.inputTokens)
+  const cacheRead = tokenCount(usage.cachedReadTokens)
+  const cacheWrite = tokenCount(usage.cachedWriteTokens)
+  const output = tokenCount(usage.outputTokens)
+  const thinking = tokenCount(usage.thoughtTokens)
+  const total = tokenCount(usage.totalTokens)
+  const inclusive = total > 0
+    ? Math.abs(total - (rawInput + output + thinking)) <
+      Math.abs(total - (rawInput + cacheRead + cacheWrite + output + thinking))
+    : cacheRead <= rawInput
+  // Prompt input excludes cache creation, which is reported separately.
+  const promptInput = inclusive ? rawInput : rawInput + cacheRead
+  const read = Math.min(cacheRead, promptInput)
+  return {
+    input: promptInput - read,
+    read,
+    write: cacheWrite,
+    output: output + thinking,
+    thinking,
+    promptInput,
+  }
+}
+
 function translateUsage(usage) {
   if (!usage || typeof usage !== "object") return null
-  const input = tokenCount(usage.inputTokens)
-  const cacheRead = Math.min(input, tokenCount(usage.cachedReadTokens))
-  const thinking = tokenCount(usage.thoughtTokens)
+  const parts = promptUsage(usage)
   return {
-    input_tokens: input - cacheRead,
-    output_tokens: tokenCount(tokenCount(usage.outputTokens) + thinking),
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: tokenCount(usage.cachedWriteTokens),
-    ...(thinking > 0 ? { output_tokens_details: { thinking_tokens: thinking } } : {}),
+    input_tokens: parts.input,
+    output_tokens: parts.output,
+    cache_read_input_tokens: parts.read,
+    cache_creation_input_tokens: parts.write,
+    ...(parts.thinking > 0 ? { output_tokens_details: { thinking_tokens: parts.thinking } } : {}),
   }
 }
 
@@ -4236,13 +4290,13 @@ function responseUsage(proc, turn, step, content, result) {
   if (final) {
     const sum = turn.stepInputEstimates.reduce((total, value) => total + value, 0)
     const weight = estimate / Math.max(estimate, sum)
-    const totalInput = tokenCount(result?.usage?.inputTokens)
-    const totalWrite = tokenCount(result?.usage?.cachedWriteTokens)
-    const read = Math.min(totalInput, tokenCount(result?.usage?.cachedReadTokens))
+    const parts = promptUsage(result?.usage || {})
+    const totalInput = parts.promptInput
+    const totalWrite = parts.write
     if (totalInput + totalWrite > 0) {
       input = tokenCount(totalInput * weight)
       write = tokenCount(totalWrite * weight)
-      cacheRatio = totalInput > 0 ? read / totalInput : 0
+      cacheRatio = totalInput > 0 ? parts.read / totalInput : 0
     }
     // The bound applies to the full window, including cache creation. Scale
     // both portions together before rounding, then split the exact integer.
@@ -4289,6 +4343,111 @@ function responseUsage(proc, turn, step, content, result) {
     cache_creation_input_tokens: write,
     output_tokens: output,
     ...(thinking > 0 ? { output_tokens_details: { thinking_tokens: thinking } } : {}),
+  }
+}
+
+// Usage of one HTTP response from agy's own per-call records (step-usage.mjs):
+// the model calls since the last settled response. Its prompt buckets are the
+// latest call's, which is how full the context is; output adds up all of them.
+// Returns null, keeping the estimate, when the store has no new completed call
+// in time or, at the end of a prompt, its calls don't yet add up to ACP's total.
+async function measuredUsage(turn, step, content, result) {
+  if (step.settled || !turn.stepsFile || turn.stepCursor == null) return null
+  const final = result !== undefined
+  const acp = final && result?.usage ? promptUsage(result.usage) : null
+  const measured = turn.measured || { prompt: 0 }
+  const expected = acp ? acp.promptInput + acp.write : null
+  const promptOf = (steps) => steps.reduce((sum, item) => sum + item.input + item.read + item.write, measured.prompt)
+  const complete = (steps) => {
+    if (!steps?.length) return false
+    if (expected === null) return true
+    return promptOf(steps) >= expected
+  }
+  // agy has written the store by its first tool call; none means none kept here.
+  if (!fs.existsSync(turn.stepsFile)) return null
+  // When an earlier response in this turn already measured a generation and no
+  // new message/thought chunk arrived, agy may still be draining sequential MCP
+  // tool calls from that same generation without invoking the model again. Wait
+  // briefly unless a new row is pending; stop immediately if the store fails/locks.
+  const sawOutput = turn.sawGenerationOutput ||
+    (Array.isArray(content) && content.some((block) => block?.type === "text" || block?.type === "thinking"))
+  const canShareGeneration = !final && !sawOutput && measured.prompt > 0 && turn.stepCursor.source !== null
+  const start = performance.now()
+  let batch = modelUsageAfter(turn.stepsFile, turn.stepCursor)
+  for (;;) {
+    if (!batch || complete(batch.steps)) break
+    const waitMs = canShareGeneration && !batch.pending
+      ? STEP_USAGE_SAME_GEN_WAIT_MS
+      : STEP_USAGE_WAIT_MS
+    if (performance.now() - start >= waitMs) break
+    await new Promise((resolve) => setTimeout(resolve, STEP_USAGE_POLL_MS))
+    batch = modelUsageAfter(turn.stepsFile, turn.stepCursor)
+  }
+  if (!batch) return null
+  const steps = batch.steps
+  if (!complete(steps)) {
+    if (!batch.pending && !steps?.length && (
+      canShareGeneration ||
+      (final && expected !== null && measured.prompt > 0 &&
+        measured.prompt >= expected &&
+        measured.prompt <= expected + Math.max(16, Math.ceil(expected * 0.01)))
+    )) {
+      if (final) turn.stepUsageReconciled = true
+      step.usageKind = "agy_same_generation"
+      step.modelCalls = 0
+      return {
+        input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 0,
+      }
+    }
+    return null
+  }
+  // agy's per-call prompts sum to ACP's total exactly. A large over-count means
+  // the store's layout or contents no longer match what ACP reported, so don't
+  // hand the client numbers we cannot reconcile.
+  const prompt = promptOf(steps)
+  if (expected !== null && prompt > expected + Math.max(16, Math.ceil(expected * 0.01))) return null
+  const last = steps.at(-1)
+  const output = steps.reduce((sum, item) => sum + item.output + item.thinking, 0)
+  const thinking = steps.reduce((sum, item) => sum + item.thinking, 0)
+  turn.stepCursor = { source: batch.source, idx: last.idx }
+  turn.measured = { prompt }
+  if (final) turn.stepUsageReconciled = true
+  step.usageKind = "agy_model_call"
+  step.modelCalls = steps.length
+  logBridgeEvent(turn.proc, turn, "model_usage", batch.source, {}, {
+    model: turn.proc.currentModel, effort: turn.proc.currentEffort,
+    model_calls: steps.length,
+    input_tokens: last.input, cache_read_tokens: last.read, cache_write_tokens: last.write,
+    output_tokens: output, thinking_tokens: thinking,
+    context_tokens: last.input + last.read + last.write,
+    local_context_estimate: last.context,
+  })
+  return {
+    input_tokens: last.input,
+    cache_read_input_tokens: last.read,
+    cache_creation_input_tokens: last.write,
+    output_tokens: output,
+    ...(thinking > 0 ? { output_tokens_details: { thinking_tokens: thinking } } : {}),
+  }
+}
+
+async function settleUsage(proc, turn, step, content, result) {
+  if (step.settled) return step.usage
+  try {
+    const measured = result?.stopReason === "cancelled" ? null : await measuredUsage(turn, step, content, result)
+    if (measured) return measured
+    // Any unconsumed generation from this turn (cancelled, timed out, locked, or
+    // an empty `.pb` / unreadable store) could land after the next turn reads
+    // MAX(idx) or keep costing 1s per turn. Stop trusting the store on this
+    // process and fall back to bounded window estimates.
+    turn.stepCursor = null
+    if (turn.stepsFile) proc.stepUsageTrusted = false
+    return responseUsage(proc, turn, step, content, result)
+  } finally {
+    turn.sawGenerationOutput = false
   }
 }
 
@@ -4470,7 +4629,9 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
               }
               if (performance.now() >= batchDeadline) break
             }
-            stopMessage("tool_use", responseUsage(proc, turn, step, responseContent))
+            const usage = await settleUsage(proc, turn, step, responseContent)
+            if (finished) return
+            stopMessage("tool_use", usage, false, step.usageKind === "agy_model_call")
             proc.recordAssistantResponse(turn, responseContent)
             detach()
             controller.close()
@@ -4479,7 +4640,8 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           if (event.type === "result") {
             closeBlock()
             turn.rawUsage = event.result.usage ?? turn.rawUsage
-            const usage = responseUsage(proc, turn, step, responseContent, event.result)
+            const usage = await settleUsage(proc, turn, step, responseContent, event.result)
+            if (finished) return
             stopMessage(STOP_REASONS[event.result.stopReason] || "end_turn", usage, true, event.result.stopReason !== "cancelled")
             proc.recordAssistantResponse(turn, responseContent)
             proc.finalizeTurn(turn)
@@ -4575,6 +4737,16 @@ function estimateInputTokens(body) {
     total += estimateTextTokens(JSON.stringify(body.tools))
   }
   return Math.max(1, total + images * 1600)
+}
+
+function estimatePromptPartsTokens(parts) {
+  let total = 0
+  let images = 0
+  for (const part of parts || []) {
+    if (part?.type === "text" && part.text) total += estimateTextTokens(part.text)
+    else if (part?.type === "image") images++
+  }
+  return total + images * 1600
 }
 
 async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
@@ -4691,7 +4863,8 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   const reminder = outputFormatReminder(body)
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
-  const baseParts = proc.hasSentFirstTurn
+  const isFirstTurn = !proc.hasSentFirstTurn
+  const baseParts = !isFirstTurn
     ? renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
@@ -4699,11 +4872,22 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
-    if (!proc.hasSentFirstTurn) {
+    if (isFirstTurn) {
       dropFromPool(proc)
       await proc.stop().catch(() => {})
     }
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
+  }
+  if (isFirstTurn) {
+    const rawEstimate = estimateInputTokens(body)
+    const sessionOverhead = (proc.instructionsInSession && body.system
+      ? estimateInputTokens({ system: body.system, messages: [] })
+      : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
+    const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts))
+    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
+    const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
+      rawEstimate > sentEstimate + 64
+    proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
   }
   return proc.startTurn(contentParts, body.messages, model, selection)
 }
