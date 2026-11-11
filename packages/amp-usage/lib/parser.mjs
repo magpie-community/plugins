@@ -12,13 +12,19 @@ const idOf = (id) =>
   (typeof id === "string" && /^[\w-]{1,100}$/.test(id))
     ? String(id)
     : null;
-const timeOf = (t) =>
-  typeof t === "string" &&
-  /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(t) &&
-  Number.isFinite(Date.parse(t)) &&
-  Date.parse(t) >= Date.UTC(2000, 0, 1)
-    ? new Date(t).toISOString()
+// An ISO string or epoch milliseconds; anything a Date cannot hold is no time.
+const timeOf = (t) => {
+  const ms =
+    typeof t === "number"
+      ? t
+      : typeof t === "string" &&
+          /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(t)
+        ? Date.parse(t)
+        : NaN;
+  return Number.isFinite(ms) && ms >= Date.UTC(2000, 0, 1) && ms <= 8.64e15
+    ? new Date(ms).toISOString()
     : null;
+};
 const token = (n) =>
   n == null
     ? 0
@@ -81,7 +87,7 @@ export function parseThread(
     Array.isArray(thread.messages) ? thread.messages : []
   ).flatMap((m) => {
     if (m?.role === "user" && Number.isFinite(m.sentAt))
-      sent = timeOf(new Date(m.sentAt).toISOString());
+      sent = timeOf(m.sentAt);
     if (m?.role !== "assistant" || !m.usage) return [];
     const r = make(m.usage, false, idOf(m.messageId), m.state?.type);
     if (r) r.sent = sent;

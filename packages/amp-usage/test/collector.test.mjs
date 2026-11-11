@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCollector, acquireLock, gatewayURL } from "../lib/collector.mjs";
@@ -133,6 +133,70 @@ test("the gateway's matching usage is not imported again", async (t) => {
   h.advance();
   await h.collector.run();
   assert.equal(h.sent.length, 0);
+});
+test("a batch Magpie refuses whole is split until the bad record stands alone", async (t) => {
+  const posts = [];
+  const h = await setup(t, {
+    fetchImpl: async (_u, req) => {
+      const batch = JSON.parse(req.body);
+      posts.push(batch.length);
+      if (batch.some((r) => r.out === 20))
+        return new Response("", { status: 400 });
+      return Response.json({
+        records: batch.map((r) => ({ rid: r.rid, status: "accepted" })),
+      });
+    },
+  });
+  for (let id = 2; id <= 5; id++)
+    h.data.messages.push({
+      ...h.data.messages[0],
+      messageId: id,
+      usage: { ...h.data.messages[0].usage, outputTokens: 20 + id },
+    });
+  await h.collector.run();
+  h.advance();
+  const s = await h.collector.run();
+  assert.deepEqual(s.errors, []);
+  assert.equal(s.imported, 4);
+  assert.equal(s.issues.rejected, 1);
+  assert.equal(posts[0], 5);
+  assert.ok(posts.length <= 7);
+});
+test("one malformed thread leaves the others' records", async (t) => {
+  const h = await setup(t, {
+    source: async () => ({ threads: [{ id: "bad" }, thread()], errors: [] }),
+  });
+  const s = await h.collector.run();
+  assert.equal(s.issues.invalidThread, 1);
+  assert.equal(s.usage[0].calls, 1);
+  assert.deepEqual(s.errors, []);
+});
+test("the gateway log is read where it grew, whole lines only", async (t) => {
+  const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
+  const log = join(h.dir, "usage.jsonl");
+  const row = (patch) =>
+    JSON.stringify({ t: at, model: "gpt-test", in: 10, out: 20, ...patch });
+  await writeFile(log, row({ out: 21 }) + "\n");
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
+  // A line still being written is not a row yet.
+  const line = row({ session: "T-example" });
+  await appendFile(log, line.slice(0, 20));
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
+  await appendFile(log, line.slice(20) + "\n");
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, 1);
+});
+test("a rotated gateway log is indexed afresh", async (t) => {
+  const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
+  const log = join(h.dir, "usage.jsonl");
+  const row = (patch) =>
+    JSON.stringify({ t: at, model: "gpt-test", in: 10, out: 20, ...patch }) +
+    "\n";
+  await writeFile(log, row({ out: 21 }).repeat(3));
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
+  // Shorter than what was read, so the offset cannot carry over.
+  await rm(log);
+  await writeFile(log, row({ session: "T-example" }));
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, 1);
 });
 test("a record Magpie rejects does not block the others", async (t) => {
   const h = await setup(t, {

@@ -71,6 +71,7 @@ export async function startServer({
         )
           return send(res, 403, {
             error: "Reopen the Amp usage page to reconnect.",
+            code: "reconnect",
           });
         res.setHeader(
           "Access-Control-Allow-Origin",
@@ -113,6 +114,10 @@ export async function startServer({
       };
       const file = files[url.pathname];
       if (!file) return send(res, 404, "Not found", "text/plain");
+      // The page carries the token, so only a navigation may read it.
+      const mode = req.headers["sec-fetch-mode"];
+      if (file[0] === "index.html" && mode && mode !== "navigate")
+        return send(res, 403, "Forbidden", "text/plain");
       let text = await readFile(join(ui, file[0]), "utf8");
       if (file[0] === "index.html")
         text = text.replace("__SERVICE_TOKEN__", token);
@@ -124,7 +129,10 @@ export async function startServer({
       return send(res, 200, text, file[1]);
     } catch {
       if (!res.headersSent)
-        send(res, 500, { error: "Local service error. Check the plugin log." });
+        send(res, 500, {
+          error: "Local service error. Check the plugin log.",
+          code: "serviceError",
+        });
       else res.end();
     }
   });

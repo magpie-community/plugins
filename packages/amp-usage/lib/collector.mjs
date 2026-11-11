@@ -1,11 +1,10 @@
 import { sendUsage } from "./transport.mjs";
 import { createReadStream, unlinkSync } from "node:fs";
-import { access, mkdir, open, unlink } from "node:fs/promises";
-import { createInterface } from "node:readline";
+import { mkdir, open, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseThread, fingerprint, tokenSignature } from "./parser.mjs";
 import { readCloud, readLocal, localDirs } from "./sources.mjs";
-import { readJSON, writeJSON } from "./storage.mjs";
+import { fail, reasonOf, readJSON, writeJSON } from "./storage.mjs";
 
 export function gatewayURL(raw) {
   const u = new URL(raw);
@@ -60,51 +59,83 @@ export async function acquireLock(dir) {
   throw new Error("Could not acquire collector lock.");
 }
 
-async function gatewayCalls(path) {
-  try {
-    await access(path);
-  } catch (e) {
-    if (e.code === "ENOENT") return new Map();
-    throw e;
-  }
+// Magpie's gateway log, indexed once and then read only where it grew. A new
+// file (rotation) or a shorter one starts the index again.
+function gatewayLog(path) {
+  // Key -> [time ms, session, time ms, session, ...]; sessions are shared
+  // strings, so a heavy log stays a modest index.
   const rows = new Map();
-  const lines = createInterface({
-    input: createReadStream(path),
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
+  const sessions = new Map();
+  let file = null,
+    offset = 0;
+  const add = (line) => {
     let r;
     try {
       r = JSON.parse(line);
     } catch {
-      continue;
+      return;
     }
     if (
-      r.source === "reported" ||
-      r.rid?.startsWith("amp-usage:") ||
-      !r.t ||
+      r?.source === "reported" ||
+      r?.rid?.startsWith?.("amp-usage:") ||
+      !r?.t ||
       ![r.in, r.out, r.cache_read, r.cache_write].some((n) => n > 0)
     )
-      continue;
+      return;
     const key = `${bareModel(r.served || r.model)}:${tokenSignature(r)}`;
-    const group = rows.get(key) || [];
-    group.push({ t: r.t, session: r.session });
-    rows.set(key, group);
-  }
-  return rows;
+    const session = String(r.session ?? "");
+    if (!sessions.has(session)) sessions.set(session, session);
+    const group = rows.get(key);
+    const entry = [Date.parse(r.t), sessions.get(session)];
+    if (group) group.push(...entry);
+    else rows.set(key, entry);
+  };
+  return async function read() {
+    let st;
+    try {
+      st = await stat(path);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      st = null;
+    }
+    const id = st && `${st.dev}:${st.ino}`;
+    if (id !== file || !st || st.size < offset) {
+      rows.clear();
+      sessions.clear();
+      file = id;
+      offset = 0;
+    }
+    if (!st || st.size === offset) return rows;
+    // Only whole lines are taken; a line still being written waits.
+    let rest = Buffer.alloc(0);
+    for await (const chunk of createReadStream(path, {
+      start: offset,
+      end: st.size - 1,
+    })) {
+      const buf = Buffer.concat([rest, chunk]);
+      const cut = buf.lastIndexOf(10) + 1;
+      if (cut) {
+        for (const line of buf.subarray(0, cut).toString("utf8").split("\n"))
+          if (line) add(line);
+        offset += cut;
+      }
+      rest = buf.subarray(cut);
+    }
+    return rows;
+  };
 }
 const bareModel = (s) =>
   String(s || "")
     .split("/")
     .at(-1);
 export function gatewayMatch(record, rows) {
-  const candidates =
+  const group =
     rows.get(`${bareModel(record.model)}:${tokenSignature(record)}`) || [];
-  return candidates.some(
-    (r) =>
-      r.session === record.session ||
-      Math.abs(Date.parse(r.t) - Date.parse(record.t)) <= 5_000,
-  );
+  const t = Date.parse(record.t);
+  for (let i = 0; i < group.length; i += 2)
+    if (group[i + 1] === record.session || Math.abs(group[i] - t) <= 5_000)
+      return true;
+  return false;
 }
 
 export async function createCollector({
@@ -132,6 +163,7 @@ export async function createCollector({
     );
   // Gateway rows leave usage.jsonl when Magpie rotates it; the verdict must not.
   state.gateway ||= {};
+  const gatewayRows = gatewayLog(join(configDir, "usage.jsonl"));
   // Installing the plugin is the consent to report; `sync: false` only reads.
   const syncing = options.sync !== false;
   // The last scan's records, for the page's own totals.
@@ -195,7 +227,7 @@ export async function createCollector({
         now: clock,
       });
     } catch (e) {
-      cloud.errors.push(e.message);
+      cloud.errors.push(reasonOf(e));
     }
     return {
       threads: [...local.threads, ...cloud.threads],
@@ -204,6 +236,42 @@ export async function createCollector({
     };
   }
   const persist = () => writeJSON(statePath, state);
+  // Each record's status, in order. Magpie answers 400 for a whole batch when
+  // one record is invalid, so halve it until that record stands alone.
+  async function post(batch) {
+    const response = await fetchImpl(`${base}/v1/magpie/usage/requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(batch),
+      signal: AbortSignal.timeout(15_000),
+    }).catch((e) => {
+      throw fail("magpieUnreachable", `Cannot reach Magpie: ${e.message}`);
+    });
+    if (response.status === 400) {
+      if (batch.length === 1) return ["rejected"];
+      const half = Math.ceil(batch.length / 2);
+      return [
+        ...(await post(batch.slice(0, half))),
+        ...(await post(batch.slice(half))),
+      ];
+    }
+    if (!response.ok)
+      throw fail(
+        "magpieRefused",
+        `Magpie refused usage (HTTP ${response.status}). Check the gateway address and Magpie version.`,
+      );
+    const ack = await response.json();
+    if (
+      !Array.isArray(ack.records) ||
+      ack.records.length !== batch.length ||
+      ack.records.some((a, j) => a.rid !== batch[j].rid)
+    )
+      throw fail(
+        "magpieAck",
+        "Unexpected Magpie acknowledgement; retry is safe with the same record IDs.",
+      );
+    return ack.records.map((a) => a.status);
+  }
   async function scan() {
     status = {
       ...status,
@@ -225,7 +293,15 @@ export async function createCollector({
           addIssue("excludedThread");
           continue;
         }
-        const parsed = parseThread(thread, { now: clock(), settleMs });
+        let parsed;
+        // One malformed thread must not cost the others their records.
+        try {
+          parsed = parseThread(thread, { now: clock(), settleMs });
+        } catch (e) {
+          console.error(`amp-usage: thread skipped: ${e.message}`);
+          addIssue("invalidThread");
+          continue;
+        }
         for (const [k, n] of Object.entries(parsed.issues)) addIssue(k, n);
         for (const r of parsed.records) {
           if (
@@ -259,8 +335,7 @@ export async function createCollector({
         shown.push(r);
         // Read the gateway log only for records still undecided. If it cannot
         // be read, fail closed instead of double-counting.
-        if (state.gateway[r.rid] !== fp)
-          through ??= await gatewayCalls(join(configDir, "usage.jsonl"));
+        if (state.gateway[r.rid] !== fp) through ??= await gatewayRows();
         if (state.gateway[r.rid] === fp || gatewayMatch(r, through)) {
           state.gateway[r.rid] = fp;
           delete state.pending[r.rid];
@@ -292,27 +367,9 @@ export async function createCollector({
         for (let i = 0; i < ready.length; i += 200) {
           if (closed) break;
           const batch = ready.slice(i, i + 200);
-          const response = await fetchImpl(`${base}/v1/magpie/usage/requests`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(batch),
-            signal: AbortSignal.timeout(15_000),
-          });
-          if (!response.ok)
-            throw new Error(
-              `Magpie refused usage (HTTP ${response.status}). Check the gateway address and Magpie version.`,
-            );
-          const ack = await response.json();
-          if (
-            !Array.isArray(ack.records) ||
-            ack.records.length !== batch.length ||
-            ack.records.some((a, j) => a.rid !== batch[j].rid)
-          )
-            throw new Error(
-              "Unexpected Magpie acknowledgement; retry is safe with the same record IDs.",
-            );
+          const results = await post(batch);
           for (const [j, r] of batch.entries()) {
-            const result = ack.records[j].status;
+            const result = results[j];
             // A record Magpie refuses is retried later; it must not block the rest.
             if (!["accepted", "skipped"].includes(result)) {
               status.issues.rejected = (status.issues.rejected || 0) + 1;
@@ -328,7 +385,10 @@ export async function createCollector({
         }
       }
     } catch (e) {
-      status.errors = [...status.errors, e.message].slice(0, 10);
+      const reason = reasonOf(e);
+      if (["unexpected", "magpieRefused", "magpieUnreachable"].includes(reason))
+        console.error(`amp-usage: ${e.message}`);
+      status.errors = [...new Set([...status.errors, reason])].slice(0, 10);
     } finally {
       status.phase = "idle";
     }

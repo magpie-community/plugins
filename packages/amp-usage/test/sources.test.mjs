@@ -107,3 +107,38 @@ test("projections from before sent times are exported again", async (t) => {
   );
   assert.equal((await readCloud({ dataDir, run })).exported, 1);
 });
+test("listing stops at the first page with nothing new, yet keeps every thread", async (t) => {
+  const dataDir = await dir(t);
+  let clock = Date.parse(usage.timestamp);
+  const ids = Array.from({ length: 250 }, (_, i) => `T-${1000 + i}`);
+  const updated = Object.fromEntries(ids.map((id) => [id, usage.timestamp]));
+  const lists = [];
+  const run = async (args) => {
+    if (args[1] !== "list") return { id: args[2], messages: [] };
+    const offset = Number(args[args.indexOf("--offset") + 1]);
+    lists.push(offset);
+    // Newest first, as Amp lists them.
+    return ids
+      .map((id) => ({ id, updated: updated[id] }))
+      .sort((a, b) => b.updated.localeCompare(a.updated))
+      .slice(offset, offset + 200);
+  };
+  const read = () =>
+    readCloud({ dataDir, run, maxExports: 300, now: () => clock });
+  assert.equal((await read()).threads.length, 250);
+  assert.deepEqual(lists.splice(0), [0, 200]);
+  const again = await read();
+  assert.deepEqual(lists.splice(0), [0]);
+  assert.equal(again.threads.length, 250);
+  assert.equal(again.exported, 0);
+  // A thread from the second page changes: it moves to the first.
+  updated["T-1249"] = "2026-01-02T00:00:00Z";
+  const changed = await read();
+  assert.deepEqual(lists.splice(0), [0, 200]);
+  assert.equal(changed.exported, 1);
+  assert.equal(changed.threads.length, 250);
+  // A day on, the whole list is read again.
+  clock += 86_400_000;
+  await read();
+  assert.deepEqual(lists.splice(0), [0, 200]);
+});

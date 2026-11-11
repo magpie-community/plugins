@@ -27,11 +27,33 @@ test("loopback service protects every API and accepts authenticated sandbox requ
     await rm(dir, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${s.port}`;
-  const root = await fetch(base);
-  const html = await root.text();
-  assert.equal(root.headers.get("access-control-allow-origin"), null);
-  const token = html.match(/name="service-token" content="([a-f0-9]+)"/)[1];
-  assert.equal((await fetch(base + "/api/status")).status, 403);
+  // Only a navigation reads the page that carries the token; Node's fetch
+  // always says cors.
+  const page = (mode) =>
+    new Promise((resolve, reject) => {
+      const req = request(
+        base,
+        { headers: { "sec-fetch-mode": mode } },
+        (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () =>
+            resolve({ status: res.statusCode, body, headers: res.headers }),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  assert.equal((await page("cors")).status, 403);
+  const root = await page("navigate");
+  assert.equal(root.headers["access-control-allow-origin"], undefined);
+  const token = root.body.match(
+    /name="service-token" content="([a-f0-9]+)"/,
+  )[1];
+  const denied = await fetch(base + "/api/status");
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "reconnect");
   assert.equal(
     (
       await fetch(base + "/api/status", {

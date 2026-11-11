@@ -61,6 +61,46 @@ const W = {
     howTitle: "How this is counted",
     how1: "Input, output, cache reads and cache writes are kept apart. Amp credits are not turned into dollars; Magpie estimates the cost in its own usage pages.",
     how2: "A request with no time of its own is dated by when its turn was sent, so a turn that runs past midnight counts on the day it began.",
+    credit: "Parser reference: Tokscale · MIT",
+    err: {
+      ampNotFound:
+        "Amp CLI not found. Install Amp and run amp login, or set ampPath in the plugin options.",
+      ampFailed:
+        "An Amp command failed. Check amp login and network access in your terminal.",
+      ampTimeout: "An Amp command timed out. Refresh to try again.",
+      ampTooLarge:
+        "An Amp thread export was too large to read; it was skipped.",
+      ampInvalidJSON:
+        "Amp returned output this plugin cannot read. Update Amp.",
+      ampListFormat:
+        "Amp's thread list changed format. Update Amp and this plugin.",
+      ampExportMismatch:
+        "Amp exported a different thread than asked; it was skipped.",
+      ampBudget: "Reading Amp took its time limit. Refresh to continue.",
+      cacheMismatch:
+        "A cached Amp thread did not match; it will be exported again.",
+      localDirInvalid:
+        "Thread directories in the plugin options must be absolute paths.",
+      localDirUnreadable: "A local thread directory cannot be read.",
+      localDirMissing:
+        "A local thread directory in the plugin options was not found.",
+      localThreadInvalid:
+        "A local thread was unreadable, oversized or invalid; it was left out.",
+      localThreadConflict:
+        "Two local copies of one thread disagree; it was left out.",
+      fileUnreadable:
+        "A file of this plugin's own cannot be read. Check the plugin log.",
+      magpieRefused:
+        "Magpie refused the usage records. Check the gateway address and Magpie version.",
+      magpieAck:
+        "Magpie answered in a way this plugin did not expect. Records will be sent again safely.",
+      magpieUnreachable:
+        "Magpie could not be reached. Check that it is running and the gateway address.",
+      reconnect: "Reopen the Amp usage page to reconnect.",
+      serviceError: "The local service failed. Check the plugin log.",
+      unreachable: "The local service is not answering. Reopen the page.",
+      unexpected: "Something went wrong. Check the plugin log.",
+    },
   },
   zh: {
     title: "Amp 用量",
@@ -100,6 +140,32 @@ const W = {
     howTitle: "统计口径",
     how1: "输入、输出、缓存读取、缓存写入分别统计。Amp credits 不折算成美元，费用由 Magpie 在自己的用量页估算。",
     how2: "没有自身时间的请求，按所在轮次的发送时间计日；跨过午夜的一轮记在开始那天。",
+    credit: "解析参考：Tokscale · MIT",
+    err: {
+      ampNotFound:
+        "未找到 Amp CLI。请安装 Amp 并运行 amp login，或在插件选项中设置 ampPath。",
+      ampFailed: "Amp 命令执行失败。请在终端中检查 amp login 和网络连接。",
+      ampTimeout: "Amp 命令超时，请刷新重试。",
+      ampTooLarge: "有一个 Amp 线程导出过大，无法读取，已跳过。",
+      ampInvalidJSON: "Amp 返回了无法解析的内容，请更新 Amp。",
+      ampListFormat: "Amp 线程列表格式已变化，请更新 Amp 和本插件。",
+      ampExportMismatch: "Amp 导出的线程与请求不符，已跳过。",
+      ampBudget: "读取 Amp 已达单次时间上限，请刷新继续。",
+      cacheMismatch: "有一个缓存的 Amp 线程不一致，将重新导出。",
+      localDirInvalid: "插件选项中的线程目录必须是绝对路径。",
+      localDirUnreadable: "无法读取本地线程目录。",
+      localDirMissing: "插件选项中的本地线程目录不存在。",
+      localThreadInvalid: "有本地线程无法读取、过大或格式无效，已排除。",
+      localThreadConflict: "同一线程的两份本地副本不一致，已排除。",
+      fileUnreadable: "无法读取插件自身的文件，请查看插件日志。",
+      magpieRefused: "Magpie 拒绝了用量记录。请检查网关地址和 Magpie 版本。",
+      magpieAck: "Magpie 的回复不符合预期，记录稍后会安全重发。",
+      magpieUnreachable: "无法连接 Magpie。请确认它正在运行，并检查网关地址。",
+      reconnect: "请重新打开 Amp 用量页面以重新连接。",
+      serviceError: "本地服务出错，请查看插件日志。",
+      unreachable: "本地服务没有响应，请重新打开页面。",
+      unexpected: "出现错误，请查看插件日志。",
+    },
   },
 }[lang];
 document.title = W.title;
@@ -119,6 +185,7 @@ const groups = {
     "conflictingIdentity",
     "invalidUsage",
     "missingIdentity",
+    "invalidThread",
     "rejected",
   ],
 };
@@ -179,7 +246,7 @@ let state,
   failure = "",
   turn = 0,
   period = kept("period", "30d"),
-  auto = Number(kept("auto", 60));
+  auto = Number(kept("auto", 300));
 const week = new Date();
 week.setDate(week.getDate() - 6);
 $("from").value = kept("from", dayOf(week));
@@ -197,22 +264,28 @@ $("auto").replaceChildren(
 $("auto").value = auto;
 
 async function api(path, body) {
-  const r = await fetch(new URL(`api/${path}`, location.href), {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      "X-Amp-Usage-Token": token,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const result = await r.json();
-  if (!r.ok)
-    throw new Error(result.error || `Service returned HTTP ${r.status}`);
+  let r, result;
+  // Errors are codes the page words itself; see W.err.
+  try {
+    r = await fetch(new URL(`api/${path}`, location.href), {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        "X-Amp-Usage-Token": token,
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    result = await r.json();
+  } catch {
+    throw new Error("unreachable");
+  }
+  if (!r.ok) throw new Error(result.code || "unexpected");
   return result;
 }
-function errors(messages) {
-  $("errors").replaceChildren(...messages.map((m) => el("p", m)));
-  $("errors").hidden = !messages.length;
+function errors(codes) {
+  const lines = [...new Set(codes.map((c) => W.err[c] || W.err.unexpected))];
+  $("errors").replaceChildren(...lines.map((m) => el("p", m)));
+  $("errors").hidden = !lines.length;
 }
 
 // The span the reader asked for, as local hour keys, both ends included.

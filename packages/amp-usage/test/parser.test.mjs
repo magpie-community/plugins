@@ -99,6 +99,17 @@ test("a call without a time takes the moment its turn was sent", () => {
   };
   assert.equal(parseThread(projectThread(raw)).records[0].t, at);
 });
+test("a time no Date can hold is no time, not a thrown scan", () => {
+  const r = parseThread(
+    thread([
+      { role: "user", sentAt: 1e20 },
+      message(1, { timestamp: undefined }),
+      message(2, { timestamp: "9999-99-99T00:00:00Z" }),
+    ]),
+  );
+  assert.equal(r.records.length, 0);
+  assert.equal(r.issues.missingTimestamp, 2);
+});
 test("identical token counts at different times are distinct calls", () => {
   const t = thread(
     [message(2, { timestamp: "2026-03-31T15:07:33.890Z" })],

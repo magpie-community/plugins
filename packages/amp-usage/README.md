@@ -15,7 +15,7 @@ magpie plugin add /absolute/path/to/plugins/packages/amp-usage
 安装后后台每 5 分钟读取一次 Amp 用量并同步到 Magpie，页面关闭后仍继续，插件关闭或 Magpie 退出时停止。页面只展示用量，没有同步开关；只想看看板、不写入 Magpie 时，在插件选项里设 `"sync": false`。
 
 - 顶部左侧切换时间段；一两天以内按小时出图，更长按日出图。
-- 右侧的刷新按钮立即重新读取，旁边选择页面打开时的自动刷新间隔（关闭、30 秒、1 分钟、5 分钟）。
+- 右侧的刷新按钮立即重新读取，旁边选择页面打开时的自动刷新间隔（关闭、30 秒、1 分钟、5 分钟，默认 5 分钟）。
 - 一条记录需要在两次读取之间保持不变（默认至少 120 秒）才会写入 Magpie。未计入的记录按原因归类，折叠在看板下方。
 - 在「观测 → 用量 → 请求」按 Agent `amp` 或上报来源筛选可以看到同步过去的记录；Day card 使用相同账本。
 
@@ -28,7 +28,7 @@ magpie plugin add /absolute/path/to/plugins/packages/amp-usage
 实现参考 [Tokscale 的 Amp 解析器](https://github.com/junhoyeo/tokscale/blob/b0991187b0af99614b48230f17d13a1fe06f28fa/crates/tokscale-core/src/sessions/amp.rs) 与 [CLI 同步器](https://github.com/junhoyeo/tokscale/blob/b0991187b0af99614b48230f17d13a1fe06f28fa/crates/tokscale-cli/src/amp.rs)，采用 MIT 许可，见 `NOTICE` 和 `LICENSE`。
 
 - 本地旧文件和云端账号每轮都读取，不需要选择来源。同一条记录两边都有时以本地为准（它带真实时间和账本）；没有安装 Amp CLI 时只读本地。
-- 云端使用当前已登录 Amp CLI 的 `threads list --json --include-archived` 分页列举及 `threads export`，不直接读取 Amp 密钥。
+- 云端使用当前已登录 Amp CLI 的 `threads list --json --include-archived` 分页列举及 `threads export`，不直接读取 Amp 密钥。列表按更新时间从新到旧，翻到整页都没有新变化时即停止；每天完整列举一次，移除已删除的线程。
 - 本地默认读取 `$XDG_DATA_HOME/amp/threads`，未设置时为 `~/.local/share/amp/threads`。这些文件可能仅包含旧历史，目录不存在时直接跳过。配置多个目录时，同线程内容冲突会被排除。
 - 账本与消息优先按 `toMessageId` / `messageId` 对齐；没有 ID 匹配时按模型、token 和兼容时间一对一匹配。保留账本独有事件与消息独有用量，避免只选一个来源造成漏计。
 - 稳定上报 ID 以线程 ID 和消息 ID 为基础；搜索、标题生成等辅助调用使用账本事件自带的 ID，没有 ID 的事件不导入。消息 ID 冲突、身份变化或导入后变化会提示并保留，不自动修正。
@@ -41,9 +41,9 @@ magpie plugin add /absolute/path/to/plugins/packages/amp-usage
 
 ### 去重的范围
 
-已接受记录按稳定 `rid` 去重，Magpie 重启后也不会重复接受。传输中断或应答丢失可安全重试。插件另保存已确认记录的指纹，检测后续修订。
+已接受记录按稳定 `rid` 去重，Magpie 重启后也不会重复接受。传输中断或应答丢失可安全重试。Magpie 因其中一条无效而拒绝整批（HTTP 400）时，插件对半拆分找出该记录，计为「被拒绝」，其余照常导入；被拒绝的记录在下一轮重试。插件另保存已确认记录的指纹，检测后续修订。
 
-读取同一 Magpie 配置目录的 `usage.jsonl` 检查网关已有请求（只在还有未判定的记录时读取，判定结果会保存，账本轮转后仍然有效）：模型和四类 token 相同，且会话 ID 相同或时间相距不超过 5 秒时，保守排除重复候选。标记为 Magpie 路由的模型也会排除。这个匹配不是完整的跨系统请求身份协议：不识别线程的代理、时间或模型改写、已归档不在该日志中的网关记录，仍可能无法关联。使用自定义网关时，应通过 `excludedThreadIds` 或 `excludedModels` 排除相关来源；分支复制历史若没有可验证的父子标识，也不能保证跨线程自动去重。
+读取同一 Magpie 配置目录的 `usage.jsonl` 检查网关已有请求（只在还有未判定的记录时读取；首次读取建立索引，此后只读追加部分，文件轮转后重建。判定结果会保存，账本轮转后仍然有效）：模型和四类 token 相同，且会话 ID 相同或时间相距不超过 5 秒时，保守排除重复候选。标记为 Magpie 路由的模型也会排除。这个匹配不是完整的跨系统请求身份协议：不识别线程的代理、时间或模型改写、已归档不在该日志中的网关记录，仍可能无法关联。使用自定义网关时，应通过 `excludedThreadIds` 或 `excludedModels` 排除相关来源；分支复制历史若没有可验证的父子标识，也不能保证跨线程自动去重。
 
 插件只扫描当前机器或当前 Amp CLI 账号；不会补齐未导出账号的数据。新增云端格式需要真实脱敏样本验证。
 
