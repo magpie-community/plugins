@@ -1067,6 +1067,12 @@ function makePlugin(site) {
                 headers.set("X-Mavis-Timezone-Offset", String(new Date().getTimezoneOffset() * -60))
                 if (!headers.get("X-Mavis-Session-Id")) headers.set("X-Mavis-Session-Id", session)
                 if (!headers.has("anthropic-version")) headers.set("anthropic-version", "2023-06-01")
+                // MiniMax answers a chat it is asked to compress as one gzip
+                // member, flushed when the answer is done: the events of a
+                // streamed answer all arrive at once, and the first token
+                // waits for the last. Asked uncompressed, it sends the
+                // events as they come.
+                headers.set("accept-encoding", "identity")
                 return siteFetch(site, req ? req.url : input instanceof URL ? input.href : input, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
               }
               let { a, renewed: did } = await fresh(getAuth)
