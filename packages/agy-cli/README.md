@@ -169,6 +169,11 @@ magpie quota refresh agy-cli --json
 支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在
 第一条提示词开头）。
 
+Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex 和 Hermes Agent
+的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
+agy 发出之前用零宽空格把这几行拆开，和 Antigravity 提供商的做法一样（`cloak.mjs`）。如果仍然
+回了这样的 429，会报成针对提示词的 400，而不是额度用完。
+
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
 发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的

@@ -11,6 +11,7 @@ import { createUsageReader } from "./usage.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
+import { cloak, hint, turnsAway } from "./cloak.mjs"
 
 const PROVIDER_ID = "agy-cli"
 // Client tools reach the session through a private `nc` placed first on agy's
@@ -1218,7 +1219,7 @@ class Proc {
     const resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
     this.instructionsInSession = appendable && !!this.instructions
     const meta = this.instructionsInSession
-      ? { _meta: { antigravity: { systemPrompt: { append: this.instructions } } } }
+      ? { _meta: { antigravity: { systemPrompt: { append: cloak(this.instructions) } } } }
       : {}
 
     let session = null
@@ -1559,6 +1560,15 @@ class Proc {
   }
 
   #formatAgentError(detail) {
+    // The system prompt turned away, not a quota (cloak.mjs): a 400 the next
+    // member of a group is asked after, and the client doesn't retry. It says
+    // what Antigravity answered (a 429).
+    if (/code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail) && turnsAway(this.instructions)) {
+      return new AgentTurnError(
+        `agy bridge: Antigravity answered 429 to this system prompt: ${detail} — ${hint(this.instructions)}`,
+        "invalid_request_error",
+      )
+    }
     if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail)) {
       return new AgentTurnError(
         `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}`,
@@ -3496,7 +3506,9 @@ function renderTurnMessage(message) {
 
 function renderTurnMessageParts(message) {
   if (message.role !== "user" || !Array.isArray(message.content)) {
-    const text = renderTurnMessage(message)
+    let text = renderTurnMessage(message)
+    // a system or developer message later in the chat is system text too
+    if (message.role === "system" || message.role === "developer") text = cloak(text)
     return text === "" ? [] : [{ type: "text", text }]
   }
   const parts = []
@@ -3657,7 +3669,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   const head = []
   if (!instructionsInSession) {
     const system = systemText(body)
-    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${system}\n</external_system_instructions>\n`)
+    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${cloak(system)}\n</external_system_instructions>\n`)
     if (callerWorkDir) appendPrompt(head, `\n${workDirNote(callerWorkDir)}\n\n`)
   }
   const currentParts = renderTurnMessagesParts(current)
@@ -3988,7 +4000,7 @@ function inspectToolTurn(results, body) {
         if (extractQueuedPrompt(rest) !== null || userInterruption.test(rest)) {
           userSteered = true
         } else if (!isNoise(rest)) {
-          notices.push(rest)
+          notices.push(cloak(rest))
         }
       } else if (!isNoise(rest)) {
         if ((hookOutput.test(rest) || claudeMetaFeedback.test(rest)) && !userInterruption.test(rest)) {

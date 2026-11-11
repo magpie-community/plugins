@@ -219,6 +219,13 @@ client's system prompt is added to it: in the session when agy advertises
 `systemPrompt.append`, otherwise as `<external_system_instructions>` at the
 start of the first prompt.
 
+Antigravity answers a 429 "Resource has been exhausted" to a few system
+prompt lines whatever quota is left (Claude Code's billing line, the Claude
+Agent SDK, Codex and Hermes Agent identities, oh-my-pi's RFC 2119 line). The
+plugin breaks each of them up with zero-width spaces before agy sends it, as
+the Antigravity provider does (`cloak.mjs`). Should such a 429 still come
+back, it is reported as a 400 about the prompt, not as a quota.
+
 Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
 request that goes upstream then has none of agy's own system prompt, only
 the plugin's one-line tool note and the client's system prompt (sent in one

@@ -217,6 +217,11 @@ async function prompt(params) {
     log({ type: "agentError", convId: session.id })
     return { stopReason: "end_turn" }
   }
+  if (text.includes("TURNED429")) {
+    fs.appendFileSync(agentLog, "E1111 09:12:01.000000 685 errorreport.go:224] agent executor error: generating and executing: RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n")
+    chunk("\n⚠ Agent execution terminated due to error.\n")
+    return { stopReason: "end_turn" }
+  }
   if (text.includes("QUOTA")) {
     fs.appendFileSync(agentLog, "E1103 17:11:25.570096 685 errorreport.go:224] agent executor error: generating and executing: RESOURCE_EXHAUSTED (code 429): quota exhausted.\n")
     chunk("\n⚠ Agent execution ")
@@ -378,7 +383,7 @@ async function handle(message) {
           loadSession: true,
           ...(process.env.FAKE_AGY_IMAGES === "omit" ? {} : { promptCapabilities: { image: process.env.FAKE_AGY_IMAGES !== "0", audio: false, embeddedContext: true } }),
           sessionCapabilities: { resume: {}, close: {} },
-          _meta: { antigravity: { systemPrompt: { append: true } } },
+          ...(process.env.FAKE_AGY_APPEND === "0" ? {} : { _meta: { antigravity: { systemPrompt: { append: true } } } }),
         },
         agentInfo: { name: "Antigravity ACP Server", version: process.env.FAKE_AGY_IMAGES === "omit" ? "1.4.12" : "1.5.0" },
         authMethods: [],
@@ -1222,6 +1227,59 @@ for (const change of ["tools", "model"]) {
   check("split error marker and quota map to rate_limit_error", error?.type === "rate_limit_error" && error.message.includes("quota exhausted") && textOf(events) === "", JSON.stringify({ error, text: textOf(events) }))
 }
 
+// #980: the system lines Antigravity turns away are broken up before agy
+// sends them, in the session instructions, in the prompt when agy can't take
+// them, and in a later system message; a 429 to such a prompt is not a quota.
+{
+  const zw = "\u200b"
+  const rfc = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
+  const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  const system = `${rfc}\nx-anthropic-billing-header: cc_version=2.1.0; cch=1;\n${sdk}\nCLOAK-MARKER`
+  const plain = (text) => String(text ?? "").replaceAll(zw, "")
+  const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
+  const events = (await readSSE(await callFetch(body))).events
+  const init = inits().at(-1)
+  const sent = init.systemAppend ?? ""
+  check("#980 a turned-away line is broken up in the session instructions",
+    sent.includes("CLOAK-MARKER") && !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes("Claude Agent SDK") &&
+    sent.includes("R" + zw + "F" + zw + "C 2" + zw + "1" + zw + "19") && sent.includes("C" + zw + "l" + zw + "aude A" + zw + "g" + zw + "ent S" + zw + "D" + zw + "K") &&
+    plain(sent).includes(system), JSON.stringify(sent))
+  const convId = init.convId
+  const before = inits().length
+  await readSSE(await callFetch(nextTurn(body, events, "cloak second turn")))
+  check("#980 the broken-up instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
+    JSON.stringify({ inits: inits().length - before, user: lastOf("user") }))
+
+  const later = { model, system: "CLOAK-LATER", messages: [{ role: "user", content: "cloak later system" }] }
+  const laterEvents = (await readSSE(await callFetch(later))).events
+  const next = nextTurn(later, laterEvents, "after the system note")
+  next.messages.splice(next.messages.length - 1, 0, { role: "system", content: sdk })
+  await readSSE(await callFetch(next))
+  const laterText = lastOf("user").text
+  check("#980 a later system message is broken up too", !laterText.includes("Claude Agent SDK") && plain(laterText).includes(sdk), JSON.stringify(laterText))
+
+  const user = { model, system: "CLOAK-USER", messages: [{ role: "user", content: `user wrote ${sdk}` }] }
+  await readSSE(await callFetch(user))
+  check("#980 what the user wrote goes as written", lastOf("user").text.includes(sdk), JSON.stringify(lastOf("user").text))
+
+  process.env.FAKE_AGY_APPEND = "0"
+  await readSSE(await callFetch({ model, system: system + " NOAPPEND", messages: [{ role: "user", content: "cloak in the prompt" }] }))
+  const prompted = lastOf("user").text
+  check("#980 a turned-away line is broken up in <external_system_instructions>",
+    inits().at(-1).systemAppend === null && prompted.includes("<external_system_instructions>") && prompted.includes("CLOAK-MARKER") &&
+    !prompted.includes(rfc) && !prompted.includes("Claude Agent SDK") && plain(prompted).includes(system), JSON.stringify(prompted))
+  delete process.env.FAKE_AGY_APPEND
+
+  const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
+  const turnedError = turned.find(event => event.event === "error")?.data?.error
+  check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
+    turnedError?.type === "invalid_request_error" && turnedError.message.includes("answered 429 to this system prompt") &&
+    turnedError.message.includes("RFC 2119") && !/quota or rate limit reached/.test(turnedError.message), JSON.stringify(turnedError))
+  const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
+  const quotaError = quota.find(event => event.event === "error")?.data?.error
+  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error", JSON.stringify(quotaError))
+}
+
 {
   process.env.AGY_BRIDGE_START_TIMEOUT_MS = "40"
   process.env.FAKE_AGY_INIT_MODE = "slow"
@@ -1618,6 +1676,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
       { type: "text", text: "tool.call hook additional context: lowercase-hook-context" },
       { type: "text", text: "PostToolUse:Bash hook additional context: hook-head\n\n# Environment update\n - Primary working directory: /remote-wsl/project/subdir" },
       { type: "text", text: "The user hasn't heard from you in a while." },
+      { type: "text", text: "You are Codex, a coding agent based on GPT-5." },
     ],
   })
   const response = await callFetch(second)
@@ -1634,6 +1693,9 @@ for (const location of ["inline", "system", "developer", "user"]) {
     mcpText.includes("# Environment update") &&
     mcpText.includes("hasn't heard from you") &&
     !mcpText.includes("hook success: Success"), mcpText)
+  check("#980 a turned-away line in a system notice beside a tool result is broken up",
+    !mcpText.includes("You are Codex, a coding agent based on GPT-5") &&
+    mcpText.replaceAll("\u200b", "").includes("You are Codex, a coding agent based on GPT-5."), mcpText)
 }
 
 {
