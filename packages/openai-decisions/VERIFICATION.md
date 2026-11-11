@@ -11,7 +11,7 @@ The revision addresses the six requests in
   Duplicate, missing and unrequested answers still fail validation.
 - Omitted, null and blank System One instructions receive a non-empty default.
 - The package is `@magpie-community/opencode-openai-decisions-auth`, with an
-  HTTPS icon, a single-line registry entry and English code comments.
+  inline SVG data icon, a single-line registry entry and English code comments.
 - README, registry summaries, changelog and notice reflect the API-key-only
   behavior. Third-party provider repository references are removed.
 
@@ -29,10 +29,24 @@ They cover all three question types, partial/all refusals, missing or invalid
 ordinary answers, structured evidence, defaults, account changes, sign-out,
 errors, cancellation and loader compatibility.
 
-Full community checks and current-main integration are recorded in the revision
-commit body and PR description. A package-only test run does not establish a
-full-repository pass. Live OpenCode decision workflows and Windows/Linux
-execution have not been verified.
+### Current-main integration
+
+The full suite at `cdbfa0b` rebased onto `f8a52a2` completed with
+**8,073 passed, 9 skipped, 0 failed** on Bun 1.4.4. The test HOME was an
+isolated directory under macOS's native temporary root, outside the Git
+checkout. Skipped optional/live/platform checks remain unverified.
+
+The whole-community loader checker passed all **56** checks. Magpie's sandbox
+harness listed this provider with one model and no sign-in or vendor request.
+The package contains ten files and excludes the removed credential reader;
+credential/private-data scans, local Markdown links and the JSON request
+example passed.
+
+The final metadata/documentation follow-up embeds an SVG data icon and places
+the registry entry beside the API-key providers. Focused tests and the loader
+checker are rerun after those changes; runtime modules remain identical to the
+full-suite run. Live OpenCode decision workflows and Windows/Linux execution
+have not been verified.
 
 ## Earlier local gateway checks — 2026-11-05
 

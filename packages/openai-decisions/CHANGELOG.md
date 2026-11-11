@@ -7,5 +7,5 @@
 - Use standard API-key sign-in and the host's selected-account auth; remove direct reads of Magpie's credential store.
 - Omit per-question refusals while preserving other answers, and supply non-empty default instructions.
 - Preserve upstream errors and cancellation; reject unsupported or invalid ordinary request/answer shapes.
-- Use the community provider package name, HTTPS icon and canonical OpenCode compatibility bridge.
+- Use the community provider package name, inline SVG icon and canonical OpenCode compatibility bridge.
 - Document installation, credential ownership, classifier setup, quota handling and verification limits.

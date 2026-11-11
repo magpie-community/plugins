@@ -364,6 +364,8 @@ Each package is a folder under `packages/<name>/`:
     - `loader(getAuth, provider)` returns what the AI SDK is given:
       `baseURL`, `apiKey`, `headers` and a `fetch` that signs each request
       and refreshes the token (saving it with `client.auth.set`).
+    - Keep Magpie's provider credentials owned by the host: use `getAuth`
+      for the selected account.
   - A provider that models.dev doesn't list is declared in a `config` hook
     that sets `config.provider[<id>] = { name, npm, api, models }`. The npm
     field names the AI SDK package the models speak:
