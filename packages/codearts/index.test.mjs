@@ -4538,10 +4538,38 @@ async function rewriteIde(file, value) {
   const db = await x.openSqlite(file)
   sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
   db.close()
-  // a clock coarse enough to give the same mtime still sees the size or inode move
-  const t = new Date(Date.now() + 5000)
+  // each rewrite strictly later than the one before: two within one
+  // millisecond would otherwise share an mtime
+  lastIdeWrite = Math.max(Date.now() + 5000, lastIdeWrite + 1000)
+  const t = new Date(lastIdeWrite)
   fs.utimesSync(file, t, t)
 }
+let lastIdeWrite = 0
+
+test("the IDE's file rewritten in one clock tick, at the same size, is read again", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  // a clock that gives every write the same time
+  const t = new Date(2000000000000)
+  fs.utimesSync(fx.file, t, t)
+  const before = fs.statSync(fx.file)
+  const read = x.ideReader(fx.file)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+  // the same file, the same time: no read
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+  // the IDE writes a key of the same length into the same page
+  const db = await x.openSqlite(fx.file)
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, ideValue(ideOrigin({ accessKey: "IDEAK2" })))
+  db.close()
+  fs.utimesSync(fx.file, t, t)
+  const after = fs.statSync(fx.file)
+  assert.equal(after.size, before.size)
+  assert.equal(after.mtimeMs, before.mtimeMs)
+  assert.equal(after.ino, before.ino)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK2")
+  // a file that can't be read is unknown, never the last read
+  fs.rmSync(fx.file)
+  assert.equal((await read()).cred, undefined)
+})
 
 test("an international account chats, reads and renews on its own station only", async () => {
   const fx = await ideFixture({ value: ideValue(ideOrigin()) })

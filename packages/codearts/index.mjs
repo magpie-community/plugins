@@ -2882,9 +2882,46 @@ async function readIdeCredential(file, { tmp = os.tmpdir() } = {}) {
 }
 
 /**
+ * A digest of `file`'s bytes, read in pieces: `""` when there is no such file,
+ * `null` when it couldn't be read (so nothing is taken as unchanged).
+ */
+function fileDigest(file) {
+  let fd
+  try {
+    fd = fs.openSync(file, "r")
+  } catch (e) {
+    return e?.code === "ENOENT" ? "" : null
+  }
+  try {
+    const hash = createHash("sha1")
+    const buf = Buffer.allocUnsafe(1 << 20)
+    let total = 0
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null)
+      if (n === 0) break
+      total += n
+      // past the size a read would copy: not read, so not known to be the same
+      if (total > IDE_DB_MAX_BYTES) return null
+      hash.update(n === buf.length ? buf : buf.subarray(0, n))
+    }
+    return `${total}:${hash.digest("hex")}`
+  } catch {
+    return null
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      /* closed */
+    }
+  }
+}
+
+/**
  * A reader of the IDE's sign-in at `file`, read again only when the file
- * changed (by its size, time and inode): a renewal that finds the IDE hasn't
- * renewed yet asks again every half minute.
+ * changed: a renewal that finds the IDE hasn't renewed yet asks again every
+ * half minute. "Changed" is by its bytes and those of its -wal and -journal,
+ * not only their size, time and inode: an IDE that writes twice within one
+ * tick of the file system's clock leaves those as they were.
  */
 function ideReader(file) {
   let last = null
@@ -2892,16 +2929,17 @@ function ideReader(file) {
     let stamp = ""
     try {
       const st = fs.statSync(file)
-      stamp = `${st.size}:${st.mtimeMs}:${st.ino}`
+      if (!st.isFile()) throw new Error("not a file")
+      const main = fileDigest(file)
+      if (!main) throw new Error("unread")
+      stamp = `${st.ino}:${main}`
       for (const suffix of ["-wal", "-journal"]) {
-        try {
-          const j = fs.statSync(file + suffix)
-          stamp += `|${suffix}:${j.size}:${j.mtimeMs}`
-        } catch {
-          /* none */
-        }
+        const d = fileDigest(file + suffix)
+        if (d === null) throw new Error("unread")
+        if (d) stamp += `|${suffix}:${d}`
       }
     } catch {
+      // unknown: read it again
       stamp = ""
     }
     if (stamp && last?.stamp === stamp) return last.result
