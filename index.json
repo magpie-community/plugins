@@ -1074,6 +1074,44 @@
       "latest": "0.1.0",
       "readme": "# @magpie-community/agent-type4me\n\n[Type4Me](https://github.com/joewongjc/type4me), a macOS voice input app, as a\nmagpie agent. With this plugin Type4Me is on magpie's Agents page like the\nagents magpie ships with: pick one of magpie's models for its LLM\npost-processing in Type4Me's row.\n\n```sh\nmagpie plugin add @magpie-community/agent-type4me\n```\n\nUntil it is on npm, install it from GitHub:\n\n```sh\nmagpie plugin add github:kchen0x/magpie-agent-type4me\n```\n\nThen pick one of magpie's models in Type4Me's row, or\n`magpie type4me magpie/deepseek/deepseek-flash`. magpie writes into\n`~/Library/Application Support/Type4Me/magpie-agent.json`:\n\n```json\n{\n  \"model\": \"deepseek/deepseek-flash\",\n  \"baseURL\": \"http://127.0.0.1:3425/v1\",\n  \"apiKey\": \"magpie-…\"\n}\n```\n\nIn Type4Me, choose **Magpie (Local Gateway)** under Settings › Models and set\nit as the default. Type4Me reads the file before each dictation, so a new model\ntakes effect on the next one, with no restart.\n\n- Type4Me and Type4Me Dev share that folder: one plugin covers both.\n- Picking a model in Type4Me's own settings changes it in magpie too (Type4Me\n  runs `magpie type4me magpie/<model>`). Type4Me never changes `baseURL` or\n  `apiKey`.\n- Switching Type4Me off in magpie removes the three keys; Type4Me then talks to\n  magpie directly, with the model picked in Type4Me.\n\nType4Me works with magpie without this plugin too, listing magpie's models\nitself. The plugin adds Type4Me to magpie's Agents page, menu bar and profiles.\n\nHow agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).\n\n## Develop\n\nThe source lives at [kchen0x/magpie-agent-type4me](https://github.com/kchen0x/magpie-agent-type4me)\nand is copied to `packages/type4me` in\n[magpie-community/plugins](https://github.com/magpie-community/plugins).\n\n```sh\nbun test                                # what connect returns\nmagpie plugin add ./type4me.agent.js    # try it on your own magpie\n```\n\n`agent.config` must match `MagpieAgentFile.defaultURL` in Type4Me.\n"
     },
+    "@magpie-community/agent-wave": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-agent-wave-0.1.0.tgz",
+          "integrity": "sha512-umQklv8FgduF6z3PE/NHRy5PFzVSBbOJqpQJYc/sYubcdDzqzjCkx9y0+vrFo0p6wBTz5isEu1pf6k7jrqzY2A==",
+          "time": "2026-11-11T04:46:10.151Z",
+          "manifest": {
+            "name": "@magpie-community/agent-wave",
+            "version": "0.1.0",
+            "description": "Wave Terminal (waveterm) as a magpie agent: pick one of magpie's models for it on the Agents page",
+            "type": "module",
+            "files": [
+              "wave.agent.js",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-agent",
+              "wave",
+              "waveterm",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/wave"
+            },
+            "magpie": {
+              "agent": "./wave.agent.js",
+              "icon": "https://github.com/wavetermdev.png"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/agent-wave\n\n[Wave Terminal](https://waveterm.dev) as a magpie agent. magpie has no setup of\nits own for Wave; with this plugin it is on magpie's Agents page like the agents\nmagpie ships with.\n\n```sh\nmagpie plugin add @magpie-community/agent-wave\n```\n\nThen pick one of magpie's models in Wave's row. magpie writes one mode,\n`magpie`, into `~/.config/waveterm/waveai.json`:\n\n```json\n{\n  \"magpie\": {\n    \"display:name\": \"Magpie\",\n    \"ai:model\": \"v2ex/glm-5.3-flash\",\n    \"ai:endpoint\": \"http://127.0.0.1:3425/v1/chat/completions\",\n    \"ai:apitype\": \"openai-chat\",\n    \"ai:apitoken\": \"magpie-wave\",\n    \"ai:capabilities\": [\"tools\"]\n  }\n}\n```\n\nYour other modes and settings stay. Picking a model of your own again, or\nswitching Wave off, takes the `magpie` mode out entirely and puts your\nsettings back as they were. Wave watches its config directory, so the mode\nshows up in the dropdown right away — pick **Magpie** there to use it (or set\n`\"waveai:defaultmode\": \"magpie\"` in `~/.config/waveterm/settings.json`).\n\nWave reads its AI modes from `~/.config/waveterm` by default; on another setup\nit may use `$XDG_CONFIG_HOME/waveterm`, `$WAVETERM_CONFIG_HOME` or the legacy\n`~/.waveterm/config`. This plugin targets the default `~/.config/waveterm`.\n\nHow agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).\n"
+    },
     "@magpie-community/gateway-aelios": {
       "versions": {
         "0.1.0": {
