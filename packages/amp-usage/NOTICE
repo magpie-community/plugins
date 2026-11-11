@@ -10,3 +10,9 @@ This package independently implements CLI export caching in JavaScript and
 adapts the ledger/message reconciliation approach. It intentionally omits
 Tokscale's fallback timestamps and does not convert Amp credits to USD.
 The MIT permission notice is included in LICENSE.
+
+The Amp app icon in page/icon.svg is an unmodified official brand asset:
+https://ampcode.com/app-icon.svg
+https://ampcode.com/press-kit
+Amp branding belongs to its respective owner and is not covered by this
+package's MIT license.

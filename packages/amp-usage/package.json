@@ -36,7 +36,7 @@
     "page": {
       "title": "Amp usage",
       "file": "page/index.html",
-      "icon": "page/icon.png",
+      "icon": "page/icon.svg",
       "service": {
         "port": 3497,
         "option": "port"

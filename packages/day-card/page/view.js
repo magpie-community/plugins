@@ -273,7 +273,7 @@
       const hidden = Math.max(0, models.length - maxModels) + (Number(a.moreModels) || 0);
       return {
         name: upper(a.id ? a.name || a.id : t.noAgent),
-        icon: a.icon || "",
+        icon: a.id === "amp" ? "amp-official" : a.icon || "",
         value: money(a.cost, cur, rate),
         models: models.slice(0, maxModels).map((m) => ({ name: upper(m.model || "?"), icon: m.icon || "", value: money(m.cost, cur, rate) })),
         more: hidden ? t.more(hidden) : "",
