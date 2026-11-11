@@ -110,6 +110,7 @@ export async function startServer({
       const files = {
         "/": ["index.html", "text/html; charset=utf-8"],
         "/app.js": ["app.js", "text/javascript; charset=utf-8"],
+        "/words.js": ["words.js", "text/javascript; charset=utf-8"],
         "/style.css": ["style.css", "text/css; charset=utf-8"],
       };
       const file = files[url.pathname];

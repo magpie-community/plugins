@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  mkdir,
+  open,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCollector, acquireLock, gatewayURL } from "../lib/collector.mjs";
@@ -171,7 +178,7 @@ test("one malformed thread leaves the others' records", async (t) => {
   assert.equal(s.usage[0].calls, 1);
   assert.deepEqual(s.errors, []);
 });
-test("the gateway log is read where it grew, whole lines only", async (t) => {
+test("a gateway log line still being written waits", async (t) => {
   const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
   const log = join(h.dir, "usage.jsonl");
   const row = (patch) =>
@@ -184,6 +191,21 @@ test("the gateway log is read where it grew, whole lines only", async (t) => {
   assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
   await appendFile(log, line.slice(20) + "\n");
   assert.equal((await h.collector.run()).issues.gatewayDuplicate, 1);
+});
+test("gateway log bytes before the offset are not read again", async (t) => {
+  const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
+  const log = join(h.dir, "usage.jsonl");
+  const row = (patch) =>
+    JSON.stringify({ t: at, model: "gpt-test", in: 10, out: 20, ...patch });
+  await writeFile(log, row({ model: "gpt-tesx" }) + "\n");
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
+  // Rewritten in place to a match, same length and inode: only a reader that
+  // starts over from byte 0 would see it.
+  const fh = await open(log, "r+");
+  await fh.write(row({}), 0);
+  await fh.close();
+  await appendFile(log, row({ out: 21 }) + "\n");
+  assert.equal((await h.collector.run()).issues.gatewayDuplicate, undefined);
 });
 test("a rotated gateway log is indexed afresh", async (t) => {
   const h = await setup(t, { options: { settleSeconds: 30, sync: false } });
