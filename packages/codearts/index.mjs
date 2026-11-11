@@ -2771,6 +2771,40 @@ async function openSqlite(file) {
   return new DatabaseSync(file)
 }
 
+function ideFileHash(file, stat, { allowEmpty = false } = {}) {
+  if (!stat.isFile() || (!allowEmpty && stat.size === 0) || stat.size > IDE_DB_MAX_BYTES) return ""
+  let fd
+  try {
+    fd = fs.openSync(file, "r")
+    const hash = createHash("sha256")
+    const chunk = Buffer.alloc(64 * 1024)
+    let read
+    while ((read = fs.readSync(fd, chunk, 0, chunk.length)) > 0) hash.update(chunk.subarray(0, read))
+    return hash.digest("hex")
+  } catch {
+    return ""
+  } finally {
+    try {
+      fd?.close()
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+function ideSidecar(file) {
+  let stat
+  try {
+    stat = fs.statSync(file)
+  } catch (e) {
+    if (e?.code === "ENOENT") return null
+    throw e
+  }
+  const digest = ideFileHash(file, stat, { allowEmpty: true })
+  if (!digest) throw new Error("unreadable")
+  return { stat, digest }
+}
+
 /** The station an IDE's `stationType` names; null for one this plugin doesn't know. */
 function ideStationOf(stationType) {
   if (stationType === undefined || stationType === null || stationType === "") return STATIONS.mainland
@@ -2883,8 +2917,8 @@ async function readIdeCredential(file, { tmp = os.tmpdir() } = {}) {
 
 /**
  * A reader of the IDE's sign-in at `file`, read again only when the file
- * changed (by its size, time and inode): a renewal that finds the IDE hasn't
- * renewed yet asks again every half minute.
+ * changed (by its size, time, inode and contents): a renewal that finds the
+ * IDE hasn't renewed yet asks again every half minute.
  */
 function ideReader(file) {
   let last = null
@@ -2892,14 +2926,16 @@ function ideReader(file) {
     let stamp = ""
     try {
       const st = fs.statSync(file)
-      stamp = `${st.size}:${st.mtimeMs}:${st.ino}`
+      const digest = ideFileHash(file, st)
+      if (!digest) throw new Error("unreadable")
+      const sidecars = []
       for (const suffix of ["-wal", "-journal"]) {
-        try {
-          const j = fs.statSync(file + suffix)
-          stamp += `|${suffix}:${j.size}:${j.mtimeMs}`
-        } catch {
-          /* none */
-        }
+        const sidecar = ideSidecar(file + suffix)
+        if (sidecar) sidecars.push({ suffix, ...sidecar })
+      }
+      stamp = `${st.size}:${st.mtimeMs}:${st.ino}:${digest}`
+      for (const { suffix, stat: sidecarStat, digest: sidecarDigest } of sidecars) {
+        stamp += `|${suffix}:${sidecarStat.size}:${sidecarStat.mtimeMs}:${sidecarDigest}`
       }
     } catch {
       stamp = ""

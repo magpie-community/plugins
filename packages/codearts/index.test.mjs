@@ -4533,15 +4533,61 @@ test("an IDE sign-in is renewed by reading the IDE's file again, never by STS", 
   assert.doesNotMatch(gone.message, SECRETS)
 })
 
+test("ideReader still rereads a state file rewritten with the same size, inode and mtime", async () => {
+  const unchanged = await ideFixture({ value: ideValue(ideOrigin()) })
+  const unchangedReader = x.ideReader(unchanged.file)
+  assert.equal((await unchangedReader()).cred?.access_key_id, "IDEAK1")
+  assert.equal((await unchangedReader()).cred?.access_key_id, "IDEAK1", "an unchanged file is reused")
+
+  const changed = await ideFixture({ value: ideValue(ideOrigin()) })
+  const fixedBefore = new Date(Math.floor(Date.now() / 1000) * 1000)
+  fs.utimesSync(changed.file, fixedBefore, fixedBefore)
+  const before = fs.statSync(changed.file)
+  const reader = x.ideReader(changed.file)
+  assert.equal((await reader()).cred?.access_key_id, "IDEAK1")
+  await rewriteIde(changed.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2" })))
+  const after = fs.statSync(changed.file)
+  fs.utimesSync(changed.file, before.atime, before.mtime)
+  assert.equal(after.size, before.size, "the test keeps the collision meaningful")
+  assert.equal(after.ino, before.ino)
+  assert.equal(fs.statSync(changed.file).mtimeMs, before.mtimeMs)
+  assert.equal((await reader()).cred?.access_key_id, "IDEAK2")
+})
+
+test("ideReader still rereads a write-ahead log rewritten with the same sizes and mtimes", async () => {
+  const first = await ideFixture({ value: ideValue(ideOrigin()), wal: true })
+  const second = await ideFixture({ value: ideValue(ideOrigin({ accessKey: "IDEAK2" })), wal: true })
+  const fixedTime = new Date(Math.floor(Date.now() / 1000) * 1000)
+  fs.utimesSync(first.file, fixedTime, fixedTime)
+  fs.utimesSync(`${first.file}-wal`, fixedTime, fixedTime)
+  const mainBefore = fs.readFileSync(first.file)
+  const mainStatBefore = fs.statSync(first.file)
+  const walStatBefore = fs.statSync(`${first.file}-wal`)
+  const reader = x.ideReader(first.file)
+  assert.equal((await reader()).cred?.access_key_id, "IDEAK1")
+
+  fs.copyFileSync(`${second.file}-wal`, `${first.file}-wal`)
+  fs.utimesSync(`${first.file}-wal`, walStatBefore.atime, walStatBefore.mtime)
+  assert.deepEqual(fs.readFileSync(first.file), mainBefore, "the main database stays unchanged")
+  assert.equal(fs.statSync(first.file).size, mainStatBefore.size)
+  assert.equal(fs.statSync(first.file).mtimeMs, mainStatBefore.mtimeMs)
+  assert.equal(fs.statSync(`${first.file}-wal`).size, walStatBefore.size)
+  assert.equal(fs.statSync(`${first.file}-wal`).mtimeMs, walStatBefore.mtimeMs)
+  assert.equal((await reader()).cred?.access_key_id, "IDEAK2")
+})
+
 // The IDE writes its file again: a new state.vscdb in the same place.
 async function rewriteIde(file, value) {
   const db = await x.openSqlite(file)
   sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
   db.close()
-  // a clock coarse enough to give the same mtime still sees the size or inode move
-  const t = new Date(Date.now() + 5000)
+  // a clock coarse enough to give the same mtime still sees time move
+  lastIdeRewriteTime = Math.max(Date.now() + 5000, lastIdeRewriteTime + 1000)
+  const t = new Date(lastIdeRewriteTime)
   fs.utimesSync(file, t, t)
 }
+
+let lastIdeRewriteTime = 0
 
 test("an international account chats, reads and renews on its own station only", async () => {
   const fx = await ideFixture({ value: ideValue(ideOrigin()) })
