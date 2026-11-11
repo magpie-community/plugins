@@ -257,12 +257,21 @@ Two consequences worth knowing:
   written into the conversation as text so nothing is lost, but the agent does the calling itself.
 - **No images.** `image_url` parts become an `[image]` note.
 
-The models still write calls into the answer text sometimes — DeepSeek's `｜DSML｜invoke name="…">`
+The models still write calls into the answer text sometimes — DeepSeek's `<｜｜DSML｜｜ invoke name="…">`
 blocks, or the `<tool_call>` shape — because the request declares no tools for them to be a call to.
 That block is not an answer: the text stops where it begins, and the turn ends with an error frame
-(the stream) or a 502 (a request that isn't streamed), so magpie asks again or of another account.
-Sending it on as prose is what the agent then reads as its reply, and what the user sees as a turn
-that stops inside a tag.
+(the stream) or a 502 (a request that isn't streamed). Sending it on as prose is what the agent then
+reads as its reply, and what the user sees as a turn that stops inside a tag.
+
+What magpie can do with that error depends on when it arrives. Its gateway holds a stream for
+another account only until the first content has gone out, so a reply that opens with the call fails
+over, while one that streamed prose first reaches the agent as a mid-stream error and no failover
+happens — and the same prompt tends to produce the same call on the next account too. A 502 is a
+passing status there, so the same account is asked again before another is tried.
+
+A call being shown rather than written — inside a code fence or in backticks — is prose, not a call,
+and the reply goes on. The rule is trae's, so a client quoting a file, a log or a page about the
+format is not answered with an error.
 
 Token counts are not reported: the upstream returns none, and an estimate passed off as real usage
 would make both cost and context accounting wrong. A caller that asks for `include_usage` gets the

@@ -891,7 +891,7 @@ const ENVELOPE_TAIL = 48
 // ---- a tool call the model wrote into its text -------------------------------
 // The request goes up with no tools at all (`tools: []`, see toUpstreamBody), yet
 // the models behind the assistant write calls into the text anyway: DeepSeek's
-// `｜DSML｜invoke name="…"` blocks, and the `<tool_call>` shape the other
+// `<｜｜DSML｜｜ invoke name="…">` blocks, and the `<tool_call>` shape the other
 // providers' packages already read. Nothing here can run one, so a block that
 // reaches the client is not an answer — it is the raw protocol, which the agent
 // reads as prose and the user sees as garbage (measured 2026-11-11: three turns
@@ -901,27 +901,61 @@ const ENVELOPE_TAIL = 48
 // the same way trae (plugins#38) and qoder (plugins#132) treat a call that
 // cannot be honoured: a 200 with the block as text is something nothing can fail
 // over on.
+//
+// What magpie can do with that error depends on when it arrives, which is worth
+// knowing before choosing this over sending the block on: the gateway holds a
+// stream for another account only until the first content has gone out. A reply
+// that opens with the call therefore fails over; one that streamed prose first
+// reaches the agent as a mid-stream error, with no failover at all, and the same
+// prompt tends to produce the same call on the next account too.
 const TEXT_CALL_OPEN = new RegExp(
   [
-    // DeepSeek's, with one or two bars on each side (the observed reply wrote
-    // <｜｜DSML｜｜).
+    // DeepSeek's, with the bars on each side counted once or twice (the
+    // observed reply wrote <｜｜DSML｜｜).
     String.raw`<\s*\/?\s*[|｜][\s|｜]*DSML[\s|｜]*`,
+    // <tool_call> and <toolcall>. `<tool_call_id>` is not one: `_` is a word
+    // character, so the boundary fails there.
     String.raw`<tool_?call\b`,
-    String.raw`<toolcall\b`,
     String.raw`<function_calls>`,
     String.raw`<function=\w`,
     String.raw`<antml:function_calls>`,
     String.raw`<antml:invoke\s+name\s*=`,
   ].join("|"),
+  "i",
 )
 
 /**
- * Where the first text-form tool call begins in `s`, or -1. An opening tag is
- * enough: a block cut short is still a call, never prose.
+ * Where the first text-form tool call begins in `s`, or -1.
+ *
+ * `s` is what has arrived, and while the reply is still streaming that is the
+ * reply minus its tail, so it can end on any character. A match ending exactly
+ * there is not trusted: `<tool_call` is what `<tool_calls>` looks like on its
+ * way in, and `\b` fires at the end of any string, so latching on one would cut
+ * an answer that merely mentions the tag. A tag with text after it is one; at
+ * `final` the text as it stands is all there will be, and an opener the stream
+ * ended inside is a call cut short rather than prose.
  */
-function textCallAt(s) {
+function textCallAt(s, final = false) {
   const m = s.match(TEXT_CALL_OPEN)
-  return m ? m.index : -1
+  if (!m) return -1
+  return final || m.index + m[0].length < s.length ? m.index : -1
+}
+
+/**
+ * Whether `s` ends inside a code fence or inline code: a tag there is being
+ * shown, not written. The rule is trae's (packages/trae), so a client that
+ * quotes a file, a log or a page about the format is not answered with an error.
+ */
+function quoted(s) {
+  if ((s.match(/```/g)?.length ?? 0) % 2) return true
+  const line = s.slice(s.lastIndexOf("\n") + 1).replace(/```/g, "")
+  return (line.match(/`/g)?.length ?? 0) % 2 === 1
+}
+
+/** Where a call begins in a reply whose text is all here, or -1 when it is prose. */
+function textCallIn(s) {
+  const at = textCallAt(s, true)
+  return at >= 0 && !quoted(s.slice(0, at)) ? at : -1
 }
 
 /**
@@ -947,18 +981,24 @@ const TEXT_CALL_MARKS = [
   "<function=",
   "<antml:function_calls>",
   "<antml:invoke ",
-  "<invoke name=",
 ]
 
 /**
  * How much of the tail from the last `<` has to be held back because it may be
  * the start of an opener: `-1` when the tail can go out as it stands.
+ *
+ * Two cases. The tail can still grow into one (a prefix of a mark: `<`, `<|`,
+ * `<tool_cal`), or it already is one that has nothing after it yet (`＜｜｜DSML｜｜ `
+ * — the regex's trailing blanks take the space, so there is no settled match,
+ * and sending it would put the opener itself out as prose).
  */
 function textCallHold(s) {
   const at = s.lastIndexOf("<")
   if (at < 0) return -1
-  const tail = s.slice(at).toLowerCase()
-  return TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(tail)) ? at : -1
+  const tail = s.slice(at)
+  if (textCallAt(tail, true) === 0) return at
+  const low = tail.toLowerCase()
+  return TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(low)) ? at : -1
 }
 
 /** A call the model wrote as text, with nothing left to send. */
@@ -1216,12 +1256,15 @@ function createAnswerExtractor() {
    * Nothing after that point is the answer: it is the call, and OrcaTerm was
    * sent no tools for it to be a call to. Holding it back is also what keeps a
    * half-arrived tag from going out — the whole point is that the client never
-   * sees `＜｜｜DSML｜｜` as prose.
+   * sees `＜｜<｜place▁holder▁no▁572｜>｜` as prose.
+   *
+   * What is in a code fence or in backticks is being shown, not written, so a
+   * quoted tag is ordinary text and the reply goes on (trae's rule).
    */
   const answerCut = () => {
     const want = answerSoFar()
-    const at = textCallAt(want)
-    if (at >= 0) {
+    const at = textCallAt(want, final)
+    if (at >= 0 && !quoted(want.slice(0, at))) {
       callAt = at
       return want.slice(0, at)
     }
@@ -1565,32 +1608,39 @@ function upstreamToOpenAI(upstreamBody, { model, pacer }) {
         // has to go out before the "thinking but no text" fallback decides there
         // was no text at all.
         const held = skipReasoningFallback ? "" : answer.finish()
-        if (held) {
-          push(chunk({ content: held }))
-          emitText += held.length
-        }
         // A tool call the model wrote as text: the answer stops where it begins
         // and the turn ends as an error frame, so magpie asks again or of another
         // account. Sent on as text it would be prose that runs into
         // `＜｜｜DSML｜｜ invoke …` — neither an answer nor a call (plugins#38,
         // plugins#132; orcaterm had no reader at all).
-        const written = skipReasoningFallback ? "" : answer.textCall()
-        if (written) {
-          closed = true
-          push(`data: ${JSON.stringify({ error: { message: `OrcaTerm: ${written}`, type: "api_error", code: "text_tool_call" } })}\n\n`)
-          controller.close()
-          return
-        }
+        let written = skipReasoningFallback ? "" : answer.textCall()
+        let tail = held
         // Upstream sent thinking but no text: turn the thinking into text
         // before closing, so the client doesn't show a blank answer.
         // The error path (skipReasoningFallback) must not — otherwise the error
         // text is pushed out by the thinking, and what the user finally sees is
         // "let me think" instead of "quota used up".
-        // Thinking can be the envelope too (#564): its answer is the text.
-        if (!skipReasoningFallback && emitText === 0 && sentReasoning) {
+        // Thinking can be the envelope too (#564): its answer is the text, and
+        // it can carry the call as well, so it passes the same guard.
+        if (!skipReasoningFallback && emitText === 0 && !written && !tail && sentReasoning) {
           const text = answerOf(sentReasoning) || sentReasoning
-          push(chunk({ content: text }))
-          emitText = text.length
+          const at = textCallIn(text)
+          if (at >= 0) {
+            tail = text.slice(0, at)
+            written = TEXT_CALL
+          } else {
+            tail = text
+          }
+        }
+        if (tail) {
+          push(chunk({ content: tail }))
+          emitText += tail.length
+        }
+        if (written) {
+          closed = true
+          push(`data: ${JSON.stringify({ error: { message: `OrcaTerm: ${written}`, type: "api_error", code: "text_tool_call" } })}\n\n`)
+          controller.close()
+          return
         }
         closed = true
         push(chunk({}, reason))
@@ -1769,9 +1819,14 @@ async function upstreamToJSON(upstreamBody, { model, pacer }) {
   // magpie asks again on, not a 200 whose answer is the raw protocol.
   const written = extractor.textCall()
   if (written) return openaiError(502, `OrcaTerm: ${written}`, "text_tool_call")
-  // An empty text can't go up blank: the thinking is used first, then a note
+  // An empty text can't go up blank: the thinking is used first, then a note.
+  // The thinking carries the call too, so it passes the same guard.
   let finalContent = visible.trimEnd()
-  if (!finalContent && reasoning) finalContent = answerOf(reasoning).trimEnd() || reasoning
+  if (!finalContent && reasoning) {
+    const text = answerOf(reasoning).trimEnd() || reasoning
+    if (textCallIn(text) >= 0) return openaiError(502, `OrcaTerm: ${TEXT_CALL}`, "text_tool_call")
+    finalContent = text
+  }
   if (!finalContent) finalContent = "(OrcaTerm returned an empty reply)"
   const message = { role: "assistant", content: finalContent }
   if (reasoning) message.reasoning_content = reasoning
@@ -2516,6 +2571,8 @@ export const _internal = {
   createAnswerExtractor,
   textCallAt,
   textCallHold,
+  textCallIn,
+  quoted,
   TEXT_CALL,
   csrfCode,
   parseTicket,

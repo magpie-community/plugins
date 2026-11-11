@@ -28,7 +28,8 @@ const CALL = [
   "```",
 ].join("\n")
 
-const frame = (content) => `data: ${JSON.stringify({ content, reasoningContent: "", type: "ai", code: 0 })}\n\n`
+const frame = (content, reasoningContent = "") =>
+  `data: ${JSON.stringify({ content, reasoningContent, type: "ai", code: 0 })}\n\n`
 
 const sse = (frames) =>
   new ReadableStream({
@@ -115,6 +116,69 @@ test("a reply that ends on < keeps it", async () => {
   const { content, error } = await asked("a <")
   expect(content).toBe("a <")
   expect(error).toBeNull()
+})
+
+// The 48-char envelope hold makes what's judged end on an arbitrary character,
+// and `<tool_call` is what `<tool_calls>` looks like on its way in: a word
+// boundary at the end of that window used to latch and kill the answer
+// (yetone's review). Every frame size, and the sentence naming the tag.
+const MENTIONS = "The response carries a `<tool_calls>` array, and the client reads it before it dispatches anything."
+for (const size of [1, 3, 47, 4096]) {
+  test(`a tag-shaped word in prose survives ${size}-character frames`, async () => {
+    const res = _internal.upstreamToOpenAI(sse(pieces(MENTIONS, size).map((c) => frame(c))), { model: "m" })
+    const { content, error } = read(await res.text())
+    expect(content).toBe(MENTIONS)
+    expect(error).toBeNull()
+  })
+}
+
+test("and the same sentence is not cut by the non-streamed path", async () => {
+  const res = await _internal.upstreamToJSON(sse([frame(MENTIONS)]), { model: "m" })
+  expect(res.status).toBe(200)
+  expect((await res.json()).choices[0].message.content).toBe(MENTIONS)
+})
+
+// A call being shown, not written: inside a code fence or inline code it is
+// prose, and trae's reader has always treated it that way (yetone's review).
+const FENCED = [
+  "Here is the format:",
+  "",
+  "```xml",
+  '<tool_call>{"name":"read","arguments":{"path":"a"}}</tool_call>',
+  "```",
+  "",
+  "That is all.",
+].join("\n")
+
+for (const size of [1, 5, 4096]) {
+  test(`a fenced call is shown, not refused, in ${size}-character frames`, async () => {
+    const res = _internal.upstreamToOpenAI(sse(pieces(FENCED, size).map((c) => frame(c))), { model: "m" })
+    const { content, error } = read(await res.text())
+    expect(content).toBe(FENCED)
+    expect(error).toBeNull()
+  })
+}
+
+test("a call in backticks is shown too", async () => {
+  const text = "Use `<tool_call>` to call a tool.\n"
+  const { content, error } = await asked(text)
+  expect(content).toBe(text)
+  expect(error).toBeNull()
+})
+
+test("a fenced call is shown by the non-streamed path as well", async () => {
+  const res = await _internal.upstreamToJSON(sse([frame(FENCED)]), { model: "m" })
+  expect(res.status).toBe(200)
+  expect((await res.json()).choices[0].message.content).toBe(FENCED)
+})
+
+// Thinking is turned into the answer when no text came, so a call carried only
+// as thinking must not be handed over as prose either.
+test("a call that arrives only as thinking still ends the turn", async () => {
+  const res = _internal.upstreamToOpenAI(sse([frame("", CALL)]), { model: "m" })
+  const { content, error } = read(await res.text())
+  expect(content).toBe("")
+  expect(error?.code).toBe("text_tool_call")
 })
 
 // The whole reply as one non-streamed body: magpie asks again on a 502.
