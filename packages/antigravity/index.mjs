@@ -202,7 +202,25 @@ async function call(s, base, method, body, headers = {}, signal) {
 const companion = (p) => (typeof p === "string" ? p : isObj(p) && typeof p.id === "string" ? p.id : "")
 
 function tiersOf(load) {
-  return { tier: load?.currentTier?.id ?? "", paid: load?.paidTier?.id ?? "" }
+  return { tier: load?.currentTier?.id ?? "", paid: load?.paidTier?.id ?? "", credits: creditsOf(load) }
+}
+
+// CREDIT is the credit type Google One plans (AI Pro, AI Ultra) buy for use
+// after a plan's own quota is used up: the app's "Use AI Credits"
+const CREDIT = "GOOGLE_ONE_AI"
+
+// creditsOf says whether a loadCodeAssist reply gives the account credits
+// above the least amount that can pay for a request
+function creditsOf(load) {
+  for (const c of load?.paidTier?.availableCredits ?? []) {
+    if (c?.creditType !== CREDIT) continue
+    // an amount the reply leaves out is not a lack of one
+    if (c.creditAmount == null) return true
+    const have = Number(c.creditAmount)
+    const need = Number(c.minimumCreditAmountForUsage ?? 0)
+    if (Number.isFinite(have) && have > 0 && (!Number.isFinite(need) || have >= need)) return true
+  }
+  return false
 }
 
 // planOf is the plan a loadCodeAssist reply names: the paid tier's name,
@@ -240,14 +258,14 @@ async function resolveProject(s) {
     err = e
   }
   if (err instanceof SignedOut) throw err
-  const { tier, paid } = tiersOf(load)
+  const { tier, paid, credits } = tiersOf(load)
   if (s.project) {
-    if (err) return { id: s.project, plan: "", tier: "", paid: "", at: Date.now() }
-    return { id: s.project, plan: planOf(load), tier, paid, at: Date.now() }
+    if (err) return { id: s.project, plan: "", tier: "", paid: "", credits: false, at: Date.now() }
+    return { id: s.project, plan: planOf(load), tier, paid, credits, at: Date.now() }
   }
   if (err) throw err
   const own = companion(load.cloudaicompanionProject)
-  if (own) return { id: own, plan: planOf(load), tier, paid, at: Date.now() }
+  if (own) return { id: own, plan: planOf(load), tier, paid, credits, at: Date.now() }
   const t = { ...defaultTier(load) }
   if (!t.id || t.id === "legacy-tier") t.id = "free-tier"
   const ua = await userAgent()
@@ -260,7 +278,7 @@ async function resolveProject(s) {
     const why = (load.ineligibleTiers ?? []).find((x) => x?.reasonMessage)?.reasonMessage
     throw new Error(why ? "Antigravity won't serve this Google account: " + why : "Antigravity hasn't set this Google account up (it gave no project); sign in to the Antigravity app with it once, then try again")
   }
-  return { id, plan: t.name ?? "", tier: t.id, paid, at: Date.now() }
+  return { id, plan: t.name ?? "", tier: t.id, paid, credits, at: Date.now() }
 }
 
 async function project(s) {
@@ -274,9 +292,9 @@ async function project(s) {
   // the tiers, read again every hour: a plan bought or lapsed since
   try {
     const load = await call(s, PROD, "loadCodeAssist", LOAD_BODY)
-    const { tier, paid } = tiersOf(load)
+    const { tier, paid, credits } = tiersOf(load)
     if (tier || paid) {
-      p = { ...p, tier, paid }
+      p = { ...p, tier, paid, credits }
       const pl = planOf(load)
       if (pl) p.plan = pl
     }
@@ -1078,10 +1096,11 @@ function sessionOf(req) {
   return "-" + n.toString()
 }
 
-function envelope(req, sent, projectID) {
+function envelope(req, sent, projectID, credits = false) {
   return {
     model: sent,
     project: projectID,
+    ...(credits ? { enabled_credit_types: [CREDIT] } : {}),
     userAgent: "antigravity",
     requestType: "agent",
     requestId: "agent-" + crypto.randomBytes(6).toString("hex"),
@@ -1149,7 +1168,7 @@ const RESPONSE_HEADERS = { "content-type": "text/event-stream", "cache-control":
 
 // complete sends a Gemini request at url (…/models/<id>:<method>) to
 // Antigravity for the account s
-async function complete(s, url, init) {
+async function complete(s, url, init, magpie) {
   const m = /\/models\/([^/:?]+):(streamGenerateContent|generateContent|countTokens)/.exec(url)
   if (!m) return errorResponse(404, `Antigravity: no such API: ${url}`)
   const model = decodeURIComponent(m[1])
@@ -1179,12 +1198,25 @@ async function complete(s, url, init) {
     return errorResponse(502, e.message ?? String(e))
   }
   const stream = method === "streamGenerateContent"
-  const res = await fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": await userAgent() },
-    body: JSON.stringify(envelope(req, sent, l.project.id)),
-    signal: init?.signal,
-  })
+  const ua = await userAgent()
+  const send = (credits) =>
+    fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": ua },
+      body: JSON.stringify(envelope(req, sent, l.project.id, credits)),
+      signal: init?.signal,
+    })
+  let res = await send(false)
+  if (res.status === 429 && l.project.credits && usesCredits(magpie) && !turnsAway(system)) {
+    // the plan's quota is used up: the app asks before it spends AI
+    // credits, and the switch is that answer. Credits are asked for only
+    // after a refusal, so a request the plan covers never spends one.
+    await res.body?.cancel().catch(() => {})
+    const again = await send(true)
+    if (again.ok) {
+      res = again
+    }
+  }
   if (!res.ok) {
     const text = await res.text()
     const msg = apiError(text, res.status)
@@ -1196,10 +1228,38 @@ async function complete(s, url, init) {
       // what Antigravity answered (a 429), not that this is a channel
       return errorResponse(400, `Antigravity answered 429 to this system prompt: ${msg} — ${hint(system)}`)
     }
+    if (res.status === 429 && l.project.credits && !usesCredits(magpie)) {
+      return new Response(withNote(text, CREDITS_NOTE), { status: 429, headers: { "content-type": "application/json" } })
+    }
     return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } })
   }
   if (stream) return new Response(unwrap(res.body), { status: 200, headers: RESPONSE_HEADERS })
   return new Response(JSON.stringify(await whole(res)), { status: 200, headers: { "content-type": "application/json" } })
+}
+
+// ---- Google AI credits ----------------------------------------------------------------------
+
+// CREDITS_OPTION is magpie's switch for the provider: off by default, since
+// credits are money
+const CREDITS_OPTION = "use-ai-credits"
+const CREDITS_NOTE =
+  "this account has Google AI credits; turn on the Use AI credits switch in magpie's Antigravity editor to spend them when the plan's quota is used up, as the app's Use AI Credits does"
+
+function usesCredits(magpie) {
+  try {
+    return magpie?.option?.(PROVIDER, CREDITS_OPTION) === true
+  } catch {
+    return false
+  }
+}
+
+// withNote is an error body with a note added to its message
+function withNote(text, note) {
+  const j = parse(text)
+  if (isObj(j) && isObj(j.error) && typeof j.error.message === "string") {
+    return JSON.stringify({ ...j, error: { ...j.error, message: j.error.message + " — " + note } })
+  }
+  return text
 }
 
 // whole is a stream read to its end, as one generateContent reply
@@ -1561,7 +1621,7 @@ async function importAccount(inputs) {
 
 // ---- the plugin ---------------------------------------------------------------------------
 
-export async function AntigravityAuthPlugin({ client } = {}) {
+export async function AntigravityAuthPlugin({ client, magpie } = {}) {
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -1592,6 +1652,16 @@ export async function AntigravityAuthPlugin({ client } = {}) {
     },
     auth: {
       provider: PROVIDER,
+      // magpie's switches for the provider, read at each request
+      options: [
+        {
+          key: CREDITS_OPTION,
+          label: "Use AI credits",
+          description: "When the plan's quota for a model is used up, spend the account's Google AI credits on the request, as the Antigravity app's Use AI Credits does. Off: the request fails with the quota's 429.",
+          labels: { zh: "使用 AI 额度" },
+          descriptions: { zh: "套餐的模型额度用完后，用账号的 Google AI 积分继续请求，同 Antigravity 应用里的 Use AI Credits。关闭时请求以额度 429 失败。" },
+        },
+      ],
       methods: [
         { type: "oauth", label: "Sign in with Google (browser)", authorize: signIn },
         {
@@ -1611,7 +1681,7 @@ export async function AntigravityAuthPlugin({ client } = {}) {
             if (!s) throw new Error("not signed in to Antigravity")
             const url = input instanceof Request ? input.url : String(input)
             if (input instanceof Request) init = { method: input.method, headers: input.headers, body: await input.text(), signal: input.signal, ...init }
-            return complete(s, url, init)
+            return complete(s, url, init, magpie)
           },
         }
       },
@@ -1647,6 +1717,7 @@ export const _internal = {
   imported,
   apiError,
   planOf,
+  creditsOf,
   entitlements,
   complete,
   usage,

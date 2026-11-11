@@ -169,3 +169,60 @@ test("an exported account is imported", async () => {
   expect(seen.find((s) => s.name === "token").body).toContain("refresh_token=1%2F%2Frt-c")
   expect((await m.authorize({ account: "" })).type).toBe("failed")
 })
+
+// An Ultra or Pro account's quota for a model is used up: the app asks
+// before it spends Google AI credits, and magpie's switch is that answer.
+const withCredits = { cloudaicompanionProject: "ag-proj", currentTier: { id: "standard-tier" }, paidTier: { id: "g1-ultra-tier", name: "Google AI Ultra", availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "25000", minimumCreditAmountForUsage: "50" }] } }
+const spentQuota = () => new Response(JSON.stringify({ error: { code: 429, message: "You have exhausted your capacity on this model.", status: "RESOURCE_EXHAUSTED" } }), { status: 429, headers: { "content-type": "application/json" } })
+const credited = (s) => (s.json.enabled_credit_types ? sse({ candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }] }) : spentQuota())
+
+async function creditsFetch(on) {
+  const p = await AntigravityAuthPlugin({ magpie: { option: (id, key) => (id === "antigravity" && key === "use-ai-credits" ? on : undefined) } })
+  const l = await p.auth.loader(async () => auth())
+  return { f: l.fetch, p }
+}
+
+test("with Use AI credits on, a request the quota refuses is asked again with the account's credits", async () => {
+  const seen = fake({ loadCodeAssist: withCredits, fetchAvailableModels: models, streamGenerateContent: credited })
+  const { f } = await creditsFetch(true)
+  const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  const sent = seen.filter((s) => s.name === "streamGenerateContent")
+  expect(sent.length).toBe(2)
+  expect(sent[0].json.enabled_credit_types).toBeUndefined()
+  expect(sent[1].json.enabled_credit_types).toEqual(["GOOGLE_ONE_AI"])
+})
+
+test("a request the quota covers never asks for credits", async () => {
+  const seen = fake({ loadCodeAssist: withCredits, fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
+  const { f } = await creditsFetch(true)
+  await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+  expect(seen.filter((s) => s.name === "streamGenerateContent").map((s) => s.json.enabled_credit_types)).toEqual([undefined])
+})
+
+test("with the switch off, a refused request is not asked again, and the 429 says what would spend the credits", async () => {
+  const seen = fake({ loadCodeAssist: withCredits, fetchAvailableModels: models, streamGenerateContent: credited })
+  const { f } = await creditsFetch(false)
+  const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+  expect(res.status).toBe(429)
+  expect(seen.filter((s) => s.name === "streamGenerateContent").length).toBe(1)
+  const j = await res.json()
+  expect(j.error.message).toContain("exhausted your capacity")
+  expect(j.error.message).toContain("Use AI credits")
+})
+
+test("an account with no credits is not asked again, with the switch on", async () => {
+  const seen = fake({ loadCodeAssist: { cloudaicompanionProject: "ag-proj", paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } }, fetchAvailableModels: models, streamGenerateContent: credited })
+  const { f } = await creditsFetch(true)
+  const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+  expect(res.status).toBe(429)
+  expect(seen.filter((s) => s.name === "streamGenerateContent").length).toBe(1)
+  expect((await res.json()).error.message).not.toContain("Use AI credits")
+})
+
+test("the plugin offers the switch, off unless set", async () => {
+  const p = await AntigravityAuthPlugin({})
+  expect(p.auth.options.map((o) => o.key)).toEqual(["use-ai-credits"])
+  expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "10", minimumCreditAmountForUsage: "50" }] } })).toBe(false)
+  expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", minimumCreditAmountForUsage: "50" }] } })).toBe(true)
+})

@@ -107,6 +107,7 @@ The plugin also changes the request itself, as the built-in did:
 | What Antigravity answers | What the plugin answers |
 |---|---|
 | 429 "Resource has been exhausted" to a system prompt with a turned-away line | 400 "turned this request away as from an unapproved channel", with what to change (it isn't a quota, so nothing is rested) |
+| 429 from a plan's quota, the account having Google AI credits | with the Use AI credits switch on (off by default), the request is asked again once with `enabled_credit_types: ["GOOGLE_ONE_AI"]`, as the app's Use AI Credits does; with it off, the 429 says the switch would spend them |
 | 401 | 401, sign-in kept |
 | 404 | 404 "model … not found" |
 | Refresh refused | 401, `x-magpie-sign-in: expired` |
