@@ -155,9 +155,6 @@ function groupedModels(models) {
     if (group) return group
     const aa = base(a), bb = base(b)
     if (aa === bb) return Number(a.endsWith("-fast")) - Number(b.endsWith("-fast"))
-    // Carbon succeeded Argon; their names have no comparable version number.
-    if (aa === "gemini-4-carbon" && bb === "gemini-4-argon") return -1
-    if (aa === "gemini-4-argon" && bb === "gemini-4-carbon") return 1
     return bb.localeCompare(aa, "en", { numeric: true })
   }))
 }

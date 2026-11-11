@@ -14,8 +14,11 @@ test("company ordering is opt-in, preserves metadata, and is read on each model 
   let enabled = false
   const hooks = await setup({ option: (_, key) => key === "group_models_by_company" && enabled })
   expect(hooks.auth.options.find((o) => o.key === "group_models_by_company")).toBeDefined()
-  const original = await lists(hooks)
-  expect(await lists(await setup())).toEqual(original)
+  const original = await lists(await setup())
+  const originalOrder = original.map((models) => Object.keys(models))
+  // Anchor the baseline independently of the switch: always-on grouping must fail.
+  expect(originalOrder[0][0]).toBe("claude-fable-5.1")
+  expect((await lists(hooks)).map((models) => Object.keys(models))).toEqual(originalOrder)
   enabled = true
   const grouped = await lists(hooks)
   expect(Object.keys(grouped[0])).toEqual(Object.keys(grouped[1]))
@@ -39,9 +42,15 @@ test("company ordering is opt-in, preserves metadata, and is read on each model 
     }
   }
   enabled = false
-  expect(await lists(hooks)).toEqual(original)
+  expect((await lists(hooks)).map((models) => Object.keys(models))).toEqual(originalOrder)
 })
 
-test("hosts whose option lookup throws retain the default order", async () => {
-  expect(await lists(await setup({ option() { throw Error("unsupported") } }))).toEqual(await lists(await setup()))
+test("absent, false, non-boolean and throwing options retain the default order", async () => {
+  const original = (await lists(await setup())).map((models) => Object.keys(models))
+  expect(original[0][0]).toBe("claude-fable-5.1")
+  const hosts = [undefined, {}, { option: 5 }, { option() { throw Error("unsupported") } },
+    ...[false, "true", 1, null].map((value) => ({ option: () => value }))]
+  for (const host of hosts) {
+    expect((await lists(await setup(host))).map((models) => Object.keys(models))).toEqual(original)
+  }
 })

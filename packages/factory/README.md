@@ -66,6 +66,8 @@ sort newest first; Fast Mode follows its base model. This groups by model
 maker, not the API hosting company. Refresh the model list after changing
 the option. It is off by default, preserving the existing order and default
 first 24 models; enabling it also changes which models occupy those slots.
+Names with the same version sort in descending natural name order, for
+example GPT-5.6 Terra before Sol and GLM-5.3-Flash before GLM-5.3.
 
 Each model is served on the one API droid uses for it:
 
