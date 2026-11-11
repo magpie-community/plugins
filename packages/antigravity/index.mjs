@@ -1207,18 +1207,31 @@ async function complete(s, url, init, magpie) {
       signal: init?.signal,
     })
   let res = await send(false)
+  let refusal
   if (res.status === 429 && l.project.credits && usesCredits(magpie) && !turnsAway(system)) {
     // the plan's quota is used up: the app asks before it spends AI
     // credits, and the switch is that answer. Credits are asked for only
     // after a refusal, so a request the plan covers never spends one.
-    await res.body?.cancel().catch(() => {})
-    const again = await send(true)
-    if (again.ok) {
+    //
+    // The refusal is read before the second ask: when that ask fails too,
+    // the refusal is what the agent is told. Its body can't be read after
+    // it was cancelled ("Body already used", a 502 on every retry).
+    refusal = await res.text()
+    let again
+    try {
+      again = await send(true)
+    } catch (e) {
+      if (init?.signal?.aborted) throw e
+    }
+    if (again?.ok) {
       res = again
+      refusal = undefined
+    } else {
+      await again?.body?.cancel().catch(() => {})
     }
   }
   if (!res.ok) {
-    const text = await res.text()
+    const text = refusal ?? (await res.text())
     const msg = apiError(text, res.status)
     if (res.status === 401) return errorResponse(401, `Antigravity: ${msg}`, "kept")
     if (res.status === 404) return errorResponse(404, `model ${sent} not found`)

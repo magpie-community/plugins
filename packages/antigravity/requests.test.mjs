@@ -193,6 +193,21 @@ test("with Use AI credits on, a request the quota refuses is asked again with th
   expect(sent[1].json.enabled_credit_types).toEqual(["GOOGLE_ONE_AI"])
 })
 
+test("when the asking with credits is refused too, the quota's 429 is what comes back, and a retry works the same", async () => {
+  const seen = fake({
+    loadCodeAssist: withCredits,
+    fetchAvailableModels: models,
+    streamGenerateContent: (s) => (s.json.enabled_credit_types ? new Response(JSON.stringify({ error: { code: 403, message: "credits refused", status: "PERMISSION_DENIED" } }), { status: 403 }) : spentQuota()),
+  })
+  const { f } = await creditsFetch(true)
+  for (let i = 0; i < 2; i++) {
+    const res = await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })
+    expect(res.status).toBe(429)
+    expect((await res.json()).error.message).toContain("exhausted your capacity")
+  }
+  expect(seen.filter((s) => s.name === "streamGenerateContent").length).toBe(4)
+})
+
 test("a request the quota covers never asks for credits", async () => {
   const seen = fake({ loadCodeAssist: withCredits, fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
   const { f } = await creditsFetch(true)
