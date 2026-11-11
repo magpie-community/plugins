@@ -119,6 +119,27 @@ test("the receipt: title, the day, its cost, then its parts", () => {
   for (const lang of Object.keys(V.TEXT)) expect(V.card(day, lang, {}, now).credit).toContain("nowdex.app")
 })
 
+test("a week, a month or all time is a receipt of its own", () => {
+  const span = { ...day, from: "2026-11-03", days: [{ date: "2026-11-03", calls: 5, tokens: 10, cost: 1 }, { date: "2026-11-07", calls: 5, tokens: 10, cost: 1 }, { date: "2026-11-08", calls: 5, tokens: 10, cost: 1 }, { date: "2026-11-09", calls: 5, tokens: 10, cost: 1 }] }
+  const w = V.card(span, "en", { span: "week" }, now)
+  expect(w.title).toBe("WEEKLY AI STATEMENT")
+  expect(w.head[0]).toEqual({ label: "PERIOD", value: "NOV 3, 2026 – NOV 9, 2026" })
+  // 4 of the 7 days had calls, and $12.345 over them
+  expect(w.stats.slice(-2)).toEqual([{ label: "ACTIVE DAYS", value: "4 / 7" }, { label: "AVG ACTIVE DAY", value: "$3.09" }])
+  expect(w.stats.map((s) => s.label)).not.toContain("VS AVERAGE DAY")
+  expect(V.card(span, "en", { span: "month" }, now).title).toBe("MONTHLY AI STATEMENT")
+  const a = V.card(span, "zh", { span: "all" }, now)
+  expect(a.title).toBe("累计 AI 账单")
+  expect(a.stats.slice(-2)[0]).toEqual({ label: "活跃天数", value: "4 天" })
+  expect(V.card({ ...span, calls: 0 }, "en", { span: "week" }, now).empty).toBe("No calls in this period.")
+  // a magpie that answers a day (no from) draws a day, never a week's title
+  expect(V.card(day, "en", { span: "week" }, now).title).toBe("DAILY AI STATEMENT")
+  // what the read is asked, and the steps of the arrows
+  expect([V.spanFrom("day", "2026-11-09"), V.spanFrom("week", "2026-11-09"), V.spanFrom("month", "2026-11-09"), V.spanFrom("all", "2026-11-09")]).toEqual(["", "2026-11-03", "2026-10-11", "all"])
+  expect([V.stepDate("week", "2026-11-09", -1, "2026-11-11"), V.stepDate("week", "2026-11-09", 1, "2026-11-11"), V.stepDate("day", "2026-11-09", 1, "2026-11-11")]).toEqual(["2026-11-02", "2026-11-11", "2026-11-10"])
+  expect([V.fileName("2026-11-09"), V.fileName("2026-11-09", "week", "2026-11-03"), V.fileName("2026-11-09", "all", "2020-01-01")]).toEqual(["magpie 2026-11-09", "magpie 2026-11-03 to 2026-11-09", "magpie all 2026-11-09"])
+})
+
 test("agents and their models by cost, each with what was left out", () => {
   const withCost = { ...day, agents: day.agents.map((a) => ({ ...a, models: a.models.map((m, i) => ({ ...m, cost: [1, 9][i] ?? 0 })) })) }
   const c = V.card(withCost, "en", {}, now)

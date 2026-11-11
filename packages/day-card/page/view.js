@@ -19,6 +19,9 @@
       noAgent: "NO AGENT NAMED",
       today: "Today", prev: "Previous day", next: "Next day", copy: "Copy image", copied: "Copied", save: "Save PNG", saved: "Saved to",
       failed: "Couldn't read usage", shareFailed: "Couldn't share the picture", update: "This card needs a newer magpie. Update magpie, then open it again.",
+      titleWeek: "WEEKLY AI STATEMENT", titleMonth: "MONTHLY AI STATEMENT", titleAll: "ALL-TIME AI STATEMENT", period: "PERIOD", activeDays: "ACTIVE DAYS", avgDay: "AVG ACTIVE DAY",
+      noCallsSpan: "No calls in this period.", spanDay: "Day", spanWeek: "Week", spanMonth: "Month", spanAll: "All", spanLabel: "Period", earlier: "Earlier", later: "Later", allTime: "All time",
+      updateSpan: "Week, month and all-time need a newer magpie. Update magpie, then open it again.",
       background: "Background", padding: "Padding", blur: "Blur", dim: "Dim", upload: "Add your own picture", imageFailed: "Couldn't use that picture", keepFailed: "Couldn't keep the background",
       "bg-none": "No background", "bg-teal": "Teal", "bg-gingham": "Gingham", "bg-grid": "Graph paper", "bg-kraft": "Kraft paper", "bg-cyan": "Cyanotype", "bg-dots": "Night dots", "bg-deck": "Deckchair stripes", "bg-linen": "Olive linen", "bg-seigaiha": "Seigaiha waves", "bg-xuan": "Xuan paper", "bg-zigzag": "Zigzag", "bg-terracotta": "Terracotta", "bg-lilac": "Lilac lines", "bg-velvet": "Green velvet", "bg-polka": "Apricot polka", "bg-alpine": "Alpine dawn", "bg-sea": "Misty shore", "bg-dunes": "Dunes", "bg-lake": "Forest lake", "bg-custom": "Your picture",
     },
@@ -35,6 +38,9 @@
       noAgent: "未标明 AGENT",
       today: "今天", prev: "前一天", next: "后一天", copy: "复制图片", copied: "已复制", save: "保存 PNG", saved: "已保存到",
       failed: "读取用量失败", shareFailed: "分享图片失败", update: "这个卡片需要更新版本的 magpie。请更新 magpie 后再打开。",
+      titleWeek: "每周 AI 账单", titleMonth: "每月 AI 账单", titleAll: "累计 AI 账单", period: "区间", activeDays: "活跃天数", avgDay: "活跃日均",
+      noCallsSpan: "这段时间没有调用。", spanDay: "日", spanWeek: "周", spanMonth: "月", spanAll: "全部", spanLabel: "统计区间", earlier: "更早", later: "更晚", allTime: "全部时间",
+      updateSpan: "周、月和全部账单需要更新版本的 magpie。请更新 magpie 后再打开。",
       background: "背景", padding: "边距", blur: "模糊", dim: "压暗", upload: "用自己的图片", imageFailed: "这张图片用不了", keepFailed: "背景没能保存",
       "bg-none": "无背景", "bg-teal": "青绿", "bg-gingham": "野餐格", "bg-grid": "方格纸", "bg-kraft": "牛皮纸", "bg-cyan": "蓝晒", "bg-dots": "夜色网点", "bg-deck": "躺椅条纹", "bg-linen": "橄榄亚麻", "bg-seigaiha": "青海波", "bg-xuan": "宣纸", "bg-zigzag": "人字纹", "bg-terracotta": "赤陶", "bg-lilac": "雾紫细线", "bg-velvet": "墨绿丝绒", "bg-polka": "杏色波点", "bg-alpine": "雪山晨光", "bg-sea": "雾中海岸", "bg-dunes": "沙丘", "bg-lake": "林间湖", "bg-custom": "自己的图片",
     },
@@ -51,6 +57,9 @@
       noAgent: "未標明 AGENT",
       today: "今天", prev: "前一天", next: "後一天", copy: "複製圖片", copied: "已複製", save: "儲存 PNG", saved: "已儲存到",
       failed: "讀取用量失敗", shareFailed: "分享圖片失敗", update: "這張卡片需要更新版本的 magpie。請更新 magpie 後再開啟。",
+      titleWeek: "每週 AI 帳單", titleMonth: "每月 AI 帳單", titleAll: "累計 AI 帳單", period: "區間", activeDays: "活躍天數", avgDay: "活躍日均",
+      noCallsSpan: "這段時間沒有呼叫。", spanDay: "日", spanWeek: "週", spanMonth: "月", spanAll: "全部", spanLabel: "統計區間", earlier: "更早", later: "更晚", allTime: "全部時間",
+      updateSpan: "週、月和全部帳單需要更新版本的 magpie。請更新 magpie 後再開啟。",
       background: "背景", padding: "邊距", blur: "模糊", dim: "壓暗", upload: "用自己的圖片", imageFailed: "這張圖片用不了", keepFailed: "背景沒能儲存",
       "bg-none": "無背景", "bg-teal": "青綠", "bg-gingham": "野餐格", "bg-grid": "方格紙", "bg-kraft": "牛皮紙", "bg-cyan": "藍曬", "bg-dots": "夜色網點", "bg-deck": "躺椅條紋", "bg-linen": "橄欖亞麻", "bg-seigaiha": "青海波", "bg-xuan": "宣紙", "bg-zigzag": "人字紋", "bg-terracotta": "赤陶", "bg-lilac": "霧紫細線", "bg-velvet": "墨綠絲絨", "bg-polka": "杏色波點", "bg-alpine": "雪山晨光", "bg-sea": "霧中海岸", "bg-dunes": "沙丘", "bg-lake": "林間湖", "bg-custom": "自己的圖片",
     },
@@ -67,6 +76,9 @@
       noAgent: "エージェント名なし",
       today: "今日", prev: "前の日", next: "次の日", copy: "画像をコピー", copied: "コピーしました", save: "PNG を保存", saved: "保存先",
       failed: "使用量を読み込めませんでした", shareFailed: "画像を共有できませんでした", update: "このカードには新しい magpie が必要です。magpie を更新してから開き直してください。",
+      titleWeek: "週間 AI 明細", titleMonth: "月間 AI 明細", titleAll: "累計 AI 明細", period: "期間", activeDays: "稼働日数", avgDay: "稼働日平均",
+      noCallsSpan: "この期間の呼び出しはありません。", spanDay: "日", spanWeek: "週", spanMonth: "月", spanAll: "全期間", spanLabel: "期間", earlier: "前へ", later: "次へ", allTime: "全期間",
+      updateSpan: "週・月・全期間には新しい magpie が必要です。magpie を更新してから開き直してください。",
       background: "背景", padding: "余白", blur: "ぼかし", dim: "暗さ", upload: "自分の画像を使う", imageFailed: "この画像は使えません", keepFailed: "背景を保存できませんでした",
       "bg-none": "背景なし", "bg-teal": "ティール", "bg-gingham": "ギンガム", "bg-grid": "方眼紙", "bg-kraft": "クラフト紙", "bg-cyan": "青写真", "bg-dots": "夜のドット", "bg-deck": "デッキチェア", "bg-linen": "オリーブリネン", "bg-seigaiha": "青海波", "bg-xuan": "宣紙", "bg-zigzag": "ジグザグ", "bg-terracotta": "テラコッタ", "bg-lilac": "ライラック", "bg-velvet": "深緑ベルベット", "bg-polka": "アプリコット水玉", "bg-alpine": "雪山の朝", "bg-sea": "霧の海辺", "bg-dunes": "砂丘", "bg-lake": "森の湖", "bg-custom": "自分の画像",
     },
@@ -83,6 +95,9 @@
       noAgent: "OHNE AGENT",
       today: "Heute", prev: "Vorheriger Tag", next: "Nächster Tag", copy: "Bild kopieren", copied: "Kopiert", save: "PNG sichern", saved: "Gesichert in",
       failed: "Nutzung nicht lesbar", shareFailed: "Bild nicht teilbar", update: "Diese Karte braucht ein neueres magpie. Aktualisiere magpie und öffne sie dann erneut.",
+      titleWeek: "WÖCHENTLICHE KI-ABRECHNUNG", titleMonth: "MONATLICHE KI-ABRECHNUNG", titleAll: "GESAMTE KI-ABRECHNUNG", period: "ZEITRAUM", activeDays: "AKTIVE TAGE", avgDay: "Ø AKTIVER TAG",
+      noCallsSpan: "In diesem Zeitraum keine Aufrufe.", spanDay: "Tag", spanWeek: "Woche", spanMonth: "Monat", spanAll: "Alle", spanLabel: "Zeitraum", earlier: "Früher", later: "Später", allTime: "Gesamte Zeit",
+      updateSpan: "Woche, Monat und Gesamt brauchen ein neueres magpie. Aktualisiere magpie und öffne die Karte dann erneut.",
       background: "Hintergrund", padding: "Rand", blur: "Weichzeichnen", dim: "Abdunkeln", upload: "Eigenes Bild wählen", imageFailed: "Dieses Bild geht nicht", keepFailed: "Hintergrund nicht gesichert",
       "bg-none": "Kein Hintergrund", "bg-teal": "Türkis", "bg-gingham": "Vichy-Karo", "bg-grid": "Millimeterpapier", "bg-kraft": "Packpapier", "bg-cyan": "Cyanotypie", "bg-dots": "Nachtpunkte", "bg-deck": "Liegestuhlstreifen", "bg-linen": "Olivleinen", "bg-seigaiha": "Seigaiha", "bg-xuan": "Xuan-Papier", "bg-zigzag": "Zickzack", "bg-terracotta": "Terrakotta", "bg-lilac": "Fliederlinien", "bg-velvet": "Grüner Samt", "bg-polka": "Aprikosenpunkte", "bg-alpine": "Alpenmorgen", "bg-sea": "Nebelküste", "bg-dunes": "Dünen", "bg-lake": "Waldsee", "bg-custom": "Eigenes Bild",
     },
@@ -170,6 +185,28 @@
     }
   }
 
+  // "NOV 5, 2026 – NOV 11, 2026": a span's dates on the receipt
+  function receiptRange(from, date, lang) {
+    return `${receiptDate(from, lang)} – ${receiptDate(date, lang)}`;
+  }
+
+  // the days a span covers: a week is the seven days ending at the date, a
+  // month the thirty, all time every day with calls up to it. `from` is
+  // what usage:day is asked ("" for a day alone)
+  const SPANS = ["day", "week", "month", "all"];
+  const SPAN_DAYS = { day: 1, week: 7, month: 30 };
+  function spanFrom(span, date) {
+    if (span === "all") return "all";
+    const n = SPAN_DAYS[span];
+    return n > 1 ? shift(date, 1 - n) : "";
+  }
+  // the date a step of the span ends on, never past today
+  function stepDate(span, date, dir, today) {
+    const n = SPAN_DAYS[span] || 1;
+    const to = shift(date, dir * n);
+    return to > today ? today : to;
+  }
+
   // when the card was drawn: "NOV 9, 2026 AT 23:04", by this computer's clock
   function issued(now, lang) {
     const p = (n) => String(n).padStart(2, "0");
@@ -243,17 +280,26 @@
       };
     });
     const hiddenAgents = Math.max(0, agents.length - maxAgents) + (Number(day.moreAgents) || 0);
+    const span = limits.span && limits.span !== "day" && day.from ? limits.span : "day";
     const stats = [
       { label: t.streak, value: t.days(streak(day.days, day.date, day.today)) },
       { label: t.requests, value: calls.toLocaleString("en-US") },
     ];
     if (errors) stats.push({ label: t.errors, value: errors.toLocaleString("en-US") });
-    stats.push({ label: t.vsAverage, value: versus(day, average(day.days, day.date)) });
+    if (span === "day") {
+      stats.push({ label: t.vsAverage, value: versus(day, average(day.days, day.date)) });
+    } else {
+      // the days of the span that had calls, and what one of them cost
+      const had = (day.days || []).filter((d) => d.date >= day.from && d.date <= day.date && Number(d.calls) > 0).length;
+      const length = span === "all" ? had : SPAN_DAYS[span];
+      stats.push({ label: t.activeDays, value: span === "all" ? t.days(had) : `${had} / ${length}` });
+      stats.push({ label: t.avgDay, value: had ? money((Number(day.cost) || 0) / had, cur, rate) : money(0, cur, rate) });
+    }
     return {
-      title: t.title,
+      title: span === "day" ? t.title : t[{ week: "titleWeek", month: "titleMonth", all: "titleAll" }[span]],
       tagline: t.tagline,
       head: [
-        { label: t.date, value: receiptDate(day.date, lang) },
+        span === "day" ? { label: t.date, value: receiptDate(day.date, lang) } : { label: t.period, value: receiptRange(day.from, day.date, lang) },
         { label: t.issued, value: issued(now, lang) },
       ],
       totalLabel: t.total,
@@ -270,14 +316,14 @@
         { label: t.hit, value: percent(hitRate(day)) },
       ],
       note: Number(day.unpriced) > 0 ? t.unpriced(Number(day.unpriced)) : "",
-      empty: calls === 0 ? t.noCalls : "",
+      empty: calls === 0 ? (span === "day" ? t.noCalls : t.noCallsSpan) : "",
       footer: t.footer,
       credit: t.credit,
     };
   }
 
   // the file a saved card is named
-  const fileName = (date) => `magpie ${date}`;
+  const fileName = (date, span, from) => (span === "all" ? `magpie all ${date}` : span && span !== "day" && from ? `magpie ${from} to ${date}` : `magpie ${date}`);
 
-  globalThis.DayView = { TEXT, langOf, text, count, money, tokensOf, hitRate, percent, shift, dateLabel, receiptDate, issued, streak, average, versus, card, fileName };
+  globalThis.DayView = { TEXT, langOf, text, count, money, tokensOf, hitRate, percent, shift, dateLabel, receiptDate, receiptRange, SPANS, spanFrom, stepDate, issued, streak, average, versus, card, fileName };
 })();

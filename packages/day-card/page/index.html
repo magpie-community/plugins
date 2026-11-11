@@ -13,6 +13,12 @@
 </head>
 <body>
 <header>
+  <div class="spans" id="spans" role="radiogroup" data-t-label="spanLabel">
+    <button type="button" role="radio" data-span="day" data-t="spanDay">Day</button>
+    <button type="button" role="radio" data-span="week" data-t="spanWeek">Week</button>
+    <button type="button" role="radio" data-span="month" data-t="spanMonth">Month</button>
+    <button type="button" role="radio" data-span="all" data-t="spanAll">All</button>
+  </div>
   <div class="days">
     <button type="button" class="step" id="prev" aria-label="Previous day" data-t-label="prev"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
     <div class="pick">

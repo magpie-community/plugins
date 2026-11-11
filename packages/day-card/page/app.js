@@ -1,5 +1,5 @@
 // The page: reads usage:day (the only read package.json declares) for the
-// day picked, draws it on a canvas as a receipt, and hands that canvas's
+// day picked, or the week, month or all time ending on it, draws it on a canvas as a receipt, and hands that canvas's
 // PNG to magpie.image to copy or save.
 (async () => {
   const V = globalThis.DayView;
@@ -8,7 +8,7 @@
   const theme = await magpie.ready;
   let lang = theme.lang;
   const zone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })();
-  const state = { date: "", day: null, icons: new Map(), loading: 0, drawn: 0, bg: B.norm(null) };
+  const state = { date: "", span: "day", day: null, icons: new Map(), loading: 0, drawn: 0, bg: B.norm(null) };
 
   // ---- words ----
   function words() {
@@ -331,7 +331,7 @@
     const n = ++state.drawn;
     const bg = state.bg;
     await fonts;
-    const c = V.card(day, lang);
+    const c = V.card(day, lang, { span: state.span });
     const icons = new Map();
     const [img] = await Promise.all([
       backdrop(bg),
@@ -404,8 +404,18 @@
   async function load(date) {
     const n = ++state.loading;
     try {
-      const day = await magpie.read("usage:day", { date: date || "", tz: zone });
+      const span = state.span;
+      const params = { date: date || "", tz: zone };
+      if (span !== "day") {
+        // a week or a month ends on a date, so today's is worked out here
+        const end = date || state.day?.today || new Date().toLocaleDateString("en-CA");
+        params.date = end;
+        params.from = V.spanFrom(span, end);
+      }
+      const day = await magpie.read("usage:day", params);
       if (n !== state.loading) return;
+      // a magpie from before spans answers one day and no `from`
+      if (span !== "day" && !day.from) throw new Error("usage:day from");
       state.day = day;
       state.date = day.date;
       status("");
@@ -413,7 +423,7 @@
       if (n !== state.loading) return;
       const m = String(e?.message || e);
       // a magpie from before usage:day refuses it as a read it doesn't have
-      status(/usage:day/.test(m) ? V.text(lang).update : `${V.text(lang).failed}: ${m}`, true, true);
+      status(m === "usage:day from" ? V.text(lang).updateSpan : /usage:day/.test(m) ? V.text(lang).update : `${V.text(lang).failed}: ${m}`, true, true);
     }
     paintBar();
     await draw();
@@ -421,10 +431,19 @@
 
   function paintBar() {
     const d = state.day;
-    $("date-text").textContent = d ? V.dateLabel(d.date, lang) : "…";
-    $("next").disabled = !d || d.date >= d.today;
-    $("today").disabled = !d || d.date === d.today;
-    $("prev").disabled = !d;
+    const t = V.text(lang);
+    const span = state.span;
+    $("date-text").textContent = !d ? "…" : span === "all" ? t.allTime : span === "day" || !d.from ? V.dateLabel(d.date, lang) : `${V.dateLabel(d.from, lang, true)} – ${V.dateLabel(d.date, lang, true)}`;
+    const all = span === "all";
+    $("next").disabled = !d || all || d.date >= d.today;
+    $("today").disabled = !d || all || d.date === d.today;
+    $("prev").disabled = !d || all;
+    $("date").disabled = all;
+    for (const [id, key] of [["prev", span === "day" ? "prev" : "earlier"], ["next", span === "day" ? "next" : "later"]]) {
+      $(id).setAttribute("aria-label", t[key]);
+      $(id).title = t[key];
+    }
+    document.querySelectorAll("#spans [data-span]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.span === span)));
   }
 
   // ---- the day menu: the days that had calls, newest first ----
@@ -472,9 +491,16 @@
   document.addEventListener("click", (e) => { if (!e.target.closest(".pick")) closeMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
 
-  $("prev").addEventListener("click", () => state.date && load(V.shift(state.date, -1)));
-  $("next").addEventListener("click", () => state.date && state.day && state.date < state.day.today && load(V.shift(state.date, 1)));
+  $("prev").addEventListener("click", () => state.date && load(V.stepDate(state.span, state.date, -1, state.day?.today || state.date)));
+  $("next").addEventListener("click", () => state.date && state.day && state.date < state.day.today && load(V.stepDate(state.span, state.date, 1, state.day.today)));
   $("today").addEventListener("click", () => load(""));
+  $("spans").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-span]");
+    if (!b || b.dataset.span === state.span) return;
+    state.span = b.dataset.span;
+    paintBar();
+    load(state.date === state.day?.today ? "" : state.date);
+  });
 
   // ---- the backdrop: a pattern, a photo from bg/, or the reader's picture ----
   const images = new Map();
@@ -732,7 +758,7 @@
     const b = $("save");
     b.disabled = true;
     try {
-      const r = await magpie.image.save(await png(), V.fileName(state.date));
+      const r = await magpie.image.save(await png(), V.fileName(state.date, state.span, state.day?.from));
       if (r?.path) status(`${V.text(lang).saved} ${r.path}`);
     } catch (e) {
       status(`${V.text(lang).shareFailed}: ${e?.message || e}`, true);
