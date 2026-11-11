@@ -58,15 +58,22 @@ test("a row that was there at launch is not this sign-in (the #847 blocking case
 })
 
 test("a new row, or an overwritten one, is this sign-in", () => {
-  // a brand-new row (creation_utc advanced)
-  let profile = fakeProfileWith([{ name: "uaa-token", creation_utc: chromiumMicros(Date.now() - 60_000) }])
-  const baseline = cookieBaseline(profile, "uaa-token", DOMAIN)
-  // Chrome overwrites in place: creation_utc stays, last_update_utc moves
-  const { Database } = require("bun:sqlite")
-  const db = new Database(join(profile, "Default", "Cookies"))
-  db.query("UPDATE cookies SET last_update_utc = ? WHERE name = 'uaa-token'").run(chromiumMicros())
-  db.close()
-  expect(profileHasNewCookie(profile, "uaa-token", baseline, DOMAIN)).toBe(true)
+  const frozenNowMs = Date.now()
+  const originalDateNow = Date.now
+  Date.now = () => frozenNowMs
+  try {
+    const profile = fakeProfileWith([{ name: "uaa-token", creation_utc: chromiumMicros(frozenNowMs - 60_000) }])
+    const baseline = cookieBaseline(profile, "uaa-token", DOMAIN)
+    expect(profileHasNewCookie(profile, "uaa-token", baseline, DOMAIN)).toBe(false)
+
+    const { Database } = require("bun:sqlite")
+    const db = new Database(join(profile, "Default", "Cookies"))
+    db.query("UPDATE cookies SET last_update_utc = ? WHERE name = 'uaa-token'").run(chromiumMicros(frozenNowMs + 1000))
+    db.close()
+    expect(profileHasNewCookie(profile, "uaa-token", baseline, DOMAIN)).toBe(true)
+  } finally {
+    Date.now = originalDateNow
+  }
 })
 
 test("an expired row, another domain's row, another cookie's row: all refused", () => {
