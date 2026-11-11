@@ -150,6 +150,12 @@ Chats are Anthropic messages (`@ai-sdk/anthropic`) sent to
 - `X-Mavis-Session-Id`. This is the conversation's id when magpie or
   OpenCode passes one, and a fixed id for the plugin's run otherwise.
 
+A chat asks for its answer uncompressed (`accept-encoding: identity`).
+MiniMax answers a chat it is asked to compress as one gzip member, flushed
+when the answer is done: the events of a streamed answer then all arrive at
+once, and the first token waits for the last. Asked uncompressed, it sends
+the events as they come.
+
 A refusal that says the credits or quota ran out goes on as a 429. The 402,
 403 or 429 statuses count, when the body says so. That way magpie can move
 the conversation to another account.
