@@ -311,9 +311,13 @@ needs no restart:
   is used up for magpie when the pinned region is, not when both are.
 - Both off, or both on, is the default: the regions in turn.
 
-Past the plan's credits a region is billed as overage, $0.04 a credit, so
-10000 credits of overage come to $400, about another 10000-credit plan.
-Pinning an account to a region spends that region's overage first.
+Credits past a region's plan are overage, billed at $0.04 each: twice what
+a plan's credits cost (a Power plan is $200 for 10000, $0.02 each), and a
+plan's credits do not roll over to the next month. So when one region is
+already in its overage and the other still has plan credits, pinning the
+account to the other spends the cheaper credits first. Left on the first,
+the account goes on into overage while the other region's plan credits
+expire unused.
 
 ## Not included
 

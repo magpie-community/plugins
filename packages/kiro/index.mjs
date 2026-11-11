@@ -3208,9 +3208,9 @@ export async function KiroAuthPlugin({ client, magpie } = {}) {
           return {
             key: onlyOption(region),
             label: `Use ${region} only`,
-            description: `An Identity Center account sends every request to ${region} and none to ${other}, whatever its credits there, and its Usage counts ${region} alone. With ${region} not enabled for the account, or its credits used up, the answer is a 429 and magpie goes on to another account. Both switches off, the account uses us-east-1 first and eu-central-1 when it is used up. Both on is the same as both off. Past the plan's credits a region is billed as overage, $0.04 a credit: 10000 credits of it come to $400, about the price of another 10000-credit plan, so a region's overage is worth keeping an eye on before it is the only one in use.`,
+            description: `An Identity Center account sends every request to ${region} and none to ${other}, whatever its credits there, and its Usage counts ${region} alone. With ${region} not enabled for the account, or its credits used up, the answer is a 429 and magpie goes on to another account. Both switches off, the account uses us-east-1 first and eu-central-1 when it is used up. Both on is the same as both off. Credits past a region's plan are overage, billed at $0.04 each, twice a Power plan's $0.02 (10000 credits for $200), and plan credits do not roll over to the next month. So when one region is already in its overage and the other still has plan credits, pin the other: its plan credits are cheaper than more overage here.`,
             labels: { zh: `只使用 ${region}` },
-            descriptions: { zh: `IAM Identity Center 账号的请求全部发往 ${region}，不发往 ${other}，不论后者还有多少额度，额度合计也只算 ${region}。该区域未开通或额度用完时返回 429，由 magpie 换下一个账号。两个开关都关闭时先用 us-east-1，用完再用 eu-central-1。两个都开与都关相同。超出套餐的部分按超额计费，每个 credit $0.04：超额 10000 credits 是 $400，约等于再买一个 10000 credits 的账号，只用一个区域前请留意它的超额。` },
+            descriptions: { zh: `IAM Identity Center 账号的请求全部发往 ${region}，不发往 ${other}，不论后者还有多少额度，额度合计也只算 ${region}。该区域未开通或额度用完时返回 429，由 magpie 换下一个账号。两个开关都关闭时先用 us-east-1，用完再用 eu-central-1。两个都开与都关相同。超出区域套餐的部分按超额计费，每个 credit $0.04，是 Power 套餐（$200 含 10000 credits，每个 $0.02）的两倍，且套餐额度不结转到下月。所以一个区域已经进入超额、另一个区域还有套餐额度时，请锁定后者：用它的套餐额度比继续超额便宜。` },
           }
         }),
       ],
