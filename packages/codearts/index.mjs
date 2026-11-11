@@ -3979,11 +3979,18 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
   }
 
   const round = (n) => Math.round(n * 100) / 100
+  const expiryOf = (value, ignored = false) => {
+    if (ignored || typeof value !== "string" || value.length === 0) return undefined
+    const at = Date.parse(value)
+    return Number.isFinite(at) ? at : undefined
+  }
   const windows = []
   const nowMs = Date.now()
   let plan = ""
   let aggregateAmount = 0
   let aggregateLimit = 0
+  let expiredLimit = 0
+  const aggregateBatches = []
 
   for (const sku of Array.isArray(j?.skus) ? j.skus : []) {
     for (const q of Array.isArray(sku?.quotas) ? sku.quotas : []) {
@@ -3992,20 +3999,23 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
       const used = Number(q.current_value)
       if (!Number.isFinite(total) || total <= 0) continue
       const isTrial = String(sku.sku_code ?? "").endsWith(".trial")
-      const expiresAt = typeof q.expired_time === "string" && q.expired_time.length > 0 ? q.expired_time : null
+      const expiresAt = expiryOf(q.expired_time, isTrial)
       const amount = Math.min(total, Math.max(0, Number.isFinite(used) ? used : 0))
       const remaining = total - amount
-      const expired = expiresAt !== null && !isTrial && new Date(expiresAt).getTime() <= nowMs
+      const expired = expiresAt !== undefined && expiresAt <= nowMs
       if (!plan && typeof sku.sku_name === "string") plan = sku.sku_name
-      if (!expired) {
+      if (expired) {
+        expiredLimit += total
+      } else {
         aggregateAmount += amount
         aggregateLimit += total
+        if (remaining > 0 && expiresAt !== undefined) aggregateBatches.push({ left: remaining, expiresAt })
       }
       windows.push(officeAceWindow({
         name: `${sku.sku_name ?? "套餐"} · 剩 ${round(remaining)}`,
         used: Math.min(100, Math.max(0, Math.round((amount / total) * 100))),
         // a `.trial` sku carries no expiry: nothing to invent
-        resetsAt: isTrial || expiresAt === null ? "" : new Date(expiresAt).toISOString(),
+        resetsAt: expiresAt === undefined ? "" : new Date(expiresAt).toISOString(),
         display: `${round(remaining)} / ${round(total)}`,
         unit: "积分",
         expired,
@@ -4022,16 +4032,19 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
     const used = Number(bonus.current_value)
     const amount = Math.min(points, Math.max(0, Number.isFinite(used) ? used : 0))
     const remaining = points - amount
-    const expiresAt = typeof bonus.expired_time === "string" ? bonus.expired_time : null
-    const expired = expiresAt !== null && new Date(expiresAt).getTime() <= nowMs
-    if (!expired) {
+    const expiresAt = expiryOf(bonus.expired_time)
+    const expired = expiresAt !== undefined && expiresAt <= nowMs
+    if (expired) {
+      expiredLimit += points
+    } else {
       aggregateAmount += amount
       aggregateLimit += points
+      if (remaining > 0 && expiresAt !== undefined) aggregateBatches.push({ left: remaining, expiresAt })
     }
     windows.push(officeAceWindow({
       name: `${bonus.activity_name ?? "活动奖励"} · 剩 ${round(remaining)}`,
       used: Math.min(100, Math.round((amount / points) * 100)),
-      resetsAt: expiresAt === null ? "" : new Date(expiresAt).toISOString(),
+      resetsAt: expiresAt === undefined ? "" : new Date(expiresAt).toISOString(),
       display: `${round(remaining)} / ${round(points)}`,
       unit: "积分",
       expired,
@@ -4041,18 +4054,35 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
     }))
   }
 
-  if (aggregateLimit > 0) {
-    const amount = round(aggregateAmount)
-    const limit = round(aggregateLimit)
-    const remaining = round(Math.max(0, aggregateLimit - aggregateAmount))
-    windows.unshift(officeAceWindow({
+  // An account whose every bucket expired still needs one used-up routing
+  // window. Without it every detail is aside and magpie would keep routing.
+  const active = aggregateLimit > 0
+  const rawLimit = active ? aggregateLimit : expiredLimit
+  if (rawLimit > 0) {
+    const rawAmount = active ? Math.min(rawLimit, aggregateAmount) : rawLimit
+    const rawRemaining = Math.max(0, rawLimit - rawAmount)
+    const roundedLimit = round(rawLimit)
+    // Keep sub-half-cent values instead of turning the routing denominator
+    // into zero. Normal credit values remain rounded to two decimals.
+    const keepRaw = roundedLimit === 0
+    const limit = keepRaw ? rawLimit : roundedLimit
+    const amount = keepRaw ? rawAmount : Math.min(limit, round(rawAmount))
+    const remaining = keepRaw ? rawRemaining : round(Math.max(0, limit - amount))
+    const total = officeAceWindow({
       name: `总积分 · 剩 ${remaining}`,
-      used: Math.min(100, Math.max(0, Math.round((amount / limit) * 100))),
+      used: Math.min(100, Math.max(0, Math.round((rawAmount / rawLimit) * 100))),
       display: `${remaining} / ${limit}`,
       unit: "积分",
       amount,
       limit,
-    }))
+    })
+    const lapse = active ? soonestLapse(aggregateBatches, nowMs) : undefined
+    if (lapse && rawRemaining > 0) {
+      const runsOut = Math.min(lapse.credit, rawRemaining)
+      total.runsOutAt = new Date(lapse.at).toISOString()
+      total.runsOut = round(runsOut) || runsOut
+    }
+    windows.unshift(total)
   }
 
   return { plan, windows }

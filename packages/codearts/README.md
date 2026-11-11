@@ -226,7 +226,10 @@ opening MaaS gets a `400` saying so, not an empty Basic header sent upstream.
 **Usage and check-in.** `GET {subscription}/v1/subscription`: the total of all unexpired plan
 buckets (`skus[].quotas`) and activity bonuses (`bonus_skus`) is the one routing window; each
 bucket remains visible as an `aside` detail. A `.trial` bucket carries no expiry and gets none
-invented; an expired bucket is folded away and takes no part in routing. The check-in is
+invented; an expired bucket is folded away and takes no part in the active total. The total's
+`runsOutAt` is the soonest still-funded bucket to expire, and `runsOut` is the remaining credit
+that expires on that Beijing day. When every bucket has expired, a used-up total remains so the
+account is paused instead of being routed without a limit. The check-in is
 `POST {subscription}/v1/subscription/bonus/claim` once a Beijing day: a 2xx with no
 `bonus_skus` is 「今日已无新增可领」 (`done`), not a failure. Turn on *Auto check-in* for OfficeAce
 under **Settings → Usage → Plugins**.
@@ -341,7 +344,8 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   不会把空的 Basic 头发给上游。
 - **OfficeAce 的用量与签到**：`/v1/subscription` 中所有未过期套餐桶（`skus[].quotas`）和活动桶（`bonus_skus`）
   汇总成唯一参与路由的「总积分」窗口，各桶只作为 `aside` 明细展示；`.trial` 桶没有到期时间就不显示；
-  已过期的桶收进折叠区且不参与汇总或路由。签到是每个北京自然日一次
+  已过期的桶收进折叠区且不参与有效余额汇总。「总积分」用仍有余额的桶里最早到期者作为 `runsOutAt`，
+  并把同一北京自然日到期的余额合为 `runsOut`；如果所有桶都已过期，仍保留一个已用尽的总积分窗口来暂停账号。签到是每个北京自然日一次
   `POST /v1/subscription/bonus/claim`：2xx 但 `bonus_skus` 为空是「今日已无新增可领」（`done`），不是失败。
 - **已知限制**：STS 的 refresh_token 只能用一次。本包的每张卡各自登录、各自持有一条记录与一个 token，所以两张卡
   互不影响；**续期只写被续的那条记录**，因此用户删掉的账号永远不会被写回来（无论它此前有没有被列出/使用过、
