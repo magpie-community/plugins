@@ -136,6 +136,28 @@ test("a conversation keeps its session", () => {
   expect(env.request.sessionId).toBe(sessionOf(a))
 })
 
+test("sessions with shared AGENTS.md preambles or distinct host headers don't collide", () => {
+  const preamble = [
+    { text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>global</INSTRUCTIONS>" },
+    { text: "<environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>" },
+  ]
+  const chatA = { contents: [{ role: "user", parts: preamble }, { role: "user", parts: [{ text: "fix login bug" }] }] }
+  const chatA2 = { contents: [...chatA.contents, { role: "model", parts: [{ text: "looking" }] }] }
+  const chatB = { contents: [{ role: "user", parts: preamble }, { role: "user", parts: [{ text: "add export csv" }] }] }
+  expect(sessionOf(chatA)).toBe(sessionOf(chatA2))
+  expect(sessionOf(chatA)).not.toBe(sessionOf(chatB))
+
+  const s1 = sessionOf(chatA, { "x-magpie-session": "01a1cb56-5f3e-74d1-b7a9-b40be82a2ba4" })
+  const s2 = sessionOf(chatA, { "x-magpie-session": "01a1c9cc-0757-70e3-990f-5a818d52b0cd" })
+  expect(s1).not.toBe(s2)
+  expect(sessionOf(chatA, { "x-magpie-session": "magpie-0123456789abcdef01234567" })).toBe(sessionOf(chatA))
+
+  const subA = sessionOf(chatA, { "x-magpie-session": "01a1cb56-5f3e-74d1-b7a9-b40be82a2ba4", "x-magpie-subagent": "collab_spawn" })
+  const subB = sessionOf(chatB, { "x-magpie-session": "01a1cb56-5f3e-74d1-b7a9-b40be82a2ba4", "x-magpie-subagent": "collab_spawn" })
+  expect(subA).not.toBe(s1)
+  expect(subA).not.toBe(subB)
+})
+
 test("an empty text a stream ended on isn't sent back (Claude: text Field required)", () => {
   const g = { contents: [
     { role: "user", parts: [{ text: "read it" }] },
