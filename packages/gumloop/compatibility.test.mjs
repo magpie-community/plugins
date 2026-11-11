@@ -245,7 +245,7 @@ describe("request and host compatibility", () => {
     // Plan 403 keeps status 403 and does not mark sign-in expired
     const rPlan = await loaded.fetch(`${loaded.baseURL}/chat/completions`, { method: "POST", body: JSON.stringify({ model: "claude-opus-5-5", messages: [] }) })
     expect(rPlan.status).toBe(403)
-    expect(rPlan.headers.get("x-magpie-sign-in")).toBeNull()
+    expect(rPlan.headers.get("x-magpie-sign-in")).toBe("kept")
 
     // Upstream Anthropic 400 credit error passes through as 400 and keeps balance intact
     chatResp = json({ error: { message: "anthropic: Your credit balance is too low to access the Anthropic API." } }, 400)

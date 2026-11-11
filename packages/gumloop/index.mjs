@@ -11,7 +11,6 @@
 // whole credit) and takes it off a balance the user reads off gumloop.com.
 // Spend on gumloop.com itself shows only at the next calibration.
 
-import { existsSync } from "node:fs"
 import { join } from "node:path"
 import {
   API as DEFAULT_API,
@@ -34,8 +33,6 @@ import {
 
 const ID = "gumloop"
 const NPM = "@ai-sdk/openai-compatible"
-const KEY_REFUSAL =
-  /\b(invalid|missing|expired|revoked|malformed|bad|wrong)\s+(api[\s_-]*key|credentials?|user[\s_-]*id|x-auth-key|token)\b|\b(api[\s_-]*key|credentials?|user[\s_-]*id|x-auth-key)\s+(is\s+)?(invalid|missing|expired|revoked|required)\b/i
 const EFFORTS = Object.fromEntries(["low", "medium", "high"].map((e) => [e, { reasoningEffort: e }]))
 
 function isCreditRefusal(status, text) {
@@ -46,7 +43,7 @@ function isCreditRefusal(status, text) {
     const code = d?.error?.code ?? d?.error?.type ?? d?.code ?? (typeof d?.error === "string" ? d.error : "")
     if (code === "credit_limit_exceeded") return true
   } catch {}
-  return /\bcredit_limit_exceeded\b/i.test(text)
+  return false
 }
 
 // aliasesFor gives every Gumloop id a slash-free name agents can type
@@ -132,12 +129,25 @@ function normalize(body, { cache1h } = {}) {
 
 // tapUsage passes a response body through unchanged and reports the usage
 // block it carried (SSE or JSON) once it ends, or that it was cut short.
+// Hold terminal SSE frames (and bounded JSON bodies) until accounting finishes:
+// short-lived hosts can terminate us as soon as they see a complete response.
 function tapUsage(stream, isSse, signal, done) {
   const dec = new TextDecoder()
   let buf = ""
   let usage
   let tooBig = false
   let finished = false
+  let terminal = false
+  let pending = []
+  // SSE offsets are bytes, not decoded string offsets: retain only the
+  // incomplete line or terminal tail, and forward original bytes unchanged.
+  const sseBuffer = isSse ? new Uint8Array(256 * 1024) : undefined
+  let sseSize = 0
+  let lineStart = 0
+  const emit = (ctl) => {
+    for (const chunk of pending) ctl.enqueue(chunk)
+    pending = []
+  }
   const aborted = () => finish(true)
   const finish = (cut) => {
     if (finished) return
@@ -147,48 +157,93 @@ function tapUsage(stream, isSse, signal, done) {
   }
   const take = (o) => {
     if (isObj(o?.usage)) usage = o.usage
+    if (isSse && (isObj(o?.usage) || o?.choices?.some((c) => c.finish_reason != null))) terminal = true
   }
   const line = (l) => {
     const t = l.trim()
     if (!t.startsWith("data:")) return
     const d = t.slice(5).trim()
-    if (!d.includes('"usage"')) return
+    if (d === "[DONE]") {
+      terminal = true
+      // The protocol is complete even if the connection remains open. Do
+      // accounting before releasing any bytes from this parsed chunk.
+      finish(false)
+      return
+    }
+    if (!d.includes('"usage"') && !d.includes('"finish_reason"')) return
     try {
       take(JSON.parse(d))
     } catch {}
+  }
+  const sseChunk = (chunk, ctl) => {
+    let offset = 0
+    while (offset < chunk.byteLength) {
+      if (tooBig || sseSize === sseBuffer.length) {
+        // A malformed/oversized line or terminal tail must not drain an
+        // unbounded source. Record the incomplete estimate before releasing
+        // any held terminal bytes, then use ordinary stream backpressure.
+        if (!tooBig) {
+          tooBig = true
+          usage = undefined
+          finish(true)
+          ctl.enqueue(sseBuffer.slice(0, sseSize))
+          sseSize = lineStart = 0
+        }
+        ctl.enqueue(chunk.subarray(offset))
+        return
+      }
+      const end = Math.min(chunk.byteLength, offset + sseBuffer.length - sseSize)
+      const scanFrom = sseSize
+      sseBuffer.set(chunk.subarray(offset, end), sseSize)
+      sseSize += end - offset
+      offset = end
+      let safe = 0
+      for (let i = scanFrom; i < sseSize; i++) {
+        if (sseBuffer[i] !== 10) continue
+        line(dec.decode(sseBuffer.subarray(lineStart, i + 1)))
+        lineStart = i + 1
+        if (!terminal || finished) safe = lineStart
+      }
+      if (safe) {
+        ctl.enqueue(sseBuffer.slice(0, safe))
+        sseBuffer.copyWithin(0, safe, sseSize)
+        sseSize -= safe
+        lineStart -= safe
+      }
+    }
   }
   signal?.addEventListener("abort", aborted, { once: true })
   if (signal?.aborted) aborted()
   const tap = new TransformStream({
       transform(chunk, ctl) {
-        ctl.enqueue(chunk)
+        if (isSse) return sseChunk(chunk, ctl)
+        pending.push(chunk)
         const s = dec.decode(chunk, { stream: true })
-        if (isSse) {
-          buf += s
-          let i
-          while ((i = buf.indexOf("\n")) >= 0) {
-            line(buf.slice(0, i))
-            buf = buf.slice(i + 1)
-          }
-        } else if (!tooBig) {
+        if (!tooBig) {
           buf += s
           if (buf.length > 4e6) {
             tooBig = true
             buf = ""
           }
         }
+        // Oversized JSON keeps the existing pass-through/unbilled behavior.
+        if (tooBig) emit(ctl)
       },
-      flush() {
-        buf += dec.decode()
+      flush(ctl) {
         if (isSse) {
-          if (buf) line(buf)
+          if (sseSize > lineStart) line(dec.decode(sseBuffer.subarray(lineStart, sseSize)))
         } else {
+          buf += dec.decode()
           try {
             take(JSON.parse(buf))
           } catch {}
         }
         buf = ""
         finish(false)
+        if (isSse) {
+          if (sseSize) ctl.enqueue(sseBuffer.slice(0, sseSize))
+          sseSize = lineStart = 0
+        } else emit(ctl)
       },
     })
   // Unlike pipeThrough, observing pipeTo also catches source failures and
@@ -225,8 +280,8 @@ function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.
   const OPENROUTER = env.GUMLOOP_OPENROUTER_BASE || DEFAULT_OPENROUTER
   // In magpie, `directory` is magpie's config dir (`input.magpie` is present).
   // In OpenCode, `directory` is the user's project tree and must not be written to.
-  const ledgerPath = directory ? join(directory, "gumloop-ledger.json") : undefined
-  const store = new Store(ledgerPath && (magpie || existsSync(ledgerPath)) ? ledgerPath : undefined, now)
+  const ledgerPath = magpie && directory ? join(directory, "gumloop-ledger.json") : undefined
+  const store = new Store(ledgerPath, now)
   const cache1h = options.cache1h === true
   // alias -> Gumloop id: built-in defaults plus one map per account.
   const defaultIds = new Map()
@@ -366,17 +421,18 @@ function createPlugin({ directory, magpie, options = {}, fetchImpl = globalThis.
         )
       }
       if (res.status === 403) {
-        let expired = KEY_REFUSAL.test(text)
-        if (!expired) {
-          try {
-            const check = await getModels(cred)
-            await check.body?.cancel().catch(() => {})
-            if (check.status === 401 || check.status === 403) expired = true
-          } catch {}
-        }
-        if (expired) {
+        // A provider's "Invalid API key" can refer to Gumloop's upstream
+        // credentials. Only Gumloop's own /models check decides our sign-in.
+        let signIn
+        try {
+          const check = await getModels(cred)
+          await check.body?.cancel().catch(() => {})
+          if (check.status === 200) signIn = "kept"
+          else if (check.status === 401 || check.status === 403) signIn = "expired"
+        } catch {}
+        if (signIn) {
           const headers = new Headers(res.headers)
-          headers.set("x-magpie-sign-in", "expired")
+          headers.set("x-magpie-sign-in", signIn)
           return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
         }
       }

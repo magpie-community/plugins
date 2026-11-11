@@ -1,7 +1,8 @@
 // Gumloop's API: what an account can use, what a call costs, and what this
 // plugin has spent. Nothing here signs in or holds a key; index.mjs does.
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { randomUUID } from "node:crypto"
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 
 export const API = "https://api.gumloop.com/api/v1"
 export const WS = "https://ws.gumloop.com/api/v1"
@@ -222,6 +223,122 @@ export function monthKey(t) {
 // `magpie` command runs its own plugin host beside the app's, so each change
 // locks and re-reads the file first rather than trusting what this process holds.
 let seq = 0
+const LOCK_WAIT_MS = 2000
+const lockWait = new Int32Array(new SharedArrayBuffer(4))
+const ownedLocks = new Set()
+// Windows can temporarily reject opening/deleting a name being renamed or
+// replacing a file another process is reading. Retry the filesystem operation,
+// never the caller's mutation, within a monotonic deadline.
+function retryFs(fn, deadline = performance.now() + LOCK_WAIT_MS) {
+  while (true) {
+    try {
+      return fn()
+    } catch (e) {
+      const remaining = deadline - performance.now()
+      if (!["EPERM", "EACCES", "EBUSY"].includes(e?.code) || remaining <= 0) throw e
+      Atomics.wait(lockWait, 0, 0, Math.min(10, remaining))
+    }
+  }
+}
+const remove = (path, deadline) => {
+  try {
+    retryFs(() => unlinkSync(path), deadline)
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e
+  }
+}
+process.once("exit", () => {
+  for (const path of ownedLocks) {
+    try { remove(path) } catch {}
+  }
+})
+
+// Lamport's bakery lock, with one never-reused participant name per attempt.
+// Publishing ticket 0 announces "choosing"; contenders then take max(ticket)+1
+// and wait for earlier (ticket, name) pairs. Atomic rename publishes complete
+// records, so a crash while writing a temporary file cannot leave a partial
+// participant. Local filesystem directory listings/renames must be coherent.
+//
+// There is deliberately no shared lock pathname to unlink. A dead owner's
+// unique files can be removed by any number of recoverers without touching a
+// later acquisition. PID reuse is conservative: a live/unknown PID blocks,
+// never authorizes recovery. Only ESRCH from kill(pid, 0) proves absence.
+function ledgerLock(file) {
+  const directory = dirname(file)
+  const prefix = `${basename(file)}.lock.`
+  const name = `${process.pid}.${randomUUID()}`
+  const participant = join(directory, `${prefix}${name}.json`)
+  const temporary = join(directory, `${prefix}${name}.tmp`)
+  const deadline = performance.now() + LOCK_WAIT_MS
+  const release = () => {
+    for (const path of [participant, temporary]) {
+      try {
+        remove(path)
+        ownedLocks.delete(path)
+      } catch {} // normal exit or another process can retry cleanup
+    }
+  }
+  const publish = (ticket) => {
+    writeFileSync(temporary, JSON.stringify({ pid: process.pid, name, ticket }), { flag: "wx" })
+    // Fully written before publication.
+    retryFs(() => renameSync(temporary, participant), deadline)
+  }
+  const peers = () => {
+    const out = []
+    const alive = new Map()
+    for (const entry of readdirSync(directory)) {
+      if (!entry.startsWith(prefix)) continue
+      const match = /^([1-9]\d*)\.([a-f0-9-]{36})\.(json|tmp)$/.exec(entry.slice(prefix.length))
+      if (!match) throw new Error("Unrecognized ledger lock owner")
+      const pid = Number(match[1])
+      if (!Number.isSafeInteger(pid)) throw new Error("Invalid ledger lock PID")
+      if (!alive.has(pid)) {
+        try {
+          process.kill(pid, 0)
+          alive.set(pid, true)
+        } catch (e) {
+          alive.set(pid, e?.code !== "ESRCH")
+        }
+      }
+      const path = join(directory, entry)
+      if (!alive.get(pid)) {
+        remove(path, deadline)
+        continue
+      }
+      if (match[3] === "tmp" || path === participant) continue
+      let record
+      try {
+        record = JSON.parse(retryFs(() => readFileSync(path, "utf8"), deadline))
+      } catch (e) {
+        if (e?.code === "ENOENT") continue // owner released after the listing
+        throw e
+      }
+      const peerName = `${match[1]}.${match[2]}`
+      if (record?.pid !== pid || record.name !== peerName || !Number.isSafeInteger(record.ticket) || record.ticket < 0) {
+        throw new Error("Invalid ledger lock participant")
+      }
+      out.push(record)
+    }
+    return out
+  }
+  try {
+    mkdirSync(directory, { recursive: true })
+    ownedLocks.add(participant)
+    ownedLocks.add(temporary)
+    publish(0)
+    const ticket = Math.max(0, ...peers().map((p) => p.ticket)) + 1
+    if (!Number.isSafeInteger(ticket)) throw new Error("Ledger lock ticket overflow")
+    publish(ticket)
+    while (performance.now() < deadline) {
+      const blocked = peers().some((p) => p.ticket === 0 || p.ticket < ticket || (p.ticket === ticket && p.name < name))
+      if (!blocked) return release
+      Atomics.wait(lockWait, 0, 0, Math.min(10, Math.max(0, deadline - performance.now())))
+    }
+  } catch {} // estimates must not fail chat on an acquisition/filesystem error
+  release()
+  return undefined
+}
+
 export class Store {
   constructor(file, now = Date.now) {
     this.file = file
@@ -232,33 +349,13 @@ export class Store {
 
   withLock(fn) {
     if (!this.file) return fn()
-    const lock = `${this.file}.lock`
-    let fd
+    const release = ledgerLock(this.file)
+    if (!release) return undefined
+    // A callback runs exactly once; its error propagates after release.
     try {
-      mkdirSync(dirname(this.file), { recursive: true })
-      for (let i = 0; i < 40; i++) {
-        try {
-          fd = openSync(lock, "wx")
-          break
-        } catch (e) {
-          if (e?.code !== "EEXIST") break
-          try {
-            if (Date.now() - statSync(lock).mtimeMs > 5000) unlinkSync(lock)
-          } catch {}
-        }
-      }
-      return fn()
-    } catch {
       return fn()
     } finally {
-      if (fd !== undefined) {
-        try {
-          closeSync(fd)
-        } catch {}
-        try {
-          unlinkSync(lock)
-        } catch {}
-      }
+      release()
     }
   }
 
@@ -270,7 +367,7 @@ export class Store {
       return this.mem
     }
     try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8"))
+      const parsed = JSON.parse(retryFs(() => readFileSync(this.file, "utf8")))
       if (!isObj(parsed)) throw new Error("invalid ledger root")
       if (!isObj(parsed.accounts)) parsed.accounts = {}
       this.mem = parsed
@@ -302,7 +399,7 @@ export class Store {
       mkdirSync(dirname(this.file), { recursive: true })
       const tmp = `${this.file}.${process.pid}.${++seq}.tmp`
       writeFileSync(tmp, JSON.stringify(d, null, 2))
-      renameSync(tmp, this.file)
+      retryFs(() => renameSync(tmp, this.file))
       this.mem = d
     } catch {
       // the ledger is an estimate; losing one write must not fail a request

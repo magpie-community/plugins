@@ -247,7 +247,12 @@ describe("loader and requests", () => {
   })
   test("a refused key marks the account expired; other errors pass through", async () => {
     const f = fake(() => json(403, { error: "Invalid API key" }))
-    const { res } = await chatOnce(plugin(f), { model: "gpt-6-sol", messages: [] })
+    const refused = {
+      fetchImpl: (url, init) => String(url).startsWith("https://gl.test/api/models")
+        ? json(403, { error: "Invalid API key" })
+        : f.fetchImpl(url, init),
+    }
+    const { res } = await chatOnce(plugin(refused), { model: "gpt-6-sol", messages: [] })
     expect(res.status).toBe(403)
     expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
     const g = fake(() => json(500, { error: "boom" }))
