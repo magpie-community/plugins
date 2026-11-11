@@ -223,10 +223,11 @@ naming the Basic pair) renews the credential once and sends it again — but onl
 changed the pair; the same pair would get the same refusal. An account that signed in without
 opening MaaS gets a `400` saying so, not an empty Basic header sent upstream.
 
-**Usage and check-in.** `GET {subscription}/v1/subscription`: plan buckets (`skus[].quotas`) and
-activity bonuses (`bonus_skus`) become magpie windows; a `.trial` bucket carries no expiry and
-gets none invented; an expired bucket is folded away (`aside`) and takes no part in routing. The
-check-in is `POST {subscription}/v1/subscription/bonus/claim` once a Beijing day: a 2xx with no
+**Usage and check-in.** `GET {subscription}/v1/subscription`: the total of all unexpired plan
+buckets (`skus[].quotas`) and activity bonuses (`bonus_skus`) is the one routing window; each
+bucket remains visible as an `aside` detail. A `.trial` bucket carries no expiry and gets none
+invented; an expired bucket is folded away and takes no part in routing. The check-in is
+`POST {subscription}/v1/subscription/bonus/claim` once a Beijing day: a 2xx with no
 `bonus_skus` is 「今日已无新增可领」 (`done`), not a failure. Turn on *Auto check-in* for OfficeAce
 under **Settings → Usage → Plugins**.
 
@@ -338,8 +339,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   去掉 `officeace/` 前缀，发到凭据里自带的 MaaS 地址（为空时用官方直连）。`401`（或 4xx 但报文点名这对 Basic 凭据）
   会先续期一次再重发，**但只有续期真的换了这对凭据时才重发**。已登录但没开通 MaaS 的账号会得到一条说清原因的 `400`，
   不会把空的 Basic 头发给上游。
-- **OfficeAce 的用量与签到**：`/v1/subscription` 的套餐桶（`skus[].quotas`）与活动桶（`bonus_skus`）转成 magpie 的窗口；
-  `.trial` 桶没有到期时间就不显示；已过期的桶收进折叠区（`aside`）且不参与路由。签到是每个北京自然日一次
+- **OfficeAce 的用量与签到**：`/v1/subscription` 中所有未过期套餐桶（`skus[].quotas`）和活动桶（`bonus_skus`）
+  汇总成唯一参与路由的「总积分」窗口，各桶只作为 `aside` 明细展示；`.trial` 桶没有到期时间就不显示；
+  已过期的桶收进折叠区且不参与汇总或路由。签到是每个北京自然日一次
   `POST /v1/subscription/bonus/claim`：2xx 但 `bonus_skus` 为空是「今日已无新增可领」（`done`），不是失败。
 - **已知限制**：STS 的 refresh_token 只能用一次。本包的每张卡各自登录、各自持有一条记录与一个 token，所以两张卡
   互不影响；**续期只写被续的那条记录**，因此用户删掉的账号永远不会被写回来（无论它此前有没有被列出/使用过、

@@ -3941,17 +3941,18 @@ function officeAceLiveModels(rows, baseUrl, rates) {
  * One usage window.
  *
  * An expired bucket is folded away (`aside`) and carries no amount/limit: its
- * own total would become the denominator and read as "100% left". It takes no
- * part in routing either, so the fold is all it needs to say.
+ * own total would become the denominator and read as "100% left". Active
+ * package details keep their numbers but are also `aside`; only the aggregate
+ * window may pause the account.
  */
-function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = false, amount = 0, limit = 0 }) {
+function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = false, aside = false, amount = 0, limit = 0 }) {
   return {
     name,
     used,
     display,
     unit,
     ...(resetsAt ? { resetsAt } : {}),
-    ...(expired ? { aside: true } : { amount, limit, span: 0 }),
+    ...(expired ? { aside: true } : { amount, limit, span: 0, ...(aside ? { aside: true } : {}) }),
   }
 }
 
@@ -3960,8 +3961,9 @@ function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = f
  *
  * Two kinds of bucket: `skus[].quotas[]` (`sku_attr_code === 'officeace_points'`)
  * and `bonus_skus[]`. A `.trial` sku carries no expiry (the trial never
- * expires — show it as it is, never guess a date); an expired bucket is marked
- * `aside` so the card folds it away instead of letting it hold the top slot.
+ * expires — show it as it is, never guess a date). Only the aggregate of
+ * unexpired buckets participates in routing; package details are `aside`, and
+ * expired buckets are folded away without routing amounts.
  */
 async function fetchOfficeAceUsage(cred, fetcher = fetch) {
   const r = await officeAceSigned(cred, `${OA_SUBSCRIPTION_BASE}${OA_SUBSCRIPTION_PATH}`, "GET", undefined, fetcher)
@@ -3980,6 +3982,8 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
   const windows = []
   const nowMs = Date.now()
   let plan = ""
+  let aggregateAmount = 0
+  let aggregateLimit = 0
 
   for (const sku of Array.isArray(j?.skus) ? j.skus : []) {
     for (const q of Array.isArray(sku?.quotas) ? sku.quotas : []) {
@@ -3989,18 +3993,24 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
       if (!Number.isFinite(total) || total <= 0) continue
       const isTrial = String(sku.sku_code ?? "").endsWith(".trial")
       const expiresAt = typeof q.expired_time === "string" && q.expired_time.length > 0 ? q.expired_time : null
-      const remaining = Math.max(0, total - used)
+      const amount = Math.min(total, Math.max(0, Number.isFinite(used) ? used : 0))
+      const remaining = total - amount
       const expired = expiresAt !== null && !isTrial && new Date(expiresAt).getTime() <= nowMs
       if (!plan && typeof sku.sku_name === "string") plan = sku.sku_name
+      if (!expired) {
+        aggregateAmount += amount
+        aggregateLimit += total
+      }
       windows.push(officeAceWindow({
         name: `${sku.sku_name ?? "套餐"} · 剩 ${round(remaining)}`,
-        used: Math.min(100, Math.max(0, Math.round((used / total) * 100))),
+        used: Math.min(100, Math.max(0, Math.round((amount / total) * 100))),
         // a `.trial` sku carries no expiry: nothing to invent
         resetsAt: isTrial || expiresAt === null ? "" : new Date(expiresAt).toISOString(),
         display: `${round(remaining)} / ${round(total)}`,
         unit: "积分",
         expired,
-        amount: used,
+        aside: true,
+        amount,
         limit: total,
       }))
     }
@@ -4010,18 +4020,38 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
     const points = Number(bonus?.points)
     if (!Number.isFinite(points) || points <= 0) continue
     const used = Number(bonus.current_value)
-    const remaining = Math.max(0, points - (Number.isFinite(used) ? used : 0))
+    const amount = Math.min(points, Math.max(0, Number.isFinite(used) ? used : 0))
+    const remaining = points - amount
     const expiresAt = typeof bonus.expired_time === "string" ? bonus.expired_time : null
     const expired = expiresAt !== null && new Date(expiresAt).getTime() <= nowMs
+    if (!expired) {
+      aggregateAmount += amount
+      aggregateLimit += points
+    }
     windows.push(officeAceWindow({
       name: `${bonus.activity_name ?? "活动奖励"} · 剩 ${round(remaining)}`,
-      used: Math.min(100, Math.round(((points - remaining) / points) * 100)),
+      used: Math.min(100, Math.round((amount / points) * 100)),
       resetsAt: expiresAt === null ? "" : new Date(expiresAt).toISOString(),
       display: `${round(remaining)} / ${round(points)}`,
       unit: "积分",
       expired,
-      amount: points - remaining,
+      aside: true,
+      amount,
       limit: points,
+    }))
+  }
+
+  if (aggregateLimit > 0) {
+    const amount = round(aggregateAmount)
+    const limit = round(aggregateLimit)
+    const remaining = round(Math.max(0, aggregateLimit - aggregateAmount))
+    windows.unshift(officeAceWindow({
+      name: `总积分 · 剩 ${remaining}`,
+      used: Math.min(100, Math.max(0, Math.round((amount / limit) * 100))),
+      display: `${remaining} / ${limit}`,
+      unit: "积分",
+      amount,
+      limit,
     }))
   }
 

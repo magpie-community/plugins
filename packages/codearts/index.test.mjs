@@ -2949,7 +2949,7 @@ test("an account signed in through officeace-auth is read as it is, no second si
   const usage = await plugin.auth.usage(async () => record)
   assert.equal(usage.plan, "个人体验版")
   assert.equal(usage.user, "189****8051")
-  assert.equal(usage.windows.length, 4)
+  assert.equal(usage.windows.length, 5)
   assert.match(
     seen[0].headers.get("authorization"),
     /^V11-HMAC-SHA256 Credential=HSTAOZ3JN3WWYF3L\/\d{8}\/cn-southwest-2\/apic, SignedHeaders=/,
@@ -3003,10 +3003,17 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
   const { windows } = await plugin.auth.usage(async () => record)
 
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "4940 / 8500")
+  assert.equal(total.amount, 3560)
+  assert.equal(total.limit, 8500)
+  assert.equal("aside" in total, false)
+
   const trial = windows.find((w) => w.name.startsWith("个人体验版"))
   assert.equal(trial.display, "500 / 500")
   assert.equal(trial.amount, 0)
   assert.equal(trial.limit, 500)
+  assert.equal(trial.aside, true)
   // a `.trial` sku carries no expiry: the window must not invent one
   assert.equal("resetsAt" in trial, false)
 
@@ -3016,6 +3023,7 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   assert.equal(plan.limit, 4000)
   assert.equal(plan.used, 45)
   assert.equal(plan.resetsAt, "2031-01-01T00:00:00.000Z")
+  assert.equal(plan.aside, true)
 
   const old = windows.find((w) => w.name.startsWith("旧套餐"))
   assert.equal(old.aside, true)
@@ -3027,6 +3035,40 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   const bonus = windows.find((w) => w.name.startsWith("新用户专属福利"))
   assert.equal(bonus.display, "2220 / 4000")
   assert.equal(bonus.used, 45)
+  assert.equal(bonus.aside, true)
+})
+
+test("a spent OfficeAce daily bonus does not pause credits left in other buckets", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [{
+      sku_code: "officeace_personal_trial.trial",
+      sku_name: "个人体验版",
+      quotas: [{ sku_attr_code: "officeace_points", sku_value: 500, current_value: 0, expired_time: "" }],
+    }],
+    bonus_skus: [
+      { activity_name: "新用户专属福利", points: 4000, current_value: 294.78, expired_time: "2031-02-05T23:25:23.515Z" },
+      { activity_name: "每日签到有礼", points: 100, current_value: 100, expired_time: "2031-11-11T15:59:59Z" },
+    ],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "4205.22 / 4600")
+  assert.equal(total.amount, 394.78)
+  assert.equal(total.limit, 4600)
+  assert.equal("aside" in total, false)
+
+  const daily = windows.find((w) => w.name.startsWith("每日签到有礼"))
+  assert.equal(daily.display, "0 / 100")
+  assert.equal(daily.amount, 100)
+  assert.equal(daily.limit, 100)
+  assert.equal(daily.aside, true)
+  assert.equal(windows.filter((w) => !w.aside).length, 1)
 })
 
 test("a failed usage read is said, never shown as an empty account", async () => {
