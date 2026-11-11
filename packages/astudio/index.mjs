@@ -81,6 +81,29 @@ const BOOTSTRAP = [
   { id: "xopdsv4flash0731in", name: "DeepSeek-V4-Flash", context: 1048576, output: 32768 },
 ]
 
+// 星火系列模型：目录 id 以 spark- 打头（启动表 Spark-X2.6 / Spark-X2.6-Lite /
+// Spark-X2.5，实时目录同名）。只有它们扣星火积分，其它模型（DeepSeek、GLM、
+// Auto）扣通用积分（plugins#990）。
+const SPARK_MODEL = /^spark-/i
+
+// sparkModelIds 是星火积分窗口要圈住的模型：账号实时目录里的星火模型（有目录时
+// 以目录为准，限免标记也以目录为准），再并上启动表里目录没列的星火模型。限免
+// 模型不扣积分，不圈进去——星火积分用光不该挡住它。
+function sparkModelIds(models) {
+  const ids = new Set()
+  const listed = new Set()
+  for (const [key, m] of Object.entries(models && typeof models === "object" ? models : {})) {
+    const id = typeof m?.id === "string" && m.id ? m.id : key
+    if (!SPARK_MODEL.test(id)) continue
+    listed.add(id)
+    if (m?.free !== true) ids.add(id)
+  }
+  for (const m of BOOTSTRAP) {
+    if (SPARK_MODEL.test(m.id) && !listed.has(m.id) && !m.free) ids.add(m.id)
+  }
+  return [...ids].sort()
+}
+
 function join(...parts) {
   return parts.join("/")
 }
@@ -693,7 +716,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
       },
       // 有 Cookie 会话时显示真实积分余额与会员档；只有模型凭据时退回目录
       // 连通性检查。读取均不计费。
-      async usage(getAuth) {
+      async usage(getAuth, provider) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         const session = auth.metadata?.session
@@ -746,10 +769,14 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           // 星火积分的到期时间 balance 接口不给，从入账流水推（失败不塌方）；
           // 流水是发放额，到期提示按余额封顶。
           const sparkExpiry = await readSparkExpiry(session, balance.sparkTotalBalance).catch(() => null)
+          // 两个池子各管各的：星火积分只圈星火模型（models），用光只挡它们，
+          // 不把整个账号判成用光；DeepSeek 等照扣通用积分照常路由（plugins#990）。
+          // 圈不出模型时（全是限免）它挡不了谁，只显示。
+          const sparkModels = sparkModelIds(provider?.models)
           windows.push({
             name: "星火积分",
             balance: balance.sparkTotalBalance,
-            aside: false,
+            ...(sparkModels.length ? { aside: false, models: sparkModels } : { aside: true }),
             ...(sparkExpiry && balance.sparkTotalBalance > 0 ? sparkExpiry : {}),
           })
         }
@@ -933,5 +960,6 @@ export const _internal = {
   DESKTOP_WAIT_MS,
   WEB_SIGNIN_WAIT_MS,
   BOOTSTRAP,
+  sparkModelIds,
   ID,
 }

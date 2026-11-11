@@ -21,6 +21,8 @@ const {
   STUDIO_WEB_URL,
   OFFICIAL_SITE,
   DESKTOP_WAIT_MS,
+  BOOTSTRAP,
+  sparkModelIds,
   ID,
 } = _internal
 
@@ -519,7 +521,7 @@ test("studioJson via usage: balance and membership map to quota windows", async 
   assert.equal(out.user, "18800000000")
   assert.deepEqual(out.windows[0], { name: "通用积分", balance: 7900, aside: false, runsOutAt: "2026-11-03T06:11:12", runsOut: 7900 })
   // 星火到期从入账流水推（balance 接口不给星火到期时间）。
-  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, runsOutAt: "2026-11-22T13:34:30.000Z", runsOut: 35000 })
+  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, models: ["spark-x2.5", "spark-x2.6"], runsOutAt: "2026-11-22T13:34:30.000Z", runsOut: 35000 })
 })
 
 test("usage spark window omits expiry when the ledger query fails", async () => {
@@ -541,7 +543,7 @@ test("usage spark window omits expiry when the ledger query fails", async () => 
   })
   const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session } }))
   // 到期推算失败不塌方：星火窗口退回无 runsOut 形态。
-  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false })
+  assert.deepEqual(out.windows[1], { name: "星火积分", balance: 35000, aside: false, models: ["spark-x2.5", "spark-x2.6"] })
 })
 
 const checkinFetch = (balanceSequence, { popups = [], identityAssert, popupFails = false, onComplete, completeFails = false, ledger, ledgerSequence, ledgerFails = false, sparkLedger, sparkPages } = {}) => {
@@ -1492,4 +1494,67 @@ test("web login maps a code 80000 from the exchange to sign-in expired", async (
   assert.equal(result.type, "failed")
   assert.match(result.error, /会话已失效/)
   assert.equal(exchangeCalls, 1)
+})
+
+// magpie 怎么读窗口（internal/provider/routing.go allowanceOf / Limit.applies）：
+// aside 的窗口不挡账号；列了 models 的窗口只算这些模型；balance ≤ 0 即用光。
+const gating = (windows, model) =>
+  windows.filter((w) => !w.aside && (!w.models || w.models.map((m) => m.toLowerCase()).includes(model.toLowerCase())))
+const exhaustedFor = (windows, model) => gating(windows, model).some((w) => typeof w.balance === "number" && w.balance <= 0)
+
+const poolsFetch = (totalBalance, sparkTotalBalance) => async (input) => {
+  const url = String(input)
+  if (url.includes("points/balance")) return jsonRes({ flag: true, code: 0, data: { totalBalance, activityBalance: 0, sparkTotalBalance } })
+  if (url.includes("membership/me")) return jsonRes({ flag: true, code: 0, data: { uid: 1, planName: "体验版" } })
+  if (url.includes("points/details")) return jsonRes({ flag: true, code: 0, data: { items: [] } })
+  throw new Error(`unexpected ${url}`)
+}
+
+test("Spark points at 0 leave the general-points models routable (plugins#990)", async () => {
+  // 报告者的账号：通用积分 1500，星火积分 0。
+  const plugin = createPlugin({ fetchImpl: poolsFetch(1500, 0) })
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session: { token: "T", accountId: "A" } } }), { models: bootstrapRows() })
+  const spark = out.windows.find((w) => w.name === "星火积分")
+  assert.equal(spark.balance, 0)
+  assert.deepEqual(spark.models, ["spark-x2.5", "spark-x2.6"])
+  for (const model of ["xopdsv4flash0731in", "xopdeepseekv4pro0813", "xopglm52", "astronclaw-auto"]) {
+    assert.equal(exhaustedFor(out.windows, model), false, `${model} 扣通用积分，不该被星火积分挡住`)
+  }
+  // 星火模型仍按星火积分判：0 就是用光。限免的 Lite 不扣积分，不挡。
+  assert.equal(exhaustedFor(out.windows, "spark-x2.6"), true)
+  assert.equal(exhaustedFor(out.windows, "spark-x2.5"), true)
+  assert.equal(exhaustedFor(out.windows, "spark-x2.6-4b"), false)
+})
+
+test("general points at 0 still stop the account", async () => {
+  const plugin = createPlugin({ fetchImpl: poolsFetch(0, 35000) })
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session: { token: "T", accountId: "A" } } }), { models: bootstrapRows() })
+  assert.equal(exhaustedFor(out.windows, "xopdsv4flash0731in"), true)
+  assert.equal(out.windows.find((w) => w.name === "通用积分").models, undefined)
+})
+
+test("the Spark window follows the account's live catalog", () => {
+  // 目录新增星火模型就圈进去；目录说限免的不圈；目录把 Lite 的限免撤了就圈。
+  assert.deepEqual(
+    sparkModelIds({
+      "spark-x3": { id: "spark-x3" },
+      "spark-x2.6-4b": { id: "spark-x2.6-4b" },
+      "spark-x2.6": { id: "spark-x2.6", free: true },
+      xopglm52: { id: "xopglm52" },
+    }),
+    ["spark-x2.5", "spark-x2.6-4b", "spark-x3"],
+  )
+  // 没有目录（usage 没拿到 provider）时退回启动表。
+  const fromBootstrap = BOOTSTRAP.filter((m) => /^spark-/.test(m.id) && !m.free).map((m) => m.id).sort()
+  assert.deepEqual(sparkModelIds(undefined), fromBootstrap)
+})
+
+test("a Spark window with no model to count is shown only", async () => {
+  const all = Object.fromEntries(BOOTSTRAP.filter((m) => /^spark-/.test(m.id)).map((m) => [m.id, { id: m.id, free: true }]))
+  const plugin = createPlugin({ fetchImpl: poolsFetch(1500, 0) })
+  const out = await plugin.auth.usage(async () => ({ type: "api", key: "k", metadata: { session: { token: "T", accountId: "A" } } }), { models: all })
+  const spark = out.windows.find((w) => w.name === "星火积分")
+  assert.equal(spark.aside, true)
+  assert.equal(spark.models, undefined)
+  assert.equal(exhaustedFor(out.windows, "xopdsv4flash0731in"), false)
 })
