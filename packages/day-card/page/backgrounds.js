@@ -24,7 +24,7 @@
     { id: "sea", photo: true, shadow: "rgba(20, 30, 50, .35)" },
     { id: "dunes", photo: true, shadow: "rgba(70, 30, 0, .4)" },
     { id: "lake", photo: true, shadow: "rgba(0, 20, 12, .5)" },
-  ];
+  ].map((b) => ({ ...b, photo: b.photo === true })); // photo is always a boolean: classList.toggle(name, undefined) flips
   const BY = new Map(LIST.map((b) => [b.id, b]));
   const CUSTOM = { id: "custom", photo: true, shadow: "rgba(0, 0, 0, .45)" };
 

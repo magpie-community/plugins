@@ -247,3 +247,10 @@ test("a saved backdrop is made sound before it is drawn", () => {
   expect(B.meta("custom").photo).toBe(true)
   expect(B.meta("nope").id).toBe("teal")
 })
+
+test("the blur and dim sliders stay put while a slider is dragged (#957)", () => {
+  // classList.toggle(name, undefined) flips the class, so a pattern's photo
+  // must be false, not missing, or every input event hides or shows them
+  for (const id of [...B.list.map((b) => b.id), "custom"]) expect([id, typeof B.meta(id).photo]).toEqual([id, "boolean"])
+  expect(read("app.js")).toContain('pop.classList.toggle("photo", B.meta(bg.bg).photo === true)')
+})
