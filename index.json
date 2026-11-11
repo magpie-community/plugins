@@ -5466,9 +5466,43 @@
               "directory": "packages/antigravity"
             }
           }
+        },
+        "0.1.6": {
+          "file": "tgz/magpie-community-opencode-antigravity-auth-0.1.6.tgz",
+          "integrity": "sha512-B6y58a05b944ZkjsAkHMExmfpcP0+dGdSwpE03u0iCdFO562q7l0GTpkGH6dGL0RP5jC4wDWKqzkKXl6+w+X1g==",
+          "time": "2026-11-11T17:14:58.963Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-antigravity-auth",
+            "version": "0.1.6",
+            "description": "Sign in to Antigravity with a Google account from OpenCode or magpie: Gemini, and the Claude and GPT-OSS models Google hosts for it",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "README.md"
+            ],
+            "keywords": [
+              "opencode",
+              "opencode-plugin",
+              "magpie",
+              "antigravity",
+              "gemini"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/antigravity"
+            }
+          }
         }
       },
-      "latest": "0.1.5",
+      "latest": "0.1.6",
       "readme": "# @magpie-community/opencode-antigravity-auth\n\nSigns in to **Antigravity** with a Google account (Google AI Pro, Ultra or\nthe free tier) and calls the models Antigravity serves: Gemini, and the\nClaude and GPT-OSS models Google hosts for it. Requests go through Google's\nCode Assist API (`daily-cloudcode-pa.googleapis.com`) the way the\nAntigravity app sends them. Provider id: `antigravity`. Ported from\nmagpie's built-in Antigravity account.\n\n## Sign-in\n\nThere are two ways to sign in:\n\n- **Sign in with Google (browser)** is Antigravity's own Google sign-in:\n  1. The plugin listens on a port of `127.0.0.1` (and `::1`).\n  2. It opens Google's consent page with PKCE and Antigravity's client and\n     scopes.\n  3. Google sends the browser back to `/oauth-callback` with a code, which\n     the plugin trades for a refresh token.\n- **Import an account** takes either a refresh token or the JSON an\n  account manager exports:\n  - one account (`{\"email\", \"token\": {\"refresh_token\", \"project_id\"}}`);\n  - a list of accounts, or an `{\"accounts\": […]}` object;\n  - plain lines of refresh tokens, where `#` starts a comment.\n\n  The import signs in the first account it finds. An export of another\n  subscription (a `type` other than Antigravity) is refused.\n\nThe sign-in is kept as an `oauth` entry:\n- `refresh` is `<refresh token>|<project>`.\n- `access` is the access token, minted again from the refresh token when\n  less than two minutes of it are left.\n- `accountId` is the account's email.\n\nWhen Google refuses the refresh token (`invalid_grant`), magpie asks you to\nsign in again.\n\n## Project and plan\n\nCode Assist serves an account under a project:\n\n- `loadCodeAssist` names the project.\n- An account without one is set up for its default tier through\n  `onboardUser`, as the app does on first sign-in.\n- The tiers are read again hourly, so a plan bought or lapsed shows up.\n- The plan shown is the paid tier's name, else the current tier's.\n\n## Models\n\n`fetchAvailableModels` lists the account's models:\n\n- The plugin names the account's paid and current tiers, as the app does.\n- A tier Google refuses with a 400 is left out for a day.\n- The list is kept for 10 minutes.\n- Antigravity's internal and retired models are left out.\n- The list keeps the order of the app's picker.\n\nA model Antigravity lists at several levels (`gemini-3.7-flash-low`,\n`-medium`, `-high`) is offered as one model, with a variant per level.\nA request picks the level in this order:\n\n1. magpie's `x-magpie-effort` header;\n2. the variant's `thinkingLevel`;\n3. the model's default level, which is high.\n\nAsking for a level the model lacks picks the nearest one, and a tie goes\nup.\n\n## Requests\n\nThe plugin sends every request to `v1internal:streamGenerateContent`,\nwrapped in the app's envelope (`{model, project, userAgent: \"antigravity\",\nrequestType: \"agent\", requestId, request}`):\n\n- The User-Agent is `antigravity/hub/<version> <os>/<arch>`. The version is\n  read from the app's update manifest every 6 hours.\n- The session id is a number made from the host's session header when named,\n  else the conversation's first real user prompt (skipping injected\n  `AGENTS.md` and environment preambles), so unrelated conversations that\n  share a preamble don't collide on one session.\n- Each reply chunk (`{response: …}`) is unwrapped back into Gemini's own.\n- A `generateContent` request gets the stream read whole.\n\nThe plugin also changes the request itself, as the built-in did:\n\n- **System prompt:** lines Antigravity turns away (Claude Code's billing\n  header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a\n  zero-width space.\n- **Tool calls:**\n  - Tool call ids are reduced to `[A-Za-z0-9_-]`.\n  - A tool's `{output}` or `{error}` response becomes `{result}`.\n- **Schemas:** a tool's schema is flattened to the subset Antigravity takes.\n  - Unions keep their own shape.\n  - Every array gets `items`.\n  - `null` types become `nullable`.\n  - `$ref` is resolved.\n  - Blank enum values are dropped.\n- **Claude:**\n  - A tool's images follow every function response.\n  - `AUTO` function calling becomes `VALIDATED`.\n  - A model without \"thinking\" in its name loses `thinkingConfig`.\n- **Gemini:**\n  - `maxOutputTokens` is dropped.\n  - Gemini 3 and later think at a `thinkingLevel`. Earlier models lose a\n    level a variant put on them.\n\n## Errors\n\n| What Antigravity answers | What the plugin answers |\n|---|---|\n| 429 \"Resource has been exhausted\" to a system prompt with a turned-away line | 400 \"turned this request away as from an unapproved channel\", with what to change (it isn't a quota, so nothing is rested) |\n| 429 from a plan's quota, the account having Google AI credits | with the Use AI credits switch on (off by default), the request is asked again once with `enabled_credit_types: [\"GOOGLE_ONE_AI\"]`, as the app's Use AI Credits does; with it off, the 429 says the switch would spend them |\n| 401 | 401, sign-in kept |\n| 404 | 404 \"model … not found\" |\n| Refresh refused | 401, `x-magpie-sign-in: expired` |\n\n## Usage\n\nEach model has a window from its `quotaInfo`:\n\n- The window reads 100% used when Antigravity leaves the fraction out.\n- It says the model's family (Gemini, Claude, GPT-OSS).\n- For a level, it also names the model magpie offers.\n\nThen `retrieveUserQuotaSummary`'s groups give the pools that models share,\neach with a 5-hour and a 7-day window (`aside`). Each model is put in the\npool it reads from:\n\n- a group whose versioned name is the model's own (Gemini 4 Argon);\n- else the group of its family, when the model reads like one of that\n  group's windows;\n- else a pool of its own, named for the model, when it reads otherwise.\n\n## Not carried over from the built-in\n\n- Resting an account that Antigravity turned away for 6 hours, and asking\n  its other accounts first. The 400 above makes magpie try the next\n  account at once.\n- Google Search grounding, and image models (drawing).\n- `countTokens` answers 404, so magpie estimates the count.\n- Sending the system prompt as written: the plugin always breaks up the\n  turned-away lines.\n- Importing many accounts at once: an import signs in one account.\n- Model names from models.dev: a model Antigravity leaves unnamed is named\n  for its id.\n"
     },
     "@magpie-community/opencode-astudio-auth": {
