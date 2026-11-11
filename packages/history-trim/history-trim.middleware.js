@@ -58,8 +58,19 @@ function turnStart(messages) {
 //    trailing spaces and tabs on a line go. Words are untouched.
 // ---------------------------------------------------------------------------
 
+function foldTrailingSpaces(text) {
+  const lines = text.split("\n")
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    let end = line.length
+    while (end > 0 && (line.charCodeAt(end - 1) === 32 || line.charCodeAt(end - 1) === 9)) end--
+    if (end !== line.length) lines[i] = line.slice(0, end)
+  }
+  return lines.join("\n")
+}
+
 function foldText(text) {
-  return text.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+$/gm, "")
+  return foldTrailingSpaces(text).replace(/\n{3,}/g, "\n\n")
 }
 
 function foldWhitespace(messages, preserveSystemPrompt) {
