@@ -156,6 +156,25 @@ describe("exclusive ledger updates", () => {
     expect(existsSync(staleLiveTmp)).toBe(false)
   })
 
+  test("a host stalled longer than LOCK_WAIT_MS still completes an uncontended update", () => {
+    const directory = tempDir()
+    const file = join(directory, "gumloop-ledger.json")
+    new Store(file).anchor("u", 100, "initial")
+    const stall = new Int32Array(new SharedArrayBuffer(4))
+    // No peer exists; the pause stands in for a GC, disk or antivirus stall
+    // between taking the deadline and the first contention check.
+    const store = new Store(file, Date.now, () => Atomics.wait(stall, 0, 0, LOCK_WAIT_MS + 100))
+    let ran = false
+    expect(store.change("u", (a) => {
+      ran = true
+      a.spent += 1
+      return a.spent
+    })).toBe(1)
+    expect(ran).toBe(true)
+    expect(store.remaining("u")).toBe(99)
+    expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
+  })
+
   test("an advanced injected Store clock does not treat a fresh live lock record as stale", () => {
     const directory = tempDir()
     const file = join(directory, "gumloop-ledger.json")

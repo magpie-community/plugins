@@ -272,7 +272,7 @@ function ledgerLock(file, onChoosing = undefined) {
   const name = `${process.pid}.${randomUUID()}`
   const participant = join(directory, `${prefix}${name}.json`)
   const temporary = join(directory, `${prefix}${name}.tmp`)
-  let deadline = performance.now() + LOCK_WAIT_MS
+  const deadline = performance.now() + LOCK_WAIT_MS
   const release = () => {
     for (const path of [participant, temporary]) {
       try {
@@ -284,7 +284,7 @@ function ledgerLock(file, onChoosing = undefined) {
   const publish = (ticket) => {
     writeFileSync(temporary, JSON.stringify({ pid: process.pid, name, ticket }), { flag: "wx" })
     // Fully written before publication.
-    retryFs(() => renameSync(temporary, participant), deadline)
+    retryFs(() => renameSync(temporary, participant))
   }
   const isAlive = (pid, alive) => {
     if (!alive.has(pid)) {
@@ -314,7 +314,7 @@ function ledgerLock(file, onChoosing = undefined) {
           const pid = tmpMatch ? Number(tmpMatch[1]) : NaN
           const path = join(directory, entry)
           if (Number.isSafeInteger(pid) && (!isAlive(pid, alive) || isStale(path))) {
-            try { remove(path, deadline) } catch {}
+            try { remove(path) } catch {}
           }
         }
         continue
@@ -325,20 +325,20 @@ function ledgerLock(file, onChoosing = undefined) {
       const path = join(directory, entry)
       if (path === participant || path === temporary) continue
       if (!isAlive(pid, alive) || isStale(path)) {
-        remove(path, deadline)
+        remove(path)
         continue
       }
       if (match[3] === "tmp") continue
       let record
       try {
-        record = JSON.parse(retryFs(() => readFileSync(path, "utf8"), deadline))
+        record = JSON.parse(retryFs(() => readFileSync(path, "utf8")))
       } catch (e) {
         if (e?.code === "ENOENT") continue // owner released after the listing
         throw e
       }
       const peerName = `${match[1]}.${match[2]}`
       if (record?.pid !== pid || record.name !== peerName || !Number.isSafeInteger(record.ticket) || record.ticket < 0) {
-        remove(path, deadline)
+        remove(path)
         continue
       }
       out.push(record)
@@ -352,12 +352,11 @@ function ledgerLock(file, onChoosing = undefined) {
     publish(0)
     const ticket = Math.max(0, ...peers().map((p) => p.ticket)) + 1
     if (!Number.isSafeInteger(ticket)) throw new Error("Ledger lock ticket overflow")
-    if (onChoosing) {
-      onChoosing()
-      deadline = performance.now() + LOCK_WAIT_MS
-    }
+    onChoosing?.()
     publish(ticket)
-    while (performance.now() < deadline) {
+    // The deadline bounds only the wait for a peer. A stalled host (GC, disk,
+    // antivirus) must still get one check, or an uncontended update is lost.
+    for (let first = true; first || performance.now() < deadline; first = false) {
       const blocked = peers().some((p) => p.ticket === 0 || (p.ticket > 0 && (p.ticket < ticket || (p.ticket === ticket && p.name < name))))
       if (!blocked) return release
       Atomics.wait(lockWait, 0, 0, Math.min(5, Math.max(0, deadline - performance.now())))
