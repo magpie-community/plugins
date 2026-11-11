@@ -593,7 +593,7 @@ test("usageFromStatistics: the soonest check-in credits to lapse show on the bon
   const usage = x.usageFromStatistics({
     metrics: [
       { name: "usageTotalPackageCredit", package_credit_amount: 7000, package_credit_remain: 6500 },
-      { name: "usageBonusPackageCredit", package_credit_amount: 2000, package_credit_remain: 1500 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 2000, package_credit_remain: 1500, package_credit_expiring_amount: 1000 },
     ],
   }, undefined, { grants })
   const bonus = usage.windows.find((w) => w.name === "赠送积分包")
@@ -602,6 +602,84 @@ test("usageFromStatistics: the soonest check-in credits to lapse show on the bon
   // The total loses them too.
   assert.equal(usage.windows.find((w) => w.name === "总积分").runsOutAt, grants[1].expiresAt)
   assert.equal(x.soonestLapse(x.grantBatches([grants[0]])), undefined)
+})
+
+// #982 (KiMelody), two accounts read 2026-11-11 in Beijing, the numbers as
+// filed. B's ledger grant is the last check-in to the millisecond; the vendor
+// said nothing is about to lapse on either.
+const NOW_982 = Date.parse("2026-11-11T10:00:00Z")
+const GRANT_982 = { at: "2026-11-10T16:01:04.916Z", credit: 100, expiresAt: "2026-11-11T16:01:03.812Z" }
+
+test("a spent check-in leaves no lapse on the bucket or the total (#982, account A)", () => {
+  const stats = {
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 600, package_credit_remain: 82.05, package_credit_expiring_amount: 0 },
+      { name: "usageBasicPackageCredit", package_credit_amount: 500, package_credit_remain: 82.05, package_credit_expiring_amount: 0 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 100, package_credit_remain: 0, package_credit_expiring_amount: 0 },
+    ],
+  }
+  // The ledger's grant, and a vendor batch whose counter lags the bucket.
+  const ghost = [{ metric: "usageBonusPackageCredit", amount: 100, left: 100, expiresAt: Date.parse(GRANT_982.expiresAt) }]
+  for (const opts of [{ grants: [GRANT_982] }, { batches: ghost }]) {
+    const usage = x.usageFromStatistics(stats, undefined, { ...opts, now: NOW_982 })
+    const total = usage.windows.find((w) => w.name === "总积分")
+    const bonus = usage.windows.find((w) => w.name === "赠送积分包")
+    assert.equal(bonus.amount, 100)
+    assert.equal(bonus.runsOutAt, undefined)
+    assert.equal(total.runsOutAt, undefined, "the total has none of the bonus bucket's credits left to lose")
+    assert.equal(total.runsOut, undefined)
+    assert.equal(total.expiring, 0)
+  }
+})
+
+test("a check-in in the ledger is no lapse when the vendor says nothing expires (#982, account B)", () => {
+  const stats = (expiring) => ({
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 4100, package_credit_remain: 2344.81, package_credit_expiring_amount: expiring },
+      { name: "usageBonusPackageCredit", package_credit_amount: 4100, package_credit_remain: 2344.81, package_credit_expiring_amount: expiring },
+    ],
+  })
+  const read = (expiring) => {
+    const usage = x.usageFromStatistics(stats(expiring), undefined, { grants: [GRANT_982], now: NOW_982 })
+    return [usage.windows.find((w) => w.name === "总积分"), usage.windows.find((w) => w.name === "赠送积分包")]
+  }
+  const [total, bonus] = read(0)
+  assert.equal(bonus.amount, 1755.19)
+  assert.equal(bonus.used.toFixed(2), "42.81")
+  assert.equal(bonus.expiring, 0)
+  assert.equal(bonus.runsOutAt, undefined, "the ledger can't say the grant wasn't spent")
+  assert.equal(total.runsOutAt, undefined)
+  // Said by the vendor, the ledger tells when, and only that much lapses.
+  const [total2, bonus2] = read(40)
+  assert.equal(bonus2.runsOutAt, GRANT_982.expiresAt)
+  assert.equal(bonus2.runsOut, 40)
+  assert.equal(total2.runsOutAt, GRANT_982.expiresAt)
+  assert.equal(total2.runsOut, 40)
+  // Without the vendor's field nothing is known.
+  assert.equal(read(undefined)[1].runsOutAt, undefined)
+  assert.equal(x.grantBatches([GRANT_982])[0].estimated, true)
+})
+
+test("the total's lapse is the buckets' own, each held to what it has left (#982)", () => {
+  const at = NOW_982 + 3 * 86_400_000
+  const usage = x.usageFromStatistics({
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 3000, package_credit_remain: 2500 },
+      { name: "usageOnDemandPackageCredit", package_credit_amount: 2000, package_credit_remain: 2000 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 30 },
+    ],
+  }, undefined, {
+    now: NOW_982,
+    batches: [
+      { metric: "usageBonusPackageCredit", amount: 1000, left: 400, expiresAt: at },
+      { metric: "usageOnDemandPackageCredit", amount: 2000, left: 2000, expiresAt: at + 60 * 86_400_000 },
+    ],
+  })
+  const bonus = usage.windows.find((w) => w.name === "赠送积分包")
+  const total = usage.windows.find((w) => w.name === "总积分")
+  assert.equal(bonus.runsOut, 30, "never more than the bucket has")
+  assert.equal(total.runsOutAt, iso(at))
+  assert.equal(total.runsOut, 30)
 })
 
 // Shaped as the console's own answers (personal-usage → 获取明细).
@@ -2322,7 +2400,7 @@ test("a claimed check-in is kept, and the usage card says when those credits run
       return new Response(JSON.stringify({
         metrics: [
           { name: "usageTotalPackageCredit", package_credit_amount: 6500, package_credit_remain: 6500 },
-          { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 1000 },
+          { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 1000, package_credit_expiring_amount: 1000 },
         ],
       }), { status: 200 })
     }

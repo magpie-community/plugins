@@ -105,7 +105,8 @@ const MAIN_AGENT_FALLBACK_ID = "a8bcb36232554267a5142361cc25a393"
 // Agents tried for a model list before giving up.
 const AGENT_DETAIL_TRIES = 3
 const AGENT_CENTER_HEADERS = { "Content-Type": "application/json", "Agent-Type": "AgentCenter", "X-Language": "zh-cn" }
-// Check-in credits are good for 30 days from when they are given.
+// How long check-in credits last when the claim names no date of its own. The
+// vendor's date wins: today's check-ins answer one about a day on (#982).
 const CHECKIN_CREDIT_DAYS = 30
 // Every credit batch with its own expiry, as the console's 「获取明细」 reads
 // them (its /portal/snap-manager and /portal/promptcenter calls are these):
@@ -2059,14 +2060,34 @@ function soonestLapse(batches, now = Date.now()) {
   return { at, credit: live.filter((b) => beijingDay(b.expiresAt) === day).reduce((n, b) => n + b.left, 0) }
 }
 
-/** The plugin's own check-in ledger as batches, for when the vendor's can't be read. */
+/**
+ * The plugin's own check-in ledger as batches, for when the vendor's can't be
+ * read. What was spent of each is not known, so `left` is only the grant and
+ * the batch is `estimated`: it tells when, never how much is still in it (#982).
+ */
 const grantBatches = (grants) =>
-  (grants ?? []).map((g) => ({ metric: PACKAGE_TYPE_METRICS.bonus, amount: num(g.credit), left: num(g.credit), expiresAt: vendorDate(g.expiresAt) }))
+  (grants ?? []).map((g) => ({
+    metric: PACKAGE_TYPE_METRICS.bonus, amount: num(g.credit), left: num(g.credit), expiresAt: vendorDate(g.expiresAt), estimated: true,
+  }))
+
+/**
+ * What of one bucket lapses soonest, apart from a reset: its own batches'
+ * soonest lapse, never more than the bucket has left (a batch's own counter
+ * can lag the bucket's). Estimated batches say only when; how much is the
+ * vendor's own expiring amount, so with none said nothing lapses (#982).
+ */
+function bucketLapse(batches, remain, expiring, now) {
+  const lapse = soonestLapse(batches, now)
+  if (!lapse) return undefined
+  const cap = batches.some((b) => b.estimated) ? Math.min(remain, expiring ?? 0) : remain
+  const credit = Math.min(lapse.credit, cap)
+  return credit > 0 ? { at: lapse.at, credit } : undefined
+}
 
 // ---- the check-in ledger -----------------------------------------------------
 //
 // CodeArts tells how many credits a bucket holds, never when each given batch
-// lapses; check-in credits are good for 30 days from their day. The plugin keeps
+// lapses; a check-in's claim says when its credits do. The plugin keeps
 // the claims it made, per account, so the usage card can say when the soonest
 // of them runs out. Best effort: a ledger that can't be read or written only
 // leaves that line out.
@@ -2505,9 +2526,11 @@ function benefitWindow(raw, ids = BENEFIT_MODEL_FALLBACK) {
  * fetchCreditBatches): the plan's batch gives the month's reset to the second,
  * and the soonest of the rest to lapse is each bucket's (and the total's)
  * `runsOutAt`/`runsOut`. Without them, `grants` (the check-ins the plugin
- * claimed, 30 days each) stand in, and the reset is `end_date`.
+ * claimed, each until the date its claim said) stand in, and the reset is
+ * `end_date`. A window's `runsOut` is only credit its own remainder holds:
+ * none when that is 0, or when nothing in it lapses (#982).
  */
-function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = {}) {
+function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now = Date.now() } = {}) {
   let data = raw
   if (raw && typeof raw.code === "number") {
     if (raw.code !== 0) return { error: firstOf(raw.message, raw.msg, `CodeArts code ${raw.code}`), windows: [] }
@@ -2517,7 +2540,6 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = 
   const pkg = asRecord(data.package)
   const plan = firstOf(pkg.package_name_cn, pkg.package_name_en, pkg.spec_code)
   const metrics = Array.isArray(data.metrics) ? data.metrics : []
-  const now = Date.now()
   const known = batches ?? grantBatches(grants)
   // The plan's own batch ends when the month's allowance comes back.
   const planEnds = known.filter((b) => b.metric === PACKAGE_TYPE_METRICS.basic && b.expiresAt > now).map((b) => b.expiresAt)
@@ -2533,21 +2555,38 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = 
     const limit = num(rec.package_credit_amount)
     const remain = num(rec.package_credit_remain)
     if (limit <= 0 && remain <= 0) continue // empty bucket, nothing to show
+    const said = rec.package_credit_expiring_amount
     const w = creditWindow(name, limit, remain, {
       resetsAt: MONTHLY_CREDIT_METRICS.includes(rec.name) ? resetsAt : undefined,
-      expiring: num(rec.package_credit_expiring_amount),
+      expiring: num(said),
     })
+    // The vendor's own count of what is about to lapse, as a field (#982).
+    if (said !== undefined && said !== null && said !== "") w.expiring = num(said)
     metricOf.set(w, rec.name)
     windows.push(w)
   }
 
-  // What lapses soonest, apart from the month's reset: a bucket's own
-  // batches; for the total, every batch but the plan's.
+  // What lapses soonest, apart from the month's reset: each bucket's own
+  // batches, held to what that bucket has left; for the total, the soonest
+  // of the buckets' lapses, what lapses that Beijing day summed.
+  const lapses = new Map()
+  for (const item of metrics) {
+    const rec = asRecord(item)
+    if (rec.name === TOTAL_CREDIT_METRIC || rec.name === PACKAGE_TYPE_METRICS.basic || lapses.has(rec.name)) continue
+    if (!Object.values(PACKAGE_TYPE_METRICS).includes(rec.name)) continue
+    const said = rec.package_credit_expiring_amount
+    const expiring = said === undefined || said === null || said === "" ? undefined : num(said)
+    const lapse = bucketLapse(known.filter((b) => b.metric === rec.name), Math.max(0, num(rec.package_credit_remain)), expiring, now)
+    if (lapse) lapses.set(rec.name, lapse)
+  }
+  const soonest = lapses.size ? Math.min(...[...lapses.values()].map((l) => l.at)) : undefined
   for (const w of windows) {
     const metric = metricOf.get(w)
-    if (metric === PACKAGE_TYPE_METRICS.basic) continue
-    const own = known.filter((b) => (metric === TOTAL_CREDIT_METRIC ? b.metric !== PACKAGE_TYPE_METRICS.basic : b.metric === metric))
-    const lapse = soonestLapse(own, now)
+    let lapse = lapses.get(metric)
+    if (metric === TOTAL_CREDIT_METRIC && soonest !== undefined) {
+      const day = beijingDay(soonest)
+      lapse = { at: soonest, credit: [...lapses.values()].filter((l) => beijingDay(l.at) === day).reduce((n, l) => n + l.credit, 0) }
+    }
     const left = Math.max(0, w.limit - w.amount)
     if (lapse && left > 0) {
       w.runsOutAt = new Date(lapse.at).toISOString()
@@ -3024,7 +3063,7 @@ export const _internal = {
   BENEFIT_CLAIM_URL, AGENT_LIST_URL, AGENT_DETAIL_URL, CODE_AGENT_ID,
   canonicalQuery, beijingDay, nextBeijingMidnight, vendorDate, creditRateOf,
   claimBenefit, ensureBenefitClaimed, parseAgentModel, fetchAgentModels,
-  readGrants, recordGrant, readUnconfirmed, recordUnconfirmed, grantExpiry, grantBatches, soonestLapse, fetchCreditBatches,
+  readGrants, recordGrant, readUnconfirmed, recordUnconfirmed, grantExpiry, grantBatches, soonestLapse, bucketLapse, fetchCreditBatches,
   PACKAGE_CREDIT_PAGE_URL, OPS_CREDIT_OVERVIEW_URL, OPS_CREDIT_CAMPAIGN_URL,
   toBytes, isBenefitModel, prepareChatBody, signedFetch, signedGet,
   TOOL_NAME_LIMIT, cutToolName, shortenToolNames, restoreToolNames, restoreToolNamesInStream,

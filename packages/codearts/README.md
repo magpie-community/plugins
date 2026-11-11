@@ -124,8 +124,14 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 - When each credit batch expires is read from the CodeArts console's own calls
   (`snap-manager/v1/package/credit/page`, `v1/ops/credit/*`); when those can't be read, the
   plugin falls back to a small ledger of the check-ins it claimed,
-  `~/.config/magpie/codearts-checkins.json` (or `MAGPIE_CODEARTS_LEDGER`). This part is still
-  being checked against more accounts — trust the CodeArts console where they differ.
+  `~/.config/magpie/codearts-checkins.json` (or `MAGPIE_CODEARTS_LEDGER`), each check-in until
+  the date its claim named. This part is still being checked against more accounts — trust the
+  CodeArts console where they differ.
+- A window's `runsOutAt` / `runsOut` is only credit its own remainder holds: none when the bucket
+  is empty, never more than it has left, and the total's is the buckets' own. The ledger can't
+  tell what was spent of a check-in, so from it the amount is the vendor's own
+  `package_credit_expiring_amount` (each window's `expiring`), and with none said there is no
+  lapse.
 - `auth.checkin`: the client's 「限时福利 → 每日领取」 — `GET /v1/ops/delivery?channel=IDE`,
   `POST /v1/ops/claim`, then `POST /v1/ops/confirm` when the claim answers an id. A claim whose
   confirm failed is kept in that ledger for the day and confirmed at the next check-in; one the
