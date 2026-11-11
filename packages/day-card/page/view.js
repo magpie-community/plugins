@@ -14,6 +14,7 @@
       agentModel: "AGENT / MODEL", cost: "COST",
       totalTokens: "TOTAL TOKENS", input: "INPUT", output: "OUTPUT", hit: "CACHE HIT RATE",
       footer: [["Get ", "magpie", " at usemagpie.ai"], ["Every agent's AI usage, on Mac, Windows and Linux"]],
+      credit: "Design inspired by nowdex.app",
       noCalls: "No calls on this day.", more: (n) => `+${n} MORE`, unpriced: (n) => (n === 1 ? "1 request without a price" : `${n} requests without a price`),
       noAgent: "NO AGENT NAMED",
       today: "Today", prev: "Previous day", next: "Next day", copy: "Copy image", copied: "Copied", save: "Save PNG", saved: "Saved to",
@@ -29,6 +30,7 @@
       agentModel: "AGENT / 模型", cost: "费用",
       totalTokens: "TOKEN 总量", input: "输入", output: "输出", hit: "缓存命中率",
       footer: [["在 usemagpie.ai 下载 ", "magpie", ""], ["在 Mac、Windows、Linux 上统计每个 Agent 的 AI 用量"]],
+      credit: "设计灵感来自 nowdex.app",
       noCalls: "这一天没有调用。", more: (n) => `还有 ${n} 个`, unpriced: (n) => `${n} 次请求没有价格`,
       noAgent: "未标明 AGENT",
       today: "今天", prev: "前一天", next: "后一天", copy: "复制图片", copied: "已复制", save: "保存 PNG", saved: "已保存到",
@@ -44,6 +46,7 @@
       agentModel: "AGENT / 模型", cost: "費用",
       totalTokens: "TOKEN 總量", input: "輸入", output: "輸出", hit: "快取命中率",
       footer: [["在 usemagpie.ai 下載 ", "magpie", ""], ["在 Mac、Windows、Linux 上統計每個 Agent 的 AI 用量"]],
+      credit: "設計靈感來自 nowdex.app",
       noCalls: "這一天沒有呼叫。", more: (n) => `還有 ${n} 個`, unpriced: (n) => `${n} 次請求沒有價格`,
       noAgent: "未標明 AGENT",
       today: "今天", prev: "前一天", next: "後一天", copy: "複製圖片", copied: "已複製", save: "儲存 PNG", saved: "已儲存到",
@@ -59,6 +62,7 @@
       agentModel: "エージェント / モデル", cost: "コスト",
       totalTokens: "合計トークン", input: "入力", output: "出力", hit: "キャッシュヒット率",
       footer: [["usemagpie.ai で ", "magpie", " を入手"], ["Mac・Windows・Linux で全エージェントの AI 使用量を"]],
+      credit: "デザインは nowdex.app に着想を得ています",
       noCalls: "この日の呼び出しはありません。", more: (n) => `ほか ${n} 件`, unpriced: (n) => `価格のないリクエスト ${n} 件`,
       noAgent: "エージェント名なし",
       today: "今日", prev: "前の日", next: "次の日", copy: "画像をコピー", copied: "コピーしました", save: "PNG を保存", saved: "保存先",
@@ -74,6 +78,7 @@
       agentModel: "AGENT / MODELL", cost: "KOSTEN",
       totalTokens: "TOKENS GESAMT", input: "EINGABE", output: "AUSGABE", hit: "CACHE-TREFFERQUOTE",
       footer: [["Hol dir ", "magpie", " auf usemagpie.ai"], ["Die KI-Nutzung jedes Agents, auf Mac, Windows und Linux"]],
+      credit: "Design inspiriert von nowdex.app",
       noCalls: "An diesem Tag keine Aufrufe.", more: (n) => `+${n} WEITERE`, unpriced: (n) => (n === 1 ? "1 Anfrage ohne Preis" : `${n} Anfragen ohne Preis`),
       noAgent: "OHNE AGENT",
       today: "Heute", prev: "Vorheriger Tag", next: "Nächster Tag", copy: "Bild kopieren", copied: "Kopiert", save: "PNG sichern", saved: "Gesichert in",
@@ -214,7 +219,7 @@
   // The receipt, as the drawing lays it out:
   // { title, tagline, head[{label, value}], totalLabel, total, totalNote,
   //   stats[], agentHead[2], agents[{name, icon, value, models[{name, icon,
-  //   value}], more}], moreAgents, tokens[], note, empty, footer[[a, b, c]] }
+  //   value}], more}], moreAgents, tokens[], note, empty, footer[[a, b, c]], credit }
   // An agent shows its first `models` models by cost, and the card its
   // first `agents` agents.
   function card(day, lang, limits = {}, now = new Date()) {
@@ -267,6 +272,7 @@
       note: Number(day.unpriced) > 0 ? t.unpriced(Number(day.unpriced)) : "",
       empty: calls === 0 ? t.noCalls : "",
       footer: t.footer,
+      credit: t.credit,
     };
   }
 

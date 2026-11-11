@@ -115,6 +115,8 @@ test("the receipt: title, the day, its cost, then its parts", () => {
   expect(V.card({ ...day, errors: 0 }, "en", {}, now).stats.map((s) => s.label)).toEqual(["STREAK", "REQUESTS", "VS AVERAGE DAY"])
   // the footer is magpie's, one word of each line bold
   for (const t of Object.values(V.TEXT)) expect(t.footer[0][1]).toBe("magpie")
+  // and the receipt credits nowdex, whose design it follows, in every language
+  for (const lang of Object.keys(V.TEXT)) expect(V.card(day, lang, {}, now).credit).toContain("nowdex.app")
 })
 
 test("agents and their models by cost, each with what was left out", () => {

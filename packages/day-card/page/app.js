@@ -313,6 +313,15 @@
       }
       y += 20;
     }
+
+    // whose design the receipt follows
+    if (c.credit) {
+      ctx.font = f(400, 9.5);
+      ctx.fillStyle = MUTED;
+      ctx.textAlign = "center";
+      ctx.fillText(c.credit, PW / 2, y);
+      y += 18;
+    }
     return Math.ceil(y + 4);
   }
 
