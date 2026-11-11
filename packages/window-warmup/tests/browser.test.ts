@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startService, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
+import { pinMagpieDirsForTest } from "./test-env";
+
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 // Playwright 的最小类型面：不依赖它的类型声明，没装也能通过 tsc
 interface Locator {
@@ -97,9 +100,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await svc?.stop();
-  gw?.stop();
-  if (dir) await rm(dir, { recursive: true, force: true });
+  try {
+    await svc?.stop();
+    gw?.stop();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  } finally {
+    restoreMagpieDirs();
+  }
 });
 
 for (const [name, engine] of ENGINES) {
