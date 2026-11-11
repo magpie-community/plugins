@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
 import { GumloopPlugin, _internal } from "./index.mjs"
-import { Store } from "./gumloop.mjs"
+import { LOCK_STALE_MS, LOCK_WAIT_MS, Store } from "./gumloop.mjs"
 
 const auth = { type: "api", key: "mock-regression-key", metadata: { userId: "regression-user" } }
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -82,8 +82,6 @@ describe("exclusive ledger updates", () => {
     const before = readFileSync(file)
     const owner = await holdLock(directory)
     const lock = join(directory, readdirSync(directory).find((name) => name.includes(".lock.") && name.endsWith(".json")))
-    // Age alone must never allow another process to steal a live lock.
-    utimesSync(lock, new Date(0), new Date(0))
     let callbacks = 0
     const start = performance.now()
     try {
@@ -95,8 +93,8 @@ describe("exclusive ledger updates", () => {
       expect(callbacks).toBe(0)
       expect(readFileSync(file)).toEqual(before)
       expect(existsSync(lock)).toBe(true)
-      expect(performance.now() - start).toBeGreaterThanOrEqual(7900)
-      expect(performance.now() - start).toBeLessThan(12000)
+      expect(performance.now() - start).toBeGreaterThanOrEqual(900)
+      expect(performance.now() - start).toBeLessThan(4000)
     } finally {
       await owner.stop()
     }
@@ -107,6 +105,83 @@ describe("exclusive ledger updates", () => {
     expect(store.account(auth.metadata.userId).month).toMatchObject({ calls: 1, credits: 1 })
     expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
   }, 15000)
+
+  test("a leftover lock record with a live foreign PID blocks at most LOCK_WAIT_MS while fresh and is removed once older than LOCK_STALE_MS", async () => {
+    const directory = tempDir()
+    const file = join(directory, "gumloop-ledger.json")
+    const store = new Store(file)
+    store.anchor(auth.metadata.userId, 5000, "initial")
+    const uuid = "00000000-0000-4000-8000-000000000001"
+    const lockPath = join(directory, `gumloop-ledger.json.lock.${process.ppid}.${uuid}.json`)
+    writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, name: `${process.ppid}.${uuid}`, ticket: 3 }))
+
+    const p = _internal.createPlugin({ directory, magpie: true, fetchImpl: fake })
+    const t0 = performance.now()
+    expect((await chat(p)).res.status).toBe(200)
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(LOCK_WAIT_MS - 50)
+    expect(performance.now() - t0).toBeLessThan(800)
+    expect(store.remaining(auth.metadata.userId)).toBe(5000)
+    expect(existsSync(lockPath)).toBe(true)
+
+    const old = new Date(Date.now() - LOCK_STALE_MS - 2000)
+    utimesSync(lockPath, old, old)
+    const t1 = performance.now()
+    expect((await chat(p)).res.status).toBe(200)
+    expect(performance.now() - t1).toBeLessThan(200)
+    expect(existsSync(lockPath)).toBe(false)
+    expect(store.remaining(auth.metadata.userId)).toBe(4999)
+    expect(readdirSync(directory)).toEqual(["gumloop-ledger.json"])
+  })
+
+  test("ignores stray lock filenames and cleans up stale or dead-PID ledger .tmp files", async () => {
+    const directory = tempDir()
+    const file = join(directory, "gumloop-ledger.json")
+    const store = new Store(file)
+    store.anchor(auth.metadata.userId, 5000, "initial")
+    const strayLock = join(directory, "gumloop-ledger.json.lock.bak")
+    const deadTmp = join(directory, "gumloop-ledger.json.99999999.1.tmp")
+    const staleLiveTmp = join(directory, `gumloop-ledger.json.${process.ppid}.2.tmp`)
+    writeFileSync(strayLock, "unexpected")
+    writeFileSync(deadTmp, "{}")
+    writeFileSync(staleLiveTmp, "{}")
+    const old = new Date(Date.now() - LOCK_STALE_MS - 2000)
+    utimesSync(staleLiveTmp, old, old)
+
+    const p = _internal.createPlugin({ directory, magpie: true, fetchImpl: fake })
+    expect((await chat(p)).res.status).toBe(200)
+    expect(store.remaining(auth.metadata.userId)).toBe(4999)
+    expect(existsSync(deadTmp)).toBe(false)
+    expect(existsSync(staleLiveTmp)).toBe(false)
+  })
+
+  test("waits for a peer in ticket 0 (choosing) state before entering critical section", () => {
+    const directory = tempDir()
+    const file = join(directory, "gumloop-ledger.json")
+    new Store(file).anchor("u", 100, "initial")
+    let enteredA = false
+    let enteredB = false
+    let choosingRan = false
+    const storeB = new Store(file)
+    const storeA = new Store(file, Date.now, () => {
+      choosingRan = true
+      // At this instant storeA has published ticket 0 on disk and chosen ticket 1,
+      // but has not yet published ticket 1. storeB sees storeA with ticket 0,
+      // picks ticket 1, and must wait on storeA's ticket 0 rather than entering.
+      expect(storeB.change("u", (a) => {
+        enteredB = true
+        a.spent += 10
+      })).toBeUndefined()
+    })
+    expect(storeA.change("u", (a) => {
+      enteredA = true
+      a.spent += 1
+      return a.spent
+    })).toBe(1)
+    expect(choosingRan).toBe(true)
+    expect(enteredA).toBe(true)
+    expect(enteredB).toBe(false)
+    expect(storeB.remaining("u")).toBe(99)
+  })
 
   for (const runtime of ["node", process.execPath]) {
     for (const phase of ["held", "partial", "choosing"]) {
@@ -504,7 +579,8 @@ describe("structured credit refusals", () => {
     [403, { error: { type: "credit_limit_exceeded" } }, true],
     [403, { error: "credit_limit_exceeded" }, true],
     [403, { code: "credit_limit_exceeded" }, true],
-    [402, { error: "Payment required" }, true],
+    [402, { error: "Payment required" }, false],
+    [402, { error: { code: 402, message: "Insufficient credits" } }, false],
   ]
   for (const [status, body, exhausted] of cases) {
     test(`${status} ${JSON.stringify(body)} ${exhausted ? "exhausts" : "preserves"} balance`, async () => {

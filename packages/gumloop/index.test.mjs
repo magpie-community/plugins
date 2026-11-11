@@ -231,6 +231,7 @@ describe("loader and requests", () => {
     expect(chats().length).toBe(3)
   })
   test("an out-of-credits answer becomes a 429 that keeps the sign-in and zeroes the estimate", async () => {
+    // Assumed Gumloop credit-exhaustion shape (no live exhaustion response has been captured).
     const f = fake(() => json(403, { error: "credit_limit_exceeded", message: "You have reached your credit limit." }))
     const p = plugin(f)
     const { res, text } = await chatOnce(p, { model: "claude-sonnet-5-5", messages: [] })
@@ -244,6 +245,12 @@ describe("loader and requests", () => {
     p.tick(1000)
     const later = await p.auth.usage(async () => ({ ...auth, metadata: { ...auth.metadata, balance: 800, balanceAt: 1_800_000_000_500 } }))
     expect(later.windows[0]).toMatchObject({ balance: 800 })
+    // upstream HTTP 402 passes through without zeroing the balance
+    const p402 = plugin(fake(() => json(402, { error: { message: "Insufficient credits" } })))
+    const r402 = await chatOnce(p402, { model: "claude-sonnet-5-5", messages: [] })
+    expect(r402.res.status).toBe(402)
+    const card402 = await p402.auth.usage(async () => ({ ...auth, metadata: { ...auth.metadata, balance: 500, balanceAt: 1 } }))
+    expect(card402.windows[0]).toMatchObject({ balance: 500 })
   })
   test("a refused key marks the account expired; other errors pass through", async () => {
     const f = fake(() => json(403, { error: "Invalid API key" }))

@@ -1,7 +1,7 @@
 // Gumloop's API: what an account can use, what a call costs, and what this
 // plugin has spent. Nothing here signs in or holds a key; index.mjs does.
 import { randomUUID } from "node:crypto"
-import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
 export const API = "https://api.gumloop.com/api/v1"
@@ -223,7 +223,8 @@ export function monthKey(t) {
 // `magpie` command runs its own plugin host beside the app's, so each change
 // locks and re-reads the file first rather than trusting what this process holds.
 let seq = 0
-const LOCK_WAIT_MS = 2000
+export const LOCK_WAIT_MS = 250
+export const LOCK_STALE_MS = 30_000
 const lockWait = new Int32Array(new SharedArrayBuffer(4))
 const ownedLocks = new Set()
 // Windows can temporarily reject opening/deleting a name being renamed or
@@ -236,7 +237,7 @@ function retryFs(fn, deadline = performance.now() + LOCK_WAIT_MS) {
     } catch (e) {
       const remaining = deadline - performance.now()
       if (!["EPERM", "EACCES", "EBUSY"].includes(e?.code) || remaining <= 0) throw e
-      Atomics.wait(lockWait, 0, 0, Math.min(10, remaining))
+      Atomics.wait(lockWait, 0, 0, Math.min(5, remaining))
     }
   }
 }
@@ -261,15 +262,17 @@ process.once("exit", () => {
 //
 // There is deliberately no shared lock pathname to unlink. A dead owner's
 // unique files can be removed by any number of recoverers without touching a
-// later acquisition. PID reuse is conservative: a live/unknown PID blocks,
-// never authorizes recovery. Only ESRCH from kill(pid, 0) proves absence.
-function ledgerLock(file) {
+// later acquisition. ESRCH from kill(pid, 0) recovers immediately; otherwise a
+// record older than LOCK_STALE_MS recovers even when the OS reused its PID.
+function ledgerLock(file, now = Date.now, onChoosing = undefined) {
   const directory = dirname(file)
-  const prefix = `${basename(file)}.lock.`
+  const base = basename(file)
+  const prefix = `${base}.lock.`
+  const tmpPrefix = `${base}.`
   const name = `${process.pid}.${randomUUID()}`
   const participant = join(directory, `${prefix}${name}.json`)
   const temporary = join(directory, `${prefix}${name}.tmp`)
-  const deadline = performance.now() + LOCK_WAIT_MS
+  let deadline = performance.now() + LOCK_WAIT_MS
   const release = () => {
     for (const path of [participant, temporary]) {
       try {
@@ -283,29 +286,54 @@ function ledgerLock(file) {
     // Fully written before publication.
     retryFs(() => renameSync(temporary, participant), deadline)
   }
+  const isAlive = (pid, alive) => {
+    if (!alive.has(pid)) {
+      try {
+        process.kill(pid, 0)
+        alive.set(pid, true)
+      } catch (e) {
+        alive.set(pid, e?.code !== "ESRCH")
+      }
+    }
+    return alive.get(pid)
+  }
+  const isStale = (path) => {
+    try {
+      return Math.max(Date.now(), now()) - statSync(path).mtimeMs > LOCK_STALE_MS
+    } catch (e) {
+      return e?.code === "ENOENT"
+    }
+  }
   const peers = () => {
     const out = []
     const alive = new Map()
     for (const entry of readdirSync(directory)) {
-      if (!entry.startsWith(prefix)) continue
-      const match = /^([1-9]\d*)\.([a-f0-9-]{36})\.(json|tmp)$/.exec(entry.slice(prefix.length))
-      if (!match) throw new Error("Unrecognized ledger lock owner")
-      const pid = Number(match[1])
-      if (!Number.isSafeInteger(pid)) throw new Error("Invalid ledger lock PID")
-      if (!alive.has(pid)) {
-        try {
-          process.kill(pid, 0)
-          alive.set(pid, true)
-        } catch (e) {
-          alive.set(pid, e?.code !== "ESRCH")
+      if (!entry.startsWith(prefix)) {
+        if (entry.startsWith(tmpPrefix)) {
+          const tmpMatch = /^([1-9]\d*)\.\d+\.tmp$/.exec(entry.slice(tmpPrefix.length))
+          const pid = tmpMatch ? Number(tmpMatch[1]) : NaN
+          const path = join(directory, entry)
+          if (Number.isSafeInteger(pid) && (!isAlive(pid, alive) || isStale(path))) {
+            try { remove(path, deadline) } catch {}
+          }
         }
+        continue
+      }
+      const match = /^([1-9]\d*)\.([a-f0-9-]{36})\.(json|tmp)$/.exec(entry.slice(prefix.length))
+      const pid = match ? Number(match[1]) : NaN
+      if (!match || !Number.isSafeInteger(pid)) {
+        if (isStale(join(directory, entry))) {
+          try { remove(join(directory, entry), deadline) } catch {}
+        }
+        continue
       }
       const path = join(directory, entry)
-      if (!alive.get(pid)) {
+      if (path === participant || path === temporary) continue
+      if (!isAlive(pid, alive) || isStale(path)) {
         remove(path, deadline)
         continue
       }
-      if (match[3] === "tmp" || path === participant) continue
+      if (match[3] === "tmp") continue
       let record
       try {
         record = JSON.parse(retryFs(() => readFileSync(path, "utf8"), deadline))
@@ -315,7 +343,8 @@ function ledgerLock(file) {
       }
       const peerName = `${match[1]}.${match[2]}`
       if (record?.pid !== pid || record.name !== peerName || !Number.isSafeInteger(record.ticket) || record.ticket < 0) {
-        throw new Error("Invalid ledger lock participant")
+        remove(path, deadline)
+        continue
       }
       out.push(record)
     }
@@ -328,11 +357,13 @@ function ledgerLock(file) {
     publish(0)
     const ticket = Math.max(0, ...peers().map((p) => p.ticket)) + 1
     if (!Number.isSafeInteger(ticket)) throw new Error("Ledger lock ticket overflow")
+    onChoosing?.()
+    deadline = performance.now() + LOCK_WAIT_MS
     publish(ticket)
     while (performance.now() < deadline) {
-      const blocked = peers().some((p) => p.ticket === 0 || p.ticket < ticket || (p.ticket === ticket && p.name < name))
+      const blocked = peers().some((p) => p.ticket === 0 || (p.ticket > 0 && (p.ticket < ticket || (p.ticket === ticket && p.name < name))))
       if (!blocked) return release
-      Atomics.wait(lockWait, 0, 0, Math.min(10, Math.max(0, deadline - performance.now())))
+      Atomics.wait(lockWait, 0, 0, Math.min(5, Math.max(0, deadline - performance.now())))
     }
   } catch {} // estimates must not fail chat on an acquisition/filesystem error
   release()
@@ -340,16 +371,17 @@ function ledgerLock(file) {
 }
 
 export class Store {
-  constructor(file, now = Date.now) {
+  constructor(file, now = Date.now, onChoosing = undefined) {
     this.file = file
     this.now = now
+    this.onChoosing = onChoosing
     this.mem = { accounts: {} }
     this.readable = true
   }
 
   withLock(fn) {
     if (!this.file) return fn()
-    const release = ledgerLock(this.file)
+    const release = ledgerLock(this.file, this.now, this.onChoosing)
     if (!release) return undefined
     // A callback runs exactly once; its error propagates after release.
     try {

@@ -35,8 +35,12 @@ const ID = "gumloop"
 const NPM = "@ai-sdk/openai-compatible"
 const EFFORTS = Object.fromEntries(["low", "medium", "high"].map((e) => [e, { reasoningEffort: e }]))
 
+// Gumloop documents no credit-exhaustion response shape, and none has been
+// captured live. Assume only HTTP 403 with a structured credit_limit_exceeded
+// code means the Gumloop account itself is out of credits; HTTP 402 is passed
+// through untouched so an upstream provider's 402 (such as OpenRouter's
+// "Insufficient credits") does not zero the user's Gumloop balance estimate.
 function isCreditRefusal(status, text) {
-  if (status === 402) return true
   if (status !== 403) return false
   try {
     const d = JSON.parse(text)

@@ -259,7 +259,13 @@ describe("request and host compatibility", () => {
     expect(rRate.status).toBe(429)
     expect((await p.auth.usage(async () => auth)).balance).toBe("5000 credits")
 
-    // Real Gumloop credit_limit_exceeded 403 becomes 429 naming HTTP 403 and zeroes estimate
+    // Upstream OpenRouter-style 402 passes through as 402 and keeps balance intact
+    chatResp = json({ error: { code: 402, message: "Insufficient credits" } }, 402)
+    const r402 = await loaded.fetch(`${loaded.baseURL}/chat/completions`, { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", messages: [] }) })
+    expect(r402.status).toBe(402)
+    expect((await p.auth.usage(async () => auth)).balance).toBe("5000 credits")
+
+    // Assumed credit_limit_exceeded 403 becomes 429 naming HTTP 403 and zeroes estimate
     chatResp = json({ error: { code: "credit_limit_exceeded", message: "You have reached your credit limit." } }, 403)
     const rCred = await loaded.fetch(`${loaded.baseURL}/chat/completions`, { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", messages: [] }) })
     expect(rCred.status).toBe(429)

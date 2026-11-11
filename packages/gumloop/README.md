@@ -72,10 +72,14 @@ A stream stopped mid-way never reports its usage; the card counts those so you
 know to recalibrate. An out-of-credits refusal sets the estimate to 0 and sends the
 request to the next account.
 
-Only HTTP 402 or HTTP 403 with a structured `credit_limit_exceeded` code is
-treated as exhausted credits. Other chat 403s check `GET /models` with the same
-credentials: HTTP 200 keeps the sign-in, HTTP 401/403 marks it expired, and a
-network failure or other status leaves the original refusal unchanged.
+Gumloop does not document its credit-limit error format and no live exhaustion
+response has been captured. The plugin assumes HTTP 403 with a structured
+`credit_limit_exceeded` code signals an exhausted Gumloop account; HTTP 402
+responses (such as an upstream provider's `"Insufficient credits"`) pass
+through without zeroing the estimate. Other chat 403s check `GET /models` with
+the same credentials: HTTP 200 keeps the sign-in, HTTP 401/403 marks it
+expired, and a network failure or other status leaves the original refusal
+unchanged.
 
 To calibrate, sign in again with the credits gumloop.com shows (bottom left), or
 set them in the plugin's options, applied once per value:
@@ -103,17 +107,18 @@ Contenders enter in ticket/name order and remove only their own records on
 release. There is no reusable shared lock pathname that competing recoverers
 could accidentally unlink after a new owner acquires it.
 
-After a host crash, the next update removes that owner's records and unfinished
-lock temporary files only when `process.kill(pid, 0)` reports `ESRCH` (no such
-process). Age never permits removal. A reused PID or a permission failure is
-treated as possibly alive; an unreadable or invalid published record also
-prevents acquisition. Normal process exit attempts cleanup, but recovery does
-not depend on exit handlers running. This requires a coherent local filesystem;
-network filesystems and simultaneous hosts using the old lock protocol are
-not supported.
+After a host crash, the next update removes a dead owner's lock records,
+unfinished lock `.tmp` files, and leftover `gumloop-ledger.json.<pid>.<seq>.tmp`
+files immediately when `process.kill(pid, 0)` reports `ESRCH` (no such
+process), or once a file's `mtime` is older than 30 seconds (`LOCK_STALE_MS`)
+even if the OS has reused that PID for another live process. Unrecognized
+`gumloop-ledger.json.lock.*` filenames are ignored. Normal process exit
+attempts cleanup, but recovery does not depend on exit handlers running. This
+requires a coherent local filesystem; network filesystems and simultaneous
+hosts using the old lock protocol are not supported.
 
-Acquisition waits up to two seconds in 10 ms intervals. Windows sharing errors
-on reads, renames and cleanup are retried with bounded two-second deadlines;
+Acquisition waits up to 250 ms in 5 ms intervals. Windows sharing errors
+on reads, renames and cleanup are retried within bounded 250 ms deadlines;
 the mutation callback itself is never retried. Waiting blocks the plugin host's
 JavaScript thread. A timeout or unrecoverable filesystem error skips that
 estimate update without failing the chat, so the estimate may be too high.
