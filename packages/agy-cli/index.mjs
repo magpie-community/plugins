@@ -1081,6 +1081,9 @@ class Proc {
     this.toolsSignature = JSON.stringify(opts.tools)
     this.workDir = opts.workDir
     this.instructions = opts.instructions || ""
+    this.userId = opts.userId || ""
+    this.openingText = openingTextOf(opts.messages?.[0])
+    this.openingImages = openingImagesOf(opts.messages?.[0])
     this.resumeFrom = opts.resume || null
     this.token = randomUUID()
     this.sessionId = null
@@ -2059,7 +2062,7 @@ function park(proc) {
     historyHash: digest(historyKey(proc.expectedMessages)),
     historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
     toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
-    instructionsHash: digest(compactIdentity(proc.instructions)),
+    instructionsHash: digest(instructionsIdentity(proc.instructions)),
     workDir: proc.workDir,
     at: Date.now(),
   })
@@ -2075,7 +2078,7 @@ function takeParked(convKey, opts) {
   unparked.add(convKey)
   saveParked()
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(compactIdentity(opts.instructions))) return null
+    entry.instructionsHash !== digest(instructionsIdentity(opts.instructions))) return null
   const incoming = digest(historyKey(opts.history))
   if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history }
   // Sans-inputs resume needs the hashes written by current park(). Old
@@ -2165,12 +2168,41 @@ async function withAcquireLock(key, fn) {
   }
 }
 
+async function withAcquireLocks(keys, fn) {
+  const unique = [...new Set(keys.filter(Boolean))].sort()
+  const run = (index) => {
+    if (index >= unique.length) return fn()
+    return withAcquireLock(unique[index], () => run(index + 1))
+  }
+  return run(0)
+}
+
 async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew = false) {
-  return withAcquireLock(convKey, () => acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew))
+  // Discover a live continued session's current key, lock it together with
+  // the new key (sorted, to avoid deadlock), then pick again inside those
+  // locks. A process is re-keyed only when its current key is already held.
+  let extra = null
+  for (let attempt = 0; ; attempt++) {
+    const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
+    const outcome = await withAcquireLocks(keys, async () => {
+      const locked = new Set(keys)
+      if (isFreshConversation && !forceNew && !pool.get(convKey)) {
+        const candidate = findLiveContinuedProc(opts)
+        const needed = candidate?.convKey
+        if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
+      }
+      return { value: await acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew, locked) }
+    })
+    if (outcome.retry) {
+      extra = outcome.retry
+      continue
+    }
+    return outcome.value
+  }
 }
 
 // Caller holds the conversation lock; recovery must not acquire it recursively.
-async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false) {
+async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey])) {
   await evictIdle()
   let existing = pool.get(convKey)
   if (existing?.turn?.cancelRequested) {
@@ -2195,6 +2227,13 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       throw new ConflictError("agy bridge: this request carries the pending tool call but no matching result. Stop resending it; send the tool result or continue from the last self-consistent message.", "tool_state_conflict")
     }
   }
+  // A flattened, growing first message changes conversationKey, so the live
+  // session is under the previous key. Reuse it when the new opening continues
+  // the whole previous opening (not just a shared prefix).
+  if (!existing && !forceNew && isFreshConversation) {
+    const candidate = findLiveContinuedProc(opts)
+    if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
+  }
   if (existing) {
     if (!existing.dead && existing.turn) {
       throw new BusyError("agy bridge: this conversation still has an unfinished response")
@@ -2208,10 +2247,19 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         matchedHistory = opts.messages.slice(0, k)
       }
     }
+    const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
+      isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
-      existing.matchesHistory(matchedHistory)
-    if (compatible && !(isFreshConversation && existing.hasSentFirstTurn)) {
+      (existing.matchesHistory(matchedHistory) || continuedFresh)
+    if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
+      if (continuedFresh) {
+        const first = Array.isArray(opts.messages) ? opts.messages[0] : null
+        // Snapshot the unsent tail before openingText advances to this turn.
+        existing.pendingFlattenedTurn = flattenedContinuationMessage(existing, first)
+        existing.openingText = openingTextOf(first) || existing.openingText
+        existing.openingImages = openingImagesOf(first)
+      }
       await existing.updateTools(opts.tools)
       return { proc: existing, history: matchedHistory }
     }
@@ -2555,6 +2603,328 @@ function sameToolUseIdentities(left, right) {
 
 // Compare conversation content, not transport metadata or client-assigned IDs.
 // Keep argument values, result contents and internal whitespace significant.
+
+// Agent-injected Claude Code billing headers. Only whole header lines (and
+// a line that is just the rotating cch token) are removed, so user text that
+// happens to mention "cch=…" or the header name is left alone.
+function stripBillingHeader(text) {
+  let s = String(text ?? "")
+  s = s.replace(/^[ \t]*x-anthropic-billing-header:[^\n]*\n?/gmi, "")
+  s = s.replace(/^[ \t]*cch=[0-9a-fA-F]+;?[ \t]*\n?/gmi, "")
+  return s
+}
+
+const ISO_DATE = String.raw`20\d{2}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?`
+const LOCALE_DATE = String.raw`(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s+\d{2}:\d{2}(?::\d{2})?)?`
+const CLOCK_VALUE = String.raw`(?:${ISO_DATE}|${LOCALE_DATE}|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)`
+const AGENT_CLOCK_LINE_RE = new RegExp(
+  String.raw`^(?:#{1,6}\s*)?(?:(?:(?:current\s+)?(?:date|time|datetime|today|now)|today(?:'s)?\s+date|(?:the\s+)?current\s+(?:date|time|datetime))\s*[:：]\s*${CLOCK_VALUE}|(?:(?:the\s+)?current\s+(?:date|time|datetime)|today(?:'s)?\s+date)\s+is\s+${CLOCK_VALUE})\s*\.?$`,
+  "i",
+)
+
+function isAgentClockLine(line) {
+  return AGENT_CLOCK_LINE_RE.test(String(line ?? "").trim())
+}
+
+function stripAgentClockLines(text) {
+  const s = String(text ?? "")
+  if (!s) return s
+  return s.split(/(\n)/).map((part) => (part === "\n" || !isAgentClockLine(part) ? part : "")).join("")
+}
+
+// System prompt and session instructions: billing headers plus known agent
+// clock lines. User text is never passed through this helper.
+function stripVolatileSystem(text) {
+  return stripAgentClockLines(stripBillingHeader(text))
+}
+
+function instructionsIdentity(text) {
+  return compactIdentity(stripVolatileSystem(text))
+}
+
+// Message text used for conversation/history identity: billing header lines,
+// and clock lines only inside <system-reminder> blocks (Claude Code injects
+// these on later turns too, so a mid-chat clock change must not rewrite the
+// history). Ordinary user/assistant text is left alone, including lines that
+// start with "Today:" or contain a date.
+// Walk closed <system-reminder>…</system-reminder> blocks with indexOf so an
+// unclosed opener does not rescan the rest of the string from every match
+// (the previous /[\s\S]*?/ regex was quadratic in the number of open tags).
+// Length-preserving ASCII fold. s.toLowerCase() maps İ (U+0130) to two
+// code units ("i" + combining dot), which would shift later indexes.
+function asciiLower(s) {
+  return String(s ?? "").replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 32))
+}
+
+function replaceClosedSystemReminders(text, replacer) {
+  const s = String(text ?? "")
+  if (!s) return s
+  const open = "<system-reminder"
+  const close = "</system-reminder>"
+  const lower = asciiLower(s)
+  let out = ""
+  let i = 0
+  while (i < s.length) {
+    const start = lower.indexOf(open, i)
+    if (start === -1) {
+      out += s.slice(i)
+      break
+    }
+    const afterName = start + open.length
+    if (afterName < s.length && /[A-Za-z0-9_]/.test(s[afterName])) {
+      out += s.slice(i, afterName)
+      i = afterName
+      continue
+    }
+    const gt = s.indexOf(">", afterName)
+    if (gt === -1) {
+      out += s.slice(i)
+      break
+    }
+    const closeAt = lower.indexOf(close, gt + 1)
+    if (closeAt === -1) {
+      // No closer after this tag means none exists later either; keep the rest
+      // verbatim so later openers do not rescan the same suffix.
+      out += s.slice(i)
+      break
+    }
+    const end = closeAt + close.length
+    out += s.slice(i, start) + replacer(s.slice(start, end))
+    i = end
+  }
+  return out
+}
+
+function stripVolatileOpening(text) {
+  return replaceClosedSystemReminders(stripBillingHeader(text), (block) => stripAgentClockLines(block))
+}
+
+function openingTextOf(message) {
+  if (!message) return ""
+  return compactIdentity(stripVolatileOpening(contentText(message.content)))
+}
+
+function openingImagesOf(message) {
+  const content = message?.content
+  if (!Array.isArray(content)) return []
+  const out = []
+  for (const block of content) {
+    if (block?.type !== "image") continue
+    try {
+      const image = parseUserImage(block)
+      if (image) out.push(`${image.mimeType}:${digest(image.data)}`)
+    } catch {
+      const source = block.source || {}
+      out.push(`invalid:${source.media_type || ""}:${digest(String(source.data || ""))}`)
+    }
+  }
+  return out
+}
+
+function sameOpeningImagePrefix(prev, cur) {
+  if (!Array.isArray(prev) || !Array.isArray(cur) || prev.length > cur.length) return false
+  return prev.every((id, index) => id === cur[index])
+}
+
+// Non-text, non-image blocks on an opening (documents, search results, etc.).
+function openingExtrasOf(message) {
+  const content = message?.content
+  if (!Array.isArray(content)) return []
+  const out = []
+  for (const block of content) {
+    if (!block || typeof block === "string" || block.type === "text" || block.type === "image") continue
+    out.push(digest(stableJSON(block)))
+  }
+  return out
+}
+
+function sameOpeningExtraPrefix(prev, cur) {
+  return sameOpeningImagePrefix(prev, cur)
+}
+
+// Advance through `text` while ignoring whitespace until `compactPrefix` is
+// consumed. Returns the index of the first non-space after the prefix, and
+// whether a newline (a turn boundary) sits between the prefix and the rest.
+function consumeCompactPrefix(text, compactPrefix) {
+  let i = 0
+  let k = 0
+  let lastWasNewline = true
+  while (i < text.length && k < compactPrefix.length) {
+    const ch = text[i]
+    if (/\s/.test(ch)) {
+      if (ch === "\n" || ch === "\r") lastWasNewline = true
+      i++
+      continue
+    }
+    if (ch !== compactPrefix[k]) return null
+    k++
+    i++
+    lastWasNewline = false
+  }
+  if (k < compactPrefix.length) return null
+  let sawNewline = lastWasNewline
+  let j = i
+  while (j < text.length && (text[j] === " " || text[j] === "\t")) j++
+  if (j < text.length && (text[j] === "\n" || text[j] === "\r")) {
+    sawNewline = true
+    while (j < text.length && /\s/.test(text[j])) j++
+  }
+  return { remainderIndex: j, boundary: sawNewline }
+}
+
+function subsequentTranscriptOf(proc) {
+  const messages = proc?.expectedMessages
+  if (!Array.isArray(messages) || messages.length < 2) return ""
+  const parts = []
+  for (const message of messages.slice(1)) {
+    if (!message) continue
+    if (message.role === "assistant") {
+      const text = assistantTextOf(message)
+      if (typeof text === "string" && text.trim()) {
+        parts.push(text)
+        continue
+      }
+      const blocks = Array.isArray(message.content) ? message.content : []
+      for (const block of blocks) {
+        if (!block) continue
+        if (block.type === "text" && typeof block.text === "string" && block.text.trim()) parts.push(block.text)
+        else if (block.type === "tool_use") parts.push(`${block.name || ""}:${stableJSON(block.input ?? {})}`)
+      }
+      continue
+    }
+    const text = contentText(message.content)
+    if (text.trim()) parts.push(text)
+  }
+  return compactIdentity(parts.join("\n"))
+}
+
+const FLAT_ROLE_LABEL_RE = /^(?:assistant|user|system|human|model)\s*:\s*/i
+
+// Leftover text after an optional role label and the subsequent transcript,
+// or null if the remainder does not start with that transcript. The reply
+// must end on a line boundary (or the end of the string) so a longer
+// independent line that only starts with the reply is rejected, including
+// replies of 12 characters or more — length is not a substitute for a
+// turn boundary.
+function leftoverAfterSubsequent(remainder, subsequentCompact) {
+  if (!subsequentCompact) return null
+  let text = remainder
+  if (FLAT_ROLE_LABEL_RE.test(text)) text = text.replace(FLAT_ROLE_LABEL_RE, "")
+  if (!compactIdentity(text).startsWith(subsequentCompact)) return null
+  const consumed = consumeCompactPrefix(text, subsequentCompact)
+  if (!consumed) return null
+  if (!consumed.boundary && consumed.remainderIndex < text.length) return null
+  return text.slice(consumed.remainderIndex)
+}
+
+function remainderHasSubsequent(remainder, subsequentCompact) {
+  return leftoverAfterSubsequent(remainder, subsequentCompact) != null
+}
+
+// The unsent tail of a flattened, growing first message: everything after
+// the previous opening and the live session's subsequent transcript (usually
+// the last assistant reply). Images and extra blocks already sent with the
+// previous opening are dropped; any new images, documents or search results
+// are kept. If the previous extras are not a prefix of the new ones, reuse
+// is refused rather than dropping content.
+function flattenedContinuationMessage(proc, firstMessage) {
+  const prev = proc?.openingText || ""
+  const cur = openingTextOf(firstMessage)
+  if (!prev || !cur || cur === prev) return null
+  // The new opening must continue the whole previous opening, not just a
+  // shared prefix. A shared 8 KiB head with a different tail is a different chat.
+  if (!(cur.startsWith(prev) && cur.length > prev.length + 4)) return null
+  const prevOpening = Array.isArray(proc.expectedMessages) ? proc.expectedMessages[0] : null
+  const prevImages = proc.openingImages || openingImagesOf(prevOpening)
+  const curImages = openingImagesOf(firstMessage)
+  if (!sameOpeningImagePrefix(prevImages, curImages)) return null
+  const prevExtras = openingExtrasOf(prevOpening)
+  const curExtras = openingExtrasOf(firstMessage)
+  if (!sameOpeningExtraPrefix(prevExtras, curExtras)) return null
+  // "Review README" must not attach "Review README and tests". Flattened
+  // history appends later turns after a newline, and those turns are still
+  // sitting on the live process, so require both a turn boundary and the
+  // subsequent transcript (the assistant reply, not just a longer prompt).
+  const curRaw = stripVolatileOpening(contentText(firstMessage?.content))
+  const consumed = consumeCompactPrefix(curRaw, prev)
+  if (!consumed?.boundary) return null
+  const subsequent = subsequentTranscriptOf(proc)
+  if (!subsequent) return null
+  const leftover = leftoverAfterSubsequent(curRaw.slice(consumed.remainderIndex), subsequent)
+  if (leftover == null) return null
+  const newText = leftover.replace(/^\s+/, "")
+  const keptBlocks = []
+  if (Array.isArray(firstMessage?.content)) {
+    let skippedImages = 0
+    let skippedExtras = 0
+    const skipImg = prevImages?.length || 0
+    const skipEx = prevExtras?.length || 0
+    for (const block of firstMessage.content) {
+      if (!block || typeof block === "string" || block.type === "text") continue
+      if (block.type === "image") {
+        if (skippedImages < skipImg) {
+          skippedImages++
+          continue
+        }
+        keptBlocks.push(block)
+        continue
+      }
+      if (skippedExtras < skipEx) {
+        skippedExtras++
+        continue
+      }
+      keptBlocks.push(block)
+    }
+  }
+  if (!newText && !keptBlocks.length) return null
+  if (!keptBlocks.length) return { role: "user", content: newText }
+  const content = []
+  if (newText) content.push({ type: "text", text: newText })
+  content.push(...keptBlocks)
+  return { role: "user", content }
+}
+
+function isContinuedOpening(proc, firstMessage) {
+  return flattenedContinuationMessage(proc, firstMessage) != null
+}
+
+function findLiveContinuedProc(opts) {
+  const first = Array.isArray(opts?.messages) ? opts.messages[0] : null
+  if (!first) return null
+  const userId = opts.userId || ""
+  let best = null
+  let bestLen = -1
+  let tied = false
+  for (const proc of pool.values()) {
+    if (proc.dead || proc.retiring || proc.turn) continue
+    if ((proc.userId || "") !== userId) continue
+    if (proc.workDir !== opts.workDir) continue
+    if (!sameInstructions(proc.instructions, opts.instructions)) continue
+    if (!proc.hasSentFirstTurn) continue
+    if (!isContinuedOpening(proc, first)) continue
+    const len = (proc.openingText || "").length
+    if (!best || len > bestLen) {
+      best = proc
+      bestLen = len
+      tied = false
+    } else if (len === bestLen) {
+      tied = true
+    }
+  }
+  return tied ? null : best
+}
+
+function rekeyProc(proc, newKey) {
+  if (!proc || proc.convKey === newKey) return proc
+  const oldKey = proc.convKey
+  dropFromPool(proc)
+  unpark(oldKey)
+  proc.convKey = newKey
+  pool.set(newKey, proc)
+  return proc
+}
+
+
 function historyKey(messages) {
   const rows = []
   const ids = new Map()
@@ -2566,7 +2936,7 @@ function historyKey(messages) {
         block.type === "tool_addition" || block.type === "tool_removal") continue
       let value
       if (typeof block === "string" || block.type === "text") {
-        value = { type: "text", text: stripMagpiePlaceholderNotice(typeof block === "string" ? block : block.text || "") }
+        value = { type: "text", text: stripVolatileOpening(stripMagpiePlaceholderNotice(typeof block === "string" ? block : block.text || "")) }
       } else if (block.type === "document") {
         value = { type: "text", text: parseUserDocumentText(block) }
       } else if (block.type === "search_result") {
@@ -2696,7 +3066,7 @@ function matchToolResults(body, blocks) {
 
 function systemText(body) {
   if (!body.system) return ""
-  return typeof body.system === "string" ? body.system : body.system.map((block) => block.text || "").join("")
+  return typeof body.system === "string" ? body.system : body.system.map((block) => block.text || "").join("\n")
 }
 
 function contentText(content) {
@@ -2742,20 +3112,24 @@ function compactIdentity(text) {
 }
 
 function sameInstructions(a, b) {
-  return compactIdentity(a) === compactIdentity(b)
+  return instructionsIdentity(a) === instructionsIdentity(b)
 }
 
 // The model is not part of the key: agy switches models inside a live session.
 function conversationKey(rawBody) {
   const body = canonicalBody(rawBody)
-  const system = historyKey([{ role: "system", content: compactIdentity(systemText(body)) }])
+  const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body))) }])
   const first = body.messages?.[0]
+  // Hash the whole stripped first message, including non-text blocks such as
+  // images. A shared 8 KiB text prefix must not put two chats in one session.
+  // Later assistant/user turns are not part of this hash, so attaching history
+  // does not change the key. Agent billing headers and opening reminder clocks
+  // are stripped; user text is not.
   const firstText = first ? historyKey([first]) : ""
   const discriminator = body.metadata?.user_id || ""
   const source = discriminator + "\n" + system + "\n===\n" + firstText
   return createHash("sha256").update(source).digest("hex")
 }
-
 function appendSchemaHint(node, hint) {
   if (!hint) return
   if (typeof node.description === "string" && node.description.trim()) {
@@ -4267,8 +4641,12 @@ function streamResponse(proc, turn, body, signal) {
 
 async function beginTurn(proc, history, body, callerWorkDir, model, selection) {
   const reminder = outputFormatReminder(body)
+  const flattened = proc.pendingFlattenedTurn
+  proc.pendingFlattenedTurn = null
   const baseParts = proc.hasSentFirstTurn
-    ? renderContinuedTurnParts(body.messages.slice(history.length))
+    ? renderContinuedTurnParts(flattened
+      ? [flattened, ...body.messages.slice(1)]
+      : body.messages.slice(history.length))
     : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
   const contentParts = mergePromptParts(baseParts, reminder)
@@ -4404,7 +4782,7 @@ export const AntigravityBridgePlugin = async () => {
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
-                hasToolResults: resultBlocks.length > 0 }
+                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "" }
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection)
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks)
