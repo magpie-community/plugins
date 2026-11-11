@@ -25,7 +25,11 @@ plugin's own, `~/.cache/opencode-devin-auth/<hash of the token>/`, so the
 CLI's own sign-in is never touched. A CLI that reads another
 `credentials.toml` than that folder's (on Windows it reads
 `%APPDATA%\devin\` whatever it is run with) isn't asked: it would name
-its own account. Otherwise the account is named "Devin".
+its own account. Otherwise the account is named
+`Devin · <fingerprint>`, using a one-way fingerprint of the API server
+and session token. Repeating the same sign-in keeps its slot, while two
+accounts whose identities are both unreadable no longer replace each
+other.
 
 The token is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
 `plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan", "orgId", "teamId" } }`.
