@@ -4,15 +4,19 @@
 // freeWindowOf for the readings and how each was checked.
 import { test, expect, beforeAll } from "bun:test"
 import { tmpdir } from "node:os"
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
+import { gzipSync } from "node:zlib"
 
 let _internal
+let routingReads
+let routingParsed
 beforeAll(async () => {
   // as usage.test.mjs: run with HOME=$(mktemp -d) bun test
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   ;({ _internal } = await import("./index.mjs"))
+  ;({ routingReads, routingParsed } = _internal)
 })
 
 // a row of magpie's usage ledger (usage.Record), as the plugin reads it
@@ -39,6 +43,23 @@ const FAT = "x".repeat(1400)
 
 // the vendor's words before the reset it names
 const TIMEOUT_BEFORE_RESET = "WorkBuddy AI: usage exceeds frequency limit, but don't worry, your usage will reset at "
+
+const routingTrace = (tries, orders = [{ id: "wb-me", provider: "workbuddy-ai", who: "me@example.com" }]) =>
+  JSON.stringify({ time: "2026-11-02T12:00:00+08:00", order: orders, tries })
+
+const routingRefusal = (reset, { model = "deepseek-v4.1-flash", id = "wb-me", provider = "workbuddy-ai", rest = undefined } = {}) => ({
+  id,
+  model,
+  status: 429,
+  start: "2026-11-02T12:00:01+08:00",
+  error: `${TIMEOUT_BEFORE_RESET}${reset} UTC+8, alternatively, you can switch to the other models to continue using it.`,
+  ...(rest ? { rest } : {}),
+})
+
+const localDay = (now) => {
+  const d = new Date(now)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
 
 // the refusal WorkBuddy AI sends when the window is spent
 const refusal = (reset, account = "me@example.com") =>
@@ -97,6 +118,45 @@ test("-sg counts in the same window as the free id", () => {
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T21:00:00+08:00"))
   expect(w.amount).toBe(50_010_000)
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
+})
+
+test("a routing trace refusal of an alias counts in the same window", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const rows = [..._internal.routingRefusalRows(
+    "",
+    false,
+    now,
+    "me@example.com",
+    undefined,
+    routingTrace([routingRefusal("2026-11-02 19:17:02", { model: "deepseek-v4.1-flash-sg" })]),
+  ), row("2026-11-02T02:00:00+08:00", { in: 1 })]
+  const w = _internal.freeWindowOf(rows, "me@example.com", now)
+  expect(w.refused).toBe(true)
+  expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+})
+
+test("a gateway rest key names an account with @ or slash in it", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const account = "team/example@workbuddy.com"
+  const trace = routingTrace(
+    [{
+      ...routingRefusal("2026-11-02 19:17:02", { id: "provider-member" }),
+      error: "429",
+      rest: { by: "resets", key: `workbuddy-ai@${account.toLowerCase()}/deepseek-v4.1-flash`, until: "2026-11-02T19:17:02+08:00" },
+    }],
+    [],
+  )
+  const rows = _internal.routingRefusalRows("", false, now, account, undefined, trace)
+  expect(rows).toHaveLength(1)
+  expect(rows[0].providerAccount).toBe(account)
+  expect(rows[0].restUntil).toBe(Date.parse("2026-11-02T19:17:02+08:00"))
+  expect(_internal.routingRefusalRows("", false, now, "other@example.com", undefined, trace)).toEqual([])
+})
+
+test("a routing entry with neither a rest key nor a named account is left out", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const trace = routingTrace([routingRefusal("2026-11-02 19:17:02")], [{ id: "wb-me", provider: "workbuddy-ai" }])
+  expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
 })
 
 test("other accounts, other models and the other build are left out", () => {
@@ -221,6 +281,316 @@ test("the parse cache keys the build", () => {
     expect(cn.map((r) => r.provider)).toEqual(["workbuddy"])
     const ai = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(ai.map((r) => r.provider)).toEqual(["workbuddy-ai"])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a routing trace's failed WorkBuddy attempt pins the vendor reset", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 3_000_000 }))])
+  try {
+    mkdirSync(join(root, "routing"))
+    writeFileSync(join(root, "routing", `${day}.jsonl`), routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
+    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const w = _internal.freeWindowOf(rows, "me@example.com", now)
+    expect(w.amount).toBe(1e8)
+    expect(w.refused).toBe(true)
+    expect(w.aside).toBeUndefined()
+    expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+    const refusal = rows.find((r) => Number(r.status) === 429)
+    expect(refusal.in).toBeUndefined()
+    expect(refusal.out).toBeUndefined()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a routing trace resets, then the next answered row opens a new window", () => {
+  const now = at("2026-11-02T20:00:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([
+    JSON.stringify(row("2026-11-01T10:00:00+08:00", { in: 3_000_000 })),
+    JSON.stringify(row("2026-11-02T19:30:00+08:00", { in: 250_000 })),
+  ])
+  try {
+    mkdirSync(join(root, "routing"))
+    writeFileSync(join(root, "routing", `${day}.jsonl`), routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
+    const w = _internal.freeWindowOf(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
+    expect(w.amount).toBe(250_000)
+    expect(w.refused).toBeUndefined()
+    expect(w.aside).toBe(true)
+    expect(w.resetsAt).toBe(iso("2026-11-03T19:30:00+08:00"))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a routing trace keeps accounts, models and builds apart", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([
+    JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 3_000_000 })),
+    JSON.stringify(cnRow("2026-11-02T02:10:00+08:00", { in: 4_000_000 })),
+  ])
+  try {
+    mkdirSync(join(root, "routing"))
+    writeFileSync(
+      join(root, "routing", `${day}.jsonl`),
+      [
+        routingTrace([routingRefusal("2026-11-02 19:17:02", { id: "wb-other", who: "other@example.com" })], [
+          { id: "wb-other", provider: "workbuddy-ai", who: "other@example.com" },
+        ]),
+        routingTrace([routingRefusal("2026-11-02 19:17:02", { model: "glm-5.3" })]),
+        routingTrace([routingRefusal("2026-11-02 19:17:02", { id: "workbuddy" })], [
+          { id: "workbuddy", who: "me@example.com" },
+        ]),
+      ].join("\n") + "\n",
+    )
+    const ai = _internal.freeWindowOf(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
+    expect(ai.amount).toBe(3_000_000)
+    expect(ai.refused).toBeUndefined()
+    const cn = _internal.freeWindowOf(
+      _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0]),
+      "me@example.com",
+      now,
+      _internal.CN_ESTIMATED_WINDOWS[0],
+    )
+    expect(cn.amount).toBe(2e8)
+    expect(cn.refused).toBe(true)
+    expect(cn.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a routing entry whose id names two accounts is left out", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const rows = _internal.routingRefusalRows(
+    "",
+    false,
+    now,
+    "me@example.com",
+    undefined,
+    routingTrace(
+      [routingRefusal("2026-11-02 19:17:02")],
+      [
+        { id: "wb-me", provider: "workbuddy-ai", who: "me@example.com" },
+        { id: "wb-me", provider: "workbuddy-ai", who: "other@example.com" },
+        { id: "wb-me", provider: "workbuddy-ai", who: "me@example.com" },
+      ],
+    ),
+  )
+  expect(rows).toEqual([])
+})
+
+test("routing traces are read compressed and missing or damaged files fall back", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 3_000_000 }))])
+  try {
+    mkdirSync(join(root, "routing"))
+    writeFileSync(join(root, "routing", `${day}.jsonl.gz`), gzipSync(Buffer.from(routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")))
+    writeFileSync(join(root, "routing", `${localDay(now - 24 * 3600_000)}.jsonl.gz`), Buffer.from("not gzip"))
+    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    expect(_internal.freeWindowOf(rows, "me@example.com", now).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+    const trace = join(root, "routing", `${day}.jsonl.gz`)
+    writeFileSync(trace, gzipSync(Buffer.from("{ torn")))
+    utimesSync(trace, new Date(), new Date(Date.now() + 5))
+    expect(_internal.readRoutingRefusals(trace, true, _internal.FREE_WINDOW_AI)).toEqual([])
+    expect(_internal.routingRefusalRows(trace, true, now + 2000, "me@example.com")).toEqual([])
+    const fallbackRows = [row("2026-11-02T02:00:00+08:00", { in: 3_000_000 })]
+    expect(_internal.freeWindowOf(fallbackRows, "me@example.com", now + 2000).resetsAt).toBe(
+      iso("2026-11-03T02:00:00+08:00"),
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a usage append does not read the routing trace again", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const first = JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 1 }))
+  const root = writeLedger([first])
+  const routingPath = join(root, "routing", `${day}.jsonl.gz`)
+  try {
+    mkdirSync(join(root, "routing"))
+    writeFileSync(routingPath, gzipSync(Buffer.from(routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")))
+    const before = routingReads.count
+    const firstRows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    expect(routingReads.count).toBe(before + 1)
+    expect(_internal.freeWindowOf(firstRows, "me@example.com", now).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+
+    writeFileSync(join(root, "usage.jsonl"), `${first}\n${JSON.stringify(row("2026-11-02T03:00:00+08:00", { in: 2 }))}\n`)
+    const secondRows = _internal.freeWindowRows("me@example.com", now + 1000, root, {}, join(root, "nohome"))
+    expect(routingReads.count).toBe(before + 1)
+    expect(secondRows.filter((r) => Number(r.status) !== 429).reduce((sum, r) => sum + (r.in ?? 0), 0)).toBe(3)
+    expect(_internal.freeWindowOf(secondRows, "me@example.com", now + 1000).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a routing trace rest names the reset when its error does not", () => {
+  const root = writeLedger([])
+  try {
+    const path = join(root, "routing.jsonl")
+    const rows = _internal.routingRefusalRows(
+      path,
+      false,
+      at("2026-11-02T12:30:00+08:00"),
+      "me@example.com",
+      _internal.FREE_WINDOW_AI,
+      routingTrace([{ ...routingRefusal("2026-11-02 19:17:02"), error: "429", rest: { by: "resets", key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash", until: "2026-11-02T19:17:02+08:00" } }]),
+    )
+    expect(rows).toHaveLength(1)
+    expect(_internal.freeWindowOf([...rows, row("2026-11-02T02:00:00+08:00", { in: 1 })], "me@example.com", at("2026-11-02T12:30:00+08:00")).resetsAt).toBe(
+      iso("2026-11-02T19:17:02+08:00"),
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a gateway rest reset names a window and other rest reasons do not", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  for (const by of ["cooldown", "backoff", "quota", "window", "retry-after", "unknown"]) {
+    const trace = routingTrace(
+      [{
+        ...routingRefusal("2026-11-02 19:17:02"),
+        error: "429",
+        rest: { by, key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash", until: "2026-11-02T19:17:02+08:00" },
+      }],
+    )
+    expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
+  }
+  const resets = routingTrace(
+    [{
+      ...routingRefusal("2026-11-02 19:17:02"),
+      error: "429",
+      rest: { by: "resets", key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash", until: "2026-11-02T19:17:02+08:00" },
+    }],
+  )
+  const rows = _internal.routingRefusalRows("", false, now, "me@example.com", undefined, resets)
+  expect(rows).toHaveLength(1)
+  expect(rows[0].restUntil).toBe(at("2026-11-02T19:17:02+08:00"))
+})
+
+test("a gateway rest key must name the provider and model", () => {
+  expect(_internal.restIdentity({ key: "other@me@example.com/deepseek-v4.1-flash" }, _internal.FREE_WINDOW_AI)).toBeNull()
+  expect(_internal.restIdentity({ key: "workbuddy-ai@me@example.com/glm-5.3" }, _internal.FREE_WINDOW_AI)).toBeNull()
+  expect(_internal.restIdentity({ key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash" }, _internal.FREE_WINDOW_AI)).toEqual({
+    account: "me@example.com",
+    model: "deepseek-v4.1-flash",
+  })
+})
+
+test("rest account comparison is case-insensitive and keeps the caller's spelling", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const keyedAccount = "mixed-case@example.com"
+  const rest = { by: "resets", key: `workbuddy-ai@${keyedAccount}/deepseek-v4.1-flash`, until: "2026-11-02T19:17:02+08:00" }
+  const refusal = (id, restKey = rest.key) => ({ id, model: "deepseek-v4.1-flash", status: 429, start: "2026-11-02T12:00:01+08:00", error: "reset at 2026-11-02 19:17:02 UTC+8", rest: { ...rest, key: restKey } })
+  const trace = routingTrace([
+    refusal("workbuddy-ai"),
+    refusal("unknown"),
+    refusal("workbuddy-ai", "workbuddy-ai@other@example.com/deepseek-v4.1-flash"),
+  ], [
+    { id: "workbuddy-ai", provider: "workbuddy-ai", who: "Mixed-Case@Example.com" },
+    { id: "workbuddy-ai", provider: "workbuddy-ai", who: "MIXED-CASE@example.com" },
+  ])
+  const rows = _internal.routingRefusalRows("", false, now, "MIXED-CASE@example.com", undefined, trace)
+  expect(rows.map((r) => r.providerAccount)).toEqual(["Mixed-Case@Example.com", "MIXED-CASE@example.com"])
+})
+
+test("a real-shaped WorkBuddy trace is attributed through order and keyed rest", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const keyedAccount = "mixed-case@example.com"
+  const trace = JSON.stringify({
+    time: "2026-11-02T12:00:00+08:00",
+    order: [{ id: "workbuddy-ai", who: "Mixed-Case@Example.com" }],
+    tries: [{
+      id: "workbuddy-ai",
+      model: "deepseek-v4.1-flash",
+      status: 429,
+      start: "2026-11-02T12:00:01+08:00",
+      error: "429",
+      rest: { by: "resets", key: `workbuddy-ai@${keyedAccount}/deepseek-v4.1-flash`, until: "2026-11-02T19:17:02+08:00" },
+    }],
+  })
+  const rows = _internal.routingRefusalRows("", false, now, "mixed-CASE@example.COM", undefined, trace)
+  expect(rows).toHaveLength(1)
+  expect(rows[0].providerAccount).toBe("Mixed-Case@Example.com")
+})
+
+test("routing refusals outside twice-the-window are ignored", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const refusal = (start) => ({
+    id: "workbuddy-ai",
+    model: "deepseek-v4.1-flash",
+    status: 429,
+    start,
+    error: "429",
+    rest: { by: "resets", key: "{{SECRET_tkvhbn6p}}", until: "2026-11-02T19:17:02+08:00" },
+  })
+  const trace = JSON.stringify({ order: [{ id: "workbuddy-ai", who: "me@example.com" }], tries: [refusal("2026-10-31T12:29:59+08:00"), refusal("2026-11-02T12:30:01+08:00")] })
+  expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
+})
+
+test("only the routing files a window can reach are read", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const days = [0, 1, 2].map((offset) => localDay(now - offset * 24 * 3600_000))
+  const root = mkdtempSync(join(tmpdir(), "wb-routing-days-"))
+  try {
+    mkdirSync(join(root, "routing"))
+    const other = localDay(now + 24 * 3600_000)
+    for (const day of [...days, other, localDay(now - 3 * 24 * 3600_000)]) writeFileSync(join(root, "routing", `${day}.jsonl`), "{}\n")
+    expect(_internal.freeWindowRouting(root, now).map((path) => basename(path))).toEqual(days.map((day) => `${day}.jsonl`))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("routing filenames follow the local day and read both forms for one day", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const older = new Date(now - 3 * 24 * 3600_000)
+  const oldDay = localDay(older)
+  const root = writeLedger([JSON.stringify(row(new Date(now - 3600_000).toISOString(), { in: 1 }))])
+  try {
+    mkdirSync(join(root, "routing"))
+    for (const name of [`${day}.jsonl`, `${day}.jsonl.gz`, `${oldDay}.jsonl`]) {
+      const text = routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n"
+      writeFileSync(join(root, "routing", name), name.endsWith(".gz") ? gzipSync(Buffer.from(text)) : text)
+    }
+    const paths = _internal.freeWindowRouting(root, now)
+    expect(paths.map((path) => basename(path))).toEqual([`${day}.jsonl`, `${day}.jsonl.gz`])
+    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    expect(rows.filter((r) => Number(r.status) === 429)).toHaveLength(2)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("routing append updates one cache entry and stale days are dropped", () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([JSON.stringify(row(new Date(now - 3600_000).toISOString(), { in: 1 }))])
+  const routing = join(root, "routing")
+  const route = join(routing, `${day}.jsonl`)
+  try {
+    mkdirSync(routing)
+    for (let i = 0; i < 50; i++) {
+      appendFileSync(route, routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
+      const rows = _internal.freeWindowRows("me@example.com", now + i, root, {}, join(root, "nohome"))
+      expect(rows.filter((r) => Number(r.status) === 429)).toHaveLength(i + 1)
+      expect(routingParsed.size).toBe(1)
+    }
+    const future = now + 3 * 24 * 3600_000
+    writeFileSync(join(routing, `${localDay(future)}.jsonl`), "{}\n")
+    _internal.freeWindowRows("me@example.com", future, root, {}, join(root, "nohome"))
+    expect([...routingParsed.values()].every((held) => basename(held.path) === `${localDay(future)}.jsonl`)).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
