@@ -1972,10 +1972,39 @@ for (const location of ["inline", "system", "developer", "user"]) {
       required: ["union_arr", "missing_field"],
     },
   }
+  const refUnionTool = {
+    name: "ref_union_schema",
+    description: "Discriminated union + $ref check",
+    input_schema: {
+      type: "object",
+      $defs: {
+        Coords: {
+          type: "object",
+          additionalProperties: false,
+          properties: { x: { type: "number" }, y: { type: "number" } },
+          required: ["x", "y"],
+        },
+      },
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: { method: { const: "click" }, params: { $ref: "#/$defs/Coords" } },
+          required: ["method", "params"],
+        },
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: { method: { const: "screenshot" } },
+          required: ["method"],
+        },
+      ],
+    },
+  }
   const syncRes = await callFetch({
     model,
     stream: false,
-    tools: [trickyTool],
+    tools: [trickyTool, refUnionTool, { name: "ToolSearch" }],
     messages: [{
       role: "user",
       content: [
@@ -1986,7 +2015,10 @@ for (const location of ["inline", "system", "developer", "user"]) {
     }],
   })
   const syncMsg = await syncRes.json()
-  const initTool = inits().at(-1)?.tools?.[0]
+  const initTools = inits().at(-1)?.tools ?? []
+  const initTool = initTools[0]
+  const initRefUnion = initTools[1]
+  const initToolSearch = initTools[2]
   const lastUser = lastOf("user")
   check("stream: false returns aggregated JSON message with image and text document",
     syncRes.status === 200 && syncMsg.type === "message" && lastUser.images === 1 && lastUser.text.includes("DOC_MARKER_42"),
@@ -2023,6 +2055,15 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("request-path permissive items have a fixed depth of 8",
     bareDepth === 8,
     String(bareDepth))
+  check("request-path expandToolSchema resolves $defs/$ref, lifts root oneOf object unions, preserves boolean additionalProperties, and populates ToolSearch",
+    initRefUnion?.inputSchema?.$defs === undefined &&
+    initRefUnion?.inputSchema?.oneOf === undefined &&
+    initRefUnion?.inputSchema?.additionalProperties === false &&
+    JSON.stringify(initRefUnion?.inputSchema?.properties?.method?.enum) === JSON.stringify(["click", "screenshot"]) &&
+    JSON.stringify(initRefUnion?.inputSchema?.properties?.params?.required) === JSON.stringify(["x", "y"]) &&
+    JSON.stringify(initToolSearch?.inputSchema?.required) === JSON.stringify(["query"]) &&
+    !/gemini/i.test(JSON.stringify(initRefUnion?.inputSchema || {})),
+    JSON.stringify({ refUnion: initRefUnion?.inputSchema, toolSearch: initToolSearch?.inputSchema }))
 
   const pdfRes = await callFetch({
     model,
