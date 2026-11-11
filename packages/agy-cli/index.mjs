@@ -8,6 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
+import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 
 const PROVIDER_ID = "agy-cli"
@@ -2866,6 +2867,20 @@ function sanitizeInputSchema(schema) {
       )
     }
   }
+  for (const key of ["propertyNames", "contains", "if", "then", "else", "unevaluatedProperties", "unevaluatedItems"]) {
+    if (out[key] && typeof out[key] === "object" && !Array.isArray(out[key])) {
+      out[key] = sanitizeInputSchema(out[key])
+    }
+  }
+  if (out.dependentSchemas && typeof out.dependentSchemas === "object" && !Array.isArray(out.dependentSchemas)) {
+    out.dependentSchemas = Object.fromEntries(
+      Object.entries(out.dependentSchemas).map(([key, value]) => [key, sanitizeInputSchema(value)]),
+    )
+  }
+  // agy (Go/RE2) will reject the whole toolbox if any pattern is only valid as
+  // ECMA-262. Translate or drop those patterns here; tool-call arguments in
+  // the response are plain JSON and do not need a reverse transform.
+  sanitizePatternFields(out)
   return out
 }
 
@@ -3934,6 +3949,8 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         send("content_block_start", {
           type: "content_block_start",
           index: blockIndex,
+          // Schema sanitization is outbound only: tool_use carries id, name, and
+          // JSON arguments, never the parameter schema, so nothing is rewritten here.
           content_block: { type: "tool_use", id: call.id, name: call.name, input: {} },
         })
         send("content_block_delta", {
@@ -4564,4 +4581,5 @@ process.once("exit", () => {
   }
 })
 
+export { sanitizeInputSchema }
 export default { id: PROVIDER_ID, server: AntigravityBridgePlugin }
