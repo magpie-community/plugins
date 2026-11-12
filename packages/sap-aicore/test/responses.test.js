@@ -221,44 +221,149 @@ test("stateless continuation keeps native call identity and encrypted reasoning 
   assert.equal(sent.length, 2, "one dispatch per turn; no generation is replayed")
 })
 
+const CUSTOM_PATCH_TOOL = {
+  type: "function",
+  name: "apply_patch",
+  parameters: {
+    type: "object",
+    properties: { input: { type: "string", description: "Input must match the lark grammar:\nstart: x" } },
+    required: ["input"],
+    additionalProperties: false,
+  },
+  strict: true,
+}
+
 test("Codex namespace and custom tools translate to native function tools reaching SAP", async () => {
   const tools = [
     { type: "namespace", name: "arithmetic", description: "Integer arithmetic", tools: [STRICT_TOOL] },
     { type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "start: x" } },
   ]
   const user = { role: "user", content: [{ type: "input_text", text: "verify 7" }] }
-  // A stray custom-tool call/output pair from a prior turn must never reach SAP.
-  const staleCustomCall = { id: "custom_item", type: "custom_tool_call", call_id: "call_patch", name: "apply_patch", input: "noop", status: "completed" }
-  const staleCustomOutput = { type: "custom_tool_call_output", call_id: "call_patch", output: "ok" }
+  const customCall = { id: "custom_item", type: "custom_tool_call", call_id: "call_patch", name: "apply_patch", input: "*** Begin Patch\n+7\n*** End Patch" }
   const { request, sent } = await fixture((_, init) => {
     const body = JSON.parse(init.body)
     try {
-      assert.deepEqual(body.tools, [{ ...STRICT_TOOL, name: "arithmetic__verify_value" }], "namespace is qualified; custom is dropped")
-      assert.ok(!JSON.stringify(body).includes("apply_patch"), "no custom/freeform tool or its call survives")
-      assert.ok(body.input.every(item => item.type !== "custom_tool_call" && item.type !== "custom_tool_call_output"), "orphaned custom history is removed")
+      assert.deepEqual(body.tools, [{ ...STRICT_TOOL, name: "arithmetic__verify_value" }, CUSTOM_PATCH_TOOL], "namespace and custom tools translate to native function tools")
       if (body.tool_choice === "required") {
         assert.deepEqual(body.input, [user])
-        return jsonResponse({ ...FIRST_WHOLE, output: [REASON_1, { ...CALL, name: "arithmetic__verify_value" }] })
+        return jsonResponse({
+          ...FIRST_WHOLE,
+          output: [
+            REASON_1,
+            { ...CALL, name: "arithmetic__verify_value" },
+            { id: customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
+          ],
+        })
       }
       assert.equal(body.tool_choice, "none")
-      assert.deepEqual(body.input.find(item => item.type === "function_call"), { ...CALL, name: "arithmetic__verify_value" })
-      const result = body.input.find(item => item.type === "function_call_output")
-      return jsonResponse(finalWhole("AICORE_RESULT_" + JSON.parse(result.output).answer))
+      assert.deepEqual(body.input.filter(item => item.type === "function_call"), [
+        { ...CALL, name: "arithmetic__verify_value" },
+        { id: customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
+      ])
+      const results = body.input.filter(item => item.type === "function_call_output")
+      assert.equal(results.length, 2)
+      assert.equal(results[1].output, "patched")
+      return jsonResponse(finalWhole("AICORE_RESULT_" + JSON.parse(results[0].output).answer + "_" + results[1].output))
     } catch {
       return nativeError(400, "invalid_tool_history", TOKEN)
     }
   })
   const first = await (await request({ model: MODEL, input: [user], tools, tool_choice: "required" })).json()
   const call = first.output.find(item => item.type === "function_call")
+  const patchCall = first.output.find(item => item.type === "custom_tool_call")
   assert.equal(call.name, "verify_value")
   assert.equal(call.namespace, "arithmetic")
   assert.deepEqual(call.encrypted_function_args, [])
-  const results = [{ type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ answer: JSON.parse(call.arguments).value * 2 }) }]
-  const second = await request({ model: MODEL, input: [user, REASON_1, call, staleCustomCall, staleCustomOutput, ...results], tools, tool_choice: "none" })
+  assert.deepEqual(patchCall, { ...customCall, status: "completed" })
+  const results = [
+    { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ answer: JSON.parse(call.arguments).value * 2 }) },
+    { type: "custom_tool_call_output", call_id: patchCall.call_id, output: "patched" },
+  ]
+  const second = await request({ model: MODEL, input: [user, REASON_1, call, patchCall, ...results], tools, tool_choice: "none" })
   assert.equal(second.status, 200)
-  assert.equal((await second.json()).output.at(-1).content[0].text, "AICORE_RESULT_14")
-  assert.equal(sent.length, 2, "each turn dispatches once, with no history-stripping replay")
+  assert.equal((await second.json()).output.at(-1).content[0].text, "AICORE_RESULT_14_patched")
+  assert.equal(sent.length, 2, "each turn dispatches once, with faithful custom-tool translation")
 })
+
+for (const stream of [false, true]) {
+  test(`top-level and namespaced custom tools execute a complete ${stream ? "SSE" : "JSON"} loop`, async () => {
+    const tools = [
+      { type: "custom", name: "apply_patch", description: "Freeform patch", format: { type: "grammar", syntax: "lark", definition: "start: patch" } },
+      { type: "namespace", name: "coding", tools: [{ type: "custom", name: "apply_patch", format: { type: "text" } }] },
+    ]
+    const inputs = ["*** Begin Patch\n+line 1\n*** End Patch\n😀", "namespaced \"patch\" \\ slash"]
+    const { request, sent } = await fixture((_, init) => {
+      const body = JSON.parse(init.body)
+      assert.deepEqual(body.tools.map(t => t.name), ["apply_patch", "coding__apply_patch"])
+      if (body.tool_choice === "none") {
+        assert.deepEqual(body.input.filter(i => i.type === "function_call").map(i => [i.name, i.arguments]), [
+          ["apply_patch", JSON.stringify({ input: inputs[0] })],
+          ["coding__apply_patch", JSON.stringify({ input: inputs[1] })],
+        ])
+        const outputs = body.input.filter(i => i.type === "function_call_output").map(i => i.output)
+        const response = finalWhole("CUSTOM_OK_" + outputs.join("|"))
+        return stream ? streamResponse([frame({ type: "response.completed", response })]) : jsonResponse(response)
+      }
+      assert.deepEqual(body.tool_choice, {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "function", name: "apply_patch" }, { type: "function", name: "coding__apply_patch" }],
+      })
+      const wireCalls = [
+        { id: "ctc_0", type: "function_call", call_id: "call_c0", name: "apply_patch", arguments: '{"input":"*** Begin Patch\\n+line 1\\n*** End Patch\\n\\ud83d\\ude00"}', status: "completed" },
+        { id: "ctc_1", type: "function_call", call_id: "call_c1", name: "coding__apply_patch", arguments: JSON.stringify({ input: inputs[1] }), status: "completed" },
+      ]
+      const response = { ...FIRST_WHOLE, output: [REASON_1, ...wireCalls] }
+      if (!stream) return jsonResponse(response)
+      const chunks0 = ['{"in', 'put":"*** Begin Patch\\n', '+line 1\\n*** End Patch\\n\\ud83d', '\\ude00"}']
+      const events = [
+        frame({ type: "response.created", response: { ...response, status: "in_progress", output: [] } }),
+        frame({ type: "response.output_item.added", output_index: 0, item: { ...wireCalls[0], arguments: "", status: "in_progress" } }),
+        ...chunks0.map((delta, i) => frame({ type: "response.function_call_arguments.delta", item_id: "ctc_0", output_index: 0, delta, sequence_number: i + 1 })),
+        frame({ type: "response.function_call_arguments.done", item_id: "ctc_0", output_index: 0, name: "apply_patch", arguments: wireCalls[0].arguments }),
+        frame({ type: "response.output_item.done", output_index: 0, item: wireCalls[0] }),
+        frame({ type: "response.output_item.added", output_index: 1, item: { ...wireCalls[1], arguments: "", status: "in_progress" } }),
+        frame({ type: "response.function_call_arguments.delta", item_id: "ctc_1", output_index: 1, delta: wireCalls[1].arguments }),
+        frame({ type: "response.function_call_arguments.done", item_id: "ctc_1", output_index: 1, name: "coding__apply_patch", arguments: wireCalls[1].arguments }),
+        frame({ type: "response.output_item.done", output_index: 1, item: wireCalls[1] }),
+        frame({ type: "response.completed", response }),
+      ]
+      return streamResponse(events)
+    })
+    const tool_choice = {
+      type: "allowed_tools",
+      mode: "required",
+      tools: [{ type: "custom", name: "apply_patch" }, { type: "custom", name: "apply_patch", namespace: "coding" }],
+    }
+    const first = await request({ model: MODEL, stream, tools, input: [USER], tool_choice })
+    const events = stream ? parseEvents(await first.text()) : []
+    const reply = stream ? events.at(-1).response : await first.json()
+    const calls = reply.output.filter(i => i.type === "custom_tool_call")
+    assert.deepEqual(calls, [
+      { id: "ctc_0", type: "custom_tool_call", call_id: "call_c0", name: "apply_patch", input: inputs[0], status: "completed" },
+      { id: "ctc_1", type: "custom_tool_call", call_id: "call_c1", name: "apply_patch", namespace: "coding", input: inputs[1], status: "completed" },
+    ])
+    if (stream) {
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.added").map(e => e.item), [
+        { id: "ctc_0", type: "custom_tool_call", call_id: "call_c0", name: "apply_patch", input: "", status: "in_progress" },
+        { id: "ctc_1", type: "custom_tool_call", call_id: "call_c1", name: "apply_patch", namespace: "coding", input: "", status: "in_progress" },
+      ])
+      // Custom input is not streamed incrementally: argument deltas are dropped
+      // and the complete input arrives once at `custom_tool_call_input.done`.
+      assert.equal(events.filter(e => e.type === "response.custom_tool_call_input.delta" || e.type === "response.function_call_arguments.delta").length, 0)
+      assert.deepEqual(events.filter(e => e.type === "response.custom_tool_call_input.done").map(e => [e.name, e.namespace, e.input]), [
+        ["apply_patch", undefined, inputs[0]],
+        ["apply_patch", "coding", inputs[1]],
+      ])
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.done").map(e => e.item), calls)
+    }
+    const results = calls.map((call, i) => ({ type: "custom_tool_call_output", call_id: call.call_id, output: "done_" + i }))
+    const second = await request({ model: MODEL, stream, tools, tool_choice: "none", input: [USER, ...reply.output, ...results] })
+    const finalReply = stream ? parseEvents(await second.text()).at(-1).response : await second.json()
+    assert.equal(finalReply.output.at(-1).content[0].text, "CUSTOM_OK_done_0|done_1")
+    assert.equal(sent.length, 2)
+  })
+}
 
 test("plain function tools and history pass through untranslated", () => {
   const body = { model: MODEL, input: [USER, CALL, { type: "function_call_output", call_id: CALL.call_id, output: "{}" }], tools: [STRICT_TOOL], tool_choice: "auto" }
@@ -267,30 +372,30 @@ test("plain function tools and history pass through untranslated", () => {
   assert.equal(out.input, body.input, "no namespace/custom means history reference is untouched")
 })
 
-test("tool translation handles custom/dropped tool_choice, all-dropped tools, orphaned history and distinct namespace names", () => {
+test("tool translation preserves custom and namespaced tool_choice, paired custom history and distinct namespace names", () => {
   const customTool = { type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "start: x" } }
   const nsToolA = { ...STRICT_TOOL, description: "from-ns-a" }
   const nsToolB = { ...STRICT_TOOL, description: "from-ns-b" }
   const otherFn = { type: "function", name: "other_fn", parameters: { type: "object" } }
 
-  // 1. tool_choice naming a custom or dropped tool resets to "auto" when function tools survive;
-  //    a namespaced function choice uses its qualified name.
+  // 1. tool_choice naming a declared custom or namespaced tool translates to its wire function name,
+  //    never relaxing to "auto" or omitting required choices.
   const withCustomChoice = validateResponsesRequest({
     model: MODEL,
     input: "hi",
     tools: [{ type: "namespace", name: "ns_a", tools: [nsToolA] }, customTool],
     tool_choice: { type: "custom", name: "apply_patch" },
   })
-  assert.deepEqual(withCustomChoice.tools, [{ ...nsToolA, name: "ns_a__verify_value" }])
-  assert.equal(withCustomChoice.tool_choice, "auto")
+  assert.deepEqual(withCustomChoice.tools, [{ ...nsToolA, name: "ns_a__verify_value" }, CUSTOM_PATCH_TOOL])
+  assert.deepEqual(withCustomChoice.tool_choice, { type: "function", name: "apply_patch" })
 
-  const withDroppedFnChoice = validateResponsesRequest({
+  const withUnmatchedFnChoice = validateResponsesRequest({
     model: MODEL,
     input: "hi",
     tools: [STRICT_TOOL],
     tool_choice: { type: "function", name: "undeclared_or_dropped" },
   })
-  assert.deepEqual(withDroppedFnChoice.tool_choice, { type: "function", name: "undeclared_or_dropped" })
+  assert.deepEqual(withUnmatchedFnChoice.tool_choice, { type: "function", name: "undeclared_or_dropped" })
 
   const withNamespacedFnChoice = validateResponsesRequest({
     model: MODEL,
@@ -300,36 +405,37 @@ test("tool translation handles custom/dropped tool_choice, all-dropped tools, or
   })
   assert.deepEqual(withNamespacedFnChoice.tool_choice, { type: "function", name: "ns_a__verify_value" })
 
-  // 2. Every tool dropped with tool_choice:"required" removes both tools and tool_choice,
-  //    and does not inject encrypted-reasoning include when no tools/reasoning remain.
-  const allDropped = validateResponsesRequest({
+  // 2. Custom tool with tool_choice:"required" retains both the translated tool and "required" choice.
+  const customRequired = validateResponsesRequest({
     model: MODEL,
     input: "hi",
-    tools: [customTool, { type: "namespace", name: "empty", tools: [] }],
+    tools: [customTool],
     tool_choice: "required",
   })
-  assert.equal("tools" in allDropped, false)
-  assert.equal("tool_choice" in allDropped, false)
-  assert.equal("include" in allDropped, false)
+  assert.deepEqual(customRequired.tools, [CUSTOM_PATCH_TOOL])
+  assert.equal(customRequired.tool_choice, "required")
+  assert.deepEqual(customRequired.include, ["reasoning.encrypted_content"])
 
-  // 3. Orphaned custom-tool history and replayed function_call namespace tags are cleaned
+  // 3. Paired custom-tool history and replayed function_call namespace tags translate faithfully
   //    even when no custom/namespace tool is declared on the turn.
-  const staleCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "x" }
-  const staleOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const customCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "x" }
+  const customOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const translatedCustomCall = { id: "c1", type: "function_call", call_id: "cp1", name: "apply_patch", arguments: '{"input":"x"}' }
+  const translatedCustomOut = { type: "function_call_output", call_id: "cp1", output: "ok" }
   const namespacedCall = { ...CALL, namespace: "ns_a" }
   const fnOut = { type: "function_call_output", call_id: CALL.call_id, output: "{}" }
-  const cleanedNoCustomTools = validateResponsesRequest({
+  const translatedHistoryWithFnTools = validateResponsesRequest({
     model: MODEL,
-    input: [USER, staleCall, staleOut, namespacedCall, fnOut],
+    input: [USER, customCall, customOut, namespacedCall, fnOut],
     tools: [STRICT_TOOL],
   })
-  assert.deepEqual(cleanedNoCustomTools.input, [USER, { ...CALL, name: "ns_a__verify_value" }, fnOut])
+  assert.deepEqual(translatedHistoryWithFnTools.input, [USER, translatedCustomCall, translatedCustomOut, { ...CALL, name: "ns_a__verify_value" }, fnOut])
 
-  const cleanedOmittedTools = validateResponsesRequest({
+  const translatedHistoryOmittedTools = validateResponsesRequest({
     model: MODEL,
-    input: [USER, staleCall, staleOut],
+    input: [USER, customCall, customOut],
   })
-  assert.deepEqual(cleanedOmittedTools.input, [USER])
+  assert.deepEqual(translatedHistoryOmittedTools.input, [USER, translatedCustomCall, translatedCustomOut])
 
   // 4. Functions sharing a bare name retain every distinct tool identity.
   const dedupedNs = validateResponsesRequest({
@@ -554,7 +660,7 @@ test("native tool-choice restrictions and malformed shapes reach SAP validation 
   assert.equal(sent.length, choices.length)
 })
 
-test("only choices targeting translated or declared dropped tools are adapted", () => {
+test("choices targeting translated tools are adapted and explicit required/forced choices are never relaxed", async () => {
   const custom = { type: "custom", name: "apply_patch" }
   const native = { ...STRICT_TOOL, name: "read" }
   const tools = [native, { type: "namespace", name: "ns", tools: [STRICT_TOOL, custom] }, custom]
@@ -563,20 +669,96 @@ test("only choices targeting translated or declared dropped tools are adapted", 
   for (const mode of ["required", "auto"]) {
     const choice = { type: "allowed_tools", mode, future: true, tools: [{ type: "custom", name: "apply_patch" }, { type: "function", namespace: "ns", name: CALL.name, future: true }, { type: "function", name: "read" }, { type: "custom", namespace: "ns", name: "apply_patch" }] }
     const before = structuredClone(choice)
-    assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: choice }).tool_choice, { ...choice, tools: [{ type: "function", name: "ns__verify_value", future: true }, { type: "function", name: "read" }] })
+    assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: choice }).tool_choice, {
+      ...choice,
+      tools: [
+        { type: "function", name: "apply_patch" },
+        { type: "function", name: "ns__verify_value", future: true },
+        { type: "function", name: "read" },
+        { type: "function", name: "ns__apply_patch" },
+      ],
+    })
     assert.deepEqual(choice, before)
   }
-  const dropped = { type: "allowed_tools", mode: "required", tools: [{ type: "custom", name: "apply_patch" }] }
-  assert.equal(validateResponsesRequest({ model: MODEL, tools, tool_choice: dropped }).tool_choice, "auto")
-  for (const tool_choice of [dropped, { type: "custom", name: "apply_patch" }, "required"]) {
-    assert.equal("tool_choice" in validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice }), false)
-  }
+  const forcedCustomAllowed = { type: "allowed_tools", mode: "required", tools: [{ type: "custom", name: "apply_patch" }] }
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: forcedCustomAllowed }).tool_choice, {
+    type: "allowed_tools",
+    mode: "required",
+    tools: [{ type: "function", name: "apply_patch" }],
+  })
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: forcedCustomAllowed }).tool_choice, {
+    type: "allowed_tools",
+    mode: "required",
+    tools: [{ type: "function", name: "apply_patch" }],
+  })
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: { type: "custom", name: "apply_patch" } }).tool_choice, {
+    type: "function",
+    name: "apply_patch",
+  })
+  assert.equal(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: "required" }).tool_choice, "required")
   for (const tool_choice of ["none", "auto", { type: "future" }, { type: "function", name: "missing" }, { type: "allowed_tools", mode: "required", tools: [{ type: "function", name: "missing" }] }]) {
     assert.equal(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice }).tool_choice, tool_choice)
   }
-  const undeclaredNamespace = { type: "custom", name: "apply_patch", namespace: "unknown" }
-  assert.equal(validateResponsesRequest({ model: MODEL, tools, tool_choice: undeclaredNamespace }).tool_choice, undeclaredNamespace)
   assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: { type: "function", name: CALL.name, namespace: "ns", future: true } }).tool_choice, { type: "function", name: "ns__verify_value", future: true })
+
+  // Unsupported hosted tools, invalid custom declarations, unpaired/malformed custom history,
+  // and undeclared or toolless forced/required choices reject with local 400 before dispatch.
+  const { request, sent } = await fixture()
+  const validCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "patch" }
+  const validOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const rejected = [
+    { tools: [{ type: "web_search" }] },
+    { tools: [STRICT_TOOL, { type: "web_search_preview" }] },
+    { tools: [{ type: "file_search" }] },
+    { tools: [{ type: "code_interpreter" }] },
+    { tools: [{ type: "computer_use_preview" }] },
+    { tools: [{ type: "mcp", server_label: "srv" }] },
+    { tools: [{ type: "namespace", name: "ns", tools: [{ type: "web_search" }] }] },
+    { tools: [{ type: "namespace", name: "empty", tools: [] }] },
+    { tools: [{ type: "custom", name: "" }] },
+    { tools: [{ type: "custom", name: STRICT_TOOL.name }, STRICT_TOOL] },
+    { tools: [custom, { type: "custom", name: "apply_patch", format: { type: "text" } }] },
+    { tools: [], tool_choice: "required" },
+    { tool_choice: "required" },
+    { tools: [], tool_choice: { type: "function", name: "read" } },
+    { tools, tool_choice: { type: "web_search" } },
+    { tools, tool_choice: { type: "allowed_tools", mode: "required", tools: [{ type: "web_search" }] } },
+    { tools, tool_choice: { type: "allowed_tools", mode: "required", tools: [] } },
+    { tools, tool_choice: { type: "custom", name: "apply_patch", namespace: "unknown" } },
+    { tools: [native], tool_choice: { type: "custom", name: "apply_patch" } },
+    { tools, tool_choice: { type: "function", name: "apply_patch" } },
+    { tools, tool_choice: { type: "function", name: "verify_value", namespace: "unknown" } },
+    { input: [USER, validCall] },
+    { input: [USER, validOut] },
+    { input: [USER, validOut, validCall] },
+    { input: [USER, { ...validCall, input: 123 }, validOut] },
+    { input: [USER, validCall, { type: "function_call_output", call_id: "cp1", output: "ok" }] },
+    { input: [USER, { type: "web_search_call", id: "ws_1", status: "completed" }] },
+  ]
+  for (const extra of rejected) {
+    const response = await request({ model: MODEL, input: [USER], ...extra })
+    assert.equal(response.status, 400, JSON.stringify(extra))
+    assert.equal((await response.json()).error.code, "invalid-request")
+  }
+  assert.equal(sent.length, 0)
+
+  // Custom validation checks only the fields the translation reads: unknown
+  // definition/format fields and unknown history fields are tolerated, so new
+  // Codex fields do not become local 400s. Unknown history fields pass through.
+  const tolerated = [
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "unknown", definition: "x" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "text", syntax: "lark" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", unknown: true }] },
+    { input: [USER, { ...validCall, unknown: true }, validOut] },
+    { input: [USER, validCall, { ...validOut, output: 123 }] },
+  ]
+  for (const extra of tolerated) {
+    assert.doesNotThrow(() => validateResponsesRequest({ model: MODEL, input: [USER], ...extra }), JSON.stringify(extra))
+  }
+  const passthrough = validateResponsesRequest({ model: MODEL, input: [USER, { ...validCall, extra_meta: { t: 1 } }, validOut] })
+  assert.deepEqual(passthrough.input[1].extra_meta, { t: 1 })
+  assert.equal(passthrough.input[1].type, "function_call")
 })
 
 test("a streamed forced function call and result round trip to an agent-derived final reply", async () => {
