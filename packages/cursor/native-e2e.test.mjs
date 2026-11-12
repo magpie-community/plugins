@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getEventListeners } from "node:events"
 import { CursorAuthPlugin, _internal } from "./index.mjs"
-import { NATIVE_LIMITS, nativeSessions, setWireTrace } from "./native-session.mjs"
+import { NATIVE_LIMITS, nativeSessions, setWebSearch, setWireTrace } from "./native-session.mjs"
 import { message, bin, text, uint, readWire, nest, number, string, envelope, update, end, tool, setBlob, getBlob, checkpoint, abortExec, readResult } from "./native-test-wire.mjs"
 
 const savedFetch = globalThis.fetch
@@ -53,10 +53,11 @@ const choice = (response) => response.body.choices[0]
 // make the second call or final answer succeed.
 async function agent(options = {}) {
   const firstID = options.omitZeroID ? 0 : 7
-  const a = { histories: [], runs: [], started: [], events: [], dashboardRequests: [], results: [], closes: [], unavailable: [], kv: [], errors: [], sessions: new Set(), timers: [], closedStreams: 0 }
+  const a = { histories: [], runs: [], started: [], events: [], dashboardRequests: [], results: [], closes: [], unavailable: [], kv: [], errors: [], allowed: [], answers: [], sessions: new Set(), timers: [], closedStreams: 0 }
   a.server = http2.createServer()
   a.server.on("session", (s) => { a.sessions.add(s); s.on("error", () => {}); s.on("close", () => a.sessions.delete(s)) })
-  a.server.on("stream", (stream) => {
+  a.server.on("stream", (stream, headers) => {
+    a.allowed.push(headers["x-cursor-agent-allowed-tools"])
     stream.on("error", () => {})
     stream.on("close", () => a.closedStreams++)
     stream.respond({ ":status": 200, "content-type": "application/connect+proto" })
@@ -109,6 +110,28 @@ async function agent(options = {}) {
         const at = Math.floor(options.toolDisplay.length / 2)
         send(update(1, text(1, options.toolDisplay.slice(0, at))))
         send(update(1, text(1, options.toolDisplay.slice(at))))
+      }
+      if (options.search) {
+        // plugins#635: Cursor's own web search, as cursor-agent's agent.v1
+        // has it: the call (ToolCall.web_search_tool_call, 18) being
+        // written, then InteractionQuery {id 1, web_search_request_query 2
+        // (or another kind's field), args: search_term 1, tool_call_id 2}
+        // as AgentServerMessage.interaction_query (7); the search is run
+        // once the client answers (AgentClientMessage.interaction_response, 6)
+        const q = options.search
+        const args = message(text(1, q.term), text(2, "ws1"))
+        const call = (n, result) => update(n, message(text(1, "ws1"), bin(2, bin(18, message(bin(1, args), ...(result ? [bin(2, result)] : []))))))
+        send(call(7))
+        if (q.shell) send(envelope(bin(2, message(uint(1, 78), bin(12, text(1, "synthetic shell request"))))))
+        send(envelope(bin(7, message(uint(1, 3), bin(q.query ?? 2, bin(1, args))))))
+        a.searched = () => {
+          send(call(3, bin(1, bin(1, message(text(1, q.ref), text(2, "https://" + q.ref + ".invalid"))))))
+          if (q.fail) return stream.end(envelope(Buffer.from(JSON.stringify({ error: { code: "resource_exhausted", message: "synthetic failure" } })), 2))
+          send(update(1, text(1, "searched answer")))
+          send(update(14, message(uint(1, 5), uint(2, 3))))
+          stream.end(end())
+        }
+        return
       }
       if (options.unsupportedExec) { send(envelope(bin(2, message(uint(1, 77), bin(12, text(1, "synthetic shell request")))))); return }
       if (options.thinkingOnly) return
@@ -211,6 +234,7 @@ async function agent(options = {}) {
               continue
             }
             const id = number(close.data, 1)
+            if (options.search && id === 78) { a.closes.push(id); continue }
             if (options.unsupportedExec && id === 77 || (options.name === "unregistered" || options.provider === "foreign" || options.approval) && id === firstID) {
               send(update(1, text(1, "continued after unavailable")))
               send(update(14, message(uint(1, 5), uint(2, 3))))
@@ -222,6 +246,9 @@ async function agent(options = {}) {
             closed.add(id)
             a.closes.push(id)
             advance()
+          } else if (fs.some((f) => f.no === 6)) {
+            a.answers.push(nest(b, 6))
+            a.searched?.()
           } else if (fs.some((f) => f.no === 3)) {
             const kv = nest(b, 3)
             const id = number(kv, 1)
@@ -1928,6 +1955,119 @@ test("native: Wire trace is off unless the option is on (plugins#550)", async ()
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// plugins#635: the web-search test switch. Off, Cursor's own search is
+// turned away as before: not allowed in the header, and its query fails a
+// native Run or goes unanswered on a stateless one. On, the search alone is
+// let through and approved, and the Run's trace is saved, in shape only.
+const NO_SEARCH = "mcp_tool_call,get_mcp_tools_tool_call"
+const searchFixture = (secret, extra = {}) => ({ search: { term: "term " + secret, ref: "ref-" + secret, ...extra } })
+const traces = (dir) => {
+  try {
+    return readdirSync(join(dir, "cursor-traces"))
+  } catch {
+    return []
+  }
+}
+for (const path of ["native", "stateless"]) {
+  test(`${path}: with the web-search switch off, Cursor's search is refused as before (plugins#635)`, async () => {
+    Object.assign(NATIVE_LIMITS, { idle: 150 })
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent(searchFixture("off"))
+    const dir = mkdtempSync(join(tmpdir(), "cursor-search-"))
+    try {
+      const input = { directory: dir, magpie: { option: () => false } }
+      const result = await a.ask(auth(), initial(), { input })
+      expect(result.status).toBe(502)
+      expect(result.body.error.message).toContain(path === "native" ? "unsupported native interaction query" : "Cursor went quiet")
+      expect(a.allowed.length).toBeGreaterThan(0)
+      expect(a.allowed.every((h) => h === NO_SEARCH)).toBe(true)
+      expect(a.answers).toEqual([])
+      expect(readdirSync(dir)).toEqual([])
+    } finally {
+      setWebSearch("")
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  for (const outcome of ["succeeds", "fails"]) test(`${path}: with the web-search switch on, the search is approved, other tools refused, and a Run that ${outcome} saves its trace with no text (plugins#635)`, async () => {
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const secret = "SECRET-" + randomUUID()
+    const a = await agent(searchFixture(secret, { shell: true, fail: outcome === "fails" }))
+    const dir = mkdtempSync(join(tmpdir(), "cursor-search-"))
+    try {
+      const account = auth()
+      // Wire trace stays off: the switch alone saves the trace
+      const input = { directory: dir, magpie: { option: (id, key) => id === "cursor" && key === "web_search_test" } }
+      const chat = initial({ messages: [{ role: "user", content: "prompt " + secret }] })
+      const result = await a.ask(account, chat, { input })
+      if (outcome === "succeeds") {
+        expect(result.status).toBe(200)
+        expect(choice(result).message.content).toBe("searched answer")
+      } else expect(result.status).toBeGreaterThanOrEqual(400)
+      expect(a.allowed[0]).toBe(NO_SEARCH + ",web_search_tool_call")
+      // InteractionResponse {id 3, web_search_request_response 2 {approved 1 {}}}
+      expect(a.answers).toHaveLength(1)
+      expect(number(a.answers[0], 1)).toBe(3)
+      expect(readWire(a.answers[0]).map((f) => f.no)).toEqual([1, 2])
+      expect(readWire(nest(a.answers[0], 2)).map((f) => f.no)).toEqual([1])
+      expect(nest(nest(a.answers[0], 2), 1)).toHaveLength(0)
+      // Cursor's shell is still turned away
+      expect(a.unavailable).toHaveLength(1)
+      expect(a.closes).toContain(78)
+      await until(() => traces(dir).length > 0)
+      const files = traces(dir)
+      expect(files).toHaveLength(1)
+      const raw = readFileSync(join(dir, "cursor-traces", files[0]), "utf8")
+      for (const word of [secret, "searched answer", "synthetic shell", "invalid", account.access, account.accountId, "synthetic-", "Bearer", "fixture-session"]) expect(raw).not.toContain(word)
+      const t = JSON.parse(raw)
+      expect(t).toMatchObject({ trace: 1, path, model: "fixture-model" })
+      if (outcome === "succeeds") expect(t.error).toBeUndefined()
+      else expect(t.error.status).toBeGreaterThanOrEqual(400)
+      expect(t.frames.some((f) => f.dir === "in" && f.kind === "message #7")).toBe(true)
+      expect(t.frames.some((f) => f.event === "web search")).toBe(true)
+      expect(t.frames.some((f) => f.dir === "out" && f.fields?.[0]?.[0] === 6)).toBe(true)
+    } finally {
+      setWebSearch("")
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test(`${path}: with the web-search switch on, a Run in which Cursor never searched saves nothing (plugins#635)`, async () => {
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent({ finalOnly: true })
+    const dir = mkdtempSync(join(tmpdir(), "cursor-search-"))
+    try {
+      const input = { directory: dir, magpie: { option: (id, key) => id === "cursor" && key === "web_search_test" } }
+      const result = await a.ask(auth(), initial(), { input })
+      expect(result.status).toBe(200)
+      expect(a.allowed[0]).toBe(NO_SEARCH + ",web_search_tool_call")
+      expect(traces(dir)).toEqual([])
+    } finally {
+      setWebSearch("")
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test(`${path}: with the web-search switch on, another interaction query is refused as before and saves nothing (plugins#635)`, async () => {
+    Object.assign(NATIVE_LIMITS, { idle: 150 })
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    // InteractionQuery.web_fetch_request_query (9)
+    const a = await agent(searchFixture("fetch", { query: 9 }))
+    const dir = mkdtempSync(join(tmpdir(), "cursor-search-"))
+    try {
+      const input = { directory: dir, magpie: { option: (id, key) => id === "cursor" && key === "web_search_test" } }
+      const result = await a.ask(auth(), initial(), { input })
+      expect(result.status).toBe(502)
+      expect(result.body.error.message).toContain(path === "native" ? "unsupported native interaction query" : "Cursor went quiet")
+      expect(a.answers).toEqual([])
+      expect(traces(dir)).toEqual([])
+    } finally {
+      setWebSearch("")
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
 
 test("stateless: a call with no count, then silence, is an error, not a step of tool calls (#2672)", async () => {
   Object.assign(NATIVE_LIMITS, { idle: 150, perProcess: 0 })

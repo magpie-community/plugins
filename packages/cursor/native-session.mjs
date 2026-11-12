@@ -162,6 +162,11 @@ export class Quiet {
   failed(error) {
     this.trace?.write(error, this)
   }
+  // ended is how the Run ended, when it succeeded: its trace is written
+  // only if Cursor asked it to search (plugins#635)
+  ended() {
+    this.trace?.write(null, this)
+  }
   // pause stops the clock while the Run waits on the caller's tool results;
   // resume starts it again from nothing, for Cursor's next model call
   pause() {
@@ -244,6 +249,54 @@ let traceDir = () => ""
 export function setWireTrace(dir) {
   traceDir = typeof dir === "function" ? dir : () => dir || ""
 }
+// The web-search test switch (plugins#635, off by default; the plugin's
+// "Cursor web search (test)" option). searchDir is the folder a Run's trace
+// goes to while it is on, "" while off, asked at each Run's start. On, the
+// Run lets Cursor's own web search through (ToolCall.web_search_tool_call,
+// 18) and approves it when Cursor asks, as cursor-agent does when it
+// auto-approves; and a Run in which Cursor asked to search saves its wire
+// trace whether it succeeded or failed. Every other tool of Cursor's own is
+// refused as before.
+let searchDir = () => ""
+export function setWebSearch(dir) {
+  searchDir = typeof dir === "function" ? dir : () => dir || ""
+}
+export function webSearchDir() {
+  try {
+    return String(searchDir() || "")
+  } catch {
+    return ""
+  }
+}
+// webSearchQuery reads an InteractionQuery (AgentServerMessage field 7):
+// id (1, uint32) and the query, a oneof of which web_search_request_query
+// is field 2 (WebSearchRequestQuery: args, 1, a WebSearchArgs of
+// search_term 1 and tool_call_id 2). It is {id, args} for a web search
+// (args false when Cursor sent none), null for any other query or one that
+// can't be read. parse is the path's field reader.
+export function webSearchQuery(data, parse = nativeFields) {
+  try {
+    const fs = parse(data)
+    const id = fs.find((f) => f.num === 1)
+    if (id && (id.wire !== 0 || !Number.isInteger(id.n) || id.n < 0 || id.n > 0xffffffff)) return null
+    // a oneof: the last of its fields is the query
+    const q = fs.filter((f) => f.num !== 1).at(-1)
+    if (!q || q.num !== 2 || q.wire !== 2) return null
+    const args = parse(q.data).some((f) => f.num === 1 && f.wire === 2)
+    return { id: id?.n ?? 0, args }
+  } catch {
+    return null
+  }
+}
+// webSearchAnswer is the AgentClientMessage that answers it: interaction_response
+// (6), an InteractionResponse of the query's id (1) and web_search_request_response
+// (2), a WebSearchRequestResponse that is approved (1, an empty message), or
+// rejected (2, reason 1) when Cursor named nothing to search, as cursor-agent
+// answers that
+export function webSearchAnswer(pb, q) {
+  const res = q.args ? pb().bytes(1, Buffer.alloc(0)) : pb().bytes(2, pb().str(1, "Missing web search arguments"))
+  return pb().bytes(6, pb().varint(1, q.id).bytes(2, res)).done()
+}
 const TRACE_HEAD = 2000 // the Run's first frames, kept
 const TRACE_TAIL = 3000 // and its last, the ones in between counted only
 const TRACE_FILES = 20 // the newest traces kept in the folder
@@ -292,7 +345,13 @@ export class WireTrace {
   static open(meta) {
     let dir = ""
     try { dir = traceDir() } catch {}
-    return dir ? new WireTrace(dir, meta) : null
+    // with Wire trace off, a Run under the web-search test switch is traced
+    // all the same, and saved only if Cursor asked it to search (plugins#635)
+    const search = meta?.search ? String(meta.search) : ""
+    if (!dir && !search) return null
+    const t = new WireTrace(dir || search, meta)
+    t.failures = !!dir
+    return t
   }
   constructor(dir, meta = {}) {
     this.dir = dir
@@ -303,6 +362,16 @@ export class WireTrace {
     this.head = []
     this.tail = []
     this.dropped = 0
+    // failures: a failed Run is saved (Wire trace on); searched: Cursor
+    // asked this Run to search the web (the web-search test switch)
+    this.failures = true
+    this.searched = false
+  }
+  // searchAsked notes that Cursor asked to search: the Run is saved however
+  // it ends (plugins#635)
+  searchAsked() {
+    this.searched = true
+    this.event("web search")
   }
   push(entry) {
     if (this.written) return
@@ -328,10 +397,12 @@ export class WireTrace {
   event(name, extra = {}) {
     this.push({ t: Date.now() - this.started, event: name, ...extra })
   }
-  // write saves the trace once, when the Run failed; a write that fails
-  // leaves the Run's error as it was
+  // write saves the trace once, when the Run failed (error), or when one
+  // that searched succeeded (no error); a write that fails leaves the Run's
+  // error as it was
   write(error, quiet) {
     if (this.written) return
+    if (!error ? !this.searched : !this.failures && !this.searched) return
     this.written = true
     try {
       const at = new Date(this.started).toISOString().replace(/[:.]/g, "-")
@@ -342,7 +413,7 @@ export class WireTrace {
         ...this.meta,
         started: new Date(this.started).toISOString(),
         ms: Date.now() - this.started,
-        error: { status: error?.status ?? 0, message: scrub(error?.message) },
+        error: error ? { status: error?.status ?? 0, message: scrub(error?.message) } : undefined,
         quiet: quiet ? { last: quiet.last, checkpoints: quiet.checkpoints, step: quiet.step, stepCheckpoints: quiet.stepCheckpoints, heartbeats: quiet.heartbeats, heard: quiet.heard, trail: quiet.trail } : undefined,
         frames: [...this.head, ...(this.dropped ? [{ dropped: this.dropped }] : []), ...this.tail],
       }
@@ -916,7 +987,9 @@ class NativeSession {
     this.segment = new Segment(this, prepared.chat)
     this.retain(bytes(prepared.chat))
     this.expireIn(this.limits.lifetime)
-    this.quiet = new Quiet(this.limits, (e) => this.fail(e), { path: "native", model: resolution?.id })
+    // the web-search test switch, as it is at the Run's start (plugins#635)
+    this.search = webSearchDir()
+    this.quiet = new Quiet(this.limits, (e) => this.fail(e), { path: "native", model: resolution?.id, search: this.search })
     this.quiet.nextStep(this.steps)
   }
   // expireIn sets the Run's absolute deadline ms from now: from its start,
@@ -1381,6 +1454,7 @@ class NativeSession {
         } } : {}),
       } })
       this.state = "complete"
+      this.quiet.ended()
       this.pool.release(this)
       this.replayTimer = later(() => this.pool.forget(this), this.limits.replayWait)
     }
@@ -1472,8 +1546,16 @@ class NativeSession {
                 if (pending && !pending.submitted) invalid("Cursor cancelled a pending native tool exec; late results cannot be submitted", 410)
               }
               break
-            case 7:
-              invalid("unsupported native interaction query", 502)
+            case 7: {
+              // interaction_query: Cursor's own web search, approved under
+              // the web-search test switch (plugins#635); anything else, or
+              // the switch off, fails the Run as before
+              const q = this.search ? webSearchQuery(m.data) : null
+              if (!q) invalid("unsupported native interaction query", 502)
+              this.quiet.trace?.searchAsked()
+              await this.reply(webSearchAnswer(pb, q))
+              break
+            }
           }
         }
       }
