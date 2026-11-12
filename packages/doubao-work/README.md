@@ -16,6 +16,10 @@ same, works too:
    `~/Applications/DoubaoWork.app` on macOS,
    `%LOCALAPPDATA%\DoubaoWork\Application\app\DoubaoWork.exe` on Windows),
    else 豆包 (`Doubao.app`, `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe`).
+   On Windows, an app installed elsewhere (another drive, a folder of your
+   own) is found through the uninstall record Windows keeps for it: the
+   record names the folder, and the app is `app\DoubaoWork.exe` in it — no
+   setting needed. `DOUBAO_WORK_APP` still names the exe outright.
    If you signed in to 豆包 through the plugin before 0.1.5, it stays on 豆包
    while 豆包 is installed.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
