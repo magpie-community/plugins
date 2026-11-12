@@ -4439,7 +4439,8 @@ async function measuredUsage(turn, step, content, result) {
   const prompt = promptOf(steps)
   if (expected !== null && prompt > expected + Math.max(16, Math.ceil(expected * 0.01))) return null
   const last = steps.at(-1)
-  const output = steps.reduce((sum, item) => sum + item.output + item.thinking, 0)
+  // Store field 3 (output) already includes field 9 (thinking), matching ACP's outputTokens.
+  const output = steps.reduce((sum, item) => sum + Math.max(item.output, item.thinking), 0)
   const thinking = steps.reduce((sum, item) => sum + item.thinking, 0)
   turn.stepCursor = { source: batch.source, idx: last.idx }
   turn.measured = { prompt }

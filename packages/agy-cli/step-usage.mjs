@@ -4,8 +4,9 @@
 // `gen_metadata`, written when generation ends, before client tools return.
 // Older stores record each completed model call in table `steps`, with
 // step_type 15 and status 3 (done), the counts in Protobuf field 9 of
-// `metadata` (2 uncached input, 3 output, 4 cache write, 5 cache read,
-// 9 thinking). Summed over a prompt they equal the ACP total exactly.
+// `metadata` (2 uncached input, 3 output including thinking, 4 cache write,
+// 5 cache read, 9 thinking). Summed over a prompt they equal the ACP total
+// exactly.
 // Protobuf layout first decoded by lili-luo/dsh-plugin-bundle
 // (dsh-llm-antigravity-acp, MIT); SQLite reader adapted from
 // DylanLIiii/opencode-antigravity-bridge (MIT). Any failure here returns null

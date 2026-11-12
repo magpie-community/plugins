@@ -1209,7 +1209,7 @@ test("SQLite gen_metadata 步级落盘：tool_use 中间步直接读取真实缓
           cachedWriteTokens: 0,
           outputTokens: 82,
           thoughtTokens: 18,
-          totalTokens: 3900 + 38_100 + 82 + 18,
+          totalTokens: 3900 + 38_100 + 82,
         },
       }
     })
@@ -1219,14 +1219,14 @@ test("SQLite gen_metadata 步级落盘：tool_use 中间步直接读取真实缓
       input_tokens: 1800,
       cache_read_input_tokens: 18_200,
       cache_creation_input_tokens: 0,
-      output_tokens: 40,
+      output_tokens: 32,
       output_tokens_details: { thinking_tokens: 8 },
     })
     assert.deepEqual(plain(responses[1].usage), {
       input_tokens: 2100,
       cache_read_input_tokens: 19_900,
       cache_creation_input_tokens: 0,
-      output_tokens: 60,
+      output_tokens: 50,
       output_tokens_details: { thinking_tokens: 10 },
     })
   })
@@ -1281,7 +1281,7 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
           cachedWriteTokens: 0,
           outputTokens: 1255 + 509 + 640,
           thoughtTokens: 850 + 171 + 283,
-          totalTokens: 31_609 + 12_852 + 2243 + 22_528 + 54_133 + 66_986 + 1255 + 509 + 640 + 850 + 171 + 283,
+          totalTokens: 31_609 + 12_852 + 2243 + 22_528 + 54_133 + 66_986 + 1255 + 509 + 640,
         },
       }
     })
@@ -1289,11 +1289,11 @@ test("单次生成串行派发多工具 + WAL 关库：续接工具不虚增账�
     assert.equal(responses.length, 5)
     assert.ok(secondToolElapsedMs < 500, `同次生成续接工具耗时 ${secondToolElapsedMs.toFixed(0)}ms，不应空转等待 1000ms`)
     assert.deepEqual(plain(responses.map((r) => r.usage)), [
-      { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 2105, output_tokens_details: { thinking_tokens: 850 } },
+      { input_tokens: 31_609, cache_read_input_tokens: 22_528, cache_creation_input_tokens: 0, output_tokens: 1255, output_tokens_details: { thinking_tokens: 850 } },
       { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
       { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
-      { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 680, output_tokens_details: { thinking_tokens: 171 } },
-      { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 923, output_tokens_details: { thinking_tokens: 283 } },
+      { input_tokens: 12_852, cache_read_input_tokens: 54_133, cache_creation_input_tokens: 0, output_tokens: 509, output_tokens_details: { thinking_tokens: 171 } },
+      { input_tokens: 2243, cache_read_input_tokens: 66_986, cache_creation_input_tokens: 0, output_tokens: 640, output_tokens_details: { thinking_tokens: 283 } },
     ])
   })
 })
@@ -1577,7 +1577,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
           cachedWriteTokens: 0,
           outputTokens: 32 + 50 + 40,
           thoughtTokens: 8 + 10 + 5,
-          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40 + 8 + 10 + 5,
+          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40,
         },
       }
     })
@@ -1588,7 +1588,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
         input_tokens: 2100,
         cache_read_input_tokens: 19_900,
         cache_creation_input_tokens: 0,
-        output_tokens: 60,
+        output_tokens: 50,
         output_tokens_details: { thinking_tokens: 10 },
       })
     } finally {
@@ -1634,7 +1634,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
           cachedWriteTokens: 0,
           outputTokens: 32 + 453 + 100,
           thoughtTokens: 8 + 15,
-          totalTokens: 1800 + 2582 + 2355 + 18_200 + 83_270 + 83_803 + 32 + 453 + 100 + 8 + 15,
+          totalTokens: 1800 + 2582 + 2355 + 18_200 + 83_270 + 83_803 + 32 + 453 + 100,
         },
       }
     })
@@ -1642,9 +1642,9 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
       const { responses } = await runTurn(kit, baseBody())
       assert.equal(responses.length, 3)
       assert.deepEqual(plain(responses.map((r) => r.usage)), [
-        { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 40, output_tokens_details: { thinking_tokens: 8 } },
+        { input_tokens: 1800, cache_read_input_tokens: 18_200, cache_creation_input_tokens: 0, output_tokens: 32, output_tokens_details: { thinking_tokens: 8 } },
         { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
-        { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 568, output_tokens_details: { thinking_tokens: 15 } },
+        { input_tokens: 2355, cache_read_input_tokens: 83_803, cache_creation_input_tokens: 0, output_tokens: 553, output_tokens_details: { thinking_tokens: 15 } },
       ])
     } finally {
       clearTimeout(lateTimer)
@@ -1673,7 +1673,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
       await agent.tool("Read", { path: "/t1.ts" })
 
       lateTimer = setTimeout(() => {
-        try { writeGen(2, { input: 2100, read: 19_900, output: 50, thinking: 10 }) } catch {}
+        try { writeGen(2, { input: 2100, read: 19_900, write: 0, output: 50, thinking: 10 }) } catch {}
       }, 150)
       await agent.text("inspecting next file ")
       await agent.tool("Read", { path: "/t2.ts" })
@@ -1688,7 +1688,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
           cachedWriteTokens: 0,
           outputTokens: 32 + 50 + 40,
           thoughtTokens: 8 + 10 + 5,
-          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40 + 8 + 10 + 5,
+          totalTokens: 1800 + 2100 + 2400 + 18_200 + 19_900 + 22_000 + 32 + 50 + 40,
         },
       }
     })
@@ -1699,7 +1699,7 @@ test("异步延迟 >75ms 落盘：pending 预写行等待真实落盘；无预�
         input_tokens: 2100,
         cache_read_input_tokens: 19_900,
         cache_creation_input_tokens: 0,
-        output_tokens: 60,
+        output_tokens: 50,
         output_tokens_details: { thinking_tokens: 10 },
       })
     } finally {
@@ -1772,6 +1772,140 @@ test("SQLite 异常保护：超额失真行触发回退，EXCLUSIVE 锁库立即
       assert.ok(toolElapsedMs < 500, `SQLITE_BUSY 时首步耗时 ${toolElapsedMs.toFixed(0)}ms，不应重复轮询阻塞至 1000ms`)
       const finalResp = await readSse(await kit.request(continueWithToolResults(body, toolResp, () => "ok")))
       assert.equal(finalResp.stopReason, "end_turn")
+    } finally {
+      try { locker?.exec("ROLLBACK") } catch {}
+      try { locker?.close() } catch {}
+    }
+  })
+})
+
+test("SQLite field 3 已含 field 9（thinking）：单步/多步落盘、steps 旧表与中途回退均不重复计思考", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const usageBytes = ({ input, output, write = 0, read = 0, thinking = 0 }) => [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+    ...(thinking ? [0x48, ...varint(thinking)] : []),
+  ]
+  const genBlob = (stats) => new Uint8Array(field(1, field(4, usageBytes(stats))))
+  const stepBlob = (stats) => new Uint8Array(field(9, usageBytes(stats)))
+
+  // 子场景 1：Carbon 实测单步重思考形状（2316 / 9390 / 9322 / 11706）：
+  // 真机存在 <sessionId>.db 时单步也会优先走 measuredUsage()，必须报 9390 而非 18712，且与无库兜底完全一致。
+  let withDbUsage = null
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      const db = openSqlite(path.join(convDir, `${agent.sessionId}.db`))
+      try {
+        db.exec("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 2316, output: 9390, thinking: 9322 }))
+      } finally {
+        db.close()
+      }
+      await agent.thought("deep reasoning")
+      await agent.text("short visible answer")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 2316, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 9390, thoughtTokens: 9322, totalTokens: 11_706 },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody({ tools: [] }))
+    assert.equal(responses.length, 1)
+    withDbUsage = plain(responses[0].usage)
+    assert.deepEqual(withDbUsage, {
+      input_tokens: 2316,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 9390,
+      output_tokens_details: { thinking_tokens: 9322 },
+    })
+  })
+
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.thought("deep reasoning")
+      await agent.text("short visible answer")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 2316, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 9390, thoughtTokens: 9322, totalTokens: 11_706 },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody({ tools: [] }))
+    assert.deepEqual(plain(responses[0].usage), withDbUsage)
+  })
+
+  // 子场景 2：旧版 steps 表（Flash 实测形状 2322 / 4728 / 4661）与单笔 thinking > output 防御下限。
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("CREATE TABLE IF NOT EXISTS steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, metadata BLOB)")
+        db.run("INSERT INTO steps VALUES (1, 15, 3, ?)", stepBlob({ input: 2322, output: 4728, thinking: 4661 }))
+      } finally {
+        db.close()
+      }
+      await agent.tool("Read", { path: "/legacy.ts" })
+      const db2 = openSqlite(dbFile)
+      try {
+        db2.run("INSERT INTO steps VALUES (2, 15, 3, ?)", stepBlob({ input: 500, output: 3, thinking: 9 }))
+        db2.run("INSERT INTO steps VALUES (3, 15, 3, ?)", stepBlob({ input: 600, output: 10, thinking: 2 }))
+      } finally {
+        db2.close()
+      }
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 3422, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 4747, thoughtTokens: 4672, totalTokens: 8169 },
+      }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.equal(responses.length, 2)
+    assertCleanUsage(responses[0].usage, "legacy-steps-flash")
+    assertCleanUsage(responses[1].usage, "legacy-steps-guard")
+    assert.equal(responses[0].usage.output_tokens, 4728)
+    assert.equal(responses[0].usage.output_tokens_details.thinking_tokens, 4661)
+    assert.equal(responses[1].usage.output_tokens, 19)
+    assert.equal(responses[1].usage.output_tokens_details.thinking_tokens, 11)
+  })
+
+  // 子场景 3：首步走 SQLite 结算后尾步锁库回退 responseUsage()：
+  // turn.emittedOutputTokens 记录不翻倍的 4700，尾步才能拿足剩余 ACP output 预算（5000 - 4700 = 300）。
+  await withKit({}, async (kit) => {
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    let locker = null
+    kit.prompts.push(async (agent) => {
+      const dbFile = path.join(convDir, `${agent.sessionId}.db`)
+      const db = openSqlite(dbFile)
+      try {
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input: 20_000, read: 10_000, output: 4700, thinking: 4650 }))
+      } finally {
+        db.close()
+      }
+      await agent.tool("Read", { path: "/step1.ts" })
+      locker = openSqlite(dbFile)
+      locker.exec("BEGIN EXCLUSIVE")
+      locker.run("INSERT INTO gen_metadata VALUES (2, ?)", genBlob({ input: 20_000, read: 20_000, output: 300, thinking: 150 }))
+      await agent.text("ok")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 40_000, cachedReadTokens: 30_000, cachedWriteTokens: 0, outputTokens: 5000, thoughtTokens: 4800, totalTokens: 75_000 },
+      }
+    })
+    try {
+      const { responses } = await runTurn(kit, baseBody())
+      assert.equal(responses.length, 2)
+      assert.equal(responses[0].usage.output_tokens, 4700)
+      assert.equal(responses[1].usage.output_tokens, 300)
+      assert.equal(responses[0].usage.output_tokens + responses[1].usage.output_tokens, 5000)
     } finally {
       try { locker?.exec("ROLLBACK") } catch {}
       try { locker?.close() } catch {}
