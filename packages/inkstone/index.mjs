@@ -181,6 +181,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   const createKeyOn = () => opt("create_key", true)
   const pruneOn = () => opt("prune_keys", true)
   const keepSignInOn = () => opt("keep_sign_in", true)
+  const reuseKeptSessionOn = () => opt("reuse_kept_session", true)
   const loginTimeoutMs = optNum(options.loginTimeoutMs, DEFAULT_LOGIN_TIMEOUT_MS)
   // an injection point for tests (the fake browser has no window title to
   // poll): hosts never pass it, so the real window-title wait always runs
@@ -391,9 +392,11 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       url: "",
       opened: true,
       instructions:
-        process.platform === "win32"
-          ? "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin reads the completed sign-in by itself and closes the window. You do not need to close it. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you."
-          : "A browser window opens on the InkStone console. Sign in there (password, SMS or QR code); the plugin watches the profile's cookie store and closes the window itself within about half a minute of the console session landing (Chrome writes cookies to disk on a timer) — you can leave the window open. After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
+        "The plugin first checks its own browser profile: if it holds a console session the server still accepts, the sign-in finishes on that session and no window opens (to sign in as another account, turn off \"Reuse the kept console session\" in this provider's options first). Otherwise a browser window opens on the InkStone console. Sign in there (password, SMS or QR code), and the plugin notices the completed sign-in by itself and closes the window" +
+        (process.platform === "win32"
+          ? " (you do not need to close it)."
+          : " within about half a minute of the console session landing (Chrome writes cookies to disk on a timer) — you can leave the window open.") +
+        " After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
       method: "auto",
       async callback(_code, { signal } = {}) {
         let token = ""
@@ -401,6 +404,14 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           token = await signInWithBrowser({
             browserPath,
             keepSignIn: keepSignInOn(),
+            reuseKeptSession: reuseKeptSessionOn(),
+            // 复用的前提是服务端还认这枚会话：只看 profile 里有没有一行，
+            // 会把已吊销的会话、或另一个账号的会话，当成这次登录的结果。
+            validateToken: async (t) => {
+              const user = await usersValidate(t)
+              const data = user?.data ?? {}
+              return firstNonEmpty(data.name, data.username, data.nickname, data.phone, data.email)
+            },
             timeoutMs: loginTimeoutMs,
             waitForLogin: typeof waitForLogin === "function" ? waitForLogin : undefined,
             signal,
@@ -540,6 +551,25 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             "zh-TW": "保留包含控制台工作階段的專用瀏覽器設定，以便 uaa-token 即將過期時無痕續期。關閉後，每次登入後刪除一次性的設定，過期 token 需手動重新登入。",
             ja: "コンソールセッションを保存した専用ブラウザープロファイルを保持し、uaa-token の期限直前にヘッドレスで更新します。無効にすると、ログインごとに一時プロファイルを削除し、期限切れトークンは手動で再サインインが必要です。",
             de: "Behält ein eigenes Browser-Profil mit der Konsolen-Session, damit ein bald ablaufender uaa-token headless erneuert wird. Aus: einmaliges Profil wird nach jeder Anmeldung gelöscht; ein abgelaufener Token erfordert eine manuelle Anmeldung.",
+          },
+          default: true,
+        },
+        {
+          key: "reuse_kept_session",
+          label: "Reuse the kept console session on browser sign-in",
+          description:
+            "When the plugin's own browser profile still holds a console session the server accepts, the browser sign-in finishes on it and opens no window. Off: every browser sign-in opens the window for a fresh login — turn it off to sign in as a second account.",
+          labels: {
+            zh: "浏览器登录时复用保留的控制台会话",
+            "zh-TW": "瀏覽器登入時復用保留的控制台工作階段",
+            ja: "ブラウザーサインイン時に保持したコンソールセッションを再利用",
+            de: "Konsolen-Session beim Browser-Login wiederverwenden",
+          },
+          descriptions: {
+            zh: "插件专用浏览器配置里还留着服务端认可的控制台会话时，浏览器登录直接复用它，不打开窗口。关闭后每次浏览器登录都会开窗重新登录——要添加第二个账号时关掉它。",
+            "zh-TW": "外掛專用瀏覽器設定裡還留著伺服器認可的控制台工作階段時，瀏覽器登入直接復用它，不開啟視窗。關閉後每次瀏覽器登入都會開窗重新登入——要新增第二個帳號時關掉它。",
+            ja: "専用ブラウザープロファイルにサーバーがまだ受け付けるコンソールセッションが残っていれば、それを再利用してサインインし、ウィンドウを開きません。無効にすると毎回ウィンドウが開きます。2つ目のアカウントを追加するときは無効にしてください。",
+            de: "Enthält das eigene Browser-Profil noch eine Konsolen-Session, die der Server akzeptiert, wird sie für die Anmeldung wiederverwendet und kein Fenster geöffnet. Aus: Jeder Browser-Login öffnet das Fenster für eine neue Anmeldung — zum Hinzufügen eines zweiten Kontos ausschalten.",
           },
           default: true,
         },

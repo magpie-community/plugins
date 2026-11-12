@@ -23,20 +23,29 @@ import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { ENDPOINTS } from "./protocol.mjs"
 import { profileHasNewCookie, cookieBaseline } from "./cookieProbe.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-const LOGIN_URL = "https://discovery.intern-ai.org.cn/token-plan/home"
+// 控制台地址取自 protocol.mjs；在模块加载时固定，测试把 ENDPOINTS 指向本地
+// 假服务器时，profile 里 cookie 的根域不会跟着变。
+const CONSOLE_ORIGIN = ENDPOINTS.console
+const LOGIN_URL = `${CONSOLE_ORIGIN}/token-plan/home`
 
 /**
- * 控制台的 cookie 根域（`intern-ai.org.cn`）：取 LOGIN_URL 主机的最后两段。
- * 不硬编码产品域名，换域名时跟着走；cookie 的 host_key 通常是 `.intern-ai.org.cn`。
+ * 控制台的 cookie 根域（`intern-ai.org.cn`）：`discovery.intern-ai.org.cn`
+ * 去掉子域。取"最后两段"会得到公共后缀 `org.cn`——那一来别的 `*.org.cn`
+ * 主机上同名的 `uaa-token` 也会被当成控制台会话（#847 复查）。本平台的
+ * 注册域是最后三段；LOGIN_URL 换域名时这里跟着走。
  */
-function consoleCookieDomain() {
+export function consoleCookieDomain(origin = CONSOLE_ORIGIN) {
   try {
-    const host = new URL(LOGIN_URL).hostname.toLowerCase()
-    const parts = host.split(".")
-    return parts.length > 2 ? parts.slice(-2).join(".") : host
+    const host = new URL(origin).hostname.toLowerCase()
+    // 本地假浏览器是 IP，没有「注册域」可切；原样返回（测试把 ENDPOINTS
+    // 指向 127.0.0.1 时也不会切出 0.0.1 这种笑话）。
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return host
+    const labels = host.split(".")
+    return labels.length > 3 ? labels.slice(-3).join(".") : host
   } catch {
     return ""
   }
@@ -419,13 +428,13 @@ export async function openSession({ browserPath, profile, headless = false, plai
     return {
       async token() {
         const res = await cdp.send("Network.getAllCookies")
-        const match = (res?.cookies ?? []).find(
-          (c) =>
-            c?.name === "uaa-token" &&
-            typeof c?.domain === "string" &&
-            // 精确匹配：includes 会放过 evilintern-ai.org.cn 这类域。
-            (c.domain === "intern-ai.org.cn" || c.domain.endsWith(".intern-ai.org.cn")),
-        )
+        const domain = consoleCookieDomain()
+        const match = (res?.cookies ?? []).find((c) => {
+          if (c?.name !== "uaa-token" || typeof c?.domain !== "string") return false
+          // 精确匹配：includes 会放过 evilintern-ai.org.cn 这类域。
+          const bare = c.domain.replace(/^\./, "")
+          return bare === domain || bare.endsWith(`.${domain}`)
+        })
         if (match?.value) {
           const value = String(match.value)
           try {
@@ -596,25 +605,91 @@ export async function waitForConsoleWindow(
   return "timeout"
 }
 
+/** 保留的会话至少还要有这么多时间才值得复用：留给落库与第一次额度读取。 */
+export const KEPT_SESSION_MARGIN_MS = 5 * 60_000
+
+/**
+ * 开窗前先试保留的 profile 会话：读出来的 token 必须是控制台**现在还认**的
+ * 活会话（`validateToken` 用 usersValidate 核对），才当作本次登录完成。
+ *
+ * 只看盘上有一行不算数：客户端没过期的会话服务端可能已经失效（改了密码、
+ * 在别处退出、被吊销），也可能根本是另一个账号的——那样会把登录「完成」到
+ * 别人的账号上，用户又没机会在窗口里改。读不到、快过期、服务端不认，都
+ * 返回空串，照常开窗重新登录。
+ */
+async function keptConsoleSession({ browserPath, profile, validateToken, log, marginMs = KEPT_SESSION_MARGIN_MS }) {
+  let session
+  try {
+    log("checking the browser profile for a kept console session")
+    session = await openSession({ browserPath, profile, headless: true, log })
+  } catch (e) {
+    log(`the profile's console session could not be read (${e?.message ?? e})`)
+    return ""
+  }
+  try {
+    // 一次读取，不等：profile 里没有会话时，等待只会让第一次登录慢上几秒。
+    const token = await Promise.race([session.token(), sleep(5000).then(() => "")])
+    if (!token) return ""
+    if (!tokenFresh(token, marginMs)) {
+      log("the profile's console session is about to expire; signing in again")
+      return ""
+    }
+    let who = ""
+    try {
+      who = String((await validateToken(token)) ?? "")
+    } catch (e) {
+      log(`the profile's console session is no longer accepted (${e?.message ?? e}); signing in again`)
+      return ""
+    }
+    log(`reusing the profile's console session${who ? ` (${who})` : ""}`)
+    return token
+  } catch (e) {
+    log(`the profile's console session could not be read (${e?.message ?? e})`)
+    return ""
+  } finally {
+    await session.close().catch(() => {})
+  }
+}
+
 /**
  * 浏览器登录：两段式。
  *
- * 1. 可见窗口，**不带 CDP**——阿里的风控看到的是普通浏览器，验证码能过；
- * 2. 用窗口标题判断登录完成（SSO → 控制台），插件自己关窗；
+ * 0. 保留的 profile 里若有一枚**服务端还认**的控制台会话，直接复用它完成
+ *    登录（不开窗）——`validateToken` 是这一步的正面信号；
+ * 1. 否则开可见窗口，**不带 CDP**——阿里的风控看到的是普通浏览器，验证码能过；
+ * 2. 用窗口标题（Windows）或 profile 的 cookie 存储（macOS / Linux）判断
+ *    登录完成，插件自己关窗；
  * 3. 同一个专用 profile 里 headless + CDP 读 `uaa-token`（此时登录已完成，
  *    不再影响验证码）。
  *
  * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
  */
-export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, waitForLogin, loginWait, signal, log = () => {} } = {}) {
+export async function signInWithBrowser({
+  browserPath,
+  keepSignIn = true,
+  reuseKeptSession = true,
+  validateToken = null,
+  timeoutMs = 8 * 60_000,
+  waitForLogin,
+  loginWait,
+  signal,
+  log = () => {},
+} = {}) {
   // before the one-off profile is made, so a missing browser leaves no folder
   const exe = requireBrowser(browserPath)
   const dir = keepSignIn ? profileDir() : oneOffProfileDir()
   const cancelled = () => Boolean(signal?.aborted)
   return await exclusive(async () => {
-    log("opening the sign-in window")
     killProfileProcesses(dir, log)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // 保留的会话：先读出 token、再让服务端确认它还是活的，才当作本次登录
+    // 完成。没有核对器时一律不复用（老路径 / 测试），照常开窗。
+    // 一次性 profile（keepSignIn 关掉）里没有「保留的会话」可复用，跳过这步。
+    if (keepSignIn && reuseKeptSession && typeof validateToken === "function") {
+      const kept = await keptConsoleSession({ browserPath: exe, profile: dir, validateToken, log })
+      if (kept) return kept
+    }
+    log("opening the sign-in window")
     // #847: the profile keeps the previous sign-in's uaa-token row
     // (keep_sign_in defaults on), so "a row exists" is not "this sign-in
     // finished" — remember the rows there now, and accept only one newer

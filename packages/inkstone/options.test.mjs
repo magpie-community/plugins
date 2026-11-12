@@ -17,6 +17,7 @@ test("the config screen's strings stay inside the host's caps and stay translate
     "create_key",
     "prune_keys",
     "keep_sign_in",
+    "reuse_kept_session",
   ])
 
   for (const option of options) {

@@ -47,6 +47,13 @@ API Key 是可选的：不填，账号仍显示额度，只是不服务模型。
 页面**静默续期**（SSO 会话还在就会换新 cookie）。关掉 `keep_sign_in` 就改成
 一次性 profile：登录完删除，过期后手动重登。
 
+重登时若专用 profile 里上一次的 `uaa-token` 还没过期，插件会**先把它读出来、
+用控制台的 `users/validate` 核对**：服务端还认这枚会话，就直接复用它完成登录，
+不打开窗口（日志里带账号名）；服务端已经不认（改过密码、在别处退出、被吊销），
+或这枚会话剩余不足 5 分钟，就照常开窗重新登录。要添加第二个账号，先在供应商
+选项里关掉「浏览器登录时复用保留的控制台会话」——否则登录会完成在窗口里当前
+的那个账号上。
+
 ## 模型
 
 插件只使用 **OpenAI Chat Completions**（`https://discovery-api.intern-ai.org.cn/v1`）。
@@ -200,7 +207,15 @@ Pruning (default on) touches only that prefix of this machine's and account's
 keys, keeps the newest two and always the key created on this sign-in; manual
 keys are never deleted. A dedicated browser profile keeps the console session
 for silent renewal (`keep_sign_in`, default on); off, each login's profile is
-deleted and an expired token needs a manual sign-in.
+deleted and an expired token needs a manual sign-in. A re-sign-in on a kept
+profile first reads the session it holds and checks it with the console's
+`users/validate`: a session the server still accepts finishes the sign-in with
+no window opened (the account name goes to the log); one the server no longer
+accepts (password changed, signed out elsewhere, revoked), or one with under
+five minutes left, opens the window for a fresh sign-in. To add a second
+account, turn off "Reuse the kept console session on browser sign-in" in this
+provider's options first — otherwise the sign-in completes on the account the
+window's profile already holds.
 
 The platform caps the pictures of one request: at most **8** (base64 and URL
 references both count), **10 MB** per picture and **40 MB** together, measured

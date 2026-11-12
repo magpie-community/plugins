@@ -97,11 +97,20 @@ if (!headless) {
         message(ws, raw) {
           const msg = JSON.parse(String(raw))
           if (msg.method === "Network.getAllCookies") {
+            // FAKE_BROWSER_COOKIE_VALUE lets a test hand out a token with a
+            // known expiry (a kept session about to expire, or one already
+            // expired server-side).
             ws.send(
               JSON.stringify({
                 id: msg.id,
                 result: {
-                  cookies: [{ name: "uaa-token", value: "fake-uaa-token-for-tests", domain: ".intern-ai.org.cn" }],
+                  cookies: [
+                    {
+                      name: "uaa-token",
+                      value: process.env.FAKE_BROWSER_COOKIE_VALUE || "fake-uaa-token-for-tests",
+                      domain: ".intern-ai.org.cn",
+                    },
+                  ],
                 },
               }),
             )
