@@ -700,6 +700,17 @@ function winAlive(w){
   if(w.remaining!=null)return w.remaining>0;
   return true;
 }
+function isWorkBuddyProvider(provider){
+  return /(^|[/_-])workbuddy(?:$|[/_-])/i.test(String(provider||''));
+}
+function isEstWindow(w){
+  return /tokens?\s*\(est\.?\)/i.test(w.name||'');
+}
+function quotaWins(q){
+  const wins=q.windows||[];
+  // WorkBuddy 的 tokens (est.) 是按日重置的 Token 速率额度，不是积分。
+  return isWorkBuddyProvider(q.provider)?wins.filter(w=>!isEstWindow(w)):wins;
+}
 function soonWin(wins){
   // 显式命名的临时池优先（麦吉的「限时积分」就是临期额度，别被「积分余额」上的 runsOut 抢走）
   const named=wins.filter(w=>/限时|临时/.test(w.name||'')&&winAlive(w));
@@ -809,8 +820,8 @@ function segBar(name,rem,used){
   return `<div class="q2bar q2seg" title="${esc(name)}${t('colonFull')}${t('avail')} ${fmt(rem)} · ${t('usedLbl')} ${fmt(used)}"><i style="width:${w1}%;background:#4da3ff"></i>${used>0?`<i style="width:${w2}%;background:var(--segused)"></i>`:''}</div>`;
 }
 function quotaCard(q){
-  const wins=q.windows||[];
-  // 快过期行：全部窗口里到期最早的；第二行：总积分（余额字段 > 积分类窗口总量 > 原窗口行）
+  const wins=quotaWins(q);
+  // 快过期行：积分窗口里到期最早的；第二行：总积分（余额字段 > 积分类窗口总量 > 原窗口行）
   const [expWin,expT]=soonWin(wins);
   const tot=pointTotal(q,wins);
   const sp=pointSplit(q,wins,tot);
@@ -926,7 +937,7 @@ function renderQuotas(list,limitInfo){
   }
   // 排序=临期积分：每池取"最快过期窗口"的到期日，从快到慢；无任何到期信息的垫底。
   // 与卡片首行同一套 soonWin（跳过已用空的窗口），保证看到的日期和排位一致。
-  const soonExp=q=>soonWin(q.windows||[])[1];
+  const soonExp=q=>soonWin(quotaWins(q))[1];
   arr.sort((a,b)=>{
     const ta=soonExp(a),tb=soonExp(b);
     const fa=ta===Infinity,fb=tb===Infinity;
