@@ -4231,6 +4231,12 @@ function tokenCount(value) {
 // 2133 input + 4899 cache read + 6 output = 7038 total). Some earlier builds
 // folded cached reads into inputTokens. totalTokens tells the two shapes apart,
 // so both report the same uncached input and cache numbers.
+//
+// outputTokens already includes thoughtTokens: a flash reply of one visible
+// token reported outputTokens 140 with thoughtTokens 139. Adding them again
+// billed thinking twice. A report with thoughtTokens above outputTokens still
+// bills at least the thinking. The totalTokens shape check still adds thinking
+// on both sides, so input inclusive/exclusive detection is unchanged.
 function promptUsage(usage) {
   if (!usage || typeof usage !== "object") usage = {}
   const rawInput = tokenCount(usage.inputTokens)
@@ -4250,7 +4256,7 @@ function promptUsage(usage) {
     input: promptInput - read,
     read,
     write: cacheWrite,
-    output: output + thinking,
+    output: Math.max(output, thinking),
     thinking,
     promptInput,
   }

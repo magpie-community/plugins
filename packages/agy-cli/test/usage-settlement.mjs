@@ -132,7 +132,7 @@ test("单步回合精确透传 ACP usage 并原样保留原始对象", async () 
     const { responses } = await runTurn(kit, baseBody())
     assert.equal(responses.length, 1)
     assert.deepEqual(plain(responses[0].usage), {
-      input_tokens: 600, output_tokens: 35, cache_read_input_tokens: 400, cache_creation_input_tokens: 50,
+      input_tokens: 600, output_tokens: 30, cache_read_input_tokens: 400, cache_creation_input_tokens: 50,
       output_tokens_details: { thinking_tokens: 5 },
     })
     const start = responses[0].events.find((item) => item.event === "message_start")
@@ -140,6 +140,56 @@ test("单步回合精确透传 ACP usage 并原样保留原始对象", async () 
     const [turn] = kit.turns
     assert.deepEqual(plain(turn.rawUsage), raw)
     assert.equal(turn.rawAcpUsages.length, 1)
+  })
+})
+
+test("ACP outputTokens 已含 thoughtTokens：单步不把思考记两次（flash 实测形状）", async () => {
+  await withKit({}, async (kit) => {
+    // Shape seen live: one visible token, 139 thinking. candidatesTokenCount
+    // = thoughtsTokenCount + 1 for a 1-byte visible reply.
+    const raw = { inputTokens: 12007, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 140, thoughtTokens: 139 }
+    kit.prompts.push(async (agent) => {
+      await agent.thought("long hidden reasoning")
+      await agent.text("4")
+      return { stopReason: "end_turn", usage: raw }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.equal(responses.length, 1)
+    assert.equal(responses[0].usage.output_tokens, 140)
+    assert.equal(responses[0].usage.output_tokens_details.thinking_tokens, 139)
+  })
+})
+
+test("thoughtTokens 大于 outputTokens 时至少计思考数，thinking 不超过 output", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.text("x")
+      return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 3, thoughtTokens: 9 } }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assertCleanUsage(responses[0].usage, "thinking>output")
+    assert.equal(responses[0].usage.output_tokens, 9)
+  })
+})
+
+test("多步工具回合：各步 output 之和不超过 ACP 累计 outputTokens（含思考）", async () => {
+  await withKit({}, async (kit) => {
+    const raw = { inputTokens: 40_000, cachedReadTokens: 30_000, cachedWriteTokens: 0, outputTokens: 5_000, thoughtTokens: 4_800 }
+    kit.prompts.push(async (agent) => {
+      await agent.thought("plan")
+      await agent.text("Reading.")
+      await agent.tools([["Read", { path: "/a" }]])
+      await agent.thought("more")
+      await agent.tools([["Read", { path: "/b" }]])
+      await agent.text("Done.")
+      return { stopReason: "end_turn", usage: raw }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.ok(responses.length >= 3)
+    for (const parsed of responses) assertCleanUsage(parsed.usage, "multi-step")
+    const total = responses.reduce((sum, parsed) => sum + parsed.usage.output_tokens, 0)
+    assert.ok(total <= raw.outputTokens, `各步 output 之和 ${total} 超过 ACP 累计 ${raw.outputTokens}`)
+    assert.ok(total >= raw.outputTokens - 50, `各步 output 之和 ${total} 明显少于 ACP 累计`)
   })
 })
 
@@ -1012,9 +1062,10 @@ test("agy 1.5.1+ 独立 inputTokens（未含读缓存）按 totalTokens 完整�
       inputTokens: 2133,
       cachedReadTokens: 28_610,
       cachedWriteTokens: 120,
-      outputTokens: 45,
+      // outputTokens already includes thoughtTokens, same as a live ACP report.
+      outputTokens: 60,
       thoughtTokens: 15,
-      totalTokens: 2133 + 28_610 + 120 + 45 + 15,
+      totalTokens: 2133 + 28_610 + 120 + 60,
     }
     kit.prompts.push(async (agent) => {
       await agent.text("answer with high cache hit")
