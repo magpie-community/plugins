@@ -59,6 +59,7 @@ for (const site of SITES) {
     const calls = serve(site)
     const { hooks, sets } = await plugin(site, account())
     expect(hooks.auth.refreshLead).toBe(10 * 60 * 1000)
+    expect(hooks.auth.rotating).toBe(true)
     const got = await hooks.auth.refresh(account(), { id: site.name })
     expect(got).toMatchObject({ access: "jt-2", refresh: "jrt-2" })
     // the renewal also names the account (the phone, not its uuid), so an

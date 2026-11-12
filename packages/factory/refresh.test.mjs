@@ -53,6 +53,7 @@ test("renews a sign-in near its end, giving magpie the new tokens to save", asyn
   const seen = serve()
   const { hooks, sets } = await plugin(due())
   expect(hooks.auth.refreshLead).toBe(3 * 60 * 1000)
+  expect(hooks.auth.rotating).toBe(true)
   const got = await hooks.auth.refresh(due(), "factory")
   expect(got).toMatchObject({ access: NEW, refresh: "r-new", expires: Math.floor(later / 1000) * 1000, activeOrganizationId: "fac_A" })
   expect(got.type).toBeUndefined()
