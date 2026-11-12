@@ -100,20 +100,80 @@ function historyOf(messages) {
   return out
 }
 
+// PROMPT_LIMIT is how long one turn's `content` may be. Tabbit counts
+// characters, not bytes: a reporter measured (#833) 20,490 characters go
+// through and 20,500 come back as code 492 after ~40s, the same for Chinese
+// (61 KB) and ASCII (20 KB) text. 18,000 keeps room under that edge.
+const PROMPT_LIMIT = 18_000
+
+// clip keeps a text's head and tail inside max characters, with a note of
+// what was left out between them.
+function clip(text, max) {
+  if (text.length <= max) return text
+  if (max <= 0) return ""
+  const note = (n) => `\n[… ${n} characters omitted …]\n`
+  let room = max - note(text.length).length
+  if (room <= 0) return text.slice(0, max)
+  const head = Math.ceil(room * 2 / 3)
+  const tail = room - head
+  return text.slice(0, head) + note(text.length - room) + (tail ? text.slice(text.length - tail) : "")
+}
+
 // flatten writes a transcript as one prompt. Tabbit's turn takes one
 // `content` string, and a fresh room has no history of its own, so the
 // transcript is what carries it. Measured: the model answers the last
 // question with the earlier turns as context.
-function flatten(history) {
+//
+// The prompt stays within limit characters. The final user message comes
+// first, then the system prompt (up to 60% of what is left when there are
+// earlier turns), then the earlier turns newest first; a turn that doesn't
+// fit is clipped or, with the ones before it, left out with a note. A long
+// final message is clipped to two thirds of the limit.
+function flatten(history, limit = PROMPT_LIMIT) {
   const systems = history.filter((m) => m.role === "system").map((m) => m.content)
   const turns = history.filter((m) => m.role !== "system")
   const lastUser = [...turns].reverse().find((m) => m.role === "user")
   const before = lastUser ? turns.slice(0, turns.lastIndexOf(lastUser)) : turns
-  const lines = []
-  if (systems.length) lines.push(`[system]\n${systems.join("\n\n")}`)
-  for (const m of before) lines.push(`${m.role === "assistant" ? "assistant" : "user"}: ${m.content}`)
-  const header = lines.length ? "Below is the conversation so far. Answer the final user message, continuing it.\n\n" : ""
-  return header + lines.join("\n\n") + (lines.length ? "\n\n" : "") + `user: ${lastUser?.content ?? ""}`
+  const header = "Below is the conversation so far. Answer the final user message, continuing it.\n\n"
+  const omitted = "[earlier conversation omitted]"
+  const sep = "\n\n"
+  if (!systems.length && !before.length) return "user: " + clip(lastUser?.content ?? "", limit - 6)
+  // Room for the omitted note is set aside first: any earlier turn may need it.
+  const note = before.length ? omitted.length + sep.length : 0
+  let left = limit - header.length - sep.length - 6
+  // A long final message takes at most two thirds, so the system prompt
+  // still has room.
+  const last = "user: " + clip(lastUser?.content ?? "", Math.max(0, Math.floor((left - note) * 2 / 3)))
+  left -= last.length - 6 + note
+  let system = ""
+  if (systems.length) {
+    const tag = "[system]\n"
+    const share = before.length ? Math.floor(left * 0.6) : left
+    const body = clip(systems.join(sep), Math.max(0, share - tag.length - sep.length))
+    if (body) { system = tag + body; left -= system.length + sep.length }
+  }
+  const kept = []
+  let dropped = false
+  for (let i = before.length - 1; i >= 0; i--) {
+    const m = before[i]
+    const label = `${m.role === "assistant" ? "assistant" : "user"}: `
+    const need = label.length + m.content.length + sep.length
+    if (need <= left) { kept.unshift(label + m.content); left -= need; continue }
+    const space = left - label.length - sep.length
+    if (space >= 500) { kept.unshift(label + clip(m.content, space)); left -= label.length + space + sep.length }
+    dropped = true
+    break
+  }
+  const render = () => {
+    const lines = []
+    if (system) lines.push(system)
+    if (dropped) lines.push(omitted)
+    lines.push(...kept)
+    return header + lines.join(sep) + (lines.length ? sep : "") + last
+  }
+  let out = render()
+  while (out.length > limit && kept.length) { kept.shift(); dropped = true; out = render() }
+  return out
 }
 
 // planTurn decides what one request sends: a new room with the flattened
@@ -126,7 +186,7 @@ function planTurn(entry, messages, now = Date.now()) {
     const added = history.slice(entry.sent.length)
     const lastUser = [...added].reverse().find((m) => m.role === "user")
     if (continues && lastUser && added.length <= 2) {
-      return { room: entry.room, parent: entry.parent, content: lastUser.content, history }
+      return { room: entry.room, parent: entry.parent, content: clip(lastUser.content, PROMPT_LIMIT), history }
     }
   }
   return { room: null, parent: null, content: flatten(history), history }
@@ -540,6 +600,8 @@ export const _internal = {
   planTurn,
   historyOf,
   flatten,
+  clip,
+  PROMPT_LIMIT,
   stripModel,
   contentOf,
   usageWindow,

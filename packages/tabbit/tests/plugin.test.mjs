@@ -612,3 +612,66 @@ test("rooms are pruned by ttl and capped in size", () => {
   assert.ok(_internal.rooms.size <= 256, "size " + _internal.rooms.size)
   _internal.rooms.clear()
 })
+
+test("a long transcript is flattened under Tabbit's character limit (#833)", () => {
+  const { flatten, PROMPT_LIMIT } = _internal
+  assert.ok(PROMPT_LIMIT < 20_490)
+  const system = "系统提示。".repeat(3000) // 15,000 characters
+  const history = [{ role: "system", content: system }]
+  for (let i = 0; i < 40; i++) {
+    history.push({ role: "user", content: `问题 ${i} ` + "x".repeat(1500) })
+    history.push({ role: "assistant", content: `回答 ${i} ` + "y".repeat(1500) })
+  }
+  history.push({ role: "user", content: "用一句话介绍你自己" })
+  const out = flatten(history)
+  assert.ok(out.length <= PROMPT_LIMIT, `prompt is ${out.length} characters`)
+  assert.ok(out.endsWith("user: 用一句话介绍你自己"))
+  assert.match(out, /\[system\]\n系统提示。/)
+  assert.match(out, /characters omitted/)
+  assert.match(out, /\[earlier conversation omitted\]/)
+  assert.match(out, /回答 39 /, "the newest earlier turn is kept")
+  assert.doesNotMatch(out, /问题 0 /, "the oldest turn is the one left out")
+})
+
+test("a short transcript is flattened unchanged", () => {
+  const out = _internal.flatten([
+    { role: "system", content: "be brief" },
+    { role: "user", content: "我叫小明" },
+    { role: "assistant", content: "记住了" },
+    { role: "user", content: "我叫什么" },
+  ])
+  assert.equal(out, "Below is the conversation so far. Answer the final user message, continuing it.\n\n[system]\nbe brief\n\nuser: 我叫小明\n\nassistant: 记住了\n\nuser: 我叫什么")
+  assert.equal(_internal.flatten([{ role: "user", content: "hi" }]), "user: hi")
+})
+
+test("one oversized message keeps its head and tail under the limit", () => {
+  const { flatten, planTurn, PROMPT_LIMIT } = _internal
+  const big = "开头" + "z".repeat(40_000) + "结尾"
+  const out = flatten([{ role: "user", content: big }])
+  assert.ok(out.length <= PROMPT_LIMIT)
+  assert.ok(out.startsWith("user: 开头"))
+  assert.ok(out.endsWith("结尾"))
+  const entry = { room: "room-1", parent: "a1", sent: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }], at: 1000 }
+  const next = planTurn(entry, [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: big }], 2000)
+  assert.equal(next.room, "room-1")
+  assert.ok(next.content.length <= PROMPT_LIMIT)
+  assert.ok(next.content.endsWith("结尾"))
+})
+
+test("every transcript size stays under the limit", () => {
+  const { flatten, PROMPT_LIMIT } = _internal
+  for (const sys of [0, 10, 9_000, 30_000]) for (const n of [0, 1, 3, 30]) for (const len of [1, 600, 5_000, 25_000]) {
+    const h = sys ? [{ role: "system", content: "s".repeat(sys) }] : []
+    for (let i = 0; i < n; i++) h.push({ role: i % 2 ? "assistant" : "user", content: "t".repeat(len) })
+    h.push({ role: "user", content: "q".repeat(len) })
+    const out = flatten(h)
+    assert.ok(out.length <= PROMPT_LIMIT, `sys=${sys} n=${n} len=${len}: ${out.length}`)
+    assert.ok(out.includes("q"), "the final question survives")
+  }
+})
+
+test("a long final message leaves room for the system prompt", () => {
+  const out = _internal.flatten([{ role: "system", content: "SYS-PROMPT " + "s".repeat(3000) }, { role: "user", content: "q".repeat(40_000) }])
+  assert.ok(out.length <= _internal.PROMPT_LIMIT)
+  assert.match(out, /\[system\]\nSYS-PROMPT s{3000}/)
+})

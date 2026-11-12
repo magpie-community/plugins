@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-tabbit-auth",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Tabbit (web.tabbit.com and web.tabbit.ai) as a magpie / OpenCode provider: live model catalog, cookie sign-in, chat completions, cycle usage and the daily check-in",
   "type": "module",
   "main": "./opencode.mjs",
