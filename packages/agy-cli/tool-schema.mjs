@@ -4,9 +4,10 @@
 // dictionaries, and boolean schemas), before `sanitizeInputSchema` and
 // `ensureGeminiArrayItems` normalize types, RE2 patterns, and untyped arrays.
 //
-// agy reads `type` as a single string, so nullable unions become `type: X`
-// plus a "Nullable X." hint rather than `[X, "null"]`.
-// Local $ref/allOf/const expansion and ToolSearch fallback inspired by
+// Nullable unions lower to `type: [X, "null"]` (matching `sanitizeInputSchema`),
+// which both agy's local JSON Schema validator and its CloudCode schema
+// translator accept for null and non-null values alike.
+// Local $ref/allOf/const expansion inspired by
 // DylanLIiii/opencode-antigravity-bridge (MIT).
 
 const NUMBER_BOUNDS = [
@@ -16,12 +17,19 @@ const NUMBER_BOUNDS = [
 const CONTAINER_MAPS = ["properties", "patternProperties", "dependentSchemas"]
 const BOOLEAN_OR_SCHEMA_CHILDREN = ["additionalProperties", "unevaluatedProperties", "unevaluatedItems"]
 const SCHEMA_ONLY_CHILDREN = ["propertyNames", "contains", "if", "then", "else", "not"]
+const VISITED_OBJECT_KEYS = new Set([
+  ...CONTAINER_MAPS,
+  ...BOOLEAN_OR_SCHEMA_CHILDREN,
+  ...SCHEMA_ONLY_CHILDREN,
+  "prefixItems", "items", "anyOf", "oneOf",
+])
 // Keywords whose value is a name -> schema map: a pointer may pass through
 // them but must not stop on them.
 const POINTER_MAP_KEYWORDS = new Set(["properties", "patternProperties", "dependentSchemas", "$defs", "definitions"])
 
 // Only `$ref` and `allOf` inlining is charged; ordinary traversal is free.
 const MAX_INLINED_NODES = 8192
+const MAX_INLINED_BYTES = 256 * 1024
 const MAX_DEPTH = 64
 const MAX_VARIANT_HINT_CHARS = 1600
 const MAX_VARIANT_SUMMARY_CHARS = 240
@@ -35,15 +43,6 @@ const LIMIT_HINT = "Schema expansion limit reached; follow the tool's original a
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
 
-export const TOOL_SEARCH_INPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    query: { type: "string", description: "Search for deferred tools by keyword, or use select:<tool_name>." },
-    max_results: { type: "integer", description: "Maximum number of tools to return.", minimum: 1 },
-  },
-  required: ["query"],
-}
-
 function appendHint(node, hint) {
   if (!hint) return
   if (typeof node.description === "string" && node.description.trim()) {
@@ -56,6 +55,34 @@ function appendHint(node, hint) {
 function clip(text, max) {
   const flat = text.replace(/\s+/g, " ").trim()
   return flat.length > max ? `${flat.slice(0, max - 3).trimEnd()}...` : flat
+}
+
+function scalarBytes(value) {
+  if (typeof value === "string") return Buffer.byteLength(value) + 2
+  if (typeof value === "number" || typeof value === "boolean") return String(value).length
+  return 4
+}
+
+function ownBytes(out) {
+  let bytes = 2
+  for (const [key, value] of Object.entries(out)) {
+    if (value === undefined) continue
+    bytes += Buffer.byteLength(key) + 4
+    if (value === null || typeof value !== "object") {
+      bytes += scalarBytes(value)
+    } else if (key === "properties" || key === "patternProperties" || key === "dependentSchemas") {
+      bytes += 2
+      for (const mapKey of Object.keys(value)) bytes += Buffer.byteLength(mapKey) + 4
+    } else if (VISITED_OBJECT_KEYS.has(key)) {
+      bytes += 2
+    } else if (Array.isArray(value) && value.every((item) => item === null || typeof item !== "object")) {
+      bytes += 2
+      for (const item of value) bytes += scalarBytes(item) + 1
+    } else {
+      bytes += Buffer.byteLength(JSON.stringify(value))
+    }
+  }
+  return bytes
 }
 
 function resolvePointer(root, ref) {
@@ -128,10 +155,12 @@ function primitiveTypeOf(schema) {
 // Stand-in for a subtree that is not expanded (recursion, depth or budget):
 // keep what kind of value it is, never invent a type it did not declare.
 function structuralFallback(schema, hint) {
-  if (isObjectBranch(schema)) return { type: "object", description: hint }
-  if (declaresArray(schema)) return { type: "array", description: hint }
+  const nullable = isObject(schema) && Array.isArray(schema.type) && schema.type.includes("null")
+  const withNull = (t) => nullable ? [t, "null"] : t
+  if (isObjectBranch(schema)) return { type: withNull("object"), description: hint }
+  if (declaresArray(schema)) return { type: withNull("array"), description: hint }
   const prim = primitiveTypeOf(schema)
-  if (prim) return { type: prim, description: hint }
+  if (prim) return { type: withNull(prim), description: hint }
   return { description: hint }
 }
 
@@ -142,21 +171,26 @@ function summarizeSchema(schema, depth = 0) {
     return schema.enum.length > 12 ? `${shown} | ...` : shown
   }
   if (schema.const !== undefined) return JSON.stringify(schema.const)
-  const rawType = Array.isArray(schema.type) ? schema.type.join("|") : schema.type
-  if ((!rawType || rawType === "object" || rawType === "object|null") && isObject(schema.properties)) {
+  const types = Array.isArray(schema.type) ? schema.type : typeof schema.type === "string" ? [schema.type] : []
+  const rawType = types.length ? types.join("|") : undefined
+  const nullable = types.includes("null")
+  const nonNullTypes = types.filter((t) => t !== "null")
+  if ((!rawType || (nonNullTypes.length === 1 && nonNullTypes[0] === "object")) && isObject(schema.properties)) {
     if (depth >= 2) return rawType || "object"
     const req = new Set(Array.isArray(schema.required) ? schema.required : [])
     const entries = Object.entries(schema.properties)
     const shown = entries.slice(0, 8).map(([k, v]) => `${k}${req.has(k) ? "" : "?"}: ${summarizeSchema(v, depth + 1)}`)
     if (entries.length > 8) shown.push("...")
-    return `{ ${shown.join(", ")} }`
+    const body = `{ ${shown.join(", ")} }`
+    return nullable ? `${body} | null` : body
   }
   if ((!rawType || rawType === "object") && Array.isArray(schema.required) && schema.required.length) {
     return `{ required: [${schema.required.join(", ")}] }`
   }
-  if (rawType === "array" || rawType === "array|null" || (!rawType && isObject(schema.items))) {
+  if ((nonNullTypes.length === 1 && nonNullTypes[0] === "array") || (!rawType && isObject(schema.items))) {
     if (depth >= 2 || !isObject(schema.items)) return rawType || "array"
-    return `array<${summarizeSchema(schema.items, depth + 1)}>`
+    const body = `array<${summarizeSchema(schema.items, depth + 1)}>`
+    return nullable ? `${body} | null` : body
   }
   const combo = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : null
   if (combo && combo.length) {
@@ -186,7 +220,8 @@ function intersectTypes(a, b) {
     }
   }
   if (!common.size) return { type: a, conflict: true }
-  const list = [...common]
+  const nonNull = [...common].filter((t) => t !== "null")
+  const list = common.has("null") ? [...nonNull, "null"] : nonNull
   return { type: list.length === 1 ? list[0] : list }
 }
 
@@ -268,17 +303,18 @@ function branchLiterals(branch) {
 }
 
 function unionPrimitiveBranches(nonNull, family, hasNull) {
-  const out = { type: family }
+  const out = { type: hasNull ? [family, "null"] : family }
   const descriptions = [...new Set(
     nonNull.map((b) => typeof b.description === "string" ? b.description.trim() : "").filter(Boolean),
   )]
   if (descriptions.length) out.description = descriptions.slice(0, 3).join("; ")
 
   // A `const` is a one-value enum. sanitizeInputSchema keeps non-empty string
-  // enums and turns numeric/boolean ones into an "Allowed values" hint.
+  // enums and turns numeric, boolean, or null-bearing ones into an "Allowed values" hint.
   const literals = nonNull.map(branchLiterals)
   if (literals.every(Boolean)) {
-    out.enum = [...new Set(literals.flat())]
+    const values = [...new Set(literals.flat().filter((v) => v !== null))]
+    out.enum = hasNull ? [...values, null] : values
   } else if (literals.some(Boolean)) {
     const known = [...new Set(literals.filter(Boolean).flat())].slice(0, 12).map((v) => JSON.stringify(v)).join(", ")
     appendHint(out, `Known values include: ${known}`)
@@ -295,7 +331,6 @@ function unionPrimitiveBranches(nonNull, family, hasNull) {
   const patterns = [...new Set(nonNull.map((b) => b.pattern).filter((p) => typeof p === "string" && p))]
   if (patterns.length === 1 && nonNull.every((b) => b.pattern === patterns[0])) out.pattern = patterns[0]
 
-  if (hasNull) appendHint(out, `Nullable ${family}.`)
   return out
 }
 
@@ -336,7 +371,7 @@ function variantsHint(branches) {
 }
 
 function unionObjectBranches(nonNull, hasNull) {
-  const out = { type: "object" }
+  const out = { type: hasNull ? ["object", "null"] : "object" }
   if (nonNull.length === 1 && typeof nonNull[0].description === "string" && nonNull[0].description.trim()) {
     out.description = nonNull[0].description
   }
@@ -364,7 +399,6 @@ function unionObjectBranches(nonNull, hasNull) {
   }
 
   if (nonNull.length > 1) appendHint(out, variantsHint(nonNull))
-  if (hasNull) appendHint(out, "Nullable object.")
   return out
 }
 
@@ -474,63 +508,80 @@ export function expandToolSchema(root) {
   // Cycle-free `$ref` targets are expanded once and deep-cloned on reuse.
   const cache = new Map()
   let produced = 0 // schema objects emitted, including cached copies
-  let inlined = 0 // of those, emitted through $ref / allOf expansion
+  let producedBytes = 0 // estimated JSON bytes emitted, including cached copies
+  let inlined = 0 // of those, nodes emitted through $ref / allOf expansion
+  let inlinedBytes = 0 // of those, bytes emitted through $ref / allOf expansion
   let limits = 0 // recursion / depth / budget fallbacks emitted
   let deepest = 0
 
   function limit(schema, hint) {
+    const out = structuralFallback(schema, hint)
     limits++
     produced++
-    return structuralFallback(schema, hint)
+    producedBytes += ownBytes(out)
+    return out
   }
 
-  function measure(depth, fn) {
-    const start = { produced, inlined, limits, deepest }
-    deepest = depth
+  function measure(inlineDepth, fn) {
+    const start = { produced, producedBytes, inlined, inlinedBytes, limits, deepest }
+    deepest = inlineDepth
     const schema = fn()
     const result = {
       schema,
       weight: produced - start.produced,
+      bytes: producedBytes - start.producedBytes,
       nested: inlined - start.inlined,
+      nestedBytes: inlinedBytes - start.inlinedBytes,
       limited: limits !== start.limits,
-      height: deepest - depth,
+      height: deepest - inlineDepth,
     }
     deepest = Math.max(start.deepest, deepest)
     // Charge only what nested expansions have not charged already.
     inlined += Math.max(0, result.weight - result.nested)
+    inlinedBytes += Math.max(0, result.bytes - result.nestedBytes)
     return result
   }
 
-  function expandRef(target, depth, active) {
-    if (typeof target === "boolean") return visit(target, depth, active)
-    if (active.has(target)) return limit(target, RECURSIVE_HINT)
-    if (depth > MAX_DEPTH || inlined >= MAX_INLINED_NODES) return limit(target, LIMIT_HINT)
+  function expandRef(target, inlineDepth, active) {
+    if (typeof target === "boolean") return visit(target, inlineDepth, active)
+    if (inlined >= MAX_INLINED_NODES || inlinedBytes >= MAX_INLINED_BYTES) return limit(target, LIMIT_HINT)
     const hit = cache.get(target)
-    if (hit && depth + hit.height <= MAX_DEPTH) {
-      if (inlined + hit.weight > MAX_INLINED_NODES) return limit(target, LIMIT_HINT)
+    if (hit && inlineDepth + hit.height <= MAX_DEPTH) {
+      if (inlined + hit.weight > MAX_INLINED_NODES || inlinedBytes + hit.bytes > MAX_INLINED_BYTES) {
+        return limit(target, LIMIT_HINT)
+      }
       produced += hit.weight
       inlined += hit.weight
-      deepest = Math.max(deepest, depth + hit.height)
+      producedBytes += hit.bytes
+      inlinedBytes += hit.bytes
+      deepest = Math.max(deepest, inlineDepth + hit.height)
       return structuredClone(hit.schema)
     }
-    const result = measure(depth, () => visit(target, depth, active))
+    const result = measure(inlineDepth, () => visit(target, inlineDepth, active))
     if (!result.limited) {
-      cache.set(target, { schema: structuredClone(result.schema), weight: result.weight, height: result.height })
+      cache.set(target, {
+        schema: structuredClone(result.schema),
+        weight: result.weight,
+        bytes: result.bytes,
+        height: result.height,
+      })
     }
     return result.schema
   }
 
-  function visit(schema, depth, active) {
-    deepest = Math.max(deepest, depth)
+  function visit(schema, inlineDepth, active) {
+    deepest = Math.max(deepest, inlineDepth)
     if (!isObject(schema)) {
+      const out = { description: schema === false ? NO_VALUE_HINT : ANY_VALUE_HINT }
       produced++
-      return { description: schema === false ? NO_VALUE_HINT : ANY_VALUE_HINT }
+      producedBytes += ownBytes(out)
+      return out
     }
     if (active.has(schema)) return limit(schema, RECURSIVE_HINT)
-    if (depth > MAX_DEPTH) return limit(schema, LIMIT_HINT)
+    if (inlineDepth > MAX_DEPTH) return limit(schema, LIMIT_HINT)
     produced++
     const nextActive = new Set(active).add(schema)
-    const child = (value) => visit(value, depth + 1, nextActive)
+    const child = (value) => visit(value, inlineDepth, nextActive)
 
     let out = {}
     for (const [key, value] of Object.entries(schema)) {
@@ -572,7 +623,7 @@ export function expandToolSchema(root) {
         out.items = structuredClone(unionPropertySchemas(out.prefixItems))
       } else {
         out.maxItems = 0
-        out.items = { description: NO_VALUE_HINT }
+        out.items = { type: "string", description: NO_VALUE_HINT }
       }
     }
     for (const key of ["anyOf", "oneOf"]) {
@@ -582,14 +633,19 @@ export function expandToolSchema(root) {
     if (typeof schema.$ref === "string") {
       const target = resolvePointer(root, schema.$ref)
       if (target !== undefined) {
-        out = intersectSchemas([out, expandRef(target, depth + 1, nextActive)])
+        out = intersectSchemas([out, expandRef(target, inlineDepth + 1, nextActive)])
       } else {
         appendHint(out, `Unresolved schema reference: ${schema.$ref}`)
       }
     }
 
     if (Array.isArray(schema.allOf) && schema.allOf.length) {
-      const { schema: branches } = measure(depth + 1, () => schema.allOf.map((branch) => child(branch)))
+      const branches = schema.allOf.map((branch) => {
+        if (inlined >= MAX_INLINED_NODES || inlinedBytes >= MAX_INLINED_BYTES) {
+          return limit(branch, LIMIT_HINT)
+        }
+        return measure(inlineDepth + 1, () => visit(branch, inlineDepth + 1, nextActive)).schema
+      })
       out = intersectSchemas([out, ...branches])
     }
 
@@ -606,6 +662,7 @@ export function expandToolSchema(root) {
       appendHint(out, `Pattern properties: ${shown.join(", ")}`)
     }
 
+    producedBytes += ownBytes(out)
     return out
   }
 

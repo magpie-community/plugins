@@ -11,7 +11,7 @@ import { createUsageReader } from "./usage.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
-import { expandToolSchema, TOOL_SEARCH_INPUT_SCHEMA } from "./tool-schema.mjs"
+import { expandToolSchema } from "./tool-schema.mjs"
 import { cloak, hint, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
@@ -3339,8 +3339,7 @@ function normalizeTools(body) {
     if (seen.has(tool.name)) throw new UnsupportedContent(`duplicate tool ${tool.name}`)
     seen.add(tool.name)
     if (selected && tool.name !== selected) continue
-    const rawSchema = tool.input_schema ?? (tool.name === "ToolSearch"
-      ? TOOL_SEARCH_INPUT_SCHEMA : { type: "object", properties: {} })
+    const rawSchema = tool.input_schema ?? { type: "object", properties: {} }
     if (!rawSchema || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }

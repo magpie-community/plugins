@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { expandToolSchema, TOOL_SEARCH_INPUT_SCHEMA } from "../tool-schema.mjs"
+import { expandToolSchema } from "../tool-schema.mjs"
 import { sanitizeInputSchema } from "../index.mjs"
 import { ensureGeminiArrayItems } from "../array-items.mjs"
 import { baseBody, createBridgeKit, readSse } from "./testkit.mjs"
@@ -112,11 +112,20 @@ test("reference expansion is bounded for deep and exponentially shared DAGs", ()
   const schema = fullPipeline({ type: "object", $defs, properties: { root: { $ref: "#/$defs/Node0" } } })
   const text = JSON.stringify(schema)
   assert.match(text, /Schema expansion limit/)
-  assert.ok(text.length < 500_000, String(text.length))
+  assert.ok(text.length < 300_000, String(text.length))
   assert.equal(schema.properties.root.type, "object")
   // Cut-off subtrees keep their object type instead of becoming strings.
   assert.doesNotMatch(text, /"type":"string","description":"Schema expansion limit/)
   assert.match(text, /"type":"object","description":"Schema expansion limit/)
+
+  const tripleDefs = { End: { type: "string" } }
+  for (let i = 0; i < 40; i++) {
+    const next = i === 39 ? "#/$defs/End" : `#/$defs/T${i + 1}`
+    tripleDefs[`T${i}`] = { type: "object", properties: { a: { $ref: next }, b: { $ref: next }, c: { $ref: next } } }
+  }
+  const tripleText = JSON.stringify(fullPipeline({ type: "object", $defs: tripleDefs, properties: { root: { $ref: "#/$defs/T0" } } }))
+  assert.match(tripleText, /Schema expansion limit/)
+  assert.ok(tripleText.length < 300_000, String(tripleText.length))
 })
 
 test("const discriminators, boolean schemas, and additionalProperties booleans vs dictionary schemas are handled cleanly", () => {
@@ -232,6 +241,9 @@ test("nullable Pydantic Optional fields and heterogeneous array item unions stay
         description: "Preferred theme",
         anyOf: [{ type: "string", enum: ["light", "dark"] }, { type: "null" }],
       },
+      plainNullable: {
+        anyOf: [{ type: "string" }, { type: "null" }],
+      },
       filter: {
         description: "Filter spec",
         anyOf: [{ $ref: "#/$defs/Filter" }, { type: "null" }],
@@ -257,14 +269,29 @@ test("nullable Pydantic Optional fields and heterogeneous array item unions stay
   const once = fullPipeline(input)
   const twice = fullPipeline(once)
 
-  assert.equal(once.properties.colorScheme.type, "string")
-  assert.deepEqual(once.properties.colorScheme.enum, ["light", "dark"])
-  assert.match(once.properties.colorScheme.description, /Nullable string/)
+  assert.deepEqual(once.properties.colorScheme.type, ["string", "null"])
+  assert.equal(once.properties.colorScheme.enum, undefined)
+  assert.equal(once.properties.colorScheme.description, 'Preferred theme (Allowed values: "light", "dark", null)')
+  assert.deepEqual(
+    once.properties.colorScheme,
+    fullPipeline({ description: "Preferred theme", type: ["string", "null"], enum: ["light", "dark", null] }),
+  )
 
-  assert.equal(once.properties.filter.type, "object")
+  assert.deepEqual(once.properties.plainNullable, { type: ["string", "null"] })
+  assert.deepEqual(once.properties.plainNullable, fullPipeline({ type: ["string", "null"] }))
+
+  assert.deepEqual(once.properties.filter.type, ["object", "null"])
   assert.deepEqual(once.properties.filter.properties, { tag: { type: "string" } })
   assert.deepEqual(once.properties.filter.required, ["tag"])
-  assert.match(once.properties.filter.description, /Nullable object/)
+  assert.deepEqual(
+    once.properties.filter,
+    fullPipeline({
+      description: "Filter spec",
+      type: ["object", "null"],
+      properties: { tag: { type: "string" } },
+      required: ["tag"],
+    }),
+  )
 
   assert.equal(once.properties.mode.type, "string")
   assert.equal(once.properties.mode.enum, undefined)
@@ -373,6 +400,8 @@ test("closed prefixItems tuples keep their length and element types", () => {
   assert.equal(point.maxItems, 2)
   assert.deepEqual(point.items, { type: "number" })
   assert.equal(empty.maxItems, 0)
+  assert.deepEqual(empty.items, { type: "string", description: "No value is allowed by the original schema." })
+  assert.equal(empty.description, undefined)
 })
 
 test("const literals: numeric and boolean unions keep their values, empty string and null get hints", () => {
@@ -413,12 +442,9 @@ test("const literals: numeric and boolean unions keep their values, empty string
   assert.match(p.list.description, /Must equal: \[1,2\]/)
   assert.deepEqual(p.nullableConst, { type: "string", enum: ["x"] })
   assert.deepEqual(p.allNull, { description: "Must be null." })
-  assert.equal(p.maybe.type, "string")
-  assert.deepEqual(p.maybe.enum, ["a", "b"])
-  assert.match(p.maybe.description, /Nullable string/)
-  // `list` is skipped: its permissive items (from ensureGeminiArrayItems) list a null leaf.
-  const { list: _list, ...rest } = p
-  assert.doesNotMatch(JSON.stringify(rest), /"type":\s*(\[[^\]]*"null"|"null")/)
+  assert.deepEqual(p.maybe, { type: ["string", "null"], description: 'Allowed values: "a", "b", null' })
+  // Standalone null leaves have no `"type": "null"` or `["null"]`.
+  assert.doesNotMatch(JSON.stringify({ nothing: p.nothing, allNull: p.allNull }), /"type"/)
 })
 
 test("variant hints keep per-variant descriptions and stay under a length cap", () => {
@@ -524,7 +550,72 @@ test("allOf narrows number with integer and flags type and enum conflicts", () =
   assert.match(schema.properties.mode.description, /Conflicting enum constraints in allOf/)
 })
 
-test("bridge request path delivers expanded schemas and default ToolSearch schema to MCP tools/list", async () => {
+test("deep plain schemas without $ref or allOf pass through untouched past depth 64", () => {
+  let inner = { type: "integer", minimum: 1 }
+  for (let i = 70; i >= 0; i--) {
+    inner = { type: "object", properties: { [`l${i}`]: inner } }
+  }
+  const schema = fullPipeline(inner)
+  assert.doesNotMatch(JSON.stringify(schema), /Schema expansion limit/)
+  let cur = schema
+  for (let i = 0; i <= 70; i++) cur = cur.properties[`l${i}`]
+  assert.deepEqual(cur, { type: "integer", minimum: 1 })
+})
+
+test("linear $ref and allOf chains stop at depth 64 even when node and byte counts are small", () => {
+  const $defs = { N70: { type: "string" } }
+  for (let i = 0; i < 70; i++) {
+    $defs[`N${i}`] = { type: "object", properties: { next: { $ref: `#/$defs/N${i + 1}` } } }
+  }
+  const refChain = fullPipeline({ type: "object", $defs, properties: { head: { $ref: "#/$defs/N0" } } })
+  const refText = JSON.stringify(refChain)
+  assert.match(refText, /Schema expansion limit/)
+  assert.ok(refText.length < 20_000, String(refText.length))
+
+  let allOfChain = { type: "object", properties: { leaf: { type: "string" } } }
+  for (let i = 0; i < 70; i++) allOfChain = { allOf: [allOfChain] }
+  const lowered = fullPipeline(allOfChain)
+  assert.match(JSON.stringify(lowered), /Schema expansion limit/)
+})
+
+test("inlined byte and node budgets independently cap shared $ref amplification", () => {
+  const heavyDefs = {
+    Heavy: { type: "object", description: "x".repeat(4000), properties: { ok: { type: "boolean" } } },
+  }
+  const heavyProps = Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`h${i}`, { $ref: "#/$defs/Heavy" }]))
+  const heavySchema = fullPipeline({ type: "object", $defs: heavyDefs, properties: heavyProps })
+  const heavyText = JSON.stringify(heavySchema)
+  assert.match(heavyText, /Schema expansion limit/)
+  assert.ok(heavyText.length < 280_000, String(heavyText.length))
+  assert.equal(heavySchema.properties.h0.properties.ok.type, "boolean")
+  assert.equal(heavySchema.properties.h79.properties, undefined)
+  assert.equal(heavySchema.properties.h79.type, "object")
+
+  const tinyDefs = { Tiny: { type: "integer" } }
+  const tinyProps = Object.fromEntries(Array.from({ length: 8300 }, (_, i) => [`t${i}`, { $ref: "#/$defs/Tiny" }]))
+  const tinySchema = fullPipeline({ type: "object", $defs: tinyDefs, properties: tinyProps })
+  assert.deepEqual(tinySchema.properties.t0, { type: "integer" })
+  assert.equal(tinySchema.properties.t8299.type, "integer")
+  assert.match(tinySchema.properties.t8299.description, /Schema expansion limit/)
+})
+
+test("recursive nullable $ref preserves [object, null] at the cycle boundary", () => {
+  const schema = fullPipeline({
+    type: "object",
+    $defs: {
+      ListNode: {
+        type: ["object", "null"],
+        properties: { val: { type: "integer" }, next: { $ref: "#/$defs/ListNode" } },
+      },
+    },
+    properties: { head: { $ref: "#/$defs/ListNode" } },
+  })
+  assert.deepEqual(schema.properties.head.type, ["object", "null"])
+  assert.deepEqual(schema.properties.head.properties.next.type, ["object", "null"])
+  assert.match(schema.properties.head.properties.next.description, /Recursive schema/)
+})
+
+test("bridge request path delivers expanded schemas to MCP tools/list without inventing a ToolSearch schema", async () => {
   const kit = await createBridgeKit()
   try {
     let listed = null
@@ -535,7 +626,7 @@ test("bridge request path delivers expanded schemas and default ToolSearch schem
 
     const res = await kit.request(baseBody({
       tools: [
-        { name: "ToolSearch", description: "Deferred tool search" },
+        { name: "ToolSearch", description: "Custom parameterless tool" },
         {
           name: "cua_action",
           description: "Desktop GUI action",
@@ -581,9 +672,7 @@ test("bridge request path delivers expanded schemas and default ToolSearch schem
     const cuaTool = mcpTools.find((t) => t.name === "cua_action")
 
     assert.ok(searchTool, "ToolSearch must be exposed over MCP tools/list")
-    assert.deepEqual(searchTool.inputSchema.required, TOOL_SEARCH_INPUT_SCHEMA.required)
-    assert.equal(searchTool.inputSchema.properties?.query?.type, "string")
-    assert.equal(searchTool.inputSchema.properties?.max_results?.type, "integer")
+    assert.deepEqual(searchTool.inputSchema, { type: "object", properties: {} })
 
     assert.ok(cuaTool, "cua_action must be exposed over MCP tools/list")
     assert.equal(cuaTool.inputSchema.$defs, undefined)
