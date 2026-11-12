@@ -30,8 +30,13 @@ import { bootModels, createCatalog, liveRowsOf, publicRowsOf } from "./lib/model
 import { cardOf } from "./lib/quota.mjs"
 import { ensureKey, pruneKeys } from "./lib/keys.mjs"
 import { precheckImages, rewriteBodyChanged, rewriteBodyObj, translateError } from "./lib/preflight.mjs"
+import { existsSync, mkdirSync, renameSync } from "node:fs"
+import { dirname, join } from "node:path"
 import {
+  accountProfileDir,
+  profileDir,
   readUaaToken,
+  removeProfile,
   requireBrowser,
   renewSilently,
   signInWithBrowser,
@@ -188,6 +193,46 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
   const waitForLogin = typeof options.waitForLogin === "function" ? options.waitForLogin : undefined
   const quotaTtlMs = optNum(options.quotaTtlMs, QUOTA_TTL_MS)
   const browserPath = typeof options.browser === "string" && options.browser.trim() ? options.browser.trim() : undefined
+  // 这次调用针对哪个账号：magpie 的 scope 期间给出（provider id 或
+  // provider#xxxx）。OpenCode / 老版本 magpie 没有这个钩子，返回空串，
+  // 全部退回「一个供应商一个 profile」的老行为。
+  const accountKeyNow = () => {
+    try {
+      const key = magpie?.account?.(PROVIDER_ID)
+      return typeof key === "string" && (key === PROVIDER_ID || key.startsWith(PROVIDER_ID + "#")) ? key : ""
+    } catch {
+      return ""
+    }
+  }
+  // 账号自己的浏览器 profile。共用一个 profile 时，第二个账号一开窗就是
+  // 第一个账号的登录态——不退登登不进去，退登又销毁它的会话，所以每个账号
+  // 一个目录，第一个账号也不例外。
+  const profileForAccount = (key) => (key ? accountProfileDir(key) : "")
+
+  // 0.1.5 的共享 profile（inkstone-browser）按账号分不出主人，但它的会话可以
+  // 用 users/validate 验证：内容属于哪个账号，就整体搬给哪个账号。只在续期
+  // 时做（那时手上正好有这个账号存的名字），一个账号只会搬一次。
+  const adoptSharedProfile = async (key, username) => {
+    if (!key || !username || !keepSignInOn()) return
+    const own = accountProfileDir(key)
+    if (existsSync(own)) return
+    const shared = profileDir()
+    if (!existsSync(shared)) return
+    try {
+      const token = await renewSilently({ browserPath, profile: shared, log })
+      if (!token) return
+      const holder = await usersValidate(token).catch(() => null)
+      const holderName = firstNonEmpty(
+        holder?.data?.name, holder?.data?.username, holder?.data?.nickname, holder?.data?.phone, holder?.data?.email,
+      )
+      if (!holderName || holderName !== username) return
+      mkdirSync(dirname(own), { recursive: true, mode: 0o700 })
+      renameSync(shared, own)
+      log("info", `inkstone: the shared browser profile belongs to ${key}; moved it there`)
+    } catch (e) {
+      log(`the shared browser profile could not be adopted (${e?.message ?? e})`)
+    }
+  }
   // test hook: the browsers this machine has, in place of the real lookup
   const browserList = typeof options.browserCandidates === "function" ? options.browserCandidates : undefined
 
@@ -258,7 +303,13 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
     if (inflight) return inflight
     const flight = (async () => {
       try {
-        const token = await renewSilently({ browserPath, log })
+        const key = accountKeyNow()
+        // 升级路径：0.1.5 的用户会话还在共享 profile 里，先认领到账号目录，
+        // 否则这次续期在空目录上什么也读不到，token 到期就得手动重登。
+        await adoptSharedProfile(key, usernameOf(auth))
+        // 续期用这个账号自己的 profile：共用 profile 时续回来的是另一个账号的
+        // 会话（后面的核对会拦下，但那就永远续不上）。
+        const token = await renewSilently({ browserPath, profile: profileForAccount(key), log })
         if (!token) return ""
         // 同一个 profile 可能同时开着另一个账号的会话：续期回来的 token 不属于
         // 本页的账号，再存回去就会串号，先核对一遍再决定。
@@ -392,19 +443,37 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
       url: "",
       opened: true,
       instructions:
-        "The plugin first checks its own browser profile: if it holds a console session the server still accepts, the sign-in finishes on that session and no window opens (to sign in as another account, turn off \"Reuse the kept console session\" in this provider's options first). Otherwise a browser window opens on the InkStone console. Sign in there (password, SMS or QR code), and the plugin notices the completed sign-in by itself and closes the window" +
+        "The plugin first checks the browser profile of the account being signed in: if it holds a console session the server still accepts, the sign-in finishes on that session and no window opens. Otherwise a browser window opens on the InkStone console — every account has its own profile, so signing in another account starts from a clean one and leaves the other accounts alone. Sign in there (password, SMS or QR code), and the plugin notices the completed sign-in by itself and closes the window" +
         (process.platform === "win32"
           ? " (you do not need to close it)."
           : " within about half a minute of the console session landing (Chrome writes cookies to disk on a timer) — you can leave the window open.") +
         " After the sign-in the plugin creates an ink-* API key on your account — the plaintext is shown once, and the plugin keeps it for you.",
       method: "auto",
       async callback(_code, { signal } = {}) {
+        const accountKey = accountKeyNow()
+        const keep = keepSignInOn()
+        const target = profileForAccount(accountKey)
+        // magpie 在「一个账号都没有」时把 provider id 这个 key 交给下一次登录：
+        // 删掉唯一的账号再添加，新账号又会拿到这个 key，而它的 profile 里还是
+        // 被删账号的会话。服务端会认这枚会话，复用就完成到已删除的账号上了；
+        // 直接在它上面开窗也不行，窗口一打开就是那个账号的登录态。所以换一个
+        // 旁边的一次性目录登录，成功后整体替换掉这个 key 的 profile。
+        // 带 # 的 key 是 magpie 随机生成的，只会回到原账号（或再也不回来），
+        // 可以照常复用。
+        const recyclable = Boolean(target) && !accountKey.includes("#")
+        const stale = recyclable && existsSync(target)
+        const loginProfile = stale
+          ? join(dirname(target), `.pending-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)
+          : target
         let token = ""
         try {
           token = await signInWithBrowser({
             browserPath,
-            keepSignIn: keepSignInOn(),
+            keepSignIn: keep,
             reuseKeptSession: reuseKeptSessionOn(),
+            // 每个 magpie 账号一个 profile：新账号是空目录，开窗就是干净的
+            // 登录页，不会顶掉别的账号；不在这里决定时退回保留的那个。
+            profile: loginProfile,
             // 复用的前提是服务端还认这枚会话：只看 profile 里有没有一行，
             // 会把已吊销的会话、或另一个账号的会话，当成这次登录的结果。
             validateToken: async (t) => {
@@ -420,6 +489,19 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
         } catch (e) {
           if (e?.cancelled) return { type: "failed", error: "the sign-in was cancelled" }
           return { type: "failed", error: cleanDetail(`InkStone sign-in: ${e?.message ?? e}`) }
+        }
+        // 目录生命周期由这里管：关掉 keep_sign_in 就删掉；stale 的一次性目录
+        // 换成这个 key 的新 profile（旧的是被删账号的会话，留着只会再被认错）。
+        if (loginProfile) {
+          if (!keep) await removeProfile(loginProfile)
+          else if (stale) {
+            try {
+              await removeProfile(target)
+              renameSync(loginProfile, target)
+            } catch (e) {
+              log("warn", `inkstone: could not replace the account's browser profile (${e?.message ?? e})`)
+            }
+          }
         }
         try {
           const user = await usersValidate(token).catch(() => null)
@@ -558,7 +640,7 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
           key: "reuse_kept_session",
           label: "Reuse the kept console session on browser sign-in",
           description:
-            "When the plugin's own browser profile still holds a console session the server accepts, the browser sign-in finishes on it and opens no window. Off: every browser sign-in opens the window for a fresh login — turn it off to sign in as a second account.",
+            "When this account's browser profile holds a console session the server accepts, the browser sign-in finishes on it and opens no window. Off: every sign-in opens the window, even on an accepted session. Each account has its own profile; adding one needs no change here.",
           labels: {
             zh: "浏览器登录时复用保留的控制台会话",
             "zh-TW": "瀏覽器登入時復用保留的控制台工作階段",
@@ -566,10 +648,10 @@ export async function InkStoneAuthPlugin({ client, magpie } = {}, options = {}) 
             de: "Konsolen-Session beim Browser-Login wiederverwenden",
           },
           descriptions: {
-            zh: "插件专用浏览器配置里还留着服务端认可的控制台会话时，浏览器登录直接复用它，不打开窗口。关闭后每次浏览器登录都会开窗重新登录——要添加第二个账号时关掉它。",
-            "zh-TW": "外掛專用瀏覽器設定裡還留著伺服器認可的控制台工作階段時，瀏覽器登入直接復用它，不開啟視窗。關閉後每次瀏覽器登入都會開窗重新登入——要新增第二個帳號時關掉它。",
-            ja: "専用ブラウザープロファイルにサーバーがまだ受け付けるコンソールセッションが残っていれば、それを再利用してサインインし、ウィンドウを開きません。無効にすると毎回ウィンドウが開きます。2つ目のアカウントを追加するときは無効にしてください。",
-            de: "Enthält das eigene Browser-Profil noch eine Konsolen-Session, die der Server akzeptiert, wird sie für die Anmeldung wiederverwendet und kein Fenster geöffnet. Aus: Jeder Browser-Login öffnet das Fenster für eine neue Anmeldung — zum Hinzufügen eines zweiten Kontos ausschalten.",
+            zh: "该账号的浏览器配置里还留着服务端认可的控制台会话时，浏览器登录直接复用它，不打开窗口。关闭后每次浏览器登录都会开窗（即使会话仍被认可）。每个 magpie 账号各用一份配置，添加账号不必改这里。",
+            "zh-TW": "該帳號的瀏覽器設定裡還留著伺服器認可的控制台工作階段時，瀏覽器登入直接復用它，不開啟視窗。關閉後每次瀏覽器登入都會開窗（即使工作階段仍被認可）。每個 magpie 帳號各用一份設定，新增帳號不必改這裡。",
+            ja: "このアカウントのブラウザープロファイルにサーバーがまだ受け付けるコンソールセッションが残っていれば、それを再利用してサインインし、ウィンドウを開きません。無効にすると毎回ウィンドウが開きます（受け付けられるセッションでも）。アカウントごとにプロファイルを分けるので、追加時に変更は不要です。",
+            de: "Enthält das Profil dieses Kontos eine Konsolen-Session, die der Server akzeptiert, beendet der Browser-Login die Anmeldung damit und öffnet kein Fenster. Aus: jeder Login öffnet das Fenster, auch bei akzeptierter Session. Jedes Konto hat sein eigenes Profil.",
           },
           default: true,
         },

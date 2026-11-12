@@ -22,7 +22,7 @@
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { ENDPOINTS } from "./protocol.mjs"
 import { profileHasNewCookie, cookieBaseline } from "./cookieProbe.mjs"
 
@@ -132,6 +132,24 @@ export function profileDir(env = process.env, platform = process.platform) {
 /** 一次性 profile：登录完就删，不把登录态留在磁盘上。 */
 export function oneOffProfileDir() {
   return mkdtempSync(join(tmpdir(), "magpie-inkstone-login-"))
+}
+
+/**
+ * 每个账号自己的专用 profile（与默认 profile 并列存放）。
+ *
+ * magpie 的一个供应商可以挂多个账号，共用一个浏览器 profile 时，第二个账号
+ * 一开窗就是第一个账号的登录态：不退登登不进去，退登又会把第一个账号的会话
+ * 销毁。按账号 key 分目录后，新账号拿到的是空 profile，谁也不碰谁。
+ */
+export function accountProfileDir(accountKey) {
+  const key = String(accountKey ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+  if (!key) return ""
+  return join(dirname(profileDir()), "inkstone-browser-accounts", key)
 }
 
 function browserEnv() {
@@ -307,14 +325,17 @@ function killTree(child) {
 function killProfileProcessesWindows(profile, log = () => {}) {
   try {
     const filter = String(profile).replace(/'/g, "''")
-    // .Contains() 而不是 -like：-like 会把路径里的 [ ] 当通配符。
+    // 正则（[regex]::Escape 转义路径）+ 参数边界：.../intern-inkstone 是
+    // .../intern-inkstone-ab12cd 的前缀，Contains 会把另一个账号的浏览器杀掉。
+    const pattern = `'--user-data-dir=' + [regex]::Escape('${filter}') + '(\\s|$|")'`
     spawnSync(
       "powershell",
       [
         "-NoProfile",
         "-Command",
-        `Get-CimInstance Win32_Process -Filter "name like '%msedge%' or name like '%chrome%'" | ` +
-          `Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${filter}') } | ` +
+        `$p = ${pattern}; ` +
+          `Get-CimInstance Win32_Process -Filter "name like '%msedge%' or name like '%chrome%'" | ` +
+          `Where-Object { $_.CommandLine -and $_.CommandLine -match $p } | ` +
           `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
       ],
       { stdio: "ignore", windowsHide: true, timeout: 30_000 },
@@ -327,8 +348,9 @@ function killProfileProcessesWindows(profile, log = () => {}) {
 function killProfileProcessesUnix(profile, log = () => {}) {
   try {
     // 只匹配 "--user-data-dir=<本插件 profile>"：pkill -f 是对全体进程命令行
-    // 做正则，裸路径里的 . 会匹配任意字符、短路径会误杀无关进程。
-    const pattern = `--user-data-dir=${String(profile).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`
+    // 做正则，裸路径里的 . 会匹配任意字符、短路径会误杀无关进程。末尾还要锚在
+    // 参数边界：.../intern-inkstone 是 .../intern-inkstone-ab12cd 的前缀。
+    const pattern = `--user-data-dir=${String(profile).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([[:space:]]|$)`
     spawnSync("pkill", ["-f", "--", pattern], { stdio: "ignore" })
   } catch (e) {
     log(`cleaning leftover browsers failed: ${e?.message ?? e}`)
@@ -662,13 +684,16 @@ async function keptConsoleSession({ browserPath, profile, validateToken, log, ma
  * 3. 同一个专用 profile 里 headless + CDP 读 `uaa-token`（此时登录已完成，
  *    不再影响验证码）。
  *
- * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
+ * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。`profile`
+ * 给出时用它替代默认目录（多账号各用各的 profile），目录的生命周期由调用方管：
+ * 给了就不删；没给时 keepSignIn 关掉才删（一次性 profile）。
  */
 export async function signInWithBrowser({
   browserPath,
   keepSignIn = true,
   reuseKeptSession = true,
   validateToken = null,
+  profile = "",
   timeoutMs = 8 * 60_000,
   waitForLogin,
   loginWait,
@@ -677,15 +702,17 @@ export async function signInWithBrowser({
 } = {}) {
   // before the one-off profile is made, so a missing browser leaves no folder
   const exe = requireBrowser(browserPath)
-  const dir = keepSignIn ? profileDir() : oneOffProfileDir()
+  const dir = profile || (keepSignIn ? profileDir() : oneOffProfileDir())
   const cancelled = () => Boolean(signal?.aborted)
   return await exclusive(async () => {
     killProfileProcesses(dir, log)
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const existed = existsSync(dir)
+    if (!existed) mkdirSync(dir, { recursive: true, mode: 0o700 })
     // 保留的会话：先读出 token、再让服务端确认它还是活的，才当作本次登录
     // 完成。没有核对器时一律不复用（老路径 / 测试），照常开窗。
     // 一次性 profile（keepSignIn 关掉）里没有「保留的会话」可复用，跳过这步。
-    if (keepSignIn && reuseKeptSession && typeof validateToken === "function") {
+    // 目录是刚建的空 profile（新账号）时也没有可复用的会话，省掉一次无头启动。
+    if (keepSignIn && reuseKeptSession && typeof validateToken === "function" && existed) {
       const kept = await keptConsoleSession({ browserPath: exe, profile: dir, validateToken, log })
       if (kept) return kept
     }
@@ -757,7 +784,7 @@ export async function signInWithBrowser({
         }
       }
     } finally {
-      if (!keepSignIn) await removeProfile(dir)
+      if (!profile && !keepSignIn) await removeProfile(dir)
     }
   })
 }
@@ -766,8 +793,8 @@ export async function signInWithBrowser({
  * 静默续期：专用 profile 里 headless 打开控制台页，SSO 会话还在就会重新
  * 下 `uaa-token`。读不到就返回空串（交给调用方提示重新登录），不抛错。
  */
-export async function renewSilently({ browserPath, timeoutMs = 20_000, log = () => {} } = {}) {
-  const dir = profileDir()
+export async function renewSilently({ browserPath, profile = "", timeoutMs = 20_000, log = () => {} } = {}) {
+  const dir = profile || profileDir()
   if (!existsSync(dir)) return ""
   // 登录正在进行时不要抢 profile：下一次额度刷新再续。
   if (profileBusy > 0) return ""
