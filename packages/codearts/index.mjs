@@ -1079,9 +1079,24 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
+  normalizeStop(body)
   const fold = body.stream !== true
   body.stream = true
   return { body, fold, injected, names }
+}
+
+/**
+ * The gateway takes `stop` as a string only: an array, an empty one too,
+ * comes back as HTTP 200 with `InferHub.001001005.400` "The request param is
+ * invalid" (magpie#6342, measured with every model). A list goes as its
+ * first non-empty string, the one the gateway can take; an empty or blank
+ * one, or a value of another kind, is left out.
+ */
+function normalizeStop(body) {
+  if (!("stop" in body)) return
+  const v = Array.isArray(body.stop) ? body.stop.find((x) => typeof x === "string" && x !== "") : body.stop
+  if (typeof v === "string" && v !== "") body.stop = v
+  else delete body.stop
 }
 
 // ---- tool names over the gateway's limit (#432) -----------------------------
