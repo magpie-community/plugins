@@ -348,8 +348,11 @@ export const SSE_ENCODER = new TextEncoder()
  * no read-ahead or whole-reply accumulation; byte framing precedes UTF-8
  * decoding so split code points and split frames are harmless. Protocol
  * specifics are supplied by callbacks:
- *   classify(event, eventName) -> { terminal, redacted } or throws a safe error
- *     for a malformed/mislabelled frame. `redacted === event` means unchanged.
+ *   classify(event, eventName) -> { terminal, redacted, name? } or throws a safe
+ *     error for a malformed/mislabelled frame. `redacted === event` means
+ *     unchanged; `redacted === null` drops a non-terminal frame (a terminal
+ *     `null` fails the stream). `name`, when set, replaces an existing `event:`
+ *     line of a rebuilt frame, or is synthesized when the frame has none.
  *   errorEvent(code) -> the serialized protocol error frame for a local failure.
  * @param {ReadableStream<Uint8Array>} upstream
  * @param {AbortSignal | undefined} signal
@@ -448,13 +451,20 @@ export function sseRelay(upstream, signal, { classify, errorEvent, complete }) {
             let event
             try { event = JSON.parse(data.join("\n")) } catch { throw safeError("inference-response") }
             const { terminal, redacted, name: emitName } = classify(event, name)
+            // `null` drops a non-terminal frame; a terminal frame must be emitted.
+            if (redacted === null) {
+              if (terminal) throw safeError("inference-response")
+              continue
+            }
             let text
             if (redacted === event) {
               text = raw.replace(/\r\n|\r/g, "\n")
             } else {
               // Rebuild a redacted frame without a leading blank line, preserving any
               // non-data lines (e.g. an existing `event:`) ahead of the new data.
+              // An existing `event:` line takes the classifier's name when given.
               const kept = lines.filter(line => line && !line.startsWith("data:"))
+                .map(line => emitName && line.startsWith("event:") ? "event: " + emitName : line)
               text = [...kept, "data: " + JSON.stringify(redacted)].join("\n") + "\n\n"
             }
             // Some upstreams (SAP) relay data-only frames; clients that dispatch on
