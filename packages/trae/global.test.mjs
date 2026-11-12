@@ -25,6 +25,8 @@ test("the realm's table is its own: hosts, client and versions differ from CN's"
   expect(GLOBAL.hosts.us).toBe("https://coreva-normal.trae.ai")
   expect(GLOBAL.hosts.pay).toBe("https://api-sg-central.trae.ai")
   expect(GLOBAL.hosts.usPay).toBe("https://api-us-east.trae.ai")
+  expect(GLOBAL.hosts.console).toBe("https://console.enterprise.trae.ai")
+  expect(GLOBAL.consoleHost).toBe("console.enterprise.trae.ai")
   // no trae.cn host is reachable from this realm's table
   expect(Object.values(GLOBAL.hosts).some((h) => /trae\.cn|mchost\.guru/.test(h))).toBe(false)
   expect(cn.hosts.web).toBe("https://www.trae.cn")
@@ -118,6 +120,59 @@ test("a 401 reading usage marks the account", async () => {
   const u = await hooks.auth.usage(async () => signedIn())
   expect(u.signIn).toBe("expired")
   expect(u.error).toContain("sign in again")
+})
+
+// The international realm's enterprise (SaaS) path: the same console Trae
+// CN reads, in dollars. NOT VERIFIED against a real account — no
+// international enterprise account was available, and
+// console.enterprise.trae.ai answers another realm's token with 请先登录
+// (as it answers no token at all). The paths and fields are the CN
+// console's shape read off the international console's own build.
+test("an international enterprise account reads the console's seat pool, in dollars", async () => {
+  const ENT = "https://console.enterprise.trae.ai"
+  f = fakeTrae("trae-global")
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_quota", () => json({ code: 0, message: "success", user_model_quota: { user_id: "u-1", seat_pool_currency_quota: 100, paygo_currency_quota: 9999999999, has_user_quota: true } }))
+  f.route("POST /trae/gtm/tob/api/v1/config/get_user_model_usage", () => json({ code: 0, message: "success", user_usage_list: [{ user_id: "u-1", in_seat_detail: { chat_usage_details: [{ total_cost_currency: 12.5 }, { total_cost_currency: 7.5 }] }, seat_total_cost_currency: null }] }))
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_core_data", () => json({ code: 0, message: "", Data: { ResetTime: 1796054400000 }, count: 0 }))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn({ host: ENT }))
+  expect(f.seen.map((r) => r.path)).toEqual([
+    "/trae/gtm/tob/api/v1/config/get_personal_quota",
+    "/trae/gtm/tob/api/v1/config/get_user_model_usage",
+    "/trae/gtm/tob/api/v1/config/get_personal_core_data",
+  ])
+  expect(u.plan).toBe("Enterprise")
+  expect(u.user).toBe("Ann")
+  expect(u.signIn).toBe("kept")
+  // the realm has no consumer credits page, so the card is the pool alone
+  expect(u.windows).toEqual([{ name: "Seat Usage", used: 20, display: "$20.00 / $100.00", amount: 20, limit: 100, unit: "usd", resetsAt: new Date(1796054400000).toISOString() }])
+})
+
+// The international console is not known to take the IDE's own token — it
+// answers 请先登录 to another realm's token exactly as it answers no token,
+// so a refusal cannot be told from a lapsed sign-in. Marking the account
+// expired on one would send every international enterprise user into a
+// re-sign-in loop that re-signing in does not break; a failed read is the
+// most this realm may say.
+test("an international console that refuses the token is a failed read, not an expired sign-in", async () => {
+  f = fakeTrae("trae-global")
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_quota", () => json({ code: 1001, message: "not login" }, 401))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn({ host: "https://console.enterprise.trae.ai" }))
+  expect(u.signIn).toBe("kept")
+  expect(u.error).toBe("Trae Global usage: not login")
+})
+
+test("an international account that names no console is read as before", async () => {
+  f = fakeTrae("trae-global")
+  f.route("POST /trae/api/v1/pay/user_current_entitlement_list", () => json({ user_entitlement_pack_list: [
+    { display_desc: "Pro plan", entitlement_base_info: { end_time: 1793491199, quota: { basic_usage_limit: 20, bonus_usage_limit: 5 } }, usage: { basic_usage_amount: 4.5, bonus_usage_amount: 1.5 } },
+  ] }))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn({ host: "https://api-us-east.trae.ai", region: "US-East" }))
+  expect(f.seen.map((r) => r.path)).toEqual(["/trae/api/v1/pay/user_current_entitlement_list"])
+  expect(u.plan).toBe("Pro plan")
+  expect(u.windows[0].name).toBe("Dollar Usage")
 })
 
 test("the international model names are the realm's own fallback list", () => {

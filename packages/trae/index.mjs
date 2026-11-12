@@ -41,7 +41,19 @@ const SITES = {
       web: "https://www.trae.cn", // the authorization page
       auth: "https://api.trae.cn", // tokens, the account, credits
       api: "https://trae-api-cn.mchost.guru", // the models
+      console: "https://console.enterprise.trae.cn", // an enterprise (SaaS) account's usage, in yuan
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // which is what tells an enterprise account apart: it bills there, not
+    // on the consumer credits page. Kept apart from hosts.console so a test
+    // can point the requests at a fake and still sign in as an enterprise
+    // account.
+    consoleHost: "console.enterprise.trae.cn",
+    // Trae CN's console was measured to take the IDE's own token: the plugin's
+    // own headers against get_personal_quota answer 200, and a 401 from it
+    // really is a lapsed sign-in. The international console could not be
+    // measured (see its realm below), so it is not allowed to say so.
+    consoleTakesIdeToken: true,
     clientId: "ono9krqynydwx5", // Trae CN's IDE
     // the clients' own renewal, which binds the JWT to a device: ExchangeToken
     // under /trae/api/v3/oauth, signed with the device's P-256 key
@@ -127,6 +139,51 @@ const SITES = {
       label: "credits",
       host: (site) => site.hosts.auth,
       body: { require_usage: true, req_source: 0 },
+      // an enterprise (SaaS) account bills in yuan on Trae's console, not on
+      // the consumer credits page: its allowance is the seat pool the
+      // console names, and what it spent is the models' own cost — two of
+      // the console's pages, not one. A personal account is read as before.
+      //
+      // The consumer page answers such an account too, with a credits
+      // allowance that real calls have been measured not to touch (two calls
+      // through magpie moved the console's spend by ￥0.0002 each and left
+      // the credits at 4.4 of 4700). It is shown beside the seat pool so the
+      // card holds both numbers, but marked aside: the seat pool is what a
+      // request spends, so the credits must not read as allowance magpie can
+      // route on. Whether they are a fallback the seat pool exhausts first
+      // is not known — no account has spent its pool to find out.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        // the console's own period, which is the seat pool's: the usage page
+        // says "席位额度将于 <ResetTime> 重置" from exactly this call, while
+        // get_personal_quota names the allowance and no date at all
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core, credits: page }, a, signIn, { credits, round }) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae CN usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          const windows = []
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) windows.push(seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), yuan, "CNY"))
+          const c = page ? credits(page) : null
+          if (c && !c.unlimited && c.limit > 0) {
+            const w = {
+              name: "Credits",
+              used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)),
+              display: `${round(c.used)} / ${round(c.limit)}`,
+              amount: round(c.used),
+              limit: round(c.limit),
+              unit: "credits",
+              aside: true,
+            }
+            if (c.until) w.resetsAt = new Date(c.until).toISOString()
+            windows.push(w)
+          }
+          if (windows.length) out.windows = windows
+          return out
+        },
+      },
       read: (v, a, signIn, { credits, round }) => {
         const c = credits(v)
         const out = { plan: v.is_credits_billing ? "Credits" : "Free", user: a.name || a.uid, signIn }
@@ -166,7 +223,18 @@ const SITES = {
       us: "https://coreva-normal.trae.ai", // the models, US
       pay: "https://api-sg-central.trae.ai", // usage
       usPay: "https://api-us-east.trae.ai", // usage, the US deployment
+      console: "https://console.enterprise.trae.ai", // an enterprise (SaaS) account's usage, in dollars
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // as on Trae CN: it bills there, not on the dollar billing's page. Kept
+    // apart from hosts.console for the same reason as Trae CN's.
+    consoleHost: "console.enterprise.trae.ai",
+    // Not measured: no international enterprise account could be found, and
+    // console.enterprise.trae.ai answers a foreign realm's token with 请先登录
+    // exactly as it answers no token at all, so whether it refuses the token
+    // or wants a console session is unknown. Until an account says otherwise,
+    // its 401 is a failed read, never a lapsed sign-in.
+    consoleTakesIdeToken: false,
     clientId: "ono9krqynydwx5",
     appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
     ideVersion: "3.5.51", // named to the international IDE's current build
@@ -222,6 +290,34 @@ const SITES = {
       // Forbidden here
       host: (site, a) => (/^US(?:[-_ ]|$)/i.test(String(a?.region ?? "")) || /api-us/i.test(String(a?.api ?? "")) ? site.hosts.usPay : site.hosts.pay),
       body: {},
+      // An enterprise (SaaS) account bills on Trae's enterprise console
+      // here too, on the same three pages Trae CN's console has and in
+      // dollars. The international deployment has no consumer credits page
+      // (its own page is the dollar billing's), so the card is the seat
+      // pool alone.
+      //
+      // NOT VERIFIED against a real account: no international enterprise
+      // account was available, and console.enterprise.trae.ai answers
+      // another realm's token with 请先登录 — as it answers no token at all,
+      // so whether it refuses the token or wants a console session is not
+      // known either. The paths and fields below are the CN console's shape
+      // read off the international console's own build, which names
+      // seat_pool_currency_quota, the models' total_cost_currency and
+      // ResetTime exactly as Trae CN's does. Whether such an account's
+      // console answers at all is not known.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core }, a, signIn) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae Global usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) out.windows = [seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), DOLLARS, "usd")]
+          return out
+        },
+      },
       read: (v, a, signIn, { round }) => {
         const d = dollarUsageOf(v)
         if (!d) return { error: "Trae Global usage: no entitlement pack in the answer", signIn, user: a.name }
@@ -3079,6 +3175,129 @@ function credits(v) {
 
 const round = (n) => Math.round(n * 100) / 100
 
+// yuan is money as Trae CN's console counts it, in yuan. The consumer
+// window's unit is a bare word ("credits"); a currency the card can't name
+// in a unit goes in display, as Cursor's and JoyCode's do.
+const yuan = (n) => "¥" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// dollars is the same money as the international console counts it. The
+// console's own build picks the symbol by deployment (volcengine ¥,
+// byteplus $), so each realm's console is asked with its own.
+const DOLLARS = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// seatUsageWindow is the seat pool's window, which both realms' consoles
+// name the same way: the pool as the limit and the models' own cost as what
+// was spent, in the realm's money, resetting when the console's period does.
+// The count rides on the window (amount of limit), as the consumer window's
+// does, so magpie says it in the window's row; display carries the currency
+// the card's own row can't name (yetone/magpie#694).
+//
+// A spend the console did not answer (used === null) is not a spend of
+// nothing: the window says no percent and no amount, and its display names
+// the pool with a question mark, so magpie reads the account as unknown
+// rather than as one that has spent none of its allowance.
+function seatUsageWindow(pool, used, until, money, unit) {
+  const w = {
+    name: "Seat Usage",
+    display: used === null ? `? / ${money(pool.limit)}` : `${money(used)} / ${money(pool.limit)}`,
+    limit: round(pool.limit),
+    unit,
+  }
+  if (used === null) w.used = null
+  else {
+    w.used = Math.round(Math.max(0, Math.min(100, (used / pool.limit) * 100)) * 100) / 100
+    w.amount = round(used)
+  }
+  if (until) w.resetsAt = until
+  return w
+}
+
+// PAYGO_UNLIMITED is the console's "no limit": a pay-as-you-go pool is
+// handed this instead of a real one (9999999999), which is not a limit a
+// card should show. The seat pool is the limit that matters.
+const PAYGO_UNLIMITED = 1e9
+
+// seatPoolOf reads an enterprise account's allowance as its console has it:
+// the seat pool, in the realm's money (seat_pool_currency_quota). A pool the
+// console hands PAYGO_UNLIMITED is no limit at all, as the consumer page's
+// -1 is. A pool the console names as null or "" is no pool either: Number()
+// would read both as 0, which would draw an allowance of nothing rather than
+// say the console named none.
+function seatPoolOf(v) {
+  const q = v?.user_model_quota
+  if (!q) return null
+  const raw = q.seat_pool_currency_quota
+  if (raw === null || raw === undefined || raw === "") return null
+  const limit = Number(raw)
+  if (!Number.isFinite(limit)) return null
+  if (limit < 0 || limit >= PAYGO_UNLIMITED) return { limit: 0, unlimited: true }
+  return { limit, unlimited: false }
+}
+
+// seatSpentOf adds up what an enterprise account's models cost, in the
+// realm's money: each model's total_cost_currency in the seat's usage
+// detail. The console gives no total of its own
+// (seat_total_cost_currency is null), so this is the sum, and a model the
+// answer leaves out costs nothing.
+//
+// Only the account's own seat is counted. The console answers an
+// administrator with every seat in the tenant, and adding those up would
+// show one person's card the whole tenant's spend; the account's own seat is
+// the one the quota names (user_model_quota.user_id), which a real console
+// sends. A seat the account's cannot be told apart — several seats and no id
+// to pick by — is not guessed at.
+//
+// null when there is nothing to add up honestly: no usage list at all (the
+// read failed, and a failed read is not a spend of zero), or several seats
+// with no way to say which is the account's.
+function seatSpentOf(v, uid) {
+  const list = v?.user_usage_list
+  if (!Array.isArray(list)) return null
+  const me = uid === undefined || uid === null || uid === "" ? null : String(uid)
+  const ids = new Set(list.map((u) => (u?.user_id === undefined || u?.user_id === null ? "" : String(u.user_id))).filter((s) => s !== ""))
+  let seats = list
+  if (ids.size > 0) {
+    // the seats carry ids: take the account's own. With no id from the quota,
+    // a single seat's answer is that seat; several seats' is not knowable.
+    const want = me ?? (ids.size === 1 ? [...ids][0] : null)
+    if (want === null) return null
+    seats = list.filter((u) => String(u?.user_id ?? "") === want)
+    if (seats.length === 0) return null
+  }
+  let used = 0
+  for (const u of seats) {
+    for (const m of u?.in_seat_detail?.chat_usage_details ?? []) {
+      const c = Number(m?.total_cost_currency)
+      if (Number.isFinite(c) && c > 0) used += c
+    }
+  }
+  return used
+}
+
+// entResetOf is when an enterprise account's seat pool refills, as an ISO
+// string: the console's ResetTime. The usage page reads the same field for
+// its "席位额度将于 <date> 重置" line, so the card and the page name one
+// date. whenOf reads it, which takes the milliseconds the console sends and
+// the seconds a stand-in may. Absent when the console gives none.
+function entResetOf(v) {
+  const t = whenOf(v?.Data?.ResetTime)
+  return t > 0 ? new Date(t).toISOString() : null
+}
+
+// isEnterprise: the sign-in named the realm's enterprise console as the
+// account's host, which is what an enterprise (SaaS) sign-in does — the
+// console serves that account's models and holds its usage. A personal
+// account names the consumer hosts, or none.
+function isEnterprise(a, site) {
+  const named = String(site?.consoleHost ?? "").toLowerCase()
+  if (!named || !a?.host) return false
+  try {
+    return new URL(String(a.host)).hostname.toLowerCase() === named
+  } catch {
+    return false
+  }
+}
+
 // dollarUsageOf reads an account's entitlement pack as the dollar billing
 // has it (the international deployment): the period's allowance in dollars
 // (basic_usage_limit plus bonus_usage_limit) and what was used of each
@@ -3427,6 +3646,70 @@ const makePlugin = (site) => async ({ client }) => {
     return { outcome: "claimed", ...(credit > 0 ? { credit } : {}) }
   }
 
+  // enterpriseUsage reads an enterprise (SaaS) account's usage: the seat
+  // pool and what the account's models cost (get_personal_quota and
+  // get_user_model_usage on the realm's console, in the realm's money). On
+  // Trae CN the consumer credits page is read beside them for the card's
+  // second row — that realm's console is what such an account bills on, and
+  // the credits page answers it too with an allowance real calls have been
+  // measured not to touch. The international realm has no such page.
+  const enterpriseUsage = async (a, signIn) => {
+    const ent = site.usage.ent
+    const ask = async (path) => {
+      const r = await post(a, site.hosts.console + path, {})
+      const e = errorOf(r.v)
+      // A console known to take the IDE's own token answers a lapsed sign-in
+      // with 401 or the realm's lapsed code, and that is the sign-in's
+      // trouble. A console that is not known to (the international one, which
+      // no such account could be found to ask) is not allowed to say so: its
+      // refusal is reported as the read's error and the sign-in stands,
+      // because a console that wants its own session would otherwise mark
+      // every one of that realm's enterprise accounts expired, and signing in
+      // again would not clear it.
+      if (r.status === 401 || lapsedCode(e.code, site)) {
+        return site.consoleTakesIdeToken ? { gone: true } : { error: e.message || statusLine(r.status) }
+      }
+      if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: e.message || statusLine(r.status) }
+      return { v: r.v }
+    }
+    let quota
+    try {
+      quota = await ask(ent.quota.path)
+    } catch (e) {
+      return { error: `${site.realm} usage: ` + (e?.message ?? e), signIn }
+    }
+    if (quota.gone) return { error: `${a.name || a.uid}: ${site.realm}'s sign-in has expired — sign in again`, signIn: "expired" }
+    if (quota.error) return { error: `${site.realm} usage: ${quota.error}`, signIn, user: a.name }
+    // the spend page is the second half of the count: when it fails, the
+    // allowance is still worth showing but the spend is unknown, and the
+    // window says so (used: null) rather than reading as nothing spent — a
+    // failed read is not a spend of zero
+    let spent = { v: {} }
+    try {
+      const got = await ask(ent.spent.path)
+      if (!got.gone && !got.error) spent = got
+    } catch {}
+    // the console's own period, for the date the pool refills: a failure
+    // there costs the card its reset date and nothing else
+    let core = { v: {} }
+    try {
+      const got = await ask(ent.core.path)
+      if (!got.gone && !got.error) core = got
+    } catch {}
+    // the credits page is the card's second row, never the count: a failure
+    // there leaves the seat pool standing. Trae Global has no such page —
+    // its own usage page is the dollar billing's, read above as the pool.
+    let page = null
+    if (site.usage.kind === "credits") {
+      try {
+        const r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
+        const e = errorOf(r.v)
+        if (r.status === 200 && (!e.code || String(e.code) === "0")) page = r.v
+      } catch {}
+    }
+    return ent.read({ quota: quota.v, spent: spent.v, core: core.v, credits: page }, a, signIn, { credits, round })
+  }
+
   const usage = async (getAuth) => {
     let a
     try {
@@ -3435,6 +3718,9 @@ const makePlugin = (site) => async ({ client }) => {
       return { error: e.message, signIn: e instanceof Expired ? "expired" : "kept" }
     }
     const signIn = a.renewed ? "renewed" : "kept"
+    // an enterprise (SaaS) account bills on the realm's own console, not on
+    // the page its realm otherwise bills on
+    if (site.usage.ent && isEnterprise(a, site)) return enterpriseUsage(a, signIn)
     let r
     try {
       r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
@@ -3840,4 +4126,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
