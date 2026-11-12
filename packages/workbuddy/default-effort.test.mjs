@@ -119,7 +119,13 @@ test("a chat goes gzipped, as WorkBuddy's client sends it, on both builds", asyn
     expect(c.headers.get("content-encoding")).toBe("gzip")
     expect(c.headers.has("content-length")).toBe(false)
     expect(typeof c.wire).not.toBe("string")
-    expect(JSON.parse(c.text)).toEqual(JSON.parse(body))
+    // WorkBuddy AI's chat carries its growth event too (growth.test.mjs)
+    const got = JSON.parse(c.text)
+    if (plugin === WorkBuddyAIAuthPlugin) {
+      expect(got.extra_vars.initiator).toBe("user")
+      delete got.extra_vars
+    }
+    expect(got).toEqual(JSON.parse(body))
     expect(c.wire.byteLength * 5).toBeLessThan(Buffer.byteLength(body))
   }
 })

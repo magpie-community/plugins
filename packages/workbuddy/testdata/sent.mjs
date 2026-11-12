@@ -56,6 +56,10 @@ export const CHATS = [
   ["not json", "https://www.workbuddy.ai/v2/chat/completions", "{not json"],
 ]
 
+// GROWN is the extra_vars a WorkBuddy AI chat is sent with (withGrowth),
+// set before the body's closing brace
+const GROWN = /,"extra_vars":(\{"growthEvent":"(?:[^"\\]|\\.)*","initiator":"user"\})(?=\}\s*$)/
+
 const sha = (s) => createHash("sha256").update(s ?? "").digest("hex")
 
 // sentBy(mod, freeOnly) is what mod's WorkBuddy AI plugin sent for CHATS,
@@ -68,8 +72,19 @@ export async function sentBy(mod, freeOnly = false) {
     if (u.endsWith("/v3/config")) return Response.json(CONFIG)
     const h = new Headers(init?.headers)
     const text = unz(init?.body)
-    const s = typeof text === "string" ? text : new TextDecoder().decode(text)
-    sent.push({ url: u, encoding: h.get("content-encoding"), body: sha(s), conversation: h.get("x-conversation-id"), turn: h.get("x-conversation-request-id") })
+    let s = typeof text === "string" ? text : new TextDecoder().decode(text)
+    // the growth event a WorkBuddy AI chat carries since 0.2.31 (#691) is
+    // set as the body's last field; what is left is held to 0.1.43's bytes,
+    // and the event to the conversation the request went as
+    const grown = GROWN.exec(s)
+    const row = { url: u, encoding: h.get("content-encoding"), body: "", conversation: h.get("x-conversation-id"), turn: h.get("x-conversation-request-id") }
+    if (grown) {
+      s = s.slice(0, grown.index) + s.slice(grown.index + grown[0].length)
+      const ev = JSON.parse(JSON.parse(grown[1]).growthEvent)
+      if (ev.length !== 1 || ev[0].eventCode !== "chat_request_send" || ev[0].id !== row.conversation) row.growth = ev
+    }
+    row.body = sha(s)
+    sent.push(row)
     if (s.includes("REFUSE-461") && s.includes('"role":"system","content":"REFUSE-461')) return new Response(REFUSAL, { status: 400, headers: { "content-type": "application/json" } })
     if (s.includes('"gemini-sent-461"')) {
       const m = JSON.parse(s).messages
