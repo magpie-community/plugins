@@ -19,7 +19,7 @@
 - **Responses 请求改写**：`portable-responses` 把完整的 Responses item 内联重放，去掉只对某个后端有意义的 id/加密状态，保留 `call_id`、工具数据和加密内容；只有引用、没有内联内容的历史仍需要原资源。
 - **Azure 资源绑定状态清理**：默认去掉 `previous_response_id`、reasoning/encrypted_content 和 item id，避免多资源负载均衡时报 “different Azure OpenAI resource”。
 - **内容过滤**：读取插件目录下的 `content-filter.local.json`，只过滤你自己配置的词，不猜词；保留代码块、工具数据和加密状态。开关 `text-filter`。
-- **余额/用量**：`/api/user/self` 的 `quota` 和 `used_quota` 折算成美元；没有密码时按 Key 读累计消耗，不编造剩余余额。
+- **余额/用量**：`/api/user/self` 的 `quota` 和 `used_quota` 折算成美元；只使用保存的 Cookie/访问令牌，不会为读额度重新登录。没有有效凭据时按 Key 读累计消耗，不编造剩余余额；Cookie 失效后等下次签到刷新。
 - **每日签到**：站点没有 `/api/user/checkin`，登录一次就是签到。`checked_in: true` → `claimed`（本次发了当天额度）；`false` → `done`（本次未新增，通常今天已领过）；缺失/非布尔 → `failed`（稍后重试）。
 
 ## 安装
@@ -140,7 +140,8 @@ AgentRouter 在多个 Azure OpenAI 资源之间负载均衡。上一轮的：
 - 插件登录信息在 `~/.config/magpie/plugin-auth.json`（权限 `0600`）：
   - `key`：从账号 `/api/token/` 自动读取的模型 API Key；
   - `metadata.site`：站点；
-  - `metadata.username` / `metadata.password`：站点登录，用于签到、余额和读取模型 Key。
+  - `metadata.username` / `metadata.password`：站点登录，用于签到和读取模型 Key；
+  - `metadata.cookie` / `metadata.userId`：登录或签到时站点下发的会话；余额读取只用它，不会为读额度重新登录，失效后等下次签到刷新。
 - 内容过滤词表 `content-filter.local.json` 在插件目录，只在本机读取。
 
 ## 测试
@@ -149,7 +150,7 @@ AgentRouter 在多个 Azure OpenAI 资源之间负载均衡。上一轮的：
 node --test *.test.mjs
 ```
 
-当前 159 个测试通过，覆盖请求改写、内容过滤、Responses 保留、流式边界、余额和签到语义。
+当前 164 个测试通过，覆盖请求改写、内容过滤、Responses 保留、流式边界、余额和签到语义。
 
 ## 来源
 

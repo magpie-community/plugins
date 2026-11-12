@@ -3,7 +3,7 @@
 **补在社区插件后面的那一半。**
 供应商、登录、请求签名与余额交给 [`@magpie-community/opencode-workbuddy-auth`](https://github.com/magpie-community/plugins/tree/main/packages/workbuddy)；wbkit 补上它没有的：账号池、每日签到补位、猫猫旅行、批量成长任务、模型目录、官方用量，以及一个能一眼看完所有账号的页面。
 
-> 版本 `0.5.9` · magpie 插件 · 零 npm 依赖 · MIT
+> 版本 `0.5.10` · magpie 插件 · 零 npm 依赖 · MIT
 
 ```
 @magpie-community/opencode-workbuddy-auth   →  WorkBuddy 供应商 / 登录 / 余额
