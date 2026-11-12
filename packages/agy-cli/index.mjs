@@ -3789,6 +3789,25 @@ function clipPartsToBytes(parts, limit) {
   return out
 }
 
+// Claude Code's own user-role notes: reminders, context notices, local
+// command output and interrupt markers. A user message of these alone is
+// not the prompt that started a tool loop (#1055).
+const LOCAL_COMMAND_RE = /<(local-command-caveat|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g
+function isMetaOnlyUserText(text) {
+  return !text.replace(SYSTEM_REMINDER_RE, "").replace(CONTEXT_NOTICE_RE, "").replace(LOCAL_COMMAND_RE, "")
+    .replace(/\[Request interrupted by user(?: for tool use)?\]/g, "")
+    .replace(/\[(?:SYSTEM NOTIFICATION|MESSAGE FROM NON-USER SOURCE) - NOT USER INPUT\]/g, "").trim()
+}
+
+// A user message with no tool result and something the user wrote or attached.
+function isUserTask(message) {
+  if (message.role !== "user") return false
+  if (typeof message.content === "string") return !isMetaOnlyUserText(message.content)
+  if (!Array.isArray(message.content) || message.content.some((block) => block?.type === "tool_result")) return false
+  return message.content.some((block) => block?.type === "image") ||
+    !isMetaOnlyUserText(message.content.filter((block) => block?.type !== "image").map(blockText).join("\n"))
+}
+
 // `reserveBytes` is text the caller appends after </current_turn>.
 function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
   const { history, messages: current } = trailingMessages(body)
@@ -3818,12 +3837,17 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
     headParts = clipPartsToBytes(headParts, Math.max(0, budget - frame - promptTextBytes(turn)))
   }
   let room = budget - frame - promptTextBytes(headParts) - promptTextBytes(turn)
-  const entries = history.map((message) => {
-    const parts = renderHistoryEntry(clipHistoryMessage(message))
+  const render = (message) => {
+    const parts = renderHistoryEntry(message)
     return { parts, bytes: promptTextBytes(parts) }
-  })
+  }
+  const overRoom = (list) => list.reduce((sum, entry) => sum + entry.bytes, 0) > room
+  // A replay that fits is sent whole; only one that does not has its big
+  // blocks clipped first (#1055).
+  let entries = history.map(render)
+  if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
   let kept = entries
-  if (entries.reduce((sum, entry) => sum + entry.bytes, 0) > room) {
+  if (overRoom(entries)) {
     // Keep the opening anchor message and the newest messages that still fit;
     // the early middle of the conversation gives way to one omission note.
     room -= utf8Bytes(HISTORY_OMITTED_NOTE)
@@ -3834,9 +3858,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
     let task = -1
     if (current.some((message) => Array.isArray(message.content) &&
       message.content.some((block) => block?.type === "tool_result"))) {
-      task = history.findLastIndex((message) => message.role === "user" && (typeof message.content === "string"
-        ? !!message.content.trim()
-        : Array.isArray(message.content) && !message.content.some((block) => block?.type === "tool_result")))
+      task = history.findLastIndex(isUserTask)
       if (task <= 0 || entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE) > room) task = -1
       else room -= entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE)
     }
