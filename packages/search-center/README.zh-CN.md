@@ -88,7 +88,7 @@ Key使用当前Windows用户DPAPI加密，已保存值不返回页面。数据�
 | MAGPIE_BIN | Magpie CLI路径；默认magpie |
 | SEARCH_CENTER_PORT | 手动测试时改变本地服务端口；正式page.service端口也需一致 |
 
-默认页面服务端口3479；同时运行多个实例时需使用不同端口和数据目录。
+默认页面服务端口3487；同时运行多个实例时需使用不同端口和数据目录。
 
 Firecrawl反代若有路径前缀，填写完整基础地址（例如 `https://your-host.example/firecrawl`）。Tavily号池余额要求服务实现兼容的 `/usage` 响应。
 

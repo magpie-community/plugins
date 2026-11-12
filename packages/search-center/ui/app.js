@@ -329,6 +329,13 @@ function renderAgents() {
     label.append(checkbox, text); $("#agents-list").append(label);
   }
 }
+function updateBaseUrlWarning() {
+  const warn = $("#baseurl-warning");
+  if (!warn || !draft) return;
+  const changed = $("#base-url").value.trim() !== ($("#base-url").dataset.initial || "");
+  const hasSavedKeys = draft.keys.some(k => k.ref && !k.value);
+  warn.classList.toggle("hidden", !(changed && hasSavedKeys));
+}
 function openDrawer(id) {
   drawerEpoch++;
   keyEditor = null;
@@ -337,8 +344,9 @@ function openDrawer(id) {
   editing = id; draft = structuredClone(state.policy.channels[id]); const cap = state.capabilities.channels[id];
   $("#drawer-title").textContent = cap.name; $("#drawer-description").textContent = cap.description;
   $("#base-url").value = cap.effectiveBaseUrl || draft.baseUrl;
-  $("#base-url").dataset.initial = $("#base-url").value;
+  $("#base-url").dataset.initial = $("#base-url").value.trim();
   $("#endpoint-field").classList.toggle("hidden", !cap.urlEnv);
+  updateBaseUrlWarning();
   $("#add-key").classList.toggle("hidden", !cap.keyEnv);
   $("#key-strategy-field").classList.toggle("hidden", !cap.keyEnv);
   $("#key-helper").textContent = cap.keyEnv ? "勾选要使用的密钥；请求如何分配由下方路由决定。修改后点击底部保存。" : "此渠道无需凭据。";
@@ -399,7 +407,7 @@ function paintKeyStrategy() {
 }
 function paintKeys() {
   const list = $("#key-list"); list.replaceChildren();
-  paintQuota(); paintKeyStrategy();
+  paintQuota(); paintKeyStrategy(); updateBaseUrlWarning();
   const first = draft.keys.find(k => k.enabled)?.id;
   for (const key of draft.keys) {
     const row = el("div", "account-row" + (key.enabled ? " in-use" : " off")); row.dataset.keyId = key.id;
@@ -569,12 +577,8 @@ $("#apply-agents").onclick = async () => {
 };
 $("#clear-selection").onclick = () => $$('#test-channels input').forEach(c => c.checked = false);
 $("#refresh").onclick = async () => { $("#refresh").disabled = true; try { await api("refresh", {}); await load(); toast("状态已刷新"); } catch (e) { error(e.message); } finally { $("#refresh").disabled = false; } };
+$("#base-url").oninput = updateBaseUrlWarning;
 $("#history-refresh").onclick = load;
-$("#sync-config").onclick = async () => {
-  $("#sync-config").disabled = true;
-  try { await api("sync", {}); await load(); toast("已同步未覆盖的原配置；本页管理的密钥保持不变"); }
-  catch (e) { error(e.message); } finally { $("#sync-config").disabled = false; }
-};
 $("#channel-filter").oninput = () => state && renderChannels();
 $$("[data-filter]").forEach(b => b.onclick = () => { filter = b.dataset.filter; $$("[data-filter]").forEach(x => { x.classList.toggle("active", x === b); x.setAttribute("aria-checked", x===b); }); if (state) renderChannels(); });
 $$("[data-tab]").forEach(b => b.onclick = () => changeTab(b.dataset.tab));

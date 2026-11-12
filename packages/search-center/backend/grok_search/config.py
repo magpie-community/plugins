@@ -28,31 +28,29 @@ class Config:
             cls._instance._cached_model = None
         return cls._instance
 
+    def _base_backend_dir(self) -> Path:
+        raw = os.environ.get("GROK_CONFIG_DIR", "").strip()
+        if raw:
+            return Path(raw)
+        data_dir = os.environ.get("SEARCH_CENTER_DATA_DIR", "").strip()
+        if data_dir:
+            return Path(data_dir) / "backend"
+        return Path.home() / ".magpie-search-center" / "backend"
+
     @property
     def config_file(self) -> Path:
         if self._config_file is None:
-            config_dir = Path(os.environ.get('GROK_CONFIG_DIR', str(Path.home() / '.magpie-search-center' / 'backend')))
-            try:
-                config_dir.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                config_dir = Path.cwd() / ".grok-search"
-                config_dir.mkdir(parents=True, exist_ok=True)
-            self._config_file = config_dir / "config.json"
+            self._config_file = self._base_backend_dir() / "config.json"
         return self._config_file
 
     def _load_config_file(self) -> dict:
         if not self.config_file.exists():
             return {}
-        try:
-            with open(self.config_file, "r", encoding="utf-8") as f:
-                value = json.load(f)
-            return value if isinstance(value, dict) else {}
-        except (json.JSONDecodeError, IOError):
-            return {}
-
-    def _save_config_file(self, config_data: dict) -> None:
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, ensure_ascii=False, indent=2)
+        with open(self.config_file, "r", encoding="utf-8") as f:
+            value = json.load(f)
+        if not isinstance(value, dict):
+            raise ValueError("config.json must contain a JSON object")
+        return value
 
     def _normalize_url(self, url: str) -> str:
         value = (url or "").strip().rstrip("/")
@@ -225,21 +223,13 @@ class Config:
 
     @property
     def log_dir(self) -> Path:
-        log_dir_str = os.getenv("GROK_LOG_DIR", "logs")
-        log_dir = Path(log_dir_str)
-        if log_dir.is_absolute():
-            return log_dir
-
-        home_log_dir = Path.home() / ".config" / "grok-search" / log_dir_str
-        try:
-            home_log_dir.mkdir(parents=True, exist_ok=True)
-            return home_log_dir
-        except OSError:
-            pass
-
-        cwd_log_dir = Path.cwd() / log_dir_str
-        cwd_log_dir.mkdir(parents=True, exist_ok=True)
-        return cwd_log_dir
+        raw = os.getenv("GROK_LOG_DIR", "").strip()
+        if raw:
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                return candidate
+            return self._base_backend_dir() / candidate
+        return self._base_backend_dir() / "logs"
 
     def _apply_model_suffix(self, model: str) -> str:
         normalized_model = self._MODEL_ALIASES.get(model, model)
@@ -276,23 +266,6 @@ class Config:
         self._cached_model = self.grok_models[0]
         return self._cached_model
 
-    def set_model(self, model: str) -> None:
-        config_data = self._load_config_file()
-        config_data["model"] = model
-        config_data.pop("models", None)
-        self._save_config_file(config_data)
-        self._cached_model = self._apply_model_suffix(model)
-
-    def set_models(self, models: list[str]) -> None:
-        normalized = [self._apply_model_suffix(model.strip()) for model in models if model and model.strip()]
-        if not normalized:
-            raise ValueError("At least one model is required")
-        config_data = self._load_config_file()
-        config_data["models"] = normalized
-        config_data["model"] = normalized[0]
-        self._save_config_file(config_data)
-        self._cached_model = normalized[0]
-
     @staticmethod
     def mask_api_key(key: str | None) -> str:
         if not key:
@@ -300,47 +273,6 @@ class Config:
         if len(key) <= 8:
             return "***"
         return f"{key[:4]}{'*' * (len(key) - 8)}{key[-4:]}"
-
-    def get_config_info(self) -> dict:
-        try:
-            grok_url = self.grok_api_url
-            grok_keys = [self.mask_api_key(key) for key in self.grok_api_keys]
-            grok_key = grok_keys[0]
-            fallback = self.grok_fallback_target
-            fallback_url = fallback.api_url if fallback else "not configured"
-            fallback_key = self.mask_api_key(fallback.api_key if fallback else None)
-            status = "configured"
-        except ValueError as exc:
-            grok_url = "not configured"
-            grok_key = "not configured"
-            grok_keys = []
-            fallback_url = "not configured"
-            fallback_key = "not configured"
-            status = f"config error: {exc}"
-
-        return {
-            "GROK_API_URL": grok_url,
-            "GROK_API_KEY": grok_key,
-            "GROK_API_KEYS": grok_keys,
-            "GROK_KEY_COUNT": len(grok_keys),
-            "GROK_FAILOVER_STRATEGY": "sticky-immediate-failover",
-            "GROK_MODELS": self.grok_models,
-            "GROK_FALLBACK_API_URL": fallback_url,
-            "GROK_FALLBACK_API_KEY": fallback_key,
-            "GROK_MODEL": self.grok_model,
-            "GROK_DEBUG": self.debug_enabled,
-            "GROK_LOG_LEVEL": self.log_level,
-            "GROK_LOG_DIR": str(self.log_dir),
-            "TAVILY_API_URL": self.tavily_api_url,
-            "TAVILY_ENABLED": self.tavily_enabled,
-            "TAVILY_API_KEY": self.mask_api_key(self.tavily_api_key),
-            "FIRECRAWL_API_URL": self.firecrawl_api_url,
-            "FIRECRAWL_API_KEY": self.mask_api_key(self.firecrawl_api_key),
-            "EXA_API_URL": self.exa_api_url,
-            "EXA_ENABLED": self.exa_enabled,
-            "EXA_API_KEY": self.mask_api_key(self.exa_api_key),
-            "config_status": status,
-        }
 
 
 config = Config()

@@ -24,7 +24,9 @@ async def main():
             del os.environ[name]
     if selected_key:
         os.environ[fields[channel]] = selected_key
-    os.environ['GROK_CONFIG_DIR'] = str(Path(os.environ['SEARCH_CENTER_DATA_DIR']) / 'backend')
+    backend_dir = Path(os.environ['SEARCH_CENTER_DATA_DIR']) / 'backend'
+    os.environ['GROK_CONFIG_DIR'] = str(backend_dir)
+    os.environ['GROK_LOG_DIR'] = str(backend_dir / 'logs')
     if encrypted:
         from local_secrets import unprotect
         fields = {"grok": "GROK_API_KEY", "tavily": "TAVILY_API_KEY", "exa": "EXA_API_KEY", "firecrawl": "FIRECRAWL_API_KEY",

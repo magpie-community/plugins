@@ -85,7 +85,7 @@ Keys are encrypted with the current Windows user's DPAPI and saved values are ne
 | `MAGPIE_BIN` | Magpie CLI path; defaults to `magpie` |
 | `SEARCH_CENTER_PORT` | Local service port for manual testing; must match `magpie.page.service.port` for the installed page |
 
-The default port is 3479. Concurrent instances need separate ports and data directories. For Firecrawl proxies with a prefix, enter the complete base URL, such as `https://your-host.example/firecrawl`. Tavily pool usage requires a compatible `/usage` response from the service.
+The default port is 3487. Concurrent instances need separate ports and data directories. For Firecrawl proxies with a prefix, enter the complete base URL, such as `https://your-host.example/firecrawl`. Tavily pool usage requires a compatible `/usage` response from the service.
 
 ## stdio clients, including Claude Desktop
 

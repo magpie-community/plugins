@@ -82,6 +82,7 @@ class GrokSearchProvider(BaseSearchProvider):
         api_key: str | None = None,
         model: str = "grok-4.20-beta",
         fallback_models: Sequence[str] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
         if isinstance(api_url_or_targets, str):
             if not api_key:
@@ -105,6 +106,7 @@ class GrokSearchProvider(BaseSearchProvider):
         self.models = [model] + [item for item in (fallback_models or []) if item and item != model]
         self._active_index = 0
         self._active_lock = asyncio.Lock()
+        self._transport = transport
 
     def get_provider_name(self) -> str:
         return "Grok"
@@ -257,7 +259,10 @@ class GrokSearchProvider(BaseSearchProvider):
     async def _execute_stream_once(self, api_url: str, headers: dict, payload: dict, ctx=None) -> str:
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
         is_search = "input" in payload
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=not is_search) as client:
+        client_kwargs = {"timeout": timeout, "follow_redirects": False}
+        if self._transport is not None:
+            client_kwargs["transport"] = self._transport
+        async with httpx.AsyncClient(**client_kwargs) as client:
             async with client.stream(
                 "POST",
                 f"{api_url}/responses" if is_search else f"{api_url}/chat/completions",

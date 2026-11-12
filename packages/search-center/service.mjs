@@ -5,19 +5,23 @@ import { fileURLToPath } from "node:url";
 import { agentView, setAgents } from "./agents.mjs";
 import { fault } from "./catalog.mjs";
 import { VERSION } from "./version.mjs";
-import { PORT } from './runtime.mjs';
+import { PORT } from "./runtime.mjs";
 export { PORT };
+
 const UI = new URL("./ui/", import.meta.url);
+const FRAME_ANCESTORS = "frame-ancestors 'self' http://127.0.0.1:* https://127.0.0.1:* http://localhost:* https://localhost:* http://[::1]:* https://[::1]:* http://wails.localhost http://wails.localhost:* https://wails.localhost https://wails.localhost:* wails:";
 const assetTypes = { "app.js": "text/javascript", "magpie.css": "text/css", "route.html": "text/html",
   "vendor/dsh/route.css": "text/css", "vendor/dsh/search-log.css": "text/css",
   ...Object.fromEntries((fs.existsSync(new URL("./ui/vendor/dsh/logos/", import.meta.url)) ? fs.readdirSync(new URL("./ui/vendor/dsh/logos/", import.meta.url)) : [])
     .filter(name => /^[\w-]+\.(svg|png)$/.test(name)).map(name => [`vendor/dsh/logos/${name}`, name.endsWith(".svg") ? "image/svg+xml" : "image/png"])) };
+
 async function readBody(req) {
   let text = "";
   for await (const chunk of req) { text += chunk; if (text.length > 160_000) throw fault("请求过大"); }
   try { return JSON.parse(text || "{}"); } catch { throw fault("请求格式不正确"); }
 }
-export function createService(center, { agents = agentView, applyAgents = setAgents } = {}) {
+
+export function createService(center, { agents = agentView, applyAgents = setAgents, instanceId = "" } = {}) {
   const token = randomBytes(24).toString("hex");
   return createServer(async (req, res) => {
     const send = (status, value) => {
@@ -33,7 +37,13 @@ export function createService(center, { agents = agentView, applyAgents = setAge
       const url = new URL(req.url, "http://127.0.0.1");
       const route = url.pathname.replace(/^\/+/, "");
       if (req.method === "GET" && route === "health") {
-        send(200, { plugin: "magpie-search-center", version: VERSION, service: "dsh-ui-port" }); return;
+        send(200, {
+          plugin: "magpie-search-center",
+          version: VERSION,
+          service: "dsh-ui-port",
+          ...(instanceId ? { instanceId } : {}),
+        });
+        return;
       }
       if (route.startsWith("api/")) {
         // Only APIs need CORS for Magpie's opaque sandbox. The HTML containing
@@ -48,7 +58,7 @@ export function createService(center, { agents = agentView, applyAgents = setAge
         let body = fs.readFileSync(fileURLToPath(new URL(name, UI)));
         if (name === "route.html") body = body.toString("utf8").replace("__TOKEN__", token).replaceAll("__VERSION__", VERSION);
         res.setHeader("Content-Security-Policy",
-          `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' http://127.0.0.1:${req.socket.localPort}; img-src 'self' data:; object-src 'none'; base-uri 'none'`);
+          `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' http://127.0.0.1:${req.socket.localPort}; img-src 'self' data:; object-src 'none'; base-uri 'none'; ${FRAME_ANCESTORS}`);
         res.writeHead(200, { "Content-Type": assetTypes[name] + "; charset=utf-8", "Cache-Control": "no-store" });
         res.end(body); return;
       }
@@ -66,7 +76,6 @@ export function createService(center, { agents = agentView, applyAgents = setAge
         send(200, { ...(await center.snapshot()), agents: agents(), uiVersion: VERSION }); return;
       }
       if (req.method === "POST" && route === "api/policy") { send(200, await center.savePolicy(await readBody(req))); return; }
-      if (req.method === "POST" && route === "api/sync") { send(200, await center.syncInherited()); return; }
       if (req.method === "POST" && route === "api/channel") { send(200, await center.saveChannel(await readBody(req))); return; }
       if (req.method === "POST" && route === "api/models") { send(200, await center.discoverModels()); return; }
       if (req.method === "POST" && route === "api/quota") { send(200, await center.queryQuota(await readBody(req))); return; }

@@ -1,15 +1,15 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CATALOG, fault } from "./catalog.mjs";
-import { pythonCommand, DATA } from './runtime.mjs';
+import { pythonCommand, DATA } from "./runtime.mjs";
 
 const WORKER = fileURLToPath(new URL("worker.py", import.meta.url));
 export function commandFor(channel, key) {
   const env = CATALOG[channel]?.keyEnv;
   if (key && (!env || !/^bw:\/\/[^/\r\n\0]+\/[^/\r\n\0]+$/.test(key.ref))) throw fault("无效凭据引用");
-  const python=pythonCommand();
-  return key ? {file:'secret-run',args:['--env',`${env}=${key.ref}`,'--',python.file,...python.args,'-B','-u',WORKER]}
-    : {file:python.file,args:[...python.args,'-B','-u',WORKER]};
+  const python = pythonCommand();
+  return key ? { file: "secret-run", args: ["--env", `${env}=${key.ref}`, "--", python.file, ...python.args, "-B", "-u", WORKER] }
+    : { file: python.file, args: [...python.args, "-B", "-u", WORKER] };
 }
 export function runCredential(channel, key, args, baseUrl, signal, encrypted) {
   const command = commandFor(channel, encrypted ? null : key);
@@ -18,10 +18,19 @@ export function runCredential(channel, key, args, baseUrl, signal, encrypted) {
     // Query and non-secret endpoint are stdin, never a shell command.
     const child = spawn(command.file, command.args, {
       windowsHide: true, shell: false, stdio: ["pipe", "pipe", "pipe"],
-      signal, env: { ...process.env, PYTHONIOENCODING: "utf-8", SEARCH_CENTER_DATA_DIR:DATA },
+      signal, env: { ...process.env, PYTHONIOENCODING: "utf-8", SEARCH_CENTER_DATA_DIR: DATA },
     });
     const fail = error => { if (!settled) { settled = true; reject(error); } };
-    child.on("error", () => fail(fault(signal?.aborted ? "调用已取消或超时" : "凭据服务无法启动", "CREDENTIAL_START", 503)));
+    child.on("error", err => {
+      if (signal?.aborted) return fail(fault("调用已取消或超时", "CREDENTIAL_START", 503));
+      if (err?.code === "ENOENT") {
+        const msg = command.file === "secret-run"
+          ? "未找到 secret-run 凭据工具，请确认已安装并加入 PATH"
+          : "未找到 Python 3.12+ 运行环境，请先按说明安装 Python 依赖";
+        return fail(fault(msg, "CREDENTIAL_START", 503));
+      }
+      fail(fault("凭据服务无法启动", "CREDENTIAL_START", 503));
+    });
     child.stderr.on("data", () => {}); // Secret-run diagnostics may include private values: never forward them.
     child.stdout.on("data", chunk => {
       size += chunk.length;
@@ -32,7 +41,7 @@ export function runCredential(channel, key, args, baseUrl, signal, encrypted) {
       if (settled) return;
       if (code === 126) return fail(fault("你拒绝了凭据解锁；本次停止，不尝试其他密钥", "UNLOCK_REFUSED", 403));
       if (code === 125) return fail(fault("凭据未配置、条目不存在或解锁服务不可用，请检查条目和字段", "SECRET_RUN_ERROR", 503));
-      if (code !== 0) return fail(fault("凭据调用失败，请检查凭据服务和网络", "CREDENTIAL_FAILED", 502));
+      if (code !== 0) return fail(fault("凭据调用失败，请检查 Python 依赖与网络状态", "CREDENTIAL_FAILED", 502));
       try {
         const line = out.split(/\r?\n/).findLast(x => x.startsWith('{"result":'));
         const payload = JSON.parse(line);
@@ -40,6 +49,6 @@ export function runCredential(channel, key, args, baseUrl, signal, encrypted) {
       } catch { fail(fault("凭据服务返回格式不正确", "CREDENTIAL_RESPONSE", 502)); }
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify({ channel, baseUrl, args, injected:Boolean(key && !encrypted), ...(encrypted ? { encrypted } : {}) }));
+    child.stdin.end(JSON.stringify({ channel, baseUrl, args, injected: Boolean(key && !encrypted), ...(encrypted ? { encrypted } : {}) }));
   });
 }

@@ -17,7 +17,7 @@
     <section class="route-card" id="route-card" data-layout="wide" data-s="live" aria-labelledby="route-title">
       <div class="rc-head">
         <div class="rc-title"><h3 id="route-title">搜索路由</h3><span class="pill" data-s="backup"><i class="pill-dot"></i><span id="route-status">读取配置…</span></span></div>
-      <div class="rc-actions"><button id="sync-config" class="hidden" disabled>同步原配置</button><button id="refresh" class="btn btn-ghost btn-sm">刷新状态</button><button id="models-button" class="btn btn-sm">搜索策略</button><button id="route-test" class="btn">▶ 测试搜索</button></div>
+      <div class="rc-actions"><button id="refresh" class="btn btn-ghost btn-sm">刷新状态</button><button id="models-button" class="btn btn-sm">搜索策略</button><button id="route-test" class="btn">▶ 测试搜索</button></div>
       </div>
       <div class="banner-slot has"><div><div id="route-banner" class="banner" data-tone="info">
         <span class="b-ic">✓</span><div class="b-body"><strong class="b-title">已读取现有配置</strong><span class="b-text" id="route-banner-text">正在读取渠道…</span></div>
@@ -65,7 +65,7 @@
   <header class="dlg-head"><div class="dlg-titles"><h2 id="drawer-title"></h2><p id="drawer-description" class="muted"></p></div><button id="close-drawer" class="icon-btn" aria-label="关闭设置">×</button></header>
   <form id="channel-form">
     <div class="dlg-body">
-      <div id="endpoint-field"><label class="label">接口地址<input id="base-url" placeholder="留空沿用现有配置或官方接口"></label><p class="hint">关联新凭据时使用此地址。</p></div>
+      <div id="endpoint-field"><label class="label">接口地址<input id="base-url" placeholder="留空使用官方接口"></label><p class="hint">关联新凭据时使用此地址。</p><p id="baseurl-warning" class="quota-warning hidden" role="status">注意：修改接口地址后，下方已保存的密钥将发送到该新地址；若新地址不受信任，请先移除旧密钥。</p></div>
       <section id="grok-model-settings" class="hidden" aria-label="Grok 模型设置">
         <div class="section-head"><h3>搜索模型</h3><span id="grok-model-count" class="muted"></span><button id="refresh-models" type="button" class="btn btn-sm">获取模型列表</button></div>
         <p class="hint">同一条 Key 可以调用多个模型。按任务档位选择模型，也可以直接填写模型 ID。</p>

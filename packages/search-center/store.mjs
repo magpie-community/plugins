@@ -1,11 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { CATALOG, IDS, PROFILES, fault } from "./catalog.mjs";
-
-import { DATA } from './runtime.mjs';
+import { DATA } from "./runtime.mjs";
 export { DATA };
+
 const seeded = new Set(["grok", "tavily", "exa", "firecrawl", "you", "github", "arxiv", "crossref"]);
 export function defaults() {
   return {
@@ -56,10 +55,23 @@ export function validatePolicy(v) {
     })),
   };
 }
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+
 export class Store {
-  constructor(root = DATA) {
+  constructor(root = DATA, { lockRetries = 80, lockRetryMs = 25, lockStaleMs = 5000 } = {}) {
     this.root = root;
-    fs.mkdirSync(path.join(root, "history"), { recursive: true });
+    this.lockRetries = lockRetries;
+    this.lockRetryMs = lockRetryMs;
+    this.lockStaleMs = lockStaleMs;
   }
   read(name, fallback) {
     try { return JSON.parse(fs.readFileSync(path.join(this.root, name), "utf8")); }
@@ -67,20 +79,63 @@ export class Store {
   }
   write(name, data) {
     const destination = path.join(this.root, name);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
     const temp = destination + "." + randomUUID() + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600 });
     fs.renameSync(temp, destination);
   }
   policy() { return validatePolicy(this.read("policy.json", defaults())); }
-  async lock(fn) {
-    const target = path.join(this.root, ".write-lock");
-    let fd;
-    for (let i = 0; i < 80; i++) {
-      try { fd = fs.openSync(target, "wx"); break; }
-      catch (e) { if (e.code !== "EEXIST") throw e; await new Promise(r => setTimeout(r, 25)); }
+  #isStaleLock(target) {
+    let raw, stat;
+    try {
+      stat = fs.statSync(target);
+      raw = fs.readFileSync(target, "utf8");
+    } catch (e) {
+      return e.code === "ENOENT" ? false : true;
     }
-    if (fd === undefined) throw fault("设置正被另一请求更新，请稍后重试", "BUSY", 409);
-    try { return fn(); } finally { fs.closeSync(fd); fs.unlinkSync(target); }
+    try {
+      const meta = JSON.parse(raw);
+      const age = Date.now() - Number(meta?.at);
+      if (!Number.isFinite(age) || age > this.lockStaleMs) return true;
+      if (!isPidAlive(meta?.pid)) return true;
+      return false;
+    } catch {
+      return Date.now() - stat.mtimeMs > Math.min(this.lockStaleMs, 250);
+    }
+  }
+  async lock(fn) {
+    fs.mkdirSync(this.root, { recursive: true });
+    const target = path.join(this.root, ".write-lock");
+    const owner = randomUUID();
+    let acquired = false;
+    for (let i = 0; i < this.lockRetries; i++) {
+      try {
+        const fd = fs.openSync(target, "wx", 0o600);
+        try {
+          fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), owner }), "utf8");
+        } finally {
+          fs.closeSync(fd);
+        }
+        acquired = true;
+        break;
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+        if (this.#isStaleLock(target)) {
+          try { fs.unlinkSync(target); } catch {}
+          continue;
+        }
+        await new Promise(r => setTimeout(r, this.lockRetryMs));
+      }
+    }
+    if (!acquired) throw fault("设置正被另一请求更新，请稍后重试", "BUSY", 409);
+    try {
+      return fn();
+    } finally {
+      try {
+        const current = JSON.parse(fs.readFileSync(target, "utf8"));
+        if (current?.owner === owner) fs.unlinkSync(target);
+      } catch {}
+    }
   }
   async save(value) {
     const clean = validatePolicy(value);
@@ -121,7 +176,18 @@ export class Store {
     for (const f of files.slice(0, Math.max(0, files.length - 100))) fs.unlinkSync(path.join(this.root, "history", f));
   }
   history() {
-    return fs.readdirSync(path.join(this.root, "history")).filter(f => /^\d+-[\w-]+\.json$/.test(f))
-      .sort().reverse().slice(0, 100).map(f => this.read("history/" + f, null)).filter(Boolean);
+    const dir = path.join(this.root, "history");
+    let entries;
+    try { entries = fs.readdirSync(dir); }
+    catch (e) { if (e.code === "ENOENT") return []; throw e; }
+    return entries.filter(f => /^\d+-[\w-]+\.json$/.test(f))
+      .sort().reverse().slice(0, 100).map(f => {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+          return parsed && typeof parsed === "object" ? parsed : null;
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
   }
 }
