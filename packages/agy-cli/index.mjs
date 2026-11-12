@@ -4235,8 +4235,10 @@ function tokenCount(value) {
 // outputTokens already includes thoughtTokens: a flash reply of one visible
 // token reported outputTokens 140 with thoughtTokens 139. Adding them again
 // billed thinking twice. A report with thoughtTokens above outputTokens still
-// bills at least the thinking. The totalTokens shape check still adds thinking
-// on both sides, so input inclusive/exclusive detection is unchanged.
+// bills at least the thinking. Because outputTokens already carries the
+// thinking, totalTokens has no separate thinking term, so the shape check
+// compares against input + output only. Adding thinking to both sides would
+// tip a small cache read (below 2x thinking) into the cache-inclusive branch.
 function promptUsage(usage) {
   if (!usage || typeof usage !== "object") usage = {}
   const rawInput = tokenCount(usage.inputTokens)
@@ -4246,8 +4248,8 @@ function promptUsage(usage) {
   const thinking = tokenCount(usage.thoughtTokens)
   const total = tokenCount(usage.totalTokens)
   const inclusive = total > 0
-    ? Math.abs(total - (rawInput + output + thinking)) <
-      Math.abs(total - (rawInput + cacheRead + cacheWrite + output + thinking))
+    ? Math.abs(total - (rawInput + output)) <
+      Math.abs(total - (rawInput + cacheRead + cacheWrite + output))
     : cacheRead <= rawInput
   // Prompt input excludes cache creation, which is reported separately.
   const promptInput = inclusive ? rawInput : rawInput + cacheRead
