@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="search-center-token" content="__TOKEN__"><title>搜索路由 · Magpie</title>
+  <meta name="search-center-version" content="__VERSION__">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+  <link rel="stylesheet" href="vendor/dsh/route.css"><link rel="stylesheet" href="vendor/dsh/search-log.css">
+  <link rel="stylesheet" href="magpie.css"><script src="app.js" defer></script>
+</head>
+<!-- Route/card/list structure is adapted from dsh-grok-search (MIT).
+     Magpie owns the theme. The Agent selects providers; there is no fallback chain. -->
+<body class="dsg-surface">
+<main class="shell dsg-root">
+  <div id="notice" class="note hidden" role="alert"></div>
+  <section id="channels-panel" class="panel route-scroll">
+    <section class="route-card" id="route-card" data-layout="wide" data-s="live" aria-labelledby="route-title">
+      <div class="rc-head">
+        <div class="rc-title"><h3 id="route-title">搜索路由</h3><span class="pill" data-s="backup"><i class="pill-dot"></i><span id="route-status">读取配置…</span></span></div>
+      <div class="rc-actions"><button id="sync-config" class="hidden" disabled>同步原配置</button><button id="refresh" class="btn btn-ghost btn-sm">刷新状态</button><button id="models-button" class="btn btn-sm">搜索策略</button><button id="route-test" class="btn">▶ 测试搜索</button></div>
+      </div>
+      <div class="banner-slot has"><div><div id="route-banner" class="banner" data-tone="info">
+        <span class="b-ic">✓</span><div class="b-body"><strong class="b-title">已读取现有配置</strong><span class="b-text" id="route-banner-text">正在读取渠道…</span></div>
+      </div></div></div>
+      <div class="route-filters"><div class="seg" aria-label="渠道筛选"><button data-filter="ready" class="filter active" aria-checked="true">已配置</button><button data-filter="all" class="filter" aria-checked="false">全部</button><button data-filter="missing" class="filter" aria-checked="false">待配置</button></div><input id="channel-filter" placeholder="查找渠道" aria-label="搜索渠道"></div>
+      <div class="stage" id="route-stage" data-layout="wide" role="group" aria-label="按需搜索路由图">
+        <svg id="route-lines" class="wires" aria-hidden="true"></svg>
+        <div class="col-agent"><button class="node node-dsh" id="agent-node" aria-label="管理接入 Agent">
+          <span class="agent-glyph node-logo">A</span><span class="node-name">接入的 Agent</span><span class="node-meta" id="agent-summary">读取应用范围</span>
+        </button></div>
+        <div class="col-hub"><button class="node node-hub" id="hub-node" aria-label="搜索中心策略">
+          <span class="hub-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5" cy="12" r="2.3"/><circle cx="19" cy="5.5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="19" cy="18.5" r="2"/><path d="M7.3 12h3.2m0 0c2.6 0 2.4-6.5 6.5-6.5M10.5 12h6.5M10.5 12c2.6 0 2.4 6.5 6.5 6.5"/></svg></span>
+          <span class="hub-text"><span class="node-name">搜索中心</span><span class="node-meta">Magpie · __VERSION__</span></span>
+          <span class="hub-pill"><span id="hub-policy">按需调用</span><span>›</span></span>
+        </button></div>
+        <div class="col-list" id="channel-list"><div class="loading">正在读取渠道…</div></div>
+      </div>
+      <footer class="rc-foot"><span class="cf-label">调用方式</span><code class="cf-path">Agent → 按需选择 → 一个或多个渠道</code><span class="cf-spacer"></span><span id="summary" class="cf-label"></span></footer>
+    </section>
+    <section class="log-card" aria-labelledby="log-title">
+      <div class="lc-head"><div class="lc-title"><h3 id="log-title">最近搜索 <span class="lc-count" id="log-count">0</span></h3><p class="lc-sub">点击记录查看实际渠道、模型与来源</p></div>
+        <div class="lc-actions"><div class="lc-filters"><button data-history="all" class="filter active" aria-checked="true">全部</button><button data-history="success" class="filter">成功</button><button data-history="partial" class="filter">部分成功</button><button data-history="failed" class="filter">失败</button></div><button id="history-refresh" class="icon-btn" aria-label="刷新记录">↻</button></div>
+      </div><div id="history-list" class="log-list"></div>
+      <footer class="lc-foot"><span>本机保留最近 100 条 · 记录真实调用，不记录密钥</span></footer>
+    </section>
+  </section>
+  <section id="test-panel" class="panel hidden">
+    <div class="section-head"><div><button class="btn btn-ghost" data-back>‹ 返回搜索路由</button><h3>真实搜索测试</h3></div><span class="muted">会消耗所选渠道额度</span></div>
+    <div class="test-layout"><form id="test-form" class="test-form card">
+      <label class="label" for="query">搜索问题</label><textarea id="query" rows="3" required>查找 Python TaskGroup 的官方文档</textarea>
+      <div class="field-pair"><label class="label">搜索档位<select id="profile"><option value="quick">快速 · 少量来源</option><option value="balanced">一般 · 交叉补充</option><option value="deep">深入 · 多源调查</option></select></label><label class="label">来源数量<input id="count" type="number" min="1" max="20" value="3"></label></div>
+      <label class="label">Grok 模型<input id="test-model" placeholder="留空使用档位模型" list="model-list"></label>
+      <label class="label">Grok 搜索范围<select id="grok-search-mode"><option value="both">网页 + X（默认）</option><option value="web">仅网页</option><option value="x">仅 X</option></select></label>
+      <p class="hint">选中 Grok 时生效。默认同时启用网页搜索和 X 搜索，实际执行的工具以接口报告为准。</p>
+      <div class="section-head"><label class="label">选择渠道</label><button type="button" id="clear-selection" class="text-button">使用默认方案</button></div>
+      <div id="test-channels" class="test-channels"></div><p class="hint">勾选后只调用所选渠道；未勾选时按档位和默认优先级选择。</p>
+      <button id="run-test" class="btn btn-primary full" type="button">开始真实搜索</button>
+    </form><div id="test-output" class="test-output card"><div class="empty">搜索结果、实际渠道和耗时会显示在这里。</div></div></div>
+  </section>
+  <section id="agents-panel" class="panel hidden"><div class="section-head"><div><button class="btn btn-ghost" data-back>‹ 返回搜索路由</button><h3>接入的 Agent</h3></div><button id="apply-agents" class="btn btn-primary">保存应用范围</button></div><div id="agents-list" class="agents-grid"></div><p class="hint">通过 Magpie MCP 库分发。已打开的会话可能需要重新连接 MCP。</p></section>
+  <p class="integration-note">Search Center · Windows Preview。渠道密钥在本页配置，不读取其他插件的账号。请先完成 README 中的 Python 依赖安装。</p>
+</main>
+<div id="drawer-backdrop" class="backdrop hidden"></div>
+<aside id="drawer" class="dialog hidden" aria-modal="true" role="dialog" aria-labelledby="drawer-title">
+  <header class="dlg-head"><div class="dlg-titles"><h2 id="drawer-title"></h2><p id="drawer-description" class="muted"></p></div><button id="close-drawer" class="icon-btn" aria-label="关闭设置">×</button></header>
+  <form id="channel-form">
+    <div class="dlg-body">
+      <div id="endpoint-field"><label class="label">接口地址<input id="base-url" placeholder="留空沿用现有配置或官方接口"></label><p class="hint">关联新凭据时使用此地址。</p></div>
+      <section id="grok-model-settings" class="hidden" aria-label="Grok 模型设置">
+        <div class="section-head"><h3>搜索模型</h3><span id="grok-model-count" class="muted"></span><button id="refresh-models" type="button" class="btn btn-sm">获取模型列表</button></div>
+        <p class="hint">同一条 Key 可以调用多个模型。按任务档位选择模型，也可以直接填写模型 ID。</p>
+        <p class="hint">Grok 搜索默认通过 Responses 同时启用网页和 X 搜索；Agent 和测试页可按次选择搜索范围。</p>
+        <label class="label">默认搜索档位<select id="grok-default-profile"><option value="quick">快速</option><option value="balanced">一般</option><option value="deep">深入</option></select></label>
+        <div id="grok-model-fields"></div>
+        <details class="model-candidates"><summary>查看接口公布的模型</summary><div id="grok-model-candidates"></div><p class="hint">模型列表来自已连接的接口，公布不代表每个模型都支持搜索。更换接口后请用真实搜索核验。</p></details>
+      </section>
+      <section class="account-field" aria-label="渠道账号"><h3 class="account-field-label">账号</h3><div class="account-field-content">
+        <div class="key-accounts"><div id="key-list"></div><button id="add-key" class="account-add" type="button"><span aria-hidden="true">⊕</span> 添加另一个密钥</button></div>
+        <p id="key-helper" class="hint">勾选要使用的密钥；请求如何分配由下方路由决定。修改后点击底部保存。</p>
+      </div></section>
+      <section id="key-strategy-field" class="account-field"><h3 class="account-field-label">路由</h3><div class="account-field-content">
+        <div id="key-strategy" class="account-routing" role="group" aria-label="密钥路由"><button type="button" data-strategy="order">按顺序</button><button type="button" data-strategy="rotate">轮流</button></div>
+        <p id="key-strategy-hint" class="hint"></p>
+      </div></section>
+      <section id="quota-panel" class="quota-section hidden" aria-label="账户额度">
+        <div class="section-head"><h3>剩余额度</h3><button type="button" id="quota-refresh" class="btn btn-sm">查询额度</button></div>
+        <label class="label">查询密钥<select id="quota-key" aria-label="查询额度的密钥"></select></label>
+        <div id="quota-output" role="status"></div>
+      </section>
+      <p class="note">密钥加密保存在本机，已保存的值不会返回页面。要修改时直接输入新 Key；留空保留原值。</p>
+    </div>
+    <div class="dlg-foot"><span id="channel-save-status" role="status" class="save-status"></span><button type="button" id="drawer-test" class="btn">测试此渠道</button><span class="cf-spacer"></span><button id="save-channel" type="button" class="btn btn-primary">保存配置</button></div>
+  </form>
+</aside>
+<dialog id="models-dialog" class="models-dialog"><form id="models-form">
+  <header class="dlg-head"><div class="dlg-titles"><h2>搜索策略</h2><p>Agent 可按次指定渠道、档位和模型。</p></div><button id="close-models" type="button" class="icon-btn" aria-label="关闭">×</button></header>
+  <div class="dlg-body"><label class="label">默认档位<select id="default-profile"><option value="quick">快速</option><option value="balanced">一般</option><option value="deep">深入</option></select></label><div id="model-fields"></div><p class="hint">留空使用现有模型候选。指定模型后不会自动升级。</p></div>
+  <div class="dlg-foot"><span id="models-save-status" role="status" class="save-status"></span><span class="cf-spacer"></span><button id="save-models" class="btn btn-primary" type="button">保存策略</button></div>
+</form></dialog>
+<datalist id="model-list"></datalist><div id="toast" class="toast hidden" role="status"></div>
+<dialog id="replay-dialog" class="models-dialog replay-dialog" aria-labelledby="replay-title"><header class="dlg-head"><div><h2 id="replay-title">历史链路回放</h2><p class="hint">展示已记录的结果，不发起搜索；动画速度不代表实际耗时。</p></div><button type="button" id="close-replay" class="icon-btn" aria-label="关闭回放">×</button></header><div class="dlg-body"><p id="replay-query"></p><div id="replay-path" class="replay-path"></div><p id="replay-status" role="status" class="hint"></p></div><div class="dlg-foot"><button id="restart-replay" class="btn" type="button">重新回放</button><span class="cf-spacer"></span><button id="stop-replay" class="btn" type="button">停止动画</button></div></dialog>
+</body></html>
