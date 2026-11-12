@@ -1,5 +1,11 @@
 # 豆包工作 (Doubao Work)
 
+**This is not a model API.** Doubao Work has no model interface for other
+clients. An agent that picks a `doubao-work/*` model gets one run of
+Doubao's cloud agent: the request is flattened into one message, Doubao
+plans and uses its own tools, and the client's tool calls are read back
+from text. One request at a time, text only.
+
 Doubao Work runs its agent loop in ByteDance's cloud and has no API, so
 there is no request to make on its behalf. This plugin uses its desktop
 app, 豆包工作 (DoubaoWork), the way a person does instead, and gives what it
