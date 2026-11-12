@@ -22,6 +22,12 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 - This changes what Google is sent so that a request it means to refuse isn't refused. It may be against Antigravity's terms, and Google can ban the account for it. Use it on an account you can afford to lose.
 - Google can change what it matches at any time. Then the refusal comes back, and magpie may no longer recognise it as this refusal: it can read as a real quota running out and rest the account. If that happens, add the new words to `extraWords`, or turn the plugin off.
 
+## When the 429 comes back anyway
+
+A `429 Resource has been exhausted` while magpie still shows quota left, and while other requests on the same model and account go through (an agent's title request, say), is this refusal, not quota. Something else in that agent's system prompt is being matched. It is often text that isn't the agent's own: a custom prompt, or a plugin or extension that adds to the prompt (magpie-community/plugins#1031 was a DeepSeek Harness plugin's injected prompt).
+
+To find it, replay the failing request with a short user message and take parts of the system prompt out, half at a time, until the 429 stops. Then add a distinctive phrase from the part that brought it back to `extraWords`, or change or remove that text where it comes from. This middleware breaks only the lines and words it is given; it doesn't hide arbitrary prompts.
+
 ## Options
 
 ```json
@@ -32,6 +38,6 @@ Install it from magpie's **Plugins › Discover**, or with `magpie plugin add @m
 - `accounts`: the subscriptions it acts on, by kind. `antigravity` is the default.
 - `off`: leave every request as it came.
 
-中文：Antigravity 看到 Claude Code / Claude Agent SDK / Codex GPT-5 / Hermes Agent 旧版默认人设的系统提示词会回一个假的 429。这个中间件只在发给 Antigravity 账号的请求里，往 `x-anthropic-billing-header`、`Claude Agent SDK` 和 Codex 给 GPT-5 模型的身份行（在 GPT 模型上开始、再切到 Antigravity 模型的 Codex 对话会带着它），以及 Hermes Agent 旧版默认人设（SOUL.md）那句里插一个零宽空格，其他供应商（尤其是 Claude 订阅）收到的提示词不变。这样做可能违反 Antigravity 的条款，账号有被封的风险，请只用在可以承受损失的账号上。需要 magpie v0.1.1283 或更新版本。
+中文：Antigravity 看到 Claude Code / Claude Agent SDK / Codex GPT-5 / Hermes Agent 旧版默认人设的系统提示词会回一个假的 429。这个中间件只在发给 Antigravity 账号的请求里，往 `x-anthropic-billing-header`、`Claude Agent SDK` 和 Codex 给 GPT-5 模型的身份行（在 GPT 模型上开始、再切到 Antigravity 模型的 Codex 对话会带着它），以及 Hermes Agent 旧版默认人设（SOUL.md）那句里插一个零宽空格，其他供应商（尤其是 Claude 订阅）收到的提示词不变。这样做可能违反 Antigravity 的条款，账号有被封的风险，请只用在可以承受损失的账号上。需要 magpie v0.1.1283 或更新版本。如果还剩额度、同一模型的其他请求也正常，却仍然收到 429，说明系统提示词里还有别的内容被匹配到（常见的是自定义提示词，或其他插件注入的内容）：把系统提示词逐段拿掉重放请求，找到触发的那段，再把其中有代表性的短语加进 `extraWords`。
 
 After [hexiaolv/magpie-antigravity-cloak](https://github.com/hexiaolv/magpie-antigravity-cloak) (MIT), which breaks a longer list of words in every request, whatever provider it goes to.
