@@ -31,7 +31,7 @@ magpie plugin use github:louiseliu/magpie-cursor-feedback cursor
 
 安装后进入 **设置 → 插件 → Cursor 自动反馈**，直接选择或填写自动反馈模型，修改反馈网关地址、超时和反馈次数上限，然后保存。页面保留其他现有选项和密钥；不显示或复制登录令牌。保存会重启插件宿主，运行中的 Run 会丢失，因此页面检测到活动 Run 时禁止保存，状态不可用时也禁止保存。应在任务之间修改。
 
-Cursor 主模型由客户端的模型选择器决定，也可在「供应商 → Cursor」选择要暴露的模型。插件提供账号可用的非 Max 模型，不强制选择 Opus；要求 Max 的变体从模型列表中移除，请求端的 Max 拦截继续保留。更换主模型请开始新任务，不能承诺跨模型复用 Run。
+Cursor 主模型由客户端的模型选择器决定，也可在「供应商 → Cursor」选择要暴露的模型。插件提供账号可用的非 Max 模型，不强制选择 Opus；要求 Max 的变体从模型列表中移除，请求端的 Max 拦截继续保留。模型目录为支持 thinking 开关的模型增加 `Think` 和 `非 Think` 两个明确选项；它们固定思考开关，推理强度另行选择。Opus 4.6 对应 `claude-opus-4-6@200k-thinking` 与 `claude-opus-4-6@200k-no-thinking`。原有模型 ID 保留。更换主模型或思考模式请开始新任务，不能跨模式复用原 Run。
 
 页面下方每两秒更新本次宿主最近 32 个 Run：实际模型、owner 标识、状态、成功自动反馈次数和成功工具回包续接次数。两类继续执行都属于同一个 owner；反馈决策与回包次数分别显示。宿主退出或快照超过 10 秒时标为过期，不能作为当前运行证据。续接被拒绝会单独提示；状态里的 Run 数不等于官方计费 request 数。插件不会为观察状态额外发起模型生成。
 
@@ -70,6 +70,22 @@ magpie plugin use @magpie-community/opencode-cursor-auth cursor
 已有的每 5 秒 Run 心跳和每 3 秒未完成工具心跳继续使用。没有本地绝对寿命限制仍不代表无限运行：Cursor 服务端断线、客户端取消/压缩/改写历史、上下文满、插件重启，以及保留内存与并发上限都会影响续接。保留现有 8 个 Run/账号、32 个 Run/进程及 blob/输出内存限制。只有同一宿主、账号、会话标识、模型/工具/控制参数和兼容历史才能原地续接。
 
 **不要把本插件放在会自动换模型、账号或 provider 的路由组后面来验证省 request。** 插件会把失败转为 409，减少网关自动重试，但不能控制客户端主动重试、重新发送用户回合或调用另一条路由。新用户回合本来就会打开新 Run。
+
+DeepSeek Harness 在工具结果后追加的固定格式时间快照属于当前步骤。插件先校验原工具批次和历史，再把时间原文作为标注清楚的上下文附在该批次的工具结果中，通过原连接回传；客户端历史保持原样，下一步仍校验完整历史。日志 `time-context-resumed` 记录原 owner。重复回传不会重复写入；原 owner 丢失时按 `allowRebuild: false` 拒绝，不把时钟通知当成新的用户任务。真正的新用户回合仍按新请求处理。
+
+## 单 Agent 执行
+
+插件在请求边界移除 DeepSeek Harness 的 `subagent`、`subagent_fork`、`workflow` 和 `send_message` 工具，防止创建、委派或重新启动子 Agent；显式强制调用这些工具会在开 Run 前被拒绝。读写文件、终端、目标管理和停止已有子 Agent 的工具保留。主模型收到单 Agent 执行指令，不应通过终端或嵌套模型客户端绕过限制。该策略只作用于本插件，不要求修改 Harness，也不替其他供应商禁用子 Agent。
+
+已有子 Agent 不会被追溯取消。加载此变更需要新插件宿主；任务进行中不要重启宿主或切换原 Run 的工具列表。
+
+## DeepSeek Harness 上下文压缩
+
+工具结果、自动反馈和原生压缩在同一个 Cursor Run 与连接中继续。插件读取 Cursor 检查点的真实 `used_tokens/max_tokens`；达到 80% 且反馈决策为 `continue` 时，在现有连接排入 `SummarizeAction` 和带原工具定义的 `ResumeAction`。反馈要求主模型暂时结束当前阶段，Cursor 压缩完成后自动继续任务。`complete` 与 `needs_user` 不触发压缩。没有用量检查点时，不凭客户端历史长度假定原生上下文已满；Cursor 自身的自动压缩仍可运行。
+
+日志中的 `compaction-queued`、`compaction-completed` 使用同一个 owner。失败或未确认压缩完成就终止时返回错误，不自动重建。原生压缩不调用 Harness 的摘要模型。DeepSeek Harness 标准模式保持 `compaction-basic.config.auto: false`、关闭独立工具结果裁剪，并保持 `allowRebuild: false`，避免客户端改写原历史。手动 Harness 压缩检查点仍被拒绝，原 Run 保留给原历史续接。
+
+2026-11-12 的原生实测：一个 Run、一次连接绑定，压缩前后两次工具回传、两次反馈（continue → complete），压缩后工具执行成功。官方用量为一条事件、`requestsCosts=2`，与同模型不压缩对照一致。这是本次观测，不把同一个 Run 或网络连接等同于所有套餐永久固定计费。
 
 ## 观察是否复用
 

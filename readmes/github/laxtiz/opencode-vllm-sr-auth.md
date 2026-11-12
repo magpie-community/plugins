@@ -5,7 +5,7 @@
 One key (or none: the plugin can make one), two systems on one base URL:
 
 - **System One**, the decision models: they answer typed questions about text, images and videos with calibrated probabilities, from one forward pass per question. They generate no text, so they are not chat models: the plugin marks them `decides: true`, which magpie reads as "offered as a routing-group classifier, hidden from agents' model lists".
-- **System Two**, `vllm-sr/auto`: an OpenAI Chat Completions endpoint with streaming and function calling. vLLM Semantic Router reads each request, asks its decision model for the request's signals, and picks a model from its pool (today GLM-5.3-Flash, Qwen3.8-Flash-Next and Qwen3.8-27B).
+- **System Two**, `vllm-sr/auto` or `vllm-sr/norn-1`: an OpenAI Chat Completions endpoint with streaming and function calling. vLLM Semantic Router reads each request, asks its decision model for the request's signals, and picks a model from its pool (today DeepSeek-V4.1-Flash, GLM-5.3-Flash and Qwen3.8-27B). `norn-1` names the generation served now; `auto` follows the newest one.
 
 ## Models
 
@@ -22,9 +22,10 @@ The list is refreshed from [`GET /v1/models`](https://app.vllm-sr.ai/docs) for s
 
 System Two:
 
-| Model | Pool today |
-| --- | --- |
-| `vllm-sr/auto` | GLM-5.3-Flash, Qwen3.8-Flash-Next, Qwen3.8-27B |
+| Model | Context | Pool today |
+| --- | --- | --- |
+| `vllm-sr/auto` | 1,048,576 | DeepSeek-V4.1-Flash, GLM-5.3-Flash, Qwen3.8-27B |
+| `vllm-sr/norn-1` | 1,048,576 | the same pool — the release `auto` serves now |
 
 ## Sign in
 

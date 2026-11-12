@@ -71,7 +71,7 @@
 github:real-LEONEAST/magpie-quota-notify
 ```
 
-安装后，从 Magpie 网页版左侧打开 **额度通知设置**。桌面版直接打开该页面时会提示使用网页版。
+安装后，从 Magpie 桌面版或网页版左侧打开 **额度通知设置**。页面跟随 Magpie 的浅色与深色主题。
 
 插件内置列表和侧栏图标。精简“已安装”列表中的通用说明和“选项”入口，可使用 [Magpie v0.1.3336 宿主补丁](compat/magpie-v0.1.3336/README.md)。
 
@@ -201,7 +201,7 @@ docker exec magpie /magpie plugin add /config/magpie-quota-notify
 
 早期本机 v0.4.0 的渠道级事件和账号筛选不再使用，首次保存时清理；已有全局规则、渠道凭据和编号保留。
 
-页面服务仅监听 `127.0.0.1:3479`。原插件 Options 中的 `uiPort` 可自定义端口，端口修改后需要重新加载插件。
+页面服务默认监听 `127.0.0.1:3479`。桌面窗口连接本机服务，网页版通过 Magpie 的页面代理连接。原插件 Options 中的 `uiPort` 可自定义端口，端口修改后需要重新加载插件。
 
 ## 兼容性与测试
 
