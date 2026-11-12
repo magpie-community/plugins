@@ -1075,15 +1075,18 @@ class Turn {
     })
   }
 
-  // Withholds a possible prefix of agy's error marker until it can be classified.
+  // Withholds agy's error marker, or a possible prefix of it, until it can be
+  // classified. agy's own marker ends the prompt; one that more text follows
+  // was the model quoting it (#1052).
   pushText(chunk) {
     if (this.done || this.agentError) return
     let text = this.heldText + chunk
     this.heldText = ""
-    const marker = text.indexOf(AGENT_ERROR_CORE)
-    if (marker >= 0) {
-      this.agentError = true
-      text = text.slice(0, marker).replace(/\n$/, "")
+    const marker = text.lastIndexOf(AGENT_ERROR_CORE)
+    if (marker >= 0 && !text.slice(marker + AGENT_ERROR_CORE.length).trim()) {
+      const start = text[marker - 1] === "\n" ? marker - 1 : marker
+      this.heldText = text.slice(start)
+      text = text.slice(0, start)
       if (text) this.push({ type: "text", text })
       return
     }
@@ -1095,6 +1098,14 @@ class Turn {
       }
     }
     if (text) this.push({ type: "text", text })
+  }
+
+  // The prompt ended: a marker still held was agy's own.
+  endText() {
+    if (this.heldText.includes(AGENT_ERROR_CORE)) {
+      this.agentError = true
+      this.heldText = ""
+    }
   }
 
   flushText() {
@@ -1623,6 +1634,7 @@ class Proc {
           turn.complete({ stopReason: "cancelled" })
           return
         }
+        turn.endText()
         if (turn.agentError) {
           throw await this.#agentError(turn)
         }
@@ -3817,13 +3829,32 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
     room -= utf8Bytes(HISTORY_OMITTED_NOTE)
     const anchor = entries[0] && entries[0].bytes <= room ? entries[0] : null
     if (anchor) room -= anchor.bytes
+    // Mid tool loop, the user's prompt that started it says what the loop is
+    // for: it stays too, after the anchor, with a note for each gap (#1053).
+    let task = -1
+    if (current.some((message) => Array.isArray(message.content) &&
+      message.content.some((block) => block?.type === "tool_result"))) {
+      task = history.findLastIndex((message) => message.role === "user" && (typeof message.content === "string"
+        ? !!message.content.trim()
+        : Array.isArray(message.content) && !message.content.some((block) => block?.type === "tool_result")))
+      if (task <= 0 || entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE) > room) task = -1
+      else room -= entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE)
+    }
+    const keep = [...(anchor ? [0] : []), ...(task > 0 ? [task] : [])]
     const tail = []
-    for (let i = entries.length - 1; i > (anchor ? 0 : -1); i--) {
+    for (let i = entries.length - 1; i > Math.max(task, anchor ? 0 : -1); i--) {
       if (entries[i].bytes > room) break
       room -= entries[i].bytes
-      tail.unshift(entries[i])
+      tail.unshift(i)
     }
-    kept = anchor ? [anchor, null, ...tail] : [null, ...tail]
+    kept = []
+    let next = 0
+    for (const i of [...keep, ...tail]) {
+      if (i > next) kept.push(null)
+      kept.push(entries[i])
+      next = i + 1
+    }
+    if (next < entries.length) kept.push(null)
     if (room < 0) kept = []
   }
   const out = []
