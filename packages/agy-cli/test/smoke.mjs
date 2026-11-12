@@ -109,12 +109,13 @@ let mcpReady = null
 let nextMcpId = 0
 const mcpPending = new Map()
 let cancelWaiter = null
+let activePromptScope = null
 
 function update(value) {
   send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: session.id, update: value } })
 }
-const chunk = text => update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } })
-const thought = text => update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } })
+const chunk = text => { if (!activePromptScope?.cancelled) update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }) }
+const thought = text => { if (!activePromptScope?.cancelled) update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } }) }
 
 function mcpRequest(method, params) {
   return new Promise((resolve, reject) => {
@@ -163,15 +164,58 @@ function saveState() {
 }
 
 async function invoke(name, args) {
-  update({ sessionUpdate: "tool_call", toolCallId: "call_" + (++nextMcpId), name: "mcp_ide-tools_" + name, status: "in_progress", kind: "other", rawInput: args })
+  const scope = activePromptScope
+  if (scope?.cancelled) {
+    return { content: [{ type: "text", text: "Tool execution was canceled" }], isError: true }
+  }
+  const callId = "call_" + (++nextMcpId)
+  update({ sessionUpdate: "tool_call", toolCallId: callId, name: "mcp_ide-tools_" + name, status: "in_progress", kind: "other", rawInput: args })
   log({ type: "mcpPending", convId: session.id, name, arguments: args })
   let result
+  let cancelledDuringCall = false
   try {
-    result = await mcpRequest("tools/call", { name, arguments: args, _meta: { progressToken: "pt-" + nextMcpId } })
+    const callPromise = mcpRequest("tools/call", { name, arguments: args, _meta: { progressToken: "pt-" + nextMcpId } })
+    if (scope) {
+      let onCancel
+      const cancelPromise = new Promise(resolve => {
+        onCancel = () => {
+          cancelledDuringCall = true
+          resolve({ content: [{ type: "text", text: "Tool execution was canceled" }], isError: true })
+        }
+        scope.listeners.add(onCancel)
+      })
+      try {
+        result = await Promise.race([callPromise, cancelPromise])
+      } finally {
+        scope.listeners.delete(onCancel)
+      }
+      if (cancelledDuringCall) {
+        callPromise.catch(() => {})
+        mcp?.stdin?.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { reason: "context canceled" } }) + "\n")
+        log({ type: "mcpCanceled", convId: session.id, name })
+      }
+    } else {
+      result = await callPromise
+    }
   } catch (error) {
     result = { content: [{ type: "text", text: error.message }], isError: true }
   }
   log({ type: "mcpResult", convId: session.id, name, result })
+  update({
+    sessionUpdate: "tool_call_update",
+    toolCallId: callId,
+    name: "mcp_ide-tools_" + name,
+    status: result?.isError ? "failed" : "completed",
+  })
+  // Real agy enters an upstream model generation after recording tool_call_update;
+  // session/cancel arriving right after tool_call_update aborts before streaming.
+  if (scope && !scope.cancelled) {
+    await new Promise(resolve => {
+      const onCancel = () => { clearTimeout(timer); scope.listeners.delete(onCancel); resolve() }
+      const timer = setTimeout(() => { scope.listeners.delete(onCancel); resolve() }, 15)
+      scope.listeners.add(onCancel)
+    })
+  }
   return result
 }
 
@@ -181,6 +225,20 @@ function finish(reply, extra = {}) {
   const cached = extra.cached || 0
   const thought = extra.thought || 0
   const input = extra.input ?? 10
+  if (activePromptScope?.cancelled) {
+    log({ type: "cancelled", convId: session.id, prompt: session.prompts })
+    return {
+      stopReason: "cancelled",
+      usage: {
+        inputTokens: extra.exclusive ? input : input + cached,
+        outputTokens: thought,
+        cachedReadTokens: cached,
+        cachedWriteTokens: 0,
+        thoughtTokens: thought,
+        totalTokens: input + cached + thought,
+      },
+    }
+  }
   log({ type: "result", convId: session.id, prompt: session.prompts, response: reply })
   return {
     stopReason: "end_turn",
@@ -434,8 +492,15 @@ async function handle(message) {
       model = params.modelId
       log({ type: "setModel", convId: session.id, model })
       return {}
-    case "session/prompt":
-      return prompt(params)
+    case "session/prompt": {
+      const scope = { cancelled: false, listeners: new Set() }
+      activePromptScope = scope
+      try {
+        return await prompt(params)
+      } finally {
+        if (activePromptScope === scope) activePromptScope = null
+      }
+    }
     default:
       throw { code: -32601, message: "unknown method " + message.method }
   }
@@ -447,6 +512,10 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
   if (message.method === "session/cancel") {
     log({ type: "cancel", convId: session?.id })
     cancelWaiter?.()
+    if (activePromptScope && !activePromptScope.cancelled) {
+      activePromptScope.cancelled = true
+      for (const fn of [...activePromptScope.listeners]) fn()
+    }
     return
   }
   if (!message.method && pendingClient.has(message.id)) {
@@ -1917,11 +1986,37 @@ for (const location of ["inline", "system", "developer", "user"]) {
     inits().length === initsBefore && replay.text.includes("New instruction after Esc") &&
     !replay.text.includes("partial tool output") && fs.existsSync(old.cwd),
     `got ${response.status} ${JSON.stringify({ replay: replay.convId, old: old.convId, n: inits().length, before: initsBefore })} ${replay.text}`)
+  check("steering commits the real MCP tool output before session/cancel instead of cancelling MCP execution",
+    mcpResultText(old.convId).includes("partial tool output") &&
+    !mcpResultText(old.convId).includes("Tool execution was canceled") &&
+    !logs().some(event => event.type === "mcpCanceled" && event.convId === old.convId),
+    mcpResultText(old.convId))
   const third = nextTurn(second, final, "MEMORY after interrupted tool turn")
   const thirdRes = await callFetch(third)
   await readSSE(thirdRes)
   check("turn after a user-interrupted tool turn reuses the same session",
     thirdRes.status === 200 && lastOf("user").convId === replay.convId)
+
+  // Steering after the first call of a sequential multi-tool prompt commits call #1 and cancels before call #2 runs.
+  const multiFirst = { model, messages: [{ role: "user", content: "TWOSTEP steer after first call" }], tools: [echoTool] }
+  const multiEvents = (await readSSE(await callFetch(multiFirst))).events
+  const multiConv = inits().at(-1).convId
+  const multiBefore = inits().length
+  const multiSecond = continuation(multiFirst, multiEvents, "first-steered-output")
+  multiSecond.messages.at(-1).content.push(
+    { type: "text", text: "[Request interrupted by user]\n" },
+    { type: "text", text: "Skip second call and reply immediately" },
+  )
+  const multiRes = await callFetch(multiSecond)
+  const multiFinal = (await readSSE(multiRes)).events
+  const multiPending = logs().filter(event => event.type === "mcpPending" && event.convId === multiConv)
+  check("steering a sequential multi-tool turn commits the first MCP result and cancels before the second MCP call",
+    multiRes.status === 200 && stopOf(multiFinal) === "end_turn" &&
+    lastOf("user").convId === multiConv && inits().length === multiBefore &&
+    mcpResultText(multiConv).includes("first-steered-output") &&
+    !logs().some(event => event.type === "mcpCanceled" && event.convId === multiConv) &&
+    multiPending.length === 1,
+    JSON.stringify({ status: multiRes.status, pending: multiPending.length, mcp: mcpResultText(multiConv) }))
 }
 
 {

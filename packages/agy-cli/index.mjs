@@ -72,6 +72,15 @@ function ideCallDeadline() {
   return positiveTimeout(process.env.AGY_BRIDGE_IDE_CALL_DEADLINE_MS, 150_000)
 }
 const CANCEL_SETTLE_MS = 15_000
+const MAX_MCP_COMMIT_WAIT_MS = 60_000
+function mcpCommitWaitMs() {
+  const raw = process.env.AGY_BRIDGE_MCP_COMMIT_WAIT_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.min(Math.floor(parsed), MAX_MCP_COMMIT_WAIT_MS)
+  }
+  return 5_000
+}
 const RECLAIM_STOP_TIMEOUT_MS = 10_000
 // Repeated unmatched tool results against the same turn that made no progress:
 // attempts below the limit stay 409 (a live turn may still be waiting), the
@@ -914,6 +923,11 @@ class Turn {
     this.done = false
     this.finalized = false
     this.cancelRequested = false
+    this.steering = false
+    this.promptInFlight = false
+    this.activeAcpToolCalls = new Set()
+    this.acpToolWaiters = []
+    this.cancelledMcpSockets = new Set()
     this.agentError = false
     this.heldText = ""
     this.timer = null
@@ -1122,6 +1136,7 @@ class Turn {
     if (this.done) return
     this.done = true
     clearTimeout(this.timer)
+    this.notifyAcpTools()
     this.push({ type: "result", result })
   }
 
@@ -1129,6 +1144,7 @@ class Turn {
     if (this.done || this.finalized) return
     this.done = true
     clearTimeout(this.timer)
+    this.notifyAcpTools()
     for (const waiter of this.lateWaiters.splice(0)) waiter.reject(error)
     this.push({ type: "error", error })
     clearTimeout(this.cleanupTimer)
@@ -1136,6 +1152,78 @@ class Turn {
       this.proc.abandonTurn(this)
     }, IDLE_MS)
     this.cleanupTimer.unref()
+  }
+
+  noteAcpToolUpdate(update) {
+    const type = update?.sessionUpdate
+    const id = update?.toolCallId
+    if (!id) return
+    if (type === "tool_call") {
+      if (!update.status || update.status === "in_progress" || update.status === "pending") {
+        this.activeAcpToolCalls.add(id)
+      } else {
+        this.activeAcpToolCalls.delete(id)
+      }
+      this.notifyAcpTools()
+      return
+    }
+    if (type === "tool_call_update" && update.status &&
+      update.status !== "in_progress" && update.status !== "pending") {
+      this.activeAcpToolCalls.delete(id)
+      this.notifyAcpTools()
+    }
+  }
+
+  notifyAcpTools() {
+    for (const check of [...this.acpToolWaiters]) check()
+  }
+
+  // Waits until agy finishes recording the MCP responses for `pendingIds`
+  // (emits tool_call_update, moves on to generation, or closes the turn) so a
+  // follow-up session/cancel does not abort an in-flight MCP tool execution.
+  waitAcpToolsCommitted(pendingIds, timeoutMs) {
+    const remaining = () => {
+      if (this.done || this.finalized || this.sawGenerationOutput) return false
+      for (const id of pendingIds) {
+        if (this.activeAcpToolCalls.has(id)) return true
+      }
+      return false
+    }
+    if (!remaining()) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (ok) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        const idx = this.acpToolWaiters.indexOf(check)
+        if (idx >= 0) this.acpToolWaiters.splice(idx, 1)
+        resolve(ok)
+      }
+      const check = () => {
+        if (!remaining()) finish(true)
+      }
+      const timer = setTimeout(() => finish(!remaining()), timeoutMs)
+      timer.unref?.()
+      this.acpToolWaiters.push(check)
+    })
+  }
+
+  // Preserves SQLite step-usage tracking across a steered tool turn when the
+  // cancelled prompt ended cleanly after its already-measured tool step(s),
+  // with no unconsumed or pending generation row left in the store.
+  reconcileCancelledStepUsage(rawUsage) {
+    if (this.stepUsageReconciled || this.sawGenerationOutput || !this.stepsFile || this.stepCursor == null) return
+    const measuredPrompt = this.measured?.prompt ?? 0
+    if (measuredPrompt <= 0 || !rawUsage || typeof rawUsage !== "object") return
+    const acp = promptUsage(rawUsage)
+    const expected = acp.promptInput + acp.write
+    if (expected <= 0) return
+    if (Math.abs(measuredPrompt - expected) > Math.max(16, Math.ceil(expected * 0.01))) return
+    const tail = modelUsageAfter(this.stepsFile, this.stepCursor)
+    if (tail && !tail.pending && tail.steps.length === 0) {
+      this.stepUsageReconciled = true
+    }
   }
 
   // True while the client still owes a result, including calls agy stopped waiting for.
@@ -1494,17 +1582,26 @@ class Proc {
     if (!turn || turn.done || turn.finalized) return
     const update = params.update ?? {}
     turn.arm()
+    turn.noteAcpToolUpdate(update)
     if (turn.cancelRequested) return
     if (update.sessionUpdate === "agent_message_chunk") {
       const text = update.content?.type === "text" ? update.content.text : ""
       if (text) {
         turn.sawGenerationOutput = true
+        if (turn.steering) {
+          turn.notifyAcpTools()
+          return
+        }
         turn.pushText(text)
       }
     } else if (update.sessionUpdate === "agent_thought_chunk") {
       const text = update.content?.type === "text" ? update.content.text : ""
       if (text) {
         turn.sawGenerationOutput = true
+        if (turn.steering) {
+          turn.notifyAcpTools()
+          return
+        }
         turn.push({ type: "thinking", text })
       }
     }
@@ -1571,22 +1668,35 @@ class Proc {
     return historyKey(stripToolUseInputs(expectedAssistant)) === historyKey(stripToolUseInputs(actualAssistant))
   }
 
-  // Answers the pending calls with the results the client sent, cancels what
-  // agy was doing next, and leaves the session at `history`, ready for the
-  // steer's prompt. False when anything is off; the caller then replays in a
-  // new session, as before.
+  // Answers the pending calls with the results the client sent, waits for agy
+  // to commit those MCP responses before cancelling what it would do next, and
+  // leaves the session at `history`, ready for the steer's prompt. False when
+  // anything is off; the caller then replays in a new session, as before.
   async steerInSession(turn, results, history) {
-    if (this.dead || this.stopping || this.retiring || this.turn !== turn || turn.done || turn.finalized ||
-      !Array.isArray(history)) return false
+    if (this.dead || this.stopping || this.retiring || this.turn !== turn || turn.steering || turn.done ||
+      turn.finalized || !Array.isArray(history)) return false
     // An image in a result is replayed in the prompt, as before.
     if (results.some((item) => item.result.content.some((part) => part.type !== "text"))) return false
+    const deliveringLiveMcp = results.some(({ call }) =>
+      (!call.deferred && !call.mcpResponded && call.ready && !turn.done) ||
+      (call.deferred && !call.result && turn.awaitCalls.some((waiter) => waiter.target === call)))
+    // ACP toolCallIds come from agy's session/update notifications and are
+    // distinct from the bridge's toolu_ IDs, so snapshot all in-flight ACP IDs.
+    const pendingAcpIds = deliveringLiveMcp ? new Set(turn.activeAcpToolCalls) : new Set()
+    turn.steering = true
     try {
       this.continueWith(results)
     } catch {
+      turn.steering = false
       return false
     }
-    if (!this.cancelTurn(turn, [])) return false
+    if (pendingAcpIds.size && !(await turn.waitAcpToolsCommitted(pendingAcpIds, mcpCommitWaitMs()))) {
+      return false
+    }
+    if (this.dead || this.stopping || this.retiring) return false
+    if (!turn.done && !turn.finalized && !this.cancelTurn(turn, [])) return false
     await Promise.race([turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
+    if (turn.done && !turn.finalized) this.finalizeTurn(turn)
     if (!turn.finalized || this.dead || this.stopping || this.historyInvalid || this.turn) return false
     this.expectedMessages = history.map((message) => ({ ...message }))
     return true
@@ -1628,12 +1738,19 @@ class Proc {
         unpark(this.convKey)
         this.hasSentFirstTurn = true
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
-        const result = await this.conn.request("session/prompt", {
-          sessionId: this.sessionId,
-          prompt: promptParts.length ? promptParts : [{ type: "text", text: "" }],
-        })
+        turn.promptInFlight = true
+        let result
+        try {
+          result = await this.conn.request("session/prompt", {
+            sessionId: this.sessionId,
+            prompt: promptParts.length ? promptParts : [{ type: "text", text: "" }],
+          })
+        } finally {
+          turn.promptInFlight = false
+        }
         usage = turn.recordPromptUsage(promptNumber, result?.usage)
         if (turn.cancelRequested) {
+          turn.reconcileCancelledStepUsage(usage)
           turn.complete({ stopReason: "cancelled" })
           return
         }
@@ -1736,8 +1853,18 @@ class Proc {
 
   acceptMcpCall(message, socket) {
     const turn = this.turn
-    if (!turn || turn.done || turn.finalized || turn.cancelRequested) {
+    if (!turn || turn.done || turn.finalized) {
       throw new Error("agy bridge: no active turn for MCP call")
+    }
+    if (turn.cancelRequested || turn.steering) {
+      // Hold any trailing sibling MCP call quiet while session/cancel is on its
+      // way so agy aborts it via cancellation instead of advancing to a new step.
+      turn.cancelledMcpSockets.add(socket)
+      socket.once("close", () => turn.cancelledMcpSockets.delete(socket))
+      return null
+    }
+    if (!turn.promptInFlight) {
+      throw new Error("agy bridge: no prompt in flight for MCP call")
     }
     const name = message.name
     const args = message.arguments ?? {}
@@ -1889,6 +2016,12 @@ class Proc {
   finalizeTurn(turn) {
     if (turn.finalized) return
     turn.finalized = true
+    turn.notifyAcpTools()
+    for (const socket of turn.cancelledMcpSockets) {
+      try { socket.destroy() } catch {}
+    }
+    turn.cancelledMcpSockets.clear()
+    turn.steering = false
     if (turn.stepsFile && turn.promptCount > 0 && !turn.stepUsageReconciled) {
       this.stepUsageTrusted = false
     }
@@ -2300,7 +2433,7 @@ async function evictLRU() {
   let victim = null
   for (const proc of pool.values()) {
     const turn = proc.turn
-    if (proc.retiring || !turn || turn.attached || turn.cancelRequested) continue
+    if (proc.retiring || !turn || turn.attached || turn.cancelRequested || turn.steering) continue
     const since = turn.clientProgressAt ?? turn.lastProgressAt
     if (!staleTurnVerdict(proc, turn, now).stale && now - since < bound) continue
     if (!victim || since < victim.since) victim = { proc, turn, since }
@@ -2545,6 +2678,7 @@ function noteNoProgressRepeat(convKey, turn, now = Date.now()) {
 function staleTurnVerdict(proc, turn, now = Date.now()) {
   if (!turn || turn.cancelRequested) return { stale: false, reason: "cancelling" }
   if (turn.attached) return { stale: false, reason: "attached" }
+  if (turn.steering) return { stale: false, reason: "steering" }
   if (turn.finalized) return { stale: true, reason: "finalized" }
   if (proc.dead || proc.stopping) return { stale: true, reason: "dead" }
   if (turn.done) return { stale: true, reason: "done" }
@@ -2555,7 +2689,7 @@ function staleTurnVerdict(proc, turn, now = Date.now()) {
 // A pending tool turn only owns its own line of history, not a sibling request
 // that continues its base without carrying any of the emitted tool calls.
 function lineageVerdict(proc, turn, opts) {
-  if (!turn || turn.attached || turn.cancelRequested || turn.done || turn.finalized) return null
+  if (!turn || turn.attached || turn.cancelRequested || turn.steering || turn.done || turn.finalized) return null
   if (proc.dead || proc.stopping || proc.retiring || !turn.hasPendingMcp()) return null
   const history = opts.history
   const base = turn.baseHistory
@@ -2650,7 +2784,7 @@ async function recoverStaleTurn(ctx) {
     const verdict = staleTurnVerdict(current, held)
     // Lineage supersession belongs to acquisition of a new prompt. Unmatched
     // results alone reclaim an unexpired owner only at the repeat limit.
-    if (!verdict.stale && (!forced || verdict.reason === "attached")) {
+    if (!verdict.stale && (!forced || verdict.reason === "attached" || verdict.reason === "steering")) {
       logBridgeEvent(current, held, "reject_active", verdict.reason, ctx.acquireOpts, extra)
       return { kind: "active" }
     }
@@ -5226,6 +5360,7 @@ export const AntigravityBridgePlugin = async () => {
                   }
                   if (proc.turn !== turn) return jsonError(409, "agy bridge: the tool response has already completed")
                   if (turn.attached) throw new BusyError("agy bridge: this conversation already has an active response")
+                  if (turn.steering) throw new BusyError("agy bridge: this conversation is already steering this tool turn")
                   noProgressRepeats.delete(convKey) // matched results are real progress
                   const rawResults = matches.map(({ block, match }) => ({
                     block,
@@ -5260,7 +5395,11 @@ export const AntigravityBridgePlugin = async () => {
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
-                    answeredIds = new Set(rawResults.map((item) => item.block.tool_use_id))
+                    answeredIds = new Set(
+                      rawResults
+                        .filter((item) => !item.call.deferred || item.call.lateDelivered)
+                        .map((item) => item.block.tool_use_id),
+                    )
                   } else if (interrupted || !historyMatches || proc.toolsGrew(tools) ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
@@ -5286,7 +5425,7 @@ export const AntigravityBridgePlugin = async () => {
                   let attempts
                   if (!verdict.stale) {
                     // An attached stream is live progress; only a quiet turn counts.
-                    if (verdict.reason === "attached") noProgressRepeats.delete(convKey)
+                    if (verdict.reason === "attached" || verdict.reason === "steering") noProgressRepeats.delete(convKey)
                     else attempts = noteNoProgressRepeat(convKey, held.turn)
                     if (attempts == null || attempts < NO_PROGRESS_REPEAT_LIMIT) {
                       logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts,
