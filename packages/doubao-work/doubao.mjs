@@ -282,6 +282,7 @@ export class Doubao {
     }
     this.app = app
     Object.assign(this, { openPage, poll, idle, total, fresh })
+    this.missAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
     this.tableAt = 0
@@ -339,6 +340,22 @@ export class Doubao {
     const table = tableFrom(read?.rows)
     this.#save(table)
     return table
+  }
+
+  // known says whether Doubao offers model. A model the list read last
+  // doesn't have sends the plugin back to the menu at once (Doubao adds
+  // models between reads, #1048), at most once a minute, so a client
+  // asking for a name Doubao never had doesn't open the menu each time.
+  // The read waits its turn behind a running ask: both press the same
+  // controls.
+  async known(model, { signal } = {}) {
+    if (this.modelList()[model]) return true
+    if (!this.app?.start || Date.now() - this.missAt < 60000) return false
+    this.missAt = Date.now()
+    const run = this.queue.then(() => this.discover({ signal }))
+    this.queue = run.catch(() => {})
+    try { await run } catch { return false }
+    return !!this.modelList()[model]
   }
 
   async connect(signal) {

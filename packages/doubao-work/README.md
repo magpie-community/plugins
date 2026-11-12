@@ -34,7 +34,8 @@ plan), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3 (`glm-5.3`) and so
 on. Rows that open a submenu (推理强度) are not models and are skipped.
 
 The list is read when you sign in, and again on a request once the cached list
-is more than six hours old; it is kept in `models.json` under
+is more than six hours old, or at once when a request names a model the
+cached list doesn't have (at most once a minute); it is kept in `models.json` under
 `DOUBAO_WORK_HOME` (`~/Library/Application Support/magpie-doubao-work` on
 macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
 anything else. The three models the plugin was written with stay as the

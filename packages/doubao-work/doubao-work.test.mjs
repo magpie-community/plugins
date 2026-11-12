@@ -557,3 +557,63 @@ test("an abort between two polls stops the ask too", async () => {
   const d = new Doubao({ app: fakeApp, openPage: async () => page, poll: 1 })
   await expect(d.ask("x", { signal: ac.signal })).rejects.toBeDefined()
 })
+
+test("a model the app added since the last read is found at once, and a made-up one opens the menu once a minute at most (#1048)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  // the list was read minutes ago, before Doubao added Kimi
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+    at: Date.now(),
+    models: { auto: MODELS.auto, "doubao-2.1-lite": MODELS["doubao-2.1-lite"] },
+  }))
+  const rows = [{ label: "自动" }, { label: "豆包 2.1 Lite" }, { label: "Kimi K3.1 Pro" }, { label: "GLM 5.3 Flash" }]
+  const page = fakePage([], { steps: { menu: { rows } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const menus = () => page.calls.filter((c) => c === MENU).length
+  expect(await d.known("doubao-2.1-lite")).toBe(true)
+  expect(menus()).toBe(0)
+  expect(await d.known("kimi-k3.1-pro")).toBe(true)
+  expect(menus()).toBe(1)
+  expect(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf8")).models)).toContain("glm-5.3-flash")
+  // a made-up name in the same minute doesn't open the menu again
+  expect(await d.known("gpt-9")).toBe(false)
+  expect(menus()).toBe(1)
+  d.missAt -= 61000
+  expect(await d.known("gpt-9")).toBe(false)
+  expect(menus()).toBe(2)
+  expect(await d.known("gpt-10")).toBe(false)
+  expect(menus()).toBe(2)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a menu that can't be read leaves the model unknown, not the list emptied (#1048)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: { auto: MODELS.auto } }))
+  const page = fakePage([], { steps: { menu: { error: "no model menu" } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  expect(await d.known("kimi-k3")).toBe(false)
+  expect(Object.keys(d.modelList())).toEqual(["auto"])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("the plugin asks Doubao's menu again for a model its list lacks, and names the models it has (#1048)", async () => {
+  let table = { auto: MODELS.auto }
+  const asked = []
+  const doubao = {
+    modelList: () => table,
+    known: async (model) => {
+      asked.push(model)
+      table = { auto: MODELS.auto, "kimi-k3": { label: "Kimi K3", name: "Kimi K3" } }
+      return !!table[model]
+    },
+    ask: async () => ({ text: "ok", reasoning: "" }),
+  }
+  const loader = await I.createPlugin({ doubao, newId: ids }).auth.loader(async () => ({}))
+  expect((await loader.fetch(req({ model: "doubao-work/kimi-k3", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  const r = await loader.fetch(req({ model: "gpt-9", messages: [] }))
+  expect(r.status).toBe(404)
+  expect((await r.json()).error.message).toBe("没有模型 gpt-9。豆包的模型菜单里有：auto、kimi-k3。")
+  expect(asked).toEqual(["kimi-k3", "gpt-9"])
+  // a model the list has never asks the menu
+  expect((await loader.fetch(req({ model: "auto", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  expect(asked).toEqual(["kimi-k3", "gpt-9"])
+})
