@@ -2395,6 +2395,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const candidate = findLiveContinuedProc(opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
+  let why = "no_live"
   if (existing) {
     if (!existing.dead && existing.turn) {
       throw new BusyError("agy bridge: this conversation still has an unfinished response")
@@ -2424,6 +2425,10 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       await existing.updateTools(opts.tools)
       return { proc: existing, history: matchedHistory }
     }
+    why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
+      existing.workDir !== opts.workDir ? "work_dir" :
+      !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
+      !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
     existing.retiring = true
     dropFromPool(existing)
     await existing.stop().catch(() => {})
@@ -2442,6 +2447,12 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     throw error
   }
   pool.set(convKey, proc)
+  // Why this request got a new agy session, so a cache that never hits can be
+  // traced to the check that failed (#1058). Counts only, never content.
+  logSessionEvent(proc, why, {
+    fresh: !!isFreshConversation, resumed: !!proc.resumed,
+    parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
+  })
   return { proc, history: opts.history }
 }
 
@@ -2493,6 +2504,21 @@ function logBridgeEvent(proc, turn, action, reason, meta = {}, extra = {}) {
     row.suppressed = eventSuppressed
     eventSuppressed = 0
   }
+  try { process.stderr.write("[agy-bridge] " + JSON.stringify(row) + "\n") } catch {}
+}
+
+// One row per new agy session, on a budget of its own so it never crowds out
+// the tool-state rows above.
+let sessionWindowStart = 0
+let sessionWindowCount = 0
+
+function logSessionEvent(proc, reason, extra) {
+  if (process.env.AGY_BRIDGE_EVENTS === "0") return
+  const now = Date.now()
+  if (now - sessionWindowStart >= EVENT_WINDOW_MS) { sessionWindowStart = now; sessionWindowCount = 0 }
+  if (sessionWindowCount++ >= EVENT_MAX_PER_WINDOW) return
+  const row = { event: "agy_bridge_session", host_epoch: HOST_EPOCH, ts: now,
+    conv: proc?.convKey ? digest(proc.convKey).slice(0, 12) : null, action: "session_new", reason, ...extra }
   try { process.stderr.write("[agy-bridge] " + JSON.stringify(row) + "\n") } catch {}
 }
 

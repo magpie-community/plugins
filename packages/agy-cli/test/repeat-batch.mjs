@@ -279,6 +279,35 @@ test("A11: AGY_BRIDGE_EVENTS=verbose reports layout_flip with a req_id and no co
   assert.ok(!JSON.stringify(flips).includes("hello") && !JSON.stringify(flips).includes("Opening hook"))
 })
 
+// ------------------------------------------------- #1058 session_new rows
+
+test("#1058: a new agy session says why the live one was not reused, with no content", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const first = baseBody({ metadata: { user_id: "why-new" }, system: "base system",
+        messages: [{ role: "user", content: "hello secret" }] })
+      const one = await readSse(await kit.request(first))
+      const reply = { role: "assistant", content: one.content.map((block) => ({ type: "text", text: block.text })) }
+      const second = { ...first, messages: [...first.messages, reply, { role: "user", content: "again" }] }
+      const two = await readSse(await kit.request(second))
+      assert.equal(kit.acpSpawns.length, 1, "the second turn continues the live session")
+      const changed = { ...second, system: "a different system",
+        messages: [...second.messages, { role: "assistant", content: two.content.map((block) => ({ type: "text", text: block.text })) },
+          { role: "user", content: "third" }] }
+      await readSse(await kit.request(changed))
+    })
+  } finally {
+    stderr.restore()
+  }
+  const rows = stderr.lines.filter((row) => row.action === "session_new")
+  assert.deepEqual(rows.map((row) => row.reason), ["no_live", "no_live"],
+    "a changed system prompt is a different conversation key, so it starts with no live session")
+  assert.notEqual(rows[0].conv, rows[1].conv)
+  assert.ok(!JSON.stringify(rows).includes("secret") && !JSON.stringify(rows).includes("system"))
+})
+
 // ------------------------------------------------------- A15 pool pressure
 
 test("A15: a full pool evicts the oldest long-detached tool turn instead of answering 503, and that conversation replays later", async () => {
