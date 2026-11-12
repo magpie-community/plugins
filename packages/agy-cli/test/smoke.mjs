@@ -186,7 +186,7 @@ function finish(reply, extra = {}) {
     stopReason: "end_turn",
     usage: {
       inputTokens: extra.exclusive ? input : input + cached,
-      outputTokens: reply.length,
+      outputTokens: reply.length + thought,
       cachedReadTokens: cached,
       cachedWriteTokens: 0,
       thoughtTokens: thought,
