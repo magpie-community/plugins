@@ -24,6 +24,12 @@ same, works too:
    else 豆包 (`Doubao.app`, `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe`).
    If you signed in to 豆包 through the plugin before 0.1.5, it stays on 豆包
    while 豆包 is installed.
+
+   An app installed somewhere else (`D:\Apps\DoubaoWork`, an external disk)
+   is found without setting anything: on Windows from its uninstall entry,
+   its App Paths entry or a running copy; on macOS from Spotlight, a running
+   copy, or one folder down in `/Applications`, `~/Applications` and
+   `/Volumes/*`.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
    (so Doubao's agent never reads or runs anything on your computer), picks
    the model, and writes the whole request (system prompt, tools, every
@@ -46,6 +52,11 @@ cached list doesn't have (at most once a minute); it is kept in `models.json` un
 macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
 anything else. The three models the plugin was written with stay as the
 fallback for when the menu cannot be read.
+
+Third-party models you added to 豆包工作 yourself (your own API key) are not
+served here: the plugin lists only what the app's model menu offers from
+Doubao's side, and a model that runs on your own key is a direct call to that
+vendor, not a Doubao task. Add that API to magpie as its own provider instead.
 
 ## What it costs
 
@@ -72,7 +83,7 @@ fallback for when the menu cannot be read.
 ## Settings
 
 - `DOUBAO_WORK_APP`: the app's binary, if it is not in one of the places
-  above. A path naming DoubaoWork is driven as 豆包工作, any other as 豆包.
+  above and the system does not know it. A path naming DoubaoWork is driven as 豆包工作, any other as 豆包.
 - `DOUBAO_WORK_HOME`: where the profile and port live.
 
 ## Adding another cloud agent

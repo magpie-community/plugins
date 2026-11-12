@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, choose, dataDir, owns, isChat, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -191,6 +191,45 @@ test("the app is found on macOS and Windows, or where DOUBAO_WORK_APP says", () 
     process.env.DOUBAO_WORK_APP = "/opt/DoubaoWork.app/Contents/MacOS/DoubaoWork"
     expect(choose("darwin", "/Users/u").app.name).toBe("豆包工作")
   }))
+
+// ul3140773077392 on X: 豆包工作 installed in D:\Apps\DoubaoWork
+test("an install outside the usual place is found from what the system knows", () =>
+  withEnv(() => {
+    const exe = "D:\\Apps\\DoubaoWork\\Application\\app\\DoubaoWork.exe"
+    const hints = ['"D:\\Apps\\DoubaoWork\\Application\\uninstall.exe" /allusers', "D:\\Apps\\DoubaoWork\\Application\\icon.ico,0"]
+    let asked = 0
+    const find = () => (asked++, hints)
+    expect(binary("win32", "C:\\Users\\u", only(exe), find)).toBe(exe)
+    expect(choose("win32", "C:\\Users\\u", only(exe), find).app.name).toBe("豆包工作")
+    // the usual place wins and the system is not asked
+    const usual = "C:\\Users\\u\\AppData\\Local\\DoubaoWork\\Application\\app\\DoubaoWork.exe"
+    asked = 0
+    expect(binary("win32", "C:\\Users\\u", only(usual, exe), find)).toBe(usual)
+    expect(asked).toBe(0)
+    // a running copy's path, an InstallLocation folder with a trailing slash, an App Paths exe
+    expect(installedAt(APPS[0], ["D:\\Apps\\DoubaoWork\\"], "win32")).toContain(exe)
+    expect(installedAt(APPS[0], ["E:\\x\\DoubaoWork\\app\\DoubaoWork.exe"], "win32")[0]).toBe("E:\\x\\DoubaoWork\\app\\DoubaoWork.exe")
+    // 豆包's hints never give 豆包工作's binary
+    expect(installedAt(APPS[0], ["D:\\Apps\\Doubao\\Application\\icon.ico"], "win32").every((p) => p.endsWith("DoubaoWork.exe"))).toBe(true)
+    // macOS: a bundle Spotlight or ps found
+    const mac = "/Volumes/Data/Apps/DoubaoWork.app/Contents/MacOS/DoubaoWork"
+    expect(binary("darwin", "/Users/u", only(mac), () => ["/Volumes/Data/Apps/DoubaoWork.app", "/Volumes/Data/Apps/Doubao.app"])).toBe(mac)
+    expect(installedAt(APPS[1], ["/Volumes/Data/Apps/DoubaoWork.app"], "darwin")).toEqual([])
+    // a finder that finds nothing or throws leaves the usual answer
+    expect(binary("win32", "C:\\Users\\u", only(), () => [])).toBe(usual)
+  }))
+
+test("the Windows and macOS finders read the system's answer and survive its failure", () => {
+  expect(hintsWin(() => '["D:\\\\Apps\\\\DoubaoWork\\\\Application\\\\icon.ico,0"]')).toEqual(["D:\\Apps\\DoubaoWork\\Application\\icon.ico,0"])
+  expect(hintsWin(() => '"D:\\\\one"')).toEqual(["D:\\one"])
+  expect(hintsWin(() => { throw Error("no powershell") })).toEqual([])
+  expect(hintsWin(() => "not json")).toEqual([])
+  const run = (cmd) => (cmd.endsWith("mdfind") ? "/Volumes/D/DoubaoWork.app\n" : "/Volumes/E/Doubao.app/Contents/MacOS/Doubao\n")
+  const got = hintsMac(run)
+  expect(got).toContain("/Volumes/D/DoubaoWork.app")
+  expect(got).toContain("/Volumes/E/Doubao.app/Contents/MacOS/Doubao")
+  expect(hintsMac(() => { throw Error("x") })).toBeInstanceOf(Array)
+})
 
 // #917 (sinoyster): only 豆包工作 at its own path, no Doubao.app
 test("a Mac with only 豆包工作 drives 豆包工作 (#917)", () =>
