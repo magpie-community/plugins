@@ -279,6 +279,7 @@ it off puts the config back.
 | Package | Agent |
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
+| [workreview](packages/workreview) | [Work Review](https://github.com/wm94i/Work-Review): daily reports, work assistant and summaries on magpie's models and routing groups, through the platform-specific `config.json`; restart Work Review after |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
