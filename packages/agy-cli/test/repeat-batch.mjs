@@ -415,3 +415,81 @@ test("A16: a short replay is rendered unchanged", async () => {
     await sleep(0)
   })
 })
+
+test("A16: mid tool loop, a trimmed replay keeps the user prompt that started the loop (#1053)", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "TASK START: rename parseConfig to loadConfig everywhere" },
+    ]
+    // 16 tool steps of about 19 KiB each: about 130 KiB even after each result is clipped to 8 KiB.
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${index}`, content: big(`step-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "budget-task" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
+    assert.ok(prompt.includes("Human: TASK START: rename parseConfig to loadConfig everywhere"), "the loop's prompt is kept")
+    assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
+    assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
+    const note = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"
+    assert.equal(prompt.split(note).length - 1, 2, "one note before the pinned prompt, one after it")
+    assert.ok(prompt.indexOf("ANCHOR opening request") < prompt.indexOf("TASK START") &&
+      prompt.indexOf("TASK START") < prompt.indexOf("step-15 tail"), "the kept history stays in order")
+  })
+})
+
+// ----------------------------------------------- agy's error marker (#1052)
+
+function markerAgent(kit, chunks) {
+  kit.defaultPrompt = async (agent) => {
+    for (const chunk of chunks) await agent.text(chunk)
+    return { stopReason: "end_turn" }
+  }
+}
+
+function replyText(parsed) {
+  return parsed.content.filter((block) => block.type === "text").map((block) => block.text).join("")
+}
+
+test("#1052: the model quoting agy's error marker mid-reply does not end a healthy turn", async () => {
+  for (const chunks of [
+    ["agy prints `⚠ Agent execution terminated due to error.` when a turn fails;", " the real cause is in its log."],
+    ["The log ends with:\n\n```\n⚠ Agent execution terminated due to error.\n", "```\n\nThat line comes from agy."],
+    ["Quoted: \n⚠ Agent execution ", "terminated due to error.\n", "and the reply goes on."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "marker-quoted" },
+        messages: [{ role: "user", content: "why did my agy turn stop?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
+test("#1052: agy's own marker at the end of the prompt still fails the turn", async () => {
+  for (const chunks of [
+    ["partial before failure", "\n⚠ Agent execution terminated due to error.\n"],
+    ["partial before failure\n⚠ Agent execution ", "terminated due to error.", "\n"],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "marker-real" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      assert.match(text, /agy stopped the turn because of an error/)
+      assert.ok(!text.includes("Agent execution terminated"), "the marker never reaches the client")
+      assert.ok(text.includes("partial before failure"), "text before the marker is kept")
+    })
+  }
+})

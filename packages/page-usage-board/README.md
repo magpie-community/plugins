@@ -14,7 +14,7 @@ page for the five things Usage does not show:
 4. **Direct-vs-remote split of the last 24 hours** — how much went out through a remote
    magpie versus straight out of this machine.
 5. **Expiry tiers on the quota cards** — how soon each allowance lapses, not just how much
-   is left.
+   is left. WorkBuddy's daily `tokens (est.)` window is not treated as expiring credits.
 
 Everything else is convenience around those: daily and per-provider charts, 24-hour
 cache-hit and token curves, per-account detail for the remote side.

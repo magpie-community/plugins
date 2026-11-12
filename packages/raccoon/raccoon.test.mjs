@@ -545,6 +545,42 @@ test("a balance a little over every listed grant keeps the Credits window (plugi
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 0, limit: 9623, display: "0 / 9623", runsOut: 300 })
 })
 
+// plugins #1030: the same reporter's income bills, as pasted (six grants,
+// 9,900), under a balance of 9,965 and then 9,964 after one call. What was
+// spent is counted from the highest balance seen; a new grant starts over.
+test("spending under a balance over every grant counts as used (plugins #1030)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  let avail = 9965
+  const grants = [
+    { bill_id: "g6", biz_type: "daily_grant", points: 300, expire_at: "2099-11-17T23:59:59+08:00" },
+    { bill_id: "g5", biz_type: "reward_grant", points: 3000 },
+    { bill_id: "g4", biz_type: "daily_grant", points: 300, expire_at: "2099-11-15T23:59:59+08:00" },
+    { bill_id: "g3", biz_type: "reward_grant", points: 3000 },
+    { bill_id: "g2", biz_type: "daily_grant", points: 300, expire_at: "2099-11-14T23:59:59+08:00" },
+    { bill_id: "g1", biz_type: "reward_grant", points: 3000 },
+  ]
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: avail } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: grants } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const read = () =>
+    hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId: "Raccoon-1030" }))
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 9965, display: "0 / 9965" })
+  avail = 9964
+  expect((await read()).windows[0]).toMatchObject({ amount: 1, limit: 9965, display: "1 / 9965" })
+  avail = 9940
+  expect((await read()).windows[0]).toMatchObject({ amount: 25, limit: 9965, display: "25 / 9965" })
+  // another account with the same grants is counted on its own
+  const other = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId: "Raccoon-other" }))
+  expect(other.windows[0]).toMatchObject({ amount: 0, limit: 9940 })
+  // the next day's grant starts the count again
+  grants.unshift({ bill_id: "g7", biz_type: "daily_grant", points: 300, expire_at: "2099-11-18T23:59:59+08:00" })
+  avail = 10240
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 10240 })
+})
+
 test("a readable balance asks setting_info nothing (plugins #520)", async () => {
   const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
   let asked = 0

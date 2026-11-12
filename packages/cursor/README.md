@@ -383,13 +383,25 @@ an email, id or token taken out. Look the file over before you attach it.
 
 Turn it off again when you're done.
 
+### Cursor web search (test, #635)
+
+**Cursor web search (test)** under **Plugin options** (`"web_search_test":
+true`) is off by default. It is a test for
+[#635](https://github.com/magpie-community/plugins/issues/635). When on,
+Cursor may search the web itself: magpie approves each search Cursor asks
+for, as cursor-agent does when it auto-approves. Cursor's other tools stay
+refused. Every request in which Cursor asked to search saves its trace in
+`cursor-traces`, whether it worked or failed. The trace is the same shape
+as a Wire trace's, with no search terms or results in it.
+
 Sign in to the Cursor account linked in Grok Bot. A linked SuperGrok
 subscription grants Bot access without a paid Cursor plan; see
 [Grok Bot plans and billing](https://cursor.com/help/grok-bot/plans).
 
 ## Not included
 
-- Web search: Cursor's own web search is refused like its other tools.
+- Web search: Cursor's own web search is refused like its other tools,
+  except under the test switch above.
 - Switching between several accounts. OpenCode keeps one sign-in per
   provider.
 - The Responses and Messages APIs: only chat completions are answered.

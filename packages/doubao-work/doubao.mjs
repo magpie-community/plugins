@@ -13,6 +13,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { execFileSync } from "node:child_process"
 import { App, Page, sleep } from "./cdp.mjs"
 
 // isChat says whether a page is either app's chat page. The page reports
@@ -81,8 +82,8 @@ const localAppData = (home) => process.env.LOCALAPPDATA || path.win32.join(home,
 //   sub  the folder under dataDir() for this app's profile, port and model
 //        list; 豆包's stays at the top, where 0.1.0 to 0.1.4 kept it
 export const APPS = [
-  { name: "豆包工作", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
-  { name: "豆包", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
+  { name: "豆包工作", bundle: "com.work.pc.doubao", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
+  { name: "豆包", bundle: "com.bot.pc.doubao", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
 ]
 
 // places lists where an app can be installed: /Applications, then
@@ -93,13 +94,115 @@ export function places(app, platform = process.platform, home = os.homedir()) {
   return []
 }
 
+// Where the app is installed when it is not in the usual place. The system
+// knows: Windows keeps an uninstall entry (InstallLocation, DisplayIcon,
+// UninstallString), an App Paths entry and the path of a running copy;
+// macOS's Spotlight knows every bundle by its identifier, and a running
+// copy has its path in ps. Each finder returns paths (files or folders) the
+// install may be under; installedAt turns them into the app's binary.
+const WIN_PROBE = String.raw`
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$o = @()
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+  Get-ItemProperty $r -ErrorAction SilentlyContinue | Where-Object { ($_.PSChildName + $_.DisplayIcon + $_.UninstallString + $_.InstallLocation) -match 'Doubao' } | ForEach-Object { $o += $_.InstallLocation, $_.DisplayIcon, $_.UninstallString }
+}
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\') {
+  foreach ($e in 'DoubaoWork.exe', 'Doubao.exe') { $k = Get-ItemProperty ($r + $e) -ErrorAction SilentlyContinue; if ($k) { $o += $k.'(default)', $k.Path } }
+}
+Get-CimInstance Win32_Process -Filter "Name='DoubaoWork.exe' or Name='Doubao.exe'" -ErrorAction SilentlyContinue | ForEach-Object { $o += $_.ExecutablePath }
+ConvertTo-Json -Compress -InputObject @($o | Where-Object { $_ })
+`
+
+// hintsWin lists the paths Windows has for 豆包工作 and 豆包.
+export function hintsWin(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 15000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })) {
+  try {
+    const out = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WIN_PROBE])
+    const list = JSON.parse(out.trim() || "[]")
+    return (Array.isArray(list) ? list : [list]).filter((x) => typeof x === "string" && x.trim())
+  } catch {
+    return []
+  }
+}
+
+// hintsMac lists the app bundles Spotlight knows by identifier, then the
+// paths of running copies.
+export function hintsMac(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] })) {
+  const out = []
+  for (const app of APPS) {
+    try {
+      out.push(...run("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${app.bundle}'`]).split("\n"))
+    } catch {}
+  }
+  try {
+    for (const l of run("/bin/ps", ["-axo", "comm="]).split("\n")) if (/\.app\/Contents\/MacOS\/Doubao(Work)?$/.test(l.trim())) out.push(l.trim())
+  } catch {}
+  // Spotlight may be off or not indexing that disk: look one folder down
+  // in the places apps are put as well
+  const roots = ["/Applications", path.join(os.homedir(), "Applications")]
+  try { for (const v of fs.readdirSync("/Volumes")) roots.push(path.join("/Volumes", v), path.join("/Volumes", v, "Applications")) } catch {}
+  for (const r of roots.slice()) {
+    try { for (const e of fs.readdirSync(r, { withFileTypes: true })) if (e.isDirectory() && !e.name.endsWith(".app")) roots.push(path.join(r, e.name)) } catch {}
+  }
+  for (const r of roots) for (const app of APPS) out.push(path.join(r, app.mac.split("/")[0]))
+  return out.map((l) => l.trim()).filter(Boolean)
+}
+
+let hinted
+const systemHints = (platform) => {
+  if (platform !== "win32" && platform !== "darwin") return []
+  return (hinted ??= {})[platform] ??= platform === "win32" ? hintsWin() : hintsMac()
+}
+
+// installedAt turns hint paths into the binaries app could have there.
+// A hint may be the exe, a folder, or a command ("\"D:\\x\\uninstall.exe\" /S",
+// "D:\\x\\icon.ico,0"): the quotes and the icon index are taken off, and the
+// folder it names and the three above it are tried, each as <dir>\app\<exe>
+// and <dir>\<exe>. On macOS a hint is a .app folder or a binary inside one.
+export function installedAt(app, hints, platform = process.platform) {
+  const out = []
+  const add = (p) => { if (p && !out.includes(p)) out.push(p) }
+  if (platform === "darwin") {
+    const suffix = "/" + app.mac
+    for (const h of hints) {
+      const i = h.indexOf(".app")
+      if (i < 0) continue
+      const bundle = h.slice(0, i + 4)
+      if (bundle.endsWith("/" + app.mac.split("/")[0])) add(bundle + "/" + app.mac.split("/").slice(1).join("/"))
+    }
+    return out
+  }
+  if (platform !== "win32") return out
+  const W = path.win32
+  const exe = app.win[app.win.length - 1]
+  for (const h of hints) {
+    let p = String(h).trim()
+    const q = p.match(/^"([^"]+)"/)
+    p = q ? q[1] : p.replace(/\s+\/[A-Za-z].*$/, "").replace(/,-?\d+$/, "")
+    p = p.replace(/[\\/]+$/, "")
+    if (!/^[A-Za-z]:\\|^\\\\/.test(p)) continue
+    if (W.basename(p).toLowerCase() === exe.toLowerCase()) add(p)
+    let d = /\.[A-Za-z0-9]{1,5}$/.test(W.basename(p)) ? W.dirname(p) : p
+    for (let n = 0; n < 4; n++) {
+      add(W.join(d, "app", exe))
+      add(W.join(d, "Application", "app", exe))
+      add(W.join(d, exe))
+      const up = W.dirname(d)
+      if (up === d) break
+      d = up
+    }
+  }
+  return out
+}
+
 // choose picks the app to drive: { app, binary, dataDir }. DOUBAO_WORK_APP
 // names the binary outright. A user already signed in to 豆包 through this
 // plugin (its profile exists) stays on 豆包 while it is installed, so an
 // update never signs them out. Otherwise the first app installed, 豆包工作
-// first; with neither, 豆包工作's own place, so the error names it. On
-// Linux the binary is "".
-export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+// first; with neither, 豆包工作's own place, so the error names it. An app
+// is looked for in its usual place first, then where the system says it was
+// installed (find returns those hints; it runs once, and only when a usual
+// place has nothing). On Linux the binary is "".
+export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find = exists === fs.existsSync ? systemHints : () => []) {
   const P = platform === "win32" ? path.win32 : path.posix
   const base = dataDir(platform, home)
   const out = (app, bin) => ({ app, binary: bin, dataDir: app.sub ? P.join(base, app.sub) : base })
@@ -108,9 +211,15 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
     const bin = process.env.DOUBAO_WORK_APP
     return out(/doubaowork/i.test(bin) ? work : doubao, bin)
   }
-  const found = (app) => places(app, platform, home).find((p) => exists(p))
-  const old = found(doubao)
-  if (old && exists(P.join(base, "profile"))) return out(doubao, old)
+  let hints
+  const found = (app) => {
+    const usual = places(app, platform, home).find((p) => exists(p))
+    if (usual) return usual
+    hints ??= find(platform) ?? []
+    return installedAt(app, hints, platform).find((p) => exists(p))
+  }
+  const old = exists(P.join(base, "profile")) ? found(doubao) : ""
+  if (old) return out(doubao, old)
   for (const app of APPS) {
     const bin = found(app)
     if (bin) return out(app, bin)
@@ -119,8 +228,8 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
 }
 
 // binary is the executable choose picks.
-export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
-  return choose(platform, home, exists).binary
+export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find) {
+  return choose(platform, home, exists, find).binary
 }
 
 export function dataDir(platform = process.platform, home = os.homedir()) {
@@ -282,6 +391,7 @@ export class Doubao {
     }
     this.app = app
     Object.assign(this, { openPage, poll, idle, total, fresh })
+    this.missAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
     this.tableAt = 0
@@ -339,6 +449,22 @@ export class Doubao {
     const table = tableFrom(read?.rows)
     this.#save(table)
     return table
+  }
+
+  // known says whether Doubao offers model. A model the list read last
+  // doesn't have sends the plugin back to the menu at once (Doubao adds
+  // models between reads, #1048), at most once a minute, so a client
+  // asking for a name Doubao never had doesn't open the menu each time.
+  // The read waits its turn behind a running ask: both press the same
+  // controls.
+  async known(model, { signal } = {}) {
+    if (this.modelList()[model]) return true
+    if (!this.app?.start || Date.now() - this.missAt < 60000) return false
+    this.missAt = Date.now()
+    const run = this.queue.then(() => this.discover({ signal }))
+    this.queue = run.catch(() => {})
+    try { await run } catch { return false }
+    return !!this.modelList()[model]
   }
 
   async connect(signal) {

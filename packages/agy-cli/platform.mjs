@@ -102,3 +102,25 @@ export function windowsMcpShim(executable, server) {
   }
   return `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${quote(executable)} ${quote(server)}\r\n`
 }
+
+// agy dials --ide-mcp-port by running `nc` from PATH. On Windows a console
+// program started that way can be handed a console of its own, and nc.cmd
+// always runs in cmd.exe, a console program: each dial then flashes a window
+// and leaves a conhost.exe behind (#1047). A GUI-subsystem nc.exe never gets
+// a console, whatever creation flags agy uses, and still talks over the
+// stdio pipes agy hands it. Bun builds it from mcp-server.mjs on the user's
+// own machine; nothing prebuilt ships. magpie runs plugins on a Bun it keeps
+// as magpie-bun(.exe), so that name counts as Bun too. Another runtime (an
+// opencode build, Node) gets null, and the caller falls back to nc.cmd.
+export function windowsNcBuild(runtime, server, outfile, versions = process.versions) {
+  if (!versions?.bun || !/^(?:magpie-)?bun(?:\.exe)?$/i.test(path.win32.basename(String(runtime || "")))) return null
+  return { file: runtime, args: ["build", "--compile", "--windows-hide-console", server, "--outfile", outfile] }
+}
+
+// One taskkill run that ends each agy and everything it started (cmd.exe,
+// nc); null when there is nothing to end.
+export function windowsTreeKill(pids) {
+  const live = [...new Set(pids)].filter(pid => Number.isInteger(pid) && pid > 0)
+  if (!live.length) return null
+  return { file: "taskkill", args: ["/T", "/F", ...live.flatMap(pid => ["/PID", String(pid)])] }
+}

@@ -28,7 +28,7 @@
 //
 // OpenCode speaks chat completions to it (@ai-sdk/openai-compatible); the
 // fetch here answers them.
-import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWireTrace, StepCalls } from "./native-session.mjs"
+import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWebSearch, setWireTrace, StepCalls, webSearchAnswer, webSearchDir, webSearchQuery } from "./native-session.mjs"
 import { isDeepStrictEqual } from "node:util"
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
@@ -646,6 +646,20 @@ const INCLUDED_ONLY = "included_only"
 // saves a failed Run's frames, scrubbed, as a JSON file in cursor-traces in
 // magpie's folder (plugins#550): see WireTrace for what one holds.
 const WIRE_TRACE = "wire_trace"
+
+// WEB_SEARCH is a test switch (off by default) for plugins#635: on, a Run
+// lets Cursor's own web search through and approves it when Cursor asks,
+// and a Run in which Cursor asked to search saves its frames as Wire trace
+// does, whether it succeeded or failed. Off, Cursor's web search is refused
+// like its other tools.
+const WEB_SEARCH = "web_search_test"
+
+// allowedTools is x-cursor-agent-allowed-tools: names of ToolCall's oneof
+// fields. Only the caller's tools (MCP), and Cursor's web search
+// (web_search_tool_call, 18) under the web-search test switch.
+function allowedTools(search) {
+  return "mcp_tool_call,get_mcp_tools_tool_call" + (search ? ",web_search_tool_call" : "")
+}
 
 // enterpriseUsage is the allowance GetCurrentPeriodUsage leaves out on an
 // Enterprise account. That call answers with only the billing cycle there;
@@ -2956,7 +2970,7 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(native.search),
     },
     native.ac.signal,
     // Over HTTP/1.1 the history's blobs go up H1.atOnce at a time, as
@@ -3043,6 +3057,8 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   // could have run up
   const book = ledger(tok, cid, since, signal, !!convID)
   const { first, blobs } = buildRun(conv.msgs, conv.last, tools, id, cid, { maxMode, params })
+  // the web-search test switch, as it is at the Run's start (plugins#635)
+  const search = webSearchDir()
   const o = await open(
     base,
     {
@@ -3055,7 +3071,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(search),
     },
     signal,
   )
@@ -3064,7 +3080,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   let closed = false
   let heartbeat
   // a Run Cursor stops answering ends, as a retained one does (#2672)
-  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why })
+  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why, search })
   const send = (msg) => {
     if (!closed && !req.destroyed && req.writable) {
       quiet.trace?.frame("out", msg)
@@ -3109,11 +3125,13 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
     stepUsage: book.own,
     owedUsage: book.owed,
     note: (name) => quiet.trace?.event(name),
+    search: search ? () => quiet.trace?.searchAsked() : null,
   })
   const wrapped = (async function* () {
     try {
       for await (const v of it) {
         if (v?.error) quiet.failed(v.error)
+        else if (v?.stop) quiet.ended()
         yield v
       }
     } finally {
@@ -3139,7 +3157,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, countWait = NATIVE_LIMITS.countWait }) {
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, search, countWait = NATIVE_LIMITS.countWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -3379,6 +3397,19 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
                 send(pb().bytes(3, pb().varint(1, id).bytes(3, EMPTY)).done())
               }
             }
+            break
+          }
+          case 7: {
+            // interaction_query: Cursor's own web search, approved under the
+            // web-search test switch (plugins#635); anything else, or the
+            // switch off, goes unanswered as before
+            const q = search ? webSearchQuery(m.data, fields) : null
+            if (!q) {
+              count(seen.messages, m.num)
+              break
+            }
+            search()
+            send(webSearchAnswer(pb, q))
             break
           }
           default:
@@ -3718,6 +3749,14 @@ export async function CursorAuthPlugin(input) {
       return ""
     }
   })
+  // the web-search test switch (plugins#635): the same folder, "" while off
+  setWebSearch(() => {
+    try {
+      return input?.magpie?.option?.(ID, WEB_SEARCH) === true && input.directory ? join(input.directory, "cursor-traces") : ""
+    } catch {
+      return ""
+    }
+  })
   return {
     auth: {
       provider: ID,
@@ -3764,6 +3803,12 @@ export async function CursorAuthPlugin(input) {
           label: "Wire trace",
           description:
             "For a bug report: when a Cursor request fails, saves the shape of what Cursor sent and what was sent back (each frame's kind, field numbers, size and time) to the cursor-traces folder in magpie's folder. No prompt or reply text, tool names or arguments, tokens, headers or account ids are written. The newest 20 are kept.",
+        },
+        {
+          key: WEB_SEARCH,
+          label: "Cursor web search (test)",
+          description:
+            "A test for plugins#635: lets Cursor search the web itself and approves each search it asks for, and saves the trace of every request in which Cursor searched, as Wire trace does, whether it worked or not. Cursor's other tools stay refused.",
         },
       ],
       // magpie's: how much of the plan's included usage is gone (the plan

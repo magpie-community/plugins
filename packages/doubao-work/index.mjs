@@ -114,7 +114,8 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
           const model = String(body.model ?? "auto").replace(/^doubao-work\//, "")
-          if (!modelTable(doubao)[model]) return json(404, `没有模型 ${model}。`, "model_not_found")
+          const known = modelTable(doubao)[model] || (typeof doubao?.known === "function" && (await doubao.known(model, { signal })))
+          if (!known) return json(404, `没有模型 ${model}。豆包的模型菜单里有：${Object.keys(modelTable(doubao)).join("、")}。`, "model_not_found")
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = (r) => usageOf(r?.usage) || Math.ceil(prompt.length / 3)

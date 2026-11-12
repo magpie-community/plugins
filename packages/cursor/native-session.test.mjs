@@ -512,6 +512,37 @@ test("native protocol: Wire trace writes a failed Run, never a cancelled one, an
   }
 })
 
+// plugins#635: InteractionQuery {id 1, web_search_request_query 2 {args 1
+// {search_term 1, tool_call_id 2}}} is read as a web search on both paths'
+// readers; any other query, or one that can't be read, is not
+test("web search: only a web_search_request_query is read, and its answer is an approval (plugins#635)", async () => {
+  const { webSearchQuery, webSearchAnswer } = await import("./native-session.mjs")
+  const args = bin(1, message(text(1, "term"), text(2, "ws1")))
+  for (const parse of [nativeFields, _internal.fields]) {
+    expect(webSearchQuery(message(uint(1, 3), bin(2, args)), parse)).toEqual({ id: 3, args: true })
+    expect(webSearchQuery(message(uint(1, 3), bin(2, Buffer.alloc(0))), parse)).toEqual({ id: 3, args: false })
+    // web_fetch_request_query, ask_question: not a search
+    expect(webSearchQuery(message(uint(1, 3), bin(9, args)), parse)).toBeNull()
+    expect(webSearchQuery(message(uint(1, 3), bin(3, args)), parse)).toBeNull()
+    // a oneof: the last field is the query
+    expect(webSearchQuery(message(uint(1, 3), bin(2, args), bin(9, args)), parse)).toBeNull()
+    // no query at all, or a search that isn't a message
+    expect(webSearchQuery(uint(1, 3), parse)).toBeNull()
+    expect(webSearchQuery(message(uint(1, 3), uint(2, 1)), parse)).toBeNull()
+  }
+  expect(webSearchQuery(Buffer.from([0x0a, 0x7f]))).toBeNull()
+  // AgentClientMessage {interaction_response 6 {id 1, web_search_request_response 2 {approved 1 {}}}}
+  const yes = webSearchAnswer(_internal.pb, { id: 3, args: true })
+  expect(readWire(yes).map((f) => f.no)).toEqual([6])
+  expect(number(nest(yes, 6), 1)).toBe(3)
+  expect(readWire(nest(nest(yes, 6), 2)).map((f) => f.no)).toEqual([1])
+  expect(nest(nest(nest(yes, 6), 2), 1)).toHaveLength(0)
+  // no args: rejected {reason 1}, as cursor-agent answers it
+  const no = webSearchAnswer(_internal.pb, { id: 4, args: false })
+  expect(readWire(nest(nest(no, 6), 2)).map((f) => f.no)).toEqual([2])
+  expect(nest(nest(nest(nest(no, 6), 2), 2), 1).toString()).toBe("Missing web search arguments")
+})
+
 test("Wire trace: scrub takes out what could be an email, id or token (plugins#550)", async () => {
   const { scrub } = await import("./native-session.mjs")
   expect(scrub("Cursor said: user a.b@example.com auth0|abc123 req 0f8e4ebc-1234-4abc-9def-0123456789ab tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig, Team budget limit reached"))

@@ -2889,7 +2889,14 @@ function parseUsage(env) {
     const used = turn.reduce((a, p) => a + p.used, 0)
     const total = turn.reduce((a, p) => a + p.total, 0)
     for (const p of turn) p.w.aside = true
-    out.windows.unshift({ name: "Total credits", used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${turn[0].unit}`, amount: used, limit: total, unit: turn[0].unit })
+    const sum = { name: "Total credits", used: Math.min(100, (100 * used) / total), display: `${gfmt(used)} / ${gfmt(total)} ${turn[0].unit}`, amount: used, limit: total, unit: turn[0].unit }
+    // the plan's credits renew when the plan says, and what is left of them
+    // is lost then: routing reads no window set aside, so the whole renews
+    // with the plan's, as WorkBuddy's does (a Teams account renewing
+    // tomorrow was ranked as one that never renews, behind an account
+    // renewing in 18 days: @tnt12231 on X)
+    if (until && turn.some((p) => p.w.resetsAt)) sum.resetsAt = until
+    out.windows.unshift(sum)
   }
   const dedicated = field("dedicatedResourcePackages", "dedicated_resource_packages")
   for (const b of Array.isArray(dedicated) ? dedicated : []) add(b, "Dedicated credits")

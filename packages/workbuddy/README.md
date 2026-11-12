@@ -174,6 +174,15 @@ Not sent: `X-Device-Token`, which the desktop app gets from Tencent's
 native device SDK before each prompt, and a `traceparent`, which the CLI
 adds only while its server-side tracing is on.
 
+A WorkBuddy AI chat also carries, in its body, the `extra_vars` its own
+client sends (#691): `initiator: "user"` and `growthEvent`, a JSON string
+holding a `chat_request_send` event for the chat's `X-Conversation-ID`, with
+the user's last message's length, the model's id and name, `mode: "craft"`
+and no command. WorkBuddy AI's CLI sends this event in the chat itself
+instead of on `/v2/report`; whether WorkBuddy reads it for the daily credit
+is not known. Anything the caller put in `extra_vars` is kept. The China
+build's chats go without it.
+
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
 

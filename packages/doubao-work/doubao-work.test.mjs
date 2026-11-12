@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, choose, dataDir, owns, isChat, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -191,6 +191,45 @@ test("the app is found on macOS and Windows, or where DOUBAO_WORK_APP says", () 
     process.env.DOUBAO_WORK_APP = "/opt/DoubaoWork.app/Contents/MacOS/DoubaoWork"
     expect(choose("darwin", "/Users/u").app.name).toBe("豆包工作")
   }))
+
+// ul3140773077392 on X: 豆包工作 installed in D:\Apps\DoubaoWork
+test("an install outside the usual place is found from what the system knows", () =>
+  withEnv(() => {
+    const exe = "D:\\Apps\\DoubaoWork\\Application\\app\\DoubaoWork.exe"
+    const hints = ['"D:\\Apps\\DoubaoWork\\Application\\uninstall.exe" /allusers', "D:\\Apps\\DoubaoWork\\Application\\icon.ico,0"]
+    let asked = 0
+    const find = () => (asked++, hints)
+    expect(binary("win32", "C:\\Users\\u", only(exe), find)).toBe(exe)
+    expect(choose("win32", "C:\\Users\\u", only(exe), find).app.name).toBe("豆包工作")
+    // the usual place wins and the system is not asked
+    const usual = "C:\\Users\\u\\AppData\\Local\\DoubaoWork\\Application\\app\\DoubaoWork.exe"
+    asked = 0
+    expect(binary("win32", "C:\\Users\\u", only(usual, exe), find)).toBe(usual)
+    expect(asked).toBe(0)
+    // a running copy's path, an InstallLocation folder with a trailing slash, an App Paths exe
+    expect(installedAt(APPS[0], ["D:\\Apps\\DoubaoWork\\"], "win32")).toContain(exe)
+    expect(installedAt(APPS[0], ["E:\\x\\DoubaoWork\\app\\DoubaoWork.exe"], "win32")[0]).toBe("E:\\x\\DoubaoWork\\app\\DoubaoWork.exe")
+    // 豆包's hints never give 豆包工作's binary
+    expect(installedAt(APPS[0], ["D:\\Apps\\Doubao\\Application\\icon.ico"], "win32").every((p) => p.endsWith("DoubaoWork.exe"))).toBe(true)
+    // macOS: a bundle Spotlight or ps found
+    const mac = "/Volumes/Data/Apps/DoubaoWork.app/Contents/MacOS/DoubaoWork"
+    expect(binary("darwin", "/Users/u", only(mac), () => ["/Volumes/Data/Apps/DoubaoWork.app", "/Volumes/Data/Apps/Doubao.app"])).toBe(mac)
+    expect(installedAt(APPS[1], ["/Volumes/Data/Apps/DoubaoWork.app"], "darwin")).toEqual([])
+    // a finder that finds nothing or throws leaves the usual answer
+    expect(binary("win32", "C:\\Users\\u", only(), () => [])).toBe(usual)
+  }))
+
+test("the Windows and macOS finders read the system's answer and survive its failure", () => {
+  expect(hintsWin(() => '["D:\\\\Apps\\\\DoubaoWork\\\\Application\\\\icon.ico,0"]')).toEqual(["D:\\Apps\\DoubaoWork\\Application\\icon.ico,0"])
+  expect(hintsWin(() => '"D:\\\\one"')).toEqual(["D:\\one"])
+  expect(hintsWin(() => { throw Error("no powershell") })).toEqual([])
+  expect(hintsWin(() => "not json")).toEqual([])
+  const run = (cmd) => (cmd.endsWith("mdfind") ? "/Volumes/D/DoubaoWork.app\n" : "/Volumes/E/Doubao.app/Contents/MacOS/Doubao\n")
+  const got = hintsMac(run)
+  expect(got).toContain("/Volumes/D/DoubaoWork.app")
+  expect(got).toContain("/Volumes/E/Doubao.app/Contents/MacOS/Doubao")
+  expect(hintsMac(() => { throw Error("x") })).toBeInstanceOf(Array)
+})
 
 // #917 (sinoyster): only 豆包工作 at its own path, no Doubao.app
 test("a Mac with only 豆包工作 drives 豆包工作 (#917)", () =>
@@ -556,4 +595,64 @@ test("an abort between two polls stops the ask too", async () => {
   }
   const d = new Doubao({ app: fakeApp, openPage: async () => page, poll: 1 })
   await expect(d.ask("x", { signal: ac.signal })).rejects.toBeDefined()
+})
+
+test("a model the app added since the last read is found at once, and a made-up one opens the menu once a minute at most (#1048)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  // the list was read minutes ago, before Doubao added Kimi
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+    at: Date.now(),
+    models: { auto: MODELS.auto, "doubao-2.1-lite": MODELS["doubao-2.1-lite"] },
+  }))
+  const rows = [{ label: "自动" }, { label: "豆包 2.1 Lite" }, { label: "Kimi K3.1 Pro" }, { label: "GLM 5.3 Flash" }]
+  const page = fakePage([], { steps: { menu: { rows } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const menus = () => page.calls.filter((c) => c === MENU).length
+  expect(await d.known("doubao-2.1-lite")).toBe(true)
+  expect(menus()).toBe(0)
+  expect(await d.known("kimi-k3.1-pro")).toBe(true)
+  expect(menus()).toBe(1)
+  expect(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf8")).models)).toContain("glm-5.3-flash")
+  // a made-up name in the same minute doesn't open the menu again
+  expect(await d.known("gpt-9")).toBe(false)
+  expect(menus()).toBe(1)
+  d.missAt -= 61000
+  expect(await d.known("gpt-9")).toBe(false)
+  expect(menus()).toBe(2)
+  expect(await d.known("gpt-10")).toBe(false)
+  expect(menus()).toBe(2)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a menu that can't be read leaves the model unknown, not the list emptied (#1048)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: { auto: MODELS.auto } }))
+  const page = fakePage([], { steps: { menu: { error: "no model menu" } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  expect(await d.known("kimi-k3")).toBe(false)
+  expect(Object.keys(d.modelList())).toEqual(["auto"])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("the plugin asks Doubao's menu again for a model its list lacks, and names the models it has (#1048)", async () => {
+  let table = { auto: MODELS.auto }
+  const asked = []
+  const doubao = {
+    modelList: () => table,
+    known: async (model) => {
+      asked.push(model)
+      table = { auto: MODELS.auto, "kimi-k3": { label: "Kimi K3", name: "Kimi K3" } }
+      return !!table[model]
+    },
+    ask: async () => ({ text: "ok", reasoning: "" }),
+  }
+  const loader = await I.createPlugin({ doubao, newId: ids }).auth.loader(async () => ({}))
+  expect((await loader.fetch(req({ model: "doubao-work/kimi-k3", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  const r = await loader.fetch(req({ model: "gpt-9", messages: [] }))
+  expect(r.status).toBe(404)
+  expect((await r.json()).error.message).toBe("没有模型 gpt-9。豆包的模型菜单里有：auto、kimi-k3。")
+  expect(asked).toEqual(["kimi-k3", "gpt-9"])
+  // a model the list has never asks the menu
+  expect((await loader.fetch(req({ model: "auto", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  expect(asked).toEqual(["kimi-k3", "gpt-9"])
 })

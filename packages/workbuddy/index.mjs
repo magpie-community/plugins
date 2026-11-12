@@ -1504,6 +1504,90 @@ function fitted(body) {
   }
 }
 
+// GROWTH_SEND is the growth event WorkBuddy's client puts in a chat's own
+// body for the user's send (Events.ChatRequestSend).
+const GROWTH_SEND = "chat_request_send"
+
+// withGrowth gives a WorkBuddy AI chat the extra_vars its own client sends
+// (magpie-community/plugins#691): `growthEvent`, a JSON string holding an
+// array of growth events, and `initiator: "user"`. WorkBuddy AI 5.6.2's CLI
+// (codebuddy-lite-wb.mjs, reportChatRequestSendTelemetry) builds the
+// chat_request_send event as {eventCode, id: the conversation's id, extra:
+// {inputLength, requestModelId, requestModelName, mode, command, expertId}}
+// and, when its growth flag is on, sends it in the chat body
+// (appendGrowthEvent into providerData.extra_vars) instead of reporting it
+// on /v2/report; a 5.9.4 capture (#691) carries it there, with initiator
+// "user". Nothing proves WorkBuddy reads it for the daily credit; it is the
+// only per-chat activity mark the client sends with the chat itself.
+//
+// Built from the chat alone: inputLength is the length of the user's last
+// own message (its text, as the CLI's getInputLength counts it), the model
+// is the chat's, its name the site's table's (else the id), mode "craft"
+// (the X-Agent-Intent it is sent with) and no command. conv is the chat's
+// X-Conversation-ID; with none, nothing is added. An event the caller put
+// there is kept; was is the conversation id an earlier call gave the event
+// for, whose event this one replaces (the chat sent as another account).
+// true when the chat changed.
+function withGrowth(site, chat, conv, was = "") {
+  if (!site.ai || !conv || !chat || typeof chat !== "object" || !Array.isArray(chat.messages)) return false
+  const vars = chat.extra_vars !== null && typeof chat.extra_vars === "object" && !Array.isArray(chat.extra_vars) ? chat.extra_vars : {}
+  let events = []
+  if (typeof vars.growthEvent === "string" && vars.growthEvent.trim()) {
+    try {
+      const v = JSON.parse(vars.growthEvent)
+      events = Array.isArray(v) ? v : [v]
+    } catch {}
+  }
+  if (was) events = events.filter((e) => !(e?.eventCode === GROWTH_SEND && e?.id === was))
+  const model = typeof chat.model === "string" ? chat.model : ""
+  const event = {
+    eventCode: GROWTH_SEND,
+    id: conv,
+    extra: {
+      inputLength: inputLengthOf(chat.messages),
+      requestModelId: model,
+      requestModelName: site.models.find((m) => m[0] === model)?.[1] ?? model,
+      mode: "craft",
+      command: "",
+    },
+  }
+  if (!events.some((e) => e?.eventCode === GROWTH_SEND && e?.id === conv)) events.push(event)
+  chat.extra_vars = { ...vars, growthEvent: JSON.stringify(events), initiator: vars.initiator ?? "user" }
+  return true
+}
+
+// regrown is a chat body given for conversation was given its growth event
+// for conv instead (withGrowth); null when it can't be read or isn't one.
+function regrown(site, b, was, conv) {
+  const chat = chatOf(typeof b === "string" ? b : bodyString(b))
+  return chat && withGrowth(site, chat, conv, was) ? JSON.stringify(chat) : null
+}
+
+// withVars is a chat body, as text, with extra_vars set as its last field
+// and every byte it had kept: the vars go in before the object's closing
+// brace. For a chat that names no extra_vars of its own (withGrowth).
+function withVars(body, vars) {
+  if (typeof body !== "string") return body
+  const i = body.lastIndexOf("}")
+  if (i < 0) return body
+  const open = /\{\s*$/.test(body.slice(0, i))
+  return body.slice(0, i) + (open ? "" : ",") + '"extra_vars":' + JSON.stringify(vars) + "}" + body.slice(i + 1)
+}
+
+// inputLengthOf is the length of the chat's last user message that is the
+// user's own (not a tool's result): its text, as WorkBuddy's CLI counts a
+// user input (TelemetryUtils.getInputLength); 0 when there is none.
+function inputLengthOf(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role !== "user" || answeredBefore(msgs, i)) continue
+    const c = msgs[i].content
+    if (typeof c === "string") return c.length
+    if (!Array.isArray(c)) return 0
+    return c.reduce((n, p) => n + ((p?.type ?? "text") === "text" && typeof p?.text === "string" ? p.text.length : 0), 0)
+  }
+  return 0
+}
+
 // gzipped is a chat's body compressed, as WorkBuddy's own client sends its
 // model requests: its CLI's GzipRequestProcessor (WorkBuddy 5.9.3, CLI
 // 2.165.0, on both builds) gzips each POST's body and sets
@@ -4033,7 +4117,22 @@ function makePlugin(site) {
             chatHeaders(site, headers)
             let who = scopeOf(a)
             let ids = attendChat(headers, chat, session, who)
+            // the growth event WorkBuddy AI's client sends with a chat (#691),
+            // for the conversation id the chat goes with
+            let grownFor = ""
+            // a chat nothing else changes has the vars set into its own
+            // bytes (withVars), so it isn't written out again whole for
+            // them (plugins#461); one that named extra_vars is written out
+            const hadVars = !!chat && typeof chat === "object" && Object.hasOwn(chat, "extra_vars")
+            if (completion && withGrowth(site, chat, headers.get("X-Conversation-ID") ?? "")) {
+              if (hadVars) changed = true
+              grownFor = headers.get("X-Conversation-ID")
+            }
             const post = (b) => {
+              // sent as another account (reattend), the chat's conversation
+              // id is that account's, and so is its growth event's
+              const conv = headers.get("X-Conversation-ID") ?? ""
+              if (grownFor && conv && conv !== grownFor) b = regrown(site, b, grownFor, conv) ?? b
               // a chat goes gzipped, as WorkBuddy's client sends it
               // (gzipped); its size on the wire is what unanswered weighs
               const z = gzipped(completion, b)
@@ -4103,6 +4202,7 @@ function makePlugin(site) {
             const shaped = (b) => (!native && endsAfterTools.has(model) ? replyAfterTools(b) ?? b : b)
             if (!native && endsAfterTools.has(model) && replyAfterToolsOn(chat)) changed = true
             if (changed) body = JSON.stringify(chat)
+            else if (grownFor) body = withVars(body, chat.extra_vars)
             chat = null
             let res = await send(body)
             // a signature WorkBuddy's own signing didn't make — a session
@@ -4408,4 +4508,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }
+export const _internal = { withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }

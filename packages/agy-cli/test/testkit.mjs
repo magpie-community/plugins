@@ -46,7 +46,7 @@ const RUNTIME_NAMES = ["Date", "setTimeout", "clearTimeout", "setInterval", "cle
 const RUNTIME_PRELUDE = `import { ${RUNTIME_NAMES.join(", ")} } from ${JSON.stringify(RUNTIME_SPECIFIER)};\n`
 const TEST_EXPORTS = "\nexport { Turn as __agyTestTurn, allProcs as __agyTestAllProcs, pool as __agyTestPool, " +
   "execOnce as __agyTestExecOnce, findAgy as __agyTestFindAgy, canonicalBody as __agyTestCanonicalBody, " +
-  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts };\n"
+  "conversationKey as __agyTestConversationKey, renderInitialPromptParts as __agyTestRenderInitialPromptParts, reapOnExit as __agyTestReapOnExit };\n"
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
 if (typeof vm.SourceTextModule !== "function" || typeof vm.SyntheticModule !== "function") {
@@ -412,6 +412,8 @@ export async function createBridgeKit(options = {}) {
     children: new Set(),
     modelsSpawns: [],
     acpSpawns: [],
+    otherSpawns: [],
+    spawnSyncs: [],
     modelsBehavior: options.modelsBehavior ?? { stdout: modelsOutput(BASE_MODEL_ROWS) },
     prompts: [],
     promptSerial: 0,
@@ -446,6 +448,10 @@ export async function createBridgeKit(options = {}) {
   const fakeProcess = new Proxy(process, {
     get(target, property) {
       if (property === "env") return kit.env
+      // Windows paths (nc.exe, taskkill) run on any test machine.
+      if (property === "platform" && options.platform) return options.platform
+      if (property === "execPath" && options.execPath) return options.execPath
+      if (property === "versions" && options.versions) return options.versions
       const value = Reflect.get(target, property, target)
       return typeof value === "function" ? value.bind(target) : value
     },
@@ -458,9 +464,15 @@ export async function createBridgeKit(options = {}) {
       new FakeAgy(kit, child, opts)
       return child
     }
+    kit.otherSpawns.push({ file, args, opts })
     const child = new FakeChild(kit, file, args)
-    child.finish(0)
+    const code = options.onSpawn ? options.onSpawn(file, args, opts) : 0
+    child.finish(code ?? 0)
     return child
+  }
+  const spawnSync = (file, args = [], opts = {}) => {
+    kit.spawnSyncs.push({ file, args, opts })
+    return { status: 0, signal: null, stdout: "", stderr: "", pid: 0, output: [] }
   }
   const fakeServer = {
     once() { return fakeServer },
@@ -471,7 +483,7 @@ export async function createBridgeKit(options = {}) {
     address() { return { address: "127.0.0.1", family: "IPv4", port: 45999 } },
   }
   const overrides = {
-    "node:child_process": { spawn },
+    "node:child_process": { spawn, spawnSync },
     "node:net": {
       createServer(handler) {
         kit.controlHandler = handler
