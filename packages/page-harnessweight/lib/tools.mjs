@@ -7,12 +7,15 @@ export function createToolsReader(file, { now = Date.now } = {}) {
   const files = [file + ".1", file]
   let key = ""
   let rows = []
+  let present = false
   let reading
   async function signature() {
-    return (await Promise.all(files.map(async (path) => {
+    const signatures = await Promise.all(files.map(async (path) => {
       try { const s = await stat(path); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}` }
       catch (error) { if (error.code === "ENOENT") return "missing"; throw error }
-    }))).join("|")
+    }))
+    present = signatures.some(value => value !== "missing")
+    return signatures.join("|")
   }
   async function refresh() {
     if (reading) return reading
@@ -47,5 +50,5 @@ export function createToolsReader(file, { now = Date.now } = {}) {
     })().finally(() => { reading = null })
     return reading
   }
-  return { refresh, rows: () => rows, file }
+  return { refresh, rows: () => rows, present: () => present, file }
 }
