@@ -86,6 +86,9 @@ The plugin also changes the request itself, as the built-in did:
 - **System prompt:** lines Antigravity turns away (Claude Code's billing
   header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a
   zero-width space.
+  DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
+  paths…") goes reworded with the same meaning: word for word, it got most
+  `gemini-4-argon` answers fast, without thinking and shallow (#1028).
 - **Tool calls:**
   - Tool call ids are reduced to `[A-Za-z0-9_-]`.
   - A tool's `{output}` or `{error}` response becomes `{result}`.

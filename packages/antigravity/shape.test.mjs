@@ -169,3 +169,21 @@ test("an empty text a stream ended on isn't sent back (Claude: text Field requir
   const s = { contents: [{ role: "model", parts: [{ text: "a" }, { text: "", thoughtSignature: "sig" }] }] }
   expect(shape(s, "gemini-3-flash", "", "").contents[0].parts[1]).toEqual({ text: "", thoughtSignature: "sig" })
 })
+
+test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1028)", () => {
+  // word for word as DSH desktop 0.2.2-rc.2 puts it in every system prompt
+  const dsh = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
+  const sys = "You are DeepSeek Harness.\n\n" + dsh + "\n\nBe brief."
+  for (const req of [{ systemInstruction: { parts: [{ text: sys }] }, contents: [] }, { systemInstruction: sys, contents: [] }]) {
+    const text = shape(req, "gemini-4-argon", "", "").systemInstruction.parts[0].text
+    expect(text).not.toContain("Tokens prefixed with @")
+    expect(text).toBe("You are DeepSeek Harness.\n\nWhen the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @\"...\".\n\nBe brief.")
+  }
+  // a prompt that only mentions @ paths is left as it is
+  const other = "Tokens prefixed with @ are paths. Be brief."
+  expect(shape({ systemInstruction: { parts: [{ text: other }] }, contents: [] }, "gemini-4-argon", "", "").systemInstruction.parts[0].text).toBe(other)
+  // the rewording and the zero-width breaks go together
+  const both = shape({ systemInstruction: { parts: [{ text: "x-anthropic-billing-header: cc\n" + dsh }] }, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts[0].text
+  expect(both).toContain("x-a​n​thropic")
+  expect(both).toContain("When the user writes @ followed by a path")
+})

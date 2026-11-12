@@ -1012,6 +1012,27 @@ function claudeTurns(contents) {
   return out
 }
 
+// REWORDED are paragraphs that go through but are answered badly, each with
+// a rewording that keeps its meaning. DeepSeek Harness's desktop app puts
+// the first in every system prompt. With it word for word, gemini-4-argon
+// answered most requests in about 3s at about 300 tok/s with no thinking,
+// and ended after one shallow step; with it removed or reworded, the same
+// replayed request was answered normally 20 of 20 times (#1028).
+const REWORDED = [
+  [
+    "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.",
+    "When the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @\"...\".",
+  ],
+]
+
+const reword = (system) => {
+  for (const [from, to] of REWORDED) if (system.includes(from)) system = system.split(from).join(to)
+  return system
+}
+
+// outgoing is a system prompt as Antigravity is sent it
+const outgoing = (system) => reword(cloak(system))
+
 // shape is the Gemini request as Antigravity takes it for the model sent
 // at the level at, asked at effort
 function shape(req, sent, at, effort) {
@@ -1019,9 +1040,9 @@ function shape(req, sent, at, effort) {
   const m = sent.toLowerCase()
   const claude = m.includes("claude")
   if (isObj(req.systemInstruction)) {
-    for (const p of req.systemInstruction.parts ?? []) if (typeof p?.text === "string") p.text = cloak(p.text)
+    for (const p of req.systemInstruction.parts ?? []) if (typeof p?.text === "string") p.text = outgoing(p.text)
   } else if (typeof req.systemInstruction === "string") {
-    req.systemInstruction = { role: "user", parts: [{ text: cloak(req.systemInstruction) }] }
+    req.systemInstruction = { role: "user", parts: [{ text: outgoing(req.systemInstruction) }] }
   }
   if (Array.isArray(req.contents)) {
     for (const c of req.contents) {
