@@ -22,6 +22,14 @@ For Claude, use `/v1/messages` and the [native Messages fields](api-reference.md
 
 Claude streaming requires explicit support on the matched catalog version; omitted support does not authorize streaming. A stream must include a valid message start and stop-reason delta before its stop frame. An identity-resolution error means non-empty catalog identity metadata was unrecognized or conflicted; an explicit non-Anthropic provider cannot qualify through a Claude name substring.
 
+## Gemini tool continuation fails or tool-result images change placement
+
+A tool may execute successfully, then the next Gemini turn can fail with HTTP 400 if the host changes signed history. Check whether signed text was merged, its signature moved to an empty sibling part, signed thoughts were dropped, or signed text was rewritten as a tool call. Native Gemini 3+ image tool results must retain the image inside the matching `functionResponse.parts`, not beside the response as separate user input. During provider failover, a signature from another Gemini provider can cause "Corrupted thought signature."
+
+The companion [Magpie host patch (caikn/magpie#1)](https://github.com/caikn/magpie/pull/1) addresses signed-part/history preservation, native Gemini 3+ image nesting, and provider-scoped Gemini signatures. Gemini 2.5 and Antigravity retain legacy image placement; Claude's signed thinking is unchanged. The PR is open, not a released Magpie fix: use a host build containing the patch or equivalent fixes, then restart the gateway and check the native tool loop. Updating this plugin alone cannot repair host-modified history. Plain unsigned text-only chat passing does not verify signed tool-loop compatibility.
+
+Do not blindly retry a tool with side effects: the tool may already have executed before the continuation failed. Verify its result first. See [host fidelity requirements](api-reference.md#gemini-host-fidelity-requirement).
+
 ## Credential updates and multiple accounts
 
 Sign in again after changing credentials and restart other running gateways. Reauthorization in another process cannot revoke an already-running host's in-memory account generation at an identical file path. Deleting/recreating a file at that path is not an automatic rotation signal.

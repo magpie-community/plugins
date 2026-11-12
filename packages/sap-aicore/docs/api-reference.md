@@ -126,7 +126,15 @@ For SSE, retain native signed parts in order while gathering the model turn. Nat
 
 ### Gemini host fidelity requirement
 
-Signed Gemini tool loops require a host that forwards signed text parts and signed thought history to the plugin unchanged. A host that rewrites or drops signed parts breaks the native tool loop. The plugin never reconstructs signed parts or repairs host-modified history; it dispatches the validated model-in-path JSON without re-encoding signed numeric arguments. Thinking controls/UI and exact schemas or usage metadata can still be adapted by a host, so native plugin fidelity is not a byte-for-byte gateway guarantee.
+Signed Gemini tool loops require a host that forwards signed text parts and signed thought history to the plugin unchanged. The companion [Magpie host patch (caikn/magpie#1)](https://github.com/caikn/magpie/pull/1) addresses this gateway boundary:
+
+- Preserve each signed text/thought part with its signature through whole replies, SSE, and next-turn history; signed text bypasses text-to-tool-call rewriting.
+- Keep native Gemini 3+ tool-result images nested inside their own `functionResponse.parts`, retaining the call ID/name. Gemini 2.5 and Antigravity keep their legacy image placement.
+- Track the signing provider for native text/thought signatures and filter foreign Gemini signatures during provider failover, leaving Claude's signed thinking unchanged.
+
+The host PR is open, not a released Magpie fix. Use a build containing that patch or equivalent fixes when relying on these tool-loop contracts. Its host regressions include `TestGeminiSignedPartsToolHistory`, `TestGeminiImageToolResultStaysInsideResponse`, and `TestGeminiAtomicSignaturesStayWithTheirProvider`; these are separate from this plugin's tests.
+
+A host that rewrites or drops signed parts breaks the native tool loop. The plugin never reconstructs signed parts or repairs host-modified history; it dispatches the validated model-in-path JSON without re-encoding signed numeric arguments. Thinking controls/UI and exact schemas or usage metadata can still be adapted by a host, so native plugin fidelity is not a byte-for-byte gateway guarantee. See [tool-loop troubleshooting](troubleshooting.md#gemini-tool-continuation-fails-or-tool-result-images-change-placement).
 
 Built-in `codeExecution`, `urlContext`, `googleSearch`, token counting, caching, audio/video and remote file input are outside this coding-agent milestone. They are rejected locally, not advertised as available. Native SAP HTTP errors for supported requests preserve status and message with credential echoes redacted. The direct-SAP observations in issue #38 (including model-specific Search/countTokens rejections) are not plugin/gateway acceptance or universal model capability claims.
 
