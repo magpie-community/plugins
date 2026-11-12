@@ -269,6 +269,20 @@ test("agyPath 变化后不复用旧可执行文件的动态目录", async () => 
   })
 })
 
+test("Gemini 4 Carbon（Ultra）：会话开放就列出，limit 是 Antigravity 型号表给的 1M/262144", async () => {
+  const rows = [...BASE_MODEL_ROWS, ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"]]
+  await withKit({ modelsBehavior: { stdout: modelsOutput(rows) }, offeredModels: [
+    ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"],
+    ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
+  ] }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    const after = await kit.models()
+    assert.ok(after["gemini-4-carbon"], "Carbon 应列出")
+    assert.deepEqual(JSON.parse(JSON.stringify(after["gemini-4-carbon"].limit)), { context: 1048576, output: 262144 })
+  })
+})
+
 test("各家族 limit 正确，未知动态型号不猜成 1M", async () => {
   const expected = {
     "gemini-4-argon": { context: 1048576, output: 65536 },

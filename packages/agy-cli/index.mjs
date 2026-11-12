@@ -505,6 +505,8 @@ async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
 function modelLimits(id) {
   const family = id.replace(/\[1m\]$/i, "").replace(/-(?:minimal|low|medium|high|xhigh|max)$/i, "")
   if (/^(?:gemini-4-argon|gemini-3\.8-flash)$/i.test(family)) return { context: 1048576, output: 65536 }
+  // Gemini 4 Carbon (Ultra plans): the numbers Antigravity's own model list gives it
+  if (/^gemini-4-carbon$/i.test(family)) return { context: 1048576, output: 262144 }
   if (/^claude-(?:opus|sonnet)-5-5$/i.test(family)) return { context: 1000000, output: 64000 }
   if (/^gpt-oss-120b$/i.test(family)) return { context: 131072, output: 32768 }
   return undefined
