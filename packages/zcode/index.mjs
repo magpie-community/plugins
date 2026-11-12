@@ -1251,6 +1251,7 @@ async function personalResets(root, key) {
 // hours and of the week, of which only those still available count (one
 // run out stays listed a week, available false), each with its own end
 // (each, soonest first, one with no end last) and the soonest as until.
+// One whose end has passed is not counted, whatever its flag says.
 // null when the list can't be read, so no count is shown rather than 0,
 // and when it holds none.
 async function resetsOf(url, auth, headers) {
@@ -1266,8 +1267,11 @@ async function resetsOf(url, auth, headers) {
     let n = 0
     for (const x of Array.isArray(rs) ? rs : []) {
       if (x?.available !== true) continue
-      n++
       const t = when(x.expireTime)
+      // a reset past its end is no reset: the list can still flag it
+      // available, and the vendor's page puts it among the expired
+      if (t && t <= Date.now()) continue
+      n++
       if (t && (!until || t < until)) until = t
       each.push(t ? { until: new Date(t).toISOString(), window } : { window })
     }
