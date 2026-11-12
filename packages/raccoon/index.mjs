@@ -663,7 +663,16 @@ async function availablePoints(token) {
   return Math.floor(n)
 }
 
-async function queryUsage(token) {
+// topBalance holds, per account and per set of grants, the highest balance
+// a read has seen. A balance over every listed grant (plugins #936) has no
+// grant total to measure spending against, so the window's total is that
+// highest balance and what was spent since is what it has gone down by
+// (plugins #1030: 9,965 then 9,964 read 0 / 9,965 then 0 / 9,964). A new
+// or expired grant changes the set and starts it again. Kept in memory: a
+// restarted host starts from the balance it reads.
+const topBalance = new Map()
+
+async function queryUsage(token, account = "") {
   const [avail, entitlement, bills] = await Promise.all([
     availablePoints(token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
@@ -684,10 +693,12 @@ async function queryUsage(token) {
   let soonestExpMs = 0
   let expiringPts = 0
   const expired = []
+  const grantKeys = []
   const now = Date.now()
   for (const item of Array.isArray(bills?.items) ? bills.items : []) {
     const pts = Math.floor(Number(item?.points) || 0)
     if (pts <= 0) continue
+    grantKeys.push(billKey(item))
     const expStr = typeof item?.expire_at === "string" ? item.expire_at : ""
     const expMs = expStr ? Date.parse(expStr) : 0
     if (expMs > 0 && expMs <= now) {
@@ -720,7 +731,10 @@ async function queryUsage(token) {
   // the card still shows one. A balance far over the bills is left
   // balance-only: the bills don't explain it.
   if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
-    grantedFromBills = avail
+    const key = `${account}\n${grantKeys.sort().join("\n")}`
+    const top = Math.max(avail, topBalance.get(key) ?? 0)
+    topBalance.set(key, top)
+    grantedFromBills = top
   }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
@@ -750,6 +764,10 @@ async function queryUsage(token) {
     balance: `${avail} credits`,
     windows: [],
   }
+}
+
+function usageAccount(a) {
+  return String(a?.accountId || a?.uid || a?.phone || a?.name || "")
 }
 
 function billKey(item) {
@@ -1193,13 +1211,13 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           let { a, didRenew } = await currentAuth(client, auth)
           let result
           try {
-            result = await queryUsage(a.access)
+            result = await queryUsage(a.access, usageAccount(a))
           } catch (e) {
             if (e?.status === 401 && a.refresh && a.source !== "desktop") {
               const retryAuth = await currentAuth(client, a, true)
               a = retryAuth.a
               didRenew = true
-              result = await queryUsage(a.access)
+              result = await queryUsage(a.access, usageAccount(a))
             } else {
               throw e
             }
