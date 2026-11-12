@@ -52,6 +52,10 @@ cached list doesn't have (at most once a minute); it is kept in `models.json` un
 macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
 anything else. The three models the plugin was written with stay as the
 fallback for when the menu cannot be read.
+A list never read (an account that signed in before the plugin read menus) is
+read when magpie lists the models, once a minute at most, and only from an app
+the plugin has started before. Rows whose names differ only in Chinese get
+distinct ids: Kimi K3.1 Pro 高速 is `kimi-k3.1-pro-fast`.
 
 Third-party models you added to 豆包工作 yourself (your own API key) are not
 served here: the plugin lists only what the app's model menu offers from

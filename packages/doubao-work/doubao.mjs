@@ -40,6 +40,7 @@ export function idFor(label) {
   if (!text || text === "自动") return "auto"
   let id = text
     .replace(/豆包/g, "doubao ")
+    .replace(/高速/g, " fast ")
     .toLowerCase()
     .replace(/[^a-z0-9.]+/g, "-")
     .replace(/-{2,}/g, "-")
@@ -61,8 +62,11 @@ export function tableFrom(rows) {
   for (const r of rows ?? []) {
     const label = String(r?.label ?? "").trim()
     if (!label) continue
-    const id = idFor(label)
-    if (out[id]) continue
+    let id = idFor(label)
+    if (out[id]?.label === label) continue
+    // two rows whose names differ only in what idFor can't spell (a
+    // Chinese suffix) must not become one model
+    for (let n = 2; out[id]; n++) id = idFor(label) + "-" + n
     out[id] = { label, name: label }
   }
   if (!Object.keys(out).length) return { ...MODELS }
@@ -392,6 +396,7 @@ export class Doubao {
     this.app = app
     Object.assign(this, { openPage, poll, idle, total, fresh })
     this.missAt = 0
+    this.readAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
     this.tableAt = 0
@@ -449,6 +454,22 @@ export class Doubao {
     const table = tableFrom(read?.rows)
     this.#save(table)
     return table
+  }
+
+  // ensureList reads the menu once when it has never been read, for an
+  // account that signed in before the plugin read menus (or whose sign-in
+  // read failed): without it the list stays at the three built-in models
+  // until the first request. Only an app this plugin has started before
+  // (its data folder exists) is opened for it; a failed read is tried
+  // again after a minute. It queues behind a running ask.
+  async ensureList({ signal } = {}) {
+    this.modelList()
+    if (this.tableAt || !this.app?.start || !this.cacheFile) return
+    if (!fs.existsSync(path.dirname(this.cacheFile)) || Date.now() - this.readAt < 60000) return
+    this.readAt = Date.now()
+    const run = this.queue.then(() => this.tableAt || this.discover({ signal }))
+    this.queue = run.catch(() => {})
+    try { await run } catch {}
   }
 
   // known says whether Doubao offers model. A model the list read last

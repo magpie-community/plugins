@@ -61,6 +61,9 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
     provider: {
       id: ID,
       async models() {
+        // a list never read from the menu is read now, so an account that
+        // signed in before the plugin read menus isn't left with three
+        if (typeof doubao?.ensureList === "function") await doubao.ensureList({ signal: AbortSignal.timeout(25000) })
         return models(modelTable(doubao))
       },
     },

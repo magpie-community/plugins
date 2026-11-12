@@ -282,6 +282,12 @@ test("idFor names a model from what its menu row says", () => {
   expect(idFor("纯中文模型").startsWith("model-")).toBe(true)
 })
 
+test("Kimi K3.1 Pro and Kimi K3.1 Pro 高速 are two models, and an unspellable suffix never merges two rows", () => {
+  expect(idFor("Kimi K3.1 Pro 高速")).toBe("kimi-k3.1-pro-fast")
+  const t = tableFrom([{ label: "Kimi K3.1 Pro" }, { label: "Kimi K3.1 Pro 高速" }, { label: "星火 4.0 快" }, { label: "星火 4.0 慢" }])
+  expect(Object.values(t).map((m) => m.label)).toEqual(["Kimi K3.1 Pro", "Kimi K3.1 Pro 高速", "星火 4.0 快", "星火 4.0 慢"])
+})
+
 test("tableFrom keeps every model row, and falls back when nothing was read", () => {
   const t = tableFrom([{ label: "自动" }, { label: "GLM 5.3" }, { label: "GLM 5.3" }, { label: "" }])
   expect(Object.keys(t)).toEqual(["auto", "glm-5.3"])
@@ -655,4 +661,38 @@ test("the plugin asks Doubao's menu again for a model its list lacks, and names 
   // a model the list has never asks the menu
   expect((await loader.fetch(req({ model: "auto", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
   expect(asked).toEqual(["kimi-k3", "gpt-9"])
+})
+
+test("a list never read from the menu is read when the plugin lists models, once a minute at most", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  const labels = ["自动", "豆包 2.1 Lite", "豆包 2.1 Pro", "DeepSeek V4.1 Flash", "Kimi K3.1 Pro", "Kimi K3.1 Pro 高速", "Kimi K3", "GLM 5.3", "GLM 5.3 Flash", "DeepSeek V4 Pro"]
+  const page = fakePage([], { steps: { menu: { rows: labels.map((label) => ({ label })) } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const p = I.createPlugin({ doubao: d })
+  const listed = await p.provider.models({}, {})
+  expect(Object.values(listed).map((m) => m.name)).toEqual(labels)
+  await p.provider.models({}, {})
+  expect(page.calls.filter((c) => c === MENU).length).toBe(1)
+  // a menu that fails is not asked again within the minute
+  const bad = fakePage([], { steps: { menu: { error: "no model menu" } } })
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  const d2 = new Doubao({ app: { start: async () => 1, dataDir: dir2 }, openPage: async () => bad, poll: 1 })
+  await d2.ensureList(); await d2.ensureList()
+  expect(bad.calls.filter((c) => c === MENU).length).toBe(1)
+  expect(Object.keys(d2.modelList())).toEqual(Object.keys(MODELS))
+  // an app never started by the plugin (no data folder) is not opened
+  const d3 = new Doubao({ app: { start: async () => { throw new Error("opened") }, dataDir: path.join(dir, "none") }, openPage: async () => page })
+  await d3.ensureList()
+  fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(dir2, { recursive: true, force: true })
+})
+
+test("picking a model from the full list presses that row in the app", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: tableFrom([{ label: "自动" }, { label: "Kimi K3.1 Pro 高速" }, { label: "DeepSeek V4 Pro" }]) }))
+  const page = fakePage([{ sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }])
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  expect(Object.keys(d.modelList())).toEqual(["auto", "kimi-k3.1-pro-fast", "deepseek-v4-pro"])
+  await d.ask("x", { model: "kimi-k3.1-pro-fast" })
+  expect(page.calls.some((c) => c.includes('"Kimi K3.1 Pro 高速"'))).toBe(true)
+  fs.rmSync(dir, { recursive: true, force: true })
 })
