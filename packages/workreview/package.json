@@ -1,0 +1,19 @@
+{
+  "name": "@magpie-community/agent-workreview",
+  "version": "0.1.0",
+  "description": "Work Review (wm94i/Work-Review) as a magpie agent: its daily reports, work assistant and summaries run on magpie's models and routing groups",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib/", "workreview.agent.js", "README.md", "COMPATIBILITY.md"],
+  "keywords": ["magpie", "magpie-agent", "work-review", "workreview", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/workreview"
+  },
+  "magpie": {
+    "agent": "./workreview.agent.js",
+    "icon": "https://raw.githubusercontent.com/wm94i/Work-Review/main/src-tauri/icons/icon.png"
+  }
+}
