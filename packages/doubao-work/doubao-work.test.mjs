@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, binary, choose, dataDir, owns, isChat, usageOf } from "./doubao.mjs"
+import { Doubao, APPS, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, records, installed, binary, choose, dataDir, owns, isChat, usageOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -214,6 +214,67 @@ test("a Mac with only 豆包工作 drives 豆包工作 (#917)", () =>
     expect(c2.dataDir).toBe("/Users/u/Library/Application Support/magpie-doubao-work")
     // a 豆包 profile with 豆包 gone: 豆包工作
     expect(binary("darwin", "/Users/u", only(work, signedIn))).toBe(work)
+  }))
+
+// An install the user put outside %LOCALAPPDATA% — another drive — is named
+// by the uninstall record Windows keeps for it, the one place that knows the
+// folder the user chose.
+test("a Windows install the default place does not hold is found through its uninstall record", () =>
+  withEnv(() => {
+    const text = [
+      "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DoubaoWork",
+      "    DisplayName    REG_SZ    豆包工作",
+      '    DisplayIcon    REG_SZ    "D:\\Apps\\DoubaoWork\\icon.ico,0"',
+      "    DisplayVersion    REG_SZ    2.25.18",
+      '    UninstallString    REG_SZ    "D:\\Apps\\DoubaoWork\\uninstall.exe"',
+      "",
+      "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Git",
+      "    DisplayName    REG_SZ    Git",
+      '    InstallLocation    REG_SZ    "C:\\Program Files\\Git"',
+      "",
+    ].join("\r\n")
+    // the folder is the one the installer chose; InstallLocation, when it is
+    // there, names it outright, and the icon's ",0" is not part of the path
+    expect(records(text)).toEqual([
+      { name: "豆包工作", root: "D:\\Apps\\DoubaoWork" },
+      { name: "Git", root: "C:\\Program Files\\Git" },
+    ])
+    const bin = "D:\\Apps\\DoubaoWork\\app\\DoubaoWork.exe"
+    expect(installed(APPS[0], "win32", () => text)).toEqual([bin])
+    // the program is app\<exe>: the exe beside it is a launcher
+    expect(installed(APPS[0], "win32", () => text)[0]).not.toBe("D:\\Apps\\DoubaoWork\\DoubaoWork.exe")
+    // other programs' records are not the app, and macOS has no such records
+    expect(installed(APPS[1], "win32", () => text)).toEqual([])
+    expect(installed(APPS[0], "darwin", () => text)).toEqual([])
+    // a DisplayName that took the version into it still counts, by its folder
+    const versioned = [
+      "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DoubaoWork",
+      "    DisplayName    REG_SZ    豆包工作 2.25.18",
+      '    UninstallString    REG_SZ    "D:\\Apps\\DoubaoWork\\uninstall.exe"',
+    ].join("\n")
+    expect(installed(APPS[0], "win32", () => versioned)).toEqual([bin])
+    // InstallLocation is the folder the installer wrote into, ahead of the icon
+    const both = versioned.replace('    UninstallString', '    InstallLocation    REG_SZ    "D:\\Apps\\DoubaoWork"\n    UninstallString')
+    expect(installed(APPS[0], "win32", () => both)).toEqual([bin])
+    // choose takes it once the default place is empty: the app still is 豆包工作
+    const c = choose("win32", "C:\\Users\\u", only(bin), () => [bin])
+    expect(c.binary).toBe(bin)
+    expect(c.app.name).toBe("豆包工作")
+    expect(c.dataDir).toBe("C:\\Users\\u\\AppData\\Local\\magpie-doubao-work\\doubaowork")
+  }))
+
+// The default place stays the first choice, and the records are not read for
+// the app it holds: no reg.exe run for the common install.
+test("the default place is taken before any uninstall record is read", () =>
+  withEnv(() => {
+    const own = "C:\\Users\\u\\AppData\\Local\\DoubaoWork\\Application\\app\\DoubaoWork.exe"
+    const asked = []
+    const c = choose("win32", "C:\\Users\\u", only(own), (app) => {
+      asked.push(app.name)
+      return []
+    })
+    expect(c.binary).toBe(own)
+    expect(asked).not.toContain("豆包工作")
   }))
 
 test("both apps' chat pages are the plugin's", () => {

@@ -10,6 +10,7 @@
 // (the page's text loses code fences), a text block under a thinking block
 // is the reasoning, ext.is_finish says it is done, and
 // ext.context_window_usage counts the prompt's tokens.
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -93,13 +94,86 @@ export function places(app, platform = process.platform, home = os.homedir()) {
   return []
 }
 
+// UNINSTALL is the key Windows keeps a record under for each program
+// installed in that hive. The record names the folder the user chose, which
+// is the only way to learn where a program went when it is not in
+// %LOCALAPPDATA% — another drive, a folder of their own.
+const UNINSTALL = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+
+// unquoted is a record's value without reg's quotes and the icon index
+// DisplayIcon ends with ("C:\...\icon.ico,0").
+const unquoted = (value) => String(value ?? "").trim().replace(/^"(.*)"$/, "$1").replace(/,\d+$/, "").trim()
+
+// folderOf is the folder a record's exe or icon lives in.
+const folderOf = (value) => {
+  const p = unquoted(value)
+  return p ? path.win32.dirname(p) : ""
+}
+
+// records reads reg.exe's listing of one hive's uninstall records into
+// [{ name, root }]: name is DisplayName, root the folder the installer wrote
+// into — InstallLocation when the installer set it, else the folder of
+// DisplayIcon or UninstallString. Lines that are neither a key nor a value
+// are skipped, so a listing that fails partway still yields what it had.
+export function records(text) {
+  const out = []
+  let cur = null
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    if (/^\s*HKEY_/i.test(line)) {
+      cur = {}
+      out.push(cur)
+      continue
+    }
+    const m = cur && line.match(/^\s+(\S+)\s+REG_[A-Z_]+\s+(.+?)\s*$/)
+    if (m) cur[m[1]] = m[2]
+  }
+  return out
+    .map((r) => ({ name: (r.DisplayName ?? "").trim(), root: unquoted(r.InstallLocation) || folderOf(r.DisplayIcon) || folderOf(r.UninstallString) }))
+    .filter((r) => r.name && r.root)
+}
+
+// listing is one hive's raw records; no reg.exe (not Windows, a locked-down
+// machine) reads as none. Kept a minute: choose runs on every request, and a
+// record does not appear or vanish that fast.
+const listingCache = new Map()
+const listing = (hive) => {
+  const hit = listingCache.get(hive)
+  if (hit && Date.now() - hit.at < 60_000) return hit.text
+  const r = spawnSync("reg", ["query", `${hive}\\${UNINSTALL}`, "/s"], { encoding: "utf8", timeout: 5000, windowsHide: true })
+  const text = r.status === 0 ? String(r.stdout ?? "") : ""
+  listingCache.set(hive, { at: Date.now(), text })
+  return text
+}
+
+// installed lists where the uninstall records say the app is: the record's
+// folder is the app's root, and the program is app\<exe> in it (the exe
+// beside it is a launcher, like the default place has). A record counts when
+// it is named after the app or when its folder is, since some installers put
+// the version in DisplayName. Applies to Windows only.
+export function installed(app, platform = process.platform, read = listing) {
+  if (platform !== "win32") return []
+  const exe = app.win[app.win.length - 1]
+  const folder = app.win[0].toLowerCase()
+  const out = []
+  for (const hive of ["HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE"]) {
+    for (const r of records(read(hive))) {
+      const named = r.name === app.name || path.win32.basename(r.root).toLowerCase() === folder
+      const bin = path.win32.join(r.root, "app", exe)
+      if (named && !out.includes(bin)) out.push(bin)
+    }
+  }
+  return out
+}
+
 // choose picks the app to drive: { app, binary, dataDir }. DOUBAO_WORK_APP
 // names the binary outright. A user already signed in to 豆包 through this
 // plugin (its profile exists) stays on 豆包 while it is installed, so an
 // update never signs them out. Otherwise the first app installed, 豆包工作
-// first; with neither, 豆包工作's own place, so the error names it. On
-// Linux the binary is "".
-export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+// first; with neither, 豆包工作's own place, so the error names it. A Windows
+// install the default place does not hold is looked for in the uninstall
+// records (installed), which is where an install to another drive shows up.
+// On Linux the binary is "".
+export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync, elsewhere = installed) {
   const P = platform === "win32" ? path.win32 : path.posix
   const base = dataDir(platform, home)
   const out = (app, bin) => ({ app, binary: bin, dataDir: app.sub ? P.join(base, app.sub) : base })
@@ -108,7 +182,12 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
     const bin = process.env.DOUBAO_WORK_APP
     return out(/doubaowork/i.test(bin) ? work : doubao, bin)
   }
-  const found = (app) => places(app, platform, home).find((p) => exists(p))
+  // the records are read only when the default place holds no app: the
+  // common install never pays for a reg.exe run
+  const found = (app) => {
+    const own = places(app, platform, home).find((p) => exists(p))
+    return own || elsewhere(app, platform).find((p) => exists(p))
+  }
   const old = found(doubao)
   if (old && exists(P.join(base, "profile"))) return out(doubao, old)
   for (const app of APPS) {

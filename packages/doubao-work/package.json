@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-doubao-work-auth",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "main": "./opencode.mjs",
   "files": [
