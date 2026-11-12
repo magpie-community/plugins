@@ -36,6 +36,7 @@ export const CLOAK_FILE = path.join(REPO_DIR, "cloak.mjs")
 export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
 export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
 export const STEP_USAGE_FILE = path.join(REPO_DIR, "step-usage.mjs")
+export const TOOL_SCHEMA_FILE = path.join(REPO_DIR, "tool-schema.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -329,6 +330,7 @@ class FakeAgy {
         return Promise.all(replies)
       },
       async tool(name, args) { return (await this.tools([[name, args]]))[0] },
+      listTools() { return self.control({ kind: "list" }) },
       waitCancel() {
         if (self.cancelPending) return Promise.resolve()
         return new Promise((resolve) => self.cancelWaiters.push(resolve))
@@ -507,6 +509,7 @@ export async function createBridgeKit(options = {}) {
   const loginUrl = pathToFileURL(LOGIN_FILE).href
   const re2Url = pathToFileURL(RE2_PATTERN_FILE).href
   const stepUsageUrl = pathToFileURL(STEP_USAGE_FILE).href
+  const toolSchemaUrl = pathToFileURL(TOOL_SCHEMA_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -520,6 +523,7 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
     else if (key === "./re2-pattern.mjs") module = sourceModule(RE2_PATTERN_FILE, "", re2Url)
     else if (key === "./step-usage.mjs") module = sourceModule(STEP_USAGE_FILE, "", stepUsageUrl)
+    else if (key === "./tool-schema.mjs") module = sourceModule(TOOL_SCHEMA_FILE, "", toolSchemaUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)

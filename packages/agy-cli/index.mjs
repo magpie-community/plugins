@@ -11,6 +11,7 @@ import { createUsageReader } from "./usage.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
+import { expandToolSchema } from "./tool-schema.mjs"
 import { cloak, hint, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
@@ -3436,7 +3437,7 @@ function normalizeTools(body) {
     if (!rawSchema || typeof rawSchema !== "object" || Array.isArray(rawSchema)) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }
-    const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(rawSchema))
+    const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(expandToolSchema(rawSchema)))
     tools.push({
       name: tool.name,
       description: typeof tool.description === "string" ? tool.description : "",
