@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-amp-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An Amp usage board in Magpie's window, with a local background service that can sync Amp usage into Magpie's usage ledger.",
   "type": "module",
   "main": "./index.mjs",
