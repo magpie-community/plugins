@@ -94,9 +94,9 @@ Once you are signed in to MiniMax Code (China) or MiniMax Code (Global):
   at `/mcp/magpie/image`): choose **MiniMax Image**. Text-to-image uses the
   same Matrix `generate_image` API as the named tool (a `requests` array, then
   `get_asset_url` for the download URL). Magpie sends edits as multipart
-  form data (the image bytes, and an optional mask); those bytes, and any
-  `data:` URL, are uploaded through MiniMax Code's `upload_temp_url` flow
-  before `generate_image`. HTTPS URLs are passed through. A size such as
+  form data; the image bytes, and any `data:` URL, are uploaded through MiniMax Code's `upload_temp_url` flow
+  before `generate_image`. HTTPS URLs are passed through. `generate_image`
+  takes no mask, so a mask edit is refused (HTTP 400). A size such as
   `1024x1024` is mapped to MiniMax's `area` (so it does not fall through to
   the vendor's 4K default). Right after a generation, `get_asset_url` may
   first answer a watermarked `/visible/` URL (#974); the plugin waits a

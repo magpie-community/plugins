@@ -22,7 +22,9 @@
 // submit_video_generation enums: MiniMax-H3, MiniMax-H3-Max, MiniMax-Hailuo-2.3.
 //
 // Magpie's plugin drawer that isn't Codex or SenseNova sends edits as
-// multipart/form-data (image bytes, optional mask). A local video frame
+// multipart/form-data (image bytes, optional mask). generate_image takes
+// no mask, so a mask part is refused with a 400 rather than drawn from as
+// one more reference image. A local video frame
 // arrives as a data: URL. Those bytes are uploaded through the live
 // catalog's upload_temp_url flow (a signed form, then a POST of the
 // file) before generate_image / submit_video_generation. HTTPS URLs are
@@ -346,9 +348,13 @@ async function videoContent(request, siteId, id, signal) {
   const node = str(result?.node_id ?? result?.success_items?.[0]?.node_id)
   if (!node) throw new Error("MiniMax video returned no node_id")
   const url = await assetUrl(request, siteId, node, signal)
-  const res = await fetch(url, { signal, redirect: "follow" })
+  const res = await _native.fetch(url, { signal, redirect: "follow" })
   if (!res.ok) throw new Error("MiniMax video download: HTTP " + res.status)
   const headers = new Headers(res.headers)
+  // fetch has already decoded the body: passing these on would have the
+  // client decode it again, or expect the encoded length
+  headers.delete("content-encoding")
+  headers.delete("content-length")
   if (!headers.get("content-type")) headers.set("content-type", "video/mp4")
   return new Response(res.body, { status: 200, headers })
 }
@@ -400,7 +406,12 @@ export function videoStatus(result) {
 }
 
 async function referenceImages(request, siteId, req, files, signal, edits) {
-  const parts = (files ?? []).filter((f) => f.field === "image" || f.field === "image[]" || f.field === "mask" || f.field === "markup")
+  // generate_image has no mask input: a mask uploaded as a reference image
+  // would be drawn from as one more picture, so it is refused, the way
+  // magpie refuses mask edits for drawers that can't take one.
+  if ((files ?? []).some((f) => f.field === "mask"))
+    throw Object.assign(new Error("MiniMax Image does not support mask edits"), { status: 400 })
+  const parts = (files ?? []).filter((f) => f.field === "image" || f.field === "image[]")
   if (parts.length) {
     const out = []
     for (const part of parts) out.push(await uploadBytes(request, siteId, part, signal))
@@ -565,7 +576,7 @@ async function postSignedUpload(signed, file, signal) {
   const abort = AbortSignal.any([AbortSignal.timeout(UPLOAD_MS), ...(signal ? [signal] : [])])
   let res
   try {
-    res = await fetch(signed.uploadHost, { method: "POST", body: form, signal: abort, redirect: "follow" })
+    res = await _native.fetch(signed.uploadHost, { method: "POST", body: form, signal: abort, redirect: "follow" })
   } catch (e) {
     abort.throwIfAborted?.()
     throw new Error("MiniMax upload: " + (e?.message ?? String(e)))
@@ -576,8 +587,7 @@ async function postSignedUpload(signed, file, signal) {
 function allowedUploadHost(url) {
   let u
   try { u = new URL(url) } catch { return false }
-  if (u.protocol === "https:") return true
-  return u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]" || u.hostname === "::1")
+  return u.protocol === "https:"
 }
 
 function parseDataUrl(url) {
@@ -808,4 +818,6 @@ function sleep(ms, signal) {
 export const _native = {
   IMAGE_NPM, MATRIX, mediaPath, aspectFromSize, durationOf, resolutionOf, areaOf, areaFromSize, mediaRef,
   visibleWaitMs: 8000, visibleStepMs: 1000, sleep,
+  // the upload POST and the video download; tests swap in a fake
+  fetch: (...args) => globalThis.fetch(...args),
 }

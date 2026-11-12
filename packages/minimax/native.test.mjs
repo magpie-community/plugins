@@ -41,6 +41,14 @@ function transport(script) {
   return { request, sent }
 }
 
+// fakeFetch stands in for the upload POST and the video download
+// (_native.fetch): no loopback server, and the upload host stays https.
+async function withFakeFetch(handler, fn) {
+  const previous = _native.fetch
+  _native.fetch = async (input, init) => handler(new Request(input, init))
+  try { return await fn() } finally { _native.fetch = previous }
+}
+
 test("pagesFrom reads MiniMax Code's organic results as Magpie search pages", () => {
   expect(pagesFrom({ organic: [{ title: "Source", url: "https://example.com", snippet: "hi", date: "2026" }] })).toEqual([
     { title: "Source", url: "https://example.com", text: "hi", age: "2026" },
@@ -176,17 +184,17 @@ test("GET /videos/{id} maps MiniMax query status to OpenAI's", async () => {
 })
 
 test("GET /videos/{id}/content downloads the asset URL after a succeeded query", async () => {
-  const file = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch() { return new Response("MP4", { headers: { "content-type": "video/mp4" } }) },
-  })
-  try {
+  const asked = []
+  await withFakeFetch((req) => {
+    asked.push(req.url)
+    // as if the CDN had gzipped it: fetch has already decoded the body
+    return new Response("MP4", { headers: { "content-type": "video/mp4", "content-encoding": "gzip", "content-length": "99" } })
+  }, async () => {
     const t = transport({
       [LIST]: catalog([entry("query_video_generation"), entry("get_asset_url")]),
       [CALL]: [
         { result_json: JSON.stringify({ status: "succeeded", node_id: "n-v" }) },
-        { result_json: JSON.stringify({ download_url: `http://127.0.0.1:${file.port}/v.mp4` }) },
+        { result_json: JSON.stringify({ download_url: "https://cdn.example/v.mp4" }) },
       ],
     })
     const res = await handleMediaFetch(
@@ -196,10 +204,11 @@ test("GET /videos/{id}/content downloads the asset URL after a succeeded query",
     )
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toContain("video/mp4")
+    expect(res.headers.get("content-encoding")).toBeNull()
+    expect(res.headers.get("content-length")).toBeNull()
     expect(await res.text()).toBe("MP4")
-  } finally {
-    file.stop(true)
-  }
+  })
+  expect(asked).toEqual(["https://cdn.example/v.mp4"])
 })
 
 test("video id encoding keeps the model for a later query", () => {
@@ -313,16 +322,12 @@ function magpieEditsBody({ model = "MiniMax-Image", prompt, n = 1, size, quality
 
 test("an images/edits multipart body is uploaded through upload_temp_url, then generate_image", async () => {
   const posted = []
-  const upload = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    async fetch(req) {
-      const form = await req.formData()
-      posted.push({ policy: form.get("policy"), file: form.get("file") })
-      return new Response("ok")
-    },
-  })
-  try {
+  await withFakeFetch(async (req) => {
+    expect(req.url).toBe("https://upload.example/put")
+    const form = await req.formData()
+    posted.push({ policy: form.get("policy"), file: form.get("file") })
+    return new Response("ok")
+  }, async () => {
     const t = transport({
       [LIST]: catalog([
         entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }),
@@ -336,7 +341,7 @@ test("an images/edits multipart body is uploaded through upload_temp_url, then g
           expect(args).toEqual({ filename: "image0.png", mime_type: "image/png" })
           return {
             result_json: JSON.stringify({
-              upload_host: `http://127.0.0.1:${upload.port}/put`,
+              upload_host: "https://upload.example/put",
               temp_url: "https://temp.example/a.png",
               fields: { policy: "sig" },
               file_field_name: "file",
@@ -376,22 +381,16 @@ test("an images/edits multipart body is uploaded through upload_temp_url, then g
     expect(posted[0].policy).toBe("sig")
     expect(posted[0].file).toBeInstanceOf(Blob)
     expect(Buffer.from(await posted[0].file.arrayBuffer()).equals(PNG)).toBe(true)
-  } finally {
-    upload.stop(true)
-  }
+  })
 })
 
 test("a video data: input_reference is uploaded; an https URL is passed through", async () => {
   const posted = []
-  const upload = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    async fetch(req) {
-      posted.push(await req.formData())
-      return new Response("ok")
-    },
-  })
-  try {
+  await withFakeFetch(async (req) => {
+    expect(req.url).toBe("https://upload.example/put")
+    posted.push(await req.formData())
+    return new Response("ok")
+  }, async () => {
     const t = transport({
       [LIST]: catalog([
         entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }),
@@ -403,7 +402,7 @@ test("a video data: input_reference is uploaded; an https URL is passed through"
         if (name.endsWith("upload_temp_url")) {
           return {
             result_json: JSON.stringify({
-              upload_host: `http://127.0.0.1:${upload.port}/put`,
+              upload_host: "https://upload.example/put",
               temp_url: "https://temp.example/frame.png",
               fields: {},
             }),
@@ -432,9 +431,7 @@ test("a video data: input_reference is uploaded; an https URL is passed through"
     expect(res.status).toBe(200)
     expect((await res.json()).id).toBe("MiniMax-H3::task-data")
     expect(posted).toHaveLength(1)
-  } finally {
-    upload.stop(true)
-  }
+  })
 
   const t2 = transport({
     [LIST]: catalog([entry("submit_video_generation")]),
@@ -548,4 +545,127 @@ test("mediaRef accepts https and data: only", () => {
   expect(() => mediaRef("http://cdn.example/a.png")).toThrow("HTTPS URL")
   expect(() => mediaRef("ftp://files.example/a.png")).toThrow("HTTPS URL")
   expect(() => mediaRef("/tmp/a.png")).toThrow("HTTPS URL")
+})
+
+test("an images/edits body with a mask part is refused with a 400, and nothing is uploaded or generated", async () => {
+  const t = transport({
+    [LIST]: catalog([
+      entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }),
+      entry("generate_image"),
+      entry("get_asset_url"),
+    ]),
+    [CALL]: (r) => { throw new Error("unexpected " + r.body.runtime_tool_name) },
+  })
+  let uploads = 0
+  await withFakeFetch(() => { uploads++; return new Response("ok") }, async () => {
+    const form = magpieEditsBody({
+      prompt: "paint the masked part red",
+      images: [{ bytes: PNG, mime: "image/png" }],
+      mask: { bytes: PNG, mime: "image/png" },
+    })
+    const res = await handleMediaFetch(
+      "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/edits",
+      { method: "POST", body: form.body, headers: form.headers },
+      { request: t.request, siteId: "minimax-code" },
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.message).toContain("does not support mask edits")
+  })
+  expect(uploads).toBe(0)
+  expect(t.sent.filter((s) => s.path === CALL)).toHaveLength(0)
+})
+
+test("an upload host that isn't https is refused, loopback included", async () => {
+  for (const host of ["http://127.0.0.1:9/put", "http://localhost/put", "http://[::1]/put", "http://upload.example/put"]) {
+    let uploads = 0
+    const t = transport({
+      [LIST]: catalog([entry("upload_temp_url", { input_schema_json: UPLOAD_SCHEMA }), entry("generate_image")]),
+      [CALL]: (r) => {
+        if (r.body.runtime_tool_name.endsWith("upload_temp_url"))
+          return { result_json: JSON.stringify({ upload_host: host, temp_url: "https://temp.example/a.png", fields: {} }) }
+        throw new Error("unexpected " + r.body.runtime_tool_name)
+      },
+    })
+    await withFakeFetch(() => { uploads++; return new Response("ok") }, async () => {
+      const form = magpieEditsBody({ prompt: "x", images: [{ bytes: PNG, mime: "image/png" }] })
+      const res = await handleMediaFetch(
+        "https://agent.minimax.cn/mavis/api/v1/llm/v1/images/edits",
+        { method: "POST", body: form.body, headers: form.headers },
+        { request: t.request, siteId: "minimax-code" },
+      )
+      expect(res.status).not.toBe(200)
+      expect((await res.json()).error.message).toContain("not HTTPS")
+    })
+    expect(uploads).toBe(0)
+  }
+})
+
+test("a 401 on get_asset_url after generate_image renews and repeats only get_asset_url", async () => {
+  let f
+  try {
+    f = fakeMiniMax()
+    let generates = 0
+    let assetAsks = 0
+    f.route("POST /oauth2/token", () => json({ access_token: "tok-2", refresh_token: "r2", expires_in: 3600 }))
+    f.route("POST " + LIST, () => json(catalog([entry("generate_image"), entry("get_asset_url")])))
+    f.route("POST " + CALL, (r) => {
+      const name = r.json.runtime_tool_name
+      if (name.endsWith("generate_image")) {
+        generates++
+        return json({ result_json: JSON.stringify({ success_items: [{ node_id: "n2", file_name: "b.png" }] }) })
+      }
+      if (name.endsWith("get_asset_url")) {
+        assetAsks++
+        // the token expired while the generation ran
+        if (r.headers.get("authorization") === "Bearer tok") return json({ error: "expired" }, 401)
+        return json({ result_json: JSON.stringify({ download_url: "https://cdn.example/b.png" }) })
+      }
+      return json({ error: "unexpected " + name }, 500)
+    })
+    const hooks = await MiniMaxCodeAuthPlugin({ client: { auth: { set: async () => true } } })
+    const auth = { type: "oauth", access: "tok", refresh: "r", expires: Date.now() + 3600_000 }
+    const out = await hooks.auth.loader(async () => auth)
+    const res = await out.fetch(f.origin + "/mavis/api/v1/llm/v1/images/generations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a tree" }),
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("X-Magpie-Sign-In")).toBe("renewed")
+    expect(await res.json()).toMatchObject({ data: [{ url: "https://cdn.example/b.png" }] })
+    expect(generates).toBe(1)
+    expect(assetAsks).toBe(2)
+    expect(f.seen.filter((s) => s.path === "/oauth2/token")).toHaveLength(1)
+  } finally {
+    f?.close()
+  }
+})
+
+test("a refusal inside base_resp carries the HTTP status it means", async () => {
+  const { parseToolEnvelope } = _internal
+  const site = _internal.SITES["minimax-code"]
+  const parse = (env) => parseToolEnvelope(new Response(JSON.stringify(env)), site, new AbortController().signal).catch((e) => e)
+  expect((await parse({ base_resp: { status_code: 1002, status_msg: "rate limit" } })).status).toBe(429)
+  expect((await parse({ base_resp: { status_code: 2056, status_msg: "usage limit exceeded" } })).status).toBe(429)
+  expect((await parse({ base_resp: { status_code: 1008, status_msg: "insufficient balance" } })).status).toBe(402)
+  expect((await parse({ code: 1039, message: "token limit" })).status).toBe(429)
+  const other = await parse({ base_resp: { status_code: 2013, status_msg: "invalid params" } })
+  expect(other.message).toContain("invalid params")
+  expect(other.status).toBeUndefined()
+})
+
+test("the search hook rests the account on a base_resp rate limit", async () => {
+  let f
+  try {
+    f = fakeMiniMax()
+    f.route("POST " + SEARCH, () => json({ base_resp: { status_code: 1002, status_msg: "rate limit" } }))
+    const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
+    const err = await hooks.search["minimax-code"].execute(
+      { query: "MiniMax" },
+      { getAuth: async () => ({ access: "tok-1", type: "oauth" }) },
+    ).catch((e) => e)
+    expect(err.status).toBe(429)
+  } finally {
+    f?.close()
+  }
 })

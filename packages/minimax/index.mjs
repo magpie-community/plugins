@@ -1112,21 +1112,24 @@ function makePlugin(site) {
                 headers.set("accept-encoding", "identity")
                 return siteFetch(site, url, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
               }
-              const media = (access) => handleMediaFetch(url, {
-                method: init?.method ?? req?.method ?? "POST",
-                body,
-                headers: init?.headers ?? req?.headers,
-                signal: init?.signal ?? req?.signal,
-              }, { request: makeTokenRequest(site, access), siteId: site.id })
               let { a, renewed: did } = await fresh(getAuth)
+              // A 401 is renewed per tool call inside the transport, and
+              // only that call is asked again: retrying the whole media
+              // request would run a paid generate_image a second time when
+              // the 401 came on the get_asset_url after it.
+              const mediaRequest = makeTokenRequest(site, a.access, async (rejected) => {
+                ;({ a } = await fresh(getAuth, rejected))
+                did = true
+                return a.access
+              })
               let res
               try {
-                res = await media(a.access)
-                if (res?.status === 401) {
-                  ;({ a } = await fresh(getAuth, a.access))
-                  did = true
-                  res = await media(a.access)
-                }
+                res = await handleMediaFetch(url, {
+                  method: init?.method ?? req?.method ?? "POST",
+                  body,
+                  headers: init?.headers ?? req?.headers,
+                  signal: init?.signal ?? req?.signal,
+                }, { request: mediaRequest, siteId: site.id })
                 if (res) return answer(res, did)
                 res = await send(a)
                 if (res.status === 401) {
@@ -1291,6 +1294,23 @@ function toolRequestInit(site, access, path, body, abort) {
   }
 }
 
+// MiniMax reports some account refusals inside the envelope (HTTP 200)
+// rather than as an HTTP status. These codes, from MiniMax's published
+// error code list, are thrown with the HTTP status they mean, so magpie
+// rests the account for search the way it does for a real 429 or 402:
+// rate, token, connection and plan-window limits are 429; no balance or
+// credit is 402. Any other code is thrown with no status.
+const REFUSAL_STATUS = new Map([
+  [1002, 429], [1039, 429], [1041, 429], [1045, 429], [2045, 429], [2056, 429], [2062, 429],
+  [1008, 402], [2053, 402],
+])
+function envelopeError(code, message) {
+  const err = new Error("MiniMax tool API: " + (message ?? "status " + code))
+  const status = REFUSAL_STATUS.get(code)
+  if (status) err.status = status
+  return err
+}
+
 // parseToolEnvelope reads one tool API response: a non-OK status is
 // thrown with that status (so a 401 can be renewed), then the JSON
 // envelope and base_resp are checked the same way for chat tools and
@@ -1307,14 +1327,14 @@ async function parseToolEnvelope(res, site, abort) {
     const { code: rawCode, message, ...payload } = env
     const code = num(rawCode)
     if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
-    if (code !== 0) throw new Error("MiniMax tool API: " + (str(env, "message") ?? "status " + code))
+    if (code !== 0) throw envelopeError(code, str(env, "message"))
     if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
   }
   if (env.base_resp !== undefined) {
     const br = obj(env.base_resp)
     const code = br && num(br.status_code)
     if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
-    if (code !== 0) throw new Error("MiniMax tool API: " + (str(br, "status_msg") ?? "status " + code))
+    if (code !== 0) throw envelopeError(code, str(br, "status_msg"))
   }
   checked(env, "MiniMax tool API")
   abort.throwIfAborted()
@@ -1334,10 +1354,38 @@ async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } 
   }
 }
 
-function makeTokenRequest(site, access) {
-  return (siteID, path, body, opts = {}) => {
+// makeTokenRequest is the tool transport for one signed-in account. Like
+// createToolRequest, a 401 is renewed per HTTP call: renewAccess(rejected)
+// gives a newer token, and only the call that got the 401 is sent again.
+// Later calls keep the newer token. Without renewAccess a 401 is thrown
+// with its status.
+function makeTokenRequest(site, access, renewAccess) {
+  let current = access
+  const secrets = new Set([access])
+  return async (siteID, path, body, { signal, timeoutMs = 30000 } = {}) => {
     if (siteID !== site.id) throw new Error("account must belong to the selected MiniMax Code site")
-    return postTool(site, access, path, body, opts)
+    const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+    abort.throwIfAborted()
+    const send = (token) => {
+      abort.throwIfAborted()
+      const req = toolRequestInit(site, token, path, body, abort)
+      return siteFetch(site, req.url, req.init, req.what)
+    }
+    try {
+      const sent = current
+      let res = await send(sent)
+      if (res.status === 401 && renewAccess) {
+        await res.body?.cancel()
+        // another call may have renewed it already
+        if (current === sent) current = await renewAccess(sent)
+        secrets.add(current)
+        res = await send(current)
+      }
+      return await parseToolEnvelope(res, site, abort)
+    } catch (e) {
+      e.message = redactSecrets(e.message, secrets)
+      throw e
+    }
   }
 }
 
