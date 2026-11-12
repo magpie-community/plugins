@@ -73,7 +73,10 @@ wrapped in the app's envelope (`{model, project, userAgent: "antigravity",
 requestType: "agent", requestId, request}`):
 
 - The User-Agent is `antigravity/hub/<version> <os>/<arch>`. The version is
-  read from the app's update manifest every 6 hours.
+  read from the app's update manifest every 6 hours. Google lists Gemini 4
+  only to new enough releases, so a manifest that can't be read is asked
+  again after a minute, and the model list is read again when the version
+  changes.
 - The session id is a number made from the host's session header when named,
   else the conversation's first real user prompt (skipping injected
   `AGENTS.md` and environment preambles), so unrelated conversations that

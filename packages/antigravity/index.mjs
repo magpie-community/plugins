@@ -53,13 +53,18 @@ const BASE = DAILY + "/v1beta"
 const NPM = "@ai-sdk/google"
 
 const VERSION_URL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
-const DEFAULT_VERSION = "2.9.1"
+// the manifest's version on 2026-11-12; Google serves Gemini 4 only to
+// releases about this new (2.9.1 got no Gemini 4, #1057)
+const DEFAULT_VERSION = "2.31.2"
 
 const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const MODELS_TTL = 10 * 60 * 1000
 const TIERS_TTL = 60 * 60 * 1000
 const TIER_REFUSED_FOR = 24 * 60 * 60 * 1000
 const VERSION_TTL = 6 * 60 * 60 * 1000
+// a manifest that couldn't be read is asked again this soon, not in six hours
+const VERSION_RETRY = 60 * 1000
+const VERSION_TIMEOUT = 15 * 1000
 
 // the header magpie names a request's effort in
 const EFFORT = "x-magpie-effort"
@@ -107,25 +112,34 @@ const platform = () => `${GOOS[process.platform] ?? process.platform}/${GOARCH[p
 const ver = { v: "", at: 0, pending: null }
 
 // version is the Antigravity release the requests say they come from,
-// read from the app's own update manifest every six hours
+// read from the app's own update manifest every six hours. Google lists
+// and serves some models (Gemini 4) only to new enough releases, so a
+// manifest that can't be read keeps the default for a minute only, and a
+// version that changes drops the model lists read under the old one.
 async function version() {
   if (ver.v && Date.now() - ver.at < VERSION_TTL) return ver.v
   if (ver.pending) return ver.pending
   ver.at = Date.now()
   if (!ver.v) ver.v = DEFAULT_VERSION
   ver.pending = (async () => {
+    let read = ""
     try {
-      const res = await fetch(VERSION_URL, { headers: { "User-Agent": "electron-builder" }, signal: AbortSignal.timeout(5000) })
+      const res = await fetch(VERSION_URL, { headers: { "User-Agent": "electron-builder" }, signal: AbortSignal.timeout(VERSION_TIMEOUT) })
       if (res.ok) {
         const text = (await res.text()).slice(0, 64 << 10)
         for (const line of text.split(/\r?\n/)) {
           if (!line.startsWith("version:")) continue
           const v = line.slice(8).trim().replace(/^['"]+|['"]+$/g, "")
-          if (v && /^[0-9.]+$/.test(v)) ver.v = v
+          if (v && /^[0-9.]+$/.test(v)) read = v
           break
         }
       }
     } catch {}
+    if (!read) ver.at = Date.now() - VERSION_TTL + VERSION_RETRY
+    else if (read !== ver.v) {
+      ver.v = read
+      lists.clear()
+    }
     ver.pending = null
     return ver.v
   })()
@@ -1911,4 +1925,8 @@ export const _internal = {
   lists,
   refused,
   ver,
+  version,
+  VERSION_TTL,
+  VERSION_RETRY,
+  DEFAULT_VERSION,
 }

@@ -244,6 +244,15 @@ test("a dated model only the agent lists keeps its date, named or not (#677)", a
   assert.equal(names["deepseek-v4.1-flash-0930"], "Deepseek V4.1 Flash 0930")
 })
 
+test("stop goes as the string the gateway takes, and an empty one not at all (magpie#6342)", () => {
+  const stop = (v) => x.prepareChatBody({ model: "GLM-5.2", messages: [], stop: v }).body
+  assert.equal(stop(["\n\n"]).stop, "\n\n")
+  assert.equal(stop(["", "###", "Observation:"]).stop, "###")
+  assert.equal(stop("###").stop, "###")
+  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in stop(v), false, JSON.stringify(v))
+  assert.equal("stop" in x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body, false)
+})
+
 test("prepareChatBody reshapes a chat into what the gateway accepts and meters", () => {
   const out = x.prepareChatBody({ model: "codearts/GLM-5.2", messages: [], max_tokens: 128000 })
   assert.equal(out.fold, true)
