@@ -9,7 +9,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import path from 'node:path';
 import os from 'node:os';
@@ -84,8 +84,10 @@ let REMOTE_CALLERS = [];
 // Host 校验：默认只认识回环名。反代或非回环部署时用 ALLOWED_HOSTS=域名1,域名2 显式放行。
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 const STATIC_DIR = path.join(ROOT, 'static');
-// 品牌 logo：读 magpie 自己维护的 plugin-providers.json（插件注册 provider 时上报的 id→icon，
-// data URI 为主）。零扫描、零下载、零落盘——https 图标不抓取（避免启动时向第三方 CDN 发请求），
+// 品牌 logo：magpie 自己维护的 plugin-providers.json（插件注册时上报的 id→data URI 图标）
+// 与本机 icons/ 缓存（quotas.json、远端 provider 名下的 file: 图标）。零下载、零落盘：
+// https 图标一律不抓取（避免向第三方 CDN 发请求）；远端 provider 的 id→图标名只在
+// remote 归因模式下向远端 magpie 的 usage/requests 问一次，图标本体仍读本机缓存。
 // 页面对没有图标的品牌用首字色块兜底。
 const PROVIDERS_FILE = process.env.MAGPIE_PROVIDERS_FILE || '';
 const MAGPIE_PROVIDERS = process.env.MAGPIE_PROVIDERS || path.join(CONFIG_DIR, 'providers.json');
@@ -357,16 +359,18 @@ function remoteSources() {
   if (ATTRIBUTION_MODE !== 'remote') return [];
   const callers = REMOTE_CALLERS;
   const out = [];
-  const push = (base, key) => {
+  const push = (base, key, id, name) => {
     const b = String(base || '').replace(/\/+$/, '').replace(/\/v1$/, '');
     let u; try { u = new URL(b); } catch { return; }
     // Bearer key 只走 https；明文 http 仅限本机回环（本地测试用）
     if (u.protocol !== 'https:' && !['127.0.0.1', 'localhost', '::1'].includes(u.hostname)) return;
-    if (key && !out.some((x) => x.base === b && x.key === key)) out.push({ base: b, key, callers });
+    if (key && !out.some((x) => x.base === b && x.key === key)) {
+      out.push({ base: b, key, callers, id: id || 'remote-magpie', name: name || id || 'Remote magpie' });
+    }
   };
   if (process.env.REMOTE_BASE && process.env.REMOTE_KEY) {
     // 显式 override 独占：设置 REMOTE_BASE/KEY 时不再读 providers.json（文档承诺的语义）
-    push(process.env.REMOTE_BASE, process.env.REMOTE_KEY);
+    push(process.env.REMOTE_BASE, process.env.REMOTE_KEY, 'remote-magpie', 'Remote magpie');
     return out;
   }
   try {
@@ -374,7 +378,7 @@ function remoteSources() {
     for (const p of j.providers || []) {
       if (!p || !p.key || !/^https?:\/\//.test(String(p.chat || p.responses || ''))) continue;
       if (p.preset !== 'remote-magpie' && p.id !== 'magpie-direct' && p.id !== 'magpie-cf') continue;
-      push(p.chat || p.responses, p.key);
+      push(p.chat || p.responses, p.key, p.id, p.name);
     }
   } catch {}
   return out;
@@ -447,6 +451,8 @@ async function readRemoteAttribution(period, days, callers, sources) {
     }
   }
   lastGoodRemote = picked.src;
+  // 远端 providers[] 顺带带上各自的 icon 名：归因每 5 分钟刷新一次，图标映射也就跟着保鲜
+  harvestRemoteLogos(picked.page && picked.page.providers);
   const rows = await fetchRemoteRows(picked.src, period, picked.page);
   const data = await aggregateAttribution(rows, { period, days, callers, source: 'remote' });
   attrCache = { key: 'remote:' + picked.src.base + suffix, data };
@@ -560,6 +566,14 @@ async function handleRequest(req, res, url) {
           upstream('/v1/magpie/limit?format=json').catch(() => null),
         ]);
         const out = { ...r.json };
+        // magpie 不再聚合远端账号卡时（0.1.3771 对 0.1.3729 远端实测只回本机卡），
+        // remote 模式下看板自己补：向远端要 /v1/magpie/quotas/cards，按线路前缀合并。
+        if (r.code === 200 && Array.isArray(out.data) && !hasRemoteLineCards(out.data)) {
+          const extra = await ensureRemoteCards().catch(() => []);
+          if (extra.length) out.data = out.data.concat(extra);
+        }
+        // icons：远端 provider 的 id→data URI（本地图标缓存），前端合并进 QLOGOS 后再画卡片
+        out.icons = remoteLogos;
         // magpie 0.1.2981+ 的 /v1/magpie/limit：报告本 caller key 当前被什么 holds（limited/key）
         if (lim && lim.code === 200 && lim.json && typeof lim.json === 'object') out.limit = lim.json;
         // code 0 = 网关无响应（upstream 内部已重试）：writeHead(0) 会 RangeError 并吞掉真实原因
@@ -594,7 +608,8 @@ async function handleRequest(req, res, url) {
         if (sources.length) {
           try {
             const data = await readRemoteAttribution(period, days, sources[0].callers, sources);
-            return json(res, 200, data);
+            // icons：远端 provider 的 id→data URI（本地图标缓存），前端合并进 QLOGOS 后重画卡片
+            return json(res, 200, Object.assign({}, data, { icons: remoteLogos }));
           } catch (e) {
             return json(res, 502, { error: 'remote attribution: ' + String(e && e.message || e) });
           }
@@ -662,8 +677,33 @@ async function handleRequest(req, res, url) {
       if (u.code !== 200) note = 'usage API ' + u.code;
     } catch (e) { note = String(e && e.message || e); }
     const trap = '<script>window.__errs=[];window.addEventListener("error",function(e){var m=e.message||((e.target&&e.target.src||e.target&&e.target.href)?("resource: "+(e.target.src||e.target.href)):"");if(!m)return;window.__errs.push(m+" @ "+(e.filename||"")+":"+(e.lineno||0)+":"+(e.colno||0))},true);window.addEventListener("unhandledrejection",function(e){window.__errs.push("PROMISE: "+String(e.reason&&e.reason.message||e.reason))});<\/script>';
-    // 品牌 logo 映射 = magpie 自己的 plugin-providers.json（data URI，启动时读一次）
-    const inject = `<script>window.__DATA__=${JSON.stringify(data).replace(/</g, '\\u003c')};window.__NOTE__=${JSON.stringify(note)};window.QLOGOS=${JSON.stringify(providerLogos).replace(/</g, '\\u003c')};window.__BUILD__=${JSON.stringify(`${VERSION}/${BUILD_ID}`)};</script>`;
+    // 品牌 logo 映射 = 本机 plugin-providers.json / quotas.json 的 data URI，
+    // 再叠加远端 provider 的图标（远端 providers[] 给出 icon 名，本体读本机 icons/ 缓存）。
+    // 远端只在 remote 归因模式下才问，且最多等 2.5s：宁可先出首字色块，也不拖住整页。
+    await Promise.race([ensureRemoteLogos(), new Promise((r) => setTimeout(r, 2500))]);
+    const logos = Object.assign({}, providerLogos, remoteLogos);
+    // 额度卡上还缺图标的本机旧缓存品牌：只补当前卡片用得到的 id，且分两轮——
+    // 先落精确同名（modelscope.ico 先就位），再走别名/去后缀（msmoli → modelscope、
+    // qingyan-checkin → qingyan），避免同一张图被别名各存一份。
+    const need = [];
+    for (const q of (data.quotas || [])) {
+      const id = String(q && q.provider || '')
+        .replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//, '').replace(/#.*$/, '').toLowerCase();
+      if (id && !need.includes(id)) need.push(id);
+    }
+    const legacy = loadLegacyLogos();
+    for (const id of need) if (legacy[id] && !logoHit(id, logos)) logos[id] = legacy[id];
+    for (const id of need) {
+      if (logoHit(id, logos)) continue;
+      const uri = legacyLogoFor(id);
+      if (uri) logos[id] = uri;
+    }
+    // 同图别名去重：前端 brandIcon() 会去后缀再查，主 id 在就不必存变体
+    for (const k of Object.keys(logos)) {
+      const base = k.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/, '');
+      if (base !== k && logos[base] === logos[k]) delete logos[k];
+    }
+    const inject = `<script>window.__DATA__=${JSON.stringify(data).replace(/</g, '\\u003c')};window.__NOTE__=${JSON.stringify(note)};window.QLOGOS=${JSON.stringify(logos).replace(/</g, '\\u003c')};window.__BUILD__=${JSON.stringify(`${VERSION}/${BUILD_ID}`)};</script>`;
     // 页面需要的口令只出现在这份 HTML 里；API 路由仍校验它，URL/书签里不出现
     const keyInject = PAGE_KEY ? `<script>window.__KEY__=${JSON.stringify(PAGE_KEY).replace(/</g, '\\u003c')};</script>` : '';
     html = html.replace('<head>', () => '<head>' + keyInject + trap + inject);
@@ -753,11 +793,14 @@ async function probe(hp) {
 // 在前端保持不变，未命中品牌走首字色块。
 let providerLogos = {};
 function loadProviderLogos() {
+  const out = {};
+  let total = 0;
+  // 来源 ①：plugin-providers.json —— magpie 的 provider 注册表，插件自己上报的
+  // data URI 图标（零下载：https 图标一律不抓，那会让本机服务在启动时向第三方
+  // CDN 发起用户不可见的请求——维护者复审红线）。
   const f = PROVIDERS_FILE || path.join(CONFIG_DIR, 'plugin-providers.json');
   try {
     const j = JSON.parse(readFileSync(f, 'utf8'));
-    const out = {};
-    let total = 0;
     for (const p of Object.values(j)) {
       const id = p && typeof p.id === 'string' ? p.id.toLowerCase() : '';
       const icon = p && typeof p.icon === 'string' ? p.icon : '';
@@ -767,11 +810,230 @@ function loadProviderLogos() {
       if (out[id] === undefined) { out[id] = icon; total += icon.length; }
       if (total > 4 * 1024 * 1024) break; // 注入 HTML 的总体积上限
     }
-    providerLogos = out;
-    console.log(`[magpie-usage] logos: ${Object.keys(out).length} brands from ${f}`);
+    console.log(`[magpie-usage] logos: ${Object.keys(out).length} data-URI brands from ${f}`);
   } catch (e) {
-    console.log(`[magpie-usage] logos: plugin-providers.json not readable (${(e && e.code) || (e && e.message) || e}) — badges only`);
+    console.log(`[magpie-usage] logos: plugin-providers.json not readable (${(e && e.code) || (e && e.message) || e})`);
   }
+  // 来源 ②：quotas.json —— magpie 给每个账号缓存的图标（quota.icon: file:xxx =
+  // CONFIG_DIR/icons/xxx，magpie 自己已下载的；或内置色名 modelscope-color，
+  // 没有实体文件，跳过）。同为本地读，零网络。
+  try {
+    const q = JSON.parse(readFileSync(path.join(CONFIG_DIR, 'quotas.json'), 'utf8'));
+    let added = 0;
+    for (const [key, v] of Object.entries(q)) {
+      if (total > 4 * 1024 * 1024) break;
+      const icon = v && v.quota && typeof v.quota.icon === 'string' ? v.quota.icon : '';
+      if (!icon.startsWith('file:')) continue; // 内置色名（modelscope-color 等）无实体文件
+      const prov = typeof key === 'string' ? key.split('/')[0].toLowerCase() : '';
+      if (!prov || out[prov] !== undefined) continue;
+      // file: 后取 basename 再拼回 icons/：防 icon 值里夹 ../ 之类穿越
+      const base = path.basename(icon.slice(5));
+      if (!/\.(png|svg|webp|jpg|jpeg|ico)$/i.test(base)) continue;
+      try {
+        const buf = readFileSync(path.join(CONFIG_DIR, 'icons', base));
+        if (!buf.length || buf.length > 2 * 1024 * 1024) continue;
+        const ext = path.extname(base).slice(1).toLowerCase();
+        const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'ico' ? 'image/x-icon' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+        out[prov] = `data:${mime};base64,${buf.toString('base64')}`;
+        total += buf.length;
+        added++;
+      } catch {}
+    }
+    if (added) console.log(`[magpie-usage] logos: +${added} from quotas.json icons (local cache)`);
+  } catch {}
+  providerLogos = out;
+}
+
+// 走远端线路的 provider（quota 卡上的 magpie-direct/duanyan 这类）在本机没有注册，
+// plugin-providers.json / quotas.json 里都没有它们的 id→图标。远端 magpie 的
+// /v1/magpie/usage/requests 会在 providers[] 里给出每条 provider 的 icon 名，
+// 其中 file:<文件名> 指向的图标文件 magpie 客户端早就下载过、就缓存在
+// CONFIG_DIR/icons/ —— 这里只读本地缓存拼 data URI，不碰任何第三方图源。
+// 映射本身只能问远端（与远端归因同一把 provider key、同在 remote 模式下），
+// 因此拿不到时退回页面原有的首字色块，不是错误。
+let remoteLogos = {};
+let remoteLogosAt = 0, remoteLogosPending = null, remoteLogosFailedAt = 0;
+const REMOTE_LOGOS_TTL = 30 * 60 * 1000, REMOTE_LOGOS_RETRY = 5 * 60 * 1000;
+
+function iconSpecToDataUri(spec) {
+  if (typeof spec !== 'string' || !spec.startsWith('file:')) return '';
+  // 只认 icons/ 下的 basename 与图片后缀：防 icon 值里夹 ../ 之类穿越
+  return iconFileDataUri(path.basename(spec.slice(5)), path.join(CONFIG_DIR, 'icons'));
+}
+
+function iconFileDataUri(base, dir) {
+  if (!/\.(png|svg|webp|jpg|jpeg|ico)$/i.test(base)) return '';
+  try {
+    const buf = readFileSync(path.join(dir, base));
+    if (!buf.length || buf.length > 2 * 1024 * 1024) return '';
+    const ext = path.extname(base).slice(1).toLowerCase();
+    const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'ico' ? 'image/x-icon' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch { return ''; }
+}
+
+// 最后一级兜底：本插件旧版（≤0.1.0）把扫描来的品牌图标写在 CONFIG_DIR/usage-board/logos/
+// （文件名 = 品牌 id）。新版不再写它，但老用户机器上的残留正好补上 magpie icons/ 缓存里
+// 缺的品牌（kuku、qingyan-checkin…）。只读、只给当前额度卡用得到的 id 用，目录不存在＝空表。
+let legacyLogos = null;
+function loadLegacyLogos() {
+  if (legacyLogos) return legacyLogos;
+  const out = {};
+  const dir = path.join(CONFIG_DIR, 'usage-board', 'logos');
+  let names = [];
+  try { names = readdirSync(dir); } catch {}
+  for (const name of names) {
+    const ext = path.extname(name);
+    if (!/^\.(png|svg|webp|jpg|jpeg|ico)$/i.test(ext)) continue;
+    const id = name.slice(0, -ext.length).toLowerCase();
+    if (!id || out[id]) continue;
+    const uri = iconFileDataUri(name, dir);
+    if (uri) out[id] = uri;
+  }
+  return (legacyLogos = out);
+}
+
+// 与页面 brandIcon() 同一套别名链，判断「某 id 已经能命中现成图标」：
+// 命中就不必再从旧缓存补一张（monkeycode-intl 与 monkeycode 是同一张图）。
+const LOGO_ALIAS = { 'opencode-2-free': 'zen', 'opencode-zen-free': 'zen', 'msmoli': 'modelscope', 'msmoli-ai': 'modelscope', '~keys': 'magpie' };
+
+function logoCands(id) {
+  const base = id.replace(/^hub-/, '');
+  // 精确 → 别名 → 去 hub- 前缀 → 去变体后缀（qingyan-checkin → qingyan）
+  return [id, LOGO_ALIAS[id], base, base.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/, '')];
+}
+
+function legacyLogoFor(id) {
+  const map = loadLegacyLogos();
+  for (const c of logoCands(id)) if (c && map[c]) return map[c];
+  return '';
+}
+
+function logoHit(id, logos) {
+  for (const c of logoCands(id)) if (c && logos[c]) return c;
+  return '';
+}
+
+function harvestRemoteLogos(list) {
+  if (!Array.isArray(list) || !list.length) return false;
+  const found = new Map();
+  for (const p of list) {
+    const id = p && typeof p.id === 'string' ? p.id.toLowerCase() : '';
+    if (!id || found.has(id)) continue;
+    const uri = iconSpecToDataUri(p.icon);
+    if (uri) found.set(id, uri);
+  }
+  // 同图别名（monkeycode-intl / monkeycode、msmoli-ai / msmoli）只留主 id：
+  // 前端 brandIcon() 本来就会去掉 -intl/-cn/-global… 后缀再查一次，
+  // 不必把同一张图在 HTML 里存两遍（monkeycode 的图 base64 就有 180KB）。
+  for (const id of [...found.keys()]) {
+    const base = id.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/, '');
+    if (base !== id && found.get(base) === found.get(id)) found.delete(id);
+  }
+  let changed = false, total = 0;
+  for (const v of Object.values(remoteLogos)) total += v.length;
+  for (const [id, uri] of found) {
+    if (remoteLogos[id] === uri) continue;
+    if (total + uri.length > 4 * 1024 * 1024) continue; // 注入 HTML 的总体积上限（同来源 ①）
+    remoteLogos[id] = uri;
+    total += uri.length;
+    changed = true;
+  }
+  if (changed) console.log(`[magpie-usage] logos: ${Object.keys(remoteLogos).length} remote provider icons (local icon cache)`);
+  return changed;
+}
+
+// 页面渲染不等远端：启动时预热一次，页面最多再等 2.5s；失败 5 分钟内不重试。
+// 归因接口返回时会再合并一次并让前端重画卡片，所以即便这里超时也能补齐。
+async function ensureRemoteLogos() {
+  if (ATTRIBUTION_MODE !== 'remote') return remoteLogos;
+  if (Date.now() - remoteLogosAt < REMOTE_LOGOS_TTL) return remoteLogos;
+  if (remoteLogosPending) return remoteLogosPending;
+  if (Date.now() - remoteLogosFailedAt < REMOTE_LOGOS_RETRY) return remoteLogos;
+  remoteLogosPending = (async () => {
+    for (const src of orderedSources()) {
+      try {
+        // 只要 providers[] 元数据：limit=1 让这次请求和归因拉全量页区分开
+        const r = await fetch(src.base + '/v1/magpie/usage/requests?period=7d&limit=1', {
+          headers: { Authorization: 'Bearer ' + src.key }, signal: AbortSignal.timeout(3000),
+        });
+        if (!r.ok) continue;
+        const j = await r.json();
+        harvestRemoteLogos(j.providers);
+        remoteLogosAt = Date.now();
+        return remoteLogos;
+      } catch {}
+    }
+    remoteLogosFailedAt = Date.now();
+    return remoteLogos;
+  })().finally(() => { remoteLogosPending = null; });
+  return remoteLogosPending;
+}
+
+// 远端额度卡：正常情况下 magpie 自己把远端 magpie 的账号卡并进 /v1/magpie/quotas；
+// 它没并（新版本对旧远端/线路波动时实测只回本机卡）而看板又在 remote 归因模式下，
+// 就用同一把 provider key 向同一远端要 /v1/magpie/quotas/cards，按线路前缀补进卡片
+// 列表——卡片自带 icon 名，顺手喂给远端图标映射。magpie 恢复聚合后此兜底自动让位。
+let remoteCards = [], remoteCardsAt = 0, remoteCardsPending = null, remoteCardsFailedAt = 0;
+const REMOTE_CARDS_TTL = 5 * 60 * 1000, REMOTE_CARDS_RETRY = 2 * 60 * 1000;
+
+function hasRemoteLineCards(list) {
+  // 线路名下的 ~keys 是本机 key 自己的预算卡，不算远端账号卡
+  return (list || []).some((q) => {
+    const p = String(q && q.provider || '');
+    return /^(magpie-direct|magpie-cf|remote-magpie|magpie-2)\//.test(p) && !/\/~keys$/.test(p);
+  });
+}
+
+async function ensureRemoteCards() {
+  if (ATTRIBUTION_MODE !== 'remote') return remoteCards;
+  if (Date.now() - remoteCardsAt < REMOTE_CARDS_TTL) return remoteCards;
+  if (remoteCardsPending) return remoteCardsPending;
+  if (Date.now() - remoteCardsFailedAt < REMOTE_CARDS_RETRY) return remoteCards;
+  remoteCardsPending = (async () => {
+    for (const src of orderedSources()) {
+      try {
+        const r = await fetch(src.base + '/v1/magpie/quotas/cards', {
+          headers: { Authorization: 'Bearer ' + src.key }, signal: AbortSignal.timeout(6000),
+        });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const out = [];
+        const bare = [];
+        for (const c of (Array.isArray(j) ? j : j.data) || []) {
+          const prov = c && typeof c.provider === 'string' ? c.provider : '';
+          if (!prov) continue;
+          // 与 magpie 自己聚合时的口径一致：provider 加线路前缀，名字缀线路名
+          out.push({ ...c, provider: src.id + '/' + prov, name: c.name ? `${c.name} · ${src.name}` : src.name, from: src.name });
+          bare.push({ id: prov, icon: c.icon }); // 图标映射按裸 provider id 记
+        }
+        if (!out.length) continue;
+        harvestRemoteLogos(bare);
+        // 远端卡里还有图标没落地的品牌（icons/ 缓存缺、但旧版 logos/ 目录里有）：
+        // 精确同名 → 别名/去后缀两轮补齐，与首屏注入同一套逻辑
+        const legacy = loadLegacyLogos();
+        for (const c of out) {
+          const id = String(c.provider || '').replace(/^[^/]+\//, '').toLowerCase();
+          if (!id || logoHit(id, remoteLogos)) continue;
+          if (legacy[id] && !logoHit(id, remoteLogos)) { remoteLogos[id] = legacy[id]; continue; }
+          const uri = legacyLogoFor(id);
+          if (uri && !logoHit(id, remoteLogos)) remoteLogos[id] = uri;
+        }
+        // 同图别名去重（monkeycode-intl↔monkeycode…）
+        for (const k of Object.keys(remoteLogos)) {
+          const base = k.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/, '');
+          if (base !== k && remoteLogos[base] === remoteLogos[k]) delete remoteLogos[k];
+        }
+        remoteCards = out;
+        remoteCardsAt = Date.now();
+        console.log(`[magpie-usage] quotas: +${out.length} remote provider cards from ${src.name}`);
+        return remoteCards;
+      } catch {}
+    }
+    remoteCardsFailedAt = Date.now();
+    return remoteCards;
+  })().finally(() => { remoteCardsPending = null; });
+  return remoteCardsPending;
 }
 
 function main(resolve, reject) {
@@ -866,6 +1128,8 @@ function main(resolve, reject) {
     console.log(`[magpie-usage] listening on http://${URL_HOST}:${port}/  gateway=${GATEWAY}  jsonl=${USAGE_JSONL}(${existsSync(USAGE_JSONL) ? 'ok' : 'missing'})  attribution=${ATTRIBUTION_MODE}  build=${BUILD_ID}`);
     console.log(`[magpie-usage] open ${openUrl(port)}`);
     server.on('error', (e) => console.log(`[magpie-usage] server error: ${e.message}`)); // 绑定后的常驻兜底
+    // 预热远端 provider 图标（remote 模式下才发请求；失败不影响启动）
+    ensureRemoteLogos().catch(() => {});
     resolve(port);
   }
 }

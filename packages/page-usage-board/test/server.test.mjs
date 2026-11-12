@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -437,9 +437,170 @@ test('brand logos come from magpie, with zero network fetches', async () => {
     assert.equal(page.status, 200);
     assert.ok(page.body.includes(icon), 'data-URI logo injected');
     assert.doesNotMatch(page.body, /cdn\.example\.com/);
-    assert.match(s.captured.out, /logos: 1 brands/);
+    assert.match(s.captured.out, /logos: 1 data-URI brands/);
   } finally {
     s.c.kill();
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('quota account icons (magpie icons cache) join QLOGOS as data URIs', async () => {
+  // 来源 ②：magpie 自己缓存的账号图标（quotas.json 的 quota.icon: file:xxx →
+  // CONFIG_DIR/icons/xxx）。同样是本地读，零网络。内置色名（非 file:）跳过。
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-qaicons-'));
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c626001000000ffff03000006000557bfabd40000000049454e44ae426082', 'hex');
+  mkdirSync(path.join(dir, 'icons'));
+  writeFileSync(path.join(dir, 'icons', 'raccoon-cache.png'), png);
+  writeFileSync(path.join(dir, 'quotas.json'), JSON.stringify({
+    'raccoon/user-1': { quota: { name: 'Raccoon', icon: 'file:raccoon-cache.png' } },
+    'modelscope/user-1': { quota: { name: 'ModelScope', icon: 'modelscope-color' } }, // 内置色名，无文件
+    'evil/none': { quota: { name: 'Evil', icon: 'file:../../server.mjs' } },        // 穿越必须被 basename 挡掉
+  }));
+  // plugin-providers.json 指向同目录同名文件（不存在 → 来源①为 0，隔离两来源）
+  writeFileSync(path.join(dir, 'plugin-providers.json'), '{}');
+  const s = start({
+    MAGPIE_CONFIG_DIR: dir, // 隔离 CONFIG_DIR：否则 quotas.json/icons 会读到本机真实的 ~/.config/magpie
+    USAGE_JSONL: path.join(dir, 'usage.jsonl'),
+    MAGPIE_PROVIDERS_FILE: path.join(dir, 'plugin-providers.json'),
+  });
+  try {
+    const p = await s.ready;
+    const page = await request(p, '/');
+    assert.equal(page.status, 200);
+    const m = page.body.match(/window.QLOGOS=(\{.*?\});/s);
+    assert.ok(m, 'QLOGOS injected');
+    const q = JSON.parse(m[1].replace(/\\u003c/g, '<'));
+    assert.ok(q.raccoon && q.raccoon.startsWith('data:image/png;base64,'), 'raccoon icon converted from the local cache');
+    assert.equal(q.modelscope, undefined, 'built-in color names are skipped');
+    assert.equal(Object.keys(q).filter((k) => k === 'evil' || k === 'server').length, 0, 'traversal stays blocked');
+    assert.match(s.captured.out, /\+1 from quotas\.json icons/);
+  } finally {
+    s.c.kill();
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('remote provider icons come from the remote mapping + local icons cache', async () => {
+  // 远端线路的 provider（magpie-direct/duanyan）本机没注册：id→图标名只用远端
+  // /v1/magpie/usage/requests 的 providers[]；图标本体读本机 icons/ 缓存，零第三方请求。
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-rlogos-'));
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>');
+  mkdirSync(path.join(dir, 'icons'));
+  writeFileSync(path.join(dir, 'icons', 'brand-cache.svg'), svg);
+  writeFileSync(path.join(dir, 'plugin-providers.json'), '{}');
+  writeFileSync(path.join(dir, 'usage.jsonl'), '');
+  const remote = http.createServer((req, res) => {
+    if (req.url.startsWith('/v1/magpie/usage/requests')) {
+      res.setHeader('content-type', 'application/json');
+      // monkeycode / monkeycode-intl 共用同一张图：变体名必须被去重
+      return res.end(JSON.stringify({
+        rows: [], total: 0,
+        providers: [
+          { id: 'duanyan', name: '书生端砚', icon: 'file:brand-cache.svg' },
+          { id: 'monkeycode', name: 'MonkeyCode', icon: 'file:brand-cache.svg' },
+          { id: 'monkeycode-intl', name: 'MonkeyCode (国际版)', icon: 'file:brand-cache.svg' },
+          { id: 'catpaw', name: 'CatPaw', icon: 'generic' },
+        ],
+      }));
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise((r) => remote.listen(0, '127.0.0.1', r));
+  const rport = remote.address().port;
+  const s = start({
+    MAGPIE_CONFIG_DIR: dir,
+    USAGE_JSONL: path.join(dir, 'usage.jsonl'),
+    MAGPIE_PROVIDERS_FILE: path.join(dir, 'plugin-providers.json'),
+    ATTRIBUTION: 'remote',
+    REMOTE_BASE: `http://127.0.0.1:${rport}`,
+    REMOTE_KEY: 'test-remote-key',
+  });
+  try {
+    const p = await s.ready;
+    const page = await request(p, '/');
+    const m = page.body.match(/window\.QLOGOS=(\{.*?\});/s);
+    assert.ok(m, 'QLOGOS injected');
+    const logos = JSON.parse(m[1].replace(/\\u003c/g, '<'));
+    assert.ok(logos.duanyan && logos.duanyan.startsWith('data:image/svg+xml;base64,'), 'remote file: icon resolved from the local cache');
+    assert.equal(logos['monkeycode-intl'], undefined, 'same-image variant ids are deduped');
+    assert.equal(logos.monkeycode, logos.duanyan, 'both ids share the one cached icon');
+    assert.equal(logos.catpaw, undefined, 'built-in icon names are skipped');
+    // 归因接口也带上同一份映射，页面晚到时可以补画
+    const api = await request(p, '/api/attribution?period=7d', { headers: { 'x-dash-key': TEST_KEY } });
+    assert.equal(api.status, 200);
+    const j = JSON.parse(api.body);
+    assert.ok(j.icons && j.icons.duanyan, 'attribution response carries the icon map');
+    assert.match(s.captured.out, /remote provider icons \(local icon cache\)/);
+  } finally {
+    s.c.kill();
+    remote.close();
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('remote quota cards join /api/quotas when magpie aggregates none', async () => {
+  // magpie 正常时把远端账号卡并进 /v1/magpie/quotas；它没并（新版对旧远端实测）而看板
+  // 又在 remote 模式下，就用同一把 key 向同一远端要 /v1/magpie/quotas/cards 按线路补齐；
+  // 网关自己已经带了远端卡时兜底必须让位，避免双份。
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-rcards-'));
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  mkdirSync(path.join(dir, 'icons'));
+  writeFileSync(path.join(dir, 'icons', 'brand-cache.svg'), svg);
+  writeFileSync(path.join(dir, 'usage.jsonl'), '');
+  let gatewayHasRemoteCard = false;
+  const gateway = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/v1/magpie/quotas')) {
+      const data = [{ provider: 'loomy', name: 'Loomy', kind: 'subscription', user: 'u1', windows: [] }];
+      if (gatewayHasRemoteCard) data.push({ provider: 'magpie-direct/x', name: 'X · Magpie 直连', user: 'u2', windows: [] });
+      return res.end(JSON.stringify({ data }));
+    }
+    if (req.url.startsWith('/v1/magpie/limit')) return res.end(JSON.stringify({ key: 'cloud', limited: false }));
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  const remote = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/v1/magpie/quotas/cards')) {
+      return res.end(JSON.stringify({ data: [
+        { provider: 'duanyan', name: '书生端砚', icon: 'file:brand-cache.svg', kind: 'subscription', user: '193', windows: [] },
+      ] }));
+    }
+    if (req.url.startsWith('/v1/magpie/usage/requests')) return res.end(JSON.stringify({ rows: [], total: 0, providers: [] }));
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise((r) => gateway.listen(0, '127.0.0.1', r));
+  await new Promise((r) => remote.listen(0, '127.0.0.1', r));
+  const s = start({
+    MAGPIE_CONFIG_DIR: dir,
+    USAGE_JSONL: path.join(dir, 'usage.jsonl'),
+    GATEWAY: `http://127.0.0.1:${gateway.address().port}`,
+    ATTRIBUTION: 'remote',
+    REMOTE_BASE: `http://127.0.0.1:${remote.address().port}`,
+    REMOTE_KEY: 'test-remote-key',
+  });
+  try {
+    const p = await s.ready;
+    const q = JSON.parse((await request(p, '/api/quotas', { headers: { 'x-dash-key': TEST_KEY } })).body);
+    const provs = (q.data || []).map((x) => x.provider);
+    assert.ok(provs.includes('loomy'), 'local card stays');
+    // REMOTE_BASE/KEY 显式 override 的线路 id 固定为 remote-magpie
+    assert.ok(provs.includes('remote-magpie/duanyan'), 'remote card merged with the line prefix');
+    const card = q.data.find((x) => x.provider === 'remote-magpie/duanyan');
+    assert.equal(card.from, 'Remote magpie', 'card is labelled with the line name');
+    assert.ok(q.icons && q.icons.duanyan, 'icon map rides along with the cards');
+    // 网关自己已经带了远端卡：兜底让位，不得出现双份
+    gatewayHasRemoteCard = true;
+    const q2 = JSON.parse((await request(p, '/api/quotas', { headers: { 'x-dash-key': TEST_KEY } })).body);
+    const provs2 = (q2.data || []).map((x) => x.provider);
+    assert.ok(provs2.includes('magpie-direct/x'), 'gateway remote card passes through');
+    assert.equal(provs2.filter((x) => x === 'remote-magpie/duanyan').length, 0, 'fallback steps aside when magpie aggregates');
+  } finally {
+    s.c.kill();
+    gateway.close();
+    remote.close();
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });

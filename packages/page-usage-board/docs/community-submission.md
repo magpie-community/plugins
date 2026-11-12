@@ -71,12 +71,18 @@ Check before opening the PR:
   only the chart library and page assets (no data).
 - Remote attribution defaults to **off** (`magpie.options.attribution: "local"`); the user
   must explicitly opt in (`ATTRIBUTION=remote` or `options.attribution: "remote"`), which
-  sends the configured provider key to the remote magpie and nowhere else.
+  sends the configured provider key to the remote magpie and nowhere else. In that mode the
+  service also reads the remote magpie's `providers[]` icon metadata and — only when that
+  remote magpie stops aggregating its own account cards into `/v1/magpie/quotas` — its
+  `/v1/magpie/quotas/cards`, so the quota wall keeps showing the remote accounts. Both are
+  read-only requests to that same configured remote, with the same key; the fallback steps
+  aside as soon as the gateway reports remote-line cards again.
 - The hosted page uses `window.magpie.service` when present, so a remote `magpie web`
   deployment keeps the frame under magpie's own origin and key.
 - The lead page has no inline scripts (its only sources are magpie's `_magpie/bridge.js`
   and the plugin's `boot.js`) and fetches nothing; the board itself only calls its own
   service on `127.0.0.1`. Its Content-Security-Policy allows no third-party host, and brand
-  logos come from magpie's `plugin-providers.json` as data URIs — the page never contacts a
-  third-party CDN.
+  logos are data URIs assembled from magpie's local `plugin-providers.json` / `icons/` cache
+  (remote provider mappings are read from the remote magpie only in remote-attribution mode)
+  — the page never contacts a third-party CDN.
 - `magpie.permissions` is `[]`: the page reads nothing through the bridge.
