@@ -11,7 +11,7 @@
   "os": ["win32"],
   "engines": {"node": ">=20"},
   "keywords": ["magpie-plugin", "search", "mcp", "grok"],
-  "files": ["*.mjs", "worker.py", "local_secrets.py", "quota.py", "stdio.py", "requirements.txt", "scripts/setup.ps1", "scripts/doctor.mjs", "backend/**/*.py", "page/search-center.html", "page/open.js", "page/icon.svg", "ui", "licenses", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "CHANGELOG.md", "tests/local-keys.test.mjs", "tests/service.test.mjs", "tests/portable.test.mjs"],
+  "files": ["*.mjs", "worker.py", "local_secrets.py", "quota.py", "stdio.py", "requirements.txt", "scripts/setup.ps1", "scripts/doctor.mjs", "backend/**/*.py", "page/search-center.html", "page/open.js", "page/icon.svg", "ui", "licenses", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "README.zh-CN.md", "docs/images", "CHANGELOG.md", "tests/local-keys.test.mjs", "tests/service.test.mjs", "tests/portable.test.mjs"],
   "scripts": {"test": "node --test tests/*.test.mjs", "doctor": "node scripts/doctor.mjs", "prepack": "node scripts/audit-package.mjs"},
   "magpie": {
     "page": {
