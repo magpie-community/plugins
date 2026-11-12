@@ -66,6 +66,15 @@ fields are kept with the sign-in; nothing sends them.
 enterprise sign-in sends back is not known yet; if yours doesn't work, open an
 issue with what the sign-in page showed.
 
+One enterprise sign-in has since been seen to name
+`console.enterprise.trae.cn` as the account's host, and its usage is read
+from that console (see Usage). The tenant and login-type fields are still
+kept and never sent.
+
+The international deployment has an enterprise console too, at
+`console.enterprise.trae.ai`, and the same reading is done there — **not
+verified**, see Usage.
+
 ### The international realm's region
 
 Trae Global has two deployments. The sign-in's `AIRegion` (or a US auth host
@@ -362,6 +371,36 @@ page the realm bills on:
   total, with the share, which magpie shows as used or left like
   WorkBuddy's.
 
+**Trae CN, an enterprise (SaaS) account** — Trae's enterprise console, which
+bills in yuan rather than in the credits the consumer page counts:
+
+- **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
+  for the allowance and `…/get_user_model_usage` for the spend, both POST
+  with an empty body; `…/get_personal_core_data` for the period's
+  `ResetTime`; and the consumer credits page above for the second row.
+- **What it adds up:** the seat pool in yuan (`seat_pool_currency_quota`;
+  the console's pay-as-you-go sentinel is no limit), and the models' own
+  `total_cost_currency` summed — the console gives no total of its own. The
+  console answers an empty body with the current period's spend, which is
+  what the pool resets on; a real account's sum matches its usage page. Only
+  the account's own seat is counted: an administrator's answer carries every
+  seat in the tenant.
+- **What it shows:** a Seat Usage window, `¥used / ¥total` and the share,
+  resetting when the console says the period does, then a Credits window of
+  the consumer page's allowance, marked `aside`. A spend page that fails
+  leaves the row saying `? / ¥total` rather than reading as nothing spent.
+- **Which accounts:** the sign-in named `console.enterprise.trae.cn` as the
+  account's host. A personal account, and any account whose usage pages
+  answer nothing, is read as before.
+- **Why both:** the consumer page answers an enterprise account too, with a
+  credits allowance that real calls have been measured not to touch — two
+  calls through magpie moved the console's spend by ￥0.0002 each and left
+  the credits at 4.4 of 4700. The seat pool is what a request spends, so
+  the credits row is `aside`: magpie shows it without routing on it. Whether
+  the credits are a fallback the seat pool exhausts first is not known — no
+  account has spent its pool to find out. A failure on the credits page or
+  on the period leaves the seat pool standing.
+
 **Trae Global** — the dollar billing's entitlements:
 
 - **Source:** `POST api-sg-central.trae.ai/trae/api/v1/pay/user_current_entitlement_list`
@@ -371,6 +410,39 @@ page the realm bills on:
   (`basic_usage_amount`, `bonus_usage_amount`).
 - **What it shows:** one Dollar Usage window, the dollars used of the
   allowance, resetting when the pack ends.
+
+**Trae Global, an enterprise (SaaS) account** — the international
+deployment's own enterprise console, which bills in dollars:
+
+- **Source:** `console.enterprise.trae.ai/trae/gtm/tob/api/v1/config/get_personal_quota`
+  for the allowance, `…/get_user_model_usage` for the spend and
+  `…/get_personal_core_data` for the period, all POST with an empty body —
+  the three pages Trae CN's console has.
+- **What it adds up:** the seat pool (`seat_pool_currency_quota`; the
+  console's pay-as-you-go sentinel is no limit) and the models' own
+  `total_cost_currency` summed.
+- **What it shows:** one Seat Usage window, `$used / $total` and the share,
+  resetting when the console says the period does. The international realm
+  has no consumer credits page, so there is no second row.
+- **Which accounts:** the sign-in named `console.enterprise.trae.ai` as the
+  account's host. Any other account is read as before.
+
+**Not verified.** No international enterprise account was available to try
+this against, and `console.enterprise.trae.ai` answers another realm's token
+with 请先登录 — exactly as it answers no token at all, so whether it refuses
+the token or wants a console session of its own is not known either. What
+the paths and fields are was read off the international console's own build,
+which names `seat_pool_currency_quota`, the models' `total_cost_currency`
+and `ResetTime` as Trae CN's console does; whether such an account's console
+answers at all is not known. The Trae CN path above is the one that has been
+run against a real account.
+
+Because that is not known, this console is not allowed to mark the sign-in:
+its 401 is reported as the read's error and the account stays signed in,
+where Trae CN's console — measured to take the IDE's own token — does mark
+it. A console that wants a session of its own would otherwise mark every
+international enterprise account expired, and signing in again would not
+clear it.
 
 A 200 carrying an error code is shown as Trae's own message rather than as
 an empty answer.
