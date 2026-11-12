@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm"
 
 const chrome = process.platform === "linux" &&
   (Bun.which("google-chrome") || Bun.which("google-chrome-stable") || Bun.which("chromium") || Bun.which("chromium-browser"))
+const LAUNCH_BOUND = 25000
 
 test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the dialog", async () => {
   const read = (name) => Bun.file(new URL(`./page/${name}`, import.meta.url)).text()
@@ -44,14 +45,35 @@ test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the
   const temp = await mkdtemp(join(tmpdir(), "nowledge-layout-"))
   try {
     const proc = Bun.spawn({
-      cmd: [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-networking", "--disable-extensions", "--disable-sync", "--disable-features=OnDeviceSpeechRecognition,SODA,OptimizationHints,MediaRouter,Translate", "--disable-component-update", "--disable-breakpad", "--disable-field-trial-config", "--no-service-autorun", "--disable-default-apps", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--host-resolver-rules=MAP * ~NOTFOUND", `--user-data-dir=${temp}/profile`, "--window-size=1200,1600", "--dump-dom", `data:text/html;charset=utf-8,${encodeURIComponent(page)}`],
+      cmd: ["setsid", chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-networking", "--disable-extensions", "--disable-sync", "--disable-features=OnDeviceSpeechRecognition,SODA,OptimizationHints,MediaRouter,Translate", "--disable-component-update", "--disable-breakpad", "--disable-field-trial-config", "--no-service-autorun", "--disable-default-apps", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--host-resolver-rules=MAP * ~NOTFOUND", `--user-data-dir=${temp}/profile`, "--window-size=1200,1600", "--dump-dom", `data:text/html;charset=utf-8,${encodeURIComponent(page)}`],
       env: { HOME: temp, PATH: "/usr/bin:/bin", XDG_CONFIG_HOME: `${temp}/config`, XDG_CACHE_HOME: `${temp}/cache` },
       stdout: "pipe", stderr: "pipe",
     })
-    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
-    expect({ code, error: code ? err : "" }).toEqual({ code: 0, error: "" })
-    const result = out.match(/<pre id="results">([^<]+)<\/pre>/)?.[1]
-    expect(result).toBeTruthy()
+    // The results are read as soon as Chrome prints them, and Chrome is then
+    // stopped: the test needs the dumped DOM, not Chrome's own exit (#972).
+    // A launch that prints nothing by the bound is stopped too, and the test
+    // fails with what Chrome wrote to stderr instead of a bare timeout.
+    const err = new Response(proc.stderr).text()
+    const found = /<pre id="results">([^<]+)<\/pre>/
+    let out = ""
+    let timedOut = false
+    // setsid gives Chrome a process group of its own, so stopping it stops
+    // its zygote, GPU and renderer children too.
+    const stop = () => { try { process.kill(-proc.pid, "SIGKILL") } catch {} }
+    const bound = setTimeout(() => { timedOut = true; stop() }, LAUNCH_BOUND)
+    try {
+      const decoder = new TextDecoder()
+      for await (const chunk of proc.stdout) {
+        out += decoder.decode(chunk, { stream: true })
+        if (found.test(out)) break
+      }
+    } finally {
+      clearTimeout(bound)
+      stop()
+    }
+    await proc.exited
+    const result = out.match(found)?.[1]
+    if (!result) throw new Error(`Chrome gave no results${timedOut ? ` within ${LAUNCH_BOUND}ms` : ` (exit ${proc.exitCode})`}; stderr:\n${(await err).slice(-4000)}`)
     const rows = JSON.parse(result)
     expect(rows).toHaveLength(30)
     for (const row of rows) {
