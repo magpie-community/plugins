@@ -85,22 +85,85 @@ export class Store {
     fs.renameSync(temp, destination);
   }
   policy() { return validatePolicy(this.read("policy.json", defaults())); }
-  #isStaleLock(target) {
-    let raw, stat;
+  #readLockSnapshot(file) {
     try {
-      stat = fs.statSync(target);
-      raw = fs.readFileSync(target, "utf8");
-    } catch (e) {
-      return e.code === "ENOENT" ? false : true;
+      const stat = fs.statSync(file);
+      const raw = fs.readFileSync(file, "utf8");
+      return { stat, raw };
+    } catch {
+      return null;
     }
+  }
+  #isStaleSnapshot(snap) {
+    if (!snap) return false;
     try {
-      const meta = JSON.parse(raw);
+      const meta = JSON.parse(snap.raw);
       const age = Date.now() - Number(meta?.at);
       if (!Number.isFinite(age) || age > this.lockStaleMs) return true;
       if (!isPidAlive(meta?.pid)) return true;
       return false;
     } catch {
-      return Date.now() - stat.mtimeMs > Math.min(this.lockStaleMs, 250);
+      return Date.now() - snap.stat.mtimeMs > Math.min(this.lockStaleMs, 250);
+    }
+  }
+  #evictIfStillStale(file, owner) {
+    const claim = `${file}.${owner}.stale`;
+    try {
+      fs.renameSync(file, claim);
+    } catch {
+      return false;
+    }
+    const moved = this.#readLockSnapshot(claim);
+    if (!this.#isStaleSnapshot(moved)) {
+      try { fs.linkSync(claim, file); } catch {}
+      try { fs.unlinkSync(claim); } catch {}
+      return false;
+    }
+    try { fs.unlinkSync(claim); } catch {}
+    return true;
+  }
+  #releaseOwnedFile(file, owner) {
+    try {
+      const snap = this.#readLockSnapshot(file);
+      if (!snap || JSON.parse(snap.raw)?.owner !== owner) return;
+    } catch {
+      return;
+    }
+    const claim = `${file}.${owner}.rel`;
+    try {
+      fs.renameSync(file, claim);
+    } catch {
+      return;
+    }
+    try {
+      const moved = JSON.parse(fs.readFileSync(claim, "utf8"));
+      if (moved?.owner !== owner) {
+        try { fs.linkSync(claim, file); } catch {}
+      }
+    } catch {}
+    try { fs.unlinkSync(claim); } catch {}
+  }
+  #tryTakeoverStale(target, owner) {
+    if (!this.#isStaleSnapshot(this.#readLockSnapshot(target))) return false;
+    const guard = target + ".takeover";
+    try {
+      const gfd = fs.openSync(guard, "wx", 0o600);
+      try {
+        fs.writeFileSync(gfd, JSON.stringify({ pid: process.pid, at: Date.now(), owner }), "utf8");
+      } finally {
+        fs.closeSync(gfd);
+      }
+    } catch (e) {
+      if (e.code === "EEXIST" && this.#isStaleSnapshot(this.#readLockSnapshot(guard))) {
+        this.#evictIfStillStale(guard, owner);
+      }
+      return false;
+    }
+    try {
+      if (!this.#isStaleSnapshot(this.#readLockSnapshot(target))) return false;
+      return this.#evictIfStillStale(target, owner);
+    } finally {
+      this.#releaseOwnedFile(guard, owner);
     }
   }
   async lock(fn) {
@@ -120,21 +183,15 @@ export class Store {
         break;
       } catch (e) {
         if (e.code !== "EEXIST") throw e;
-        if (this.#isStaleLock(target)) {
-          try { fs.unlinkSync(target); } catch {}
-          continue;
-        }
+        if (this.#tryTakeoverStale(target, owner)) continue;
         await new Promise(r => setTimeout(r, this.lockRetryMs));
       }
     }
     if (!acquired) throw fault("设置正被另一请求更新，请稍后重试", "BUSY", 409);
     try {
-      return fn();
+      return await fn();
     } finally {
-      try {
-        const current = JSON.parse(fs.readFileSync(target, "utf8"));
-        if (current?.owner === owner) fs.unlinkSync(target);
-      } catch {}
+      this.#releaseOwnedFile(target, owner);
     }
   }
   async save(value) {

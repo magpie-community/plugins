@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import http from "node:http";
+import plugin from "../index.mjs";
+import { DATA } from "../runtime.mjs";
 import { createService } from "../service.mjs";
 import { VERSION } from "../version.mjs";
 
@@ -83,4 +86,30 @@ test("page nonce protects API, sandbox CORS does not expose HTML, Host/Origin/CS
   });
   assert.equal(saved.status, 200);
   assert.equal(calls[0].revision, 1);
+});
+
+test("index.mjs takeover check verifies instanceId on EADDRINUSE", async t => {
+  const expectedId = createHash("sha256").update(DATA).digest("hex").slice(0, 16);
+  let reportedInstanceId = "other-data-dir-00";
+  const fakeOccupant = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      plugin: "magpie-search-center",
+      version: VERSION,
+      service: "dsh-ui-port",
+      instanceId: reportedInstanceId,
+    }));
+  });
+  await new Promise(r => fakeOccupant.listen(0, "127.0.0.1", r));
+  t.after(() => new Promise(r => fakeOccupant.close(r)));
+  const port = fakeOccupant.address().port;
+
+  await assert.rejects(
+    () => plugin.server(undefined, { port }),
+    /搜索中心端口被其他服务占用/,
+  );
+
+  reportedInstanceId = expectedId;
+  const hooks = await plugin.server(undefined, { port });
+  assert.deepEqual(Object.keys(hooks.tool), ["search", "capabilities"]);
 });

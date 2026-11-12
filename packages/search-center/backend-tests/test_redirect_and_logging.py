@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 
 import grok_search.channels as channels
+import grok_search.logger as gs_logger
 import grok_search.server as server
 from grok_search.config import Config, GrokTarget
 from grok_search.providers.grok import GrokSearchProvider
@@ -119,6 +120,8 @@ class RedirectAndLoggingTests(unittest.IsolatedAsyncioTestCase):
                 env = {
                     "HOME": fake_home,
                     "USERPROFILE": fake_home,
+                    "GROK_DEBUG": "true",
+                    "GROK_API_URL": "https://api.x.ai",
                     "TAVILY_ENABLED": "true",
                     "TAVILY_API_URL": "https://api.tavily.com",
                     "TAVILY_API_KEY": "synthetic-key",
@@ -127,22 +130,43 @@ class RedirectAndLoggingTests(unittest.IsolatedAsyncioTestCase):
                     os.environ.pop("GROK_LOG_DIR", None)
                     os.environ.pop("GROK_CONFIG_DIR", None)
                     os.environ.pop("SEARCH_CENTER_DATA_DIR", None)
+                    os.environ.pop("GROK_MODEL", None)
                     Config._instance = None
+                    gs_logger._file_handler_dir = None
                     cfg = Config()
-                    with patch.object(server, "config", cfg):
-                        results = await server._call_tavily_search(
-                            "query",
-                            1,
-                            transport=httpx.MockTransport(
-                                lambda req: httpx.Response(
+                    try:
+                        # Accessing config_file / log_dir / grok_models must not mkdir in HOME or cwd
+                        _ = cfg.config_file
+                        _ = cfg.log_dir
+                        _ = cfg.grok_models
+                        with patch.object(server, "config", cfg), patch.object(gs_logger, "config", cfg):
+                            calls = 0
+
+                            def handler(_req: httpx.Request) -> httpx.Response:
+                                nonlocal calls
+                                calls += 1
+                                if calls == 1:
+                                    return httpx.Response(500, text="first candidate error to trigger debug log_info")
+                                return httpx.Response(
                                     200,
                                     json={"results": [{"url": "https://example.org", "title": "Example"}]},
                                 )
-                            ),
-                        )
-                        self.assertEqual(len(results), 1)
-                    self.assertEqual(list(Path(fake_home).iterdir()), [])
-                    self.assertEqual(list(Path(fake_cwd).iterdir()), [])
+
+                            results = await server._call_tavily_search(
+                                "query",
+                                1,
+                                transport=httpx.MockTransport(handler),
+                            )
+                            self.assertEqual(len(results), 1)
+                            await gs_logger.log_info(None, "debug log without GROK_LOG_DIR", is_debug=True)
+                        self.assertEqual(list(Path(fake_home).iterdir()), [])
+                        self.assertEqual(list(Path(fake_cwd).iterdir()), [])
+                    finally:
+                        for h in list(gs_logger.logger.handlers):
+                            if type(h).__name__ == "FileHandler":
+                                gs_logger.logger.removeHandler(h)
+                                h.close()
+                        gs_logger._file_handler_dir = None
 
                     bad_dir = Path(fake_home) / "cfg"
                     bad_dir.mkdir()
