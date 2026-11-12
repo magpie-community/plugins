@@ -64,7 +64,9 @@
   // A mark (a mono logo, or a colour one with no ground of its own) is
   // filled with the ink; a picture on a light ground of its own (an app's
   // tile, a drawing) prints in the ink, only its near-white parts left the
-  // paper's, and what is clear around it stays clear.
+  // paper's, and what is clear around it stays clear. A tile with no light
+  // ground (an app icon, an illustration like Cindy's) prints in greys from
+  // its own darkest to its lightest, so it doesn't fill in as a block.
   function drawIcon(ctx, ic, x, y, size, scale) {
     if (!ic) {
       ctx.fillStyle = INK;
@@ -87,21 +89,45 @@
         const p = d.data;
         const lum = (i) => (0.2126 * p[i] + 0.7152 * p[i + 1] + 0.0722 * p[i + 2]) / 255;
         let solid = 0, light = 0, dark = 0;
+        let x0 = px, y0 = px, x1 = -1, y1 = -1;
+        const tones = [];
         for (let i = 0; i < p.length; i += 4) {
           if (p[i + 3] < 128) continue;
           solid++;
           const v = lum(i);
+          tones.push(v);
           if (v > 0.8) light++;
           else if (v < 0.5) dark++;
+          const cx = (i / 4) % px, cy = Math.floor(i / 4 / px);
+          if (cx < x0) x0 = cx;
+          if (cx > x1) x1 = cx;
+          if (cy < y0) y0 = cy;
+          if (cy > y1) y1 = cy;
         }
         // a ground: mostly light, with something dark drawn on it
-        clear = !(solid && light / solid > 0.35 && dark / solid > 0.05) && solid < px * px * 0.8;
+        const ground = solid && light / solid > 0.35 && dark / solid > 0.05;
+        // a tile: it fills its own box (a square, rounded or not, or a disc), and the
+        // box is most of the icon
+        const box = (x1 - x0 + 1) * (y1 - y0 + 1);
+        const tile = solid >= px * px * 0.8 || (x1 >= 0 && solid >= box * 0.75 && box >= px * px * 0.4);
+        clear = !ground && !tile;
         if (!clear) {
           const ink = [0x1f, 0x1d, 0x20], paper = [0xf7, 0xf4, 0xed];
+          let tone = null;
+          if (!ground) {
+            tones.sort((a, b) => a - b);
+            const lo = tones[Math.floor(tones.length * 0.03)];
+            const hi = tones[Math.min(tones.length - 1, Math.floor(tones.length * 0.97))];
+            if (hi - lo > 0.12) tone = (v) => Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+          }
           for (let i = 0; i < p.length; i += 4) {
-            // only what is near white stays light: a logo prints solid
-            const t = Math.min(1, Math.max(0, (lum(i) - 0.65) / 0.2));
-            const l = t * t * (3 - 2 * t);
+            let l;
+            if (tone) l = tone(lum(i));
+            else {
+              // only what is near white stays light: a logo prints solid
+              const t = Math.min(1, Math.max(0, (lum(i) - 0.65) / 0.2));
+              l = t * t * (3 - 2 * t);
+            }
             for (let k = 0; k < 3; k++) p[i + k] = ink[k] + (paper[k] - ink[k]) * l;
           }
           o.putImageData(d, 0, 0);

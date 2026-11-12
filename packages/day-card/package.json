@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-day-card",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "A page in magpie's window that draws a day, week, month or all of your AI usage as a card: tokens, cost, each agent and its models, your streak and your average day. Copy it as a picture or save it as a PNG",
   "files": ["page", "README.md", "NOTICE"],
   "keywords": ["magpie", "magpie-page", "usage", "tokens", "cost", "card"],
