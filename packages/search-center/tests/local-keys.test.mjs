@@ -15,7 +15,8 @@ function fixture(t) {
     credential:async(id,key,args,url,signal,encrypted)=>{calls.push({id,encrypted});return {sources:[],routing:{channel_results:{[id]:{status:"no_sources"}}}}}});
   return {root,store,vault,center,calls};
 }
-test("local key create, retain, replace and delete never expose plaintext or fall back",{skip:process.platform!=="win32" ? "Windows DPAPI required" : false},async t=>{
+const winTest = process.platform === "win32" ? test : test.skip;
+winTest("local key create, retain, replace and delete never expose plaintext or fall back",async t=>{
   const {root,store,center,calls}=fixture(t);
   const secret="synthetic-only-api-key-not-a-real-secret";
   const input={channel:"exa",revision:0,baseUrl:"https://api.exa.ai",strategy:"rotate",keys:[{id:"draft",label:"测试 Key",enabled:true,value:secret}]};
@@ -36,7 +37,7 @@ test("local key create, retain, replace and delete never expose plaintext or fal
   await center.search({query:"test",channels:["exa"]});assert.equal(calls.length,1);
   await assert.rejects(center.saveChannel({...input,revision:0}),e=>e.code==="CONFLICT");
 });
-test("encrypted keys are bound to their channel",{skip:process.platform!=="win32" ? "Windows DPAPI required" : false},async t=>{
+winTest("encrypted keys are bound to their channel",async t=>{
   const {vault}=fixture(t);const e=await vault.protect("exa","synthetic-channel-binding-key");vault.persist([e]);
   assert.throws(()=>vault.cipher("tavily",{ref:`local://${e.id}`}),/不属于/);
 });
