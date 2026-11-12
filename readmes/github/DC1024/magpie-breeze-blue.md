@@ -131,6 +131,19 @@ MAGPIE_BREEZE_BROWSER="D:\Program Files\Google\Chrome\Application\chrome.exe" ma
 
 > 这条路径**要求 Magpie 和浏览器在同一台机器上**。Magpie 装在 NAS / Docker 里时，这里 spawn 出来的窗口会开在 NAS 自己的显示器上——你既看不到也点不到。那种情况请用上面的「浏览器登录」。
 
+#### 如果 Google 说「此浏览器或应用可能不安全」
+
+这是 Google 对**自动化浏览器**的拦截，不是登录失败，也不是密码错。判定依据是页面里的 `navigator.webdriver`：Chrome 157 实测**只要开了 `--remote-debugging-port`，即使没有 `--enable-automation`，这个值也是 `true`**。
+
+插件从 0.7.1 起带 `--disable-blink-features=AutomationControlled` 抵消它（探针实测 `navigator.webdriver` 变回 `false`），并会在浏览器停在 `accounts.google.com` 超过 90 秒时**直接报错**，不再让你干等 5 分钟超时。报错里就写着替代路径。
+
+如果仍然被拦（Google 的判断不公开，可能还有别的信号），有两条一定能走通的路：
+
+1. **邮箱密码登录** —— 完全不开浏览器，Google 无从拦截，还带自动续期
+2. **浏览器登录** —— 页开在你自己日常用的浏览器里（Google 完全信任它），登录后粘一次 cookie
+
+顺带一句：账号如果是「用 Google 注册」且从没设过密码，就只能走第 2 条。
+
 ### 只做 TTS
 
 选 `Breeze API key`，填 `brz_…` 即可。这条**只能**用于 TTS 与余额查询，不能签到。
@@ -255,7 +268,7 @@ node --test          # 需要 Node 18+
 - `test/checkin.test.mjs`：签到的请求构造、outcome 映射、凭证不泄漏，注入 `fetchImpl`，不访问真实网络。
 - `test/password-login.test.mjs`：邮箱密码登录链路——`Set-Cookie` 合并与删除指令、Firebase 错误码翻译、换会话必须带 `Origin`、拿不到 cookie 时只报字段名不报值、refresh token 轮换。
 - `test/auth-flow.test.mjs`：auth 方法的接线契约——邮箱密码排第一且密码走掩码类型、密码不进凭据、`refresh` 钩子轮换与 `signIn: "expired"`、粘贴方法是 `opened: false` + `method: "code"`（保证登录页由 Magpie 开在用户浏览器里）、粘贴后先验再存、无效/空 cookie 的报错、本机自动模式标记 `opened: true`、API key 方法仍然存在（TTS 依赖它）、`checkin` 对「只有 API key」的账号给出可照做的提示。
-- `test/browser-login.test.mjs`：CDP 端口解析、Cookie 拼接与域名/路径优先级、浏览器探测、超时与 abort、`Storage.getCookies` 与页面级回退、无 DISPLAY 的 Linux 直接拒绝。
+- `test/browser-login.test.mjs`：CDP 端口解析、Cookie 拼接与域名/路径优先级、浏览器探测、超时与 abort、`Storage.getCookies` 与页面级回退、无 DISPLAY 的 Linux 直接拒绝、**启动参数必须带 `AutomationControlled` 抑制标志**（Google 登录的前提）、撞上 Google 拦截时快速报错。
 - 全部用例都不触网、不启动真实浏览器。
 
 ### 手工验证 CDP 读取
@@ -279,6 +292,7 @@ node -e "import('./lib/browser-login.mjs').then(async m => {
 - 用 Google 注册、没设过密码的账号没有密码可填，只能用「浏览器登录」。
 - **Breeze 登录不发 code、也不做 OAuth 回调**，所以「浏览器登录」必须让用户粘一次 cookie 回来。这是站点性质决定的，Magpie 的 `code` / `PasteCallback` / `auto` 三种收尾方式里只有「粘一段文本」适用于它（详见上文表格）。
 - 「本机自动读 Cookie」依赖 Chromium 内核浏览器 + CDP，**只在 Magpie 与浏览器同机时可用**；NAS / Docker 下请用「邮箱密码登录」或「浏览器登录」。
+- Google 账号登录对「自动化浏览器」的拦截是黑盒：插件用 `--disable-blink-features=AutomationControlled` 消掉了 `navigator.webdriver` 这个已知信号，但 Google 的判断不公开，仍可能被拦。被拦就用「邮箱密码登录」或「浏览器登录」，这两条不涉及 Google 的判定。
 - 无图形界面（纯 SSH、无 `DISPLAY` 的服务器）下本机模式会直接报错并指向「浏览器登录」，不会让你干等 5 分钟超时；纯服务器上直接用「邮箱密码登录」最省事。
 - 插件跑在 Magpie 的 provider 进程（Bun）里，因此能用 `child_process` / WebSocket；middleware 与 agent 所在的 moejs 环境没有这些能力，不要把这段代码搬过去。
 - 脚本化领取可能与 Breeze 服务条款冲突，账号风险由使用者承担。

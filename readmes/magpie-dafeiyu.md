@@ -9,7 +9,7 @@
 ![Windows 10+ x64](https://img.shields.io/badge/Windows-10%2B%20x64-426B9A)
 ![macOS Apple Silicon](https://img.shields.io/badge/macOS-Apple%20Silicon-4C78A8)
 ![Magpie](https://img.shields.io/badge/Magpie-local%20integration-C7475C)
-![Version](https://img.shields.io/badge/version-0.1.4-4C78A8)
+![Version](https://img.shields.io/badge/version-0.1.5-4C78A8)
 ![Code MIT](https://img.shields.io/badge/code-MIT-538476)
 ![Artwork noncommercial](https://img.shields.io/badge/artwork-noncommercial-D19A35)
 
@@ -24,6 +24,13 @@
 一只住在桌边的蓝色大肥鱼——Windows 和 Mac 都住得下。请求进来时亮起小灯泡，额度快用完时直接摆在眼前，空闲时吃饭、施法、放烟花——**让 Magpie 的状态不用再开面板确认。**
 
 不需要 DSH，也不绑定 Codex。只要请求经过本机 Magpie，桌宠就能跟着忙起来。
+
+> **Magpie 插件说明 · About the Magpie plugin**
+>
+> - Magpie 里的插件页（npm 包 `magpie-dafeiyu`）只是使用指南入口。桌宠是需要另外下载的独立 App，安装插件不会安装、下载或启动它。
+> - 角色与动画素材来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)，遵循其非商用要求。
+> - The page in Magpie (npm package `magpie-dafeiyu`) is only a guide. The pet is a separate app you download yourself; installing the plugin does not install, download or start it.
+> - The character and animations come from [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) and are for non-commercial use only.
 
 ## 为什么是它
 
@@ -42,11 +49,11 @@
 
 ### 直接用 App（推荐）
 
-先选与系统匹配的压缩包：Windows 10+ x64 下载 `magpie-DaFeiYu-v0.1.4-Windows-x64.zip`；Apple Silicon Mac（M 系列，macOS 12+）下载 `magpie-DaFeiYu-v0.1.4-macOS-arm64.zip`。压缩包名称里的系统后缀就是目标平台，请勿混用。
+先选与系统匹配的压缩包：Windows 10+ x64 下载 `magpie-DaFeiYu-v0.1.5-Windows-x64.zip`；Apple Silicon Mac（M 系列，macOS 12+）下载 `magpie-DaFeiYu-v0.1.5-macOS-arm64.zip`。压缩包名称里的系统后缀就是目标平台，请勿混用。
 
 **Windows 10+ x64**
 
-1. 打开 [Releases](https://github.com/wolfvoid/magpie-DaFeiYu/releases/latest)，下载 `magpie-DaFeiYu-v0.1.4-Windows-x64.zip` 并解压。
+1. 打开 [Releases](https://github.com/wolfvoid/magpie-DaFeiYu/releases/latest)，下载 `magpie-DaFeiYu-v0.1.5-Windows-x64.zip` 并解压。
 2. 想免安装使用，进入解压后的 `蓝色大肥鱼-win32-x64` 文件夹，双击 `BlueDaFeiYu.exe`。
 3. 想装进当前用户账户，就在解压目录里执行：
 
@@ -63,7 +70,7 @@ Windows 版没有代码签名。若 SmartScreen 拦截，请先核对下载来�
 
 **macOS（Apple Silicon）**
 
-1. 打开 [Releases](https://github.com/wolfvoid/magpie-DaFeiYu/releases/latest)，下载 `magpie-DaFeiYu-v0.1.4-macOS-arm64.zip`。
+1. 打开 [Releases](https://github.com/wolfvoid/magpie-DaFeiYu/releases/latest)，下载 `magpie-DaFeiYu-v0.1.5-macOS-arm64.zip`。
 2. 解压后把「蓝色大肥鱼.app」拖进「应用程序」，再从菜单栏打开。
 3. 启动本机 [Magpie](https://github.com/yetone/magpie)，请求灯泡和额度会自动接入。
 
@@ -117,6 +124,8 @@ npm start
 - Magpie 暂时断开时保留最近一次有效显示；重置时间已过的旧额度仍会变为 `—%`，不会凭空推算。
 
 本地接口只连接 `127.0.0.1:3425`（支持自定义端口）：并发状态每 2 秒读取，额度和今日统计每 30 秒刷新。Magpie 的配置按官方约定读取 `~/.config/magpie/settings.json`（遵循 `XDG_CONFIG_HOME`），Windows 与 macOS 路径一致。账号归属只在内存中换算为每次启动重新生成的代号。
+
+每次请求都带 `Authorization: Bearer magpie-dafeiyu`，Magpie 的用量统计会把它记为本应用；如果你在 Magpie 里创建了网关 key，可以用环境变量 `MAGPIE_API_KEY` 让桌宠改用它。标出「正在使用」的账号依赖 Magpie 内部的 trace 接口，它以后可能变化；读不到时灯泡照常亮，只是不标红账号。
 
 ## 致谢与许可
 

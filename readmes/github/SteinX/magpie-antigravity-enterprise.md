@@ -1,13 +1,13 @@
 # Antigravity Enterprise for Magpie
 
-A local Magpie provider for the enterprise account already signed in to Antigravity App on macOS. Models are exposed as `antigravity-enterprise/<catalog-model-id>`.
+A local Magpie provider with browser sign-in for Google Cloud and Workforce Identity Federation enterprise accounts on macOS. Models are exposed as `antigravity-enterprise/<catalog-model-id>`.
 
 ## Requirements
 
 - Magpie with provider-plugin support.
-- Antigravity App installed and signed in to a Google Cloud or Workforce Identity Federation enterprise account.
+- Antigravity App installed for its validated enterprise OAuth client configuration. A pre-existing App sign-in is not required for browser login.
 - [Official agy CLI](https://antigravity.google/docs/getting-started.md?tab=cli), normally installed at `~/.local/bin/agy`. Set the package option `cliPath` for a custom installation.
-- macOS login Keychain access. The plugin uses Antigravity's existing `gemini / antigravity` item.
+- macOS login Keychain access. Browser login creates or updates the shared `gemini / antigravity` credential only after authorization and license validation succeed.
 - Xcode Command Line Tools (`xcrun swiftc`) for the first credential access. A dedicated Security-framework helper is compiled, ad-hoc signed, and cached. Credentials cross private process pipes only, never compiler arguments or source files.
 
 ## Install and configure
@@ -21,18 +21,18 @@ magpie plugin add .
 magpie plugin login antigravity-enterprise
 ```
 
-The sign-in asks for each account's configuration:
+Choose **Sign in with enterprise account** to start browser SSO directly from Magpie. **Use existing local Antigravity sign-in** remains available to explicitly import an existing native session. The browser flow asks for:
 
 | Field | How to choose it |
 | --- | --- |
 | Google Cloud Project ID | The project assigned to the enterprise license you want to use. Required. |
 | Location | The license location: `global`, `us`, or `eu`. Required; in-country locations such as `us-central1` are not supported by this enterprise-seat API. |
-| Authentication | Detect the existing local sign-in, or explicitly require Google Cloud SSO / WIF. |
-| WIF Provider | When explicitly selecting WIF, enter the provider supplied by your administrator. It must match the account already signed in to the App. |
+| Authentication | Google Cloud SSO or Workforce Identity Federation. |
+| WIF Provider | For WIF, the provider supplied by your administrator: `locations/global/workforcePools/POOL/providers/PROVIDER`. |
 
-Current App values appear as suggestions, not as hidden routing defaults. The license API must confirm the selected project and location before the account is saved. The license tier comes from that response. No personal project, location, provider, or email is embedded in the source.
+The browser opens Google's authorization page, uses S256 PKCE and a random state, and returns through a loopback-only localhost callback. Complete enterprise SSO in that browser. The plugin then confirms the selected project and location through the license API before installing the native credential and binding the Magpie account. The license tier comes from that response. No personal project, location, provider, or email is embedded in the source.
 
-Changing authentication method or WIF provider requires first signing in with that identity in Antigravity App, then signing in to this Magpie provider again. These fields cannot turn an existing token into another provider's token.
+Browser login does not require an existing Keychain item and does not sign out the current native session at the start. A successful login changes the shared native account on this Mac; a failed authorization or license check preserves it. If another client changes the native credential while login is in progress, the plugin refuses to overwrite that newer credential. Explicit import uses current App values as suggestions and never turns a token into another authentication method.
 
 After sign-in, select `antigravity-enterprise/<catalog-model-id>` in Magpie's model picker and send a request from your agent. Some Magpie releases, including the tested 0.1.3673 CLI, reject `provider test` for Google-protocol plugins before sending a request. Use an actual gateway or agent request to verify this provider on those releases.
 
@@ -50,11 +50,13 @@ The plugin reads the current Keychain credential for requests, renews within fiv
 
 Renewed tokens are written to the original Keychain item while preserving its other fields and ACL. A helper holds an OS file lock and checks that the original credential still matches immediately before updating it. The native App does not participate in that lock, and Apple's Keychain API has no atomic value-data compare-and-swap: a native-App write can still race the final comparison and update.
 
-Once a token renewal is dispatched, cancellation stops the caller waiting but allows the bounded renewal and guarded writeback to finish, so a received rotating refresh token is not abandoned. Resource HTTP 401 responses trigger one native renewal and one retry before being reported as expired; HTTP 403 remains an authorization error. If Google rejects the refresh token itself (for example, `invalid_grant`), sign in again in Antigravity App, then reconnect this provider; no plugin can renew a revoked refresh token.
+Once a token renewal is dispatched, cancellation stops the caller waiting but allows the bounded renewal and guarded writeback to finish, so a received rotating refresh token is not abandoned. Resource HTTP 401 responses trigger one native renewal and one retry before being reported as expired; HTTP 403 remains an authorization error. If Google rejects the refresh token itself (for example, `invalid_grant`), run the plugin's browser sign-in again; no plugin can renew a revoked refresh token.
 
 After native access and renewal succeed, `magpie quota refresh antigravity-enterprise` can clear Magpie's persisted expired-account mark when the quota response succeeds. A Keychain access error reported as `kept` does not clear an older expiry mark. Explicit sign-in with a changed native binding may add a separate account; retain the intended account's project and location when reconnecting.
 
 Binding uses an authenticated principal when available, otherwise a successfully renewed refresh-token lineage. Rotations made by this plugin retain that lineage. An unknown externally replaced or rotated token requires explicit rebinding rather than assuming it belongs to the same account. The plugin never selects another native identity merely because its project or provider matches.
+
+Each saved native account binding owns a separate in-memory session in a long-running plugin host. Browser sign-in completed by another host can therefore introduce a new valid binding without reusing the previous account's pinned session; old bindings still reject replacement native credentials.
 
 Nonsecret principal fingerprints, the compiled helper, and its lock are stored under `~/.config/magpie/antigravity-enterprise`. Package options `appPath`, `cliPath`, and `stateDir` may change the App, CLI executable, and state paths. All plugin hosts sharing the same native Keychain item must use the same `stateDir` to share its renewal lock.
 
@@ -89,6 +91,10 @@ Each reported bucket becomes a separate percentage window. Its exact bucket ID s
 
 The observed response reports the limit closest to being reached for each model, without reset timestamps, absolute limits, or monetary balances. The plugin does not invent these values. Models absent from the response retain unknown quota. The live account returned 25 buckets matching 25 of its 31 catalog models, each with 100% remaining, and the plan `Gemini Enterprise Plus`; those figures describe that reading and can change. Authentication expiry requires sign-in; permission, network, and malformed-response errors preserve the sign-in and remain visible.
 
+The vendor describes separate Gemini Pro, Gemini Flash, and Claude/GPT pools, each with weekly and five-hour caps; each returned percentage reflects the cap closest to exhaustion. It does not provide a complete model-to-pool mapping or identify which cap supplied a particular reading. Model rows must not be interpreted as independent pools or summed across models.
+
+On 2026-11-12, a direct HTTP 200 read bypassing Magpie's cache still returned `remainingFraction: 1` for all 25 buckets. Earlier captured official-client responses did too. This establishes that 100% was reported upstream; it does not establish zero consumption, unlimited quota, or why the value stayed unchanged after usage. The plugin preserves that reported value instead of estimating consumption from request counts. The API's per-model structure is confirmed; equivalence to the official App's final quota UI is not established.
+
 Catalog capability flags also recognize explicit video input and adaptive thinking support when MIME types or the older thinking flag are absent. This corrects picker metadata; it does not establish entitlement to a model.
 
 ## Checks
@@ -100,6 +106,8 @@ npm test
 For the opt-in macOS integration check, run `MAGPIE_NATIVE_KEYCHAIN_TESTS=1 node --test keychain.test.mjs`. It creates an explicit private temporary Keychain, checks reads, guarded rotation, unauthorized and locked access, helper identity reuse, and altered-cache rejection, then deletes the fixture. It never changes the user's Keychain search list or uses production credentials.
 
 The deterministic suite covers effective authentication selection, renewal ownership and cancellation, token replacement races, rotation lineage, per-account configuration preservation, Fetch input semantics, regional routing, complex tool schemas, fragmented SSE, signatures, tool calls, upstream errors, and cancellation. Error-event fixtures exercise the generic Google RPC/SSE contract; they are not captured App responses. Live model checks consume the selected enterprise account's allowance.
+
+Version 1.1.0 verification: 288 behavior tests passed, with the opt-in native Keychain integration test also passing separately. The native fixture covers absent-item installation, guarded replacement, collisions, unchanged ACL restrictions, and ordinary refresh commits that cannot create credentials. A real WIF sign-in was initiated by `magpie plugin login antigravity-enterprise 1`, completed in the browser, validated its license, and saved the native credential. Two subsequent real renewals returned HTTP 200 with `expires_in: 3599` and verified Keychain writeback; a fresh process reused the saved token without interaction or network access. The running gateway returned HTTP 200 and the exact expected Gemini response after account-scoped session handling was applied. One enabled, non-lapsed account remained with 25 quota windows. GCP browser behavior has deterministic protocol coverage; live browser verification used WIF. Tests also cover post-install native replacement and account changes in the same long-running plugin host.
 
 Version 1.0.6 accepts native credentials that omit the optional `tier_display_name` field, without adding a default to the Keychain item; invalid supplied types remain rejected. All 248 behavior tests passed (the separate opt-in native integration check is skipped by the default command). After a fresh enterprise sign-in, two consecutive real OAuth renewals returned HTTP 200 with `expires_in: 3599`. Both returned access tokens matched Keychain writeback; the server returned the same refresh token. A fresh process reused the persisted token and expiry with interaction disabled and zero network calls. Explicit provider sign-in re-established the changed native binding; quota refresh returned 25 windows, and the running gateway completed a Gemini Flash Lite request with HTTP 200 and the exact expected response. These checks forced renewal; they did not wait for natural expiry. The earlier 1.0.5 native Keychain integration check passed.
 
@@ -128,6 +136,8 @@ The capture covered a WIF-backed native profile whose stored authentication labe
 - [Google Antigravity enterprise authentication, licenses, models and endpoints](https://antigravity.google/docs/enterprise)
 - [Google Antigravity unified local authentication](https://antigravity.google/docs/install)
 - [Magpie provider-plugin contract](https://usemagpie.ai/docs/plugins)
+- [Google installed-application OAuth and loopback PKCE](https://developers.google.com/identity/protocols/oauth2/native-app)
+- [Google Workforce Identity Federation browser login configuration](https://docs.cloud.google.com/iam/docs/workforce-log-in-gcloud)
 - [Enterprise request-format reference](https://github.com/aeroxy/claude-proxy/blob/b7dd5a943a1f70c7c6a030592757c70a977f666b/src/gemini/aicode.rs)
 - [WIF OAuth protocol reference](https://github.com/Mag1cFall/Antigravity2API/blob/6aa1a0a35906abad793f0cef6bebb30c69920ead/docs/protocol.md)
 - [Native Google Schema fields](https://googleapis.github.io/js-genai/release_docs/interfaces/types.Schema.html)

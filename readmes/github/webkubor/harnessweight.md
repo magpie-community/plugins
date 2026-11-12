@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/866f1b60-b5c6-4128-8828-15646b10a32e
 
 > ▶ 30 秒演示：结论 → Agent 卡片 → 排序 → 详情 → 切 30 天 → 深色。
 
-> 截图是作者本机 7 天的真实用量，在和 magpie 一样的沙箱框架里实拍，没有模拟数据。Agent 名字和图标与 magpie 自己显示的一致。
+> 截图是作者本机 7 天的真实用量，在和 magpie 一样的沙箱框架里实拍，没有模拟数据。Agent 名字和图标与 magpie 自己显示的一致。卡片上的小图标是该 Agent 在这段时间实际用到的模型，超出排序的部分渐隐。
 
 ## 它回答什么问题
 
@@ -148,7 +148,9 @@ Claude Code、Grok 等尚未提供内置任务生命周期适配器；这不代�
 
 向 `node bin/task-event.js --source protocol --data-dir /absolute/data/path` 的标准输入发送该结构；阶段为 `started`、`completed`、`failed`、`cancelled`。`atMs` 必须是原始事件的 Unix 毫秒时间；重试保留原 ID 与原时间戳，新执行使用新 `runId`，同一执行中的每个任务使用不同 `taskId`。只有确为同一任务的恢复执行才可继续用原 ID。每个执行周期使用一种采集来源，避免人为重复接入。不能把网关请求开始/结束事件映射为任务。
 
-`GET /api/summary` 的 `agents[].taskDuration` 提供 `averageMs`、`totalMs`、`samples`、`available`、`coverage`、`reason`、`sources` 与 `excluded`。顶层 `taskTiming` 给出执行周期边界、按完成时间筛选的口径、实际时间窗口、保留限制和支持的适配器。没有有效完成样本时 `averageMs` / `totalMs` 为 `null`；采集文件读取失败单独降级为 `reason=read-error`，不影响请求指标。
+`GET /api/summary` 的 `agents[].taskDuration` 提供 `averageMs`、`totalMs`、`samples`、`available`、`coverage`、`reason`、`sources`、`metricSource` 与 `excluded`。顶层 `taskTiming` 给出执行周期边界、按完成时间筛选的口径、实际时间窗口、保留限制和支持的适配器。没有有效完成样本时 `averageMs` / `totalMs` 为 `null`；采集文件读取失败单独降级为 `reason=read-error`，不影响其他可读来源。同一 Harness 存在不同来源的有效完成样本时，边界不确定，`reason=mixed-sources` 且不提供合并平均值；只有单一来源有有效完成样本时 `metricSource` 指明该来源。不同来源按组展示，不标优劣。
+
+页面顶部分别显示请求日志、工具日志、任务事件日志和 Codex 有效完成轮次的最近观测与读取状态；任务两路仅覆盖保留窗口的近 30 天。`telemetry` 提供对应的 `state` 与最近时间。`missing` 表示日志文件未找到，`no-events` / `no-completions` 表示未观测到可用记录，`read-error` 表示读取失败；它们均不等价于判定 hook 是否安装。页面数据生成时间与记录到达时间分别显示。单一路径读取失败时，不展示该来源的旧缓存，其他来源继续显示并提示降级。
 
 ## 开发
 
@@ -170,7 +172,7 @@ npm run dev   # 直接起服务：http://127.0.0.1:3496/
 
 ## 状态
 
-v0.4.0。原名 Agent Lens，因与多个同名项目撞车，在 0.4.0 改名为 HarnessWeight；旧的 GitHub 地址会自动跳转，已有的工具采样会自动迁移。
+v0.5.0。原名 Agent Lens，因与多个同名项目撞车，在 0.4.0 改名为 HarnessWeight；旧的 GitHub 地址会自动跳转，已有的工具采样会自动迁移。0.5.0 新增：供应商 × Harness 稳定性报告（按供应商查看各 Harness 的请求、失败与主动取消，品牌图标沿用本机 magpie 配置）、Agent 卡片上的模型图标（按实际用量排序、超出渐隐）、页面顶部按来源分开的采集状态（请求日志 / 工具日志 / 任务事件 / Codex 轮次），以及任务耗时的来源与空态说明（Codex 显示「平均已完成用户轮次耗时」，未接入生命周期采集器的 Harness 显示 `—` 而不是 0）。
 
 ---
 

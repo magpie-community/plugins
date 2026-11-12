@@ -22,85 +22,138 @@ have a row, a name and an icon for it.
 
 ## Install
 
-magpie installed from a **.dmg** is an app: its command line lives at
-`/Applications/magpie.app/Contents/MacOS/magpie` and `magpie` is usually **not
-on PATH**. The script below finds it there, so plain shell commands are enough.
+Lévin Harness ships for macOS and Windows; the installer adds the plugin to
+magpie, finds the copy magpie installed, pins which of Lévin's model entries
+magpie may write, and reloads the plugin. Running it again only re-pins.
+
+Linux has no Lévin build in the releases checked on 2026-11-12, so that section
+is preparation only.
+
+### macOS
+
+magpie from a **.dmg** is an app: its command line is
+`/Applications/magpie.app/Contents/MacOS/magpie`, and `magpie` is usually **not** on
+PATH. The script looks there itself, so no setup is needed first.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/YaoYinYing/levin-harness-connector/main/install.sh | sh
 ```
 
-It:
+Needs Node.js 18+ (`node --version`). Run it in Terminal, not inside another
+app's sandbox: macOS blocks a sandboxed process from reading Levin Harness's
+`config.json`.
 
-1. finds magpie on PATH, then in `/Applications/magpie.app` and `~/Applications/magpie.app`
-   (override with `MAGPIE=/path/to/magpie.app/Contents/MacOS/magpie`);
-2. runs `plugin add github:YaoYinYing/levin-harness-connector`;
-3. finds the copy magpie just installed under `~/.config/magpie/plugins/node_modules/`;
-4. pins the Levin Harness model entry magpie may write, by its id;
-5. turns the plugin off and on so the new pin is read.
+### Windows
 
-Run it again any time — it only re-pins.
+Lévin Harness has a Windows build: the GitHub releases carry
+`Levin-Harness-<version>-x64.exe` next to the arm64 `.dmg`. Install that first,
+then run the script below — it has **not** been run on a real Windows machine
+yet, so treat it as reviewed-but-unproven.
 
-| flag | what it does |
-| --- | --- |
-| `--link` | also symlinks `~/.local/bin/magpie` → the app's own binary, so `magpie …` works in a shell |
-| `--create` | no usable entry yet: append one to Levin Harness's config first (**quit Levin Harness**), keeping a `config.json.bak-…` |
-| `--list` | print Levin Harness's model entries and their ids, then stop |
+magpie on Windows is `magpie.exe` (the app) or `magpie-cli.exe` (the command line
+build). Neither is on PATH unless you put it there, so the script looks in the
+usual places and in your Downloads folder.
 
-Two loose ends worth knowing:
+In **PowerShell**:
 
-- With `curl … | sh` a flag goes to the script like this:
-  `curl -fsSL …/install.sh | sh -s -- --link`.
-- If `~/.local/bin` is not on your PATH, add it (`export PATH="$HOME/.local/bin:$PATH"`
-  in `~/.zshrc`) to use plain `magpie` afterwards. magpie's own app never needs this.
+```powershell
+irm https://raw.githubusercontent.com/YaoYinYing/levin-harness-connector/main/install.ps1 | iex
+```
 
-### The plain-`magpie` alternative
+Because the one-liner runs with `iex`, flags are not available; clone once if you
+want `-Create`, `-List`, `-Link`, `-Spec` or `-Magpie`:
 
-The app window can add the plugin without any shell: **Plugins → add plugin**,
-paste
+```powershell
+git clone https://github.com/YaoYinYing/levin-harness-connector.git
+cd levin-harness-connector
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -List        # see the entries
+powershell -ExecutionPolicy Bypass -File .\install.ps1             # pin one
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Create     # make one first, Levin closed
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Link       # + a `magpie` command
+```
+
+Where it looks for magpie: PATH, then `%LOCALAPPDATA%\Programs\magpie\`,
+`%LOCALAPPDATA%\magpie\`, `%ProgramFiles%\magpie\`, `%ProgramFiles(x86)%\magpie\`,
+`%USERPROFILE%\magpie\`, and the release downloads in `%USERPROFILE%\Downloads\`.
+Point it somewhere else with `-Magpie "C:\path\to\magpie.exe"`.
+
+Levin Harness keeps its config at `%APPDATA%\levin-harness\config.json`; `pin-slot.mjs` looks
+there because the Windows `node.exe` reports `platform === "win32"`. Run the pin
+from **PowerShell** (or cmd) with the Windows Node — from Git Bash it also works,
+since Node still reports win32, but not through a WSL `node`, which reports
+linux. If magpie runs on Windows, use the Windows script: WSL is a separate
+machine to magpie.
+
+`-Link` writes `%LOCALAPPDATA%\Microsoft\WindowsApps\magpie.cmd`, which is already on
+PATH: no new folder to add, and it survives moving `magpie.exe`.
+
+### Linux (and WSL)
+
+No Lévin Harness build for Linux appears in the releases checked on 2026-11-12,
+so there is nothing to point at yet. `install.sh` already looks in
+`$XDG_CONFIG_HOME/levin-harness/config.json` and `~/.config/levin-harness/`,
+which is preparation, not support.
+
+WSL is a separate machine to magpie: a Lévin inside WSL is not the install
+magpie sees on Windows.
+
+### What the installers pass on
+
+| flag (`install.sh`) | flag (`install.ps1`) | what it does |
+| --- | --- | --- |
+| `--link` | `-Link` | put a `magpie` command on PATH (`~/.local/bin` on macOS/Linux, `WindowsApps` on Windows) |
+| `--create` | `-Create` | no usable entry yet: append one to Levin Harness's config first (**quit Levin Harness**), keeping a `config.json.bak-…` |
+| `--list` | `-List` | print Levin Harness's model entries and their ids, then stop |
+| `--dry-run` | — | say what the pin would write, change nothing |
+| `MAGPIE=…` | `-Magpie …` | where magpie lives, if it is not in a usual place |
+| `SPEC=…` | `-Spec …` | install from another repo or a local folder |
+
+With `curl … | sh` a flag goes to the script like this:
+`curl -fsSL …/install.sh | sh -s -- --link`.
+
+### Where each side keeps its files
+
+| | Lévin build | Lévin's `config.json` | magpie's plugins |
+| --- | --- | --- | --- |
+| macOS | arm64 `.dmg` | `~/Library/Application Support/Levin/config.json` | `~/.config/magpie/plugins/node_modules/` |
+| Windows | `x64.exe` | `%APPDATA%\levin-harness\config.json` (by Lévin's own code, unverified on Windows) | `%USERPROFILE%\.config\magpie\plugins\node_modules\` |
+| Linux | none in the releases checked | `$XDG_CONFIG_HOME/levin-harness/config.json`, else `~/.config/levin-harness/` (preparation) | `~/.config/magpie/plugins/node_modules/` |
+
+On every platform `$LEVIN_HARNESS_CONFIG_DIR/config.json` wins if it is set (Levin Harness
+honours it too), and `pin-slot.mjs --config <path>` overrides everything. When it
+cannot find the file, it prints every path it tried.
+
+### Then, in the app
+
+**magpie → Agents → the Levin Harness row → pick a model.** Levin Harness reads its
+model when a session starts, so send the next message or open a new chat.
+
+Undo: pick Levin Harness's previous model in that row, or
+
+```sh
+magpie levin-harness-connector default
+```
+
+Levin Harness's `config.json` comes back byte for byte (magpie stashes each key it
+wrote; verified in a sandbox). On Windows use the full
+`"$env:LOCALAPPDATA\Programs\magpie\magpie.exe" levin-harness-connector default`,
+or the `-Link` shim `magpie levin-harness-connector default`.
+
+### Without an installer
+
+The app can add the plugin by itself: **Plugins → add plugin** and paste
 
 ```
 https://github.com/YaoYinYing/levin-harness-connector
 ```
 
-The pin still needs a terminal (only Node can read Levin Harness's `config.json`):
+The pin still needs Node once, because only Node can read Levin Harness's `config.json`:
 
-```sh
-node ~/.config/magpie/plugins/node_modules/levin-harness-connector/tools/pin-slot.mjs
-/Applications/magpie.app/Contents/MacOS/magpie plugin off levin-harness-connector
-/Applications/magpie.app/Contents/MacOS/magpie plugin on levin-harness-connector
-```
-
-Then, in the **magpie window** → *Agents* → the Levin Harness row → pick a model.
-Levin Harness reads its model when a session starts, so send the next message or open
-a new chat.
-
-Why the pin needs a normal shell: it reads and writes Levin Harness's `config.json`, which
-macOS protects. Run it from Terminal (with Full Disk Access if it asks), not
-from inside an app sandbox.
-
-### By hand
-
-```sh
-git clone https://github.com/YaoYinYing/levin-harness-connector.git
-cd levin-harness-connector
-MAGPIE=/Applications/magpie.app/Contents/MacOS/magpie
-"$MAGPIE" plugin add .
-node tools/pin-slot.mjs          # --list first, if you want to see the entries
-```
-
-or, without cloning, add the GitHub link in the app (*Plugins → add plugin*) and run
-`node tools/pin-slot.mjs` inside the installed copy at
-`~/.config/magpie/plugins/node_modules/levin-harness-connector`.
-
-Disconnect: pick Levin Harness's previous model in that row, or
-
-```sh
-magpie levin-harness-connector default        # /Applications/magpie.app/Contents/MacOS/magpie …
-```
-
-Levin Harness's `config.json` comes back byte for byte (magpie stashes each key it wrote;
-verified in a sandbox).
+| platform | the pin, then reload |
+| --- | --- |
+| macOS | `node ~/.config/magpie/plugins/node_modules/levin-harness-connector/tools/pin-slot.mjs` then `magpie plugin off levin-harness-connector` and `magpie plugin on levin-harness-connector` |
+| Windows | the same `node` command (PowerShell), then the same two `plugin off`/`on` with `magpie.exe` |
+| Linux | the same `node` command, then the same two `plugin off`/`on` |
 
 ## Why `pin-slot` exists
 

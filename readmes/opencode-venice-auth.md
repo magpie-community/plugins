@@ -40,13 +40,44 @@ The plugin does not send `venice_parameters` in requests. Venice therefore appli
 
 ## Usage
 
-`magpie quota`, and the Providers usage card, show what Venice reports for the key:
+`magpie quota`, and the Providers usage card, show what Venice reports for the key as windows ordered by Venice's charge priority:
 
-- All balances that are present, joined in the order USD, DIEM, BUNDLED_CREDITS, for example `$50.23 · 100.023 DIEM · 25 BUNDLED_CREDITS`.
-- The key expiration time, when there is one.
+- `Daily DIEM`: the DIEM balance, shown only when it is greater than zero. It resets at the next daily epoch (`nextEpochBegins`, 00:00 UTC).
+- `Plan credits`: the bundled plan credits, shown as a wallet when no plan tier is configured. Without a tier, a zero balance is hidden.
+- `Plan credits (est.)`: with a plan tier configured, an estimate of the tier's usage. The display reads `25 of 75 credits left`; magpie derives the percentage. The window is marked as auxiliary (`aside: true`) and has no reset time because Venice does not expose one for the subscription.
+- `API balance`: the prepaid USD balance, shown whenever Venice reports the field, including zero (a negative value is displayed as zero).
 - Rate-limit caps summarized per limit type as a range (for example `50-100 across 119 models`), with account-wide caps listed first. Only caps are shown: Venice does not report consumption, so the plugin does not invent a used amount. Per-model caps remain available from Venice at `GET /api_keys/rate_limits`.
+- `plan option`: added at the end only when the configured plan value is not recognized. It reads `not recognized; use pro, plus or max` and never echoes the bad value; the credits fall back to the untiered wallet window.
 
 An HTTP 402 from a usage request is displayed as the balance or spending-cap condition described in [Sign-in](#http-402-is-not-an-expired-sign-in).
+
+The old single balance line is gone. In `magpie quota --json`, the top-level `balance` field no longer exists: this is a breaking change for scripts that read it. Read the `windows` array instead; wallet windows carry `balance` and `unit`. The top-level `until` field is the API key's expiration, not the subscription's. The plan badge and the estimate window come from the plugin's `plan` option, not from Venice.
+
+### Billing order
+
+Venice charges each request in a fixed order: DIEM, then earned credits, then bundled plan credits, then USD. When one source runs out, the next one is used automatically. A request fails with HTTP 402 when the combined available balance is insufficient, or when a key-level spending cap is reached. There is no plugin switch for this, because Venice fixes the order server-side.
+
+The window order itself expresses that priority: with a plan tier configured, the `Plan credits (est.)` window marks where bundled plan credits sit. To find the next currency Venice will charge, look for the first source with a remaining balance in window order, including the estimate window; scanning only wallet windows is not enough. One exception is that earned credits sit between DIEM and plan credits and are not visible to the plugin, so a missing earned-credits window is normal; a missing window can also simply mean that currency's balance is zero. A Venice per-key consumption limit (for example a USD cap) is configured in the Venice web account, not by this plugin; it can turn an otherwise funded request into a 402.
+
+### Plan estimate (optional)
+
+Set the plan tier to add the `Plan credits (est.)` window:
+
+```sh
+magpie plugin options opencode-venice-auth '{"plan":"plus"}'
+```
+
+Valid values are `pro`, `plus` and `max`, matched case-insensitively and ignoring surrounding whitespace. Clear the option with:
+
+```sh
+magpie plugin options opencode-venice-auth off
+```
+
+Use the name or spec the plugin was installed under; `opencode-venice-auth` is the package name. The credit limits are Pro 1, Plus 75 and Max 225 credits, matching Venice's current published values, where 1 credit = $1. These values can go out of date, in which case the estimate is still shown but its percentage is wrong.
+
+The estimate is best effort. Venice does not expose the subscription's total allowance or reset time to an inference key, so the limit comes from the table above, the window has no `resetsAt`, and the estimate carries the `(est.)` suffix and `aside: true`. The `aside` flag tells magpie this is auxiliary data rather than a timed metered quota, so it is not marked as a clock-based hold. The same flag also keeps the estimate out of magpie's balance reminders (quota and balance alerts). If the reported bundled balance is greater than the configured limit (a stale tier or a rollover), the plugin shows a plain `Plan credits` wallet instead of a percentage. A zero bundled balance with a tier configured shows the estimate at 100% used.
+
+Options are resolved once when the plugin loads, and magpie reloads the plugin when the options change. The plan badge can be stale on the host side: after clearing the option, the previous badge may remain until the account is logged out and back in. Signing in again alone does not clear it; run `magpie plugin logout venice` first, then sign in again.
 
 ## Install
 

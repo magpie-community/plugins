@@ -1,6 +1,6 @@
 # baipiao — bit-api 提供商插件
 
-[magpie](https://usemagpie.ai) / [OpenCode](https://opencode.ai) 的提供商插件,接入
+[magpie](https://usemagpie.ai) 的提供商插件,接入
 [bit-api](https://ai.baipiao.co/)。
 
 名称说明:
@@ -29,18 +29,34 @@
 
 ### 一、浏览器登录(账户)——推荐
 
-走站点自己的网页登录,能查余额、能签到:
+走站点自己的网页登录,能查余额、能签到。magpie 会**连着问两格**——先粘会话 cookie,
+点「下一步」,再粘聊天密钥:
 
-1. magpie 里选择该登录方式,插件会打开 bit-api 的登录页;
-2. 在页面上完成登录(整个登录流程都发生在你的浏览器里——登录流绑定一个只有
-   浏览器持有的 HttpOnly cookie,插件无法代劳);
-3. 登录完成后,bit-api 页面会把会话 token 存起来:在该页面按 **F12** 打开控制台,
-   运行 `localStorage.bitapi_token`,复制输出的那串 JWT,粘贴回 magpie;
-4. 插件验真 token 后,自动抓取账户第一把启用的聊天密钥(与控制台"复制"按钮走同一个
-   reveal 接口),聊天与拉模型都用它。
+1. 选这种登录方式时,插件会**自己打开** bit-api 的登录页
+   (https://ai.baipiao.co/portal#/login)。若浏览器没弹出,手动打开该地址即可。
+   在页面上用「社区登录」完成登录(整个登录流程都发生在你的浏览器里——登录流绑定
+   一个只有浏览器持有的 HttpOnly cookie,插件无法代劳);
+2. 登录完成后,bit-api 把会话存在 **HttpOnly cookie `bitapi_session`** 里
+   (旁边还有一个 `bitapi_csrf`)。页面脚本读不到它,站点自己还会在每次加载时
+   `localStorage.removeItem("bitapi_token")`,所以**不能再从 localStorage 取 token**。
+   在该页面按 **F12**,打开 **Application → Cookies → https://ai.baipiao.co**,
+   复制 `bitapi_session` 的值;也可以从 **Network** 面板任一 `/api` 请求里复制整条
+   `Cookie` 头,插件会自己取出其中的 `bitapi_session`。把这段粘进**第一格**,
+   点「下一步」;
+3. 到控制台的 **Keys** 页复制一把聊天密钥(`sk-…`),粘进**第二格**,点「登录」。
 
-token 是站点自己签发的 JWT,默认 7 天有效。站点不签发 refresh token,过期后照原样
-重来一遍(打开浏览器、粘贴新 token)即可。
+两格都必填。插件用会话验真身份并查余额、签到,聊天与拉模型用你给的这把 key。
+
+为什么是两格提问而不是登录后一个粘贴框:magpie 在浏览器步骤之后只给**一个**
+单行粘贴框(换行会被吞掉),而 magpie 的提问框(`ask` 钩子,pi 的登录就用它)
+可以一个接一个地问,所以插件把登录页的打开放在第一问发生时,登录完再问第二问。
+插件也不会去猜账户里"第一把"密钥(`/api/keys` 与 reveal 接口从不调用),用哪把
+由你决定。
+
+cookie 里装的就是站点签发的会话 JWT,默认 7 天有效;`bitapi_session` 本身是
+HttpOnly,而插件用的是同一个 JWT 的 `Authorization: Bearer`(bitapi 对脚本客户端
+保留 Bearer,GET 请求不需要 CSRF 头)。站点不签发 refresh token,过期后照原样
+重来一遍(重新登录、粘贴新 cookie 与 key)即可。
 
 ### 二、API key
 
@@ -54,7 +70,13 @@ token 是站点自己签发的 JWT,默认 7 天有效。站点不签发 refresh 
 | `GET /v1/models` | API key | 账户分组可用模型(`https://ai.baipiao.co/v1`) |
 | `GET /api/overview` | 会话 token | 余额(卡片余额行)、今日消费与请求数 |
 | `POST /api/checkin` | 会话 token | 每日签到,UTC+8 自然日一次 |
-| `GET /api/keys` + `GET /api/keys/{id}/reveal` | 会话 token | 密钥列表只给脱敏串,明文按 id 单取 |
+
+站点的密钥列表(`/api/keys`)与明文 reveal 接口插件**不调用**:聊天用哪把 key
+由登录时你粘的那把决定。
+
+站点把浏览器登录态放在 HttpOnly cookie `bitapi_session` 里,同一份 JWT 也接受
+脚本客户端用 `Authorization: Bearer` 发来;插件走的就是 Bearer,因此 POST
+(`/api/checkin`)不需要 `X-CSRF-Token`。
 
 网关本身兼容 OpenAI chat completions、Responses 与 Anthropic Messages 三种协议,
 模型条目一份即可服务所有协议。
@@ -66,8 +88,13 @@ token 是站点自己签发的 JWT,默认 7 天有效。站点不签发 refresh 
 
 ## 凭据存放
 
-存在 OpenCode / magpie 自己的 auth store 里(`~/.local/share/opencode/auth.json`,
-magpie 同结构),条目名为 `baipiao`。
+存在 magpie 自己的 auth store 里(`~/.config/magpie/plugin-auth.json`,条目名为
+`baipiao`),文件权限 0600。浏览器登录的条目是 `{type: "oauth", access, refresh:
+"none", expires: 0, apiKey, accountId}`,纯 key 的是 `{type: "api", key}`。
+
+浏览器登录用的是 magpie 的 `ask` 钩子(pi 的登录也用它),所以提问可以发生在
+打开登录页之后:第一问粘 cookie 时插件打开登录页,第二问粘 key。magpie 的
+`prompts` 做不到这一点——它在 `authorize` 之前就把问题问完。
 
 ## 本地测试
 

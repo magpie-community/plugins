@@ -1,5 +1,7 @@
 # poxian
 
+![version](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/ksmord/poxian/main/package.json&query=$.version&label=version&color=blue)
+
 **上游：[YaoGuaiLi/hangong](https://github.com/YaoGuaiLi/hangong)（MIT）· 本仓库为 fork 重构版**
 
 一个 [magpie](https://usemagpie.ai) 网关中间件：把完整的工作台系统提示词写进**每一个经过网关的请求**——一个注入点，覆盖所有 Agent，客户端零改动。
@@ -171,8 +173,12 @@ magpie plugin options poxian '{"override":true,"override_mode":"replace"}'
 | `enable_message_filter` | `false` | **报文清洗总开关**。开 = 注入前先删掉请求自带的冲突 system 与拒绝式 assistant 历史。默认关，旧行为不变 |
 | `strip_safety_system` | `true` | 清洗的子项：删命中关键词的 system 位。四种协议都认（chat 的 `system`/`developer` 消息、Anthropic 的 `system`、Responses 的 `instructions`、Gemini 的 `systemInstruction` / `system_instruction`） |
 | `strip_deny_assistant` | `false` | 清洗的子项：删历史里「抱歉 / 不能 / 无法」一类整条 assistant 回复。删完会合并相邻同角色消息，否则 Anthropic 要求 `user`/`assistant` 交替会直接 400 |
-| `probe_echo` | `false` | **回显探针**。载荷末尾追加一枚 6 位随机标记，要求模型回复首行原样吐出。回显到 = 注入真的拿到了控制权，而不只是字节写进去了。约 +20 token，会改请求体，故默认关 |
+| `probe_echo` | `false` | **回显探针**。追加一枚 6 位随机标记，要求模型回复首行原样吐出。回显到 = 注入真的拿到了控制权，而不只是字节写进去了。约 +20 token，会改请求体，故默认关 |
+| `probe_echo_position` | `message` | **回显落点**。`message` = 最后一条 user 消息尾部（默认）；`payload` = 0.1.x 旧行为，拼到注入载荷末尾、跟着进 `system`。**别随便改回 payload**：`system` 是缓存前缀的头，每请求换一枚 nonce，上游逐 token 比对会从 nonce 处断链，后面整段历史每轮都按新 token 计费（实测 workbuddy 79.4% → 1.3%，`cache_read` 恒等于 1024） |
 | `probe_refusal` | `false` | **拒答探针**。只读回复前 200 字符判是否拒答，不改请求、零 token 成本。单用只能知道「这次拒了」，配上回显探针才能区分「没送到」与「送到了不认」 |
+| `prefill` | `""` | **预填**。请求末尾补一条 assistant，内容就是工件首行（围栏、`1. `、标题）——把模型的第一个 token 从「要不要答」挪到「这段怎么接」。会改请求体，默认关 |
+| `prefill_models` | `[]` | 预填白名单，按模型名前缀匹配。写死它就等于关掉自动判断 |
+| `prefill_auto` | `true` | 没写白名单时，按「先验 + 该路由滑动统计」自动决定。先验来自实机：`hy4` 71%→93%、`dp4.1f` 71%→38%、`k3` 系 0%、`glm` 无增益。统计是进程内 EWMA，`n≥4` 才动手；拒答连续出现会把已开的路由翻成关 |
 
 ### 探针：区分「注入进去了」和「注入生效了」
 

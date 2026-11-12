@@ -2,9 +2,11 @@
 
 magpie 侧边栏的一个页面：把网关自己写的 `usage.jsonl` 读成一块实时看板 —— 每次请求的首字、总时长、缓存命中、token、速度和计费方式，按供应商 / 模型 / 推理强度 / Agent / 时间窗筛选，并把分组统计、趋势、失败码、正在休息的席位、余额与额度放在同一屏。
 
-> 只读。插件不接管路由、不改 magpie 配置、不发任何出站请求，全部数据来自本机 `~/.config/magpie`。
+> 看板只读本机 `~/.config/magpie` 里的用量文件，不接管路由、不改路由配置。两处例外写在这里，不在小字里：**唯一的出站请求**是数值指纹的参考库（钉死版本、点了按钮才下、下完校验 sha256，只连 `cdn.jsdmirror.com` 一个域名），**唯一的写入**是检测缓存那几个文件（见[会写哪些文件](#会写哪些文件)）。没有遥测，没有统计上报。
 
-> **English** — A page for magpie's sidebar that turns the gateway's own `usage.jsonl` into a live routing board: first-byte time, total duration, cache hit rate, tokens, output speed and how each call was billed — filterable by provider / model / reasoning effort / agent / time window, with group stats, trends, error codes, resting accounts, balance and quota on the same screen. Read-only: it never routes, never edits magpie's config, never makes an outbound request. Also includes a provider status view (per-route cards with uptime and recent-call strips) and an intelligence check — fingerprint, a full HTML animation of a pelican riding a bike (rendered live in a sandboxed iframe), and "draw a pelican" — with per-line reasoning effort and a candidate ranking that lands on concrete model names.
+> **English** — A page for magpie's sidebar that turns the gateway's own `usage.jsonl` into a live routing board: first-byte time, total duration, cache hit rate, tokens, output speed and how each call was billed — filterable by provider / model / reasoning effort / agent / time window, with group stats, trends, error codes, resting accounts, balance and quota on the same screen. Read-only: it never routes and never edits magpie's routing config. Two exceptions, stated up front: the only outbound request is the numeric-fingerprint reference library (pinned version, downloaded when you click, sha256-verified, one domain), and the only files it writes are the check caches listed under "会写哪些文件". No telemetry. Also includes a provider status view (per-route cards with uptime and recent-call strips) and an intelligence check — fingerprint, a full HTML animation of a pelican riding a bike (rendered live in a sandboxed iframe), and "draw a pelican" — with per-line reasoning effort and a candidate ranking that lands on concrete model names.
+
+> 下面所有截图里都是**合成数据**（`Alpha Relay`、`Beta Gateway` 这些渠道名是编的），不是谁的用量记录。
 
 ![看板](screenshots/board-dark.png)
 
@@ -69,8 +71,16 @@ deepseek 这类链路 magpie 不写 effort，只留下**思考 token 数**（usa
 
 - **为什么从 3 个样本加到 5 个**：3 个只够有排名，前两名经常咬在 45% / 40% 这种位置，看着像「差不多」；5 个方差收窄约三成，而且能算「**与第二名的差距**」——差 30 个点的 80% 和差 5 个点的 80% 是两件事，结果卡里直接写出来。
 - 库是 `lmfpd-sdk` 0.2.0（MIT，零运行时依赖），整份 vendored 进 [`lib/lmfpd/`](lib/lmfpd/index.js)，不装 npm 包、不联网拉代码。
-- 参考数据约 3.6 MB，第一次用时从 `https://lm.ikale.io/data/` 下（失败退 `https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`），缓存在 `~/.config/magpie/lmfpd-data.bin`；进「指纹」页就先预热，状态写在强度下拉右边（`参考库 2026-11-11 · 3.6 MB`）。
-- **数数挑战绝对不带 `max_tokens`**：一带上限，思考就把预算吃光，content 为空，网关回 502「`an empty reply … the whole output spent on reasoning`」。所以 `ask()` 用 `maxTokens: 0` 表示「不设上限」（见 [`lib/gateway.mjs`](lib/gateway.mjs)）。
+- **参考数据钉在固定版本上，并且要点按钮才下**：
+  - 版本与哈希写在代码里（`lib/numeric.mjs` 的 `DATA_VERSION` / `DATA_SHA256` / `DATA_BUILT_AT`），下载路径是 `https://cdn.jsdmirror.com/npm/lmfpd-data@<版本>/`，**不用 `@latest`**——参考库换了内容，今天跑的分和昨天的就不是同一把尺子，而界面上这两条会摆在一起看。
+  - 落地落在 `~/.config/magpie/lmfpd-data.bin`，读的时候先算一遍 sha256：对不上就判失败，并说明「本地参考库不是插件固定的版本」，不让一份来源不明的库参与打分。
+  - 进「指纹」页**不联网**，只读本地缓存报状态（`参考库 2026-11-11 · 4.8 MB`）；没下过就在强度下拉右边给一个「下载 3.8 MB」按钮，点了才去取（并发点击只发一次），下完立刻校验。第一次直接点「开始检测」也会顺手取。
+  - 数据来源：lm-detector（MIT）的参考库，约 3.8 MB（解压后 4.8 MB）。
+- **从哪取**：默认走上游自己那台 `https://lm.ikale.io/data/`（bundle.json 里声明的 detector sha256 就是代码里那个值，chunk 名本身是内容寻址的 `.zst`）。不想联网就设下面两个环境变量之一——
+  - `ROUTE_INSIGHT_DATA_SOURCE=https://your-mirror/`：换成自己的镜像 / 自建源（你给的只是前缀）；钉死版本的 npm 镜像 `https://cdn.jsdmirror.com/npm/lmfpd-data@0.0.1794360871947/` 也走这个口子；
+  - `ROUTE_INSIGHT_DATA_DIR=D:\some\dir`：直接读一个本地目录，**完全不联网**（走 SDK 的 readDir 分支）。
+  - 换源不改校验：sha256 与字节数还是代码里的常量，对不上照样判失败。
+- **数数挑战的 `max_tokens` 给得很宽**：这个挑战天生话多，卡太紧思考就把预算吃光、content 为空，网关回 502「`an empty reply … the whole output spent on reasoning`」。以前干脆不传（等于不限），但那是**没有上限的付费请求**；0.15.1 起统一写 `maxTokens: NUM_MAX_TOKENS`（16000，见 [`lib/numeric.mjs`](lib/numeric.mjs)），比实测需要的量宽，同时又真的封了顶。协议审计 7 个探针里的 tool 调用也给 `max_completion_tokens: 200`，动画 2 趟给 32000。
 - 样本不够会明说「不确定」（`strict` 模式），不硬给部分排名；全空就直接判失败。
 - 它挡得住「后端钉死系统提示词」这类冒充（数数的手感改不了），但挡不住**真换了模型**——那就是它该说的话。
 
@@ -126,7 +136,7 @@ deepseek 这类链路 magpie 不写 effort，只留下**思考 token 数**（usa
 
 原来的 `<select>` 塞不下头像、也没法搜，所以自己画了一个：
 
-- 触发器：**供应商头像**（就是 magpie 自己那份图标，走 `/icons/<hash>.svg`）+ 模型名 + 家族 / 供应商。magpie 那边没配图标的渠道（`codex` 这类内置的）走内置图形 `ui/brand/codex.png`（Codex 应用自带图标），匹配不到才回落首字母方块。
+- 触发器：**供应商头像**（就是 magpie 自己那份图标，走 `/icons/<hash>.svg`）+ 模型名 + 家族 / 供应商。magpie 那边没配图标的渠道（`codex` 这类内置的）就回落成首字母方块（按供应商 id 取首字母 + 固定色相），包里不带任何第三方品牌素材。
 - 面板：顶部一个搜索框（匹配模型名、供应商、家族），下面按供应商分组，每组标题也带头像和条数；每行是 `模型名 → 家族 → 调用次数`，选中的那行打 ✓。
 - 键盘：`↑` / `↓` 移动，`↵` 选中，`Esc` 关闭；点面板外面也关。
 - 同一个模型挂在多家线路下时，分组就是区分它们的唯一线索——这也是不再用平铺下拉的原因。
@@ -146,11 +156,7 @@ deepseek 这类链路 magpie 不写 effort，只留下**思考 token 数**（usa
 
 数值指纹、协议审计、画图是三条不同的请求，但前两条都属于「文本探针」，所以给两个下拉：「**文本强度**」管数值指纹和协议审计，「**画图强度**」管 HTML 动画。档位跟着所选型号自己的 `levels` 走（`low` / `high` / `max` 这种），选不出档位的型号下拉自动置灰；留「默认档」就用这条线自己的默认值，不传 `reasoning_effort`。
 
-![指纹 · 数值指纹 + HTML 动画、可改的提示词与具体型号排名](screenshots/lab-num-dark.png)
-![协议审计 · 五项分数与疑点清单](screenshots/lab-relay-dark.png)
-![HTML 动画产物](screenshots/lab-anim-html.png)
-![指纹·浅色](screenshots/lab-light.png)
-![模型选择器](screenshots/lab-pick-dark.png)
+> 指纹页的截图这里不放：那一屏会把被测渠道的模型名、价格和检测结果一起拍进去，而仓库里的截图都是用合成数据拍的（看板里那几个 `Alpha Relay` / `Beta Gateway` 是假名字）。想看图，装上去点一下就知道了。
 
 ## 它比「用量 → 请求」多给了什么
 
@@ -203,6 +209,15 @@ magpie plugin add "D:/数据/AI/magpie-plugins/route-insight"
 
 跳板页和官方 page 插件同一种做法：拿到 `magpie.ready` / `options` 后**直接**导航到 `http://127.0.0.1:<port>/?theme=&lang=&uiOrigin=`，不做探活（探活会被页面 CSP 的 `connect-src 'none'` 拦掉，反而跳不过去）。8 秒后页面还在，或者手动加 `?diag=1`，才显示排查面板（目标地址、`magpie.service`、options、页面来源、浏览器）。
 
+## 双语界面 English UI
+
+界面跟 magpie 的语言走（bridge 传 `lang`），也可以手写 `?lang=en` 或 `?lang=zh`。
+
+- 文案表在 [`ui/i18n.js`](ui/i18n.js)：**键是中文原文、值是英文**，查不到就退回中文——所以补一条英文只要加一行，漏了也不会把页面搞坏。
+- 界面自己的文案走 `t("中文原文")`（带占位符就 `t("最近 {n} 次", { n })`）；`index.html` 里用 `data-i18n` / `data-i18n-title` / `data-i18n-ph`，由 `RI18N.apply(document)` 统一填。
+- 服务端返回的分析文字（`lib/*.mjs` 里的 note / detail / signal）不在服务端翻，而是在渲染前过一遍 `RI18N.localize`：先查整句表，再跑带变量的正则表。要在服务端加一句中文说明，改了之后记得在 `i18n.js` 的 `ZH2EN`（整句）或 `RULES`（带 `{变量}` 的句子）里补一条，否则英文界面下这句会留中文。
+- 供应商名、型号名故意不翻：那是数据，不是界面。
+
 ## 地址栏参数
 
 页面跟着 magpie 的主题走（bridge 会传 `theme` / `lang`）。直接开浏览器时也可以手写：
@@ -226,16 +241,33 @@ magpie plugin add "D:/数据/AI/magpie-plugins/route-insight"
 - 命中率用 `cache_read / (in + cache_read)`：`in` 是未命中缓存的那部分输入。
 - 推理强度、命中的规则、原始请求模型、路由分组来自 `routing/<本地日期>.jsonl`，按 `response_id` 对齐；对不上的行留空，不猜。走 deepseek 这类不带 effort 的模型时，强度列显示 `—` 是正常的。
 - 计费三分类：`quotas.json` 里同一供应商有 `windows` 就是**额度**（codex 账号），有 `balance` 就是**余额**（中转站），两者都没有按**积分**看。同一供应商多把 key 的余额相加。
-- 只读四个文件：`usage.jsonl`、`routing/<日期>.jsonl`、`quotas.json`、`rests.json`（谁在休息），外加 `providers.json` 取供应商中文名。没有第三方请求，没有遥测。
+读：`usage.jsonl`、`routing/<日期>.jsonl`、`quotas.json`、`rests.json`（谁在休息），外加 `providers.json` 取供应商中文名。没碰别的。
+
+### 会写哪些文件
+
+配置目录（`~/.config/magpie`）里，插件自己会写这几样：
+
+| 文件 | 什么时候写 | 里面是什么 | 上限 |
+| --- | --- | --- | --- |
+| `route-insight-lab-history.json` | 每次检测跑完 | 一条摘要：时间、模型、跑过哪几项、花了几次请求多少积分 | 最新 40 条 |
+| `route-insight-lab-results.json` | 每次检测跑完 | 最近几次的完整结果，含上游原始输出和判定文案，重开窗口还能看上次那张卡 | 最近 6 份 |
+| `route-insight-art/<id>.html` | 跑「HTML 动画」时 | 模型当场写的那份 HTML（iframe 里播） | 最新 60 份，旧的自动删 |
+| `lmfpd-data.bin` | 你点「下载参考库」或开始检测时 | 数值指纹的参考库（约 3.8 MB，sha256 与代码里写死的值对不上就不用） | 1 份 |
+| `route-insight-access.log` | **默认不写**：只有设了 `ROUTE_INSIGHT_ACCESS_LOG=1` 才落盘 | 谁在什么时候请求过这个页面（method / host / URL / UA），用来查「窗口打不开」 | 1 MB 轮转一份 |
+
+**唯一的出站请求**：`https://cdn.jsdmirror.com/npm/lmfpd-data@0.0.1794360871947/`——只下上面那个 `lmfpd-data.bin`。SDK 自带的源列表（`lm.ikale.io` 与 `@latest` 镜像）在 `loadDetector({ source: [DATA_SOURCE] })` 里被整份替换掉了，所以不会去那两个地方；版本是钉死的常量，TTL 也设成一年（SDK 默认 24 小时后会自己后台重下一次，那属于「悄悄联网」）。界面上按钮旁边就写着从哪个域名取、下完会校验 sha256。
 
 ## 隐私
 
 页面服务只绑 `127.0.0.1`，校验 Host 头，CSP 只允许自己的脚本、样式和同源 fetch；不显示 `client_ip`、会话 id、请求内容或密钥。
 
+接口另有服务令牌：启动时生成一枚随机令牌，只写进**导航响应**里的 `<meta name="service-token">`（`Sec-Fetch-Mode` 不是 `navigate` 的请求根本拿不到页面），之后每个 `/api/*` 都要带 `X-Route-Insight-Token`，比对用 `timingSafeEqual`，不带就是 403。CORS 只对一种情况放行：magpie 把插件页装在 `sandbox="allow-scripts"` 的 iframe 里，那份文档的 origin 就是 `"null"`，页面里的 `fetch('/api/…')` 在浏览器看来是跨源请求——**带对令牌**时回 `access-control-allow-origin: null`，不带或令牌错就 403 且一个 CORS 头都不回（以前是无条件放行，等于让任意网页的沙箱 iframe 读走余额、账号邮箱和每一次请求，还能借你的订阅替它跑检测）。检测是单飞的：同一时刻只跑一份，一天还有积分上限。
+
 ## 开发
 
 ```bash
-node test.mjs                 # 85 条断言：字段收敛、去重、命中率、分位数、多选筛选、effort 分桶、计费分类、路由对齐、抠文档、洗 HTML、家族落地到具体型号、数数挑战与解析
+node test.mjs                 # 121 条断言：字段收敛、去重、命中率、分位数、多选筛选、effort 分桶、计费分类、路由对齐、抠文档、洗 HTML、家族落地到具体型号、数数挑战与解析、审计措辞不再给篡改结论
+bun test                      # 7 条服务端约定：不带令牌读不到 /api/state、错令牌 403、带令牌 200、Origin: null 拿不到任何 CORS 放行头、不带令牌不能 POST /api/lab/run、页面只发给导航
 node index.mjs                # 直接起服务，浏览器打开 127.0.0.1:4397
 node index.mjs --port 4398    # 端口冲突时
 ```
@@ -246,26 +278,30 @@ node index.mjs --port 4398    # 端口冲突时
 | --- | --- |
 | ![看板深色](screenshots/board-dark.png) | ![看板浅色](screenshots/board-light.png) |
 
-| 供应商状态（头像、可用性、PAST→NOW） | 指纹与智商检测（数值指纹 · 具体型号概率） |
+| 供应商状态（头像、可用性、PAST→NOW） | 英文界面（`?lang=en`） |
 | --- | --- |
-| ![供应商](screenshots/providers-dark.png) | ![指纹](screenshots/lab-anim-dark.png) |
+| ![供应商](screenshots/providers-dark.png) | ![英文界面](screenshots/board-en.jpg) |
 
-「智商检测」是一张卡：老记录里画过鹈鹕的，图在上面、指纹在下面；0.9.2 之后新跑的检测不再单独画图，这张卡就只显示指纹。![智商检测](screenshots/lab-iq-dark.png)
+英文界面（`?lang=en`）：
 
-| HTML 动画产物（iframe 里真在动） | 两条证据打架（数值指纹说 luna、自述说 sol） |
-| --- | --- |
-| ![HTML 动画](screenshots/lab-anim-html.png) | ![两条证据打架](screenshots/lab-xcheck-dark.png) |
+![English UI](screenshots/board-en.jpg)
+
+「智商检测」是一张卡：老记录里画过鹈鹕的，图在上面、指纹在下面；0.9.2 之后新跑的检测不再单独画图，这张卡就只显示指纹。
 
 窄窗口（900×1200，单栏）：![窄窗口](screenshots/board-narrow.png)
 
+手机宽度（420×900，KPI 2 列、趋势单列、表格在卡内横滚，整页不横滚）：
+
+![420](screenshots/board-420.png)
+
 ## 版本
 
-每次改动都会前进一版，逐版条目见 [CHANGELOG.md](CHANGELOG.md)。当前 0.13.0。
+每次改动都会前进一版，逐版条目见 [CHANGELOG.md](CHANGELOG.md)。当前 0.15.1。
 
 ## License
 
 MIT（本仓库自己的代码）。
 
-第三方：数值指纹用到的 `lmfpd-sdk` 0.2.0（MIT，© Ikaleio，https://github.com/Ikaleio/lm-detector）以源码形式放在 [`lib/lmfpd/`](lib/lmfpd/)，许可证随包附带在 [`lib/lmfpd/LICENSE`](lib/lmfpd/LICENSE)；它下载的参考数据（约 3.6 MB）不随本包分发。
+第三方：数值指纹用到的 `lmfpd-sdk` 0.2.0（MIT，© Ikaleio，https://github.com/Ikaleio/lm-detector）以源码形式放在 [`lib/lmfpd/`](lib/lmfpd/)，许可证随包附带在 [`lib/lmfpd/LICENSE`](lib/lmfpd/LICENSE)；它下载的参考数据（固定版本 `0.0.1794360871947`，约 3.8 MB）不随本包分发，且只在用户点「下载参考库」或开始检测时才取。
 
 协议审计的**检测维度参考** [Veridrop](https://github.com/canarybyte/veridrop)（AGPL-3.0，© canarybyte）。AGPL 与本项目的 MIT 不兼容，所以[`lib/relay.mjs`](lib/relay.mjs) 是照着它公开的方法**重新实现**的：没有复制它的任何代码，也没有引入它的依赖；探针内容（418 那句话、`get_current_weather` 的 schema、`nonce` 的取值）来自它 README 与设计文档里公开写明的检测思路。为此本项目不声称对 Veridrop 有任何著作权，也不因其 AGPL 而改变本项目的许可。

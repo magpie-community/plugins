@@ -14,12 +14,18 @@
 
 ## 安装
 
-要求：已安装 Magpie、Cursor 和 Cursor++，并开启 Cursor++ 的 BYOK Server。Cursor++ 默认监听 `127.0.0.1:39831`。
+要求：已安装 Magpie、Cursor 和 Cursor++，并开启 Cursor++ 的 BYOK Server。Cursor++ 默认监听 `127.0.0.1:39831`。插件支持 macOS、Windows 和 Linux，配置写入当前用户的 `~/.ccursor/providers.json`。
 
 在 Magpie 的 **Plugins → Discover → Unofficial** 搜索本插件，或运行：
 
 ```sh
 magpie plugin add github:teczt/magpie-cursorpp
+```
+
+发布到 npm 后，也可以运行：
+
+```sh
+magpie plugin add npm:magpie-agent-cursorpp
 ```
 
 然后进入 **Agents → Cursor++**，将 Provider 设为 `magpie`。也可以使用命令行：
@@ -32,7 +38,7 @@ magpie cursorpp provider magpie
 
 ## 配置管理方式
 
-连接期间，本插件统一管理 `~/.ccursor/providers.json` 的 **`providers` 数组**，生成以下三个提供商：
+连接期间，本插件统一管理 `~/.ccursor/providers.json` 的 **`providers` 数组**（Windows 下位于当前用户目录，例如 `C:\Users\<用户名>\.ccursor\providers.json`），生成以下三个提供商：
 
 | 提供商 ID | 接口 |
 | --- | --- |
@@ -69,6 +75,8 @@ magpie cursorpp provider magpie
 ```
 
 `agent.js` 只声明 Agent 并转发数据；`cursorpp.mjs` 负责纯数据转换，不含文件系统或网络操作。Magpie 负责配置写入、目录变化通知和断开恢复。
+
+插件运行时由 Magpie 提供，用户不需要单独安装 Node.js；Node.js 20 仅用于本仓库的开发和测试。
 
 ## 许可证
 
