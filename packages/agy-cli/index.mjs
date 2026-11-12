@@ -1,5 +1,5 @@
-import { agyCandidates, spawnAgy, windowsMcpShim } from "./platform.mjs"
-import { spawn } from "node:child_process"
+import { agyCandidates, spawnAgy, windowsMcpShim, windowsNcBuild, windowsTreeKill } from "./platform.mjs"
+import { spawn, spawnSync } from "node:child_process"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { once } from "node:events"
 import fs from "node:fs"
@@ -127,6 +127,8 @@ let cachedAgySearchKey
 let controlServer
 let controlServerPromise
 let shimDir
+// Only a shim dir this process made is removed at exit; the shared Windows nc.exe dir stays.
+let shimDirOwned = false
 let shimDirPromise
 
 function positiveTimeout(value, fallback) {
@@ -667,9 +669,21 @@ function shellQuote(value) {
 // agy connects to --ide-mcp-port by running `nc host port`. A private `nc`
 // earlier in agy's PATH runs the bridge's stdio MCP server instead, so the
 // connection is authenticated by the per-process token in its environment.
-function ensureShimDir() {
+async function ensureShimDir() {
+  // Another host's sweep can take a shared dir that sat unused for a week.
+  if (shimDir && !shimDirOwned && !await isFileWithBytes(path.join(shimDir, "nc.exe"))) {
+    shimDir = undefined
+    shimDirPromise = null
+  }
   if (shimDirPromise) return shimDirPromise
   shimDirPromise = (async () => {
+    if (process.platform === "win32") {
+      const shared = await windowsNcDir().catch(() => null)
+      if (shared) {
+        shimDir = shared
+        return shared
+      }
+    }
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-bridge-bin-"))
     if (process.platform === "win32") {
       await fs.promises.writeFile(path.join(dir, "nc.cmd"),
@@ -679,10 +693,78 @@ function ensureShimDir() {
         `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(MCP_SERVER_PATH)}\n`, { mode: 0o700 })
     }
     shimDir = dir
+    shimDirOwned = true
     return dir
   })()
   shimDirPromise.catch(() => { shimDirPromise = null })
   return shimDirPromise
+}
+
+// Windows: a dir holding only nc.exe, a GUI-subsystem build of mcp-server.mjs
+// (see windowsNcBuild). It is named for the runtime and the server's source, so
+// every session and every later host reuses it. One no host has started for a
+// week is swept. null when the runtime can't build it.
+const WINDOWS_NC_PREFIX = "magpie-agy-bridge-nc-"
+const WINDOWS_NC_BUILD_PREFIX = "magpie-agy-bridge-ncbuild-"
+const WINDOWS_NC_BUILD_TIMEOUT_MS = 120_000
+
+async function isFileWithBytes(file) {
+  try {
+    const stat = await fs.promises.stat(file)
+    return stat.isFile() && stat.size > 0
+  } catch {
+    return false
+  }
+}
+
+async function windowsNcDir() {
+  if (!windowsNcBuild(process.execPath, MCP_SERVER_PATH, "nc.exe")) return null
+  const tmp = os.tmpdir()
+  const source = await fs.promises.readFile(MCP_SERVER_PATH)
+  const key = createHash("sha256").update(String(process.execPath)).update("\0")
+    .update(String(process.versions?.bun || "")).update("\0").update(source).digest("hex").slice(0, 16)
+  const dir = path.join(tmp, WINDOWS_NC_PREFIX + key)
+  const exe = path.join(dir, "nc.exe")
+  if (await isFileWithBytes(exe)) {
+    const now = new Date()
+    await fs.promises.utimes(exe, now, now).catch(() => {})
+    return dir
+  }
+  const build = await fs.promises.mkdtemp(path.join(tmp, WINDOWS_NC_BUILD_PREFIX))
+  try {
+    const spec = windowsNcBuild(process.execPath, MCP_SERVER_PATH, path.join(build, "nc.exe"))
+    const { err, code, timedOut } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
+    if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) return null
+    await fs.promises.mkdir(dir, { recursive: true })
+    try {
+      await fs.promises.rename(path.join(build, "nc.exe"), exe)
+    } catch (error) {
+      // Another host built it at the same time; theirs is as good.
+      if (!await isFileWithBytes(exe)) throw error
+    }
+  } finally {
+    fs.promises.rm(build, { recursive: true, force: true }).catch(() => {})
+  }
+  sweepWindowsNcDirs(tmp, path.basename(dir)).catch(() => {})
+  return dir
+}
+
+// A build no host has started for a week (an older runtime or server), or a
+// build dir a killed host left half done. An nc.exe still running is locked,
+// so its dir stays until a later sweep.
+async function sweepWindowsNcDirs(tmp, keep) {
+  const now = Date.now()
+  for (const name of await fs.promises.readdir(tmp)) {
+    const shared = name.startsWith(WINDOWS_NC_PREFIX) && /^[0-9a-f]{16}$/.test(name.slice(WINDOWS_NC_PREFIX.length))
+    const build = name.startsWith(WINDOWS_NC_BUILD_PREFIX)
+    if (name === keep || (!shared && !build)) continue
+    const file = path.join(tmp, name)
+    try {
+      const stat = await fs.promises.stat(shared ? path.join(file, "nc.exe") : file).catch(() => fs.promises.stat(file))
+      if (now - stat.mtimeMs < (shared ? 7 * 24 : 1) * 60 * 60 * 1000) continue
+      await fs.promises.rm(file, { recursive: true, force: true })
+    } catch {}
+  }
 }
 
 function agentDefinition() {
@@ -5221,17 +5303,35 @@ function jsonError(status, message, code, { extra, headers, noRetry = false } = 
   )
 }
 
-process.once("exit", () => {
+// On Windows child.kill() ends agy alone and leaves the cmd.exe and nc it
+// started, so one taskkill /T ends every tree before the workspaces go.
+function reapOnExit() {
+  const windows = process.platform === "win32"
+  const pids = []
   for (const proc of allProcs) {
-    try { proc.child?.kill("SIGKILL") } catch {}
-    if (proc.workspace) {
-      try { fs.rmSync(proc.workspace, { recursive: true, force: true }) } catch {}
+    const child = proc.child
+    if (!child || child.exitCode !== null || child.signalCode !== null) continue
+    if (windows && child.pid) pids.push(child.pid)
+    else {
+      try { child.kill("SIGKILL") } catch {}
     }
   }
-  if (shimDir) {
+  const kill = windows ? windowsTreeKill(pids) : null
+  if (kill) {
+    try { spawnSync(kill.file, kill.args, { stdio: "ignore", windowsHide: true, timeout: 10_000 }) } catch {}
+  }
+  for (const proc of allProcs) {
+    // A process that just ended can hold its cwd (the workspace) for a moment.
+    if (proc.workspace) {
+      try { fs.rmSync(proc.workspace, { recursive: true, force: true, maxRetries: windows ? 10 : 0, retryDelay: 50 }) } catch {}
+    }
+  }
+  if (shimDir && shimDirOwned) {
     try { fs.rmSync(shimDir, { recursive: true, force: true }) } catch {}
   }
-})
+}
+
+process.once("exit", reapOnExit)
 
 export { sanitizeInputSchema }
 export default { id: PROVIDER_ID, server: AntigravityBridgePlugin }
