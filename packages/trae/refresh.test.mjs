@@ -19,6 +19,7 @@ test("auth.refresh exchanges the refresh token, once for two asking", async () =
   })
   const hooks = await TraeCNAuthPlugin({ client: {} })
   expect(hooks.auth.refreshLead).toBe(10 * 60 * 1000)
+  expect(hooks.auth.rotating).toBe(true)
   const auth = signedIn({ expires: Date.now() + 60_000 })
   const [x, y] = await Promise.all([hooks.auth.refresh(auth), hooks.auth.refresh(auth)])
   expect(n).toBe(1)

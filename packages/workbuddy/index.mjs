@@ -3919,6 +3919,7 @@ function makePlugin(site) {
       // which doesn't call this. Desktop's sign-in has no expiry stored
       // and is renewed as before.
       refreshLead: LEAD_MS,
+      rotating: true,
       refresh: (auth) => refreshed(site, auth),
       // the account's daily check-in: magpie can run it once a day per
       // account, when its WorkBuddy check-in switch is on; the button in

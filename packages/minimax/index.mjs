@@ -1070,6 +1070,7 @@ function makePlugin(site) {
         // check before each request below stays for OpenCode, which
         // doesn't call this
         refreshLead: LEAD_MS,
+        rotating: true,
         async refresh(auth) {
           if (auth?.type !== "oauth" || !auth.access || !auth.refresh) return undefined
           const a = latest(site, auth)

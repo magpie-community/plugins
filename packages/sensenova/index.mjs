@@ -328,6 +328,7 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
     auth: {
       provider: PROVIDER_ID,
       refreshLead: EARLY_MS,
+      rotating: true,
       maxConcurrency: 1,
 
       options: [

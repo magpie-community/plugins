@@ -1071,6 +1071,7 @@ export const ClinePlugin = async ({ client } = {}, options = {}) => {
 			// saves what this gives (it is merged over the sign-in): only what
 			// changed comes back, and remember isn't called here.
 			refreshLead: RENEW_LEAD,
+			rotating: true,
 			refresh: (auth) =>
 				locked(async () => {
 					const a = authOf(auth)

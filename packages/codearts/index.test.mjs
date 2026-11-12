@@ -3824,11 +3824,13 @@ test("a renewal never invalidates the other card's record", async () => {
   oa.refreshLineages.clear()
 
   const ca2 = await CodeArtsAuthPlugin({ client }, { fetch: ca.fetcher, ledgerPath })
+  assert.equal(ca2.auth.rotating, true)
   const renewed = await ca2.auth.refresh(store.get(codeartsKey))
   assert.equal(accessOf(renewed), "AK-1CA")
 
   // ... and the other card's record still renews with its own token
   const of = await OfficeAceAuthPlugin({ client }, { fetch: oaSts.fetcher, ledgerPath })
+  assert.equal(of.auth.rotating, true)
   const again = await of.auth.refresh(store.get(officeaceKey))
   assert.equal(accessOf(again), "AK-1OA")
 })

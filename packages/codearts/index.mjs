@@ -3249,6 +3249,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     auth: {
       provider: PROVIDER,
       refreshLead: REFRESH_LEAD_MS,
+      rotating: true,
       // The gateway's own cap: more in flight only queues in the plugin.
       maxConcurrency: maxInflight,
 
@@ -4639,6 +4640,7 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
       icon: OFFICEACE_ICON,
       maxConcurrency: 3,
       refreshLead: OA_REFRESH_LEAD_MS,
+      rotating: true,
 
       methods: [
         {

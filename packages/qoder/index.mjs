@@ -3797,6 +3797,7 @@ const makePlugin = (site) => async ({ client }) => {
       // doesn't call this. The device token of a job-token account has no
       // end on record: usage rotates it once Qoder refuses it, as before.
       refreshLead: RENEW_LEAD,
+      rotating: true,
       async refresh(auth) {
         // a Lingma 1.0 account: the IDE's newer token, when it has one;
         // nothing when it hasn't yet (fresh says so once it is needed)

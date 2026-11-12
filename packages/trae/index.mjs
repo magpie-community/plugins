@@ -3707,6 +3707,7 @@ const makePlugin = (site) => async ({ client }) => {
       // requests, models and usage ask; the check before each request
       // stays for OpenCode, which doesn't call this
       refreshLead: LEAD_MS,
+      rotating: true,
       refresh,
       loader: async (getAuth) => {
         const a0 = fromAuth(await getAuth(), site)

@@ -56,6 +56,7 @@ const due = () => ({ type: "oauth", access: "jwt1", refresh: "r1", expires: Date
 test("the lead is no shorter than the check before each request", async () => {
 	const { hooks } = await plugin(due())
 	expect(hooks.auth.refreshLead).toBeGreaterThanOrEqual(5 * 60 * 1000)
+	expect(hooks.auth.rotating).toBe(true)
 	expect(typeof hooks.auth.refresh).toBe("function")
 })
 

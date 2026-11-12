@@ -2080,6 +2080,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
       // spend one refresh token; that check stays for OpenCode, which
       // doesn't call this
       refreshLead: MAGPIE_LEAD,
+      rotating: true,
       async refresh(auth) {
         if (auth?.type !== "oauth" || !auth.access || !auth.refresh) return undefined
         return locked(async () => {

@@ -139,6 +139,7 @@ test("magpie renews the sign-in ahead of its end through auth.refresh, once with
   const s = store({ access: "old", refresh: "r1", expires: Date.now() - 1 })
   const hooks = await MiniMaxCodeAuthPlugin({ client: s.client })
   expect(hooks.auth.refreshLead).toBe(10 * 60 * 1000)
+  expect(hooks.auth.rotating).toBe(true)
   // magpie's renewal and a request's own check, at once
   const [got, res] = await Promise.all([hooks.auth.refresh({ ...s.auth }, "minimax-code"), chat(await hooks.auth.loader(s.getAuth))])
   expect(got).toMatchObject({ access: "new", refresh: "r2" })
