@@ -41,11 +41,17 @@
     const port = Number(options?.port ?? 3497);
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error("port");
+    // This computer's window: wails://localhost on macOS and Linux,
+    // http://wails.localhost on Windows (Wails v3, WebView2).
+    const host = location.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const local =
+      host === "" ||
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host === "::1" ||
+      /^127\./.test(host);
     const target =
-      magpie.service ||
-      (["localhost", "127.0.0.1", ""].includes(location.hostname)
-        ? `http://127.0.0.1:${port}/`
-        : "");
+      magpie.service || (local ? `http://127.0.0.1:${port}/` : "");
     if (!target) throw new Error("remote");
     const url = new URL(target);
     url.searchParams.set("theme", theme.dark ? "dark" : "light");
