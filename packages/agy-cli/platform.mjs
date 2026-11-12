@@ -109,10 +109,11 @@ export function windowsMcpShim(executable, server) {
 // and leaves a conhost.exe behind (#1047). A GUI-subsystem nc.exe never gets
 // a console, whatever creation flags agy uses, and still talks over the
 // stdio pipes agy hands it. Bun builds it from mcp-server.mjs on the user's
-// own machine; nothing prebuilt ships. Another runtime gets null, and the
-// caller falls back to nc.cmd.
+// own machine; nothing prebuilt ships. magpie runs plugins on a Bun it keeps
+// as magpie-bun(.exe), so that name counts as Bun too. Another runtime (an
+// opencode build, Node) gets null, and the caller falls back to nc.cmd.
 export function windowsNcBuild(runtime, server, outfile, versions = process.versions) {
-  if (!versions?.bun || !/^bun(?:\.exe)?$/i.test(path.win32.basename(String(runtime || "")))) return null
+  if (!versions?.bun || !/^(?:magpie-)?bun(?:\.exe)?$/i.test(path.win32.basename(String(runtime || "")))) return null
   return { file: runtime, args: ["build", "--compile", "--windows-hide-console", server, "--outfile", outfile] }
 }
 

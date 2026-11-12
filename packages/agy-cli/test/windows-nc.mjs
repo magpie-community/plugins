@@ -54,6 +54,13 @@ test("windowsNcBuild compiles a hidden-console exe under Bun only", () => {
     file: BUN,
     args: ["build", "--compile", "--windows-hide-console", "C:\\p\\mcp-server.mjs", "--outfile", "C:\\t\\nc.exe"],
   })
+  // magpie's plugin host runs a Bun renamed magpie-bun.exe
+  const MAGPIE_BUN = "C:\\Users\\u\\AppData\\Local\\magpie\\bun\\1.4.2\\magpie-bun.exe"
+  assert.deepEqual(windowsNcBuild(MAGPIE_BUN, "s", "o", { bun: "1.4.2" }), {
+    file: MAGPIE_BUN,
+    args: ["build", "--compile", "--windows-hide-console", "s", "--outfile", "o"],
+  })
+  assert.equal(windowsNcBuild("C:\\x\\magpie-bun.exe", "s", "o", { node: "22.0.0" }), null)
   assert.equal(windowsNcBuild("C:\\opencode\\opencode.exe", "s", "o", { bun: "1.4.2" }), null)
   assert.equal(windowsNcBuild("C:\\node\\node.exe", "s", "o", { node: "22.0.0" }), null)
   assert.equal(windowsNcBuild(BUN, "s", "o", { node: "22.0.0" }), null)
