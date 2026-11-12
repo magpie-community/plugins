@@ -3196,8 +3196,15 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             if (checked.error) return { type: "failed", error: checked.error }
             const cred = { ...read.cred, ...checked.fields, session_id: randomHex(16) }
             const identity = accountIdentityOf(cred)
+            // refresh is here, empty, because a host keeps an OAuth
+            // sign-in only when the result has one (OpenCode's CLI and
+            // magpie's host.js both test `"refresh" in result`): without
+            // it the sign-in said ok and nothing was stored (#998). This
+            // one has no refresh token; it is renewed by reading the IDE's
+            // file again.
             return {
               type: "success",
+              refresh: "",
               access: JSON.stringify(cred),
               expires: expiresFromCredential(cred),
               accountId: identity.id,
