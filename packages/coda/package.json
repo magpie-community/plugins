@@ -1,0 +1,29 @@
+{
+  "name": "@magpie-community/agent-coda",
+  "version": "0.1.0",
+  "description": "Coda Bot as a Magpie agent: sync Magpie's gateway, model catalog and default model into ~/.coda/magpie.json",
+  "type": "module",
+  "files": [
+    "coda.agent.js",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "coda",
+    "codabot"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/coda"
+  },
+  "scripts": {
+    "test": "bun test coda.test.mjs"
+  },
+  "magpie": {
+    "agent": "./coda.agent.js",
+    "icon": "https://codabot.app/favicon.ico"
+  }
+}

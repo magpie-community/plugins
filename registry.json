@@ -193,6 +193,8 @@
       "summary": { "en": "Use Magpie models and routing groups in Eta’s own model picker. Requires Eta 0.1.164 or later; restart Eta after connecting.", "zh": "在 Eta 自带的模型选择器中使用 Magpie 模型与路由组。需要 Eta 0.1.164 或更新版本；连接后重启 Eta。" } },
     { "package": "@magpie-community/agent-rhino9-ai", "name": "Magpie-Rhino", "kind": "agent", "community": true,
       "summary": { "en": "Magpie-Rhino brings Magpie models, custom groups and strategies into Rhino 9's AI panel through Rhino MCP. Install the companion .yak, restart Rhino, then open its AI panel and choose Magpie; no command required. Local gateway only.", "zh": "Magpie-Rhino 将模型、自定义组和策略接入 Rhino 9 原生 AI 面板，通过 Rhino MCP 建模。安装配套 .yak 并重启后，直接打开 AI 面板选择 Magpie，无需输入命令。仅连接本机网关。" } },
+    { "package": "@magpie-community/agent-coda", "name": "Coda Bot", "kind": "agent", "community": true, "icon": "https://codabot.app/favicon.ico",
+      "summary": { "en": "Coda Bot (codabot.app) on magpie's Agents page: pick its default model and sync magpie's models so each Coda bot can choose its own; switch it off to restore Coda's own setup. Needs Coda Bot 0.0.2-dev.7 or later; disconnect before uninstalling.", "zh": "把 Coda Bot（codabot.app）加到 magpie 的 Agent 页：选它的默认模型，并同步 magpie 的模型列表，让每个 Coda 分身各选各的；关掉即恢复 Coda 原来的配置。需要 Coda Bot 0.0.2-dev.7 或更新版本；卸载前先断开。" } },
     { "package": "@magpie-community/tools-goanyapi", "name": "GoAnyAPI", "kind": "tools", "community": true,
       "summary": { "en": "Explore Google Trends, website traffic, domain rating (DR), keyword suggestions, SERPs, backlinks, and ads statistics for market, keyword, and competitor research.", "zh": "查询 Google 趋势、网站流量、域名权重（DR）、关键词建议、SERP、外链和广告统计，辅助市场、关键词与竞品研究。" } },
     {

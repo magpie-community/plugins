@@ -293,6 +293,7 @@ it off puts the config back.
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
 | [rhino9-ai](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
+| [coda](packages/coda) | [Coda Bot](https://codabot.app): Magpie's gateway, model catalog and default model in `~/.coda/magpie.json`; each Coda bot picks its own Magpie model and reasoning effort. Needs Coda Bot 0.0.2-dev.7 or later |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
