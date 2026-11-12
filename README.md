@@ -292,6 +292,7 @@ it off puts the config back.
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
 | [rhino9-ai](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
+| [finch](packages/finch) | [Finch](https://finchwork.app/): Magpie's chosen model written into Finch's supported external-model integration file (`~/.finch/config/integrations/magpie.json`), which Finch imports and syncs on the file change with no restart; installed from a local path, so it stays out of Magpie's automatic updates |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
