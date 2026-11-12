@@ -44,7 +44,7 @@ test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the
   const temp = await mkdtemp(join(tmpdir(), "nowledge-layout-"))
   try {
     const proc = Bun.spawn({
-      cmd: [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-networking", "--disable-extensions", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--host-resolver-rules=MAP * ~NOTFOUND", `--user-data-dir=${temp}/profile`, "--window-size=1200,1600", "--dump-dom", `data:text/html;charset=utf-8,${encodeURIComponent(page)}`],
+      cmd: [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-networking", "--disable-extensions", "--disable-sync", "--disable-features=OnDeviceSpeechRecognition,SODA,OptimizationHints,MediaRouter,Translate", "--disable-component-update", "--disable-breakpad", "--disable-field-trial-config", "--no-service-autorun", "--disable-default-apps", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--host-resolver-rules=MAP * ~NOTFOUND", `--user-data-dir=${temp}/profile`, "--window-size=1200,1600", "--dump-dom", `data:text/html;charset=utf-8,${encodeURIComponent(page)}`],
       env: { HOME: temp, PATH: "/usr/bin:/bin", XDG_CONFIG_HOME: `${temp}/config`, XDG_CACHE_HOME: `${temp}/cache` },
       stdout: "pipe", stderr: "pipe",
     })
