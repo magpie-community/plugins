@@ -183,6 +183,12 @@ async function creditsFetch(on) {
   return { f: l.fetch, p }
 }
 
+async function liveFetch(on) {
+  const p = await AntigravityAuthPlugin({ magpie: { option: (id, key) => (id === "antigravity" && key === "live-thinking" ? on : undefined) } })
+  const l = await p.auth.loader(async () => auth())
+  return l.fetch
+}
+
 test("with Use AI credits on, a request the quota refuses is asked again with the account's credits", async () => {
   const seen = fake({ loadCodeAssist: withCredits, fetchAvailableModels: models, streamGenerateContent: credited })
   const { f } = await creditsFetch(true)
@@ -238,7 +244,7 @@ test("an account with no credits is not asked again, with the switch on", async 
 
 test("the plugin offers the switch, off unless set", async () => {
   const p = await AntigravityAuthPlugin({})
-  expect(p.auth.options.map((o) => o.key)).toEqual(["use-ai-credits"])
+  expect(p.auth.options.map((o) => o.key)).toEqual(["use-ai-credits", "live-thinking"])
   expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", creditAmount: "10", minimumCreditAmountForUsage: "50" }] } })).toBe(false)
   expect(_internal.creditsOf({ paidTier: { availableCredits: [{ creditType: "GOOGLE_ONE_AI", minimumCreditAmountForUsage: "50" }] } })).toBe(true)
 })
@@ -312,6 +318,36 @@ test("an INVALID_ARGUMENT in the stream after thinking only is asked again, and 
   expect(text).not.toContain("INVALID_ARGUMENT")
   expect(text.split("hmm").length - 1).toBe(1)
   expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("with live thinking on, thinking is sent as it comes and an in-stream rejection isn't retried", async () => {
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => raw(dataOf(think), dataOf(think), errChunk) })
+  const f = await liveFetch(true)
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(text.split("hmm").length - 1).toBe(2)
+  expect(text).toContain("INVALID_ARGUMENT")
+  expect(calls(seen)).toBe(1)
+})
+
+test("with live thinking on, a 400 before the stream is still asked again", async () => {
+  _internal.retry400.floorMs = 0
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? bad400() : sse(answer)) })
+  const f = await liveFetch(true)
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  expect(await res.text()).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("live thinking doesn't change a generateContent reply's retries", async () => {
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), errChunk) : sse(answer)) })
+  const f = await liveFetch(true)
+  const res = await f(URL_("gemini-4-carbon", "generateContent"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  expect(JSON.stringify(await res.json())).toContain("functionCall")
   expect(calls(seen)).toBe(2)
 })
 

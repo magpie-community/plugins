@@ -1346,6 +1346,7 @@ async function complete(s, url, init, magpie) {
     return errorResponse(502, e.message ?? String(e))
   }
   const stream = method === "streamGenerateContent"
+  const live = stream && liveThinking(magpie)
   const ua = await userAgent()
   const send = (credits) =>
     fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
@@ -1401,6 +1402,7 @@ async function complete(s, url, init, magpie) {
       await sleep(retry400.pauseMs)
       continue
     }
+    if (live) break
     const held = await holdThoughts(res, init?.signal)
     if (held.bad) {
       await sleep(retry400.pauseMs)
@@ -1436,10 +1438,19 @@ async function complete(s, url, init, magpie) {
 const CREDITS_OPTION = "use-ai-credits"
 const CREDITS_NOTE =
   "this account has Google AI credits; turn on the Use AI credits switch in magpie's Antigravity editor to spend them when the plan's quota is used up, as the app's Use AI Credits does"
+const LIVE_THINKING = "live-thinking"
 
 function usesCredits(magpie) {
   try {
     return magpie?.option?.(PROVIDER, CREDITS_OPTION) === true
+  } catch {
+    return false
+  }
+}
+
+function liveThinking(magpie) {
+  try {
+    return magpie?.option?.(PROVIDER, LIVE_THINKING) === true
   } catch {
     return false
   }
@@ -1857,6 +1868,13 @@ export async function AntigravityAuthPlugin({ client, magpie } = {}) {
           description: "When the plan's quota for a model is used up, spend the account's Google AI credits on the request, as the Antigravity app's Use AI Credits does. Off: the request fails with the quota's 429.",
           labels: { zh: "使用 AI 额度" },
           descriptions: { zh: "套餐的模型额度用完后，用账号的 Google AI 积分继续请求，同 Antigravity 应用里的 Use AI Credits。关闭时请求以额度 429 失败。" },
+        },
+        {
+          key: LIVE_THINKING,
+          label: "Show Gemini 4's thinking live",
+          description: "Stream Gemini 4's thinking as it arrives. Off: thinking is held back until the answer begins, so a call Google rejects in the stream before then is asked again without showing thinking twice.",
+          labels: { zh: "实时显示 Gemini 4 思考" },
+          descriptions: { zh: "Gemini 4 的思考内容到达即转发。关闭时，思考内容会暂存到回答开始；在此之前 Google 于流中拒绝的调用会重新请求，客户端不会看到重复思考。" },
         },
       ],
       methods: [

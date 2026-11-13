@@ -83,6 +83,14 @@ requestType: "agent", requestId, request}`):
   share a preamble don't collide on one session.
 - Each reply chunk (`{response: …}`) is unwrapped back into Gemini's own.
 - A `generateContent` request gets the stream read whole.
+- The backend sometimes rejects a Gemini 4 call after the model has already
+  run. The plugin retries a slow HTTP 400 `INVALID_ARGUMENT` or a
+  thinking-only stream error up to twice. A streamed reply's thinking is
+  held until the first answer part, so a later rejection can be retried
+  without showing thinking twice. `Show Gemini 4's thinking live`, off by
+  default, forwards thinking as it comes; a stream that has already started
+  is not retried, though a 400 before it starts still is. `generateContent`
+  still reads the stream to its end, keeping its full retry protection.
 
 The plugin also changes the request itself, as the built-in did:
 
