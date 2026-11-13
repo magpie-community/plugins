@@ -37,7 +37,33 @@ function fixture(t) {
   return { p, select, disconnect: () => fs.writeFileSync(p.control, "{}") }
 }
 
-test("agent descriptor and sandbox hook expose one selected model", () => {
+test("catalog refresh replaces routes and per-model limits without changing the default or manual connections", t => {
+  const { p, disconnect } = fixture(t)
+  const chosen = { id: "codex/gpt", name: "GPT", context: 512000, images: true }
+  const ollama = { id: "ollama-cloud/vendor/glm:5.3", name: "GLM · Ollama Cloud", context: 64000, output: 4096, images: false }
+  const apply = models => {
+    fs.writeFileSync(p.control, JSON.stringify({ model: chosen.id, ...connect({ gateway: { v1: "http://localhost/v1", key: "fixture" }, model: chosen, models }) }))
+    syncBridge(p)
+    const cfg = parse(fs.readFileSync(p.config, "utf8"))
+    assert.equal(cfg.default_model, PROVIDER + "/" + chosen.id)
+    assert.deepEqual(cfg.providers[0], parse(originalConfig).providers[0])
+    return cfg.providers[1]
+  }
+  const full = apply([chosen, ollama, ollama])
+  assert.deepEqual(full.models, [chosen.id, ollama.id])
+  assert.deepEqual({ ...full.model_overrides[ollama.id] }, { display_name: ollama.name, context_window: 64000, max_output_tokens: 4096, vision: false })
+  assert.equal(full.context_window, undefined)
+  assert.equal(full.max_output_tokens, undefined)
+  // A manually selected default can be absent from the returned catalog.
+  const updated = apply([{ id: "local/new" }])
+  assert.deepEqual(updated.models, ["local/new", chosen.id])
+  assert.equal(updated.model_overrides[ollama.id], undefined)
+  disconnect()
+  syncBridge(p)
+  assert.equal(fs.readFileSync(p.config, "utf8"), originalConfig)
+})
+
+test("agent descriptor and sandbox hook expose the selected default", () => {
   assert.equal(agent.id, "deepzora")
   assert.equal(agent.format, "json")
   assert.equal(agent.model, "model")

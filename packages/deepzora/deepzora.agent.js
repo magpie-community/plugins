@@ -14,11 +14,16 @@ export const agent = {
   notice: "Wait a moment for the bridge, restart Deepzora, then start a new conversation. 等待桥接完成，重启 Deepzora 并新建会话。",
 }
 
-export function connect({ gateway, model }) {
+export function connect({ gateway, model, models }) {
   if (!model?.id || !gateway?.v1 || !gateway?.key) throw new Error("Choose a model with a configured Magpie gateway first.")
   return {
     baseURL: gateway.v1,
     gatewayKey: gateway.key,
+    // Magpie calls connect again when the agent-visible catalog changes.
+    // Keep IDs as values: dotted or nested model IDs are not edit paths.
+    catalog: (models || []).map(({ id, name, context, output, images }) => ({
+      id, name, context, output, images,
+    })),
     modelInfo: {
       context: model.context > 0 ? model.context : 0,
       output: model.output > 0 ? model.output : 0,
