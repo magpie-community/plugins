@@ -143,7 +143,7 @@ pool it reads from:
 The plugin registers a magpie `search` hook (`antigravity:antigravity`)
 backed by Antigravity's Google Search grounding (`tools: [{ googleSearch: {} }]`
 on an available Flash model with minimal/zero thinking on the signed-in
-Antigravity account), returning grounded pages with resolved URLs and snippets.
+Antigravity account), returning grounded pages with URLs and snippets.
 
 ## Not carried over from the built-in
 

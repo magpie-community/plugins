@@ -21,7 +21,6 @@ const models = {
 
 const REDIR_A = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA"
 const REDIR_B = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/BBB"
-const REDIR_DUP = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/DUP"
 
 test("plugin registers the antigravity search hook signed in as antigravity", async () => {
   const p = await AntigravityAuthPlugin({})
@@ -36,7 +35,7 @@ test("search rejects an empty query and a missing sign-in", async () => {
   await expect(p.search.antigravity.execute({ query: "bun" }, { getAuth: async () => null })).rejects.toThrow("not signed in")
 })
 
-test("search calls Antigravity with googleSearch, resolves redirects, deduplicates, and trims to count", async () => {
+test("search calls Antigravity with googleSearch, returns URIs unchanged, deduplicates, and trims to count", async () => {
   const seen = fake({
     fetchAvailableModels: models,
     streamGenerateContent: () =>
@@ -51,7 +50,7 @@ test("search calls Antigravity with googleSearch, resolves redirects, deduplicat
                 webSearchQueries: ["latest bun version"],
                 groundingChunks: [
                   { web: { uri: REDIR_A, title: "github.com" } },
-                  { web: { uri: REDIR_DUP, title: "github.com duplicate" } },
+                  { web: { uri: REDIR_A, title: "github.com duplicate" } },
                   { web: { uri: REDIR_B, title: "bun.sh" } },
                 ],
                 groundingSupports: [
@@ -64,14 +63,12 @@ test("search calls Antigravity with googleSearch, resolves redirects, deduplicat
           ],
         },
       ),
-    [REDIR_A]: () => new Response(null, { status: 302, headers: { location: "https://github.com/oven-sh/bun/releases" } }),
-    [REDIR_DUP]: () => new Response(null, { status: 302, headers: { location: "https://github.com/oven-sh/bun/releases" } }),
-    [REDIR_B]: () => new Response(null, { status: 302, headers: { location: "https://bun.sh/blog" } }),
   })
 
   const p = await AntigravityAuthPlugin({})
   const pages = await p.search.antigravity.execute({ query: "latest bun version", count: 5 }, { getAuth: async () => auth() })
 
+  expect(seen.map((s) => s.name)).toEqual(["loadCodeAssist", "fetchAvailableModels", "streamGenerateContent"])
   const req = seen.find((s) => s.name === "streamGenerateContent")
   expect(req.json.model).toBe("gemini-3-flash")
   expect(req.json.request.tools).toEqual([{ googleSearch: {} }])
@@ -79,19 +76,19 @@ test("search calls Antigravity with googleSearch, resolves redirects, deduplicat
   expect(pages).toEqual([
     {
       title: "github.com",
-      url: "https://github.com/oven-sh/bun/releases",
+      url: REDIR_A,
       text: "Bun 1.4.4 was released.\nSee release notes on GitHub.",
     },
     {
       title: "bun.sh",
-      url: "https://bun.sh/blog",
+      url: REDIR_B,
       text: "Install via bun.sh.",
     },
   ])
 
   const one = await p.search.antigravity.execute({ query: "latest bun version", count: 1 }, { getAuth: async () => auth() })
   expect(one).toHaveLength(1)
-  expect(one[0].url).toBe("https://github.com/oven-sh/bun/releases")
+  expect(one[0].url).toBe(REDIR_A)
 })
 
 test("search carries numeric status and retryAfter when Antigravity refuses", async () => {

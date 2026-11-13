@@ -1850,9 +1850,8 @@ async function importAccount(inputs) {
 
 // ---- web search (Google Search grounding) -----------------------------------------------
 
+// Preference order for search calls; falls back to any non-image Flash or Gemini model in the live catalog
 const SEARCH_MODELS = ["gemini-3-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
-const REDIRECT_HOST = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
-const REDIRECT_TIMEOUT = 2000
 
 function pickSearchModel(infos) {
   const raw = catalogOf(infos)
@@ -1877,20 +1876,7 @@ function searchThinkingConfig(sent) {
   return { includeThoughts: false, thinkingBudget: 0 }
 }
 
-async function resolveGroundingUrl(uri, signal) {
-  if (typeof uri !== "string" || !uri.startsWith(REDIRECT_HOST)) return uri
-  try {
-    const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(REDIRECT_TIMEOUT)]) : AbortSignal.timeout(REDIRECT_TIMEOUT)
-    const res = await fetch(uri, { method: "HEAD", redirect: "manual", signal: sig })
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get("location")
-      if (loc && /^https?:\/\//i.test(loc)) return loc
-    }
-  } catch {}
-  return uri
-}
-
-async function pagesFromGrounding(reply, count, signal) {
+function pagesFromGrounding(reply, count) {
   const cand = reply?.candidates?.[0]
   const gm = cand?.groundingMetadata
   const chunks = Array.isArray(gm?.groundingChunks) ? gm.groundingChunks : []
@@ -1911,25 +1897,19 @@ async function pagesFromGrounding(reply, count, signal) {
       }
     }
   }
-  const resolved = await Promise.all(
-    chunks.map(async (chunk, i) => {
-      const rawUri = typeof chunk?.web?.uri === "string" ? chunk.web.uri.trim() : ""
-      const title = (typeof chunk?.web?.title === "string" ? chunk.web.title.trim() : "") || rawUri
-      const url = rawUri ? await resolveGroundingUrl(rawUri, signal) : ""
-      return { url, title, snippets: textsByIdx[i] }
-    }),
-  )
   const out = []
   const byKey = new Map()
-  for (const item of resolved) {
-    if (!item.url && !item.title) continue
-    const key = item.url || item.title
+  for (let i = 0; i < chunks.length; i++) {
+    const url = typeof chunks[i]?.web?.uri === "string" ? chunks[i].web.uri.trim() : ""
+    const title = (typeof chunks[i]?.web?.title === "string" ? chunks[i].web.title.trim() : "") || url
+    if (!url && !title) continue
+    const key = url || title
     const existing = byKey.get(key)
     if (existing) {
-      for (const s of item.snippets) if (!existing._snippets.includes(s)) existing._snippets.push(s)
+      for (const s of textsByIdx[i]) if (!existing._snippets.includes(s)) existing._snippets.push(s)
       continue
     }
-    const entry = { title: item.title || item.url, url: item.url, _snippets: [...item.snippets] }
+    const entry = { title: title || url, url, _snippets: [...textsByIdx[i]] }
     byKey.set(key, entry)
     out.push(entry)
   }
@@ -1993,7 +1973,7 @@ async function webSearch({ query, count } = {}, ctx = {}) {
     throw err
   }
   const reply = await whole(res)
-  return pagesFromGrounding(reply, count, ctx.abort)
+  return pagesFromGrounding(reply, count)
 }
 
 // ---- the plugin ---------------------------------------------------------------------------
