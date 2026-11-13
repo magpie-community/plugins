@@ -51,9 +51,11 @@ export async function acquireLock(dir) {
         await unlink(path).catch(() => {});
         continue;
       }
-      throw new Error(
+      const held = new Error(
         "Another Amp collector is running for this Magpie configuration.",
       );
+      held.code = "ELOCKED"; // a node-style code, not one the page shows
+      throw held;
     }
   }
   throw new Error("Could not acquire collector lock.");
