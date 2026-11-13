@@ -1,0 +1,48 @@
+/* Vibe AStock × magpie 页面样式：跟随 magpie 窗口的浅色 / 深色偏好，无外部字体与图片 */
+:root {
+  --bg: #ffffff; --fg: #1b1b1f; --muted: #66666f; --line: #e6e6ec;
+  --card: #f7f7fa; --accent: #c92a2a; --code: #f0f0f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16161a; --fg: #ececf1; --muted: #9a9aa5; --line: #2b2b33; --card: #1e1e24; --accent: #ff6b6b; --code: #26262e; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 28px 22px 44px; background: var(--bg); color: var(--fg);
+  font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 720px; margin: 0 auto; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+header svg { width: 34px; height: 34px; flex: none; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 13px; margin: 2px 0 22px; }
+section { margin-bottom: 22px; }
+h2 { font-size: 14px; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+h2 .n {
+  display: inline-flex; width: 20px; height: 20px; border-radius: 50%; align-items: center; justify-content: center;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; flex: none;
+}
+p { margin: 0 0 8px; color: var(--muted); }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
+  background: var(--code); padding: 2px 6px; border-radius: 5px; color: var(--fg);
+}
+.cmd {
+  display: flex; align-items: center; gap: 10px; background: var(--code); border-radius: 9px;
+  padding: 9px 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
+  overflow-x: auto; white-space: nowrap;
+}
+.cmd span { flex: 1; }
+button {
+  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg); flex: none;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+footer { margin-top: 30px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.tip { font-size: 12px; color: var(--muted); margin-top: 6px; }
