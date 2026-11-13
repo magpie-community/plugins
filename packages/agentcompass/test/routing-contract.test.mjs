@@ -1164,13 +1164,31 @@ test("a held bundle is a row that offers the effort, on an account that has it (
   }
 });
 
-test("the docs say what a disabled row covers and what the log carries (review 4 r5)", () => {
-  const notes = fs.readFileSync(path.join(REPO, "CHANGELOG.md"), "utf8");
-  assert.doesNotMatch(notes, /账号和配额不写。/);
-  assert.match(notes, /when no candidate can serve a request, `warnings` in the local log may include account names and quotas/);
-  const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
-  assert.match(readme, /A disabled row with an `account` applies to that account only/);
-  assert.match(readme, /禁用行带 `account` 时只对该账户生效/);
+test("the documents' examples work as written: the profile, the quotas snapshot, the candidate list, the links", () => {
+  const read = (...parts) => fs.readFileSync(path.join(REPO, ...parts), "utf8").replace(/\r\n/g, "\n");
+  const readme = read("README.md");
+  const reference = read("docs", "reference.md");
+
+  const blocks = [...reference.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => JSON.parse(m[1]));
+  const callerProfile = blocks.find((b) => "axis_demand" in b);
+  assert.ok(callerProfile, "the reference shows a profile");
+  assert.equal(profiler.validateProfile(callerProfile).work_kind, callerProfile.work_kind);
+  assert.equal(selectBestRoute(callerProfile, { candidateModels: ["gpt-6.1-sol"] }).error, undefined);
+
+  const snapshot = blocks.find((b) => "claude/main" in b);
+  assert.ok(snapshot, "the reference shows a quotas snapshot");
+  const row = rawIndex.listQuotaAccounts(snapshot, NOW).find((a) => a.key === "claude/main");
+  assert.equal(row?.dispatchable, true);
+
+  const listed = /"candidateModels":\[([^\]]*)\]/.exec(readme)?.[1].match(/"([^"]+)"/g)?.map((n) => n.slice(1, -1)) ?? [];
+  assert.ok(listed.length > 1, "the quickstart lists candidate models");
+  for (const name of listed) assert.equal(catalog.catalogNameWarning(name), null, `${name} has an entry in the catalog`);
+
+  const anchors = new Set([...reference.matchAll(/^## (.+)$/gm)].map((m) => m[1].toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")));
+  for (const [, file, anchor] of [...readme.matchAll(/\]\((docs\/[A-Za-z_.]+)(?:#([a-z-]+))?\)/g)]) {
+    assert.ok(fs.existsSync(path.join(REPO, file)), `${file} exists`);
+    if (anchor) assert.ok(anchors.has(anchor), `${file}#${anchor} is a heading of the reference`);
+  }
 });
 
 test("M-3.5 onProvider reroutes on a held turn too, and keeps the unhealthy models out", async (t) => {
