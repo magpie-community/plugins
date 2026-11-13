@@ -1041,7 +1041,7 @@ function isRegularModel(model, state) {
  *   agent's own, to put back in the answer; null when none was cut).
  * A body that is not a chat (no `model` + `messages`) gives null.
  */
-function prepareChatBody(parsed, { thinking = true } = {}) {
+function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {}) {
   if (!parsed || typeof parsed.model !== "string" || !Array.isArray(parsed.messages)) return null
   const body = { ...parsed, model: upstreamModelId(parsed.model) }
   const names = shortenToolNames(body)
@@ -1079,24 +1079,26 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
-  normalizeStop(body)
+  normalizeStop(body, station)
   const fold = body.stream !== true
   body.stream = true
   return { body, fold, injected, names }
 }
 
 /**
- * The gateway takes `stop` as a string only: an array, an empty one too,
- * comes back as HTTP 200 with `InferHub.001001005.400` "The request param is
- * invalid" (magpie#6342, measured with every model). A list goes as its
- * first non-empty string, the one the gateway can take; an empty or blank
- * one, or a value of another kind, is left out.
+ * `stop` in the shape the credential's station takes; the other shape comes
+ * back as HTTP 200 with `InferHub.001001005.400` "The request param is
+ * invalid". The mainland gateway takes a string only (magpie#6342, measured
+ * with every model), so a list goes as its first non-empty string. The
+ * international one takes a list only (#998, GLM-5.1: `["zzz"]` answered,
+ * `"zzz"` refused), so a string goes as a list of one. An empty or blank
+ * value, or one of another kind, is left out on both.
  */
-function normalizeStop(body) {
+function normalizeStop(body, station = "mainland") {
   if (!("stop" in body)) return
-  const v = Array.isArray(body.stop) ? body.stop.find((x) => typeof x === "string" && x !== "") : body.stop
-  if (typeof v === "string" && v !== "") body.stop = v
-  else delete body.stop
+  const all = (Array.isArray(body.stop) ? body.stop : [body.stop]).filter((x) => typeof x === "string" && x !== "")
+  if (!all.length) delete body.stop
+  else body.stop = station === "international" ? all : all[0]
 }
 
 // ---- tool names over the gateway's limit (#432) -----------------------------
@@ -1827,7 +1829,7 @@ async function signedFetch(cred, input, init, context) {
   else body = new Uint8Array()
   // The body is part of the signature, so it is reshaped before signing.
   const parsed = body.length > 0 ? safeJson(new TextDecoder().decode(body)) : null
-  const chat = prepareChatBody(parsed, context)
+  const chat = prepareChatBody(parsed, { ...context, station: stationOf(cred).id })
   if (chat) body = utf8(JSON.stringify(chat.body))
   const model = upstreamModelId(parsed?.model)
   let extra = isBenefitModel(model, context.state) ? { maas_type: "benefit" } : undefined

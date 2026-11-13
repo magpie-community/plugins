@@ -251,6 +251,11 @@ test("stop goes as the string the gateway takes, and an empty one not at all (ma
   assert.equal(stop("###").stop, "###")
   for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in stop(v), false, JSON.stringify(v))
   assert.equal("stop" in x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body, false)
+  // the international station takes a list only (#998)
+  const intl = (v) => x.prepareChatBody({ model: "GLM-5.1", messages: [], stop: v }, { station: "international" }).body
+  assert.deepEqual(intl("zzz").stop, ["zzz"])
+  assert.deepEqual(intl(["", "###", 3, "Observation:"]).stop, ["###", "Observation:"])
+  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in intl(v), false, JSON.stringify(v))
 })
 
 test("prepareChatBody reshapes a chat into what the gateway accepts and meters", () => {
@@ -4618,6 +4623,8 @@ test("an international account chats, reads and renews on its own station only",
       // the first goes with a credential the vendor calls expired
       if (chats === 1) return new Response(JSON.stringify({ error_code: "APIG.0602", error_msg: "the security token has expired" }), { status: 400 })
       assert.match(auth, /Access=IDEAK2,/)
+      // the station's own shape of stop: a list (#998)
+      assert.deepEqual(JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)).stop, ["zzz"])
       return sseResponse(okStream)
     }
     if (u.includes("/statistics/plugin")) return new Response(JSON.stringify(intlStatistics), { status: 200 })
@@ -4631,7 +4638,7 @@ test("an international account chats, reads and renews on its own station only",
   assert.equal(loaded.baseURL, `${INTL}/api/v2`)
   await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2" })))
   // the config's mainland `api` is taken to the account's station
-  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true }))
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true, stop: "zzz" }))
   assert.equal(res.status, 200)
   assert.equal(chats, 2)
   assert.equal(JSON.parse(sets.at(-1).body.access).access_key_id, "IDEAK2")
