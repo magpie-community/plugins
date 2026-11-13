@@ -229,6 +229,11 @@ plugin breaks each of them up with zero-width spaces before agy sends it, as
 the Antigravity provider does (`cloak.mjs`). Should such a 429 still come
 back, it is reported as a 400 about the prompt, not as a quota.
 
+DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
+paths…") goes reworded with the same meaning, as the Antigravity provider
+sends it: word for word, it got most `gemini-4-argon` answers fast, without
+thinking and shallow (#1028).
+
 Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
 request that goes upstream then has none of agy's own system prompt, only
 the plugin's one-line tool note and the client's system prompt (sent in one

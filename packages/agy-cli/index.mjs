@@ -12,7 +12,7 @@ import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
-import { cloak, hint, turnsAway } from "./cloak.mjs"
+import { hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
@@ -1482,7 +1482,7 @@ class Proc {
     const resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
     this.instructionsInSession = appendable && !!this.instructions
     const meta = this.instructionsInSession
-      ? { _meta: { antigravity: { systemPrompt: { append: cloak(this.instructions) } } } }
+      ? { _meta: { antigravity: { systemPrompt: { append: outgoing(this.instructions) } } } }
       : {}
 
     let session = null
@@ -3866,7 +3866,7 @@ function renderTurnMessageParts(message) {
   if (message.role !== "user" || !Array.isArray(message.content)) {
     let text = renderTurnMessage(message)
     // a system or developer message later in the chat is system text too
-    if (message.role === "system" || message.role === "developer") text = cloak(text)
+    if (message.role === "system" || message.role === "developer") text = outgoing(text)
     return text === "" ? [] : [{ type: "text", text }]
   }
   const parts = []
@@ -4046,7 +4046,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   const head = []
   if (!instructionsInSession) {
     const system = systemText(body)
-    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${cloak(system)}\n</external_system_instructions>\n`)
+    if (system.trim()) appendPrompt(head, `<external_system_instructions>\n${outgoing(system)}\n</external_system_instructions>\n`)
     if (callerWorkDir) appendPrompt(head, `\n${workDirNote(callerWorkDir)}\n\n`)
   }
   const currentParts = renderTurnMessagesParts(current)
@@ -4406,11 +4406,11 @@ function inspectToolTurn(results, body) {
           // the gateway's wrapper for a developer message, or a system one
           const inner = wrapped ? wrapped[1] : rest
           if (extractQueuedPrompt(inner) !== null || userInterruption.test(inner)) userSteered = true
-          else if (!isNoise(inner)) notices.push(cloak(inner))
+          else if (!isNoise(inner)) notices.push(outgoing(inner))
         } else if (message.role === "user") {
           userSteered = true
         } else if (!isNoise(rest)) {
-          notices.push(cloak(rest))
+          notices.push(outgoing(rest))
         }
         continue
       }
@@ -4418,7 +4418,7 @@ function inspectToolTurn(results, body) {
         if (extractQueuedPrompt(rest) !== null || userInterruption.test(rest)) {
           userSteered = true
         } else if (!isNoise(rest)) {
-          notices.push(cloak(rest))
+          notices.push(outgoing(rest))
         }
       } else if (!isNoise(rest)) {
         if ((hookOutput.test(rest) || claudeMetaFeedback.test(rest)) && !userInterruption.test(rest)) {
@@ -4429,7 +4429,7 @@ function inspectToolTurn(results, body) {
         } else {
           // text from neither the user nor the system (an assistant message
           // that landed after the result): the model is told it, as a notice
-          notices.push(cloak(rest))
+          notices.push(outgoing(rest))
         }
       }
     }

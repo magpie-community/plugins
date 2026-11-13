@@ -1390,6 +1390,39 @@ for (const change of ["tools", "model"]) {
   check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error", JSON.stringify(quotaError))
 }
 
+// antigravity #1028: DeepSeek Harness's @-path paragraph reaches agy
+// reworded, as the antigravity plugin sends it, in the session
+// instructions, in <external_system_instructions> and in a later system
+// message.
+{
+  const dsh = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
+  const reworded = "When the user writes @ followed by a path, they are pointing at that file or folder."
+  const system = `You are DeepSeek Harness.\n\n${dsh}\n\nDSH-MARKER`
+  await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: "dsh session instructions" }] }))
+  const sent = inits().at(-1).systemAppend ?? ""
+  check("#1028 DSH's @-path paragraph goes reworded in the session instructions",
+    sent.includes("DSH-MARKER") && !sent.includes("Tokens prefixed with @") && sent.includes(reworded), JSON.stringify(sent))
+
+  process.env.FAKE_AGY_APPEND = "0"
+  await readSSE(await callFetch({ model, system: system + " NOAPPEND", messages: [{ role: "user", content: "dsh in the prompt" }] }))
+  const prompted = lastOf("user").text
+  check("#1028 DSH's @-path paragraph goes reworded in <external_system_instructions>",
+    prompted.includes("<external_system_instructions>") && prompted.includes("DSH-MARKER") && !prompted.includes("Tokens prefixed with @") && prompted.includes(reworded),
+    JSON.stringify(prompted))
+  delete process.env.FAKE_AGY_APPEND
+
+  const later = { model, system: "DSH-LATER", messages: [{ role: "user", content: "dsh later system" }] }
+  const laterEvents = (await readSSE(await callFetch(later))).events
+  const next = nextTurn(later, laterEvents, "after the dsh note")
+  next.messages.splice(next.messages.length - 1, 0, { role: "system", content: dsh })
+  await readSSE(await callFetch(next))
+  const laterText = lastOf("user").text
+  check("#1028 a later system message with the paragraph goes reworded", !laterText.includes("Tokens prefixed with @") && laterText.includes(reworded), JSON.stringify(laterText))
+
+  await readSSE(await callFetch({ model, system: "DSH-USER", messages: [{ role: "user", content: `user wrote ${dsh}` }] }))
+  check("#1028 what the user wrote goes as written", lastOf("user").text.includes(dsh), JSON.stringify(lastOf("user").text))
+}
+
 {
   process.env.AGY_BRIDGE_START_TIMEOUT_MS = "40"
   process.env.FAKE_AGY_INIT_MODE = "slow"

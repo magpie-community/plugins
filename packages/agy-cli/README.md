@@ -175,6 +175,9 @@ Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent S
 agy 发出之前用零宽空格把这几行拆开，和 Antigravity 提供商的做法一样（`cloak.mjs`）。如果仍然
 回了这样的 429，会报成针对提示词的 400，而不是额度用完。
 
+DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
+换成同义的说法再发：原文照发时 `gemini-4-argon` 大多很快答完、不思考、只走一步（#1028）。
+
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
 发送）。原作者实测每次模型调用的输入从约 8,400 token 降到约 500 token。代价是上游看到的

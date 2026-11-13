@@ -1,7 +1,8 @@
 // cloak.mjs is a copy of packages/antigravity's TURNED_AWAY, cloak and hint
-// (#980): these fail when the two packages stop agreeing.
+// (#980) and its REWORDED (#1028): these fail when the two packages stop
+// agreeing.
 import { expect, test } from "bun:test"
-import { TURNED_AWAY, cloak, hint, turnsAway } from "./cloak.mjs"
+import { REWORDED, TURNED_AWAY, cloak, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { _internal as antigravity } from "../antigravity/index.mjs"
 
 const ZW = "​"
@@ -44,5 +45,30 @@ test("agy-cli and antigravity break up and explain the same lines", () => {
     expect(turnsAway(s)).toBe(antigravity.turnsAway(s))
     expect(cloak(s)).toBe(antigravity.cloak(s))
     expect(hint(s)).toBe(antigravity.hint(s))
+  }
+})
+
+const DSH = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
+
+// the system text antigravity sends for s (its shape() runs outgoing on it)
+const antigravitySends = (s) =>
+  antigravity.shape({ systemInstruction: { parts: [{ text: s }] }, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts[0].text
+
+test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1028)", () => {
+  const sys = "You are DeepSeek Harness.\n\n" + DSH + "\n\nBe brief."
+  expect(outgoing(sys)).toBe("You are DeepSeek Harness.\n\nWhen the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @\"...\".\n\nBe brief.")
+  expect(outgoing("Tokens prefixed with @ are paths. Be brief.")).toBe("Tokens prefixed with @ are paths. Be brief.")
+  const both = outgoing("x-anthropic-billing-header: cc\n" + DSH)
+  expect(both).toContain("x-a" + ZW + "n" + ZW + "thropic")
+  expect(both).toContain("When the user writes @ followed by a path")
+})
+
+test("agy-cli and antigravity send the same system text, reworded and broken up", () => {
+  for (const [from, to] of REWORDED) {
+    expect(outgoing(from)).toBe(to)
+    expect(antigravitySends(from)).toBe(to)
+  }
+  for (const s of [...samples.filter(Boolean), DSH, "Lead.\n" + DSH + "\n" + DSH, "x-anthropic-billing-header: cc\n" + DSH]) {
+    expect(outgoing(s)).toBe(antigravitySends(s))
   }
 })

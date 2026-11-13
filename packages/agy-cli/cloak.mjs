@@ -1,7 +1,8 @@
-// System prompt lines Antigravity turns away, the same list and the same
-// break-up as packages/antigravity/index.mjs (TURNED_AWAY, breakUp, cloak,
-// hint). Each package ships on its own, so the code is a copy; cloak.test.mjs
-// fails when the two give a different answer for any line.
+// System prompt lines Antigravity turns away, and paragraphs it answers
+// badly, the same lists and the same rewrites as
+// packages/antigravity/index.mjs (TURNED_AWAY, breakUp, cloak, hint,
+// REWORDED, reword, outgoing). Each package ships on its own, so the code is
+// a copy; cloak.test.mjs fails when the two give a different answer.
 //
 // Antigravity answers a 429 "Resource has been exhausted" to a request whose
 // system prompt has one of these lines, whatever quota is left, and lets the
@@ -58,6 +59,27 @@ export function cloak(system) {
   }
   return out + system.slice(prev)
 }
+
+// REWORDED are paragraphs that go through but are answered badly, each with
+// a rewording that keeps its meaning. DeepSeek Harness's desktop app puts
+// the first in every system prompt; word for word, gemini-4-argon answered
+// most requests in about 3s with no thinking and ended after one shallow
+// step (antigravity #1028).
+export const REWORDED = [
+  [
+    "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.",
+    "When the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @\"...\".",
+  ],
+]
+
+export function reword(system) {
+  if (typeof system !== "string") return system
+  for (const [from, to] of REWORDED) if (system.includes(from)) system = system.split(from).join(to)
+  return system
+}
+
+// outgoing is system text as agy is handed it: broken up, then reworded
+export const outgoing = (system) => reword(cloak(system))
 
 const HINT =
   "Antigravity answers this 429 to the system prompt of Claude Code and the Claude Agent SDK (Claude Desktop's chats) whatever quota is left, so it is not a quota and waiting won't help; use another provider for these chats, or put one after Antigravity in a routing group"
