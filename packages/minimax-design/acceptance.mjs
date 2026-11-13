@@ -121,7 +121,10 @@ try {
   const gatewayPort = await freePort()
   env.MAGPIE_ADDR = `127.0.0.1:${gatewayPort}`
   const original = {
-    _version: 33, config: { theme: "native-fixture", customModels: { "user-custom-mine": { untouched: true } } },
+    _version: 33, config: { theme: "native-fixture", customModels: {
+      "user-custom-mine": { untouched: true },
+      "user-custom-magpie": { restore: "existing provider" },
+    } },
     customMcpVault: "fixture-vault-left-alone",
   }
   writeJSON(configFile, original)
@@ -157,6 +160,17 @@ try {
   const begin = nativeSource.indexOf("function getCustomModelValidationErrors(")
   const end = nativeSource.indexOf("function validateCustomModelInput", begin)
   const validate = vm.runInNewContext(`(${nativeSource.slice(begin, end)})`, { URL })
+  const modelHelpers = nativeSource.slice(
+    nativeSource.indexOf("function customModelRuntimeId("), begin,
+  )
+  const builderStart = nativeSource.indexOf("function buildCustomProviderConfig(")
+  const builderEnd = nativeSource.indexOf("var SHARED_PROFILE_ENTRIES=", builderStart)
+  assert.ok(builderStart >= 0 && builderEnd > builderStart)
+  const buildProvider = vm.runInNewContext(
+    `${modelHelpers}\n(${nativeSource.slice(builderStart, builderEnd)})`,
+  )
+  const providerID = "user-custom-magpie"
+  const runtimeProvider = JSON.parse(JSON.stringify(buildProvider(provider)))
   for (const entry of Object.values(connected.config.customModels).filter((entry) => entry.providerName === "Magpie")) {
     assert.deepEqual(Object.keys(validate(entry)), [])
   }
@@ -197,11 +211,7 @@ try {
     XDG_CACHE_HOME: path.join(data, "ai-runtime/cache-home"), XDG_STATE_HOME: path.join(data, "ai-runtime/state-home"),
     OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1", OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
     OPENCODE_CONFIG_CONTENT: JSON.stringify({
-      provider: { [provider.providerName.toLowerCase()]: {
-        npm: "@ai-sdk/openai-compatible",
-        options: { baseURL: provider.baseUrl, apiKey: provider.apiKey },
-        models: { "fixture/gpt-4.1": { id: "fixture/gpt-4.1", limit: { context: provider.models[0].contextWindow, output: provider.models[0].maxOutputTokens } } },
-      } },
+      provider: { [providerID]: runtimeProvider },
       mcp: { bundled: { type: "remote", url: `${fixtureURL}/bundled`, enabled: false } },
     }),
   }
@@ -210,6 +220,8 @@ try {
   assert.ok(resolved.mcp["magpie-probe"])
   assert.ok(resolved.mcp.bundled)
   assert.ok(resolved.mcp.mine)
+  assert.equal(resolved.provider[providerID].models["fixture/gpt-4.1"].tool_call, true)
+  assert.equal(resolved.provider[providerID].options.baseURL, provider.baseUrl)
   const runtimePort = await freePort()
   const runtime = start(opencode, ["serve", "--hostname", "127.0.0.1", "--port", String(runtimePort)], runtimeEnv)
   const runtimeURL = `http://127.0.0.1:${runtimePort}`
@@ -236,7 +248,7 @@ try {
   const turn = await fetch(`${runtimeURL}/session/${session.id}/message`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: { providerID: "magpie", modelID: "fixture/gpt-4.1" },
+      model: { providerID, modelID: "fixture/gpt-4.1" },
       parts: [{ type: "text", text: "Call the probe tool once and return its result." }],
     }),
     signal: AbortSignal.timeout(30000),
@@ -275,6 +287,17 @@ try {
     .filter(([name]) => name.startsWith("user-custom-magpie"))
   assert.deepEqual(split.map(([, value]) => value.models.length).sort((left, right) => left - right), [1, 50, 50])
   assert.equal(split.flatMap(([, value]) => value.models).length, 101)
+  const splitProviders = {}
+  for (const [name, value] of split) {
+    assert.deepEqual(Object.keys(validate(value)), [])
+    splitProviders[name] = buildProvider(value)
+  }
+  const splitConfig = JSON.parse((await run(opencode, ["debug", "config", "--pure"], {
+    ...runtimeEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: splitProviders }),
+  })).stdout)
+  assert.equal(Object.entries(splitConfig.provider)
+    .filter(([name]) => name.startsWith("user-custom-magpie"))
+    .flatMap(([, value]) => Object.keys(value.models)).length, 101)
   const changedProviderFile = JSON.parse(fs.readFileSync(path.join(settings, "providers.json")))
   changedProviderFile.providers[0].models = ["model-0"]
   writeJSON(path.join(settings, "providers.json"), changedProviderFile)
