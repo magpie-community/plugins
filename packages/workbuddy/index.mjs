@@ -10,10 +10,10 @@
 // those of its current desktop app (see SITES' app, cli and appName).
 
 import { createHash, randomBytes } from "node:crypto"
-import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs"
+import { closeSync, createReadStream, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join } from "node:path"
-import { gzipSync, gunzipSync } from "node:zlib"
+import { createGunzip, gzipSync } from "node:zlib"
 
 const POLL_MS = 1000
 const SIGN_IN_MS = 5 * 60 * 1000
@@ -2845,7 +2845,9 @@ function freeWindowLedger(cwd = process.cwd(), env = process.env, home = homedir
 // freeWindowRouting is the trace files a window can need, from the same root
 // as the ledger. Magpie writes one plain file a day and gzips the days before,
 // so only the local dates a 24h window and its lead can reach are named:
-// three, from the day two days back through today.
+// three, from the day two days back through today. A busy day goes on past
+// 256 MB in numbered files (2026-11-13.1.jsonl, magpie 5d93f6b3), each
+// gzipped in turn, and every one of them is that day's too (#1077).
 function freeWindowRouting(base, now = Date.now()) {
   const days = new Set()
   for (let at = new Date(now); days.size < 3; at.setDate(at.getDate() - 1)) {
@@ -2859,7 +2861,13 @@ function freeWindowRouting(base, now = Date.now()) {
   }
   const found = []
   for (const day of days) {
-    for (const name of [`${day}.jsonl`, `${day}.jsonl.gz`]) if (names.includes(name)) found.push(join(base, "routing", name))
+    const of = []
+    for (const name of names) {
+      const m = /^(?:\.(\d+))?\.jsonl(\.gz)?$/.exec(name.startsWith(day) ? name.slice(day.length) : "")
+      if (m) of.push({ name, n: Number(m[1] ?? 0), gz: m[2] ? 1 : 0 })
+    }
+    of.sort((a, b) => a.n - b.n || a.gz - b.gz)
+    for (const { name } of of) found.push(join(base, "routing", name))
   }
   return found
 }
@@ -2887,63 +2895,123 @@ function restIdentity(rest, win) {
 // than guessed onto one of them.
 function routingRefusals(win, text) {
   const rows = []
-  for (const line of text.split("\n")) {
-    if (!/"status"\s*:\s*429/.test(line)) continue
-    if (!line.includes(win.provider)) continue
-    let event
-    try {
-      event = JSON.parse(line)
-    } catch {
-      continue
-    }
-    const orders = Array.isArray(event?.order) ? event.order : []
-    const named = new Map()
-    const ambiguous = new Set()
-    for (const order of orders) {
-      if (order?.provider !== undefined && order.provider !== win.provider) continue
-      if (typeof order.id !== "string" || typeof order.who !== "string") continue
-      if (ambiguous.has(order.id)) continue
-      const was = named.get(order.id)
-      if (was === undefined) named.set(order.id, order.who)
-      else if (was.toLowerCase() !== order.who.toLowerCase()) {
-        named.delete(order.id)
-        ambiguous.add(order.id)
-      }
-    }
-    for (const attempt of Array.isArray(event?.tries) ? event.tries : []) {
-      if (Number(attempt?.status) !== 429) continue
-      if (attempt.provider !== undefined && attempt.provider !== win.provider) continue
-      if (!windowModel(attempt.model, win)) continue
-      const error = typeof attempt.error === "string" ? attempt.error : typeof attempt.error?.message === "string" ? attempt.error.message : ""
-      const keyed = restIdentity(attempt.rest, win)
-      let reset = windowReset(error)
-      let restUntil = NaN
-      if (!Number.isFinite(reset)) {
-        restUntil = keyed && attempt.rest.by === "resets" ? Date.parse(typeof attempt.rest.until === "string" ? attempt.rest.until : "") : NaN
-        if (Number.isFinite(restUntil)) reset = restUntil
-      }
-      if (!Number.isFinite(reset)) continue
-      const ordered = named.get(String(attempt.id ?? ""))
-      if (ordered !== undefined && keyed && ordered.toLowerCase() !== keyed.account.toLowerCase()) continue
-      const account = ordered ?? keyed?.account
-      if (typeof account !== "string" || !account) continue
-      const keyedOnly = ordered === undefined
-      rows.push({
-        provider: win.provider,
-        providerAccount: account,
-        model: attempt.model,
-        t: attempt.start ?? event?.time,
-        status: 429,
-        err: error,
-        ...(keyedOnly ? { keyedOnly: true } : {}),
-        ...(Number.isFinite(windowReset(error)) ? {} : { restUntil }),
-      })
-    }
-  }
+  for (const line of text.split("\n")) routingRefusal(win, line, rows)
   return rows
 }
 
-function readRoutingRefusals(path, compressed, win) {
+// routingRefusal adds one trace line's refusals to rows. Only a line that
+// names a 429 and this build is decoded.
+function routingRefusal(win, line, rows) {
+  if (!/"status"\s*:\s*429/.test(line)) return
+  if (!line.includes(win.provider)) return
+  let event
+  try {
+    event = JSON.parse(line)
+  } catch {
+    return
+  }
+  const orders = Array.isArray(event?.order) ? event.order : []
+  const named = new Map()
+  const ambiguous = new Set()
+  for (const order of orders) {
+    if (order?.provider !== undefined && order.provider !== win.provider) continue
+    if (typeof order.id !== "string" || typeof order.who !== "string") continue
+    if (ambiguous.has(order.id)) continue
+    const was = named.get(order.id)
+    if (was === undefined) named.set(order.id, order.who)
+    else if (was.toLowerCase() !== order.who.toLowerCase()) {
+      named.delete(order.id)
+      ambiguous.add(order.id)
+    }
+  }
+  for (const attempt of Array.isArray(event?.tries) ? event.tries : []) {
+    if (Number(attempt?.status) !== 429) continue
+    if (attempt.provider !== undefined && attempt.provider !== win.provider) continue
+    if (!windowModel(attempt.model, win)) continue
+    const error = typeof attempt.error === "string" ? attempt.error : typeof attempt.error?.message === "string" ? attempt.error.message : ""
+    const keyed = restIdentity(attempt.rest, win)
+    let reset = windowReset(error)
+    let restUntil = NaN
+    if (!Number.isFinite(reset)) {
+      restUntil = keyed && attempt.rest.by === "resets" ? Date.parse(typeof attempt.rest.until === "string" ? attempt.rest.until : "") : NaN
+      if (Number.isFinite(restUntil)) reset = restUntil
+    }
+    if (!Number.isFinite(reset)) continue
+    const ordered = named.get(String(attempt.id ?? ""))
+    if (ordered !== undefined && keyed && ordered.toLowerCase() !== keyed.account.toLowerCase()) continue
+    const account = ordered ?? keyed?.account
+    if (typeof account !== "string" || !account) continue
+    const keyedOnly = ordered === undefined
+    rows.push({
+      provider: win.provider,
+      providerAccount: account,
+      model: attempt.model,
+      t: attempt.start ?? event?.time,
+      status: 429,
+      err: error,
+      ...(keyedOnly ? { keyedOnly: true } : {}),
+      ...(Number.isFinite(windowReset(error)) ? {} : { restUntil }),
+    })
+  }
+}
+
+// ROUTING_LINE_MAX is the longest trace line read; a longer one is passed
+// over. A refusal's line is a few KiB, and the longest line of a 520 MB day
+// was 88 KiB (#1077).
+const ROUTING_LINE_MAX = 4 << 20
+
+// routingLines calls each with every whole line of a routing trace, from
+// byte `from` of a plain file on, unzipped as it is read when compressed.
+// Only a chunk and one line are ever held, never the file: a busy day's .gz
+// unzipped to 520 MB, and reading it whole took the plugin host past 1 GB
+// on a 2 GB machine, where the kernel killed it and every request in flight
+// with it (#1077). It resolves to the offset just past a plain file's last
+// newline, where a later read goes on: a last line with none yet may be
+// half written. A .gz's last line is passed whole, as magpie's own reader
+// takes it. A read that fails part way resolves to how far it got, the
+// lines before kept.
+async function routingLines(path, compressed, from, each) {
+  let offset = from
+  let line = [] // the pieces of the line being read, while it fits
+  let lineBytes = 0
+  const add = (piece) => {
+    if (lineBytes + piece.length <= ROUTING_LINE_MAX) line.push(piece)
+    else line = null
+    lineBytes += piece.length
+  }
+  const done = () => {
+    if (line && lineBytes) each(Buffer.concat(line, lineBytes).toString("utf8"))
+    offset += lineBytes
+    line = []
+    lineBytes = 0
+  }
+  const file = createReadStream(path, compressed ? undefined : { start: from })
+  const stream = compressed ? file.pipe(createGunzip()) : file
+  if (compressed) file.on("error", (e) => stream.destroy(e))
+  try {
+    for await (const chunk of stream) {
+      let start = 0
+      for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, start)) {
+        add(chunk.subarray(start, nl))
+        done()
+        offset++
+        start = nl + 1
+      }
+      if (start < chunk.length) add(chunk.subarray(start))
+    }
+    if (compressed) done()
+  } catch {
+    file.destroy()
+    stream.destroy()
+  }
+  return offset
+}
+
+// routingReading is the reads under way, so that two usage reads at once
+// read a trace once.
+const routingReading = new Map()
+
+async function readRoutingRefusals(path, compressed, win) {
   let st
   try {
     st = statSync(path)
@@ -2954,21 +3022,29 @@ function readRoutingRefusals(path, compressed, win) {
   const held = routingParsed.get(key)
   const fingerprint = `${st.mtimeMs}:${st.size}`
   if (held?.fingerprint === fingerprint) return held.rows
-  routingReads.count++
-  let text
+  const going = routingReading.get(key)
+  if (going) return going
+  const read = (async () => {
+    routingReads.count++
+    // magpie only appends to a day's plain file, so one that has grown is
+    // read on from where the last read stopped; one that shrank or kept its
+    // size was written anew, and is read whole
+    const grown = !compressed && held && held.ino === st.ino && st.size > held.size
+    const rows = grown ? [...held.rows] : []
+    const offset = await routingLines(path, compressed, grown ? held.offset : 0, (line) => routingRefusal(win, line, rows))
+    routingParsed.set(key, { key, path, fingerprint, size: st.size, ino: st.ino, offset, rows })
+    return rows
+  })()
+  routingReading.set(key, read)
   try {
-    text = compressed ? gunzipSync(readFileSync(path)).toString("utf8") : readFileSync(path, "utf8")
-  } catch {
-    routingParsed.set(key, { key, path, fingerprint, rows: [] })
-    return []
+    return await read
+  } finally {
+    routingReading.delete(key)
   }
-  const rows = routingRefusals(win, text)
-  routingParsed.set(key, { key, path, fingerprint, rows })
-  return rows
 }
 
-function routingRefusalRows(path, compressed, now, account, win = FREE_WINDOW_AI, text) {
-  const parsed = text === undefined ? readRoutingRefusals(path, compressed, win) : routingRefusals(win, text)
+async function routingRefusalRows(path, compressed, now, account, win = FREE_WINDOW_AI, text) {
+  const parsed = text === undefined ? await readRoutingRefusals(path, compressed, win) : routingRefusals(win, text)
   const rows = []
   const oldest = now - 2 * FREE_WINDOW_SPAN
   for (const attempt of parsed) {
@@ -2994,7 +3070,7 @@ function routingRefusalRows(path, compressed, now, account, win = FREE_WINDOW_AI
 // ledger mid-write, the one row holding the free window's start was
 // dropped without a word, and the panel showed no window at all until the
 // next read happened to succeed.
-function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = process.env, home = homedir(), win = FREE_WINDOW_AI) {
+async function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = process.env, home = homedir(), win = FREE_WINDOW_AI) {
   if (!account) return null
   let found = null
   for (const path of freeWindowLedger(cwd, env, home)) {
@@ -3037,7 +3113,8 @@ function freeWindowRows(account, now = Date.now(), cwd = process.cwd(), env = pr
   const routes = freeWindowRouting(dirname(path), now)
   const current = new Set(routes)
   for (const [key, held] of routingParsed) if (!current.has(held.path)) routingParsed.delete(key)
-  const refused = routes.flatMap((route) => routingRefusalRows(route, route.endsWith(".gz"), now, account, win))
+  const refused = []
+  for (const route of routes) refused.push(...(await routingRefusalRows(route, route.endsWith(".gz"), now, account, win)))
   const rows = [...got.rows, ...refused].sort((a, b) => Date.parse(a.t) - Date.parse(b.t))
   return rows
 }
@@ -4541,7 +4618,7 @@ function makePlugin(site) {
             const account = a.accountId || a.user || a.uid || ""
             const wins = site.ai ? [FREE_WINDOW_AI] : CN_ESTIMATED_WINDOWS
             for (const win of wins) {
-              const rows = freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
+              const rows = await freeWindowRows(account, Date.now(), process.cwd(), process.env, homedir(), win)
               const w = rows && freeWindowOf(rows, account, Date.now(), win)
               if (w) out.windows.push(w)
             }
@@ -4692,4 +4769,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }
+export const _internal = { endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

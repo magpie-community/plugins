@@ -7,7 +7,8 @@ import { tmpdir } from "node:os"
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
-import { gzipSync } from "node:zlib"
+import { createGzip, gzipSync } from "node:zlib"
+import { randomBytes } from "node:crypto"
 
 let _internal
 let routingReads
@@ -69,7 +70,7 @@ const refusal = (reset, account = "me@example.com") =>
     err: `WorkBuddy AI: usage exceeds frequency limit, but don't worry, your usage will reset at ${reset} UTC+8, alternatively, you can switch to the other models to continue using it.`,
   })
 
-test("a window counts in + cache_read + out", () => {
+test("a window counts in + cache_read + out", async () => {
   const rows = [row("2026-10-20T19:53:48+08:00", { in: 1_000_000, cache: 4_000_000, out: 100_000 }), row("2026-10-20T20:00:00+08:00", { in: 500_000, cache: 2_000_000 })]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T21:00:00+08:00"))
   expect(w.amount).toBe(7_600_000)
@@ -84,7 +85,7 @@ test("a window counts in + cache_read + out", () => {
 
 // reading in + out alone is 20x too small and never reaches a cap, so a
 // window read that way looks empty while it is full
-test("cache_read alone can fill a window", () => {
+test("cache_read alone can fill a window", async () => {
   const w = _internal.freeWindowOf([row("2026-10-20T19:53:48+08:00", { in: 200, cache: 99_000_000, out: 300 })], "me@example.com", at("2026-10-20T21:00:00+08:00"))
   expect(w.used).toBeGreaterThan(98)
   expect(w.used).toBeLessThanOrEqual(100)
@@ -92,7 +93,7 @@ test("cache_read alone can fill a window", () => {
 
 // the reset a refusal names is the old window's end; the new one starts at
 // the next request, which a real account made 68 minutes later
-test("a new window opens at the next request, not at the reset instant", () => {
+test("a new window opens at the next request, not at the reset instant", async () => {
   const rows = [
     row("2026-10-16T15:40:03+08:00", { in: 60_000_000 }),
     row("2026-10-17T08:00:00+08:00", { in: 40_000_000 }),
@@ -105,7 +106,7 @@ test("a new window opens at the next request, not at the reset instant", () => {
 })
 
 // a window never refused still ends 24h after its first request
-test("an unrefused window lapses 24h after its first request", () => {
+test("an unrefused window lapses 24h after its first request", async () => {
   const rows = [row("2026-10-19T19:52:24+08:00", { in: 90_000_000 }), row("2026-10-19T23:00:00+08:00", { in: 2_000_000 })]
   expect(_internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T19:00:00+08:00")).amount).toBe(92_000_000)
   // lapsed: nothing is exhausted, so no window is reported
@@ -113,16 +114,16 @@ test("an unrefused window lapses 24h after its first request", () => {
 })
 
 // the paid id draws on the same window, so its rows are in this one
-test("-sg counts in the same window as the free id", () => {
+test("-sg counts in the same window as the free id", async () => {
   const rows = [row("2026-10-20T19:53:48+08:00", { in: 50_000_000 }), row("2026-10-20T20:00:00+08:00", { in: 10_000, model: "deepseek-v4.1-flash-sg" })]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T21:00:00+08:00"))
   expect(w.amount).toBe(50_010_000)
   expect(w.models).toEqual(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
 })
 
-test("a routing trace refusal of an alias counts in the same window", () => {
+test("a routing trace refusal of an alias counts in the same window", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
-  const rows = [..._internal.routingRefusalRows(
+  const rows = [...await _internal.routingRefusalRows(
     "",
     false,
     now,
@@ -135,7 +136,7 @@ test("a routing trace refusal of an alias counts in the same window", () => {
   expect(w.resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
 })
 
-test("a gateway rest key names an account with @ or slash in it", () => {
+test("a gateway rest key names an account with @ or slash in it", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const account = "team/example@workbuddy.com"
   const trace = routingTrace(
@@ -146,20 +147,20 @@ test("a gateway rest key names an account with @ or slash in it", () => {
     }],
     [],
   )
-  const rows = _internal.routingRefusalRows("", false, now, account, undefined, trace)
+  const rows = await _internal.routingRefusalRows("", false, now, account, undefined, trace)
   expect(rows).toHaveLength(1)
   expect(rows[0].providerAccount).toBe(account)
   expect(rows[0].restUntil).toBe(Date.parse("2026-11-02T19:17:02+08:00"))
-  expect(_internal.routingRefusalRows("", false, now, "other@example.com", undefined, trace)).toEqual([])
+  expect(await _internal.routingRefusalRows("", false, now, "other@example.com", undefined, trace)).toEqual([])
 })
 
-test("a routing entry with neither a rest key nor a named account is left out", () => {
+test("a routing entry with neither a rest key nor a named account is left out", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const trace = routingTrace([routingRefusal("2026-11-02 19:17:02")], [{ id: "wb-me", provider: "workbuddy-ai" }])
-  expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
+  expect(await _internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
 })
 
-test("other accounts, other models and the other build are left out", () => {
+test("other accounts, other models and the other build are left out", async () => {
   const rows = [
     row("2026-10-20T19:53:48+08:00", { in: 1_000 }),
     row("2026-10-20T19:54:00+08:00", { in: 9_000_000, account: "other@example.com" }),
@@ -185,7 +186,7 @@ const cnRefusal = (reset, account = "me@example.com") =>
     err: `WorkBuddy: 您的使用量已超出频率限制，将在 ${reset} UTC+8 重置，您也可以切换其他模型继续使用。`,
   })
 
-test("the China build counts its own rows against 200M", () => {
+test("the China build counts its own rows against 200M", async () => {
   const rows = [cnRow("2026-11-02T02:32:00+08:00", { in: 1_000_000, cache: 188_000_000, out: 500_000 }), cnRow("2026-11-02T03:00:00+08:00", { in: 200 })]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-11-02T12:00:00+08:00"), _internal.CN_ESTIMATED_WINDOWS[0])
   expect(w.amount).toBe(189_500_200)
@@ -202,7 +203,7 @@ test("the China build counts its own rows against 200M", () => {
 // one phone number can be signed in to both builds, and both write to one
 // ledger: each build's read must see its own rows alone, or one build's
 // spending fills the other's window
-test("the two builds' rows stay apart over one account", () => {
+test("the two builds' rows stay apart over one account", async () => {
   const rows = [
     cnRow("2026-11-02T02:00:00+08:00", { in: 90_000_000 }),
     row("2026-11-02T02:10:00+08:00", { in: 40_000_000 }),
@@ -218,7 +219,7 @@ test("the two builds' rows stay apart over one account", () => {
 
 // the China build names its reset in Chinese, the time in the same shape and
 // the offset spelled out the same way (UTC+8)
-test("windowReset reads the China refusal", () => {
+test("windowReset reads the China refusal", async () => {
   expect(_internal.windowReset("将在 2026-11-02 19:17:02 UTC+8 重置")).toBe(Date.parse("2026-11-02T19:17:02+08:00"))
   expect(_internal.windowReset("您的使用量已超出频率限制，将在 2026-11-03 01:14:57 UTC+8 重置，您也可以切换其他模型继续使用。")).toBe(Date.parse("2026-11-03T01:14:57+08:00"))
   // and a time it cannot place is still no edge
@@ -228,7 +229,7 @@ test("windowReset reads the China refusal", () => {
 // same as the AI probe the review asked for: a refusal at 100M of a 200M
 // window (the account spent elsewhere) reads full, refused, on the Chinese
 // words alone
-test("a China account refused under the cap reads full", () => {
+test("a China account refused under the cap reads full", async () => {
   const rows = [
     cnRow("2026-11-02T02:32:00+08:00", { in: 80_000_000 }),
     cnRefusal("2026-11-02 19:17:02"),
@@ -245,7 +246,7 @@ test("a China account refused under the cap reads full", () => {
 // readLedgerTail stops the chain on both languages' edges: a Chinese refusal
 // whose reset can be read pins where the read is taken from, and the read
 // keeps its own build's rows alone
-test("the China read stops on a Chinese refusal's edge", () => {
+test("the China read stops on a Chinese refusal's edge", async () => {
   const now = at("2026-11-02T12:00:00+08:00")
   const spent = cnRow("2026-10-29T10:00:00+08:00", { in: 50_000_000 })
   // the refusal's row time sits where it was written: after the spent
@@ -254,7 +255,7 @@ test("the China read stops on a Chinese refusal's edge", () => {
   const fresh = cnRow("2026-11-02T02:32:00+08:00", { in: 300_000 })
   const root = writeLedger([JSON.stringify(spent), JSON.stringify(denied), JSON.stringify(fresh)])
   try {
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
     // the row that reveals the edge is kept — the read goes back to it and
     // stops — while the window the refusal closed reads nothing: the chain
     // opens at the next answered row, 300k of 200M, resetting 24h later
@@ -264,7 +265,7 @@ test("the China read stops on a Chinese refusal's edge", () => {
     expect(rows.every((r) => r.provider === "workbuddy")).toBe(true)
     // the AI read over the same ledger has nothing answered inside 24h and
     // stops at the day's bound: no window for the other build
-    expect(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))).toEqual([])
+    expect(await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))).toEqual([])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -272,28 +273,28 @@ test("the China read stops on a Chinese refusal's edge", () => {
 
 // two reads of one ledger, one per build, must not answer for each other
 // through the parse cache: the key carries the build
-test("the parse cache keys the build", () => {
+test("the parse cache keys the build", async () => {
   const now = at("2026-11-02T12:00:00+08:00")
   const lines = [cnRow("2026-11-02T02:00:00+08:00", { in: 90_000_000 }), row("2026-11-02T02:10:00+08:00", { in: 40_000_000 })].map((r) => JSON.stringify(r))
   const root = writeLedger(lines)
   try {
-    const cn = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
+    const cn = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0])
     expect(cn.map((r) => r.provider)).toEqual(["workbuddy"])
-    const ai = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const ai = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(ai.map((r) => r.provider)).toEqual(["workbuddy-ai"])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("a routing trace's failed WorkBuddy attempt pins the vendor reset", () => {
+test("a routing trace's failed WorkBuddy attempt pins the vendor reset", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const root = writeLedger([JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 3_000_000 }))])
   try {
     mkdirSync(join(root, "routing"))
     writeFileSync(join(root, "routing", `${day}.jsonl`), routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     const w = _internal.freeWindowOf(rows, "me@example.com", now)
     expect(w.amount).toBe(1e8)
     expect(w.refused).toBe(true)
@@ -307,7 +308,7 @@ test("a routing trace's failed WorkBuddy attempt pins the vendor reset", () => {
   }
 })
 
-test("a routing trace resets, then the next answered row opens a new window", () => {
+test("a routing trace resets, then the next answered row opens a new window", async () => {
   const now = at("2026-11-02T20:00:00+08:00")
   const day = localDay(now)
   const root = writeLedger([
@@ -317,7 +318,7 @@ test("a routing trace resets, then the next answered row opens a new window", ()
   try {
     mkdirSync(join(root, "routing"))
     writeFileSync(join(root, "routing", `${day}.jsonl`), routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
-    const w = _internal.freeWindowOf(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
+    const w = _internal.freeWindowOf(await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
     expect(w.amount).toBe(250_000)
     expect(w.refused).toBeUndefined()
     expect(w.aside).toBe(true)
@@ -327,7 +328,7 @@ test("a routing trace resets, then the next answered row opens a new window", ()
   }
 })
 
-test("a routing trace keeps accounts, models and builds apart", () => {
+test("a routing trace keeps accounts, models and builds apart", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const root = writeLedger([
@@ -348,11 +349,11 @@ test("a routing trace keeps accounts, models and builds apart", () => {
         ]),
       ].join("\n") + "\n",
     )
-    const ai = _internal.freeWindowOf(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
+    const ai = _internal.freeWindowOf(await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
     expect(ai.amount).toBe(3_000_000)
     expect(ai.refused).toBeUndefined()
     const cn = _internal.freeWindowOf(
-      _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0]),
+      await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"), _internal.CN_ESTIMATED_WINDOWS[0]),
       "me@example.com",
       now,
       _internal.CN_ESTIMATED_WINDOWS[0],
@@ -365,9 +366,9 @@ test("a routing trace keeps accounts, models and builds apart", () => {
   }
 })
 
-test("a routing entry whose id names two accounts is left out", () => {
+test("a routing entry whose id names two accounts is left out", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
-  const rows = _internal.routingRefusalRows(
+  const rows = await _internal.routingRefusalRows(
     "",
     false,
     now,
@@ -385,7 +386,7 @@ test("a routing entry whose id names two accounts is left out", () => {
   expect(rows).toEqual([])
 })
 
-test("routing traces are read compressed and missing or damaged files fall back", () => {
+test("routing traces are read compressed and missing or damaged files fall back", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const root = writeLedger([JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 3_000_000 }))])
@@ -393,13 +394,13 @@ test("routing traces are read compressed and missing or damaged files fall back"
     mkdirSync(join(root, "routing"))
     writeFileSync(join(root, "routing", `${day}.jsonl.gz`), gzipSync(Buffer.from(routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")))
     writeFileSync(join(root, "routing", `${localDay(now - 24 * 3600_000)}.jsonl.gz`), Buffer.from("not gzip"))
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(_internal.freeWindowOf(rows, "me@example.com", now).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
     const trace = join(root, "routing", `${day}.jsonl.gz`)
     writeFileSync(trace, gzipSync(Buffer.from("{ torn")))
     utimesSync(trace, new Date(), new Date(Date.now() + 5))
-    expect(_internal.readRoutingRefusals(trace, true, _internal.FREE_WINDOW_AI)).toEqual([])
-    expect(_internal.routingRefusalRows(trace, true, now + 2000, "me@example.com")).toEqual([])
+    expect(await _internal.readRoutingRefusals(trace, true, _internal.FREE_WINDOW_AI)).toEqual([])
+    expect(await _internal.routingRefusalRows(trace, true, now + 2000, "me@example.com")).toEqual([])
     const fallbackRows = [row("2026-11-02T02:00:00+08:00", { in: 3_000_000 })]
     expect(_internal.freeWindowOf(fallbackRows, "me@example.com", now + 2000).resetsAt).toBe(
       iso("2026-11-03T02:00:00+08:00"),
@@ -409,7 +410,7 @@ test("routing traces are read compressed and missing or damaged files fall back"
   }
 })
 
-test("a usage append does not read the routing trace again", () => {
+test("a usage append does not read the routing trace again", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const first = JSON.stringify(row("2026-11-02T02:00:00+08:00", { in: 1 }))
@@ -419,12 +420,12 @@ test("a usage append does not read the routing trace again", () => {
     mkdirSync(join(root, "routing"))
     writeFileSync(routingPath, gzipSync(Buffer.from(routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")))
     const before = routingReads.count
-    const firstRows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const firstRows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(routingReads.count).toBe(before + 1)
     expect(_internal.freeWindowOf(firstRows, "me@example.com", now).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
 
     writeFileSync(join(root, "usage.jsonl"), `${first}\n${JSON.stringify(row("2026-11-02T03:00:00+08:00", { in: 2 }))}\n`)
-    const secondRows = _internal.freeWindowRows("me@example.com", now + 1000, root, {}, join(root, "nohome"))
+    const secondRows = await _internal.freeWindowRows("me@example.com", now + 1000, root, {}, join(root, "nohome"))
     expect(routingReads.count).toBe(before + 1)
     expect(secondRows.filter((r) => Number(r.status) !== 429).reduce((sum, r) => sum + (r.in ?? 0), 0)).toBe(3)
     expect(_internal.freeWindowOf(secondRows, "me@example.com", now + 1000).resetsAt).toBe(iso("2026-11-02T19:17:02+08:00"))
@@ -433,11 +434,11 @@ test("a usage append does not read the routing trace again", () => {
   }
 })
 
-test("a routing trace rest names the reset when its error does not", () => {
+test("a routing trace rest names the reset when its error does not", async () => {
   const root = writeLedger([])
   try {
     const path = join(root, "routing.jsonl")
-    const rows = _internal.routingRefusalRows(
+    const rows = await _internal.routingRefusalRows(
       path,
       false,
       at("2026-11-02T12:30:00+08:00"),
@@ -454,7 +455,7 @@ test("a routing trace rest names the reset when its error does not", () => {
   }
 })
 
-test("a gateway rest reset names a window and other rest reasons do not", () => {
+test("a gateway rest reset names a window and other rest reasons do not", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   for (const by of ["cooldown", "backoff", "quota", "window", "retry-after", "unknown"]) {
     const trace = routingTrace(
@@ -464,7 +465,7 @@ test("a gateway rest reset names a window and other rest reasons do not", () => 
         rest: { by, key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash", until: "2026-11-02T19:17:02+08:00" },
       }],
     )
-    expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
+    expect(await _internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
   }
   const resets = routingTrace(
     [{
@@ -473,12 +474,12 @@ test("a gateway rest reset names a window and other rest reasons do not", () => 
       rest: { by: "resets", key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash", until: "2026-11-02T19:17:02+08:00" },
     }],
   )
-  const rows = _internal.routingRefusalRows("", false, now, "me@example.com", undefined, resets)
+  const rows = await _internal.routingRefusalRows("", false, now, "me@example.com", undefined, resets)
   expect(rows).toHaveLength(1)
   expect(rows[0].restUntil).toBe(at("2026-11-02T19:17:02+08:00"))
 })
 
-test("a gateway rest key must name the provider and model", () => {
+test("a gateway rest key must name the provider and model", async () => {
   expect(_internal.restIdentity({ key: "other@me@example.com/deepseek-v4.1-flash" }, _internal.FREE_WINDOW_AI)).toBeNull()
   expect(_internal.restIdentity({ key: "workbuddy-ai@me@example.com/glm-5.3" }, _internal.FREE_WINDOW_AI)).toBeNull()
   expect(_internal.restIdentity({ key: "workbuddy-ai@me@example.com/deepseek-v4.1-flash" }, _internal.FREE_WINDOW_AI)).toEqual({
@@ -487,7 +488,7 @@ test("a gateway rest key must name the provider and model", () => {
   })
 })
 
-test("rest account comparison is case-insensitive and keeps the caller's spelling", () => {
+test("rest account comparison is case-insensitive and keeps the caller's spelling", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const keyedAccount = "mixed-case@example.com"
   const rest = { by: "resets", key: `workbuddy-ai@${keyedAccount}/deepseek-v4.1-flash`, until: "2026-11-02T19:17:02+08:00" }
@@ -500,11 +501,11 @@ test("rest account comparison is case-insensitive and keeps the caller's spellin
     { id: "workbuddy-ai", provider: "workbuddy-ai", who: "Mixed-Case@Example.com" },
     { id: "workbuddy-ai", provider: "workbuddy-ai", who: "MIXED-CASE@example.com" },
   ])
-  const rows = _internal.routingRefusalRows("", false, now, "MIXED-CASE@example.com", undefined, trace)
+  const rows = await _internal.routingRefusalRows("", false, now, "MIXED-CASE@example.com", undefined, trace)
   expect(rows.map((r) => r.providerAccount)).toEqual(["Mixed-Case@Example.com", "MIXED-CASE@example.com"])
 })
 
-test("a real-shaped WorkBuddy trace is attributed through order and keyed rest", () => {
+test("a real-shaped WorkBuddy trace is attributed through order and keyed rest", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const keyedAccount = "mixed-case@example.com"
   const trace = JSON.stringify({
@@ -519,12 +520,12 @@ test("a real-shaped WorkBuddy trace is attributed through order and keyed rest",
       rest: { by: "resets", key: `workbuddy-ai@${keyedAccount}/deepseek-v4.1-flash`, until: "2026-11-02T19:17:02+08:00" },
     }],
   })
-  const rows = _internal.routingRefusalRows("", false, now, "mixed-CASE@example.COM", undefined, trace)
+  const rows = await _internal.routingRefusalRows("", false, now, "mixed-CASE@example.COM", undefined, trace)
   expect(rows).toHaveLength(1)
   expect(rows[0].providerAccount).toBe("Mixed-Case@Example.com")
 })
 
-test("routing refusals outside twice-the-window are ignored", () => {
+test("routing refusals outside twice-the-window are ignored", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const refusal = (start) => ({
     id: "workbuddy-ai",
@@ -535,10 +536,10 @@ test("routing refusals outside twice-the-window are ignored", () => {
     rest: { by: "resets", key: "{{SECRET_tkvhbn6p}}", until: "2026-11-02T19:17:02+08:00" },
   })
   const trace = JSON.stringify({ order: [{ id: "workbuddy-ai", who: "me@example.com" }], tries: [refusal("2026-10-31T12:29:59+08:00"), refusal("2026-11-02T12:30:01+08:00")] })
-  expect(_internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
+  expect(await _internal.routingRefusalRows("", false, now, "me@example.com", undefined, trace)).toEqual([])
 })
 
-test("only the routing files a window can reach are read", () => {
+test("only the routing files a window can reach are read", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const days = [0, 1, 2].map((offset) => localDay(now - offset * 24 * 3600_000))
   const root = mkdtempSync(join(tmpdir(), "wb-routing-days-"))
@@ -552,7 +553,7 @@ test("only the routing files a window can reach are read", () => {
   }
 })
 
-test("routing filenames follow the local day and read both forms for one day", () => {
+test("routing filenames follow the local day and read both forms for one day", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const older = new Date(now - 3 * 24 * 3600_000)
@@ -566,14 +567,14 @@ test("routing filenames follow the local day and read both forms for one day", (
     }
     const paths = _internal.freeWindowRouting(root, now)
     expect(paths.map((path) => basename(path))).toEqual([`${day}.jsonl`, `${day}.jsonl.gz`])
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(rows.filter((r) => Number(r.status) === 429)).toHaveLength(2)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("routing append updates one cache entry and stale days are dropped", () => {
+test("routing append updates one cache entry and stale days are dropped", async () => {
   const now = at("2026-11-02T12:30:00+08:00")
   const day = localDay(now)
   const root = writeLedger([JSON.stringify(row(new Date(now - 3600_000).toISOString(), { in: 1 }))])
@@ -583,13 +584,13 @@ test("routing append updates one cache entry and stale days are dropped", () => 
     mkdirSync(routing)
     for (let i = 0; i < 50; i++) {
       appendFileSync(route, routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
-      const rows = _internal.freeWindowRows("me@example.com", now + i, root, {}, join(root, "nohome"))
+      const rows = await _internal.freeWindowRows("me@example.com", now + i, root, {}, join(root, "nohome"))
       expect(rows.filter((r) => Number(r.status) === 429)).toHaveLength(i + 1)
       expect(routingParsed.size).toBe(1)
     }
     const future = now + 3 * 24 * 3600_000
     writeFileSync(join(routing, `${localDay(future)}.jsonl`), "{}\n")
-    _internal.freeWindowRows("me@example.com", future, root, {}, join(root, "nohome"))
+    await _internal.freeWindowRows("me@example.com", future, root, {}, join(root, "nohome"))
     expect([...routingParsed.values()].every((held) => basename(held.path) === `${localDay(future)}.jsonl`)).toBe(true)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -598,7 +599,7 @@ test("routing append updates one cache entry and stale days are dropped", () => 
 
 
 // a refusal carries no tokens: it neither counts nor opens a window
-test("a 429 neither counts nor opens a window", () => {
+test("a 429 neither counts nor opens a window", async () => {
   const rows = [row("2026-10-20T19:53:48+08:00", { in: 100 }), row("2026-10-20T22:00:00+08:00", { status: 429, in: 5_000, err: "429 usage exceeds frequency limit" })]
   const w = _internal.freeWindowOf(rows, "me@example.com", at("2026-10-20T23:00:00+08:00"))
   expect(w.amount).toBe(100)
@@ -607,7 +608,7 @@ test("a 429 neither counts nor opens a window", () => {
 
 // a refusal with no readable reset time is no edge; the 24h span still ends
 // the window
-test("a refusal that names no reset falls back to the 24h span", () => {
+test("a refusal that names no reset falls back to the 24h span", async () => {
   const rows = [
     row("2026-10-20T10:00:00+08:00", { in: 99_000_000 }),
     row("2026-10-20T12:00:00+08:00", { status: 429, err: "WorkBuddy AI: usage exceeds frequency limit" }),
@@ -618,23 +619,23 @@ test("a refusal that names no reset falls back to the 24h span", () => {
   expect(w.amount).toBe(1_000)
 })
 
-test("nothing to read yields no window, not a made-up one", () => {
+test("nothing to read yields no window, not a made-up one", async () => {
   expect(_internal.freeWindowOf([], "me@example.com")).toBeNull()
   expect(_internal.freeWindowOf(null, "me@example.com")).toBeNull()
   expect(_internal.freeWindowOf([row("2026-10-20T19:53:48+08:00")], "nobody@example.com")).toBeNull()
   expect(_internal.freeWindowOf([row("2026-10-20T19:53:48+08:00", { status: 429, err: "429 usage exceeds frequency limit" })], "me@example.com")).toBeNull()
 })
 
-test("the card reads a token count, not a credits count", () => {
+test("the card reads a token count, not a credits count", async () => {
   expect(_internal.tokensShort(99_971_831)).toBe("100.0M")
   expect(_internal.tokensShort(11_950_000)).toBe("11.9M")
   expect(_internal.tokensShort(812_400)).toBe("812k")
   expect(_internal.tokensShort(6)).toBe("6")
 })
 
-test("no ledger means no window rather than a guess", () => {
+test("no ledger means no window rather than a guess", async () => {
   // HOME is a temp dir in tests and no folder it reads holds a ledger
-  expect(_internal.freeWindowRows("me@example.com", Date.now(), join(homedir(), "magpie-test-nowhere"), {}, homedir())).toBeNull()
+  expect(await _internal.freeWindowRows("me@example.com", Date.now(), join(homedir(), "magpie-test-nowhere"), {}, homedir())).toBeNull()
 })
 
 // --- the review's points, each red on 33ca87f8 -------------------------
@@ -642,7 +643,7 @@ test("no ledger means no window rather than a guess", () => {
 // point 1: an account refused under the cap read as 93% because the rest of
 // its spending was on another machine. The refusal is the one exact signal
 // there is: a 429 whose named reset is still ahead makes the window full.
-test("an account refused under the cap reads full, not 93%", () => {
+test("an account refused under the cap reads full, not 93%", async () => {
   const rows = [
     row("2026-10-18T19:47:00+08:00", { in: 62_000_000, cache: 30_000_000, out: 700_000 }),
     row("2026-10-18T19:52:00+08:00", { in: 92_962, model: "deepseek-v4.1-flash-sg" }),
@@ -657,7 +658,7 @@ test("an account refused under the cap reads full, not 93%", () => {
 })
 
 // the refusal belongs to its window: once its reset passes, the sum reads
-test("a refusal whose reset has passed does not hold the next window full", () => {
+test("a refusal whose reset has passed does not hold the next window full", async () => {
   const rows = [
     row("2026-10-18T19:47:00+08:00", { in: 92_000_000 }),
     row("2026-10-18T19:52:04+08:00", { status: 429, err: `${TIMEOUT_BEFORE_RESET}2026-10-19 19:52:24 UTC+8, alternatively, you can switch to the other models to continue using it.` }),
@@ -670,7 +671,7 @@ test("a refusal whose reset has passed does not hold the next window full", () =
 
 // point 6: the offset is read from the refusal, and one that cannot be read
 // is no edge at all rather than +08:00
-test("the reset's offset is read from the text", () => {
+test("the reset's offset is read from the text", async () => {
   expect(_internal.windowOffset("reset at 2026-10-20 19:47:41 UTC+8")).toBe(480)
   expect(_internal.windowOffset("reset at 2026-10-20 19:47:41 UTC+08:00")).toBe(480)
   expect(_internal.windowOffset("reset at 2026-10-20 19:47:41 GMT-5")).toBe(-300)
@@ -683,7 +684,7 @@ test("the reset's offset is read from the text", () => {
 // point 3: magpie keeps usage.jsonl in appdir.Config(), which is the folder
 // the plugin host runs in — portable, or $XDG_CONFIG_HOME/magpie — and only
 // ~/.config/magpie otherwise
-test("the ledger is found through $XDG_CONFIG_HOME", () => {
+test("the ledger is found through $XDG_CONFIG_HOME", async () => {
   const root = mkdtempSync(join(tmpdir(), "wb-xdg-"))
   try {
     const home = join(root, "home")
@@ -692,18 +693,18 @@ test("the ledger is found through $XDG_CONFIG_HOME", () => {
     mkdirSync(join(xdg, "magpie"), { recursive: true })
     writeFileSync(join(home, ".config", "magpie", "usage.jsonl"), JSON.stringify(row("2026-10-01T10:00:00+08:00", { in: 1 })) + "\n")
     writeFileSync(join(xdg, "magpie", "usage.jsonl"), JSON.stringify(row("2026-10-20T10:00:00+08:00", { in: 5_000_000 })) + "\n")
-    const rows = _internal.freeWindowRows("me@example.com", at("2026-10-20T12:00:00+08:00"), join(root, "elsewhere"), { XDG_CONFIG_HOME: xdg }, home)
+    const rows = await _internal.freeWindowRows("me@example.com", at("2026-10-20T12:00:00+08:00"), join(root, "elsewhere"), { XDG_CONFIG_HOME: xdg }, home)
     expect(rows.map((r) => r.in)).toEqual([5_000_000])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("the ledger is found through the folder the host runs in", () => {
+test("the ledger is found through the folder the host runs in", async () => {
   const root = mkdtempSync(join(tmpdir(), "wb-cwd-"))
   try {
     writeFileSync(join(root, "usage.jsonl"), JSON.stringify(row("2026-10-20T10:00:00+08:00", { in: 7_000_000 })) + "\n")
-    const rows = _internal.freeWindowRows("me@example.com", at("2026-10-20T12:00:00+08:00"), root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", at("2026-10-20T12:00:00+08:00"), root, {}, join(root, "nohome"))
     expect(rows.map((r) => r.in)).toEqual([7_000_000])
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -713,7 +714,7 @@ test("the ledger is found through the folder the host runs in", () => {
 // point 4: a heavy ledger runs to hundreds of MB, so the read starts at its
 // end. Where it stops is the chain's business (see the probes below); with no
 // edge in reach it goes back to an edge it can stand on, or to the file's end.
-test("the read starts at the file's end", () => {
+test("the read starts at the file's end", async () => {
   const root = mkdtempSync(join(tmpdir(), "wb-tail-"))
   try {
     const now = at("2026-10-20T20:00:00+08:00")
@@ -721,7 +722,7 @@ test("the read starts at the file's end", () => {
     for (let i = 0; i < 3000; i++) lines.push(JSON.stringify(row(new Date(now - (2999 - i) * 3600_000).toISOString(), { in: i === 2999 ? 9_000_000 : 1 })))
     lines.push(JSON.stringify({ ...row(new Date(now).toISOString(), { in: 4 }), provider: "zcode" }))
     writeFileSync(join(root, "usage.jsonl"), lines.join("\n") + "\n" + '{"provider":"workbuddy-ai","t":"2026-10-20T')
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     expect(rows.every((r) => r.provider === "workbuddy-ai")).toBe(true)
     expect(rows.at(-1).in).toBe(9_000_000) // the newest row, and never the torn one
   } finally {
@@ -767,14 +768,14 @@ function spreadLedger(rows, now) {
 // a day of rows, and the account served every hour after them: the window is
 // whatever the ledger's own chain makes of it, and the tail alone makes
 // something else
-test("a day of rows pins the chain where the whole ledger does", () => {
+test("a day of rows pins the chain where the whole ledger does", async () => {
   const now = at("2026-10-20T20:00:00+08:00")
   // served hourly for a week before, then a gap of 5h, then hourly
   const rows = spread(now - 7 * A_DAY, now - 5 * AN_HOUR).concat(spread(now - 1 * AN_HOUR, now))
   const root = spreadLedger(rows, now)
   try {
     const whole = _internal.freeWindowOf(rows, "me@example.com", now)
-    const read = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const read = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     // the read goes past the 48h tail to the day before where the gap lets
     // the chain be read: the tail alone holds 41 of these rows
     expect(read.length).toBeGreaterThan(41)
@@ -788,7 +789,7 @@ test("a day of rows pins the chain where the whole ledger does", () => {
 
 // with a refusal to stand at, the chain is anchored exactly: the window
 // opens at the first request answered after the reset it names
-test("a refusal the read reaches pins the window exactly", () => {
+test("a refusal the read reaches pins the window exactly", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   const rows = spread(now - 70 * AN_HOUR, now)
   // the window the 70h row opened was refused once its day ran out
@@ -800,7 +801,7 @@ test("a refusal the read reaches pins the window exactly", () => {
   ].sort((a, b) => Date.parse(a.t) - Date.parse(b.t))
   const root = spreadLedger(refused, now)
   try {
-    const w = _internal.freeWindowOf(_internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
+    const w = _internal.freeWindowOf(await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome")), "me@example.com", now)
     // the refusal names the window's end; the window holding now opened on
     // the span after it, and the rows read say the same as all of them
     const whole = _internal.freeWindowOf(refused, "me@example.com", now)
@@ -814,7 +815,7 @@ test("a refusal the read reaches pins the window exactly", () => {
 
 // a gap of a day or more ends every window before it, so the row after the
 // gap opens one: the second thing that pins the chain without a refusal
-test("a gap of a day or more pins the chain too", () => {
+test("a gap of a day or more pins the chain too", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   // served hourly until 50h ago, then nothing for 30h, then hourly since
   const rows = spread(now - 100 * AN_HOUR, now - 50 * AN_HOUR).concat(spread(now - 20 * AN_HOUR, now))
@@ -826,7 +827,7 @@ test("a gap of a day or more pins the chain too", () => {
     expect(whole.amount).toBe(21 * 4_000_000)
     expect(whole.resetsAt).toBe(iso(new Date(now - 20 * AN_HOUR + A_DAY)))
 
-    const read = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const read = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     const w = _internal.freeWindowOf(read, "me@example.com", now)
     // the read stops a day before the row after the idle: the 21 rows since
     // it, and the 25 of the day before the gap — not the 100 before them
@@ -843,7 +844,7 @@ test("a gap of a day or more pins the chain too", () => {
 // refusal anywhere. With no edge to stand at there is no window chain to be
 // read, so the whole ledger and the read agree — and a run of use with no gap
 // and no refusal is exactly that: there is no window edge in it to find.
-test("the review's probe: a run with no edge reads as the whole ledger", () => {
+test("the review's probe: a run with no edge reads as the whole ledger", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   // rows from two hours before the file's other rows, so the tail read alone
   // would still open the window mid-run
@@ -851,7 +852,7 @@ test("the review's probe: a run with no edge reads as the whole ledger", () => {
   const root = spreadLedger(rows, now)
   try {
     const whole = _internal.freeWindowOf(rows, "me@example.com", now)
-    const read = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const read = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     const w = _internal.freeWindowOf(read, "me@example.com", now)
     expect(read.length).toBe(rows.length) // every row: no edge, so the file's start
     expect(w.amount).toBe(whole.amount)
@@ -868,7 +869,7 @@ test("the review's probe: a run with no edge reads as the whole ledger", () => {
 // time says nothing about where the read has got to: magpie's own index
 // leaves it out of firstOwn for the same reason. It never carries
 // providerAccount, so it is never a row of this account's either.
-test("a backfilled row of a client's does not end the read", () => {
+test("a backfilled row of a client's does not end the read", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   const rows = spread(now - 70 * AN_HOUR, now - AN_HOUR)
   const reported = (t) => ({ t: new Date(t).toISOString(), agent: "myapp", provider: "openai", model: "gpt-5", in: 10, out: 5, status: 200, rid: "r1", source: "reported" })
@@ -877,7 +878,7 @@ test("a backfilled row of a client's does not end the read", () => {
     const root = writeLedger([...rows, ...backfilled].map((r) => JSON.stringify(r)))
     try {
       const whole = _internal.freeWindowOf(rows, "me@example.com", now)
-      const read = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+      const read = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
       const w = read && _internal.freeWindowOf(read, "me@example.com", now)
       // the card is there, and reads as the whole ledger does
       expect(w).not.toBeNull()
@@ -893,7 +894,7 @@ test("a backfilled row of a client's does not end the read", () => {
 
 // The chain is this account's own: a refusal of another account's, or of a
 // paid model, says nothing about where this account's window opened
-test("another account's refusal does not pin this account", () => {
+test("another account's refusal does not pin this account", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   const rows = spread(now - 70 * AN_HOUR, now - 1 * AN_HOUR)
   const root = spreadLedger(
@@ -902,7 +903,7 @@ test("another account's refusal does not pin this account", () => {
   )
   try {
     const whole = _internal.freeWindowOf(rows, "me@example.com", now)
-    const read = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const read = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     // the other account's row is not this account's, and is not kept either
     expect(read.every((r) => r.providerAccount === "me@example.com")).toBe(true)
     const w = _internal.freeWindowOf(read, "me@example.com", now)
@@ -917,7 +918,7 @@ test("another account's refusal does not pin this account", () => {
 // first line was parsed and kept even after the loop had stopped on an older
 // row, so a stray row far back opened the window and the answer was right by
 // accident. It is kept only when the read runs to the file's start.
-test("the file's first line is kept only when the read runs to the start", () => {
+test("the file's first line is kept only when the read runs to the start", async () => {
   const now = at("2026-10-20T20:00:00+08:00")
   const lines = [
     JSON.stringify(row(new Date(now - 20 * 3600_000).toISOString(), { in: 1 })), // the file's first line
@@ -926,7 +927,7 @@ test("the file's first line is kept only when the read runs to the start", () =>
   ]
   const root = writeLedger(lines)
   try {
-    const rows = _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
     // with no edge in reach the read goes back to the start, and then the
     // first line is a row of the ledger like any other
     expect(rows.map((r) => r.in)).toEqual([1, 2, 3])
@@ -943,7 +944,7 @@ test("the file's first line is kept only when the read runs to the start", () =>
     JSON.stringify(row(new Date(gap - 3600_000).toISOString(), { in: 4 })),
   ])
   try {
-    const rows = _internal.freeWindowRows("me@example.com", gap, stopped, {}, join(stopped, "nohome"))
+    const rows = await _internal.freeWindowRows("me@example.com", gap, stopped, {}, join(stopped, "nohome"))
     // 3 and 4: the day before the gap's later row stopped the read, and the
     // first line, 10h under it, is not kept
     expect(rows.map((r) => r.in)).toEqual([3, 4])
@@ -956,7 +957,7 @@ test("the file's first line is kept only when the read runs to the start", () =>
 // is. A ledger of another provider's rows, with this account's only row 60
 // days back, is read from its end and stops a day in: a lapsed window is
 // nothing to report, and no row above the day can open one.
-test("a ledger of another provider's rows is not read whole", () => {
+test("a ledger of another provider's rows is not read whole", async () => {
   const now = at("2026-10-20T20:00:00+08:00")
   const lines = [JSON.stringify(row(new Date(now - 60 * 24 * 3600_000).toISOString(), { in: 5 }))]
   // a fortnight of another provider's rows, a minute apart: nine days of them
@@ -981,7 +982,7 @@ test("a ledger of another provider's rows is not read whole", () => {
 // an account used would otherwise be read whole when that account has no
 // refusal and only its own rows to go on: those rows stop the read, at the
 // tail or where the chain is pinned
-test("the read of an account's own rows still stops", () => {
+test("the read of an account's own rows still stops", async () => {
   const now = at("2026-10-20T20:00:00+08:00")
   const lines = []
   for (let i = 6000; i >= 1; i--) lines.push(JSON.stringify(row(new Date(now - i * 60_000).toISOString(), { in: 1 })))
@@ -1003,7 +1004,7 @@ test("the read of an account's own rows still stops", () => {
 // the rows oldest to newest and overwrites, so the newest refusal wins — it is
 // nearer to now and its reset is the tighter bound on where the chain can be
 // read from. The old `reset < newest` guard is gone; this pins what replaced it.
-test("of two refusals in the chain, the newest one pins the read", () => {
+test("of two refusals in the chain, the newest one pins the read", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   const at8 = (h) => `${new Date(now - h * AN_HOUR).toISOString().slice(0, 19).replace("T", " ")} UTC+8`
   const refusalAt = (h, reset) => row(new Date(now - h * AN_HOUR).toISOString(), { status: 429, err: `${TIMEOUT_BEFORE_RESET}${reset}, alternatively, you can switch to the other models to continue using it.` })
@@ -1025,7 +1026,7 @@ test("of two refusals in the chain, the newest one pins the read", () => {
 // Swap `if (!Number.isFinite(t)) continue` back to `return Infinity` and this
 // fails: the corrupt row becomes the bound, and the read would go back to the
 // file's start instead of stopping where the clean chain stops.
-test("a row whose time cannot be read is passed over", () => {
+test("a row whose time cannot be read is passed over", async () => {
   const now = at("2026-10-22T12:00:00+08:00")
   // hourly for 100h, then nothing until 20h ago, then hourly: two runs a day
   // or more apart, so the row after the second gap pins the chain
@@ -1048,7 +1049,7 @@ test("a row whose time cannot be read is passed over", () => {
 // as long as readLedgerTail asks (pinned said 0, and the row is not a
 // refusal). Random chains of answered rows, failures, refusals with and
 // without a readable reset, unreadable times and day-wide gaps.
-test("pinning answers as pinned does, row by row", () => {
+test("pinning answers as pinned does, row by row", async () => {
   let seed = 7
   const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
   const now = at("2026-10-22T12:00:00+08:00")
@@ -1095,7 +1096,7 @@ test("pinning answers as pinned does, row by row", () => {
 // thread, at every usage read. The work is counted here, not timed: every
 // time is read with Date.parse, which a quadratic read calls millions of
 // times for these 6,000 rows and a linear one a few times per line.
-test("a busy account's ledger is read in time linear in its rows", () => {
+test("a busy account's ledger is read in time linear in its rows", async () => {
   const now = at("2026-11-02T12:00:00+08:00")
   const lines = []
   for (let i = 6000; i >= 1; i--) {
@@ -1124,7 +1125,7 @@ test("a busy account's ledger is read in time linear in its rows", () => {
 // aside, and never stops the model; only the vendor's refusal does, and
 // magpie's gateway rests the model on it until the reset it names. Both
 // builds, as both read the sum the same way.
-test("a window the vendor hasn't refused is set aside, on both builds (plugins#641)", () => {
+test("a window the vendor hasn't refused is set aside, on both builds (plugins#641)", async () => {
   const now = at("2026-11-02T14:00:00+08:00")
   // the reporter's sum, 187,701,367, in a window opened at 11:08:53
   const cn = _internal.freeWindowOf(
@@ -1154,4 +1155,116 @@ test("a window the vendor hasn't refused is set aside, on both builds (plugins#6
   const aiDenied = _internal.freeWindowOf([row("2026-11-02T11:00:00+08:00", { in: 100_000_000 }), refusal("2026-11-03 11:00:00")], "me@example.com", now)
   expect(aiDenied.refused).toBe(true)
   expect(aiDenied.aside).toBeUndefined()
+})
+
+// --- #1077: a big routing day is read a line at a time ---------------------
+
+// A busy day's trace unzipped to 520 MB, and reading it whole took Bun past
+// 1 GB on a 2 GB host, where the kernel killed the plugin host (easonlao,
+// #1077). The read runs in a child of its own so that its peak is its own: a
+// .gz holding 256 MB of other providers' lines and a refusal at the end,
+// whose reset must still be read.
+test("a routing day far bigger than memory allows is streamed, not held", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wb-route-big-"))
+  try {
+    const filler = JSON.stringify({ time: "2026-11-02T12:00:00+08:00", order: [{ id: "x", provider: "other", who: "a@b" }], pad: "y".repeat(2000) }) + "\n"
+    const block = Buffer.from(filler.repeat(1024)) // ~2 MB
+    const z = createGzip({ level: 1 })
+    const parts = []
+    z.on("data", (c) => parts.push(c))
+    const ended = new Promise((r) => z.on("end", r))
+    for (let i = 0; i < 128; i++) z.write(block)
+    z.end(routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n")
+    await ended
+    const trace = join(root, "big.jsonl.gz")
+    writeFileSync(trace, Buffer.concat(parts))
+    const script = join(root, "read.mjs")
+    writeFileSync(
+      script,
+      `const { _internal } = await import(${JSON.stringify(join(import.meta.dir, "index.mjs"))})
+const base = process.memoryUsage().rss
+let peak = base
+const tick = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss) }, 5)
+const rows = await _internal.readRoutingRefusals(${JSON.stringify(trace)}, true, _internal.FREE_WINDOW_AI)
+clearInterval(tick)
+peak = Math.max(peak, process.memoryUsage().rss)
+console.log(JSON.stringify({ rows: rows.length, grew: peak - base }))`,
+    )
+    const child = Bun.spawnSync([process.execPath, script], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" })
+    expect(child.stderr.toString()).toBe("")
+    const out = JSON.parse(child.stdout.toString().trim().split("\n").pop())
+    expect(out.rows).toBe(1)
+    // whole, the read held the unzipped text and its split: well over 500 MB
+    expect(out.grew).toBeLessThan(160 * 1024 * 1024)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 120_000)
+
+test("a day rolled into numbered files is read in every one of them", async () => {
+  const now = at("2026-11-02T12:30:00+08:00")
+  const day = localDay(now)
+  const root = writeLedger([JSON.stringify(row(new Date(now - 3600_000).toISOString(), { in: 1 }))])
+  try {
+    mkdirSync(join(root, "routing"))
+    const text = routingTrace([routingRefusal("2026-11-02 19:17:02")]) + "\n"
+    for (const name of [`${day}.jsonl.gz`, `${day}.1.jsonl.gz`, `${day}.2.jsonl`, `${day}.10.jsonl`, `${day}.x.jsonl`, `${day}.jsonl.gz.tmp`]) {
+      writeFileSync(join(root, "routing", name), name.endsWith(".gz") ? gzipSync(Buffer.from(text)) : text)
+    }
+    expect(_internal.freeWindowRouting(root, now).map((path) => basename(path))).toEqual([
+      `${day}.jsonl.gz`,
+      `${day}.1.jsonl.gz`,
+      `${day}.2.jsonl`,
+      `${day}.10.jsonl`,
+    ])
+    const rows = await _internal.freeWindowRows("me@example.com", now, root, {}, join(root, "nohome"))
+    expect(rows.filter((r) => Number(r.status) === 429)).toHaveLength(4)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a plain day is read on from where the last read stopped, a half-written line once whole", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wb-route-tail-"))
+  try {
+    const trace = join(root, "day.jsonl")
+    const line = routingTrace([routingRefusal("2026-11-02 19:17:02")])
+    writeFileSync(trace, line + "\n")
+    const win = _internal.FREE_WINDOW_AI
+    expect(await _internal.readRoutingRefusals(trace, false, win)).toHaveLength(1)
+    // a line still being written is left for the next read
+    appendFileSync(trace, line.slice(0, 40))
+    expect(await _internal.readRoutingRefusals(trace, false, win)).toHaveLength(1)
+    const held = [...routingParsed.values()].find((h) => h.path === trace)
+    expect(held.offset).toBe(Buffer.byteLength(line) + 1)
+    appendFileSync(trace, line.slice(40) + "\n")
+    expect(await _internal.readRoutingRefusals(trace, false, win)).toHaveLength(2)
+    // written anew, smaller: read whole again, not on from the old offset
+    writeFileSync(trace, line + "\n")
+    expect(await _internal.readRoutingRefusals(trace, false, win)).toHaveLength(1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a .gz of several members, a line too long to hold and a cut-short .gz", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wb-route-gz-"))
+  try {
+    const line = routingTrace([routingRefusal("2026-11-02 19:17:02")])
+    const win = _internal.FREE_WINDOW_AI
+    const members = join(root, "members.jsonl.gz")
+    writeFileSync(members, Buffer.concat([gzipSync(Buffer.from(line + "\n")), gzipSync(Buffer.from(line + "\n"))]))
+    expect(await _internal.readRoutingRefusals(members, true, win)).toHaveLength(2)
+
+    const long = join(root, "long.jsonl")
+    writeFileSync(long, `${line}\n{"status":429,"pad":"${"z".repeat(_internal.ROUTING_LINE_MAX)}"}\n${line}\n`)
+    expect(await _internal.readRoutingRefusals(long, false, win)).toHaveLength(2)
+
+    const cut = join(root, "cut.jsonl.gz")
+    const whole = gzipSync(Buffer.from(`${line}\n`.repeat(3) + randomBytes(50_000).toString("hex")))
+    writeFileSync(cut, whole.subarray(0, whole.length - 200))
+    expect(await _internal.readRoutingRefusals(cut, true, win)).toHaveLength(3)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

@@ -474,11 +474,13 @@ What is measured, and what is easy to read wrongly:
 - **A refusal hidden by routing still counts.** A group that moves to
   another provider after the 429 writes only the 200 that answered, so the
   failed WorkBuddy attempt is read from `routing/YYYY-MM-DD.jsonl` (or its
-  `.gz`) as well: its vendor words — or the gateway rest's `until` and
-  `key`, which names the account and model — pin the window the same way.
-  Three days of traces are read, the current plain file and the compressed
-  days before it, and what they held is kept until a trace itself changes;
-  an append to `usage.jsonl` does not decompress them again.
+  `.gz`, and a busy day's numbered `YYYY-MM-DD.N.jsonl` files) as well: its
+  vendor words — or the gateway rest's `until` and `key`, which names the
+  account and model — pin the window the same way. Three days of traces are
+  read a line at a time, never held whole, and what they held is kept until
+  a trace itself changes; an append to `usage.jsonl` does not decompress
+  them again, and an append to today's plain file is read from where the
+  last read stopped.
 - **The sum is shown, not routed on.** Until the vendor refuses, the card is
   set aside (`aside: true`): magpie draws it beside the account and never
   counts it as the account's allowance, so an estimate near its cap does not
