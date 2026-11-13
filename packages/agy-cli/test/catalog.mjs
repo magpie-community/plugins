@@ -63,6 +63,34 @@ test("没有 agy 时直接给静态目录，不起子进程", async () => {
   })
 })
 
+// JZGiVvkSOA75376 on X: a signed-out agy opens Google's sign-in in the browser
+// whenever it runs (on Windows through ShellExecuteW, past any BROWSER shim).
+test("agy 没存登录时不在后台跑 agy models、不起探测会话，请求答需要重新登录", async () => {
+  await withKit({ platform: "darwin", storedSignIn: "missing", modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    assertFallbackPresent(await kit.models())
+    const warming = kit.plugin.provider.warming?.()
+    if (warming) await warming
+    await settle(kit)
+    assert.equal(kit.modelsSpawns.length, 0, "没登录也跑了 agy models")
+    assert.equal(kit.acpSpawns.length, 0, "没登录也起了探测会话")
+    assert.ok(kit.execFiles.some(c => c.file === "/usr/bin/security" && c.args.includes("antigravity")))
+    const response = await kit.request(baseBody())
+    assert.equal(response.status, 401)
+    assert.equal(response.headers.get("X-Magpie-Sign-In"), "expired")
+    assert.match(await response.text(), /isn't signed in/)
+    assert.equal(kit.acpSpawns.length, 0, "没登录也为请求起了 agy")
+  })
+  // 存着能续期的登录（access token 过期也一样）：照常列目录
+  const value = "go-keyring-base64:" + Buffer.from(JSON.stringify({ token: { access_token: "a", refresh_token: "r", expiry: "2020-01-01T00:00:00Z" } })).toString("base64")
+  await withKit({ platform: "darwin", storedSignIn: value + "\n", modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    await kit.models()
+    const warming = kit.plugin.provider.warming?.()
+    if (warming) await warming
+    await settle(kit)
+    assert.ok(kit.modelsSpawns.length >= 1, "有登录却没跑 agy models")
+  })
+})
+
 test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () => {
   await withKit({ modelsBehavior: { hang: true } }, async (kit) => {
     const { value, ms } = await timed(() => kit.models())

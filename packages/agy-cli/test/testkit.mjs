@@ -36,6 +36,7 @@ export const CLOAK_FILE = path.join(REPO_DIR, "cloak.mjs")
 export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
 export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
 export const STEP_USAGE_FILE = path.join(REPO_DIR, "step-usage.mjs")
+export const SIGNIN_FILE = path.join(REPO_DIR, "signin.mjs")
 export const TOOL_SCHEMA_FILE = path.join(REPO_DIR, "tool-schema.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
@@ -418,6 +419,7 @@ export async function createBridgeKit(options = {}) {
     acpSpawns: [],
     otherSpawns: [],
     spawnSyncs: [],
+    execFiles: [],
     modelsBehavior: options.modelsBehavior ?? { stdout: modelsOutput(BASE_MODEL_ROWS) },
     prompts: [],
     promptSerial: 0,
@@ -445,6 +447,9 @@ export async function createBridgeKit(options = {}) {
     LOCALAPPDATA: path.join(tmp, "localappdata"),
     XDG_STATE_HOME: path.join(tmp, "state"),
     AGY_PATH: options.agyPath === undefined ? kit.agyPath : options.agyPath,
+    // agy's stored sign-in is read only when a test says what it is
+    // (options.storedSignIn, macOS keychain output or "missing")
+    ...(options.storedSignIn === undefined ? { AGY_BRIDGE_STORED_SIGNIN: "skip" } : {}),
     ...(options.env || {}),
   }
   for (const [key, value] of Object.entries(kit.env)) {
@@ -479,6 +484,15 @@ export async function createBridgeKit(options = {}) {
     kit.spawnSyncs.push({ file, args, opts })
     return { status: 0, signal: null, stdout: "", stderr: "", pid: 0, output: [] }
   }
+  // signin.mjs's keyring read; never the real keychain
+  const execFile = (file, args = [], opts, callback) => {
+    if (typeof opts === "function") callback = opts
+    kit.execFiles.push({ file, args })
+    const stored = options.storedSignIn
+    setImmediate(() => stored === "missing" || stored === undefined
+      ? callback(Object.assign(new Error("not found (test)"), { code: 44 }), "", "")
+      : callback(null, stored, ""))
+  }
   const fakeServer = {
     once() { return fakeServer },
     on() { return fakeServer },
@@ -488,7 +502,7 @@ export async function createBridgeKit(options = {}) {
     address() { return { address: "127.0.0.1", family: "IPv4", port: 45999 } },
   }
   const overrides = {
-    "node:child_process": { spawn, spawnSync },
+    "node:child_process": { spawn, spawnSync, execFile },
     "node:net": {
       createServer(handler) {
         kit.controlHandler = handler
@@ -514,6 +528,7 @@ export async function createBridgeKit(options = {}) {
   const loginUrl = pathToFileURL(LOGIN_FILE).href
   const re2Url = pathToFileURL(RE2_PATTERN_FILE).href
   const stepUsageUrl = pathToFileURL(STEP_USAGE_FILE).href
+  const signinUrl = pathToFileURL(SIGNIN_FILE).href
   const toolSchemaUrl = pathToFileURL(TOOL_SCHEMA_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
@@ -528,6 +543,7 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./login.mjs") module = sourceModule(LOGIN_FILE, "", loginUrl)
     else if (key === "./re2-pattern.mjs") module = sourceModule(RE2_PATTERN_FILE, "", re2Url)
     else if (key === "./step-usage.mjs") module = sourceModule(STEP_USAGE_FILE, "", stepUsageUrl)
+    else if (key === "./signin.mjs") module = sourceModule(SIGNIN_FILE, "", signinUrl)
     else if (key === "./tool-schema.mjs") module = sourceModule(TOOL_SCHEMA_FILE, "", toolSchemaUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)

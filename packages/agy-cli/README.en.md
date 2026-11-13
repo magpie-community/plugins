@@ -189,9 +189,17 @@ magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed
-in to the CLI, broken down by model group. The plugin does not read or write
-Google tokens; it always reports the account agy is signed in to. A window with no
+in to the CLI, broken down by model group. The plugin never writes Google tokens
+or sends them anywhere; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
+
+A signed-out agy opens Google's sign-in page in the browser when it runs, so
+before running agy for usage or the model list, the plugin looks at agy's stored
+sign-in in the system keychain (macOS) or Credential Manager (Windows) and only
+reads whether one is there and when it ends. With none, with one that has ended
+and can't be renewed, or with one agy already failed on, agy is not run: the
+account shows its sign-in has expired until you sign in again. Other failed
+usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 
 ## Environment variables
 
@@ -210,6 +218,7 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | How long a suspended tool turn whose client disconnected may keep its pool slot |
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
+| `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading agy's stored sign-in |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
 | `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |

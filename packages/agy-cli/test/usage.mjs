@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { createUsageReader, fetchUsage, parseUsageReport } from "../usage.mjs"
+import { forgetStoredSignIn } from "../signin.mjs"
 
 const report = groups => ({ status: "SUCCESS", command: { name: "usage", data: { groups } } })
 const group = (buckets, name = "Gemini Models") => ({ name, buckets })
@@ -211,7 +212,8 @@ else if (version) {
   const env = { ...process.env, TEST_LOG: logPath, TEST_REPORT: JSON.stringify(report([group([bucket()])])), TEST_DESCENDANT: path.join(directory, "descendant"), ...extraEnv }
   return {
     executable, env,
-    options: { env, tempRoot: directory },
+    // agy's stored sign-in can't be read here (signin.mjs is tested on its own)
+    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }) },
     async logs() { return (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line)) },
     // Every pid to see gone after a kill: the spawned children, and the agy
     // each one ran that got as far as logging (on Windows a grandchild under
@@ -476,25 +478,122 @@ test("only concurrent refreshes share work, and callers cannot mutate each other
   await f.assertClean()
 })
 
-test("reports sanitized failures and preserves the bridge sign-in; failures are retryable", async t => {
-  for (const [message, expected] of [
-    ["Not logged in secret@example.com https://secret.invalid/token", /sign in again/],
-    ["Eligibility check failed: EOF secret@example.com", /eligibility check failed on a network/],
-    ["not eligible secret@example.com", /not eligible/],
-    ["connection refused: secret@example.com https://secret.invalid", /network or proxy/],
-    ["unrecognized secret@example.com", /could not read usage/],
+test("reports sanitized failures and preserves the bridge sign-in; failures back off, then are retried", async t => {
+  for (const [message, expected, signIn] of [
+    ["Not logged in secret@example.com https://secret.invalid/token", /sign in again/, "expired"],
+    ["Eligibility check failed: EOF secret@example.com", /eligibility check failed on a network/, "kept"],
+    ["not eligible secret@example.com", /not eligible/, "kept"],
+    ["connection refused: secret@example.com https://secret.invalid", /network or proxy/, "kept"],
+    ["unrecognized secret@example.com", /could not read usage/, "kept"],
   ]) {
     const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: message })
-    const read = createUsageReader(() => f.executable, f.options)
+    let clock = 1_000_000
+    const read = createUsageReader(() => f.executable, { ...f.options, now: () => clock })
     const result = await read()
     assert.deepEqual(result.windows, [])
-    assert.equal(result.signIn, "kept")
+    assert.equal(result.signIn, signIn)
     assert.match(result.error, expected)
     assert.doesNotMatch(result.error, /secret|https:/)
+    const runs = (await f.logs()).length
     f.env.TEST_MODE = ""
-    assert.equal((await read()).windows.length, 1)
+    // held: agy isn't run again until the backoff ends
+    const again = await read()
+    assert.deepEqual(again.windows, [])
+    assert.equal(again.error, result.error)
+    assert.equal((await f.logs()).length, runs)
+    clock += 10 * 60 * 1000
+    const ok = await read()
+    assert.equal(ok.windows.length, 1)
+    assert.equal(ok.signIn, signIn === "expired" ? "renewed" : "kept")
     await f.assertClean()
   }
+})
+
+test("backoff doubles per failure up to six hours", async t => {
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "unrecognized" })
+  let clock = 0
+  const read = createUsageReader(() => f.executable, { ...f.options, now: () => clock })
+  const minute = 60 * 1000
+  const runs = async () => (await f.logs()).filter(l => l.args[0] !== "--version").length
+  await read()
+  for (const wait of [10, 20, 40, 80, 160, 320, 360, 360]) {
+    const before = await runs()
+    clock += (wait - 1) * minute
+    await read()
+    assert.equal(await runs(), before, `run again before ${wait} minutes`)
+    clock += minute
+    await read()
+    assert.equal(await runs(), before + 1, `not run again after ${wait} minutes`)
+  }
+  await f.assertClean()
+})
+
+test("never runs agy while it has no stored sign-in, or one that ended with nothing to renew it", async t => {
+  const f = await fixture(t)
+  const ended = { state: "present", fp: "a", canRenew: false, expiresAt: 1, expired: true }
+  for (const stored of [{ state: "missing" }, ended]) {
+    let reads = 0
+    const read = createUsageReader(() => f.executable, { ...f.options, signIn: async () => { reads++; return stored } })
+    for (let i = 0; i < 3; i++) {
+      const result = await read()
+      assert.deepEqual(result.windows, [])
+      assert.equal(result.signIn, "expired")
+      assert.match(result.error, /sign in again|Sign in again/i)
+    }
+    assert.equal(reads, 3)
+  }
+  await assert.rejects(f.logs(), { code: "ENOENT" })
+  // signing in again: agy runs, and the sign-in reads as renewed
+  let stored = { state: "missing" }
+  const read = createUsageReader(() => f.executable, { ...f.options, signIn: async () => stored })
+  assert.equal((await read()).signIn, "expired")
+  stored = { state: "present", fp: "b", canRenew: true, expiresAt: 1, expired: true }
+  const back = await read()
+  assert.equal(back.windows.length, 1)
+  assert.equal(back.signIn, "renewed")
+  assert.equal((await read()).signIn, "kept")
+  await f.assertClean()
+})
+
+test("a sign-in agy failed on isn't run again in the background until another is stored", async t => {
+  forgetStoredSignIn({ dead: true })
+  t.after(() => forgetStoredSignIn({ dead: true }))
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "You are not logged in. Please sign in." })
+  let clock = 0
+  let stored = { state: "present", fp: "old", canRenew: true, expiresAt: 1, expired: true }
+  const read = createUsageReader(() => f.executable, { ...f.options, now: () => clock, signIn: async () => stored })
+  assert.equal((await read()).signIn, "expired")
+  const runs = (await f.logs()).length
+  f.env.TEST_MODE = ""
+  clock += 7 * 60 * 60 * 1000
+  const held = await read()
+  assert.equal(held.signIn, "expired")
+  assert.equal((await f.logs()).length, runs)
+  stored = { ...stored, fp: "new", expired: false }
+  const back = await read()
+  assert.equal(back.windows.length, 1)
+  assert.equal(back.signIn, "renewed")
+  await f.assertClean()
+})
+
+test("a run that hangs with an ended access token and says nothing marks the sign-in dead", async t => {
+  forgetStoredSignIn({ dead: true })
+  t.after(() => forgetStoredSignIn({ dead: true }))
+  const f = await fixture(t, { TEST_MODE: "hang" })
+  const stored = { state: "present", fp: "hung", canRenew: true, expiresAt: 1, expired: true }
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.signIn, "expired")
+  const runs = (await f.logs()).length
+  assert.equal((await read()).signIn, "expired")
+  assert.equal((await f.logs()).length, runs)
+  // a hang with a live access token is a hang, not a sign-in
+  const g = await fixture(t, { TEST_MODE: "hang" })
+  const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
+  const other = await createUsageReader(() => g.executable, { ...g.options, timeoutMs: 3000, signIn: async () => live })()
+  assert.equal(other.signIn, "kept")
+  await f.assertClean()
+  await g.assertClean()
 })
 
 test("invalid and oversized stdout/stderr reports fail within the output budget", async t => {

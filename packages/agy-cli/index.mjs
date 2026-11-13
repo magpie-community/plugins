@@ -8,6 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
@@ -219,6 +220,9 @@ function execOnce(file, args, opts = {}) {
 }
 
 async function listAgyModels(agyPath) {
+  // a listing nobody asked for doesn't run an agy that would start its own
+  // Google sign-in (signin.mjs); the catalog it has stays
+  if (await backgroundBlocked()) return null
   const { err, stdout, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000, unrefTimer: true })
   // null, not FALLBACK_MODELS: a failed listing must not overwrite a dynamic catalog.
   if (err || timedOut || code !== 0) return null
@@ -249,6 +253,11 @@ function parseAgyModels(stdout) {
 const OFFERED_SIGNIN_WAIT_MS = 3_000
 
 async function probeSignedIn(agy) {
+  // no sign-in stored, or one agy failed with: `agy models` would start
+  // agy's own Google sign-in (on Windows, a browser no shim stops), so the
+  // caller goes on to magpie's own sign-in link instead
+  const blocked = await backgroundBlocked({ fresh: true })
+  if (blocked) return { ok: false, why: blocked }
   const probe = await execOnce(agy, ["models"], { timeoutMs: 15_000 })
   const listed = !probe.err && !probe.timedOut && probe.code === 0 &&
     probe.stdout.split("\n").some(line => /^\S+\s+\S/.test(line.trim()))
@@ -5325,6 +5334,9 @@ export const AntigravityBridgePlugin = async () => {
               callback: async (code, opts = {}) => {
                 const done = await login.finish(code, { signal: opts.signal })
                 if (done.error) return { type: "failed", error: done.error }
+                // agy stored a new sign-in: read it again, and let what
+                // failed with the old one run again
+                forgetStoredSignIn({ dead: true })
                 // A new account: what agy offered the last one, or refused
                 // before the sign-in, is asked again.
                 forgetOffered()
@@ -5366,6 +5378,14 @@ export const AntigravityBridgePlugin = async () => {
 
             const agy = findAgy()
             if (!agy) return jsonError(503, "agy CLI not found on this machine")
+            // nothing stored to sign agy in with: agy would only start its
+            // own Google sign-in, so the account is told to sign in again
+            // (from the last read; a request doesn't wait for a new one)
+            const notSignedIn = cannotSignIn(storedSignInNow())
+            if (notSignedIn) {
+              return jsonError(401, `${notSignedIn}: sign in again in magpie, or run \`agy\` in a terminal`, undefined,
+                { headers: { "X-Magpie-Sign-In": "expired" } })
+            }
             let body
             try {
               const raw = typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)
