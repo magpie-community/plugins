@@ -871,6 +871,11 @@ async function ensureShimDir() {
 const WINDOWS_NC_PREFIX = "magpie-agy-bridge-nc-"
 const WINDOWS_NC_BUILD_PREFIX = "magpie-agy-bridge-ncbuild-"
 const WINDOWS_NC_BUILD_TIMEOUT_MS = 120_000
+// Each nc dir names the runtime that built it, so a build for a newer
+// mcp-server.mjs drops the same runtime's older ones at once: each holds a
+// whole Bun runtime (~115MB), and a week of plugin updates piles them up
+// (#1097). Another runtime's dirs (another install) keep the week.
+const WINDOWS_NC_RUNTIME_FILE = "runtime"
 
 function asciiPath(value) {
   return /^[\x20-\x7e]*$/.test(String(value || ""))
@@ -889,6 +894,8 @@ async function windowsNcDir() {
   if (!windowsNcBuild(process.execPath, MCP_SERVER_PATH, "nc.exe")) return null
   const tmp = os.tmpdir()
   const source = await fs.promises.readFile(MCP_SERVER_PATH)
+  const runtimeKey = createHash("sha256").update(String(process.execPath)).update("\0")
+    .update(String(process.versions?.bun || "")).digest("hex").slice(0, 16)
   const key = createHash("sha256").update(String(process.execPath)).update("\0")
     .update(String(process.versions?.bun || "")).update("\0").update(source).digest("hex").slice(0, 16)
   const dir = path.join(tmp, WINDOWS_NC_PREFIX + key)
@@ -920,6 +927,7 @@ async function windowsNcDir() {
     const { err, code, timedOut } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
     if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) return null
     await fs.promises.mkdir(dir, { recursive: true })
+    await fs.promises.writeFile(path.join(dir, WINDOWS_NC_RUNTIME_FILE), runtimeKey).catch(() => {})
     try {
       await fs.promises.rename(path.join(build, "nc.exe"), exe)
     } catch (error) {
@@ -930,15 +938,16 @@ async function windowsNcDir() {
     fs.promises.rm(build, { recursive: true, force: true }).catch(() => {})
     if (copy && copy !== build) fs.promises.rm(copy, { recursive: true, force: true }).catch(() => {})
   }
-  sweepWindowsNcDirs(tmp, path.basename(dir)).catch(() => {})
-  if (copyBase && copyBase !== tmp) sweepWindowsNcDirs(copyBase, path.basename(dir)).catch(() => {})
+  sweepWindowsNcDirs(tmp, path.basename(dir), runtimeKey).catch(() => {})
+  if (copyBase && copyBase !== tmp) sweepWindowsNcDirs(copyBase, path.basename(dir), runtimeKey).catch(() => {})
   return dir
 }
 
-// A build no host has started for a week (an older runtime or server), or a
-// build dir a killed host left half done. An nc.exe still running is locked,
-// so its dir stays until a later sweep.
-async function sweepWindowsNcDirs(tmp, keep) {
+// A build no host has started for a week (an older runtime or server), one
+// this runtime built for an older server, or a build dir a killed host left
+// half done. An nc.exe still running is locked, so its dir stays until a
+// later sweep.
+async function sweepWindowsNcDirs(tmp, keep, runtimeKey = "") {
   const now = Date.now()
   for (const name of await fs.promises.readdir(tmp)) {
     const shared = name.startsWith(WINDOWS_NC_PREFIX) && /^[0-9a-f]{16}$/.test(name.slice(WINDOWS_NC_PREFIX.length))
@@ -946,8 +955,10 @@ async function sweepWindowsNcDirs(tmp, keep) {
     if (name === keep || (!shared && !build)) continue
     const file = path.join(tmp, name)
     try {
+      const ours = shared && runtimeKey &&
+        await fs.promises.readFile(path.join(file, WINDOWS_NC_RUNTIME_FILE), "utf8").then(v => v === runtimeKey, () => false)
       const stat = await fs.promises.stat(shared ? path.join(file, "nc.exe") : file).catch(() => fs.promises.stat(file))
-      if (now - stat.mtimeMs < (shared ? 7 * 24 : 1) * 60 * 60 * 1000) continue
+      if (!ours && now - stat.mtimeMs < (shared ? 7 * 24 : 1) * 60 * 60 * 1000) continue
       await fs.promises.rm(file, { recursive: true, force: true })
     } catch {}
   }
