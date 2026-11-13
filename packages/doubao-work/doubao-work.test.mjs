@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -339,6 +339,7 @@ function fakePage(reads, { signedIn = true, steps = {} } = {}) {
       if (expr === NEW_TASK) return steps.newTask ?? ""
       if (expr === CLOUD) return steps.cloud ?? ""
       if (expr === MENU) return steps.menu ?? { rows: [] }
+      if (expr === QUOTA) return steps.quota ?? { error: "no quota step" }
       if (expr === READ) return reads.length > 1 ? reads.shift() : reads[0]
       if (expr.includes("chat_input_action_model")) return steps.model ?? ""
       if (expr.includes("insertContent")) return 10
@@ -695,4 +696,53 @@ test("picking a model from the full list presses that row in the app", async () 
   await d.ask("x", { model: "kimi-k3.1-pro-fast" })
   expect(page.calls.some((c) => c.includes('"Kimi K3.1 Pro 高速"'))).toBe(true)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// quota/summary as the app's page answered it for a 标准套餐 account
+const SUMMARY = { status: 200, body: { data: { current_subscription: { display: { product_name: "个人订阅", short_name: "标准套餐" } }, window_limit_section: { entitlement_count: 1, usage_exhausted: false, window_limit_groups: [{ feature_group: "general", window_limits: [{ end_time: 0, item_type: 0, less_than_one_percent: false, start_time: 0, used_percent: 0, window_type: 2 }] }] } }, code: 0 } }
+
+test("the plugin tells the plan's allowance from quota/summary instead of 暂无额度数据", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-quota-"))
+  const page = fakePage([], { steps: { quota: SUMMARY } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const p = I.createPlugin({ doubao: d })
+  const u = await p.auth.usage(async () => ({}))
+  expect(u).toEqual({ plan: "标准套餐", windows: [{ name: "额度", used: 0 }] })
+  // a window with times is named by its span and says when it resets
+  const w = quotaOf({ body: { data: { window_limit_section: { window_limit_groups: [{ window_limits: [
+    { start_time: 1000, end_time: 1000 + 5 * 3600000, used_percent: 42.5 },
+    { start_time: 1000, end_time: 1000 + 7 * 86400000, used_percent: 8 }] }] } } } })
+  expect(w.windows).toEqual([{ name: "5 小时", used: 42.5, resetsAt: 1000 + 5 * 3600000 }, { name: "每周", used: 8, resetsAt: 1000 + 7 * 86400000 }])
+  // an exhausted plan reads 100%
+  expect(quotaOf({ body: { data: { window_limit_section: { usage_exhausted: true, window_limit_groups: [{ window_limits: [{ used_percent: 99 }] }] } } } }).windows[0].used).toBe(100)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a quota that can't be read says why and keeps the sign-in", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-quota-"))
+  const mk = (quota, dataDir = dir) => I.createPlugin({ doubao: new Doubao({ app: { start: async () => 1, dataDir }, openPage: async () => fakePage([], { steps: { quota } }), poll: 1 }) })
+  for (const [quota, want] of [[{ status: 401, body: null }, "过期"], [{ status: 200, body: {} }, "没有额度数据"], [{ error: "Failed to fetch" }, "Failed to fetch"]]) {
+    const u = await mk(quota).auth.usage(async () => ({}))
+    expect(u.signIn).toBe("kept")
+    expect(u.error).toContain(want)
+  }
+  // an app the plugin never started is not opened for a usage read
+  const u = await mk(SUMMARY, path.join(dir, "none")).auth.usage(async () => ({}))
+  expect(u.error).toContain("还没有登录")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a model's multiple is read from its menu row and given as rate", () => {
+  expect(rateOf(["2x 额度"])).toBe(2)
+  expect(rateOf(["×0.5"])).toBe(0.5)
+  expect(rateOf(["消耗 1.5 倍"])).toBe(1.5)
+  expect(rateOf(["256K 上下文", "V4.1"])).toBe(0)
+  expect(rateOf([])).toBe(0)
+  const table = tableFrom([{ label: "自动" }, { label: "Kimi K3.1 Pro", lines: ["x2"] }, { label: "GLM 5.3", lines: ["0.5倍额度"] }, { label: "DeepSeek V4 Pro", lines: ["推理强度"] }])
+  expect(table.auto.rate).toBeUndefined()
+  expect(table["kimi-k3.1-pro"].rate).toBe(2)
+  expect(table["glm-5.3"].rate).toBe(0.5)
+  const out = I.models(table)
+  expect(out["kimi-k3.1-pro"].rate).toBe(2)
+  expect("rate" in out["deepseek-v4-pro"]).toBe(false)
 })

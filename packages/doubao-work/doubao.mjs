@@ -55,6 +55,19 @@ export function idFor(label) {
   return id
 }
 
+// rateOf reads the multiple a menu row says it costs from the lines under
+// the model's name ("2x 额度", "×0.5", "消耗 1.5 倍"); 0 when it says none.
+// Version numbers and context sizes ("V4.1", "256K") are not multiples.
+export function rateOf(lines) {
+  for (const line of lines ?? []) {
+    const t = String(line ?? "")
+    const m = t.match(/(?:^|[^\w.])[x×]\s*(\d+(?:\.\d+)?)(?![\w.])/i) || t.match(/(\d+(?:\.\d+)?)\s*(?:[x×]|倍)(?![a-z])/i)
+    const n = m ? Number(m[1]) : 0
+    if (n > 0) return n
+  }
+  return 0
+}
+
 // tableFrom builds the model table ({ id: {label, name} }) from the rows
 // read off the menu. Nothing read means the fallback stays.
 export function tableFrom(rows) {
@@ -68,6 +81,8 @@ export function tableFrom(rows) {
     // Chinese suffix) must not become one model
     for (let n = 2; out[id]; n++) id = idFor(label) + "-" + n
     out[id] = { label, name: label }
+    const rate = Number(r?.rate) || rateOf(r?.lines)
+    if (Number.isFinite(rate) && rate > 0) out[id].rate = rate
   }
   if (!Object.keys(out).length) return { ...MODELS }
   if (out.auto) out.auto = { ...MODELS.auto }
@@ -332,7 +347,7 @@ export const MENU = js(`
   await wait(250);
   const rows = $$("[role=menuitem]", menu)
     .filter((e) => e.getAttribute("aria-haspopup") !== "menu")
-    .map((e) => ({ label: e.innerText.split("\\n")[0].trim(), upgrade: e.innerText.includes("升级") }))
+    .map((e) => { const l = e.innerText.split("\\n").map((x) => x.trim()).filter(Boolean); return { label: l[0] || "", lines: l.slice(1), upgrade: e.innerText.includes("升级") }; })
     .filter((r) => r.label);
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return { rows };
@@ -368,6 +383,44 @@ export const READ = js(`
     status: (r.final_status && r.final_status.session) || "", reason: ext.finish_reason_chat || "",
     usage: ext.context_window_usage || "", error: r.error_details ? JSON.stringify(r.error_details) : "" };
 `)
+
+// QUOTA asks the app's own page for the plan's allowance, the way the
+// page's 订阅 view does (its cookies sign the call).
+export const QUOTA = js(`
+  try {
+    const r = await fetch("https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: "{}" });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+    return { status: r.status, body: j };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+const HOUR = 3600000
+// quotaOf turns quota/summary into magpie's usage: the plan's short name
+// and one window per limit, as a percent used. A window names its span when
+// the reply gives one; without times it is just 额度.
+export function quotaOf(read) {
+  const d = read?.body?.data
+  if (!d || typeof d !== "object") return null
+  const groups = [...(d.window_limit_section?.window_limit_groups ?? []), ...(d.enterprise_window_limit_section?.window_limit_groups ?? [])]
+  const windows = []
+  for (const g of groups)
+    for (const w of g?.window_limits ?? []) {
+      const pct = Number(w?.used_percent)
+      if (!Number.isFinite(pct)) continue
+      const span = Number(w.end_time) - Number(w.start_time)
+      let name = "额度"
+      if (w.start_time > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
+      const out = { name, used: Math.max(0, Math.min(100, pct)) }
+      if (w.less_than_one_percent && pct === 0) out.display = "不到 1%"
+      if (w.end_time > 0) out.resetsAt = Number(w.end_time)
+      windows.push(out)
+    }
+  const exhausted = d.window_limit_section?.usage_exhausted === true || d.enterprise_window_limit_section?.usage_exhausted === true
+  if (exhausted) for (const w of windows) w.used = 100
+  return { plan: String(d.current_subscription?.display?.short_name || d.current_subscription?.display?.product_name || ""), windows }
+}
 
 export const usageOf = (raw) => {
   try {
@@ -486,6 +539,19 @@ export class Doubao {
     this.queue = run.catch(() => {})
     try { await run } catch { return false }
     return !!this.modelList()[model]
+  }
+
+  // quota reads the plan's allowance through the app's page. Only an app
+  // this plugin has started before is opened for it (its data folder
+  // exists), so a usage read never launches Doubao for a user who has
+  // not signed in here.
+  async quota({ signal } = {}) {
+    if (!(this.page && !this.page.closed)) {
+      if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
+      if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
+    }
+    const page = await this.connect(signal)
+    return page.eval(QUOTA)
   }
 
   async connect(signal) {

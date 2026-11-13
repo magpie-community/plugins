@@ -5,7 +5,7 @@
 // request into the input, and reads the reply as Doubao renders it. The
 // client's tools are asked for as <tool_call> text blocks and given back
 // as OpenAI tool_calls. See README.md for what that costs.
-import { Doubao, DoubaoError, MODELS, choose, usageOf } from "./doubao.mjs"
+import { Doubao, DoubaoError, MODELS, choose, quotaOf, usageOf } from "./doubao.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
 
@@ -30,6 +30,9 @@ function models(table = MODELS) {
       reasoning: true,
       attachment: false,
       modalities: { input: ["text"], output: ["text"] },
+      // the multiple of the plan's allowance a request costs, as the menu
+      // writes it next to the model (none when it says none)
+      ...(m.rate > 0 ? { rate: m.rate } : {}),
     }
   return out
 }
@@ -70,6 +73,22 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
     auth: {
       provider: ID,
       maxConcurrency: 1,
+      // the plan's allowance, read through the app's own page
+      usage: async () => {
+        const fail = (error) => ({ plan: "", windows: [], error, signIn: "kept" })
+        let read
+        try {
+          read = await doubao.quota({ signal: AbortSignal.timeout(25000) })
+        } catch (e) {
+          return fail(e?.code === "app_busy" ? BUSY(pick().app.name) : String(e?.message ?? e))
+        }
+        if (read?.error) return fail("读取豆包额度失败：" + read.error)
+        if (read?.status === 401 || read?.status === 403) return fail("豆包登录已过期，请重新登录豆包工作窗口。")
+        const u = quotaOf(read)
+        if (!u) return fail("豆包额度回复里没有额度数据（HTTP " + (read?.status ?? "?") + "）")
+        if (!u.windows.length) return fail("当前套餐没有额度限制数据")
+        return u
+      },
       methods: [
         {
           type: "oauth",
