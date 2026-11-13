@@ -18,7 +18,7 @@ magpie plugin login loomy     # 选「短信验证码登录」或「手动粘贴
 - **聊天**：`POST {modelBase}/chat/completions`，OpenAI 形态基本透传，两处适配（参照实现 `reasoning_patch` / `images.rs`）：思考档折进 low/medium/high（超档删除）、旧版 DeepSeek（deepseek-v4-flash-0731）的 data-URI 图片转 `<image_base64>` 标记（DeepSeek-V4.1-Flash 收 OpenAI `image_url`，不转，#811）；SSE；请求头必须带 `charset=utf-8`（上游对无 charset 的 body 按 GBK 解码）。
 - **画图**：`POST {modelBase}/images/generations`（doubao-seedream-5-lite / qwen-image-3.0-pro / Hy-Image-3.5-preview），body 按 magpie 写的原样透传，`Accept: application/json`（不是 SSE），回答是普通 JSON（`data[].url`、`points_consumed`）。401/403 报登录失效。`/images/edits`（改图）暂不转发：magpie 发给插件的改图是 multipart，Loomy 网关收不收这种改图没有实测过（#609）。
 - **模型**：登录前给静态表（2026-10-16 实抓 `/api/v1/models` 的 chat 模型：DeepSeek-V4.1-Flash / deepseek-v4-flash-0731 / MiniMax-M3 / Kimi-k2.6 / qwen-3.8-max / GLM-5.3-Flash / qwen3.8-flash / spark-x / mimo-v2.5 / auto），登录后以 `GET /api/v1/models` 的实时目录为准（能力位读 `capabilities`；展示名尾部倍率 `(x3.0)` 拆为 rate 字段）。
-- **余额（usage）**：`GET /api/v2/points/records?...` → 永久积分 + 每日赠送积分两个窗口；每日窗口用厂商自己的 `dailyLimitPoints`/`dailyRemainingPoints` 报「已用/剩余/上限」，厂商未带这一对时按无上限的余额展示（不编造上限）。响应缺余额字段时报 error（"未知"不冒充 0）。
+- **余额（usage）**：`GET /api/v2/points/records?...` → 永久积分 + 每日赠送积分两个窗口；每日窗口用厂商自己的 `dailyLimitPoints`/`dailyRemainingPoints` 报「已用/剩余/上限」，厂商未带这一对时按无上限的余额展示（不编造上限）。响应缺余额字段时报 error（"未知"不冒充 0）。路由读的是两者合计的「积分合计」窗口（已用 = 每日已用，上限 = 已用 + 每日剩余 + 永久积分），两个钱包作为 aside 并列展示：每日积分用完、永久积分还有时账号仍可路由；每日剩余积分在北京时间零点失效，用 `runsOutAt`/`runsOut` 报出，让路由先花掉它们。
 - **签到判定**：`first-login` 接口对"当天首登"与"重复调用"都返回成功，插件用调用前后的每日余额差判定——涨了 = `claimed`（今日首登奖励），没涨 = `done`（已领过/无每日钱包）。
 - **每日签到（checkin）**：`POST /api/v1/points/first-login`（body `{}`）——服务端按"当天是否第一次"把每日赠送刷回；按天幂等，重复调=成功。这是厂商客户端自己就会发的那个单请求（判定见上）。
 

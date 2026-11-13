@@ -74,6 +74,35 @@ const messageOf = (payload) => String(payload?.desc ?? payload?.message ?? "").t
 
 const beijingMidnight = () => Math.floor((Date.now() + 8 * 3600e3) / 86400e3) * 86400e3 + 86400e3 - 8 * 3600e3
 
+// totalOf is the account's whole credits as the window routing reads: the
+// daily wallet (spent of its limit when the vendor tells the pair, else only
+// what is left) and the permanent balance added up. Spent is what the daily
+// wallet has spent; the permanent balance has nothing spent to tell, so the
+// total is spent of spent + left, and with nothing left it is all used. It
+// renews with the daily wallet at Beijing midnight, when the daily credits
+// left are lost (runsOutAt, runsOut), so routing spends those first. null
+// with neither wallet told.
+function totalOf(dailyWallet, dailyLeft, permanent) {
+  if (dailyLeft == null && permanent == null) return null
+  const spent = dailyWallet?.amount ?? 0
+  const left = Math.max(0, dailyLeft ?? 0) + Math.max(0, permanent ?? 0)
+  const limit = spent + left
+  const w = {
+    name: "积分合计",
+    used: limit > 0 ? (100 * spent) / limit : 100,
+    display: `${left} credits left`,
+    amount: spent,
+    limit,
+    unit: "credits",
+  }
+  if (dailyWallet) {
+    w.resetsAt = beijingMidnight()
+    if (dailyWallet.span) w.span = dailyWallet.span
+    if (dailyLeft > 0) Object.assign(w, { runsOutAt: w.resetsAt, runsOut: dailyLeft })
+  }
+  return w
+}
+
 class SignedOut extends Error {}
 const expired = (message) => Object.assign(new Error(message), { signIn: "expired" })
 
@@ -519,15 +548,25 @@ export async function LoomyAuthPlugin({ client } = {}) {
             dailyLimit != null && dailyRemaining != null
               ? { name: "每日赠送积分", used: dailyLimit > 0 ? (100 * dailySpent) / dailyLimit : 0, amount: dailySpent, limit: dailyLimit, unit: "credits", resetsAt: beijingMidnight(), span: 86400 }
               : daily != null
-                ? { name: "每日赠送积分", used: 0, display: `${daily} credits`, aside: true }
+                ? { name: "每日赠送积分", used: 0, display: `${daily} credits` }
                 : null
-          const windows = [
-            ...(dailyWallet ? [dailyWallet] : []),
-            // the permanent wallet comes back as a balance alone, with no
-            // total and nothing spent, so there is no share or spent amount
-            // a cap could read: it stays an amount shown aside
-            ...(permanent != null ? [{ name: "永久积分", used: 0, display: `${permanent} credits`, aside: true }] : []),
-          ]
+          // the permanent wallet comes back as a balance alone, with no
+          // total and nothing spent, so on its own there is no share or
+          // spent amount a cap could read
+          const permanentWallet = permanent != null ? { name: "永久积分", used: 0, display: `${permanent} credits` } : null
+          const windows = [...(dailyWallet ? [dailyWallet] : []), ...(permanentWallet ? [permanentWallet] : [])]
+          // A request draws the daily credits first and the permanent ones
+          // after, so the account stops only when both are gone (gocccy0 on
+          // X): the daily wallet as the window that stops it held an account
+          // with permanent credits left, and the permanent one as text alone
+          // left routing nothing to read. So routing reads one window, the two
+          // added up (totalOf), and the two wallets are shown beside it, set
+          // aside, as WorkBuddy's plan and extra credits are.
+          const total = totalOf(dailyWallet, dailyLimit != null && dailyRemaining != null ? dailyRemaining : daily, permanent)
+          if (total) {
+            for (const w of windows) w.aside = true
+            windows.unshift(total)
+          }
           // no `signIn` on a clean read: that absence is how magpie takes an
           // expired mark back off the account (Loomy has no renewal, so a
           // "kept" here would leave a transient 401's lapse on forever)
@@ -630,4 +669,5 @@ export const _internal = {
   makeBase,
   toNum,
   beijingMidnight,
+  totalOf,
 }

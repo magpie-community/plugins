@@ -315,6 +315,66 @@ describe("usage", () => {
     expect(permanent.display).toBe("5000 credits")
   })
 
+  test("routing reads the two wallets added up, so permanent credits keep an account going after the daily ones run out (gocccy0 on X)", async () => {
+    const realFetch = globalThis.fetch
+    const reply = (data) => (input, init) => {
+      const url = typeof input === "string" ? input : String(input?.url ?? input)
+      if (String(url).includes("/api/v2/points/records"))
+        return new Response(JSON.stringify({ code: "000000", desc: "ok", data: { ...data, list: [], total: 0 } }), { status: 200 })
+      return realFetch(input, init)
+    }
+    const read = async (data) => {
+      globalThis.fetch = reply(data)
+      return (await plugin.auth.usage(getAuth)).windows
+    }
+    // routing skips a window set aside: exactly one may stop the account
+    const counted = (ws) => ws.filter((w) => !w.aside)
+    try {
+      // the daily credits all spent, 1,200 permanent left: not used up
+      let ws = await read({ balance: 1200, dailyBalance: 0, dailyLimitPoints: 5000, dailyRemainingPoints: 0 })
+      expect(counted(ws)).toHaveLength(1)
+      let total = counted(ws)[0]
+      expect(total).toMatchObject({ name: "积分合计", amount: 5000, limit: 6200, unit: "credits" })
+      expect(total.used).toBeCloseTo((100 * 5000) / 6200)
+      expect(total.used).toBeLessThan(100)
+      // the daily wallet at 100% is shown, set aside
+      expect(ws.find((w) => w.name === "每日赠送积分")).toMatchObject({ used: 100, aside: true })
+      expect(ws.find((w) => w.name === "永久积分")).toMatchObject({ display: "1200 credits", aside: true })
+      // nothing of the daily wallet left: nothing lapses at midnight
+      expect(total.runsOutAt).toBeUndefined()
+      expect(total.resetsAt).toBe(_internal.beijingMidnight())
+
+      // both gone: used up, back at Beijing midnight
+      ws = await read({ balance: 0, dailyBalance: 0, dailyLimitPoints: 5000, dailyRemainingPoints: 0 })
+      expect(counted(ws)[0]).toMatchObject({ used: 100, amount: 5000, limit: 5000 })
+
+      // 3,000 daily credits left are lost at midnight: runsOutAt / runsOut
+      ws = await read({ balance: 1200, dailyBalance: 3000, dailyLimitPoints: 5000, dailyRemainingPoints: 3000 })
+      total = counted(ws)[0]
+      expect(total).toMatchObject({ amount: 2000, limit: 6200, runsOut: 3000, span: 86400 })
+      expect(total.runsOutAt).toBe(_internal.beijingMidnight())
+
+      // without the limit pair the daily wallet is what is left: the total
+      // is a balance, used up only when both are 0
+      ws = await read({ balance: 1200, dailyBalance: 0 })
+      expect(counted(ws)).toHaveLength(1)
+      expect(counted(ws)[0]).toMatchObject({ name: "积分合计", used: 0, amount: 0, limit: 1200 })
+      ws = await read({ balance: 0, dailyBalance: 0 })
+      expect(counted(ws)[0]).toMatchObject({ used: 100, limit: 0 })
+      ws = await read({ balance: 1200, dailyBalance: 800 })
+      expect(counted(ws)[0]).toMatchObject({ used: 0, limit: 2000, runsOut: 800 })
+
+      // only the permanent balance told: it alone is the total, no reset
+      ws = await read({ balance: 1200 })
+      total = counted(ws)[0]
+      expect(total).toMatchObject({ used: 0, limit: 1200 })
+      expect(total.resetsAt).toBeUndefined()
+      expect(total.runsOutAt).toBeUndefined()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   test("a fresh daily wallet reads as nothing spent, and an empty one as all of it (plugins#889)", async () => {
     const realFetch = globalThis.fetch
     const reply = (limit, remaining) => (input, init) => {
