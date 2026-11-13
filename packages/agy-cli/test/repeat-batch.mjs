@@ -405,6 +405,7 @@ test("A16: a replay of more than 128 KiB of history stays within 112 KiB and kee
     assert.ok(prompt.includes("ANCHOR opening request"), "the anchor message is kept")
     assert.ok(prompt.includes("NEWEST assistant reply"), "the newest history is kept")
     assert.ok(prompt.includes("[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]"))
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"), "non-loop replay adds no loop handoff note")
     assert.ok(prompt.includes("bytes of this history block omitted"), "oversized history blocks keep only head and tail")
     assert.ok(prompt.includes('Never output "[tool call ...]" text'))
   })
@@ -518,7 +519,7 @@ test("A16: mid tool loop, the pinned prompt is the user's task, not a Claude Cod
       for (let index = 0; index < 16; index++) {
         messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
         messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${index}`, content: big(`step-${index}`) }] })
-        if (index === 3) messages.push({ role: "user", content: meta })
+        if (index === 1) messages.push({ role: "user", content: meta })
       }
       messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
       messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
@@ -527,9 +528,262 @@ test("A16: mid tool loop, the pinned prompt is the user's task, not a Claude Cod
       const prompt = prompts(kit).at(-1)
       assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
       assert.ok(prompt.includes("TASK START: rename parseConfig to loadConfig everywhere"), `the loop's prompt is kept past ${JSON.stringify(meta).slice(0, 40)}`)
+      const noteText = typeof meta === "string" ? meta : meta[0].text
+      assert.ok(!prompt.includes(noteText), "the note is not pinned as the loop's task")
       assert.ok(prompt.includes("step-15 tail") && prompt.includes("LAST RESULT"), "the newest steps are kept")
     })
   }
+})
+
+test("A16: mid tool loop, DeepSeek Harness runtime metadata after a tool result does not displace the user's task", async () => {
+  const metaSamples = [
+    "Time sampled while preparing turn 19, step 1: 2026-11-13T15:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: 12m 17s.",
+    "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00+08:00[Asia/Shanghai]\nElapsed since the preceding step context: 10m 2s.",
+    "Time sampled while preparing turn 1, step 1: 2026-11-13T08:00:00Z",
+    "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\ncwd: /repo\nmode: default",
+    "Current runtime context: none. Earlier runtime-context snapshots no longer apply.",
+    "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.",
+    "Repeated tool call detected:\n- tool: Read\n- consecutive_calls: 5\n- arguments: {\"path\":\"a\"}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+    "The user switched this session to plan mode.",
+    "The user switched this session back to the default mode.",
+  ]
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  for (const meta of metaSamples) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const messages = [
+        { role: "user", content: "ANCHOR opening request" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "TASK START: rename parseConfig to loadConfig everywhere" },
+      ]
+      for (let index = 0; index < 16; index++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_dsh_meta_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_dsh_meta_${index}`, content: big(`step-${index}`) }] })
+        if (index === 1) messages.push({ role: "user", content: meta })
+      }
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_dsh_meta_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_dsh_meta_last", content: "LAST RESULT" }] })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "dsh-meta" }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("TASK START: rename parseConfig to loadConfig everywhere"), `kept past ${meta.slice(0, 40)}`)
+      assert.ok(!prompt.includes(meta), "the note is not pinned as the loop's task")
+      assert.ok(prompt.includes("LAST RESULT"))
+    })
+  }
+})
+
+test("A16: mid tool loop with an opening handoff note and DeepSeek Harness companions keeps the whole user turn and marks the opening turn done", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const handoff = "[Handoff · part 5]\n" + "Morning summary line. ".repeat(700) +
+      "\n## Progress\n### In progress\n- Earlier task: draft the release summary\n\nYou were in the middle of a turn. Go on with it now from where you stopped."
+    const realPrompt = "REAL TASK: fix the race condition in the session router and summarize what changed"
+    const skillCompanion = '<skill_content name="router">\n# Router conventions\nKeep existing exports.\n</skill_content>'
+    const timeCompanion = "Time sampled while preparing turn 19, step 1: 2026-11-13T15:24:33+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: 12m 17s."
+    const messages = [
+      { role: "user", content: handoff },
+      { role: "assistant", content: "Turn 1 reply: release summary drafted." },
+      { role: "user", content: "Follow-up question from midday" },
+      { role: "assistant", content: "Turn 2 reply: midday question answered." },
+      { role: "user", content: realPrompt },
+      { role: "user", content: skillCompanion },
+      { role: "user", content: timeCompanion },
+    ]
+    const midLoopMeta = [
+      "Time sampled while preparing turn 19, step 5: 2026-11-13T15:35:00+08:00[Asia/Shanghai]\nElapsed since the preceding step context: 10m 2s.",
+      "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\ncwd: /repo",
+      "The user switched this session back to the default mode.",
+      "Repeated tool call detected:\n- tool: Read\n- consecutive_calls: 5\n- arguments: {\"path\":\"/repo/a.txt\"}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_dsh_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_dsh_${index}`, content: big(`step-${index}`) }] })
+      if (index < midLoopMeta.length) messages.push({ role: "user", content: midLoopMeta[index] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_dsh_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_dsh_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "dsh-handoff" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("[Handoff · part 5]"), "opening anchor stays present")
+    assert.ok(prompt.includes(`Human: ${realPrompt}`), "real Turn 19 user prompt stays pinned")
+    assert.ok(prompt.includes("Router conventions"), "skill companion in the same turn stays attached")
+    const between = prompt.slice(prompt.indexOf(realPrompt), prompt.indexOf("Router conventions"))
+    assert.ok(!between.includes("omitted"), "no omission note is inserted inside a kept user turn")
+    assert.ok(prompt.includes("The opening message above, and any resume note in it, belongs to an earlier turn that is already done."),
+      "omitted history disambiguates prior handoff note from active loop")
+    assert.ok(prompt.includes("LAST RESULT"), "current turn result stays intact")
+  })
+})
+
+test("A16: mid tool loop keeps a multi-message user turn whole without an omission marker inside it", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "USER PART 1: inspect group handler" },
+      { role: "user", content: "Time sampled while preparing turn 2, step 1: 2026-11-13T15:24:33Z" },
+      { role: "user", content: "USER PART 2: fix the null check and report back" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_multi_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_multi_${index}`, content: big(`multi-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_multi_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_multi_last", content: "LAST RESULT" }] })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "multi-user" }, messages })))
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: USER PART 1: inspect group handler"))
+    assert.ok(prompt.includes("Human: USER PART 2: fix the null check and report back"))
+    const between = prompt.slice(prompt.indexOf("USER PART 1"), prompt.indexOf("USER PART 2"))
+    assert.ok(between.includes("Time sampled while preparing turn 2, step 1"))
+    assert.ok(!between.includes("omitted"), "meta message between user parts leaves the run contiguous")
+  })
+})
+
+test("A16: mid tool loop keeps both the loop-opening prompt and a mid-loop user steer", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+    ]
+    for (let index = 0; index < 4; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_steer_a_${index}`, name: "Read", input: { path: `/repo/a${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_steer_a_${index}`, content: big(`sa-${index}`) }] })
+    }
+    messages.push({ role: "user", content: "MID LOOP STEER: keep backward-compatible exports" })
+    messages.push({ role: "user", content: "Time sampled while preparing turn 2, step 5: 2026-11-13T15:35:00Z" })
+    for (let index = 0; index < 14; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_steer_b_${index}`, name: "Read", input: { path: `/repo/b${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_steer_b_${index}`, content: big(`sb-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_steer_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_steer_last", content: "LAST RESULT" }] })
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "loop-steer" }, messages })))
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), "mid-loop steer is kept")
+    assert.ok(prompt.indexOf("LOOP OPENER") < prompt.indexOf("MID LOOP STEER"))
+  })
+})
+
+test("A16: turn-1 oversized tool loop does not mark its own opening handoff as already done", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      {
+        role: "user",
+        content: "[Handoff · part 5]\nCarry on this task.\n\nYou were in the middle of a turn. Go on with it now from where you stopped.",
+      },
+      { role: "user", content: "Time sampled while preparing turn 1, step 1: 2026-11-13T08:19:00Z" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_t1_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_t1_${index}`, content: big(`t1-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_t1_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_t1_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "turn1-handoff" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("[Handoff · part 5]"), "opening handoff stays pinned")
+    assert.ok(prompt.includes("LAST RESULT"), "current result stays present")
+    assert.ok(!prompt.includes("already done"), "must not tell the model turn-1 opening handoff is already done")
+  })
+})
+
+test("A16: a tool loop opened by a meta-only notification neither pins a prior turn's prompt nor marks an active Human request", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "OLD TASK 2 (already done)" },
+      { role: "assistant", content: "done 2" },
+      { role: "user", content: "<task-notification><status>completed</status><summary>worker finished</summary></task-notification>" },
+    ]
+    for (let index = 0; index < 16; index++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_meta_loop_${index}`, name: "Read", input: { path: `/repo/${index}.txt` } }] })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_meta_loop_${index}`, content: big(`ml-${index}`) }] })
+    }
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_meta_loop_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_meta_loop_last", content: "LAST RESULT" }] })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "meta-opened-loop" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(!prompt.includes("OLD TASK 2 (already done)"), "must not pin an already-completed earlier turn")
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"),
+      "must not emit opening-done note when no active-loop user task is pinned")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+test("A16: when a tight budget cannot fit the loop-opening prompt, the opening-done note is omitted", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(8 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const hugeOpener = "HUGE OPENER " + "x".repeat(8 * 1024)
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: hugeOpener },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_tight_0", name: "Read", input: { path: "/repo/0.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_tight_0", content: "step 0 output" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_tight_last", name: "Read", input: { path: "/repo/last.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_tight_last", content: "y".repeat(4 * 1024) + " LAST RESULT" }] },
+    ]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "tight-opener" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 8 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("ANCHOR opening request"), "anchor fits tight room")
+    assert.ok(!prompt.includes("HUGE OPENER"), "oversized opener did not fit")
+    assert.ok(!prompt.includes("belongs to an earlier turn that is already done"),
+      "must not emit opening-done note when opener did not fit")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
+})
+
+test("A16: under a tight budget, a mid-loop user steer beats an opening meta companion", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(8 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const bigReminder = "<system-reminder>" + "r".repeat(4200) + "</system-reminder>"
+    const steer = "MID LOOP STEER: keep backward-compatible exports " + "s".repeat(900)
+    const messages = [
+      { role: "user", content: "ANCHOR opening request" },
+      { role: "assistant", content: "ANCHOR reply" },
+      { role: "user", content: "LOOP OPENER: refactor group router" },
+      { role: "user", content: bigReminder },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_ts_0", name: "Read", input: { path: "/repo/0.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ts_0", content: "z".repeat(4000) }] },
+      { role: "user", content: steer },
+      { role: "user", content: "Time sampled while preparing turn 2, step 2: 2026-11-13T15:35:00Z" },
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_ts_last", name: "Read", input: { path: "/repo/last.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ts_last", content: "y".repeat(3000) + " LAST RESULT" }] },
+    ]
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "tight-steer" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 8 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("Human: LOOP OPENER: refactor group router"), "loop opener is kept")
+    assert.ok(prompt.includes("Human: MID LOOP STEER: keep backward-compatible exports"), "mid-loop steer beats opening reminder")
+    assert.ok(!prompt.includes(bigReminder), "oversized opening reminder gave way to fit the steer")
+    assert.ok(prompt.includes("LAST RESULT"))
+  })
 })
 
 // ----------------------------------------------- agy's error marker (#1052)
