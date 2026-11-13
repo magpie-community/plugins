@@ -12,7 +12,7 @@
 // Design picks its model in its own UI, so this agent has no `model` key:
 // the row is a switch, and connect is called without a model.
 //
-if (typeof magpie === "undefined") {
+if (typeof magpie === "undefined" || !magpie.platform) {
   throw new Error("Update Magpie to a build exposing magpie.platform before installing MiniMax Design 0.2.")
 }
 const platform = magpie.platform
@@ -36,7 +36,7 @@ export const agent = {
     mcpFormat: "opencode",
   },
   notice:
-    "Quit MiniMax Design before changing models or MCP servers, then restart it（修改模型或 MCP 前退出，修改后重启）。Models without valid context/output limits are omitted（未提供有效上下文及输出上限的模型不导入）。",
+    "Quit MiniMax Design before changing models or MCP servers, then restart it（修改模型或 MCP 前退出，修改后重启）。Models with invalid IDs or context/output limits are omitted（ID 或上下文及输出上限无效的模型不导入）。",
 }
 
 // Design's model menu knows these reasoning levels; anything else magpie
@@ -45,7 +45,8 @@ const DESIGN_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
 // magpie model fields -> Design's custom-model entry fields
 function toDesignModel(m) {
-  if (!m || !m.id) return null
+  if (!m || typeof m.id !== "string" || !m.id ||
+      m.id.startsWith("__hub_reasoning__") || /[\s\u0000-\u001f]/.test(m.id)) return null
   if (!Number.isSafeInteger(m.context) || m.context <= 0 ||
       !Number.isSafeInteger(m.output) || m.output <= 0 || m.output > m.context) return null
   const levels = (m.efforts || []).filter((l) => DESIGN_LEVELS.includes(l))
@@ -59,11 +60,14 @@ function toDesignModel(m) {
 
 export function connect({ gateway, models }) {
   const list = []
+  const seen = new Set()
   for (const m of models || []) {
     const d = toDesignModel(m)
-    if (d) list.push(d)
+    if (!d || seen.has(d.id)) continue
+    seen.add(d.id)
+    list.push(d)
   }
-  if (!list.length) throw new Error("MiniMax Design needs a model with valid context and output limits.")
+  if (!list.length) throw new Error("MiniMax Design needs a model with a valid ID and valid context and output limits.")
   const entries = {}
   for (let offset = 0; offset < list.length; offset += 50) {
     const suffix = offset === 0 ? "" : `-${offset / 50 + 1}`

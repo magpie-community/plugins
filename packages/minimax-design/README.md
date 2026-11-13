@@ -60,7 +60,9 @@ attributes requests to this agent in Usage.
 Models map `id`, `context`, `output` and `efforts` to `id`, `contextWindow`,
 `maxOutputTokens` and `reasoningLevels`. The reasoning array is always
 present, filtered to `low`, `medium`, `high`, `xhigh`, `max`. Models without
-positive integer context/output limits are omitted; if none remain,
+positive integer context/output limits or valid model IDs are omitted.
+IDs containing whitespace/control characters or Design's reserved reasoning
+prefix are rejected; duplicate IDs keep the first eligible model. If none remain,
 connecting fails. Set accurate limits in Magpie when a source lists none.
 
 Design 4.0 permits 50 models per provider. Larger catalogs are split into

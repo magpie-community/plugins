@@ -44,6 +44,32 @@ test("unsupported platforms fail before exporting writable paths", () => {
 
 test("an older Magpie fails explicitly instead of choosing Windows on macOS", () => {
   assert.throws(() => vm.runInNewContext(source.replaceAll("export ", "")), /Update Magpie/)
+  assert.throws(() => load(undefined), /Update Magpie/)
+})
+
+test("invalid IDs are omitted and duplicate IDs do not consume provider slots", () => {
+  const valid = Array.from({ length: 51 }, (_, index) => ({
+    id: `vendor/model-${index}`, context: 128000, output: 16000, efforts: ["high", "high", "none"],
+  }))
+  const invalid = ["", "vendor/bad id", "vendor/\u0000bad", "__hub_reasoning__reserved", 123]
+    .map((id) => ({ id, context: 128000, output: 16000 }))
+  const context = vm.createContext({
+    magpie: { platform: "darwin" },
+    input: {
+      gateway: { v1: "http://localhost/v1", key: "test-key" },
+      models: [...invalid, ...valid, ...valid],
+    },
+  })
+  const result = JSON.parse(vm.runInContext(
+    source.replaceAll("export ", "") + "\nJSON.stringify(connect(input))", context,
+  ))
+  const entries = Object.values(result)
+  assert.deepEqual(entries.map((entry) => entry.models.length), [50, 1])
+  assert.deepEqual(entries.flatMap((entry) => entry.models.map((model) => model.id)),
+    valid.map((model) => model.id))
+  assert.deepEqual(entries[0].models[0].reasoningLevels, ["high"])
+  context.input.models = invalid
+  assert.throws(() => vm.runInContext("connect(input)", context), /valid ID/)
 })
 
 test("models always contain valid limits and an array of supported reasoning levels", () => {
