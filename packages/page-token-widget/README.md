@@ -95,6 +95,16 @@ forwarding of Tailscale (`tailscale serve --tcp`), so the phone reaches it on
 the 100.x address. A forwarding of another service on that port is never
 touched.
 
+The forwarding points at the phone side of the service (by default one port
+above the service port, so 3499), while the console stays on
+127.0.0.1:3498. A request that comes in through the tailnet lands on that
+phone port and is never taken for a request of this computer, so the phone
+cannot read the console or the token.
+
+`tailscale serve --bg --tcp=3498` is a standing setting of Tailscale: it stays
+there when the plugin is removed or crashes, and only a clean uninstall takes
+it away. `tailscale serve status` shows what is published right now.
+
 ## Uninstall
 
 ```sh
@@ -110,9 +120,11 @@ The forwarding of the plugin is taken away with it.
 - The token is random, read only and stays in the directory of Magpie. Only the
   plugin page on this computer and a phone that holds the pairing code can get
   it.
-- The service listens on this computer only (127.0.0.1); the phone comes in
-  through the forwarding of Tailscale. There is no public entrance and no
-  firewall rule is needed.
+- The console listens on this computer only (127.0.0.1). The phone comes in
+  through the forwarding of Tailscale, which lands on the phone side of the
+  service; every console route answers 403 there, so a device in the tailnet
+  cannot read the console or the token whatever it puts in the Host header.
+  There is no public entrance and no firewall rule is needed.
 
 ## How it differs from the pages that are listed
 
