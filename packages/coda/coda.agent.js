@@ -1,0 +1,155 @@
+// Runs in Magpie's embedded moejs sandbox: no Node/Bun APIs, network or external imports.
+export const agent = {
+  id: "coda",
+  name: "Coda Bot",
+  icon: "data:image/png;base64,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",
+  dir: "~/.coda",
+  config: "~/.coda/magpie.json",
+  format: "json",
+  model: "defaultModel",
+  // Coda Bot sends "CodaBot/<version>"; magpie lowercases the product name before matching.
+  ua: ["codabot"],
+  notice:
+    "New turns in Coda Bot use the selected model immediately; individual Coda bots can pick any Magpie model and set their own reasoning effort. Disconnect before uninstalling. Coda Bot 新一轮对话立即生效，各分身可单独选用任意 Magpie 模型与思考强度；卸载插件前请先断开连接。",
+};
+
+const VALID_EFFORTS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+
+const MAX_MODEL_ID_LENGTH = 240;
+
+function isValidModelId(id) {
+  return (
+    typeof id === "string" &&
+    id.length > 0 &&
+    id.length <= MAX_MODEL_ID_LENGTH &&
+    !/[,\s]/.test(id)
+  );
+}
+
+// Coda Bot ignores ~/.coda/magpie.json unless the gateway is on this computer (the same three
+// hosts) and baseUrl is url + "/v1"; connect fails on anything else instead of writing a file
+// Coda Bot would never read.
+const LOOPBACK_URL = /^(https?):\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?(\/[^\s?#@]*)?$/i;
+
+function loopbackUrl(value, label) {
+  const trimmed = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+  const match = LOOPBACK_URL.exec(trimmed);
+  if (!match) {
+    throw new Error(
+      `Coda Bot only reads a Magpie gateway on this computer (127.0.0.1, localhost or [::1]); gateway.${label} is ${JSON.stringify(value ?? null)}`,
+    );
+  }
+  return { url: trimmed, origin: `${match[1]}://${match[2]}${match[3] ?? ""}`.toLowerCase(), path: match[4] ?? "" };
+}
+
+function loopbackGateway(gateway) {
+  const root = loopbackUrl(gateway?.url, "url");
+  const v1 = loopbackUrl(gateway?.v1, "v1");
+  if (v1.origin !== root.origin || v1.path !== `${root.path}/v1`) {
+    throw new Error(`Coda Bot expects gateway.v1 to be gateway.url + "/v1"; got ${JSON.stringify(gateway.v1)} for ${JSON.stringify(gateway.url)}`);
+  }
+  return { url: root.url, baseUrl: v1.url };
+}
+
+function normalizeEfforts(efforts) {
+  if (!Array.isArray(efforts)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of efforts) {
+    if (typeof raw !== "string") continue;
+    const mapped = raw.trim().toLowerCase() === "none" ? "off" : raw.trim().toLowerCase();
+    if (VALID_EFFORTS.has(mapped) && !seen.has(mapped)) {
+      seen.add(mapped);
+      out.push(mapped);
+    }
+  }
+  return out;
+}
+
+function normalizeNativeEndpoints(endpoints) {
+  if (!Array.isArray(endpoints)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of endpoints) {
+    if (typeof raw !== "string") continue;
+    const ep = raw.trim();
+    if (ep.startsWith("/") && !/\s/.test(ep) && !seen.has(ep)) {
+      seen.add(ep);
+      out.push(ep);
+    }
+  }
+  return out;
+}
+
+function toCodaModel(m) {
+  const id = typeof m?.id === "string" ? m.id.trim() : "";
+  if (!isValidModelId(id)) return null;
+  const name = typeof m?.name === "string" && m.name.trim() !== "" ? m.name.trim() : id;
+  const entry = {
+    id,
+    name,
+    vision: Boolean(m?.images),
+    efforts: normalizeEfforts(m?.efforts),
+    nativeEndpoints: normalizeNativeEndpoints(m?.native_endpoints),
+  };
+  const context = Number.isSafeInteger(m?.context) && m.context > 0 ? m.context : 0;
+  const output = Number.isSafeInteger(m?.output) && m.output > 0 ? m.output : 0;
+  if (context > 0) entry.contextWindow = context;
+  if (output > 0) entry.maxOutputTokens = context > 0 ? Math.min(output, context) : output;
+  return entry;
+}
+
+export function connect({ gateway, model, models } = {}) {
+  const { url, baseUrl } = loopbackGateway(gateway);
+  const apiKey = typeof gateway?.key === "string" ? gateway.key.trim() : "";
+  if (!apiKey) {
+    throw new Error("Magpie gateway.key is unavailable");
+  }
+  if (model !== undefined && model !== null) {
+    const selectedId = typeof model?.id === "string" ? model.id.trim() : "";
+    if (selectedId && !isValidModelId(selectedId)) {
+      throw new Error(`Selected model id ${JSON.stringify(selectedId)} is invalid for Coda Bot`);
+    }
+  }
+
+  const catalog = [];
+  const seenIds = new Set();
+  const list = Array.isArray(models) ? models : [];
+  for (const item of list) {
+    const converted = toCodaModel(item);
+    if (converted && !seenIds.has(converted.id)) {
+      seenIds.add(converted.id);
+      catalog.push(converted);
+    }
+  }
+
+  const selectedEntry = model ? toCodaModel(model) : null;
+  if (selectedEntry && !seenIds.has(selectedEntry.id)) {
+    seenIds.add(selectedEntry.id);
+    catalog.unshift(selectedEntry);
+  }
+
+  // Keep url, baseUrl and apiKey as top-level string keys so Magpie's pluggedStash
+  // records st.Mark = "apiKey" and st.Wrote drift checks, while Disconnect deletes
+  // every top-level key cleanly without leaving empty nested objects behind.
+  return {
+    url,
+    baseUrl,
+    apiKey,
+    gateway: {
+      version: 1,
+      url,
+      baseUrl,
+      models: catalog,
+    },
+  };
+}
