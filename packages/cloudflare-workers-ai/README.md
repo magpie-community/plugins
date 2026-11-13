@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.4-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.6-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 A provider plugin for [OpenCode](https://opencode.ai) 1.x and
@@ -27,7 +27,9 @@ AI Gateway credits (flagged below).
 
 The quota card shows the daily free allowance as a count and a Used / Left
 percentage, resetting at 00:00 UTC. Paid or unconfirmed plans keep this window
-informational; only a confirmed Free plan stops routing when it is spent.
+informational; only a confirmed Free plan stops routing when it is spent. If the
+token's account answer names no plan, set `plan` to `free` or `paid` in the
+plugin options to say which it is.
 
 ## Install in magpie
 
@@ -108,6 +110,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | `apiKey` | — | default token (the sign-in's key wins) |
 | `baseTemplate` | see below | template target that the Account ID is interpolated into |
 | `discoveryTTLMs` | `3600000` | catalog refresh interval |
+| `plan` | — | `free` or `paid`, when Cloudflare's answer names no plan: `free` lets the daily Neurons window count for routing, `paid` keeps it informational |
 
 **`baseTemplate` default** (insertion target, Account ID interpolated per account):
 
@@ -126,14 +129,14 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 | 400 `No route for that URI` | if this survives a re-`plugin add`, it's a stale plugin version — the current proxy normalizes template URLs; file an issue |
 | `Model … absent from the current catalog` | the model id isn't in models.dev's cloudflare-workers-ai section; pick a listed model |
 | 400 on a (Paid) model | your plan is Free and the model needs Workers Paid or AI Gateway credits |
-| Quota row shows the fallback plan text | the token lacks `Account Settings → Read`; the escalation is purely cosmetic — the Neurons window is still shown |
+| Quota row shows the fallback plan text, or routing calls the key's remaining allowance unknown | Cloudflare's account answer names no plan (or the token lacks `Account Settings → Read`); the Neurons window still shows. Set the `plan` option to `free` (or `paid`) so routing counts it |
 | Quota row shows 10,000 / 10,000 remaining but requests fail with `used up your daily free allocation` | the token lacks `Account Analytics → Read`, so the used amount is unknown and magpie renders the allowance as untouched — grant that scope and refresh |
 
 ## Development
 
 ```sh
 node --check src/index.mjs       # parse guard (the upstream bug that started this fork)
-node --test                     # 23 tests, no network needed
+node --test                     # 26 tests, no network needed
 sh scripts/sandbox.sh login      # magpie 0.1.1326 in a throwaway HOME
 sh scripts/sandbox.sh test       # provider test inside that sandbox
 sh scripts/sandbox.sh json       # plugin --json inside that sandbox
