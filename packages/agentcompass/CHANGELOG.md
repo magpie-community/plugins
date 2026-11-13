@@ -21,7 +21,7 @@ The engine is AgentCompass v0.6.0 (pinned at `974eb49`, the `v0.6.0` tag), porte
 
 Not ported, because Magpie only routes: launching workers, harness order, and the launch side of fast mode.
 
-The comparison with AgentCompass's `allocator.plan` and the Linux sandbox run stay in the source repository, [akiiwa-games/magpie-agentcompass-router](https://github.com/akiiwa-games/magpie-agentcompass-router); this package's tests run on their own. The sandbox script was rewritten for this engine and ran on real Magpie 0.1.4022 (2026-11-13, no real sign-in): scenarios 1–10, 12, 14 and 15 passed; scenario 13, against real upstream accounts, was not run. The record is `docs/linux-sandbox-e2e-report-0.1.4022.json` there.
+The comparison with AgentCompass's `allocator.plan` and the Linux sandbox run stay in the source repository, [akiiwa-games/magpie-agentcompass-router](https://github.com/akiiwa-games/magpie-agentcompass-router); this package's tests run on their own. The sandbox script was rewritten for this engine and ran on real Magpie 0.1.4026 (2026-11-13) with real Codex and Claude sign-ins: scenarios 1–10 and 12–15 passed, scenario 13 against both real upstreams included (no `profile` on the wire, the routes the engine gives, a real classifier, one valid account among invalid peers, every account unavailable). The record is `docs/linux-sandbox-e2e-report-0.1.4026.json` there.
 
 ## 0.1.6 - 2026-11-08
 
