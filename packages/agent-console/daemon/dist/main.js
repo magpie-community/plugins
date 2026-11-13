@@ -181,6 +181,11 @@ var init_i18n = __esm({
         "err.projectMissing": "\u9879\u76EE\u4E0D\u5B58\u5728",
         "err.threadMissing": "\u5BF9\u8BDD\u4E0D\u5B58\u5728",
         "err.dirMissing": "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939",
+        "err.noIde": "\u6CA1\u6709\u627E\u5230\u53EF\u7528\u7684 IDE\uFF08\u5DF2\u5C1D\u8BD5 Cursor\u3001VS Code\u3001Windsurf\u3001Zed\u3001IntelliJ IDEA\u3001WebStorm\u3001Sublime Text\uFF09",
+        "err.ideFailed": "{ide} \u542F\u52A8\u5931\u8D25\uFF1A{detail}",
+        "err.pathOutside": "\u8DEF\u5F84\u4E0D\u5728\u9879\u76EE\u76EE\u5F55\u5185",
+        "err.targetMissing": "\u6587\u4EF6\u6216\u6587\u4EF6\u5939\u4E0D\u5B58\u5728",
+        "err.revealFailed": "\u65E0\u6CD5\u6253\u5F00\u6587\u4EF6\u7BA1\u7406\u5668\uFF1A{detail}",
         "err.projectDirGone": "\u9879\u76EE\u76EE\u5F55\u5DF2\u4E0D\u5B58\u5728",
         "err.terminalMissing": "\u7EC8\u7AEF\u4E0D\u5B58\u5728",
         "err.noManager": "\u4F1A\u8BDD\u7BA1\u7406\u5668\u672A\u542F\u52A8",
@@ -294,6 +299,11 @@ var init_i18n = __esm({
         "err.projectMissing": "Project not found",
         "err.threadMissing": "Conversation not found",
         "err.dirMissing": "The folder does not exist or is not a folder",
+        "err.noIde": "No IDE found (tried Cursor, VS Code, Windsurf, Zed, IntelliJ IDEA, WebStorm, Sublime Text)",
+        "err.ideFailed": "{ide} failed to start: {detail}",
+        "err.pathOutside": "The path is outside the project folder",
+        "err.targetMissing": "The file or folder does not exist",
+        "err.revealFailed": "Couldn't open the file manager: {detail}",
         "err.projectDirGone": "The project folder no longer exists",
         "err.terminalMissing": "Terminal not found",
         "err.noManager": "The session manager is not running",
@@ -1321,8 +1331,8 @@ function extraBinDirs({ platform = process.platform, env = process.env, home = h
   return dirs;
 }
 function searchDirs({ platform = process.platform, env = process.env, home = homedir2(), extra = true } = {}) {
-  const sep5 = platform === "win32" ? ";" : ":";
-  const raw = String(envGet(env, "PATH") ?? "").split(sep5).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
+  const sep6 = platform === "win32" ? ";" : ":";
+  const raw = String(envGet(env, "PATH") ?? "").split(sep6).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean);
   const all = extra ? [...raw, ...extraBinDirs({ platform, env, home })] : raw;
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -3011,8 +3021,8 @@ function parseLine(line) {
   }
   return { cwd, userText };
 }
-async function* linesOf(path4) {
-  const text = await readFile5(path4, "utf8").catch(() => "");
+async function* linesOf(path5) {
+  const text = await readFile5(path5, "utf8").catch(() => "");
   for (const line of text.split("\n")) {
     if (line.trim()) yield line;
   }
@@ -3024,11 +3034,11 @@ async function listClaudeHistory(cwd) {
     const dirPath = join6(CLAUDE_ROOT, d);
     const files = (await readdir(dirPath).catch(() => [])).filter((f) => f.endsWith(".jsonl"));
     for (const f of files) {
-      const path4 = join6(dirPath, f);
+      const path5 = join6(dirPath, f);
       let match = false;
       let title = "";
       let count = 0;
-      for await (const line of linesOf(path4)) {
+      for await (const line of linesOf(path5)) {
         const p = parseLine(line);
         if (!p) continue;
         if (!match) {
@@ -3040,7 +3050,7 @@ async function listClaudeHistory(cwd) {
         if (p.userText) count++;
       }
       if (!match) continue;
-      const s = await stat4(path4).catch(() => null);
+      const s = await stat4(path5).catch(() => null);
       out.push({
         sessionId: f.replace(/\.jsonl$/, ""),
         title: title || tr("history.untitled"),
@@ -3055,11 +3065,11 @@ async function listClaudeHistory(cwd) {
 async function readClaudeHistory(sessionId, cwd) {
   const dirs = await readdir(CLAUDE_ROOT).catch(() => []);
   for (const d of dirs) {
-    const path4 = join6(CLAUDE_ROOT, d, `${sessionId}.jsonl`);
-    if (!existsSync7(path4)) continue;
+    const path5 = join6(CLAUDE_ROOT, d, `${sessionId}.jsonl`);
+    if (!existsSync7(path5)) continue;
     const msgs = [];
     let matched = false;
-    for await (const line of linesOf(path4)) {
+    for await (const line of linesOf(path5)) {
       const p = parseLine(line);
       if (!matched) {
         if (p?.cwd && samePath(p.cwd, cwd)) matched = true;
@@ -3217,11 +3227,11 @@ async function* walk(dir, depth = 0) {
 }
 async function listCodexHistory(cwd) {
   const out = [];
-  for await (const path4 of walk(CODEX_ROOT)) {
-    const m = /rollout-.*-([0-9a-f-]{36})\.jsonl$/i.exec(path4);
+  for await (const path5 of walk(CODEX_ROOT)) {
+    const m = /rollout-.*-([0-9a-f-]{36})\.jsonl$/i.exec(path5);
     const sessionId = m?.[1];
     if (!sessionId) continue;
-    const text = await readFile6(path4, "utf8").catch(() => "");
+    const text = await readFile6(path5, "utf8").catch(() => "");
     let match = false;
     let title = "";
     let count = 0;
@@ -3252,7 +3262,7 @@ async function listCodexHistory(cwd) {
       }
     }
     if (!match) continue;
-    const s = await stat5(path4).catch(() => null);
+    const s = await stat5(path5).catch(() => null);
     out.push({ sessionId, title: title || tr("history.untitled"), updatedAt: s ? Math.round(s.mtimeMs) : 0, messageCount: count });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -3812,11 +3822,11 @@ async function readPromptFiles(dir) {
   }
   for (const f of names) {
     if (!f.endsWith(".md")) continue;
-    const path4 = join8(dir, f);
+    const path5 = join8(dir, f);
     try {
-      const st = await stat6(path4);
+      const st = await stat6(path5);
       if (!st.isFile()) continue;
-      const raw = await readFile7(path4, "utf8");
+      const raw = await readFile7(path5, "utf8");
       const { meta, body } = parseFrontMatter(raw);
       const name = basename3(f, ".md");
       out.push({
@@ -5808,9 +5818,9 @@ import { join as join11 } from "node:path";
 function magpieTokenFor(agentId) {
   return `${MAGPIE_GATEWAY_TOKEN}-${agentId}`;
 }
-async function readJson(path4) {
+async function readJson(path5) {
   try {
-    return JSON.parse(await readFile11(path4, "utf8"));
+    return JSON.parse(await readFile11(path5, "utf8"));
   } catch {
     return null;
   }
@@ -6522,6 +6532,203 @@ var init_openExternal = __esm({
   }
 });
 
+// daemon/src/util/osOpen.ts
+import { spawn as spawn4 } from "node:child_process";
+import { existsSync as existsSync9, readdirSync as readdirSync2 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import path4 from "node:path";
+function envGet3(env, key) {
+  const k = Object.keys(env).find((x) => x.toLowerCase() === key.toLowerCase());
+  return k ? env[k] : void 0;
+}
+function exeNearShim(shim, exes, exists) {
+  const P = path4.win32;
+  let dir = P.dirname(shim);
+  for (let up = 0; up < 4; up++) {
+    for (const exe of exes) {
+      const f = P.join(dir, exe);
+      if (exists(f)) return f;
+    }
+    const parent = P.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+function ideLaunchFor(spec, dir, deps = {}) {
+  const platform = deps.platform ?? process.platform;
+  const env = deps.env ?? process.env;
+  const exists = deps.exists ?? existsSync9;
+  const find = deps.find ?? ((n) => findOnPath(n, { platform, env }));
+  const win = platform === "win32";
+  for (const bin of spec.bins) {
+    const hit = find(bin)[0];
+    if (!hit) continue;
+    if (!win) return { cmd: hit, args: [dir] };
+    const ext = path4.win32.extname(hit).toLowerCase();
+    if (ext === ".exe" || ext === ".com") return { cmd: hit, args: [dir] };
+    if (ext === ".cmd" || ext === ".bat") {
+      const exe = exeNearShim(hit, spec.winExe, exists);
+      if (exe) return { cmd: exe, args: [dir] };
+      const r = {
+        ok: true,
+        cmd: deps.comspec ?? envGet3(env, "ComSpec") ?? "cmd.exe",
+        prefixArgs: [],
+        display: hit,
+        via: "cmd-shim",
+        shim: hit
+      };
+      return { ...argvFor(r, [dir]), hide: true };
+    }
+  }
+  if (win) {
+    for (const d of spec.winDirs) {
+      const base = envGet3(env, d.base);
+      if (!base) continue;
+      const f = path4.win32.join(base, d.rel);
+      if (exists(f)) return { cmd: f, args: [dir] };
+    }
+    if (spec.winJetBrains) {
+      const list = deps.list ?? ((p) => {
+        try {
+          return readdirSync2(p);
+        } catch {
+          return [];
+        }
+      });
+      for (const key of ["ProgramFiles", "ProgramFiles(x86)"]) {
+        const base = envGet3(env, key);
+        if (!base) continue;
+        const jb = path4.win32.join(base, "JetBrains");
+        const names = list(jb).filter((n) => n.startsWith(spec.winJetBrains.prefix)).sort().reverse();
+        for (const n of names) {
+          const f = path4.win32.join(jb, n, spec.winJetBrains.exe);
+          if (exists(f)) return { cmd: f, args: [dir] };
+        }
+      }
+    }
+  }
+  if (platform === "darwin") {
+    const home = deps.home ?? homedir9();
+    for (const app of spec.macApps) {
+      for (const root of ["/Applications", path4.posix.join(home, "Applications")]) {
+        const bundle = path4.posix.join(root, `${app}.app`);
+        if (exists(bundle)) return { cmd: "open", args: ["-a", bundle, dir] };
+      }
+    }
+  }
+  return null;
+}
+function detectIde(dir, deps = {}) {
+  for (const spec of IDES) {
+    const launch = ideLaunchFor(spec, dir, deps);
+    if (launch) return { ide: spec.name, launch };
+  }
+  return null;
+}
+function revealLaunch(platform, target, isDir2) {
+  if (platform === "win32") {
+    const p = path4.win32.normalize(target);
+    return isDir2 ? { cmd: "explorer.exe", args: [p] } : { cmd: "explorer.exe", args: [`/select,"${p}"`], windowsVerbatimArguments: true };
+  }
+  if (platform === "darwin") return isDir2 ? { cmd: "open", args: [target] } : { cmd: "open", args: ["-R", target] };
+  return { cmd: "xdg-open", args: [isDir2 ? target : path4.posix.dirname(target)] };
+}
+function launchDetached(l, opts = {}) {
+  const run = opts.spawn ?? spawn4;
+  return new Promise((resolve4) => {
+    let settled = false;
+    const done = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve4(v);
+      }
+    };
+    let child;
+    try {
+      child = run(l.cmd, l.args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: !!l.hide,
+        shell: false,
+        ...l.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}
+      });
+    } catch (e) {
+      done({ ok: false, reason: String(e?.message ?? e) });
+      return;
+    }
+    child.once("error", (e) => done({ ok: false, reason: e.message }));
+    child.once("exit", (code) => {
+      if (opts.ignoreExit || code === 0) done({ ok: true });
+      else done({ ok: false, reason: `exit ${code}` });
+    });
+    child.once("spawn", () => {
+      setTimeout(() => done({ ok: true }), opts.graceMs ?? 1500).unref?.();
+    });
+    child.unref();
+  });
+}
+var IDES;
+var init_osOpen = __esm({
+  "daemon/src/util/osOpen.ts"() {
+    init_pathscan();
+    init_bin();
+    IDES = [
+      {
+        name: "Cursor",
+        bins: ["cursor"],
+        winExe: ["Cursor.exe"],
+        winDirs: [{ base: "LOCALAPPDATA", rel: "Programs\\cursor\\Cursor.exe" }, { base: "ProgramFiles", rel: "cursor\\Cursor.exe" }],
+        macApps: ["Cursor"]
+      },
+      {
+        name: "VS Code",
+        bins: ["code"],
+        winExe: ["Code.exe"],
+        winDirs: [{ base: "LOCALAPPDATA", rel: "Programs\\Microsoft VS Code\\Code.exe" }, { base: "ProgramFiles", rel: "Microsoft VS Code\\Code.exe" }],
+        macApps: ["Visual Studio Code"]
+      },
+      {
+        name: "Windsurf",
+        bins: ["windsurf"],
+        winExe: ["Windsurf.exe"],
+        winDirs: [{ base: "LOCALAPPDATA", rel: "Programs\\Windsurf\\Windsurf.exe" }, { base: "ProgramFiles", rel: "Windsurf\\Windsurf.exe" }],
+        macApps: ["Windsurf"]
+      },
+      {
+        name: "Zed",
+        bins: ["zed", "zeditor"],
+        winExe: ["Zed.exe", "zed.exe"],
+        winDirs: [{ base: "LOCALAPPDATA", rel: "Programs\\Zed\\Zed.exe" }, { base: "ProgramFiles", rel: "Zed\\Zed.exe" }],
+        macApps: ["Zed"]
+      },
+      {
+        name: "IntelliJ IDEA",
+        bins: ["idea"],
+        winExe: ["idea64.exe"],
+        winDirs: [],
+        winJetBrains: { prefix: "IntelliJ IDEA", exe: "bin\\idea64.exe" },
+        macApps: ["IntelliJ IDEA", "IntelliJ IDEA Ultimate", "IntelliJ IDEA CE"]
+      },
+      {
+        name: "WebStorm",
+        bins: ["webstorm"],
+        winExe: ["webstorm64.exe"],
+        winDirs: [],
+        winJetBrains: { prefix: "WebStorm", exe: "bin\\webstorm64.exe" },
+        macApps: ["WebStorm"]
+      },
+      {
+        name: "Sublime Text",
+        bins: ["subl"],
+        winExe: ["sublime_text.exe", "subl.exe"],
+        winDirs: [{ base: "ProgramFiles", rel: "Sublime Text\\subl.exe" }, { base: "ProgramFiles", rel: "Sublime Text 3\\subl.exe" }],
+        macApps: ["Sublime Text"]
+      }
+    ];
+  }
+});
+
 // daemon/src/preview/inject.ts
 function injectScriptTag(html) {
   const tag = `<script src="${PREVIEW_SCRIPT_PATH}"></script>`;
@@ -6932,8 +7139,8 @@ var init_proxy = __esm({
           return;
         }
         l.lastUsed = this.now();
-        const path4 = (req.url ?? "/").split("?")[0];
-        if (path4 === PREVIEW_PING_PATH) {
+        const path5 = (req.url ?? "/").split("?")[0];
+        if (path5 === PREVIEW_PING_PATH) {
           const body = g.role === "canary" ? l.canaryNonce : l.nonce;
           res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "access-control-allow-origin": "null", "referrer-policy": "no-referrer" });
           res.end(req.method === "HEAD" ? void 0 : body);
@@ -6948,7 +7155,7 @@ var init_proxy = __esm({
           this.refuse(res, req, 403, "magpie");
           return;
         }
-        if (path4 === PREVIEW_SCRIPT_PATH) {
+        if (path5 === PREVIEW_SCRIPT_PATH) {
           res.writeHead(200, {
             "content-type": "text/javascript; charset=utf-8",
             "cache-control": "no-store",
@@ -7185,10 +7392,10 @@ var init_host = __esm({
 
 // daemon/src/ws/methods.ts
 import { z } from "zod";
-import { existsSync as existsSync9, statSync as statSync5 } from "node:fs";
-import { mkdir as mkdir3, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir9 } from "node:os";
-import { dirname as dirname4, join as join12, win32 as win32Path } from "node:path";
+import { existsSync as existsSync10, statSync as statSync5 } from "node:fs";
+import { mkdir as mkdir3, realpath as realpath2, stat as stat10, writeFile as writeFile4 } from "node:fs/promises";
+import { homedir as homedir10 } from "node:os";
+import { dirname as dirname4, isAbsolute as isAbsolute4, join as join12, sep as sep3, win32 as win32Path } from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 function wrap(schema, fn) {
   return (params, ctx) => {
@@ -7361,7 +7568,7 @@ function registerMethods(gw, svc) {
   gw.method("projects.open", wrap(z.object({ id: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.id);
     if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-    if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
+    if (!existsSync10(proj.path)) throw new ApiError("bad_path", tr("err.dirMissing"));
     const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
     const target = process.platform === "win32" ? win32Path.normalize(proj.path) : proj.path;
     execFile4(cmd, [target], { windowsHide: true }, () => {
@@ -7369,11 +7576,28 @@ function registerMethods(gw, svc) {
     });
     return { ok: true };
   }));
+  gw.method("projects.openInIde", wrap(z.object({ id: z.string() }), async (p) => {
+    const proj = await svc.projects.get(p.id);
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    let dir;
+    try {
+      dir = await realpath2(proj.path);
+      if (!(await stat10(dir)).isDirectory()) throw new Error("not a folder");
+    } catch {
+      throw new ApiError("bad_path", tr("err.dirMissing"));
+    }
+    if (process.platform === "win32") dir = win32Path.normalize(dir);
+    const hit = detectIde(dir);
+    if (!hit) throw new ApiError("no_ide", tr("err.noIde"));
+    const r = await launchDetached(hit.launch);
+    if (!r.ok) throw new ApiError("ide_failed", tr("err.ideFailed", { ide: hit.ide, detail: r.reason }));
+    return { ok: true, ide: hit.ide };
+  }));
   gw.method("fs.check", wrap(z.object({ path: z.string().min(1) }), (p) => {
     let exists = false;
     let isDir2 = false;
     try {
-      exists = existsSync9(p.path);
+      exists = existsSync10(p.path);
       isDir2 = exists && statSync5(p.path).isDirectory();
     } catch {
     }
@@ -7402,7 +7626,7 @@ function registerMethods(gw, svc) {
     async (p) => {
       const proj = await svc.projects.get(p.projectId);
       if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-      if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
+      if (!existsSync10(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
       if (!p.providerSessionId && !isProviderEnabled(await svc.settings.get(), p.provider)) {
         throw new ApiError("bad_params", tr("provider.disabledNamed", { name: catalogById(p.provider)?.name ?? p.provider }));
       }
@@ -7477,7 +7701,7 @@ function registerMethods(gw, svc) {
   const projectPath = async (projectId) => {
     const proj = await svc.projects.get(projectId);
     if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
-    if (!existsSync9(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
+    if (!existsSync10(proj.path)) throw new ApiError("bad_path", tr("err.projectDirGone"));
     return proj.path;
   };
   gw.method("git.status", wrap(
@@ -7500,6 +7724,35 @@ function registerMethods(gw, svc) {
     z.object({ projectId: z.string(), path: z.string() }),
     async (p) => svc.files.read(await projectPath(p.projectId), p.path)
   ));
+  gw.method("files.reveal", wrap(z.object({ projectId: z.string(), path: z.string() }), async (p) => {
+    const proj = await svc.projects.get(p.projectId);
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    let root;
+    try {
+      root = await realpath2(proj.path);
+    } catch {
+      throw new ApiError("bad_path", tr("err.dirMissing"));
+    }
+    const rel = p.path.replace(/\\/g, "/");
+    if (!rel || isAbsolute4(rel) || win32Path.isAbsolute(rel) || rel.split("/").includes("..")) {
+      throw new ApiError("bad_path", tr("err.pathOutside"));
+    }
+    let target;
+    try {
+      target = await realpath2(join12(root, rel));
+    } catch {
+      throw new ApiError("bad_path", tr("err.targetMissing"));
+    }
+    const fold = (s) => process.platform === "win32" || process.platform === "darwin" ? s.toLowerCase() : s;
+    const rootSep = root.endsWith(sep3) ? root : root + sep3;
+    if (fold(target) !== fold(root) && !fold(target).startsWith(fold(rootSep))) {
+      throw new ApiError("bad_path", tr("err.pathOutside"));
+    }
+    const isDir2 = (await stat10(target)).isDirectory();
+    const r = await launchDetached(revealLaunch(process.platform, target, isDir2), { ignoreExit: process.platform === "win32" });
+    if (!r.ok) throw new ApiError("reveal_failed", tr("err.revealFailed", { detail: r.reason }));
+    return { ok: true };
+  }));
   gw.method("history.list", wrap(z.object({ projectId: z.string() }), async (p) => {
     const proj = await svc.projects.get(p.projectId);
     if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
@@ -7558,8 +7811,8 @@ function registerMethods(gw, svc) {
   gw.method("terminal.create", wrap(
     z.object({ projectId: z.string(), cols: z.number().int().min(20).max(500).default(80), rows: z.number().int().min(5).max(200).default(24) }),
     async (p) => {
-      const path4 = await projectPath(p.projectId);
-      const r = await svc.terminals.create(p.projectId, path4, p.cols, p.rows);
+      const path5 = await projectPath(p.projectId);
+      const r = await svc.terminals.create(p.projectId, path5, p.cols, p.rows);
       if ("error" in r) throw new ApiError("bad_params", r.error);
       return r;
     }
@@ -7709,7 +7962,7 @@ ${e.text}
     const markdown = L.join("\n");
     const safe = meta.title.replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 60) || "thread";
     const filename = `${safe}.md`;
-    let dir = join12(homedir9(), "Downloads");
+    let dir = join12(homedir10(), "Downloads");
     try {
       await mkdir3(dir, { recursive: true });
     } catch {
@@ -7717,7 +7970,7 @@ ${e.text}
       await mkdir3(dir, { recursive: true });
     }
     let dest = join12(dir, filename);
-    if (existsSync9(dest)) {
+    if (existsSync10(dest)) {
       const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
       dest = join12(dir, `${safe}-${stamp2}.md`);
     }
@@ -7759,6 +8012,7 @@ var init_methods = __esm({
     init_i18n();
     init_mentions();
     init_openExternal();
+    init_osOpen();
     init_agentShell();
     init_gitBash();
     init_proxy();
@@ -7963,7 +8217,7 @@ __export(legacy_exports, {
   migrateLegacy: () => migrateLegacy
 });
 import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile18 } from "node:fs/promises";
-import { existsSync as existsSync13 } from "node:fs";
+import { existsSync as existsSync14 } from "node:fs";
 import { join as join20 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
@@ -7975,17 +8229,17 @@ async function migrateLegacy(dataDir, stores) {
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
   const oldDir = join20(dataDir, "sessions");
   const oldSettingsPath = join20(dataDir, "settings.json");
-  if (!existsSync13(oldDir) && !existsSync13(oldSettingsPath)) {
+  if (!existsSync14(oldDir) && !existsSync14(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
   const backup = join20(dataDir, "trash", `legacy-${stamp()}`);
   await mkdir8(backup, { recursive: true });
-  if (existsSync13(oldDir)) await cp2(oldDir, join20(backup, "sessions"), { recursive: true }).catch(() => {
+  if (existsSync14(oldDir)) await cp2(oldDir, join20(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync13(oldSettingsPath)) await cp2(oldSettingsPath, join20(backup, "settings.json")).catch(() => {
+  if (existsSync14(oldSettingsPath)) await cp2(oldSettingsPath, join20(backup, "settings.json")).catch(() => {
   });
-  const oldSettings = existsSync13(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
+  const oldSettings = existsSync14(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
   const lc = (p) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
   for (const p of oldSettings.projects ?? []) {
@@ -7999,7 +8253,7 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync13(join20(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync14(join20(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
@@ -8019,7 +8273,7 @@ async function migrateLegacy(dataDir, stores) {
     extraDirs.push(m.cwd);
   }
   for (const d of extraDirs) {
-    if (!existsSync13(d)) continue;
+    if (!existsSync14(d)) continue;
     try {
       const name = d.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? d;
       const proj = await stores.projects.create(d, name);
@@ -8076,7 +8330,7 @@ async function migrateLegacy(dataDir, stores) {
         seq: 0
       };
       const tdir = join20(threadsDir, meta.id);
-      if (existsSync13(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
+      if (existsSync14(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
       await mkdir8(join20(threadsDir, meta.id), { recursive: true });
       const oldEvts = (await readFile18(join20(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
@@ -8586,7 +8840,7 @@ init_atomic();
 init_paths();
 init_methods();
 import { readFile as readFile13 } from "node:fs/promises";
-import { existsSync as existsSync10, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync11, statSync as statSync6 } from "node:fs";
 import { join as join14 } from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 function newId() {
@@ -8619,19 +8873,19 @@ var ProjectsStore = class {
     this.writing = this.writing.then(() => writeJsonAtomic(this.file, snap));
     await this.writing;
   }
-  async create(path4, name) {
-    if (!path4 || typeof path4 !== "string") throw new ApiError("bad_params", "\u8DEF\u5F84\u4E0D\u80FD\u4E3A\u7A7A");
-    if (!existsSync10(path4) || !statSync6(path4).isDirectory()) {
+  async create(path5, name) {
+    if (!path5 || typeof path5 !== "string") throw new ApiError("bad_params", "\u8DEF\u5F84\u4E0D\u80FD\u4E3A\u7A7A");
+    if (!existsSync11(path5) || !statSync6(path5).isDirectory()) {
       throw new ApiError("bad_path", "\u76EE\u5F55\u4E0D\u5B58\u5728\u6216\u4E0D\u662F\u6587\u4EF6\u5939");
     }
-    const np = normPath(path4);
+    const np = normPath(path5);
     const list = await this.list();
     const dup = list.find((p) => normPath(p.path) === np);
     if (dup) return dup;
     const proj = {
       id: newId(),
-      name: name?.trim() || path4.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path4,
-      path: path4,
+      name: name?.trim() || path5.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path5,
+      path: path5,
       createdAt: Date.now()
     };
     list.push(proj);
@@ -9934,9 +10188,9 @@ var AgentManager = class {
 init_i18n();
 init_decode();
 import { execFile as execFile5 } from "node:child_process";
-import { existsSync as existsSync11 } from "node:fs";
-import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat11 } from "node:fs/promises";
-import { join as join16, normalize as normalize2, sep as sep3 } from "node:path";
+import { existsSync as existsSync12 } from "node:fs";
+import { cp, mkdir as mkdir7, readFile as readFile16, rename as rename4, rm, stat as stat12 } from "node:fs/promises";
+import { join as join16, normalize as normalize2, sep as sep4 } from "node:path";
 var TIMEOUT2 = 15e3;
 var DIFF_LIMIT = 1024 * 1024;
 function runGit(cwd, args) {
@@ -9953,7 +10207,7 @@ function insidePath(projectPath, p) {
   const rel = normalize2(p).replace(/\\/g, "/");
   const abs = normalize2(join16(projectPath, rel));
   const proj = normalize2(projectPath);
-  if (abs !== proj && !abs.startsWith(proj + sep3)) return null;
+  if (abs !== proj && !abs.startsWith(proj + sep4)) return null;
   return rel.replace(/\\/g, "/");
 }
 async function moveAcrossDevices(from, to, ops = {}) {
@@ -9982,7 +10236,7 @@ var GitService = class {
       if (!rec5 || rec5.length < 4) continue;
       const index = rec5[0];
       const worktree = rec5[1];
-      let path4 = rec5.slice(3);
+      let path5 = rec5.slice(3);
       let kind = "modified";
       if (index === "?" && worktree === "?") kind = "untracked";
       else if (index === "R" || worktree === "R") {
@@ -9990,7 +10244,7 @@ var GitService = class {
         i++;
       } else if (index === "A" || worktree === "A") kind = "added";
       else if (index === "D" || worktree === "D") kind = "deleted";
-      files.push({ path: path4, index, worktree, kind });
+      files.push({ path: path5, index, worktree, kind });
     }
     return { isRepo: true, branch: br.out.trim() || void 0, files };
   }
@@ -10001,8 +10255,8 @@ var GitService = class {
     const ls = await runGit(projectPath, ["ls-files", "--error-unmatch", "--", rel]);
     if (ls.code !== 0) {
       const full = join16(projectPath, rel);
-      if (!existsSync11(full)) return { error: tr("fs.fileMissing") };
-      const s = await stat11(full);
+      if (!existsSync12(full)) return { error: tr("fs.fileMissing") };
+      const s = await stat12(full);
       if (!s.isFile()) return { error: tr("fs.notFile") };
       if (s.size > DIFF_LIMIT) return { tooLarge: true };
       const text = await readFile16(full, "utf8").catch(() => null);
@@ -10035,7 +10289,7 @@ ${lines}` };
       return { ok: true };
     }
     const full = join16(projectPath, rel);
-    if (!existsSync11(full)) return { ok: false, error: tr("fs.fileMissing") };
+    if (!existsSync12(full)) return { ok: false, error: tr("fs.fileMissing") };
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const dest = join16(dataDir, "trash", "discarded", stamp2, rel);
     await mkdir7(join16(dest, ".."), { recursive: true });
@@ -10050,8 +10304,8 @@ ${lines}` };
 
 // daemon/src/files/service.ts
 init_i18n();
-import { readdir as readdir5, readFile as readFile17, stat as stat12 } from "node:fs/promises";
-import { join as join17, normalize as normalize3, sep as sep4, extname as extname3 } from "node:path";
+import { readdir as readdir5, readFile as readFile17, stat as stat13 } from "node:fs/promises";
+import { join as join17, normalize as normalize3, sep as sep5, extname as extname3 } from "node:path";
 import ignore from "ignore";
 function decodeText(buf) {
   try {
@@ -10116,7 +10370,7 @@ function insidePath2(projectPath, p) {
   const rel = normalize3(p || ".").replace(/\\/g, "/");
   const abs = normalize3(join17(projectPath, rel));
   const proj = normalize3(projectPath);
-  if (abs !== proj && !abs.startsWith(proj + sep4)) return null;
+  if (abs !== proj && !abs.startsWith(proj + sep5)) return null;
   return rel;
 }
 var FileService = class {
@@ -10125,7 +10379,7 @@ var FileService = class {
   igCache = /* @__PURE__ */ new Map();
   async igFor(projectPath) {
     const gi = join17(projectPath, ".gitignore");
-    const st = await stat12(gi).catch(() => null);
+    const st = await stat13(gi).catch(() => null);
     const mtime = st?.isFile() ? st.mtimeMs : -1;
     const hit = this.igCache.get(projectPath);
     if (hit && hit.mtime === mtime) return hit.ig;
@@ -10144,7 +10398,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, dir);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat12(abs).catch(() => null);
+    const s = await stat13(abs).catch(() => null);
     if (!s?.isDirectory()) return { error: tr("fs.dirMissing") };
     const ig = await this.igFor(projectPath);
     const dirents = await readdir5(abs, { withFileTypes: true }).catch(() => null);
@@ -10157,7 +10411,7 @@ var FileService = class {
       const childRel = rel === "." ? name : `${rel}/${name}`;
       let isDir2 = d.isDirectory();
       if (d.isSymbolicLink()) {
-        const st = await stat12(join17(projectPath, childRel)).catch(() => null);
+        const st = await stat13(join17(projectPath, childRel)).catch(() => null);
         if (!st) continue;
         isDir2 = st.isDirectory();
       } else if (!d.isFile() && !isDir2) {
@@ -10175,7 +10429,7 @@ var FileService = class {
     const rel = insidePath2(projectPath, p);
     if (rel === null) return { error: tr("fs.pathDenied") };
     const abs = join17(projectPath, rel);
-    const s = await stat12(abs).catch(() => null);
+    const s = await stat13(abs).catch(() => null);
     if (!s) return { error: tr("fs.fileMissing") };
     if (!s.isFile()) return { error: tr("fs.notFile") };
     if (s.size > MAX_READ) return { tooLarge: true };
@@ -10193,8 +10447,8 @@ init_pathscan();
 init_log();
 init_i18n();
 init_decode();
-import { spawn as spawn4, execFileSync as execFileSync2 } from "node:child_process";
-import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync12, statSync as statSync7 } from "node:fs";
+import { spawn as spawn5, execFileSync as execFileSync2 } from "node:child_process";
+import { accessSync as accessSync2, chmodSync, constants as fsc, existsSync as existsSync13, statSync as statSync7 } from "node:fs";
 import { createRequire as moduleRequire } from "node:module";
 import { release } from "node:os";
 import { dirname as dirname7, join as join18 } from "node:path";
@@ -10243,7 +10497,7 @@ function fixSpawnHelper() {
     const root = dirname7(req.resolve("node-pty/package.json"));
     for (const sub of [`prebuilds/darwin-${process.arch}`, "build/Release"]) {
       const f = join18(root, sub, "spawn-helper");
-      if (existsSync12(f) && !isExecFile(f)) {
+      if (existsSync13(f) && !isExecFile(f)) {
         chmodSync(f, 493);
         log("info", "\u5DF2\u4FEE\u590D node-pty spawn-helper \u7684\u53EF\u6267\u884C\u4F4D", { file: f });
       }
@@ -10321,7 +10575,7 @@ var TerminalService = class {
     if (!term.pty) {
       term.simple = true;
       const args = simpleShellArgs(shell);
-      const proc = spawn4(shell, args, {
+      const proc = spawn5(shell, args, {
         cwd,
         stdio: "pipe",
         windowsHide: true,
@@ -10389,7 +10643,7 @@ var TerminalService = class {
     const args = ["/pid", String(pid), "/T", "/F"];
     try {
       if (sync) execFileSync2("taskkill", args, { windowsHide: true, stdio: "ignore", timeout: 5e3 });
-      else spawn4("taskkill", args, { windowsHide: true, stdio: "ignore" }).on("error", () => {
+      else spawn5("taskkill", args, { windowsHide: true, stdio: "ignore" }).on("error", () => {
       });
     } catch {
     }
@@ -10475,9 +10729,9 @@ function pidAlive(pid, kill = (p, s) => process.kill(p, s)) {
 }
 function augmentPath(env, nodeDir, platform = process.platform, home) {
   const win = platform === "win32";
-  const sep5 = win ? ";" : platform === process.platform ? delimiter : ":";
+  const sep6 = win ? ";" : platform === process.platform ? delimiter : ":";
   const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
-  const cur = (env[key] ?? "").split(sep5).filter(Boolean);
+  const cur = (env[key] ?? "").split(sep6).filter(Boolean);
   const norm2 = (d) => win ? d.replace(/[\\/]+$/, "").toLowerCase() : d.replace(/\/+$/, "");
   const seen = new Set(cur.map(norm2));
   const out = [...cur];
@@ -10486,7 +10740,7 @@ function augmentPath(env, nodeDir, platform = process.platform, home) {
     seen.add(norm2(d));
     out.push(d);
   }
-  return out.join(sep5);
+  return out.join(sep6);
 }
 
 // daemon/src/main.ts
@@ -10494,8 +10748,8 @@ init_proxy();
 
 // daemon/src/preview/ports.ts
 import { readFileSync as readFileSync2 } from "node:fs";
-import { homedir as homedir10 } from "node:os";
-import { basename as basename5, dirname as dirname8, isAbsolute as isAbsolute4, join as join19 } from "node:path";
+import { homedir as homedir11 } from "node:os";
+import { basename as basename5, dirname as dirname8, isAbsolute as isAbsolute5, join as join19 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 var MAGPIE_DEFAULT_PORTS = [3425, 3430];
 var GATE_DEFAULT_PORT = 3488;
@@ -10514,7 +10768,7 @@ function magpieDirFromInstall(p) {
 function magpieConfigDirs(env = process.env, where = {}) {
   const out = [];
   const add = (d) => {
-    if (d && isAbsolute4(d) && !out.includes(d)) out.push(d);
+    if (d && isAbsolute5(d) && !out.includes(d)) out.push(d);
   };
   let self = where.self;
   if (self === void 0) {
@@ -10528,9 +10782,9 @@ function magpieConfigDirs(env = process.env, where = {}) {
   const cwd = where.cwd ?? (env === process.env ? process.cwd() : "");
   if (cwd && basename5(cwd) === "plugin-work") add(dirname8(cwd));
   const x = env.XDG_CONFIG_HOME;
-  if (x && isAbsolute4(x)) add(join19(x, "magpie"));
+  if (x && isAbsolute5(x)) add(join19(x, "magpie"));
   const platform = where.platform ?? process.platform;
-  const home = where.home ?? (env === process.env ? homedir10() : platform === "win32" ? env.USERPROFILE : env.HOME);
+  const home = where.home ?? (env === process.env ? homedir11() : platform === "win32" ? env.USERPROFILE : env.HOME);
   if (home) add(join19(home, ".config", "magpie"));
   return out;
 }

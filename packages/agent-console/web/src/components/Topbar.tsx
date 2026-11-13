@@ -13,7 +13,7 @@ import { copyText } from "./Markdown";
 import { toast } from "./Toast";
 import { fmtTokens, fmtCost } from "../util/format";
 import type { Project, ThreadMeta } from "../types/models";
-import { displayThreadTitle, getIntlLocale, t, tf } from "../i18n/index.js";
+import { displayThreadTitle, getIntlLocale, rpcMessage, t, tf } from "../i18n/index.js";
 
 function useNow(running: boolean): number {
   const [now, setNow] = useState(Date.now());
@@ -108,6 +108,21 @@ export function Topbar({ pendingCount, pendingKey }: { pendingCount: number; pen
         : <span className={`tb-pill ${pill.cls}`}>{pill.cls === "run" && <span className="tb-pill-dot" />}{pill.text}</span>)}
       <div className="tb-right">
         {thread?.model && <span className="tb-model">{thread.model}</span>}
+        {project && (
+          // 1.3.8 (issue #3): open the project folder in the first IDE the daemon finds
+          <button
+            className="ibtn"
+            title={t("topbar.openInIde")}
+            aria-label={t("topbar.openInIde")}
+            onClick={() => {
+              ws.call("projects.openInIde", { id: project.id })
+                .then((r) => toast(tf("topbar.openedInIde", { ide: String((r as { ide?: string })?.ide ?? "IDE") })))
+                .catch((e) => toast(t("topbar.openInIdeFail") + rpcMessage(e), true));
+            }}
+          >
+            <Icon name="code" />
+          </button>
+        )}
         {panelBtns.map((b) => (
           <button
             key={b.tab}
