@@ -16,7 +16,7 @@ test("shows Wave's own icon, as the package gives it", async () => {
   expect(pkg.magpie.icon).toBe(agent.icon)
 })
 
-test("writes the whole magpie mode, with display:name, and nothing else", () => {
+test("writes the whole magpie mode, and nothing else", () => {
   const out = connect({
     gateway: { url: "http://127.0.0.1:3425", v1: "http://127.0.0.1:3425/v1", key: "magpie-wave" },
     model: { id: "v2ex/glm-5.3-flash", name: "GLM-5.3-Flash", images: false },
@@ -26,7 +26,9 @@ test("writes the whole magpie mode, with display:name, and nothing else", () => 
   // a single "magpie" object, so switching off removes the mode entirely
   expect(Object.keys(out)).toEqual(["magpie"])
   expect(out.magpie).toEqual({
-    "display:name": "Magpie",
+    "display:name": "Magpie · GLM-5.3-Flash",
+    "display:order": 1,
+    "display:icon": "crow",
     "ai:model": "v2ex/glm-5.3-flash",
     "ai:endpoint": "http://127.0.0.1:3425/v1/chat/completions",
     "ai:apitype": "openai-chat",
@@ -35,10 +37,18 @@ test("writes the whole magpie mode, with display:name, and nothing else", () => 
   })
 })
 
-test("declares images when the model takes them", () => {
+test("declares images and a thinking level when the model offers them", () => {
   const out = connect({
     gateway: { v1: "http://127.0.0.1:3425/v1", key: "magpie-wave" },
-    model: { id: "zhipu/glm-5.3-flash", images: true },
+    model: { id: "zhipu/glm-5.3-flash", images: true, efforts: ["low", "medium", "high"] },
   })
   expect(out.magpie["ai:capabilities"]).toEqual(["tools", "images"])
+  expect(out.magpie["ai:thinkinglevel"]).toBe("medium")
+})
+
+test("tolerates being called without a model", () => {
+  const out = connect({ gateway: { v1: "http://127.0.0.1:3425/v1", key: "magpie-wave" } })
+  expect(out.magpie["display:name"]).toBe("Magpie")
+  expect(out.magpie["ai:endpoint"]).toBe("http://127.0.0.1:3425/v1/chat/completions")
+  expect(out.magpie["ai:thinkinglevel"]).toBeUndefined()
 })

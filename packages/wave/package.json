@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-wave",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wave Terminal (waveterm) as a magpie agent: pick one of magpie's models for it on the Agents page",
   "type": "module",
   "files": ["wave.agent.js", "README.md"],
