@@ -6,11 +6,41 @@
 magpie plugin add @magpie-community/agent-minimax-design
 ```
 
-**Windows only.** The paths below lean on `%APPDATA%` and `%LOCALAPPDATA%`, which other systems don't set. Quit MiniMax Design first, switch the agent on in magpie's Agents page, then start Design and pick a model under the **Magpie** entry in its model menu. Disconnecting in magpie removes the entry magpie wrote — the whole entry, not just its fields — and leaves the rest of Design's configuration untouched.
+**macOS and Windows, domestic production edition.** Requires the companion
+Magpie change exposing `magpie.platform` to agent modules. Stock Magpie
+0.1.4040 does not expose it. Linux is refused explicitly.
+
+Quit MiniMax Design, switch the agent on in Magpie's Agents page, then
+start Design and pick a model under **Magpie**. Disconnecting restores the
+provider entries Magpie replaced and leaves other settings intact.
+
+## Library
+
+Design becomes a target for **Skills** and **MCP servers**, using the same
+Library controls as other agents:
+
+- Skills are linked/copied into `~/Movies/Hub/skills`, the desktop's user
+  skill directory. New skills may need enabling in Design's skill UI;
+  Library manages placement/removal and Design keeps its permissions.
+- MCP servers use the OpenCode format in the desktop's isolated
+  `ai-runtime/config-home/opencode/opencode.json`. Restart Design after
+  changing servers. They are available to the agent beside bundled
+  servers, but are not added to the desktop's connector UI.
+- Removing an item removes only Library's entry or skill. The encrypted
+  `customMcpVault` is never edited.
+- Global instructions are not offered: no always-read instruction file
+  has been established for this desktop.
+
+On macOS the data directory is
+`~/Library/Application Support/@hilo/desktop`; on Windows it is
+`%APPDATA%\@hilo\desktop`. Detection uses the data directory so moving the
+app between `/Applications` and `~/Applications` does not break it.
+Start Design once before connecting.
 
 ## How it works
 
-Design keeps its custom models in `%APPDATA%\@hilo\desktop\hub-config.json`, under `config.customModels.<id>`:
+Design keeps custom models in `hub-config.json` under that data directory,
+at `config.customModels.<id>`:
 
 ```json
 {
@@ -22,7 +52,21 @@ Design keeps its custom models in `%APPDATA%\@hilo\desktop\hub-config.json`, und
 }
 ```
 
-The agent is a switch (no model picker): Design picks its model in its own UI. Connecting writes the single entry `config.customModels.user-custom-magpie` — one key holding the whole object, so disconnecting takes the entry out whole rather than leaving an emptied `{"user-custom-magpie": {}}` behind. `apiKey` is a Design-specific key, so Usage attributes requests to this agent. `models` is mapped from magpie's current model list (`id` → `id`, `context` → `contextWindow`, `output` → `maxOutputTokens`, `efforts` → `reasoningLevels`); when magpie's models change, magpie re-calls connect and the list refreshes itself. Reasoning levels are filtered to the ones Design's model menu knows (`low`, `medium`, `high`, `xhigh`, `max`); models whose efforts are all something else (e.g. `none`) get no `reasoningLevels` field.
+The agent is a switch: Design picks its model in its own UI. Connecting
+writes `config.customModels.user-custom-magpie` as one object, so
+disconnect restores/removes the whole entry. Its Design-specific key
+attributes requests to this agent in Usage.
+
+Models map `id`, `context`, `output` and `efforts` to `id`, `contextWindow`,
+`maxOutputTokens` and `reasoningLevels`. The reasoning array is always
+present, filtered to `low`, `medium`, `high`, `xhigh`, `max`. Models without
+positive integer context/output limits are omitted; if none remain,
+connecting fails. Set accurate limits in Magpie when a source lists none.
+
+Design 4.0 permits 50 models per provider. Larger catalogs are split into
+additional `user-custom-magpie-N` entries without dropping eligible models.
+Magpie refreshes these on catalog changes, restores obsolete entries after
+a shrink, and removes/restores all its entries on disconnect.
 
 ## Notes
 
@@ -31,3 +75,18 @@ The agent is a switch (no model picker): Design picks its model in its own UI. C
 - See [COMPATIBILITY.md](COMPATIBILITY.md) for verified versions and platforms.
 
 How agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).
+
+## Verification
+
+```sh
+node --test packages/minimax-design/minimax-design.test.mjs
+bun scripts/check.mjs minimax-design
+MAGPIE_BIN=/path/to/patched/magpie \
+  MINIMAX_APP="/Applications/MiniMax Design.app" \
+  node packages/minimax-design/acceptance.mjs
+```
+
+Native acceptance uses isolated homes, the installed app's real gateway
+and agent executables, and localhost model/MCP fixtures. It exercises
+Library distribution/removal and an agent model → MCP → model round trip.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for versions and limits.
