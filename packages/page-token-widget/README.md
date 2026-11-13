@@ -8,6 +8,8 @@
 magpie plugin add @magpie-community/page-token-widget
 ```
 
+和社区里已列的用量页面不同：**数字落在另一台设备上**。usage、page-usage-board、page-usage-tree 把用量画在跑 magpie 的那台机器的窗口里；这个页把各家订阅的额度窗口本身（5 小时与每周的剩余比例、重置时间）送到 iPhone 桌面，额度不是按模型摊开的 token。手机通过 Tailscale 尾网连进本机服务。
+
 # @magpie-community/page-token-widget
 
 ## English
