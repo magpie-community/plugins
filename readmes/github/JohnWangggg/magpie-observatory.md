@@ -16,7 +16,7 @@ Observatory turns that stream into something you can *watch*:
 - **Live routing** — Agent → Magpie → Provider/Account, with a filled magpie
   carrying the request out and a mirrored outlined magpie bringing the answer
   back. Failed attempts stay visible as “rerouted”.
-- **Five views** — `Route`, `Radar`, `Loom`, `Rhythm`, `Rings`.
+- **Twenty-one views** — the nineteen above plus `Factory` and `Bees`.
 - **Four style packs** — `Control`, `Pixel`, `Paper`, `Neon`; each with a light
   and dark variant. Light/dark and style are independent.
 - **Layout settings** — Auto / One screen / Comfort, density Compact / Standard /
@@ -89,7 +89,7 @@ MAGPIE_URL=http://127.0.0.1:3425 MAGPIE_KEY=... node preview.mjs
 
 The preview is for development only; the plugin uses the same service internally.
 
-## The five views
+## The twenty-one views
 
 | Route · two-way magpies | Radar · provider ring and quotas |
 | --- | --- |
@@ -99,7 +99,39 @@ The preview is for development only; the plugin uses the same service internally
 | --- | --- |
 | ![loom](docs/mode-loom.png) | ![rhythm](docs/mode-rhythm.png) |
 
-![Rings · half a year as a polar calendar](docs/mode-rings.png)
+| Rings · half a year as a polar calendar | Quota · burn-down and pace |
+| --- | --- |
+| ![rings](docs/mode-rings.png) | ![quota](docs/mode-quota.png) |
+
+| Waterfall · sessions on a time axis | Swarm · TTFT per provider |
+| --- | --- |
+| ![waterfall](docs/mode-waterfall.png) | ![swarm](docs/mode-swarm.png) |
+
+| Treemap · cost by provider and model | Sankey · agent → provider → model flow |
+| --- | --- |
+| ![treemap](docs/mode-treemap.png) | ![sankey](docs/mode-sankey.png) |
+
+| Funnel · requests to success | Latency · time × bucket |
+| --- | --- |
+| ![funnel](docs/mode-funnel.png) | ![latency](docs/mode-latency.png) |
+
+![Orrery · providers, quotas and sessions in orbit](docs/mode-orrery.png)
+
+| Budget · thresholds and pace | Marimekko · provider × model mosaic |
+| --- | --- |
+| ![budget](docs/mode-budget.png) | ![marimekko](docs/mode-marimekko.png) |
+
+![Chord · agent ↔ provider ribbons](docs/mode-chord.png)
+
+| Network · agent ↔ provider graph | Stream · provider flow over time |
+| --- | --- |
+| ![network](docs/mode-network.png) | ![stream](docs/mode-stream.png) |
+
+![Chips · combo cards](docs/mode-chips.png)
+
+| Factory · queued → streaming → done | Bees · sessions around provider hives |
+| --- | --- |
+| ![factory](docs/mode-factory.png) | ![bees](docs/mode-bees.png) |
 
 - **Route**: the default. Magpies fly the whole `Agent → Magpie → Provider`
   path; failures remain visible.
@@ -112,6 +144,53 @@ The preview is for development only; the plugin uses the same service internally
 - **Rings**: the last 26 weeks as a polar calendar — seven weekday rings, one
   column per week; bead size and colour carry token volume, and today keeps a
   green ring.
+- **Quota**: each account's window as a burn-down line with a projected left at
+  reset; green/amber/red risk, reset markers and a `QUOTA PACE` side list.
+- **Waterfall**: sessions as Gantt rows; pale first-token segment plus a
+  streaming segment, failure hatching, click a session to focus it.
+- **Swarm**: one lane per provider, TTFT points with P50/P90 lines, dot size =
+  tokens; missing first-token samples are marked as estimated.
+- **Treemap**: provider → model area by tokens; click a provider to drill into
+  its models.
+- **Sankey**: agent → provider → model flow; link width = tokens, provider
+  colours, hover highlights the whole route.
+- **Funnel**: calls → uncanceled → first token → success, with drop-off counts,
+  success/error rate and an amber reroute chip.
+- **Latency**: a time × latency-bucket heatmap that accumulates while the page
+  is open, with P50/P90 and the hottest bucket.
+- **Orrery**: providers as planets on elliptical orbits; planet size = active
+  sessions, the arc = quota used, moons = active sessions.
+- **Budget**: a bullet chart per account window; 70/88 thresholds, a pace marker
+  from quota history, and a projected end.
+- **Marimekko**: column width = provider share, band height = model share; click
+  a provider to expand its column.
+- **Chord**: agents on one arc, providers on the other; ribbon area = tokens;
+  hover highlights the flow and side panel lists the top routes.
+- **Network**: a force-directed agent → provider → model graph; node size =
+  tokens, hover/focus highlights neighbours.
+- **Stream**: provider token deltas over buffered snapshots as a streamgraph,
+  with a Horizon toggle for a compact per-provider reading.
+- **Chips**: an optional game-like view; each request is a card, consecutive
+  successes build a combo, and score/multipliers come from the real ledger.
+- **Factory**: sessions as parcels moving through queued → streaming → done,
+  with a reject lane for errors; the belt and parcels animate, the counts are real.
+- **Bees**: providers as hives and sessions as bees; subagents become smaller
+  bees, size follows tokens, and hovering a hive highlights its bees.
+
+## Switching views
+
+The hero header has a view picker instead of a wall of tabs. Press **V** (or
+click it), type to filter by name / eyebrow / group, press Enter to switch, or
+hit **随机一个** for a random view. The 21 views are grouped into
+`实时` / `用量` / `结构` / `趣味`, and the hero accent follows the group.
+**G** starts or stops an auto tour (5 / 10 / 30-second interval in settings),
+**R** picks a random view, **F** stars the current view (favourites pin to the
+top of the picker and survive reloads), **?** opens the shortcut sheet, and
+**Esc** closes the picker.
+
+| View picker | Keyboard shortcuts |
+| --- | --- |
+| ![view menu](docs/view-menu.png) | ![shortcuts](docs/help.png) |
 
 ## Styles and themes
 
@@ -123,11 +202,28 @@ The preview is for development only; the plugin uses the same service internally
 | --- | --- |
 | ![paper](docs/style-paper.png) | ![neon](docs/style-neon.png) |
 
+| Terminal | Blueprint |
+| --- | --- |
+| ![terminal](docs/style-terminal.png) | ![blueprint](docs/style-blueprint.png) |
+
+| Zine | Game Boy (pixel light) |
+| --- | --- |
+| ![zine](docs/style-zine.png) | ![game boy](docs/style-pixel-light.png) |
+
 - **Control**: glass cards, iris/cyan accents, balanced density.
-- **Pixel**: hard 2 px borders, 4 px hard shadows, monospace, scanlines, Game Boy
-  green. Light variant is a daylight Game Boy.
+- **Pixel**: 8-bit console — 2 px frames, offset block shadows, dither pattern,
+  segmented meters, uppercase mono, heavy CRT raster; the light variant is a
+  Game Boy DMG screen.
 - **Paper**: cream, serif, brown ink, paper grain; a report-like dark variant.
-- **Neon**: black, magenta/cyan glow, radar-friendly; a daylight variant.
+- **Neon**: cyberpunk black glass — magenta/cyan split lighting, HUD corner
+  brackets, a perspective grid floor and chromatic-aberration titles.
+- **Terminal**: phosphor CRT — green bloom on numbers, block cursor on card
+  heads, hard raster, monospace everywhere; light variant is a day terminal.
+- **Blueprint**: drafting table — navy vellum, 24 px graph grid, dashed inner
+  frames, ruler ticks, no glow; light variant is a day print.
+- **Zine**: risograph cut-out — newsprint with halftone dots, 2 px ink borders,
+  hard offset shadows, one spot red, highlighter titles; dark variant is
+  black-ink newsprint.
 
 Use the **明暗** button for light/dark and the **风格** button for a pack. Both
 choices persist separately.
@@ -184,6 +280,10 @@ them for five minutes. No prompt or response body is read.
 No prompts, replies, credentials or model-call keys are stored. The service
 listens on loopback; the plugin page reaches it through its own origin.
 
+Steady-state polling is incremental: after the first snapshot, the service sends
+only the new trace routes, the new ledger rows and a quota-history hash, so a
+2.5-second poll is ~23 KB instead of ~150 KB.
+
 ### Privacy
 
 - **Screenshots use demo data.** Every account shown in this README is
@@ -207,6 +307,7 @@ page/index.html        Magpie plugin launcher page
 page/boot.js           reads magpie.service / port and navigates the frame
 page/icon.svg          plugin icon
 public/                the dashboard (index.html, assets/)
+public/assets/views/   standalone hero-view modules
 docs/research.md       research & design notes (简体中文)
 docs/research.en.md    research & design notes (English)
 docs/publishing.md     GitHub release + Magpie store topics

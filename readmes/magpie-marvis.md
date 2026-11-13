@@ -73,6 +73,9 @@ magpie plugin add MYCF711/magpie-marvis
 
 - **QQ 登录** / **微信登录**：自动打开一个隔离浏览器窗口，授权完窗口自己关掉，不用复制任何东西
 - **从本机 Marvis 导入**：装了 Marvis 客户端并且登录过的话，一条命令读出来
+- **QQ / 微信登录（粘贴回调地址）**：magpie 跑在**没有浏览器、没有显示**的地方（NAS 容器、Linux 服务器、
+  Docker/WSL）时用这条——授权页在你自己的浏览器里打开，登录完把地址栏那条
+  `…marvis_oauth?login_type=…&code=…&state=…` 整条粘贴回 magpie 的输入框即可
 
 ## 设备指纹（不需要任何二进制）
 
