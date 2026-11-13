@@ -1,0 +1,40 @@
+{
+  "name": "@magpie-community/opencode-scnet-auth",
+  "version": "0.1.0",
+  "description": "SCNet (scnet.cn / 超算互联网) for magpie and OpenCode: Token Plan and free-quota tiers, each with its own API key, live models and the matching Credits or free-token balance",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "scnet",
+    "超算互联网",
+    "token-plan"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/scnet"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJTQ05ldCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwYjFmM2QiLz48cGF0aCBkPSJNMjAgMjJoMjR2NmgtMTJ2NGgxMnYxMEgyMHYtNmgxMnYtNEgyMHoiIGZpbGw9IiM0ZGEzZmYiLz48L3N2Zz4="
+  }
+}
