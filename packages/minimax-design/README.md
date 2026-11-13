@@ -42,12 +42,21 @@ Restart Design after the first synchronization to refresh its desktop
 model lists. Desktop selection and canvas insertion remain acceptance
 items; the automated test covers its native media loader and executor.
 
-The bridge uses explicit image/video kinds from Magpie's authenticated
-model list. Images support generation and, when advertised, one reference
-image for editing. Videos support generation and one first-frame image.
-Size/aspect ratio and video duration are passed to Magpie; leave them empty
-for the selected model's defaults. Model-specific ranges, video/audio
-references, sound options and image quality presets are not inferred.
+The bridge uses explicit image/video kinds from Magpie's authenticated model
+list. It automatically builds model-specific dropdowns and reference budgets
+from explicit parameter metadata, OpenRouter's public endpoint schemas, or
+verified route profiles. `自动` retains the selected route's defaults.
+MiniMax, Grok, Qwen and verified RightAPI routes have presets; unidentified
+routes retain optional manual size/duration controls.
+
+Video references automatically select a first frame, subject collection, or
+ordered first/last frames according to the model and image count. Hailuo has
+one resolution/duration dropdown containing only legal pairs. Other invalid
+reference/parameter combinations are rejected before HTTP submission.
+Design's custom specifications do not support dynamic cross-field rules;
+see [MEDIA-PARAMETERS.md](MEDIA-PARAMETERS.md) for exact limits, sources and
+gateway mappings. Unsupported video/audio references and ineffective
+resolution controls are not advertised.
 
 The bridge owns a provider and model entries under `media-models`, preserves
 other providers/models and each managed model's enabled setting, and removes
