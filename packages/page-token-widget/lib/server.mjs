@@ -7,7 +7,7 @@ import { Collector } from './collector.mjs';
 import { displayOptions } from './normalize.mjs';
 import { ensureState, notePairing, rotatePairing, writeState } from './state.mjs';
 import { detect } from './tailnet.mjs';
-import { applyForward, removeForward, serveState } from './forward.mjs';
+import { applyForward, publishedFor, removeForward, serveState } from './forward.mjs';
 import { dataUri } from './qr.mjs';
 
 const PLUGIN = '@magpie-community/page-token-widget';
@@ -126,6 +126,11 @@ const jsonBody = async (request) => {
 
 export async function startServer({ root, dataDir, magpieDir, options = {} }) {
   const port = Number(options.port ?? 3498);
+  // The phone gets a port of its own. The forwarding of Tailscale points the
+  // published port at it, so a request that arrives through the tailnet lands
+  // on a different socket than the console of this computer. The scope of a
+  // request follows the socket it came in on, not the Host header it carries.
+  const phonePort = Number(options.phonePort ?? port + 1);
   const upstream = options.gatewayURL || 'http://127.0.0.1:3425';
   const stateFile = path.join(dataDir, 'state.json');
   const snapshotFile = path.join(dataDir, 'snapshot.json');
@@ -150,13 +155,19 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     ios: [],
     error: '正在检测 Tailscale…',
   };
-  let forward = { ready: false, port, error: '正在准备尾网转发…' };
+  let forward = { ready: false, port, phonePort, error: '正在准备尾网转发…' };
   const sessions = new Map();
   let closed = false;
+  // The console of this computer must not be reachable from the tailnet. It
+  // stays shut until the forwarding is known to point at the phone side.
+  let consoleOpen = false;
+  let phoneBound = false;
 
   const serviceURL = () => (tailnet.tailnetIP ? `http://${tailnet.tailnetIP}:${port}` : '');
   const pairingURL = () => (serviceURL() ? `${serviceURL()}/p/${state.pairing.code}` : '');
 
+  // The Host header is only a guard against a name that points at this
+  // computer by accident. It says nothing about who is asking.
   const allowedHosts = (host) => {
     if (host.port !== port) return false;
     if (LOCAL_HOSTS.has(host.name)) return true;
@@ -181,6 +192,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
   const consoleState = () => ({
     plugin: PLUGIN,
     port,
+    phonePort,
     upstream,
     serviceURL: serviceURL(),
     pairingURL: pairingURL(),
@@ -197,28 +209,46 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       error: tailnet.error,
     },
     paired: state.paired,
-    forward: { ready: forward.ready, port: forward.port, error: forward.error },
+    forward: { ready: forward.ready, port: forward.port, phonePort: forward.phonePort, error: forward.error },
     display: collector.display,
     subscriptions: collector.overviewWith({ ...collector.display, subscriptions: ['*'] }).subscriptions,
   });
 
-  const syncForward = async () => {
+  // The forwarding of the published port has to point at the phone side. A
+  // forwarding of an older version of this plugin points at the console of
+  // this computer, and it is moved to the phone side as well.
+  const settleForward = async () => {
     if (options.forward === false) {
-      forward = { ready: false, port, error: '这次没有建尾网转发，手机直接连尾网地址。' };
+      forward = { ready: false, port, phonePort, error: '这次没有建尾网转发，手机直接连尾网地址。' };
+      consoleOpen = true;
       return;
     }
-    const result = await applyForward(port);
+    const status = await serveState();
+    const existing = publishedFor(status, port);
+    consoleOpen = !existing || existing.TCPForward !== `127.0.0.1:${port}`;
+    if (!phoneBound) {
+      forward = { ready: false, port, phonePort, error: '手机那一侧的端口没有打开，手机暂时连不上。' };
+      return;
+    }
+    const result = await applyForward(port, phonePort);
     if (result?.ok) {
-      forward = { ready: true, port, error: '' };
+      forward = { ready: true, port, phonePort, error: '' };
+      consoleOpen = true;
       return;
     }
-    forward = { ready: false, port, error: result?.error || '转发没有建好。' };
+    forward = { ready: false, port, phonePort, error: result?.error || '转发没有建好。' };
+    // If the tailnet still points at the console of this computer, the console
+    // stays shut.
+    const after = await serveState();
+    const now = publishedFor(after, port);
+    consoleOpen = !now || now.TCPForward !== `127.0.0.1:${port}`;
   };
 
-  const forwardOwned = async () => {
+  // Is the published port already taken by a forwarding of Tailscale? Then
+  // Tailscale itself holds the tailnet address of that port.
+  const portPublished = async () => {
     const status = await serveState();
-    const existing = status?.data?.state?.TCP?.[String(port)];
-    return existing?.TCPForward === `127.0.0.1:${port}`;
+    return Boolean(publishedFor(status, port));
   };
 
   const servePairPage = async (response, code) => {
@@ -285,7 +315,10 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     }
   };
 
-  const handle = async (request, response) => {
+  // The scope comes from the socket the request came in on. The console of
+  // this computer listens on the loopback address of the published port, the
+  // phone side listens on a port of its own.
+  const handle = async (request, response, scope) => {
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
     // Magpie's service proxy strips its own prefix before it forwards. The
     // service answers the same paths either way.
@@ -301,7 +334,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       return json(response, 403, { error: 'Invalid origin.' });
     }
 
-    const local = LOCAL_HOSTS.has(host.name);
+    const consoleScope = scope === 'console';
     const method = request.method || 'GET';
     const allowOrigin = { 'Access-Control-Allow-Origin': origin || `http://${request.headers.host}`, Vary: 'Origin' };
 
@@ -310,14 +343,18 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
         ok: true,
         service: PLUGIN,
         port,
+        phonePort,
         tailnetIP: tailnet.tailnetIP,
         connected: tailnet.connected,
       });
     }
 
     if (pathname.startsWith('/api/v1/console/')) {
-      if (!local) {
+      if (!consoleScope) {
         return json(response, 403, { error: 'This page is only opened on the computer of the service.' });
+      }
+      if (!consoleOpen) {
+        return json(response, 503, { error: '服务还在准备尾网转发，请稍后再打开。' });
       }
       if (method === 'OPTIONS') {
         response.writeHead(204, {
@@ -403,8 +440,11 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       return servePairPage(response, decodeURIComponent(pathname.slice('/p/'.length)));
     }
 
-    if (!local) {
+    if (!consoleScope) {
       return json(response, 403, { error: 'This page is only opened on the computer of the service.' });
+    }
+    if (!consoleOpen) {
+      return json(response, 503, { error: '服务还在准备尾网转发，请稍后再打开。' });
     }
 
     if ((pathname === '/' || pathname === '/index.html') && method === 'GET') {
@@ -450,9 +490,9 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     return json(response, 404, { error: 'Not found.' });
   };
 
-  const makeServer = () =>
+  const makeServer = (scope) =>
     createServer((request, response) => {
-      handle(request, response).catch((error) => {
+      handle(request, response, scope).catch((error) => {
         if (!response.headersSent) json(response, 500, { error: error.message });
         else response.end();
       });
@@ -460,7 +500,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
 
   // The window opens the page as soon as the plugin is loaded, so the service
   // has to be listening before anything slow happens.
-  const server = makeServer();
+  const server = makeServer('console');
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -474,21 +514,36 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     if (error?.code !== 'EADDRINUSE' || !(await servedByUs(port))) throw error;
     return {
       port,
+      phonePort,
       shared: true,
       async close() {},
     };
   }
 
-  const tailnetListener = makeServer();
+  // The phone side of the service. The forwarding of Tailscale points the
+  // published port at this port, so a request from the tailnet lands here
+  // and is answered as a request of the phone.
+  const phoneServer = makeServer('phone');
+  try {
+    await new Promise((resolve, reject) => {
+      phoneServer.once('error', reject);
+      phoneServer.listen(phonePort, '127.0.0.1', resolve);
+    });
+    phoneBound = true;
+  } catch (error) {
+    phoneServer.close(() => {});
+  }
+
+  const tailnetListener = makeServer('phone');
   const timers = [];
 
   const background = async () => {
     if (closed) return;
     tailnet = await detect();
     if (closed) return;
-    await syncForward();
+    await settleForward();
     if (closed) return;
-    if (options.listenTailnet !== false && tailnet.tailnetIP && !(await forwardOwned())) {
+    if (options.listenTailnet !== false && tailnet.tailnetIP && !(await portPublished())) {
       await new Promise((resolve) => {
         tailnetListener.once('error', () => resolve());
         tailnetListener.listen(port, tailnet.tailnetIP, resolve);
@@ -509,18 +564,20 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
         if (closed) return;
         tailnet = await detect();
         if (closed) return;
-        await syncForward();
+        await settleForward();
       })();
     }, 60_000),
   );
 
   return {
     port,
+    phonePort,
     async close() {
       closed = true;
       for (const timer of timers) clearInterval(timer);
-      await removeForward(port);
+      await removeForward(port, phonePort);
       await new Promise((resolve) => server.close(resolve));
+      await new Promise((resolve) => phoneServer.close(resolve));
       await new Promise((resolve) => tailnetListener.close(resolve));
     },
   };

@@ -10,13 +10,17 @@ import { startServer } from '../lib/server.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = 18799;
 const base = `http://127.0.0.1:${port}`;
+// The phone side of the service listens on a port of its own. The forwarding
+// of Tailscale points the published port at it.
+const phonePort = port + 1;
+const phoneBase = `http://127.0.0.1:${phonePort}`;
 const TOKEN_HEADER = 'x-token-widget-token';
 
 // The browser does not let a page set Sec-Fetch-Mode, so a plain request is
 // the only way to pretend to be a navigation.
-const get = (route, headers = {}) =>
+const ask = (origin, route, headers = {}) =>
   new Promise((resolve, reject) => {
-    const req = httpRequest(base + route, { headers }, (res) => {
+    const req = httpRequest(origin + route, { headers }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
@@ -24,6 +28,8 @@ const get = (route, headers = {}) =>
     req.on('error', reject);
     req.end();
   });
+
+const get = (route, headers = {}) => ask(base, route, headers);
 
 let service;
 let dataDir;
@@ -45,7 +51,21 @@ before(async () => {
     options: { port, listenTailnet: false, forward: false, gatewayURL: 'http://127.0.0.1:1' },
   });
   state = JSON.parse(await readFile(path.join(dataDir, 'state.json'), 'utf8'));
+  await waitForConsole();
 });
+
+// The console of the computer stays shut until the service knows that the
+// forwarding of the tailnet points at the phone side.
+const waitForConsole = async () => {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const response = await fetch(base + '/api/v1/console/state', {
+      headers: { [TOKEN_HEADER]: state.token },
+    });
+    if (response.status !== 503) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('the console of the service never opened');
+};
 
 after(async () => {
   await service?.close();
@@ -189,4 +209,57 @@ test('a second Magpie shares the service of the first one', async () => {
   // The first one is still the one answering.
   const response = await fetch(base + '/health');
   assert.equal(response.status, 200);
+});
+
+test('the console and the phone side are two different rooms', async () => {
+  // Both listeners take the same requests, but each one knows which side it
+  // belongs to. The console of this computer is only open on its own port.
+  const onConsole = await get('/api/v1/console/state', { [TOKEN_HEADER]: state.token });
+  assert.equal(onConsole.status, 200);
+
+  const onPhone = await ask(phoneBase, '/api/v1/console/state', {
+    host: `127.0.0.1:${port}`,
+    [TOKEN_HEADER]: state.token,
+  });
+  assert.equal(onPhone.status, 403);
+  assert.match(onPhone.body, /only opened on the computer of the service/);
+
+  // The page of the console stays closed on the phone side too.
+  const page = await ask(phoneBase, '/', {
+    host: `127.0.0.1:${port}`,
+    'sec-fetch-mode': 'navigate',
+  });
+  assert.equal(page.status, 403);
+  assert.match(page.body, /only opened on the computer of the service/);
+  assert.doesNotMatch(page.body, /name="service-token"/);
+
+  // What the phone came for still works there.
+  const overview = await ask(phoneBase, '/api/v1/overview', {
+    host: `127.0.0.1:${port}`,
+    Authorization: 'Bearer ' + state.token,
+  });
+  assert.equal(overview.status, 200);
+});
+
+test('a request from the tailnet is not one of this computer', async () => {
+  // The forwarding of the tailnet keeps the name the phone asked for, and a
+  // name can be written by anyone. The side the request arrived on decides
+  // what it may see, not the name it carries.
+  const stolen = await ask(phoneBase, '/api/v1/console/state', {
+    host: `127.0.0.1:${port}`,
+    [TOKEN_HEADER]: state.token,
+  });
+  assert.equal(stolen.status, 403);
+  assert.doesNotMatch(stolen.body, /"token"/);
+
+  const page = await ask(phoneBase, '/', {
+    host: `127.0.0.1:${port}`,
+    'sec-fetch-mode': 'navigate',
+  });
+  assert.equal(page.status, 403);
+  assert.doesNotMatch(page.body, /__SERVICE_TOKEN__/);
+
+  // The console of this computer answers on its own port as before.
+  const onConsole = await get('/api/v1/console/state', { [TOKEN_HEADER]: state.token });
+  assert.equal(onConsole.status, 200);
 });

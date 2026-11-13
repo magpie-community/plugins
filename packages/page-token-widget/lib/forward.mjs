@@ -3,7 +3,12 @@ import { call } from './tailnet.mjs';
 // The phone reaches the service through a forwarding of Tailscale: the port
 // of the service is published inside the tailnet and points at this computer.
 // The forwarding of another service on the same port is never touched.
-const targetFor = port => '127.0.0.1:' + port;
+//
+// The published port and the port it points at are not the same one. The
+// console of this computer keeps the published port on the loopback address,
+// and the phone side gets a port of its own, so a request that arrives
+// through the tailnet can never be mistaken for one from this computer.
+export const targetFor = port => '127.0.0.1:' + port;
 
 export async function serveState() {
   const result = await call(['serve', 'status', '--json']);
@@ -15,21 +20,29 @@ export async function serveState() {
   }
 }
 
-export async function planForward(port) {
+// The status of Tailscale lists the published ports under "TCP".
+export const publishedFor = (status, port) => status?.data?.TCP?.[String(port)] || null;
+
+export async function planForward(publishedPort, phonePort) {
   const status = await serveState();
   if (!status.ok) return { ok: false, error: status.error };
-  const existing = status.data?.state?.TCP?.[String(port)];
-  if (existing && existing.TCPForward !== targetFor(port)) {
-    return { ok: false, error: `端口 ${port} 上已经有别的转发，没有动它。` };
+  const existing = publishedFor(status, publishedPort);
+  const target = targetFor(phonePort);
+  // An older version of this plugin pointed the published port at the console
+  // of this computer. That forwarding is ours as well, and it is moved to the
+  // phone side.
+  const legacy = targetFor(publishedPort);
+  if (existing && existing.TCPForward !== target && existing.TCPForward !== legacy) {
+    return { ok: false, error: `端口 ${publishedPort} 上已经有别的转发，没有动它。` };
   }
-  const commands = existing
+  const commands = existing && existing.TCPForward === target
     ? []
-    : [['serve', '--bg', '--tcp=' + port, 'tcp://' + targetFor(port)]];
+    : [['serve', '--bg', '--tcp=' + publishedPort, 'tcp://' + target]];
   return { ok: true, commands, ready: true };
 }
 
-export async function applyForward(port) {
-  const plan = await planForward(port);
+export async function applyForward(publishedPort, phonePort) {
+  const plan = await planForward(publishedPort, phonePort);
   if (!plan.ok) return plan;
   for (const command of plan.commands) {
     const result = await call(command);
@@ -39,12 +52,16 @@ export async function applyForward(port) {
 }
 
 // Only a forwarding that points at this service is removed.
-export async function removeForward(port) {
+export async function removeForward(publishedPort, phonePort) {
   const status = await serveState();
-  const existing = status.ok ? status.data?.state?.TCP?.[String(port)] : null;
-  if (!existing || existing.TCPForward !== targetFor(port)) {
+  const existing = status.ok ? publishedFor(status, publishedPort) : null;
+  const ours = existing && (
+    existing.TCPForward === targetFor(phonePort) ||
+    existing.TCPForward === targetFor(publishedPort)
+  );
+  if (!ours) {
     return { ok: false, error: '没有找到属于这个插件的转发。' };
   }
-  const result = await call(['serve', '--tcp=' + port, 'off']);
+  const result = await call(['serve', '--tcp=' + publishedPort, 'off']);
   return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
