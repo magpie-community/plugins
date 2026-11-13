@@ -153,6 +153,7 @@ test("the account's list is the vendor's own, live", () => {
     id: "gpt-6-luna",
     name: "GPT-6 Luna",
     api: { id: "gpt-6-luna", url: "https://amr-link.open-design.ai/v1", npm: "@ai-sdk/openai-compatible" },
+    also: ["@ai-sdk/openai", "@ai-sdk/anthropic"],
     status: "active",
     headers: {},
     options: {},
@@ -365,6 +366,19 @@ test("each model is asked on the API amr-link thinks on (plugins#141)", async ()
   expect(p.models["kimi-k2.7-code"].provider.npm).toBe("@ai-sdk/openai-compatible")
 })
 
+test("each model says the two other APIs amr-link serves it on (plugins#888)", async () => {
+  // magpie relays a client's request on any of them as it was sent: an
+  // Anthropic request to a chat model went upstream as chat completions
+  // (gaubeebangeel on X)
+  const models = I.modelsOf(CATALOG)
+  expect(models["gpt-6-luna"].also).toEqual(["@ai-sdk/openai", "@ai-sdk/anthropic"])
+  expect(models["deepseek-v4-pro"].also).toEqual(["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"])
+  const cfg = {}
+  await (await OpenDesignAuthPlugin({})).config(cfg)
+  expect(cfg.provider.opendesign.models["glm-5.3-flash"].also).toEqual(["@ai-sdk/openai-compatible", "@ai-sdk/openai"])
+  expect(cfg.provider.opendesign.models["deepseek-v4.1-flash"].also).toEqual(["@ai-sdk/openai", "@ai-sdk/anthropic"])
+})
+
 // ---- what magpie is given ----------------------------------------------------
 
 test("the plugin declares the provider and answers its methods", async () => {
@@ -383,6 +397,7 @@ test("the plugin declares the provider and answers its methods", async () => {
     name: "DeepSeek V4.1 Flash",
     api: { npm: "@ai-sdk/openai-compatible" },
     provider: { npm: "@ai-sdk/openai-compatible" },
+    also: ["@ai-sdk/openai", "@ai-sdk/anthropic"],
     attachment: true,
     tool_call: true,
     reasoning: true,
