@@ -1358,8 +1358,11 @@ const LINE_OF={'magpie-direct':'lineDirectUnattr','remote-magpie':'lineDirectUna
 // 品牌拆分名归并（同一家的不同端点命名，2026-11-01 用户拍板）
 // 品牌名按 provider 原名展示（不再做个人化的归并映射）
 const nameOf=pn=>String(pn||'');
-// 线路前缀剥离（直连/代理两线路+旧出口名，归一化到同一订阅）
-const normSub=p=>String(p||'').replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//,'');
+// 线路前缀剥离：服务端注入 __LINES__（providers.json 里用户自定义的远端线路 id）+ magpie
+// 自带的四条。用户把远端线路起名 office 时，office/duanyan 的前缀才剥得掉、logo 找得到。
+const LINES=(window.__LINES__&&window.__LINES__.length)?window.__LINES__:fallback=['magpie-direct','magpie-cf','magpie-2','remote-magpie'];
+const LINE_RE=new RegExp('^('+LINES.map(s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')\\/');
+const normSub=p=>String(p||'').replace(LINE_RE,'');
 // 品牌 logo 映射 = window.QLOGOS（deploy 部署时由 logos/manifest.json 注入；
 // manifest 由 tools/sync-plugin-logos.mjs 从插件包生成——新 provider 装好后重跑该脚本即自动点亮）
 // provider 会带线路/地区/变体后缀（qoder-cn、monkeycode-intl、trae-global、hub-magicrew…），

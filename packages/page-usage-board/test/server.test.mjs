@@ -605,6 +605,79 @@ test('remote quota cards join /api/quotas when magpie aggregates none', async ()
   }
 });
 
+test('a custom-id remote line aggregates exactly once and keeps its icons', async () => {
+  // 复审 1056：用户把远端线路起名 office（preset remote-magpie，自定义 id）时，
+  // magpie 自己已经在 /v1/magpie/quotas 里给了 office/* 卡——hasRemoteLineCards 必须
+  // 从 remoteSources() 的 id 动态识别它，兜底不得再加第二份；页面的线路前缀剥离
+  // （__LINES__）也必须认识 office/，否则 office/duanyan 的 logo 找不到。
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-board-office-'));
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  mkdirSync(path.join(dir, 'icons'));
+  writeFileSync(path.join(dir, 'icons', 'office-cache.svg'), svg);
+  writeFileSync(path.join(dir, 'usage.jsonl'), '');
+  let gatewayHasOfficeCard = false;
+  const gateway = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/v1/magpie/quotas')) {
+      const data = [{ provider: 'loomy', name: 'Loomy', kind: 'subscription', user: 'u1', windows: [] }];
+      if (gatewayHasOfficeCard) data.push({ provider: 'office/duanyan', name: '书生端砚 · Office', user: 'u2', windows: [] });
+      return res.end(JSON.stringify({ data }));
+    }
+    if (req.url.startsWith('/v1/magpie/limit')) return res.end(JSON.stringify({ key: 'cloud', limited: false }));
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  const remote = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/v1/magpie/quotas/cards')) {
+      return res.end(JSON.stringify({ data: [
+        { provider: 'duanyan', name: '书生端砚', icon: 'file:office-cache.svg', kind: 'subscription', user: '193', windows: [] },
+      ] }));
+    }
+    if (req.url.startsWith('/v1/magpie/usage/requests')) return res.end(JSON.stringify({ rows: [], total: 0, providers: [] }));
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise((r) => gateway.listen(0, '127.0.0.1', r));
+  await new Promise((r) => remote.listen(0, '127.0.0.1', r));
+  // office 线路的 chat 指向本 mock 远端（push() 只放行 https 或本机回环），先 listen 再写文件
+  writeFileSync(path.join(dir, 'providers.json'), JSON.stringify({ providers: [
+    { id: 'office', name: 'Office', preset: 'remote-magpie', chat: `http://127.0.0.1:${remote.address().port}/v1`, key: 'office-key' },
+    { id: 'modelscope', name: 'ModelScope', chat: 'http://ms.invalid/v1', key: 'ms-key' },
+  ] }));
+  const s = start({
+    MAGPIE_CONFIG_DIR: dir,
+    USAGE_JSONL: path.join(dir, 'usage.jsonl'),
+    GATEWAY: `http://127.0.0.1:${gateway.address().port}`,
+    ATTRIBUTION: 'remote',
+    MAGPIE_PROVIDERS: path.join(dir, 'providers.json'),
+  });  try {
+    const p = await s.ready;
+    // 网关没聚合 office 卡：兜底按 office/ 前缀补进——office id 从 providers.json 来
+    const q = JSON.parse((await request(p, '/api/quotas', { headers: { 'x-dash-key': TEST_KEY } })).body);
+    const provs = (q.data || []).map((x) => x.provider);
+    assert.ok(provs.includes('office/duanyan'), 'custom-id line card merged under the office prefix');
+    assert.equal(provs.filter((x) => x === 'office/duanyan').length, 1, 'custom-id card appears exactly once');
+    const card = q.data.find((x) => x.provider === 'office/duanyan');
+    assert.equal(card.from, 'Office', 'card is labelled with the custom line name');
+    assert.ok(q.icons && q.icons.duanyan, 'icon map rides along under the custom id');
+    // 网关自己已经带了 office/duanyan：兜底让位——绝不能出现第二份 office/duanyan
+    gatewayHasOfficeCard = true;
+    const q2 = JSON.parse((await request(p, '/api/quotas', { headers: { 'x-dash-key': TEST_KEY } })).body);
+    const provs2 = (q2.data || []).map((x) => x.provider);
+    assert.ok(provs2.includes('office/duanyan'), 'gateway office card passes through');
+    assert.equal(provs2.filter((x) => x === 'office/duanyan').length, 1, 'no double card for a custom-id line');
+    // 页面 __LINES__ 注入包含自定义 id：office/ 前缀剥得掉，logo 才找得到
+    const page = (await request(p, '/', { headers: { 'x-dash-key': TEST_KEY } })).body;
+    assert.match(page, /"office"/, 'page __LINES__ carries the custom line id');
+  } finally {
+    s.c.kill();
+    gateway.close();
+    remote.close();
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 test('a public bind never serves the board page at all', async () => {
   const s = start({ HOST: '0.0.0.0', ALLOWED_HOSTS: 'dash.example' });
   publicChild = s.c;
@@ -742,52 +815,6 @@ test('the dashboard asks the local service for attribution', () => {
   assert.doesNotMatch(html, /cloudflareinsights/);
 });
 
-function pageBetween(text, start, end) {
-  const first = text.indexOf(start);
-  const last = text.indexOf(end, first + start.length);
-  assert.ok(first >= 0, `missing page source: ${start}`);
-  assert.ok(last > first, `missing page source: ${end}`);
-  return text.slice(first, last);
-}
-
-function quotaPageApi() {
-  const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
-  const source = [
-    pageBetween(html, 'function isWorkBuddyProvider', 'function soonWin'),
-    pageBetween(html, 'function soonWin', '// 总积分：'),
-  ].join('\n');
-  const functions = new Function(
-    'winExp',
-    'winAlive',
-    `${source}
-    return {quotaWins,soonWin};`,
-  )(
-    (win) => win.exp,
-    (win) => win.remaining !== 0,
-  );
-  return functions;
-}
-
-test('quota expiry ignores WorkBuddy estimated-token windows', () => {
-  const { quotaWins, soonWin } = quotaPageApi();
-
-  const estimated = { name: 'DeepSeek tokens (est.)', exp: 1, remaining: 1 };
-  const credits = { name: 'Extra credits', exp: 2, remaining: 1 };
-  assert.deepEqual(
-    quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }).map((win) => win.name),
-    ['Extra credits'],
-  );
-  assert.deepEqual(
-    quotaWins({ provider: 'workbuddy-ai', windows: [estimated, credits] }).map((win) => win.name),
-    ['Extra credits'],
-  );
-  assert.equal(quotaWins({ provider: 'trae-cn', windows: [estimated, credits] }).length, 2);
-  assert.equal(
-    soonWin(quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }))[0].name,
-    'Extra credits',
-  );
-});
-
 test('registry draft summary matches package.json verbatim (three-text rule)', () => {
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   const doc = readFileSync(path.join(root, 'docs', 'community-submission.md'), 'utf8');
@@ -843,4 +870,50 @@ test('package metadata matches the community page spec', () => {
   assert.equal(pkg.magpie.options.attribution, 'local'); // 远端归因必须 opt-in
   assert.ok(pkg.magpie.summary.en && pkg.magpie.summary.zh);
   assert.ok(pkg.magpie.page.titles.en && pkg.magpie.page.titles.zh);
+});
+
+function pageBetween(text, start, end) {
+  const first = text.indexOf(start);
+  const last = text.indexOf(end, first + start.length);
+  assert.ok(first >= 0, `missing page source: ${start}`);
+  assert.ok(last > first, `missing page source: ${end}`);
+  return text.slice(first, last);
+}
+
+function quotaPageApi() {
+  const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const source = [
+    pageBetween(html, 'function isWorkBuddyProvider', 'function soonWin'),
+    pageBetween(html, 'function soonWin', '// 总积分：'),
+  ].join('\n');
+  const functions = new Function(
+    'winExp',
+    'winAlive',
+    `${source}
+    return {quotaWins,soonWin};`,
+  )(
+    (win) => win.exp,
+    (win) => win.remaining !== 0,
+  );
+  return functions;
+}
+
+test('quota expiry ignores WorkBuddy estimated-token windows', () => {
+  const { quotaWins, soonWin } = quotaPageApi();
+
+  const estimated = { name: 'DeepSeek tokens (est.)', exp: 1, remaining: 1 };
+  const credits = { name: 'Extra credits', exp: 2, remaining: 1 };
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy-ai', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.equal(quotaWins({ provider: 'trae-cn', windows: [estimated, credits] }).length, 2);
+  assert.equal(
+    soonWin(quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }))[0].name,
+    'Extra credits',
+  );
 });

@@ -394,6 +394,27 @@ function orderedSources() {
   return list;
 }
 
+// 远端线路 id 全集：providers.json 里用户自己起名的 id（preset remote-magpie，如 office）
+// + magpie 自带的四条。hasRemoteLineCards 与页面的线路前缀剥离都从这里取——写死四条时，
+// 自定义 id 的线路会被兜底加成第二张卡、图标也剥不掉前缀（1056 复审）。
+function remoteLineIds() {
+  const ids = orderedSources().map((s) => s.id);
+  for (const id of ['magpie-direct', 'magpie-cf', 'magpie-2', 'remote-magpie']) {
+    if (!ids.some((x) => String(x).toLowerCase() === id)) ids.push(id);
+  }
+  return ids;
+}
+
+function stripLinePrefix(provider) {
+  const p = String(provider || '');
+  const low = p.toLowerCase();
+  for (const id of remoteLineIds()) {
+    const head = id.toLowerCase() + '/';
+    if (low.startsWith(head)) return p.slice(head.length);
+  }
+  return p;
+}
+
 async function remotePage(src, period, offset) {
   const u = src.base + '/v1/magpie/usage/requests?period=' + encodeURIComponent(period)
     + '&limit=' + REMOTE_PAGE + '&offset=' + offset;
@@ -687,8 +708,7 @@ async function handleRequest(req, res, url) {
     // qingyan-checkin → qingyan），避免同一张图被别名各存一份。
     const need = [];
     for (const q of (data.quotas || [])) {
-      const id = String(q && q.provider || '')
-        .replace(/^(magpie-direct|magpie-cf|magpie-2|remote-magpie)\//, '').replace(/#.*$/, '').toLowerCase();
+      const id = stripLinePrefix(q && q.provider).replace(/#.*$/, '').toLowerCase();
       if (id && !need.includes(id)) need.push(id);
     }
     const legacy = loadLegacyLogos();
@@ -703,7 +723,7 @@ async function handleRequest(req, res, url) {
       const base = k.replace(/-(cn|intl|global|free|extra|checkin|pro|api)$/, '');
       if (base !== k && logos[base] === logos[k]) delete logos[k];
     }
-    const inject = `<script>window.__DATA__=${JSON.stringify(data).replace(/</g, '\\u003c')};window.__NOTE__=${JSON.stringify(note)};window.QLOGOS=${JSON.stringify(logos).replace(/</g, '\\u003c')};window.__BUILD__=${JSON.stringify(`${VERSION}/${BUILD_ID}`)};</script>`;
+    const inject = `<script>window.__DATA__=${JSON.stringify(data).replace(/</g, '\\u003c')};window.__NOTE__=${JSON.stringify(note)};window.QLOGOS=${JSON.stringify(logos).replace(/</g, '\\u003c')};window.__LINES__=${JSON.stringify(remoteLineIds())};window.__BUILD__=${JSON.stringify(`${VERSION}/${BUILD_ID}`)};</script>`;
     // 页面需要的口令只出现在这份 HTML 里；API 路由仍校验它，URL/书签里不出现
     const keyInject = PAGE_KEY ? `<script>window.__KEY__=${JSON.stringify(PAGE_KEY).replace(/</g, '\\u003c')};</script>` : '';
     html = html.replace('<head>', () => '<head>' + keyInject + trap + inject);
@@ -978,10 +998,12 @@ let remoteCards = [], remoteCardsAt = 0, remoteCardsPending = null, remoteCardsF
 const REMOTE_CARDS_TTL = 5 * 60 * 1000, REMOTE_CARDS_RETRY = 2 * 60 * 1000;
 
 function hasRemoteLineCards(list) {
+  // 线路 id 从 remoteSources() 动态取（含用户自定义 id，如 office），不写死四条；
   // 线路名下的 ~keys 是本机 key 自己的预算卡，不算远端账号卡
+  const ids = remoteLineIds();
   return (list || []).some((q) => {
-    const p = String(q && q.provider || '');
-    return /^(magpie-direct|magpie-cf|remote-magpie|magpie-2)\//.test(p) && !/\/~keys$/.test(p);
+    const p = String(q && q.provider || '').toLowerCase();
+    return ids.some((id) => p.startsWith(id.toLowerCase() + '/')) && !p.endsWith('/~keys');
   });
 }
 
