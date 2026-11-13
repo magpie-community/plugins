@@ -157,6 +157,10 @@ const OPS_CLAIM_URL = `${SNAP_HOST}/v1/ops/claim`
 const OPS_CONFIRM_URL = `${SNAP_HOST}/v1/ops/confirm`
 const OPS_CHANNEL = "IDE"
 const DAILY_CHECKIN_TYPE = "USER_LOGIN"
+// A campaign of that type is a daily check-in when its title says so; the list
+// also holds one-time USER_LOGIN campaigns (a contest's sign-up gift), which are
+// not the daily check-in and are left to the user.
+const DAILY_CHECKIN_TITLE = /签到|每日/
 // States the IDE disables the claim button in: today's benefit is in already.
 const CLAIMED_STATUSES = ["CLAIMED", "CONFIRMED", "CONSUMED"]
 // Unsigned headers snap-access routes on (signing them breaks the signature).
@@ -2068,23 +2072,35 @@ async function snapRequest(method, url, cred, fetcher, payload) {
   const raw = safeJson(text)
   if (!raw || Array.isArray(raw)) return { ok: false, message: "the answer could not be read" }
   if (raw.code !== undefined && Number(raw.code) !== 0) {
-    return { ok: false, message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
+    return { ok: false, code: Number(raw.code), message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
   }
   return { ok: true, data: "data" in raw ? raw.data : raw }
 }
 
 // ---- daily check-in ----------------------------------------------------------
 
-/** The account's 「每日领取」 campaign from the activity list, or a reason it can't be read. */
-async function dailyCampaign(cred, fetcher) {
+/** The account's 「每日领取」 campaigns from the activity list, or a reason they can't be read. */
+async function dailyCampaigns(cred, fetcher) {
   const listed = await snapRequest("GET", OPS_DELIVERY_URL, cred, fetcher)
   if (!listed.ok) return { error: `活动列表读取失败：${listed.message}` }
   const items = asRecord(listed.data).items
   if (!Array.isArray(items)) return { error: "活动列表缺少 items" }
-  return { item: items.find((it) => asRecord(it).type === DAILY_CHECKIN_TYPE) }
+  return {
+    items: items.filter(
+      (it) => asRecord(it).type === DAILY_CHECKIN_TYPE && DAILY_CHECKIN_TITLE.test(String(asRecord(it).title ?? "")),
+    ),
+  }
 }
 
 const isClaimedToday = (item) => !item?.claimable && CLAIMED_STATUSES.includes(item?.status)
+
+const sameCampaign = (a, b) => String(a?.campaignId) === String(b?.campaignId)
+
+// A claim the vendor turns down because the account has not joined that
+// campaign (a contest's daily check-in before signing up for the contest): the
+// account is not eligible, not a failure to retry.
+const INELIGIBLE_CLAIM = /需要先通过触发接口激活|未参与|未报名|无资格/
+const isIneligibleClaim = (failure) => INELIGIBLE_CLAIM.test(String(failure?.message ?? ""))
 
 // ---- credit batches and when they lapse ------------------------------------
 
@@ -2216,7 +2232,11 @@ function recordGrant(file, account, grant) {
     const keep = Date.now() - LEDGER_KEEP_DAYS * 86_400_000
     const day = beijingDay(vendorDate(grant.at))
     const list = (Array.isArray(all[account]) ? all[account] : [])
-      .filter((g) => (vendorDate(g.expiresAt) ?? 0) > keep && beijingDay(vendorDate(g.at) ?? 0) !== day)
+      .filter(
+        (g) =>
+          (vendorDate(g.expiresAt) ?? 0) > keep &&
+          !(beijingDay(vendorDate(g.at) ?? 0) === day && String(g.campaignId ?? "") === String(grant.campaignId ?? "")),
+      )
     all[account] = [...list, grant]
     writeLedger(file, all)
   } catch {
@@ -2230,21 +2250,23 @@ function recordGrant(file, account, grant) {
 // here, so it is never confirmed. Kept for its Beijing day only.
 const UNCONFIRMED = "_unconfirmed"
 
-/** Today's claim this plugin left unconfirmed for `account`, if any. */
+/** Today's claims this plugin left unconfirmed for `account`, if any. */
 function readUnconfirmed(file, account) {
   const left = asRecord(asRecord(readLedger(file)[UNCONFIRMED])[account])
-  return left.day === beijingDay() ? left : undefined
+  if (left.day !== beijingDay()) return []
+  if (Array.isArray(left.claims)) return left.claims
+  return left.campaignId !== undefined ? [left] : []
 }
 
-/** Keep the claim left unconfirmed for `account`, or with null drop it; other days' go. */
-function recordUnconfirmed(file, account, left) {
+/** Keep the claims left unconfirmed for `account`, or with an empty list drop them; other days' go. */
+function recordUnconfirmed(file, account, claims) {
   try {
     const all = readLedger(file)
     const today = beijingDay()
     const kept = Object.fromEntries(
       Object.entries(asRecord(all[UNCONFIRMED])).filter(([k, v]) => k !== account && asRecord(v).day === today),
     )
-    if (left) kept[account] = { ...left, day: today }
+    if (Array.isArray(claims) && claims.length > 0) kept[account] = { day: today, claims }
     all[UNCONFIRMED] = kept
     writeLedger(file, all)
   } catch {
@@ -2262,52 +2284,125 @@ function grantExpiry(benefit, at) {
 }
 
 /**
- * Press the daily check-in, exactly as the IDE's 「限时福利 → 每日领取」 does:
- * list the activities, claim the `USER_LOGIN` one with `{campaignId, channel}`,
- * and confirm it when the claim answers an id (`benefit.id !== null`), or the
- * credits stay pending. Answers magpie's check-in outcome; never throws.
- * `unconfirmed` is today's claim this plugin left unconfirmed (the ledger's);
- * an answer's own `unconfirmed` is one to keep there.
+ * Press the daily check-ins, exactly as the IDE's 「限时福利 → 每日领取」 does:
+ * list the activities, claim every claimable `USER_LOGIN` item with
+ * `{campaignId, channel}`, and confirm each when its claim answers an id
+ * (`benefit.id !== null`), or the credits stay pending. The list holds more than
+ * one such item: the ordinary daily check-in, and the campaigns a contest adds
+ * beside it. Answers magpie's check-in outcome; never throws. `unconfirmed` is
+ * today's list of claims this plugin left unconfirmed (the ledger's); an
+ * answer's own `unconfirmed` is one to keep there.
  */
 async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
-  const first = await dailyCampaign(cred, fetcher)
-  if (first.error) return { outcome: "failed", message: first.error }
-  const item = first.item
-  if (!item) return { outcome: "inactive", message: "当前没有每日领取活动" }
-  const credit = num(item.benefitAmount)
-  // Claimed here, but the confirm failed: confirm it now, or the credits stay
-  // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
-  // well, and the IDE never confirms it. When the confirm fails, only the
-  // activity tells whether it was confirmed after all; still claimed, it is a
-  // failure magpie tries again later that day.
-  const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
-  const leftHere = unconfirmed && String(unconfirmed.campaignId) === String(item.campaignId)
-  if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (confirmed.ok) return claimedOutcome(asRecord(unconfirmed.benefit), credit)
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item) && again.item.status !== "CLAIMED") return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取确认失败：${confirmed.message}` }
-  }
-  if (isClaimedToday(item)) return { outcome: "done", message: "今天已领取" }
-  if (!item.claimable) return { outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` }
-  if (!campaign) return { outcome: "failed", message: "活动缺少 campaignId" }
+  const listed = await dailyCampaigns(cred, fetcher)
+  if (listed.error) return { outcome: "failed", message: listed.error }
+  const items = listed.items
+  if (items.length === 0) return { outcome: "inactive", message: "当前没有每日领取活动" }
 
-  const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
-  if (!claimed.ok) {
-    // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item)) return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取失败：${claimed.message}` }
-  }
-  const benefit = asRecord(claimed.data)
-  if (claimed.data && benefit.id !== null) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (!confirmed.ok) {
-      return { outcome: "failed", message: `领取确认失败：${confirmed.message}`, unconfirmed: { campaignId: item.campaignId, benefit } }
+  const left = [].concat(unconfirmed ?? [])
+  const results = []
+  const grants = []
+  const kept = []
+
+  for (const item of items) {
+    const credit = num(item.benefitAmount)
+    const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
+    const leftHere = campaign ? left.find((claim) => sameCampaign(claim, item)) : undefined
+    // Claimed here, but the confirm failed: confirm it now, or the credits stay
+    // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
+    // well, and the IDE never confirms it. When the confirm fails, only the
+    // activity tells whether it was confirmed after all; still claimed, it is a
+    // failure magpie tries again later that day.
+    if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (confirmed.ok) {
+        const outcome = claimedOutcome(asRecord(leftHere.benefit), credit)
+        if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+        results.push(outcome)
+        continue
+      }
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen) && seen.status !== "CLAIMED") {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      kept.push(leftHere)
+      results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+      continue
     }
+    if (isClaimedToday(item)) {
+      results.push({ outcome: "done", message: "今天已领取" })
+      continue
+    }
+    if (!item.claimable) {
+      results.push({ outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` })
+      continue
+    }
+    if (!campaign) {
+      results.push({ outcome: "failed", message: "活动缺少 campaignId" })
+      continue
+    }
+
+    const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
+    if (!claimed.ok) {
+      // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen)) {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      if (isIneligibleClaim(claimed)) {
+        results.push({ outcome: "ineligible", message: claimed.message })
+        continue
+      }
+      results.push({ outcome: "failed", message: `领取失败：${claimed.message}` })
+      continue
+    }
+    const benefit = asRecord(claimed.data)
+    if (claimed.data && benefit.id !== null) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (!confirmed.ok) {
+        kept.push({ campaignId: item.campaignId, benefit })
+        results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+        continue
+      }
+    }
+    const outcome = claimedOutcome(benefit, credit)
+    if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+    results.push(outcome)
   }
-  return claimedOutcome(benefit, credit)
+
+  const failed = results.filter((result) => result.outcome === "failed")
+  const claimed = results.filter((result) => result.outcome === "claimed")
+  const done = results.filter((result) => result.outcome === "done")
+  const ineligible = results.filter((result) => result.outcome === "ineligible")
+
+  let outcome
+  let credit
+  let message
+  if (failed.length > 0) {
+    outcome = "failed"
+    message = failed.length === 1 ? failed[0].message : `${failed[0].message}（另有 ${failed.length - 1} 个活动失败）`
+  } else if (claimed.length > 0) {
+    outcome = "claimed"
+    credit = claimed.reduce((sum, result) => sum + (result.credit ?? 0), 0)
+    message = credit > 0 ? `+${credit} 积分` : "已领取"
+  } else if (done.length > 0) {
+    outcome = "done"
+    message = "今天已领取"
+  } else {
+    outcome = "ineligible"
+    message = ineligible[0]?.message ?? ""
+  }
+
+  const answer = { outcome, ...(credit > 0 ? { credit } : {}), message }
+  if (grants.length === 1) answer.grant = grants[0]
+  else if (grants.length > 1) answer.grants = grants
+  if (kept.length === 1) answer.unconfirmed = kept[0]
+  else if (kept.length > 1) answer.unconfirmed = kept
+  return answer
 }
 
 /** The outcome of a check-in that went through, with the grant the ledger keeps. */
@@ -3472,23 +3567,25 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         // The account's own memory first: the ledger is written best effort,
         // and a write that failed mustn't lose the claim; the ledger carries it
         // to another process, or past a restart.
-        const held = state.unconfirmed?.day === today ? state.unconfirmed : undefined
+        const held = state.unconfirmed?.day === today ? state.unconfirmed.claims : undefined
         const left = held ?? readUnconfirmed(ledgerPath, key)
-        const { grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        const { grant, grants, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
         // A claim whose confirm failed is kept for the next check-in; one
         // confirmed now, or found done, is dropped.
-        if (unconfirmed) {
-          state.unconfirmed = { ...unconfirmed, day: today }
-          recordUnconfirmed(ledgerPath, key, unconfirmed)
-        } else if (left && r.outcome !== "failed") {
+        const kept = Array.isArray(unconfirmed) ? unconfirmed : unconfirmed ? [unconfirmed] : []
+        if (kept.length > 0) {
+          state.unconfirmed = { day: today, claims: kept }
+          recordUnconfirmed(ledgerPath, key, kept)
+        } else if (left?.length > 0 && r.outcome !== "failed") {
           state.unconfirmed = null
-          recordUnconfirmed(ledgerPath, key, null)
+          recordUnconfirmed(ledgerPath, key, [])
         }
-        if (r.outcome === "claimed") {
+        const newGrants = grants ?? (grant ? [grant] : [])
+        if (newGrants.length > 0) {
           // The new batch shows at the next usage read; the ledger keeps it in
           // case the vendor's batch list can't be read.
           state.batchesAt = 0
-          if (grant) recordGrant(ledgerPath, key, grant)
+          for (const item of newGrants) recordGrant(ledgerPath, key, item)
         }
         return r
       },

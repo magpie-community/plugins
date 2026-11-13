@@ -175,7 +175,13 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 - `auth.checkin`: the client's 「限时福利 → 每日领取」 — `GET /v1/ops/delivery?channel=IDE`,
   `POST /v1/ops/claim`, then `POST /v1/ops/confirm` when the claim answers an id. A claim whose
   confirm failed is kept in that ledger for the day and confirmed at the next check-in; one the
-  client leaves unconfirmed (`id: null`) never is. Turn on
+  client leaves unconfirmed (`id: null`) never is. Every claimable campaign whose title is a
+  daily one (`签到` / `每日`) is claimed: the ordinary daily check-in and a contest's daily
+  check-in beside it (such as the 小红书 Skill 创新赛 daily 1000, 2026-11-11–12-05) are separate campaigns in that
+  same list; a contest's one-time sign-up gift is left to the user. A contest check-in the
+  account has not signed up for is not claimable, so it is skipped and the ordinary one is still
+  claimed. The dates are the vendor list's own (`extra.endTime`), not hardcoded here, so the
+  campaign stops being claimed when it ends. Turn on
   *Auto check-in* for CodeArts under **Settings → Usage → Plugins**.
 
 ## OfficeAce (the second provider)
@@ -327,6 +333,10 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   时间读自码道控制台同一批接口，读不到时退回插件的签到账本 `~/.config/magpie/codearts-checkins.json`
   （这部分仍在用更多账号验证，请以控制台为准）。`auth.checkin` 与客户端「限时福利 → 每日领取」一致
   （插件领取后确认失败的，当天记在签到账本里，下次签到时补确认；客户端本就不确认的 `id: null` 领取不会被确认），
+  活动列表里标题为签到/每日（`签到` / `每日`）的每一个可领活动都会领取：普通每日签到和赛事附带的
+  每日签到（例如小红书 Skill 创新赛的每日 1000 积分，2026-11-11–12-05）是同一列表里的不同活动，赛事的一次性报名礼
+  留给用户自己领；没报名该赛事的账号，赛事签到不可领，会被跳过，普通每日签到仍照常领取，
+  日期取自服务端活动列表的 `extra.endTime`，代码里没有写死，活动结束后自然不再领取，
   在 **设置 → 用量 → Plugins** 打开「每日自动签到」即可。
 - **OfficeAce（第二个供应商）**：officeace 卡片提供与 CodeArts 卡片相同的「华为云登录」，账号体系是同一套：
   码道的 STS 三元组能签 OfficeAce 的订阅接口（V11-HMAC）并通过它的 CLAW 权限校验，反之 OfficeAce 的三元组也能签
