@@ -1,6 +1,6 @@
 # magpie-comate-auth
 
-给 magpie 加一张**文心快码（Baidu Comate）**账号卡片：会员席位积分、增购积分、赠送积分一眼看全。
+给 magpie 加一个**文心快码（Baidu Comate）**provider：账号卡片（会员席位 / 增购 / 赠送积分）+ **15 个模型**（DeepSeek V4 系、GLM-5 系、Kimi K2.6、MiniMax M3、ERNIE 5.5…）。
 
 ## 为什么要单独一个插件
 
@@ -10,17 +10,26 @@
 
 ## 它做什么 / 不做什么
 
-- 做：`auth`（复用 magpie 里已登录的百度账号，或浏览器粘贴 Cookie）+ `usage`（读 `/api/user/agent/balance`）。
-- 不做：不提供模型。文心快码的模型只能通过 IDE 调用，没有公开的 OpenAI 兼容端点，所以这张卡片只显示额度，不会出现在模型列表里。
-- 不写任何本地文件、不改 magpie 其它 provider 的配置。卸载干净：`magpie plugin rm magpie-comate-auth`。
+- 做 `auth`：复用 magpie 里已登录的百度账号（零操作），或浏览器粘贴 Cookie。
+- 做 `usage`：读 `/api/user/agent/balance`，显示席位 / 增购 / 赠送 / 独立积分包。
+- 做模型：插件自己在 `127.0.0.1:3427` 起一个 OpenAI 兼容口，把请求翻译成官方 CLI 的 `zulu run --mode Ask`。**没有独立服务进程**，端口随插件生死；没装 CLI 时自动退化成纯额度卡片。
+- 不改 magpie 的 provider 配置，只写一份用量缓存 `comate-usage-cache.json`（在 magpie 的 data 目录）。卸载干净：`magpie plugin rm magpie-comate-auth`。
 
 ## 安装
 
 ```bash
-magpie plugin add D:/AI/hermes/magpie-comate-auth
+magpie plugin add github:ikashana/magpie-comate-auth
 ```
 
-（或先把仓库推到 GitHub，`magpie plugin add github:ikashana/magpie-comate-auth`；仓库需要带 `magpie-plugin` topic。）
+也可以 clone 到本地后 `magpie plugin add <本地目录>`（插件会被原地加载，不拷进 magpie 的 node_modules）。
+
+模型通道依赖官方 CLI，装完插件后要在插件目录里装一次：
+
+```bash
+cd <插件目录> && npm i
+```
+
+（`@comate/zulu` 已在 `dependencies` 里；不装它插件就只当额度卡片，登录与积分照常可用。）
 
 ## 登录
 
@@ -38,6 +47,29 @@ magpie plugin add D:/AI/hermes/magpie-comate-auth
 | `balance` | 席位 + 增购 + 赠送 + 独立积分包 的**可用**合计 |
 | `windows[]` | 每类积分一行（只列总额 > 0 的）：已用 / 总额 |
 | `user` | 百度账号名 |
+
+## 模型通道（15 个模型）
+
+Comate 不给外部 API，但官方 CLI `@comate/zulu` 有 `run --mode Ask`（纯问答、不碰文件）。
+插件因此在进程内起一个兼容口：
+
+```
+magpie ──OpenAI 格式──▶ 127.0.0.1:3427（插件内）──▶ zulu run --mode Ask ──▶ Comate 云
+```
+
+`GET /v1/models` 与 `POST /v1/chat/completions`（含 SSE 流式）都支持。
+
+**⚠️ 关键坑：必须显式 `HTTP_HOST`。** zulu 的 `API_MAP` 里没有 SaaS 平台这一项，
+默认会掉到内网域名 `comate.baidu-int.com`，表现为 `ENOTFOUND` 或「TLS 连接被断开」。
+插件里固定传 `HTTP_HOST=https://comate.baidu.com`。
+
+其他实情：
+
+- 每次请求要拉起一次 CLI 进程，**4~11 秒**（模型越重越慢），不适合高频调用。
+- 多轮对话会被拼成一条 query 发给 Ask 模式，不是真正的 chat session。
+- `tool_call: false`：zulu 的 agent 能力不暴露成 OpenAI tools 协议。
+- 图片模型（Deepseek V4.1 Flash / GLM-5v-Turbo / MiniMax M3 / Kimi K2.6 等）目前只标了
+  `attachment: true`，还没接 `--attach-image`，发图会被忽略。
 
 ## 接口（实测）
 

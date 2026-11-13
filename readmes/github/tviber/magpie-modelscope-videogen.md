@@ -22,7 +22,7 @@ The package runs locally. Magpie calls fourteen tools; the Python service queues
 The service exposes `GET /v1/models`, `POST /v1/videos`, `GET /v1/videos/{id}` and `GET /v1/videos/{id}/content`. It binds to loopback by default. It does not require or store a ModelScope password or API key; it uses the browser sessions you configure.
 
 
-## VideoGen 0.1.0 model and parameter support
+## VideoGen 0.0.2 model and parameter support
 
 The npm/plugin name is **`magpie-modelscope-videogen`**. Local folder installs
 load the package name from `package.json`; disable and enable the installed
@@ -166,7 +166,7 @@ $env:WAN_SERVICE_DATA_DIR = "$env:LOCALAPPDATA\magpie-wan"
 magpie-wan-service
 ```
 
-There is no two-account limit. The service starts one serial worker queue per configured account ID and assigns plugin jobs by the selected WAN routing mode (direct HTTP requests without a mode keep queue-based selection). Open `https://modelscope.cn` or `https://www.modelscope.cn` and sign in in each browser profile. Other domains, HTTP pages, and redirects are rejected. Upload destinations must be official HTTPS ModelScope hosts or bucket-specific Alibaba OSS HTTPS endpoints; upload redirects are rejected.
+There is no two-account limit. The service starts one serial worker queue per configured account ID and assigns plugin jobs by the selected VideoGen routing mode (direct HTTP requests without a mode keep queue-based selection). Open `https://modelscope.cn` or `https://www.modelscope.cn` and sign in in each browser profile. Other domains, HTTP pages, and redirects are rejected. Upload destinations must be official HTTPS ModelScope hosts or bucket-specific Alibaba OSS HTTPS endpoints; upload redirects are rejected.
 
 Each ID is bound to a salted local fingerprint of its ModelScope login. The service checks the fingerprint before processing jobs, and the adapter checks the login before API operations. You can reorder the mapping or change a CDP port while keeping each ID with its original login. A different login or a duplicate identity blocks that worker. Use a new ID for a new account; never rename an ID with unfinished jobs. Choose generic IDs, since they appear in tool responses. Raw login IDs and CDP addresses are not persisted by the service. Display names are held in memory; connecting an account in Magpie saves its display label and configured account ID there.
 
@@ -207,16 +207,16 @@ Managed browsers use one private profile per account, run headless after login, 
 
 A configured account with a private `browser-profiles/<account-id>` directory in the service data directory is managed by the service too. Its debugging port is allocated at startup and restored automatically; its database identity and job ownership remain unchanged. Manually configured accounts without such a directory remain externally managed. Managed ports never reuse another configured account's reserved port, even when that external browser is offline.
 
-To remove a saved sign-in, expand that account card's **设置** and click Magpie's native **移除** button. This removes that account's Magpie login, not the entire provider or the ModelScope account. It does not delete browser profiles, stop the independent WAN queue, or erase video history. The provider-level **移除** button has a different effect; use the per-account button.
+To remove a saved sign-in, expand that account card's **设置** and click Magpie's native **移除** button. This removes that account's Magpie login, not the entire provider or the ModelScope account. It does not delete browser profiles, stop the independent video queue, or erase video history. The provider-level **移除** button has a different effect; use the per-account button.
 
 Each connected account has its own label and **可用魔粒** wallet in Providers and Usage. The optional [native Magpie wallet-trend patch](patches/README.md) adds per-account balance history when expanded and a combined history when folded; it requires a patched Magpie build, not only this plugin. The plugin reads ModelScope's `available_balance`, not total credits including frozen amounts. Snapshots refresh about every 60 seconds when idle, and after submission/completion; a snapshot older than 120 seconds is marked stale and its balance hidden. A browser busy uploading/submitting can temporarily make its wallet stale. Unknown balances are not displayed as zero. `estimate_unit` is `魔粒`; `estimate` is a quoted generation cost, not seconds or a confirmed charge.
 
-This provider is an account/usage integration with no chat models. Generate through the WAN tools. Magpie's provider account switches do not control the service's independent video queues; use the submission's optional `account` ID when a specific queue is needed. Browser logins are not automatically written into Magpie's sign-in store: use the native login flow, so signing out in Magpie stays signed out until you explicitly sign in again.
+This provider is an account/usage integration with no chat models. Generate through the VideoGen tools. Magpie's provider account switches do not control the service's independent video queues; use the submission's optional `account` ID when a specific queue is needed. Browser logins are not automatically written into Magpie's sign-in store: use the native login flow, so signing out in Magpie stays signed out until you explicitly sign in again.
 
-### WAN account routing
+### VideoGen account routing
 
-The provider editor's **均衡负载（剩余魔粒最多优先）** switch is on by default.
-It controls WAN video tools, independently of Magpie's general model routing.
+The provider editor's **VideoGen 均衡负载（剩余魔粒最多优先）** switch is on by default.
+It controls all VideoGen video tools, independently of Magpie's general model routing.
 Every submission picks the connected account with the largest fresh, positive
 `available_balance` (a max-priority-queue top). Equal balances prefer the shorter
 active queue, then account ID for a stable tie. Expired snapshots, unknown/zero
@@ -248,15 +248,15 @@ Example tool arguments:
 
 ```json
 {
-  "prompt": "The camera follows the knight through the rain.",
-  "first_frame": "/absolute/workspace/opening.png",
+  "prompt": "A red ball rolls slowly across a wooden table.",
+  "first_frame": "/absolute/workspace/first-frame.png",
   "seconds": 8,
   "size": "1280x720",
-  "project": "Knight MV",
-  "shot": "01 Opening",
+  "project": "Demo Project",
+  "shot": "01 Sample Clip",
   "account": "account-1",
   "copy_to_media_root": true,
-  "idempotency_key": "knight-opening-v1"
+  "idempotency_key": "demo-clip-01-v1"
 }
 ```
 
@@ -427,7 +427,7 @@ On the repository page, use the gear next to **About**, add `magpie-plugin` unde
 
 The generation tools opt into the [native plugin-video routing patch](patches/README.md).
 With that patched Magpie installed, agent submissions appear in Routing
-with agent, model, account, duration, submission result and WAN job ID.
+with agent, model, account, duration, submission result and video job ID.
 Open **Request and response** for the returned job status. HTTP 200 means
 submission succeeded; use `videogen_get_video_status` for the ongoing generation
 and `videogen_get_video_result` for the completed video. Polls and downloads do
@@ -435,7 +435,7 @@ not create duplicate generation rows. Older calls are not backfilled.
 Official Magpie without this patch continues running all tools normally.
 
 
-### VideoGen 0.1.0 live validation
+### VideoGen 0.0.2 live validation
 
 On 2026-11-13, the complete nine-model alias set matched the official
 `defaultTemplateV2` video list. Catalog search returned matching H3 and LTX

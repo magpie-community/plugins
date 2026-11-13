@@ -11,7 +11,7 @@ magpie plugin login image-models/twelveai
 magpie plugin login image-models/wavespeed
 ```
 
-发布版本固定在 `v0.3.1`。登录时 Magpie 只询问该渠道的 API Key，并沿用
+发布版本固定在 `v0.4.0`。登录时 Magpie 只询问该渠道的 API Key，并沿用
 Magpie 自己的凭据存储。插件不读取环境变量、Keychain、私有配置文件或本机
 路径。只使用一个渠道时，只登录该渠道。
 
@@ -58,12 +58,18 @@ magpie tool generate_image \
 ## 结构
 
 一个插件包，每个供应商一个 provider。它们共用请求解析、异步轮询、上传、
-下载和标准 API Key 登录，但各自保留模型目录与请求合同。新增一个 OpenAI
-兼容的异步图片渠道通常只需要：
+下载和标准 API Key 登录。`catalog.json` 是可读的模型能力清单，
+`catalog.mjs` 将它同时用于 Magpie 模型注册和请求边界校验，避免模型名与
+参数合同分叉。`null` 表示该边界尚未核实，不会据此拒绝请求。
+
+能力清单区分文生图与编辑：带 `editModel` 的条目在收到参考图时转到对应编辑模型；`maxReferences` 是编辑模式可接受的参考图上限，`null` 表示尚未核实。
+
+新增一个兼容的异步图片渠道通常只需要：
 
 1. 在 `providers/` 增加一个供应商文件。
 2. 在 `index.mjs` 增加一个导出。
-3. 声明独立 provider ID、模型列表和三项渠道函数：提交、查询、结果提取。
+3. 在 `catalog.json` 声明独立 provider ID、模型与已知能力。
+4. 声明三项渠道函数：提交、查询、结果提取。
 
 不替换已有 `rightimage`、`generation-service` 或 Magpie 默认图片路由。
 一个渠道的凭据或故障不会影响其他渠道。
@@ -84,4 +90,9 @@ magpie tool generate_image \
 - `workspace/magpie-async-image-plugins-20261112/`：文生图与单参考编辑及视觉边界。
 
 `npm test` 覆盖 provider 注册、标准登录、缺登录 fail-closed，以及三个渠道的
-请求映射、异步轮询、上传和下载；它不提交真实生成，也不证明供应商当前可用性。
+请求映射、异步轮询、上传、下载和已知参数边界；它不提交真实生成，也不证明
+供应商当前可用性。
+
+异步任务在单次 Magpie 请求内轮询。进程中断后，插件没有持久化上游任务 ID，
+因此不能自动恢复或重新提交；需要跨进程恢复的长任务应使用
+`generation-service`。
