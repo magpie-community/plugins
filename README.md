@@ -280,6 +280,7 @@ it off puts the config back.
 |---|---|
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
+| [trae-desktop](packages/trae-desktop) | Trae CN on Windows: Magpie models in Trae’s own picker, native catalog synchronization and reversible cleanup. Requires the verified CN 3.4.18 build; installs a hash-guarded refresh component, then restart Trae once. Separate from the Trae subscription provider |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
 | [deepzora](packages/deepzora) | [Deepzora](https://github.com/SivanCola/deepzora) Desktop, CLI and ACP: reversible global TOML/dotenv bridge; restart Deepzora after choosing a model |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
