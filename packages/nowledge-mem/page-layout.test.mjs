@@ -8,7 +8,10 @@ import { runInNewContext } from "node:vm"
 
 const chrome = process.platform === "linux" &&
   (Bun.which("google-chrome") || Bun.which("google-chrome-stable") || Bun.which("chromium") || Bun.which("chromium-browser"))
-const LAUNCH_BOUND = 25000
+const CI_LAUNCH_BOUND = 90000
+const LAUNCH_BOUND = process.env.CI ? CI_LAUNCH_BOUND : 25000
+// Leave room for the launch bound plus process cleanup and stderr collection.
+const TEST_TIMEOUT = LAUNCH_BOUND + 10000
 
 test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the dialog", async () => {
   const read = (name) => Bun.file(new URL(`./page/${name}`, import.meta.url)).text()
@@ -51,8 +54,10 @@ test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the
     })
     // The results are read as soon as Chrome prints them, and Chrome is then
     // stopped: the test needs the dumped DOM, not Chrome's own exit (#972).
-    // A launch that prints nothing by the bound is stopped too, and the test
-    // fails with what Chrome wrote to stderr instead of a bare timeout.
+    // Local launches stay tightly bounded. CI's full test suite can slow
+    // Chrome startup without affecting layout assertions, so it gets a larger
+    // bound; a launch that still prints nothing by it is stopped and fails
+    // with what Chrome wrote to stderr instead of a bare timeout.
     const err = new Response(proc.stderr).text()
     const found = /<pre id="results">([^<]+)<\/pre>/
     let out = ""
@@ -83,4 +88,4 @@ test.skipIf(!chrome)("narrow settings footer keeps translated actions inside the
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
-}, 30000)
+}, TEST_TIMEOUT)
