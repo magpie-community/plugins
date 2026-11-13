@@ -4028,6 +4028,7 @@ const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
 const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]\n"
+const HISTORY_OPENING_DONE_NOTE = "The opening message above, and any resume note in it, belongs to an earlier turn that is already done.\n"
 const utf8 = new TextEncoder()
 
 function utf8Bytes(text) {
@@ -4129,23 +4130,113 @@ function clipPartsToBytes(parts, limit) {
   return out
 }
 
-// Claude Code's own user-role notes: reminders, context notices, local
-// command output and interrupt markers. A user message of these alone is
-// not the prompt that started a tool loop (#1055).
+// Claude Code's and DeepSeek Harness's own user-role notes: reminders, context
+// notices, local command output, interrupt markers, clock and runtime-context
+// snapshots, repeat-tool warnings and mode switches. A user message of these
+// alone is not a prompt from the user (#1055).
 const LOCAL_COMMAND_RE = /<(local-command-caveat|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g
+const DSH_TIME_CONTEXT_RE = /(?:^|\r?\n)Time sampled while preparing turn \d+, step \d+: [^\r\n]+(?:\r?\nBrowser time zone for this request: [^\r\n]+)?(?:\r?\nElapsed since the preceding (?:model-visible message|step context): [^\r\n]+)?/g
+const DSH_REPEAT_TOOL_RE = /(?:^|\r?\n)(?:You are repeating the exact same tool call with identical arguments\. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call\.|Repeated tool call detected:\r?\n- tool: [^\r\n]+\r?\n- consecutive_calls: \d+\r?\n- arguments: [^\r\n]+\r?\nThe repeated calls are not making progress\. Do not call this tool with these exact arguments again\. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered\.)/g
+const DSH_PLAN_MODE_RE = /(?:^|\r?\n)The user switched this session (?:to plan|back to the default) mode\.(?=\r?\n|$)/g
+// DeepSeek Harness sends a runtime-context snapshot as its own user message;
+// a gateway that merges user messages into one string could lose text after it.
+const DSH_RUNTIME_SNAPSHOT_RE = /^Current runtime context(?:\. This snapshot supersedes earlier runtime-context snapshots\.(?:\r?\n[\s\S]*)?|: none\. Earlier runtime-context snapshots no longer apply\.)$/
+
 function isMetaOnlyUserText(text) {
-  return !text.replace(SYSTEM_REMINDER_RE, "").replace(CONTEXT_NOTICE_RE, "").replace(LOCAL_COMMAND_RE, "")
+  const rest = stripMagpiePlaceholderNotice(text)
+    .replace(SYSTEM_REMINDER_RE, "")
+    .replace(CONTEXT_NOTICE_RE, "")
+    .replace(LOCAL_COMMAND_RE, "")
+    .replace(DSH_TIME_CONTEXT_RE, "")
+    .replace(DSH_REPEAT_TOOL_RE, "")
+    .replace(DSH_PLAN_MODE_RE, "")
     .replace(/\[Request interrupted by user(?: for tool use)?\]/g, "")
-    .replace(/\[(?:SYSTEM NOTIFICATION|MESSAGE FROM NON-USER SOURCE) - NOT USER INPUT\]/g, "").trim()
+    .replace(/\[(?:SYSTEM NOTIFICATION|MESSAGE FROM NON-USER SOURCE) - NOT USER INPUT\]/g, "")
+    .trim()
+  return !rest || DSH_RUNTIME_SNAPSHOT_RE.test(rest)
+}
+
+function isToolResultMessage(message) {
+  return Array.isArray(message?.content) && message.content.some((block) => block?.type === "tool_result")
 }
 
 // A user message with no tool result and something the user wrote or attached.
 function isUserTask(message) {
-  if (message.role !== "user") return false
+  if (message?.role !== "user") return false
   if (typeof message.content === "string") return !isMetaOnlyUserText(message.content)
-  if (!Array.isArray(message.content) || message.content.some((block) => block?.type === "tool_result")) return false
-  return message.content.some((block) => block?.type === "image") ||
-    !isMetaOnlyUserText(message.content.filter((block) => block?.type !== "image").map(blockText).join("\n"))
+  if (!Array.isArray(message.content) || isToolResultMessage(message)) return false
+  if (message.content.some((block) => block?.type === "image")) return true
+  return message.content.some((block) => !isMetaOnlyUserText(blockText(block)))
+}
+
+// Index right after the last completed assistant reply (an assistant run with
+// no tool_use), or 0 when the conversation is still in its first turn.
+function lastCompletedTurnEnd(history) {
+  for (let end = history.length; end > 0;) {
+    if (history[end - 1].role !== "assistant") {
+      end--
+      continue
+    }
+    let start = end - 1
+    while (start > 0 && history[start - 1].role === "assistant") start--
+    const hasToolUse = history.slice(start, end).some((message) =>
+      Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_use"))
+    if (!hasToolUse) return end
+    end = start
+  }
+  return 0
+}
+
+// Bounds of the non-assistant, non-tool_result run around `index` when at
+// least one message in it is a user task; null when the run is meta-only.
+function userTurnRun(history, index) {
+  if (index < 0 || index >= history.length) return null
+  let start = index
+  while (start > 0 && history[start - 1].role !== "assistant" && !isToolResultMessage(history[start - 1])) start--
+  let end = index + 1
+  while (end < history.length && history[end].role !== "assistant" && !isToolResultMessage(history[end])) end++
+  const all = []
+  const tasks = []
+  const rest = []
+  for (let i = start; i < end; i++) {
+    if (i === 0) continue
+    all.push(i)
+    if (isUserTask(history[i])) tasks.push(i)
+    else rest.push(i)
+  }
+  const hasTask = tasks.length > 0 || (start === 0 && end > 0 && isUserTask(history[0]))
+  return hasTask ? { all, tasks, rest } : null
+}
+
+// The user-turn run that opened the active tool loop, if any.
+function loopOpeningRun(history, loopStart) {
+  for (let i = loopStart; i < history.length; i++) {
+    if (history[i].role === "assistant" || isToolResultMessage(history[i])) break
+    if (isUserTask(history[i])) return userTurnRun(history, i)
+  }
+  return null
+}
+
+// The latest user-turn run at or after `loopStart`, never reaching back into
+// an earlier completed turn.
+function latestLoopTaskRun(history, loopStart) {
+  for (let i = history.length - 1; i >= loopStart; i--) {
+    if (isUserTask(history[i])) return userTurnRun(history, i)
+  }
+  return null
+}
+
+// Byte size of `indices` (sorted, unique) plus an omission note for each gap.
+function keptSliceBytes(indices, totalLength, entries, noteBytes) {
+  let bytes = 0
+  let next = 0
+  for (const i of indices) {
+    if (i > next) bytes += noteBytes
+    bytes += entries[i].bytes
+    next = i + 1
+  }
+  if (next < totalLength) bytes += noteBytes
+  return bytes
 }
 
 // `reserveBytes` is text the caller appends after </current_turn>.
@@ -4187,43 +4278,71 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   let entries = history.map(render)
   if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
   let kept = entries
+  let showOpeningDone = false
   if (overRoom(entries)) {
-    // Keep the opening anchor message and the newest messages that still fit;
-    // the early middle of the conversation gives way to one omission note.
-    room -= utf8Bytes(HISTORY_OMITTED_NOTE)
-    const anchor = entries[0] && entries[0].bytes <= room ? entries[0] : null
-    if (anchor) room -= anchor.bytes
-    // Mid tool loop, the user's prompt that started it says what the loop is
-    // for: it stays too, after the anchor, with a note for each gap (#1053).
-    let task = -1
-    if (current.some((message) => Array.isArray(message.content) &&
-      message.content.some((block) => block?.type === "tool_result"))) {
-      task = history.findLastIndex(isUserTask)
-      if (task <= 0 || entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE) > room) task = -1
-      else room -= entries[task].bytes + utf8Bytes(HISTORY_OMITTED_NOTE)
+    const noteBytes = utf8Bytes(HISTORY_OMITTED_NOTE)
+    const inToolLoop = current.some(isToolResultMessage)
+    const loopStart = inToolLoop ? lastCompletedTurnEnd(history) : history.length
+    const openingDoneBytes = utf8Bytes(HISTORY_OPENING_DONE_NOTE)
+    let reservedOpeningDone = false
+    if (room < noteBytes) {
+      kept = []
+    } else {
+      if (inToolLoop && loopStart > 0 && room >= noteBytes + openingDoneBytes) {
+        reservedOpeningDone = true
+        room -= openingDoneBytes
+      }
+      // Keep the opening anchor message and the newest messages that still fit;
+      // the early middle of the conversation gives way to omission notes.
+      let keep = []
+      if (entries.length && keptSliceBytes([0], entries.length, entries, noteBytes) <= room) {
+        keep.push(0)
+      }
+      // Mid tool loop, the user's prompt run that started it says what the loop is
+      // for (plus any later user steer run): keep it after the anchor, with a note
+      // for each gap (#1053, #1055).
+      if (inToolLoop) {
+        const runs = [loopOpeningRun(history, loopStart), latestLoopTaskRun(history, loopStart)].filter(Boolean)
+        const whole = [...new Set([...keep, ...runs.flatMap((run) => run.all)])].sort((a, b) => a - b)
+        if (whole.length > keep.length && keptSliceBytes(whole, entries.length, entries, noteBytes) <= room) {
+          keep = whole
+        } else {
+          const order = [...new Set([...runs.flatMap((run) => run.tasks), ...runs.flatMap((run) => run.rest)])]
+          for (const idx of order) {
+            if (keep.includes(idx)) continue
+            const nextKeep = [...keep, idx].sort((a, b) => a - b)
+            if (keptSliceBytes(nextKeep, entries.length, entries, noteBytes) <= room) keep = nextKeep
+          }
+        }
+      }
+      let left = room - keptSliceBytes(keep, entries.length, entries, noteBytes)
+      const tail = []
+      const floor = keep.length ? keep.at(-1) : -1
+      for (let i = entries.length - 1; i > floor; i--) {
+        const cost = entries[i].bytes - (i === floor + 1 ? noteBytes : 0)
+        if (cost > left) break
+        left -= cost
+        tail.unshift(i)
+      }
+      const keptIndices = [...keep, ...tail]
+      kept = []
+      let next = 0
+      for (const i of keptIndices) {
+        if (i > next) kept.push(null)
+        kept.push(entries[i])
+        next = i + 1
+      }
+      if (next < entries.length) kept.push(null)
+      showOpeningDone = reservedOpeningDone && keep.includes(0) && kept.includes(null) &&
+        keptIndices.some((i) => i >= loopStart && isUserTask(history[i]))
     }
-    const keep = [...(anchor ? [0] : []), ...(task > 0 ? [task] : [])]
-    const tail = []
-    for (let i = entries.length - 1; i > Math.max(task, anchor ? 0 : -1); i--) {
-      if (entries[i].bytes > room) break
-      room -= entries[i].bytes
-      tail.unshift(i)
-    }
-    kept = []
-    let next = 0
-    for (const i of [...keep, ...tail]) {
-      if (i > next) kept.push(null)
-      kept.push(entries[i])
-      next = i + 1
-    }
-    if (next < entries.length) kept.push(null)
-    if (room < 0) kept = []
   }
   const out = []
   appendPrompt(out, headParts)
   if (history.length) {
     appendPrompt(out, historyOpen)
     for (const entry of kept) appendPrompt(out, entry ? entry.parts : HISTORY_OMITTED_NOTE)
+    if (showOpeningDone) appendPrompt(out, HISTORY_OPENING_DONE_NOTE)
     appendPrompt(out, historyClose)
   }
   appendPrompt(out, turnOpen)
