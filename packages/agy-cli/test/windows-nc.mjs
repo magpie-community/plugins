@@ -4,6 +4,7 @@
 // exit every agy is ended with its tree, and its workspace is removed.
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { windowsNcBuild, windowsTreeKill } from "../platform.mjs"
@@ -99,6 +100,45 @@ test("Windows sessions dial a shared nc.exe built once, never nc.cmd", async () 
     }
   } finally {
     await kit.dispose()
+  }
+})
+
+// #1097: Bun's compile can't read its own path when it holds non-ASCII
+// characters (a Chinese user name): it fails with "failed to copy bun
+// executable into temporary file: ENOENT". The build runs a copy of the
+// runtime in an ASCII-only folder, removed after.
+test("a runtime under a non-ASCII folder builds nc.exe from an ASCII copy", async () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-nonascii-"))
+  const runtimeDir = path.join(outside, "\u6d4b\u8bd5")
+  fs.mkdirSync(runtimeDir)
+  const runtime = path.join(runtimeDir, "magpie-bun.exe")
+  fs.writeFileSync(runtime, "MZ fake bun")
+  const seen = []
+  const kit = await windowsKit({
+    execPath: runtime,
+    onSpawn: (file, args) => {
+      if (args[0] === "build") seen.push({ file, copied: fs.existsSync(file) && fs.readFileSync(file, "utf8") })
+      return writeOutfile(file, args)
+    },
+  })
+  try {
+    await turn(kit, "hi")
+    const builds = buildsOf(kit)
+    assert.equal(builds.length, 1)
+    assert.notEqual(builds[0].file, runtime)
+    assert.match(builds[0].file, /^[\x20-\x7e]+$/)
+    assert.equal(path.basename(builds[0].file), "magpie-bun.exe")
+    assert.deepEqual(seen, [{ file: builds[0].file, copied: "MZ fake bun" }])
+    const dir = agyPathDir(kit)
+    assert.match(path.basename(dir), /^magpie-agy-bridge-nc-[0-9a-f]{16}$/)
+    assert.deepEqual(fs.readdirSync(dir), ["nc.exe"])
+    // The copy goes with the build dir.
+    for (let i = 0; i < 1000 && fs.existsSync(builds[0].file); i++) await new Promise(resolve => setImmediate(resolve))
+    assert.equal(fs.existsSync(builds[0].file), false)
+    assert.ok(!fs.readdirSync(kit.tmp).some((name) => name.startsWith("magpie-agy-bridge-ncbuild-")))
+  } finally {
+    await kit.dispose()
+    fs.rmSync(outside, { recursive: true, force: true })
   }
 })
 

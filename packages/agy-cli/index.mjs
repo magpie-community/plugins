@@ -872,6 +872,10 @@ const WINDOWS_NC_PREFIX = "magpie-agy-bridge-nc-"
 const WINDOWS_NC_BUILD_PREFIX = "magpie-agy-bridge-ncbuild-"
 const WINDOWS_NC_BUILD_TIMEOUT_MS = 120_000
 
+function asciiPath(value) {
+  return /^[\x20-\x7e]*$/.test(String(value || ""))
+}
+
 async function isFileWithBytes(file) {
   try {
     const stat = await fs.promises.stat(file)
@@ -895,8 +899,24 @@ async function windowsNcDir() {
     return dir
   }
   const build = await fs.promises.mkdtemp(path.join(tmp, WINDOWS_NC_BUILD_PREFIX))
+  let copy = null
+  let copyBase = null
   try {
-    const spec = windowsNcBuild(process.execPath, MCP_SERVER_PATH, path.join(build, "nc.exe"))
+    let runtime = process.execPath
+    if (!asciiPath(runtime)) {
+      // Bun's compile reads its own path one byte to one UTF-16 unit, so a
+      // runtime under a non-ASCII folder (a Chinese user name) fails with
+      // "failed to copy bun executable into temporary file: ENOENT" (#1097).
+      // A copy of it in an ASCII-only folder builds the same nc.exe.
+      const base = [tmp, process.env.PUBLIC, process.env.ProgramData]
+        .find(dir => dir && asciiPath(dir))
+      if (!base) return null
+      copyBase = base
+      copy = base === tmp ? build : await fs.promises.mkdtemp(path.join(base, WINDOWS_NC_BUILD_PREFIX))
+      runtime = path.join(copy, path.win32.basename(process.execPath))
+      await fs.promises.copyFile(process.execPath, runtime)
+    }
+    const spec = windowsNcBuild(runtime, MCP_SERVER_PATH, path.join(build, "nc.exe"))
     const { err, code, timedOut } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
     if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) return null
     await fs.promises.mkdir(dir, { recursive: true })
@@ -908,8 +928,10 @@ async function windowsNcDir() {
     }
   } finally {
     fs.promises.rm(build, { recursive: true, force: true }).catch(() => {})
+    if (copy && copy !== build) fs.promises.rm(copy, { recursive: true, force: true }).catch(() => {})
   }
   sweepWindowsNcDirs(tmp, path.basename(dir)).catch(() => {})
+  if (copyBase && copyBase !== tmp) sweepWindowsNcDirs(copyBase, path.basename(dir)).catch(() => {})
   return dir
 }
 
