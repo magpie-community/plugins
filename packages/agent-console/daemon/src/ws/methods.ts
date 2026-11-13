@@ -14,9 +14,9 @@ import { GitService } from "../git/service.js";
 import { FileService } from "../files/service.js";
 import type { TerminalService } from "../terminal/service.js";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, win32 as win32Path } from "node:path";
+import { dirname, isAbsolute, join, sep, win32 as win32Path } from "node:path";
 import { execFile } from "node:child_process";
 import { pickFolder } from "../util/pickFolder.js";
 import { clearBinCache } from "../util/bin.js";
@@ -27,6 +27,7 @@ import { endLegacyDefault, guardLegacyMode, upgradeNotice } from "../migrate/aut
 import { setAppLocale, tr, intlLocale } from "../util/i18n.js";
 import { MAX_MENTIONS } from "../util/mentions.js";
 import { openExternal } from "../util/openExternal.js";
+import { detectIde, launchDetached, revealLaunch } from "../util/osOpen.js";
 import { agentShellStatus, refreshAgentShell } from "../util/agentShell.js";
 import { checkBashPath, GIT_FOR_WINDOWS_URL } from "../util/gitBash.js";
 import { PreviewError, type PreviewProxy } from "../preview/proxy.js";
@@ -288,6 +289,26 @@ export function registerMethods(gw: Gateway, svc: Services): void {
     return { ok: true };
   }));
 
+  // 1.3.8 (issue #3): open the project folder in the first IDE found (Cursor, VS Code, Windsurf, Zed, IntelliJ IDEA,
+  // WebStorm, Sublime Text); argv arrays only (util/osOpen.ts)
+  gw.method("projects.openInIde", wrap(z.object({ id: z.string() }), async (p) => {
+    const proj = await svc.projects.get(p.id);
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    let dir: string;
+    try {
+      dir = await realpath(proj.path);
+      if (!(await stat(dir)).isDirectory()) throw new Error("not a folder");
+    } catch {
+      throw new ApiError("bad_path", tr("err.dirMissing"));
+    }
+    if (process.platform === "win32") dir = win32Path.normalize(dir);
+    const hit = detectIde(dir);
+    if (!hit) throw new ApiError("no_ide", tr("err.noIde"));
+    const r = await launchDetached(hit.launch);
+    if (!r.ok) throw new ApiError("ide_failed", tr("err.ideFailed", { ide: hit.ide, detail: r.reason }));
+    return { ok: true, ide: hit.ide };
+  }));
+
   // ---- fs.* ----
   gw.method("fs.check", wrap(z.object({ path: z.string().min(1) }), (p) => {
     let exists = false;
@@ -435,6 +456,38 @@ export function registerMethods(gw: Gateway, svc: Services): void {
   gw.method("files.read", wrap(z.object({ projectId: z.string(), path: z.string() }), async (p) =>
     svc.files.read(await projectPath(p.projectId), p.path)
   ));
+
+  // 1.3.8 (issue #3): show a file (selected in its folder) or a folder in Explorer / Finder / the file manager.
+  // The target must resolve (symlinks followed) inside the project's real root.
+  gw.method("files.reveal", wrap(z.object({ projectId: z.string(), path: z.string() }), async (p) => {
+    const proj = await svc.projects.get(p.projectId);
+    if (!proj) throw new ApiError("not_found", tr("err.projectMissing"));
+    let root: string;
+    try {
+      root = await realpath(proj.path);
+    } catch {
+      throw new ApiError("bad_path", tr("err.dirMissing"));
+    }
+    const rel = p.path.replace(/\\/g, "/");
+    if (!rel || isAbsolute(rel) || win32Path.isAbsolute(rel) || rel.split("/").includes("..")) {
+      throw new ApiError("bad_path", tr("err.pathOutside"));
+    }
+    let target: string;
+    try {
+      target = await realpath(join(root, rel));
+    } catch {
+      throw new ApiError("bad_path", tr("err.targetMissing"));
+    }
+    const fold = (s: string) => (process.platform === "win32" || process.platform === "darwin" ? s.toLowerCase() : s);
+    const rootSep = root.endsWith(sep) ? root : root + sep;
+    if (fold(target) !== fold(root) && !fold(target).startsWith(fold(rootSep))) {
+      throw new ApiError("bad_path", tr("err.pathOutside"));
+    }
+    const isDir = (await stat(target)).isDirectory();
+    const r = await launchDetached(revealLaunch(process.platform, target, isDir), { ignoreExit: process.platform === "win32" });
+    if (!r.ok) throw new ApiError("reveal_failed", tr("err.revealFailed", { detail: r.reason }));
+    return { ok: true };
+  }));
 
   // ---- history.* (§7.6) ----
   gw.method("history.list", wrap(z.object({ projectId: z.string() }), async (p) => {

@@ -8,7 +8,7 @@ import { useTimeline } from "../stores/timeline";
 import { TimelineRow } from "./Timeline";
 import { foldTimeline, TOOL_COLLAPSE_AT } from "../timeline/fold";
 import { collectAutoApproved } from "../timeline/autoApproved";
-import { decideOnScroll, newTracker, SCROLL_UP_KEYS } from "../timeline/stick";
+import { decideOnScroll, newTracker, SCROLL_DOWN_KEYS, SCROLL_UP_KEYS } from "../timeline/stick";
 import { Composer } from "./Composer";
 import { QuoteSelect } from "./QuoteSelect";
 import { Icon } from "./Icons";
@@ -39,6 +39,7 @@ export function Chat() {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
     track.current.lastTop = el.scrollTop;
+    track.current.lastDist = el.scrollHeight - el.scrollTop - el.clientHeight;
   }, []);
 
   const project = projects.find((p) => p.id === ui.currentProjectId) ?? null;
@@ -55,6 +56,7 @@ export function Chat() {
     setHasNew(false);
     track.current.pointerDown = false;
     track.current.intentAt = -Infinity;
+    track.current.intentDir = "any";
   }, [activeThreadId, setStick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const est = useCallback((i: number) => {
@@ -154,15 +156,18 @@ export function Chat() {
   }, [tl.sentAt, setStick, toBottom]);
 
   // 1.3.6: only a user gesture may leave the bottom (layout growth fires scroll events too)
-  const intent = () => { track.current.intentAt = performance.now(); };
+  // 1.3.8: with its direction where the gesture tells it (touch and the scrollbar don't)
+  const intent = (dir: "up" | "down" | "any" = "any") => { track.current.intentAt = performance.now(); track.current.intentDir = dir; };
   const onWheel = (e: React.WheelEvent) => {
-    intent();
+    intent(e.deltaY < 0 ? "up" : e.deltaY > 0 ? "down" : "any");
     const el = scrollRef.current;
     // upward wheel on an overflowing list: leave at once, before the next growth snaps it back
     if (e.deltaY < 0 && el && el.scrollHeight > el.clientHeight && track.current.stick) setStick(false);
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (SCROLL_UP_KEYS.has(e.key) || (e.key === " " && e.shiftKey)) intent();
+    // 1.3.8: scrolling down by key is a gesture too (it may re-stick within 60px of the bottom)
+    if (SCROLL_UP_KEYS.has(e.key) || (e.key === " " && e.shiftKey)) intent("up");
+    else if (SCROLL_DOWN_KEYS.has(e.key) || e.key === " ") intent("down");
   };
   const onPointerDown = () => { track.current.pointerDown = true; intent(); };
   useEffect(() => {
@@ -254,7 +259,7 @@ export function Chat() {
   return (
     <>
       <div className="scroll" ref={scrollRef} onScroll={onScroll} onWheel={onWheel} onKeyDown={onKeyDown}
-        onPointerDown={onPointerDown} onTouchStart={intent} onTouchMove={intent}>
+        onPointerDown={onPointerDown} onTouchStart={() => intent()} onTouchMove={() => intent()}>
         <div className="tl-wrap" data-quote-root="chat">
           <div style={{ height: totalSize, position: "relative" }}>
             {virt.getVirtualItems().map((v) => {

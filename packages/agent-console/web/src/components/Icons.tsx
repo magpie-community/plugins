@@ -18,6 +18,7 @@ const PATHS: Record<string, string> = {
   menu: "M4 6h16M4 12h16M4 18h16",
   changes: "M7 4v13m0 0a3 3 0 1 0 .01 0M7 17a3 3 0 1 1-.01 0M17 7v13m0-13a3 3 0 1 0 .01 0M17 7a3 3 0 1 1-.01 0",
   files: "M4 4h6l2 3h8v13H4V4Z",
+  code: "M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14",
   term: "M4 5h16v14H4zM7 9l3 3-3 3m5 0h5",
   x: "M6 6l12 12M18 6 6 18",
   refresh: "M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6",

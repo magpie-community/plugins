@@ -8,7 +8,7 @@ import { Icon } from "./Icons";
 import { DiffView, type DiffHunk } from "./Timeline";
 import { ConfirmDialog } from "./Dialog";
 import { toast } from "./Toast";
-import { errMsg, t, tf } from "../i18n/index.js";
+import { errMsg, revealLabel, rpcMessage, t, tf } from "../i18n/index.js";
 import { TerminalPanel } from "./TerminalPanel";
 import { PreviewPanel } from "./PreviewPanel";
 import { Menu, type MenuItem } from "./Menu";
@@ -360,6 +360,16 @@ function FilesPanel() {
         { kind: "sep" },
         { kind: "item", label: t("common.copyPath"), onClick: () => { void copyText(joinProjectPath(project.path, ctx.entry.path)); toast(t("common.copiedPath")); } },
         { kind: "item", label: t("mention.copyRel"), onClick: () => { void copyText(ctx.entry.path); toast(t("common.copiedPath")); } },
+        { kind: "sep" },
+        // 1.3.8 (issue #3): a file is selected in its folder, a folder is opened (the daemon keeps it inside the project)
+        {
+          kind: "item",
+          label: revealLabel(),
+          onClick: () => {
+            ws.call("files.reveal", { projectId: project.id, path: ctx.entry.path })
+              .catch((e) => toast(t("panel.revealFail") + rpcMessage(e), true));
+          },
+        },
       ]
     : [];
 
