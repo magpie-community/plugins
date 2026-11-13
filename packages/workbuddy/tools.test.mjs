@@ -25,6 +25,43 @@ test("a pattern's \\0 is sent as \\u0000, at any depth; \\\\0 and \\01 are left"
   expect(new RegExp(ps.properties.a.pattern).test("ab")).toBe(true)
 })
 
+test("REA's surrogate guard is omitted from outbound schemas, keeping other path constraints", () => {
+  const guard = { pattern: "^[^\\uD800-\\uDFFF]*$" }
+  const path = {
+    type: "string", minLength: 1,
+    allOf: [
+      { pattern: "^[^\\x00]*$" },
+      guard,
+      { pattern: "^(?:[\\x5C\\x2F]|[A-Za-z]:[\\x5C\\x2F])" },
+    ],
+  }
+  const parameters = { type: "object", properties: {
+    expected_server_path: path,
+    paths: { type: "array", items: { type: "string", ...guard } },
+  }, $defs: { path: structuredClone(path) }, additionalProperties: false }
+  const original = structuredClone(parameters)
+  const body = chat([tool("mcp__rea__binary_session", parameters)])
+  const sent = fitted(body).body
+  const schema = JSON.parse(sent).tools[0].function.parameters
+  expect(schema.properties.expected_server_path).toEqual({
+    ...path, allOf: [path.allOf[0], {}, path.allOf[2]],
+  })
+  expect(schema.properties.paths.items).toEqual({ type: "string" })
+  expect(schema.$defs.path).toEqual(schema.properties.expected_server_path)
+  expect(schema.additionalProperties).toBe(false)
+  expect(parameters).toEqual(original)
+  expect(fitted(sent).body).toBe(sent)
+})
+
+test("other surrogate patterns and literal escape sequences are left alone", () => {
+  const body = chat([tool("t", { type: "object", properties: {
+    mixed: { type: "string", pattern: "^[^\\u0000\\uD800-\\uDFFF]*$" },
+    literal: { type: "string", pattern: "^[^\\\\uD800-\\\\uDFFF]*$" },
+    ordinary: { type: "string", pattern: "^[a-z]+$" },
+  } })])
+  expect(fitted(body).body).toBe(body)
+})
+
 test("a root anyOf of objects becomes one object; a field each branch requires stays required", () => {
   const body = chat([tool("t", { anyOf: [
     { type: "object", properties: { kind: { const: "a" }, x: { type: "string" } }, required: ["kind", "x"] },

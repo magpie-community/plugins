@@ -253,6 +253,9 @@ models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
 - a tool's parameters with no `type`, empty, or a union (`anyOf`, `oneOf`,
   `allOf`) at the root are an object, the union's fields merged;
 - a `pattern`'s `\0` is `\u0000`, which matches the same;
+- REA's exact `^[^\uD800-\uDFFF]*$` surrogate guard is omitted from the
+  outbound schema: WorkBuddy AI's DeepSeek rejects it with "invalid function
+  call parameters". Other path constraints and REA's own validation stay;
 - a tuple's `items` (a list) is one schema any of them fits;
 - an `enum` with no `type` takes its values' type (or that and `"null"`),
   and an `enum` of several types is an `anyOf` of one typed `enum` for
