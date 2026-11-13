@@ -96,6 +96,14 @@ Its token package shows as one window, `usage_token_num` of `package_token_amoun
 `/api/v2/chat/completions` there as on the mainland, and the model list falls back to the
 built-in one when the station doesn't answer it.
 
+**International browser sign-in** (since 0.3.17, #1090): "Sign in with Huawei Cloud
+(International)" opens Huawei Cloud's international login (`auth.huaweicloud.com`,
+`site=intl`), which goes on to the international portal's authorize page
+(`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`). The code is exchanged at the same
+STS endpoint, and the credential is kept as an international one, through every renewal. It
+skips the mainland-only phone and OfficeAce reads. Not tried yet with a real international
+account.
+
 ## Models
 
 The account's live list: CodeArts' builtin models, plus the free models of its daily benefit
@@ -300,6 +308,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   `start_date`–`end_date` 内 `package_token_amount` 中已用的 `usage_token_num`，套餐名取 `package_name_en`。
   国际站没有 `opengw` 接口、积分批次和每日签到，插件在那里一概不请求（签到回答「未开通」）。尚未用真实国际站账号试过：
   对话仍发到 `/api/v2/chat/completions`，模型列表读不到时用内置列表。
+- **国际站浏览器登录**（0.3.17 起，#1090）：「Sign in with Huawei Cloud (International)」先打开华为云国际站登录页
+  （`auth.huaweicloud.com`，`site=intl`），再到国际站门户的授权页（`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`）。
+  授权码仍在同一个 STS 端点换取，凭据记为国际站凭据，续期后不变；不读国内站才有的手机号和 OfficeAce 信息。尚未用真实国际站账号试过。
 - **模型**：账号实时的内置模型列表；领取当日免费权益成功后，再加上免费模型（每个北京自然日领一次，与
   客户端一致；当天还没领取时遇到 `benefit not found` 也会先领取再重发）。每个模型的「消耗系数」作为 magpie 的倍率上报，来自账号主智能体（`build`）的模型列表。
   0.3.2 起模型名照码道给的显示：带日期的 `deepseek-v4.1-flash-1017` 是另一个模型（错峰倍率不同），显示为

@@ -70,12 +70,25 @@ const OPENGW_GATEWAY_CONFIG_URL = `${OPENGW_HOST}/api/v1/gateway/config`
 // nothing of opengw's is asked there. The console of each only ever opens in
 // the browser and is never signed for.
 const STATIONS = {
-  mainland: { id: "mainland", snap: SNAP_HOST, opengw: OPENGW_HOST, console: "https://codearts.huaweicloud.com" },
+  mainland: {
+    id: "mainland",
+    snap: SNAP_HOST,
+    opengw: OPENGW_HOST,
+    console: "https://codearts.huaweicloud.com",
+    portal: "https://codearts.huaweicloud.com/portal",
+    locale: "zh-cn",
+  },
+  // The international portal is the IDE's `intlPortalHost` (#1090). Its
+  // authorize page sends a signed-out browser to the mainland login unless
+  // the login page is asked for `site=intl`, so the browser starts there.
   international: {
     id: "international",
     snap: "https://snap-access.ap-southeast-1.myhuaweicloud.com",
     opengw: "",
     console: "https://console-intl.huaweicloud.com",
+    portal: "https://codearts.ap-southeast-1.huaweicloud.com/portal",
+    locale: "en-us",
+    login: "https://auth.huaweicloud.com/authui/login?site=intl",
   },
 }
 /** The hosts a credential of `station` is signed for: its API hosts, by name. */
@@ -148,9 +161,8 @@ const DAILY_CHECKIN_TYPE = "USER_LOGIN"
 const CLAIMED_STATUSES = ["CLAIMED", "CONFIRMED", "CONSUMED"]
 // Unsigned headers snap-access routes on (signing them breaks the signature).
 const SNAP_EXTRA_HEADERS = { "Agent-Type": "PromptCenter", "X-Language": "zh-cn" }
-// OAuth portal (new IAM flow) and the STS token endpoint.
-const PORTAL_AUTHORIZE_BASE = "https://codearts.huaweicloud.com/portal/authorize"
-const PORTAL_LOGIN_BASE = "https://codearts.huaweicloud.com/portal/login"
+// OAuth portal (new IAM flow, each station's `portal`) and the STS token
+// endpoint, which answers both stations' codes and refresh tokens (#1090).
 const STS_TOKEN_ENDPOINT = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 
 // OAuth client id (equals the plugin's URI scheme) and local callback path.
@@ -161,7 +173,6 @@ const REDIRECT_PATH = "/oauth/callback"
 const LOGIN_PLUGIN_NAME = "snap_AIIDE"
 const LOGIN_PLUGIN_VERSION = "5.2.0"
 const OAUTH_THEME = "2" // activeColorTheme.kind: 2 = Dark
-const OAUTH_LOCALE = "zh-cn"
 
 const GRANT_AUTHORIZATION_CODE = "authorization_code"
 const GRANT_REFRESH_TOKEN = "refresh_token"
@@ -824,7 +835,7 @@ async function refreshCredential(cred, fetcher) {
   if (!next.refresh_token) next.refresh_token = refreshToken
   // Preserve non-rotating identity fields a legacy login may have carried, and
   // the session id: it belongs to the account, not to the token.
-  for (const k of ["domain_id", "user_id", "user_name", "session_id"]) {
+  for (const k of ["domain_id", "user_id", "user_name", "session_id", "station"]) {
     if (cred[k]) next[k] = cred[k]
   }
   return next
@@ -844,16 +855,22 @@ async function accountSessionIds(cred) {
 
 // ---- OAuth login: URL + loopback callback ----------------------------------
 
-/** Build the Huawei Cloud portal authorize URL (params mirror the real IDE). */
-function buildOAuthLoginUrl(port, pkce, ticketId) {
-  return `${PORTAL_AUTHORIZE_BASE}?theme=${OAUTH_THEME}&locale=${OAUTH_LOCALE}`
+/**
+ * The URL the browser opens to sign in on `station` (params mirror the real
+ * IDE): the station's portal authorize page, or, for a station with its own
+ * login page, that page with the authorize URL as where it goes next.
+ */
+function buildOAuthLoginUrl(port, pkce, ticketId, station = STATIONS.mainland) {
+  const authorize = `${station.portal}/authorize?theme=${OAUTH_THEME}&locale=${station.locale}`
     + `&uri_scheme=${CLIENT_ID}&client_id=${CLIENT_ID}&port=${port}`
     + `&code_challenge=${pkce.codeChallenge}&code_challenge_method=SHA-256`
     + `&ticket_id=${ticketId}&plugin-name=${LOGIN_PLUGIN_NAME}&plugin-version=${LOGIN_PLUGIN_VERSION}`
+  if (!station.login) return authorize
+  return `${station.login}&locale=${station.locale}&service=${encodeURIComponent(authorize)}`
 }
 
-const buildPortalLoginResultUrl = (ok) =>
-  `${PORTAL_LOGIN_BASE}?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${OAUTH_LOCALE}`
+const buildPortalLoginResultUrl = (ok, station = STATIONS.mainland) =>
+  `${station.portal}/login?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${station.locale}`
 
 /**
  * Start the loopback callback server, listening on 127.0.0.1:port>=10000. It
@@ -863,7 +880,7 @@ const buildPortalLoginResultUrl = (ok) =>
  * the sign-in at once, with the portal's own words when it gave any. The
  * redirect target is always that page, never a parameter of the request.
  */
-function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
+function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts", station = STATIONS.mainland) {
   let resolveResult
   let rejectResult
   const result = new Promise((resolve, reject) => {
@@ -893,7 +910,7 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const url = new URL(raw, `http://127.0.0.1:${request.socket.localPort}`)
     const code = url.searchParams.get("code")
     if (!code) {
-      response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+      response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
       const said = firstOf(url.searchParams.get("error_description"), url.searchParams.get("error"))
       rejectResult(new Error(`CodeArts sign-in failed: ${said || "the callback came back without an authorization code"}`))
       return
@@ -901,12 +918,14 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const port = request.socket.localPort ?? 0
     void exchangeAuthorizationCode(code, pkce.codeVerifier, port, keyPair, fetcher, label).then(
       (token) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(true) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(true, station) }).end()
         const cred = credentialFromTokenResponse(token, pkce.codeVerifier, keyPair)
+        // A mainland credential carries no station, as before stations existed.
+        if (station !== STATIONS.mainland) cred.station = station.id
         resolveResult({ access: JSON.stringify(cred), expires: expiresFromCredential(cred) })
       },
       (error) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
         rejectResult(error)
       },
     )
@@ -951,13 +970,13 @@ function listenOnCallbackPort(server) {
  * The result resolves once the browser is redirected back and STS answers;
  * the callback server is closed as soon as the result settles.
  */
-async function startOAuthFlow(fetcher, label = "CodeArts") {
+async function startOAuthFlow(fetcher, label = "CodeArts", station = STATIONS.mainland) {
   const pkce = await generatePkcePair()
   const keyPair = await generateDpopKeyPair()
-  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label)
+  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label, station)
   // The authorize URL carries a ticket_id as the IDE's does; the code flow
   // itself never reads it back.
-  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32))
+  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32), station)
 
   let closed = false
   const close = async () => {
@@ -3139,14 +3158,20 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     }
   }
 
-  const browserMethod = {
+  // The browser sign-in on one station. The international one (#1090) opens
+  // Huawei Cloud's international login first, and its account skips the two
+  // mainland-only reads below (IAM's phone, OfficeAce's MaaS pair).
+  const browserMethodOn = (station) => ({
     type: "oauth",
-    label: "Sign in with Huawei Cloud",
+    label: station === STATIONS.mainland ? "Sign in with Huawei Cloud" : "Sign in with Huawei Cloud (International)",
     async authorize() {
-      const flow = await startOAuthFlow(fetcher)
+      const flow = await startOAuthFlow(fetcher, "CodeArts", station)
+      const mainland = station === STATIONS.mainland
       return {
         url: flow.loginUrl,
-        instructions: "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done.",
+        instructions: mainland
+          ? "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done."
+          : "Sign in to Huawei Cloud International in the browser. This signs in CodeArts only. This window closes itself when done.",
         method: "auto",
         async callback() {
           try {
@@ -3156,12 +3181,12 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             // The card's name is the phone (one read away, best effort:
             // a failed read still signs in), shown through usage's
             // `user`; the credential carries it as `user_phone`.
-            const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
+            const identified = mainland ? { ...cred, ...(await accountPhoneField(cred, fetcher)) } : cred
             // The MaaS pair OfficeAce needs is read once here (best effort:
             // an account that never opened MaaS signs in all the same), and
             // kept on this credential too, so a later rotation of this
             // record hands the other one a credential that still has it.
-            const withMaas = await withOfficeAceMaas(identified, fetcher)
+            const withMaas = mainland ? await withOfficeAceMaas(identified, fetcher) : identified
             const identity = accountIdentityOf(withMaas)
             // `accountId` is the account's identity — the URN, as main
             // gives it — so a re-sign-in replaces the account instead of
@@ -3188,7 +3213,9 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         },
       }
     },
-  }
+  })
+  const browserMethod = browserMethodOn(STATIONS.mainland)
+  const intlBrowserMethod = browserMethodOn(STATIONS.international)
 
   // Sign in from the CodeArts Agent on this machine: its own stored sign-in,
   // read (never written), checked once with the station, and renewed by
@@ -3467,10 +3494,13 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       },
 
       // The browser sign-in first, always; the CodeArts Agent's second, only
-      // while the IDE's state file is there (the host picks a method by its
-      // place, so the browser one keeps its).
+      // while the IDE's state file is there; the international browser
+      // sign-in last (the host picks a method by its place, so the older
+      // ones keep theirs).
       get methods() {
-        return ideFile && fs.existsSync(ideFile) ? [browserMethod, ideMethod] : [browserMethod]
+        return ideFile && fs.existsSync(ideFile)
+          ? [browserMethod, ideMethod, intlBrowserMethod]
+          : [browserMethod, intlBrowserMethod]
       },
     },
   }
@@ -3516,7 +3546,7 @@ export const _internal = {
   PROVIDER, NPM, CATALOG, CONTEXT_WINDOWS, BENEFIT_MODEL_FALLBACK, MAX_OUTPUT_TOKENS,
   CHAT_API_BASE, SNAP_MODEL_BUILTIN_URL, SNAP_STATISTICS_URL, OPENGW_GATEWAY_CONFIG_URL, BENEFIT_BALANCE_URL,
   OPS_DELIVERY_URL, OPS_CLAIM_URL, OPS_CONFIRM_URL, SESSION_LIMIT_ERROR, ACCOUNT_MAX_INFLIGHT,
-  PORTAL_AUTHORIZE_BASE, STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
+  STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
   firstOf, asRecord, safeJson, num, clamp, prettify, normalizeModelId, upstreamModelId, formatCredit,
   b64url, utf8, sha256Hex, hmacSha256Hex,
   generatePkcePair, generateDpopKeyPair, keyPairFromStoredJwk, signDpopJws,

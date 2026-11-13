@@ -547,6 +547,29 @@ test("buildOAuthLoginUrl matches the real IDE parameters", () => {
   assert.equal(q.get("plugin-name"), "snap_AIIDE")
   // The real plugin never sends auth_callback_url (portal derives it from port).
   assert.equal(q.has("auth_callback_url"), false)
+  assert.equal(q.get("locale"), "zh-cn")
+})
+
+test("the international sign-in opens Huawei Cloud's international login, then its portal (#1090)", () => {
+  const login = new URL(x.buildOAuthLoginUrl(12345, { codeChallenge: "CH" }, "TICKET", x.STATIONS.international))
+  assert.equal(login.origin + login.pathname, "https://auth.huaweicloud.com/authui/login")
+  assert.equal(login.searchParams.get("site"), "intl")
+  assert.equal(login.searchParams.get("locale"), "en-us")
+  const service = new URL(login.searchParams.get("service"))
+  assert.equal(service.origin + service.pathname, "https://codearts.ap-southeast-1.huaweicloud.com/portal/authorize")
+  assert.equal(service.searchParams.get("locale"), "en-us")
+  assert.equal(service.searchParams.get("port"), "12345")
+  assert.equal(service.searchParams.get("code_challenge"), "CH")
+  assert.equal(service.searchParams.get("ticket_id"), "TICKET")
+  assert.equal(service.searchParams.get("client_id"), "codearts-agent")
+  assert.equal(
+    x.buildPortalLoginResultUrl(true, x.STATIONS.international),
+    "https://codearts.ap-southeast-1.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=en-us",
+  )
+  assert.equal(
+    x.buildPortalLoginResultUrl(true),
+    "https://codearts.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=zh-cn",
+  )
 })
 
 test("usageFromStatistics maps credit metrics to windows with real numbers", () => {
@@ -907,8 +930,9 @@ test("plugin exposes config, provider.models, and an oauth auth method", async (
   assert.equal(typeof plugin.config, "function")
   assert.equal(plugin.provider.id, "codearts")
   assert.equal(plugin.auth.provider, "codearts")
-  assert.equal(plugin.auth.methods.length, 1)
+  assert.ok(plugin.auth.methods.length >= 2)
   assert.equal(plugin.auth.methods[0].type, "oauth")
+  assert.equal(plugin.auth.methods.at(-1).type, "oauth")
   assert.equal(typeof plugin.auth.checkin, "function")
   assert.equal(plugin.auth.maxConcurrency, x.ACCOUNT_MAX_INFLIGHT)
 
@@ -2015,6 +2039,19 @@ test("auth.refresh exchanges the refresh token for fresh credentials", async () 
   assert.equal(parsed.access_key_id, "AK2")
   assert.equal(next.refresh, "R2")
   assert.equal(next.expires, Date.parse("2031-01-01T00:00:00Z"))
+})
+
+test("a refresh keeps an international credential on its station (#1090)", async () => {
+  const cred = { ...(await makeCred()), station: "international" }
+  const fetcher = async () => new Response(JSON.stringify({
+    credentials: { access_key_id: "AK2", secret_access_key: "SK2", security_token: "ST2", expiration: "2031-01-01T00:00:00Z" },
+    refresh_token: "R2",
+  }), { status: 200 })
+  const next = await x.refreshCredential(cred, fetcher)
+  assert.equal(next.access_key_id, "AK2")
+  assert.equal(next.station, "international")
+  const mainland = await x.refreshCredential(await makeCred(), fetcher)
+  assert.equal("station" in mainland, false)
 })
 
 /** Check a token request's DPoP proof: it verifies against the stored key, for POST to the STS endpoint. */
@@ -3477,6 +3514,47 @@ test("a CodeArts sign-in writes only its own record", async () => {
   assert.equal(calls.some((c) => c.path?.id?.startsWith("officeace")), false, "no record for the other card")
 })
 
+test("the international browser sign-in gives an international credential, with no mainland reads (#1090)", async () => {
+  oa.seenProviderAccounts.clear()
+  oa.renewalGates.clear()
+  const calls = []
+  const asked = []
+  const fetcher = async (url) => {
+    asked.push(String(url))
+    if (String(url) === x.STS_TOKEN_ENDPOINT) return new Response(stsBody("AK-INTL", oaRefreshToken()), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: oaClient(calls) }, { fetch: fetcher })
+  const method = plugin.auth.methods.at(-1)
+  assert.equal(method.label, "Sign in with Huawei Cloud (International)")
+  assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the mainland one keeps its place")
+  const a = await method.authorize()
+  const service = new URL(new URL(a.url).searchParams.get("service"))
+  const port = service.searchParams.get("port")
+  const done = a.callback()
+  const res = await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  assert.match(res.headers.get("location"), /^https:\/\/codearts\.ap-southeast-1\.huaweicloud\.com\/portal\/login\?login_succeed=true/)
+  const out = await done
+  assert.equal(out.type, "success")
+  const cred = JSON.parse(out.access)
+  assert.equal(cred.access_key_id, "AK-INTL")
+  assert.equal(cred.station, "international")
+  assert.equal(x.stationOf(cred).id, "international")
+  assert.equal(asked.some((u) => u.includes("iam.cn-north-4")), false, "no mainland IAM read")
+  assert.equal(asked.some((u) => u.includes("client-permission-validate")), false, "no OfficeAce MaaS read")
+})
+
+test("a mainland browser sign-in's credential carries no station, as before (#1090)", async () => {
+  const flow = await x.startOAuthFlow(async (url) => String(url) === x.STS_TOKEN_ENDPOINT
+    ? new Response(stsBody("AK-CN", oaRefreshToken()), { status: 200 })
+    : new Response("{}", { status: 200 }))
+  const port = new URL(flow.loginUrl).searchParams.get("port")
+  await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  const out = await flow.result
+  assert.equal("station" in JSON.parse(out.access), false)
+  await flow.close()
+})
+
 test("the OfficeAce sign-in writes only its own record", async () => {
   oa.seenProviderAccounts.clear()
   oa.renewalGates.clear()
@@ -4433,15 +4511,17 @@ test("readIdeCredential: missing, unreadable, half-written or empty is unknown, 
 
 test("the CodeArts Agent sign-in is offered only while its state file is there", async () => {
   const none = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: path.join(os.tmpdir(), `no-ide-${process.pid}`, "state.vscdb") })
-  assert.equal(none.auth.methods.length, 1)
+  assert.equal(none.auth.methods.length, 2)
+  assert.match(none.auth.methods[1].label, /International/)
   const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
   const plugin = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: file })
-  assert.equal(plugin.auth.methods.length, 2)
+  assert.equal(plugin.auth.methods.length, 3)
   assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the browser one keeps its place")
+  assert.match(plugin.auth.methods[2].label, /International/)
   assert.equal(plugin.auth.methods[1].type, "oauth")
   assert.match(plugin.auth.methods[1].label, /CodeArts Agent/)
   fs.rmSync(file)
-  assert.equal(plugin.auth.methods.length, 1, "read again each time")
+  assert.equal(plugin.auth.methods.length, 2, "read again each time")
 })
 
 async function ideSignIn(plugin) {
