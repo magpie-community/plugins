@@ -297,11 +297,14 @@ async function prompt(params) {
     return { stopReason: "end_turn" }
   }
   if (text.includes("PERMISSION")) {
+    const titled = /PERMISSION_TITLE\[(.*?)\]/.exec(text)
     const outcome = await new Promise(resolve => {
       pendingClient.set("perm", resolve)
       send({ jsonrpc: "2.0", id: "perm", method: "session/request_permission", params: {
         sessionId: session.id,
-        toolCall: { toolCallId: "call_perm", title: "Run run_command?", rawInput: { CommandLine: "printf SHOULD_NOT_RUN" } },
+        toolCall: titled
+          ? { toolCallId: "call_perm", title: titled[1], rawInput: { text: "hi" } }
+          : { toolCallId: "call_perm", title: "Run run_command?", rawInput: { CommandLine: "printf SHOULD_NOT_RUN" } },
         options: [
           { optionId: "allow", name: "Allow once", kind: "allow_once" },
           { optionId: "always", name: "Allow always", kind: "allow_always" },
@@ -1318,6 +1321,19 @@ for (const change of ["tools", "model"]) {
   const permission = lastOf("permission")
   check("built-in tool permission requests are denied", permission?.outcome?.outcome === "selected" && permission.outcome.optionId === "deny", JSON.stringify(permission))
   check("a denied built-in tool does not fail the turn", stopOf(events) === "end_turn")
+}
+
+for (const [title, tools, want, name] of [
+  ["mcp(ide-tools/echo)", [echoTool], "allow", "a client tool on ide-tools is allowed once (#1082)"],
+  ["mcp_ide-tools_echo", [echoTool], "allow", "a client tool named as agy's function is allowed once (#1082)"],
+  ["mcp(ide-tools/run_shell)", [echoTool], "deny", "an ide-tools tool the client did not declare is denied"],
+  ["Run command: echo mcp(ide-tools/echo)", [echoTool], "deny", "a title that only contains an ide-tools name is denied"],
+  ["mcp(other/echo)", [echoTool], "deny", "another MCP server's tool is denied"],
+]) {
+  const response = await callFetch({ model, messages: [{ role: "user", content: `PERMISSION_TITLE[${title}]` }], tools })
+  const { events } = await readSSE(response)
+  const permission = lastOf("permission")
+  check(name, permission?.outcome?.outcome === "selected" && permission.outcome.optionId === want && stopOf(events) === "end_turn", JSON.stringify(permission))
 }
 
 {

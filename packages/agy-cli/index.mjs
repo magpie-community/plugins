@@ -856,6 +856,22 @@ async function sweepWindowsNcDirs(tmp, keep) {
   }
 }
 
+// The client tool a permission request names, when it names one on the
+// bridge's ide-tools server: agy calls it `mcp(ide-tools/<name>)` in its
+// permission rules and `mcp_ide-tools_<name>` as a function. Only agy's own
+// words are read (title, name), never rawInput, which the model writes.
+const IDE_TOOL_NAMED = /^(?:mcp\(ide-tools\/([^()\s]+)\)|(?:mcp\s+)?"?ide-tools\/([^()\s"]+)"?|mcp_ide-tools_(\S+))$/
+export function ideToolOf(toolCall) {
+  for (const value of [toolCall?.title, toolCall?.name, toolCall?.toolName]) {
+    if (typeof value !== "string") continue
+    // The whole title, never a word in it: a shell command's own text can
+    // appear in its title.
+    const m = IDE_TOOL_NAMED.exec(value.trim().replace(/\?$/, ""))
+    if (m) return m[1] || m[2] || m[3]
+  }
+  return ""
+}
+
 function agentDefinition() {
   const lines = [
     "---",
@@ -1635,8 +1651,17 @@ class Proc {
       throw Object.assign(new Error("unknown session"), { code: -32602 })
     }
     if (method === "session/request_permission") {
-      // Client tools arrive through MCP and never ask. Deny anything that would
-      // run inside agy itself (shell, file edits, questions, browser).
+      // A client tool reaches agy through the bridge's own ide-tools MCP
+      // server and runs in the client, under the client's own permissions.
+      // Newer agy asks before an MCP call too (plugins #1082), so a request
+      // that names ide-tools and a tool the client declared is allowed once.
+      // Anything that would run inside agy itself (shell, file edits,
+      // questions, browser) is denied.
+      const tool = ideToolOf(params?.toolCall)
+      if (tool && this.tools.some((t) => t.name === tool)) {
+        const allow = (params?.options || []).find((option) => option?.kind === "allow_once")
+        if (allow) return { outcome: { outcome: "selected", optionId: allow.optionId } }
+      }
       this.deniedPermissions++
       const reject = (params?.options || []).find((option) => option?.kind === "reject_once")
         || (params?.options || []).find((option) => option?.kind === "reject_always")

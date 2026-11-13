@@ -82,8 +82,11 @@ MCP server. The control port listens on loopback only, with a token per process.
   and instruction hashes still match. The state file stores session IDs and
   hashes, never message text.
 - **Isolation**: your global MCP configuration is never read. Every agy process
-  runs with a temporary agent, and every permission request agy raises (shell,
-  file edits, browser) is refused. Real actions happen on the client side.
+  runs with a temporary agent, and every permission request agy raises for its
+  own tools (shell, file edits, browser) is refused. A request for one of the
+  client's tools on the bridge's `ide-tools` server is allowed once, since that
+  tool runs in the client under the client's own permissions. Real actions
+  happen on the client side.
 - **Assistant prefill**: requests that end with a text-only assistant message
   (SillyTavern presets, "continue"/"impersonate", bot frameworks) are served
   instead of rejected; the session ledger stays aligned across turns. See
