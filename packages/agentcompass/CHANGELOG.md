@@ -28,7 +28,7 @@ The scoring, quota economy and data gates are now AgentCompass v0.6.0's, ported 
 
 **Not ported** (Magpie only routes): launching workers, harness order and place (`harness_place` is always 0), and the fast variants and the launch side of `wants_fast`.
 
-**Unverified in this package:** the Linux sandbox run against real Magpie builds (in the source repository) has not been run on the v0.6.0 engine.
+**Checked in a real gateway:** the source repository's Linux sandbox run passed on Magpie 0.1.4022 with this engine (CLI install, market listing, Mode A and Mode B, every pool shape on four protocols, session continuity, pins, caller profiles); its record is `docs/linux-sandbox-e2e-report-0.1.4022.json` there. The scenario against real upstream accounts was not run.
 
 ## 0.1.6 - 2026-11-08
 
