@@ -6,9 +6,12 @@
 magpie plugin add @magpie-community/agent-minimax-design
 ```
 
-**macOS and Windows, domestic production edition.** Requires the companion
-Magpie change exposing `magpie.platform` to agent modules. Stock Magpie
-0.1.4040 does not expose it. Linux is refused explicitly.
+**macOS and Windows, domestic production edition.** Uses Magpie's existing
+Agent and companion plugin interfaces; no modified Magpie build is required.
+The companion creates `~/.minimax-design` as a directory link to Design's
+existing data directory (a junction on Windows). The Agent and Library use
+that shared path to edit the original files. No configuration is copied.
+An occupied path is reported without replacing it. Linux is unsupported.
 
 Quit MiniMax Design, switch the agent on in Magpie's Agents page, then
 start Design and pick a model under **Magpie**. Disconnecting restores the
@@ -83,6 +86,12 @@ On macOS the data directory is
 `%APPDATA%\@hilo\desktop`. Detection uses the data directory so moving the
 app between `/Applications` and `~/Applications` does not break it.
 Start Design once before connecting.
+If Design was first launched after installing the plugin, the running companion
+creates the shared entry on its next check.
+When upgrading from 0.4.1 or an older local package, quit Design and disconnect
+the old Agent before updating, then reconnect. Magpie keys its restoration
+record by the configuration path, so the old connection must be restored before
+switching to the shared entry.
 
 ## Native speech models — 0.4.0
 
@@ -152,7 +161,8 @@ remaining boundaries for rules, memory, speech and music.
 ```sh
 node --test packages/minimax-design/minimax-design.test.mjs
 bun scripts/check.mjs minimax-design
-MAGPIE_BIN=/path/to/patched/magpie \
+MAGPIE_BIN=/Applications/magpie.app/Contents/MacOS/magpie \
+  MAGPIE_BUN=/path/to/bun \
   MINIMAX_APP="/Applications/MiniMax Design.app" \
   node packages/minimax-design/acceptance.mjs
 ```

@@ -75,9 +75,9 @@ select the configured source routes. No paid generation was submitted.
 
 Backup:
 `~/.config/magpie/backups/design-references-1794589992753`.
-The previously installed agent platform adaptation was preserved; the portable
-repository entry continues to require Magpie's `magpie.platform` contract.
-Other pre-existing uncommitted MCP and speech changes remain in the workspace.
+At that installation, the agent platform adaptation was preserved; the portable
+repository entry still required Magpie's `magpie.platform` contract.
+The MCP and speech changes were subsequently included in the source commit.
 
 ## Remote Mac release verification
 
@@ -95,10 +95,32 @@ Rechecked on November 14, 2026 with the installed applications:
 
 The release check uses disposable stores and HTTP fixtures. It does not establish
 desktop canvas acceptance, native Windows acceptance or a new paid vendor run.
-The portable agent still requires a host exposing `magpie.platform`; the
+At that verification point, the portable agent required `magpie.platform`; the
 installed macOS descriptor adaptation is not a replacement for that prerequisite.
 
 GitHub HTTPS works through this machine's existing HTTP proxy. Direct SSH name
 resolution failed, while SSH over port 443 through the same proxy authenticated
 the existing GitHub key and successfully pushed both source repositories.
 No credential or proxy setting was added to either package.
+
+## Stock host verification — 0.4.2
+
+The Agent now uses a fixed `~/.minimax-design` directory entry, prepared by the
+existing companion plugin. The entry links to Design's native data directory
+(a junction on Windows). Configuration and Library writes reach the original
+files, without copying them or introducing a new host API.
+
+The installed, unmodified Magpie passed `acceptance.mjs` with the repository
+package installed through `plugin add`: connection, native configuration
+validation, Library skill and MCP distribution, a model-to-MCP round trip,
+disconnect restoration, 101-model splitting and catalogue shrink all passed.
+The Agent loads with no injected globals. Path fixtures cover macOS and Windows
+data roots, atomic replacement through the directory entry, repeated setup and
+an occupied entry. Windows junction execution still needs a native Windows run.
+Node and Bun each passed all 36 regression tests. The real gateway reference
+fixture also passed with the new entry and four references through both source
+protocols.
+
+Before upgrading an already connected pre-0.4.2 package, disconnect its Agent
+while Design is closed, so Magpie restores the old path's ownership record.
+Reconnect after updating to establish ownership under the shared entry.

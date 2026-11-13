@@ -5,8 +5,8 @@ import vm from "node:vm"
 
 const source = readFileSync(new URL("./minimax-design.agent.js", import.meta.url), "utf8")
 
-function load(platform) {
-  const context = vm.createContext({ magpie: { platform } })
+function load() {
+  const context = vm.createContext({})
   return JSON.parse(vm.runInContext(
     source.replaceAll("export ", "") + "\nJSON.stringify({ agent, result: connect(input) })",
     Object.assign(context, {
@@ -18,33 +18,17 @@ function load(platform) {
   ))
 }
 
-test("macOS selects observed config and the isolated runtime's Library paths", () => {
-  const { agent } = load("darwin")
-  assert.equal(agent.config, "~/Library/Application Support/@hilo/desktop/hub-config.json")
-  assert.equal(agent.dir, "~/Library/Application Support/@hilo/desktop")
+test("agent loads without host globals and uses the shared native-data entry", () => {
+  const { agent } = load()
+  assert.equal(agent.config, "~/.minimax-design/hub-config.json")
+  assert.equal(agent.dir, "~/.minimax-design")
   assert.deepEqual(agent.library, {
     skills: "~/Movies/Hub/skills",
-    mcp: "~/Library/Application Support/@hilo/desktop/ai-runtime/config-home/opencode/opencode.json",
+    mcp: "~/.minimax-design/ai-runtime/config-home/opencode/opencode.json",
     mcpFormat: "opencode",
   })
   assert.equal(agent.model, undefined)
   assert.equal(agent.library.instructions, undefined)
-})
-
-test("Windows retains its config path and gets a separate runtime Library", () => {
-  const { agent } = load("windows")
-  assert.equal(agent.config, "$APPDATA/@hilo/desktop/hub-config.json")
-  assert.equal(agent.library.mcp, "$APPDATA/@hilo/desktop/ai-runtime/config-home/opencode/opencode.json")
-  assert.equal(agent.library.skills, "~/Movies/Hub/skills")
-})
-
-test("unsupported platforms fail before exporting writable paths", () => {
-  assert.throws(() => load("linux"), /macOS and Windows only/)
-})
-
-test("an older Magpie fails explicitly instead of choosing Windows on macOS", () => {
-  assert.throws(() => vm.runInNewContext(source.replaceAll("export ", "")), /Update Magpie/)
-  assert.throws(() => load(undefined), /Update Magpie/)
 })
 
 test("invalid IDs are omitted and duplicate IDs do not consume provider slots", () => {
@@ -54,7 +38,6 @@ test("invalid IDs are omitted and duplicate IDs do not consume provider slots", 
   const invalid = ["", "vendor/bad id", "vendor/\u0000bad", "__hub_reasoning__reserved", 123]
     .map((id) => ({ id, context: 128000, output: 16000 }))
   const context = vm.createContext({
-    magpie: { platform: "darwin" },
     input: {
       gateway: { v1: "http://localhost/v1", key: "test-key" },
       models: [...invalid, ...valid, ...valid],
@@ -73,7 +56,7 @@ test("invalid IDs are omitted and duplicate IDs do not consume provider slots", 
 })
 
 test("models always contain valid limits and an array of supported reasoning levels", () => {
-  const { result } = load("darwin")
+  const { result } = load()
   assert.deepEqual(result, {
     "config.customModels.user-custom-magpie": {
       protocol: "openai-compatible", providerName: "Magpie",
@@ -88,7 +71,6 @@ test("Design's 50-model limit splits a large catalog without truncation", () => 
     id: `vendor/model-${index}`, context: 128000, output: 16000, efforts: [],
   }))
   const context = vm.createContext({
-    magpie: { platform: "darwin" },
     input: { gateway: { v1: "http://localhost/v1", key: "test-key" }, models },
   })
   const result = JSON.parse(vm.runInContext(
@@ -101,7 +83,6 @@ test("Design's 50-model limit splits a large catalog without truncation", () => 
 
 test("missing limits are omitted and an empty eligible catalog is refused", () => {
   const context = vm.createContext({
-    magpie: { platform: "darwin" },
     input: {
       gateway: { v1: "http://localhost/v1", key: "test-key" },
       models: [
