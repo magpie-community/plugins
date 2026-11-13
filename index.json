@@ -1258,6 +1258,45 @@
       "latest": "0.1.0",
       "readme": "# @magpie-community/agent-wave\n\n[Wave Terminal](https://waveterm.dev) as a magpie agent. magpie has no setup of\nits own for Wave; with this plugin it is on magpie's Agents page like the agents\nmagpie ships with.\n\n```sh\nmagpie plugin add @magpie-community/agent-wave\n```\n\nThen pick one of magpie's models in Wave's row. magpie writes one mode,\n`magpie`, into `~/.config/waveterm/waveai.json`:\n\n```json\n{\n  \"magpie\": {\n    \"display:name\": \"Magpie\",\n    \"ai:model\": \"v2ex/glm-5.3-flash\",\n    \"ai:endpoint\": \"http://127.0.0.1:3425/v1/chat/completions\",\n    \"ai:apitype\": \"openai-chat\",\n    \"ai:apitoken\": \"magpie-wave\",\n    \"ai:capabilities\": [\"tools\"]\n  }\n}\n```\n\nYour other modes and settings stay. Picking a model of your own again, or\nswitching Wave off, takes the `magpie` mode out entirely and puts your\nsettings back as they were. Wave watches its config directory, so the mode\nshows up in the dropdown right away — pick **Magpie** there to use it (or set\n`\"waveai:defaultmode\": \"magpie\"` in `~/.config/waveterm/settings.json`).\n\nWave reads its AI modes from `~/.config/waveterm` by default; on another setup\nit may use `$XDG_CONFIG_HOME/waveterm`, `$WAVETERM_CONFIG_HOME` or the legacy\n`~/.waveterm/config`. This plugin targets the default `~/.config/waveterm`.\n\nHow agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).\n"
     },
+    "@magpie-community/agent-zycode": {
+      "versions": {
+        "0.1.0": {
+          "file": "tgz/magpie-community-agent-zycode-0.1.0.tgz",
+          "integrity": "sha512-29DFcMaAh8u20ygF6TROOVaCgSQJJxtxVXregRE2jZfZHsRN7Wi6l3A/PeuTdpkG79G4TOvbS3v1q5AL+gAyAQ==",
+          "time": "2026-11-13T15:24:26.315Z",
+          "manifest": {
+            "name": "@magpie-community/agent-zycode",
+            "version": "0.1.0",
+            "description": "zycode as a magpie agent: pick one of magpie's models for it on the Agents page",
+            "type": "module",
+            "main": "./index.mjs",
+            "files": [
+              "zycode.agent.js",
+              "index.mjs",
+              "bridge.mjs",
+              "README.md"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-agent",
+              "zycode",
+              "llm-gateway"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/zycode"
+            },
+            "magpie": {
+              "agent": "./zycode.agent.js"
+            }
+          }
+        }
+      },
+      "latest": "0.1.0",
+      "readme": "# @magpie-community/agent-zycode\n\n[zycode](https://github.com/zy1233/pi-python) (the ACP agent `pi-agent-cli-lc`,\nthe terminal UI `zypi` and the VS Code extension `zycode.zycode`) as a magpie\nagent. magpie has no setup of its own for zycode; with this plugin it is on\nmagpie's Agents page like the agents magpie ships with. Unofficial.\n\n```sh\nmagpie plugin add @magpie-community/agent-zycode\n```\n\nThen pick one of magpie's models in zycode's row. zycode keeps its model in\nthe `[model]` table of `~/.pi-python/agent.toml` and its keys in\n`~/.pi-python/local.env`. magpie edits `local.env`, and the host part of this\npackage copies the result into `[model]`, because magpie cannot edit TOML.\n\n`~/.pi-python/local.env`, written by magpie:\n\n```sh\nMAGPIE_ZYCODE_MODEL=deepseek/deepseek-flash    # magpie's model\nMAGPIE_ZYCODE_API_KEY=magpie-zycode            # zycode's own key, so Usage names it\nMAGPIE_ZYCODE_BASE_URL=http://127.0.0.1:3425/v1\n```\n\n`~/.pi-python/agent.toml`, written by the host part:\n\n```toml\n[model]\nprovider = \"openai\"\nid = \"deepseek/deepseek-flash\"\nbase_url = \"http://127.0.0.1:3425/v1\"\napi_key_env = \"MAGPIE_ZYCODE_API_KEY\"\n```\n\nOnly those four keys of `[model]` are set. `thinking_level`, `permission`,\n`[[models]]`, comments and every other key stay as they are. If there is no\n`agent.toml`, or it has no `[model]` table, one is made.\n\nPicking zycode's own model again, or switching the plugin off or removing it,\nputs `agent.toml` back as it was before: byte for byte when nobody changed it\nmeanwhile. If you or zycode (`--setup`) changed the file while it was\nconnected, only the lines magpie wrote are put back (or taken out), and your\nchange stays. The file as it was is kept in `~/.pi-python/.magpie-zycode.json`\n(mode 0600) until then.\n\nRestart zycode after a change: it reads `agent.toml` and `local.env` when it\nstarts. Its `/model` picker then lists the one model magpie set.\n\nWhat it does not do:\n\n- It writes `agent.toml` only when its `[model]` table is plain: a `model = {…}`\n  inline table, `model.id = …` keys, `[model.x]` tables, a `[model]` key that\n  spans several lines, or a symbolic link in place of `agent.toml` make it\n  stop and change nothing. magpie's log then says once why:\n  `zycode bridge paused, agent.toml left as it is: …`.\n- It follows `~/.pi-python`. A `PI_HOME` that points elsewhere is not read.\n- zycode's own thinking level is not touched: set `thinking_level` in\n  `agent.toml` as before.\n- zycode sends the OpenAI SDK's User-Agent, so Usage names its requests by the\n  key `magpie-zycode`.\n\nHow agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).\n"
+    },
     "@magpie-community/gateway-aelios": {
       "versions": {
         "0.1.0": {
