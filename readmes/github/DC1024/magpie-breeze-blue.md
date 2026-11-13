@@ -164,20 +164,53 @@ Magpie 内建了 `auth.checkin` 契约，宿主自己负责调度，插件只提
 
 - 每个已登录、启用中的账号，**每个北京日调用一次**；首次询问时间取 设置 → 用量 → 插件 里的配置，未配置则在零点。
 - 返回 `{ outcome, credit?, streak?, message?, until? }`，`outcome ∈ claimed / done / ineligible / inactive / captcha / failed`。
-- 只有 `failed` 当天重试（30 分钟后）；其他结论当天定案。
+- 只有 `failed` 当天重试（30 分钟后）；其他结论当天定案 —— **除非**给了 `until`，宿主会到 `until` 再来问一次。Breeze 的日切与北京日不同步，正是靠这个补领。
 - 结果写 `plugin-checkin.json`，同时在账号卡片上显示。
 - 手动触发：`magpie accounts checkin`，或设置里的「立即签到」。
+
+### 签到时间怎么设
+
+`checkinAt` 是 Magpie 的全局设置（所有服务商共用，不只是本插件）：
+
+```bash
+magpie settings set checkinAt 09:00     # 从 09:00 起
+magpie settings set checkinAt ""        # 清空 = 每天零点
+```
+
+语义是「**从**这个时刻起」而非「正好在这个时刻」：宿主每 30 分钟轮询一次，所以设 09:00 实际落在 09:00–09:30。格式必须是 `HH:MM`，`25:99` 会被直接拒绝。
+
+建议设在 **08:10 之后**：Breeze 在北京时间 08:00 才切到新的一天，早于它去问只能拿到「昨天已领」。
 
 ### outcome 映射
 
 | 上游情况 | 返回 |
 |---|---|
-| `POST /api/credits/daily-claim` 2xx | `claimed`（能取到 `credit`/`streak` 就带上） |
-| 2xx 且 `code` 表示今日已领 | `done` |
+| `POST /api/credits/daily-claim` 返回 `claimed: true` | `claimed`，带 `credits_issued` 作为 `credit` |
+| `already_claimed: true`（网站当天已领过） | `done` |
+| 同上但**网站还没日切**（北京 00:00–08:00） | `inactive` + `until` 指向日切，08:00 后自动补领 |
 | 401 / 403 / `AUTH_REQUIRED` | `signIn: "expired"`，提示重新登录 |
 | 429 / 5xx / 网络异常 | `failed`（交给宿主当天重试） |
 
 Cookie 失效时故意**不**返回 `failed`：那会导致一天重试近 48 次。改用 `signIn: "expired"` 让账号标记为需重新登录，当天不再打扰。
+
+#### 为什么会有「已签到却没领到」
+
+Breeze 的一天按 **UTC 零点**切，也就是**北京时间 08:00**；而 Magpie 按**北京时间零点**记日子。两边差 8 小时。
+
+插件默认在北京时间 00:00 去问「今天领了吗」，此时网站还停在前一天，答「已经领过」——那说的是**昨天**。旧版把这句记成今天 `claimed`，界面上就出现「已签到」但没有 `+N`，而网站那边今天的 400 积分其实一分没到账，且当天不会再问第二次。
+
+修法有两条，都已落地：
+
+1. 解析 `daily_claim_next_reset_at`，把 `until` 报给 Magpie，让它到**网站日切时刻**再来问（宿主支持 `until`，`internal/provider/workbuddy_checkin.go` 的 `settled` 会据此重新排期）。
+2. 日切前拿到「已领」不报 `done` 而报 `inactive`，避免界面谎报今天已签。
+
+想彻底绕开这 8 小时窗口，也可以把签到时间设在日切之后：
+
+```bash
+magpie settings set checkinAt 08:10
+```
+
+`checkinAt` 是「从几点起」而非「正好几点」，轮询间隔 30 分钟，所以设 08:10 实际落在 08:10–08:40。所有服务商共用这一个值。
 
 ## 使用 `/v1/audio/speech`
 
@@ -236,15 +269,31 @@ Breeze 的 `{code, detail, error}` 会被改成 OpenAI 形状，保留 HTTP 状�
 
 本地校验失败 400；非 `/v1/audio/speech` 404；非 POST 405。
 
-## 余额
+## 余额与积分
 
-`auth.usage` 调 `GET /v1/balance`，把余额显示在 provider 卡片上：
+`auth.usage` 按账号类型走两条路：
+
+**有网页会话（cookie）时**，读 `GET /api/credits/summary`，显示**真实剩余积分**：
+
+```json
+{ "plan": "BreezeBlue", "windows": [
+  { "name": "剩余积分", "balance": 3090.9, "unit": "积分" },
+  { "name": "每日积分", "display": "今日已领取 · 400 积分", "aside": true },
+  { "name": "下次重置", "display": "2026/11/14 08:00:00（北京时间）", "aside": true }
+] }
+```
+
+「每日积分」一行会区分「今日已领取」「今日可领取」「今日暂不可领取」，直接对应网站的 `daily_claim_claimed_today` / `daily_claim_available`。这是只读的 GET，**不会触发领取**。
+
+**只有 API key 时**，读 `GET /v1/balance`（`https://api.breeze.blue`），显示 TTS 侧余额：
 
 ```json
 { "plan": "BreezeBlue", "windows": [{ "name": "余额", "balance": 1635.6, "unit": "积分" }] }
 ```
 
-`settlement_pending` 为真时窗口带 `aside: true`。查询失败返回 `windows: []` 和 `error` 文本，不抛到外层。
+`settlement_pending` 为真时窗口带 `aside: true`。两条路失败都返回 `windows: []` 和 `error` 文本，不抛到外层。
+
+> 网页积分与 TTS 余额是**同一个账户的两套读数**：前者是站点 Credits（签到发的就是它），后者是 API 侧余额。有 cookie 时优先显示前者，因为签到影响的是它。
 
 ## 网络与安全
 
@@ -265,7 +314,7 @@ node --test          # 需要 Node 18+
 ```
 
 - `test/breeze.test.mjs`：上游的 TTS 映射 / 错误 / 余额测试。
-- `test/checkin.test.mjs`：签到的请求构造、outcome 映射、凭证不泄漏，注入 `fetchImpl`，不访问真实网络。
+- `test/checkin.test.mjs`：签到的请求构造、outcome 映射、**跨日错位**（北京 00:30 的「已领」必须报 `inactive` 而非 `done`）、`until` 指向日切、凭证不泄漏，注入 `fetchImpl`，不访问真实网络。
 - `test/password-login.test.mjs`：邮箱密码登录链路——`Set-Cookie` 合并与删除指令、Firebase 错误码翻译、换会话必须带 `Origin`、拿不到 cookie 时只报字段名不报值、refresh token 轮换。
 - `test/auth-flow.test.mjs`：auth 方法的接线契约——邮箱密码排第一且密码走掩码类型、密码不进凭据、`refresh` 钩子轮换与 `signIn: "expired"`、粘贴方法是 `opened: false` + `method: "code"`（保证登录页由 Magpie 开在用户浏览器里）、粘贴后先验再存、无效/空 cookie 的报错、本机自动模式标记 `opened: true`、API key 方法仍然存在（TTS 依赖它）、`checkin` 对「只有 API key」的账号给出可照做的提示。
 - `test/browser-login.test.mjs`：CDP 端口解析、Cookie 拼接与域名/路径优先级、浏览器探测、超时与 abort、`Storage.getCookies` 与页面级回退、无 DISPLAY 的 Linux 直接拒绝、**启动参数必须带 `AutomationControlled` 抑制标志**（Google 登录的前提）、撞上 Google 拦截时快速报错。
@@ -287,7 +336,9 @@ node -e "import('./lib/browser-login.mjs').then(async m => {
 ## 已知边界
 
 - 签到走的是 Breeze Web 端的内部接口 `POST /api/credits/daily-claim`，无公开契约，前端改版即可能失效。
-- 成功响应体的字段结构未由官方定义，解析采用多候选字段兜底；取不到就不报 credit。
+- 领取成功的字段实测为 `credits_issued`（旧版按 `credit`/`credits` 等候选猜，取不到就不带数量，界面于是只有「已签到」没有 `+N`）。仍保留候选兜底，字段全变时不谎报成功，改报 `failed` 让宿主重试。
+- **Breeze 按 UTC 零点（北京 08:00）切日，Magpie 按北京零点切日**，两边差 8 小时。插件靠 `daily_claim_next_reset_at` 算出日切并报 `until` 给宿主；如果 Breeze 以后不再返回这个字段，就会退化成旧行为（当天不再补问）。
+- **卡片上的「立即签到」按钮只在有账号今天还没签时才出现**，这是 Magpie 宿主前端的 `checkinDue` 门控（`internal/gui/assets/app.js`），插件改不了。已签时请用**供应商编辑器 → 高级 → 签到 → 立即签到**，那个按钮恒显示。
 - 邮箱密码登录依赖 Breeze 继续把 Firebase 配置公开在 `GET /api/config` 里，且 Firebase 侧不给人机验证。任一条变了都会退化成「请用浏览器登录」，不会静默失败。
 - 用 Google 注册、没设过密码的账号没有密码可填，只能用「浏览器登录」。
 - **Breeze 登录不发 code、也不做 OAuth 回调**，所以「浏览器登录」必须让用户粘一次 cookie 回来。这是站点性质决定的，Magpie 的 `code` / `PasteCallback` / `auto` 三种收尾方式里只有「粘一段文本」适用于它（详见上文表格）。

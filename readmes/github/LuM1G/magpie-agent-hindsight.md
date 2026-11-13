@@ -4,7 +4,7 @@
 
 非官方社区插件：把 **Hindsight（后知后觉）** 接入 Magpie 的 Agents 页。你只需在 Magpie 中勾选模型，插件会把配置写入 Hindsight 当前账号的 SQLite 设置，并在连接期间保持同步；断开时恢复原来的 AI 设置。
 
-> 本插件不是 Hindsight 或 Magpie 官方作品。Hindsight 的名称和图标仅用于说明兼容对象，详见 [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)。
+> 本插件不是 Hindsight 或 Magpie 官方作品。Hindsight 的名称仅用于说明兼容对象；插件图标为原创设计。
 
 ## 接管范围
 
@@ -34,7 +34,7 @@
 magpie plugin add github:LuM1G/magpie-agent-hindsight
 ```
 
-安装后打开 **Agents → Hindsight**，勾选模型并连接。`0.1.3` 会在插件后台进程加载时立即开始同步；更新后重启一次 Magpie，让托管进程重新加载。桥接路径与 `0.1.2` 相同，已连接时无需重新勾选模型。
+安装后打开 **Agents → Hindsight**，勾选模型并连接。从 `0.1.3` 起，插件会在后台进程加载时立即开始同步；更新后重启一次 Magpie，让托管进程重新加载。桥接路径与 `0.1.2` 相同，已连接时无需重新勾选模型。
 
 ## 桥接与状态文件
 
@@ -66,9 +66,10 @@ Magpie 写入：
 
 ```text
 ~/.magpie-agent/hindsight/state.json
+~/.magpie-agent/hindsight/state.json.bak
 ```
 
-状态文件包含恢复所需的原始 API key 和 gateway key，因此不要分享。日志不会输出这些密钥。不支持或已损坏的桥接不会触发数据库写入。
+每次成功写入主状态后会同时写入一份 `state.json.bak` 备份；如果备份写入失败，主状态仍然有效，插件会继续同步。主文件缺失或无法解析时，插件会从备份恢复并修复主文件。状态文件和备份都包含恢复所需的原始 API key 和 gateway key，因此都不要分享。日志不会输出这些密钥。如果主文件和备份都无法解析，插件会停止写库并记录错误，避免在丢失恢复信息的情况下继续操作。不支持或已损坏的桥接不会触发数据库写入。
 
 ## 写入 Hindsight
 
@@ -142,7 +143,7 @@ Hindsight 前端会缓存设置。下一次对话或总结通常已读取数据�
 - `~/.magpie-agent/hindsight/state.json` 存在，当前账号的 `connected` 为 `true`。
 - Hindsight 设置中的 `endpoint` 不是空值，并且 `externalProfiles` 中有 `Magpie · ...` 档案。
 
-如果 `bridge.json` 已存在但 `state.json` 不存在，重启一次 Magpie，让插件后台进程重新加载；必要时在 Agents 页断开再连接。后台通常会在 2 秒内完成第一次同步。
+如果 `bridge.json` 已存在但 `state.json` 不存在，插件会先尝试从 `state.json.bak` 恢复；两者都不存在时才视为首次连接。也可以重启一次 Magpie，让插件后台进程重新加载；必要时在 Agents 页断开再连接。后台通常会在 2 秒内完成第一次同步。
 
 ### 对话返回 400，日报/周报正常
 
@@ -184,6 +185,4 @@ npm pack --dry-run
 
 ## 许可
 
-插件源代码使用 MIT 许可，见 [`LICENSE`](./LICENSE)。
-
-Hindsight 官方图标是单独的 GPL-3.0 第三方资产，见 [`LICENSE-GPL-3.0.txt`](./LICENSE-GPL-3.0.txt) 和 [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)。本插件是社区作品，不代表 Hindsight 或 Magpie 官方。
+插件源代码和图标使用 MIT 许可，见 [`LICENSE`](./LICENSE)。本插件是社区作品，不代表 Hindsight 或 Magpie 官方。

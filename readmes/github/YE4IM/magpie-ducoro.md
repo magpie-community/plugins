@@ -1,4 +1,6 @@
-# Ducoro 0.4.5
+# Ducoro 0.4.7
+
+The 0.4.7 interface supports English and Chinese, follows Magpie language changes, and preserves drafts, focus and open dialogs. It includes grouped settings, bordered Bot summaries and aligned expanded editors. See the [release notes](RELEASE-NOTES.md).
 
 Sync Magpie models, connectors, skills, instructions and explicitly selected subagents to Ducoro, and manage per-Bot assignments from the plugin page. Changes go through previews with confirmation before saving; failures are recorded by category with per-item retry; verification distinguishes saved settings, written configuration, readback and session loading.
 
@@ -12,11 +14,11 @@ Full history: [CHANGELOG.md](CHANGELOG.md) · Release notes: [RELEASE-NOTES.md](
 - **Connectors**: two sources — Magpie library connectors (global or per Bot) and Ducoro account connectors (connect the service first, then select allowed tools per Bot in the account drawer). Revocations run before additions and connector failures are isolated; the first explicit assignment records the previous policy and revocation restores it; external edits produce conflicts instead of being overwritten. When the current CLI cannot clear a nonempty args/env/headers list or safely change transport, the plugin retains the definition and reports a conflict.
 - **Skills**: assigned per Bot from Magpie resources already allocated to Ducoro; skill artifacts with the same name and content digest are prepared once and reused. Skill bundles are bounded by file count (5000) and total size (32 MiB).
 - **Instructions and subagents**: instructions are appended inside the plugin-owned block, and removal restores the user's original profile; subagents are selected explicitly per target.
-- **Plans**: define a name, model, library connectors, skills and extra instructions under **Bot plans**; multiple Bots inherit continuously and explicit selections take precedence. One click clears per-Bot overrides back to the plan (including instruction overrides). Plan IDs accept 1–64 letters, digits, underscores and hyphens; cancel inheritance before deleting a plan.
+- **Plans**: define a name, model, library connectors, skills and extra instructions under **Manage plans**; multiple Bots inherit continuously and explicit selections take precedence. One click clears per-Bot overrides back to the plan (including instruction overrides). Plan IDs accept 1–64 letters, digits, underscores and hyphens; cancel inheritance before deleting a plan.
 
 ### Preview and verification
 
-- **Preview changes** reads the draft without writing; **Save settings** shows a preview and requires confirmation. The preview lists global and per-Bot additions and removals, the resources other Pi Agents are expected to lose when global resources move to per-Bot assignment, each value's source (global settings, inherited plan or Bot override), and a three-way comparison of last-synced, current Ducoro and desired Magpie values.
+- **Preview changes** reads the draft without writing; **Preview and save** shows a preview and requires confirmation. The preview lists global and per-Bot additions and removals, the resources other Pi Agents are expected to lose when global resources move to per-Bot assignment, each value's source (global settings, inherited plan or Bot override), and a three-way comparison of last-synced, current Ducoro and desired Magpie values.
 - Switching targets, disabling sync or deselecting explicitly lists the managed blocks and files scheduled for removal.
 - After saving, items are verified across four stages: saved, written, read back and session-loaded. Items without sufficient evidence stay explicitly unverified; a successful command does not prove that a running session loaded the changes. Subagents are verified against the current desired content. Verification continues in the background beyond 35 seconds, reconnects after interrupted polling and resumes when the page reopens.
 - Drift handling: models offer adopt-current, reapply-desired or pause model management for that Bot; writes carry the reviewed configuration summary and re-read before applying, keeping the current state on mismatch.
@@ -34,24 +36,24 @@ Full history: [CHANGELOG.md](CHANGELOG.md) · Release notes: [RELEASE-NOTES.md](
 
 ### Backups and rollback
 
-- **Backup management** centralizes management-record backups and configuration checkpoints: create backups, open the backup folder, import external files (8 MiB limit; record imports need a complete v1/v2 snapshot, checkpoint imports accept version 1 records), JSON export and per-collection clearing. Backups support names, notes and retention flags; retained items survive automatic pruning, bulk clearing and local-record cleanup.
+- **Backup and restore** centralizes management-record backups and configuration checkpoints: create backups, open the backup folder, import external files (8 MiB limit; record imports need a complete v1/v2 snapshot, checkpoint imports accept version 1 records), JSON export and per-collection clearing. Backups support names, notes and retention flags; retained items survive automatic pruning, bulk clearing and local-record cleanup.
 - A configuration checkpoint is created before each save (file mode 0600, latest 20 unretained kept). Checkpoints roll back selectively by field and Bot, automatically including related plan definitions, inheritance and scope changes; restores stage a draft for preview before saving.
 - Restoring a management-record backup pauses automatic sync until previewed and manually continued; restarting the host does not clear the pause.
 - **Clean up local records** previews counts and sizes before confirming: it removes completed operation history (up to 500 records), old state backups (latest 5 unretained kept) and skill caches unused for over 7 days, and compacts the journal. Current ownership, permission-recovery data, unfinished operations and skills in use are retained.
 
 ## Installation
 
-Add this folder's absolute path in Magpie's plugin settings, or install the local `magpie-ducoro-0.4.5.tgz` package. Open **Ducoro** in the sidebar. Magpie must support plugin page services, and `ducoro-cli` and the Ducoro daemon must be available locally.
+Add this folder's absolute path in Magpie's plugin settings, or install the local `magpie-ducoro-0.4.7.tgz` package. Open **Ducoro** in the sidebar. Magpie must support plugin page services, and `ducoro-cli` and the Ducoro daemon must be available locally.
 
 Upgrading: stop the previous host, then replace the plugin path or package before loading the new version, so two versions never write the same management state. Existing settings and compatible v1/v2 records carry forward without reconfiguration.
 
-Downgrading: stop the 0.4.5 host first, then run `npm run state:compact -- /absolute/path/to/state.json` from this package directory to merge the journal under the shared lock. After an interrupted run, recover with 0.4.5 first. Do not manually delete an uncompacted journal.
+Downgrading: stop the 0.4.7 host first, then run `npm run state:compact -- /absolute/path/to/state.json` from this package directory to merge the journal under the shared lock. After an interrupted run, recover with 0.4.7 first. Do not manually delete an uncompacted journal.
 
 ## Page and assignments
 
 - **Sync settings**: switches for the model connection, models, connectors, skills, instructions and subagents. Disconnect handling and the three resource scopes use switches: off means global sync, on means per-Bot assignment.
 - **Bot resources**: three independent scopes for models, connectors and skills; all Bots are listed automatically (names and IDs are read-only; refresh the list). Supports search by name/ID, status filters and unsaved-change counts.
-- **Sync diagnostics**: generates a live report on demand, showing the viewing time and the last synchronization time, with explicit stale and in-progress states. Viewing never triggers sync; retry synchronization separately. Shows the current step and its duration, CLI and merged-read counts, and the last 20 in-memory rounds (cleared on restart); issues link straight to the relevant settings area.
+- **Sync status**: generates a live report on demand, showing the viewing time and the last synchronization time, with explicit stale and in-progress states. Viewing never triggers sync; retry synchronization separately. Shows the current step and its duration, CLI and merged-read counts, and the last 20 in-memory rounds (cleared on restart); issues link straight to the relevant settings area.
 
 The model dropdown is single-select and manages only Pi Agents bound to the plugin connection; other runtimes and connection bindings are not changed automatically. Refreshing retains unsaved choices, and a failed list read is never treated as an empty list. Connectors and skills support inheritance, explicit selection and no assignment; empty lists mean the plugin assigns none and do not block other global or user configurations. Resource scopes are based on plugin ownership records and never count user-installed resources as plugin-owned.
 
@@ -109,9 +111,6 @@ npm run lock:inspect -- /absolute/path/to/ducoro-bridge TOKEN --all-hosts-stoppe
 
 Plan-related configuration keys: `botPlansCatalog`, `botPlans`, `botInstructions`, `pausedModels`, `modelGuards`. Gateway connections, complete skill packages, instruction blocks and explicit subagents use the existing sync modules; hooks and RTK are not synchronized. Technical keys keep their original names; the UI calls library tools “connectors”.
 
-## Validation scope
-
-Automated regression covers account policy writes, external conflicts, reapplication and restoration, and local HTTP page-service proxy constraints, plus browser checks for backup downloads, plan confirmation, bulk undo and draft recovery. Real account permission writes and the Magpie web proxy still require installation-level acceptance testing; automated checks do not establish real account authorization.
 
 ## License
 

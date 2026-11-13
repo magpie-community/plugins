@@ -13,46 +13,31 @@ Local company-name masking and reversible replies for Magpie, with session appro
 
 这是规则识别工具，不能保证发现所有公司名称，也不能作为完整的数据防泄漏边界。图片、音频、文件二进制内容及绕过 Magpie 的连接不在检查范围内。宿主超时、回调缺失或请求被跳过时，不能视为已完成保护。
 
-当前在 macOS 上验证；其他系统尚未验证。会话授权依赖 Codex 的会话元数据，其他客户端默认执行名称脱敏。插件不修改源文件或业务数据库，Magpie 自带的其他隐私保护继续按原配置运行。
+本版仅支持 macOS，安装包已声明此限制；Windows 和 Linux 不在本版支持范围内。会话授权依赖 Codex 的会话元数据，其他客户端默认执行名称脱敏。插件不修改源文件或业务数据库，Magpie 自带的其他隐私保护继续按原配置运行。
 
-## 安装与首次配置
+## 安装与首次运行
 
-需要官方 Magpie、可用的 `magpie` 命令，以及 Node.js。只启用一份本插件，并在继续模型请求前完成密钥配置。
+支持 macOS，需要 Magpie 0.1.3841 或更新版本。运行时使用 Magpie 自带的 Bun，无需另外安装 Node.js 或 npm。只启用一份本插件，避免两份安装同时处理请求。
+
+在终端执行：
 
 ```sh
 magpie plugin add github:cyanask/magpie-company-guard
 ```
 
-首次安装后运行以下命令。它通过 Magpie 官方配置入口补齐本机随机密钥，保留已有有效密钥和其他选项，不输出密钥；已有密钥格式异常时会停止，避免覆盖授权。
+如果标准 App 已安装，但终端找不到 `magpie` 命令，可使用：
 
 ```sh
-node --input-type=module <<'JS'
-import {randomBytes} from 'node:crypto';
-import {spawnSync} from 'node:child_process';
-
-const plugin = 'github:cyanask/magpie-company-guard';
-const run = args => {
-  const result = spawnSync('magpie', args, {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
-  if (result.status !== 0) throw new Error('Magpie configuration command failed.');
-  return result.stdout;
-};
-const text = run(['plugin', 'options', plugin]);
-const options = JSON.parse(text.slice(text.indexOf('{')));
-let changed = false;
-for (const key of ['authKey', 'receiptReadKey', 'authorizationKey']) {
-  if (options[key] === undefined) {
-    options[key] = randomBytes(32).toString('hex');
-    changed = true;
-  } else if (!/^[a-f0-9]{64}$/.test(options[key])) {
-    throw new Error(`Invalid ${key}; existing configuration was preserved.`);
-  }
-}
-if (changed) run(['plugin', 'options', plugin, JSON.stringify(options)]);
-console.log('Local configuration is ready. Open the Company name protection page.');
-JS
+/Applications/magpie.app/Contents/MacOS/magpie plugin add github:cyanask/magpie-company-guard
 ```
 
-随后打开 Magpie → 公司名称保护。默认页面端口为 `3478`，可通过插件选项 `receiptPort` 调整。首次配置完成前，插件会因缺少保护密钥拒绝请求。
+安装后打开 Magpie → 公司名称保护。首次加载时，插件自动生成三个随机密钥，保存在本机状态目录的 `keys.json` 中，文件权限为 `0600`，目录权限为 `0700`。插件会把缺失的密钥同步到自身的 Magpie 选项，使中间件、请求 Hook 和页面使用同一套凭据；不需要手动运行配置脚本。
+
+已有有效密钥、会话授权、自定义端口和其他选项继续沿用。重启不会重新生成密钥。若已有文件权限不安全、密钥损坏或两处配置冲突，初始化会停止并保留原配置，请先排查重复安装或配置变动，不要通过删除密钥文件尝试恢复。
+
+默认页面端口为 `3469`，已核对本次社区插件源码未使用此端口。它只监听 `127.0.0.1`；可通过插件选项 `receiptPort` 调整。升级时已有端口设置不变，原来显式配置的 `3478` 仍会继续使用；如果同时安装 AtomCode 等使用该端口的插件，应为本插件另设端口。
+
+默认状态目录为 `~/.config/magpie/company-guard`；设置了绝对路径 `XDG_CONFIG_HOME` 时，使用该目录下的 `magpie/company-guard`。显式配置的 `stateDir` 优先。密钥、授权目录和含密钥的插件选项只留在本机，不要提交或发送给他人。
 
 ## 会话授权
 
@@ -73,6 +58,8 @@ JS
 
 在“脱敏回执”页面按任务和状态筛选，查看替换数量、处理状态及限时明细。未命中不代表没有敏感名称；记录未确认时，也不能据此认定请求已经完成保护。
 
+桌面版默认读取 macOS 的 `~/Library/Logs/magpie/app.log` 来核对处理确认。使用 `magpie web` 或自行重定向日志时，可在插件选项 `appLog` 中指定实际日志文件的绝对路径。日志缺失时保留“未确认”状态，不会把缺少核对依据当作处理成功。
+
 可从源码目录读取本机计数报告：
 
 ```sh
@@ -81,12 +68,15 @@ node receipt-report.mjs --json
 
 本仓库不包含用户配置、授权名单、业务材料或本机验收记录。
 
-## 源码构建
+## 开发与测试
 
 ```sh
 npm ci
+npm test
 npm run build
 ```
+
+开发和测试需要 Node.js 20 或更新版本。测试使用独立的临时配置和虚构名称，覆盖四种协议的往返处理、流式分段还原、工具参数、会话授权与撤销，以及首次初始化和密钥权限。
 
 `dist/` 已提交，可直接从 Git 安装，无需安装时构建。运行时使用 Magpie 自带的 Bun，无额外 npm 运行时依赖；esbuild 仅用于开发构建。本项目尚未发布到 npm。
 

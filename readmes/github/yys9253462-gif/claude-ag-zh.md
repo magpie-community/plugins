@@ -6,7 +6,7 @@
 
 ## 最简单：Windows 双击选择语言后汉化
 
-从 [Releases](https://github.com/yys9253462-gif/magpie-claude-desktop-zh-cn/releases) 下载 `ClaudeDesktop-ZH-CN.exe`，双击即可。
+从 [Releases](https://github.com/yys9253462-gif/claude-ag-zh/releases) 下载 `ClaudeDesktop-ZH-CN.exe`，双击即可。
 
 - **不需要 Magpie、Node.js、Python 或安装 .NET**；EXE 已内嵌运行时与全部语言资源。
 - **启动后先选择语言，再点击“开始汉化”**，不会打开就修改 Claude。
@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File .\standalone\publish.ps1
 
 ## macOS 便携版（实验版）
 
-下载：[macOS 0.1.0 实验版](https://github.com/yys9253462-gif/magpie-claude-desktop-zh-cn/releases/tag/macos-v0.1.0)。附件包含 ZIP 与 SHA-256 校验文件。
+下载：[macOS 0.1.0 实验版](https://github.com/yys9253462-gif/claude-ag-zh/releases/tag/macos-v0.1.0)。附件包含 ZIP 与 SHA-256 校验文件。
 
 Mac 包内提供 `.app` 启动入口与 `.command` 备用入口。先选择语言，再明确确认执行；只有确认后才关闭 Claude 并修改资源。提供原应用备份恢复与本机日志，不需要 Magpie。
 
@@ -69,7 +69,7 @@ python -I macos/package.py
 ## 安装到 Magpie
 
 ```powershell
-magpie plugin add github:yys9253462-gif/magpie-claude-desktop-zh-cn
+magpie plugin add github:yys9253462-gif/claude-ag-zh
 ```
 
 在 Magpie 侧栏的插件页面打开 **Claude Desktop 中文**。也可从 Releases 下载 `.tgz`，**先解压，再选择含 `package.json` 的目录**，不要直接把 `.tgz` 文件路径作为插件安装。
@@ -77,7 +77,7 @@ magpie plugin add github:yys9253462-gif/magpie-claude-desktop-zh-cn
 本机源码安装示例：
 
 ```powershell
-magpie plugin add F:\github\magpie-claude-desktop-zh-cn
+magpie plugin add F:\github\claude-ag-zh
 ```
 
 ### 独立运行

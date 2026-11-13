@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/polang233/claude-desktop-zh/main/assets/logo.png" width="128" alt="Claude 中文插件图标">
+<img src="https://raw.githubusercontent.com/polang233/claude-desktop-zh/main/assets/logo.png" width="176" alt="Claude 中文插件图标">
 
 # claude-desktop-zh
 
@@ -6,7 +6,7 @@
 [![npm 下载量](https://img.shields.io/npm/dt/magpie-claude-zh?label=npm%20downloads)](https://www.npmjs.com/package/magpie-claude-zh)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522-43853d)](https://nodejs.org/)
 [![Windows](https://img.shields.io/badge/platform-Windows-0078d4)](https://github.com/polang233/claude-desktop-zh#%E5%AE%89%E8%A3%85)
-[![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/polang233/claude-desktop-zh/blob/main/LICENSE)
+[![代码 MIT](https://img.shields.io/badge/code-MIT-blue)](https://github.com/polang233/claude-desktop-zh/blob/main/LICENSE)
 
 在 magpie 中安装，让原版 Claude Desktop 的第三方 Gateway 模式使用中文界面，继续使用原来的设置、会话和历史。
 
@@ -19,7 +19,7 @@
 准备好 Windows、magpie 和 Node.js 22 或以上版本，Claude 已配置为第三方 Gateway 模式。
 
 1. 在 magpie 的插件页按 npm 包名 **`magpie-claude-zh`** 添加。也可在「发现 → 非官方插件 · GitHub」中搜索 **claude-desktop-zh**。
-2. 保持插件启用，使用默认简体中文和「启动时加载中文」选项。
+2. 保持插件启用，使用默认简体中文和「启动时自动中文」选项。
 3. 如果 Claude 正在运行，通过 **File → Exit（文件 → 退出）** 正常退出。看到 Windows 的「中文已准备好」通知后，从原来的入口打开 Claude。
 
 首次准备由插件自动完成。已通过文件夹安装过插件的用户，先在 magpie 中移除旧条目，再安装 npm 包，保留一个安装条目。
@@ -30,7 +30,7 @@
 
 使用时保持 magpie 运行。每次打开 Claude，插件会自动加载中文；过程中可能短暂出现调试窗口和文件选择框，完成后自动收起。
 
-在插件设置页选择语言并保存，下次打开 Claude 时生效。「启动时加载中文」开关控制后续启动是否加载。
+在插件设置页选择语言，改动即保存，下次打开 Claude 时生效。「启动时自动中文」开关控制后续启动是否加载。
 
 ![Claude 第三方模式的中文设置界面](https://raw.githubusercontent.com/polang233/claude-desktop-zh/main/docs/images/claude-settings-zh.png)
 
@@ -51,4 +51,4 @@ Claude 更新后，请在 magpie 中关闭再启用插件，让它重新生成�
 - [macOS 手动运行时说明](https://github.com/polang233/claude-desktop-zh/blob/main/docs/macos.md)
 - [开发与验证](https://github.com/polang233/claude-desktop-zh/blob/main/docs/README.md)
 
-项目代码采用 MIT 许可，官方语言资源的权利归其所有者，见 [NOTICE](https://github.com/polang233/claude-desktop-zh/blob/main/NOTICE)。
+项目代码采用 MIT 许可；当前吉祥物参考 CrossPet 角色素材改编，采用 CC BY-NC-SA 4.0。官方语言资源的权利归其所有者。来源与许可见 [NOTICE](https://github.com/polang233/claude-desktop-zh/blob/main/NOTICE)。

@@ -63,7 +63,9 @@ magpie plugin rm github:SivanCola/magpie-agent-deepzora
   在 Deepzora `config.toml` 中添加 `magpie-agent` 供应商并设置默认模型，
   将网关密钥写入全局 `.env` 的 `MAGPIE_DEEPZORA_API_KEY`。
 
-原有供应商、模型、其他凭据和设置保留。已知的上下文长度、输出长度和图片
+在 Magpie 选择的模型只决定默认值。插件会同步此 Agent 可见的完整模型目录，
+后续增删随 Magpie 的目录更新生效。旧版升级后，重新选择一次当前模型即可。
+原有供应商、模型、其他凭据和设置保留。每个模型各自的名称、上下文长度、输出长度和图片
 能力会同步；插件使用 OpenAI Chat Completions，具体上游协议由 Magpie 转换。
 模型请求由 Deepzora 发往 Magpie，插件本身不调用模型或登录上游供应商。
 
@@ -135,6 +137,9 @@ Install the **whole package** using
 wait about a second with Magpie running, then restart Deepzora and create a new
 conversation. Explicit project defaults and CLI model flags take precedence.
 
+The selected model is the default; the bridge imports and refreshes the whole
+agent-visible catalog with per-model capabilities. Reselect the current model
+once after upgrading from a single-model version.
 The bridge preserves existing providers and other credentials. Its gateway key
 is stored in Deepzora's global `.env`, never TOML. While connected, TOML formatting
 is normalized; disconnect restores original bytes if untouched, otherwise it

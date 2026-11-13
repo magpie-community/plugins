@@ -17,7 +17,7 @@
 - **供应商行**：`amd-cloud (AMD Cloud, N models)  signed in` / `amd-cloud-lab (AMD Cloud Lab, N models)  signed in`。多把 key 重复登录即多账号。
 - **账号额度卡片 + `magpie quota`**：
   - `amd-cloud`（国内站）：「点数（24h 滚动）」窗口——已用百分比、`已用 / 上限 pts`、重置倒计时（滚动周期：从本周期首次计费起 24 小时后重置，非固定零点）；账号旁显示组织 ID（`oneclick-org-…`）。
-  - `amd-cloud-lab`（国际站）：无用量 API，额度处显示个人页链接。**Points 是 30 天接入期的总量（10 pts），不是每日重置**——与国内站完全不同，别按每日额度假设安排用量。
+  - `amd-cloud-lab`（国际站）：无用量 API，额度处显示个人页链接 + **本地预估已用**（插件从每次响应的 `usage.cost` 自行累计的进程内计数，标注“本地预估”——装插件前/进程重启前的消耗不含在内）。**Points 是 30 天接入期的总量（10 pts），不是每日重置**——与国内站完全不同；**实际计算与余额以 [TokenLab 个人页](https://notebooks.amd.com/profile) 为准**。
   - 两站都把这套数字叫 **pts（点数）**，官方明示是免费服务的配额计量而非真实费用；国内站 API 字段名叫 `daily_cost_*_usd`，数值与 pts 完全一致（1 pt ≡ 1 名义美元），插件按 pts 口径展示。
 - **模型选择器 / Agent**：`amd-cloud/...` 与 `amd-cloud-lab/...` 各自站点目录里的全部聊天模型——模型列表登录后运行时从各自的 `GET /v1/models` 拉取，不写死，新模型上架自动出现。
 - **网关 `GET /v1/magpie/quotas`**：暴露同样的额度信息给外部工具。

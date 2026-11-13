@@ -59,6 +59,7 @@ provider   phanthycode（模型名 phanthycode/<id>）
 | `model_not_found` / 模型不存在 | **404** `model_not_found` | 上游不认识这个 id | 重新拉一次模型列表 |
 | `plan_required` / `missing_or_expired_plan` / `no active plan` | **403** `plan_required` | 套餐到期 / 未订阅 | 续费；账号不会被停用 |
 | `insufficient_credits` | **402** `quota_exhausted` | 积分真的用尽 | 充值或等重置 |
+| `disabled_account` / `account_frozen`，或网页登录页「此账户已被禁用」 | **403** `account_disabled` | **账号被服务端禁用 / 冻结**，不是登录过期 | 换号，或联系客服申诉；重新登录不会恢复 |
 | `device_binding_conflict`（409） | **409** `device_binding_conflict` | 该 installation id 已绑定官方桌面端公钥，服务端不接受第二台设备 | 换号或换设备；数据面（目录 / 额度 / 签到只读）仍可用 |
 
 **「积分到账」不等于「模型能用」**：积分只决定付不付得起；某个模型能不能调，由**套餐**决定。
@@ -73,11 +74,19 @@ provider   phanthycode（模型名 phanthycode/<id>）
 3. **套餐**：出现 `model_not_found`（正文带 `model_not_allowed`）或 `plan_required` 都是套餐范围问题，
    不是插件配置问题。
 
+如果错误是 **`account_disabled`**（或网页登录页直接显示「**此账户已被禁用**」），
+那是账号被服务端禁用，**不是**登录过期 —— 插件不会把你送回去反复重登，重登也不会恢复；
+只能换号或联系客服申诉。
+
 ## 数据处理
 
 - **只发官方端点**：提示词、补全、模型目录、额度、签到全部直连 `https://code.phanthy.com`；
   插件不中转、不经第三方、不把对话写进日志或缓存。云端如何留存 / 使用数据由官方服务条款决定
   （运营方：范式万神殿（北京）控股有限公司，见 [NOTICE.md](./NOTICE.md)），插件无法代它承诺。
+- **请求头与官方桌面端 2.51.0 一致**：每次请求带 `x-app: cli`、
+  `x-phanthy-client-source: desktop`、`x-phanthy-client-version: 2.51.0` 和
+  `x-phanthy-cli-device` 设备指纹（platform / arch / osRelease / 本机 IPv4 候选）。
+  服务端「用量」页的「来源 / OS」两列靠它们；**只含设备信息，不含对话内容**，也不额外上传。
 - **本地落盘只有这几类（都不含对话）**：
   - OAuth `access` / `refresh`：magpie 自己的 `~/.config/magpie/plugin-auth.json`，插件不另存；
   - 设备身份：`~/.cache/magpie/phanthycode-device-<账号>.json`，三把 ed25519 私钥，权限 `0600`；

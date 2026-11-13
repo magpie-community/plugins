@@ -76,7 +76,7 @@ Inside a system prompt, a name that is part of a technical reference is left alo
 
 ## The preset
 
-47 names: Claude Agent, Claude Code, OpenAI Codex / Codex CLI, OpenCode, GitHub Copilot / CLI, Gemini Code Assist / Gemini CLI, Windsurf, Codeium, Roo Code, Kilo Code, Continue.dev, Amazon Q Developer / CodeWhisperer, JetBrains AI Assistant / Junie, Qoder / CLI, Qwen Code, Tabnine, Sourcegraph Cody, Augment Code, Replit Agent / Ghostwriter, OpenHands, SWE-agent, Zed AI, Void Editor, PearAI, Refact.ai, GitLab Duo, Visual Studio IntelliCode, CodeBuddy, Blackbox AI, Pieces for Developers, CodiumAI, Rovo Dev CLI, Factory Droid, OpenClaw / Clawdbot / Moltbot, Hermes Agent, WorkBuddy, Chatbox / Chatbox AI.
+48 names: Claude Agent, Claude Code, OpenAI Codex / Codex CLI, OpenCode, GitHub Copilot / CLI, Gemini Code Assist / Gemini CLI, Windsurf, Codeium, Roo Code, Kilo Code, Continue.dev, Amazon Q Developer / CodeWhisperer, JetBrains AI Assistant / Junie, Qoder / CLI, Qwen Code, Tabnine, Sourcegraph Cody, Augment Code, Replit Agent / Ghostwriter, OpenHands, SWE-agent, Zed AI, Void Editor, PearAI, Refact.ai, GitLab Duo, Visual Studio IntelliCode, CodeBuddy, Blackbox AI, Pieces for Developers, CodiumAI, Rovo Dev CLI, Factory Droid, OpenClaw / Clawdbot / Moltbot, Hermes Agent, WorkBuddy, Chatbox / Chatbox AI, Kelivo.
 
 Longest name first, ignoring case, so `GitHub Copilot CLI` is replaced once rather than as `GitHub Copilot` plus a leftover ` CLI`.
 
@@ -143,6 +143,12 @@ The page reads and writes the middleware's own options through the magpie bridge
 
 To point it at magpie: add a custom OpenAI-compatible provider in Chatbox, set its API host to magpie's gateway address and its key to a magpie gateway key, and pick a model magpie serves. Nothing else changes: the filter acts only on the request an Antigravity account is sent, so Chatbox on a Claude subscription gets the prompt it wrote.
 
+## Kelivo
+
+[Kelivo](https://github.com/Chevey339/kelivo) is an open-source, cross-platform chat and agent client built with Flutter, for Android, iOS, macOS, Windows and Linux. Its provider settings take a custom, OpenAI-compatible API host, so its requests can go through magpie's gateway and reach an Antigravity account like an agent's — and a system prompt that names the app brings the 429 back on that route. `Kelivo` is in the preset for that reason, next to Chatbox.
+
+To point it at magpie: add a provider in Kelivo, set its Base URL to magpie's gateway address (usually ending in `/v1`) and its key to a magpie gateway key, then fetch and pick a model magpie serves. Nothing else changes: the filter acts only on the request an Antigravity account is sent, so Kelivo on a Claude subscription gets the prompt it wrote.
+
 ## When the 429 comes back anyway
 
 A `429 Resource has been exhausted` while magpie shows quota left, and while other requests on the same model and account go through, means something else in that system prompt is being matched — often text that isn't the agent's own: a custom prompt, or another plugin's injection.
@@ -178,7 +184,7 @@ bun test
 
 中文：把 CLIProxyAPI 的 antigravity-coding-filter 移植到 magpie 的 gateway middleware。只在发给 Antigravity 账号的那次尝试上、只改 system / developer 提示词：默认 `cloak`（在名字第一、第二个字母后各插一个零宽空格，模型照读，字面串变了），可选 `rewrite`（改成 `Antigravity`）；上游的 `block` 在 magpie 里做不到——`onProvider` 阶段请求已经路由，`ctx.reject` 无效，要拦截请配合 `middleware-block-patterns`。URL、路径、`mcp__`、`.codex`、`*.md` 里的名字不动。
 
-内置词表现在是 47 条：Go 版的 56 条里，有 11 条本身是普通英文词或人名（Aider、Cline、Codex、Cursor、Devin、Goose、Hermes、Kiro、Qodo、Tabby、Trae），已经拿出去，免得 `move the cursor`、`goose bumps`、`the tabby cat` 被改坏；要用哪条就用 `customMappings` 加回来，或者一次全加 `useAmbiguousKeywords: true`，再加 `strictCase: true` 就只按原样大小写匹配。另外加了 Chatbox / Chatbox AI 两条（桌面客户端，自己名字会进 system 提示词）。
+内置词表现在是 48 条：Go 版的 56 条里，有 11 条本身是普通英文词或人名（Aider、Cline、Codex、Cursor、Devin、Goose、Hermes、Kiro、Qodo、Tabby、Trae），已经拿出去，免得 `move the cursor`、`goose bumps`、`the tabby cat` 被改坏；要用哪条就用 `customMappings` 加回来，或者一次全加 `useAmbiguousKeywords: true`，再加 `strictCase: true` 就只按原样大小写匹配。另外加了 Chatbox / Chatbox AI、Kelivo 三条（聊天客户端，自己的名字会进 system 提示词）。
 
 这个分支另外加了几项（都可关掉）：`boundaries`（默认开）只匹配整词，`Traefik`、`decline`、`Kirov`、`raider` 不再被当成 `Trae`、`Cline`、`Kiro`、`Aider` 改坏；`protectCode`（默认开）代码块和行内代码里的名字不动，免得把示例里的字符串字面量改了；`useModelKeywords`（默认关）额外匹配 `Claude Sonnet`、`GPT-5` 这类模型名；`dryRun` / `report` 只算不改，把命中的名字和次数写到 `ctx.state["antigravity-coding-filter"]`，方便排查“429 又回来了”。`customMappings` 里用 `null` 可以删掉某条内置词，多行字符串则允许映射值里带逗号。另外把保护区间合并、按游标遍历，272 KB / 5000 个保护区间的耗时从 316 ms 降到约 9 ms（钩子预算 250 ms）；`accounts` 改成忽略大小写比较，`off: "false"` 不再被当成关闭，映射成自己名字的条目不记为改动。
 
