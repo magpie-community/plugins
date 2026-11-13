@@ -36,6 +36,17 @@ The package exports `WorkBuddyAuthPlugin` (`workbuddy`) and
   none with a key), and its models are `/v3/config`'s only for `ck_`/`pt_`
   keys, as the CLI asks; any other key keeps the list below.
 
+- **Import from a file** (since 0.2.32; magpie with plugin imports).
+  magpie's "Import accounts from a file…" takes WorkBuddy desktop's
+  sign-in file (`workbuddy-desktop[-ai].info`, above) or a copy of a
+  sign-in: JSON with its access and refresh tokens, as this plugin's
+  `auth.json` entry, `accessToken`/`refreshToken` or
+  `access_token`/`refresh_token`, alone, in a map or in a list. Each is
+  renewed with WorkBuddy before it is added, as a browser sign-in is, so
+  the app or tool the file came from is signed out of that account. An
+  encrypted file (WorkBuddy 5.6 and later) and the other build's sign-in
+  are refused with why.
+
 A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
 marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode keeps it in
@@ -60,6 +71,17 @@ app's file. Every request then carries `X-Enterprise-Id` and `X-Tenant-Id`,
 as WorkBuddy's own client sends them; without them WorkBuddy answers as the
 personal account, with the personal plan's models. A browser sign-in made
 before 0.1.13 has no enterprise id kept: sign in again.
+
+A cloud-hosted enterprise's account (its sign-in's domain is
+`<enterprise>.sso.copilot.tencent.com`, `<enterprise>.copilot.qq.com` or
+`<enterprise>.sso.codebuddy.cn`, the cloud-hosted hosts WorkBuddy's own
+`product.json` lists) is served at that host, as WorkBuddy's client sets
+the enterprise's endpoint for it: its refresh, account list, models, usage
+and chats go there. Tencent's own iOA host
+(`tencent.sso.copilot.tencent.com`) stays on `copilot.tencent.com`, as in
+WorkBuddy's `product.ioa.json`. Before 0.2.32 every account was sent to
+the build's own endpoint. A self-hosted enterprise's host isn't known to
+the plugin and isn't routed.
 
 An enterprise's own models (`custom:<name>|<name>`) are listed after the
 plan's, as WorkBuddy's own client lists them, with their context, output,

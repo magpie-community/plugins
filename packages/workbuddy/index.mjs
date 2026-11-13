@@ -227,6 +227,48 @@ function domainOf(site, a) {
   return a.domain || new URL(api(site)).host
 }
 
+// CLOUD_HOSTED are the hosts of WorkBuddy's cloud-hosted enterprises, as
+// WorkBuddy's own product.json lists them (cloudHostedDomain, read from
+// WorkBuddy 5.5.6 and WorkBuddy AI): <enterprise>.sso.copilot.tencent.com,
+// <enterprise>.copilot.qq.com, <enterprise>.sso.codebuddy.cn. Such an
+// account's sign-in names that host as its domain, and WorkBuddy's client
+// serves it there: the cloud-hosted product has no endpoint of its own, and
+// the client sets the enterprise's endpoint in its place
+// (applyEnterpriseEndpoint). Tencent's own iOA host
+// (tencent.sso.copilot.tencent.com) matches the pattern but is served at
+// copilot.tencent.com (product.ioa.json), as the client checks iOA first.
+const CLOUD_HOSTED = [/^[a-z0-9-]+\.sso\.copilot\.tencent\.com$/, /^[a-z0-9-]+\.copilot\.qq\.com$/, /^[a-z0-9-]+\.sso\.codebuddy\.cn$/]
+const IOA = new Set(["tencent.sso.copilot.tencent.com", "tencent.sso.codebuddy.cn"])
+
+// endpointOf is where a's requests go: its enterprise's own host for a
+// cloud-hosted enterprise's account, else the site's endpoint. Before
+// 0.2.32 every account was sent to the site's endpoint, which a
+// cloud-hosted enterprise's token isn't valid at.
+function endpointOf(site, a) {
+  const d = typeof a?.domain === "string" ? a.domain.trim().toLowerCase() : ""
+  if (!d || IOA.has(d) || a?.source === "key") return site.endpoint
+  return CLOUD_HOSTED.some((r) => r.test(d)) ? "https://" + d : site.endpoint
+}
+
+// at is site with a's endpoint (endpointOf): the same site when that is
+// the site's own.
+const atHosts = new Map()
+function at(site, a) {
+  const end = endpointOf(site, a)
+  if (end === site.endpoint) return site
+  const key = site.id + "\n" + end
+  let s = atHosts.get(key)
+  if (!s) atHosts.set(key, (s = { ...site, endpoint: end }))
+  return s
+}
+
+// moved is url sent to a's endpoint instead of the site's, when they differ.
+function moved(site, a, url) {
+  const end = endpointOf(site, a)
+  if (end === site.endpoint || !url.startsWith(site.endpoint + "/")) return url
+  return end + url.slice(site.endpoint.length)
+}
+
 // merge takes a token WorkBuddy gave (sign-in or refresh) into the
 // stored sign-in, times given as at-ms or in-seconds.
 function merge(a, got) {
@@ -266,7 +308,7 @@ function renew(site, a, save) {
   let r = renewing.get(key)
   if (!r) {
     r = (async () => {
-      const got = await call(site, "POST", "/v2/plugin/auth/token/refresh", {
+      const got = await call(at(site, a), "POST", "/v2/plugin/auth/token/refresh", {
         "X-Refresh-Token": a.refresh,
         "X-Auth-Refresh-Source": "plugin",
         "X-Domain": domainOf(site, a),
@@ -464,7 +506,7 @@ async function enterpriseOf(site, a, who) {
   if (own && name(who)) return { id: own, name: name(who) }
   let list
   try {
-    list = await call(site, "GET", "/v2/plugin/accounts", {
+    list = await call(at(site, a), "GET", "/v2/plugin/accounts", {
       Authorization: "Bearer " + a.access,
       "X-Domain": domainOf(site, a),
     })
@@ -1961,6 +2003,144 @@ function desktopSignIn(site) {
   }
 }
 
+// ---- accounts from a file (magpie's auth.import) ------------------------------
+
+// IMPORT_FROM says which files magpie's "Import accounts from a file…"
+// takes for site (marchen_cc on X: there was no way to bring a WorkBuddy
+// sign-in in from its JSON). Importing renews the sign-in, as signing in
+// does, so the app the file came from is signed out of that account.
+function importFrom(site) {
+  const file = site.authID + ".info"
+  return {
+    en: `Choose ${site.name} desktop's sign-in file (${file}, in CodeBuddyExtension/Data/Public/auth), or a copy of a sign-in (JSON with its access and refresh tokens). Each account's sign-in is renewed with ${site.name} before it is added, so the app or tool the file came from is signed out of it and has to sign in again.`,
+    froms: {
+      zh: `选择 ${site.name} 桌面版的登录文件（${file}，在 CodeBuddyExtension/Data/Public/auth 下），或一份登录凭证（含 access 和 refresh token 的 JSON）。每个账号都会先向 ${site.name} 续期登录再添加，所以文件来源的应用或工具会退出该账号，需要重新登录。`,
+      "zh-TW": `選擇 ${site.name} 桌面版的登入檔（${file}，在 CodeBuddyExtension/Data/Public/auth 下），或一份登入憑證（含 access 和 refresh token 的 JSON）。每個帳號都會先向 ${site.name} 續期登入再加入，所以檔案來源的應用或工具會登出該帳號，需要重新登入。`,
+      ja: `${site.name} デスクトップのサインインファイル（${file}、CodeBuddyExtension/Data/Public/auth 内）か、サインイン情報のコピー（access と refresh トークンを含む JSON）を選んでください。各アカウントは追加の前に ${site.name} でサインインを更新するため、ファイルの元のアプリやツールはそのアカウントからサインアウトされ、再サインインが必要になります。`,
+      de: `Wähle die Anmeldedatei von ${site.name} Desktop (${file}, in CodeBuddyExtension/Data/Public/auth) oder eine Kopie einer Anmeldung (JSON mit Access- und Refresh-Token). Die Anmeldung jedes Kontos wird vor dem Hinzufügen bei ${site.name} erneuert, daher wird die App oder das Tool, aus dem die Datei stammt, von diesem Konto abgemeldet und muss sich neu anmelden.`,
+    },
+  }
+}
+
+const str = (v) => (typeof v === "string" ? v.trim() : "")
+const sealed = (v) => !!(v && typeof v === "object" && v.$wbEncrypted)
+// plain is an account a file names with only its plain words: WorkBuddy 5.6
+// and later seal the nickname too ({ $wbEncrypted }), which isn't a name
+const plain = (who) => who && { ...who, nickname: str(who.nickname), phoneNumber: str(who.phoneNumber), uid: str(who.uid) }
+const atMs = (at, inSec, now) => (Number(at) > 0 ? Number(at) : Number(inSec) > 0 ? now + Number(inSec) * 1000 : 0)
+
+// signInsIn are the sign-ins a file's text holds, as found: WorkBuddy
+// desktop's .info ({ auth, account }), a plugin's or OpenCode's auth.json
+// entry ({ access, refresh, expires, uid, domain, enterpriseId, … }, by
+// itself, in a map or a list), or tokens named as OAuth names them
+// (accessToken/refreshToken, access_token/refresh_token). Each is
+// { a, who, sealed? }: a the sign-in, who the account the file names (or
+// null). Nothing is asked of WorkBuddy here.
+function signInsIn(text) {
+  let v
+  try {
+    v = JSON.parse(text)
+  } catch {
+    return [{ error: "not JSON" }]
+  }
+  const out = []
+  const now = Date.now()
+  const seen = new Set()
+  const walk = (o, depth) => {
+    if (!o || typeof o !== "object" || depth > 4 || seen.has(o)) return
+    seen.add(o)
+    if (Array.isArray(o)) return o.forEach((x) => walk(x, depth + 1))
+    // the desktop app's file: its tokens under auth, the account beside
+    if (o.auth && typeof o.auth === "object" && ("accessToken" in o.auth || "refreshToken" in o.auth)) {
+      const t = o.auth
+      if (sealed(t.accessToken) || sealed(t.refreshToken)) return out.push({ sealed: true })
+      const acct = o.account && typeof o.account === "object" ? o.account : null
+      return out.push({
+        a: {
+          access: str(t.accessToken), refresh: str(t.refreshToken),
+          expires: atMs(t.expiresAt, t.expiresIn, now), refreshExpiresAt: atMs(t.refreshExpiresAt, t.refreshExpiresIn, now),
+          domain: str(t.domain), tokenType: str(t.tokenType),
+          ...(str(acct?.enterpriseId) ? { enterpriseId: str(acct.enterpriseId) } : {}),
+        },
+        who: str(acct?.uid) ? plain(acct) : null,
+      })
+    }
+    const access = o.access ?? o.accessToken ?? o.access_token
+    const refresh = o.refresh ?? o.refreshToken ?? o.refresh_token
+    if (sealed(access) || sealed(refresh)) return out.push({ sealed: true })
+    if (str(access) || str(refresh)) {
+      const uid = str(o.uid)
+      return out.push({
+        a: {
+          access: str(access), refresh: str(refresh),
+          expires: atMs(o.expires ?? o.expiresAt, o.expiresIn ?? o.expires_in, now),
+          refreshExpiresAt: atMs(o.refreshExpiresAt, o.refreshExpiresIn ?? o.refresh_expires_in, now),
+          domain: str(o.domain), tokenType: str(o.tokenType ?? o.token_type),
+          ...(str(o.enterpriseId) ? { enterpriseId: str(o.enterpriseId) } : {}),
+        },
+        who: uid ? { uid, nickname: str(o.nickname) || str(o.accountId) } : null,
+      })
+    }
+    for (const x of Object.values(o)) walk(x, depth + 1)
+  }
+  walk(v, 0)
+  return out.length ? out : [{ error: "no WorkBuddy sign-in in it" }]
+}
+
+// otherSite says the site a sign-in's domain belongs to when it isn't
+// site: a China build's sign-in brought into WorkBuddy AI, or the other way.
+function otherSite(site, a) {
+  const d = str(a.domain).toLowerCase()
+  if (!d) return ""
+  const cn = /(^|\.)(codebuddy\.cn|tencent\.com|qq\.com)$/.test(d)
+  const ai = /(^|\.)workbuddy\.ai$/.test(d)
+  if (site.ai && cn) return SITES.workbuddy.name
+  if (!site.ai && ai) return SITES["workbuddy-ai"].name
+  return ""
+}
+
+// importSignIns checks each sign-in texts hold with WorkBuddy, as signing
+// in does, and gives each as a sign-in result: renewed with its refresh
+// token (an access token alone is kept while it lasts), and the account
+// looked up — the one the file names, else the one WorkBuddy's account
+// list has it signed in to.
+async function importSignIns(site, texts) {
+  const results = []
+  for (const text of texts) {
+    for (const got of signInsIn(text)) {
+      if (got.error) { results.push({ type: "failed", error: got.error }); continue }
+      if (got.sealed) {
+        results.push({ type: "failed", error: `${site.name} desktop keeps this sign-in encrypted (WorkBuddy 5.6 and later), which magpie can't read; sign in with "${site.name} account (browser)" instead` })
+        continue
+      }
+      let a = got.a
+      const name0 = got.who ? accountName(got.who, null) : ""
+      try {
+        const other = otherSite(site, a)
+        if (other) throw new Error(`this is a ${other} sign-in; import it under ${other}`)
+        if (refreshable(a)) a = await renew(site, a)
+        else if (!a.access || stale(a)) throw new Error(`the sign-in has ended; sign in to ${site.name} again where it came from`)
+        let who = got.who
+        if (!who?.uid) {
+          const list = await call(at(site, a), "GET", "/v2/plugin/accounts", { Authorization: "Bearer " + a.access, "X-Domain": domainOf(site, a), ...enterpriseHeaders(a) })
+          const all = (list?.accounts ?? []).filter((x) => x?.uid)
+          const ent = a.enterpriseId
+          const pick = ent ? all.filter((x) => str(x.enterpriseId) === ent) : all.filter((x) => x.lastLogin)
+          who = plain(pick.length === 1 ? pick[0] : all.length === 1 ? all[0] : null)
+          if (!who) throw new Error(`${site.name} didn't say whose sign-in this is`)
+        }
+        a.uid = who.uid
+        const ent = await enterpriseOf(site, a, who)
+        if (ent.id) a.enterpriseId = ent.id
+        results.push(success(site, a, accountName(who, ent)))
+      } catch (e) {
+        results.push({ type: "failed", error: e?.message ?? String(e), ...(name0 ? { accountId: name0 } : {}) })
+      }
+    }
+  }
+  return results
+}
+
 // desktopHeld is what a desktop sign-in was renewed to here, by site and
 // account: kept in memory only, never written where the app keeps it.
 const desktopHeld = new Map()
@@ -2004,7 +2184,7 @@ const statusText = (n) => STATUS_TEXT[n] || `HTTP ${n}`
 
 // meterAsked is the billing API's reply to path, asked with a's sign-in.
 function meterAsked(site, a, path, body = {}, signal = AbortSignal.timeout(20000)) {
-  return fetch(site.endpoint + path, {
+  return fetch(endpointOf(site, a) + path, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", "User-Agent": "WorkBuddy/" + site.app,
       Authorization: "Bearer " + a.access, "X-User-Id": a.uid ?? "", "X-Domain": domainOf(site, a), "X-Product": "SaaS",
@@ -3670,7 +3850,7 @@ async function liveModels(site, a) {
   headers.set("User-Agent", cliAgent(site))
   headers.set("X-Requested-With", "XMLHttpRequest")
   headers.set("Accept", "application/json")
-  const res = await fetch(site.endpoint + "/v3/config", { headers, signal: AbortSignal.timeout(15000) })
+  const res = await fetch(endpointOf(site, a) + "/v3/config", { headers, signal: AbortSignal.timeout(15000) })
   const env = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(`${site.name}'s config: HTTP ${res.status}`)
   if (env.code) throw new Error(`${site.name}'s config: ${env.msg} (${env.code})`)
@@ -4138,7 +4318,7 @@ function makePlugin(site) {
               const z = gzipped(completion, b)
               if (z) headers.set("Content-Encoding", "gzip")
               else headers.delete("Content-Encoding")
-              return fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: z ?? b }).catch((e) => unanswered(site, a, z ?? b, e, init?.signal))
+              return fetch(moved(site, a, String(req ? req.url : input)), { ...init, method: init?.method ?? req?.method, headers, body: z ?? b }).catch((e) => unanswered(site, a, z ?? b, e, init?.signal))
             }
             // a 401 is answered once, on whichever try meets it: by a
             // sign-in with another access token (reissued), the request
@@ -4371,6 +4551,10 @@ function makePlugin(site) {
           return { error: e?.message ?? String(e), signIn: "kept" }
         }
       },
+      // magpie's "Import accounts from a file…" (OpenCode ignores these)
+      importFrom: importFrom(site).en,
+      importFroms: importFrom(site).froms,
+      import: (texts) => importSignIns(site, Array.isArray(texts) ? texts : [texts]),
       methods: [
         {
           type: "oauth",
@@ -4508,4 +4692,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }
+export const _internal = { endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity }
