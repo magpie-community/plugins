@@ -47,20 +47,27 @@ test("an unknown code reads as the generic message, never as the code", () => {
 });
 
 // Opens the page on a bare stand-in for the browser, answers its status poll
-// with a scan finished `ago` ms before, and returns the API paths it called.
-async function open(ago) {
+// with a scan finished `ago` ms before. Timers are advanced explicitly.
+const settle = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+};
+async function open(ago, fetchImpl) {
   const element = () => ({
     children: [],
     dataset: {},
     style: {},
     classList: { toggle() {} },
     append() {},
-    replaceChildren() {},
+    replaceChildren(...children) {
+      this.children = children;
+    },
     setAttribute() {},
     addEventListener() {},
   });
   const elements = new Map();
   const called = [];
+  const timers = new Map();
+  let tick;
   const status = {
     phase: "idle",
     lastScan: new Date(Date.now() - ago).toISOString(),
@@ -83,23 +90,89 @@ async function open(ago) {
     matchMedia: () => ({ matches: false }),
     atob,
     localStorage: { getItem: () => null, setItem() {} },
-    setInterval() {},
+    setInterval(fn) {
+      tick = fn;
+    },
+    setTimeout(fn, ms) {
+      timers.set(fn, ms);
+      return fn;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    AbortController,
     AmpUsage: scope.AmpUsage,
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       called.push(new URL(url).pathname);
+      if (fetchImpl) return fetchImpl(url, init, status);
       return { ok: true, json: async () => status };
     },
   };
   new Function(...Object.keys(page), await read("../ui/app.js"))(
     ...Object.values(page),
   );
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-  return called;
+  await settle();
+  return { called, elements, tick, timers };
 }
 
 test("with nothing kept, the open page refreshes once a scan is 5 minutes old", async () => {
-  assert.deepEqual(await open(4 * 60_000), ["/api/status"]);
-  assert.deepEqual(await open(6 * 60_000), ["/api/status", "/api/refresh"]);
+  assert.deepEqual((await open(4 * 60_000)).called, ["/api/status"]);
+  assert.deepEqual((await open(6 * 60_000)).called, [
+    "/api/status",
+    "/api/refresh",
+  ]);
+});
+
+test("a stalled status request times out without overlapping polls and recovers", async () => {
+  let first = true;
+  const page = await open(0, async (url, { signal }, status) => {
+    if (!first) return { ok: true, json: async () => status };
+    first = false;
+    return new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  });
+  await page.tick();
+  assert.deepEqual(page.called, ["/api/status"]);
+  assert.equal(page.timers.size, 1);
+  const [[timeout, ms]] = page.timers;
+  assert.equal(ms, 10_000);
+  timeout();
+  await settle();
+  assert.equal(page.elements.get("errors").hidden, false);
+  assert.equal(page.timers.size, 0);
+  await page.tick();
+  assert.equal(page.elements.get("errors").hidden, true);
+});
+
+test("a successful status poll clears a transient refresh failure", async () => {
+  let failRefresh = true;
+  const page = await open(0, async (url, init, status) => {
+    if (new URL(url).pathname.endsWith("refresh") && failRefresh)
+      throw new Error("connection reset");
+    return { ok: true, json: async () => status };
+  });
+  await page.elements.get("refresh").onclick();
+  assert.equal(page.elements.get("errors").hidden, false);
+  failRefresh = false;
+  await page.tick();
+  assert.equal(page.elements.get("errors").hidden, true);
+  assert.equal(page.elements.get("refresh").disabled, false);
+});
+
+test("a late poll failure cannot overwrite a newer successful refresh", async () => {
+  let rejectPoll;
+  const page = await open(0, async (url, init, status) => {
+    if (new URL(url).pathname.endsWith("status"))
+      return new Promise((resolve, reject) => {
+        rejectPoll = reject;
+      });
+    return { ok: true, json: async () => status };
+  });
+  await page.elements.get("refresh").onclick();
+  rejectPoll(new Error("connection reset"));
+  await settle();
+  assert.equal(page.elements.get("errors").hidden, true);
 });
 
 test("the page loads its words before its script", async () => {
