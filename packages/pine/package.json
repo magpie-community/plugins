@@ -1,0 +1,21 @@
+{
+  "name": "@magpie-community/agent-pine",
+  "version": "0.1.0",
+  "description": "Pine (github.com/pmndrs/pine) as a magpie agent: magpie's gateway and model catalog in ~/.pine/models.json, and the model Pine starts on in ~/.pine/pine.json",
+  "type": "module",
+  "files": ["pine.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "pine", "pmndrs", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/pine"
+  },
+  "scripts": {
+    "test": "bun test pine.test.mjs"
+  },
+  "magpie": {
+    "agent": "./pine.agent.js",
+    "icon": "https://raw.githubusercontent.com/pmndrs/pine/main/docs/images/logo-light.svg"
+  }
+}
