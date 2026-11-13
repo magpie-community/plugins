@@ -133,7 +133,8 @@ export class Quiet {
   fire() {
     const gap = Date.now() - this.since
     const what = this.heard + gap >= this.limits.quiet ? `${this.heartbeats} heartbeats and nothing else for ${Math.round((this.heard + gap) / 1000)} s` : `no message for ${Math.round(gap / 1000)} s`
-    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""} (try again)`
+    // Pi classifies streamed errors by message after the HTTP status is lost.
+    this.why = `Cursor went quiet: ${what}${this.last ? ", its last message " + this.lastSaid() : ""}; stream timed out (try again)`
     this.trace?.event("quiet", { heard: this.heard + gap, heartbeats: this.heartbeats })
     this.gone?.()
     this.stop({ status: 502, message: this.why })
