@@ -789,28 +789,31 @@ test("0.10.0: the served trajectory carries per-agent tool-call events", async (
   expect(p.path).toContain("website")
 }, 30000)
 
-test("0.10.0: the service starts only once a store exists — empty or foreign folders start nothing", async () => {
+test("0.10.2: the service answers with no store — the empty state, nothing written — so the page never hangs on Connecting", async () => {
   const home = mkTmp("layerfs-home-")
+  rmSync(home, { recursive: true, force: true })
   process.env.MAGPIE_LAYERFS_HOME = home
   process.env.MAGPIE_LAYERFS_BACKEND = "sim"
   delete process.env.MAGPIE_LAYERFS_INSTALL_DIR
   delete process.env.MAGPIE_LAYERFS_DATA_DIR
   delete process.env.MAGPIE_LAYERFS_PAGE_DIR
-  // (a) a projects folder holding nothing: no service, and the backend
-  // is never built — its constructor is what creates the rest of the store
-  mkdirSync(join(home, "projects"))
+  // (a) no store at all: the service still serves the page, with no
+  // projects, and builds no backend — nothing appears under the home
   const portA = await freePort()
   await LayerfsTools({ directory: mkTmp("magpie-config-") }, { pagePort: portA })
-  await new Promise((r) => setTimeout(r, 300))
-  await expect(fetch(`http://127.0.0.1:${portA}/`)).rejects.toThrow()
+  const a = await serviceData(`http://127.0.0.1:${portA}/`, (x) => Array.isArray(x.projects))
+  expect(a.data.projects).toEqual([])
+  expect(a.html).toContain('id="empty"')
+  expect(existsSync(home)).toBe(false)
+  // (b) a projects folder holding nothing, or an entry that is no
+  // project: the same empty answer, and still no store built
+  mkdirSync(join(home, "projects"), { recursive: true })
+  expect((await serviceData(`http://127.0.0.1:${portA}/`, (x) => Array.isArray(x.projects))).data.projects).toEqual([])
   expect(existsSync(join(home, "store"))).toBe(false)
-  // (b) an entry that is no project: the backend's own answer decides,
-  // so nothing listens
   writeFileSync(join(home, "projects", "not-a-project.txt"), "x")
   const portB = await freePort()
   await LayerfsTools({ directory: mkTmp("magpie-config-") }, { pagePort: portB })
-  await new Promise((r) => setTimeout(r, 300))
-  await expect(fetch(`http://127.0.0.1:${portB}/`)).rejects.toThrow()
+  expect((await serviceData(`http://127.0.0.1:${portB}/`, (x) => Array.isArray(x.projects))).data.projects).toEqual([])
   // (c) a real project: one instance provisions it, and a fresh instance
   // on the same home serves it from the factory call, no tool call needed
   const portD = await freePort()
@@ -820,4 +823,7 @@ test("0.10.0: the service starts only once a store exists — empty or foreign f
   await LayerfsTools({ directory: mkTmp("magpie-config-") }, { pagePort: portE })
   const { data } = await serviceData(`http://127.0.0.1:${portE}/`, (x) => !!x.projects.find((p) => p.name === "website"))
   expect(data.projects.at(-1).name).toBe("website")
+  // and the service that started with no store serves the new project
+  // on its next answer: the page's reload lands on it
+  await serviceData(`http://127.0.0.1:${portA}/`, (x) => !!x.projects.find((p) => p.name === "website"))
 }, 30000)

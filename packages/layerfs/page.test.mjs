@@ -406,3 +406,9 @@ test("the service no longer appends its own blind reload timer", () => {
   const svc = readFileSync(join(dir, "page-service.mjs"), "utf8")
   expect(svc).not.toContain("setTimeout(() => location.reload(), 5000)")
 })
+
+test("0.10.2: the empty state reloads itself, so the first project appears without reopening the page", () => {
+  const app = readFileSync(join(dir, "page", "app.js"), "utf8")
+  const empty = app.slice(app.indexOf("if (!projects.length) {"), app.indexOf("$(\"stamp\")"))
+  expect(empty).toContain("location.reload()")
+})

@@ -9,8 +9,8 @@
 // plugin-private files, so the installed page/index.html only navigates
 // its frame to the service, which embeds backend.trajectory() — the
 // page's real commits, branches, storage and dedup accounting, with the
-// real calling agent on each — in the HTML it returns. The service
-// starts only once a store exists; see the README's page section.
+// real calling agent on each — in the HTML it returns. With no store
+// it serves the empty state; see the README's page section.
 //
 // Backend: a local content-addressed store with the LayerFS model, in
 // layerfs.mjs. The native backend (the real LayerFS SDK) is not shipped
@@ -38,16 +38,14 @@ const callingAgent = (ctx) => {
 }
 
 // ---- the page's live channel: the host's own service ---------------------
-// The service starts once per plugin instance, and only once a store
-// exists — two read-only gates, so a user with no store gets no service
-// and nothing written anywhere: a projects folder that holds entries
-// (not merely exists; the backend's constructor mkdirs it), and a
-// non-empty answer from the backend that will serve the calls. A host
-// whose store gains its first project later starts the service after
-// the call that created it (mutate, below). The start is off the tool
-// calls' path and every failure is swallowed: a held port or a failed
-// read leaves the tools untouched, and the page's redirect simply finds
-// nothing listening.
+// The service starts once per plugin instance, at load, store or no
+// store: the installed page jumps its frame to it, and a WebKit frame
+// whose jump is refused keeps showing "Connecting…" for good (0.10.1 and
+// before started it only once a store existed). With no store it serves
+// the page's empty state and builds no backend, so nothing is written
+// under ~ until a tool call makes the first project. The start is off
+// the tool calls' path and every failure is swallowed: a held port or a
+// failed read leaves the tools untouched.
 
 export const LayerfsTools = async (ctx = {}, options = {}) => {
   let backendPromise
@@ -64,17 +62,14 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
   }
   // A new host may start before the retired host releases this port.
   // Keep one start in flight, and remember a service only after it
-  // actually listens. Retry while a real store exists, without keeping
-  // an otherwise finished host alive or polling before the first project.
+  // actually listens. Retry with backoff, without keeping an otherwise
+  // finished host alive.
   let service = null
   let starting = null
   let retryTimer = null
   let retryDelay = 1000
-  let storeVersion = 0
-  let recheck = false
-  let hasStore = false
   const retry = () => {
-    if (!hasStore || retryTimer || service?.server.listening) return
+    if (retryTimer || service?.server.listening) return
     retryTimer = setTimeout(() => {
       retryTimer = null
       ensureService().catch(() => { /* the page never blocks a tool */ })
@@ -82,38 +77,32 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
     retryTimer.unref?.()
     retryDelay = Math.min(retryDelay * 2, 30000)
   }
+  // What the service serves: the store's trajectory once a store exists,
+  // else an empty recording, so the page shows its empty state (and
+  // reloads itself into the first project) instead of a frame that never
+  // lands. The store is looked for without building the backend: its
+  // constructor is what creates the store's folders, and a user with no
+  // store gets nothing written.
+  const empty = () => ({ projects: [], events: [], generatedAt: new Date().toISOString() })
+  const pageBackend = {
+    trajectory: async () => {
+      try {
+        if (!readdirSync(join(storeHome(), "projects")).length) return empty()
+      } catch {
+        return empty()
+      }
+      return (await backend()).trajectory()
+    },
+  }
   const ensureService = () => {
     if (service?.server.listening) return Promise.resolve()
-    if (starting) {
-      recheck = true
-      return starting
-    }
+    if (starting) return starting
     if (retryTimer) {
       clearTimeout(retryTimer)
       retryTimer = null
     }
-    const version = storeVersion
-    recheck = false
     starting = (async () => {
-      let hasEntries
-      try {
-        hasEntries = readdirSync(join(storeHome(), "projects")).length > 0
-      } catch (error) {
-        hasStore = false
-        return
-      }
-      if (!hasEntries) {
-        hasStore = false
-        return
-      }
-      const b = await backend()
-      const data = await b.trajectory()
-      if (!data.projects.length) {
-        hasStore = false
-        return
-      }
-      hasStore = true
-      const candidate = startPageService({ backend: b, port: resolvePagePort(options) })
+      const candidate = startPageService({ backend: pageBackend, port: resolvePagePort(options) })
       const stopped = () => {
         if (service !== candidate || candidate.server.listening) return
         service = null
@@ -131,26 +120,13 @@ export const LayerfsTools = async (ctx = {}, options = {}) => {
       retry()
     }).finally(() => {
       starting = null
-      if ((recheck || storeVersion !== version) &&
-          !service?.server.listening && !retryTimer) {
-        recheck = false
-        queueMicrotask(() => ensureService().catch(() => { /* the tools stay usable */ }))
-      }
     })
     return starting
   }
   ensureService().catch(() => { /* no service: the tools are untouched */ })
-  // A mutating call may have created the store's first project: offer
-  // the service its start, off the call's path.
-  const mutate = async (fn) => {
-    const b = await backend()
-    const out = await fn(b)
-    // The first mutation may race the factory's empty-store check. Let the
-    // in-flight check finish, then run one more against the new store.
-    storeVersion++
-    ensureService().catch(() => { /* never on the tool call's path */ })
-    return out
-  }
+  // A mutating call: the service, up since load, reads the store it
+  // writes on the page's next reload.
+  const mutate = call
 
   return {
     tool: {
