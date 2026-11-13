@@ -5,7 +5,7 @@ import {createHash, randomUUID} from "node:crypto";
 import {retainDetails} from "./receipt-details.mjs";
 import {secureDir, stateRoot} from "./grant-store.mjs";
 
-export const RECEIPT_VERSION = "0.4.0";
+export const RECEIPT_VERSION = "0.4.1";
 const writes = new Map();
 export const RECEIPT_LIMIT = 25;
 

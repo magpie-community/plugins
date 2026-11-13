@@ -41,8 +41,12 @@ async function attachGrant(body, ctx) {
 
 import { rememberDetails } from "./src/receipt-details.mjs";
 import { newReceipt, appendReceipt } from "./src/receipts.mjs";
+import {initializeOptions} from "./src/local-options.mjs";
 import { prepareRequest, PREPARED } from "./src/company-guard.js";
 export async function onRequest(body, ctx) {
+  ctx.options ||= {};
+  if (!["authKey", "receiptReadKey", "authorizationKey"].every(field => validKey(ctx.options[field])))
+    await initializeOptions(ctx.options);
   const started = Date.now(), receipt = newReceipt(ctx, identity(body));
   ctx.state ||= {}; ctx.state.receipt = receipt;
   delete body[PREPARED]; delete body[PROOF];

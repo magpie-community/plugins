@@ -7,7 +7,8 @@ import {inspectRequest} from "./protocols.js";
 import {sessionIdentity, sessionWorkspace} from "./session-authorization.js";
 
 export const hash = s => createHash("sha256").update(s).digest("hex");
-export const stateRoot = explicit => explicit || path.join(os.homedir(), ".config", "magpie", "company-guard");
+export const configRoot = () => path.join(path.isAbsolute(process.env.XDG_CONFIG_HOME || "") ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(), ".config"), "magpie");
+export const stateRoot = explicit => explicit || path.join(configRoot(), "company-guard");
 export const grantPath = (root, session) => path.join(root, "grants", hash(session) + ".json");
 
 export async function secureDir(dir, create = false) {

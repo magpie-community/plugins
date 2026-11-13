@@ -13,7 +13,7 @@
         <fieldset><legend>放行范围</legend><label><input type="radio" name="coverage" value="names" checked>仅指定公司名单</label><label><input type="radio" name="coverage" value="all">本会话全部公司名称</label></fieldset>
         <div id="authorization-names"><label for="authorization-name-list">公司名称，每行一个，最多32个</label><textarea id="authorization-name-list" rows="3" placeholder="在本机粘贴需要放行的完整名称"></textarea><label class="file-label">或读取本地 UTF-8 文本名单<input id="authorization-file" type="file" accept=".txt,text/plain"></label><p id="authorization-file-status" class="detail-message"></p></div>
         <p id="authorization-scope-note">名单外名称继续脱敏。其他会话、分叉和子任务不会自动取得授权。</p>
-        <div class="authorization-footer"><label class="authorization-confirm"><input id="authorization-consent" type="checkbox" required>我确认对上述会话和范围授权</label><div class="authorization-actions"><button id="authorization-approve" type="submit">确认放行</button><button id="authorization-cancel" type="button">取消</button></div></div>
+        <div class="authorization-footer"><label class="authorization-confirm"><input id="authorization-consent" type="checkbox" required>我确认对上述会话和范围授权</label><div class="authorization-actions"><button id="authorization-approve" type="button">确认放行</button><button id="authorization-cancel" type="button">取消</button></div></div>
       </form>
     </section>
     <section aria-labelledby="active-title"><h2 id="active-title">已启用授权</h2><div id="authorization-active" class="authorization-list"></div></section>

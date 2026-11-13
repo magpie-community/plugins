@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-company-guard",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "license": "MIT",
   "description": "Local company-name masking, reversible replies and session approvals for Magpie",
@@ -31,7 +31,7 @@
       },
       "file": "page/index-0.3.3.html",
       "service": {
-        "port": 3478,
+        "port": 3469,
         "option": "receiptPort"
       }
     }
@@ -55,9 +55,17 @@
     "codex"
   ],
   "scripts": {
-    "build": "esbuild src/company-guard.js --bundle --format=esm --target=es2020 --outfile=dist/company-guard.middleware.js"
+    "build": "esbuild src/company-guard.js --bundle --format=esm --target=es2020 --outfile=dist/company-guard.middleware.js",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.12"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.3841"
   }
 }

@@ -4,18 +4,20 @@ import {createServer} from "node:http";
 import {timingSafeEqual, randomBytes, randomUUID} from "node:crypto";
 import path from "node:path";
 import os from "node:os";
+import {gunzipSync} from "node:zlib";
 import {getReceiptReport} from "./src/receipt-report.mjs";
 import {readDetails} from "./src/receipt-details.mjs";
 import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant} from "./src/grant-store.mjs";
-import {retainReceipts} from "./src/receipts.mjs";
+import {retainReceipts, readTail} from "./src/receipts.mjs";
 import {validName,namePattern} from "./src/policy.js";
 import {readAuthorization, signAuthorization} from "./src/session-authorization.js";
+import {initializeOptions} from "./src/local-options.mjs";
 
 const services = new Map();
 
-// Titles are display metadata only. Read the local index, never chat messages,
-// and return names only for sessions already present in this page's records.
-async function withTaskTitles(rows) {
+// Titles and task kinds are display metadata only, never authorization.
+// Read local indexes, never chat messages, and match complete session IDs.
+async function withTaskTitles(rows, day) {
   const idOf=row=>row.session || row.task || row.thread;
   const ids=new Set(rows.map(idOf).filter(Boolean)),titles=new Map();
   if(ids.size)try{
@@ -34,12 +36,50 @@ async function withTaskTitles(rows) {
       }
     }finally{await fd.close();}
   }catch{} // An unavailable title index must not affect grants or receipts.
+  const missing=new Set([...ids].filter(id=>!titles.has(id)));
+  if(missing.size && /^\d{4}-\d{2}-\d{2}$/.test(day || "")){
+    // Hidden Codex tasks need not appear in its chat-title index. Magpie's
+    // routing history already records their kinds, including older receipts.
+    const labels=new Map([
+      ["memory_consolidation","后台记忆整理"], ["memgen","后台记忆处理"],
+      ["guardian","后台审批复核"], ["guardian_review","后台审批复核"],
+      ["thread_title","后台标题生成"], ["thread_title_reconsideration","后台标题更新"],
+      ["composer_predictions","后台输入预测"], ["collab_spawn","子任务"],
+      ["compact","上下文压缩"], ["review","后台审阅"]
+    ]), kinds=new Map();
+    const config=path.isAbsolute(process.env.XDG_CONFIG_HOME || "") ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(),".config");
+    // Receipt dates use UTC; routes use local dates, which may be adjacent.
+    for(const offset of [-1,0,1])try{
+      const date=new Date(Date.parse(day+"T00:00:00Z")+offset*86400000).toISOString().slice(0,10);
+      const file=path.join(config,"magpie","routing",date+".jsonl");
+      let content=await readTail(file);
+      if(!content){
+        const fd=await fs.open(file+".gz",constants.O_RDONLY|constants.O_NOFOLLOW);
+        try{
+          const stat=await fd.stat();
+          if(stat.isFile()&&stat.uid===process.getuid()&&stat.size<=8*1024*1024)
+            content=gunzipSync(await fd.readFile(),{maxOutputLength:16*1024*1024}).toString("utf8");
+        }finally{await fd.close();}
+      }
+      for(const line of content.split("\n")){
+        let route;try{route=JSON.parse(line);}catch{continue;}
+        if(route?.agent!=="codex" || !missing.has(route.session))continue;
+        const found=kinds.get(route.session) || new Set();
+        found.add(labels.get(route.kind) || ""); kinds.set(route.session,found);
+      }
+    }catch{} // Missing, rotated or oversized history only affects the label.
+    for(const [id,found] of kinds){
+      // A session with ordinary or unknown calls must not acquire a false kind.
+      if(!found.has(""))titles.set(id,found.size===1 ? [...found][0] : "后台任务");
+    }
+  }
   return rows.map(row=>({...row,taskTitle:titles.get(idOf(row)) || ""}));
 }
 
 // Runs inside Magpie's existing plugin host; no separate daemon or model call.
 export const ReceiptPage = async (_input, options = {}) => {
-  const port = Number(options.receiptPort || 3478);
+  await initializeOptions(options);
+  const port = Number(options.receiptPort || 3469);
   const key = options.receiptReadKey;
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || !/^[a-f0-9]{64}$/.test(key || "")) {
     console.warn("company_guard_receipt_page_not_configured"); return {};
@@ -150,8 +190,8 @@ export const ReceiptPage = async (_input, options = {}) => {
     const day = url.searchParams.get("date") || new Date().toISOString().slice(0,10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(400, {error:"invalid_date"});
     try {
-      const report = await getReceiptReport({day, root});
-      send(200, {...report, rows:await withTaskTitles(report.rows),readAt:new Date().toISOString()});
+      const report = await getReceiptReport({day, root, appLog:options.appLog});
+      send(200, {...report, rows:await withTaskTitles(report.rows,day),readAt:new Date().toISOString()});
     } catch { console.warn("company_guard_receipt_page_read_failed"); send(500, {error:"receipt_read_failed"}); }
   });
   server.requestTimeout = 10000;
