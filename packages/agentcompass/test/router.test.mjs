@@ -128,6 +128,21 @@ test("image input is a gate at tool_operation level 3: no model without it, none
   assert.ok(ranked.allCandidates.some((c) => !c.eligible && c.excluded.some((e) => /image/i.test(e))));
 });
 
+test("needs_visual is a required modality at every tool_operation level: the same image-input gate applies", () => {
+  for (const level of [0, 2]) {
+    const ranked = rank(profile({ needs_visual: true, axis_demand: { tool_operation: level } }));
+    assert.ok(ranked.ranking.length > 0, `level ${level}`);
+    for (const c of ranked.ranking) {
+      const info = defaultScoredModels()[catalog.resolveModel(c.model).key] || {};
+      assert.equal(((info.five_axis || {}).image_input || {}).status, "yes", `${c.id} at level ${level}`);
+    }
+    assert.ok(ranked.allCandidates.some((c) => !c.eligible && c.excluded.some((e) => /model does not accept image input/.test(e))), `level ${level}`);
+  }
+  // Without the flag, below level 3, no candidate leaves for modality.
+  const plain = rank(profile({ needs_visual: false, axis_demand: { tool_operation: 2 } }));
+  assert.ok(!plain.allCandidates.some((c) => c.excluded.some((e) => /image.input/i.test(e))));
+});
+
 test("a profile the schema does not hold is refused, not routed", () => {
   for (const bad of [{ axis_demand: { coding: 4 } }, { axis_demand: { coding: 2, speed: 1 } }, { access: "workspace-write" }, { reasoning_depth: 9 }]) {
     const d = selectBestRoute({ ...P, ...bad }, { candidateModels: ["gpt-6.1-sol"], now: T0 });

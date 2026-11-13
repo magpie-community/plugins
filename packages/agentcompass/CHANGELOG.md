@@ -2,6 +2,12 @@
 
 One entry per version, newest first. This lists what a user has to know to upgrade.
 
+## 0.2.1 - 2026-11-13
+
+The engine follows AgentCompass `2844342` (v0.6.0 plus one routing rule).
+
+- **A `needs_visual` task requires image input at every `tool_operation` level.** Before, the image-input gate applied only at `tool_operation` 3, so a task marked `needs_visual` (or `needs_gui`) with a lower level could be routed to a model whose public data says it takes no image input. Such a model now leaves the task, and a model with no cited modality leaves automatic routing; naming it still dispatches it with the data error. Nothing to change when upgrading.
+
 ## 0.2.0 - 2026-11-13
 
 The engine is AgentCompass v0.6.0 (pinned at `974eb49`, the `v0.6.0` tag), ported module by module: four capability categories (`divergence`, `coding`, `aesthetics`, `tool_operation`) in place of the 6D/7D vectors and the 3D model profile, data gates, and the quota economy. The source repository compares the port with AgentCompass's `allocator.plan` on a committed sample of 1,451 rows, drawn from a grid of 58,016. How the engine scores is AgentCompass's ([technical reference](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/docs/technical-reference.md#1-how-scoring--allocation-work)).
