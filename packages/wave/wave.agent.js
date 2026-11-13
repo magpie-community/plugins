@@ -8,7 +8,8 @@ export const agent = {
   id: "wave",
   name: "Wave",
   icon: "https://github.com/wavetermdev.png",
-  // detection: Wave's config directory exists
+  // detection: the wsh CLI, or Wave's config directory
+  bin: "wsh",
   dir: "~/.config/waveterm",
   config: "~/.config/waveterm/waveai.json",
   format: "json",
@@ -16,19 +17,39 @@ export const agent = {
   model: "magpie.ai:model",
   // Wave passes ai:model as-is to the gateway, so no prefix
   prefix: "",
+  ua: ["waveterm", "wave"],
+  notice:
+    "Wave reads waveai.json live; pick the Magpie mode in Wave AI's mode dropdown once, or run `wsh setconfig waveai:defaultmode=magpie`. Wave 实时读取 waveai.json；在 Wave AI 面板的模式下拉里选一次 Magpie，或执行 `wsh setconfig waveai:defaultmode=magpie`。",
+}
+
+// Wave's thinking levels are just low/medium/high; pick the closest a
+// model's efforts offer, or leave the mode without one.
+function thinkingLevel(model) {
+  const efforts = model?.efforts || []
+  for (const level of ["medium", "high", "low"]) {
+    if (efforts.includes(level)) return level
+  }
+  return undefined
 }
 
 export function connect({ gateway, model }) {
   const caps = model?.images ? ["tools", "images"] : ["tools"]
+  const name = model?.name || model?.id
+  const mode = {
+    "display:name": name ? `Magpie · ${name}` : "Magpie",
+    "display:order": 1,
+    // FontAwesome's bird, the closest it has to a magpie
+    "display:icon": "crow",
+    "ai:model": model?.id ?? "",
+    "ai:endpoint": gateway.v1 + "/chat/completions",
+    "ai:apitype": "openai-chat",
+    "ai:apitoken": gateway.key,
+    "ai:capabilities": caps,
+  }
+  const thinking = thinkingLevel(model)
+  if (thinking) mode["ai:thinkinglevel"] = thinking
   return {
     // one whole object, so a disconnect takes the mode out with it
-    magpie: {
-      "display:name": "Magpie",
-      "ai:model": model?.id ?? "",
-      "ai:endpoint": gateway.v1 + "/chat/completions",
-      "ai:apitype": "openai-chat",
-      "ai:apitoken": gateway.key,
-      "ai:capabilities": caps,
-    },
+    magpie: mode,
   }
 }
