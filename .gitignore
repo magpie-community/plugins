@@ -3,3 +3,6 @@ node_modules/
 *.log
 .env
 .DS_Store
+# scripts/check.mjs loads every package; the atomcode plugin records its diagnostic
+# state into the working directory when no plugin data directory is given.
+atomcode-state.json
