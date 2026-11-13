@@ -122,8 +122,16 @@ test("kiro-cli's Builder ID sign-in (its start URL, or none) is asked with Build
     db.exec("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
     const token = { access_token: "t", refresh_token: "r", expires_at: new Date(later()).toISOString(), region: "us-east-1",
       ...(start ? { start_url: start } : {}) }
-    db.prepare("INSERT INTO auth_kv VALUES (?, ?)").run("kirocli:odic:token", JSON.stringify(token))
-    db.prepare("INSERT INTO auth_kv VALUES (?, ?)").run("kirocli:odic:device-registration", JSON.stringify({ client_id: "c", client_secret: "s" }))
+    const insert = (key, value) => {
+      const stmt = db.prepare("INSERT INTO auth_kv VALUES (?, ?)")
+      try {
+        stmt.run(key, value)
+      } finally {
+        stmt.finalize()
+      }
+    }
+    insert("kirocli:odic:token", JSON.stringify(token))
+    insert("kirocli:odic:device-registration", JSON.stringify({ client_id: "c", client_secret: "s" }))
     db.close()
     const seen = kiro()
     const h = await hooks()
