@@ -10,6 +10,8 @@ magpie plugin add @magpie-community/page-token-widget
 
 和社区里已列的用量页面不同：**数字落在另一台设备上**。usage、page-usage-board、page-usage-tree 把用量画在跑 magpie 的那台机器的窗口里；这个页把各家订阅的额度窗口本身（5 小时与每周的剩余比例、重置时间）送到 iPhone 桌面，额度不是按模型摊开的 token。手机通过 Tailscale 尾网连进本机服务。
 
+点一下手机上的组件，Safari 会打开手机版的用量页：各家订阅的额度、今日 Token、近七日趋势，以及按模型、厂商、Agent 和电脑排的榜。数字和电脑上看到的一样。这一页只在手机这一侧提供，页里不带任何密钥——令牌只在地址栏的 `#token=` 一段里出现一下，页面读完就抹掉，Scriptable 自己把令牌存在钥匙串里。电脑上的控制台仍然只留在本机，尾网里够不到。
+
 # @magpie-community/page-token-widget
 
 ## English
@@ -75,6 +77,19 @@ and run that in Scriptable.
 | Small | one quota, the reset countdown, today's tokens | `codex` (default), `minimax`, `glm`; one account is written `codex@<account>`; `\|used` shows what is used |
 | Medium | up to 6 per page; today's tokens | empty; `page=2` for the second page |
 | Large | up to 6 per page; two columns with the quota, the reset and the second window; today's and the last seven days | empty; `page=2` for the second page |
+
+## The page on the phone
+
+Tapping the widget on the home screen opens a page in Safari: the quotas of
+every subscription, today's tokens, the last seven days and the rankings by
+model, provider, agent and computer. It shows the same numbers as the plugin
+page.
+
+That page is served on the phone side of the service only, so it never carries
+a secret. The token travels in the address of the phone as `#token=…` and the
+page drops it from the address as soon as it has read it; Scriptable keeps the
+token in its own keychain. The console of the computer stays on the loopback
+address and is never reachable from the tailnet.
 
 ## Lifetime
 

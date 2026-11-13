@@ -1,12 +1,13 @@
 {
   "name": "@magpie-community/page-token-widget",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A page in Magpie's window: an iPhone home screen widget that shows the remaining quota and the real token usage of Codex, MiniMax and GLM. Its local service reads Magpie's quota API and publishes the port in your Tailscale tailnet.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
     "index.mjs",
     "lib",
+    "mobile",
     "page",
     "scriptable",
     "ui",

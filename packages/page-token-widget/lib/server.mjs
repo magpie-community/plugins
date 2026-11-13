@@ -300,6 +300,26 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     response.end(body);
   };
 
+  // The page of the phone. It carries no token: the phone brings its own in
+  // the address, and the page drops it as soon as it has read it.
+  const phoneCsp =
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'";
+
+  const serveMobile = async (response, name, type) => {
+    try {
+      const body = await readFile(path.join(root, 'mobile', name), 'utf8');
+      response.writeHead(200, {
+        'Content-Type': type,
+        'Content-Security-Policy': phoneCsp,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      response.end(body);
+    } catch {
+      text(response, 404, 'Not found');
+    }
+  };
+
   const serveUi = async (response, name, type, port) => {
     try {
       const body = await readFile(path.join(root, 'ui', name), 'utf8');
@@ -441,6 +461,18 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     }
 
     if (!consoleScope) {
+      // The phone opens the page of the phone here. It carries no token: the
+      // phone brings its own in the address and drops it as soon as it has
+      // read it.
+      if ((pathname === '/' || pathname === '/index.html') && method === 'GET') {
+        return serveMobile(response, 'index.html', 'text/html; charset=utf-8');
+      }
+      if (pathname === '/app.js' && method === 'GET') {
+        return serveMobile(response, 'app.js', 'text/javascript; charset=utf-8');
+      }
+      if (pathname === '/style.css' && method === 'GET') {
+        return serveMobile(response, 'style.css', 'text/css; charset=utf-8');
+      }
       return json(response, 403, { error: 'This page is only opened on the computer of the service.' });
     }
     if (!consoleOpen) {

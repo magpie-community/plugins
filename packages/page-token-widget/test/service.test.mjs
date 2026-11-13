@@ -224,14 +224,22 @@ test('the console and the phone side are two different rooms', async () => {
   assert.equal(onPhone.status, 403);
   assert.match(onPhone.body, /only opened on the computer of the service/);
 
-  // The page of the console stays closed on the phone side too.
+  // The phone gets the page of the phone. It carries no token: the phone
+  // brings its own in the address.
   const page = await ask(phoneBase, '/', {
     host: `127.0.0.1:${port}`,
     'sec-fetch-mode': 'navigate',
   });
-  assert.equal(page.status, 403);
-  assert.match(page.body, /only opened on the computer of the service/);
+  assert.equal(page.status, 200);
+  assert.match(page.body, /用量总览/);
   assert.doesNotMatch(page.body, /name="service-token"/);
+  assert.doesNotMatch(page.body, /__SERVICE_TOKEN__/);
+
+  // The scripts of that page come with it.
+  const script = await ask(phoneBase, '/app.js', { host: `127.0.0.1:${port}` });
+  assert.equal(script.status, 200);
+  const sheet = await ask(phoneBase, '/style.css', { host: `127.0.0.1:${port}` });
+  assert.equal(sheet.status, 200);
 
   // What the phone came for still works there.
   const overview = await ask(phoneBase, '/api/v1/overview', {
@@ -252,12 +260,16 @@ test('a request from the tailnet is not one of this computer', async () => {
   assert.equal(stolen.status, 403);
   assert.doesNotMatch(stolen.body, /"token"/);
 
+  // The phone gets its own page, and that page carries no secret: the
+  // token travels in the address of the phone, not in the page.
   const page = await ask(phoneBase, '/', {
     host: `127.0.0.1:${port}`,
     'sec-fetch-mode': 'navigate',
   });
-  assert.equal(page.status, 403);
+  assert.equal(page.status, 200);
   assert.doesNotMatch(page.body, /__SERVICE_TOKEN__/);
+  assert.doesNotMatch(page.body, /name="service-token"/);
+  assert.doesNotMatch(page.body, /state\.token/);
 
   // The console of this computer answers on its own port as before.
   const onConsole = await get('/api/v1/console/state', { [TOKEN_HEADER]: state.token });
