@@ -17,8 +17,42 @@ describe("@magpie-community/agent-coda", () => {
     // magpie matches the lowercased product name of the User-Agent against these prefixes
     expect(agent.ua.every((p) => p === p.toLowerCase())).toBe(true);
     expect(agent.ua.some((p) => "CodaBot/0.0.2-dev.7".split("/")[0].toLowerCase().startsWith(p))).toBe(true);
-    expect(agent.icon.startsWith("https://")).toBe(true);
     expect(agent.notice.length).toBeGreaterThan(20);
+  });
+
+  test("embeds the shipped icon.png so the Agents page needs no network for it", () => {
+    const png = readFileSync(join(import.meta.dir, "icon.png"));
+    const dataUri = `data:image/png;base64,${png.toString("base64")}`;
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8"));
+    expect(agent.icon).toBe(dataUri);
+    expect(pkg.magpie.icon).toBe(dataUri);
+    expect(pkg.files).toContain("icon.png");
+  });
+
+  test("connects only to a gateway on this computer, with v1 at url + /v1", () => {
+    const key = "mgp_key";
+    for (const [url, v1] of [
+      ["http://127.0.0.1:3425", "http://127.0.0.1:3425/v1"],
+      ["http://localhost:3425/", "http://localhost:3425/v1/"],
+      ["http://[::1]:3425", "http://[::1]:3425/v1"],
+      ["https://127.0.0.1:3425", "https://127.0.0.1:3425/v1"],
+    ]) {
+      const out = connect({ gateway: { url, v1, key }, models: [] });
+      expect(out.baseUrl).toBe(`${out.url}/v1`);
+      expect(out.gateway.baseUrl).toBe(out.baseUrl);
+    }
+    for (const [url, v1] of [
+      ["http://192.168.1.20:3425", "http://192.168.1.20:3425/v1"],
+      ["https://magpie.example.com", "https://magpie.example.com/v1"],
+      ["http://127.0.0.2:3425", "http://127.0.0.2:3425/v1"],
+      ["http://localhost.example.com:3425", "http://localhost.example.com:3425/v1"],
+      ["http://127.0.0.1@example.com:3425", "http://127.0.0.1@example.com:3425/v1"],
+    ]) {
+      expect(() => connect({ gateway: { url, v1, key }, models: [] })).toThrow(/only reads a Magpie gateway on this computer/);
+    }
+    for (const v1 of ["http://127.0.0.1:3426/v1", "http://localhost:3425/v1", "http://127.0.0.1:3425/api"]) {
+      expect(() => connect({ gateway: { url: "http://127.0.0.1:3425", v1, key }, models: [] })).toThrow(/gateway\.url \+ "\/v1"/);
+    }
   });
 
   test("contains no Node/Bun/external imports so moejs loads it cleanly", () => {

@@ -6,7 +6,7 @@ The agent declares no `effort`: each Coda bot keeps its own thinking level, chos
 
 ## Install and use
 
-Requires the Coda Bot desktop app **0.0.2-dev.7 or later**, on the same computer as Magpie. Tested with Magpie **v0.1.3937** on macOS (connecting and chatting); Windows and Linux are untested.
+Requires the Coda Bot desktop app **0.0.2-dev.7 or later** ([download](https://codabot.app/#download)), on the same computer as Magpie. Tested with Magpie **v0.1.3937** on macOS (connecting and chatting); Windows and Linux are untested.
 
 ```sh
 magpie plugin add @magpie-community/agent-coda
@@ -17,7 +17,7 @@ magpie plugin add @magpie-community/agent-coda
 
 ## Disconnect or remove
 
-Disconnecting Coda Bot on the Agents page restores `~/.coda/magpie.json` to what it was before, or removes it if there was none. Coda Bot then drops the `custom:magpie:*` models, and a bot that was on one of them goes back to a default model it can still run.
+Disconnecting Coda Bot on the Agents page puts back what `~/.coda/magpie.json` had under the keys Magpie wrote; when it had none, Magpie leaves an empty `{}`, which Coda Bot reads as disconnected. Coda Bot then drops the `custom:magpie:*` models, and a bot that was on one of them goes back to a default model it can still run.
 
 - **Disconnect before uninstalling** this plugin, so Magpie restores the file.
 - **Quitting Magpie without disconnecting** leaves the file in place: Coda Bot keeps listing Magpie's models, but requests to them fail until Magpie runs again or Coda Bot is disconnected.
@@ -52,7 +52,7 @@ Magpie writes `~/.coda/magpie.json` in the home folder of the user Magpie runs a
 ```
 
 - `url`, `baseUrl` and `apiKey` are top-level keys, so Magpie can tell from the gateway key that the file is still its own, and see when the endpoint changed.
-- Coda Bot uses the file only when `gateway.version` is `1` and `url` and `baseUrl` are the same loopback origin (`127.0.0.1`, `localhost` or `[::1]`), with `baseUrl` under `/v1`.
+- Coda Bot uses the file only when `gateway.version` is `1` and `url` and `baseUrl` are the same loopback origin (`127.0.0.1`, `localhost` or `[::1]`), with `baseUrl` at `url` + `/v1`. Connecting fails with an error when Magpie's gateway isn't like that, rather than writing a file Coda Bot would ignore.
 - Each model is called on the API its `nativeEndpoints` names: `/v1/messages` as Anthropic Messages, `/v1/responses` as OpenAI Responses, `/v1/chat/completions` as OpenAI Chat Completions. Coda Bot sends `User-Agent: CodaBot/<version>` on these requests only.
 - A `defaultModel` missing from `gateway.models` is ignored, and Coda Bot keeps its own default.
 
