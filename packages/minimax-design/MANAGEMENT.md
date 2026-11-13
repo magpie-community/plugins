@@ -9,11 +9,12 @@ Checked against the installed domestic production Design 4.0.10 and Magpie
 | Image/video models | Companion discovers, synchronizes and removes its native media entries | Enabled switches and unrelated models are preserved; new options require an established gateway mapping |
 | Media parameters | Explicit metadata, public OpenRouter schemas and verified route profiles | Defaults are automatic; unknown parameter contracts retain optional manual controls |
 | Skills | Library distributes and withdraws user skill files | Design keeps its skill permission toggle |
-| MCP servers | Library manages the isolated OpenCode configuration | Restart required; these entries do not appear in the encrypted connector UI |
+| MCP servers | Library configuration is projected into Design V3's native connector proxy per workspace | Restart once to load the bridge; later changes sync automatically. The encrypted connector vault is not modified |
 | Usage and routing | Requests use the Design agent gateway key | Accounting and provider routing remain Magpie's responsibility; Design's own account credits are separate |
 | Project Agent rules | Design manages `<project>/.hilo/project-rules.md` | No global instruction file has been established for Library |
 | Memory | Design manages project `.hilo/memory` and user `~/.hub/memory` | User path can be overridden by `HUB_MEMORY_DIR`; these are mutable Design records, not Library instructions |
-| Speech/music | Design has native `speech` and `music` custom model types | This bridge currently synchronizes image/video only |
+| Speech | Magpie speech endpoints and the verified Ming route | All requests use Magpie; reference-audio and cloning routes remain excluded |
+| Music | Design has native `music` custom model type | Streaming chat music requires a separate adapter |
 | ComfyUI/local models/assets/account settings | Design's own managers | No Magpie Library target or verified synchronization contract in this plugin |
 
 ## Why rules and memory are not synchronized
@@ -34,7 +35,7 @@ A future rules bridge needs an explicit project target and revision-aware
 updates. Memory management needs its own lifecycle and merge contract.
 Neither can be promised merely by adding another path to the agent descriptor.
 
-## Speech and music follow-up
+## Speech and music
 
 The installed Design runtime declares
 `MEDIA_MODEL_TYPES = ["image", "video", "speech", "music"]`.
@@ -44,12 +45,13 @@ videos and decisions. Its speech handler relays OpenAI-style fields and the
 vendor response; this does not establish compatibility with every MiniMax
 native speech/music interface.
 
-Automatic speech/music synchronization needs explicit model kinds, voice and
-output-format metadata, and a tested adapter for the actual response format.
+Speech uses explicitly advertised endpoints and the verified Ming route.
+Parameter schemas provide voice, format, speed and instruction controls.
+All speech requests use Magpie's gateway. The uninstalled direct-LoomVox
+experiment was withdrawn; it is not part of this release.
 There is no verified common music-generation endpoint in the examined gateway.
-Audio output modality alone cannot distinguish speech, music and sound effects.
-This release therefore leaves speech/music with Design rather than
-misclassifying models or installing controls whose requests are unverified.
+Audio output modality alone cannot distinguish speech, music and sound effects;
+Lyria streaming chat audio remains outside this release.
 
 ## Acceptance and release
 

@@ -73,6 +73,15 @@ entries and the generated Hailuo options. This verifies settings discovery;
 canvas generation selection, live inference and output insertion remain
 unaccepted. See MANAGEMENT.md for the wider management audit.
 
+## Speech bridge — 0.4.0
+
+Node and Bun regression coverage includes discovery exclusions, explicit
+voice/format/speed schemas, automatic Ming defaults, parameter rejection and
+non-audio response rejection. The installed Design 4.0.10 loader, spec parser,
+adapter sandbox and executor load a native speech model and return exact WAV
+fixture bytes. These are simulated network responses, not a generated voice
+or listening acceptance. Music streaming and voice cloning remain unsupported.
+
 ## Windows
 
 The existing `%APPDATA%\@hilo\desktop\hub-config.json` model path is retained.
@@ -88,8 +97,11 @@ paths follow the observed Design 4.x layout.
   test and development profiles have separate storage and are not targeted.
 - New user skills may initially be disabled by Design. Library manages
   placement/removal; Design retains its own permission toggle.
-- MCPs in the isolated OpenCode file are available to the agent, but are
-  not entries in Design's encrypted connector vault or connector UI.
+- V3 requires a separate native connector proxy registration. The companion
+  installs a workspace runtime bridge; plain OpenCode configuration alone
+  does not make tools callable by Design. The encrypted vault is not edited.
+  Restart once after bridge installation; subsequent Library changes sync
+  every five seconds. Disabled/withdrawn entries lose their callable grants.
 - Global instructions are not advertised: Design disables ordinary
   project/Claude config discovery and has its own optional memory system.
 - Models without positive integer context/output limits are omitted.
@@ -100,3 +112,21 @@ paths follow the observed Design 4.x layout.
 - Design permits at most 50 models per provider. Larger catalogs are
   split into `user-custom-magpie`, `user-custom-magpie-2`, etc.
   Magpie restores obsolete entries when a catalog shrinks.
+
+## V3 MCP regression — November 13, 2026
+
+Node and Bun each pass 31 tests. `mcp-loader.mjs` uses the installed
+OpenCode 1.18.18 to verify actual plugin loading from the global configuration,
+direct-MCP suppression and gateway registration. `mcp-native.mjs` uses
+Design 4.0.10's packaged ConnectorToolProxyService and ConnectorCapabilityService
+with a real localhost MCP fixture to cover discovery, calls, disable and withdrawal.
+
+Both existing live workspace gateways (8002 and 8003) were hot-registered
+without restarting Design. Seven configured endpoints report connected.
+The native `/api/connectors/tools/call` endpoint successfully called
+Eagle `get_app_info` in both workspaces and Resolve `get_resolve_status`.
+Eagle initially refused connections because the application was not running;
+starting Eagle restored its MCP listener on 41596. Existing chat transcripts
+were not rewritten and no generation or content mutation was submitted.
+The runtime watcher will load on the next normal Design relaunch; live
+hot-registration proves current access, not a completed desktop restart.

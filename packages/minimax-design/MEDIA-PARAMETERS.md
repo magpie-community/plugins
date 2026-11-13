@@ -14,15 +14,50 @@ durations are also omitted when unset. No inference is performed during sync.
    This reader accepts the enum/range shape used by OpenRouter: `type: enum`
    with `values`, or `type: range` with `min`/`max`. It is a bridge-supported
    extension, not a claim that Magpie has standardized a capability API.
-2. For direct OpenRouter image routes without gateway parameters, fetch its
+2. Source plugin declarations from Magpie's shared `config.provider` object:
+   per-model `supported_parameters`, or `capabilities.maxReferences` and
+   explicit input modalities. These fill catalogue gaps without introducing
+   models absent from the authenticated gateway list. An explicit gateway
+   reference limit of zero remains authoritative.
+3. For direct OpenRouter image routes without gateway parameters, fetch its
    public `/api/v1/images/models/<model>/endpoints` schema. Intersect endpoint
    options/reference limits; never send the gateway authorization header.
-3. Exact routes with verified provider and gateway contracts use bundled
+4. Exact routes with verified provider and gateway contracts use bundled
    profiles. A remote-magpie mirror of a known direct route can reuse the
    profile; routing groups and arbitrary aliases cannot.
-4. Unidentified routes retain optional manual size/duration and provider
+5. Plugin option `mediaParameters` supplies missing fields using the same
+   enum/range schema. Explicit source and gateway fields take precedence.
+6. Unidentified routes retain optional manual size/duration and provider
    defaults. Known routes whose gateway cannot carry a parameter expose no
-   ineffective control. The catalogue's explicit lack of image input wins.
+   ineffective control. Missing image modality alone does not override an
+   explicit reference-count schema.
+
+## Portable configuration
+
+Plugin options are persisted by Magpie in `plugins.json` and passed to the
+companion's factory. The package declares empty defaults; no routing
+replacement or model-specific reference expansion is enabled implicitly.
+For a provider whose existing route cannot carry references, install or
+configure a source plugin that supports the required protocol first.
+An optional `imageRoutes` map then reuses the existing Design identity and
+enabled switch while submitting to the explicitly selected replacement.
+
+```json
+{
+  "imageRoutes": { "old-provider/image": "source-plugin/new-image" },
+  "mediaParameters": {
+    "source-plugin/new-image": {
+      "input_references": { "type": "range", "min": 0, "max": 6 }
+    }
+  }
+}
+```
+
+The IDs and limit above are examples, not defaults. Both routes must be in
+the authenticated catalogue. Do not raise limits to bypass an unsupported
+provider transport. New models with explicit metadata are discovered on the
+next refresh without a code change; models lacking such information need a
+source declaration or a verified manual supplement.
 
 Metadata is validated before store writes. Invalid schemas or failed endpoint
 discovery keep the previously installed store and report the error. Parameters

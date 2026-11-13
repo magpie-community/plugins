@@ -24,8 +24,11 @@ Library controls as other agents:
   Library manages placement/removal and Design keeps its permissions.
 - MCP servers use the OpenCode format in the desktop's isolated
   `ai-runtime/config-home/opencode/opencode.json`. Restart Design after
-  changing servers. They are available to the agent beside bundled
-  servers, but are not added to the desktop's connector UI.
+  installing the bridge for the first time. The companion installs an OpenCode
+  plugin that registers Library servers with Design V3's native connector
+  gateway, using the current workspace identity. Later changes are applied
+  automatically. Direct OpenCode connections are disabled to avoid duplicate
+  tools and processes. Connection failures are reported independently.
 - Removing an item removes only Library's entry or skill. The encrypted
   `customMcpVault` is never edited.
 - Global instructions are not offered: no always-read instruction file
@@ -48,6 +51,10 @@ The bridge uses explicit image/video kinds from Magpie's authenticated model
 list. It automatically builds model-specific dropdowns and reference budgets
 from explicit parameter metadata, OpenRouter's public endpoint schemas, or
 verified route profiles. `自动` retains the selected route's defaults.
+Source plugins can publish reference limits in Magpie's shared provider
+configuration; the bridge reads these without requiring a model-name match.
+Optional `imageRoutes` and `mediaParameters` plugin settings provide explicit
+route replacements and missing schemas; both default to empty objects.
 MiniMax, Grok, Qwen and verified RightAPI routes have presets; unidentified
 routes retain optional manual size/duration controls.
 
@@ -76,6 +83,25 @@ On macOS the data directory is
 `%APPDATA%\@hilo\desktop`. Detection uses the data directory so moving the
 app between `/Applications` and `~/Applications` does not break it.
 Start Design once before connecting.
+
+## Native speech models — 0.4.0
+
+The media bridge synchronizes speech models whose catalogue explicitly
+advertises `/v1/audio/speech`, plus the verified LoomVox Ming route.
+Requests use Magpie's gateway. Direct LoomVox discovery and a separate manual
+audio catalogue are not enabled. Audio expansion belongs in Magpie's source
+providers before models are synchronized into Design.
+
+Speech uses Design's native `speech` model type and its binary media executor.
+Ming defaults to automatic voice selection and WAV; format, speed and optional
+voice description are available without extra setup. Explicit Magpie parameter
+schemas override these defaults. Unknown speech routes require a voice unless
+their schema provides a default or voice choices. Raw PCM and SSE are not
+offered as playable outputs. Reference audio and voice cloning are not mapped.
+
+The bridge does not start LoomVox or download weights. Start LoomVox before
+using a local speech model. Music, including Lyria chat audio, requires a
+separate streaming adapter and is not imported by this release.
 
 ## How it works
 
@@ -135,3 +161,11 @@ Native acceptance uses isolated homes, the installed app's real gateway
 and agent executables, and localhost model/MCP fixtures. It exercises
 Library distribution/removal and an agent model → MCP → model round trip.
 See [COMPATIBILITY.md](COMPATIBILITY.md) for versions and limits.
+
+The earlier OpenCode MCP fixture did not cover V3's separate connector proxy.
+Use `MINIMAX_APP="/Applications/MiniMax Design.app" node
+packages/minimax-design/mcp-native.mjs` to verify native proxy registration,
+tool discovery/calls, disabled servers and withdrawal with the installed code.
+`mcp-loader.mjs` additionally verifies that bundled OpenCode loads the runtime
+plugin from global configuration. The runtime has its own package entry so
+OpenCode cannot resolve it to the outer Magpie media companion.

@@ -2,7 +2,7 @@ export const apiVersion = 1
 const capability = null
 
 export function buildSubmit(request) {
-  const body = { model: request.model, prompt: request.prompt }
+  const body = { model: capability?.requestModel ?? request.model, prompt: request.prompt }
   const params = {}
   for (const [key, value] of Object.entries(request.params)) {
     if (value === undefined || value === "" || value === "自动" || value === "auto") continue
@@ -18,10 +18,29 @@ export function buildSubmit(request) {
       const rule = capability.params.find((parameter) => parameter.key === key)
       if (!rule || (rule.type === "string" && typeof value !== "string") ||
           (rule.type === "integer" && !Number.isInteger(value)) ||
+          (rule.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) ||
           (rule.enum && !rule.enum.includes(value)) ||
           (rule.min !== undefined && value < rule.min) || (rule.max !== undefined && value > rule.max)) {
         throw new Error(`模型不支持参数 ${key}=${String(value)}。请重新选择。`)
       }
+    }
+    for (const rule of capability.params) {
+      if (rule.required && params[rule.key] === undefined && capability.defaults?.[rule.key] === undefined) {
+        throw new Error(`请填写${rule.title}。`)
+      }
+    }
+    if (capability.transport === "speech") {
+      if (request.type !== "speech") throw new Error("该模型只支持语音合成。")
+      if (request.images.length || request.videos?.length || request.audios?.length) throw new Error("该语音接口不接受参考媒体。")
+      const speech = { ...capability.defaults, ...params }
+      if (Object.values(speech).some((value) => typeof value === "string" && !value.trim())) throw new Error("语音参数不能为空。")
+      if (capability.ming && speech.voice !== "default" && speech.instructions) throw new Error("Ming 音色和声音描述只能选择一项。")
+      if (capability.ming && speech.voice !== "default" &&
+          !/^(?:US|UK)_[A-Z][a-z]+$|^[\u4e00-\u9fff][\u4e00-\u9fff_]*$/.test(speech.voice)) {
+        throw new Error("Ming 音色名格式不正确；留为 default 可自动选择。")
+      }
+      return { method: "POST", path: "/audio/speech", response: "binary",
+        body: { model: request.model, input: request.prompt, ...speech } }
     }
     mode = params.referenceMode || (request.images.length > 1 ? capability.defaultMode : "首帧")
     if (request.images.length && !capability.modes.includes(mode) && request.type === "video") throw new Error("模型不支持该参考图用途。")
@@ -80,6 +99,15 @@ export function buildSubmit(request) {
 
 export function parseSubmit(response, request) {
   if (response.body?.error) return { error: response.body.error.message || "Magpie rejected the request." }
+  if (request.type === "speech") {
+    const mime = response.headers?.["content-type"]?.split(";")[0]?.trim()
+    if (response.body?.$binary !== true || response.body.size <= 0 ||
+        !["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/flac", "audio/x-flac",
+          "audio/aac", "audio/ogg", "audio/opus", "application/ogg"].includes(mime)) {
+      return { error: "Magpie 未返回可播放的音频文件。请检查语音接口和输出格式。" }
+    }
+    return { outputs: [{ responseBody: true }] }
+  }
   if (request.type === "video") {
     if (typeof response.body?.id !== "string" || !response.body.id) return { error: "Magpie returned no video task ID." }
     return { taskId: response.body.id }

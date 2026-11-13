@@ -115,7 +115,7 @@ test("unsupported stores and provider limits fail without truncation", () => {
 
 test("invalid catalogue IDs are rejected at discovery", async () => {
   const original = globalThis.fetch
-  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [{ id: "bad id", kind: "image" }] }) })
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [{ id: "bad\u0000id", kind: "image" }] }) })
   try { await assert.rejects(discoverMedia(gateway), /invalid model ID/) }
   finally { globalThis.fetch = original }
 })
@@ -132,4 +132,88 @@ test("an unmanaged model directory is never overwritten", () => {
     assert.throws(() => applyMedia(paths, gateway, catalogue), /unmanaged media model directory/)
     assert.equal(fs.readFileSync(path.join(folder, "adapter.js"), "utf8"), before)
   } finally { cleanup() }
+})
+
+test("explicit source routes preserve existing Design IDs and switches without duplicate models", async () => {
+  const { paths, cleanup } = sandbox()
+  const original = globalThis.fetch
+  const legacy = "existing-provider/old-model"
+  const replacement = "other-provider/new-model"
+  const options = { imageRoutes: { [legacy]: replacement },
+    mediaParameters: { [replacement]: { input_references: { type: "range", min: 0, max: 4 } } } }
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [
+    { id: legacy, kind: "image", display_name: "General Image 2.1", modalities: { input: ["text"] } },
+    { id: replacement, kind: "image", modalities: { input: ["text", "image"] } },
+  ] }) })
+  try {
+    assert.equal((await discoverMedia(gateway)).length, 2)
+    applyMedia(paths, gateway, [{ ref: legacy, name: "General Image 2.1", type: "image", images: false }])
+    const config = path.join(paths.store, "config.json")
+    const previous = JSON.parse(fs.readFileSync(config))
+    previous.models[0].enabled = false
+    fs.writeFileSync(config, JSON.stringify(previous))
+    const models = await discoverMedia(gateway, options)
+    assert.equal(models.length, 1)
+    assert.equal(models[0].requestModel, replacement)
+    applyMedia(paths, gateway, models)
+    const updated = JSON.parse(fs.readFileSync(config))
+    assert.equal(updated.models[0].id, previous.models[0].id)
+    assert.equal(updated.models[0].enabled, false)
+    assert.equal(updated.models[0].name, "General Image 2.1")
+    const folder = path.join(paths.store, "models", updated.models[0].id)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(folder, "spec.json"))).references.image.max, 4)
+    assert.ok(fs.readFileSync(path.join(folder, "adapter.js"), "utf8").includes(replacement))
+    await assert.rejects(discoverMedia(gateway, { imageRoutes: { [legacy]: "missing/model" } }), /unavailable/)
+    await assert.rejects(discoverMedia(gateway, { imageRoutes: [] }), /imageRoutes/)
+    await assert.rejects(discoverMedia(gateway, { imageRoutes: { [legacy]: replacement, [replacement]: "another/model" } }), /imageRoutes/)
+    await assert.rejects(discoverMedia(gateway, { mediaParameters: [] }), /mediaParameters/)
+  } finally { globalThis.fetch = original; cleanup() }
+})
+
+test("new models use edit endpoints and explicit reference schemas before manual supplements", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [
+    { id: "new-source/未来 image Pro", kind: "image", supported_endpoint_types: ["image-edit"],
+      supported_parameters: { input_references: { type: "range", min: 0, max: 6 } } },
+    { id: "new-source/future-video", kind: "video",
+      supported_parameters: { input_references: { type: "range", min: 0, max: 1 } } },
+  ] }) })
+  try {
+    const models = await discoverMedia(gateway, { mediaParameters: {
+      "new-source/未来 image Pro": { input_references: { type: "range", min: 0, max: 4 } },
+    } })
+    assert.equal(models[0].images, true)
+    assert.equal(models[0].ref, "new-source/未来 image Pro")
+    assert.equal(models[0].parameters.input_references.max, 6)
+    const { mediaCapability } = await import("./media-capabilities.mjs")
+    assert.equal(mediaCapability(models[1]).references.max, 1)
+  } finally { globalThis.fetch = original }
+})
+
+test("shared provider capabilities fill catalogue gaps without overriding explicit gateway limits", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [
+    { id: "other/provider/new-image", kind: "image", modalities: { input: ["text"] } },
+    { id: "other/provider/disabled", kind: "image",
+      supported_parameters: { input_references: { type: "range", min: 0, max: 0 } } },
+    { id: "other/provider/video", kind: "video", modalities: { input: ["text"] } },
+  ] }) })
+  const providers = { "other/provider": { models: {
+    "new-image": { modalities: { input: ["text", "image"] }, capabilities: { edit: true, maxReferences: 6 } },
+    disabled: { capabilities: { edit: true, maxReferences: 8 } },
+    video: { capabilities: { maxReferences: 1 } },
+    hidden: { capabilities: { edit: true, maxReferences: 8 } },
+  } } }
+  try {
+    const models = await discoverMedia({ ...gateway, baseURL: "https://another-gateway.example/v1" }, {
+      mediaParameters: { "other/provider/disabled": { input_references: { type: "range", min: 0, max: 9 } } },
+    }, providers)
+    assert.equal(models.length, 3)
+    assert.equal(models[0].images, true)
+    assert.equal(models[0].parameters.input_references.max, 6)
+    assert.equal(models[0].parameterSource, "plugin-config")
+    assert.equal(models[1].parameters.input_references.max, 0)
+    const { mediaCapability } = await import("./media-capabilities.mjs")
+    assert.equal(mediaCapability(models[2]).references.max, 1)
+  } finally { globalThis.fetch = original }
 })

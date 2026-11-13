@@ -15,7 +15,8 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
     assert.equal(request.headers["x-magpie-drawers"], "1")
     assert.equal(request.headers["x-magpie-videomakers"], "1")
     response.setHeader("content-type", "application/json")
-    response.end(JSON.stringify({ data: [{ id: "fixture/image", kind: "image" }, { id: "fixture/video", kind: "video" }] }))
+    response.end(JSON.stringify({ data: [{ id: "fixture/image", kind: "image" },
+      { id: "replacement/new-image", kind: "image" }, { id: "fixture/video", kind: "video" }] }))
   })
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
   const address = `http://127.0.0.1:${server.address().port}/v1`
@@ -27,9 +28,19 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
     import assert from "node:assert/strict";
     import fs from "node:fs";
     import plugin from ${JSON.stringify(new URL("./index.mjs", import.meta.url).href)};
-    await plugin();
+    const hooks = await plugin({}, { imageRoutes: { "fixture/image": "replacement/new-image" } });
+    const shared = {};
+    hooks.config(shared);
+    shared.provider = { replacement: { models: { "new-image": {
+      modalities: { input: ["text", "image"] }, capabilities: { maxReferences: 6 }
+    } } } };
     const config = ${JSON.stringify(path.join(paths.store, "config.json"))};
     assert.equal(JSON.parse(fs.readFileSync(config)).models.length, 2);
+    await new Promise(resolve => setTimeout(resolve, 5500));
+    const entry = JSON.parse(fs.readFileSync(config)).models.find(model => model.type === "image");
+    const folder = ${JSON.stringify(path.join(paths.store, "models"))} + "/" + entry.id;
+    assert.equal(JSON.parse(fs.readFileSync(folder + "/spec.json")).references.image.max, 6);
+    assert.ok(fs.readFileSync(folder + "/adapter.js", "utf8").includes("replacement/new-image"));
     fs.writeFileSync(${JSON.stringify(paths.control)}, "{}");
     await new Promise(resolve => setTimeout(resolve, 5500));
     assert.equal(JSON.parse(fs.readFileSync(config)).models.length, 0);
@@ -38,7 +49,7 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
   `
   try {
     const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
-      env: { ...process.env, HOME: home, USERPROFILE: home }, timeout: 12000,
+      env: { ...process.env, HOME: home, USERPROFILE: home }, timeout: 16000,
     })
     assert.match(stdout, /host remains alive/)
   } finally {
