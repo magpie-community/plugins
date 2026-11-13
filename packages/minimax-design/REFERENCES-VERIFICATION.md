@@ -78,3 +78,27 @@ Backup:
 The previously installed agent platform adaptation was preserved; the portable
 repository entry continues to require Magpie's `magpie.platform` contract.
 Other pre-existing uncommitted MCP and speech changes remain in the workspace.
+
+## Remote Mac release verification
+
+Rechecked on November 14, 2026 with the installed applications:
+
+- Node regression suites: Design 36 passed; image source 15 passed.
+- The real Magpie gateway fixture passed again with persisted plugin options,
+  renamed source models and four distinct reference images through both
+  configured protocols.
+- Design's packaged media executor passed image editing, four-reference
+  forwarding, video submit/poll/content and speech response checks.
+- Design's native connector layer passed MCP tool discovery/call, disable and
+  withdrawal checks.
+- Registry validation and whitespace checks passed.
+
+The release check uses disposable stores and HTTP fixtures. It does not establish
+desktop canvas acceptance, native Windows acceptance or a new paid vendor run.
+The portable agent still requires a host exposing `magpie.platform`; the
+installed macOS descriptor adaptation is not a replacement for that prerequisite.
+
+GitHub HTTPS works through this machine's existing HTTP proxy. Direct SSH name
+resolution failed, while SSH over port 443 through the same proxy authenticated
+the existing GitHub key and successfully pushed both source repositories.
+No credential or proxy setting was added to either package.
