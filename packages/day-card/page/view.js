@@ -22,7 +22,7 @@
       titleWeek: "WEEKLY AI STATEMENT", titleMonth: "MONTHLY AI STATEMENT", titleAll: "ALL-TIME AI STATEMENT", period: "PERIOD", activeDays: "ACTIVE DAYS", avgDay: "AVG ACTIVE DAY",
       noCallsSpan: "No calls in this period.", spanDay: "Day", spanWeek: "Week", spanMonth: "Month", spanAll: "All", spanLabel: "Period", earlier: "Earlier", later: "Later", allTime: "All time",
       updateSpan: "Week, month and all-time need a newer magpie. Update magpie, then open it again.",
-      background: "Background", padding: "Padding", blur: "Blur", dim: "Dim", upload: "Add your own picture", imageFailed: "Couldn't use that picture", keepFailed: "Couldn't keep the background",
+      background: "Background", padding: "Padding", blur: "Blur", dim: "Dim", upload: "Add your own picture", removeImage: "Remove your picture", imageFailed: "Couldn't use that picture", keepFailed: "Couldn't keep the background",
       "bg-none": "No background", "bg-teal": "Teal", "bg-gingham": "Gingham", "bg-grid": "Graph paper", "bg-kraft": "Kraft paper", "bg-cyan": "Cyanotype", "bg-dots": "Night dots", "bg-deck": "Deckchair stripes", "bg-linen": "Olive linen", "bg-seigaiha": "Seigaiha waves", "bg-xuan": "Xuan paper", "bg-zigzag": "Zigzag", "bg-terracotta": "Terracotta", "bg-lilac": "Lilac lines", "bg-velvet": "Green velvet", "bg-polka": "Apricot polka", "bg-alpine": "Alpine dawn", "bg-sea": "Misty shore", "bg-dunes": "Dunes", "bg-lake": "Forest lake", "bg-custom": "Your picture",
     },
     zh: {
@@ -41,7 +41,7 @@
       titleWeek: "每周 AI 账单", titleMonth: "每月 AI 账单", titleAll: "累计 AI 账单", period: "区间", activeDays: "活跃天数", avgDay: "活跃日均",
       noCallsSpan: "这段时间没有调用。", spanDay: "日", spanWeek: "周", spanMonth: "月", spanAll: "全部", spanLabel: "统计区间", earlier: "更早", later: "更晚", allTime: "全部时间",
       updateSpan: "周、月和全部账单需要更新版本的 magpie。请更新 magpie 后再打开。",
-      background: "背景", padding: "边距", blur: "模糊", dim: "压暗", upload: "用自己的图片", imageFailed: "这张图片用不了", keepFailed: "背景没能保存",
+      background: "背景", padding: "边距", blur: "模糊", dim: "压暗", upload: "用自己的图片", removeImage: "删除这张图片", imageFailed: "这张图片用不了", keepFailed: "背景没能保存",
       "bg-none": "无背景", "bg-teal": "青绿", "bg-gingham": "野餐格", "bg-grid": "方格纸", "bg-kraft": "牛皮纸", "bg-cyan": "蓝晒", "bg-dots": "夜色网点", "bg-deck": "躺椅条纹", "bg-linen": "橄榄亚麻", "bg-seigaiha": "青海波", "bg-xuan": "宣纸", "bg-zigzag": "人字纹", "bg-terracotta": "赤陶", "bg-lilac": "雾紫细线", "bg-velvet": "墨绿丝绒", "bg-polka": "杏色波点", "bg-alpine": "雪山晨光", "bg-sea": "雾中海岸", "bg-dunes": "沙丘", "bg-lake": "林间湖", "bg-custom": "自己的图片",
     },
     "zh-TW": {
@@ -60,7 +60,7 @@
       titleWeek: "每週 AI 帳單", titleMonth: "每月 AI 帳單", titleAll: "累計 AI 帳單", period: "區間", activeDays: "活躍天數", avgDay: "活躍日均",
       noCallsSpan: "這段時間沒有呼叫。", spanDay: "日", spanWeek: "週", spanMonth: "月", spanAll: "全部", spanLabel: "統計區間", earlier: "更早", later: "更晚", allTime: "全部時間",
       updateSpan: "週、月和全部帳單需要更新版本的 magpie。請更新 magpie 後再開啟。",
-      background: "背景", padding: "邊距", blur: "模糊", dim: "壓暗", upload: "用自己的圖片", imageFailed: "這張圖片用不了", keepFailed: "背景沒能儲存",
+      background: "背景", padding: "邊距", blur: "模糊", dim: "壓暗", upload: "用自己的圖片", removeImage: "刪除這張圖片", imageFailed: "這張圖片用不了", keepFailed: "背景沒能儲存",
       "bg-none": "無背景", "bg-teal": "青綠", "bg-gingham": "野餐格", "bg-grid": "方格紙", "bg-kraft": "牛皮紙", "bg-cyan": "藍曬", "bg-dots": "夜色網點", "bg-deck": "躺椅條紋", "bg-linen": "橄欖亞麻", "bg-seigaiha": "青海波", "bg-xuan": "宣紙", "bg-zigzag": "人字紋", "bg-terracotta": "赤陶", "bg-lilac": "霧紫細線", "bg-velvet": "墨綠絲絨", "bg-polka": "杏色波點", "bg-alpine": "雪山晨光", "bg-sea": "霧中海岸", "bg-dunes": "沙丘", "bg-lake": "林間湖", "bg-custom": "自己的圖片",
     },
     ja: {
@@ -79,7 +79,7 @@
       titleWeek: "週間 AI 明細", titleMonth: "月間 AI 明細", titleAll: "累計 AI 明細", period: "期間", activeDays: "稼働日数", avgDay: "稼働日平均",
       noCallsSpan: "この期間の呼び出しはありません。", spanDay: "日", spanWeek: "週", spanMonth: "月", spanAll: "全期間", spanLabel: "期間", earlier: "前へ", later: "次へ", allTime: "全期間",
       updateSpan: "週・月・全期間には新しい magpie が必要です。magpie を更新してから開き直してください。",
-      background: "背景", padding: "余白", blur: "ぼかし", dim: "暗さ", upload: "自分の画像を使う", imageFailed: "この画像は使えません", keepFailed: "背景を保存できませんでした",
+      background: "背景", padding: "余白", blur: "ぼかし", dim: "暗さ", upload: "自分の画像を使う", removeImage: "この画像を削除", imageFailed: "この画像は使えません", keepFailed: "背景を保存できませんでした",
       "bg-none": "背景なし", "bg-teal": "ティール", "bg-gingham": "ギンガム", "bg-grid": "方眼紙", "bg-kraft": "クラフト紙", "bg-cyan": "青写真", "bg-dots": "夜のドット", "bg-deck": "デッキチェア", "bg-linen": "オリーブリネン", "bg-seigaiha": "青海波", "bg-xuan": "宣紙", "bg-zigzag": "ジグザグ", "bg-terracotta": "テラコッタ", "bg-lilac": "ライラック", "bg-velvet": "深緑ベルベット", "bg-polka": "アプリコット水玉", "bg-alpine": "雪山の朝", "bg-sea": "霧の海辺", "bg-dunes": "砂丘", "bg-lake": "森の湖", "bg-custom": "自分の画像",
     },
     de: {
@@ -98,7 +98,7 @@
       titleWeek: "WÖCHENTLICHE KI-ABRECHNUNG", titleMonth: "MONATLICHE KI-ABRECHNUNG", titleAll: "GESAMTE KI-ABRECHNUNG", period: "ZEITRAUM", activeDays: "AKTIVE TAGE", avgDay: "Ø AKTIVER TAG",
       noCallsSpan: "In diesem Zeitraum keine Aufrufe.", spanDay: "Tag", spanWeek: "Woche", spanMonth: "Monat", spanAll: "Alle", spanLabel: "Zeitraum", earlier: "Früher", later: "Später", allTime: "Gesamte Zeit",
       updateSpan: "Woche, Monat und Gesamt brauchen ein neueres magpie. Aktualisiere magpie und öffne die Karte dann erneut.",
-      background: "Hintergrund", padding: "Rand", blur: "Weichzeichnen", dim: "Abdunkeln", upload: "Eigenes Bild wählen", imageFailed: "Dieses Bild geht nicht", keepFailed: "Hintergrund nicht gesichert",
+      background: "Hintergrund", padding: "Rand", blur: "Weichzeichnen", dim: "Abdunkeln", upload: "Eigenes Bild wählen", removeImage: "Eigenes Bild entfernen", imageFailed: "Dieses Bild geht nicht", keepFailed: "Hintergrund nicht gesichert",
       "bg-none": "Kein Hintergrund", "bg-teal": "Türkis", "bg-gingham": "Vichy-Karo", "bg-grid": "Millimeterpapier", "bg-kraft": "Packpapier", "bg-cyan": "Cyanotypie", "bg-dots": "Nachtpunkte", "bg-deck": "Liegestuhlstreifen", "bg-linen": "Olivleinen", "bg-seigaiha": "Seigaiha", "bg-xuan": "Xuan-Papier", "bg-zigzag": "Zickzack", "bg-terracotta": "Terrakotta", "bg-lilac": "Fliederlinien", "bg-velvet": "Grüner Samt", "bg-polka": "Aprikosenpunkte", "bg-alpine": "Alpenmorgen", "bg-sea": "Nebelküste", "bg-dunes": "Dünen", "bg-lake": "Waldsee", "bg-custom": "Eigenes Bild",
     },
   };

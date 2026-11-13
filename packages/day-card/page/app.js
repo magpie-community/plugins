@@ -637,7 +637,19 @@
       img.alt = "";
       img.src = state.bg.image;
       b.append(img);
-      list.push(b);
+      // the reader's picture can go again: a badge at its corner, shown on
+      // hover or focus, and always where there is no hover (netube99 on X)
+      const own = document.createElement("span");
+      own.className = "sw-own";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "sw-del";
+      del.id = "bg-del";
+      del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg>';
+      del.setAttribute("aria-label", t.removeImage);
+      del.title = t.removeImage;
+      own.append(b, del);
+      list.push(own);
     }
     const add = document.createElement("button");
     add.type = "button";
@@ -698,6 +710,13 @@
     if (pop.hidden || pop.classList.contains("closing")) openPop(); else closePop();
   });
   grid.addEventListener("click", (e) => {
+    if (e.target.closest("#bg-del")) {
+      // the grid is drawn again under the click, so it isn't read as a
+      // click outside the menu
+      e.stopPropagation();
+      dropPicture();
+      return;
+    }
     const b = e.target.closest(".sw");
     if (!b) return;
     if (b.id === "bg-add") $("file").click();
@@ -742,6 +761,12 @@
     } catch (e) {
       status(`${V.text(lang).imageFailed}: ${e?.message || e}`, true);
     }
+  }
+  // the picture leaves the saved options; a card drawn on it goes back to
+  // the default backdrop (norm), and focus stays in the menu
+  function dropPicture() {
+    pick({ image: "" });
+    buildGrid().then(() => $("bg-add")?.focus());
   }
   $("file").addEventListener("change", (e) => {
     usePicture(e.target.files?.[0]);

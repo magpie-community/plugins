@@ -311,6 +311,23 @@ test("a saved backdrop is made sound before it is drawn", () => {
   expect(B.meta("nope").id).toBe("teal")
 })
 
+test("a picture of the reader's own can be removed, and a card drawn on it goes back to teal (netube99 on X)", () => {
+  const mine = B.norm({ bg: "custom", image: "data:image/jpeg;base64,AAAA", pad: 40, blur: 6 })
+  // app.js's dropPicture is pick({ image: "" }): the saved options lose the picture
+  expect(B.norm({ ...mine, image: "" })).toEqual({ bg: "teal", pad: 40, blur: 6, dim: 0, image: "" })
+  // a picture not in use goes, and the backdrop picked stays
+  expect(B.norm({ ...mine, bg: "kraft", image: "" })).toMatchObject({ bg: "kraft", image: "" })
+  const app = read("app.js")
+  expect(app).toContain('pick({ image: "" })')
+  // the badge is a button of its own, beside the picture's swatch, never in it
+  expect(app).toContain("own.append(b, del)")
+  const css = read("style.css")
+  // shown on hover only where there is hover, and on focus, and always where there isn't
+  expect(css).toContain("@media (hover: hover) and (pointer: fine) { .sw-own:hover .sw-del")
+  expect(css).toContain(".sw-own:focus-within .sw-del")
+  expect(css).toContain("@media not all and (hover: hover) and (pointer: fine) { .sw-del")
+})
+
 test("the blur and dim sliders stay put while a slider is dragged (#957)", () => {
   // classList.toggle(name, undefined) flips the class, so a pattern's photo
   // must be false, not missing, or every input event hides or shows them
