@@ -1224,7 +1224,11 @@ const RETRY_BAD_CALL = 2
 // floorMs is how long a 400 must have taken to count as the backend's own
 // rejection of what the model made: a request that is wrong in itself is
 // refused at once, and isn't sent again
-const retry400 = { floorMs: 3000, pauseMs: 300, holdMax: 512 * 1024 }
+// holdMs is the longest a stream's thinking is held back: past it what was
+// held goes out and the rest streams live, so a long-thinking turn never
+// leaves its client silent long enough to time out (plugins #1078). A 400
+// after that reaches the client as it is.
+const retry400 = { floorMs: 3000, pauseMs: 300, holdMax: 512 * 1024, holdMs: 10_000 }
 const isGemini4 = (id) => /^gemini-4/i.test(String(id ?? ""))
 
 // badCall is whether a reply's body is Google's INVALID_ARGUMENT
@@ -1251,6 +1255,7 @@ function showsAnswer(j) {
 // comes first sends nothing to the client, so the caller can ask again
 // ({bad: true}). Once an answer has begun the client has it, and the
 // stream goes through as it is: a reply can't be taken back.
+const LATE = Symbol("late")
 async function holdThoughts(res, signal) {
   const rd = res.body.getReader()
   const dec = new TextDecoder()
@@ -1261,6 +1266,11 @@ async function holdThoughts(res, signal) {
   let release = false
   let bad = false
   let failure
+  // pending is a read still out when the hold's time ran out: the body
+  // takes it first, so no chunk is lost
+  let pending
+  let timer
+  const late = new Promise((r) => (timer = setTimeout(r, retry400.holdMs, LATE)))
   const scan = (final) => {
     let i
     while (!release && ((i = buf.indexOf("\n")) >= 0 || (final && buf))) {
@@ -1275,7 +1285,13 @@ async function holdThoughts(res, signal) {
   }
   try {
     while (!release && !bad) {
-      const r = await rd.read()
+      const read = rd.read()
+      const r = await Promise.race([read, late])
+      if (r === LATE) {
+        pending = read
+        release = true
+        break
+      }
       if (r.done) {
         done = true
         break
@@ -1288,9 +1304,13 @@ async function holdThoughts(res, signal) {
     }
     if (done && !bad && !release) scan(true)
   } catch (e) {
-    if (signal?.aborted) throw e
+    if (signal?.aborted) {
+      clearTimeout(timer)
+      throw e
+    }
     failure = e
   }
+  clearTimeout(timer)
   if (bad) {
     await rd.cancel().catch(() => {})
     return { bad: true }
@@ -1302,7 +1322,9 @@ async function holdThoughts(res, signal) {
       if (failure) return ctl.error(failure)
       if (done) return ctl.close()
       try {
-        const r = await rd.read()
+        const read = pending ?? rd.read()
+        pending = undefined
+        const r = await read
         if (r.done) ctl.close()
         else ctl.enqueue(r.value)
       } catch (e) {

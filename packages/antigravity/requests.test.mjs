@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { AntigravityAuthPlugin, _internal } from "./index.mjs"
 import { auth, fake, real, reset } from "./fake.mjs"
 
-beforeEach(() => { reset(); _internal.retry400.pauseMs = 0; _internal.retry400.floorMs = 3000 })
+beforeEach(() => { reset(); _internal.retry400.pauseMs = 0; _internal.retry400.floorMs = 3000; _internal.retry400.holdMs = 10_000 })
 afterEach(() => (globalThis.fetch = real))
 
 const URL_ = (m, method = "streamGenerateContent") => `https://daily-cloudcode-pa.googleapis.com/v1beta/models/${m}:${method}?alt=sse`
@@ -300,6 +300,38 @@ test("a fast 400 is the request's own and isn't asked again; nor is another mode
   _internal.retry400.floorMs = 0
   expect((await f(URL_("gemini-3-flash"), { method: "POST", body: ask() })).status).toBe(400)
   expect(calls(seen)).toBe(2)
+})
+
+test("thinking held past holdMs goes out while the model still thinks, and nothing read is lost (#1078)", async () => {
+  _internal.retry400.holdMs = 50
+  let ctl
+  const enc = new TextEncoder()
+  const body = new ReadableStream({ start: (c) => (ctl = c) })
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }) })
+  const f = await loaderFetch(auth())
+  ctl.enqueue(enc.encode(dataOf(think) + "\r\n\r\n"))
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(200)
+  const rd = res.body.getReader()
+  const dec = new TextDecoder()
+  let got = ""
+  while (!got.includes("hmm")) {
+    const r = await rd.read()
+    if (r.done) break
+    got += dec.decode(r.value, { stream: true })
+  }
+  // the answer doesn't exist yet: the thinking came out on its own
+  expect(got).toContain("hmm")
+  expect(got).not.toContain("functionCall")
+  ctl.enqueue(enc.encode(dataOf(answer) + "\r\n\r\n"))
+  ctl.close()
+  for (;;) {
+    const r = await rd.read()
+    if (r.done) break
+    got += dec.decode(r.value, { stream: true })
+  }
+  expect(got).toContain("functionCall")
+  expect(calls(seen)).toBe(1)
 })
 
 test("an INVALID_ARGUMENT in the stream after thinking only is asked again, and no thinking is sent twice", async () => {
