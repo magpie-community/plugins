@@ -16,47 +16,44 @@
             stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     <h1>Vibe AStock × magpie</h1>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" data-lang="zh" aria-pressed="true">中文</button>
+      <button type="button" data-lang="en" aria-pressed="false">EN</button>
+    </div>
   </header>
-  <p class="sub">让 Vibe AStock 的对话、六阶段研究和回测，都用这台机器上的 magpie 网关出模型。</p>
+  <p class="sub" data-i18n="sub"></p>
 
   <section>
-    <h2><span class="n">1</span>确认网关在跑</h2>
-    <p>magpie 默认监听 <code>127.0.0.1:3425</code>，OpenAI 兼容前缀是 <code>/v1</code>。改过 <code>MAGPIE_ADDR</code> 就用你改后的地址。</p>
-    <div class="cmd"><span>http://127.0.0.1:3425/v1</span><button type="button" data-copy="http://127.0.0.1:3425/v1">复制</button></div>
+    <h2><span class="n">1</span><span data-i18n="s1.title"></span></h2>
+    <p data-i18n="s1.body"></p>
+    <div class="cmd"><span>http://127.0.0.1:3425/v1</span><button type="button" data-copy="http://127.0.0.1:3425/v1" data-i18n="copy"></button></div>
+    <p class="tip" data-i18n="s1.tip"></p>
   </section>
 
   <section>
-    <h2><span class="n">2</span>把 Vibe AStock 接上</h2>
-    <p>在 Vibe AStock 仓库目录里跑一次（它会写 <code>.local/providers/magpie.json</code>，并把这个网关的每个模型放进「接入 AI」的下拉）：</p>
-    <div class="cmd"><span id="cmdInstall">npx vibe-astock-magpie install</span><button type="button" data-copy-target="cmdInstall">复制</button></div>
-    <p class="tip">不想装命令行工具也行：Vibe AStock 页面「接入 AI」→ 选「其它 OpenAI 兼容端点」，把下面三项填进去。</p>
+    <h2><span class="n">2</span><span data-i18n="s2.title"></span></h2>
+    <p data-i18n="s2.body"></p>
+    <div class="cmd"><span id="cmdInstall">npx vibe-astock-magpie install</span><button type="button" data-copy-target="cmdInstall" data-i18n="copy"></button></div>
+    <p class="tip" data-i18n="s2.tip"></p>
   </section>
 
   <section>
-    <h2><span class="n">3</span>在 Vibe AStock 里选一个模型</h2>
-    <p>装好插件后，「接入 AI → API 接入」的模型下拉里会直接列出这个网关的每个模型（前缀 <code>Magpie ·</code>）。挑一个就行：</p>
-    <div class="cmd"><span>Magpie · GLM-5.3-Flash —— auto/glm-5.3-flash</span><button type="button" data-copy="auto/glm-5.3-flash">复制 id</button></div>
-    <p class="tip">
-      Base URL（<code>http://127.0.0.1:3425/v1</code>）、Model（该模型的 id）、API Key（<code>magpie</code>）
-      会跟着自动带出，不用手抄。在 magpie 里加了新模型后，跑一次
-      <code>npx vibe-astock-magpie models</code> 再刷新页面。
-    </p>
+    <h2><span class="n">3</span><span data-i18n="s3.title"></span></h2>
+    <p data-i18n="s3.body"></p>
+    <p class="tip" data-i18n="s3.tip"></p>
   </section>
 
   <section>
-    <h2><span class="n">4</span>点「测试并保存」</h2>
-    <p>Vibe AStock 会先真发一轮对话，成功后才保存。之后对话、六阶段研究、多空辩论、回测都走这一个来源。</p>
-    <p class="tip">
-      已知边界：服务端 JSON Schema 约束在 magpie 上不生效，结构化输出走提示词（产品自己的校验照旧把关）；
-      图片输入不支持，所以「从截图或表格识别」用不了，文字资料不受影响。
-    </p>
+    <h2><span class="n">4</span><span data-i18n="s4.title"></span></h2>
+    <p data-i18n="s4.body"></p>
+    <p class="tip" data-i18n="s4.tip"></p>
   </section>
 
   <footer>
-    Vibe AStock · A 股短线复盘与跟踪工作台 ——
-    <a href="https://github.com/simonlin1212/vibe-astock" target="_blank" rel="noreferrer noopener">源码</a> ·
+    <span data-i18n="footer.lead"></span>
+    <a href="https://github.com/simonlin1212/vibe-astock" target="_blank" rel="noreferrer noopener" data-i18n="footer.source"></a> ·
     <a href="https://github.com/yetone/magpie" target="_blank" rel="noreferrer noopener">magpie</a> ·
-    插件 <a href="https://github.com/lee-lipeng/vibe-astock-magpie" target="_blank" rel="noreferrer noopener">vibe-astock-magpie</a>
+    <a href="https://github.com/lee-lipeng/vibe-astock-magpie" target="_blank" rel="noreferrer noopener" data-i18n="footer.plugin"></a>
   </footer>
 </div>
 </body>
