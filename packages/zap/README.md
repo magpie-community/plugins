@@ -1,4 +1,4 @@
-# @magpie-community/agent-zap
+# magpie-agent-zap
 
 [Zap](https://github.com/zerx-lab/zap) (the OpenWarp fork of Warp) as a [magpie](https://usemagpie.ai) agent. Pick one of magpie's models on the Agents page and Zap's BYOP provider follows it — every request stays on localhost: Zap → magpie's gateway → the model, no cloud in between.
 
@@ -33,9 +33,10 @@ image = true
 Behavior worth knowing:
 
 - **No API key needed.** Zap talks to magpie's gateway on loopback, which answers without a token, so nothing is added to Zap's keychain.
-- **Adoption.** A hand-made provider whose `base_url` is magpie's gateway is taken over by the managed one (its models were a stale copy anyway).
+- **Your own providers are never touched.** Only the block with the managed `id` is rewritten; a hand-made provider on the same gateway URL — and the keychain entry its `id` keys — stays exactly as it was.
+- **Byte-exact surgery.** No whitespace normalization anywhere: multi-line strings, blank runs and every other table keep their exact bytes across connect/disconnect.
 - **Your picks in Zap stay yours.** Selecting another provider's model in Zap is left alone; only picks made in magpie move `last_used_model_id`.
 - **Self-healing.** If a running Zap re-saves `settings.toml` from stale in-memory state, the managed provider is restored within ~1.5 s. Restart Zap after connecting so it loads the provider once.
-- **Switching off** removes the managed provider and puts `last_used_model_id` back to what it was before.
+- **Switching off** removes the managed provider and puts `last_used_model_id` back to what it was before — including when the plugin itself is switched off or removed while connected: the watcher leaves a tombstone of the managed block in `~/.zap/magpie-bridge.state.json`, and the next tick (from any later host start) cleans the file.
 
 How agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).

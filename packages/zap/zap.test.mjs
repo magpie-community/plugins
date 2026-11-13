@@ -36,24 +36,29 @@ describe("connect", () => {
   })
 })
 
-const USER_TOML = `[agents.third_party.per_agent]
+// A user-made provider on the magpie gateway URL and a DeepSeek provider,
+// plus a multi-line string with three empty lines elsewhere in the file.
+const USER_TOML = `[notes]
+text = """line one
+
+
+line four"""
+[agents.third_party.per_agent]
 Codex = { toolbar = true }
 
 [agents.byop]
-last_used_model_id = "auto/kimi-k3"
+last_used_model_id = "byop:user-own-uuid:my-model"
 
 [[agents.warp_agent.providers]]
-id = "000ab961-5ef4-4d48-a8c5-0ad6f4ed1b22"
-name = "magpie (local)"
+id = "user-own-uuid"
+name = "My magpie"
 kind = "open_ai_compatible"
 api_type = "open_ai"
 base_url = "http://127.0.0.1:3425/v1"
 
 [[agents.warp_agent.providers.models]]
-name = "Kimi K3"
-id = "auto/kimi-k3"
-context_window = 1048576
-image = true
+name = "My Model"
+id = "my-model"
 
 [[agents.warp_agent.providers]]
 id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -76,34 +81,45 @@ const OUTBOX = {
   },
 }
 
-describe("toml surgery", () => {
-  test("adopts a hand-made provider on the same gateway, keeps the others", () => {
-    const out = removeProviderBlocks(USER_TOML, { baseUrl: "http://127.0.0.1:3425/v1" })
-    expect(out).not.toContain("magpie (local)")
-    expect(out).toContain("DeepSeek official")
-    expect(out).toContain("[agents.third_party.per_agent]")
+describe("user content is preserved", () => {
+  test("a hand-made provider on the gateway URL is never removed", () => {
+    const { text } = reconcileToml(USER_TOML, OUTBOX, {})
+    expect(text).toContain('id = "user-own-uuid"')
+    expect(text).toContain('name = "My magpie"')
+    expect(text).toContain('id = "my-model"')
+    const off = reconcileToml(text, null, { lastAppliedSelected: "tokenservice/kimi-k3", preLastUsed: getLastUsedModel(USER_TOML) })
+    expect(off.text).toContain('id = "user-own-uuid"')
+    expect(off.text).not.toContain(PROVIDER_ID)
+    const off2 = reconcileToml(off.text, null, off.state) // no flap
+    expect(off2.changed).toBe(false)
   })
 
-  test("renders a provider block in Zap's shape", () => {
-    const block = providerBlockText({ baseUrl: "http://127.0.0.1:3425/v1", models: OUTBOX.models })
-    expect(block).toContain(`id = "${PROVIDER_ID}"`)
-    expect(block).toContain('base_url = "http://127.0.0.1:3425/v1"')
-    expect(block).toContain('id = "tokenservice/kimi-k3"')
-    expect(block).toContain("context_window = 1048576")
-    expect(block).toContain("image = true")
-    expect(block).not.toContain('id = "zcode/glm-5.3"\ncontext_window')
+  test("multi-line strings and blank runs keep their exact bytes", () => {
+    const { text } = reconcileToml(USER_TOML, OUTBOX, {})
+    expect(text).toContain("line one\n\n\nline four")
+    const off = reconcileToml(text, null, { lastAppliedSelected: "tokenservice/kimi-k3", preLastUsed: getLastUsedModel(USER_TOML) })
+    expect(off.text).toContain("line one\n\n\nline four")
   })
 
-  test("reconcile installs provider, points last_used at the pick, keeps user tables", () => {
+  test("removeProviderBlocks touches nothing outside the managed block", () => {
+    const withManaged = reconcileToml(USER_TOML, OUTBOX, {}).text
+    const { text, removedText } = removeProviderBlocks(withManaged)
+    expect(removedText).toContain(PROVIDER_ID)
+    expect(text).toBe(USER_TOML.replace("[agents.byop]\nlast_used_model_id = \"byop:user-own-uuid:my-model\"", "[agents.byop]\nlast_used_model_id = \"byop:6d616770-6965-4000-8000-7a6170000001:tokenservice/kimi-k3\""))
+  })
+})
+
+describe("managed provider lifecycle", () => {
+  test("connect installs the provider and points last_used at the pick", () => {
     const { text, state, changed } = reconcileToml(USER_TOML, OUTBOX, {})
     expect(changed).toBe(true)
     expect(text).toContain(`id = "${PROVIDER_ID}"`)
-    expect(text).not.toContain("magpie (local)")
-    expect(text).toContain("DeepSeek official")
+    expect(text).toContain('name = "DeepSeek official"')
     expect(text).toContain("[agents.third_party.per_agent]")
     expect(getLastUsedModel(text)).toBe(`byop:${PROVIDER_ID}:tokenservice/kimi-k3`)
     expect(state.lastAppliedSelected).toBe("tokenservice/kimi-k3")
-    expect(state.preLastUsed).toBe("auto/kimi-k3")
+    expect(state.preLastUsed).toBe("byop:user-own-uuid:my-model")
+    expect(state.managedBlock).toBeTruthy()
   })
 
   test("reconcile is idempotent once in sync", () => {
@@ -128,15 +144,34 @@ describe("toml surgery", () => {
     expect(getLastUsedModel(again.text)).toBe("byop:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:deepseek-chat")
   })
 
-  test("disconnect removes the provider and restores the previous pick", () => {
+  test("disconnect removes the managed provider and restores the previous pick", () => {
     const first = reconcileToml(USER_TOML, OUTBOX, {})
     const off = reconcileToml(first.text, null, first.state)
     expect(off.text).not.toContain(PROVIDER_ID)
-    expect(off.text).toContain("DeepSeek official")
-    expect(getLastUsedModel(off.text)).toBe("auto/kimi-k3")
+    expect(off.text).toContain('id = "user-own-uuid"')
+    expect(getLastUsedModel(off.text)).toBe("byop:user-own-uuid:my-model")
     expect(off.state).toEqual({})
-    // and it stays off without flapping
-    const again = reconcileToml(off.text, null, off.state)
+  })
+})
+
+describe("host stopped with a stale outbox", () => {
+  // The plugin is turned off or removed while connected: core empties the
+  // outbox but the host is down, so the disconnect is never written. The
+  // tombstone left by earlier ticks must clean the file on the next tick.
+  const buildStale = () => {
+    const first = reconcileToml(USER_TOML, OUTBOX, {})
+    const tombstone = { managedBlock: first.state.managedBlock, preLastUsed: first.state.preLastUsed }
+    return { text: first.text, tombstone }
+  }
+
+  test("the stale managed provider is removed from the file", () => {
+    const { text, tombstone } = buildStale()
+    const cleaned = reconcileToml(text, null, tombstone)
+    expect(cleaned.text).not.toContain(PROVIDER_ID)
+    expect(cleaned.text).toContain('id = "user-own-uuid"')
+    expect(getLastUsedModel(cleaned.text)).toBe("byop:user-own-uuid:my-model")
+    expect(cleaned.state).toEqual({})
+    const again = reconcileToml(cleaned.text, null, cleaned.state)
     expect(again.changed).toBe(false)
   })
 })
