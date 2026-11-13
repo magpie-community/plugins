@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, READ, STATE, MODELS, idFor, tableFrom, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
+import { Doubao, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -298,6 +298,7 @@ test("models.json is read first, and discover rewrites it", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
   const file = path.join(dir, "models.json")
   fs.writeFileSync(file, JSON.stringify({
+    v: 2,
     at: Date.now(),
     models: { auto: MODELS.auto, "glm-5.3": { label: "GLM 5.3", name: "GLM 5.3" } },
   }))
@@ -316,6 +317,7 @@ test("models.json is read first, and discover rewrites it", async () => {
 test("ask picks a model that only the menu knows about", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
   fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+    v: 2,
     at: Date.now(),
     models: { auto: MODELS.auto, "glm-5.3": { label: "GLM 5.3", name: "GLM 5.3" } },
   }))
@@ -339,13 +341,17 @@ function fakePage(reads, { signedIn = true, steps = {} } = {}) {
       if (expr === NEW_TASK) return steps.newTask ?? ""
       if (expr === CLOUD) return steps.cloud ?? ""
       if (expr === MENU) return steps.menu ?? { rows: [] }
+      if (expr === LIST) return typeof steps.list === "function" ? steps.list() : steps.list ?? { error: "no list step" }
       if (expr === QUOTA) return steps.quota ?? { error: "no quota step" }
+      if (expr === SEND) return steps.send ?? false
       if (expr === READ) return reads.length > 1 ? reads.shift() : reads[0]
-      if (expr.includes("chat_input_action_model")) return steps.model ?? ""
+      if (expr.includes("推理强度")) return steps.effort ?? ""
+      if (expr.includes("chat_input_action_model")) return typeof steps.model === "function" ? steps.model(expr) : steps.model ?? ""
       if (expr.includes("insertContent")) return 10
       throw Error("unexpected eval")
     },
     async key(k) { keys.push(k) },
+    async call(method, params) { calls.push(method); return steps.call?.(method, params) ?? {} },
   }
 }
 
@@ -608,6 +614,7 @@ test("a model the app added since the last read is found at once, and a made-up 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
   // the list was read minutes ago, before Doubao added Kimi
   fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({
+    v: 2,
     at: Date.now(),
     models: { auto: MODELS.auto, "doubao-2.1-lite": MODELS["doubao-2.1-lite"] },
   }))
@@ -633,7 +640,7 @@ test("a model the app added since the last read is found at once, and a made-up 
 
 test("a menu that can't be read leaves the model unknown, not the list emptied (#1048)", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
-  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: { auto: MODELS.auto } }))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ v: 2, at: Date.now(), models: { auto: MODELS.auto } }))
   const page = fakePage([], { steps: { menu: { error: "no model menu" } } })
   const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
   expect(await d.known("kimi-k3")).toBe(false)
@@ -657,7 +664,7 @@ test("the plugin asks Doubao's menu again for a model its list lacks, and names 
   expect((await loader.fetch(req({ model: "doubao-work/kimi-k3", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
   const r = await loader.fetch(req({ model: "gpt-9", messages: [] }))
   expect(r.status).toBe(404)
-  expect((await r.json()).error.message).toBe("没有模型 gpt-9。豆包的模型菜单里有：auto、kimi-k3。")
+  expect((await r.json()).error.message).toBe("没有模型 gpt-9。豆包工作的模型有：auto、kimi-k3。")
   expect(asked).toEqual(["kimi-k3", "gpt-9"])
   // a model the list has never asks the menu
   expect((await loader.fetch(req({ model: "auto", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
@@ -689,7 +696,7 @@ test("a list never read from the menu is read when the plugin lists models, once
 
 test("picking a model from the full list presses that row in the app", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
-  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: tableFrom([{ label: "自动" }, { label: "Kimi K3.1 Pro 高速" }, { label: "DeepSeek V4 Pro" }]) }))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ v: 2, at: Date.now(), models: tableFrom([{ label: "自动" }, { label: "Kimi K3.1 Pro 高速" }, { label: "DeepSeek V4 Pro" }]) }))
   const page = fakePage([{ sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }])
   const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
   expect(Object.keys(d.modelList())).toEqual(["auto", "kimi-k3.1-pro-fast", "deepseek-v4-pro"])
@@ -745,4 +752,173 @@ test("a model's multiple is read from its menu row and given as rate", () => {
   const out = I.models(table)
   expect(out["kimi-k3.1-pro"].rate).toBe(2)
   expect("rate" in out["deepseek-v4-pro"]).toBe(false)
+})
+
+// ---- the model list from brief_list ----
+
+// LIST's reply as the 豆包工作 app's page got it on 2026-11-13 (icons left
+// out, as LIST leaves them out)
+const BRIEF = JSON.parse(fs.readFileSync(path.join(import.meta.dir, "testdata", "brief-list-2026-11-13.json"), "utf8"))
+const WORK = ["自动", "豆包 2.1 Lite", "豆包 2.1 Pro", "DeepSeek V4.1 Flash", "Kimi K3.1 Pro", "Kimi K3.1 Pro 高速", "Kimi K3", "GLM 5.3", "GLM 5.3 Flash", "DeepSeek V4 Pro"]
+
+test("listOf reads 工作任务's models, Doubao's ids and 推理强度 from brief_list", () => {
+  const rows = listOf(BRIEF)
+  expect(rows.map((r) => r.label)).toEqual(WORK)
+  const flash = rows.find((r) => r.label === "DeepSeek V4.1 Flash")
+  expect(flash).toMatchObject({ key: "person-deepseek-v4-1-flash-261017", efforts: ["低", "中", "高", "极高", "最高"], effort: "高" })
+  expect(rows.find((r) => r.label === "GLM 5.3").efforts).toEqual(["低", "高", "最高"])
+  const t = tableFrom(rows)
+  expect(Object.keys(t)).toEqual(["auto", "doubao-2.1-lite", "doubao-2.1-pro", "deepseek-v4.1-flash", "kimi-k3.1-pro", "kimi-k3.1-pro-fast", "kimi-k3", "glm-5.3", "glm-5.3-flash", "deepseek-v4-pro"])
+  expect(t.auto).toMatchObject({ label: "自动", key: "9" })
+  // a request may name a model by the plugin's id, Doubao's own id or its name
+  expect(lookup(t, "person-deepseek-v4-1-flash-261017").label).toBe("DeepSeek V4.1 Flash")
+  expect(lookup(t, "Kimi K3.1 Pro 高速").key).toBe("person-kimi-k3-1-pro-highspeed-261111")
+  expect(lookup(t, "gpt-9")).toBe(null)
+  // a reply that failed, or has no 工作任务, is no list
+  expect(listOf({ status: 200, code: 710010702, msg: "系统错误" })).toBe(null)
+  expect(listOf({ conf: { mode_list: { item_list: [{ mode_id: "1", name: "快速", agent_mode: 0, conversation_mode_list: ["chat"] }] }, model_list: { item_list: [{ name: "快速", model_item_key: "1" }] } } })).toBe(null)
+  // a 工作任务 that lists only the keys it supports takes them from the shared list
+  const shared = { conf: { mode_list: { item_list: [{ mode_id: "3", agent_mode: 1, support_models: [{ model_item_key: "b" }] }] }, model_list: { item_list: [{ name: "A", model_item_key: "a" }, { name: "B", model_item_key: "b" }] } } }
+  expect(listOf(shared).map((r) => r.label)).toEqual(["B"])
+})
+
+test("discover takes brief_list's list over the menu, so the 对话 menu's 快速 and 专家 are never the list", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  // the 豆包 app sitting on a 对话 page: its model menu is 快速 and 专家
+  const page = fakePage([], { steps: { list: BRIEF, menu: { rows: [{ label: "快速" }, { label: "专家" }] } } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const t = await d.discover()
+  expect(Object.values(t).map((m) => m.label)).toEqual(WORK)
+  expect(page.calls.includes(MENU)).toBe(false)
+  // brief_list failing falls back to the menu of a new work task, not the
+  // page's current menu
+  const p2 = fakePage([], { steps: { list: { status: 200, code: 710010702 }, menu: { rows: [{ label: "自动" }, { label: "Kimi K3" }] } } })
+  const d2 = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => p2, poll: 1 })
+  expect(Object.keys(await d2.discover())).toEqual(["auto", "kimi-k3"])
+  expect(p2.calls.indexOf(NEW_TASK)).toBeGreaterThan(-1)
+  expect(p2.calls.indexOf(NEW_TASK)).toBeLessThan(p2.calls.indexOf(MENU))
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a models.json 0.1.9 wrote from the 对话 menu (快速, 专家) is read again from brief_list", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: tableFrom([{ label: "快速" }, { label: "专家" }]) }))
+  const page = fakePage([], { steps: { list: BRIEF } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const p = I.createPlugin({ doubao: d })
+  const listed = await p.provider.models({}, {})
+  expect(Object.values(listed).map((m) => m.name)).toEqual(WORK)
+  expect(JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf8")).v).toBe(2)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("effortFor takes the client's reasoning effort to the nearest 推理强度 the model has", () => {
+  const five = ["低", "中", "高", "极高", "最高"]
+  expect(effortFor("low", five)).toBe("低")
+  expect(effortFor("medium", five)).toBe("中")
+  expect(effortFor("high", five)).toBe("高")
+  expect(effortFor("xhigh", five)).toBe("极高")
+  expect(effortFor("max", five)).toBe("最高")
+  expect(effortFor("minimal", five)).toBe("低")
+  expect(effortFor("none", five)).toBe("低")
+  // GLM 5.3 has 低, 高 and 最高: medium and xhigh go one up
+  expect(effortFor("medium", ["低", "高", "最高"])).toBe("高")
+  expect(effortFor("xhigh", ["低", "高", "最高"])).toBe("最高")
+  // nothing asked, an unknown effort or a model without levels keeps Doubao's default
+  expect(effortFor("", five)).toBe("")
+  expect(effortFor("turbo", five)).toBe("")
+  expect(effortFor("high", undefined)).toBe("")
+})
+
+test("ask picks the model and the 推理强度 the client asked for", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ v: 2, at: Date.now(), models: tableFrom(listOf(BRIEF)) }))
+  const ok = { sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }
+  const page = fakePage([ok])
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  await d.ask("x", { model: "person-deepseek-v4-1-flash-261017", effort: "xhigh" })
+  expect(page.calls).toContain(EFFORT("极高"))
+  expect(page.calls.some((c) => c.includes('"DeepSeek V4.1 Flash"') && c.includes("chat_input_action_model") && !c.includes("推理强度"))).toBe(true)
+  // the model before its effort: the effort menu is the picked model's
+  const i = page.calls.findIndex((c) => c.includes('"DeepSeek V4.1 Flash"'))
+  expect(i).toBeLessThan(page.calls.indexOf(EFFORT("极高")))
+  // no effort asked: the model's own default (GLM 5.3's is 高), not the
+  // level the last request left the app on
+  const p2 = fakePage([ok])
+  await new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => p2, poll: 1 }).ask("x", { model: "glm-5.3" })
+  expect(p2.calls).toContain(EFFORT("高"))
+  // a model without levels presses nothing
+  const p4 = fakePage([ok])
+  await new Doubao({ app: fakeApp, openPage: async () => p4, poll: 1 }).ask("x", { model: "auto" })
+  expect(p4.calls.some((c) => c.includes("推理强度"))).toBe(false)
+  // an effort that can't be set fails the request instead of running another
+  const p3 = fakePage([ok], { steps: { effort: "no 推理强度 in the model menu" } })
+  await expect(new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => p3, poll: 1 }).ask("x", { model: "kimi-k3", effort: "low" })).rejects.toThrow("推理强度")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a model the list has and the app's menu doesn't loads the page again once", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ v: 2, at: Date.now(), models: tableFrom(listOf(BRIEF)) }))
+  const ok = { sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }
+  let reloaded = false
+  const steps = {
+    call: (m) => { if (m === "Page.reload") reloaded = true },
+    model: () => (reloaded ? "" : "no DeepSeek V4.1 Flash in the model menu"),
+  }
+  const page = fakePage([ok], { steps })
+  const ev = page.eval
+  page.eval = async (e) => (e === STATE ? { signedIn: true, name: "yetone", input: true, sends: 0 } : ev(e))
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  await d.ask("x", { model: "deepseek-v4.1-flash" })
+  expect(page.calls.filter((c) => c === "Page.reload").length).toBe(1)
+  // still missing after the reload: said, and loaded once only
+  reloaded = false
+  const p2 = fakePage([ok], { steps: { call: () => {}, model: "no DeepSeek V4.1 Flash in the model menu" } })
+  const ev2 = p2.eval
+  p2.eval = async (e) => (e === STATE ? { signedIn: true, name: "yetone", input: true, sends: 0 } : ev2(e))
+  await expect(new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => p2, poll: 1 }).ask("x", { model: "deepseek-v4.1-flash" })).rejects.toThrow("no DeepSeek V4.1 Flash in the model menu")
+  expect(p2.calls.filter((c) => c === "Page.reload").length).toBe(1)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("the plugin offers each model's 推理强度 as variants and passes the client's reasoning_effort on", async () => {
+  const table = tableFrom(listOf(BRIEF))
+  const asked = []
+  const p = I.createPlugin({ doubao: { modelList: () => table, ask: async (prompt, o) => { asked.push([o.model, o.effort]); return { text: "ok", reasoning: "" } } }, newId: ids })
+  const listed = await p.provider.models({}, {})
+  expect(Object.keys(listed["deepseek-v4.1-flash"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"])
+  expect(listed["glm-5.3"].variants).toEqual({ low: { reasoningEffort: "low" }, high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } })
+  const loader = await p.auth.loader(async () => ({}))
+  expect((await loader.fetch(req({ model: "doubao-work/deepseek-v4.1-flash", reasoning_effort: "xhigh", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  expect((await loader.fetch(req({ model: "person-kimi-k3-261111", messages: [{ role: "user", content: "hi" }] }))).status).toBe(200)
+  expect(asked).toEqual([["deepseek-v4.1-flash", "xhigh"], ["person-kimi-k3-261111", ""]])
+})
+
+test("a model's multiple is read from the menu of the task ask opened, and kept when the menu says none", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  const menu = { rows: [{ label: "自动", lines: [] }, { label: "Kimi K3", lines: ["0.65x"] }, { label: "Kimi K3.1 Pro 限时优惠 0.01x", lines: [] }] }
+  const page = fakePage([], { steps: { list: BRIEF, menu } })
+  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const t = await d.discover({ inTask: true })
+  expect(t["kimi-k3"].rate).toBe(0.65)
+  expect(t["kimi-k3.1-pro"].rate).toBe(0.01)
+  // Kimi K3.1 Pro 高速 is not Kimi K3.1 Pro's row
+  expect(t["kimi-k3.1-pro-fast"].rate).toBeUndefined()
+  expect(rateIn(menu.rows, "Kimi K3.1 Pro", listOf(BRIEF))).toBe(0.01)
+  page.calls.length = 0
+  const again = await new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => fakePage([], { steps: { list: BRIEF, menu: { rows: [] } } }), poll: 1 }).discover({ inTask: true })
+  expect(again["kimi-k3"].rate).toBe(0.65)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("ask sends with the send button, and with Enter only when there is none", async () => {
+  const ok = { sends: 1, reply: true, text: "ok", reasoning: "", finished: true, reason: "succeed" }
+  const page = fakePage([ok], { steps: { send: true } })
+  await new Doubao({ app: fakeApp, openPage: async () => page, poll: 1 }).ask("x")
+  expect(page.calls).toContain(SEND)
+  expect(page.keys).toEqual([])
+  const p2 = fakePage([ok])
+  await new Doubao({ app: fakeApp, openPage: async () => p2, poll: 1 }).ask("x")
+  expect(p2.keys).toEqual(["Enter"])
 })

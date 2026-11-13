@@ -39,11 +39,23 @@ same, works too:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
-Models: the plugin reads Doubao's own model menu, so whatever the app offers
-is what magpie lists. The menu row text becomes the id: 自动 (`auto`), 豆包 2.1
-Lite (`doubao-2.1-lite`), 豆包 2.1 Pro (`doubao-2.1-pro`, needs a paid Doubao
-plan), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3 (`glm-5.3`) and so
-on. Rows that open a submenu (推理强度) are not models and are skipped.
+Models: the plugin reads the 工作任务 model list from Doubao itself (the
+`brief_list` request the app's own page makes, through the app's page), so
+whatever 工作任务 offers is what magpie lists. Before 0.1.10 it read the menu
+of whatever page was open, and on 豆包's 对话 page that menu is 快速 and 专家,
+which 工作任务 doesn't have. A list cached from that menu is read again. The
+name becomes the id: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`), 豆包 2.1
+Pro (`doubao-2.1-pro`), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3
+(`glm-5.3`) and so on. A request may also name a model by Doubao's own key
+(`person-deepseek-v4-1-flash-261017`) or by its name (`DeepSeek V4.1 Flash`).
+When `brief_list` can't be read, the plugin opens a 工作任务 and reads its
+model menu instead.
+
+推理强度: each model's levels are offered as variants, and the client's
+`reasoning_effort` (or `reasoning.effort`) picks one: `low` 低, `medium` 中,
+`high` 高, `xhigh` 极高, `max` 最高. A level the model lacks goes to the
+nearest one it has (a tie goes higher). With no effort asked, the model's own
+default level is picked, not the one the last request left the app on.
 
 The list is read when you sign in, and again on a request once the cached list
 is more than six hours old, or at once when a request names a model the
@@ -51,7 +63,7 @@ cached list doesn't have (at most once a minute); it is kept in `models.json` un
 `DOUBAO_WORK_HOME` (`~/Library/Application Support/magpie-doubao-work` on
 macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
 anything else. The three models the plugin was written with stay as the
-fallback for when the menu cannot be read.
+fallback for when no list can be read.
 A list never read (an account that signed in before the plugin read menus) is
 read when magpie lists the models, once a minute at most, and only from an app
 the plugin has started before. Rows whose names differ only in Chinese get

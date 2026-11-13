@@ -5,7 +5,7 @@
 // request into the input, and reads the reply as Doubao renders it. The
 // client's tools are asked for as <tool_call> text blocks and given back
 // as OpenAI tool_calls. See README.md for what that costs.
-import { Doubao, DoubaoError, MODELS, choose, quotaOf, usageOf } from "./doubao.mjs"
+import { Doubao, DoubaoError, EFFORTS, MODELS, choose, lookup, quotaOf, usageOf } from "./doubao.mjs"
 import { completion, sse } from "./openai.mjs"
 import { flatten } from "./prompt.mjs"
 
@@ -16,6 +16,17 @@ const BUSY = (name) => `${name}正在运行。${name}同时只能开一个，插
 
 const json = (status, message, type) =>
   new Response(JSON.stringify({ error: { message, type } }), { status, headers: { "Content-Type": "application/json" } })
+
+// variantsOf offers a model's 推理强度 levels as reasoning efforts
+// (低 low, 中 medium, 高 high, 极高 xhigh, 最高 max).
+function variantsOf(m) {
+  const out = {}
+  for (const name of m?.efforts ?? []) {
+    const e = EFFORTS.find(([n]) => n === name)
+    if (e) out[e[1]] = { reasoningEffort: e[1] }
+  }
+  return Object.keys(out).length ? out : null
+}
 
 // models are named as Doubao's menu names them: magpie adds the
 // provider's name. Each says it takes text only, or magpie would ask
@@ -33,6 +44,7 @@ function models(table = MODELS) {
       // the multiple of the plan's allowance a request costs, as the menu
       // writes it next to the model (none when it says none)
       ...(m.rate > 0 ? { rate: m.rate } : {}),
+      ...(variantsOf(m) ? { variants: variantsOf(m) } : {}),
     }
   return out
 }
@@ -136,15 +148,18 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
             return json(400, "请求不是 JSON。", "invalid_request_error")
           }
           const model = String(body.model ?? "auto").replace(/^doubao-work\//, "")
-          const known = modelTable(doubao)[model] || (typeof doubao?.known === "function" && (await doubao.known(model, { signal })))
-          if (!known) return json(404, `没有模型 ${model}。豆包的模型菜单里有：${Object.keys(modelTable(doubao)).join("、")}。`, "model_not_found")
+          const known = lookup(modelTable(doubao), model) || (typeof doubao?.known === "function" && (await doubao.known(model, { signal })))
+          if (!known) return json(404, `没有模型 ${model}。豆包工作的模型有：${Object.keys(modelTable(doubao)).join("、")}。`, "model_not_found")
+          // the client's reasoning effort, as OpenAI's chat completions or
+          // the Responses API write it
+          const effort = String(body.reasoning_effort ?? body.reasoning?.effort ?? "")
           const prompt = flatten(body)
           const id = "chatcmpl-" + Math.random().toString(36).slice(2)
           const promptTokens = (r) => usageOf(r?.usage) || Math.ceil(prompt.length / 3)
           try {
             if (body.stream)
-              return await sse({ id, model, signal, newId, promptTokens, ask: (onUpdate, sig) => doubao.ask(prompt, { model, signal: sig, onUpdate }) })
-            const final = await doubao.ask(prompt, { model, signal })
+              return await sse({ id, model, signal, newId, promptTokens, ask: (onUpdate, sig) => doubao.ask(prompt, { model, effort, signal: sig, onUpdate }) })
+            const final = await doubao.ask(prompt, { model, effort, signal })
             return Response.json(completion({ id, model, final, promptTokens: promptTokens(final), newId }))
           } catch (e) {
             return failed(e)
