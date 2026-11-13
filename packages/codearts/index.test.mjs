@@ -2450,6 +2450,115 @@ test("checkin claims and confirms the daily benefit the way the IDE does", async
   assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 1)
 })
 
+test("checkin claims both daily check-ins, and leaves a contest's one-time sign-up gift alone", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 42, type: "USER_LOGIN", title: "Skill创新赛报名礼", claimable: true, status: "ELIGIBLE", benefitAmount: 2000 },
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+    { campaignId: 4, type: "NEW_USER_REGISTER", claimable: false, status: "CONSUMED" },
+  ]
+  const calls = []
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    calls.push({ url: u, method: init.method, body })
+    const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId + 1000, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+
+  const { grants, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 1100, message: "+1100 积分" })
+  assert.deepEqual(grants.map((g) => [g.campaignId, g.credit]), [[40, 1000], [34, 100]])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CLAIM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CONFIRM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(
+    [items[0].claimable, items[0].status],
+    [true, "ELIGIBLE"],
+    "the one-time sign-up gift is not claimed",
+  )
+
+  // Later the same day: both are in, and neither is claimed again.
+  assert.equal((await x.dailyCheckin(cred, fetcher)).outcome, "done")
+  assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 2)
+})
+
+test("a contest check-in the account has not joined is skipped, and the official one still claims", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: false, status: "ENTRY", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [34], "the contest campaign is not claimed")
+})
+
+test("a contest check-in refused for not having signed up is ineligible, not a failed day", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      if (body.campaignId === 40) {
+        return new Response(JSON.stringify({ code: 40001, message: "该活动类型需要先通过触发接口激活" }), { status: 200 })
+      }
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [40, 34])
+})
+
 test("a claimed check-in is kept, and the usage card says when those credits run out", async () => {
   const cred = await makeCred()
   const ledgerPath = path.join(ledgerDir, "integrated.json")
@@ -2603,7 +2712,7 @@ test("a confirm that failed is made by the next check-in, in another magpie too,
   }
   assert.equal((await checkin()).outcome, "failed")
   const kept = JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed
-  assert.deepEqual(Object.values(kept).map((v) => [v.campaignId, v.day]), [[1, x.beijingDay()]])
+  assert.deepEqual(Object.values(kept).map((v) => [v.claims?.[0]?.campaignId, v.day]), [[1, x.beijingDay()]])
   assert.deepEqual(await checkin(), { outcome: "claimed", credit: 1000, message: "+1000 积分" })
   assert.equal(confirms, 2)
   assert.deepEqual(JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed, {}, "confirmed, so forgotten")
