@@ -54,9 +54,13 @@ editing, video submission/polling and authenticated content fetch. The video
 fixture checks byte transport, not playback or a usable generated clip.
 This test does not prove canvas insertion or desktop GUI selection.
 
-Initial controls cover one image reference, size/aspect ratio, and video
-duration. They do not infer vendor-specific ranges or support additional
-video/audio references. Native Windows media execution has not been tested.
+Version 0.3.1 parses generated enum/default/reference limits with Design's
+actual parser and runs generated per-model adapters. It verifies multi-image
+editing, a legal Hailuo preset, and an invalid 1080P/10-second request rejected
+before the HTTP fixture is called. See MEDIA-PARAMETERS.md for model-specific
+controls and sources. Custom specs do not expose dynamic cross-field rules;
+combined presets and submission validation enforce those restrictions.
+Video/audio references and native Windows media execution remain untested.
 
 ## Windows
 

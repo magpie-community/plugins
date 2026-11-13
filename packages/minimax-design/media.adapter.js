@@ -1,8 +1,62 @@
 export const apiVersion = 1
+const capability = null
 
 export function buildSubmit(request) {
   const body = { model: request.model, prompt: request.prompt }
-  if (request.params.size) body.size = request.params.size
+  const params = {}
+  for (const [key, value] of Object.entries(request.params)) {
+    if (value === undefined || value === "" || value === "自动" || value === "auto") continue
+    params[key] = value
+  }
+  let mode = "首帧"
+  if (capability) {
+    if (request.images.length < capability.references.min || request.images.length > capability.references.max) {
+      throw new Error(`参考图数量应为 ${capability.references.min}–${capability.references.max} 张。`)
+    }
+    if (capability.promptMax && request.prompt.length > capability.promptMax) throw new Error("提示词超过模型长度限制。")
+    for (const [key, value] of Object.entries(params)) {
+      const rule = capability.params.find((parameter) => parameter.key === key)
+      if (!rule || (rule.type === "string" && typeof value !== "string") ||
+          (rule.type === "integer" && !Number.isInteger(value)) ||
+          (rule.enum && !rule.enum.includes(value)) ||
+          (rule.min !== undefined && value < rule.min) || (rule.max !== undefined && value > rule.max)) {
+        throw new Error(`模型不支持参数 ${key}=${String(value)}。请重新选择。`)
+      }
+    }
+    mode = params.referenceMode || (request.images.length > 1 ? capability.defaultMode : "首帧")
+    if (request.images.length && !capability.modes.includes(mode) && request.type === "video") throw new Error("模型不支持该参考图用途。")
+    if (request.type === "video" && ((mode === "首帧" && request.images.length > 1) || (mode === "首尾帧" && request.images.length !== 2))) {
+      throw new Error(mode === "首尾帧" ? "首尾帧需要按顺序提供两张图。" : "首帧模式只接受一张图。")
+    }
+    if (mode === "主体参考" && !request.images.length) throw new Error("主体参考模式需要参考图。")
+    if (mode === "主体参考" && capability.referenceSecondsMax && params.seconds > capability.referenceSecondsMax) {
+      throw new Error(`主体参考模式最多支持 ${capability.referenceSecondsMax} 秒。`)
+    }
+    if (mode === "主体参考" && params.resolution && capability.referenceResolutions &&
+        !capability.referenceResolutions.includes(params.resolution)) throw new Error("主体参考模式最高支持 720p。")
+    if (capability.transport === "minimax-video" && request.images.length && mode !== "主体参考" && params.ratio) {
+      throw new Error("首帧/首尾帧自动沿用图片比例，请将比例设为自动。")
+    }
+    if (capability.presets && params.preset) Object.assign(body, capability.presets[params.preset])
+    if (capability.transport === "minimax-image") {
+      if (params.ratio) body.size = params.ratio
+      if (params.resolution) body.quality = { "1K": "low", "2K": "medium", "4K": "high" }[params.resolution]
+    }
+    if (capability.transport === "minimax-video") {
+      if (params.resolution) body.size = params.resolution
+      if (params.ratio) body.ratio = params.ratio
+    }
+    if (capability.transport === "grok-video") {
+      if (params.resolution) {
+        if (request.images.length && !params.ratio) throw new Error("指定分辨率时，请同时选择比例；全部留为自动可沿用参考图。")
+        const ratio = (params.ratio || "16:9").split(":").map(Number)
+        const short = Number.parseInt(params.resolution, 10)
+        const unit = short / Math.min(...ratio)
+        body.size = `${Math.round(ratio[0] * unit)}x${Math.round(ratio[1] * unit)}`
+      } else if (params.ratio) body.size = params.ratio
+    }
+  }
+  if (params.size) body.size = params.size
   if (request.type === "image") {
     body.n = 1
     body.response_format = "b64_json"
@@ -10,8 +64,17 @@ export function buildSubmit(request) {
     return { method: "POST", path: request.images.length ? "/images/edits" : "/images/generations", body }
   }
   if (request.type !== "video") throw new Error("Magpie supports image and video generation here.")
-  if (request.params.seconds !== undefined) body.seconds = String(request.params.seconds)
-  if (request.images.length) body.input_reference = request.images[0].dataUrl
+  if (params.seconds !== undefined) body.seconds = String(params.seconds)
+  if (capability?.hailuo && body.size === "1080P" && body.seconds !== undefined && body.seconds !== "6") {
+    throw new Error("Hailuo 1080P 只支持 6 秒。")
+  }
+  if (request.images.length) {
+    if (mode === "主体参考") body.reference_images = request.images.map((image) => image.dataUrl)
+    else {
+      body.input_reference = request.images[0].dataUrl
+      if (mode === "首尾帧") body.last_frame = request.images[1].dataUrl
+    }
+  }
   return { method: "POST", path: "/videos", body }
 }
 

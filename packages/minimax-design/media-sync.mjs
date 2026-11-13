@@ -2,6 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
+import { enrichMediaParameters, mediaCapability, mediaSpec } from "./media-capabilities.mjs"
 
 const providerID = "provider-magpiedesign"
 const adapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
@@ -60,23 +61,14 @@ export async function discoverMedia(gateway) {
     const name = model.magpie_label ?? model.display_name ?? model.id
     if (typeof name !== "string" || !name.trim()) throw new Error("Media discovery returned an invalid model name.")
     models.set(`${model.kind}:${model.id}`, { ref: model.id, type: model.kind, name: name.slice(0, 60),
-      images: model.modalities?.input?.includes("image") === true })
+      images: model.modalities?.input?.includes("image") === true, owner: model.owned_by,
+      parameters: model.supported_parameters })
   }
-  return [...models.values()]
-}
-
-function specFor(model) {
-  return {
-    version: 1, prompt: { use: "required" },
-    references: model.images ? { image: { min: 0, max: 1 } } : {},
-    params: [
-      { key: "size", type: "string", title: "Size / aspect ratio", description: "A size or aspect ratio supported by this model. Leave empty for its default." },
-      ...(model.type === "video" ? [{ key: "seconds", type: "integer", title: "Duration (seconds)", min: 1 }] : []),
-    ],
-  }
+  return enrichMediaParameters([...models.values()])
 }
 
 export function applyMedia(paths, gateway, catalogue) {
+  const capabilities = catalogue.map(mediaCapability)
   const state = readJSON(paths.state)
   if (!gateway && !state) return { models: 0, connected: false }
   if (state && (state.version !== 1 || !Array.isArray(state.ids) ||
@@ -123,7 +115,9 @@ export function applyMedia(paths, gateway, catalogue) {
     atomic(paths.state, JSON.stringify(pending))
     for (const [index, entry] of entries.entries()) {
       const folder = path.join(paths.store, "models", entry.id)
-      const files = { "spec.json": JSON.stringify(specFor(catalogue[index]), null, 2), "adapter.js": adapter }
+      const capability = capabilities[index]
+      const files = { "spec.json": JSON.stringify(mediaSpec(capability), null, 2),
+        "adapter.js": adapter.replace("const capability = null", () => `const capability = ${JSON.stringify(capability)}`) }
       for (const [name, text] of Object.entries(files)) {
         const file = path.join(folder, name)
         if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === text) continue

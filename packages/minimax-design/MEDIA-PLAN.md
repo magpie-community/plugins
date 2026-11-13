@@ -16,11 +16,11 @@ Agent switch also owns a Magpie provider in Design's native media store.
 4. Provide Design-native image and video adapters. Images use generation or
    editing and return files; videos submit, poll, and fetch authenticated
    content. Credentials remain in provider headers, never adapter sources.
-5. Show only gateway-supported common controls. The catalogue does not
-   enumerate per-model parameter ranges, so do not invent vendor presets.
-   Initial scope: text-to-image, image editing where declared, text-to-video
-   and one first-frame image. Additional video/audio references await explicit
-   capability metadata.
+5. Automatically project explicit gateway parameter metadata first, public
+   OpenRouter endpoint schemas second, and verified exact-route profiles
+   otherwise. Map only parameters that the gateway can transport faithfully.
+   Use automatic defaults, legal combination presets and adapter preflight.
+   Additional video/audio references await explicit capability metadata.
 6. Test adapter behavior, catalogue sync/update/removal, failed discovery,
    lock contention, preserved user data and disconnect. Validate generated
    stores and adapters with the installed Design runtime in disposable homes,
@@ -35,5 +35,7 @@ Steps 1–6 are implemented with fixture-based native runtime validation.
 The local companion is installed and has synchronized 22 image and 7 video
 models. Node/Bun regression tests pass. Desktop UI still showed the prior
 list; exiting Design warned that tasks would be interrupted and was
-cancelled. Step 7 remains incomplete for desktop selection and canvas
+cancelled. Version 0.3.1 adds parameter profiles, live OpenRouter schema
+discovery, multi-image budgets and preflight, verified with generated adapters
+inside Design's real runtime. Step 7 remains incomplete for desktop selection and canvas
 insertion. No paid generation was submitted.
