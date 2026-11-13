@@ -7,6 +7,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import {
   BASE_MODEL_ROWS, CATALOG_TTL_MS, baseBody, createBridgeKit, modelsOutput, readSse, sleep, tick,
 } from "./testkit.mjs"
@@ -225,6 +228,49 @@ test("#1064 慢 agy：第一次 models() 给静态目录，后台热身后的第
     assert.equal(kit.acpSpawns.length, 1)
     assert.equal(kit.plugin.provider.warming(), null, "热身完了不该还说在热身")
   })
+})
+
+// #1086（yinbing-666）：重启后在 agy 再次回答前，也该列出上次的完整目录，而不是只有 Gemini。
+test("#1086 重启后第一次 models() 就给上次 agy 列出并开放的目录，坏文件和别的 agy 仍给静态目录", async () => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-catalog-saved-"))
+  try {
+    const agy = path.join(shared, process.platform === "win32" ? "agy.exe" : "agy")
+    fs.writeFileSync(agy, "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+    const env = { XDG_STATE_HOME: path.join(shared, "state") }
+    await withKit({ ...SLOW_AGY, agyPath: agy, env }, async (kit) => {
+      assertFallbackPresent(await kit.models())
+      await warmed(kit)
+      assertClaudeListed(await kit.models(), "第一次运行")
+    })
+    const file = path.join(shared, "state", "magpie-agy-bridge", "models.json")
+    const saved = fs.readFileSync(file, "utf8")
+    assert.match(saved, /claude-sonnet-5-5-high/)
+
+    // 重启：agy 还是慢，第一次 models() 就该有 Claude；探测等 agy models 回答后才起。
+    await withKit({ ...SLOW_AGY, agyPath: agy, env }, async (kit) => {
+      const { value: first, ms } = await timed(() => kit.models())
+      assert.ok(ms < FAST_BUDGET_MS, `重启后首次目录耗时 ${Math.round(ms)}ms`)
+      assertClaudeListed(first, "重启后第一次")
+      assert.equal(kit.acpSpawns.length, 0, "agy models 回答前不该起探测会话")
+      assert.equal(kit.modelsSpawns.length, 1, "保存的目录也要再问一次 agy")
+      await warmed(kit)
+    })
+
+    // 另一个 agy 可执行文件不用这份目录。
+    await withKit({ ...SLOW_AGY, env }, async (kit) => {
+      assertFallbackPresent(await kit.models())
+      await warmed(kit)
+    })
+
+    // 半截文件：当作不知道，给静态目录。
+    fs.writeFileSync(file, saved.slice(0, Math.floor(saved.length / 2)))
+    await withKit({ ...SLOW_AGY, agyPath: agy, env }, async (kit) => {
+      assertFallbackPresent(await kit.models())
+      await warmed(kit)
+    })
+  } finally {
+    fs.rmSync(shared, { recursive: true, force: true })
+  }
 })
 
 test("#1064 慢 agy：已登录时 authorize 读到的列表和探测就是目录，紧接着的 models() 不再是静态目录", async () => {

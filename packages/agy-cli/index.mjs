@@ -313,6 +313,7 @@ function noteOfferedModels(configOptions, models) {
   if (key === acpOfferedKey) return
   acpOfferedModels = names
   acpOfferedKey = key
+  if (cachedModelCatalog?.agyPath) saveCatalog(cachedModelCatalog.agyPath, { offered: [...names].map(([id, name]) => ({ id, name })) })
 }
 
 // A model the session offers that `agy models` did not list is served as is.
@@ -502,17 +503,90 @@ function fallbackModelCatalog(agyPath = null) {
   return { agyPath, list: FALLBACK_MODELS, catalog: null, offeredKey: null, isFallback: true, fetchedAt: 0, lastAttemptAt: null }
 }
 
+// The last list `agy models` gave, kept beside sessions.json per agy
+// executable (#1086): after a restart the host lists it at once, instead of
+// the Gemini-only fallback until agy answers again. It is served as stale
+// (fetchedAt 0), so the first models() call still asks agy.
+const SAVED_CATALOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+
+function modelCatalogFile() {
+  return path.join(path.dirname(sessionStateFile()), "models.json")
+}
+
+function validModelRow(row) {
+  return row && typeof row.id === "string" && /^\S+$/.test(row.id) && typeof row.name === "string" &&
+    (row.effort === undefined || EFFORT_ORDER.includes(row.effort))
+}
+
+function readSavedCatalog(agyPath) {
+  if (!agyPath) return null
+  try {
+    const data = JSON.parse(fs.readFileSync(modelCatalogFile(), "utf8"))
+    const entry = data?.version === 1 && data.byAgy && Object.hasOwn(data.byAgy, agyPath) ? data.byAgy[agyPath] : null
+    if (!entry || !Number.isFinite(entry.at) || Date.now() - entry.at > SAVED_CATALOG_MAX_AGE_MS) return null
+    // A half-written or hand-edited file means "unknown": the fallback serves.
+    if (!Array.isArray(entry.list) || !entry.list.length || !entry.list.every(validModelRow)) return null
+    const offered = Array.isArray(entry.offered) && entry.offered.length &&
+      entry.offered.every(row => validModelRow(row) && row.effort === undefined)
+      ? entry.offered
+      : null
+    return { list: entry.list.map(savedRow), offered: offered && offered.map(({ id, name }) => ({ id, name })) }
+  } catch {
+    return null
+  }
+}
+
+function savedRow({ id, name, effort }) {
+  return effort ? { id, name, effort } : { id, name }
+}
+
+// saveCatalog merges what changed (the listing, or what agy acp offers) into
+// the agy's entry.
+function saveCatalog(agyPath, change) {
+  if (!agyPath) return
+  const file = modelCatalogFile()
+  try {
+    withStateLock(file, () => {
+      let byAgy = {}
+      try {
+        const data = JSON.parse(fs.readFileSync(file, "utf8"))
+        if (data?.version === 1 && data.byAgy && typeof data.byAgy === "object") byAgy = data.byAgy
+      } catch {}
+      const entry = { ...(byAgy[agyPath] || {}), at: Date.now() }
+      if (change.list) entry.list = change.list.map(savedRow)
+      if (change.offered) entry.offered = change.offered
+      if (!Array.isArray(entry.list)) return
+      byAgy[agyPath] = entry
+      const temp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
+      fs.writeFileSync(temp, JSON.stringify({ version: 1, byAgy }) + "\n", { mode: 0o600 })
+      fs.renameSync(temp, file)
+    })
+  } catch {}
+}
+
+function startingModelCatalog(agyPath) {
+  const saved = readSavedCatalog(agyPath)
+  if (!saved) return fallbackModelCatalog(agyPath)
+  // What agy acp offered last time, until a session of this run says.
+  if (saved.offered && !acpOfferedModels) {
+    acpOfferedModels = new Map(saved.offered.map(({ id, name }) => [id, name]))
+    acpOfferedKey = [...acpOfferedModels.keys()].sort().join("\n")
+  }
+  return { agyPath, list: saved.list, catalog: null, offeredKey: null, isFallback: false, fetchedAt: 0, lastAttemptAt: null }
+}
+
 // useAgyPath starts over when the executable changes: an old executable's
 // dynamic additions and offer must not route to, or list for, a new one.
 function useAgyPath(agyPath) {
   if (cachedModelCatalog.agyPath === agyPath) return
   // The first agy this process finds is not a change of one.
   if (cachedModelCatalog.agyPath !== null) forgetOffered()
-  cachedModelCatalog = fallbackModelCatalog(agyPath)
+  cachedModelCatalog = startingModelCatalog(agyPath)
   modelCatalogRefreshPromise = null
 }
 
 function storeListedCatalog(agyPath, list, lastAttemptAt) {
+  saveCatalog(agyPath, { list })
   cachedModelCatalog = {
     agyPath,
     list,
@@ -583,7 +657,8 @@ async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
   }
   // `agy models` answered, so agy is signed in: learn what its ACP server
   // offers this client, waiting for it as briefly as for the listing.
-  const probe = probeOffered && !cachedModelCatalog.isFallback ? probeOfferedOnce(agyPath) : null
+  // A saved list (fetchedAt 0) is not an answer from this agy yet.
+  const probe = probeOffered && !cachedModelCatalog.isFallback && cachedModelCatalog.fetchedAt > 0 ? probeOfferedOnce(agyPath) : null
   if (probe) await briefly(probe, MODEL_CATALOG_FAST_WAIT_MS)
   return catalogOf(cachedModelCatalog)
 }
