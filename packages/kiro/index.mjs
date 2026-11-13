@@ -145,7 +145,14 @@ async function readCLI() {
   try {
     db = await openDB(path, true)
     const get = (key) => {
-      const row = db.prepare("SELECT value FROM auth_kv WHERE key = ?").get(key)
+      // Bun's SQLite keeps the file locked until a statement is finalized.
+      const stmt = db.prepare("SELECT value FROM auth_kv WHERE key = ?")
+      let row
+      try {
+        row = stmt.get(key)
+      } finally {
+        stmt.finalize?.()
+      }
       if (!row?.value) return null
       try {
         return JSON.parse(row.value)
@@ -212,12 +219,23 @@ async function saveBack(c) {
     try {
       db = await openDB(cliDB(), false)
       db.exec("PRAGMA busy_timeout = 3000")
-      const row = db.prepare("SELECT value FROM auth_kv WHERE key = ?").get(c.dbKey)
+      const select = db.prepare("SELECT value FROM auth_kv WHERE key = ?")
+      let row
+      try {
+        row = select.get(c.dbKey)
+      } finally {
+        select.finalize?.()
+      }
       if (!row?.value) return
       const m = JSON.parse(row.value)
       Object.assign(m, { access_token: c.access, refresh_token: c.refresh, expires_at: expires })
       if (c.profile && c.method === "social") m.profile_arn = c.profile
-      db.prepare("UPDATE auth_kv SET value = ? WHERE key = ?").run(JSON.stringify(m), c.dbKey)
+      const update = db.prepare("UPDATE auth_kv SET value = ? WHERE key = ?")
+      try {
+        update.run(JSON.stringify(m), c.dbKey)
+      } finally {
+        update.finalize?.()
+      }
     } catch {
     } finally {
       db?.close()

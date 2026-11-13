@@ -179,8 +179,13 @@ test("kiro-cli's sign-in, with no way known, keeps the bare email", async () => 
   mkdirSync(cliDir(), { recursive: true })
   const db = new Database(join(cliDir(), "data.sqlite3"), { create: true })
   db.exec("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
-  db.prepare("INSERT INTO auth_kv VALUES (?, ?)").run("kirocli:social:token", JSON.stringify({ access_token: "t", refresh_token: "r",
-    expires_at: new Date(Date.now() + 3600_000).toISOString(), region: "us-east-1", profile_arn: PROFILE }))
+  const stmt = db.prepare("INSERT INTO auth_kv VALUES (?, ?)")
+  try {
+    stmt.run("kirocli:social:token", JSON.stringify({ access_token: "t", refresh_token: "r",
+      expires_at: new Date(Date.now() + 3600_000).toISOString(), region: "us-east-1", profile_arn: PROFILE }))
+  } finally {
+    stmt.finalize()
+  }
   db.close()
   globalThis.fetch = async () => Response.json({ subscriptionInfo: { subscriptionTitle: "KIRO FREE" }, userInfo: { email: EMAIL } })
   const saves = []
