@@ -129,7 +129,22 @@ stateless: 60 seconds with no message at all, or 4 minutes with only
 Cursor's heartbeats (yetone/magpie#2672, where a Run sent some thinking and
 then nothing, and the reply waited until the agent gave up after 5 minutes).
 Only time spent waiting on Cursor counts: a retained Run waiting for the
-caller's tool results is bounded by the 120 seconds above instead.
+caller's tool results is bounded by the 120 seconds above instead. These
+errors explicitly say `stream timed out`, so clients such as Pi that classify
+streamed errors by their message can apply their bounded retry policy. A timeout
+still fails the request; it never turns an incomplete answer into a success.
+
+The optional Pi SDK regression uses a loopback SSE fixture and synthetic data;
+it reads no real credentials and makes no upstream requests. From the repo root,
+pass the directory containing an installed `@earendil-works/pi-coding-agent`:
+
+```sh
+node scripts/cursor-pi-retry.integration.mjs /path/to/pi-coding-agent packages/cursor
+node scripts/cursor-pi-retry.integration.mjs /path/to/pi-coding-agent packages/cursor exhausted
+```
+
+It checks recovery, retry-budget exhaustion, and that a completed tool runs only
+once while partial output from failed attempts stays out of retry context.
 
 Cursor's count of a step's tool calls includes calls the plugin answers itself:
 a tool the request doesn't have is refused to the model, and Cursor's own
