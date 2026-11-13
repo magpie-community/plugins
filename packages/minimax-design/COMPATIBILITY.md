@@ -22,6 +22,8 @@ OpenCode executable, and local model/MCP fixtures. It verifies:
 
 1. Magpie discovers and connects Design, preserving existing providers/settings.
 2. Design 4.0.10's own model validator accepts the generated provider.
+   Its packaged provider converter builds the actual OpenCode configuration,
+   retaining the desktop's provider IDs and tool support.
 3. Library distributes and withdraws a user skill and HTTP MCP server.
 4. Design's actual gateway lists the skill, enables it through its normal
    permission API, and stops listing it after Library withdraws it.
@@ -31,6 +33,9 @@ OpenCode executable, and local model/MCP fixtures. It verifies:
    Magpie to the model.
 8. Disconnect restores existing custom providers. Existing MCP entries and
    the desktop's encrypted `customMcpVault` remain intact.
+9. A 101-model catalog passes the desktop validator and bundled OpenCode
+   loader across three providers, then shrinks to one without stale groups.
+   An existing `user-custom-magpie` entry is restored on disconnect.
 
 No account credentials or paid inference are used. These checks exercise
 the installed app's real gateway and agent executables; they do not claim
