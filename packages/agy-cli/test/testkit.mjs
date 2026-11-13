@@ -264,7 +264,9 @@ class FakeAgy {
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
       if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
-      this.respond(id, { sessionId: this.sessionId, models })
+      // A real signed-in agy takes ~3s to open a session (#1064).
+      if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
+      else this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
       this.respond(id, {})
@@ -424,6 +426,7 @@ export async function createBridgeKit(options = {}) {
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
     sessionResume: options.sessionResume ?? false,
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],

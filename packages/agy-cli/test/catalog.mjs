@@ -72,6 +72,11 @@ test("首次 agy models 卡死时 750ms 内返回非空静态目录", async () =
     assert.equal(kit.timers.refed().length, 0, "agy models 卡死期间不应有挂住 Node 退出的模块定时器")
     await kit.finishChildren()
     assert.equal(kit.timers.refed().length, 0, "子进程结束后不应残留挂住退出的定时器")
+    // 探测一起就在 warming() 里：等它跑完再数，不靠固定时长。
+    const warming = kit.plugin.provider.warming?.()
+    if (warming) await warming
+    await settle(kit)
+    assert.equal(kit.acpSpawns.length, 0, "agy models 没答出来时不应起探测会话")
   })
 })
 
@@ -151,6 +156,90 @@ test("会话后来开放的型号变了，目录随之更新", async () => {
     const parsed = await readSse(await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] })))
     assert.equal(parsed.error, null, JSON.stringify(parsed.error))
     assert.ok((await kit.models())["claude-opus-5-5"])
+  })
+})
+
+// #1064（hiee3）：真实登录的 agy 上 `agy models` 约 4.4s、agy acp 开会话约 3s，都远过 500ms 的快速等待。
+// 这里各模拟 1.5s：第一次 models() 只能给静态目录，但列表一到就该起探测，
+// 后台跑完后的第一次 models() 就要有 Claude 和 GPT-OSS，不该要第三次。
+const SLOW_MS = 1_500
+const OFFERED_CLAUDE = [
+  ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
+  ["claude-opus-5-5-high", "Claude Opus 5.5 (High)"], ["claude-opus-5-5-low", "Claude Opus 5.5 (Low)"],
+  ["claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"], ["claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"],
+  ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+]
+const SLOW_AGY = { modelsBehavior: { stdout: modelsOutput(BASE_MODEL_ROWS), delayMs: SLOW_MS }, sessionNewDelayMs: SLOW_MS, offeredModels: OFFERED_CLAUDE }
+
+// 等后台的列表与探测都结束：等状态（没有在跑的假子进程，且插件说没有在热身），不等固定时长。
+async function warmed(kit) {
+  const warming = kit.plugin.provider.warming?.()
+  if (warming) await warming
+  for (let i = 0; i < 1000 && kit.children.size; i++) await sleep(10)
+  await settle(kit)
+}
+
+function assertClaudeListed(models, label) {
+  for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "gpt-oss-120b"]) assert.ok(models[id], `${label}：没有 ${id}，只有 ${ids(models).join(", ")}`)
+}
+
+test("#1064 慢 agy：第一次 models() 给静态目录，后台热身后的第一次就列出 Claude 和 GPT-OSS", async () => {
+  await withKit(SLOW_AGY, async (kit) => {
+    const { value: first, ms } = await timed(() => kit.models())
+    assert.ok(ms < FAST_BUDGET_MS, `首次目录耗时 ${Math.round(ms)}ms`)
+    assertFallbackPresent(first)
+    await warmed(kit)
+    assert.equal(kit.acpSpawns.length, 1, "列表一到就该起一次探测会话")
+    const { value: after, ms: warmMs } = await timed(() => kit.models())
+    assert.ok(warmMs < 100, `热身后的目录耗时 ${Math.round(warmMs)}ms`)
+    assertClaudeListed(after, "热身后的第一次 models()")
+    assert.equal(kit.modelsSpawns.length, 1)
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.equal(kit.plugin.provider.warming(), null, "热身完了不该还说在热身")
+  })
+})
+
+test("#1064 慢 agy：已登录时 authorize 读到的列表和探测就是目录，紧接着的 models() 不再是静态目录", async () => {
+  await withKit(SLOW_AGY, async (kit) => {
+    const { value: started, ms } = await timed(() => kit.plugin.auth.methods[0].authorize())
+    assert.equal(started.method, "auto")
+    assert.ok(ms < SLOW_MS * 2 + 3_000, `登录检查耗时 ${Math.round(ms)}ms`)
+    assert.equal((await started.callback()).type, "success")
+    const { value: listed, ms: listMs } = await timed(() => kit.models())
+    assert.ok(listMs < 100, `登录后的目录耗时 ${Math.round(listMs)}ms`)
+    assertClaudeListed(listed, "登录后的第一次 models()")
+    assert.equal(kit.modelsSpawns.length, 1, "登录检查读过的列表不该再读一遍")
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
+test("#1064 登录检查不为探测等太久：会话一直不答时最多多等几秒", async () => {
+  await withKit({ ...SLOW_AGY, sessionNewDelayMs: 6_000 }, async (kit) => {
+    const { value: started, ms } = await timed(() => kit.plugin.auth.methods[0].authorize())
+    assert.equal(started.method, "auto")
+    assert.ok(ms < SLOW_MS + 3_000 + 1_000, `登录检查等了 ${Math.round(ms)}ms`)
+    assert.ok(ms >= SLOW_MS + 2_500, `登录检查没等探测（${Math.round(ms)}ms）`)
+    const models = await kit.models()
+    assert.ok(models["gemini-4-argon"])
+    assert.equal(models["claude-opus-5-5"], undefined, "探测没答前不该列出 Claude")
+  })
+})
+
+test("#1064 agyPath 变了，旧 agy 开放的型号不再列出，新 agy 重新探测", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK, offeredModels: OFFERED_CLAUDE }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    assertClaudeListed(await kit.models(), "agy-a")
+    kit.env.AGY_PATH = kit.makeFakeAgy("agy-b")
+    kit.offeredModels = [["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"]]
+    const switched = await kit.models()
+    assert.deepEqual(ids(switched).filter(id => /^(?:claude|gpt)-/.test(id)), [], "换了 agy 还在列旧 agy 开放的型号")
+    await warmed(kit)
+    assert.equal(kit.acpSpawns.length, 2, "新 agy 应重新探测")
+    assert.equal(kit.acpSpawns.at(-1).file, kit.env.AGY_PATH)
+    const after = await kit.models()
+    assert.equal(after["claude-opus-5-5"], undefined)
+    assert.ok(after["gemini-4-argon"])
   })
 })
 
