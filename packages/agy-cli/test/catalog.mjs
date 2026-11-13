@@ -288,10 +288,14 @@ test("#1064 慢 agy：已登录时 authorize 读到的列表和探测就是目�
 })
 
 test("#1064 登录检查不为探测等太久：会话一直不答时最多多等几秒", async () => {
-  await withKit({ ...SLOW_AGY, sessionNewDelayMs: 6_000 }, async (kit) => {
+  // 会话 60s 才答：authorize 只等探测约 3s，不该等到会话答（#1089：上界不留 1s 那么窄的余量）。
+  // 下界是计时器，只会晚到不会早到，负载下也不会误报。
+  const SESSION_MS = 60_000
+  await withKit({ ...SLOW_AGY, sessionNewDelayMs: SESSION_MS }, async (kit) => {
     const { value: started, ms } = await timed(() => kit.plugin.auth.methods[0].authorize())
     assert.equal(started.method, "auto")
-    assert.ok(ms < SLOW_MS + 3_000 + 1_000, `登录检查等了 ${Math.round(ms)}ms`)
+    assert.equal(kit.acpSpawns.length, 1, "登录检查该起探测会话")
+    assert.ok(ms < SESSION_MS / 2, `登录检查等了会话（${Math.round(ms)}ms）`)
     assert.ok(ms >= SLOW_MS + 2_500, `登录检查没等探测（${Math.round(ms)}ms）`)
     const models = await kit.models()
     assert.ok(models["gemini-4-argon"])
