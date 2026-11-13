@@ -87,12 +87,14 @@ test("rowFromCatalogEntry degrades safely on sparse entries", () => {
 
 test("bootstrap table covers the observed catalog", () => {
   const rows = bootstrapRows()
-  assert.equal(Object.keys(rows).length, 7)
+  assert.equal(Object.keys(rows).length, 8)
   for (const id of ["astronclaw-auto", "spark-x2.6", "spark-x2.6-4b", "xopglm52", "xopdeepseekv4pro0813"]) {
     assert.ok(rows[id], `missing ${id}`)
   }
   assert.equal(rows["spark-x2.6-4b"].free, true)
   assert.equal(rows["xopglm52"].limit.context, 1048576)
+  // 目录接口尚未上、网关已接受的模型：目录读不到时也要能选到。
+  assert.equal(rows["xdeepseek-flash-in"].name, "DeepSeek-V4.1-Flash")
 })
 
 test("readAcodeConfigToken parses the astron-spark section", () => {
@@ -223,8 +225,12 @@ test("models hook maps the live catalog and keeps the old list on network failur
     },
   })
   const rows = await plugin.provider.models({ models: {} }, { auth: { type: "api", key: "k" } })
-  assert.deepEqual(Object.keys(rows), ["spark-x2.6-4b", "xopglm52"])
+  assert.deepEqual(Object.keys(rows), ["spark-x2.6-4b", "xopglm52", "xdeepseek-flash-in"])
   assert.equal(rows["spark-x2.6-4b"].free, true)
+  // 目录没上的模型由 EXTRA_CATALOG 补位，形状与目录行一致（context/推理档位都在）。
+  assert.equal(rows["xdeepseek-flash-in"].name, "DeepSeek-V4.1-Flash")
+  assert.equal(rows["xdeepseek-flash-in"].limit.context, 1048576)
+  assert.equal(rows["xdeepseek-flash-in"].reasoning, true)
 
   const keep = createPlugin({ fetchImpl: async () => { throw new Error("down") } })
   const previousProvider = { models: { kept: true } }
@@ -241,6 +247,41 @@ test("models hook maps the live catalog and keeps the old list on network failur
 
   const malformed = createPlugin({ fetchImpl: async () => okRes({ data: {} }) })
   await assert.rejects(malformed.provider.models({ models: {} }, { auth: { type: "api", key: "k" } }))
+})
+
+test("catalog rows win over EXTRA_CATALOG for the same slug", async () => {
+  const plugin = createPlugin({
+    fetchImpl: async () => okRes({
+      code: 0,
+      data: { models: [{ slug: "xdeepseek-flash-in", display_name: "DeepSeek-V4.1-Flash（目录）", context_window: 4096, max_output_tokens: 512, visibility: "list", supported_in_api: true, supported_reasoning_levels: [{ effort: "none" }] }] },
+    }),
+  })
+  const rows = await plugin.provider.models({ models: {} }, { auth: { type: "api", key: "k" } })
+  assert.equal(rows["xdeepseek-flash-in"].name, "DeepSeek-V4.1-Flash（目录）")
+  assert.equal(rows["xdeepseek-flash-in"].limit.context, 4096)
+})
+
+test("EXTRA_CATALOG does not revive a slug the catalog delisted", async () => {
+  // 目录给了这个名字但标成 hidden：那是上游下架的表态，补位表不能把它复活。
+  const plugin = createPlugin({
+    fetchImpl: async () => okRes({
+      code: 0,
+      data: { models: [
+        { slug: "xopglm52", display_name: "GLM-5.2", visibility: "list", supported_in_api: true, supported_reasoning_levels: [{ effort: "none" }] },
+        { slug: "xdeepseek-flash-in", display_name: "DeepSeek-V4.1-Flash", visibility: "hidden", supported_in_api: true, supported_reasoning_levels: [{ effort: "none" }] },
+      ] },
+    }),
+  })
+  const rows = await plugin.provider.models({ models: {} }, { auth: { type: "api", key: "k" } })
+  assert.deepEqual(Object.keys(rows), ["xopglm52"])
+})
+
+test("an empty catalog is still an error, EXTRA_CATALOG does not mask it", async () => {
+  const plugin = createPlugin({ fetchImpl: async () => okRes({ code: 0, data: { models: [] } }) })
+  await assert.rejects(
+    plugin.provider.models({ models: {} }, { auth: { type: "api", key: "k" } }),
+    /AStudio 模型目录为空/,
+  )
 })
 
 test("catalog reads refuse redirects and carry a timeout", async () => {
