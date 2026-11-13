@@ -1,0 +1,63 @@
+{
+  "name": "@magpie-community/agent-trae-desktop",
+  "version": "0.3.3",
+  "description": "Use Magpie models in Trae CN on Windows, with native catalog synchronization and reversible configuration",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "trae.agent.js",
+    "index.mjs",
+    "bridge.mjs",
+    "cli.mjs",
+    "README.md",
+    "LICENSE",
+    "assets",
+    "ASSET_NOTICE.md",
+    "sync.mjs",
+    "trae-api.mjs",
+    "trae-local-token.mjs",
+    "restore.mjs",
+    "client-refresh.mjs",
+    "trae-refresh-notifier.cjs",
+    "vendor",
+    "THIRD_PARTY.md",
+    "README.en.md"
+  ],
+  "bin": {
+    "magpie-trae": "./cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "acceptance": "node scripts/magpie-acceptance.mjs",
+    "test:cancel": "node scripts/verify-trae-cancel-patch.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "magpie": {
+    "agent": "./trae.agent.js",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzI0RERBMyI+PHRpdGxlPlRSQUU8L3RpdGxlPjxwYXRoIGQ9Ik0yNCAyMC41NDFIMy40Mjh2LTMuNDI2SDBWMy40aDI0VjIwLjU0ek0zLjQyOCAxNy4xMTVoMTcuMTQ0VjYuODI3SDMuNDI4djEwLjI4OHptOC41NzMtNS4xOTZsLTIuNDI1IDIuNDI0LTIuNDI0LTIuNDI0IDIuNDI0LTIuNDI0IDIuNDI1IDIuNDI0em02Ljg1Ny0uMDAxbC0yLjQyNCAyLjQyMy0yLjQyNS0yLjQyMyAyLjQyNS0yLjQyNSAyLjQyNCAyLjQyNXoiLz48L3N2Zz4K",
+    "options": {
+      "port": 3498
+    },
+    "name": "Trae CN (Magpie models)"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/trae-desktop"
+  },
+  "homepage": "https://github.com/lmy414/magpie-agent-trae#readme",
+  "bugs": {
+    "url": "https://github.com/lmy414/magpie-agent-trae/issues"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-agent",
+    "trae",
+    "trae-cn",
+    "windows"
+  ]
+}
