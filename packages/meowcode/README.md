@@ -38,6 +38,10 @@ magpie off. The Magpie group in MeowCode's settings is read-only, since its
 models come from magpie; their enabled state and reasoning effort are kept in
 MeowCode across restarts.
 
+MeowCode keeps only loopback gateway addresses (`127.0.0.1`, `localhost`,
+`[::1]`) from the overlay. If magpie writes another address — a gateway shared
+on the LAN, say — those records are left out and no magpie models appear.
+
 Switching magpie off clears the keys it wrote; MeowCode ignores the empty file
 and, after a restart, is back on your own providers. Disconnect MeowCode
 before uninstalling magpie.

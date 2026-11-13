@@ -17,7 +17,7 @@ export const agent = {
   prefix: "magpie/",
   dir: "$APPDATA/MeowCode/agent",
   ua: ["meowcode"],
-  notice: "Restart MeowCode to see magpie's models.",
+  notice: "Needs MeowCode 1.3.0 or later. Restart MeowCode to see magpie's models.",
 }
 
 // The overlay MeowCode reads: magpieKey is the one string key that holds
