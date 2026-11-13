@@ -12,16 +12,7 @@
 // Design picks its model in its own UI, so this agent has no `model` key:
 // the row is a switch, and connect is called without a model.
 //
-if (typeof magpie === "undefined" || !magpie.platform) {
-  throw new Error("Update Magpie to a build exposing magpie.platform before installing MiniMax Design 0.2.")
-}
-const platform = magpie.platform
-if (platform !== "darwin" && platform !== "windows") {
-  throw new Error("MiniMax Design supports macOS and Windows only.")
-}
-const dataDir = platform === "darwin"
-  ? "~/Library/Application Support/@hilo/desktop"
-  : "$APPDATA/@hilo/desktop"
+const dataDir = "~/.minimax-design"
 
 export const agent = {
   id: "minimax-design",

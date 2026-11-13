@@ -138,6 +138,7 @@ try {
   writeJSON(path.join(settings, "library.json"), {
     skills: [{ name: skillName, agents: ["minimax-design"] }], mcp: [], applied: {},
   })
+  await run(magpie, ["plugin", "add", packageDir])
   const listing = await run(magpie, ["minimax-design"])
   assert.match(listing.stdout, /MiniMax Design/)
   await run(magpie, ["minimax-design", "provider", "magpie"])
@@ -178,7 +179,6 @@ try {
   const filtered = vm.runInNewContext(
     pluginSource.replaceAll("export ", "") + "\nconnect(input)",
     {
-      magpie: { platform: "darwin" },
       input: {
         gateway: { v1: provider.baseUrl, key: provider.apiKey },
         models: ["fixture/good", "fixture/bad id", "fixture/good", "fixture/\u0000bad"]

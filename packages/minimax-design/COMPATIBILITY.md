@@ -3,8 +3,10 @@
 ## macOS — verified on November 13, 2026
 
 MiniMax Design 4.0.10, domestic production build, Apple Silicon macOS.
-Requires the companion Magpie change exposing `magpie.platform` to agent
-modules. Stock Magpie 0.1.4040 does not expose it.
+The Agent uses `~/.minimax-design`, linked automatically by the companion to
+the native data directory. It does not require `magpie.platform` or a patched
+host. Windows uses a directory junction; native Windows execution remains
+unverified.
 
 | Purpose | Observed path |
 | --- | --- |

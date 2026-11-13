@@ -67,8 +67,8 @@ generation selection, real vendor inference and canvas output insertion
 remain unaccepted. A prior quit attempt warned about interrupting tasks and
 was cancelled. Restart needs user confirmation.
 
-The cross-platform package requires the companion `magpie.platform` host
-change. The locally installed package uses a static macOS platform binding
-with stock Magpie. PR #1096 stays Draft while that host prerequisite and
-desktop acceptance remain open. Windows paths have regression coverage, but
-there is no new native Windows execution result.
+The cross-platform Agent uses a shared `~/.minimax-design` directory entry,
+prepared by the existing companion. Stock Magpie loads it without platform
+globals or a modified host. Native acceptance covers connection, Library,
+inference and restoration on macOS. Windows paths have regression coverage,
+but there is no native Windows junction execution result.

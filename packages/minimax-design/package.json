@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-minimax-design",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "MiniMax Design as a Magpie agent, with native text/image/video/speech model sync and Library skills/MCP",
   "type": "module",
   "main": "./index.mjs",

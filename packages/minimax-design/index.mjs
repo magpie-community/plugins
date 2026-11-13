@@ -1,4 +1,4 @@
-import { applyMedia, connection, mediaPaths, syncMedia } from "./media-sync.mjs"
+import { applyMedia, connection, mediaPaths, prepareAgentPath, syncMedia } from "./media-sync.mjs"
 import { installMcpBridge } from "./mcp-sync.mjs"
 
 const instance = Symbol.for("magpie.minimax-design.media.v1")
@@ -15,6 +15,7 @@ export default async function MiniMaxDesignMediaPlugin(_input, options = {}) {
     if (running) return
     running = true
     try {
+      if (!prepareAgentPath(paths)) return
       installMcpBridge(paths.control)
       const current = JSON.stringify(connection(paths))
       if (current === lastConnection && Date.now() - lastRefresh < 60000) return

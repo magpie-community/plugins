@@ -21,6 +21,21 @@ export function mediaPaths(home = os.homedir(), platform = process.platform, app
     state: path.join(data, ".magpie-media", "ownership.json") }
 }
 
+export function prepareAgentPath(paths, home = os.homedir()) {
+  const target = path.dirname(paths.control)
+  if (!fs.existsSync(target)) return false
+  const entry = path.join(home, ".minimax-design")
+  const existing = fs.lstatSync(entry, { throwIfNoEntry: false })
+  if (existing) {
+    if (!existing.isSymbolicLink() || fs.realpathSync(entry) !== fs.realpathSync(target)) {
+      throw new Error(`MiniMax Design agent path is occupied: ${entry}`)
+    }
+    return true
+  }
+  fs.symlinkSync(target, entry, process.platform === "win32" ? "junction" : "dir")
+  return true
+}
+
 function readJSON(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")) }
   catch (error) { if (error.code === "ENOENT") return null; throw error }

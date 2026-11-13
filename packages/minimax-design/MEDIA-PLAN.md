@@ -26,8 +26,8 @@ Agent switch also owns a Magpie provider in Design's native media store.
    stores and adapters with the installed Design runtime in disposable homes,
    including image/video fixture output. No paid inference.
 7. Install the tested companion locally and confirm native model discovery.
-   Keep the PR Draft until the host platform prerequisite and any remaining
-   desktop acceptance requirements are satisfied.
+   Keep the PR Draft until remaining desktop acceptance requirements are
+   satisfied. The shared directory entry removes the host platform prerequisite.
 
 ## Implementation status
 
