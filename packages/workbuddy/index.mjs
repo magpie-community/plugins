@@ -1243,6 +1243,10 @@ function fitSchema(s, depth = 0) {
       changed = true
     }
   }
+  if (s.pattern === "^[^\\uD800-\\uDFFF]*$") {
+    delete s.pattern
+    changed = true
+  }
   if (Array.isArray(s.items)) {
     const list = s.items.filter((v) => v && typeof v === "object")
     s.items = list.length === 0 ? {} : list.length === 1 ? list[0] : { anyOf: list }
