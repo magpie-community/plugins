@@ -398,6 +398,10 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["You are Cline, a coding assistant.", "You are the Cline agent, a coding assistant."],
     ["You are Qwen Code, an interactive CLI tool.", "You are the Qwen Code agent, an interactive CLI tool."],
     ["You are ZCode, an interactive coding agent", "You are the ZCode agent, an interactive coding agent"],
+    // #1094: ZCode's subagent opening line
+    ["You are an agent for ZCode CLI. Given the user's message, you should use the tools available to complete the task.", "You are an agent for the ZCode CLI. Given the user's message, you should use the tools available to complete the task."],
+    // the rewritten form is left as it is
+    ["You are an agent for the ZCode CLI.", "You are an agent for the ZCode CLI."],
     ["operating inside pi, a coding agent harness.", "operating inside the pi coding agent harness."],
     ["This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)", "This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)"],
     ["You are powered by the model glm-5.3-flash[1m].", "You are powered by the GLM-5.3-flash model."],

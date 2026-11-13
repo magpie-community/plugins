@@ -97,6 +97,12 @@ const FLAGGED = [
   [/You are Cline/gi, "You are the Cline agent"],
   [/You are Qwen Code/gi, "You are the Qwen Code agent"],
   [/You are ZCode/gi, "You are the ZCode agent"],
+  // #1094: ZCode's built-in subagents (general-purpose) open "You are an
+  // agent for ZCode CLI." — 406 on autoclaw while the main session, same
+  // minute and account, is 200; the reporter's patched run was 200 x2. The
+  // "You are ZCode" rule above can't catch it. As for Claude Code's
+  // subagents, only an article goes in front of the name.
+  [/an agent for ZCode/gi, "an agent for the ZCode"],
   [/operating inside pi, a coding agent harness/gi, "operating inside the pi coding agent harness"],
   // ZCode's opening line is "This conversation is powered by GLM-<version>";
   // the CN gateway refuses that wording with any GLM version, in any case,
