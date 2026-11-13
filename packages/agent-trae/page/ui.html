@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trae models</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; color: #1f2328; background: #fff; }
+      main { max-width: 760px; margin: 0 auto; padding: 28px 24px 40px; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 14px; margin: 20px 0 6px; }
+      p { margin: 6px 0; }
+      .muted { color: #6b7280; }
+      .note { color: #6b7280; font-size: 12.5px; border-left: 3px solid #d1d5db; padding-left: 10px; margin: 14px 0; }
+      .actions { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
+      button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid #d0d7de; background: #f6f8fa; color: inherit; cursor: pointer; }
+      button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+      button:disabled { opacity: .5; cursor: default; }
+      code { font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+      ul { margin: 0; padding-left: 20px; }
+      li { margin: 2px 0; }
+      .confirm { border: 1px solid #d0d7de; border-radius: 8px; padding: 12px 14px; margin: 4px 0 14px; background: #fff8e5; }
+      .confirm p { margin: 0 0 10px; }
+      .confirm .actions { margin: 0; }
+      #result { white-space: pre-wrap; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-top: 16px; }
+      #result:empty { display: none; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #16181d; color: #e6edf3; }
+        .muted, .note { color: #8b949e; }
+        .note { border-left-color: #30363d; }
+        button { background: #21262d; border-color: #30363d; }
+        button.primary { background: #1f6feb; border-color: #1f6feb; }
+        code, #result { background: #21262d; border-color: #30363d; }
+        .confirm { background: #2d2410; border-color: #5c4a1c; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Trae models</h1>
+      <p id="status" class="muted"></p>
+      <p id="note" class="note"></p>
+      <div class="actions">
+        <button id="refresh" type="button"></button>
+        <button id="mirror" type="button" class="primary" disabled></button>
+      </div>
+      <div id="confirm" class="confirm" hidden>
+        <p id="confirmText"></p>
+        <div class="actions">
+          <button id="confirmYes" type="button" class="primary"></button>
+          <button id="confirmNo" type="button"></button>
+        </div>
+      </div>
+      <section>
+        <h2 id="addTitle"></h2>
+        <ul id="add"></ul>
+        <h2 id="removeTitle"></h2>
+        <ul id="remove"></ul>
+        <h2 id="keepTitle"></h2>
+        <ul id="keep"></ul>
+        <h2 id="conflictTitle"></h2>
+        <ul id="conflicts"></ul>
+      </section>
+      <pre id="result"></pre>
+    </main>
+    <script>
+      (() => {
+        const zh =
+          new URLSearchParams(location.search).get("lang") === "zh" ||
+          /^zh(?:-|$)/i.test(String(navigator.language || ""));
+        const words = zh
+          ? {
+              title: "Trae 模型",
+              note: "这里只使用 Magpie 交给 Trae 这一行的 per-agent key，不读取网关密钥；只复用 Trae 已保存的加密模型密钥，不读取 Trae 的本地凭证。确认之前不会向 Trae 写入任何内容。",
+              refresh: "刷新预览",
+              mirror: "镜像到 Trae…",
+              add: "将添加",
+              remove: "将移除",
+              keep: "保留",
+              conflicts: "冲突（不会改动）",
+              none: "无",
+              loading: "正在读取 Trae 的模型列表…",
+              disconnected: "Trae 这一行还没有连接。请先在 Agents 页打开连接开关。",
+              disabled: "模型镜像已被环境变量关闭。",
+              busy: "另一个镜像操作正在进行，请稍后刷新。",
+              login: "还没有登录 Trae 账号。请运行 magpie plugin login trae-agent，然后刷新。",
+              expired: "Trae 登录已过期。请重新运行 magpie plugin login trae-agent，然后刷新。",
+              unreachable: "无法读取模型列表：",
+              failed: "操作失败：",
+              confirm: (n) => `将向 Trae 云端写入 ${n} 个模型变更（添加/删除）。`,
+              confirmYes: "确认写入",
+              confirmNo: "取消",
+              mirrored: "完成。",
+              noChanges: "没有需要变更的模型。",
+              signedIn: "已登录。",
+              count: (n, a, r) => `已启用 ${n} 个模型；将添加 ${a} 个，移除 ${r} 个。`,
+            }
+          : {
+              title: "Trae models",
+              note: "This page uses only the per-agent key Magpie gave the Trae row, not Magpie's gateway keys, and reuses the encrypted model key already stored in Trae. It does not read Trae's local credentials. Nothing is written to Trae until you confirm.",
+              refresh: "Refresh preview",
+              mirror: "Mirror to Trae…",
+              add: "Will add",
+              remove: "Will remove",
+              keep: "Keep",
+              conflicts: "Conflicts (left alone)",
+              none: "None",
+              loading: "Reading Trae's model list…",
+              disconnected: "The Trae row is not connected. Turn it on on the Agents page first.",
+              disabled: "Model mirroring is disabled by an environment variable.",
+              busy: "Another mirror is running; refresh in a moment.",
+              login: "Trae is not signed in. Run magpie plugin login trae-agent, then refresh.",
+              expired: "The Trae sign-in expired. Run magpie plugin login trae-agent again, then refresh.",
+              unreachable: "Could not read the model list: ",
+              failed: "Failed: ",
+              confirm: (n) => `This writes ${n} model change(s) to Trae's cloud (add/remove).`,
+              confirmYes: "Confirm mirror",
+              confirmNo: "Cancel",
+              mirrored: "Done.",
+              noChanges: "No model changes are needed.",
+              signedIn: "Signed in.",
+              count: (n, a, r) => `${n} models enabled; ${a} to add, ${r} to remove.`,
+            };
+        const $ = (id) => document.getElementById(id);
+        let current = null;
+        $("title").textContent = words.title;
+        $("note").textContent = words.note;
+        $("refresh").textContent = words.refresh;
+        $("mirror").textContent = words.mirror;
+        $("addTitle").textContent = words.add;
+        $("removeTitle").textContent = words.remove;
+        $("keepTitle").textContent = words.keep;
+        $("conflictTitle").textContent = words.conflicts;
+
+        function list(id, items) {
+          const el = $(id);
+          el.replaceChildren();
+          if (!items || !items.length) {
+            const li = document.createElement("li");
+            li.className = "muted";
+            li.textContent = words.none;
+            el.appendChild(li);
+            return;
+          }
+          for (const item of items) {
+            const li = document.createElement("li");
+            li.textContent = item;
+            el.appendChild(li);
+          }
+        }
+
+        function setStatus(text) {
+          $("status").textContent = text;
+        }
+
+        function render(data) {
+          current = null;
+          hideConfirm();
+          $("mirror").disabled = true;
+          $("result").textContent = "";
+          if (!data) {
+            setStatus(words.failed);
+            return;
+          }
+          if (data.skipped) {
+            setStatus(
+              data.reason === "disconnected"
+                ? words.disconnected
+                : data.reason === "disabled"
+                  ? words.disabled
+                  : data.reason === "busy"
+                    ? words.busy
+                    : words.failed,
+            );
+            list("add", []);
+            list("remove", []);
+            list("keep", []);
+            list("conflicts", []);
+            return;
+          }
+          if (!data.ok) {
+            if (data.code === "token-required") {
+              setStatus(data.error && /expired|过期/i.test(data.error) ? words.expired : words.login);
+            } else if (data.code === "unreachable") {
+              setStatus(words.unreachable + (data.error || ""));
+            } else {
+              setStatus(words.failed + (data.error || ""));
+            }
+            list("add", []);
+            list("remove", []);
+            list("keep", []);
+            list("conflicts", []);
+            return;
+          }
+          current = data;
+          const add = data.plan?.add || [];
+          const remove = data.plan?.remove || [];
+          setStatus(words.count(data.wanted?.length || 0, add.length, remove.length));
+          list("add", add);
+          list("remove", remove);
+          list("keep", data.plan?.keep || []);
+          list("conflicts", data.plan?.conflicts || []);
+          $("mirror").disabled = add.length + remove.length === 0;
+        }
+
+        async function preview() {
+          setStatus(words.loading);
+          try {
+            const res = await fetch("/api/preview", { headers: { Accept: "application/json" } });
+            render(await res.json());
+          } catch (err) {
+            render({ ok: false, error: String(err) });
+          }
+        }
+
+        function hideConfirm() {
+          $("confirm").hidden = true;
+        }
+
+        function askConfirm() {
+          if (!current) return;
+          const changes = (current.plan?.add?.length || 0) + (current.plan?.remove?.length || 0);
+          if (!changes) {
+            setStatus(words.noChanges);
+            return;
+          }
+          $("confirmText").textContent = words.confirm(changes);
+          $("confirmYes").textContent = words.confirmYes;
+          $("confirmNo").textContent = words.confirmNo;
+          $("confirm").hidden = false;
+        }
+
+        async function mirror() {
+          if (!current) return;
+          hideConfirm();
+          $("mirror").disabled = true;
+          setStatus(words.loading);
+          try {
+            const res = await fetch("/api/mirror", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ previewId: current.previewId, confirm: true }),
+            });
+            const data = await res.json();
+            if (data.ok) {
+              setStatus(words.mirrored);
+              $("result").textContent = JSON.stringify(
+                { added: data.result?.added || [], removed: data.result?.removed || [], rows: data.result?.rows || [] },
+                null,
+                2,
+              );
+            } else if (data.code === "stale-preview") {
+              setStatus(data.error || words.failed);
+            } else {
+              setStatus(words.failed + (data.error || data.code || ""));
+            }
+          } catch (err) {
+            setStatus(words.failed + String(err));
+          }
+          $("mirror").disabled = false;
+        }
+
+        $("refresh").addEventListener("click", preview);
+        $("mirror").addEventListener("click", askConfirm);
+        $("confirmYes").addEventListener("click", mirror);
+        $("confirmNo").addEventListener("click", hideConfirm);
+        preview();
+      })();
+    </script>
+  </body>
+</html>

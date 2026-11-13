@@ -1,0 +1,60 @@
+{
+  "name": "@magpie-community/agent-trae",
+  "version": "0.2.0",
+  "description": "Trae as a Magpie agent: confirm and mirror the enabled Magpie models into Trae with the plugin's own Trae sign-in, plus MCP servers and skills",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "bridge.mjs",
+    "trae-page.mjs",
+    "trae-api.mjs",
+    "trae-auth.mjs",
+    "trae.agent.js",
+    "page",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-agent",
+    "trae",
+    "trae-ai",
+    "bytedance"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "name": "Trae",
+    "summary": {
+      "en": "Trae and Magpie: preview and confirm the enabled Magpie models, then mirror them into Trae with the plugin's own Trae sign-in, plus MCP servers and skills.",
+      "zh": "用本插件自己的 Trae 登录，先预览再确认，把 Magpie 启用的模型镜像进 Trae，并接好 MCP 服务器与技能。"
+    },
+    "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAMTSURBVFhHrVf/bfIwEM0mMAITtNmACaAsULUbwCaMwAiMwAAtcf+v1IQEQvhlf3rG5+9ysQuqOOnVd+9+PZxQiSQRZoxJjTELY4x6IFZu5kTu82aM6Rtjlua/aeZz4zz8WF3MIKgfWo6EHC59vjC0XMYhDnFbhCN+MznkXiORof4lLZ8wMlTILTSQ3wg/Y8bzKQTg5YjZb8NCuZi4mL+AALyhnJRDZE5yIbtVT76i5x9KSpM1sTqyWJ6L8wJkkvzYkFsWuoGQdQR4e3t7M/1+/yF4f3/HyJCojgCffHl5MfiSPAKTCf+iWaM9HQHeuAD5ie5FRAA92s470HrmaKIBSgU1wqLvDHoiArhl0RsICJAvlIy56TsEdG6glQwI8DabzSzkJ07T1IsNCGjdkLPODQQfwdfXF/F6Op16Hj4My+iZ40QcENCa7+wqQGvLX/9c/dZLSAKQm8/nUoD++fkxg8HAC0B9lmVSgF+OOW6PSrTWEACz5OVyseACMMzVaOTm87m9CfiuDyL0cDi0teDX67XvxyzqpXq7EDdwuVzU+XymxbZICsAwcK7O1rAeDp/LskxzAWIH7cmS8/kMARoFp9PJFuLkAj4/Py1HQI3r0SL2PHqEAMr7HdidHI9HheB4PLaWfH9/64+PDwM8Pz93/sncAxIwHo/tfALt8wIQHA4HS+Ik30HzYX/BaDSyc9xc7YA9KmmaRtFSoGkaEqDJf3p6Mr1ez38y8nFKhPjX19fW7MPhADHAVUDTNLTMnhL7/Z5yBB6jxvehlsA5WQd/v9+rBH94E6Gu6w7nmgDEdEpYnvpdT2gOfJXUda3quta73c42wccpYp7nuZZPtSyW4LPhr5LdbrcAAWy3W5ugmPOSc/DiOAfInkAduEVSVVVaVZVdEgGG2YGCk3VGzKE+X0vCWP76U62qqqVr1jhDoGGM4wuifbxfxMr/MsrzvF+WpSrLUm82G1OW5SMRmqmw0wsgEZvNRqHYNdhGDnCEWM0tlGW57Cznluf5pCiKRVEUq6IoIMgCfgyUv1G3yPM8lfv+AQ6YUk2YwOqhAAAAAElFTkSuQmCC",
+    "agent": "./trae.agent.js",
+    "page": {
+      "title": "Trae models",
+      "titles": {
+        "zh": "Trae 模型"
+      },
+      "file": "page/index.html",
+      "service": {
+        "port": 3499,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3499
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agent-trae"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/agent-trae#readme",
+  "bugs": "https://github.com/magpie-community/plugins/issues"
+}
