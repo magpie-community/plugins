@@ -23,6 +23,7 @@ for (const [name, mocks] of [
   ["step-usage.mjs", false],
   ["tool-schema.mjs", false],
   ["usage-settlement.mjs", false],
+  ["steer-in-session.mjs", false],
   ["repeat-batch.mjs", false],
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],

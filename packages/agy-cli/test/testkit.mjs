@@ -314,6 +314,8 @@ class FakeAgy {
       index,
       prompt: params.prompt,
       sessionId: this.sessionId,
+      get cancelPending() { return self.cancelPending },
+      update(u) { self.update(u) },
       async text(text) { self.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }); await tick() },
       async thought(text) { self.update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } }); await tick() },
       // 同一批调用在同一个同步块里投递，等价于 agy 并行发起；返回各自的 MCP 回包。
