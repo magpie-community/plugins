@@ -174,6 +174,21 @@ try {
   for (const entry of Object.values(connected.config.customModels).filter((entry) => entry.providerName === "Magpie")) {
     assert.deepEqual(Object.keys(validate(entry)), [])
   }
+  const pluginSource = fs.readFileSync(path.join(packageDir, "minimax-design.agent.js"), "utf8")
+  const filtered = vm.runInNewContext(
+    pluginSource.replaceAll("export ", "") + "\nconnect(input)",
+    {
+      magpie: { platform: "darwin" },
+      input: {
+        gateway: { v1: provider.baseUrl, key: provider.apiKey },
+        models: ["fixture/good", "fixture/bad id", "fixture/good", "fixture/\u0000bad"]
+          .map((id) => ({ id, context: 128000, output: 16000, efforts: [] })),
+      },
+    },
+  )
+  const filteredProvider = filtered["config.customModels.user-custom-magpie"]
+  assert.equal(filteredProvider.models.length, 1)
+  assert.deepEqual(Object.keys(validate(filteredProvider)), [])
   console.log("PASS: Design 4.0.10's own model validator accepts Magpie's generated configuration")
 
   writeJSON(mcpFile, { mcp: { mine: { type: "remote", url: `${fixtureURL}/mine`, enabled: false } }, instructions: [] })

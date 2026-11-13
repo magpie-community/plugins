@@ -62,6 +62,9 @@ paths follow the observed Design 4.x layout.
   project/Claude config discovery and has its own optional memory system.
 - Models without positive integer context/output limits are omitted.
   Empty eligible catalogs fail explicitly; no guessed limits are written.
+- Model IDs must satisfy Design's validator: nonempty strings without
+  whitespace/control characters or its reserved reasoning prefix. Duplicate
+  IDs keep the first eligible model before providers are split.
 - Design permits at most 50 models per provider. Larger catalogs are
   split into `user-custom-magpie`, `user-custom-magpie-2`, etc.
   Magpie restores obsolete entries when a catalog shrinks.
