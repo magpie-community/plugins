@@ -694,6 +694,10 @@
   function openPop() {
     if (!grid.childElementCount) buildGrid();
     pop.hidden = false;
+    // the menu hangs from the button's right edge; where the toolbar wrapped
+    // and the button sits at the left, that runs off the page, so it hangs
+    // from the button's left edge instead
+    pop.classList.toggle("left", $("bg").getBoundingClientRect().right < pop.offsetWidth + 8);
     pop.classList.remove("closing");
     pop.classList.add("opening");
     $("bg").setAttribute("aria-expanded", "true");

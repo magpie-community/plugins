@@ -41,6 +41,7 @@ canvas { display: block; width: 100%; height: auto; margin: 0 auto; border-radiu
 #bg-chip { width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12); }
 #bg-pop { position: absolute; z-index: 2; top: calc(100% + 4px); right: 0; width: 292px; padding: 12px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, .18); transform-origin: top right; transition: opacity .18s cubic-bezier(.23, 1, .32, 1), transform .18s cubic-bezier(.23, 1, .32, 1); }
 #bg-pop[hidden] { display: none; }
+#bg-pop.left { right: auto; left: 0; transform-origin: top left; }
 #bg-pop.closing, #bg-pop.opening { opacity: 0; transform: scale(.96); }
 #bg-pop.closing { transition-duration: .12s; }
 #bg-grid { display: grid; grid-template-columns: repeat(4, 60px); gap: 8px; justify-content: space-between; }

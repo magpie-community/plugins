@@ -2,7 +2,8 @@
 // at the picture's top-right corner, shown on hover with a mouse, on focus
 // from the keyboard, and always on a touch screen. Removing it drops the
 // picture from the saved options and a card drawn on it goes back to teal,
-// with the menu left open. Drives the real page in Chromium and WebKit, in
+// with the menu left open. The menu stays on the page where the toolbar
+// wraps. Drives the real page in Chromium and WebKit, in
 // every language, against a stub bridge.
 // Run: NODE_PATH=<playwright's node_modules> node bg-delete.gui.mjs
 import { readFileSync, existsSync } from "node:fs"
@@ -30,8 +31,9 @@ await (async () => {
   const ok = (c, m) => { console.log((c ? "ok   " : "FAIL ") + m); if (!c) bad++; };
   for (const [name, type] of [["chromium", chromium], ["webkit", webkit]]) {
     const browser = await type.launch();
-    for (const lang of Object.keys(words)) for (const touch of [false, true]) {
-      const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, hasTouch: touch, isMobile: touch && name === "chromium" });
+    // 900 and 420 wrap the toolbar, so the Background button sits at the left
+    for (const width of [1200, 900, 420]) for (const lang of Object.keys(words)) for (const touch of [false, true]) {
+      const ctx = await browser.newContext({ viewport: { width, height: 800 }, hasTouch: touch, isMobile: touch && name === "chromium" });
       const p = await ctx.newPage();
       const errs = [];
       p.on("pageerror", (e) => errs.push(String(e)));
@@ -46,7 +48,9 @@ await (async () => {
       await p.goto("http://day.test/day/index.html");
       await p.click("#bg");
       await p.waitForSelector("#bg-del");
-      const tag = `${name} ${lang} ${touch ? "touch" : "mouse"}`;
+      const tag = `${name} ${width} ${lang} ${touch ? "touch" : "mouse"}`;
+      const pb = await p.locator("#bg-pop").boundingBox();
+      ok(pb.x >= 0 && pb.x + pb.width <= width, `${tag}: menu within the page (${Math.round(pb.x)}..${Math.round(pb.x + pb.width)})`);
       const del = p.locator("#bg-del");
       ok((await del.getAttribute("aria-label")) === words[lang], `${tag}: badge named ${words[lang]}`);
       ok((await p.locator('.sw[data-bg="custom"]').getAttribute("aria-checked")) === "true", `${tag}: custom picked`);
