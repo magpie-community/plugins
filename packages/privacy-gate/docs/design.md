@@ -166,12 +166,30 @@ only needs enough information to choose a local extractor. MIME parameters are
 stripped before classification, and oversized candidates are ignored before
 lowercasing so untrusted metadata cannot add unbounded normalization work.
 
+## Agent controls
+
+Magpie supplies `ctx.agent` to the gateway middleware. ShyPie uses it only for
+policy selection:
+
+- `disabledAgents` (exact ids or globs) bypasses both `onRequest` and
+  `onProvider` for that agent; the request is returned unchanged.
+- `protectUnknownAgent` defaults to `true`. An empty `ctx.agent` stays gated
+  unless the operator explicitly opts out.
+- New agents and newly added plugin agents are protected by default. The policy
+  is a deny-list, not an allow-list, so an unrecognised agent cannot silently
+  escape the gate.
+- The page, the Agents-page panel and the agent-row action all edit the same
+  `disabledAgents` and `protectUnknownAgent` options. The page also keeps a
+  page-only `extraAgents` catalogue for custom ids; the middleware ignores it.
+- `ctx.agent` is host-classified metadata, never a User-Agent header. Session
+  ids and working directories are not used for UI policy.
+
 ## Verification
 
-- 67 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
+- 72 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
   hook calls Magpie performs.
 - The package has no network, timers, Node APIs or imports; the middleware file
   is one plain JavaScript module.
 - The tests cover fail/guide mode, malformed options, all four protocols,
-  vendor-sealed replay fields, site scoping, blob scanning, and guide-mode
-  bounds.
+  vendor-sealed replay fields, site scoping, blob scanning, agent controls, and
+  guide-mode bounds.

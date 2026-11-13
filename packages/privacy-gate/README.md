@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-0D4B4E">
+  <img alt="version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-0D4B4E">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-F2B35A">
 </p>
 
@@ -52,7 +52,7 @@ Codex, Cursor, Claude Code and scripts.
 | **Default policy** | `binaryPolicy: fail` — binary part for a non-local model → **403** |
 | **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/media/size metadata + a neutral local-tool prompt |
 | **Text masking** | **Not here.** Use Magpie **Settings → Privacy** |
-| **Tests** | 67 cases through the repository's `scripts/middleware.mjs` |
+| **Tests** | 72 middleware cases + 3 page/panel checks through the repository harness |
 
 ## Install
 
@@ -129,6 +129,22 @@ parts are treated as binary parts; keys with names like `signature`, `id`,
 `parameters` or `tools` inside tool arguments and message text are ordinary data
 and are still scanned.
 
+## Per-agent controls
+
+The middleware is **agent-aware**: Magpie supplies `ctx.agent` to the gateway
+hook, so ShyPie can protect some agents and deliberately bypass others.
+
+Open **Settings → Plugins → Installed → ShyPie → Open page** for the full page,
+use the **ShyPie protection** card at the bottom of Magpie's **Agents** page for
+quick toggles, or right-click an agent and choose **ShyPie protection** to open
+the page focused on that agent.
+
+Every agent is protected by default, including new agents. A bypass is explicit:
+only ids in `disabledAgents` (or an empty `ctx.agent` when
+`protectUnknownAgent: false`) skip the gate. The page warns before a request can
+leave without protection; saving its switches updates the same `ctx.options` the
+middleware reads, with no restart.
+
 ## Configuration
 
 All settings are one JSON object, stored as `ctx.options`:
@@ -139,6 +155,8 @@ magpie plugin options privacy-gate '{
   "allowModels": ["deepseek/*", "copilot/*"],
   "localModels": ["ollama/*", "lmstudio/*"],
   "localProviders": ["ollama", "lmstudio"],
+  "disabledAgents": [],
+  "protectUnknownAgent": true,
   "guideTools": ["shypie.describe", "shypie.extract", "shypie.ocr"]
 }'
 ```
@@ -146,6 +164,9 @@ magpie plugin options privacy-gate '{
 | Option | Default | Meaning |
 |---|---:|---|
 | `binaryPolicy` | `fail` | `fail` returns 403; `guide` withholds every binary part and injects metadata + a local-tool prompt. |
+| `disabledAgents` | `[]` | Magpie agent ids (or globs) that bypass the gate completely. Empty protects every agent. |
+| `protectUnknownAgent` | `true` | Whether a request Magpie cannot name is still gated. |
+| `extraAgents` | `[]` | Page-only list of custom agent ids; the middleware ignores it. |
 | `allowModels` | `[]` | Model globs. `[]` allows every model. If present but not an array of non-empty short strings, **every request is refused** — a typo never silently removes the allowlist. |
 | `localModels` | `[]` | Model globs allowed to receive binary parts in `onRequest`. Pair with `localProviders`. |
 | `localProviders` | `[]` | Provider-id globs checked in `onProvider`. Both lists must agree. |
@@ -163,6 +184,7 @@ magpie plugin options privacy-gate '{
 | Image/file/audio/document parts for non-local models | 403 (`fail`) or withheld (`guide`) |
 | Encoded blobs in text (base64/base64url, hex, data URI, PDF/ZIP magic) | 403 |
 | Model outside `allowModels` | 403 |
+| Agent in `disabledAgents` | passes unchanged (explicit per-agent bypass) |
 | Malformed `allowModels` | every request 403 |
 | Body too complex for the inspection budget | 403 |
 | Protocol outside the four supported shapes | 403 unless `allowUnknownProtocol: true` |
@@ -337,6 +359,20 @@ flowchart LR
 工具参数和消息文本中名为 `signature`、`id`、`parameters` 或 `tools` 的字段
 属于普通数据，仍会被扫描。
 
+## 按 Agent 控制
+
+中间件是 **Agent 感知** 的：Magpie 会把 `ctx.agent` 提供给网关钩子，因此 ShyPie
+可以为部分 Agent 开启防护，并明确绕过其他 Agent。
+
+打开 **设置 → 插件 → 已安装 → ShyPie → 打开页面** 使用完整页面；在 Magpie
+**Agents** 页面底部的 **ShyPie 防护** 卡片中快速切换；或右键某个 Agent 选择
+**ShyPie 防护**，页面会定位到该 Agent。
+
+默认保护所有 Agent，包括新出现的 Agent。绕过必须显式配置：只有
+`disabledAgents` 中的 ID（或在 `protectUnknownAgent: false` 时没有
+`ctx.agent` 的请求）才会跳过防护。页面会在请求可能失去保护时提示；保存开关
+会更新中间件读取的同一份 `ctx.options`，无需重启。
+
 ## 配置
 
 所有配置都在一个 JSON 对象中，即 `ctx.options`：
@@ -347,6 +383,8 @@ magpie plugin options privacy-gate '{
   "allowModels": ["deepseek/*", "copilot/*"],
   "localModels": ["ollama/*", "lmstudio/*"],
   "localProviders": ["ollama", "lmstudio"],
+  "disabledAgents": [],
+  "protectUnknownAgent": true,
   "guideTools": ["shypie.describe", "shypie.extract", "shypie.ocr"]
 }'
 ```
@@ -354,6 +392,9 @@ magpie plugin options privacy-gate '{
 | 选项 | 默认值 | 含义 |
 |---|---:|---|
 | `binaryPolicy` | `fail` | `fail` 返回 403；`guide` 扣留所有二进制内容，并注入元数据和本地工具提示。 |
+| `disabledAgents` | `[]` | 完全绕过防护的 Magpie Agent ID（或 glob）。为空时保护所有 Agent。 |
+| `protectUnknownAgent` | `true` | Magpie 无法识别 Agent 时是否仍执行防护。 |
+| `extraAgents` | `[]` | 仅页面使用的自定义 Agent ID 列表；中间件忽略。 |
 | `allowModels` | `[]` | 模型 glob。`[]` 允许所有模型。如果该选项存在但不是由非空短字符串组成的数组，**所有请求都会被拒绝**，拼写错误不会静默取消允许列表。 |
 | `localModels` | `[]` | 允许在 `onRequest` 接收二进制内容的模型 glob；需要与 `localProviders` 配合。 |
 | `localProviders` | `[]` | 在 `onProvider` 中检查的 provider-id glob；两个列表必须同时匹配。 |
@@ -371,6 +412,7 @@ magpie plugin options privacy-gate '{
 | 面向非本地模型的图片/文件/音频/文档 part | 403（`fail`）或扣留（`guide`） |
 | 文本中的编码数据块（base64/base64url、hex、data URI、PDF/ZIP 头） | 403 |
 | 模型不在 `allowModels` 中 | 403 |
+| Agent 在 `disabledAgents` 中 | 原样通过（显式按 Agent 绕过） |
 | `allowModels` 格式错误 | 所有请求 403 |
 | 请求体超出检查预算 | 403 |
 | 四种支持协议之外的请求 | 403，除非 `allowUnknownProtocol: true` |

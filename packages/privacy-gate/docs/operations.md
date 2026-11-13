@@ -64,6 +64,21 @@ in the guide prompt.
 5. Check Magpie's plugin log for counts and the `usage` line. The middleware
    never logs request content — only provider/model/status/blocked counters.
 
+## Per-agent controls
+
+Open **Settings → Plugins → Installed → ShyPie → Open page** for the full
+per-agent page. The same switches are available in the **ShyPie protection**
+card at the bottom of Magpie's **Agents** page, and right-clicking an agent adds
+**ShyPie protection** to its row menu.
+
+Every agent is protected by default. A switch that is off writes that agent's id
+to `disabledAgents`; it bypasses both the request gate and the provider check.
+The **Unknown / unclassified agent** switch controls `protectUnknownAgent` and
+defaults to on. Saving applies to the next request; no Magpie restart is needed.
+
+A bypassed agent is intentionally unprotected, including binary parts and
+encoded blobs. Use it only for an agent whose traffic you have chosen to trust.
+
 ## Troubleshooting
 
 ### I get a 403 for an image
