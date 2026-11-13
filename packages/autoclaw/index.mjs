@@ -2252,7 +2252,7 @@ export const _internal = {
   clearCampaignLedger: () => campaignCache.clear(),
   campaignBreakdown, fetchCampaignLedger, fmtPoints, campaignCached,
   balanceObserve, usageStatePath: () => usageStatePath ?? usageStatePathDefault(), setUsageStatePath, beijingDayOf,
-  fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth,
+  fetchUserProfile, accountDeviceId, accountDisplayName, startLocalOAuth, callEnvelope,
   FLAGGED, unflagged, unflag, tidyBody, rewriteManagedBody, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
   dumpDefaultDir, D406_KEEP,
   guidePageHtml, callbackPageHtml,
