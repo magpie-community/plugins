@@ -31,6 +31,35 @@ Library controls as other agents:
 - Global instructions are not offered: no always-read instruction file
   has been established for this desktop.
 
+## Native image and video models
+
+With Design 4.0.10, connecting the Agent also synchronizes Magpie's image
+and video catalogue into Design's native media model store. These are
+native model choices, independent of MCP. A companion Bun plugin checks
+connection changes every five seconds and refreshes the catalogue every
+minute while Magpie is running.
+Restart Design after the first synchronization to refresh its desktop
+model lists. Desktop selection and canvas insertion remain acceptance
+items; the automated test covers its native media loader and executor.
+
+The bridge uses explicit image/video kinds from Magpie's authenticated
+model list. Images support generation and, when advertised, one reference
+image for editing. Videos support generation and one first-frame image.
+Size/aspect ratio and video duration are passed to Magpie; leave them empty
+for the selected model's defaults. Model-specific ranges, video/audio
+references, sound options and image quality presets are not inferred.
+
+The bridge owns a provider and model entries under `media-models`, preserves
+other providers/models and each managed model's enabled setting, and removes
+its entries when the Agent disconnects. A failed catalogue request keeps
+the previous list. Store version conflicts, ID collisions and Design's
+200-model/50-provider limits stop synchronization with a logged error.
+Do not edit the generated adapters/specifications by hand.
+
+Image outputs and authenticated video downloads go through Design's media
+executor. No separate generation service is installed. Changing the model
+list does not submit generation jobs or incur inference charges.
+
 On macOS the data directory is
 `~/Library/Application Support/@hilo/desktop`; on Windows it is
 `%APPDATA%\@hilo\desktop`. Detection uses the data directory so moving the

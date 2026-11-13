@@ -41,6 +41,23 @@ No account credentials or paid inference are used. These checks exercise
 the installed app's real gateway and agent executables; they do not claim
 GUI interaction, image/video generation or live vendor inference.
 
+## Native media bridge — 0.3.0
+
+`media-native.mjs` validates the generated media store and adapter using
+Design 4.0.10's installed gateway code and Electron Node runtime, in a
+disposable home. It loads the packaged module with automatic gateway
+startup suppressed and invokes its actual media store, sandbox and executor.
+HTTP responses are fixture responses, not live vendor generation.
+
+Passed: image/video model loading, image output resolution, reference-image
+editing, video submission/polling and authenticated content fetch. The video
+fixture checks byte transport, not playback or a usable generated clip.
+This test does not prove canvas insertion or desktop GUI selection.
+
+Initial controls cover one image reference, size/aspect ratio, and video
+duration. They do not infer vendor-specific ranges or support additional
+video/audio references. Native Windows media execution has not been tested.
+
 ## Windows
 
 The existing `%APPDATA%\@hilo\desktop\hub-config.json` model path is retained.
