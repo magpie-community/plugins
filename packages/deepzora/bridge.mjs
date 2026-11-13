@@ -108,9 +108,24 @@ function desired(control) {
     models: [control.model], default: control.model, api_key_env: KEY,
   }
   const info = control.modelInfo || {}
-  if (Number.isSafeInteger(info.context) && info.context > 0) entry.context_window = info.context
-  if (Number.isSafeInteger(info.output) && info.output > 0) entry.max_output_tokens = info.output
-  if (typeof info.images === "boolean") entry.model_overrides = { [control.model]: { vision: info.images } }
+  // Old control files have only modelInfo. Keep the explicit default even
+  // when it is a manually entered route absent from the discovery catalog.
+  const catalog = new Map()
+  for (const m of control.catalog || []) {
+    if (typeof m?.id === "string" && m.id.trim()) catalog.set(m.id, m)
+  }
+  catalog.set(control.model, { ...info, ...catalog.get(control.model) })
+  entry.models = [...catalog.keys()]
+  const overrides = []
+  for (const [id, m] of catalog) {
+    const item = {}
+    if (typeof m.name === "string" && m.name.trim() && m.name !== id) item.display_name = m.name.trim()
+    if (Number.isSafeInteger(m.context) && m.context > 0) item.context_window = m.context
+    if (Number.isSafeInteger(m.output) && m.output > 0) item.max_output_tokens = m.output
+    if (typeof m.images === "boolean") item.vision = m.images
+    if (Object.keys(item).length) overrides.push([id, item])
+  }
+  if (overrides.length) entry.model_overrides = Object.fromEntries(overrides)
   return { entry, key: control.gatewayKey, ref: `${PROVIDER}/${control.model}` }
 }
 
@@ -201,8 +216,23 @@ export function syncBridge(p = pathsFor()) {
 export function startBridge(p = pathsFor(), { interval = 750, onError = () => console.error("Deepzora bridge paused; run magpie-deepzora sync for details (configuration retained).") } = {}) {
   if (active.has(p.state)) return active.get(p.state)
   let previousError = ""
+  let previousFiles
+  const watched = [p.control, p.config, p.env, p.state, p.state + ".pending"]
   const tick = () => {
-    try { syncBridge(p); previousError = "" } catch (error) {
+    try {
+      // A catalog can contain hundreds of overrides. Avoid parsing the whole
+      // TOML and backup every 750 ms when neither side has changed. Use the
+      // pre-sync stamp so a concurrent edit is always seen on the next tick.
+      const files = watched.map(file => {
+        const st = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false })
+        return st ? `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}` : "-"
+      }).join("|")
+      if (files === previousFiles) return
+      syncBridge(p)
+      previousFiles = files
+      previousError = ""
+    } catch (error) {
+      previousFiles = undefined
       // Parser errors can contain a source line; never write those to logs.
       if (error.message !== previousError) onError()
       previousError = error.message

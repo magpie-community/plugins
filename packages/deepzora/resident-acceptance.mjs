@@ -40,7 +40,10 @@ try {
   fs.mkdirSync(path.join(env.XDG_CONFIG_HOME, "magpie"), { recursive: true })
   fs.writeFileSync(config, original)
   fs.writeFileSync(credentials, "OTHER_KEY=fixture-original\n")
-  fs.writeFileSync(path.join(env.XDG_CONFIG_HOME, "magpie/providers.json"), JSON.stringify({ providers: [{ id: "fixture", name: "Fixture", key: "fixture-only", chat: "http://127.0.0.1:9/v1", models: ["model"] }] }))
+  fs.writeFileSync(path.join(env.XDG_CONFIG_HOME, "magpie/providers.json"), JSON.stringify({ providers: [
+    { id: "fixture", name: "Fixture", key: "fixture-only", chat: "http://127.0.0.1:9/v1", models: ["model"] },
+    { id: "ollama-cloud", name: "Ollama Cloud", key: "fixture-only", chat: "http://127.0.0.1:9/v1", models: ["second"] },
+  ] }))
   await run(["plugin", "add", repo])
   await run(["deepzora", "fixture/model"])
   child = spawn(magpie, ["serve"], { cwd: root, env, stdio: "ignore" })
@@ -49,7 +52,12 @@ try {
     try { return (await fetch(`http://${addr}/api/hello`, { signal: AbortSignal.timeout(500) })).ok } catch { return false }
   })
   await fetch(`http://${addr}/v1/models`, { signal: AbortSignal.timeout(10000) })
-  await until(() => parseTOML(fs.readFileSync(config, "utf8")).default_model === "magpie-agent/fixture/model")
+  const managed = () => parseTOML(fs.readFileSync(config, "utf8")).providers?.find(p => p.name === "magpie-agent")
+  await until(() => managed()?.models.includes("ollama-cloud/second"))
+  await run(["provider", "rm", "ollama-cloud"])
+  await until(() => managed() && !managed().models.includes("ollama-cloud/second"))
+  assert.equal(parseTOML(fs.readFileSync(config, "utf8")).default_model, "magpie-agent/fixture/model")
+  console.log("PASS: removing an upstream updates Deepzora without reselecting the default")
   await run(["plugin", "off", repo])
   // Refreshing the catalog observes plugins.json and closes the old host.
   await fetch(`http://${addr}/v1/models`, { signal: AbortSignal.timeout(10000) })
