@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/gateway-agentcompass",
-  "version": "0.1.4",
-  "description": "Intent, multi-dimensional capability, Model DNA, subscription quota opportunity-cost, and session-affinity routing plugin for Magpie, powered by AgentCompass.",
+  "version": "0.2.0",
+  "description": "Four-category capability fit, quota-economy and session-affinity routing plugin for Magpie, powered by AgentCompass v0.6.0.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -25,7 +25,7 @@
     }
   },
   "scripts": {
-    "test": "node --test test/router.test.mjs"
+    "test": "node --test test/router.test.mjs test/routing-contract.test.mjs test/no-hardcode.test.mjs test/plan-state.test.mjs test/quotas-load.test.mjs test/plan-align.test.mjs"
   },
   "keywords": [
     "magpie",
