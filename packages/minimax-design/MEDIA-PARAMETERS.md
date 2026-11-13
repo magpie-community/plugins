@@ -43,11 +43,15 @@ are not blindly passed through.
 | qwen-cn or bailian-token-plan/qwen-image-3.0-pro | Verified pixel presets; automatic size | WIDTHxHEIGHT; never send a ratio as size |
 | rightimage GPT Image 2, 2.5, 2.6 routes | Verified pixel presets | size; no unverified reference-count or quality expansion |
 | rightimage Gemini routes | Provider defaults | Current route cannot faithfully carry size/resolution |
-| OpenRouter images | Live ratios; 2K combinations only for faithfully mapped ratios; live reference budget | size; unsupported 1.5K combinations omitted |
+| OpenRouter images | Live ratios and reference budget; 2K combinations only for the verified `bytedance-seed/seedream-5-5` Images API route | size; chat image routes expose ratios without resolution controls |
 
 For image models with declared image input but no verified count, the bridge
 retains its existing one-image bridge budget; this is not a vendor maximum.
 Unsupported video/audio references remain outside this bridge.
+Video reference counts are capped by the verified frame/subject mapping.
+Count metadata alone does not establish a new multi-image mode; unknown video
+routes accept at most one first frame. A minimum above the mapped maximum
+fails synchronization rather than installing an unusable specification.
 
 ## Automatic reference modes and preflight
 

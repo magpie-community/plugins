@@ -1,10 +1,10 @@
 {
   "name": "@magpie-community/agent-minimax-design",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MiniMax Design as a Magpie agent, with native text/image/video model sync and Library skills/MCP",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["minimax-design.agent.js", "index.mjs", "media-sync.mjs", "media-capabilities.mjs", "media.adapter.js", "README.md", "COMPATIBILITY.md", "MEDIA-PARAMETERS.md"],
+  "files": ["minimax-design.agent.js", "index.mjs", "media-sync.mjs", "media-capabilities.mjs", "media.adapter.js", "README.md", "COMPATIBILITY.md", "MEDIA-PARAMETERS.md", "MANAGEMENT.md"],
   "keywords": ["magpie", "magpie-agent", "minimax", "minimax-design", "llm-gateway"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax-design" },
