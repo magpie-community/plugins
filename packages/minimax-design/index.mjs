@@ -1,21 +1,24 @@
 import { applyMedia, connection, mediaPaths, syncMedia } from "./media-sync.mjs"
+import { installMcpBridge } from "./mcp-sync.mjs"
 
 const instance = Symbol.for("magpie.minimax-design.media.v1")
 
-export default async function MiniMaxDesignMediaPlugin() {
+export default async function MiniMaxDesignMediaPlugin(_input, options = {}) {
   if (globalThis[instance]) return {}
   const paths = mediaPaths()
   let running = false
   let lastConnection
   let lastRefresh = 0
   let lastError
+  let config
   const tick = async () => {
     if (running) return
     running = true
     try {
+      installMcpBridge(paths.control)
       const current = JSON.stringify(connection(paths))
       if (current === lastConnection && Date.now() - lastRefresh < 60000) return
-      await syncMedia(paths)
+      await syncMedia(paths, options, config?.provider)
       lastConnection = current
       lastRefresh = Date.now()
       lastError = undefined
@@ -33,5 +36,5 @@ export default async function MiniMaxDesignMediaPlugin() {
     catch { console.error("[minimax-design] Media cleanup pending; ownership record retained.") }
   })
   await tick()
-  return {}
+  return { config(value) { config = value; lastRefresh = 0 } }
 }

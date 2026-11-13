@@ -146,9 +146,46 @@ test("video count metadata cannot promise reference modes the adapter cannot sub
   assert.deepEqual(mediaSpec(unknown.capability).references.image, { min: 0, max: 1 })
   assert.equal(unknown.submit({}, [image]).body.input_reference, image.dataUrl)
   assert.throws(() => unknown.submit({}, [image, image]), /数量/)
-  const known = await configured("minimax-code/MiniMax-H3-Max", "video", { parameters })
+  const known = await configured("minimax-code/MiniMax-H3-Max", "video", { images: false, parameters })
   assert.equal(known.capability.references.max, 2)
   assert.equal(known.submit({}, [image, image]).body.last_frame, image.dataUrl)
   assert.throws(() => mediaCapability({ ref: "custom/video", type: "video", images: true,
     parameters: { input_references: { type: "range", min: 2, max: 4 } } }), /verified gateway mapping/)
+})
+
+test("reference schemas survive incomplete modalities independently of provider or model names", async () => {
+  const model = await configured("renamed-source/new-image-model", "image", {
+    images: false, parameters: { input_references: { type: "range", min: 0, max: 4 } },
+  })
+  assert.equal(model.capability.references.max, 4)
+  const request = model.submit({}, Array(4).fill(image))
+  assert.equal(request.path, "/images/edits")
+  assert.deepEqual(request.body.images, Array(4).fill({ image_url: image.dataUrl }))
+  assert.throws(() => model.submit({}, Array(5).fill(image)), /数量/)
+  const disabled = await configured("renamed-source/new-image-model", "image", {
+    images: false, parameters: { input_references: { type: "range", min: 0, max: 0 } },
+  })
+  assert.throws(() => disabled.submit({}, [image]), /数量/)
+  const unknown = await configured("unverified/gpt-image-2.6-flare", "image", { images: false })
+  assert.equal(unknown.capability.references.max, 0)
+  const metadata = await configured("custom/image", "image", {
+    images: false, parameters: { input_references: { type: "range", min: 1, max: 4 } },
+  })
+  assert.equal(metadata.submit({}, Array(4).fill(image)).body.images.length, 4)
+})
+
+test("Gemini source models preserve four references through the standard Magpie image API", async () => {
+  const model = { ref: "existing-provider/image-model",
+    requestModel: "replacement-provider/new-image-model", type: "image", images: false,
+    parameters: { input_references: { type: "range", min: 0, max: 4 } } }
+  const capability = { ...mediaCapability(model), requestModel: model.requestModel }
+  const generated = source.replace("const capability = null", () => `const capability = ${JSON.stringify(capability)}`)
+  const adapter = await import(`data:text/javascript;base64,${Buffer.from(generated).toString("base64")}`)
+  const images = Array.from({ length: 4 }, (_, index) => ({ dataUrl: `data:image/png;base64,fixture${index}` }))
+  const request = adapter.buildSubmit({ type: "image", model: model.ref, prompt: "test", params: {}, images })
+  assert.equal(request.path, "/images/edits")
+  assert.equal(request.body.model, model.requestModel)
+  assert.deepEqual(request.body.images, images.map((image) => ({ image_url: image.dataUrl })))
+  assert.deepEqual(adapter.parseSubmit({ body: { data: [{ b64_json: "AA==" }] } }, {}),
+    { outputs: [{ base64: "AA==" }] })
 })
