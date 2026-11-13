@@ -1,0 +1,69 @@
+{
+  "name": "@magpie-community/page-token-widget",
+  "version": "0.1.0",
+  "description": "A page in Magpie's window: an iPhone home screen widget that shows the remaining quota and the real token usage of Codex, MiniMax and GLM. Its local service reads Magpie's quota API and publishes the port in your Tailscale tailnet.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "page",
+    "scriptable",
+    "ui",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "magpie": ">=0.1.3681",
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-token-widget"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-token-widget",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "scriptable",
+    "iphone",
+    "tailscale",
+    "quota",
+    "usage"
+  ],
+  "magpie": {
+    "name": "iPhone quota widget",
+    "summary": {
+      "en": "An iPhone home screen widget for Magpie: scan a code, and the widget shows the remaining quota of Codex, MiniMax and GLM on the phone.",
+      "zh": "Magpie 的 iPhone 桌面额度组件：扫一次码，手机上就能看到 Codex、MiniMax、GLM 各家套餐的剩余额度。"
+    },
+    "page": {
+      "title": "iPhone quota widget",
+      "titles": {
+        "en": "iPhone quota widget",
+        "zh": "iPhone 额度组件",
+        "zh-TW": "iPhone 額度元件"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3498,
+        "option": "port"
+      }
+    },
+    "permissions": [],
+    "options": {
+      "port": 3498,
+      "gatewayURL": "http://127.0.0.1:3425"
+    }
+  }
+}

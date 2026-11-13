@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh" data-theme="__THEME__">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="service-token" content="__SERVICE_TOKEN__" />
+    <title>iPhone 额度组件</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>iPhone 额度组件</h1>
+        <p class="lead">
+          这个插件把各家的套餐余量送到 iPhone 桌面。下面是配对用的码：扫一次，手机就能自己装好组件。
+        </p>
+      </header>
+
+      <section class="card">
+        <h2>扫码配对</h2>
+        <div class="qr"><img id="qr" alt="配对二维码" /></div>
+        <p class="center mono" id="pairingURL">—</p>
+        <div class="actions">
+          <button id="copyLink" type="button">复制配对链接</button>
+          <button id="copyToken" type="button">复制只读令牌</button>
+          <button id="rotate" type="button" class="quiet">重新生成配对码</button>
+        </div>
+        <p class="note" id="pairNote"></p>
+      </section>
+
+      <section class="card">
+        <h2>状态</h2>
+        <dl id="facts"></dl>
+      </section>
+
+      <section class="card">
+        <h2>显示哪些订阅</h2>
+        <div id="subscriptions" class="checks"></div>
+        <p class="note">
+          这里改的是中号和大号组件里的内容。勾一个厂商＝这个厂商的所有账号都显示；只勾一个账号＝只有这个账号。小号组件用自己的参数选一张：codex、minimax、glm，或 codex@账号名。
+        </p>
+        <p class="note" id="subNote"></p>
+      </section>
+
+      <section class="card">
+        <h2>在 iPhone 上</h2>
+        <ol>
+          <li>手机和电脑连在同一个 Tailscale 里。</li>
+          <li>用相机扫上面的二维码，打开配对页。</li>
+          <li>在下载列表里用 Scriptable 打开下载的脚本。</li>
+          <li>长按 iPhone 桌面，添加 Scriptable 小组件，选 UsageWidget。</li>
+        </ol>
+        <p class="note" id="lifetime"></p>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
