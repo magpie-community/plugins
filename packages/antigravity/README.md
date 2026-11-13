@@ -138,12 +138,19 @@ pool it reads from:
   group's windows;
 - else a pool of its own, named for the model, when it reads otherwise.
 
+## Web Search
+
+The plugin registers a magpie `search` hook (`antigravity:antigravity`)
+backed by Antigravity's Google Search grounding (`tools: [{ googleSearch: {} }]`
+on an available Flash model with minimal/zero thinking on the signed-in
+Antigravity account), returning grounded pages with URLs and snippets.
+
 ## Not carried over from the built-in
 
 - Resting an account that Antigravity turned away for 6 hours, and asking
   its other accounts first. The 400 above makes magpie try the next
   account at once.
-- Google Search grounding, and image models (drawing).
+- Image models (drawing) as an OpenAI images endpoint.
 - `countTokens` answers 404, so magpie estimates the count.
 - Sending the system prompt as written: the plugin always breaks up the
   turned-away lines.

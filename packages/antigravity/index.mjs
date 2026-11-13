@@ -1476,19 +1476,34 @@ function withNote(text, note) {
   return text
 }
 
+// mergeGrounding merges SSE groundingMetadata chunks without letting a
+// trailing empty array overwrite chunks/supports from an earlier chunk
+function mergeGrounding(prev, next) {
+  if (!isObj(prev)) return { ...next }
+  const out = { ...prev }
+  for (const [k, v] of Object.entries(next)) {
+    if (Array.isArray(v) && v.length === 0 && Array.isArray(prev[k]) && prev[k].length > 0) continue
+    out[k] = v
+  }
+  return out
+}
+
 // whole is a stream read to its end, as one generateContent reply
 async function whole(res) {
   const text = await res.text()
   const out = { candidates: [] }
   const parts = []
   let last
+  let groundingMetadata
   for (const l of text.split(/\r?\n/)) {
     if (!l.startsWith("data:")) continue
     let j = parse(l.slice(5).trim())
     if (isObj(j?.response)) j = j.response
     if (!isObj(j)) continue
     last = j
-    for (const p of j.candidates?.[0]?.content?.parts ?? []) {
+    const c0 = j.candidates?.[0]
+    if (isObj(c0?.groundingMetadata)) groundingMetadata = mergeGrounding(groundingMetadata, c0.groundingMetadata)
+    for (const p of c0?.content?.parts ?? []) {
       // a stream ends on an empty text, which Claude refuses sent back
       if (p?.text === "" && !p.thoughtSignature && Object.keys(p).length === 1) continue
       const prev = parts[parts.length - 1]
@@ -1500,7 +1515,7 @@ async function whole(res) {
     if (j.responseId) out.responseId = j.responseId
   }
   const c = last?.candidates?.[0] ?? {}
-  out.candidates = [{ ...c, content: { role: "model", parts } }]
+  out.candidates = [{ ...c, ...(groundingMetadata ? { groundingMetadata } : {}), content: { role: "model", parts } }]
   return out
 }
 
@@ -1833,6 +1848,134 @@ async function importAccount(inputs) {
   }
 }
 
+// ---- web search (Google Search grounding) -----------------------------------------------
+
+// Preference order for search calls; falls back to any non-image Flash or Gemini model in the live catalog
+const SEARCH_MODELS = ["gemini-3-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
+
+function pickSearchModel(infos) {
+  const raw = catalogOf(infos)
+  const remaining = new Map((Array.isArray(infos) ? infos : []).map((m) => [m.id, m.remaining]))
+  const pickFrom = (pool) => {
+    const ids = new Set(pool.map((m) => m.id))
+    for (const id of SEARCH_MODELS) if (ids.has(id)) return id
+    const flash = pool.find((m) => m.id.startsWith("gemini-") && !draws(m.id) && m.id.includes("flash"))
+    if (flash) return flash.id
+    const anyGemini = pool.find((m) => m.id.startsWith("gemini-") && !draws(m.id))
+    return anyGemini?.id ?? ""
+  }
+  const avail = raw.filter((m) => remaining.get(m.id) !== 0)
+  return pickFrom(avail) || pickFrom(raw) || SEARCH_MODELS[0]
+}
+
+function searchThinkingConfig(sent) {
+  const m = String(sent ?? "").toLowerCase()
+  if (generation(m) >= 3 || m.startsWith("gemini-pro-agent")) {
+    return { includeThoughts: false, thinkingLevel: m.includes("flash") ? "minimal" : "low" }
+  }
+  return { includeThoughts: false, thinkingBudget: 0 }
+}
+
+function pagesFromGrounding(reply, count) {
+  const cand = reply?.candidates?.[0]
+  const gm = cand?.groundingMetadata
+  const chunks = Array.isArray(gm?.groundingChunks) ? gm.groundingChunks : []
+  if (!chunks.length) return []
+  const supports = Array.isArray(gm?.groundingSupports) ? gm.groundingSupports : []
+  const answer = (cand?.content?.parts ?? [])
+    .filter((p) => !p?.thought && typeof p?.text === "string")
+    .map((p) => p.text)
+    .join("")
+    .trim()
+  const textsByIdx = chunks.map(() => [])
+  for (const sup of supports) {
+    const seg = typeof sup?.segment?.text === "string" ? sup.segment.text.trim() : ""
+    if (!seg || !Array.isArray(sup?.groundingChunkIndices)) continue
+    for (const idx of sup.groundingChunkIndices) {
+      if (Number.isInteger(idx) && idx >= 0 && idx < chunks.length && !textsByIdx[idx].includes(seg)) {
+        textsByIdx[idx].push(seg)
+      }
+    }
+  }
+  const out = []
+  const byKey = new Map()
+  for (let i = 0; i < chunks.length; i++) {
+    const url = typeof chunks[i]?.web?.uri === "string" ? chunks[i].web.uri.trim() : ""
+    const title = (typeof chunks[i]?.web?.title === "string" ? chunks[i].web.title.trim() : "") || url
+    if (!url && !title) continue
+    const key = url || title
+    const existing = byKey.get(key)
+    if (existing) {
+      for (const s of textsByIdx[i]) if (!existing._snippets.includes(s)) existing._snippets.push(s)
+      continue
+    }
+    const entry = { title: title || url, url, _snippets: [...textsByIdx[i]] }
+    byKey.set(key, entry)
+    out.push(entry)
+  }
+  const limit = Number.isInteger(Number(count)) && Number(count) > 0 ? Number(count) : out.length
+  const trimmed = out.slice(0, limit).map(({ title, url, _snippets }) => ({
+    title,
+    url,
+    text: _snippets.join("\n"),
+  }))
+  if (answer && trimmed.length && trimmed.every((p) => !p.text)) trimmed[0].text = answer
+  return trimmed
+}
+
+async function webSearch({ query, count } = {}, ctx = {}) {
+  const q = typeof query === "string" ? query.trim() : ""
+  if (!q) throw new Error("query is required")
+  const s = stateOf(await ctx.getAuth?.())
+  if (!s) throw new Error("not signed in to Antigravity")
+  let l
+  try {
+    l = await modelInfo(s)
+  } catch (e) {
+    if (e instanceof SignedOut) throw new StatusError(401, e.message)
+    throw e
+  }
+  const picked = pickSearchModel(l.infos)
+  const [sent, at] = sentID(catalogOf(l.infos), picked, "minimal")
+  const n = Number.isInteger(Number(count)) && Number(count) > 0 ? Math.min(Number(count), 20) : 6
+  const raw = {
+    systemInstruction: {
+      role: "user",
+      parts: [{ text: "You are a web search retrieval assistant. Always use Google Search to look up the user's query. Write concise bullet points summarizing concrete facts, dates, versions, and numbers, and ground each bullet in the retrieved sources so every major source is cited." }],
+    },
+    contents: [{
+      role: "user",
+      parts: [{ text: `Search the live web for: ${q}\nProvide up to ${n} diverse, authoritative web sources, ensuring each relevant source supports at least one concrete factual bullet point.` }],
+    }],
+    tools: [{ googleSearch: {} }],
+  }
+  const req = shape(raw, sent, at, "minimal")
+  req.generationConfig = { thinkingConfig: searchThinkingConfig(sent) }
+  let tok
+  try {
+    tok = await token(s)
+  } catch (e) {
+    if (e instanceof SignedOut) throw new StatusError(401, e.message)
+    throw e
+  }
+  const ua = await userAgent()
+  const res = await fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": ua },
+    body: JSON.stringify(envelope(req, sent, l.project.id, false)),
+    signal: ctx.abort,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    const err = new StatusError(res.status, `Antigravity: ${apiError(text, res.status)}`)
+    const ra = res.headers.get("retry-after")
+    if (ra) err.retryAfter = ra
+    throw err
+  }
+  const reply = await whole(res)
+  return pagesFromGrounding(reply, count)
+}
+
 // ---- the plugin ---------------------------------------------------------------------------
 
 export async function AntigravityAuthPlugin({ client, magpie } = {}) {
@@ -1908,6 +2051,13 @@ export async function AntigravityAuthPlugin({ client, magpie } = {}) {
         return usage(await getAuth())
       },
     },
+    search: {
+      antigravity: {
+        name: "Antigravity (Google Search)",
+        auth: PROVIDER,
+        execute: webSearch,
+      },
+    },
   }
 }
 
@@ -1939,6 +2089,9 @@ export const _internal = {
   creditsOf,
   entitlements,
   complete,
+  pickSearchModel,
+  pagesFromGrounding,
+  webSearch,
   retry400,
   badCall,
   usage,
