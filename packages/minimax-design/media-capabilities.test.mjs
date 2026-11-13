@@ -106,7 +106,7 @@ test("OpenRouter refresh intersects endpoints, keeps credentials local and proje
   let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++
-    assert.equal(url, "https://openrouter.ai/api/v1/images/models/vendor/image/endpoints")
+    assert.equal(url, "https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-5/endpoints")
     assert.equal(options.headers, undefined)
     return { ok: true, json: async () => ({ endpoints: [10, 6].map((max) => ({ supported_parameters: {
       aspect_ratio: { type: "enum", values: ["16:9", "4:5", "1:1", "auto"] },
@@ -114,7 +114,7 @@ test("OpenRouter refresh intersects endpoints, keeps credentials local and proje
     } })) }) }
   }
   try {
-    const [model] = await enrichMediaParameters([{ ref: "openrouter/vendor/image", owner: "openrouter", type: "image", images: true }])
+    const [model] = await enrichMediaParameters([{ ref: "openrouter/bytedance-seed/seedream-5-5", owner: "openrouter", type: "image", images: true }])
     const capability = mediaCapability(model)
     assert.equal(capability.references.max, 6)
     assert.equal(capability.source, "openrouter-endpoints")
@@ -126,4 +126,29 @@ test("OpenRouter refresh intersects endpoints, keeps credentials local and proje
     globalThis.fetch = async () => ({ ok: false, status: 503 })
     await assert.rejects(enrichMediaParameters([{ ...model, parameters: undefined }]), /503/)
   } finally { globalThis.fetch = original }
+})
+
+test("OpenRouter chat image routes expose ratios without ineffective pixel resolution presets", async () => {
+  for (const upstream of ["google/gemini-3-pro-image-preview", "openai/gpt-5-image", "vendor/new-image"]) {
+    const { capability, submit } = await configured(`openrouter/${upstream}`, "image", {
+      owner: "openrouter", parameters: { aspect_ratio: { type: "enum", values: ["16:9", "1:1"] },
+        resolution: { type: "enum", values: ["2K"] } },
+    })
+    assert.deepEqual(capability.params[0].enum, ["自动", "16:9", "1:1"])
+    assert.equal(submit({ preset: "16:9" }).body.size, "16:9")
+    assert.throws(() => submit({ preset: "16:9 · 2K" }), /不支持参数/)
+  }
+})
+
+test("video count metadata cannot promise reference modes the adapter cannot submit", async () => {
+  const parameters = { input_references: { type: "range", min: 0, max: 4 } }
+  const unknown = await configured("custom/video", "video", { parameters })
+  assert.deepEqual(mediaSpec(unknown.capability).references.image, { min: 0, max: 1 })
+  assert.equal(unknown.submit({}, [image]).body.input_reference, image.dataUrl)
+  assert.throws(() => unknown.submit({}, [image, image]), /数量/)
+  const known = await configured("minimax-code/MiniMax-H3-Max", "video", { parameters })
+  assert.equal(known.capability.references.max, 2)
+  assert.equal(known.submit({}, [image, image]).body.last_frame, image.dataUrl)
+  assert.throws(() => mediaCapability({ ref: "custom/video", type: "video", images: true,
+    parameters: { input_references: { type: "range", min: 2, max: 4 } } }), /verified gateway mapping/)
 })

@@ -33,9 +33,13 @@ Agent switch also owns a Magpie provider in Design's native media store.
 
 Steps 1–6 are implemented with fixture-based native runtime validation.
 The local companion is installed and has synchronized 22 image and 7 video
-models. Node/Bun regression tests pass. Desktop UI still showed the prior
-list; exiting Design warned that tasks would be interrupted and was
-cancelled. Version 0.3.1 adds parameter profiles, live OpenRouter schema
+models. Node/Bun regression tests pass. The model-access settings now display
+the synchronized catalogue and generated Hailuo presets; canvas selection
+remains unaccepted. Exiting Design warned that tasks would be interrupted
+and was cancelled. Version 0.3.1 adds parameter profiles, live OpenRouter schema
 discovery, multi-image budgets and preflight, verified with generated adapters
 inside Design's real runtime. Step 7 remains incomplete for desktop selection and canvas
 insertion. No paid generation was submitted.
+Version 0.3.2 corrects ineffective OpenRouter resolution controls and video
+reference budgets that exceeded the adapter's verified modes. MANAGEMENT.md
+records the management audit and release boundaries.

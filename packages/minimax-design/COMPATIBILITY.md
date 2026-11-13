@@ -62,6 +62,17 @@ controls and sources. Custom specs do not expose dynamic cross-field rules;
 combined presets and submission validation enforce those restrictions.
 Video/audio references and native Windows media execution remain untested.
 
+Version 0.3.2 restricts OpenRouter resolution presets to the verified
+Seedream Images API route. Chat image routes retain ratio controls, because
+the tested gateway does not pass their resolution override. Video reference
+metadata cannot expand beyond the adapter's verified frame/subject modes.
+Both regressions have generated-adapter tests.
+
+The live desktop model-access settings displayed all 29 synchronized media
+entries and the generated Hailuo options. This verifies settings discovery;
+canvas generation selection, live inference and output insertion remain
+unaccepted. See MANAGEMENT.md for the wider management audit.
+
 ## Windows
 
 The existing `%APPDATA%\@hilo\desktop\hub-config.json` model path is retained.

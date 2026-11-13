@@ -38,9 +38,11 @@ and video catalogue into Design's native media model store. These are
 native model choices, independent of MCP. A companion Bun plugin checks
 connection changes every five seconds and refreshes the catalogue every
 minute while Magpie is running.
-Restart Design after the first synchronization to refresh its desktop
-model lists. Desktop selection and canvas insertion remain acceptance
-items; the automated test covers its native media loader and executor.
+Design's model-access settings have displayed the synchronized image/video
+entries and Hailuo's generated parameter options. Restart Design after the
+first synchronization if its canvas lists remain stale. Canvas generation
+selection and output insertion remain acceptance items; the automated test
+covers its native media loader and executor.
 
 The bridge uses explicit image/video kinds from Magpie's authenticated model
 list. It automatically builds model-specific dropdowns and reference budgets
@@ -115,6 +117,9 @@ a shrink, and removes/restores all its entries on disconnect.
 - See [COMPATIBILITY.md](COMPATIBILITY.md) for verified versions and platforms.
 
 How agent plugins work: [usemagpie.ai/docs/plugins#agents](https://usemagpie.ai/docs/plugins#agents).
+
+See [MANAGEMENT.md](MANAGEMENT.md) for the verified management scope and the
+remaining boundaries for rules, memory, speech and music.
 
 ## Verification
 

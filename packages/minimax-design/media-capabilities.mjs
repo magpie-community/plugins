@@ -108,7 +108,8 @@ export function mediaCapability(model) {
         if (ratio === "auto") continue
         if (!/^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(ratio)) throw new Error("Invalid media aspect ratio.")
         presets[ratio] = { size: ratio }
-        if ([...commonRatios, "21:9"].includes(ratio) && resolutions?.values.includes("2K")) {
+        if (model.ref === "openrouter/bytedance-seed/seedream-5-5" &&
+            [...commonRatios, "21:9"].includes(ratio) && resolutions?.values.includes("2K")) {
           const sides = ratio.split(":").map(Number)
           const scale = 2048 / Math.max(...sides)
           presets[`${ratio} · 2K`] = { size: `${Math.round(sides[0] * scale)}x${Math.round(sides[1] * scale)}` }
@@ -167,7 +168,10 @@ export function mediaCapability(model) {
         throw new Error("Invalid media input_references schema.")
       }
       if (references.min > 0 && !model.images) throw new Error("Media reference requirements contradict input modalities.")
-      capability.references = { min: references.min, max: model.images ? references.max : 0 }
+      let max = model.images ? references.max : 0
+      if (model.type === "video") max = Math.min(max, capability.references.max)
+      if (references.min > max) throw new Error("Media reference requirements exceed the verified gateway mapping.")
+      capability.references = { min: references.min, max }
       capability.source = model.parameterSource ?? "magpie"
     }
   }
