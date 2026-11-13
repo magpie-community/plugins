@@ -22,6 +22,8 @@ beforeAll(async () => {
   // Bun reads HOME once, at start: run as HOME=$(mktemp -d) bun test, so
   // no real sign-in is ever read or written
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
+  // kiro-cli keeps its sign-in under %APPDATA% on Windows: keep that in HOME too
+  if (process.platform === "win32") process.env.APPDATA = join(homedir(), "AppData", "Roaming")
   ;({ KiroAuthPlugin: plugin } = await import("./index.mjs"))
 })
 const offline = async () => { throw new Error("no network in tests") }
@@ -29,7 +31,8 @@ const real = globalThis.fetch
 globalThis.fetch = offline
 afterAll(() => (globalThis.fetch = real))
 const cliDir = () =>
-  process.platform === "darwin" ? join(homedir(), "Library", "Application Support", "kiro-cli") : join(homedir(), ".local", "share", "kiro-cli")
+  process.platform === "win32" ? join(homedir(), "AppData", "Roaming", "kiro-cli")
+  : process.platform === "darwin" ? join(homedir(), "Library", "Application Support", "kiro-cli") : join(homedir(), ".local", "share", "kiro-cli")
 afterEach(() => {
   globalThis.fetch = offline
   rmSync(cliDir(), { recursive: true, force: true })
