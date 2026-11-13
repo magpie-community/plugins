@@ -6,8 +6,8 @@ Provider id: `devin`.
 
 ## Signing in
 
-An account is the CLI's session token (`devin-session-token$…`). There are
-two ways to get one:
+An account is the CLI's session token (`devin-session-token$…`) or a key
+made in Devin's settings. There are three ways to add one:
 
 - **Devin (browser)**: the CLI's own `devin auth login`, run by the
   plugin. It is a PKCE sign-in through `app.devin.ai/auth/cli/continue`
@@ -17,6 +17,9 @@ two ways to get one:
   its `credentials.toml` (`$XDG_DATA_HOME/devin/`, by default
   `~/.local/share/devin/`; `%APPDATA%\devin\` on Windows). The file is only
   read, never changed.
+- **Devin API key (cog_…)**: a key typed in, such as a service user's
+  `cog_…` key. It is sent as a sign-in's token is (chat and usage), and is
+  never renewed. The first usage read names the account.
 
 The plugin names the account as Devin does when asked with the token
 (`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI

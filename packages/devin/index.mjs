@@ -2868,6 +2868,8 @@ async function v2Setup(ctx) {
       },
       label: (c) => c?.metadata?.email || "Devin",
     })
+    // a key typed in, as the v1 "api" method saves it (v2Auth reads it)
+    editor.method.update({ integrationID: ID, method: { type: "key", label: "Devin API key (cog_…)" } })
   })
 
   // authFor resolves the active connection's key each call, so a chat goes
@@ -3153,6 +3155,10 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
       methods: [
         { type: "oauth", label: "Devin (browser)", authorize: browserSignIn },
         { type: "oauth", label: "Devin CLI's sign-in", authorize: cliSignIn },
+        // a key made in Devin's settings (a service user's cog_…, or a
+        // session token): sent as the sign-ins' token is, never renewed;
+        // the first usage read names the account (syncOrg)
+        { type: "api", label: "Devin API key (cog_…)", placeholder: "cog_…" },
       ],
       // magpie's own switches (OpenCode never reads auth.options)
       options: [
