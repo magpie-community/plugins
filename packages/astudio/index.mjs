@@ -79,6 +79,28 @@ const BOOTSTRAP = [
   { id: "xopglm52", name: "GLM-5.2", context: 1048576, output: 32768 },
   { id: "xopdeepseekv4pro0813", name: "DeepSeek-V4-Pro", context: 1048576, output: 32768 },
   { id: "xopdsv4flash0731in", name: "DeepSeek-V4-Flash", context: 1048576, output: 32768 },
+  // 与 EXTRA_CATALOG 同步：目录接口没上这个模型时，网络故障分支也要能列出来。
+  { id: "xdeepseek-flash-in", name: "DeepSeek-V4.1-Flash", context: 1048576, output: 100000 },
+]
+
+// 目录接口（model-manager/models）滞后于桌面端目录时，网关已接受、目录里还没露面的模型在
+// 此补位。2026-11-13 实测：xdeepseek-flash-in 直调 /model-gateway/v1/responses 返 200，
+// 同一时刻目录只给 7 个（桌面端自己的 catalog 已有 8 个）。上游补齐后删掉对应条目即可。
+const EXTRA_CATALOG = [
+  {
+    slug: "xdeepseek-flash-in",
+    display_name: "DeepSeek-V4.1-Flash",
+    context_window: 1048576,
+    max_output_tokens: 100000,
+    input_modalities: ["text"],
+    supported_in_api: true,
+    visibility: "list",
+    supported_reasoning_levels: [
+      { effort: "none", description: "关闭思考" },
+      { effort: "high", description: "高强度思考" },
+      { effort: "max", description: "最大强度思考" },
+    ],
+  },
 ]
 
 // 星火系列模型：目录 id 以 spark- 打头（启动表 Spark-X2.6 / Spark-X2.6-Lite /
@@ -921,12 +943,16 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         if (!Array.isArray(list) || list.some((m) => typeof m?.slug !== "string" || !m.slug)) {
           throw new Error("AStudio 模型目录格式异常")
         }
+        const catalogSlugs = new Set(list.map((m) => m.slug))
         const rows = Object.fromEntries(
           list
             .filter((m) => m.visibility !== "hidden" && m.supported_in_api !== false)
             .map((m) => [m.slug, rowFromCatalogEntry(m)]),
         )
         if (!Object.keys(rows).length) throw new Error("AStudio 模型目录为空")
+        // 目录里出现过这个名字（哪怕被 visibility/supported_in_api 过滤掉）就不再补位：
+        // 下架或禁用是上游的明确表态，不能用补位表把它复活。
+        for (const m of EXTRA_CATALOG) if (!catalogSlugs.has(m.slug)) rows[m.slug] = rowFromCatalogEntry(m)
         return rows
       },
     },
