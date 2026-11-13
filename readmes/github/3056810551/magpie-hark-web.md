@@ -4,13 +4,21 @@
 
 <p align="center">
   把 <a href="https://hark.com">hark.com</a> 的网页账号接进 <a href="https://github.com/yetone/magpie">Magpie</a>：<br>
-  在浏览器里登录或直接导入已登录的 Chrome 会话，就能在 Codex、OpenCode 等 Agent 里使用 Hark，<br>
-  支持工具调用（Tool Calls），并在额度卡片上查看每日 Token 与周期额度池用量。
+  在浏览器里登录或复用日常 Chrome 会话，通过 OpenAI 兼容接口进行问答与代码生成，<br>
+  并在额度卡片上查看每日 Token 与周期额度池用量。
 </p>
 
 <p align="center">
   Provider id：<code>hark-web</code> · 模型：<code>hark-web/hark</code>、<code>hark-web/hark-chat</code> · macOS / Windows / Linux · MIT
 </p>
+
+> [!WARNING]
+> **重要限制说明：Hark 官方策略不支持当作其他应用背后的模型来用**
+>
+> - **✅ 可正常使用**：纯问答、代码生成、常规 OpenAI Chat Completions 对话（如 Python/JS SDK 调用、普通对话窗口、总结翻译等）。
+> - **⚠️ 受 Hark 官方限制（Agent / 工具调用不可靠）**：Hark 模型内置了官方政策限制——当请求携带完整的外部 IDE / Agent 系统提示词（如 Codex、OpenCode、Zed Agent 模式）或大量工具调用定义（Tool Definitions）时，Hark 往往会主动拒答并提示：<br>
+>   *“Hark 不支持当作其他应用背后的模型来用，你直接在这里说想完成什么，我就帮你做。”*
+> - 插件本身虽实现了超长文本自动转附件（`prompt-context.txt`）与 `tool_call` 协议映射，但无法绕过 Hark 模型层面的策略拦截，因此**不建议用于重度 Agent / 工具调用工作流**。
 
 ---
 
@@ -37,15 +45,20 @@ magpie plugin login hark-web
 
 想登录多个账号，可以多登录几次；Magpie 会自动进行多账号管理与轮换调度。
 
-## 在 Agent 里使用
+## 使用方式与适用场景
 
 ```sh
-magpie codex hark-web/hark        # 让 Codex 使用 Hark
-magpie opencode hark-web/hark     # 让 OpenCode 使用 Hark
-magpie provider test hark-web     # 发送测试消息，检查整条调用链路
+# 测试连通性（发送普通问答，检查调用链路）
+magpie provider test hark-web
+
+# 在支持纯对话模式的客户端中使用（纯问答 / 代码生成可正常使用）
+# 例如直接使用 OpenAI SDK：base_url="http://127.0.0.1:18622/v1"
 ```
 
-也可以在任何兼容 OpenAI 格式的客户端中使用 `http://127.0.0.1:18622/v1` 作为接口基地址。
+也可以在任何兼容 OpenAI 格式的客户端中使用 `http://127.0.0.1:18622/v1` 作为接口基地址（认证头 `Authorization: Bearer <engine.key>`，账号头 `X-Hark-Account: <handle>`）。
+
+- **纯问答 / 代码生成**：通过 OpenAI SDK、普通 Chat 客户端发送对话请求，可稳定正常返回（支持多气泡代码卡片合并、超 36,000 字自动转为 `prompt-context.txt` 附件绕过输入框 40,000 字限制）。
+- **Agent / 工具调用模式（如 `magpie codex hark-web/hark`、`magpie opencode hark-web/hark`、Zed Agent 等）**：受 Hark 官方策略限制，模型遇到外部 Agent 的系统规则或工具注入提示时，通常会直接拒绝执行（提示“Hark 不支持当作其他应用背后的模型来用”）。因此不建议将 Hark 用作代码 Agent 背后的驱动模型。
 
 ## 登录方式
 
@@ -83,13 +96,15 @@ node engine/import-chrome.mjs 9222
 - `engine.key`：Magpie 与本机引擎通信的密钥
 - `engine.log`：请求与运行日志（自动轮转）
 
-## 工具调用（Tool Calling）
+## 工具调用（Tool Calling · 受 Hark 官方策略限制）
 
-Hark 网页本身没有开放函数调用接口，插件采用提示词映射机制：
-1. 请求包含 `tools` 时，插件自动将工具签名注入到系统提示词中；
-2. 引导模型使用标准 `tool_call` 代码块返回调用意图；
-3. 引擎在流式输出中捕获并结构化解析为标准 OpenAI `tool_calls` 响应；
+Hark 网页本身没有开放函数调用接口，插件层虽然提供了提示词映射机制：
+1. 请求包含 `tools` 时，插件将工具签名注入到提示词中；
+2. 引导模型使用 `tool_call` 代码块返回调用意图；
+3. 引擎在输出中捕获并解析为 OpenAI `tool_calls` 结构化响应；
 4. 工具执行结果以标记上下文形式回传给后续轮次。
+
+> **注意**：由于 Hark 官方模型自身策略限制，检测到外部应用的系统提示词或工具指令时，模型可能会拒绝合作并返回 *“Hark 不支持当作其他应用背后的模型来用”*。该限制来自 Hark 服务端模型策略，纯问答 / 代码生成不受影响，但**无法保证 Agent / 工具调用模式可用**。
 
 ## 额度卡片（Usage Card）
 
@@ -98,11 +113,26 @@ Hark 网页本身没有开放函数调用接口，插件采用提示词映射机
 - **周期额度池**：当前订阅周期内的 Token 用量与周期重置时间。
 - **方案类型**：显示当前账号对应的会员方案（如 Hark Pro）。
 
+## 复用日常 Chrome（推荐，不新开第二个 Chrome 进程）
+
+本插件默认会在每次发送请求时自动探测并复用你**平时正在使用的 Chrome / Edge / Chromium / Brave**（后台静默标签页，不会弹窗、也不会关闭你的浏览器）。
+
+### 如何让平时用的 Chrome 支持自动复用（仅需一次设置）
+
+1. 在你平时使用的 Chrome 地址栏打开：`chrome://inspect/#remote-debugging`
+2. 勾选 / 开启 **“允许远程调试”（Allow remote debugging）**
+3. 首次有请求连接时，Chrome 会在浏览器窗口弹出 **“允许远程调试？（Allow remote debugging?）”** 安全确认框，点击 **允许（Allow）** 即可（超时约 15 秒；点击后插件会保持连接复用，不需要每次请求都再开新进程或反复确认）
+
+> 提示：
+> - 如果弹窗未及时确认超时，或者 Chrome 未开启远程调试，插件会自动回退到内置的隐藏浏览器模式，不会报错阻塞。
+> - 多账号场景下，主账号会直接复用你当前 Chrome 的上下文；如果同一个引擎里同时有不同账号，其余账号会自动使用独立上下文以避免串号。
+
 ## 环境变量配置（可选）
 
 - `HARK_WEB_ENGINE_PORT`：自定义本地引擎监听端口（默认 `18622`）
+- `HARK_WEB_REUSE_CHROME`：是否自动探测并复用已运行的 Chrome（默认开启；设为 `0` 禁用，强制使用独立浏览器进程）
 - `HARK_WEB_CHROME`：指定 Chrome 可执行文件路径
-- `HARK_WEB_CHROME_PORT`：指定已运行 Chrome 的 CDP 调试端口
-- `HARK_WEB_BROWSER`：浏览器运行模式，可选 `hidden`（默认后台隐藏窗口，推荐）、`headless`（无头模式）、`show`（显示窗口）
+- `HARK_WEB_CHROME_PORT`：指定已运行 Chrome 的 CDP 调试端口（会自动尝试 `/json/version` 与 `DevToolsActivePort`）
+- `HARK_WEB_BROWSER`：当回退到独立浏览器时的运行模式，可选 `hidden`（默认后台隐藏窗口，推荐）、`headless`（无头模式）、`show`（显示窗口）
 - `HARK_WEB_PROXY`：指定代理地址（如 `http://127.0.0.1:7890`，或设为 `direct` 直连）
-- `HARK_WEB_IDLE_MIN`：闲置多长时间自动释放后台浏览器进程以节省内存（默认 60 分钟）
+- `HARK_WEB_IDLE_MIN`：闲置多长时间自动释放后台标签页/浏览器（默认 60 分钟）

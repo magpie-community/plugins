@@ -391,7 +391,7 @@ rm -rf .git && git init    # 换掉历史
 ### 方式三：一条命令生成（身份自动改对）
 
 ```bash
-npx --yes github:MYCF711/magpie-plugin-scaffold#v0.3.12 create \
+npx --yes github:MYCF711/magpie-plugin-scaffold#v0.3.13 create \
   --dir my-provider \
   --provider huawei \
   --name "华为云 HUAWEI" \
@@ -418,13 +418,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: MYCF711/magpie-plugin-scaffold/.github/actions/check@v0.3.12
+      - uses: MYCF711/magpie-plugin-scaffold/.github/actions/check@v0.3.13
         with:
           target: .
 ```
 
 这个复合动作直接跑动作仓库里的 `scripts/check.mjs`，不下载 npm 包、不装依赖、不写你的目录。
-本地等价命令：`npx --yes github:MYCF711/magpie-plugin-scaffold#v0.3.12 check .`。
+本地等价命令：`npx --yes github:MYCF711/magpie-plugin-scaffold#v0.3.13 check .`。
 上面引用里的 tag 是写这份文档时的最新 Release；固定 tag 能让行为可复现，
 想跟随最新可以换成 `#main`（Action 的 `@main` 同理，但固定 tag 更安全）。
 

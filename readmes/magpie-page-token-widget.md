@@ -70,6 +70,10 @@ magpie plugin options magpie-page-token-widget '{"port":8890}'
 
 改完要重启 Magpie。插件会在尾网里给这个端口建一条转发（`tailscale serve --tcp`），手机从 100.x 地址连进来；端口上已经有别人的转发时，插件不会动它。
 
+转发指向的是手机那一侧的端口（默认比服务端口大 1，即 8791），控制台留在 127.0.0.1:8790。尾网里的请求落在这条转发上，不会被当成本机的请求，所以手机看不到控制台，也拿不到令牌。
+
+`tailscale serve --bg --tcp=8790` 是 Tailscale 里的长期设置：它留在那儿，插件被移除或崩溃都不会自己消失，只有插件正常卸载时才会撤掉。想知道现在有哪些转发，看 `tailscale serve status`。
+
 ## 卸载
 
 ```bash
@@ -145,6 +149,10 @@ magpie plugin options magpie-page-token-widget '{"port":8890}'
 ```
 
 Restart Magpie afterwards. The plugin publishes the port in the tailnet with a forwarding of Tailscale (`tailscale serve --tcp`), so the phone reaches it on the 100.x address. A forwarding of another service on that port is never touched.
+
+The forwarding points at the phone side of the service (by default one port above the service port, so 8791), while the console stays on 127.0.0.1:8790. A request that comes in through the tailnet lands on that phone port and is never taken for a request of this computer, so the phone cannot read the console or the token.
+
+`tailscale serve --bg --tcp=8790` is a standing setting of Tailscale: it stays there when the plugin is removed or crashes, and only a clean uninstall takes it away. `tailscale serve status` shows what is published right now.
 
 ## Uninstall
 

@@ -6,7 +6,7 @@
 
 **告别满屏终端窗口 —— 在 magpie 里统一托管本地常驻服务，并一键分享到公网供他人使用**
 
-![version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
+![version](https://img.shields.io/badge/version-0.2.1-blue?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square)
 ![runtime](https://img.shields.io/badge/runtime-Bun-black?style=flat-square)

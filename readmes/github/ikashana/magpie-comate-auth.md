@@ -63,13 +63,26 @@ magpie ──OpenAI 格式──▶ 127.0.0.1:3427（插件内）──▶ zulu 
 默认会掉到内网域名 `comate.baidu-int.com`，表现为 `ENOTFOUND` 或「TLS 连接被断开」。
 插件里固定传 `HTTP_HOST=https://comate.baidu.com`。
 
+**多轮怎么处理的（跟其它 CLI 反代一个思路）**：不重发历史。
+zulu 有 `-c <conversationId>` 会话续跑。认会话的优先级是：
+
+1. 客户端显式给的会话标识：`prompt_cache_key`，或 `x-session-id` / `x-conversation-id` / `x-thread-id` 头；
+2. 没有就退回指纹：拿「上一轮自己返回的 assistant 文本」做 hash（客户端下一轮必然把它带回来）。
+
+命中后**只把最后一句增量发过去**，历史留在服务端。实测两轮：5.8s → 4.5s，第二轮只发一句仍记得住上文。
+
+> 刻意**不用** OpenAI 的 `user` 字段当会话 key —— 它是用户身份，拿它当会话会把同一用户的不同对话串成一条。
+
+**图片**：OpenAI 的 `image_url`（data URL）会落成临时文件，走 `--attach-image` 传给 zulu，
+用完即删。实测能正确识别图形与图上文字。
+
 其他实情：
 
 - 每次请求要拉起一次 CLI 进程，**4~11 秒**（模型越重越慢），不适合高频调用。
-- 多轮对话会被拼成一条 query 发给 Ask 模式，不是真正的 chat session。
-- `tool_call: false`：zulu 的 agent 能力不暴露成 OpenAI tools 协议。
-- 图片模型（Deepseek V4.1 Flash / GLM-5v-Turbo / MiniMax M3 / Kimi K2.6 等）目前只标了
-  `attachment: true`，还没接 `--attach-image`，发图会被忽略。
+- **长上下文走附件**：Windows 的 CreateProcess 命令行上限约 32k 字符，Hermes 一轮带完整历史很容易顶破，`-q` 会直接报 `ENAMETOOLONG: name too long, uv_spawn`。所以超过 8000 字符的 query 会写成临时文件、用 `--attach-file` 传给 zulu（Ask 模式能读附件，实测 10k 字符正常）。
+- `tool_call: false`：zulu 的 agent 能力不暴露成 OpenAI tools 协议；当前固定 `--mode Ask`（纯问答，不碰文件）。
+  想让它真的动手，得把模式改成 `Agent`，那会有改文件的副作用，不适合挂在聊天接口后面。
+- 会话映射存在内存里（最多 300 条，LRU），magpie 重启后旧会话接不上，会当新会话处理。
 
 ## 接口（实测）
 

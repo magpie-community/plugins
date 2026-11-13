@@ -48,14 +48,15 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 | `--target` | `zh` / `en` 强制目标语言，默认自动判定 |
 | `--hotkey` | 全局热键，默认 `Alt+D`（支持 `Ctrl+Shift+T`、`Win+F12`） |
 | `--blacklist` | 逗号分隔的进程名黑名单，覆盖默认值 |
-| `--glossary-file` | 术语表，每行 `原文=译文`，拼进 user 消息尾部 |
+| `--glossary-file` | 启动时读入术语表（每行 `原文=译文`），拼进 user 消息尾部 |
 | `--no-restore-clipboard` | 取词后不还原剪贴板（手滑时用来验证取词） |
 | `--debug` | 日志带微秒 |
 | `--version` | 版本号 |
 
 ## 每用户配置
 
-`%LOCALAPPDATA%\magpie-translate\settings.json`（可用 `PUT /api/settings` 或 magpie 插件设置页改）：
+`%LOCALAPPDATA%\magpie-translate\settings.json`（可用 `PUT /api/settings` 或 magpie 插件设置页改；
+插件设置页是把它转成 helper 的启动参数，重启 helper 后生效）：
 
 ```json
 {
@@ -66,21 +67,28 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
   "hotkey": "Alt+D",
   "trigger": "hotkey",
   "blacklist": "mstsc.exe,windowsterminal.exe,...",
-  "glossaryFile": "",
+  "glossary": "",
   "restoreClipboard": true
 }
 ```
 
-改 `hotkey` / `port` 需要重启 helper；改 `model` / `target` / `blacklist` / `glossaryFile` 立即生效。
+改 `hotkey` / `port` 需要重启 helper；改 `model` / `target` / `blacklist` / `glossary` 立即生效。
+`glossary` 只存正文：接口不接受文件路径，helper 也不会按请求读本地文件。
 
-## 本地接口（只绑 127.0.0.1，校验 Host）
+## 隐私
+
+- helper 只监听 `127.0.0.1`；带浏览器 `Origin` 的请求一律拒绝，写请求必须是 `application/json`。
+- 网关密钥从 magpie 的 `caller-keys.json` **只读**取用（`secret` 字段），只放内存，不落日志、不转发。
+- 日志只有时间、事件、耗时、字数，**不记原文**。
+
+## 本地接口（只绑 127.0.0.1，校验 Host / Origin / Content-Type）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/ping` | 探活，`{ok,version,port,gateway,hotkey}` |
 | POST | `/api/translate` | `{text,target,model}` → `text/event-stream`：`data:{"delta":...}` … `data:{"done":{...}}`；出错 `data:{"error":{code,message}}` |
 | GET | `/api/selection` | 触发一次取词（调试用） |
-| GET/PUT | `/api/settings` | 读写配置 |
+| GET/PUT | `/api/settings` | 读写配置（PUT 必须是 `application/json`） |
 | POST | `/api/clipboard` | `{text}` 写剪贴板 |
 | POST | `/api/hide` | 关闭浮窗 |
 
