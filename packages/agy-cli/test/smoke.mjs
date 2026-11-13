@@ -375,7 +375,10 @@ async function prompt(params) {
     // Like agy 1.5.3: a call is checked against the tools listed before this
     // prompt began; a tools/list_changed during the prompt does not reach it.
     const known = new Set(tools.map(tool => tool.name))
-    if (!text.includes("<conversation_history>")) await invoke("ToolSearch", { query: "select:loaded_tool" })
+    if (!text.includes("<conversation_history>")) {
+      const result = await invoke("ToolSearch", { query: "select:loaded_tool" })
+      if (result?.isError) return finish("ToolSearch failed")
+    }
     if (!known.has("loaded_tool")) {
       log({ type: "unknownTool", convId: session.id, name: "loaded_tool" })
       chunk('Encountered error in tool validation: unknown tool: "loaded_tool" — check spelling\n')
