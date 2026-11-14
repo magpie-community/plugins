@@ -1,0 +1,66 @@
+{
+  "name": "@magpie-community/route-insight",
+  "version": "0.15.5",
+  "license": "MIT",
+  "description": "magpie 侧边栏页面：把网关自己的用量日志变成实时路由看板，看首字、缓存命中、重试、积分/余额/额度。A magpie page that turns the gateway usage log into a live routing and cache insight board.",
+  "type": "module",
+  "main": "./index.mjs",
+  "magpie": {
+    "name": "路由洞察 Route insight",
+    "page": {
+      "title": "Route insight",
+      "titles": {
+        "zh": "路由洞察",
+        "zh-TW": "路由洞察",
+        "ja": "ルート分析",
+        "de": "Routing-Einblick",
+        "en": "Route insight"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 4397,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 4397,
+      "window": "today",
+      "historyBytes": 25165824,
+      "keepRows": 60000
+    },
+    "summary": {
+      "en": "A page in magpie's window that turns the gateway's own usage log into a live routing board: first-byte, total time, cache hit, tokens, speed and how each call was billed.",
+      "zh": "把网关自己的用量日志变成实时路由看板：首字、总时长、缓存命中、tokens、速度与每次调用的计费方式，另附供应商状态、指纹家族与一文一画的智商检测。"
+    }
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-page",
+    "routing",
+    "cache",
+    "latency",
+    "usage"
+  ],
+  "files": [
+    "index.mjs",
+    "lib/",
+    "ui/",
+    "page/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "CHANGELOG.md",
+    "examples/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/route-insight"
+  },
+  "homepage": "https://github.com/InvisibleGuardian007/magpie-route-insight#readme",
+  "bugs": {
+    "url": "https://github.com/InvisibleGuardian007/magpie-route-insight/issues"
+  }
+}
