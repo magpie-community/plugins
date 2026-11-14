@@ -8,6 +8,9 @@
       invalidPort: 'Invalid Fingerprint service port.',
       failed: 'Could not connect',
       fallback: 'If the page does not open, copy this address into a browser on this computer:',
+      copyAddress: 'Copy address',
+      copied: 'Address copied.',
+      copyFallback: 'Address selected. Copy it and open it in a browser on this computer.',
     },
     'zh-Hans': {
       title: '模型指纹',
@@ -16,6 +19,9 @@
       invalidPort: '模型指纹服务端口无效。',
       failed: '连接失败',
       fallback: '如果页面未打开，请将此地址复制到本机浏览器：',
+      copyAddress: '复制地址',
+      copied: '地址已复制。',
+      copyFallback: '已选中地址，请复制后在本机浏览器中打开。',
     },
     'zh-Hant': {
       title: '模型指紋',
@@ -24,6 +30,9 @@
       invalidPort: '模型指紋服務連接埠無效。',
       failed: '連線失敗',
       fallback: '如果頁面未開啟，請將此網址複製到本機瀏覽器：',
+      copyAddress: '複製網址',
+      copied: '網址已複製。',
+      copyFallback: '已選取網址，請複製後在本機瀏覽器中開啟。',
     },
     ja: {
       title: 'モデル指紋',
@@ -34,6 +43,9 @@
       failed: '接続できませんでした',
       fallback:
         'ページが開かない場合は、このアドレスをこのコンピューターのブラウザーにコピーしてください：',
+      copyAddress: 'アドレスをコピー',
+      copied: 'アドレスをコピーしました。',
+      copyFallback: 'アドレスを選択しました。このコンピューターのブラウザーに貼り付けてください。',
     },
     de: {
       title: 'Modell-Fingerabdruck',
@@ -44,6 +56,9 @@
       failed: 'Verbindung fehlgeschlagen',
       fallback:
         'Falls sich die Seite nicht öffnet, diese Adresse im Browser auf diesem Computer öffnen:',
+      copyAddress: 'Adresse kopieren',
+      copied: 'Adresse kopiert.',
+      copyFallback: 'Adresse ausgewählt. Kopieren und im Browser auf diesem Computer öffnen.',
     },
   };
   let text = messages.en;
@@ -71,7 +86,7 @@
     followLanguage(theme);
     window.magpie?.onTheme?.(followLanguage);
     const config = (await window.magpie?.options?.get?.()) || {};
-    const port = Number(config.port ?? 3488);
+    const port = Number(config.port ?? 4388);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(text.invalidPort);
     let service = window.magpie?.service;
     let localFallback = '';
@@ -114,7 +129,20 @@
         status.textContent = text.fallback;
         const field = document.getElementById('service-url');
         field.value = localFallback;
-        field.onclick = () => field.select();
+        const copy = document.getElementById('copy-service-url');
+        copy.textContent = text.copyAddress;
+        copy.onclick = async () => {
+          try {
+            const clipboard = window.navigator?.clipboard;
+            if (!clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await clipboard.writeText(localFallback);
+            status.textContent = text.copied;
+          } catch {
+            field.focus();
+            field.select();
+            status.textContent = text.copyFallback;
+          }
+        };
         document.getElementById('fallback').hidden = false;
       }, 4000);
     }
