@@ -271,6 +271,7 @@
       "package": "@magpie-community/middleware-privacy-gate",
       "name": "ShyPie Privacy Gate",
       "kind": "middleware",
+      "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/privacy-gate/assets/shypie-icon.svg",
       "community": true,
       "summary": {
         "en": "Maintained by the ShyPie project. The Magpie-side gate of ShyPie's privacy-first workflow for DeepSeek Harness: with DSH on DeepSeek models behind Magpie's gateway, it turns away image/file/audio parts, encoded blobs and models outside the allowlist whenever Magpie cannot mask them locally. It does not mask text (Magpie's Privacy masking does); images and files get a 403 by default unless localModels and localProviders both allow them. Set binaryPolicy: guide to withhold binary parts and ask the model to choose a local extraction tool instead; structural checks fail closed; a request above maxNodes values is refused, but text beyond scanChars is not inspected (newest first, each field capped), so long encoded tokens can be false positives.",
