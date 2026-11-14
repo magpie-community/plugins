@@ -7,7 +7,7 @@ Checked against the installed domestic production Design 4.0.10 and Magpie
 | --- | --- | --- |
 | Text models | Magpie Agent connection, catalogue refresh and disconnect restoration | Design chooses the active model; invalid IDs/limits are omitted |
 | Image/video models | Companion discovers, synchronizes and removes its native media entries | Enabled switches and unrelated models are preserved; new options require an established gateway mapping |
-| Media parameters | Explicit metadata, public OpenRouter schemas and verified route profiles | Defaults are automatic; unknown parameter contracts retain optional manual controls |
+| Media parameters | Explicit gateway/source metadata and verified route profiles | Defaults are automatic; unknown parameter contracts retain optional manual controls |
 | Skills | Library staging is projected into the native user skill directory | Local metadata supplies summary/version without changing shared sources; Design keeps its permission toggle |
 | MCP servers | Library staging is saved into Design's encrypted native vault before startup | Design manages saved-list visibility and runtime connection; changes wait while Design runs |
 | Usage and routing | Requests use the Design agent gateway key | Accounting and provider routing remain Magpie's responsibility; Design's own account credits are separate |

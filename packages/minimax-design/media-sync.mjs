@@ -2,7 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
-import { enrichMediaParameters, mediaCapability, mediaSpec } from "./media-capabilities.mjs"
+import { mediaCapability, mediaSpec } from "./media-capabilities.mjs"
 import { speechModel } from "./speech.mjs"
 
 const providerID = "provider-magpiedesign"
@@ -129,7 +129,7 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
       model.parameters = { ...declared, ...model.parameters }
     }
   }
-  const catalogue = await enrichMediaParameters([...models.values()])
+  const catalogue = [...models.values()]
   for (const model of catalogue) {
     const manual = parameters[model.requestModel ?? model.ref]
     if (!manual) continue

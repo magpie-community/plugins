@@ -20,15 +20,12 @@ remain unset. No inference is performed during sync.
    explicit input modalities. These fill catalogue gaps without introducing
    models absent from the authenticated gateway list. An explicit gateway
    reference limit of zero remains authoritative.
-3. For direct OpenRouter image routes without gateway parameters, fetch its
-   public `/api/v1/images/models/<model>/endpoints` schema. Intersect endpoint
-   options/reference limits; never send the gateway authorization header.
-4. Exact routes with verified provider and gateway contracts use bundled
+3. Exact routes with verified provider and gateway contracts use bundled
    profiles. A remote-magpie mirror of a known direct route can reuse the
    profile; routing groups and arbitrary aliases cannot.
-5. Plugin option `mediaParameters` supplies missing fields using the same
+4. Plugin option `mediaParameters` supplies missing fields using the same
    enum/range schema. Explicit source and gateway fields take precedence.
-6. Unidentified routes retain provider defaults and expose only declared,
+5. Unidentified routes retain provider defaults and expose only declared,
    transferable options. Known routes whose gateway cannot carry a parameter expose no
    ineffective control. Missing image modality alone does not override an
    explicit reference-count schema.
@@ -41,8 +38,11 @@ metadata and is retained as `sourceReferences` in the generated adapter.
 Design's spec and request validation use the smaller bridge/mode limit.
 A minimum above the usable limit is rejected explicitly. The budget is a
 bridge constraint, not a claim about the vendor's maximum or Design's
-ultimate capacity. OpenRouter endpoint intersections also retain their
-source limits before this projection.
+ultimate capacity.
+
+Capability discovery contacts only the configured Magpie gateway. It does not
+query OpenRouter or other vendor hosts. Missing schemas remain unknown unless
+provided by source declarations, verified bundled profiles or explicit options.
 
 The current host may omit extended model metadata from `/v1/models`.
 Startup `config.provider` fills that gap only for declarations it contains;
@@ -234,7 +234,6 @@ conditional dropdown updates remain separate gaps.
   `draw.go` (`drawOpenRouterImages`, `openRouterSize`, `grokAspects`);
   `draw_dashscope.go` (`dashScopeSize`); `video.go` (`grokVideoBody`,
   `videoResolution`, `remoteVideoBody`).
-- https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-5/endpoints
 - https://docs.x.ai/developers/model-capabilities/video/generation
 - https://docs.x.ai/developers/model-capabilities/video/reference-to-video
 - https://docs.qwencloud.com/api-reference/image-generation/qwen-text-to-image

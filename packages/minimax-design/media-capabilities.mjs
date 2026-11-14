@@ -18,48 +18,6 @@ function pixelTier(size) {
   return `${Math.round(longEdge / 1024 * 2) / 2}K`
 }
 
-export async function enrichMediaParameters(models) {
-  const endpoints = new Map()
-  for (const model of models) {
-    const route = (model.requestModel ?? model.ref).replace(/^(?:remote-magpie\/)+/, "")
-    if (model.type !== "image" || !route.startsWith("openrouter/") ||
-        (model.parameters?.aspect_ratio !== undefined && model.parameters?.resolution !== undefined)) continue
-    const upstream = route.slice("openrouter/".length)
-    let body = endpoints.get(upstream)
-    if (!body) {
-      const response = await fetch(`https://openrouter.ai/api/v1/images/models/${upstream.split("/").map(encodeURIComponent).join("/")}/endpoints`,
-        { signal: AbortSignal.timeout(15000) })
-      if (!response.ok) throw new Error(`OpenRouter media parameters returned HTTP ${response.status}.`)
-      body = await response.json()
-      endpoints.set(upstream, body)
-    }
-    if (!Array.isArray(body.endpoints) || !body.endpoints.length) throw new Error("OpenRouter returned no media endpoints.")
-    const parameters = body.endpoints.map((endpoint) => endpoint.supported_parameters)
-    if (parameters.some((entry) => !entry || typeof entry !== "object")) throw new Error("OpenRouter returned no media parameter schema.")
-    const merged = {}
-    for (const key of ["aspect_ratio", "resolution"]) {
-      const entries = parameters.map((entry) => entry[key])
-      if (entries.some((entry) => entry === undefined)) continue
-      if (entries.some((entry) => entry.type !== "enum" || !Array.isArray(entry.values) ||
-          !entry.values.every((value) => typeof value === "string"))) throw new Error(`Invalid OpenRouter ${key} schema.`)
-      const values = entries[0].values.filter((value) => entries.every((entry) => entry.values.includes(value)))
-      if (values.length) merged[key] = { type: "enum", values }
-    }
-    const references = parameters.map((entry) => entry.input_references)
-    if (references.some((entry) => entry !== undefined && (entry?.type !== "range" ||
-        !Number.isInteger(entry.min) || !Number.isInteger(entry.max) || entry.min < 0 || entry.max < entry.min))) {
-      throw new Error("Invalid OpenRouter reference limits.")
-    }
-    if (references.every((entry) => entry?.type === "range" && Number.isInteger(entry.min) && Number.isInteger(entry.max))) {
-      merged.input_references = { type: "range", min: Math.max(...references.map((entry) => entry.min)),
-        max: Math.min(...references.map((entry) => entry.max)) }
-    }
-    model.parameters = { ...merged, ...model.parameters }
-    model.parameterSource ??= "openrouter-endpoints"
-  }
-  return models
-}
-
 export function mediaCapability(model) {
   if (model.type === "speech") return speechCapability(model)
   const imageInput = model.images || model.parameters?.input_references?.max > 0
