@@ -111,11 +111,13 @@ const STEP_USAGE_SAME_GEN_WAIT_MS = 75
 const STEP_USAGE_POLL_MS = 25
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
 // 1.5.8 words a connection that failed every retry, and a spent credit
-// balance, on their own (#1136).
+// balance, on their own (#1136). 1.5.9 ends a turn whose every retry got 429
+// with the upstream status itself (#1151).
 const AGENT_ERROR_MARKERS = [
   "\n⚠ Agent execution terminated due to error.\n",
   "\n⚠ There was a network issue connecting to the server, please try again.\n",
   "\n⚠ Your AI credits balance is too low to continue.\n",
+  "\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n",
 ]
 const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 const CREDITS_CORE = AGENT_ERROR_CORES[2]

@@ -894,13 +894,16 @@ test("#1136: agy's attempt banners before a retry that works never reach the cli
   }
 })
 
-test("#1136: agy 1.5.8's network and credit endings fail the turn", async () => {
+test("#1136, #1151: agy's network, credit and 429 endings fail the turn", async () => {
   for (const [chunks, want, kind] of [
     // Turn B: one attempt, then agy gives up. The attempt's detail names why.
     [[EOF_ATTEMPT(1) + "\n" + NETWORK], /EOF/, "api_error"],
     // Turn C: the ending alone, split mid-marker.
     [[NETWORK.slice(0, 20), NETWORK.slice(20)], /network issue connecting/, "api_error"],
     [["partial\n⚠ Your AI credits ", "balance is too low to continue.\n"], /credits balance is too low/, "rate_limit_error"],
+    // #1151: agy 1.5.9's ending after every retry got 429, split mid-marker.
+    [["partial\n⚠ RESOURCE_EXHAU", "STED (code 429): Resource has been exhausted (e.g. check quota).\n"], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\)/, "rate_limit_error"],
+    [["\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n"], /quota or rate limit reached/, "rate_limit_error"],
   ]) {
     await withKit({}, async (kit) => {
       markerAgent(kit, chunks)
@@ -912,6 +915,17 @@ test("#1136: agy 1.5.8's network and credit endings fail the turn", async () => 
       assert.ok(!text.includes("⚠"), "no banner reaches the client")
     })
   }
+})
+
+test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
+  const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "exhausted-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
 })
 
 test("#1136: the model quoting an attempt banner or the network ending mid-line keeps it", async () => {
