@@ -481,3 +481,19 @@ give GLM-5.3-Flash). The server picks the bucket, so the usage card
 counts the model on its live bucket, the least used, and sets a spent
 sibling aside. A spent sibling never makes the model, or the account,
 look used up while another bucket still has quota.
+
+### Keychain authorization for the app sign-in
+
+On macOS, connecting with **ZCode app's sign-in** may ask permission to read
+ZCode's encryption key. Only this explicit connection or retry starts a new
+Keychain read. Background quota reads and model requests reuse the in-process
+key or the saved account session; they never initiate an authorization dialog.
+A successful key stays in memory for the process lifetime, without being
+written to another file. Concurrent reads share one asynchronous operation,
+and failed or interrupted reads are cooled down. An explicit connection can
+retry immediately after a failure.
+
+After a restart or key rotation, the saved session continues to serve until
+it expires. If it expires before a key is cached, sign in to ZCode and connect
+the account again in Magpie. This intentionally requires user action rather
+than asking for Keychain access from a background request.
