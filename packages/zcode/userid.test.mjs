@@ -85,14 +85,14 @@ test("every request of one account names the same device", async () => {
   expect(a).toEqual(b)
 })
 
-test("a pasted key's device is the same on every start, and its own", () => {
+test("a pasted key's device is the same on every start, and its own", async () => {
   const { keyDevice, stateOf } = require("./index.mjs")._internal
-  expect(stateOf(pasted).device).toBe(keyDevice("id.pasted"))
-  expect(stateOf(pasted).device).toBe(stateOf({ ...pasted }).device)
-  expect(stateOf({ ...pasted, key: "id.other" }).device).not.toBe(stateOf(pasted).device)
+  expect((await stateOf(pasted)).device).toBe(keyDevice("id.pasted"))
+  expect((await stateOf(pasted)).device).toBe((await stateOf({ ...pasted })).device)
+  expect((await stateOf({ ...pasted, key: "id.other" })).device).not.toBe(await stateOf(pasted).then((s) => s.device))
   expect(keyDevice("id.pasted")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   // a sign-in's saved device wins
-  expect(stateOf(signedIn).device).toBe(DEVICE)
+  expect((await stateOf(signedIn)).device).toBe(DEVICE)
 })
 
 test("a pasted key's request names its device too", async () => {

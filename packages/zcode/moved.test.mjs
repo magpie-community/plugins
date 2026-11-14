@@ -30,7 +30,7 @@ const writeStore = (v2, store) => {
 }
 const KEY = "account-provider:coding-plan:account:zai-individual-coding-plan:account:u1:api-key"
 
-test("ZCode's sign-in is read from the folder its data was moved to", () => {
+test("ZCode's sign-in is read from the folder its data was moved to", async () => {
   const homeV2 = join(homedir(), ".zcode", "v2")
   const moved = mkdtempSync(join(tmpdir(), "zcode-moved-"))
   const movedV2 = join(moved, ".zcode", "v2")
@@ -40,16 +40,16 @@ test("ZCode's sign-in is read from the folder its data was moved to", () => {
     writeStore(homeV2, { [KEY]: "old.stale", zcodejwttoken: "j-old" })
     writeStore(movedV2, { [KEY]: "new.live", zcodejwttoken: "j-new", "oauth:zai:access_token": "tok-team" })
     setting({ locale: "zh-CN", dataBaseDir: moved })
-    expect(_internal.ownSignIn()).toMatchObject({ key: "new.live", jwt: "j-new" })
+    expect(await _internal.ownSignIn()).toMatchObject({ key: "new.live", jwt: "j-new" })
 
     // the team plan ZCode switched to stays in the home folder's setting.json
     setting({ dataBaseDir: "  " + moved + " ", providerFamilyConnectionSelections: { zai: { kind: "team-coding-plan", organizationId: "org1", projectId: "p1" } } })
-    expect(_internal.ownSignIn()).toMatchObject({ token: "tok-team", org: "org1", project: "p1", jwt: "j-new" })
+    expect(await _internal.ownSignIn()).toMatchObject({ token: "tok-team", org: "org1", project: "p1", jwt: "j-new" })
 
     // an empty, blank, relative or non-string dataBaseDir is no move
     for (const d of ["", "  ", "ZCodeData", 7, null]) {
       setting({ dataBaseDir: d })
-      expect(_internal.ownSignIn()).toMatchObject({ key: "old.stale", jwt: "j-old" })
+      expect(await _internal.ownSignIn()).toMatchObject({ key: "old.stale", jwt: "j-old" })
     }
   } finally {
     rmSync(moved, { recursive: true, force: true })

@@ -4,15 +4,30 @@
 // signed in anew, uses what ZCode has now.
 import { test, expect, beforeAll, afterEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
 import { join } from "node:path"
 
-let ZCodeAuthPlugin, _internal
+let ZCodeAuthPlugin, _internal, secret, zcodeDir
+// a security(1) shim: records its args in $SHIM_LOG (one JSON array per
+// line), answers as $SHIM_EXIT (0 by default), sleeping $SHIM_MS first.
+// Keychain reads in tests never touch the real one.
+const SHIM = mkdtempSync(join(tmpdir(), "zcode-shim-"))
+writeFileSync(join(SHIM, "security"), `#!/usr/bin/env python3
+import json, os, sys, time
+with open(os.environ.get('SHIM_LOG') or os.devnull, 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\\n')
+ms = os.environ.get('SHIM_MS')
+if ms:
+    time.sleep(int(ms) / 1000)
+raise SystemExit(int(os.environ.get('SHIM_EXIT') or 0))
+`)
+chmodSync(join(SHIM, "security"), 0o755)
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   process.env.ZCODE_CREDENTIAL_SECRET = "test-seed"
   ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
+  ;({ secret, zcodeDir } = _internal)
 })
 
 const dir = () => join(homedir(), ".zcode", "v2")
@@ -22,6 +37,22 @@ function enc(text) {
   const c = createCipheriv("aes-256-gcm", key, iv)
   const data = Buffer.concat([c.update(text, "utf8"), c.final()])
   return "enc:v1:" + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+}
+
+// ZCode 3.18's vault form: the key stands in for the OS keychain, named by
+// ZCODE_CREDENTIAL_V2_SECRET, and the fingerprint is sha256(key) as 24 hex
+const V2_KEY = randomBytes(32)
+const V2_FP = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
+function encV2(text) {
+  const iv = randomBytes(12)
+  const c = createCipheriv("aes-256-gcm", V2_KEY, iv)
+  const data = Buffer.concat([c.update(text, "utf8"), c.final()])
+  return `enc:v2:os:${V2_FP}:` + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+}
+function zcodeHas2(store, setting = {}) {
+  mkdirSync(dir(), { recursive: true })
+  writeFileSync(join(dir(), "credentials.json"), JSON.stringify(store))
+  writeFileSync(join(dir(), "setting.json"), JSON.stringify(setting))
 }
 function zcodeHas(store, setting = {}) {
   mkdirSync(dir(), { recursive: true })
@@ -40,19 +71,19 @@ test("the sign-in takes ZCode's account and key, and follows ZCode after", async
   expect(got.access).toBe("id1.secret1")
   expect(JSON.parse(got.refresh).source).toBe("zcode")
   const auth = { ...got, type: "oauth" }
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
 
   // ZCode signs in again with a new key
   const ada = JSON.stringify({ email: "ada@phone.local" })
   zcodeHas({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": ada })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
 
   // and switches to a team's plan
   zcodeHas(
     { [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:access_token": "tok-team", "oauth:zai:user_info": ada },
     { providerFamilyConnectionSelections: { zai: { kind: "team-coding-plan", organizationId: "org1", projectId: "p1" } } },
   )
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "", token: "tok-team", org: "org1", project: "p1", jwt: "j2" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "", token: "tok-team", org: "org1", project: "p1", jwt: "j2" })
 })
 
 test("with ZCode signed out, the sign-in says so", async () => {
@@ -64,9 +95,9 @@ test("with ZCode signed out, the sign-in says so", async () => {
   expect(got.error).toContain("ZCode isn't signed in")
 })
 
-test("a sign-in not ZCode's keeps its own key", () => {
+test("a sign-in not ZCode's keeps its own key", async () => {
   zcodeHas({ [KEY]: "id9.secret9" })
-  const s = _internal.stateOf({ type: "oauth", access: "mine.k", refresh: JSON.stringify({ site: "zai", key: "mine.k" }) })
+  const s = await _internal.stateOf({ type: "oauth", access: "mine.k", refresh: JSON.stringify({ site: "zai", key: "mine.k" }) })
   expect(s.key).toBe("mine.k")
 })
 
@@ -92,8 +123,8 @@ test("an app sign-in for A doesn't send with B's key once ZCode is signed in to 
   const b = await appSignIn()
   expect([a.accountId, b.accountId]).toEqual(["alice@x.local", "bob@x.local"])
 
-  expect(_internal.stateOf(a)).toMatchObject({ key: "idA.secretA", jwt: "jA" })
-  expect(_internal.stateOf(b)).toMatchObject({ key: "idB.secretB", jwt: "jB" })
+  expect(await _internal.stateOf(a)).toMatchObject({ key: "idA.secretA", jwt: "jA" })
+  expect(await _internal.stateOf(b)).toMatchObject({ key: "idB.secretB", jwt: "jB" })
 
   _internal.routes?.clear?.()
   const sent = []
@@ -124,7 +155,7 @@ test("an app sign-in for A whose saved session has lapsed, with ZCode on B, says
   zcodeHas({ zcodejwttoken: "Bearer " + expiredJWT, "oauth:zai:user_info": JSON.stringify({ email: "alice@x.local" }) })
   const a = await appSignIn()
   zcodeHas({ zcodejwttoken: "Bearer jB-live", "oauth:zai:user_info": JSON.stringify({ email: "bob@x.local" }) })
-  expect(_internal.stateOf(a).jwt).toBe(expiredJWT)
+  expect((await _internal.stateOf(a)).jwt).toBe(expiredJWT)
 
   _internal.routes?.clear?.()
   const sent = []
@@ -158,15 +189,15 @@ test("ZCode 3.15's plan key is read from its config.json", async () => {
   expect(got.type).toBe("success")
   expect(got.access).toBe("bm.secret")
   const auth = { ...got, type: "oauth" }
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret", jwt: "j1", base: "https://open.bigmodel.cn/api/anthropic", site: "bigmodel" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "bm.secret", jwt: "j1", base: "https://open.bigmodel.cn/api/anthropic", site: "bigmodel" })
 
   // one written encrypted reads too; one that isn't a key doesn't
   config({ "builtin:zai-coding-plan": { options: { apiKey: "{env:ZAI_KEY}" } }, "builtin:bigmodel-coding-plan": { options: { apiKey: enc("bm.secret2") } } })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret2", base: "https://open.bigmodel.cn/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "bm.secret2", base: "https://open.bigmodel.cn/api/anthropic" })
 
   // a key in credentials.json still comes first
   zcodeHas({ [KEY]: "id1.secret1", zcodejwttoken: "j1", "oauth:bigmodel:user_info": bm })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
   config({})
 })
 
@@ -186,12 +217,12 @@ test("the app's sign-in keeps the user id, and follows ZCode by it", async () =>
   const auth = { ...got, type: "oauth" }
 
   zcodeHas({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": as("u1") })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
-  expect(_internal.stateOf(auth).uid).toBeUndefined()
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+  expect(await _internal.stateOf(auth).uid).toBeUndefined()
 
   // another account named Ada: A's entry keeps what it saved
   zcodeHas({ [KEY]: "id3.secret3", zcodejwttoken: "j3", "oauth:zai:user_info": as("u2") })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1" })
 })
 
 // meraki7304 (#410): ZCode 3.16.3 on a Mac keeps no plan key at all, in
@@ -226,7 +257,7 @@ test("ZCode 3.16's key location gives the coding plan its key", async () => {
   const got = await (await m.authorize()).callback()
   expect(got.type).toBe("success")
   const auth = { ...got, type: "oauth" }
-  const s = await _internal.located(_internal.stateOf(auth))
+  const s = await _internal.located(await _internal.stateOf(auth))
   expect(s).toMatchObject({ key: "k7.sec7", site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic" })
   expect(sent[0]).toEqual(["GET", "https://bigmodel.cn/api/biz/v1/organization/org7/projects/proj7/api_keys/copy/k7", "tok-bm"])
   // nothing is made
@@ -246,7 +277,7 @@ test("ZCode 3.16's key location gives the coding plan its key", async () => {
   )
   sent.length = 0
   const z = await (await m.authorize()).callback()
-  const zs = await _internal.located(_internal.stateOf({ ...z, type: "oauth" }))
+  const zs = await _internal.located(await _internal.stateOf({ ...z, type: "oauth" }))
   expect(zs.key).toBe("")
   // asked at the site's own API, never the record's foreign origin, as a Bearer
   expect(sent[0]).toEqual(["GET", "https://api.z.ai/api/biz/v1/organization/o/projects/p/api_keys/copy/gone", "Bearer tok-z"])
@@ -314,4 +345,207 @@ test("ZCode 3.16's key location lists the coding plan's models", async () => {
   )
   _internal.routes.clear()
   await expect(hooks.provider.models({ models: {} }, { auth: { ...z, type: "oauth" } })).rejects.toThrow("coding plan key")
+})
+
+test("3.18's vault-encrypted credentials read like the older ones", async () => {
+  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
+  try {
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: encV2("Bearer j1"),
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    const hooks = await ZCodeAuthPlugin({ client: {} })
+    const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+    const got = await (await m.authorize()).callback()
+    expect(got.type).toBe("success")
+    expect(got.accountId).toBe("ada@example.com")
+    expect(got.access).toBe("id1.secret1")
+    const auth = { ...got, type: "oauth" }
+    expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+
+    // a fingerprint the vault doesn't name reads as nothing, without
+    // taking the older values down with it
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: "enc:v2:os:deadbeefdeadbeefdeadbeef:aa.bb.cc",
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "" })
+  } finally {
+    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  }
+})
+
+// 3.18's vault form reaches the helpers too: the team plan (ownTeam), the
+// key location (ownLocation) and config.json's key (configKey) all decrypt
+// values from the same store, and a store that went vault reads them as
+// v1-only helpers would read nothing (adv1's team2 repro).
+test("3.18's vault reads the team plan, the key location and config.json's key", async () => {
+  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
+  try {
+    zcodeHas2(
+      {
+        zcodejwttoken: encV2("Bearer j2"),
+        "oauth:zai:access_token": encV2("tok-team"),
+        "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+      },
+      { providerFamilyConnectionSelections: { zai: { kind: "team-coding-plan", organizationId: "org1", projectId: "p1" } } },
+    )
+    expect(await _internal.ownSignIn()).toMatchObject({ token: "tok-team", org: "org1", project: "p1", jwt: "j2" })
+
+    // the key location: where ZCode 3.16+ keeps the plan key instead
+    const loc = "project-key-location:v1:" + encodeURIComponent(JSON.stringify(["https://bigmodel.cn", "bigmodel", "u7", null, 1, "non-team"]))
+    zcodeHas2(
+      {
+        zcodejwttoken: encV2("Bearer j1"),
+        "oauth:bigmodel:access_token": encV2("tok-bm"),
+        "oauth:bigmodel:user_info": encV2(JSON.stringify({ id: "u7", email: "q@example.com" })),
+        [loc]: encV2(JSON.stringify({ organizationId: "org7", projectId: "proj7", apiKeyId: "k7" })),
+      },
+      { providerFamilyDomain: "bigmodel" },
+    )
+    const s = await _internal.ownSignIn()
+    expect(s).toMatchObject({ site: "bigmodel", token: "tok-bm" })
+    expect(s.loc).toMatchObject({ org: "org7", project: "proj7", apiKeyId: "k7" })
+
+    // config.json's key (ZCode 3.15), written encrypted
+    const v2 = join(homedir(), ".zcode", "v2")
+    mkdirSync(join(v2, "runtime"), { recursive: true })
+    writeFileSync(join(v2, "config.json"), JSON.stringify({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: encV2("cfg.secret") } } } }))
+    zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+    expect(await _internal.ownSignIn()).toMatchObject({ key: "cfg.secret", base: "https://open.bigmodel.cn/api/anthropic" })
+    rmSync(join(v2, "config.json"), { force: true })
+  } finally {
+    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  }
+})
+
+// keychain denials: the exit code is the OSStatus's low byte, and a denial
+// (UserCanceled -128, AuthFailed -25293) must say itself instead of reading
+// as "not signed in" (adv3's codes repro). A denial with a usable saved
+// sign-in keeps it (adv1/adv2's c_fallback repro).
+test("a keychain denial says itself, exit 128/51; 45 is no denial", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  const exits = async (code, deny) => {
+    _internal.vault.clear()
+    _internal.denyKeychain = false
+    process.env.PATH = SHIM + ":" + process.env.PATH
+    process.env.SHIM_EXIT = String(code)
+    try {
+      if (deny) await expect(_internal.ownSignIn()).rejects.toThrow("keychain access was denied")
+      else expect(await _internal.ownSignIn()).toBe(null)
+    } finally {
+      process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
+      delete process.env.SHIM_EXIT
+    }
+  }
+  // security names no exit 45 on a read: 45 is errSecDuplicateItem, no
+  // denial said, the store reads as signed out
+  await exits(45, false)
+  await exits(128, true)
+  await exits(51, true)
+})
+
+test("a keychain denial keeps the saved sign-in it served before", async () => {
+  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
+  try {
+    zcodeHas2({ [KEY]: encV2("id1.secret1"), zcodejwttoken: encV2("Bearer j1"), "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })) })
+    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+    const got = await (await m.authorize()).callback()
+    expect(got.type).toBe("success")
+    const auth = { ...got, type: "oauth" }
+
+    // ZCode rotates its vault; the new key's read is denied, the saved
+    // sign-in still serves its key
+    const rotated = randomBytes(32)
+    process.env.ZCODE_CREDENTIAL_V2_SECRET = rotated.toString("base64url")
+    zcodeHas2({ [KEY]: encV2("id2.secret2"), zcodejwttoken: encV2("Bearer j2"), "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })) })
+    _internal.vault.clear()
+    _internal.denyKeychain = false
+    process.env.PATH = SHIM + ":" + process.env.PATH
+    process.env.SHIM_EXIT = "128"
+    try {
+      expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1" })
+    } finally {
+      process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
+      delete process.env.SHIM_EXIT
+    }
+  } finally {
+    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  }
+})
+
+// concurrent decrypts share one keychain read: the first spawns, the rest
+// await it; a read cut off by its timeout is not remembered as a miss for
+// minutes (adv2's a_concurrency and f_slowtimeout repros)
+test("concurrent vault reads spawn one keychain read, and a slow one isn't a miss", async () => {
+  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  const log = join(SHIM, "log")
+  process.env.PATH = SHIM + ":" + process.env.PATH
+  process.env.SHIM_LOG = log
+  try {
+    // six concurrent reads, one spawn, and the read answers slower than
+    // its timeout: cut off, nothing remembered, the next read tries again
+    process.env.SHIM_EXIT = "0"
+    process.env.SHIM_MS = "5100"
+    _internal.vault.clear()
+    const fp = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
+    const value = "enc:v2:os:" + fp + ":aa.bb.cc"
+    const reads = await Promise.all(Array.from({ length: 6 }, () => _internal.decryptV2(secret(), value)))
+    expect(reads.every((r) => r === null)).toBe(true)
+    expect(_internal.vault.size).toBe(0)
+    expect(readFileSync(log, "utf8").split("\n").filter(Boolean).length).toBe(1)
+
+    // and, cut off or not, the in-flight read is shared: six callers, one spawn
+    process.env.SHIM_MS = "400"
+    rmSync(log, { force: true })
+    await Promise.all(Array.from({ length: 6 }, () => _internal.decryptV2(secret(), value)))
+    const spawnLines = readFileSync(log, "utf8").split("\n").filter(Boolean)
+    expect(spawnLines.length).toBe(1)
+    expect(JSON.parse(spawnLines[0]).filter((a) => a === "-a")).toHaveLength(1)
+  } finally {
+    process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
+    delete process.env.SHIM_MS
+    delete process.env.SHIM_EXIT
+    delete process.env.SHIM_LOG
+  }
+}, 12000)
+
+test("a keychain read names the account ZCode keeps, not one guessed", async () => {
+  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  _internal.vault.clear()
+  const log = join(SHIM, "log")
+  rmSync(log, { force: true })
+  process.env.PATH = SHIM + ":" + process.env.PATH
+  process.env.SHIM_EXIT = "0"
+  process.env.SHIM_LOG = log
+  try {
+    const fp = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
+    await _internal.decryptV2(secret(), "enc:v2:os:" + fp + ":aa.bb.cc")
+    const args = JSON.parse(readFileSync(log, "utf8").split("\n").filter(Boolean)[0])
+    expect(args.filter((a) => a === "-a")).toHaveLength(1)
+    expect(args[args.indexOf("-a") + 1]).toBe(createHash("sha256").update(join(zcodeDir(), "credentials.json")).digest("hex"))
+  } finally {
+    process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
+    delete process.env.SHIM_EXIT
+    delete process.env.SHIM_LOG
+  }
+})
+
+test("a stand-in key that isn't 32 base64url bytes stands in for nothing", async () => {
+  const bad = [
+    Buffer.from(randomBytes(31)).toString("base64url"),
+    Buffer.from(randomBytes(33)).toString("base64url"),
+    Buffer.from("has!exclamation", "utf8").toString("base64url"),
+    "",
+  ]
+  for (const standIn of bad) {
+    process.env.ZCODE_CREDENTIAL_V2_SECRET = standIn
+    expect(await _internal.decryptV2(secret(), "enc:v2:os:" + V2_FP + ":aa.bb.cc")).toBe(null)
+  }
+  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
 })
