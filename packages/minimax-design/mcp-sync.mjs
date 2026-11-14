@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { isDeepStrictEqual } from "node:util"
 
 const runtimePlugin = pathToFileURL(fileURLToPath(new URL("./runtime/mcp-runtime.mjs", import.meta.url))).href
 const inherited = new Set("PATH HOME USER LOGNAME USERNAME USERPROFILE APPDATA LOCALAPPDATA TEMP TMP TMPDIR SYSTEMROOT SYSTEMDRIVE WINDIR COMSPEC PATHEXT LANG LC_ALL LC_CTYPE TERM COLORTERM HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR".split(" "))
@@ -14,6 +15,29 @@ export function installMcpBridge(control) {
   const temporary = `${file}.magpie-bridge.tmp`
   fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 })
   fs.renameSync(temporary, file)
+}
+
+export function removeMcpBridge(control, managed) {
+  const file = path.join(path.dirname(control), "ai-runtime/config-home/opencode/opencode.json")
+  if (!fs.existsSync(file)) return
+  const original = fs.readFileSync(file, "utf8")
+  const config = JSON.parse(original)
+  for (const [name, entry] of Object.entries(managed)) {
+    if (!Object.hasOwn(config.mcp ?? {}, name)) continue
+    if (!isDeepStrictEqual(config.mcp[name], entry)) {
+      throw new Error(`Design MCP runtime config conflicts with Library; retained: ${name}`)
+    }
+    delete config.mcp[name]
+  }
+  if (config.plugin?.includes(runtimePlugin)) {
+    config.plugin = config.plugin.filter((entry) => entry !== runtimePlugin)
+  }
+  const text = JSON.stringify(config, null, 2) + "\n"
+  if (text === original) return
+  const backup = `${file}.before-native-mcp.json`
+  if (!fs.existsSync(backup)) fs.writeFileSync(backup, original, { flag: "wx", mode: 0o600 })
+  fs.writeFileSync(`${file}.magpie-bridge.tmp`, text, { mode: 0o600 })
+  fs.renameSync(`${file}.magpie-bridge.tmp`, file)
 }
 
 export function createMcpBridge({ file, serverUrl, env = process.env, request = fetch }) {

@@ -22,8 +22,8 @@ export const agent = {
   format: "json",
   dir: dataDir,
   library: {
-    skills: "~/Movies/Hub/skills",
-    mcp: `${dataDir}/ai-runtime/config-home/opencode/opencode.json`,
+    skills: `${dataDir}/library-skills`,
+    mcp: `${dataDir}/library-mcp.json`,
     mcpFormat: "opencode",
   },
   notice:

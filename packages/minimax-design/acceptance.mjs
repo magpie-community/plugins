@@ -7,6 +7,8 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import vm from "node:vm"
+import { readMcpVault, syncMcpStore } from "./mcp-store.mjs"
+import { syncSkills } from "./skill-sync.mjs"
 
 const exec = promisify(execFile)
 const magpie = process.env.MAGPIE_BIN
@@ -125,16 +127,17 @@ try {
       "user-custom-mine": { untouched: true },
       "user-custom-magpie": { restore: "existing provider" },
     } },
-    customMcpVault: "fixture-vault-left-alone",
+    customMcpVault: "",
   }
   writeJSON(configFile, original)
+  fs.writeFileSync(path.join(data, ".token-key"), Buffer.alloc(32, 4))
   writeJSON(path.join(settings, "plugins.json"), { plugins: [{ spec: packageDir }] })
   writeJSON(path.join(settings, "providers.json"), {
     providers: [{ id: "fixture", name: "Fixture", key: "fixture-only", chat: `${fixtureURL}/v1`, models: ["gpt-4.1"], catalog: "openai" }],
   })
   const librarySkill = path.join(settings, "library/skills", skillName, "SKILL.md")
   fs.mkdirSync(path.dirname(librarySkill), { recursive: true })
-  fs.writeFileSync(librarySkill, `---\nname: ${skillName}\ndescription: Native MiniMax acceptance marker\n---\nReturn minimax-skill-ok.\n`)
+  fs.writeFileSync(librarySkill, `---\n${JSON.stringify({ name: skillName, description: "Native MiniMax acceptance marker", metadata: { version: "2.3.4" } })}\n---\nReturn minimax-skill-ok.\n`)
   writeJSON(path.join(settings, "library.json"), {
     skills: [{ name: skillName, agents: ["minimax-design"] }], mcp: [], applied: {},
   })
@@ -193,13 +196,32 @@ try {
 
   writeJSON(mcpFile, { mcp: { mine: { type: "remote", url: `${fixtureURL}/mine`, enabled: false } }, instructions: [] })
   await run(magpie, ["library", "sync"])
+  const skillPaths = { staging: path.join(data, "library-skills"), target: path.join(root, "Movies/Hub/skills") }
+  syncSkills(skillPaths, JSON.parse)
   assert.match(fs.readFileSync(skill, "utf8"), /minimax-skill-ok/)
   await run(magpie, ["library", "mcp", "add", "magpie-probe", `${fixtureURL}/mcp`, "agents=minimax-design"])
+  const staged = JSON.parse(fs.readFileSync(path.join(data, "library-mcp.json")))
+  assert.equal(staged.mcp["magpie-probe"].type, "remote")
+  syncMcpStore({ control: configFile }, { isRunning: false })
+  assert.equal(readMcpVault(configFile).servers["magpie-probe"].config.url, `${fixtureURL}/mcp`)
+  const nativeMcpHelper = chunksNativeMcp()
+  const vaultServers = Object.values(readMcpVault(configFile).servers)
   const mcp = JSON.parse(fs.readFileSync(mcpFile))
-  assert.equal(mcp.mcp["magpie-probe"].type, "remote")
+  Object.assign(mcp.mcp, Object.fromEntries(vaultServers.map((server) => [server.name, nativeMcpHelper(server)])))
+  writeJSON(mcpFile, mcp)
   assert.equal(mcp.mcp.mine.enabled, false)
-  assert.equal(JSON.parse(fs.readFileSync(configFile)).customMcpVault, original.customMcpVault)
-  console.log("PASS: Magpie Library distributes the skill and MCP server while preserving existing MCP and encrypted-vault data")
+  assert.equal(fs.existsSync(path.join(path.dirname(librarySkill), "meta.yaml")), false)
+  console.log("PASS: Library stages MCPs, encrypted local records supply native runtime configuration, and skill projections preserve their sources")
+
+  function chunksNativeMcp() {
+    for (const entry of Object.values(header.files.out.files.main.files.chunks.files)) {
+      const source = archive.subarray(base + Number(entry.offset), base + Number(entry.offset) + entry.size).toString()
+      const start = source.indexOf("function toOpenCodeMcpConfig(")
+      const finish = source.indexOf("function toConnectorProxyConfig(", start)
+      if (start >= 0 && finish > start) return vm.runInNewContext(`(${source.slice(start, finish)})`)
+    }
+    throw new Error("Native saved-MCP runtime mapping is unavailable.")
+  }
 
   const desktopPort = await freePort()
   const desktop = start(path.join(app, "Contents/MacOS/MiniMax Design"),
@@ -212,6 +234,8 @@ try {
   const desktopURL = `http://127.0.0.1:${desktopPort}`
   const skills = await (await ready(`${desktopURL}/api/skills`, desktop)).json()
   assert.ok(skills.some((entry) => entry.name === skillName && entry.source === "user"))
+  assert.equal(skills.find((entry) => entry.name === skillName).version, "2.3.4")
+  assert.equal(skills.find((entry) => entry.name === skillName).summary, "Native MiniMax acceptance marker")
   const enabled = await fetch(`${desktopURL}/api/skills/${skillName}/toggle`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true }),
   })
@@ -276,7 +300,12 @@ try {
 
   await run(magpie, ["library", "mcp", "agents", "magpie-probe", "none"])
   await run(magpie, ["library", "skill", "agents", skillName, "none"])
-  assert.equal(JSON.parse(fs.readFileSync(mcpFile)).mcp["magpie-probe"], undefined)
+  syncMcpStore({ control: configFile }, { isRunning: false })
+  syncSkills(skillPaths, JSON.parse)
+  assert.equal(readMcpVault(configFile).servers["magpie-probe"], undefined)
+  const withdrawn = JSON.parse(fs.readFileSync(mcpFile))
+  delete withdrawn.mcp["magpie-probe"]
+  writeJSON(mcpFile, withdrawn)
   assert.ok(JSON.parse(fs.readFileSync(mcpFile)).mcp.mine)
   assert.equal(fs.existsSync(skill), false)
   const afterSkills = await (await fetch(`${desktopURL}/api/skills`)).json()

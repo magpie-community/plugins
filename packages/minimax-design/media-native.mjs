@@ -35,6 +35,10 @@ const controlsFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-image
 const soundFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-video", type: "video",
   parameters: { generate_audio: { type: "boolean", default: true },
     seconds: { type: "range", min: 5, max: 30 } } }))
+const pixelCapability = mediaCapability({ ref: "unrelated/pixel-image", type: "image",
+  parameters: { size: { type: "enum", values: ["512x512", "1536x1024", "1584x1056", "3072x3072"] } } })
+const pixelAdapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
+  .replace("const capability = null", () => `const capability = ${JSON.stringify(pixelCapability)}`)
 const bootstrap = source.lastIndexOf("bootstrap().catch(")
 assert.ok(bootstrap > 0)
 const driver = `
@@ -54,6 +58,9 @@ assert.equal(ownParam(soundParam)[1].presentation.widget, "switch");
 assert.equal(soundParam.default, true);
 assert.deepEqual(soundSpec.params.find(param => param.key === "duration").enum, Array.from({length: 26}, (_, index) => String(index + 5)));
 console.log("PASS: actual Design parser produces selects and sound switch for unrelated declared models");
+const pixelSpec = parseMediaSpec(${JSON.stringify(mediaSpec(pixelCapability))});
+assert.deepEqual(pixelSpec.params.find(param => param.key === "resolution").enum,
+  ["自动", "0.5K", "1.5K (1536x1024)", "1.5K (1584x1056)", "3K"]);
 const models = await service.models();
 assert.equal(models.length, 5);
 assert.deepEqual(models.map(model => model.type).sort(), ["image", "image", "image", "speech", "video"]);
@@ -75,6 +82,7 @@ for (const folder of ${JSON.stringify([geminiFolder, gptFolder])}) {
   assert.equal(parseMediaSpec(JSON.parse(fs.readFileSync(folder + "/spec.json"))).references.image.max, 4);
 }
 const endpoint = { baseUrl: "http://127.0.0.1:3425/v1", headers: { authorization: "Bearer magpie-minimax-design" } };
+const pixelBundle = { source: ${JSON.stringify(pixelAdapter)} };
 const requests = [];
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const wav = Buffer.alloc(48);
@@ -123,6 +131,28 @@ const fakeFetch = async (url, init) => {
   throw new Error("Unexpected fixture URL: " + address.pathname);
 };
 const common = { bundle: imageBundle, endpoint, fetch: fakeFetch };
+let pixelRequests = 0;
+for (const [ratio, resolution, size] of [
+  ["1:1", "0.5K", "512x512"], ["3:2", "1.5K (1536x1024)", "1536x1024"],
+  ["3:2", "1.5K (1584x1056)", "1584x1056"], ["1:1", "3K", "3072x3072"],
+]) {
+  const result = await submitOnce({ bundle: pixelBundle, endpoint,
+    fetch: async (url, init) => {
+      pixelRequests++;
+      assert.equal(JSON.parse(init.body).size, size);
+      return new Response(JSON.stringify({ data: [{ b64_json: png.toString("base64") }] }),
+        { headers: { "content-type": "application/json" } });
+    },
+    job: { type: "image", model: "unrelated/pixel-image", prompt: "pixel fixture",
+      params: { aspect_ratio: ratio, resolution }, references: {} } });
+  assert.equal(result.kind, "done");
+}
+await assert.rejects(submitOnce({ bundle: pixelBundle, endpoint,
+  fetch: async () => { pixelRequests++; throw new Error("Invalid combination reached HTTP"); },
+  job: { type: "image", model: "unrelated/pixel-image", prompt: "invalid",
+    params: { aspect_ratio: "自动", resolution: "3K" }, references: {} } }));
+assert.equal(pixelRequests, 4);
+console.log("PASS: native pixel tiers retain each size and reject automatic ratio before HTTP");
 const image = await submitOnce({ ...common, job: { type: "image", model: "minimax-code/MiniMax-Image", prompt: "native fixture", params: {}, references: {} } });
 assert.equal(image.kind, "done");
 assert.equal(image.outputs.length, 1);

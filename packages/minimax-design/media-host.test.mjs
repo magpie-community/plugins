@@ -23,9 +23,24 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
   const address = `http://127.0.0.1:${server.address().port}/v1`
   fs.mkdirSync(path.dirname(paths.control), { recursive: true })
-  fs.writeFileSync(paths.control, JSON.stringify({ config: { customModels: {
+  fs.writeFileSync(paths.control, JSON.stringify({ customMcpVault: JSON.stringify({
+    version: 1, servers: { conflict: { name: "conflict", enabled: true,
+      config: { transport: "http", url: "https://user.invalid/mcp" } } },
+  }), config: { customModels: {
     "user-custom-magpie": { baseUrl: address, apiKey: "magpie-minimax-design" },
   } } }))
+  fs.writeFileSync(path.join(path.dirname(paths.control), "library-mcp.json"), JSON.stringify({
+    mcp: { conflict: { type: "remote", url: "https://library.invalid/mcp" } },
+  }))
+  const source = path.join(home, "library-source")
+  const staging = path.join(path.dirname(paths.control), "library-skills")
+  const userSkill = path.join(home, "Movies/Hub/skills/conflict")
+  fs.mkdirSync(source)
+  fs.mkdirSync(staging)
+  fs.mkdirSync(userSkill, { recursive: true })
+  fs.writeFileSync(path.join(source, "SKILL.md"), "---\nname: conflict\ndescription: Fixture\n---\n")
+  fs.writeFileSync(path.join(userSkill, "SKILL.md"), "user skill")
+  fs.symlinkSync(source, path.join(staging, "conflict"), "junction")
   const script = `
     import assert from "node:assert/strict";
     import fs from "node:fs";
@@ -50,10 +65,15 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
     console.log("host remains alive after disconnect");
   `
   try {
-    const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
       env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData }, timeout: 16000,
     })
     assert.match(stdout, /host remains alive/)
+    assert.match(stderr, /Design skill (?:name is already in use|projection requires a YAML parser)/)
+    assert.match(stderr, /Design MCP already exists outside Magpie/)
+    assert.equal(stderr.split("[minimax-design:skills]").length - 1, 1)
+    assert.equal(stderr.split("[minimax-design:mcp] Design MCP already exists outside Magpie").length - 1, 1)
+    assert.equal(fs.readFileSync(path.join(userSkill, "SKILL.md"), "utf8"), "user skill")
   } finally {
     await new Promise((resolve) => server.close(resolve))
     fs.rmSync(home, { recursive: true, force: true })

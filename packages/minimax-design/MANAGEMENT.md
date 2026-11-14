@@ -8,14 +8,62 @@ Checked against the installed domestic production Design 4.0.10 and Magpie
 | Text models | Magpie Agent connection, catalogue refresh and disconnect restoration | Design chooses the active model; invalid IDs/limits are omitted |
 | Image/video models | Companion discovers, synchronizes and removes its native media entries | Enabled switches and unrelated models are preserved; new options require an established gateway mapping |
 | Media parameters | Explicit metadata, public OpenRouter schemas and verified route profiles | Defaults are automatic; unknown parameter contracts retain optional manual controls |
-| Skills | Library distributes and withdraws user skill files | Design keeps its skill permission toggle |
-| MCP servers | Library configuration is projected into Design V3's native connector proxy per workspace | Restart once to load the bridge; later changes sync automatically. The encrypted connector vault is not modified |
+| Skills | Library staging is projected into the native user skill directory | Local metadata supplies summary/version without changing shared sources; Design keeps its permission toggle |
+| MCP servers | Library staging is saved into Design's encrypted native vault before startup | Design manages saved-list visibility and runtime connection; changes wait while Design runs |
 | Usage and routing | Requests use the Design agent gateway key | Accounting and provider routing remain Magpie's responsibility; Design's own account credits are separate |
 | Project Agent rules | Design manages `<project>/.hilo/project-rules.md` | No global instruction file has been established for Library |
 | Memory | Design manages project `.hilo/memory` and user `~/.hub/memory` | User path can be overridden by `HUB_MEMORY_DIR`; these are mutable Design records, not Library instructions |
 | Speech | Magpie speech endpoints and the verified Ming route | All requests use Magpie; reference-audio and cloning routes remain excluded |
 | Music | Design has native `music` custom model type | Streaming chat music requires a separate adapter |
 | ComfyUI/local models/assets/account settings | Design's own managers | No Magpie Library target or verified synchronization contract in this plugin |
+
+## Skill display and MCP management
+
+### Configuration locations
+
+Library writes MCP definitions under `mcp` in
+`~/.minimax-design/library-mcp.json`. With Design stopped, `mcp-store.mjs`
+converts them to the native saved-server schema and encrypts `customMcpVault`
+in `hub-config.json` using the existing local `.token-key`. The original
+configuration is backed up before the first write. On macOS this shared
+directory points to `~/Library/Application Support/@hilo/desktop`.
+
+Design's `CustomMcpMainService` loads these records and owns runtime
+connection and saved-list state. The old connector-only bridge could make
+tools callable without a saved desktop record, producing “plugin missing”
+cards even after successful calls. Migration removes identical Library
+entries from `ai-runtime/config-home/opencode/opencode.json` and removes
+this installation's bridge, preserving unrelated runtime entries/plugins.
+The runtime plugin stops registering only after the ownership record marks
+native persistence and old-bridge cleanup complete. A staging file alone does
+not disable it. Cleanup failures retain a pending migration state and retry
+after Design exits. Skill, MCP and media failures are reported independently,
+so a Library conflict does not prevent unrelated media refresh.
+Same-name legacy runtime definitions with different fields block migration
+completion and remain untouched. Object key order alone is not a conflict.
+Executable/URL whitespace and environment/header key whitespace are normalized
+before native storage and ownership comparison, matching Design's handling of
+these fields; genuine local configuration edits still block replacement.
+
+Vault changes wait while Design runs. Existing services are not adopted
+silently; name conflicts and local config edits stop the sync. Native
+enabled switches survive refresh unless Library changes its enabled state.
+Withdrawal removes only owned records and associated side data.
+
+Skills stage in `~/.minimax-design/library-skills`. Each native directory
+in `~/Movies/Hub/skills` contains links to the original files plus a local
+`meta.yaml` and ownership marker. YAML frontmatter provides description and
+version; existing source metadata takes precedence. Structured detail fields
+are copied when supplied, never invented. Shared source files are untouched.
+An existing matching Library directory link can migrate; user-owned directories
+and locally edited projections stop the sync rather than being overwritten.
+
+On November 14, 2026, isolated acceptance used Design 4.0.10's actual
+decryption, validation and saved-service implementation to verify encrypted
+records, saved-list visibility, native toggle persistence across reload,
+and withdrawal. A real Magpie sandbox also verified staging, source-preserving
+Skill summary/version display and a model → MCP → model turn. These checks
+do not establish that a running user's desktop has already migrated.
 
 ## Why rules and memory are not synchronized
 
