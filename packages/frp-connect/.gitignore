@@ -1,0 +1,6 @@
+node_modules/
+frpc.pid
+frpc.json
+frpc.toml
+*.log
+.DS_Store
