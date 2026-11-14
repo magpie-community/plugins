@@ -331,10 +331,12 @@ test('the phone says goodbye to its row on the list', async () => {
 
 test('the cards of the medium widget keep their bars on one line', async () => {
   const widget = await read('scriptable/UsageWidget.js');
-  // A card without an account keeps the line of the account empty (a space
-  // of its own, so the line keeps its height), so the bars of the cards sit
-  // on one line and can be read side by side.
-  assert.match(widget, /text\(column, " ", accountSize, colors\.muted\)/);
+  // Every line of a card has a height of its own: a card without an
+  // account keeps the line of the account empty without moving its
+  // bar up or down, so the bars of the cards sit on one line and can
+  // be read side by side.
+  assert.match(widget, /function line\(parent, size, width\)/);
+  assert.match(widget, /const emptyRow = line\(column, accountSize, cellWidth\)/);
   // The time of the reset and the share of the week each get a line of their
   // own: together on one line they were cut short, and the time was the first
   // thing to go.

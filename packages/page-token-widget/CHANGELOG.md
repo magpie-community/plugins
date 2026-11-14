@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.5 · 2026-11-14
+
+The bars of the cards of the medium widget sit on one line now. Nothing else
+changed: the paired phones, the token format, the widget parameter and the
+port are the same as in 0.4.4.
+
+> 中号组件里四张卡的额度条现在在同一条线上。没有账号的厂商（MiniMax、GLM）以前那一行写的是
+> 一个不换行空格，高度由手机自己来量，于是它们的条比 Codex 那两张卡高了一截。现在每一行都有
+> 自己固定的高度，四张卡的条就在同一条线上。
+
+### Fixed
+
+- **A card without an account of its own no longer puts its bar out of line.**
+  The empty line of the account used to be a space whose height the phone
+  measured by itself, so the MiniMax and GLM bars sat a little higher than the
+  two cards of Codex. Every line of a card now has a height of its own.
+- The large widget puts two cards in a row; the two bars of a row sit on one
+  line as well.
+- A test keeps it that way: the four cards of a real page are drawn and the
+  line of every bar is read — 55, 55, 45, 45 before, one line now.
+
 ## 0.4.4 · 2026-11-14
 
 The code of the standalone plugin (`magpie-page-token-widget`, 0.4.4) is now in this

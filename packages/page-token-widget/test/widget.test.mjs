@@ -17,30 +17,80 @@ class FakeElement {
     this.lineLimit = 1;
     this.minimumScaleFactor = 1;
     this.imageSize = null;
+    this.text = null;
   }
 }
 
+// The stub keeps the tree as well as the words: the height of a line of a
+// card decides where the bar below it sits, and that is the thing this file
+// has something to say about.
 class FakeStack {
   constructor(log) {
     this.log = log;
     this.size = null;
+    this.children = [];
   }
   addText(value) {
     this.log.push(String(value));
-    return new FakeElement();
+    const element = new FakeElement();
+    element.text = String(value);
+    this.children.push({ type: 'text', element });
+    return element;
   }
   addStack() {
-    return new FakeStack(this.log);
+    const stack = new FakeStack(this.log);
+    this.children.push({ type: 'stack', stack });
+    return stack;
   }
   addImage() {
-    return new FakeElement();
+    const element = new FakeElement();
+    this.children.push({ type: 'image', element });
+    return element;
   }
-  addSpacer() {}
+  addSpacer(size = 0) {
+    this.children.push({ type: 'spacer', size });
+  }
   centerAlignContent() {}
   topAlignContent() {}
   layoutVertically() {}
   layoutHorizontally() {}
 }
+
+// The height of a piece of a card. A Scriptable line is about 1.2 times its
+// font size. A line that holds nothing but a space takes no room: a phone
+// measures it as it likes, and a card that leans on it leans with it.
+const LINE_HEIGHT = 1.2;
+const heightOf = node => {
+  if (node.type === 'text') {
+    const size = node.element.font && node.element.font.size ? node.element.font.size : 12;
+    return node.element.text && node.element.text.trim() ? Math.round(size * LINE_HEIGHT) : 0;
+  }
+  if (node.type === 'spacer') return node.size || 0;
+  if (node.type === 'image') return node.element.imageSize ? node.element.imageSize.height : 0;
+  if (node.type === 'stack') {
+    // A stack with a size of its own keeps it, whatever is inside it.
+    if (node.stack.size) return node.stack.size.height;
+    return node.stack.children.reduce((most, child) => Math.max(most, heightOf(child)), 0);
+  }
+  return 0;
+};
+
+// The height at which the bar of every card of the widget sits.
+const barLevels = (node, found = []) => {
+  if (node.type !== 'stack') return found;
+  const stack = node.stack;
+  const bar = stack.children.find(child => child.type === 'image');
+  if (bar) {
+    let level = 0;
+    for (const child of stack.children) {
+      if (child === bar) break;
+      level += heightOf(child);
+    }
+    found.push(level);
+  }
+  for (const child of stack.children) if (child.type === 'stack') barLevels(child, found);
+  return found;
+};
 
 class FakeSize {
   constructor(width, height) {
@@ -72,7 +122,7 @@ class FakeDrawContext {
   }
 }
 
-const overview = (display = {}) => ({
+const overview = (display = {}, cards = null) => ({
   schemaVersion: 1,
   generatedAt: Date.now(),
   display: { widgetMode: 'remaining', widgetCard: '', subscriptions: ['codex'], ...display },
@@ -85,7 +135,7 @@ const overview = (display = {}) => ({
     today: { totalTokens: 3500, input: 1000, output: 500, cacheRead: 2000, cacheWrite: 0, requests: 100 },
     week: { totalTokens: 10500, input: 4000, output: 2000, cacheRead: 4500, cacheWrite: 0, requests: 700 },
   },
-  subscriptions: [
+  subscriptions: cards || [
     {
       id: 'codex@alpha',
       provider: 'codex',
@@ -103,13 +153,14 @@ const overview = (display = {}) => ({
 
 const runWidget = async ({
   request,
-  keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40) }) },
+  keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40) }) },
   config = {},
   args = {},
   paired = null,
   cache = '',
 } = {}) => {
   const log = [];
+  const widgets = [];
   const calls = { setWidget: 0, complete: 0 };
   // What the script keeps after itself: the exchanges of the keychain are the
   // way back in when a token runs out.
@@ -134,19 +185,15 @@ const runWidget = async ({
       }),
     },
     Request: request,
-    ListWidget: class {
-      constructor() { this.log = log; }
-      addText(value) { log.push(String(value)); return new FakeElement(); }
-      addStack() { return new FakeStack(log); }
-      addImage() { return new FakeElement(); }
-      addSpacer() {}
+    ListWidget: class extends FakeStack {
+      constructor() { super(log); widgets.push(this); }
       setPadding() {}
     },
     DrawContext: FakeDrawContext,
     Size: FakeSize,
     Rect: FakeRect,
     Color: FakeColor,
-    Font: { systemFont: () => 'font', mediumSystemFont: () => 'font' },
+    Font: { systemFont: (size) => ({ size }), mediumSystemFont: (size) => ({ size, medium: true }) },
     config: { widgetFamily: 'medium', widgetParameter: '', runsInWidget: true, ...config },
     args: { widgetParameter: '', ...args },
     Device: { name: () => 'iPhone', model: () => 'iPhone', isUsingDarkAppearance: () => false },
@@ -158,7 +205,7 @@ const runWidget = async ({
     ? source.replace('let PAIRED = null;', `let PAIRED = ${JSON.stringify(paired)};`)
     : source;
   await vm.runInContext(`(async () => {\n${script}\n})();`, context);
-  return { log, calls, kept };
+  return { log, calls, kept, tree: widgets[0] };
 };
 
 // A request that fails. The response it leaves behind stands for the
@@ -222,11 +269,11 @@ test('a new code is exchanged before the token the phone already has', async () 
     '/api/v1/device/forget': { forgotten: true },
     '/api/v1/overview': overview(),
   });
-  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40), code: 'old-code' }) };
+  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40), code: 'old-code' }) };
   const run = await runWidget({
     request: Request,
     keychain,
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'fresh-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'fresh-code' },
   });
   // The exchange comes first, and the reading is asked for with the new token.
   const session = asked.findIndex((call) => call.url.endsWith('/api/v1/session'));
@@ -253,7 +300,7 @@ test('a code that no longer works falls back to the token the phone has', async 
   });
   const run = await runWidget({
     request: Request,
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'a-code-that-was-used' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'a-code-that-was-used' },
   });
   // The session is not among the answers: the code was used, so the exchange
   // fails and the token that is there is used as it was.
@@ -267,11 +314,11 @@ test('a code that has been used is not asked for again', async () => {
   const { Request, asked } = listening({
     '/api/v1/overview': overview(),
   });
-  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40), code: 'the-same-code' }) };
+  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40), code: 'the-same-code' }) };
   await runWidget({
     request: Request,
     keychain,
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'the-same-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'the-same-code' },
   });
   assert.equal(asked.find((call) => call.url.endsWith('/api/v1/session')), undefined);
 });
@@ -355,11 +402,11 @@ test('a code that only failed because the service did not answer is asked again'
     '/api/v1/overview': overview(),
     '/api/v1/session': () => { throw new Error('The request timed out.'); },
   });
-  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40) }) };
+  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40) }) };
   const run = await runWidget({
     request: Request,
     keychain,
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'a-fresh-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'a-fresh-code' },
   });
   const saved = JSON.parse(run.kept[run.kept.length - 1][1]);
   assert.equal(saved.code, '', 'the code is not spent by a timeout');
@@ -367,7 +414,7 @@ test('a code that only failed because the service did not answer is asked again'
   await runWidget({
     request: Request,
     keychain: { [SETTINGS_KEY]: JSON.stringify(saved) },
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'a-fresh-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'a-fresh-code' },
   });
   assert.equal(asked.filter((call) => call.url.endsWith('/api/v1/session')).length, 2, 'the code is asked again');
 });
@@ -383,7 +430,7 @@ test('a code that is refused for good is not asked again', async () => {
   });
   const run = await runWidget({
     request: Request,
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'a-stale-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'a-stale-code' },
   });
   const saved = JSON.parse(run.kept[run.kept.length - 1][1]);
   assert.equal(saved.code, 'a-stale-code', 'the code is spent');
@@ -391,7 +438,7 @@ test('a code that is refused for good is not asked again', async () => {
   await runWidget({
     request: Request,
     keychain: { [SETTINGS_KEY]: JSON.stringify(saved) },
-    paired: { baseURL: 'http://127.0.0.1:3498', code: 'a-stale-code' },
+    paired: { baseURL: 'http://127.0.0.1:8790', code: 'a-stale-code' },
   });
   assert.equal(asked.filter((call) => call.url.endsWith('/api/v1/session')).length, 1, 'the code is not asked again');
 });
@@ -422,7 +469,7 @@ test('the phone that has to pair again says so on every refresh', async () => {
     '/api/v1/device/forget': { forgotten: true },
     '/api/v1/overview': 401,
   });
-  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40) }) };
+  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40) }) };
   const first = await runWidget({ request: Request, keychain });
   assert.ok(first.log.some((line) => line.includes('令牌无效，请重新配对')), first.log.join(' | '));
 
@@ -445,7 +492,7 @@ test('a refusal that does not come from the service leaves the token alone', asy
       throw new Error('The server returned status 401');
     }
   };
-  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40) }) };
+  const keychain = { [SETTINGS_KEY]: JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40) }) };
   const run = await runWidget({ request: Request, keychain });
   assert.ok(run.log.some(line => line.includes('服务返回 401')), run.log.join(' | '));
   // The token is still there.
@@ -557,7 +604,7 @@ const runMeasured = async ({ family = 'medium', screen = [320, 568], data = over
   const context = {
     console,
     Script: { setWidget: () => {}, complete: () => {} },
-    Keychain: { get: () => JSON.stringify({ baseURL: 'http://127.0.0.1:3498', token: 'a'.repeat(40) }), set: () => {} },
+    Keychain: { get: () => JSON.stringify({ baseURL: 'http://127.0.0.1:8790', token: 'a'.repeat(40) }), set: () => {} },
     FileManager: {
       local: () => ({
         joinPath: (...parts) => parts.join('/'),
@@ -667,4 +714,49 @@ test('a parameter that is a token says so instead of hunting for it', async () =
     args: { widgetParameter: 'a'.repeat(40) },
   });
   assert.ok(medium.log.some((line) => line.includes('参数里的令牌已忽略')), medium.log.join(' | '));
+});
+
+// The four cards of a real page: two accounts of one vendor, a vendor without
+// an account and a second one. The names are of different lengths and the
+// accounts are of different lengths too, which is what used to put the bars
+// of the cards on different lines.
+const realCards = () => {
+  const window = (label, used) => ({ label, usedPercent: used, remainingPercent: 100 - used, resetsAt: Date.now() + 3600000 });
+  return [
+    { id: 'codex@liuzq1103', provider: 'codex', account: 'liuzq1103', label: 'Codex · liuzq1103', windows: [window('5h', 100), window('7d', 18)], usage: { today: { totalTokens: 7171104 } }, stale: false },
+    { id: 'codex@fangzt98', provider: 'codex', account: 'fangzt98', label: 'Codex · fangzt98', windows: [window('5h', 11), window('7d', 95)], usage: { today: { totalTokens: 1077940 } }, stale: false },
+    { id: 'minimax', provider: 'minimax', account: null, label: 'MiniMax', windows: [window('5h', 96)], usage: { today: { totalTokens: 282669693 } }, stale: false },
+    { id: 'glm', provider: 'glm', account: null, label: 'GLM', windows: [window('5h', 7), window('7d', 40)], usage: { today: { totalTokens: 34228561 } }, stale: false },
+  ];
+};
+
+// The bars of the cards of the medium widget have to sit on one line. A card
+// whose name is longer, or that has no account of its own, must not push its
+// bar up or down: the four bars are read side by side.
+test('the bars of the cards of the medium widget sit on one line', async () => {
+  const cards = realCards();
+  const { Request } = listening({
+    '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
+  });
+  const run = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
+  const levels = barLevels({ type: 'stack', stack: run.tree });
+  assert.equal(levels.length, 4, 'four cards, four bars');
+  assert.equal(new Set(levels).size, 1, 'the bars sit on one line, but they sit at ' + levels.join(', '));
+});
+
+// The same for the large widget: the cards are in two columns there, and the
+// bars of a row are read side by side as well.
+test('the bars of the cards of the large widget sit on one line', async () => {
+  const cards = realCards();
+  const { Request } = listening({
+    '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
+  });
+  const run = await runWidget({ request: Request, config: { widgetFamily: 'large' } });
+  const levels = barLevels({ type: 'stack', stack: run.tree });
+  assert.equal(levels.length, 4, 'four cards, four bars');
+  // The large widget puts the cards in two rows of two. The bars of a row are
+  // read side by side, so they have to sit on one line; the rows themselves
+  // are of course not on one line.
+  assert.equal(levels[0], levels[1], 'the two cards of the first row are not on one line: ' + levels.join(', '));
+  assert.equal(levels[2], levels[3], 'the two cards of the second row are not on one line: ' + levels.join(', '));
 });

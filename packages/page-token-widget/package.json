@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-token-widget",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "在 iPhone 主屏上放一个额度小组件：扫一次码，Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量就在手边。A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM.",
   "type": "module",
   "main": "./index.mjs",
