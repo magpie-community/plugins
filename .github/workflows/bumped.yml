@@ -1,0 +1,26 @@
+# A package whose shipped files change keeps nothing of the change unless
+# its version changes too (scripts/bumped.mjs, plugins#1131). Runs on each
+# pull request and on each push to main, against what it is based on.
+name: bumped
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  bumped:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: versions raised
+        run: bun scripts/bumped.mjs "${{ github.event.pull_request.base.sha || github.event.before }}"
