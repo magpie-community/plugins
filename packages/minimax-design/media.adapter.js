@@ -51,12 +51,13 @@ export function buildSubmit(request) {
       params.referenceMode = "主体参考"
     }
     if (capability.pixelSizes) {
-      const choices = params.ratio ? capability.pixelSizes[params.ratio] : undefined
-      const size = params.resolution ?
-        (choices ? choices[params.resolution] : Object.values(capability.pixelSizes).map((entry) => entry[params.resolution]).find(Boolean)) :
-        (choices ? Object.values(choices)[0] : Object.values(capability.pixelSizes).flatMap(Object.values)[0])
-      if (!size) throw new Error("模型不支持所选比例和清晰度组合。请重新选择。")
-      if (params.ratio || params.resolution) body.size = size
+      if (params.resolution && !params.ratio) throw new Error("指定清晰度时，请同时选择比例。")
+      if (params.ratio) {
+        const choices = capability.pixelSizes[params.ratio]
+        const size = params.resolution ? choices[params.resolution] : Object.values(choices)[0]
+        if (!size) throw new Error("模型不支持所选比例和清晰度组合。请重新选择。")
+        body.size = size
+      }
     }
     if (params.ratio && capability.transport === "generic" && !capability.pixelSizes) body.size = params.ratio
     if (capability.transport === "generic" && request.type === "video" && params.resolution) body.resolution = params.resolution

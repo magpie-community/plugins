@@ -22,18 +22,20 @@ provider entries Magpie replaced and leaves other settings intact.
 Design becomes a target for **Skills** and **MCP servers**, using the same
 Library controls as other agents:
 
-- Skills are linked/copied into `~/Movies/Hub/skills`, the desktop's user
-  skill directory. New skills may need enabling in Design's skill UI;
-  Library manages placement/removal and Design keeps its permissions.
-- MCP servers use the OpenCode format in the desktop's isolated
-  `ai-runtime/config-home/opencode/opencode.json`. Restart Design after
-  installing the bridge for the first time. The companion installs an OpenCode
-  plugin that registers Library servers with Design V3's native connector
-  gateway, using the current workspace identity. Later changes are applied
-  automatically. Direct OpenCode connections are disabled to avoid duplicate
-  tools and processes. Connection failures are reported independently.
-- Removing an item removes only Library's entry or skill. The encrypted
-  `customMcpVault` is never edited.
+- Library stages skills in `~/.minimax-design/library-skills`. The companion
+  projects them into `~/Movies/Hub/skills`, with local display metadata and
+  linked original files. It never writes metadata through Library source links.
+  New skills may need enabling in Design; existing permissions are preserved.
+- Library stages OpenCode-format MCP definitions in
+  `~/.minimax-design/library-mcp.json`. With Design closed, the companion
+  saves them into the native encrypted `customMcpVault` in `hub-config.json`.
+  Design loads those saved records and manages runtime connections on restart.
+  Pending changes wait while Design runs; media refresh continues.
+- Native MCP toggles are preserved until Library explicitly changes its
+  enabled state. Existing user services, local edits and naming conflicts
+  are retained. Withdrawal affects only plugin-owned entries.
+- Migration backs up the control and runtime files, removes matching old
+  direct MCP definitions and removes this installation's runtime bridge.
 - Global instructions are not offered: no always-read instruction file
   has been established for this desktop.
 

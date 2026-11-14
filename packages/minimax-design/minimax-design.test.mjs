@@ -23,8 +23,8 @@ test("agent loads without host globals and uses the shared native-data entry", (
   assert.equal(agent.config, "~/.minimax-design/hub-config.json")
   assert.equal(agent.dir, "~/.minimax-design")
   assert.deepEqual(agent.library, {
-    skills: "~/Movies/Hub/skills",
-    mcp: "~/.minimax-design/ai-runtime/config-home/opencode/opencode.json",
+    skills: "~/.minimax-design/library-skills",
+    mcp: "~/.minimax-design/library-mcp.json",
     mcpFormat: "opencode",
   })
   assert.equal(agent.model, undefined)

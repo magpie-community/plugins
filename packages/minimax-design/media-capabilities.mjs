@@ -12,11 +12,8 @@ const pixels = ["1024x1024", "1536x1024", "1024x1536", "2048x1152", "1152x2048",
 
 function pixelTier(size) {
   const longEdge = Math.max(...size.split("x").map(Number))
-  if (longEdge <= 1280) return "1K"
-  if (longEdge <= 1792) return "1.5K"
-  if (longEdge <= 2560) return "2K"
-  if (longEdge <= 4608) return "4K"
-  return `${Math.round(longEdge / 1024 * 10) / 10}K`
+  if (longEdge < 512) return `${longEdge / 1024}K`
+  return `${Math.round(longEdge / 1024 * 2) / 2}K`
 }
 
 export async function enrichMediaParameters(models) {
@@ -235,16 +232,24 @@ export function mediaCapability(model) {
         return { value, error: Math.abs(width / height / (horizontal / vertical) - 1) }
       }).sort((left, right) => left.error - right.error)[0]
       const ratio = nearest.error < 0.015 ? nearest.value : `${width / unit}:${height / unit}`
-      const resolution = pixelTier(size)
-      choices[ratio] ??= {}
-      const current = choices[ratio][resolution]
-      if (!current || Math.max(...size.split("x").map(Number)) < Math.max(...current.split("x").map(Number))) {
-        choices[ratio][resolution] = size
-      }
+      choices[ratio] ??= []
+      if (!choices[ratio].includes(size)) choices[ratio].push(size)
     }
-    capability.pixelSizes = choices
+    capability.pixelSizes = {}
+    for (const [ratio, sizes] of Object.entries(choices)) {
+      const counts = new Map()
+      for (const size of sizes) {
+        const tier = pixelTier(size)
+        counts.set(tier, (counts.get(tier) ?? 0) + 1)
+      }
+      capability.pixelSizes[ratio] = Object.fromEntries(sizes.map((size) => {
+        const tier = pixelTier(size)
+        const label = counts.get(tier) > 1 ? `${tier} (${size})` : tier
+        return [label, size]
+      }))
+    }
     capability.params = capability.params.filter((parameter) => !["size", "ratio", "resolution"].includes(parameter.key))
-    const tiers = [...new Set(Object.values(choices).flatMap(Object.keys))]
+    const tiers = [...new Set(Object.values(capability.pixelSizes).flatMap(Object.keys))]
       .sort((left, right) => Number.parseFloat(left) - Number.parseFloat(right))
     capability.params.unshift(select("ratio", "比例", Object.keys(choices)),
       select("resolution", "清晰度", tiers))

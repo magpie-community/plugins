@@ -209,8 +209,10 @@ test("native canvas keys and exact pixel choices work for unrelated models witho
   const collision = await configured("another-provider/collision-image", "image", {
     parameters: { size: { type: "enum", values: ["1536x1024", "1584x1056"] } },
   })
-  assert.deepEqual(collision.capability.params[1].enum, ["自动", "1.5K"])
-  assert.equal(collision.submit({ aspect_ratio: "3:2", resolution: "1.5K" }).body.size, "1536x1024")
+  assert.deepEqual(collision.capability.params[1].enum, ["自动", "1.5K (1536x1024)", "1.5K (1584x1056)"])
+  for (const size of ["1536x1024", "1584x1056"]) {
+    assert.equal(collision.submit({ aspect_ratio: "3:2", resolution: `1.5K (${size})` }).body.size, size)
+  }
   const custom = await configured("unrelated-source/new-image", "image", {
     mediaRequest: { size: "aspect-resolution" },
     parameters: { aspect_ratio: { type: "enum", values: ["16:9", "1:1"] },
@@ -227,6 +229,27 @@ test("native canvas keys and exact pixel choices work for unrelated models witho
   assert.equal(video.submit({ duration: "8", resolution: "4k" }).body.seconds, "8")
   assert.equal(video.submit({ duration: "8", resolution: "4k" }).body.resolution, "4k")
   assert.throws(() => video.submit({ duration: "7" }), /不支持参数/)
+})
+
+test("pixel tiers retain small and intermediate sizes and require an explicit ratio", async () => {
+  const sizes = ["512x512", "1024x1024", "1200x1200", "3072x3072", "3840x2160", "2048x2048", "2048x1152"]
+  const pixel = await configured("unrelated-provider/pixel-image", "image", {
+    parameters: { size: { type: "enum", values: sizes } },
+  })
+  assert.deepEqual(pixel.capability.params[1].enum,
+    ["自动", "0.5K", "1K (1024x1024)", "1K (1200x1200)", "2K", "3K", "4K"])
+  assert.equal(pixel.submit({ aspect_ratio: "1:1", resolution: "0.5K" }).body.size, "512x512")
+  assert.equal(pixel.submit({ aspect_ratio: "1:1", resolution: "3K" }).body.size, "3072x3072")
+  assert.equal(pixel.submit({ aspect_ratio: "16:9", resolution: "4K" }).body.size, "3840x2160")
+  for (const size of ["1024x1024", "1200x1200"]) {
+    assert.equal(pixel.submit({ aspect_ratio: "1:1", resolution: `1K (${size})` }).body.size, size)
+  }
+  assert.throws(() => pixel.submit({ aspect_ratio: "自动", resolution: "2K" }), /同时选择比例/)
+  assert.throws(() => pixel.submit({ resolution: "2K" }, [image]), /同时选择比例/)
+  assert.equal(pixel.submit().body.size, undefined)
+  assert.equal(pixel.submit({}, [image]).body.size, undefined)
+  assert.equal(pixel.submit({ aspect_ratio: "16:9" }).body.size, "3840x2160")
+  assert.deepEqual(Object.values(pixel.capability.pixelSizes).flatMap(Object.values).sort(), [...sizes].sort())
 })
 
 test("remote and direct OpenRouter discover one shared schema and preserve explicit limits", async () => {

@@ -116,10 +116,13 @@ The adapter has no decoded image dimensions and does not claim to infer them.
 All media specifications use Design's canonical `aspect_ratio`, `resolution`,
 `duration` and `image_mode` keys. String options always have a nonempty enum;
 unknown size strings are not exposed as empty text controls. Pixel-only size
-lists become ratio and familiar `1K` / `1.5K` / `2K` / `4K` tiers with an
-exact lookup back to the original size. When two presets share a tier for the
-same ratio, the smaller canonical pixel size is kept. Unsupported combinations
-fail before HTTP.
+lists become ratio and approximate long-edge tiers rounded to the nearest
+`0.5K` (`1K` = 1024 pixels), with an exact lookup back to every original size.
+Long edges below 512 pixels use their unrounded K value. When presets share a
+tier for the same ratio, labels include the original dimensions so each stays
+selectable. Pixel-only routes require an explicit ratio when selecting a tier;
+leaving both automatic omits size and preserves the upstream default.
+Unsupported combinations fail before HTTP.
 
 Sources that can encode independent image ratio and resolution in the standard
 image API declare `media_request: { "size": "aspect-resolution" }`. The bridge
