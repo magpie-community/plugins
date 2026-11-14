@@ -1109,19 +1109,21 @@ function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {})
 }
 
 /**
- * `stop` in the shape the credential's station takes; the other shape comes
+ * `stop` in the shape the credential's station takes; another shape comes
  * back as HTTP 200 with `InferHub.001001005.400` "The request param is
- * invalid". The mainland gateway takes a string only (magpie#6342, measured
- * with every model), so a list goes as its first non-empty string. The
- * international one takes a list only (#998, GLM-5.1: `["zzz"]` answered,
- * `"zzz"` refused), so a string goes as a list of one. An empty or blank
- * value, or one of another kind, is left out on both.
+ * invalid". The mainland gateway refuses every non-empty `stop`, a string
+ * included (#1120, measured with every model; magpie#6342's string-only
+ * rule held for `"\n\n"` once and no longer does), so it is left out there:
+ * a reply that runs past a stop word beats one refused. The international
+ * gateway takes a list only (#998, GLM-5.1: `["zzz"]` answered, `"zzz"`
+ * refused), so a string goes as a list of one. An empty or blank value, or
+ * one of another kind, is left out on both.
  */
 function normalizeStop(body, station = "mainland") {
   if (!("stop" in body)) return
   const all = (Array.isArray(body.stop) ? body.stop : [body.stop]).filter((x) => typeof x === "string" && x !== "")
-  if (!all.length) delete body.stop
-  else body.stop = station === "international" ? all : all[0]
+  if (station === "international" && all.length) body.stop = all
+  else delete body.stop
 }
 
 // ---- tool names over the gateway's limit (#432) -----------------------------

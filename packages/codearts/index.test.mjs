@@ -244,12 +244,10 @@ test("a dated model only the agent lists keeps its date, named or not (#677)", a
   assert.equal(names["deepseek-v4.1-flash-0930"], "Deepseek V4.1 Flash 0930")
 })
 
-test("stop goes as the string the gateway takes, and an empty one not at all (magpie#6342)", () => {
+test("stop never reaches the mainland gateway, which refuses any (#1120, magpie#6342)", () => {
   const stop = (v) => x.prepareChatBody({ model: "GLM-5.2", messages: [], stop: v }).body
-  assert.equal(stop(["\n\n"]).stop, "\n\n")
-  assert.equal(stop(["", "###", "Observation:"]).stop, "###")
-  assert.equal(stop("###").stop, "###")
-  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in stop(v), false, JSON.stringify(v))
+  for (const v of [["\n\n"], ["", "###", "Observation:"], "###", "x", "</block>", [], [""], [null, 3], "", null, 7])
+    assert.equal("stop" in stop(v), false, JSON.stringify(v))
   assert.equal("stop" in x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body, false)
   // the international station takes a list only (#998)
   const intl = (v) => x.prepareChatBody({ model: "GLM-5.1", messages: [], stop: v }, { station: "international" }).body
