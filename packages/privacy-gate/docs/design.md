@@ -185,8 +185,14 @@ policy selection:
   globs and values the UI cannot represent are kept verbatim, shown read-only,
   and merged back on save. The page seeds custom exact ids from
   `disabledAgents` so a custom bypass is not invisible.
-- Saving starts from freshly read options and changes only the three page-owned
-  fields. A concurrent change to those fields is reported instead of overwritten;
+- The page's **Middleware settings** tab edits `binaryPolicy`,
+  `allowUnknownProtocol`, the model/provider/guide lists, the blob thresholds,
+  `scanChars`, `maxNodes`, `maxDepth`, `logMaxLines` and `logEveryRows`. It
+  validates ranges/list shape, preserves options it does not own, and blocks a
+  malformed `allowModels` rather than replacing it with an allow-everything empty
+  list.
+- Saving starts from freshly read options and changes only the page-owned fields.
+  A concurrent change to those fields is reported instead of overwritten;
   controls are disabled while a write is pending.
 - `ctx.agent` is host-classified metadata, never a User-Agent header. Session
   ids and working directories are not used for UI policy.
@@ -194,7 +200,7 @@ policy selection:
 ## Verification
 
 - 72 cases in `cases.json`, run through `scripts/middleware.mjs` using the same
-  hook calls Magpie performs.
+  hook calls Magpie performs, plus 5 page/policy/settings checks.
 - The package has no network, timers, Node APIs or imports; the middleware file
   is one plain JavaScript module.
 - The tests cover fail/guide mode, malformed options, all four protocols,

@@ -3,13 +3,16 @@
 
   var A = window.ShyPieAgents
   var P = window.ShyPiePolicy
+  var S = window.ShyPieSettings
   var $ = function (id) { return document.getElementById(id) }
 
   var COPY = {
     en: {
       kicker: 'ShyPie Filter',
-      title: 'Per-agent protection',
-      lede: 'Choose which Magpie agents ShyPie protects. A disabled agent bypasses the gate entirely.',
+      title: 'Middleware settings',
+      lede: 'Choose which agents ShyPie protects and how its Magpie middleware behaves.',
+      settingsFailed: 'Could not read the middleware settings.',
+      settingsInvalid: 'Fix the malformed options before saving.',
       search: 'Search agents',
       reload: 'Reload',
       save: 'Save changes',
@@ -40,8 +43,10 @@
     },
     zh: {
       kicker: 'ShyPie 防护',
-      title: '按 Agent 保护',
-      lede: '选择哪些 Magpie Agent 受 ShyPie 保护。关闭的 Agent 会完全绕过防护。',
+      title: '中间件设置',
+      lede: '选择哪些 Agent 受 ShyPie 保护，以及 Magpie 中间件如何工作。',
+      settingsFailed: '无法读取中间件设置。',
+      settingsInvalid: '请先修复格式错误的选项再保存。',
       search: '搜索 Agent',
       reload: '重新加载',
       save: '保存更改',
@@ -87,7 +92,11 @@
     error: '',
     loaded: { disabledAgents: [], protectUnknownAgent: true, extraAgents: [] },
     pendingAction: null,
-    lang: 'en'
+    lang: 'en',
+    tab: 'settings',
+    settings: {},
+    settingsLoaded: {},
+    settingsInvalidKeys: []
   }
 
   function t(key) {
@@ -145,6 +154,78 @@
     return true
   }
 
+  var SETTING_IDS = {
+    binaryPolicy: 'opt-binary-policy',
+    allowUnknownProtocol: 'opt-allow-unknown',
+    allowModels: 'opt-allow-models',
+    localModels: 'opt-local-models',
+    localProviders: 'opt-local-providers',
+    guideTools: 'opt-guide-tools',
+    blobBase64Chars: 'opt-blob-base64',
+    blobHexChars: 'opt-blob-hex',
+    scanChars: 'opt-scan-chars',
+    maxNodes: 'opt-max-nodes',
+    maxDepth: 'opt-max-depth',
+    logMaxLines: 'opt-log-max-lines',
+    logEveryRows: 'opt-log-every-rows'
+  }
+
+  function numberInput(raw) {
+    var text = String(raw == null ? '' : raw).trim()
+    if (text === '' || !/^-?\d+$/.test(text)) return NaN
+    return Number(text)
+  }
+
+  function readSettingsForm() {
+    var values = {}
+    values.binaryPolicy = $('opt-binary-policy').value
+    values.allowUnknownProtocol = $('opt-allow-unknown').checked
+    values.allowModels = S.parseList($('opt-allow-models').value)
+    values.localModels = S.parseList($('opt-local-models').value)
+    values.localProviders = S.parseList($('opt-local-providers').value)
+    values.guideTools = S.parseList($('opt-guide-tools').value)
+    values.blobBase64Chars = numberInput($('opt-blob-base64').value)
+    values.blobHexChars = numberInput($('opt-blob-hex').value)
+    values.scanChars = numberInput($('opt-scan-chars').value)
+    values.maxNodes = numberInput($('opt-max-nodes').value)
+    values.maxDepth = numberInput($('opt-max-depth').value)
+    values.logMaxLines = numberInput($('opt-log-max-lines').value)
+    values.logEveryRows = numberInput($('opt-log-every-rows').value)
+    return { values: values, errors: S.validate(values) }
+  }
+
+  function fillSettingsForm(values) {
+    $('opt-binary-policy').value = values.binaryPolicy
+    $('opt-allow-unknown').checked = values.allowUnknownProtocol === true
+    $('opt-allow-models').value = (values.allowModels || []).join('\n')
+    $('opt-local-models').value = (values.localModels || []).join('\n')
+    $('opt-local-providers').value = (values.localProviders || []).join('\n')
+    $('opt-guide-tools').value = (values.guideTools || []).join('\n')
+    $('opt-blob-base64').value = values.blobBase64Chars
+    $('opt-blob-hex').value = values.blobHexChars
+    $('opt-scan-chars').value = values.scanChars
+    $('opt-max-nodes').value = values.maxNodes
+    $('opt-max-depth').value = values.maxDepth
+    $('opt-log-max-lines').value = values.logMaxLines
+    $('opt-log-every-rows').value = values.logEveryRows
+  }
+
+  function showSettingsError(text) {
+    var el = $('settings-error')
+    if (!el) return
+    el.textContent = text || ''
+    el.hidden = !text
+  }
+
+  function setTab(tab) {
+    state.tab = tab === 'agents' ? 'agents' : 'settings'
+    $('agents-view').hidden = state.tab !== 'agents'
+    $('settings-view').hidden = state.tab !== 'settings'
+    $('tab-agents').setAttribute('aria-selected', state.tab === 'agents' ? 'true' : 'false')
+    $('tab-settings').setAttribute('aria-selected', state.tab === 'settings' ? 'true' : 'false')
+    $('count').hidden = state.tab !== 'agents'
+  }
+
   function configure(options) {
     state.options = options && typeof options === 'object' ? options : {}
     var split = P.split(state.options.disabledAgents)
@@ -159,6 +240,12 @@
       protectUnknownAgent: state.protectUnknown,
       extraAgents: P.rawList(state.options.extraAgents)
     }
+    var parsed = S.fromOptions(state.options)
+    state.settings = parsed.values
+    state.settingsLoaded = S.snapshot(state.options)
+    state.settingsInvalidKeys = parsed.invalid.slice()
+    fillSettingsForm(state.settings)
+    showSettingsError(state.settingsInvalidKeys.length > 0 ? t('settingsInvalid') : '')
   }
 
   function patternFor(id) {
@@ -287,6 +374,7 @@
 
     var counts = protectedCount()
     setText('count', counts.on + ' / ' + counts.total + ' ' + t('protected'))
+    $('count').hidden = state.tab !== 'agents'
     var warning = $('warning')
     if (counts.on === 0) {
       warning.textContent = t('warningAll')
@@ -301,6 +389,10 @@
     $('reload').disabled = state.busy
     $('add-agent').disabled = state.busy
     $('add-id').disabled = state.busy
+    Object.keys(SETTING_IDS).forEach(function (key) {
+      var control = $(SETTING_IDS[key])
+      if (control) control.disabled = state.busy
+    })
     var status = $('status')
     if (state.error) {
       status.textContent = state.error
@@ -379,6 +471,12 @@
 
   function save() {
     if (state.busy || !state.dirty) return
+    var form = readSettingsForm()
+    if (state.settingsInvalidKeys.length > 0 || form.errors.length > 0) {
+      setTab('settings')
+      showSettingsError(state.settingsInvalidKeys.length > 0 ? t('settingsInvalid') : form.errors[0].message)
+      return
+    }
     state.busy = true
     clearError()
     render()
@@ -389,18 +487,20 @@
       extra: state.extra
     }
     Promise.resolve(magpie.options.get()).then(function (current) {
-      if (!P.sameAgentFields(current, state.loaded)) {
+      if (!P.sameAgentFields(current, state.loaded) || !S.same(current, state.settingsLoaded)) {
         var conflict = new Error('options changed elsewhere')
         conflict.conflict = true
         throw conflict
       }
-      return magpie.options.set(P.mergeOptions(current, edit))
+      var next = P.mergeOptions(current, edit)
+      return magpie.options.set(S.apply(next, form.values))
     }).then(function (saved) {
       configure(saved)
       state.busy = false
       state.dirty = false
       state.saved = true
       clearError()
+      showSettingsError('')
       render()
     }).catch(function (error) {
       state.busy = false
@@ -416,6 +516,7 @@
     var id = A.normalizeId(agent.id)
     if (!id) return
     var added = ensureExtra(id)
+    setTab('agents')
     state.rows = A.allRows(state.extra)
     state.search = ''
     $('search').value = ''
@@ -464,6 +565,25 @@
     if (event.key === 'Enter' && !state.busy) addAgent()
   })
   $('save').addEventListener('click', save)
+  $('tab-agents').addEventListener('click', function () { setTab('agents') })
+  $('tab-settings').addEventListener('click', function () { setTab('settings') })
+
+  function settingsTouched(key) {
+    state.settingsInvalidKeys = state.settingsInvalidKeys.filter(function (item) { return item !== key })
+    state.dirty = true
+    clearError()
+    showSettingsError('')
+    render()
+  }
+
+  Object.keys(SETTING_IDS).forEach(function (key) {
+    var el = $(SETTING_IDS[key])
+    if (!el) return
+    el.addEventListener('input', function () { settingsTouched(key) })
+    el.addEventListener('change', function () { settingsTouched(key) })
+  })
+
+  setTab('settings')
 
   if (typeof magpie.onAction === 'function') {
     magpie.onAction(function (action) {
