@@ -25,11 +25,15 @@ Use `magpie plugin login opencode-console-account` for pay-as-you-go. Model name
 
 Magpie's Usage page shows the selected workspace, the Go 5-hour, weekly and monthly windows with their reset times, and any readable Console budgets in USD. Console budgets apply to paid usage, including Go Extra Usage paid from credits. They are displayed for Go without blocking requests that are still covered by the subscription.
 
+The Go quota windows do not apply to promotional models that the Go catalog reports as free. The plugin reads the plan windows, not the Extra Usage setting or the balance available for it.
+
 Budget remaining is the amount left under a spending limit. View prepaid credit balance, renewal status and plan details in your OpenCode Console workspace under **Settings → Billing**. The plugin reads allowances and budgets; wallet balance is only available in [Console billing](https://opencode.ai/docs/console/billing/).
 
 ## Credentials and requests
 
-Magpie stores the access and refresh tokens in `plugin-auth.json` and renews them for the selected account through `auth.refresh`. The plugin sends credentials only to `https://opencode.ai` and does not read browser cookies. The package ships OpenCode 1.x and 2.x entry points; hosts that do not call the refresh hook require a new sign-in after expiry.
+Magpie stores the access and refresh tokens in `plugin-auth.json` and renews them for the selected account through `auth.refresh`. The plugin sends credentials only to `https://opencode.ai`, rejects redirects, and does not read browser cookies.
+
+The package also ships OpenCode 1.x and 2.x entry points. Standalone OpenCode users sign in again after expiry. Sign in again when upgrading an older OpenCode 1.x installation that did not retain the workspace ID. Existing Magpie credentials need no migration.
 
 The plugin uses OpenCode's device authorization with the public `opencode-cli` client ID and sends its own User-Agent. Model discovery reads the public catalog and applies the selected workspace's model settings. An empty settings object makes no changes; explicitly disabled models stay hidden. An invalid catalog leaves Magpie's previous list in place. Inference uses the protocol declared by the model and preserves conversation IDs; a standalone model test gets its own ID.
 

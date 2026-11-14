@@ -110,7 +110,7 @@ test("refresh rotates tokens and preserves account metadata; invalid grant expir
 
 test("usage displays measured windows without treating unknown usage as zero", () => {
   const windows = usageWindows({ usage: { rolling: { percent: 42, resetsAt: "2026-11-14T12:00:00Z" }, monthly: { percent: 102 } } }, [{
-    ruleID: "model-budget", limitDollars: 20, spentDollars: 15, coverage: "models", models: [{ providerID: "opencode-go", modelID: "gpt-6-luna" }],
+    ruleID: "model-budget", per: "set", scope: "each", limitDollars: 20, spentDollars: 15, coverage: "models", models: [{ providerID: "opencode-go", modelID: "gpt-6-luna" }],
   }], "opencode-go", "console")
   assert.deepEqual(windows.map((w) => w.used), [42, 102, 75])
   assert.deepEqual(windows[2].models, ["gpt-6-luna"])
@@ -257,7 +257,7 @@ test("malformed quota successes report errors while retaining good windows", asy
 })
 
 test("filtered and per-model budget spend is displayed aside without broad routing", () => {
-  const base = { ruleID: "test", limitDollars: 10, spentDollars: 5, coverage: "models" }
+  const base = { ruleID: "test", per: "set", scope: "each", limitDollars: 10, spentDollars: 5, coverage: "models" }
   for (const models of [[{ providerID: "another", modelID: "same" }], [{ providerID: "opencode-go", modelID: "same", spentDollars: 2 }]]) {
     const [w] = usageWindows(undefined, [{ ...base, models }])
     assert.equal(w.aside, true)
@@ -283,7 +283,7 @@ test("invalid authorization JSON and account shapes produce safe errors", async 
 
 
 test("vendor-filtered budgets do not affect all-model routing", () => {
-  const [w] = usageWindows(undefined, [{ ruleID: "vendor", coverage: "all", vendors: [{ id: "v" }], limitDollars: 10, spentDollars: 4 }])
+  const [w] = usageWindows(undefined, [{ ruleID: "vendor", per: "set", scope: "each", coverage: "all", vendors: [{ id: "v" }], limitDollars: 10, spentDollars: 4 }])
   assert.equal(w.aside, true)
 })
 
@@ -388,4 +388,144 @@ test("partial authenticated usage remains visible after a 401 and a 404", async 
   result = await plugin.auth.usage(async () => auth())
   assert.equal(result.error, undefined)
   assert.match(result.windows[1].display, /无法读取 Console 预算/)
+})
+
+
+test("OpenCode v1 persisted OAuth projection retains a tagged workspace and signs requests", async () => {
+  globalThis.fetch = async (url, init) => {
+    if (typeof url === "string" && url.endsWith("/code")) return Response.json({ device_code: "d", user_code: "u", verification_uri_complete: "/console/device", expires_in: 30, interval: 1 })
+    if (typeof url === "string" && url.endsWith("/token")) return Response.json(token)
+    if (typeof url === "string" && url.endsWith("/user")) return Response.json({ id: "u", email: "e@example.invalid" })
+    if (typeof url === "string" && url.endsWith("/orgs")) return Response.json([{ id: "org-z", name: "Z" }])
+    const headers = new Request(url, init).headers
+    assert.equal(headers.get("x-opencode-org-id"), "org-z")
+    assert.equal(headers.get("authorization"), "Bearer test-new-access")
+    assert.equal(headers.get("cookie"), null)
+    assert.equal(headers.get("x-org-id"), null)
+    return new Response("ok")
+  }
+  const plugin = makePlugin("go")
+  const flow = await plugin.auth.methods[0].authorize()
+  const result = await flow.callback()
+  const projected = Object.fromEntries(["type", "access", "refresh", "expires", "accountId", "enterpriseUrl"].filter((k) => result[k] !== undefined).map((k) => [k, result[k]]))
+  projected.type = "oauth"
+  const loader = await plugin.auth.loader(async () => projected)
+  assert.equal(loader.apiKey, "opencode-oauth-placeholder")
+  await loader.fetch("https://opencode.ai/inference/go/openai/v1/responses", { headers: { cookie: "bad", "x-org-id": "bad" } })
+  await assert.rejects((await plugin.auth.loader(async () => ({ ...projected, accountId: "friendly name" }))).fetch("https://opencode.ai/inference/go/openai/v1/responses"), /workspace missing/)
+})
+
+test("Magpie refuses an expired credential after a failed host refresh without sending", async () => {
+  let sent = 0
+  globalThis.fetch = async () => { sent++; return new Response() }
+  const plugin = makePlugin("go", { magpie: {} })
+  const loader = await plugin.auth.loader(async () => ({ ...auth(), expires: Date.now() - 1 }))
+  await assert.rejects(loader.fetch("https://opencode.ai/inference/go/openai/v1/responses"), (e) => e.signIn === "kept")
+  assert.equal(sent, 0)
+})
+
+test("catalog rejects invalid prices, limits and encoded bases and tries a later safe protocol", async () => {
+  const good = catalog("go")[0]
+  const bad = [
+    { ...good, id: "bad-limit", limit: { context: "huge", output: -2 } },
+    { ...good, id: "bad-cost", cost: { text: { input: { price: -1 }, output: { price: "1" } } } },
+    { ...good, id: "encoded", api: { responses: { base_url: "https://opencode.ai/inference/go/%2e%2e/openai/v1" } } },
+  ]
+  const candidate = { ...good, id: "safe", name: {}, api: { responses: { base_url: "https://example.invalid/x" }, "chat-completions": good.api["chat-completions"] } }
+  const models = buildModels([...bad, candidate], "go")
+  assert.deepEqual(Object.keys(models), ["safe"])
+  assert.equal(models.safe.name, "safe")
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/models") ? { data: bad } : {})
+  await assert.rejects(makePlugin("go").provider.models({ models: { old: {} } }, { auth: auth() }), /目录格式无效/)
+})
+
+test("bad budget and Go meter semantics are reported without routing fabricated quotas", async () => {
+  const bad = { limitDollars: -1, spentDollars: 0, per: "unrecognized", coverage: "all", scope: "each", resetsAt: "bad" }
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/usage") ? { usage: { rolling: { percent: -1 }, weekly: { percent: 22 }, monthly: { percent: 98, status: "rate-limited", resetsAt: "bad" } } } : [bad])
+  const result = await makePlugin("go", { magpie: {} }).auth.usage(async () => auth())
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.windows.filter((w) => !w.aside).map((w) => w.used), [22])
+  assert.match(result.windows.at(-1).display, /格式无效/)
+})
+
+
+test("Console credential destination only accepts declared inference routes", async () => {
+  const loader = await makePlugin("console", { magpie: {} }).auth.loader(async () => auth())
+  let sent = 0
+  globalThis.fetch = async () => { sent++; return new Response("ok") }
+  for (const path of ["/inference/%67o/openai/v1/responses", "/inference/go%2fopenai/v1/responses", "/inference/go;example/openai/v1/responses", "/inference/openai/v1/other"]) {
+    await assert.rejects(loader.fetch(`https://opencode.ai${path}`), /官方接口以外/)
+  }
+  assert.equal(sent, 0)
+  for (const path of ["/inference/openai/v1/responses/", "/inference/openai/v1/chat/completions", "/inference/anthropic/v1/messages", "/inference/google/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse"]) {
+    await loader.fetch(`https://opencode.ai${path}`)
+  }
+  assert.equal(sent, 4)
+})
+
+test("invalid stored credential fields never reach the network", async () => {
+  let sent = 0
+  globalThis.fetch = async () => { sent++; return new Response("ok") }
+  const plugin = makePlugin("go", { magpie: {} })
+  const url = "https://opencode.ai/inference/go/openai/v1/responses"
+  for (const bad of [{ access: "bad token" }, { refresh: "bad\nvalue" }, { metadata: { orgID: "bad;org" } }, { expires: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const loader = await plugin.auth.loader(async () => ({ ...auth(), ...bad }))
+    await assert.rejects(loader.fetch(url), (e) => e.signIn === "expired")
+  }
+  assert.equal(sent, 0)
+})
+
+test("device and token response reject unsafe fields and overflowing deadlines", async () => {
+  globalThis.fetch = async () => Response.json({ device_code: "d", user_code: "u", verification_uri_complete: "/console/device", expires_in: Number.MAX_SAFE_INTEGER })
+  await assert.rejects(startDevice(), /设备码格式/)
+  globalThis.fetch = async () => Response.json({ ...token, access_token: "bad\ntoken" })
+  await assert.rejects(refreshAuth(auth()), /Token 格式/)
+})
+
+test("Go subscription windows exclude confirmed free models and retain paid routing", async () => {
+  const plugin = makePlugin("go", { magpie: {} })
+  const known = ["beam-free", "iceman-contributor-free", "longcat-2.5-free"]
+  const discovery = buildModels(catalog("go"), "go")
+  assert.deepEqual(Object.values(discovery).filter((m) => m.free).map((m) => m.id).sort(), known.slice().sort())
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/models")) return Response.json({ data: catalog("go") })
+    if (url.endsWith("/config")) return Response.json({})
+    if (url.endsWith("/usage")) return Response.json({ usage: { rolling: { percent: 1 }, weekly: { percent: 2 }, monthly: { percent: 3 } } })
+    return Response.json([])
+  }
+  await plugin.provider.models({ models: {} }, { auth: auth() })
+  const result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.windows.length, 3)
+  for (const window of result.windows) {
+    assert.deepEqual(window.notModels.slice().sort(), known.slice().sort())
+    assert.ok(!window.notModels.includes("deepseek-v4.1-flash"))
+  }
+})
+
+test("Go free-model exclusions follow the discovered workspace catalog", async () => {
+  const plugin = makePlugin("go", { magpie: {} })
+  const rows = catalog("go").map((row) => row.id === "beam-free" ? { ...row, cost: { text: { input: { price: 1 }, output: { price: 1 } } } } : row)
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/models")) return Response.json({ data: rows })
+    if (url.endsWith("/config")) return Response.json({})
+    if (url.endsWith("/usage")) return Response.json({ usage: { weekly: { percent: 2 } } })
+    return Response.json([])
+  }
+  await plugin.provider.models({ models: {} }, { auth: auth() })
+  const result = await plugin.auth.usage(async () => auth())
+  assert.ok(!result.windows[0].notModels.includes("beam-free"))
+  assert.ok(result.windows[0].notModels.includes("longcat-2.5-free"))
+})
+
+
+test("package exposes the 2.x root and a legacy main entry", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+  assert.equal(pkg.exports["./server"], undefined)
+  const legacy = await import(new URL(pkg.main, new URL("../", import.meta.url)))
+  assert.equal(typeof legacy.OpenCodeGoAccountPlugin, "function")
+  assert.equal(typeof legacy.OpenCodeConsoleAccountPlugin, "function")
+  await assert.rejects(import("@magpie-community/opencode-console-account-auth/server"))
+  const modern = await import("@magpie-community/opencode-console-account-auth")
+  assert.equal(typeof modern.default.setup, "function")
+  assert.ok(modern.default.id)
 })

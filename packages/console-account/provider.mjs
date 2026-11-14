@@ -24,8 +24,29 @@ function expired(message = "OpenCode 登录已失效，请重新登录。") {
   return Object.assign(new Error(message), { signIn: "expired" })
 }
 
+const ACCOUNT_TAG = "opencode-workspace-v1:"
+
+function restoreWorkspace(auth) {
+  if (auth?.metadata?.orgID) return auth
+  if (typeof auth?.accountId !== "string" || !auth.accountId.startsWith(ACCOUNT_TAG)) throw expired("OpenCode workspace missing; please sign in again.")
+  const encoded = auth.accountId.slice(ACCOUNT_TAG.length)
+  if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw expired("OpenCode workspace missing; please sign in again.")
+  const orgID = Buffer.from(encoded, "base64url").toString("utf8")
+  if (!safeOrg(orgID) || Buffer.from(orgID).toString("base64url") !== encoded) throw expired("OpenCode workspace missing; please sign in again.")
+  return { ...auth, metadata: { orgID } }
+}
+
+function safeToken(value) { return typeof value === "string" && /^[\x21-\x7e]+$/.test(value) }
+function safeOrg(value) { return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value) }
+function deadline(seconds) {
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return undefined
+  const result = Date.now() + seconds * 1000
+  return Number.isSafeInteger(result) ? result : undefined
+}
+
 function requireAuth(auth) {
-  if (auth?.type !== "oauth" || !auth.access || !auth.metadata?.orgID) throw expired()
+  if (auth?.type !== "oauth" || !safeToken(auth.access) || !safeToken(auth.refresh) ||
+      !safeOrg(auth.metadata?.orgID) || !Number.isSafeInteger(auth.expires) || auth.expires <= 0) throw expired()
   return auth
 }
 
@@ -70,12 +91,11 @@ async function token(body, signal) {
 }
 
 function tokenFields(t, previous) {
-  if (!object(t) || (t.org_id != null && (typeof t.org_id !== "string" || !t.org_id)) || typeof t?.access_token !== "string" || !t.access_token ||
-      typeof t.refresh_token !== "string" || !t.refresh_token ||
-      !Number.isFinite(t.expires_in) || t.expires_in <= 0) throw new Error("OpenCode 返回的 Token 格式不完整。")
+  if (!object(t) || (t.org_id != null && !safeOrg(t.org_id)) || !safeToken(t.access_token) ||
+      !safeToken(t.refresh_token) || !deadline(t.expires_in)) throw new Error("OpenCode 返回的 Token 格式不完整。")
   const metadata = { ...previous }
   if (previous?.orgID && t.org_id != null && t.org_id !== previous.orgID) throw expired("OpenCode 工作区已变更，请重新授权。")
-  return { access: t.access_token, refresh: t.refresh_token, expires: Date.now() + t.expires_in * 1000, metadata }
+  return { access: t.access_token, refresh: t.refresh_token, expires: deadline(t.expires_in), metadata }
 }
 
 export async function startDevice({ signal } = {}) {
@@ -83,25 +103,30 @@ export async function startDevice({ signal } = {}) {
     body: { client_id: CLIENT, supports_org_scope: true }, signal,
   })
   if (!object(d) || typeof d.device_code !== "string" || !d.device_code || typeof d.user_code !== "string" || !d.user_code || typeof d.verification_uri_complete !== "string" || !d.verification_uri_complete ||
-      (d.interval != null && (!Number.isFinite(d.interval) || d.interval <= 0)) || !Number.isFinite(d.expires_in) || d.expires_in <= 0) throw new Error("OpenCode 返回的设备码格式不完整。")
+      (d.interval != null && (!Number.isSafeInteger(d.interval) || d.interval <= 0 || !Number.isSafeInteger(d.interval * 1000))) || !deadline(d.expires_in)) throw new Error("OpenCode 返回的设备码格式不完整。")
   let url
   try { url = new URL(d.verification_uri_complete, `${CONSOLE}/`) } catch { throw new Error("OpenCode 返回了意外的授权地址。") }
   if (url.username || url.password || url.origin !== ORIGIN || !url.pathname.startsWith("/console/")) throw new Error("OpenCode 返回了意外的授权地址。")
-  return { ...d, url: url.href, deadline: Date.now() + d.expires_in * 1000 }
+  return { ...d, url: url.href, deadline: deadline(d.expires_in) }
 }
 
 export async function finishDevice(device, { signal, sleep = delay } = {}) {
   let interval = Math.max(1, Number(device.interval) || 5) * 1000
   while (Date.now() < device.deadline) {
-    await sleep(Math.min(interval, Math.max(0, device.deadline - Date.now())), undefined, { signal })
+    let wait = Math.min(interval, Math.max(0, device.deadline - Date.now()))
+    while (wait > 0) {
+      const chunk = Math.min(wait, 2147483647)
+      await sleep(chunk, undefined, { signal })
+      wait -= chunk
+    }
     if (Date.now() >= device.deadline) break
-    const deadlineSignal = AbortSignal.timeout(Math.max(1, Math.ceil(device.deadline - Date.now())))
+    const deadlineSignal = AbortSignal.timeout(Math.min(2147483647, Math.max(1, Math.ceil(device.deadline - Date.now()))))
     let t
     try { t = await token({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: device.device_code }, signal ? AbortSignal.any([signal, deadlineSignal]) : deadlineSignal) }
     catch (e) { if (deadlineSignal.aborted && !signal?.aborted) break; throw e }
     if (!object(t)) throw new Error("OpenCode 返回的 Token 格式不完整。")
     if (t.error === "authorization_pending") continue
-    if (t.error === "slow_down") { interval += 5000; continue }
+    if (t.error === "slow_down") { interval = Math.min(Number.MAX_SAFE_INTEGER, interval + 5000); continue }
     if (t.error === "access_denied") throw new Error("OpenCode 授权已拒绝，请重新登录。")
     if (t.error === "expired_token") throw new Error("OpenCode 设备码已过期，请重新登录。")
     if (t.error) throw new Error("OpenCode 授权未完成，请重新登录。")
@@ -133,7 +158,7 @@ export async function finishDevice(device, { signal, sleep = delay } = {}) {
 
 export async function refreshAuth(auth) {
   requireAuth(auth)
-  if (typeof auth.refresh !== "string" || !auth.refresh) throw expired()
+  if (!safeToken(auth.refresh)) throw expired()
   const t = await token({ grant_type: "refresh_token", refresh_token: auth.refresh })
   if (!object(t)) throw new Error("OpenCode 返回的 Token 格式不完整。")
   if (t.error === "invalid_grant") throw expired()
@@ -144,20 +169,36 @@ export async function refreshAuth(auth) {
 function object(value) { return value !== null && typeof value === "object" && !Array.isArray(value) }
 
 function validAccount(user, orgs) {
-  const validOrg = (org) => object(org) && typeof org.id === "string" && !!org.id && typeof org.name === "string"
+  const validOrg = (org) => object(org) && safeOrg(org.id) && typeof org.name === "string"
   return object(user) && typeof user.id === "string" && !!user.id &&
     typeof user.email === "string" && !!user.email && Array.isArray(orgs) && orgs.every(validOrg)
+}
+
+function validReset(value) {
+  return value === undefined || (typeof value === "string" && Number.isFinite(Date.parse(value)))
+}
+
+function validMeter(m) {
+  return object(m) && Number.isFinite(m.percent) && m.percent >= 0 && validReset(m.resetsAt) &&
+    (m.status === undefined || m.status === "ok" || m.status === "rate-limited")
 }
 
 function invalidGoUsage(go) {
   if (!object(go) || !object(go.usage)) return true
   const keys = ["rolling", "weekly", "monthly"]
-  const valid = (key) => Number.isFinite(go.usage[key]?.percent)
+  const valid = (key) => validMeter(go.usage[key])
   return !keys.some(valid) || keys.some((key) => go.usage[key] !== undefined && !valid(key))
 }
 
 function invalidBudget(b) {
-  return !object(b) || !Number.isFinite(b.limitDollars) || !Number.isFinite(b.spentDollars)
+  const money = (n) => Number.isFinite(n) && n >= 0
+  return !object(b) || !money(b.limitDollars) || !money(b.spentDollars) ||
+    !["set", "model"].includes(b.per) || !["all", "models"].includes(b.coverage) ||
+    !["each", "combined"].includes(b.scope) || !validReset(b.resetsAt) ||
+    (b.models !== undefined && !Array.isArray(b.models)) ||
+    (b.vendors !== undefined && !Array.isArray(b.vendors)) ||
+    (b.inputPriceAtLeast !== undefined && !money(b.inputPriceAtLeast)) ||
+    (Array.isArray(b.models) && b.models.some((m) => !object(m) || (m.spentDollars !== undefined && !money(m.spentDollars))))
 }
 
 function validateConfig(remote, spec) {
@@ -180,14 +221,41 @@ function modalities(values) {
     typeof v === "string" && (v === kind || v.startsWith(`${kind}/`) || (kind === "pdf" && v === "application/pdf")))]))
 }
 
-function allowedURL(value, spec) {
+function allowedURL(value, spec, base = false) {
   const url = new URL(value)
-  const root = `${spec.root}/`
-  if (url.origin !== ORIGIN || url.username || url.password || !url.pathname.startsWith(root) ||
-      (spec === specs.console && url.pathname.startsWith("/inference/go/"))) {
+  const prefix = spec.root
+  const bases = [`${prefix}/openai/v1`, `${prefix}/anthropic/v1`, `${prefix}/google/v1beta`]
+  const cleanPath = !/[%;\\]/.test(url.pathname)
+  const path = url.pathname.replace(/\/$/, "")
+  const validBase = bases.includes(path)
+  let validRoute = false
+  if (!base && cleanPath) {
+    const openai = `${prefix}/openai/v1`
+    const anthropic = `${prefix}/anthropic/v1`
+    const google = `${prefix}/google/v1beta`
+    validRoute = [`${openai}/chat/completions`, `${openai}/responses`, `${anthropic}/messages`].includes(path) ||
+      new RegExp(`^${google}/models/[A-Za-z0-9_.-]+:(generateContent|streamGenerateContent)$`).test(path)
+  }
+  if (url.origin !== ORIGIN || url.username || url.password || !cleanPath ||
+      (base ? !validBase || !!url.search || !!url.hash : !validRoute) || url.hash) {
     throw new Error("拒绝向 OpenCode 官方接口以外的地址发送账户 Token。")
   }
   return url
+}
+
+function positiveInteger(n) { return Number.isSafeInteger(n) && n > 0 }
+function nonnegative(n) { return typeof n === "number" && Number.isFinite(n) && n >= 0 }
+
+function usableCatalogRow(row) {
+  const limits = row.limit, text = row.cost?.text
+  if (!object(limits) || !positiveInteger(limits.context) || !positiveInteger(limits.output) ||
+      (limits.input !== undefined && !positiveInteger(limits.input))) return false
+  if (!nonnegative(text?.input?.price) || !nonnegative(text?.output?.price)) return false
+  const cache = text.input?.cache
+  if (cache === undefined) return true
+  if (!object(cache) || (cache.read !== undefined && !nonnegative(cache.read))) return false
+  return cache.write === undefined || nonnegative(cache.write) ||
+    (object(cache.write) && Object.keys(cache.write).length > 0 && Object.values(cache.write).every(nonnegative))
 }
 
 function applyOverrides(models, remote, spec) {
@@ -203,16 +271,26 @@ export function buildModels(rows, mode, remote) {
   const spec = specs[mode]
   const models = Object.create(null)
   for (const row of rows) {
-    if (!object(row) || typeof row.id !== "string" || !row.id || row.type !== "chat" || row.deprecated || ["disabled", "retired", "deprecated"].includes(row.status)) continue
+    if (!object(row) || typeof row.id !== "string" || !row.id.trim() || /[\u0000-\u001f\u007f]/.test(row.id) || row.type !== "chat" || row.deprecated || ["disabled", "retired", "deprecated"].includes(row.status)) continue
+    if (!usableCatalogRow(row)) continue
     const text = row.cost?.text
     // Console's free tier is restricted to OpenCode. Go has its own catalog.
     if (mode === "console" && (/-free(?:$|-)/i.test(row.id) || (text?.input?.price === 0 && text?.output?.price === 0))) continue
-    const [protocol, api] = Object.entries(object(row.api) ? row.api : {}).find(([p]) => Object.hasOwn(SDK, p)) ?? []
-    if (typeof api?.base_url !== "string") continue
-    let url
-    try { url = allowedURL(api.base_url, spec).href.replace(/\/$/, "") } catch { continue }
+    let protocol, url
+    for (const [candidate, api] of Object.entries(object(row.api) ? row.api : {})) {
+      if (!Object.hasOwn(SDK, candidate) || typeof api?.base_url !== "string" || api.base_url.includes("%")) continue
+      try {
+        const parsed = allowedURL(api.base_url, spec, true)
+        if (parsed.pathname.includes("%") || parsed.search || parsed.hash) continue
+        protocol = candidate
+        url = parsed.href.replace(/\/$/, "")
+        break
+      } catch { continue }
+    }
+    if (!url) continue
     models[row.id] = {
-      id: row.id, providerID: spec.id, name: row.name ?? row.id,
+      id: row.id, providerID: spec.id, name: typeof row.name === "string" && row.name.trim() ? row.name : row.id,
+      ...(mode === "go" && text.input.price === 0 && text.output.price === 0 ? { free: true } : {}),
       api: { id: row.id, url, npm: SDK[protocol] },
       limit: { context: row.limit?.context ?? 0, output: row.limit?.output ?? 0, ...(row.limit?.input ? { input: row.limit.input } : {}) },
       capabilities: {
@@ -222,24 +300,24 @@ export function buildModels(rows, mode, remote) {
         attachment: (Array.isArray(row.modalities?.input) ? row.modalities.input : []).some((m) => typeof m === "string" && m !== "text"),
         input: modalities(row.modalities?.input), output: modalities(row.modalities?.output), interleaved: false,
       },
-      cost: { input: text?.input?.price ?? 0, output: text?.output?.price ?? 0, cache: { read: text?.input?.cache?.read ?? 0, write: typeof text?.input?.cache?.write === "number" ? text.input.cache.write : 0 } },
+      cost: { input: text?.input?.price ?? 0, output: text?.output?.price ?? 0, cache: { read: text?.input?.cache?.read ?? 0, ...(typeof text?.input?.cache?.write === "number" ? { write: text.input.cache.write } : {}) } },
       options: {}, headers: {}, variants: {},
     }
   }
   return applyOverrides(models, remote, spec)
 }
 
-export function usageWindows(go, budgets = [], upstream = "opencode-go", mode = "go") {
+export function usageWindows(go, budgets = [], upstream = "opencode-go", mode = "go", freeModels = []) {
   const windows = []
   for (const [key, name, span] of [["rolling", "5 hours", 18000], ["weekly", "7 days", 604800], ["monthly", "Monthly", undefined]]) {
     const m = go?.usage?.[key]
-    if (!Number.isFinite(m?.percent)) continue
+    if (!validMeter(m)) continue
     const raw = Math.max(0, m.percent)
     const used = m.status === "rate-limited" ? Math.max(100, raw) : raw
-    windows.push({ name, used, ...(used !== raw ? { display: `Rate limited · ${raw}% reported` } : {}), ...(m.resetsAt ? { resetsAt: m.resetsAt } : {}), ...(span ? { span } : {}) })
+    windows.push({ name, used, ...(freeModels.length ? { notModels: [...freeModels] } : {}), ...(used !== raw ? { display: `Rate limited · ${raw}% reported` } : {}), ...(m.resetsAt ? { resetsAt: m.resetsAt } : {}), ...(span ? { span } : {}) })
   }
   for (const b of budgets) {
-    if (!object(b) || !Number.isFinite(b.limitDollars) || !Number.isFinite(b.spentDollars)) continue
+    if (invalidBudget(b)) continue
     const filtered = (Array.isArray(b.vendors) && b.vendors.length > 0) || b.inputPriceAtLeast !== undefined
     const models = Array.isArray(b.models) ? b.models : []
     const matching = models.length > 0 && models.every((m) => object(m) && m.providerID === upstream && typeof m.modelID === "string" && m.modelID)
@@ -266,13 +344,19 @@ export function usageWindows(go, budgets = [], upstream = "opencode-go", mode = 
 export function makePlugin(mode, input = {}) {
   const spec = specs[mode]
   const current = async (getAuth) => {
-    const auth = requireAuth(await getAuth())
+    const stored = await getAuth()
+    const auth = requireAuth(input.magpie ? stored : restoreWorkspace(stored))
     // Magpie refreshes and persists tokens in the selected account's scope.
     // Other hosts do not expose an atomic account-scoped credential save.
-    if (!input.magpie && Number.isFinite(auth.expires) && auth.expires > 0 && auth.expires <= Date.now()) throw expired()
+    if (Number.isFinite(auth.expires) && auth.expires > 0 && auth.expires <= Date.now()) {
+      if (input.magpie) throw Object.assign(new Error("OpenCode session renewal pending; retry shortly."), { signIn: "kept" })
+      throw expired()
+    }
     return auth
   }
+  const workspaceFreeModels = new Map()
   const bootstrap = buildModels(JSON.parse(readFileSync(new URL(`./catalog/${mode}.json`, import.meta.url), "utf8")).data, mode)
+  const bootstrapFreeModels = Object.values(bootstrap).filter((m) => m.free).map((m) => m.id)
   return {
     async config(cfg) {
       cfg.provider ??= {}
@@ -280,6 +364,7 @@ export function makePlugin(mode, input = {}) {
         name: spec.name, npm: "@ai-sdk/openai-compatible", api: `${ORIGIN}${spec.root}/openai/v1`,
         models: Object.fromEntries(Object.entries(bootstrap).map(([id, m]) => [id, {
           name: m.name, provider: { api: m.api.url, npm: m.api.npm }, limit: m.limit,
+          ...(m.free ? { free: true } : {}),
           reasoning: m.capabilities.reasoning, tool_call: m.capabilities.toolcall,
           modalities: { input: KINDS.filter((k) => m.capabilities.input[k]), output: KINDS.filter((k) => m.capabilities.output[k]) },
         }])),
@@ -298,7 +383,11 @@ export function makePlugin(mode, input = {}) {
             method: "auto", url: device.url,
             instructions: `Sign in and select a workspace on OpenCode. Check code: ${device.user_code}`,
             async callback(_code, { signal: callbackSignal } = {}) {
-              try { return await finishDevice(device, { signal: callbackSignal ?? signal }) }
+              try {
+                const result = await finishDevice(device, { signal: callbackSignal ?? signal })
+                if (!input.magpie) result.accountId = ACCOUNT_TAG + Buffer.from(result.metadata.orgID).toString("base64url")
+                return result
+              }
               catch (e) { return { type: "failed", error: e.message } }
             },
           }
@@ -306,6 +395,7 @@ export function makePlugin(mode, input = {}) {
       }],
       async loader(getAuth) {
         return {
+          apiKey: "opencode-oauth-placeholder",
           async fetch(input, init) {
             const request = new Request(input, init)
             allowedURL(request.url, spec)
@@ -314,6 +404,8 @@ export function makePlugin(mode, input = {}) {
             headers.set("authorization", `Bearer ${auth.access}`)
             headers.set("x-opencode-org-id", auth.metadata.orgID)
             headers.set("user-agent", AGENT)
+            headers.delete("cookie")
+            headers.delete("x-org-id")
             headers.delete("x-api-key")
             headers.delete("x-goog-api-key")
             // Magpie's model test is one independent request and has no chat
@@ -340,7 +432,8 @@ export function makePlugin(mode, input = {}) {
         if (results[1].status === "fulfilled" && budgetValue === undefined) errors.push(new Error("当前工作区无法读取 Console 预算。"))
         if (budgetValue !== undefined && (!Array.isArray(budgetValue) || budgets.some(invalidBudget))) errors.push(new Error("OpenCode 预算信息格式无效。"))
         if (go !== undefined && invalidGoUsage(go)) errors.push(new Error("OpenCode Go 额度信息格式无效。"))
-        const windows = usageWindows(go, budgets, spec.upstream, mode)
+        const freeModels = mode === "go" ? (workspaceFreeModels.get(auth.metadata.orgID) ?? bootstrapFreeModels) : []
+        const windows = usageWindows(go, budgets, spec.upstream, mode, freeModels)
         if (mode === "go" && !go && results[0].status === "fulfilled") errors.push(new Error("当前工作区没有可读取的 Go 订阅额度。"))
         const authenticatedRead = (mode === "go" && go !== undefined) || budgetValue !== undefined
         const signIn = errors.some((e) => e.signIn === "expired") && !authenticatedRead ? "expired" : "kept"
@@ -370,7 +463,13 @@ export function makePlugin(mode, input = {}) {
         validateConfig(remote, spec)
         const models = buildModels(catalog.data, mode)
         if (!Object.keys(models).length) throw new Error("OpenCode 模型目录格式无效，保留已有列表。")
-        return applyOverrides(models, remote, spec)
+        const configured = applyOverrides(models, remote, spec)
+        if (mode === "go") {
+          workspaceFreeModels.delete(auth.metadata.orgID)
+          workspaceFreeModels.set(auth.metadata.orgID, Object.values(configured).filter((m) => m.free).map((m) => m.id))
+          if (workspaceFreeModels.size > 32) workspaceFreeModels.delete(workspaceFreeModels.keys().next().value)
+        }
+        return configured
       },
     },
     async "chat.headers"(input, output) {
