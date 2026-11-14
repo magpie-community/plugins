@@ -8,18 +8,21 @@ import {gunzipSync} from "node:zlib";
 import {getReceiptReport} from "./src/receipt-report.mjs";
 import {readDetails} from "./src/receipt-details.mjs";
 import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant} from "./src/grant-store.mjs";
-import {retainReceipts, readTail} from "./src/receipts.mjs";
+import {retainReceipts, readTail, receiptAgent} from "./src/receipts.mjs";
 import {validName,namePattern} from "./src/policy.js";
 import {readAuthorization, signAuthorization} from "./src/session-authorization.js";
 import {initializeOptions} from "./src/local-options.mjs";
 
 const services = new Map();
+const agentNames={codex:"Codex",claude:"Claude Code","claude-code":"Claude Code",pi:"Pi",opencode:"OpenCode","deepseek-harness":"DeepSeek Harness",deepseek:"DeepSeek",hermes:"Hermes","nero-banker":"NERO Banker"};
 
 // Titles and task kinds are display metadata only, never authorization.
 // Read local indexes, never chat messages, and match complete session IDs.
-async function withTaskTitles(rows, day) {
+async function withTaskTitles(rows, day, availableAgents) {
   const idOf=row=>row.session || row.task || row.thread;
-  const ids=new Set(rows.map(idOf).filter(Boolean)),titles=new Map();
+  const ids=new Set(rows.map(idOf).filter(Boolean)),titles=new Map(),agents=new Map();
+  const addAgent=(id,value)=>{const agent=receiptAgent(value);if(agent){availableAgents?.add(agent);const found=agents.get(id)||new Set();found.add(agent);agents.set(id,found);}};
+  for(const row of rows)addAgent(idOf(row),row.agent);
   if(ids.size)try{
     const file=path.join(process.env.CODEX_HOME || path.join(os.homedir(),".codex"),"session_index.jsonl");
     const fd=await fs.open(file,constants.O_RDONLY|constants.O_NOFOLLOW);
@@ -29,6 +32,7 @@ async function withTaskTitles(rows, day) {
         for(const line of (await fd.readFile("utf8")).split("\n")){
           let row;try{row=JSON.parse(line);}catch{continue;}
           if(ids.has(row?.id)&&typeof row.thread_name==="string"){
+            addAgent(row.id,"codex");
             const title=row.thread_name.replace(/[\u0000-\u001f\u007f]/g," ").trim().slice(0,300);
             if(title)titles.set(row.id,title);
           }
@@ -37,7 +41,7 @@ async function withTaskTitles(rows, day) {
     }finally{await fd.close();}
   }catch{} // An unavailable title index must not affect grants or receipts.
   const missing=new Set([...ids].filter(id=>!titles.has(id)));
-  if(missing.size && /^\d{4}-\d{2}-\d{2}$/.test(day || "")){
+  if(ids.size && /^\d{4}-\d{2}-\d{2}$/.test(day || "")){
     // Hidden Codex tasks need not appear in its chat-title index. Magpie's
     // routing history already records their kinds, including older receipts.
     const labels=new Map([
@@ -63,7 +67,10 @@ async function withTaskTitles(rows, day) {
       }
       for(const line of content.split("\n")){
         let route;try{route=JSON.parse(line);}catch{continue;}
-        if(route?.agent!=="codex" || !missing.has(route.session))continue;
+        const knownAgent=receiptAgent(route?.agent);if(knownAgent)availableAgents?.add(knownAgent);
+        if(!ids.has(route?.session))continue;
+        addAgent(route.session,route.agent);
+        if(route.agent!=="codex" || !missing.has(route.session))continue;
         const found=kinds.get(route.session) || new Set();
         found.add(labels.get(route.kind) || ""); kinds.set(route.session,found);
       }
@@ -73,7 +80,7 @@ async function withTaskTitles(rows, day) {
       if(!found.has(""))titles.set(id,found.size===1 ? [...found][0] : "后台任务");
     }
   }
-  return rows.map(row=>({...row,taskTitle:titles.get(idOf(row)) || ""}));
+  return rows.map(row=>{const own=receiptAgent(row.agent),found=own?[own]:[...(agents.get(idOf(row))||[])];return {...row,taskTitle:titles.get(idOf(row)) || "",agentIds:found,agentLabel:found.length?found.map(agent=>agentNames[agent]||agent).join("、"):"来源未记录"};});
 }
 
 // Runs inside Magpie's existing plugin host; no separate daemon or model call.
@@ -85,7 +92,7 @@ export const ReceiptPage = async (_input, options = {}) => {
     console.warn("company_guard_receipt_page_not_configured"); return {};
   }
   const root = stateRoot(options.stateDir);
-  try { await retainReceipts(root); } catch { console.warn("company_guard_receipt_retention_failed"); }
+  try { await retainReceipts(root, undefined, options.appLog); } catch { console.warn("company_guard_receipt_retention_failed"); }
   const assets = new Map();
   for (const [route,file,type] of [["/","page/dashboard.html","text/html"],["/session-authorization.html","page/authorization.html","text/html"],["/authorization.js","page/authorization.js","text/javascript"],["/app.js","page/app.js","text/javascript"],["/style.css","page/style.css","text/css"],["/bridge.js","vendor/magpie-pagebridge.js","text/javascript"]]) {
     assets.set(route, {body:await fs.readFile(new URL(file,import.meta.url)),type});
@@ -191,7 +198,8 @@ export const ReceiptPage = async (_input, options = {}) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(400, {error:"invalid_date"});
     try {
       const report = await getReceiptReport({day, root, appLog:options.appLog});
-      send(200, {...report, rows:await withTaskTitles(report.rows,day),readAt:new Date().toISOString()});
+      const availableAgents=new Set(),rows=await withTaskTitles(report.rows,day,availableAgents);
+      send(200, {...report,rows,agentOptions:[...availableAgents].sort().map(id=>({id,label:agentNames[id]||id})),readAt:new Date().toISOString()});
     } catch { console.warn("company_guard_receipt_page_read_failed"); send(500, {error:"receipt_read_failed"}); }
   });
   server.requestTimeout = 10000;

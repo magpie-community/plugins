@@ -1157,7 +1157,7 @@ function onEvent(ev, ctx) {
   const state = ctx.state.guard;
   if (!state?.ready) return;
   if (!Object.keys(state.reverse).length) {
-    if (terminalEvent(ev, ctx.protocol)) receiptEvent(state, "reply_processed", terminalOK(ev), terminalOK(ev) ? "processed" : "upstream_incomplete", ev.type);
+    if (terminalEvent(ev, ctx.protocol)) receiptEvent(state, "reply_processed", terminalOK(ev), terminalOK(ev) ? "processed" : "upstream_incomplete", terminalLabel(ev, ctx.protocol));
     return;
   }
   if (state.failed) return null;
@@ -1206,7 +1206,7 @@ function onEvent(ev, ctx) {
         if (c.finishReason && pending(state, "g:" + (c.index ?? ci) + ":")) return streamError(ctx, state);
       }
     } else whole(ev, state);
-    if (terminalEvent(ev, ctx.protocol)) receiptEvent(state, "reply_processed", terminalOK(ev) && !state.failed && !pending(state), !terminalOK(ev) ? "upstream_incomplete" : state.failed || pending(state) ? "restoration_incomplete" : "processed", ev.type);
+    if (terminalEvent(ev, ctx.protocol)) receiptEvent(state, "reply_processed", terminalOK(ev) && !state.failed && !pending(state), !terminalOK(ev) ? "upstream_incomplete" : state.failed || pending(state) ? "restoration_incomplete" : "processed", terminalLabel(ev, ctx.protocol));
     return ev;
   } catch {
     return streamError(ctx, state);
@@ -1274,6 +1274,11 @@ function onRequest(body, ctx) {
 function terminalOK(ev) {
   return !["error", "response.failed", "response.incomplete"].includes(ev.type);
 }
+function terminalLabel(ev, protocol) {
+  if (protocol === "chat") return ev.choices?.length && ev.choices.every((c) => ["stop", "tool_calls", "function_call"].includes(c.finish_reason)) ? "chat.completed" : void 0;
+  if (protocol === "gemini") return ev.candidates?.length && ev.candidates.every((c) => c.finishReason === "STOP") ? "gemini.completed" : void 0;
+  return ev.type;
+}
 function terminalEvent(ev, protocol) {
   if (protocol === "responses") return ["response.completed", "response.failed", "response.incomplete"].includes(ev.type);
   if (protocol === "anthropic") return ["message_stop", "error"].includes(ev.type);
@@ -1285,7 +1290,7 @@ function receiptEvent(state, phase, ok, reason, eventType) {
   if (phase === "reply_processed" && state.receiptDone) return;
   if (phase === "reply_processed") state.receiptDone = true;
   const replyReason = phase === "reply_processed" ? reason || (ok ? "processed" : "restoration_incomplete") : void 0;
-  const terminalType = ["response.completed", "response.failed", "response.incomplete", "message_stop", "error"].includes(eventType) ? eventType : void 0;
+  const terminalType = ["response.completed", "response.failed", "response.incomplete", "message_stop", "chat.completed", "gemini.completed", "error"].includes(eventType) ? eventType : void 0;
   if (state.fallback) {
     const metrics = state.metrics || {};
     try {

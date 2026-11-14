@@ -6,7 +6,10 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {randomBytes} from "node:crypto";
 import {prepareRequest, onRequest, onResponse, onEvent, PREPARED} from "../src/company-guard.js";
-import {onRequest as hookRequest} from "../company-guard.hooks.mjs";
+import {onRequest as hookRequest, onResponse as hookResponse} from "../company-guard.hooks.mjs";
+import {retainReceipts} from "../src/receipts.mjs";
+import {getReceiptReport} from "../src/receipt-report.mjs";
+import {onRequest as middlewareRequest, onResponse as middlewareResponse, onEvent as middlewareEvent} from "../dist/company-guard.middleware.js";
 import {initializeOptions} from "../src/local-options.mjs";
 import {signAuthorization} from "../src/session-authorization.js";
 
@@ -56,8 +59,12 @@ for (const protocol of ["responses", "chat", "anthropic", "gemini"]) {
     assert(!JSON.stringify(response).includes(token));
   });
 
-  test(protocol + ": restore a name split across streaming chunks", () => {
+  test(protocol + ": restore a name split across streaming chunks", t => {
     const {ctx, token} = prepare(protocol);
+    const confirmations=[], info=console.info;
+    ctx.state.guard.receiptId=SESSION;
+    console.info=value=>confirmations.push(value);
+    t.after(()=>{console.info=info;});
     const events = [token.slice(0, 19), token.slice(19)].map((text, index) => ({
       responses:() => ({type:"response.output_text.delta", output_index:0, content_index:0, delta:text}),
       chat:() => ({choices:[{index:0, delta:{content:text}, finish_reason:index ? "stop" : null}]}),
@@ -72,6 +79,11 @@ for (const protocol of ["responses", "chat", "anthropic", "gemini"]) {
     }).join("");
     assert.equal(output, NAME);
     assert.equal(ctx.state.guard.failed, false);
+    if (["chat","gemini"].includes(protocol)) {
+      const row=confirmations.map(line=>JSON.parse(line.slice("NERO_COMPANY_GUARD_RECEIPT ".length))).find(r=>r.phase==="reply_processed");
+      assert.equal(row.ok,true);
+      assert.equal(row.eventType,protocol+".completed");
+    }
   });
 
   test(protocol + ": mask company names in tool arguments", () => {
@@ -151,7 +163,7 @@ test("a pinned GitHub installation initializes without a local-path registration
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   for (const field of keyFields) assert.equal(saved.plugins[0].options[field], options[field]);
 });
-for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.1"]) {
+for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.3"]) {
   test("community installation initializes: " + spec, async t => {
     const setup = await installation(t);
     setup.config.plugins[0].spec = spec;
@@ -222,10 +234,34 @@ test("fresh hook preparation and native middleware share keys and remove the pri
   await hookRequest(body, hook);
   assert(body[PREPARED]);
   const native = context("responses", JSON.parse(await fs.readFile(setup.configFile)).plugins[0].options);
-  onRequest(body, native);
+  const messages=[], info=console.info;
+  console.info=value=>messages.push(value);
+  t.after(()=>{console.info=info;});
+  middlewareRequest(body, native);
   assert.equal(body[PREPARED], undefined);
   assert(!JSON.stringify(body).includes(NAME));
   for (const field of keyFields) assert(!JSON.stringify(body).includes(native.options[field]));
   const token = Object.keys(native.state.guard.reverse)[0], reply = {output:[{content:[{type:"output_text", text:token}]}]};
-  onResponse(reply, native); assert(JSON.stringify(reply).includes(NAME));
+  middlewareEvent({type:"response.completed",response:reply}, native);
+  middlewareResponse(reply, native); assert(JSON.stringify(reply).includes(NAME));
+  console.info=info;
+
+  // Reuse this real hook/middleware exchange to exercise confirmation loss.
+  const root=path.dirname(setup.keyFile), appLog=path.join(root,"app.log"), day=hook.state.receipt.startedAt.slice(0,10);
+  await fs.writeFile(appLog,messages.join("\n")+"\n",{mode:0o600});
+  await retainReceipts(root,undefined,appLog);
+  const file=path.join(root,"receipts",day+".jsonl"), records=(await fs.readFile(file,"utf8")).trim().split("\n").map(JSON.parse);
+  const report=async(saved=[]) => (await getReceiptReport({day,root,appLog,records:saved})).rows.find(r=>r.id===hook.state.receipt.id);
+  assert.equal((await report()).statusCode,"completed");
+  assert.equal((await report()).completionSource,"stream");
+  assert.equal((await report()).agent,"codex");
+  await fs.writeFile(appLog,"");
+  assert.equal((await report()).statusCode,"completed","persisted confirmations survive log rotation");
+  await fs.unlink(file);
+  assert.equal((await report(records)).statusCode,"completed","fixed snapshots survive recent-window eviction");
+  assert.equal((await report(records.filter(r=>r.phase!=="request_checked"))).statusCode,"request_confirmation_missing");
+  await hookResponse(reply,{...hook,success:false});
+  assert.equal((await report(records)).statusCode,"call_incomplete","explicit failed completion is never promoted by a stream checkpoint");
+  await hookResponse({output:[{content:[{type:"output_text",text:token}]}]},{...hook,success:true});
+  assert.equal((await report(records)).statusCode,"restoration_residue","actual residual tokens still fail");
 });

@@ -18,7 +18,7 @@ async function authorizationPost(route,body){
 function sessionCard(row,kind){
   const card=el('article',undefined,'authorization-card'),text=el('div',undefined,'authorization-task'),scope=el('div',undefined,'authorization-scope');
   const title=el('h3',row.taskTitle || '会话 '+short(row.session));title.title=row.taskTitle || row.session;
-  const identity=el('p',undefined,'authorization-identity');identity.append(el('span',row.session,'mono'),el('span',row.workspace,'authorization-workspace'));
+  const identity=el('p',undefined,'authorization-identity');identity.append(el('span',row.agentLabel || '来源未记录','agent-source'),el('span',row.session,'mono'),el('span',row.workspace,'authorization-workspace'));
   text.append(title,identity);
   scope.append(el('span',kind==='pending'?'等待确认':row.coverage==='all'?'全部公司名称':`${Number(row.nameCount).toLocaleString('zh-CN')} 个名称`,'authorization-scope-label'));
   if(kind!=='pending'&&row.coverage!=='all')scope.append(el('span',row.legacy?'已有名单授权':'指定名单','detail-message'));

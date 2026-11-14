@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-company-guard",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "type": "module",
   "license": "MIT",
   "description": "Local company-name masking, reversible replies and session approvals for Magpie",
