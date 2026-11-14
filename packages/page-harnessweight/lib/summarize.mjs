@@ -2,6 +2,7 @@
 // agent. Everything here is plain arithmetic over numbers already recorded;
 // nothing is estimated except the tool tokens, which say so.
 import { kindOf } from "./usage.mjs"
+import { emptyTaskDuration, summarizeTaskDurations, taskTimingMetadata } from "./task-duration.mjs"
 // the insight sentences live in the shared table, so the page and the service
 // say the same thing in the same language
 import { insight } from "../app/i18n.mjs"
@@ -28,7 +29,7 @@ function dayKey(t, tzOffsetMin) {
   return new Date(t - tzOffsetMin * 60e3).toISOString().slice(0, 10)
 }
 
-export function summarize({ usage = [], tools = [], period = "7d", now = Date.now(), showClients = false, tzOffsetMin = 0, nameOf = (a) => a, lang = "zh" }) {
+export function summarize({ usage = [], tools = [], tasks = [], codexTasks = [], taskReadError = false, codexReadError = false, period = "7d", now = Date.now(), showClients = false, tzOffsetMin = 0, nameOf = (a) => a, lang = "zh" }) {
   const span = PERIODS[period] ?? PERIODS["7d"]
   const since = now - span
   const by = new Map()
@@ -50,7 +51,7 @@ export function summarize({ usage = [], tools = [], period = "7d", now = Date.no
 
   let hidden = 0
   for (const r of usage) {
-    if (r.t < since) continue
+    if (!Number.isFinite(r.t) || r.t < since || r.t > now) continue
     if (!showClients && kindOf(r.agent) === "client") { hidden++; continue }
     const a = get(r.agent)
     a.calls++
@@ -81,7 +82,7 @@ export function summarize({ usage = [], tools = [], period = "7d", now = Date.no
   let toolSamples = 0
   let toolsSince = Infinity
   for (const r of tools) {
-    if (r.t < since) continue
+    if (!Number.isFinite(r.t) || r.t < since || r.t > now) continue
     if (!showClients && kindOf(r.agent) === "client") continue
     const a = get(r.agent)
     toolSamples++
@@ -93,7 +94,15 @@ export function summarize({ usage = [], tools = [], period = "7d", now = Date.no
     if (r.t < toolsSince) toolsSince = r.t
   }
 
-  const agents = [...by.values()].filter((a) => a.calls > 0 || a.tool.samples > 0).map((a) => {
+  const durations = summarizeTaskDurations([...(taskReadError ? [] : tasks), ...(codexReadError ? [] : codexTasks)], { since, now })
+  for (const agent of durations.keys()) {
+    if (showClients || kindOf(agent) !== "client") get(agent)
+  }
+  if (codexReadError) {
+    get("codex")
+    if (!durations.get("codex")?.available) durations.set("codex", emptyTaskDuration("read-error"))
+  }
+  const agents = [...by.values()].map((a) => {
     const prompt = a.in + a.cacheRead + a.cacheWrite
     const avgPrompt = a.calls ? prompt / a.calls : 0
     const tb = a.tool.samples ? a.tool.bytes / a.tool.samples : 0
@@ -112,6 +121,7 @@ export function summarize({ usage = [], tools = [], period = "7d", now = Date.no
       p50ms: median(a.ms), p50ttft: median(a.ttft),
       models: top(a.models, 8), protocols: top(a.protocols, 4),
       session: sessionStats(a.sessions),
+      taskDuration: durations.get(a.agent) ?? emptyTaskDuration(taskReadError ? "read-error" : "no-lifecycle-events"),
       series: [...a.days.values()].sort((x, y) => (x.day < y.day ? -1 : 1)),
       first: Number.isFinite(a.first) ? a.first : null, last: a.last || null,
       tools: a.tool.samples ? {
@@ -134,11 +144,13 @@ export function summarize({ usage = [], tools = [], period = "7d", now = Date.no
   totals.cacheRate = totals.prompt ? totals.cacheRead / totals.prompt : 0
 
   let lastUsage = 0, lastTool = 0
-  for (let i = usage.length - 1; i >= 0 && i >= usage.length - 50; i--) if (usage[i].t > lastUsage) lastUsage = usage[i].t
-  for (const r of tools) if (r.t > lastTool) lastTool = r.t
+  const observed = r => Number.isFinite(r?.t) && r.t > 0 && r.t <= now && typeof r.agent === "string" && r.agent.trim()
+  for (const r of usage) if (observed(r) && r.t > lastUsage) lastUsage = r.t
+  for (const r of tools) if (observed(r) && r.t > lastTool) lastTool = r.t
   return {
     lastUsage: lastUsage || null, lastTool: lastTool || null,
     period, since, generatedAt: now, agents, totals, hiddenClients: hidden,
+    taskTiming: { ...taskTimingMetadata(), since, until: now, readError: taskReadError || codexReadError },
     toolSamples, toolsSince: Number.isFinite(toolsSince) ? toolsSince : null,
     insights: insights(agents, nameOf, lang),
   }

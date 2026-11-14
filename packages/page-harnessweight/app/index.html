@@ -19,6 +19,7 @@
     <div>
       <h1>HarnessWeight</h1>
       <p class="status wait" id="status" role="status" data-t="status.loading">正在读取…</p>
+      <div class="telemetry" id="telemetry" role="group" aria-label-t="telemetry.label"></div>
       <p class="sub" data-t="header.sub">同一个网关后面，每个 agent harness 读了多少 token、命中多少缓存、失败多少次、每轮重发多重的工具定义。</p>
     </div>
   </div>
@@ -33,25 +34,63 @@
 </header>
 
 <main>
+  <p class="state" id="state" role="status" hidden></p>
   <section class="insights" id="insights" aria-label="结论" aria-label-t="aria.insights"></section>
   <section class="kpis" id="kpis" aria-label="总览" aria-label-t="aria.overview"></section>
 
-  <section class="block">
+  <section class="block" id="agentsBlock">
     <div class="block-head">
-      <h2 data-t="cards.title">谁在花你的 token</h2>
-      <p class="hint" data-t="cards.hint">每张卡是一个 Agent。条的长度是这段时间读进模型的总 token，深色部分是按原价算的（没命中缓存）。</p>
-      <div class="sortbar" id="cardSort" role="group" aria-label="卡片排序" aria-label-t="aria.cardSort"></div>
-      <p class="hint" id="activityInfo" role="status" data-t="activity.connecting">正在连接实时调用状态…</p>
+      <div class="agent-heading"><h2 data-t="cards.title"></h2>
+        <div class="seg" id="agentView" role="group" aria-label-t="view.label">
+          <button type="button" data-view="cards" aria-pressed="true" data-t="view.cards"></button>
+          <button type="button" data-view="table" aria-pressed="false" data-t="view.table"></button>
+        </div>
+      </div>
+      <p class="hint" id="cardsHint" data-t="cards.hint"></p>
+      <div class="sortbar" id="cardSort" role="group" aria-label-t="aria.cardSort"></div>
+      <p class="hint" id="activityInfo" role="status" data-t="activity.connecting"></p>
     </div>
     <div class="cards" id="cards"></div>
+    <div id="comparison" hidden>
+      <div id="metricGroups" class="sortbar" role="group" aria-label-t="table.categories"></div>
+      <p class="hint" id="taskCompareHint" data-t="task.sortHint" hidden></p>
+      <p class="hint" data-t="table.hint"></p>
+      <details class="comparison-notes"><summary data-t="table.guide"></summary><p class="hint" data-t="table.extrema"></p></details>
+      <div class="table-wrap comparison-scroll" tabindex="0" role="region" aria-labelledby="comparison-caption"><table id="table"></table></div>
+      <p id="sortStatus" class="sr-only" role="status"></p>
+    </div>
   </section>
 
-  <section class="block">
+  <section class="block" id="providersBlock" aria-busy="false">
     <div class="block-head">
-      <h2 data-t="table.title">逐项对比</h2>
-      <p class="hint" data-t="table.hint">点表头排序，点一行看详情。</p>
+      <h2 data-t="providers.title"></h2>
+      <p class="hint" data-t="providers.hint"></p>
     </div>
-    <div class="table-wrap"><table id="table"></table></div>
+    <p id="providerUnavailable" class="empty-note" role="status" data-t="providers.serviceReload" hidden></p>
+    <div id="providerPicker" class="provider-picker">
+      <div id="providerGallery" class="provider-gallery" role="group" aria-label-t="providers.provider"></div>
+      <button id="providerExpand" class="pill provider-expand" aria-expanded="false" aria-controls="providerGallery" hidden></button>
+    </div>
+    <div class="provider-controls">
+      <label><span data-t="providers.model"></span><select id="providerModel" name="model"></select></label>
+      <button class="pill" id="providerShare" aria-pressed="false" data-t="providers.share"></button>
+    </div>
+    <div id="providerReport" class="provider-report">
+      <header class="report-head">
+        <div class="report-brand">HarnessWeight <span data-t="providers.observed"></span></div>
+        <div class="report-identity"><span id="providerReportMark" class="report-logo" aria-hidden="true"></span><div><p class="report-eyebrow" data-t="providers.report"></p><h2 id="providerReportTitle"></h2></div></div>
+        <p class="hint" id="providerScope"></p>
+      </header>
+      <dl class="report-stats" id="providerKpis"></dl>
+      <section class="provider-coverage" aria-labelledby="providerCoverageTitle">
+        <div class="provider-coverage-head"><h3 id="providerCoverageTitle" data-t="providers.coverage"></h3><span data-t="providers.observed"></span></div>
+        <div id="providerHarnesses" class="provider-harnesses"></div>
+        <p class="hint" data-t="providers.drilldown"></p>
+      </section>
+      <details class="provider-table-detail"><summary data-t="providers.fullBreakdown"></summary><div class="table-wrap" tabindex="0" role="region" aria-label-t="providers.fullBreakdown"><table id="providerTable"></table></div></details>
+      <div id="providerReasons" aria-live="polite"></div>
+      <footer class="report-note"><p data-t="providers.formula"></p><p data-t="providers.caveat"></p></footer>
+    </div>
   </section>
 
   <section class="block" id="toolsBlock">
@@ -62,10 +101,9 @@
     <div id="tools"></div>
   </section>
 
-  <p class="state" id="state" hidden></p>
 </main>
 
-<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1">
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label-t="card.details" aria-hidden="true" inert tabindex="-1">
   <button class="close" id="close" aria-label="关闭" aria-label-t="aria.close">×</button>
   <div id="detail"></div>
 </aside>
