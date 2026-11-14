@@ -1226,6 +1226,10 @@ function shape(req, sent, at, effort) {
           else if (e === "minimal" && at) level = "minimal"
           else if ((e === "none" || e === "minimal") && !draws(m)) level = "low"
           else if (e === "medium" && (m.includes("flash") || g > 3)) level = "medium"
+          // a variant at xhigh (Gemini 4 Hydrogen) is asked at xhigh, which
+          // Google lists for it (LOW, MEDIUM, HIGH, XHIGH); a model with no
+          // such variant stays at high (#1169)
+          if (at === "xhigh") level = "xhigh"
           tc.thinkingLevel = level
         } else delete tc.thinkingLevel
       } else if (typeof tc.thinkingLevel === "string") {
@@ -1539,7 +1543,8 @@ async function complete(s, url, init, magpie) {
   let effort = headerOf(init?.headers, EFFORT).toLowerCase()
   // a variant's level, where OpenCode asked for one
   const tl = raw.generationConfig?.thinkingConfig?.thinkingLevel
-  if (!effort && typeof tl === "string" && LEVELS.includes(tl)) effort = tl
+  // Gemini's own clients write it in capitals ("XHIGH")
+  if (!effort && typeof tl === "string" && LEVELS.includes(tl.toLowerCase())) effort = tl.toLowerCase()
   let l
   try {
     l = await modelInfo(s)

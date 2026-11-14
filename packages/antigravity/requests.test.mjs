@@ -58,6 +58,15 @@ test("OpenCode's variant names the level", async () => {
   expect(seen.find((s) => s.name === "streamGenerateContent").json.model).toBe("gemini-3.7-flash-low")
 })
 
+test("a level in capitals, as Gemini's own clients write it, names the level too (#1169)", async () => {
+  const seen = fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
+  const f = await loaderFetch(auth())
+  await f(URL_("gemini-3.7-flash"), { method: "POST", body: ask("hi", { generationConfig: { thinkingConfig: { includeThoughts: true, thinkingLevel: "LOW" } } }) })
+  const sent = seen.find((s) => s.name === "streamGenerateContent").json
+  expect(sent.model).toBe("gemini-3.7-flash-low")
+  expect(sent.request.generationConfig.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "low" })
+})
+
 test("a Request input is read", async () => {
   const seen = fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
   const f = await loaderFetch(auth())

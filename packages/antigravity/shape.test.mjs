@@ -59,6 +59,10 @@ test.each([
   ["gemini-3.7-flash-low", "low", "low", "low"],
   ["gemini-3.7-flash-medium", "medium", "medium", "medium"],
   ["gemini-3.7-flash-high", "high", "xhigh", "high"],
+  // a variant at xhigh thinks at xhigh, asked or by default (#1169)
+  ["gemini-4-hydrogen-xhigh", "xhigh", "xhigh", "xhigh"],
+  ["gemini-4-hydrogen-xhigh", "xhigh", "", "xhigh"],
+  ["gemini-4-hydrogen-high", "high", "xhigh", "high"],
   ["gemini-3.1-pro-high", "high", "medium", "high"],
   ["gemini-3-flash", "", "medium", "medium"],
   ["gemini-pro-agent", "", "medium", "high"],
