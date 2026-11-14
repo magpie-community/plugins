@@ -86,10 +86,15 @@ requestType: "agent", requestId, request}`):
 
 The plugin also changes the request itself, as the built-in did:
 
-- **System prompt:** lines Antigravity turns away (Claude Code's billing
-  header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a
-  zero-width space; omp's line goes as "RFC 2119 key words: …", since a
-  broken-up copy of it was still turned away now and then.
+- **System prompt:** lines Antigravity turns away with a 429 whatever quota
+  is left go reworded with the same meaning, since Google's check reads past
+  zero-width spaces (11-14): Claude Code's billing header is left out, the
+  Claude Agent SDK's "built on Anthropic's Claude Agent SDK" (Claude
+  Desktop's Code tab and its subagents) goes as "built on the Claude Agent
+  SDK by Anthropic", Codex's GPT-5 lines say "built on GPT-5", Hermes
+  Agent's earlier persona "built by Nous Research", and omp's line "RFC 2119
+  key words: …". A copy someone broke up with invisible characters is
+  reworded the same way.
   DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
   paths…") goes reworded with the same meaning: word for word, it got most
   `gemini-4-argon` answers fast, without thinking and shallow (#1028).

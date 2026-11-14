@@ -1,10 +1,11 @@
 // Antigravity answers a request whose system prompt reads as Claude Code's
 // or the Claude Agent SDK's with a 429 "Resource has been exhausted", which
 // isn't about the account's quota at all. Tried with a real account, it
-// matches these words in the system prompt:
+// matches these lines in the system prompt:
 //
-//   "x-anthropic-billing-header:"   Claude Code's billing line
-//   "You are a Claude agent, built on Anthropic's Claude Agent SDK"
+//   "x-anthropic-billing-header: …"   Claude Code's billing line
+//   "built on Anthropic's Claude Agent SDK"   the Agent SDK's identity line
+//                    (Claude Desktop's Code tab and its subagents)
 //   "You are Codex, an agent based on GPT-5"         Codex's own prompt
 //   "You are Codex, a coding agent based on GPT-5"   for its GPT-5 models
 //   "Hermes Agent, an intelligent AI assistant created by Nous Research"
@@ -14,33 +15,59 @@
 //
 // (a Codex thread begun on a GPT model keeps its prompt after /model or a
 // fork onto an Antigravity one)
-// and lets the same prompt through with a zero-width space (U+200B) inside
-// each. This middleware puts one after the first letter of each word in
-// what Antigravity alone is sent (onProvider, ctx.provider.account): every
-// other provider, a Claude subscription above all, gets the prompt as the
-// agent wrote it. The model reads the words as before. omp's line goes as
-// "RFC 2119 key words: …" instead (saidAs): broken up, Google still turned
-// it away now and then.
 //
-//   {"extraWords": [], "accounts": ["antigravity"], "off": false}
+// Up to 0.1.6 this middleware put zero-width spaces (U+200B) inside them.
+// Since 11-14 Google's check reads past invisible characters: two U+200B in
+// each word, one after every character, or U+2060 instead, each line was
+// turned away 5 of 5 on a real account (hc295971796 on X, Claude Desktop's
+// Code tab). Each line now goes reworded with the same meaning (saidAs),
+// which went through 5 of 5, and only in what Antigravity alone is sent
+// (onProvider, ctx.provider.account): every other provider, a Claude
+// subscription above all, gets the prompt as the agent wrote it.
 //
-// extraWords are more words to break the same way, should Google match
-// others; accounts are the subscriptions' kinds it acts on.
+//   {"saidAs": {}, "extraWords": [], "accounts": ["antigravity"], "off": false}
+//
+// saidAs maps more phrases to what goes instead, should Google match others.
+// extraWords are phrases still broken up with zero-width spaces, as before;
+// Google reads past that now, so prefer saidAs. accounts are the
+// subscriptions' kinds it acts on.
 //
 // After hexiaolv's magpie-antigravity-cloak (MIT), which does the same to
 // every request whatever provider it goes to.
 
-export const words = ["x-anthropic-billing-header", "Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."]
+export const lines = ["x-anthropic-billing-header:", "built on Anthropic's Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."]
+
+// saidAs is how each line goes, given the line as it was matched with its
+// invisible characters taken out and its white space kept: Claude Code's
+// billing line not at all (no Antigravity model reads it), the Agent SDK's
+// as "built on the Claude Agent SDK by Anthropic", Codex's as "built on
+// GPT-5", Hermes' as "built by Nous Research" (as its current persona says
+// it), omp's with RFC 2119's own "key words".
+const saidAs = [
+  () => "",
+  (m) => m.replace(/^(built\s+on\s+)anthropic's(\s+)(claude\s+agent\s+sdk)$/i, "$1the$2$3 by Anthropic"),
+  (m) => m.replace(/based(\s+)on/i, "built$1on"),
+  (m) => m.replace(/based(\s+)on/i, "built$1on"),
+  (m) => m.replace(/created(\s+)by/i, "built$1by"),
+  (m) => m.replace(/(key)(words)/i, "$1 $2"),
+]
 
 const zwsp = "​"
 
-// saidAs are the words no zero-width space gets through reliably, each with
-// how it goes instead, a rewording that keeps its meaning: omp's line broken
-// up was still turned away 1 to 3 times in 10 on a real account on 11-14,
-// whatever the invisible character, while "key words", RFC 2119's own term,
-// went through 10 times in 10.
-const saidAs = {
-  "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.": (m) => m.replace(/(key)(words)/i, "$1 $2"),
+// invisible are the characters Google's check reads past. A line is matched
+// with them anywhere inside it, so a copy an older version of this
+// middleware or of magpie broke up is reworded as the line.
+const invisible = "[\\u00ad\\u180e\\u200b-\\u200f\\u2060-\\u2064\\ufeff]"
+const invisibleRe = new RegExp(invisible, "g")
+const escape = (c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+// lineRe matches a line in any case, with any run of white space where it
+// has a space: Google's check read omp's line wrapped after "REQUIRED," or
+// with a tab or a no-break space for a space as it read the line itself (a
+// real account, 11-14). The billing line is matched to its end.
+function lineRe(line, toEnd) {
+  const words = line.split(" ").map((w) => [...w].map(escape).join(`${invisible}*`))
+  return new RegExp(words.join(`${invisible}*\\s+${invisible}*`) + (toEnd ? "[^\\n]*\\n?" : ""), "gi")
 }
 
 export function onProvider(body, ctx) {
@@ -48,8 +75,7 @@ export function onProvider(body, ctx) {
   if (o.off) return
   const accounts = Array.isArray(o.accounts) && o.accounts.length ? o.accounts : ["antigravity"]
   if (!accounts.includes(ctx.provider?.account)) return
-  const list = words.concat(Array.isArray(o.extraWords) ? o.extraWords.filter((w) => typeof w === "string" && w.length > 1) : [])
-  const cloak = cloaker(list)
+  const cloak = cloaker(o)
   let changed = false
   const text = (s) => {
     if (typeof s !== "string") return s
@@ -62,46 +88,55 @@ export function onProvider(body, ctx) {
       body.system = typeof body.system === "string" ? text(body.system) : parts(body.system, text)
       break
     case "chat":
-      if (Array.isArray(body.messages)) for (const m of body.messages) system(m, text)
+      if (Array.isArray(body.messages)) body.messages = body.messages.filter((m) => system(m, text))
       break
     case "responses":
       body.instructions = text(body.instructions)
-      if (Array.isArray(body.input)) for (const m of body.input) system(m, text)
+      if (Array.isArray(body.input)) body.input = body.input.filter((m) => system(m, text))
       break
     case "gemini":
-      for (const k of ["systemInstruction", "system_instruction"]) if (body[k]) parts(body[k].parts, text)
+      for (const k of ["systemInstruction", "system_instruction"]) if (body[k]) body[k].parts = parts(body[k].parts, text)
       break
   }
   return changed ? body : undefined
 }
 
-// a system or developer message's text, a string or parts
+// system rewrites a system or developer message's text, a string or parts,
+// and says whether the message stays: one that had text and has none left
+// (Claude Code's billing line sent as a message of its own) is left out.
 function system(m, text) {
-  if (!m || (m.role !== "system" && m.role !== "developer")) return
+  if (!m || (m.role !== "system" && m.role !== "developer")) return true
+  const had = typeof m.content === "string" ? m.content !== "" : Array.isArray(m.content) && m.content.length > 0
   m.content = typeof m.content === "string" ? text(m.content) : parts(m.content, text)
+  return !had || (typeof m.content === "string" ? m.content !== "" : !Array.isArray(m.content) || m.content.length > 0)
 }
 
+// parts rewrites each part's text, and leaves out a part that had text and
+// has none left: Claude Code's billing line is a block of its own.
 function parts(list, text) {
-  if (Array.isArray(list)) for (const p of list) if (p && typeof p.text === "string") p.text = text(p.text)
-  return list
+  if (!Array.isArray(list)) return list
+  const out = []
+  for (const p of list) {
+    if (p && typeof p.text === "string" && p.text !== "") {
+      p.text = text(p.text)
+      if (p.text === "") continue
+    }
+    out.push(p)
+  }
+  return out
 }
 
-// cloaker breaks every word of list where it appears, whatever its case:
-// a zero-width space after the first and after the second character of each
-// run of three or more letters or digits in it. One after the first letter
-// only stopped working on 11-11, when Google turned
-// "x\u200b-anthropic-billing-header" and "C\u200blaude Agent SDK" away again.
-//
-// A word matches with any run of white space where it has a space: Google's
-// check read omp's line wrapped after "REQUIRED," or with a tab or a no-break
-// space for a space as it read the line itself (a real account, 11-14).
-function cloaker(list) {
-  const res = list.map((w) => new RegExp(w.split(" ").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi"))
+// cloaker rewords every line where it appears, then each of saidAs' and
+// extraWords' phrases.
+function cloaker(o) {
+  const rules = lines.map((l, i) => [lineRe(l, i === 0), saidAs[i]])
+  if (o.saidAs && typeof o.saidAs === "object") {
+    for (const [from, to] of Object.entries(o.saidAs)) if (from.length > 1 && typeof to === "string") rules.push([lineRe(from, false), () => to])
+  }
   const two = (m) => m.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + zwsp + w[1] + zwsp + w.slice(2))
+  for (const w of Array.isArray(o.extraWords) ? o.extraWords : []) if (typeof w === "string" && w.length > 1) rules.push([lineRe(w, false), two])
   return (s) => {
-    list.forEach((w, i) => {
-      s = s.replace(res[i], saidAs[w] ?? two)
-    })
+    for (const [re, as] of rules) s = s.replace(re, (m) => as(m.replace(invisibleRe, "")))
     return s
   }
 }

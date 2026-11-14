@@ -23,10 +23,10 @@ const samples = [
   "",
 ]
 
-test("every turned-away line is broken up or reworded, and the model still reads it", () => {
+test("every turned-away line is reworded, with no invisible character in it", () => {
   for (const s of samples) {
     const out = cloak(s)
-    expect(out.replaceAll(ZW, "").replace(/key words/i, (m) => m.replace(" ", ""))).toBe(s)
+    expect(out).not.toMatch(/[\u00ad\u200b-\u200f\u2060-\u2064]/)
     if (turnsAway(s)) {
       expect(out).not.toBe(s)
       expect(turnsAway(out)).toBe(false)
@@ -39,7 +39,7 @@ test("every turned-away line is broken up or reworded, and the model still reads
   )
 })
 
-test("a turned-away line wrapped or widened by white space is broken up too", () => {
+test("a turned-away line wrapped or widened by white space is reworded too", () => {
   for (const s of [samples[7], samples[8], samples[9]]) {
     expect(turnsAway(s)).toBe(true)
     expect(cloak(s)).not.toBe(s)
@@ -49,8 +49,8 @@ test("a turned-away line wrapped or widened by white space is broken up too", ()
   expect(turnsAway(samples[10])).toBe(false)
 })
 
-test("agy-cli and antigravity break up and explain the same lines", () => {
-  for (const line of TURNED_AWAY) {
+test("agy-cli and antigravity reword and explain the same lines", () => {
+  for (const line of [...TURNED_AWAY, ...samples.filter((s) => turnsAway(s)).map((s) => s.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + ZW + w[1] + ZW + w.slice(2)))]) {
     expect(antigravity.turnsAway(line)).toBe(true)
     expect(cloak(line)).toBe(antigravity.cloak(line))
     expect(hint(line)).toBe(antigravity.hint(line))
@@ -73,11 +73,11 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   expect(outgoing(sys)).toBe("You are DeepSeek Harness.\n\nWhen the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @\"...\".\n\nBe brief.")
   expect(outgoing("Tokens prefixed with @ are paths. Be brief.")).toBe("Tokens prefixed with @ are paths. Be brief.")
   const both = outgoing("x-anthropic-billing-header: cc\n" + DSH)
-  expect(both).toContain("x-a" + ZW + "n" + ZW + "thropic")
+  expect(both).not.toContain("anthropic")
   expect(both).toContain("When the user writes @ followed by a path")
 })
 
-test("agy-cli and antigravity send the same system text, reworded and broken up", () => {
+test("agy-cli and antigravity send the same system text, reworded", () => {
   for (const [from, to] of REWORDED) {
     expect(outgoing(from)).toBe(to)
     expect(antigravitySends(from)).toBe(to)

@@ -896,9 +896,7 @@ function plainSchema(root) {
 // ---- system prompts Antigravity turns away -----------------------------------------------
 
 // TURNED_AWAY are the lines, lower-cased, Antigravity answers a 429 to
-// whatever quota is left. Each is broken up before it goes by a zero-width
-// space after its first and second character of each word, which Google
-// lets through.
+// whatever quota is left. Each goes as SAID_AS says instead.
 const TURNED_AWAY = [
   "x-anthropic-billing-header:",
   "built on anthropic's claude agent sdk",
@@ -908,16 +906,31 @@ const TURNED_AWAY = [
   "rfc 2119 keywords: must, required, should, recommended, may, optional.",
 ]
 
-const ZW = "​"
+// INVISIBLE are the characters Google's check reads past: since 11-14 a
+// line with a zero-width space (U+200B) after the first and second
+// character of each word, or after every character, or U+2060, is turned
+// away as the line itself, 5 of 5 on a real account for every line here
+// (hc295971796 on X, Claude Desktop's Code tab). A copy someone broke up
+// that way (the antigravity-cloak middleware before 0.1.7, an older magpie)
+// is matched as the line.
+const INVISIBLE = "[\\u00ad\\u180e\\u200b-\\u200f\\u2060-\\u2064\\ufeff]"
+const INVISIBLE_RE = new RegExp(INVISIBLE, "g")
 
-// lineRe matches line in any case and with any run of white space between
-// its words: Google's check reads a line break, a tab, two spaces or a
-// no-break space where the line has one space, and turned omp's line away
-// wrapped after "REQUIRED," or after "RFC 2119" as it did on one line, while
-// a missing period, a space dropped after a comma or the words in another
-// order went through (a real account, 11-14). JavaScript's \s takes no
-// zero-width space, so a line already broken up isn't matched again.
-const lineRe = (line) => new RegExp(line.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi")
+const escape = (c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+// lineRe matches line in any case, with any run of white space between its
+// words and any invisible characters inside them: Google's check reads a
+// line break, a tab, two spaces or a no-break space where the line has one
+// space, and turned omp's line away wrapped after "REQUIRED," or after
+// "RFC 2119" as it did on one line, while a missing period, a space dropped
+// after a comma or the words in another order went through (a real
+// account, 11-14). Claude Code's billing line is matched to its end, since
+// it goes whole.
+const lineRe = (line) => {
+  const words = line.split(" ").map((w) => [...w].map(escape).join(`${INVISIBLE}*`))
+  const tail = line === "x-anthropic-billing-header:" ? "[^\\n]*\\n?" : ""
+  return new RegExp(words.join(`${INVISIBLE}*\\s+${INVISIBLE}*`) + tail, "gi")
+}
 const TURNED_AWAY_RE = TURNED_AWAY.map(lineRe)
 const has = (s, re) => {
   re.lastIndex = 0
@@ -929,20 +942,26 @@ const said = (system, line) => has(system, TURNED_AWAY_RE[TURNED_AWAY.indexOf(li
 
 const turnsAway = (system) => TURNED_AWAY_RE.some((re) => has(system, re))
 
-// breakUp puts a zero-width space after the first and after the second
-// character of every run of three or more letters or digits in a line.
-// One after the first letter only stopped working on 11-11: Google turned
-// "x\u200b-anthropic-billing-header:" and "b\u200built on Anthropic's Claude
-// Agent SDK" away again, and answered each word broken twice.
-const breakUp = (line) => line.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + ZW + w[1] + ZW + w.slice(2))
-
-// SAID_AS are the lines no zero-width space gets through reliably, each
-// with how it goes instead: a rewording that keeps its meaning. omp's
-// RFC 2119 line, broken up as the others are (or after every character,
-// or with U+2060 or a soft hyphen), was still turned away 1 to 3 times in
-// 10 on a real account on 11-14, while "key words", the RFC's own term,
-// went through 10 times in 10 (eric_li8983 on X).
+// SAID_AS is how each line goes, with its invisible characters taken out
+// and its white space as it was: a rewording that keeps its meaning, each
+// answered 5 of 5 on a real account on 11-14 while the line itself, broken
+// up or not, was turned away 5 of 5.
+//   - Claude Code's billing line is left out: it is Anthropic's, and no
+//     Antigravity model reads anything in it.
+//   - "built on Anthropic's Claude Agent SDK", the Agent SDK's identity
+//     line (Claude Desktop's Code tab and its subagents), goes as "built on
+//     the Claude Agent SDK by Anthropic".
+//   - Codex's GPT-5 lines go "built on GPT-5" for "based on GPT-5".
+//   - Hermes' earlier persona goes "built by Nous Research", as Hermes'
+//     current one says it, for "created by".
+//   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
+//     on 11-14, eric_li8983 on X).
 const SAID_AS = {
+  "x-anthropic-billing-header:": () => "",
+  "built on anthropic's claude agent sdk": (line) => line.replace(/^(built\s+on\s+)anthropic's(\s+)(claude\s+agent\s+sdk)$/i, "$1the$2$3 by Anthropic"),
+  "you are codex, an agent based on gpt-5": (line) => line.replace(/based(\s+)on/i, "built$1on"),
+  "you are codex, a coding agent based on gpt-5": (line) => line.replace(/based(\s+)on/i, "built$1on"),
+  "hermes agent, an intelligent ai assistant created by nous research": (line) => line.replace(/created(\s+)by/i, "built$1by"),
   "rfc 2119 keywords: must, required, should, recommended, may, optional.": (line) => line.replace(/(key)(words)/i, "$1 $2"),
 }
 
@@ -950,14 +969,14 @@ function cloak(system) {
   if (!turnsAway(system)) return system
   const at = []
   TURNED_AWAY_RE.forEach((re, i) => {
-    for (const m of system.matchAll(re)) at.push([m.index, m.index + m[0].length, SAID_AS[TURNED_AWAY[i]] ?? breakUp])
+    for (const m of system.matchAll(re)) at.push([m.index, m.index + m[0].length, SAID_AS[TURNED_AWAY[i]]])
   })
   at.sort((a, b) => a[0] - b[0])
   let out = ""
   let prev = 0
   for (const [from, to, as] of at) {
     if (from < prev) continue
-    out += system.slice(prev, from) + as(system.slice(from, to))
+    out += system.slice(prev, from) + as(system.slice(from, to).replace(INVISIBLE_RE, ""))
     prev = to
   }
   return out + system.slice(prev)
@@ -1070,6 +1089,10 @@ function shape(req, sent, at, effort) {
   const claude = m.includes("claude")
   if (isObj(req.systemInstruction)) {
     for (const p of req.systemInstruction.parts ?? []) if (typeof p?.text === "string") p.text = outgoing(p.text)
+    // Claude Code's billing line, a block of its own, goes out whole and
+    // leaves an empty text, which a Claude model refuses
+    const parts = req.systemInstruction.parts
+    if (Array.isArray(parts) && parts.length > 1) req.systemInstruction.parts = parts.filter((p) => !(isObj(p) && p.text === "" && Object.keys(p).length === 1))
   } else if (typeof req.systemInstruction === "string") {
     req.systemInstruction = { role: "user", parts: [{ text: outgoing(req.systemInstruction) }] }
   }

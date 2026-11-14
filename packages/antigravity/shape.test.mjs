@@ -148,22 +148,64 @@ test("omp's line is reworded wherever white space wraps or widens it", () => {
   for (const line of OMP_PASSED) expect(cloak(line)).toBe(line)
   // the other lines take white space the same way (Hermes' and Codex's
   // were turned away wrapped and with a tab on the same account)
-  expect(cloak("You are Hermes Agent, an intelligent\nAI assistant created by Nous Research.")).toContain("i\u200bn\u200btelligent\nAI a\u200bs\u200bsistant")
-  expect(cloak("You are Codex, an agent\tbased on GPT-5.")).toContain("a\u200bg\u200bent\tb\u200ba\u200bsed")
+  expect(cloak("You are Hermes Agent, an intelligent\nAI assistant created by Nous Research.")).toBe("You are Hermes Agent, an intelligent\nAI assistant built by Nous Research.")
+  expect(cloak("You are Codex, an agent\tbased on GPT-5.")).toBe("You are Codex, an agent\tbuilt on GPT-5.")
 })
 
-test("the lines Antigravity turns away are broken up", () => {
-  const sys = "x-anthropic-billing-header: cc_version=2\nYou are Claude Code, built on Anthropic's Claude Agent SDK.\nhi"
+// Claude Desktop's Code tab, as Claude Code 2.1.316 sends it with
+// CLAUDE_CODE_ENTRYPOINT=claude-desktop: the billing line and the identity
+// line are blocks of their own. Its subagents begin "You are a Claude agent,
+// built on Anthropic's Claude Agent SDK." Since 11-14 Google reads past a
+// zero-width space: the prompt with either line broken up was turned away
+// 10 of 10 on a real account (hc295971796 on X), and the reworded one
+// answered 10 of 10.
+const BILLING = "x-anthropic-billing-header: cc_version=2.1.316.2e4; cc_entrypoint=claude-desktop;"
+const DESKTOP = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+const SUBAGENT = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+
+test("Claude Code's billing line is left out, and the Agent SDK's line is reworded", () => {
+  const { turnsAway, hint } = _internal
+  const sys = BILLING + "\n" + SUBAGENT + "\nhi"
   const out = cloak(sys)
-  expect(out).not.toBe(sys)
-  expect(out.replaceAll("​", "")).toBe(sys)
-  expect(out).toContain("x-a\u200bn\u200bthropic-b\u200bi\u200blling-h\u200be\u200bader:")
-  expect(out).toContain("b\u200bu\u200bilt on A\u200bn\u200bthropic's C\u200bl\u200baude A\u200bg\u200bent S\u200bD\u200bK")
+  expect(out).toBe("You are a Claude agent, built on the Claude Agent SDK by Anthropic.\nhi")
+  expect(turnsAway(out)).toBe(false)
+  expect(hint(sys)).toContain("Claude Agent SDK")
   // twice is the same as once, and other text is left alone
   expect(cloak(out)).toBe(out)
   expect(cloak("be brief")).toBe("be brief")
-  const r = shape({ systemInstruction: { parts: [{ text: sys }] }, contents: [] }, "gemini-3-flash", "", "")
-  expect(r.systemInstruction.parts[0].text).toBe(out)
+  expect(cloak(DESKTOP)).toBe(DESKTOP)
+  // the case and white space the agent wrote stay
+  expect(cloak("built on\nANTHROPIC'S  claude agent sdk")).toBe("built on\nthe  claude agent sdk by Anthropic")
+  // as the gateway hands it: each block a part; the billing line's part goes
+  const r = shape({ systemInstruction: { parts: [{ text: BILLING }, { text: DESKTOP }, { text: SUBAGENT }] }, contents: [] }, "gemini-3-flash", "", "")
+  expect(r.systemInstruction.parts.map((p) => p.text)).toEqual([DESKTOP, "You are a Claude agent, built on the Claude Agent SDK by Anthropic."])
+  // a billing line alone in a string stays one (empty) part
+  expect(shape({ systemInstruction: BILLING, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts).toEqual([{ text: "" }])
+})
+
+test("a line someone broke up with invisible characters is reworded as the line", () => {
+  const zw = (s, z = "\u200b") => s.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + z + w[1] + z + w.slice(2))
+  const every = (s) => [...s].join("\u2060")
+  const lines = [
+    [SUBAGENT, "You are a Claude agent, built on the Claude Agent SDK by Anthropic."],
+    ["You are Codex, an agent based on GPT-5.", "You are Codex, an agent built on GPT-5."],
+    ["You are Codex, a coding agent based on GPT-5.", "You are Codex, a coding agent built on GPT-5."],
+    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "You are Hermes Agent, an intelligent AI assistant built by Nous Research."],
+    ["RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.", "RFC 2119 key words: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."],
+  ]
+  // the break-ups also reach words outside the turned-away part, which go as
+  // written: compare with the invisible characters taken out
+  const seen = (s) => s.replace(/[\u00ad\u200b\u2060]/g, "")
+  for (const [line, to] of lines) {
+    expect(cloak(line)).toBe(to)
+    for (const broken of [zw(line), every(line), zw(line, "\u00ad")]) {
+      const out = cloak(broken)
+      expect(out).not.toBe(broken)
+      expect(seen(out)).toBe(to)
+      expect(_internal.turnsAway(out)).toBe(false)
+    }
+  }
+  expect(cloak(zw(BILLING) + "\nhi")).toBe("hi")
 })
 
 test("a conversation keeps its session", () => {
@@ -224,8 +266,9 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   // a prompt that only mentions @ paths is left as it is
   const other = "Tokens prefixed with @ are paths. Be brief."
   expect(shape({ systemInstruction: { parts: [{ text: other }] }, contents: [] }, "gemini-4-argon", "", "").systemInstruction.parts[0].text).toBe(other)
-  // the rewording and the zero-width breaks go together
+  // the billing line is left out and the paragraph reworded, together
   const both = shape({ systemInstruction: { parts: [{ text: "x-anthropic-billing-header: cc\n" + dsh }] }, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts[0].text
-  expect(both).toContain("x-a​n​thropic")
+  expect(both).not.toContain("x-anthropic-billing-header")
+  expect(both).not.toMatch(/[\u200b-\u200f\u2060]/)
   expect(both).toContain("When the user writes @ followed by a path")
 })

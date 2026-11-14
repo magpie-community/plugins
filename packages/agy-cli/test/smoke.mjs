@@ -1356,7 +1356,7 @@ for (const [title, tools, want, name] of [
   check("split error marker and quota map to rate_limit_error", error?.type === "rate_limit_error" && error.message.includes("quota exhausted") && textOf(events) === "", JSON.stringify({ error, text: textOf(events) }))
 }
 
-// #980: the system lines Antigravity turns away are broken up before agy
+// #980: the system lines Antigravity turns away are reworded before agy
 // sends them, in the session instructions, in the prompt when agy can't take
 // them, and in a later system message; a 429 to such a prompt is not a quota.
 {
@@ -1364,20 +1364,22 @@ for (const [title, tools, want, name] of [
   const rfc = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
   const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
   const system = `${rfc}\nx-anthropic-billing-header: cc_version=2.1.0; cch=1;\n${sdk}\nCLOAK-MARKER`
-  // omp's line goes as RFC 2119's own "key words", the others broken up
-  const plain = (text) => String(text ?? "").replaceAll(zw, "").replaceAll("RFC 2119 key words:", "RFC 2119 keywords:")
+  // omp's line goes as RFC 2119's own "key words", the billing line not at
+  // all, the Agent SDK's line reworded; no zero-width space, which Google's
+  // check reads past since 11-14
+  const sdkSaid = "You are a Claude agent, built on the Claude Agent SDK by Anthropic."
+  const want = `${rfc.replace("keywords", "key words")}\n${sdkSaid}\nCLOAK-MARKER`
   const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
   const events = (await readSSE(await callFetch(body))).events
   const init = inits().at(-1)
   const sent = init.systemAppend ?? ""
-  check("#980 a turned-away line is broken up in the session instructions",
-    sent.includes("CLOAK-MARKER") && !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes("Claude Agent SDK") &&
-    sent.includes("RFC 2119 key words: MUST,") && sent.includes("C" + zw + "l" + zw + "aude A" + zw + "g" + zw + "ent S" + zw + "D" + zw + "K") &&
-    plain(sent).includes(system), JSON.stringify(sent))
+  check("#980 a turned-away line is reworded in the session instructions",
+    !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes(sdk) && !sent.includes(zw) &&
+    sent.includes(want), JSON.stringify(sent))
   const convId = init.convId
   const before = inits().length
   await readSSE(await callFetch(nextTurn(body, events, "cloak second turn")))
-  check("#980 the broken-up instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
+  check("#980 the reworded instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
     JSON.stringify({ inits: inits().length - before, user: lastOf("user") }))
 
   const later = { model, system: "CLOAK-LATER", messages: [{ role: "user", content: "cloak later system" }] }
@@ -1386,7 +1388,7 @@ for (const [title, tools, want, name] of [
   next.messages.splice(next.messages.length - 1, 0, { role: "system", content: sdk })
   await readSSE(await callFetch(next))
   const laterText = lastOf("user").text
-  check("#980 a later system message is broken up too", !laterText.includes("Claude Agent SDK") && plain(laterText).includes(sdk), JSON.stringify(laterText))
+  check("#980 a later system message is reworded too", !laterText.includes(sdk) && laterText.includes(sdkSaid), JSON.stringify(laterText))
 
   const user = { model, system: "CLOAK-USER", messages: [{ role: "user", content: `user wrote ${sdk}` }] }
   await readSSE(await callFetch(user))
@@ -1395,9 +1397,9 @@ for (const [title, tools, want, name] of [
   process.env.FAKE_AGY_APPEND = "0"
   await readSSE(await callFetch({ model, system: system + " NOAPPEND", messages: [{ role: "user", content: "cloak in the prompt" }] }))
   const prompted = lastOf("user").text
-  check("#980 a turned-away line is broken up in <external_system_instructions>",
-    inits().at(-1).systemAppend === null && prompted.includes("<external_system_instructions>") && prompted.includes("CLOAK-MARKER") &&
-    !prompted.includes(rfc) && !prompted.includes("Claude Agent SDK") && plain(prompted).includes(system), JSON.stringify(prompted))
+  check("#980 a turned-away line is reworded in <external_system_instructions>",
+    inits().at(-1).systemAppend === null && prompted.includes("<external_system_instructions>") &&
+    !prompted.includes(rfc) && !prompted.includes(sdk) && !prompted.includes(zw) && prompted.includes(want), JSON.stringify(prompted))
   delete process.env.FAKE_AGY_APPEND
 
   const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
@@ -1856,9 +1858,9 @@ for (const location of ["inline", "system", "developer", "user"]) {
     mcpText.includes("# Environment update") &&
     mcpText.includes("hasn't heard from you") &&
     !mcpText.includes("hook success: Success"), mcpText)
-  check("#980 a turned-away line in a system notice beside a tool result is broken up",
+  check("#980 a turned-away line in a system notice beside a tool result is reworded",
     !mcpText.includes("You are Codex, a coding agent based on GPT-5") &&
-    mcpText.replaceAll("\u200b", "").includes("You are Codex, a coding agent based on GPT-5."), mcpText)
+    mcpText.includes("You are Codex, a coding agent built on GPT-5."), mcpText)
 }
 
 {
