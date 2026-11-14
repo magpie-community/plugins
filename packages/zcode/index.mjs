@@ -2044,7 +2044,11 @@ function kept(res, text) {
 // this computer through this one process, so the plugin does what that
 // client does: the Start Plan gets a few requests of an account in flight at
 // once (startGate), the rest wait their turn here instead of being sent to be
-// refused, and a refusal anyway is asked again twice (BUSY_WAITS).
+// refused, and a refusal anyway is asked again twice (BUSY_WAITS). A refusal
+// of a request sent beside others of the same account lowers that account's
+// gate and waits its turn again (askBusy's requeue), as ZCode's own
+// dynamic-workflow governor cuts its cap and queues a capped subagent
+// request rather than failing it.
 //
 // The coding plan keeps no gate of the plugin's: its cap depends on its tier
 // (Z.ai serves Max more at once than Pro, and Lite fewer) and is higher
@@ -2068,6 +2072,10 @@ const BUSY_CODES = new Set(["3008", "3009", "3010"])
 // requests a capped account could serve on the wire, and the agents' own
 // retries came on top.
 const BUSY_WAITS = [1000, 2000]
+// REQUEUE_MAX bounds how often one request is handed back to the gate by a
+// narrowing (askBusy): each narrowing lowers the gate, three to one at most
+// takes two, so more is a fault of the count, not ZCode.
+const REQUEUE_MAX = 4
 // The hint names neither "plan" nor "limit": after the vendor's "…limit
 // exceeded" either would read to magpie as a plan used up.
 const BUSY_HINT =
@@ -2129,8 +2137,10 @@ const startFull = (key) => {
 }
 
 // startSlot waits for one of the account's Start Plan slots: { release },
-// null when startGate.wait ran out first, or the agent's abort thrown.
-function startSlot(key, signal) {
+// null when the wait (startGate.wait unless given) ran out first, or the
+// agent's abort thrown. A request handed back by a narrowing (requeued) was
+// first in line already, so it waits at the head of the queue.
+function startSlot(key, signal, { wait = startGate.wait, front = false } = {}) {
   const lanes = startGate.lanes
   let l = lanes.get(key)
   if (!l) lanes.set(key, (l = { busy: 0, queue: [] }))
@@ -2172,9 +2182,10 @@ function startSlot(key, signal) {
       leave()
       next()
       resolve(null)
-    }, startGate.wait)
+    }, Math.max(0, wait))
     signal?.addEventListener?.("abort", aborted, { once: true })
-    l.queue.push(go)
+    if (front) l.queue.unshift(go)
+    else l.queue.push(go)
   })
 }
 
@@ -2270,10 +2281,12 @@ const busyHeld = () => busyHold.now() < busyHold.until
 // busyCap records one sustained concurrency cap of a Start Plan request.
 // Only a run arms a hold; the window is cleared on arming, and a cap that
 // lands while the hold is on counts toward nothing — the hold's own 429s and
-// the first caps after it cannot keep re-arming it.
+// the first caps after it cannot keep re-arming it. It says true when the
+// cap narrowed the account instead: the request is then requeued, not
+// failed (see askBusy).
 function busyCap(key) {
-  if (key != null && narrowed(key)) return
-  if (busyHeld()) return
+  if (key != null && narrowed(key)) return true
+  if (busyHeld()) return false
   const now = busyHold.now()
   busyHold.hits.push(now)
   while (busyHold.hits.length && now - busyHold.hits[0] > BUSY_WINDOW) busyHold.hits.shift()
@@ -2281,6 +2294,7 @@ function busyCap(key) {
     busyHold.until = now + BUSY_HOLD
     busyHold.hits.length = 0
   }
+  return false
 }
 
 // BUSY_HOLD_MARK marks an answer the hold made up: a request the gate or the
@@ -2349,8 +2363,13 @@ function busyAnswer(res, text) {
 // 1s and then 2s, as ZCode's own client does. Past them the cap goes back as
 // busyAnswer's 429. A request refused again at its 1s re-ask is a sustained
 // cap, told to onCap once (the firewall hold's count); one the re-ask got
-// past is not. The plan path's patience, shared with free first's replay,
-// whose plan has a cap of its own.
+// past is not. When onCap says the cap narrowed the account (others of this
+// computer were in flight on it), asking again in 2s would only be refused
+// beside them again: the busyAnswer goes back at once marked `requeue`, and
+// the Start Plan path waits for one of those others to end and sends it
+// again (JJLIN070414 on X: two sessions on one account, each pair's second
+// request failed 429 where ZCode's own client queues it). The plan path's
+// patience, shared with free first's replay, whose plan has a cap of its own.
 async function askBusy(u, o, hs, onCap) {
   let res = await fetch(u, { ...o, headers: hs })
   let caps = 0
@@ -2358,7 +2377,11 @@ async function askBusy(u, o, hs, onCap) {
     const text = await res.text()
     const cap = busy(429, text)
     // one request's refusals are one saturation signal, not one per ask
-    if (cap && ++caps === 2) onCap?.()
+    if (cap && ++caps === 2 && onCap?.() === true) {
+      res = busyAnswer(res, text)
+      res.requeue = true
+      break
+    }
     // the hold armed: a request already in flight stops asking too. The
     // second check catches the asks that capped before the hold armed and
     // woke from their wait after it. Keying on onCap keeps the coding plan
@@ -3250,6 +3273,25 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               // coding plan is served by another host and was never refused
               // with the IP's 405.
               res = await askBusy(url, opts, h, start ? () => busyCap(gateKey) : undefined)
+              // a cap this computer brought on itself, with others of the
+              // account in flight beside it, narrowed the account's gate:
+              // the request gives its slot back and waits, first in line,
+              // until one of those others has ended, then is sent again —
+              // queued, as ZCode's own client queues its subagents' caps,
+              // not failed. Free first's gift goes to the plan instead,
+              // which serves it now. The waits share one startGate.wait;
+              // each turn the gate is lower or the request is alone, where
+              // a cap is ZCode's or another client's and goes back as it
+              // did.
+              const until = Date.now() + startGate.wait
+              for (let turn = 0; res.requeue && !freeGift && turn < REQUEUE_MAX; turn++) {
+                own.slot?.release()
+                own.slot = await startSlot(gateKey, opts.signal, { wait: until - Date.now(), front: true })
+                if (!own.slot) return kept(startQueueAnswer(gateKey))
+                if (edgeHeld()) return kept(edgeHeldAnswer())
+                if (busyHeld()) return kept(busyHeldAnswer())
+                res = await askBusy(url, opts, h, () => busyCap(gateKey))
+              }
             } catch (e) {
               // free first moved the request onto the gift, so a gift that
               // cannot be asked at all — the network, the host — is answered

@@ -275,6 +275,19 @@ the slots. An account whose slots are taken elsewhere is narrowed to one
 within a few refusals and then refused alone, so the firewall hold still
 comes before the 405.
 
+Since 0.1.64 the request that brought about such a narrowing is not
+failed either. Up to 0.1.63 it went back to magpie as a 429 after its
+re-asks, so two sessions on an account served one at a time showed a 429
+every time the narrowing ran out (JJLIN070414 on X), and with one account
+the agent was told it. Now it gives its slot back at once, without the 2s
+re-ask, and waits at the head of the queue until one of the account's
+other requests has ended, then is sent again, as ZCode's own client
+(its dynamic-workflow governor) cuts its cap and queues a capped request
+rather than failing it. The waits share the gate's two minutes, after
+which it is answered here with the queue's 429. A request refused alone,
+or free first's gift (which goes to the coding plan), is answered as
+before.
+
 ## Two accounts at once
 
 Three ZCode accounts used at once from one address can get the address
