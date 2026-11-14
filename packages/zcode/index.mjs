@@ -1804,7 +1804,11 @@ function ownSignIn() {
   else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
   if (!s.key && !s.jwt && !isTeam(s)) return null
   let info = {}
-  for (const name of ["oauth:zai:user_info", "oauth:bigmodel:user_info"]) {
+  // The JWT belongs to the app's active sign-in. Cached profiles from
+  // another provider must not name it, and 3.18's China sign-in is zai_cn.
+  const active = decrypt(key, store["oauth:active_provider"])
+  const families = [...new Set([active, "zai", "zai_cn", "bigmodel"].filter((x) => ["zai", "zai_cn", "bigmodel"].includes(x)))]
+  for (const name of families.map((x) => `oauth:${x}:user_info`)) {
     const v = decrypt(key, store[name])
     if (v && !first(info.email, info.name, info.user_id)) {
       try {
