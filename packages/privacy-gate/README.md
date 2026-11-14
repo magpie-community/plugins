@@ -52,7 +52,7 @@ Codex, Cursor, Claude Code and scripts.
 | **Default policy** | `binaryPolicy: fail` — binary part for a non-local model → **403** |
 | **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/media/size metadata + a neutral local-tool prompt |
 | **Text masking** | **Not here.** Use Magpie **Settings → Privacy** |
-| **Tests** | 72 middleware cases + 3 page/panel checks through the repository harness |
+| **Tests** | 72 middleware cases + 4 page/policy checks through the repository harness |
 
 ## Install
 
@@ -141,9 +141,11 @@ the page focused on that agent.
 
 Every agent is protected by default, including new agents. A bypass is explicit:
 only ids in `disabledAgents` (or an empty `ctx.agent` when
-`protectUnknownAgent: false`) skip the gate. The page warns before a request can
-leave without protection; saving its switches updates the same `ctx.options` the
-middleware reads, with no restart.
+`protectUnknownAgent: false`) skip the gate. `disabledAgents` may also contain
+globs or raw policy entries; the page preserves them verbatim and lists them
+read-only, and it seeds custom disabled ids so their bypass is visible. The page
+warns before a request can leave without protection; saving its switches updates
+the same `ctx.options` the middleware reads, with no restart.
 
 ## Configuration
 

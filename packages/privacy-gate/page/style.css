@@ -240,6 +240,41 @@ button:disabled {
   font-size: 13px;
 }
 
+.patterns {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--shy-line);
+  border-radius: var(--shy-radius);
+  background: var(--shy-card);
+}
+
+.patterns h2 { margin-bottom: 2px; }
+
+.pattern-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pattern-list li {
+  padding: 3px 7px;
+  border: 1px solid var(--shy-line);
+  border-radius: 6px;
+  background: var(--shy-bg);
+  font-family: var(--magpie-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 11px;
+}
+
+.switch:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.status[data-error="true"] { color: var(--shy-danger); }
+
 .empty {
   margin: 16px 14px;
   color: var(--shy-muted);

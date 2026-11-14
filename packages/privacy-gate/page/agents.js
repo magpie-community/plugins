@@ -5,7 +5,6 @@
 
   var KNOWN = [
     { id: 'claude', name: 'Claude Code', group: 'Coding agents' },
-    { id: 'claude-code', name: 'Claude Code (legacy id)', group: 'Coding agents' },
     { id: 'claude-desktop', name: 'Claude Desktop', group: 'Desktop apps' },
     { id: 'codex', name: 'Codex', group: 'Coding agents' },
     { id: 'dsh', name: 'DeepSeek Harness', group: 'Coding agents' },
@@ -18,7 +17,6 @@
     { id: 'omp', name: 'omp', group: 'Coding agents' },
     { id: 'cursor', name: 'Cursor', group: 'Desktop apps' },
     { id: 'copilot', name: 'Copilot CLI', group: 'Coding agents' },
-    { id: 'aider', name: 'Aider', group: 'Coding agents' },
     { id: 'devin', name: 'Devin', group: 'Coding agents' }
   ]
 

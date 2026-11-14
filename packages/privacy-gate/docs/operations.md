@@ -73,8 +73,12 @@ card at the bottom of Magpie's **Agents** page, and right-clicking an agent adds
 
 Every agent is protected by default. A switch that is off writes that agent's id
 to `disabledAgents`; it bypasses both the request gate and the provider check.
-The **Unknown / unclassified agent** switch controls `protectUnknownAgent` and
-defaults to on. Saving applies to the next request; no Magpie restart is needed.
+Globs and raw values are preserved verbatim and shown read-only under **Policy
+patterns**. A custom id already present only in `disabledAgents` is seeded into
+the page so its bypass stays visible. The **Unknown / unclassified agent** switch
+controls `protectUnknownAgent` and defaults to on. Saving applies to the next
+request; no Magpie restart is needed. If options changed elsewhere, the page asks
+you to reload rather than overwriting the newer values.
 
 A bypassed agent is intentionally unprotected, including binary parts and
 encoded blobs. Use it only for an agent whose traffic you have chosen to trust.

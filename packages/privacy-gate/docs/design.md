@@ -181,6 +181,13 @@ policy selection:
 - The page, the Agents-page panel and the agent-row action all edit the same
   `disabledAgents` and `protectUnknownAgent` options. The page also keeps a
   page-only `extraAgents` catalogue for custom ids; the middleware ignores it.
+- Disabled ids and raw policy entries are separate. Exact ids get switches;
+  globs and values the UI cannot represent are kept verbatim, shown read-only,
+  and merged back on save. The page seeds custom exact ids from
+  `disabledAgents` so a custom bypass is not invisible.
+- Saving starts from freshly read options and changes only the three page-owned
+  fields. A concurrent change to those fields is reported instead of overwritten;
+  controls are disabled while a write is pending.
 - `ctx.agent` is host-classified metadata, never a User-Agent header. Session
   ids and working directories are not used for UI policy.
 
