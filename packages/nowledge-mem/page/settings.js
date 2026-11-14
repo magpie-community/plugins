@@ -215,6 +215,9 @@ async function save(event) {
   const dependencies = [];
   if (next.recall !== false && draftOptions.recall === false) dependencies.push(['recallRemote']);
   if (next.capture === true && draftOptions.capture !== true) dependencies.push(['captureRemote']);
+  // A newly enabled remote grant must not inherit a changed key-policy mode.
+  if ((next.recall !== false && next.recallRemote === true && (draftOptions.recall === false || draftOptions.recallRemote !== true)) ||
+      (next.capture === true && next.captureRemote === true && (draftOptions.capture !== true || draftOptions.captureRemote !== true))) dependencies.push(['keyPolicies']);
   if (next.allowInsecureHttp === true && draftOptions.allowInsecureHttp !== true) dependencies.push(['serverUrl']);
   if (dependencies.some((path) => !sameAtPath(draftOptions,current,path))) { result('conflict',true); return; }
   const merged = applyChanges(current,changes);
@@ -260,6 +263,9 @@ $('summary-capture').onchange = async () => {
  message('capture-feedback','saving');
  try {
   const current = await magpie.options.get();
+  if (enabled && [['captureRemote'],['keyPolicies']].some((path) => !sameAtPath(savedOptions,current,path))) {
+   savedOptions = current; message('capture-feedback','captureConflict',true); return;
+  }
   const next = {...current,capture:enabled};
   await magpie.options.set(next); savedOptions = next;
   message('capture-feedback',enabled ? 'captureEnabled' : 'captureDisabled');
