@@ -1,0 +1,25 @@
+{
+  "name": "@magpie-community/agent-saymore",
+  "version": "0.1.0",
+  "description": "Select a Magpie model for Saymore text polishing with a separate, reversible configuration handoff",
+  "type": "module",
+  "files": ["saymore.agent.js", "README.md", "LICENSE", "assets"],
+  "keywords": ["saymore", "magpie", "magpie-agent", "voice-input", "text-polishing"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/agent-saymore"
+  },
+  "homepage": "https://github.com/PraxisGrove/Saymore",
+  "scripts": { "test": "bun test saymore.test.mjs" },
+  "magpie": {
+    "agent": "./saymore.agent.js",
+    "name": "Saymore",
+    "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/agent-saymore/assets/icon.png",
+    "summary": {
+      "en": "Choose a Magpie model for Saymore's text-polishing provider on macOS. Requires a Saymore release with Magpie handoff support.",
+      "zh": "在 macOS 版 Saymore 的文本润色服务中选择 Magpie 模型。需要支持 Magpie 配置导入的 Saymore 版本。"
+    }
+  }
+}
