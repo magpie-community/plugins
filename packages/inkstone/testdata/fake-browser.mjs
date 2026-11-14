@@ -3,19 +3,22 @@
 // waitForToken / CDP cookie read run against it. Modes come from argv:
 //   --headless=new  → serve CDP (the renewal / post-sign-in read)
 //   (no headless)   → the login window: wait for the plugin's close
-import { writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const args = process.argv.slice(2)
-const profile = args.find((a) => a.startsWith("--user-data-dir="))?.slice(17) ?? "."
+// "--user-data-dir=" is 16 characters; the path starts right after it.
+const profile = args.find((a) => a.startsWith("--user-data-dir="))?.slice(16) ?? "."
 // bun build --compile's Windows launcher mangles argument values: the drive
-// letter and part of the path are eaten. The test always makes the profile
-// under tmpdir(), so the safe repair is: take the last path segment and
-// re-seat it under tmpdir().
-const profilePath = /^[A-Za-z]:/.test(profile)
+// letter and part of the path is eaten. A path that exists as given is taken
+// as it is (an account's own profile lives one level under tmpdir); only a
+// mangled one is repaired by re-seating its last segment under tmpdir().
+const profilePath = existsSync(profile)
   ? profile
-  : join(tmpdir(), profile.split(/[\\/]/).filter(Boolean).pop() ?? "fake-profile")
+  : /^[A-Za-z]:/.test(profile)
+    ? profile
+    : join(tmpdir(), profile.split(/[\\/]/).filter(Boolean).pop() ?? "fake-profile")
 const headless = args.includes("--headless=new")
 const url = args.find((a) => a.startsWith("http")) ?? ""
 let pageTargetUrl = ""
@@ -97,14 +100,21 @@ if (!headless) {
         message(ws, raw) {
           const msg = JSON.parse(String(raw))
           if (msg.method === "Network.getAllCookies") {
-            ws.send(
-              JSON.stringify({
-                id: msg.id,
-                result: {
-                  cookies: [{ name: "uaa-token", value: "fake-uaa-token-for-tests", domain: ".intern-ai.org.cn" }],
-                },
-              }),
-            )
+            // FAKE_BROWSER_COOKIE_VALUE lets a test hand out a token with a
+            // known expiry (a kept session about to expire, or one already
+            // expired server-side). FAKE_BROWSER_FOREIGN_COOKIE puts a
+            // same-named cookie on another org.cn host first: the plugin
+            // must not take it for the console's session.
+            const cookies = []
+            if (process.env.FAKE_BROWSER_FOREIGN_COOKIE) {
+              cookies.push({ name: "uaa-token", value: "foreign-org-cn-token", domain: ".other.org.cn" })
+            }
+            cookies.push({
+              name: "uaa-token",
+              value: process.env.FAKE_BROWSER_COOKIE_VALUE || "fake-uaa-token-for-tests",
+              domain: ".intern-ai.org.cn",
+            })
+            ws.send(JSON.stringify({ id: msg.id, result: { cookies } }))
           } else {
             ws.send(JSON.stringify({ id: msg.id, result: {} }))
           }
