@@ -9,7 +9,8 @@
 // kiro-cli's or the IDE's own sign-in can be used instead: it is read where
 // they keep it each time, refreshed by kiro-cli first, and a token
 // refreshed here is written back, so they go on with it. A Kiro API key
-// (ksk_…) signs in too.
+// (ksk_…) signs in too, and in magpie sign-ins made elsewhere are imported
+// from a file by their refresh token (auth.import).
 //
 // Kiro has no API OpenCode speaks: the models are declared on Anthropic's
 // Messages, and the fetch here sends each request whole to Kiro's own API
@@ -43,6 +44,16 @@ const WORDS = {
   region: { zh: "AWS 区域（留空为 us-east-1）", "zh-TW": "AWS 區域（留空為 us-east-1）", ja: "AWS リージョン（空欄なら us-east-1）", de: "AWS-Region (leer: us-east-1)" },
   own: { zh: "Kiro CLI 或 Kiro IDE 已登录的账号", "zh-TW": "Kiro CLI 或 Kiro IDE 已登入的帳號", ja: "Kiro CLI または Kiro IDE のサインイン", de: "Anmeldung von Kiro CLI oder Kiro IDE" },
   key: { zh: "Kiro API Key（ksk_…）", "zh-TW": "Kiro API Key（ksk_…）", ja: "Kiro API キー（ksk_…）", de: "Kiro-API-Schlüssel (ksk_…)" },
+}
+// IMPORT_FROM says what magpie's "Import accounts from a file…" takes
+const IMPORT_FROM = {
+  en: "Choose a JSON file of Kiro sign-ins, or paste it: one account or a list, each with its refreshToken and the way it signed in (provider: Google, Github, BuilderId or Enterprise; Builder ID and Identity Center also need clientId, clientSecret and region), such as the Kiro IDE's kiro-auth-token.json. Each is renewed with Kiro before it is added, so the tool it came from may have to sign in again.",
+  froms: {
+    zh: "选择 Kiro 登录凭证的 JSON 文件，或直接粘贴：一个账号或一组账号，每个含 refreshToken 和登录方式（provider：Google、Github、BuilderId 或 Enterprise；Builder ID 和 IAM Identity Center 还需要 clientId、clientSecret 和 region），例如 Kiro IDE 的 kiro-auth-token.json。每个账号先向 Kiro 续期再添加，来源工具可能需要重新登录。",
+    "zh-TW": "選擇 Kiro 登入憑證的 JSON 檔，或直接貼上：一個帳號或一組帳號，每個含 refreshToken 和登入方式（provider：Google、Github、BuilderId 或 Enterprise；Builder ID 和 IAM Identity Center 還需要 clientId、clientSecret 和 region），例如 Kiro IDE 的 kiro-auth-token.json。每個帳號先向 Kiro 續期再加入，來源工具可能需要重新登入。",
+    ja: "Kiro のサインイン情報の JSON ファイルを選ぶか貼り付けてください。1 アカウントまたはリストで、各アカウントに refreshToken とサインイン方法（provider：Google、Github、BuilderId、Enterprise。Builder ID と IAM Identity Center は clientId、clientSecret、region も必要）を含めます。Kiro IDE の kiro-auth-token.json もそのまま使えます。各アカウントは追加前に Kiro で更新されるため、元のツールは再サインインが必要になることがあります。",
+    de: "Wähle eine JSON-Datei mit Kiro-Anmeldungen oder füge sie ein: ein Konto oder eine Liste, jedes mit refreshToken und Anmeldeart (provider: Google, Github, BuilderId oder Enterprise; Builder ID und IAM Identity Center brauchen außerdem clientId, clientSecret und region), etwa die kiro-auth-token.json der Kiro IDE. Jedes Konto wird vor dem Hinzufügen bei Kiro erneuert, daher muss sich das Tool, aus dem es stammt, eventuell neu anmelden.",
+  },
 }
 const MESSAGES = "@ai-sdk/anthropic"
 const BASE = "https://runtime.us-east-1.kiro.dev" // what OpenCode is given; the fetch sends each request to the account's region
@@ -2901,6 +2912,17 @@ function httpsURL(s) {
   }
 }
 
+// signedIn is the account a sign-in keeps, whether made in the browser or
+// brought in from a file: named by the email Kiro has for it (else the one
+// given), with the way it was signed in to.
+function signedIn(c, who, email = who.email, nameless = "Kiro account") {
+  return { type: "success", provider: ID, refresh: c.refresh, access: c.access, expires: c.expires,
+    accountId: email ? nameOf(email, c.loginProvider) : nameless,
+    ...(uidOf(c.loginProvider) ? { uid: uidOf(c.loginProvider) } : {}),
+    method: c.method, loginProvider: c.loginProvider, region: c.region, profileArn: who.profile,
+    ...(c.clientId ? { clientId: c.clientId, clientSecret: c.clientSecret } : {}), ...(who.plan ? { plan: who.plan } : {}) }
+}
+
 // whoIs names a new sign-in with the email Kiro has for it, and its plan.
 async function whoIs(c) {
   try {
@@ -3075,13 +3097,10 @@ async function browserSignIn(inputs = {}) {
     // still busy while it is named: a second paste is told it is finishing
     const who = await whoIs(c)
     if (stage === "over") return over()
-    const user = who.email ? nameOf(who.email, c.loginProvider) : "Kiro account"
+    const done = signedIn(c, who)
     stage = "over"
-    finish({ type: "success", provider: ID, refresh: c.refresh, access: c.access, expires: c.expires, accountId: user,
-      ...(uidOf(c.loginProvider) ? { uid: uidOf(c.loginProvider) } : {}),
-      method: c.method, loginProvider: c.loginProvider, region: c.region, profileArn: who.profile,
-      ...(c.clientId ? { clientId: c.clientId, clientSecret: c.clientSecret } : {}), ...(who.plan ? { plan: who.plan } : {}) })
-    html(200, page(true, "You're signed in", `${user} is signed in. You can close this tab.`))
+    finish(done)
+    html(200, page(true, "You're signed in", `${done.accountId} is signed in. You can close this tab.`))
   })
 
   const timer = setTimeout(() => {
@@ -3147,6 +3166,140 @@ async function ownSignIn() {
         accountId: who.email || (cli ? "kiro-cli's account" : "Kiro IDE's account"), ...(who.plan ? { plan: who.plan } : {}) }
     },
   }
+}
+
+// ---- accounts from a file (magpie's auth.import) ------------------------------------
+//
+// A file of sign-ins made elsewhere: Kiro Account Manager's ([{ email,
+// refreshToken, provider }], or its export with the tokens under
+// credentials), kiro2api's ({ auth: "Social" | "IdC", refreshToken }), the
+// Kiro IDE's kiro-auth-token.json (with its <clientIdHash>.json client),
+// kiro-cli's tokens, or this plugin's own entry. Each is kept as the browser
+// sign-in keeps it (signedIn), renewed first the way its kind is renewed.
+
+const IMPORT_MOST = 100 // what magpie keeps of one import
+const IMPORT_AT_ONCE = 6
+// the ways a sign-in is named in those files, as loginProvider says them
+const IMPORT_WAYS = { google: "Google", github: "Github", builderid: "BuilderId", awsbuilderid: "BuilderId", enterprise: "Enterprise",
+  idc: "Enterprise", awsidc: "Enterprise", identitycenter: "Enterprise", iamidentitycenter: "Enterprise", internal: "Internal" }
+const squash = (s) => s.toLowerCase().replace(/[^a-z]/g, "")
+const word = (v) => (typeof v === "string" ? v.trim() : "")
+const pick = (o, ...keys) => keys.map((k) => word(o[k])).find(Boolean) ?? ""
+// an expiry as ISO time, local "YYYY/MM/DD HH:MM:SS", Unix seconds or ms
+const whenOf = (v) => (typeof v === "number" ? (v <= 0 ? 0 : v < 1e11 ? v * 1000 : v) : time(v))
+const emailIn = (s) => /^([^\s()]+@[^\s()]+)(?: \([^()]*\))?$/.exec(s)?.[1] ?? ""
+const EXTERNAL_IDP = "A company's own identity provider can't be signed in to here yet; sign in with `kiro-cli login`, and use Kiro CLI's sign-in"
+const NO_CLIENT = "an AWS Builder ID or IAM Identity Center sign-in is renewed with the client it was registered with: add its clientId and clientSecret, or choose the Kiro IDE's registration file (~/.aws/sso/cache/<clientIdHash>.json) with it"
+const REFUSED = "Kiro refused its refresh token: it has expired, been revoked, or been replaced by a newer one where it came from; sign in there again and export it once more"
+const REFUSED_IDC = "AWS refused its refresh token or its client: one has expired or been revoked; sign in again where it came from and export it once more"
+
+// entryOf reads one sign-in of a file: { c, email } as refresh() takes it,
+// or { error, email }.
+function entryOf(o) {
+  const said = pick(o, "provider", "loginProvider", "idp", "loginMethod", "login_option")
+  const how = squash(pick(o, "authMethod", "auth_method", "auth", "method"))
+  const email = emailIn(pick(o, "email", "accountId"))
+  if (squash(said) === "externalidp" || how === "externalidp") return { error: EXTERNAL_IDP, email }
+  let loginProvider = IMPORT_WAYS[squash(said)] ?? ""
+  if (said && !loginProvider) return { error: `Kiro has no sign-in with ${JSON.stringify(said)}; provider is Google, Github, BuilderId or Enterprise`, email }
+  const clientId = pick(o, "clientId", "client_id")
+  const clientSecret = pick(o, "clientSecret", "client_secret")
+  const start = pick(o, "startUrl", "start_url", "issuerUrl", "issuer_url")
+  // kiro-cli's AWS sign-in names no provider and keeps its client apart, but has a start URL or scopes
+  const aws = how === "idc" || how === "builderid" || !!clientId || !!start || Array.isArray(o.scopes)
+  const social = loginProvider ? loginProvider === "Google" || loginProvider === "Github" : how === "social" || !aws
+  if (!social && !loginProvider) {
+    loginProvider = how === "builderid" || start === BUILDER_ID_START ? "BuilderId" : start ? "Enterprise" : ""
+  }
+  // Kiro's auth service renews every Google and GitHub sign-in in us-east-1
+  const region = social ? "us-east-1" : pick(o, "idcRegion", "idc_region", "authRegion", "region") || "us-east-1"
+  if (!AWS_REGION.test(region)) return { error: `${JSON.stringify(region)} isn't an AWS region`, email }
+  return { email, c: { access: pick(o, "accessToken", "access_token", "access"), refresh: pick(o, "refreshToken", "refresh_token", "refresh"),
+    expires: whenOf(o.expiresAt ?? o.expires_at ?? o.expires), method: social ? "social" : "idc", loginProvider, region,
+    profile: pick(o, "profileArn", "profile_arn"), clientId, clientSecret, builderID: isBuilderID(loginProvider) } }
+}
+
+// signInsIn are the sign-ins a file's text holds; the clients registered
+// with AWS it holds (the Kiro IDE's <clientIdHash>.json) go into regs.
+function signInsIn(text, regs) {
+  let v
+  try {
+    v = JSON.parse(text)
+  } catch {
+    return [{ error: "not JSON" }]
+  }
+  const out = []
+  const seen = new Set()
+  const walk = (o, depth) => {
+    if (!o || typeof o !== "object" || depth > 4 || seen.has(o)) return
+    seen.add(o)
+    if (Array.isArray(o)) return o.forEach((x) => walk(x, depth + 1))
+    const t = o.credentials && typeof o.credentials === "object" && !Array.isArray(o.credentials) ? { ...o, ...o.credentials } : o
+    if (pick(t, "refreshToken", "refresh_token", "refresh", "accessToken", "access_token", "access")) return out.push(entryOf(t))
+    const clientId = pick(t, "clientId", "client_id")
+    const clientSecret = pick(t, "clientSecret", "client_secret")
+    if (clientId && clientSecret) return regs.push({ clientId, clientSecret })
+    // a sign-in store (magpie's plugin-auth.json, OpenCode's auth.json) keeps other providers' too: only Kiro's are taken
+    for (const [k, x] of Object.entries(o)) if (!(x && (x.type === "oauth" || x.type === "api") && !/^kiro(#|$)/i.test(k))) walk(x, depth + 1)
+  }
+  walk(v, 0)
+  return out.length || regs.length ? out : [{ error: "no Kiro sign-in in it (no refreshToken)" }]
+}
+
+// importOne checks a sign-in with Kiro as signing in does: renewed unless
+// its access token still has time (as the Kiro IDE renews it), then named
+// by the email Kiro has for it.
+async function importOne(e) {
+  const failed = (error) => ({ type: "failed", error, ...(e.email ? { accountId: nameOf(e.email, e.c?.loginProvider) } : {}) })
+  if (e.error) return failed(e.error)
+  let c = e.c
+  if (c.method === "idc" && !(c.clientId && c.clientSecret)) return failed(NO_CLIENT)
+  try {
+    let renewed = false
+    if (!c.access || !(c.expires - Date.now() > EARLY_MS)) {
+      if (!c.refresh) return failed("its access token has ended, and it has no refreshToken to renew it with")
+      c = await refresh(c)
+      renewed = true
+    }
+    let who = await whoIs(c)
+    // an access token Kiro didn't answer to: renewed, and asked again
+    if (!who.email && !renewed && c.refresh) {
+      c = await refresh(c)
+      who = await whoIs(c)
+    }
+    // one Kiro names no one is still its own account: called by its file's token, so two such aren't kept as one
+    const tag = createHash("sha256").update(e.c.refresh || e.c.access).digest("hex").slice(0, 8)
+    return signedIn(c, who, who.email || e.email, `Kiro account ${tag}`)
+  } catch (err) {
+    return failed(err?.gone ? (c.method === "idc" ? REFUSED_IDC : REFUSED) : err?.message ?? String(err))
+  }
+}
+
+async function importSignIns(texts, signal) {
+  const regs = []
+  const found = texts.flatMap((t) => signInsIn(t, regs))
+  if (regs.length === 1) for (const e of found) if (e.c?.method === "idc" && !e.c.clientId) Object.assign(e.c, regs[0])
+  // one sign-in twice: renewing it twice would spend its refresh token
+  const tokens = new Set()
+  const list = found.filter((e) => {
+    const k = e.c?.refresh || e.c?.access
+    if (!k) return true
+    if (tokens.has(k)) return false
+    tokens.add(k)
+    return true
+  })
+  const left = list.length > IMPORT_MOST ? list.splice(IMPORT_MOST - 1).length : 0
+  const results = []
+  let next = 0
+  const work = async () => {
+    while (next < list.length && !signal?.aborted) {
+      const i = next++
+      results[i] = await importOne(list[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(IMPORT_AT_ONCE, list.length) }, work))
+  if (left) results.push({ type: "failed", error: `${left} more sign-ins weren't imported: at most ${IMPORT_MOST} are taken at a time; import the rest on their own` })
+  return results.filter(Boolean)
 }
 
 // ---- the plugin ------------------------------------------------------------------------
@@ -3226,6 +3379,10 @@ export async function KiroAuthPlugin({ client, magpie } = {}) {
           return { error: e.message, signIn: e.gone ? "expired" : "kept" }
         }
       },
+      // magpie's "Import accounts from a file…" (OpenCode ignores it)
+      importFrom: IMPORT_FROM.en,
+      importFroms: IMPORT_FROM.froms,
+      import: (texts, { signal } = {}) => importSignIns(Array.isArray(texts) ? texts : [texts], signal),
       // labels, messages and hints are magpie's own fields: the same words
       // by the window's language (OpenCode shows the English)
       // magpie's switches for the provider (#2038): shown in its editor, read

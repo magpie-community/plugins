@@ -75,6 +75,48 @@ them, are under "Other ways to sign in…".
   us-east-1, as kiro-cli uses it. Its models are listed with the control
   plane's `ListAvailableModels` and its credits with `GetUsageLimits`, and
   no profile is named in its calls, as kiro-cli names none.
+- **Import accounts from a file** (magpie only, `auth.import`): a JSON file,
+  or JSON pasted in, of sign-ins made elsewhere, one account or a list:
+
+  ```json
+  [
+    { "email": "user@gmail.com", "refreshToken": "…", "provider": "Google" },
+    { "refreshToken": "…", "provider": "Github" },
+    { "refreshToken": "…", "clientId": "…", "clientSecret": "…", "provider": "BuilderId" },
+    { "refreshToken": "…", "clientId": "…", "clientSecret": "…", "provider": "Enterprise", "region": "eu-central-1" }
+  ]
+  ```
+
+  - `provider` is the way it was signed in to: `Google` and `Github` are
+    renewed through Kiro's auth service in us-east-1; `BuilderId` and
+    `Enterprise` (IAM Identity Center) through AWS's OIDC in `region`
+    (blank: us-east-1), with the `clientId` and `clientSecret` registered
+    for it. With no `provider`, `authMethod` (`social`, `IdC`) or `auth`
+    (`Social`, `IdC`) says it, and else a sign-in with a client is AWS's.
+  - Also read: Kiro Account Manager's export (`{ accounts: [{ email,
+    provider, credentials: { refreshToken, … } }] }`), kiro2api's
+    `KIRO_AUTH_TOKEN` list, the Kiro IDE's `kiro-auth-token.json` (choose its
+    `<clientIdHash>.json` with it for a Builder ID or Identity Center
+    sign-in), kiro-cli's tokens (`access_token`, `refresh_token`, …; one with
+    a `start_url` or `scopes` is AWS's, renewed with the
+    `kirocli:odic:device-registration` client chosen with it) and this
+    plugin's own entries in `plugin-auth.json` or OpenCode's `auth.json`.
+    Other providers' entries there (keys not `kiro` or `kiro#…`) are passed
+    over, so none of their tokens is sent to Kiro.
+  - Each sign-in is renewed first unless its access token has more than 2
+    minutes left (`accessToken` with `expiresAt`), as the Kiro IDE renews
+    it. Kiro may give a new refresh token and stop taking the old one, so
+    the tool the file came from may have to sign in again.
+  - It is named by the email Kiro has for it (the file's `email` when Kiro
+    names none) and kept exactly as a browser sign-in of that way: `email
+    (Google)`, with its `uid`, region, profile ARN and plan. One with no
+    email either is `Kiro account <8 hex>`, from its file's token, so two
+    such stay two accounts. Importing an account signed in already replaces
+    it.
+  - A sign-in Kiro refuses, one of an unknown `provider`, an AWS one without
+    its client, and a company's own identity provider (`ExternalIdp`) are
+    listed as not imported, with why; the others are imported. One sign-in
+    twice is renewed once. At most 100 are taken at a time.
 
 A browser sign-in is kept where OpenCode keeps sign-ins (`auth.json`; in
 magpie, `plugin-auth.json`) as an `oauth` entry. The entry holds the
