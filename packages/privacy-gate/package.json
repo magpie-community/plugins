@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/middleware-privacy-gate",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Structural egress gate for Magpie: withholds or rejects image/file/audio parts, encoded blobs and disallowed models, and guides agents toward local extraction when Magpie cannot mask text. Companion to ShyPie for DeepSeek Harness.",
   "type": "module",
   "files": [
@@ -32,7 +32,9 @@
     "icon": "https://raw.githubusercontent.com/magpie-community/plugins/main/packages/privacy-gate/assets/shypie-icon.svg",
     "page": {
       "title": "ShyPie Filter",
-      "titles": { "zh": "ShyPie 防护" },
+      "titles": {
+        "zh": "ShyPie 防护"
+      },
       "file": "page/index.html",
       "icon": "page/icon.svg"
     },
@@ -41,7 +43,9 @@
         "slot": "agents",
         "file": "page/agents-panel.html",
         "title": "ShyPie protection",
-        "titles": { "zh": "ShyPie 防护" }
+        "titles": {
+          "zh": "ShyPie 防护"
+        }
       }
     ],
     "actions": [
@@ -49,7 +53,9 @@
         "id": "shypie-protection",
         "menu": "agent",
         "title": "ShyPie protection",
-        "titles": { "zh": "ShyPie 防护" }
+        "titles": {
+          "zh": "ShyPie 防护"
+        }
       }
     ],
     "permissions": [],

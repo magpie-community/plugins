@@ -21,6 +21,7 @@ test('page and panel use only the released bridge and make no network calls', ()
   const panel = read('panel.js')
   const agents = read('agents.js')
   const policy = read('policy.js')
+  const settings = read('settings.js')
   const page = read('index.html')
   const panelPage = read('agents-panel.html')
   const allowed = ['ready', 'options.get', 'options.set', 'onAction']
@@ -29,6 +30,7 @@ test('page and panel use only the released bridge and make no network calls', ()
   expect(safePageScript(panel, allowed)).toBe(true)
   expect(safePageScript(agents, [])).toBe(true)
   expect(safePageScript(policy, [])).toBe(true)
+  expect(safePageScript(settings, [])).toBe(true)
   for (const source of [app, panel]) {
     expect(safePageScript(`${source}\nfetch('https://evil.example/x')`, allowed)).toBe(false)
     expect(safePageScript(`${source}\nmagpie.read?.('secrets')`, allowed)).toBe(false)
@@ -44,6 +46,7 @@ test('page and panel use only the released bridge and make no network calls', ()
     expect(sources).toContain('_magpie/bridge.js')
     expect(sources).toContain('agents.js')
     expect(sources).toContain('policy.js')
+    if (html === page) expect(sources).toContain('settings.js')
     expect(sources).toContain(html === page ? 'app.js' : 'panel.js')
     expect(tags).toHaveLength(sources.length)
   }
@@ -86,6 +89,33 @@ test('a glob policy survives an options save and unrelated options are kept', ()
   )).toBe(false)
 })
 
+test('middleware settings are validated, merged and detect stale values', () => {
+  const sandbox = {}
+  sandbox.globalThis = sandbox
+  runInNewContext(read('settings.js'), sandbox)
+  const S = sandbox.ShyPieSettings
+  const parsed = S.fromOptions({
+    binaryPolicy: 'guide',
+    allowModels: ['safe/*'],
+    blobBase64Chars: 400,
+    future: 'keep',
+  })
+  expect(Array.from(parsed.values.allowModels)).toEqual(['safe/*'])
+  expect(parsed.invalid).toEqual([])
+  expect(Array.from(S.parseList('a/*, b/*\nc/*'))).toEqual(['a/*', 'b/*', 'c/*'])
+  expect(S.fromOptions({ allowModels: { bad: true } }).invalid).toEqual(['allowModels'])
+  expect(S.validate({ ...parsed.values, maxDepth: 0 }).map((error) => error.key)).toEqual(['maxDepth'])
+  const merged = S.apply(
+    { binaryPolicy: 'fail', future: 'keep' },
+    { ...parsed.values, binaryPolicy: 'guide', localProviders: ['ollama'] },
+  )
+  expect(merged.binaryPolicy).toBe('guide')
+  expect(Array.from(merged.localProviders)).toEqual(['ollama'])
+  expect(merged.future).toBe('keep')
+  expect(S.same({ ...parsed.values }, parsed.values)).toBe(true)
+  expect(S.same({ ...parsed.values, blobBase64Chars: 500 }, parsed.values)).toBe(false)
+})
+
 test('the shared agent catalogue validates ids and keeps custom agents', () => {
   const sandbox = {}
   sandbox.globalThis = sandbox
@@ -100,7 +130,7 @@ test('the shared agent catalogue validates ids and keeps custom agents', () => {
 
 test('package declares the page, Agents panel and agent action', () => {
   const pkg = JSON.parse(read('../package.json'))
-  expect(pkg.version).toBe('0.4.0')
+  expect(pkg.version).toBe('0.5.0')
   expect(pkg.files).toContain('page')
   expect(pkg.magpie.page.file).toBe('page/index.html')
   expect(pkg.magpie.page.icon).toBe('page/icon.svg')
