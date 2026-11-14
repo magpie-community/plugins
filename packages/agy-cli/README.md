@@ -203,7 +203,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 - **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力（需要 1.5.0 以上）。另外只接受
   内联 base64，URL 图片和 PDF 等二进制文档都会被拒绝。
 - **回复里出现 "Agent execution terminated due to error."**：这是 agy 的错误标记。插件会
-  从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。
+  从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
+  "There was a network issue connecting to the server" 和 "Your AI credits balance is
+  too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
+  重试中的提示行会被去掉。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
 - **想关掉思考摘要**：设置 `AGY_BRIDGE_THINKING=0`，或者在请求里带上

@@ -109,13 +109,26 @@ const STEP_USAGE_WAIT_MS = 1_000
 const STEP_USAGE_SAME_GEN_WAIT_MS = 75
 const STEP_USAGE_POLL_MS = 25
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
-const AGENT_ERROR_MARKER = "\n⚠ Agent execution terminated due to error.\n"
-const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
+// 1.5.8 words a connection that failed every retry, and a spent credit
+// balance, on their own (#1136).
+const AGENT_ERROR_MARKERS = [
+  "\n⚠ Agent execution terminated due to error.\n",
+  "\n⚠ There was a network issue connecting to the server, please try again.\n",
+  "\n⚠ Your AI credits balance is too low to continue.\n",
+]
+const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
+const CREDITS_CORE = AGENT_ERROR_CORES[2]
+// agy 1.5.8 writes each failed attempt of a model call into the reply as one
+// line, then tries again in the same turn (#1136). The line is agy's.
+const ATTEMPT_CORE = "⚠ API error (attempt "
+const ATTEMPT_MARKER = "\n" + ATTEMPT_CORE
+const ATTEMPT_LINE = /^⚠ API error \(attempt \d+\): ?(.*)$/
 // agy writes this into the reply when the model's first call came back with
 // neither text nor tool calls, then calls the model again in the same turn.
 // It is agy's, not the model's, and the turn goes on (#1124).
 const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
 const RETRY_CORE = RETRY_MARKER.trim()
+const HOLD_MAX = Math.max(...AGENT_ERROR_MARKERS.map((marker) => marker.length)) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
 // with the client's system prompt in their place.
@@ -1137,6 +1150,9 @@ class Turn {
     this.agentError = false
     this.heldText = ""
     this.textTail = ""
+    this.openBanner = -1
+    this.attemptDetail = ""
+    this.agentErrorCore = ""
     this.timer = null
     this.cleanupTimer = null
     this.logOffset = 0
@@ -1301,23 +1317,30 @@ class Turn {
 
   // Withholds agy's error marker, or a possible prefix of it, until it can be
   // classified. agy's own marker ends the prompt; one that more text follows
-  // was the model quoting it (#1052). agy's retry banner is dropped where it
-  // starts a line (#1124).
+  // was the model quoting it (#1052). agy's retry banners are dropped where
+  // they start a line (#1124, #1136); one whose line hasn't ended is held.
   pushText(chunk) {
     if (this.done || this.agentError) return
     let text = this.dropRetryBanner(this.heldText + chunk)
     this.heldText = ""
-    const marker = text.lastIndexOf(AGENT_ERROR_CORE)
-    if (marker >= 0 && !text.slice(marker + AGENT_ERROR_CORE.length).trim()) {
-      const start = text[marker - 1] === "\n" ? marker - 1 : marker
-      this.heldText = text.slice(start)
-      text = text.slice(0, start)
-      this.emitText(text)
+    if (this.openBanner >= 0) {
+      this.heldText = text.slice(this.openBanner)
+      this.emitText(text.slice(0, this.openBanner))
       return
     }
-    for (let keep = Math.min(text.length, AGENT_ERROR_MARKER.length - 1); keep > 0; keep--) {
+    for (const core of AGENT_ERROR_CORES) {
+      const marker = text.lastIndexOf(core)
+      if (marker >= 0 && !text.slice(marker + core.length).trim()) {
+        const start = text[marker - 1] === "\n" ? marker - 1 : marker
+        this.heldText = text.slice(start)
+        this.emitText(text.slice(0, start))
+        return
+      }
+    }
+    for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKER.startsWith(tail) || (RETRY_MARKER.startsWith(tail) && keep > 1)) {
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail)))) {
         this.heldText = tail
         text = text.slice(0, -keep)
         break
@@ -1326,26 +1349,35 @@ class Turn {
     this.emitText(text)
   }
 
-  // Removes agy's retry banner, with its leading and one trailing newline,
-  // wherever it starts a line. Text that only quotes it mid-line is kept.
-  // Until the turn's text is flushed, a banner that ends the buffer is left
-  // for pushText to hold, so its newline in the next chunk goes with it.
+  // Removes agy's retry banners, each with its leading and one trailing
+  // newline, wherever one starts a line. Text that only quotes one mid-line is
+  // kept. Until the turn's text is flushed, a banner that ends the buffer is
+  // left in place and openBanner says where, so pushText holds it and its
+  // newline in the next chunk goes with it.
   dropRetryBanner(text, final = false) {
-    let at = text.indexOf(RETRY_CORE)
-    while (at >= 0) {
+    this.openBanner = -1
+    let from = 0
+    for (;;) {
+      const at = nextBanner(text, from)
+      if (at < 0) return text
       const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
       if (!lineStart) {
-        at = text.indexOf(RETRY_CORE, at + 1)
+        from = at + 1
         continue
       }
       const start = at > 0 ? at - 1 : at
-      let end = at + RETRY_CORE.length
-      if (end === text.length && !final) break
+      const attempt = !text.startsWith(RETRY_CORE, at)
+      let end = attempt ? text.indexOf("\n", at) : at + RETRY_CORE.length
+      if (end < 0) end = text.length
+      if (end === text.length && !final) {
+        this.openBanner = start
+        return text
+      }
+      if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
       if (text[end] === "\n") end++
       text = text.slice(0, start) + text.slice(end)
-      at = text.indexOf(RETRY_CORE, start)
+      from = start
     }
-    return text
   }
 
   emitText(text) {
@@ -1356,8 +1388,10 @@ class Turn {
 
   // The prompt ended: a marker still held was agy's own.
   endText() {
-    if (this.heldText.includes(AGENT_ERROR_CORE)) {
+    const core = AGENT_ERROR_CORES.find((core) => this.heldText.includes(core))
+    if (core) {
       this.agentError = true
+      this.agentErrorCore = core
       this.heldText = ""
     }
   }
@@ -2045,7 +2079,14 @@ class Proc {
   }
 
   async #agentError(turn) {
-    const detail = await lastAgentError(this.logPath, turn.logOffset)
+    const core = turn.agentErrorCore
+    // A failed connection is in the reply's last attempt line, not the log's
+    // executor error (#1136).
+    const detail = await lastAgentError(this.logPath, turn.logOffset) || turn.attemptDetail ||
+      (core && core !== AGENT_ERROR_CORES[0] ? core.replace(/^⚠ /, "") : "")
+    if (core === CREDITS_CORE) {
+      return new AgentTurnError(`agy bridge: Antigravity AI credits balance is too low to continue${detail ? ": " + detail : ""}`, "rate_limit_error")
+    }
     return this.#formatAgentError(detail)
   }
 
@@ -2471,13 +2512,23 @@ async function lastAgentError(file, offset) {
   }
   let found = ""
   for (const line of text.split("\n")) {
-    const match = /\] (?:agent executor error|failed to construct executor): (.+)$/.exec(line)
+    const match = /\] (?:agent executor error|failed to construct executor|inference connection failed[^:]*): (.+)$/.exec(line) ||
+      /\] (?:Run|CallWithRetry): attempt \d+ failed \((.+)\), retrying in /.exec(line)
     if (match) found = match[1]
   }
   if (!found) return ""
   const cut = found.lastIndexOf("generating and executing: ")
   if (cut >= 0) found = found.slice(cut + "generating and executing: ".length)
   return found.trim().slice(0, 1000)
+}
+
+// Where the next retry banner of either kind starts, from `from` on.
+function nextBanner(text, from) {
+  const retry = text.indexOf(RETRY_CORE, from)
+  const attempt = text.indexOf(ATTEMPT_CORE, from)
+  if (retry < 0) return attempt
+  if (attempt < 0) return retry
+  return Math.min(retry, attempt)
 }
 
 function dropFromPool(proc) {

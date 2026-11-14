@@ -866,3 +866,61 @@ test("#1124: the model quoting the retry banner mid-line keeps it", async () => 
     assert.equal(replyText(parsed), chunks.join(""))
   })
 })
+
+// #1136: agy 1.5.8's own words, byte for byte from the reporter's Codex rollout.
+const EOF_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF`
+const NETWORK = "\n⚠ There was a network issue connecting to the server, please try again.\n"
+
+test("#1136: agy's attempt banners before a retry that works never reach the client", async () => {
+  const three = EOF_ATTEMPT(1) + "\n" + EOF_ATTEMPT(2) + "\n" + EOF_ATTEMPT(3)
+  const answer = "已拿到两张 `3420×1966` 全窗口无损截图"
+  for (const steps of [
+    // The reporter's turn A: the last banner has no newline before the thought.
+    [["text", three], ["thought", "look again"], ["text", "\n" + answer]],
+    [["text", EOF_ATTEMPT(1).slice(0, 30)], ["text", EOF_ATTEMPT(1).slice(30)], ["text", "\n" + answer]],
+    [["text", "\n⚠ API err"], ["text", "or (attempt 2): EOF\n"], ["text", answer]],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        for (const [kind, text] of steps) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "attempt-banner" },
+        messages: [{ role: "user", content: "screenshot" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), answer)
+    })
+  }
+})
+
+test("#1136: agy 1.5.8's network and credit endings fail the turn", async () => {
+  for (const [chunks, want, kind] of [
+    // Turn B: one attempt, then agy gives up. The attempt's detail names why.
+    [[EOF_ATTEMPT(1) + "\n" + NETWORK], /EOF/, "api_error"],
+    // Turn C: the ending alone, split mid-marker.
+    [[NETWORK.slice(0, 20), NETWORK.slice(20)], /network issue connecting/, "api_error"],
+    [["partial\n⚠ Your AI credits ", "balance is too low to continue.\n"], /credits balance is too low/, "rate_limit_error"],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "network-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      assert.match(text, want)
+      assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+    })
+  }
+})
+
+test("#1136: the model quoting an attempt banner or the network ending mid-line keeps it", async () => {
+  const chunks = ["agy printed `⚠ API error (attempt 1): EOF` and later", " `⚠ There was a network issue connecting to the server, please try again.` too."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "attempt-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})

@@ -274,7 +274,11 @@ off unless you turn it on.
   and binary documents such as PDFs are rejected.
 - **A reply contains "Agent execution terminated due to error."**: that is agy's
   in-band error marker. The plugin reads the real cause from agy's log and ends
-  the turn with an error instead of passing the marker through as text.
+  the turn with an error instead of passing the marker through as text. agy
+  1.5.8's "There was a network issue connecting to the server" and "Your AI
+  credits balance is too low to continue." end the turn the same way (the
+  latter as a rate limit), and its `⚠ API error (attempt N)` retry lines are
+  dropped.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
