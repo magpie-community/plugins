@@ -18,9 +18,10 @@
 
 import { createDecipheriv, createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { arch, homedir, release, tmpdir, userInfo } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import PROMPT from "./prompt.mjs"
 
 const PROVIDER = "zcode"
@@ -1625,7 +1626,7 @@ function v2Target() {
 }
 
 const V2_PS = `param([string]$Target = "")
-$source = @"
+$source = @'
 using System;
 using System.Runtime.InteropServices;
 public class MagpieCredRead {
@@ -1641,7 +1642,7 @@ public class MagpieCredRead {
   [DllImport("advapi32.dll")]
   public static extern void CredFree(IntPtr cred);
 }
-"@
+'@
 Add-Type -TypeDefinition $source
 [IntPtr]$ptr = [IntPtr]::Zero
 if (-not [MagpieCredRead]::CredRead($Target, 1, 0, [ref]$ptr)) {
@@ -1655,18 +1656,19 @@ $bytes = New-Object byte[] $cred.CredentialBlobSize
 Write-Output ("BLOB " + [Convert]::ToBase64String($bytes))
 `
 
-// v2Debug notes a failed vault read in the temp folder, without any
-// credential material, so a vault that misbehaves in magpie's sanitized
-// plugin-host env says why.
+// v2Debug notes a failed vault read beside the plugin, in its own folder,
+// without any credential material, so a vault that misbehaves in magpie's
+// sanitized plugin-host env says why.
 function v2Debug(what) {
   try {
-    writeFileSync(join(tmpdir(), "zcode-vault-debug.log"), `${new Date().toISOString()} ${what}\n`, { flag: "a" })
+    writeFileSync(join(dirname(fileURLToPath(import.meta.url)), "zcode-vault-debug.log"), `${new Date().toISOString()} ${what}\n`, { flag: "a" })
   } catch {}
 }
 
 // v2Env is the env a spawned PowerShell needs: magpie's plugin host runs
 // with a sanitized env (no PATH, no SystemRoot), and PowerShell's runtime
-// needs both to start.
+// needs both to start. Its temp files go to the fresh folder each read
+// makes, never a shared one.
 function v2Env() {
   const root = process.env.SystemRoot || "C:\\Windows"
   const home = homedir()
@@ -1674,8 +1676,6 @@ function v2Env() {
     SystemRoot: root,
     SystemDrive: process.env.SystemDrive || "C:",
     PATH: join(root, "System32") + ";" + root,
-    TEMP: process.env.TEMP || "C:\\Windows\\Temp",
-    TMP: process.env.TMP || "C:\\Windows\\Temp",
     USERPROFILE: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
@@ -1687,20 +1687,26 @@ function v2Env() {
 
 // readVaultKey fetches the vault's key for a fingerprint, once: the first
 // read asks PowerShell and blocks the host a second or two, the rest are
-// memory hits. Windows alone; elsewhere, or without the item, it is a miss.
+// memory hits. The script is written into a fresh mkdtempSync folder the
+// read deletes after, so nothing at a fixed path runs and nothing another
+// account planted is picked up; the target goes as data (-Target), never
+// inside the script. Windows alone; elsewhere, or without the item, it is
+// a miss.
 function readVaultKey(fingerprint) {
   const hit = v2Keys.get(fingerprint)
   if (hit) return hit
   const missed = v2Misses.get(fingerprint)
   if (missed !== undefined && Date.now() - missed < V2_MISS_MS) return null
   let key = null
+  let temp = null
   if (process.platform === "win32") {
     const root = process.env.SystemRoot || "C:\\Windows"
     const ps = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     try {
-      const script = join(tmpdir(), "zcode-vault-read.ps1")
-      if (!existsSync(script)) writeFileSync(script, V2_PS)
-      const out = execFileSync(ps, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Target", v2Target()], { timeout: 15000, encoding: "utf8", windowsHide: true, env: v2Env() })
+      temp = mkdtempSync(join(tmpdir(), "zcode-vault-"))
+      const script = join(temp, "zcode-vault-read.ps1")
+      writeFileSync(script, V2_PS)
+      const out = execFileSync(ps, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Target", v2Target()], { timeout: 15000, encoding: "utf8", windowsHide: true, env: { ...v2Env(), TEMP: temp, TMP: temp } })
       const lines = String(out).split(/\r?\n/)
       const line = lines.find((l) => l.startsWith("BLOB "))
       const errLine = lines.find((l) => l.startsWith("ERR "))
@@ -1711,7 +1717,19 @@ function readVaultKey(fingerprint) {
         else v2Debug("read: the blob is not the 43-char base64url key")
       }
     } catch (e) {
-      v2Debug(`spawn threw: ${e && e.message} code=${e && e.code}`)
+      // a nonzero exit is the script's own answer (its ERR line), not a
+      // crash: the item is missing or CredRead refused, and the code says
+      // which
+      const out = String((e && e.stdout) || "")
+      const errLine = out.split(/\r?\n/).find((l) => l.startsWith("ERR "))
+      if (errLine) v2Debug(`read: ${errLine.trim()}`)
+      else v2Debug(`spawn threw: ${e && e.message} code=${e && e.code}`)
+    } finally {
+      if (temp) {
+        try {
+          rmSync(temp, { recursive: true, force: true })
+        } catch {}
+      }
     }
   }
   if (key && v2Fingerprint(key) === fingerprint) {
