@@ -34,7 +34,7 @@ const COMPLETED = {
   error: null, incomplete_details: null,
 }
 
-async function fixture(inference = () => new Response(JSON.stringify(COMPLETED)), { image = false } = {}) {
+async function fixture(inference = () => new Response(JSON.stringify(COMPLETED))) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magpie-responses-"))
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
   const credentialFile = path.join(dir, "credentials.json")
@@ -52,7 +52,7 @@ async function fixture(inference = () => new Response(JSON.stringify(COMPLETED))
       return json({ resources: url.searchParams.get("$skip") === "0" ? [{ id: "deployment-a", status: "RUNNING", deploymentUrl: state.deployment, configurationId: "configuration-a", details: { resources: { backendDetails: { model: { name: MODEL, version: state.activeVersion } } } } }] : [] })
     }
     if (url.pathname === "/v2/lm/configurations/configuration-a") return json({ id: "configuration-a", scenarioId: "foundation-models", executableId: "azure-openai", parameterBindings: [{ key: "modelName", value: MODEL }, { key: "modelVersion", value: VERSION }] })
-    if (url.pathname === "/v2/lm/scenarios/foundation-models/models") return json({ resources: [{ model: MODEL, executableId: "azure-openai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "azure-openai" }], versions: [{ name: VERSION, inputTypes: image ? ["text", "image"] : ["text"] }] }] })
+    if (url.pathname === "/v2/lm/scenarios/foundation-models/models") return json({ resources: [{ model: MODEL, executableId: "azure-openai", allowedScenarios: [{ scenarioId: "foundation-models", executableId: "azure-openai" }], versions: [{ name: VERSION, inputTypes: ["text"] }] }] })
     sent.push({ url: url.href, init, body: JSON.parse(init.body) })
     return inference(input, init)
   }
@@ -221,6 +221,546 @@ test("stateless continuation keeps native call identity and encrypted reasoning 
   assert.equal(sent.length, 2, "one dispatch per turn; no generation is replayed")
 })
 
+const CUSTOM_PATCH_TOOL = {
+  type: "function",
+  name: "apply_patch",
+  parameters: {
+    type: "object",
+    properties: { input: { type: "string", description: "Input must match the lark grammar:\nstart: x" } },
+    required: ["input"],
+    additionalProperties: false,
+  },
+  strict: true,
+}
+
+test("Codex namespace and custom tools translate to native function tools reaching SAP", async () => {
+  const tools = [
+    { type: "namespace", name: "arithmetic", description: "Integer arithmetic", tools: [STRICT_TOOL] },
+    { type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "start: x" } },
+  ]
+  const user = { role: "user", content: [{ type: "input_text", text: "verify 7" }] }
+  const customCall = { id: "custom_item", type: "custom_tool_call", call_id: "call_patch", name: "apply_patch", input: "*** Begin Patch\n+7\n*** End Patch" }
+  const { request, sent } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    try {
+      assert.deepEqual(body.tools, [{ ...STRICT_TOOL, name: "arithmetic__verify_value" }, CUSTOM_PATCH_TOOL], "namespace and custom tools translate to native function tools")
+      if (body.tool_choice === "required") {
+        assert.deepEqual(body.input, [user])
+        return jsonResponse({
+          ...FIRST_WHOLE,
+          output: [
+            REASON_1,
+            { ...CALL, name: "arithmetic__verify_value" },
+            { id: customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
+          ],
+        })
+      }
+      assert.equal(body.tool_choice, "none")
+      assert.deepEqual(body.input.filter(item => item.type === "function_call"), [
+        { ...CALL, name: "arithmetic__verify_value" },
+        { id: customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
+      ])
+      const results = body.input.filter(item => item.type === "function_call_output")
+      assert.equal(results.length, 2)
+      assert.equal(results[1].output, "patched")
+      return jsonResponse(finalWhole("AICORE_RESULT_" + JSON.parse(results[0].output).answer + "_" + results[1].output))
+    } catch {
+      return nativeError(400, "invalid_tool_history", TOKEN)
+    }
+  })
+  const first = await (await request({ model: MODEL, input: [user], tools, tool_choice: "required" })).json()
+  const call = first.output.find(item => item.type === "function_call")
+  const patchCall = first.output.find(item => item.type === "custom_tool_call")
+  assert.equal(call.name, "verify_value")
+  assert.equal(call.namespace, "arithmetic")
+  assert.deepEqual(call.encrypted_function_args, [])
+  assert.deepEqual(patchCall, { ...customCall, status: "completed" })
+  const results = [
+    { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ answer: JSON.parse(call.arguments).value * 2 }) },
+    { type: "custom_tool_call_output", call_id: patchCall.call_id, output: "patched" },
+  ]
+  const second = await request({ model: MODEL, input: [user, REASON_1, call, patchCall, ...results], tools, tool_choice: "none" })
+  assert.equal(second.status, 200)
+  assert.equal((await second.json()).output.at(-1).content[0].text, "AICORE_RESULT_14_patched")
+  assert.equal(sent.length, 2, "each turn dispatches once, with faithful custom-tool translation")
+})
+
+for (const stream of [false, true]) {
+  test(`top-level and namespaced custom tools execute a complete ${stream ? "SSE" : "JSON"} loop`, async () => {
+    const tools = [
+      { type: "custom", name: "apply_patch", description: "Freeform patch", format: { type: "grammar", syntax: "lark", definition: "start: patch" } },
+      { type: "namespace", name: "coding", tools: [{ type: "custom", name: "apply_patch", format: { type: "text" } }] },
+    ]
+    const inputs = ["*** Begin Patch\n+line 1\n*** End Patch\n😀", "namespaced \"patch\" \\ slash"]
+    const { request, sent } = await fixture((_, init) => {
+      const body = JSON.parse(init.body)
+      assert.deepEqual(body.tools.map(t => t.name), ["apply_patch", "coding__apply_patch"])
+      if (body.tool_choice === "none") {
+        assert.deepEqual(body.input.filter(i => i.type === "function_call").map(i => [i.name, i.arguments]), [
+          ["apply_patch", JSON.stringify({ input: inputs[0] })],
+          ["coding__apply_patch", JSON.stringify({ input: inputs[1] })],
+        ])
+        const outputs = body.input.filter(i => i.type === "function_call_output").map(i => i.output)
+        const response = finalWhole("CUSTOM_OK_" + outputs.join("|"))
+        return stream ? streamResponse([frame({ type: "response.completed", response })]) : jsonResponse(response)
+      }
+      assert.deepEqual(body.tool_choice, {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "function", name: "apply_patch" }, { type: "function", name: "coding__apply_patch" }],
+      })
+      const wireCalls = [
+        { id: "ctc_0", type: "function_call", call_id: "call_c0", name: "apply_patch", arguments: '{"input":"*** Begin Patch\\n+line 1\\n*** End Patch\\n\\ud83d\\ude00"}', status: "completed" },
+        { id: "ctc_1", type: "function_call", call_id: "call_c1", name: "coding__apply_patch", arguments: JSON.stringify({ input: inputs[1] }), status: "completed" },
+      ]
+      const response = { ...FIRST_WHOLE, output: [REASON_1, ...wireCalls] }
+      if (!stream) return jsonResponse(response)
+      const chunks0 = ['{"in', 'put":"*** Begin Patch\\n', '+line 1\\n*** End Patch\\n\\ud83d', '\\ude00"}']
+      const events = [
+        frame({ type: "response.created", response: { ...response, status: "in_progress", output: [] } }),
+        frame({ type: "response.output_item.added", output_index: 0, item: { ...wireCalls[0], arguments: "", status: "in_progress" } }),
+        ...chunks0.map((delta, i) => frame({ type: "response.function_call_arguments.delta", item_id: "ctc_0", output_index: 0, delta, sequence_number: i + 1 })),
+        frame({ type: "response.function_call_arguments.done", item_id: "ctc_0", output_index: 0, name: "apply_patch", arguments: wireCalls[0].arguments }),
+        frame({ type: "response.output_item.done", output_index: 0, item: wireCalls[0] }),
+        frame({ type: "response.output_item.added", output_index: 1, item: { ...wireCalls[1], arguments: "", status: "in_progress" } }),
+        frame({ type: "response.function_call_arguments.delta", item_id: "ctc_1", output_index: 1, delta: wireCalls[1].arguments }),
+        frame({ type: "response.function_call_arguments.done", item_id: "ctc_1", output_index: 1, name: "coding__apply_patch", arguments: wireCalls[1].arguments }),
+        frame({ type: "response.output_item.done", output_index: 1, item: wireCalls[1] }),
+        frame({ type: "response.completed", response }),
+      ]
+      return streamResponse(events)
+    })
+    const tool_choice = {
+      type: "allowed_tools",
+      mode: "required",
+      tools: [{ type: "custom", name: "apply_patch" }, { type: "custom", name: "apply_patch", namespace: "coding" }],
+    }
+    const first = await request({ model: MODEL, stream, tools, input: [USER], tool_choice })
+    const events = stream ? parseEvents(await first.text()) : []
+    const reply = stream ? events.at(-1).response : await first.json()
+    const calls = reply.output.filter(i => i.type === "custom_tool_call")
+    assert.deepEqual(calls, [
+      { id: "ctc_0", type: "custom_tool_call", call_id: "call_c0", name: "apply_patch", input: inputs[0], status: "completed" },
+      { id: "ctc_1", type: "custom_tool_call", call_id: "call_c1", name: "apply_patch", namespace: "coding", input: inputs[1], status: "completed" },
+    ])
+    if (stream) {
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.added").map(e => e.item), [
+        { id: "ctc_0", type: "custom_tool_call", call_id: "call_c0", name: "apply_patch", input: "", status: "in_progress" },
+        { id: "ctc_1", type: "custom_tool_call", call_id: "call_c1", name: "apply_patch", namespace: "coding", input: "", status: "in_progress" },
+      ])
+      // Custom input is not streamed incrementally: argument deltas are dropped
+      // and the complete input arrives once at `custom_tool_call_input.done`.
+      assert.equal(events.filter(e => e.type === "response.custom_tool_call_input.delta" || e.type === "response.function_call_arguments.delta").length, 0)
+      assert.deepEqual(events.filter(e => e.type === "response.custom_tool_call_input.done").map(e => [e.name, e.namespace, e.input]), [
+        ["apply_patch", undefined, inputs[0]],
+        ["apply_patch", "coding", inputs[1]],
+      ])
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.done").map(e => e.item), calls)
+    }
+    const results = calls.map((call, i) => ({ type: "custom_tool_call_output", call_id: call.call_id, output: "done_" + i }))
+    const second = await request({ model: MODEL, stream, tools, tool_choice: "none", input: [USER, ...reply.output, ...results] })
+    const finalReply = stream ? parseEvents(await second.text()).at(-1).response : await second.json()
+    assert.equal(finalReply.output.at(-1).content[0].text, "CUSTOM_OK_done_0|done_1")
+    assert.equal(sent.length, 2)
+  })
+}
+
+test("plain function tools and history pass through untranslated", () => {
+  const body = { model: MODEL, input: [USER, CALL, { type: "function_call_output", call_id: CALL.call_id, output: "{}" }], tools: [STRICT_TOOL], tool_choice: "auto" }
+  const out = validateResponsesRequest(body)
+  assert.deepEqual(out.tools, [STRICT_TOOL])
+  assert.equal(out.input, body.input, "no namespace/custom means history reference is untouched")
+})
+
+test("tool translation preserves custom and namespaced tool_choice, paired custom history and distinct namespace names", () => {
+  const customTool = { type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "start: x" } }
+  const nsToolA = { ...STRICT_TOOL, description: "from-ns-a" }
+  const nsToolB = { ...STRICT_TOOL, description: "from-ns-b" }
+  const otherFn = { type: "function", name: "other_fn", parameters: { type: "object" } }
+
+  // 1. tool_choice naming a declared custom or namespaced tool translates to its wire function name,
+  //    never relaxing to "auto" or omitting required choices.
+  const withCustomChoice = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [{ type: "namespace", name: "ns_a", tools: [nsToolA] }, customTool],
+    tool_choice: { type: "custom", name: "apply_patch" },
+  })
+  assert.deepEqual(withCustomChoice.tools, [{ ...nsToolA, name: "ns_a__verify_value" }, CUSTOM_PATCH_TOOL])
+  assert.deepEqual(withCustomChoice.tool_choice, { type: "function", name: "apply_patch" })
+
+  const withUnmatchedFnChoice = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [STRICT_TOOL],
+    tool_choice: { type: "function", name: "undeclared_or_dropped" },
+  })
+  assert.deepEqual(withUnmatchedFnChoice.tool_choice, { type: "function", name: "undeclared_or_dropped" })
+
+  const withNamespacedFnChoice = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [{ type: "namespace", name: "ns_a", tools: [nsToolA] }],
+    tool_choice: { type: "function", name: STRICT_TOOL.name, namespace: "ns_a" },
+  })
+  assert.deepEqual(withNamespacedFnChoice.tool_choice, { type: "function", name: "ns_a__verify_value" })
+
+  // 2. Custom tool with tool_choice:"required" retains both the translated tool and "required" choice.
+  const customRequired = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [customTool],
+    tool_choice: "required",
+  })
+  assert.deepEqual(customRequired.tools, [CUSTOM_PATCH_TOOL])
+  assert.equal(customRequired.tool_choice, "required")
+  assert.deepEqual(customRequired.include, ["reasoning.encrypted_content"])
+
+  // 3. Paired custom-tool history and replayed function_call namespace tags translate faithfully
+  //    even when no custom/namespace tool is declared on the turn.
+  const customCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "x" }
+  const customOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const translatedCustomCall = { id: "c1", type: "function_call", call_id: "cp1", name: "apply_patch", arguments: '{"input":"x"}' }
+  const translatedCustomOut = { type: "function_call_output", call_id: "cp1", output: "ok" }
+  const namespacedCall = { ...CALL, namespace: "ns_a" }
+  const fnOut = { type: "function_call_output", call_id: CALL.call_id, output: "{}" }
+  const translatedHistoryWithFnTools = validateResponsesRequest({
+    model: MODEL,
+    input: [USER, customCall, customOut, namespacedCall, fnOut],
+    tools: [STRICT_TOOL],
+  })
+  assert.deepEqual(translatedHistoryWithFnTools.input, [USER, translatedCustomCall, translatedCustomOut, { ...CALL, name: "ns_a__verify_value" }, fnOut])
+
+  const translatedHistoryOmittedTools = validateResponsesRequest({
+    model: MODEL,
+    input: [USER, customCall, customOut],
+  })
+  assert.deepEqual(translatedHistoryOmittedTools.input, [USER, translatedCustomCall, translatedCustomOut])
+
+  // 4. Functions sharing a bare name retain every distinct tool identity.
+  const dedupedNs = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [
+      { type: "namespace", name: "ns_a", tools: [nsToolA, otherFn] },
+      { type: "namespace", name: "ns_b", tools: [nsToolB] },
+    ],
+  })
+  assert.deepEqual(dedupedNs.tools, [{ ...nsToolA, name: "ns_a__verify_value" }, { ...otherFn, name: "ns_a__other_fn" }, { ...nsToolB, name: "ns_b__verify_value" }])
+
+  const dedupedWithTop = validateResponsesRequest({
+    model: MODEL,
+    input: "hi",
+    tools: [
+      { type: "namespace", name: "ns_a", tools: [nsToolA] },
+      STRICT_TOOL,
+    ],
+  })
+  assert.deepEqual(dedupedWithTop.tools, [{ ...nsToolA, name: "ns_a__verify_value" }, STRICT_TOOL])
+})
+
+for (const stream of [false, true]) {
+  test(`namespaced tools restore distinct identities and execute a complete ${stream ? "SSE" : "JSON"} loop`, async () => {
+    const tools = [
+      { type: "namespace", name: "collaboration", tools: [{ ...STRICT_TOOL, name: "spawn_agent" }] },
+      { type: "namespace", name: "other", tools: [{ ...STRICT_TOOL, name: "spawn_agent" }] },
+      { ...STRICT_TOOL, name: "spawn_agent" },
+    ]
+    const before = structuredClone(tools)
+    const { request, sent } = await fixture((_, init) => {
+      const body = JSON.parse(init.body)
+      assert.deepEqual(body.tools.map(t => t.name), ["collaboration__spawn_agent", "other__spawn_agent", "spawn_agent"])
+      if (body.tool_choice === "none") {
+        assert.deepEqual(body.input.filter(i => i.type === "function_call").map(i => i.name), body.tools.map(t => t.name))
+        assert.ok(body.input.every(i => !("namespace" in i) && !("encrypted_function_args" in i)))
+        const answers = body.input.filter(i => i.type === "function_call_output").map(i => JSON.parse(i.output).answer)
+        const response = finalWhole("AICORE_RESULTS_" + answers.join(","))
+        return stream ? streamResponse([frame({ type: "response.completed", response })]) : jsonResponse(response)
+      }
+      assert.deepEqual(body.tool_choice, { type: "allowed_tools", mode: "required", tools: [
+        { type: "function", name: "collaboration__spawn_agent" }, { type: "function", name: "other__spawn_agent" }, { type: "function", name: "spawn_agent" },
+      ] })
+      const calls = body.tools.map((t, i) => ({ ...CALL, name: t.name, id: "item_" + i, call_id: "call_" + i, arguments: JSON.stringify({ value: i + 1 }) }))
+      const response = { ...FIRST_WHOLE, output: [REASON_1, ...calls] }
+      if (!stream) return jsonResponse(response)
+      const events = [frame({ type: "response.created", response: { ...response, status: "in_progress", output: [] } })]
+      for (const [output_index, item] of calls.entries()) {
+        events.push(frame({ type: "response.output_item.added", output_index, item: { ...item, arguments: "", status: "in_progress" } }))
+        events.push(frame({ type: "response.function_call_arguments.delta", item_id: item.id, output_index, delta: item.arguments }))
+        events.push(frame({ type: "response.function_call_arguments.done", item_id: item.id, output_index, name: item.name, arguments: item.arguments }))
+        events.push(frame({ type: "response.output_item.done", output_index, item }))
+      }
+      events.push(frame({ type: "response.completed", response }))
+      const bytes = new TextEncoder().encode(events.join(""))
+      return streamResponse(Array.from({ length: Math.ceil(bytes.length / 17) }, (_, i) => bytes.slice(i * 17, (i + 1) * 17)))
+    })
+    const fields = { model: MODEL, stream, tools }
+    const tool_choice = { type: "allowed_tools", mode: "required", tools: [
+      { type: "function", name: "spawn_agent", namespace: "collaboration" }, { type: "function", name: "spawn_agent", namespace: "other" }, { type: "function", name: "spawn_agent" },
+    ] }
+    const first = await request({ ...fields, input: [USER], tool_choice })
+    const events = stream ? parseEvents(await first.text()) : []
+    const reply = stream ? events.at(-1).response : await first.json()
+    const calls = reply.output.filter(i => i.type === "function_call")
+    assert.deepEqual(calls.map(i => [i.namespace, i.name]), [["collaboration", "spawn_agent"], ["other", "spawn_agent"], [undefined, "spawn_agent"]])
+    assert.deepEqual(calls.slice(0, 2).map(i => i.encrypted_function_args), [[], []])
+    assert.equal("encrypted_function_args" in calls[2], false)
+    if (stream) {
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.done").map(e => e.item), calls)
+      assert.deepEqual(events.filter(e => e.type === "response.output_item.added").map(e => e.item.namespace), ["collaboration", "other", undefined])
+      assert.deepEqual(events.filter(e => e.type === "response.function_call_arguments.delta").map(e => e.delta), calls.map(i => i.arguments))
+      assert.deepEqual(events.filter(e => e.type === "response.function_call_arguments.done").map(e => [e.name, e.namespace, e.arguments]), calls.map(i => [i.name, i.namespace, i.arguments]))
+    }
+    const results = calls.map(call => ({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ answer: JSON.parse(call.arguments).value * 2 }) }))
+    const final = await request({ ...fields, tool_choice: "none", input: [USER, ...reply.output, ...results] })
+    const finalReply = stream ? parseEvents(await final.text()).at(-1).response : await final.json()
+    assert.equal(finalReply.output.at(-1).content[0].text, "AICORE_RESULTS_2,4,6")
+    assert.deepEqual(tools, before)
+    assert.equal(sent.length, 2)
+  })
+}
+
+test("SSE argument completion restores only matching calls and keeps stream state isolated", async () => {
+  const alias = "ns__verify_value"
+  const unrelated = { type: "response.function_call_arguments.done", item_id: "unrelated", output_index: 0, name: alias, arguments: CALL.arguments, future: { name: alias } }
+  const { request } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    const events = []
+    if (body.input === "with-call") {
+      events.push({ type: "response.output_item.added", output_index: 0, item: { ...CALL, name: alias, arguments: "" } })
+      events.push({ ...unrelated, item_id: CALL.id, name: "native_unmatched" })
+      events.push({ ...unrelated, item_id: CALL.id })
+    } else events.push({ ...unrelated, item_id: CALL.id })
+    events.push(unrelated)
+    events.push({ type: "response.completed", response: COMPLETED })
+    return streamResponse(events.map(frame))
+  })
+  const fields = { model: MODEL, stream: true, tools: [{ type: "namespace", name: "ns", tools: [STRICT_TOOL] }] }
+  const withCall = await request({ ...fields, input: "with-call" })
+  const withoutCall = await request({ ...fields, input: "without-call" })
+  // Consume the stream that learns the call first. Its IDs must not affect the other reply.
+  const events = parseEvents(await withCall.text())
+  const completions = events.filter(e => e.type === "response.function_call_arguments.done")
+  assert.deepEqual(completions, [{ ...unrelated, item_id: CALL.id, name: "native_unmatched" }, { ...unrelated, item_id: CALL.id, name: CALL.name, namespace: "ns" }, unrelated])
+  assert.deepEqual(parseEvents(await withoutCall.text()).filter(e => e.type === "response.function_call_arguments.done"), [{ ...unrelated, item_id: CALL.id }, unrelated])
+})
+
+test("identical repeated namespaced declarations emit one tool without deduplicating native tools", async () => {
+  const reordered = { parameters: structuredClone(STRICT_TOOL.parameters), name: STRICT_TOOL.name, strict: true, type: "function" }
+  const namespace = { type: "namespace", name: "ns", tools: [STRICT_TOOL, reordered] }
+  const tools = [namespace, structuredClone(namespace), { type: "namespace", name: "other", tools: [STRICT_TOOL] }, STRICT_TOOL, STRICT_TOOL]
+  const snapshot = structuredClone(tools)
+  const { request, sent } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    assert.deepEqual(body.tools, [{ ...STRICT_TOOL, name: "ns__verify_value" }, { ...STRICT_TOOL, name: "other__verify_value" }, STRICT_TOOL, STRICT_TOOL])
+    return jsonResponse({ ...FIRST_WHOLE, output: [{ ...CALL, name: "ns__verify_value" }] })
+  })
+  const reply = await (await request({ model: MODEL, tools, input: [USER] })).json()
+  assert.equal(reply.output[0].namespace, "ns")
+  assert.deepEqual(tools, snapshot)
+  assert.equal(sent.length, 1)
+})
+
+test("conflicting namespaced definitions and malformed namespaces reject before SAP dispatch", async () => {
+  const { request, sent } = await fixture()
+  const namespace = { type: "namespace", name: "ns", tools: [STRICT_TOOL] }
+  const malformed = [
+    ...[undefined, null, false, 42, {}, [], ""].map(name => [{ ...namespace, name }, STRICT_TOOL]),
+    [{ ...namespace, tools: null }], [{ ...namespace, tools: {} }],
+    [{ ...namespace, tools: [{ ...STRICT_TOOL, name: undefined }] }],
+    [{ ...namespace, tools: [{ ...STRICT_TOOL, name: 42 }] }],
+    [{ ...namespace, tools: [STRICT_TOOL, { ...STRICT_TOOL, strict: false }] }],
+    [namespace, { ...namespace, tools: [{ ...STRICT_TOOL, description: "conflicting" }] }],
+  ]
+  for (const tools of malformed) {
+    const response = await request({ model: MODEL, input: [USER], tools })
+    assert.equal(response.status, 400)
+    assert.equal((await response.json()).error.code, "invalid-request")
+  }
+  assert.equal(sent.length, 0)
+})
+
+test("qualified-name collisions and long names get bounded reversible aliases", async () => {
+  const declarations = [
+    { type: "namespace", name: "collaboration", tools: [{ ...STRICT_TOOL, name: "spawn_agent" }] },
+    { ...STRICT_TOOL, name: "collaboration__spawn_agent" },
+    { type: "namespace", name: "a__b", tools: [{ ...STRICT_TOOL, name: "c" }] },
+    { type: "namespace", name: "a", tools: [{ ...STRICT_TOOL, name: "b__c" }] },
+    { type: "namespace", name: "long".repeat(20), tools: [STRICT_TOOL] },
+  ]
+  const snapshot = structuredClone(declarations)
+  const { request, sent } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    const names = body.tools.map(t => t.name)
+    assert.equal(new Set(names).size, names.length)
+    assert.ok(names.every(name => /^[A-Za-z0-9_-]{1,64}$/.test(name)))
+    assert.equal(names[1], "collaboration__spawn_agent")
+    assert.ok(names.filter((_, i) => i !== 1).every(name => name.startsWith("mp_ns_")))
+    return jsonResponse({ ...FIRST_WHOLE, output: names.map((name, i) => ({ ...CALL, name, id: "id_" + i, call_id: "call_" + i })) })
+  })
+  const reply = await (await request({ model: MODEL, input: [USER], tools: declarations })).json()
+  assert.deepEqual(reply.output.map(i => [i.namespace, i.name]), [["collaboration", "spawn_agent"], [undefined, "collaboration__spawn_agent"], ["a__b", "c"], ["a", "b__c"], ["long".repeat(20), "verify_value"]])
+  const reordered = validateResponsesRequest({ model: MODEL, tools: [...declarations].reverse() })
+  assert.deepEqual(reordered.tools.map(t => t.name).reverse(), sent[0].body.tools.map(t => t.name))
+  assert.deepEqual(declarations, snapshot)
+  const hashedName = sent[0].body.tools[0].name
+  assert.throws(() => validateResponsesRequest({ model: MODEL, tools: [declarations[0], declarations[1], { ...STRICT_TOOL, name: hashedName }] }), { code: "invalid-request" })
+})
+
+for (const stream of [false, true]) for (const status of ["incomplete", "failed"]) {
+  test(`namespace restoration preserves ${status} ${stream ? "SSE" : "JSON"} output and redaction`, async () => {
+    const call = { ...CALL, name: "ns__verify_value", encrypted_function_args: ["opaque-marker"] }
+    const response = { ...FIRST_WHOLE, status, output: [REASON_1, call], error: status === "failed" ? { code: "server_error", message: "failure " + TOKEN } : null, incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : null }
+    const { request } = await fixture(() => stream ? streamResponse([frame({ type: "response." + status, response })]) : jsonResponse(response))
+    const result = await request({ model: MODEL, stream, input: [USER], tools: [{ type: "namespace", name: "ns", tools: [STRICT_TOOL] }] })
+    const text = await result.text()
+    const reply = stream ? parseEvents(text).at(-1).response : JSON.parse(text)
+    assert.deepEqual(reply.output, [REASON_1, { ...call, name: CALL.name, namespace: "ns" }])
+    assert.deepEqual(reply.usage, response.usage)
+    assert.equal(reply.status, status)
+    assert.deepEqual(reply.incomplete_details, response.incomplete_details)
+    assert.ok(!text.includes(TOKEN))
+  })
+}
+
+test("history-only namespaces restore calls and only empty plaintext markers are removed on replay", async () => {
+  const input = [USER, { ...CALL, namespace: "ns", encrypted_function_args: [] }, { ...CALL, namespace: "other", encrypted_function_args: ["opaque"] }]
+  const snapshot = structuredClone(input)
+  const { request, sent } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    assert.deepEqual(body.input, [USER, { ...CALL, name: "ns__verify_value" }, { ...CALL, name: "other__verify_value", encrypted_function_args: ["opaque"] }])
+    return jsonResponse({ ...FIRST_WHOLE, output: [{ ...CALL, name: "ns__verify_value" }] })
+  })
+  const reply = await (await request({ model: MODEL, input })).json()
+  assert.deepEqual(reply.output, [{ ...CALL, namespace: "ns", encrypted_function_args: [] }])
+  assert.deepEqual(input, snapshot)
+  assert.equal("tools" in sent[0].body, false)
+})
+
+test("native tool-choice restrictions and malformed shapes reach SAP validation unchanged", async () => {
+  const tools = [{ ...STRICT_TOOL, name: "read" }, { ...STRICT_TOOL, name: "write" }]
+  const choices = [
+    ...["auto", "required"].map(mode => ({ type: "allowed_tools", mode, tools: [{ type: "function", name: "read" }], future: { keep: true } })),
+    { type: "function", name: "missing" }, { type: "future", options: ["read"] }, { type: "allowed_tools", mode: "invalid", tools: "invalid" },
+  ]
+  let index = 0
+  const { request, sent } = await fixture((_, init) => {
+    const body = JSON.parse(init.body)
+    assert.deepEqual(body.tool_choice, choices[index++])
+    return index <= 2 ? jsonResponse({ ...FIRST_WHOLE, output: [{ ...CALL, name: "read" }] }) : nativeError(400, "invalid_tool_choice", TOKEN)
+  })
+  for (const [i, tool_choice] of choices.entries()) {
+    const response = await request({ model: MODEL, input: [USER], tools, tool_choice })
+    assert.equal(response.status, i < 2 ? 200 : 400)
+    const reply = await response.json()
+    if (i < 2) assert.equal(reply.output[0].name, "read")
+    else assert.equal(reply.error.code, "invalid_tool_choice")
+    assert.equal(validateResponsesRequest({ model: MODEL, tools, tool_choice }).tool_choice, tool_choice)
+  }
+  assert.equal(sent.length, choices.length)
+})
+
+test("choices targeting translated tools are adapted and explicit required/forced choices are never relaxed", async () => {
+  const custom = { type: "custom", name: "apply_patch" }
+  const native = { ...STRICT_TOOL, name: "read" }
+  const tools = [native, { type: "namespace", name: "ns", tools: [STRICT_TOOL, custom] }, custom]
+  const unchanged = { type: "allowed_tools", mode: "required", tools: [{ type: "function", name: "read" }] }
+  assert.equal(validateResponsesRequest({ model: MODEL, tools, tool_choice: unchanged }).tool_choice, unchanged)
+  for (const mode of ["required", "auto"]) {
+    const choice = { type: "allowed_tools", mode, future: true, tools: [{ type: "custom", name: "apply_patch" }, { type: "function", namespace: "ns", name: CALL.name, future: true }, { type: "function", name: "read" }, { type: "custom", namespace: "ns", name: "apply_patch" }] }
+    const before = structuredClone(choice)
+    assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: choice }).tool_choice, {
+      ...choice,
+      tools: [
+        { type: "function", name: "apply_patch" },
+        { type: "function", name: "ns__verify_value", future: true },
+        { type: "function", name: "read" },
+        { type: "function", name: "ns__apply_patch" },
+      ],
+    })
+    assert.deepEqual(choice, before)
+  }
+  const forcedCustomAllowed = { type: "allowed_tools", mode: "required", tools: [{ type: "custom", name: "apply_patch" }] }
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: forcedCustomAllowed }).tool_choice, {
+    type: "allowed_tools",
+    mode: "required",
+    tools: [{ type: "function", name: "apply_patch" }],
+  })
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: forcedCustomAllowed }).tool_choice, {
+    type: "allowed_tools",
+    mode: "required",
+    tools: [{ type: "function", name: "apply_patch" }],
+  })
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: { type: "custom", name: "apply_patch" } }).tool_choice, {
+    type: "function",
+    name: "apply_patch",
+  })
+  assert.equal(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice: "required" }).tool_choice, "required")
+  for (const tool_choice of ["none", "auto", { type: "future" }, { type: "function", name: "missing" }, { type: "allowed_tools", mode: "required", tools: [{ type: "function", name: "missing" }] }]) {
+    assert.equal(validateResponsesRequest({ model: MODEL, tools: [custom], tool_choice }).tool_choice, tool_choice)
+  }
+  assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: { type: "function", name: CALL.name, namespace: "ns", future: true } }).tool_choice, { type: "function", name: "ns__verify_value", future: true })
+
+  // Unsupported hosted tools, invalid custom declarations, unpaired/malformed custom history,
+  // and undeclared or toolless forced/required choices reject with local 400 before dispatch.
+  const { request, sent } = await fixture()
+  const validCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "patch" }
+  const validOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const rejected = [
+    { tools: [{ type: "web_search" }] },
+    { tools: [STRICT_TOOL, { type: "web_search_preview" }] },
+    { tools: [{ type: "file_search" }] },
+    { tools: [{ type: "code_interpreter" }] },
+    { tools: [{ type: "computer_use_preview" }] },
+    { tools: [{ type: "mcp", server_label: "srv" }] },
+    { tools: [{ type: "namespace", name: "ns", tools: [{ type: "web_search" }] }] },
+    { tools: [{ type: "namespace", name: "empty", tools: [] }] },
+    { tools: [{ type: "custom", name: "" }] },
+    { tools: [{ type: "custom", name: STRICT_TOOL.name }, STRICT_TOOL] },
+    { tools: [custom, { type: "custom", name: "apply_patch", format: { type: "text" } }] },
+    { tools: [], tool_choice: "required" },
+    { tool_choice: "required" },
+    { tools: [], tool_choice: { type: "function", name: "read" } },
+    { tools, tool_choice: { type: "web_search" } },
+    { tools, tool_choice: { type: "allowed_tools", mode: "required", tools: [{ type: "web_search" }] } },
+    { tools, tool_choice: { type: "allowed_tools", mode: "required", tools: [] } },
+    { tools, tool_choice: { type: "custom", name: "apply_patch", namespace: "unknown" } },
+    { tools: [native], tool_choice: { type: "custom", name: "apply_patch" } },
+    { tools, tool_choice: { type: "function", name: "apply_patch" } },
+    { tools, tool_choice: { type: "function", name: "verify_value", namespace: "unknown" } },
+    { input: [USER, validCall] },
+    { input: [USER, validOut] },
+    { input: [USER, validOut, validCall] },
+    { input: [USER, { ...validCall, input: 123 }, validOut] },
+    { input: [USER, validCall, { type: "function_call_output", call_id: "cp1", output: "ok" }] },
+    { input: [USER, { type: "web_search_call", id: "ws_1", status: "completed" }] },
+  ]
+  for (const extra of rejected) {
+    const response = await request({ model: MODEL, input: [USER], ...extra })
+    assert.equal(response.status, 400, JSON.stringify(extra))
+    assert.equal((await response.json()).error.code, "invalid-request")
+  }
+  assert.equal(sent.length, 0)
+
+  // Custom validation checks only the fields the translation reads: unknown
+  // definition/format fields and unknown history fields are tolerated, so new
+  // Codex fields do not become local 400s. Unknown history fields pass through.
+  const tolerated = [
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "unknown", definition: "x" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", format: { type: "text", syntax: "lark" } }] },
+    { tools: [{ type: "custom", name: "apply_patch", unknown: true }] },
+    { input: [USER, { ...validCall, unknown: true }, validOut] },
+    { input: [USER, validCall, { ...validOut, output: 123 }] },
+  ]
+  for (const extra of tolerated) {
+    assert.doesNotThrow(() => validateResponsesRequest({ model: MODEL, input: [USER], ...extra }), JSON.stringify(extra))
+  }
+  const passthrough = validateResponsesRequest({ model: MODEL, input: [USER, { ...validCall, extra_meta: { t: 1 } }, validOut] })
+  assert.deepEqual(passthrough.input[1].extra_meta, { t: 1 })
+  assert.equal(passthrough.input[1].type, "function_call")
+})
+
 test("a streamed forced function call and result round trip to an agent-derived final reply", async () => {
   const { request, sent } = await fixture(streamToolUpstream)
   const r1 = await request({ model: MODEL, input: [USER], tools: [STRICT_TOOL], tool_choice: FORCE, stream: true })
@@ -298,106 +838,68 @@ test("omitted include defaults to encrypted reasoning while an explicit empty in
   assert.equal(sent.length, 2)
 })
 
-test("malformed and unsupported function tools are rejected before dispatch", async () => {
+test("stateless and stream framing guards reject unsafe requests before dispatch", async () => {
   const { request, sent } = await fixture()
   const cases = [
-    { tools: "not-an-array" },
-    { tools: [{ type: "function" }] },
-    { tools: [{ type: "function", name: "" }] },
-    { tools: [{ type: "function", name: "x", description: 7 }] },
-    { tools: [{ type: "function", name: "x", parameters: [] }] },
-    { tools: [{ type: "function", name: "x", strict: "yes" }] },
-    { tools: [{ type: "function", name: "x", extra: 1 }] },
-    { tools: [{ type: "file_search" }] },
-    { tools: [STRICT_TOOL], tool_choice: { type: "function", name: "missing" } },
-    { tools: [STRICT_TOOL], tool_choice: { type: "function" } },
-    { tool_choice: "required" },
-  ]
-  for (const extra of cases) assert.equal((await request({ model: MODEL, input: "hi", ...extra })).status, 400, JSON.stringify(extra))
-  assert.equal(sent.length, 0)
-})
-
-test("unsupported stateful, multimodal and unverified parameters never reach SAP", async () => {
-  const { request, sent } = await fixture()
-  const cases = [
-    { store: true }, { store: null }, { background: true }, { previous_response_id: null }, { conversation: "conv_1" },
-    { messages: [] }, { max_tokens: 10 }, { reasoning_effort: "low" }, { stream: "true" }, { stream: null },
-    { reasoning: { effort: "none" } }, { include: ["message.output_text.logprobs"] },
-    { prompt_cache_key: null }, { prompt_cache_key: 7 }, { prompt_cache_retention: "24h" },
-    { reasoning: { effort: "minimal" } }, { reasoning: { effort: "xhigh" } }, { reasoning: { effort: ["high"] } },
-    { reasoning: { effort: "high", summary: "detailed" } }, { reasoning: { summary: "auto" } },
-    { reasoning: { effort: "high", summary: "auto", extra: true } },
-    { input: [{ type: "item_reference", id: "msg_1" }] },
-    { input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/image" }] }] },
-    { input: [{ type: "conversation", id: "conv_1" }] },
-    { tools: [{ type: "web_search" }] }, { tool_choice: "invented" },
+    { store: true }, { store: null }, { store: 0 }, { store: "false" },
+    { background: true }, { background: null }, { background: 0 }, { background: "false" },
+    { previous_response_id: null }, { previous_response_id: "resp_old" },
+    { conversation: null }, { conversation: "conv_1" }, { conversation: {} },
+    { stream: "true" }, { stream: null }, { stream: 0 }, { stream: {} },
+    { model: null }, { model: "" }, { model: 7 }, { model: [] },
   ]
   for (const extra of cases) {
     const response = await request({ model: MODEL, input: "hello", ...extra })
     assert.equal(response.status, 400, JSON.stringify(extra))
     assert.equal(response.headers.get("x-magpie-sign-in"), "kept")
+    assert.equal((await response.json()).error.code, "invalid-request")
   }
+  const missingModel = await request({ input: "hello" })
+  assert.equal(missingModel.status, 400)
+  assert.equal((await missingModel.json()).error.code, "invalid-request")
   assert.equal(sent.length, 0)
+
+  const allowed = await request({ model: MODEL, input: "hello", store: false, background: false, stream: false })
+  assert.equal(allowed.status, 200)
+  assert.deepEqual(await allowed.json(), COMPLETED)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].body.store, false)
+  assert.equal(sent[0].body.background, false)
+  assert.equal(sent[0].body.stream, false)
 })
 
-test("function results accept strings and input_text arrays without image capability", () => {
-  for (const output of ["", "tool text", [], [{ type: "input_text", text: "tool text" }]]) {
-    const body = { model: MODEL, input: [{ type: "function_call_output", call_id: "call_image", output }] }
-    assert.deepEqual(validateResponsesRequest(body).input, body.input)
+test("SAP owns generation validation and receives client metadata, text and future fields unchanged", async () => {
+  const body = {
+    model: MODEL,
+    input: [USER, { type: "item_reference", id: "item_ref_1" }],
+    prompt: { id: "pmpt_123", version: "1" },
+    client_metadata: { session_id: "session-42", flags: [false, null, { channel: "agent" }] },
+    text: { format: { type: "json_schema", name: "answer", strict: true, schema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false } }, verbosity: "low" },
+    future_generation_field: { nested: [{ enabled: false, limit: 0 }, null, "opaque"] },
+    reasoning: { effort: "none", summary: "detailed" },
+    max_output_tokens: "backend-owned",
+    include: ["message.output_text.logprobs"],
   }
+  const { request, sent } = await fixture((_, init) => {
+    let intact = true
+    try { assert.deepEqual(JSON.parse(init.body), { ...body, store: false }) } catch { intact = false }
+    return new Response(JSON.stringify({ error: intact
+      ? { code: "unsupported_reasoning_summary", type: "invalid_request_error", param: "reasoning.summary", message: "Unsupported summary " + TOKEN + " " + CREDS.clientId + " " + CREDS.clientSecret + " sdk-secret" }
+      : { code: "forwarded_payload_changed", type: "transport_error", param: "request", message: "A generation value was dropped or changed" },
+    }), { status: intact ? 422 : 409, headers: { "content-type": "application/json" } })
+  })
+  const response = await request(body, { headers: { authorization: "Bearer sdk-secret" } })
+  assert.equal(response.status, 422)
+  assert.equal(response.headers.get("x-magpie-sign-in"), "kept")
+  const raw = await response.text()
+  const error = JSON.parse(raw).error
+  assert.equal(error.code, "unsupported_reasoning_summary")
+  assert.equal(error.type, "invalid_request_error")
+  assert.equal(error.param, "reasoning.summary")
+  for (const secret of [TOKEN, CREDS.clientId, CREDS.clientSecret, "sdk-secret"]) assert.ok(!raw.includes(secret), secret)
+  assert.equal(sent.length, 1, "a backend validation error must not trigger a stripped or modified replay")
 })
 
-test("image function results are forwarded verbatim only for image-capable models", async () => {
-  const { request, sent } = await fixture(undefined, { image: true })
-  const image = { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "auto" }
-  for (const output of [[image], [{ type: "input_text", text: "Read image file [image/png]" }, image]]) {
-    const body = { model: MODEL, input: [USER, CALL, { type: "function_call_output", call_id: CALL.call_id, output }] }
-    assert.throws(() => validateResponsesRequest(body), { code: "invalid-request" })
-    assert.throws(() => validateResponsesRequest(body, { capabilities: { image: false } }), { code: "invalid-request" })
-    const response = await request(body)
-    assert.equal(response.status, 200)
-    assert.deepEqual(sent.at(-1).body.input, body.input)
-  }
-})
-
-test("function result arrays still reject malformed images, unsupported parts and invalid call ids", () => {
-  const entry = { capabilities: { image: true } }
-  const badOutputs = [
-    undefined, null, 7, {}, [null],
-    [{ type: "input_text" }], [{ type: "output_text", text: "wrong direction" }],
-    [{ type: "input_file", file_id: "file_a" }],
-    [{ type: "input_image" }],
-    [{ type: "input_image", image_url: "ftp://example.invalid/image.png" }],
-    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "high", extra: true }],
-    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "invalid" }],
-  ]
-  for (const output of badOutputs) {
-    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ type: "function_call_output", call_id: "call_image", output }] }, entry), { code: "invalid-request" })
-  }
-  for (const call_id of [undefined, null, "", 7]) {
-    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ type: "function_call_output", call_id, output: [{ type: "input_text", text: "ok" }] }] }, entry), { code: "invalid-request" })
-  }
-})
-
-test("an input_image part is accepted only for an image-capable model", () => {
-  const imagePart = { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" }
-  const body = { model: MODEL, input: [{ role: "user", content: [{ type: "input_text", text: "what is this?" }, imagePart] }] }
-  // No capability / image-off: rejected.
-  assert.throws(() => validateResponsesRequest(body), { code: "invalid-request" })
-  assert.throws(() => validateResponsesRequest(body, { capabilities: { image: false } }), { code: "invalid-request" })
-  // Image-capable: accepted, image part forwarded verbatim.
-  const out = validateResponsesRequest(body, { capabilities: { image: true } })
-  assert.deepEqual(out.input[0].content[1], imagePart)
-  // Even when capable, malformed URLs and unknown fields are rejected.
-  for (const content of [
-    [{ type: "input_image" }],
-    [{ type: "input_image", image_url: "ftp://example.invalid/i.png" }],
-    [{ type: "input_image", image_url: "data:image/png;base64,x", foo: 1 }],
-    [{ type: "input_image", image_url: "data:image/png;base64,x", detail: "ultra" }],
-  ]) {
-    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [{ role: "user", content }] }, { capabilities: { image: true } }), { code: "invalid-request" }, JSON.stringify(content))
-  }
-})
 
 test("upstream 429 and temporary failures preserve native code, seconds and redacted details without replay", async () => {
   let status = 429
@@ -487,22 +989,6 @@ test("the request deadline bounds an inference fetch that ignores its AbortSigna
   assert.equal(response.status, 504)
   assert.equal((await response.json()).error.code, "inference-timeout")
   assert.equal(upstreamSignal.aborted, true)
-})
-
-test("malformed native history and mismatched function choices are rejected without dispatch", async () => {
-  const { request, sent } = await fixture()
-  const histories = [
-    [{ role: "user" }], [{ role: "tool", content: "wrong protocol" }],
-    [{ type: "message", content: "missing role" }], [{ role: "user", content: [{ type: "input_text" }] }],
-    [{ type: "function_call", id: "fc_item", name: "lookup", arguments: "{}" }],
-    [{ type: "function_call_output", call_id: "call_a" }],
-    [{ type: "reasoning", id: "rs_a", encrypted_content: 7, summary: [] }],
-    [{ type: "reasoning", id: "rs_a", summary: [{ type: "summary_text" }] }],
-  ]
-  for (const input of histories) assert.equal((await request({ model: MODEL, input })).status, 400, JSON.stringify(input))
-  const response = await request({ model: MODEL, input: "hello", tools: [{ type: "function", name: "declared", parameters: { type: "object" } }], tool_choice: { type: "function", name: "undeclared" } })
-  assert.equal(response.status, 400)
-  assert.equal(sent.length, 0)
 })
 
 test("first request after system sleep renews a wall-expired token before discovery", async () => {

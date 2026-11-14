@@ -2,10 +2,11 @@ import fs from "node:fs"
 import { open } from "node:fs/promises"
 import path from "node:path"
 import { createHash } from "node:crypto"
-import { discover, projectModels, isPermittedModel, parseDate } from "./discovery.js"
+import { discover, projectModels, isPermittedModel, isGeminiModel, parseDate } from "./discovery.js"
 import { validateRequest, dispatch, responseError } from "./responses.js"
 import { validateRequest as validateMessagesRequest, dispatch as messagesDispatch } from "./messages.js"
-import { readJSONRequest } from "./transport.js"
+import { validateRequest as validateGeminiRequest, dispatch as geminiDispatch } from "./gemini.js"
+import { readJSONRequest, invalid } from "./transport.js"
 import { pluginRevision } from "./revision.js"
 
 // Per-protocol transports keyed by the registry entry's protocol. The account
@@ -14,6 +15,7 @@ import { pluginRevision } from "./revision.js"
 const TRANSPORTS = {
   responses: { validateRequest, dispatch },
   anthropic: { validateRequest: validateMessagesRequest, dispatch: messagesDispatch },
+  gemini: { validateRequest: validateGeminiRequest, dispatch: geminiDispatch },
 }
 // Account-root client routes the host rewrites to, mapped to their protocol.
 const ROUTES = { "/responses": "responses", "/messages": "anthropic" }
@@ -293,12 +295,18 @@ async function exchange(creds, controller) {
 
 function requestTarget(input, init) {
   const request = input instanceof Request ? input : null
-  const url = serviceURL(request ? request.url : String(input))
+  const raw = request ? request.url : String(input)
+  // Only native Gemini streaming admits a query; all other destinations retain
+  // serviceURL's strict no-query policy.
+  const streamingQuery = raw.endsWith(":streamGenerateContent?alt=sse")
+  const url = serviceURL(streamingQuery ? raw.slice(0, -8) : raw)
   const method = init?.method ?? request?.method ?? "GET"
-  const protocol = Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined
+  const gemini = /^\/models\/(gemini-\d+(?:\.\d+)*(?:-[a-z0-9]+)+):(generateContent|streamGenerateContent)$/.exec(url.pathname)
+  if (gemini && ((gemini[2] === "streamGenerateContent") !== streamingQuery)) throw failure("destination")
+  const protocol = gemini ? "gemini" : Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined
   if (typeof method !== "string" || method.toUpperCase() !== "POST" ||
       !AI_HOST.test(url.hostname) || protocol === undefined) throw failure("destination")
-  return { origin: url.origin, signal: init?.signal ?? request?.signal, protocol }
+  return { origin: url.origin, signal: init?.signal ?? request?.signal, protocol, model: gemini?.[1], streaming: gemini ? streamingQuery : undefined }
 }
 
 const CREDENTIAL_HEADERS = new Set(["api-key", "x-api-key", "x-goog-api-key", "openai-api-key", "x-auth-token", "x-access-token", "client-secret", "x-client-secret"])
@@ -612,12 +620,16 @@ export async function SAPAICorePlugin(input) {
           const work = (async () => {
             await check()
             const transport = TRANSPORTS[target.protocol]
-            const request = await readJSONRequest(input, init, controller.signal)
+            const request = await readJSONRequest(input, init, controller.signal, target.model)
+            if (target.protocol === "gemini") {
+              if ("stream" in request && request.stream !== target.streaming) throw invalid("The body stream selector must match the URL action.")
+              request.stream = target.streaming
+            }
             const entries = await registryFor(gen, controller.signal, check)
             await check()
             const entry = entries[request.model]
             if (!entry) {
-              const code = isPermittedModel(request.model) || KNOWN_CLAUDE_MODELS.has(request.model) ? "unavailable-model" : "unknown-model"
+              const code = isPermittedModel(request.model) || isGeminiModel(request.model) || KNOWN_CLAUDE_MODELS.has(request.model) ? "unavailable-model" : "unknown-model"
               throw Object.assign(failure(code), { status: 404 })
             }
             // The client route must match the selected model's native protocol:
