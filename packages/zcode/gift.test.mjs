@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { realpathSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
 const { ZCodeAuthPlugin, _internal } = await import("./index.mjs")
@@ -480,4 +480,67 @@ test("a gift-only account lists only the models its balance names (young02036)",
   } finally {
     _internal.config(undefined)
   }
+})
+
+// heduian and bg5eau on X (11-14): on a weekend the GLM-5.3-Flash-Trial
+// pick answered only "no active limited quota". The weekend plan
+// (ZCODE WEEKEND BUILD, testdata/touch-1030-wk.json, the feed's real
+// reply) is a gift ZCode holds until it is claimed, and its claim needs
+// the ZCode app's captcha, which the plugin doesn't post. The refusal
+// now names the held plan and where it is claimed; it still asks no
+// model and posts no claim, and the feed is read once for a retry.
+test("a -Trial pick with no gift names the weekend plan ZCode holds unclaimed", async () => {
+  const touch = readFileSync(new URL("./testdata/touch-1030-wk.json", import.meta.url), "utf8")
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  const asked = []
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") {
+      asked.push((init.method ?? "GET").toUpperCase())
+      return new Response(touch, { headers: { "content-type": "application/json" } })
+    }
+    if (url.pathname === "/api/v1/zcode-plan/billing/claim") throw new Error("a claim was posted")
+    return base(input, init)
+  }
+  for (let i = 0; i < 2; i++) {
+    const res = await send("GLM-5.3-Flash-Trial")
+    expect(res.status).toBe(400)
+    const { error } = await res.json()
+    expect(error.message).toStartWith("ZCode has no active limited quota for GLM-5.3-Flash-Trial. ")
+    expect(error.message).toContain("ZCODE WEEKEND BUILD")
+    expect(error.message).toContain("claim it in the ZCode app")
+  }
+  expect(asked).toEqual(["GET"])
+  expect(sent).toHaveLength(0)
+})
+
+test("a -Trial pick with no gift and nothing held says only that there is none", async () => {
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") return ok({ deliveries: [] })
+    return base(input, init)
+  }
+  const res = await send("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(400)
+  expect((await res.json()).error.message).toBe("ZCode has no active limited quota for GLM-5.3-Flash-Trial")
+  expect(sent).toHaveLength(0)
+})
+
+test("a -Trial pick whose feed doesn't read says only that there is none, and asks the feed again", async () => {
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  let reads = 0
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") return reads++, new Response("bad gateway", { status: 502 })
+    return base(input, init)
+  }
+  for (let i = 0; i < 2; i++) expect((await (await send("GLM-5.3-Flash-Trial")).json()).error.message).toBe("ZCode has no active limited quota for GLM-5.3-Flash-Trial")
+  expect(reads).toBe(2)
 })

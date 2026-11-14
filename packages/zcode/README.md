@@ -350,8 +350,12 @@ menu bar pass it over. The name is a fixed sentence magpie can
 translate; the count and the plan's own name are the display. Reading
 the card never claims one. A preview that fails, or lists nothing, adds
 no line at all, and a card that is an error keeps its error. Claim the
-plan in the ZCode app (open it once), or let the daily claim below do it;
-the next read shows it as an ordinary gift bucket.
+plan in the ZCode app (open it once); while ZCode asks its security check
+for a claim, as it does now, the daily claim below posts none. The next
+read shows it as an ordinary gift bucket: its `-Trial` entry is listed and
+free first spends it. Until then a `-Trial` pick that finds no gift is
+refused with the held plan's name and "claim it in the ZCode app", not
+only "no active limited quota" (heduian and bg5eau on X, 11-14).
 
 ## The daily claim
 

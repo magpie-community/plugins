@@ -715,6 +715,28 @@ async function claimHint(s) {
   return { name: CLAIM_HINT, used: 0, aside: true, display: `${n} · ${plan}` }
 }
 
+// unclaimed names the gift plans ZCode holds for the account but has not
+// put on it (toClaim), for a -Trial pick that finds no gift: the weekend
+// plan (ZCODE WEEKEND BUILD) comes only by a claim, and the claim needs
+// the ZCode app's captcha (claimDaily posts none), so until it is
+// claimed in the app the pick's quota does not exist yet (heduian and
+// bg5eau on X, 11-14). The refusal says where the quota is rather than
+// only that there is none. Kept ten minutes per session, so an agent
+// retrying the pick doesn't read the feed each time; a read that fails
+// names none and is not kept.
+const unclaimedSeen = new Map()
+async function unclaimed(s) {
+  if (!s.jwt || jwtExpired(s.jwt)) return []
+  const k = s.jwt
+  const c = unclaimedSeen.get(k)
+  if (c && Date.now() - c.at < 600_000) return c.names
+  const got = await toClaim(s).catch(() => null)
+  if (!got || got.unread.length) return []
+  const names = uniqueModels(got.plans.map((p) => first(p.name, p.plan_id)).filter(Boolean))
+  unclaimedSeen.set(k, { at: Date.now(), names })
+  return names
+}
+
 // ---- the daily claim ---------------------------------------------------------------
 
 // CLAIMED_ALREADY is /billing/claim's body code for a plan the account
@@ -3119,7 +3141,8 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 const raw = giftModel(gift, m)
                 const available = raw && giftUsable(s, gift, raw)
                 if (!available) {
-                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `${giftRested(s, raw) ? `ZCode said the last request for ${raw} was over its quota, so it is not asked again for a minute: ` : ""}ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}` }
+                  const held = raw ? [] : await unclaimed(s)
+                  const error = { type: raw ? "rate_limit_error" : "invalid_request_error", message: raw ? `${giftRested(s, raw) ? `ZCode said the last request for ${raw} was over its quota, so it is not asked again for a minute: ` : ""}ZCode's limited quota for ${raw} is exhausted or temporarily unavailable` : `ZCode has no active limited quota for ${m}${held.length ? `. ZCode holds ${held.join(", ")} for this account unclaimed: claim it in the ZCode app (its claim needs the app's security check), and ${m} spends it` : ""}` }
                   return kept(new Response(JSON.stringify({ type: "error", error }), { status: raw ? 429 : 400, headers: { "content-type": "application/json" } }))
                 }
                 orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: wireModel(raw) })
@@ -3501,4 +3524,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
