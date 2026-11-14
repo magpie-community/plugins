@@ -1701,6 +1701,52 @@ test("a spent refresh token marks the sign-in and stops calling the vendor", asy
   assert.equal(chats, 1)
 })
 
+
+test("a body APIG can't sign is a 413 that keeps the sign-in, never a renewal (#1121)", async () => {
+  const cred = await makeCred()
+  const tooLarge = '{"error_msg":"Incorrect IAM authentication information: calc ak sk signature fail:body too large","error_code":"APIG.0301","request_id":"r"}'
+  let chats = 0
+  let renewals = 0
+  const fetcher = async (url) => {
+    if (String(url) === x.STS_TOKEN_ENDPOINT) {
+      renewals += 1
+      return new Response("{}", { status: 500 })
+    }
+    chats += 1
+    return new Response(tooLarge, { status: 401 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  // under the 12 MB the plugin checks, the gateway's own answer is read
+  const big = "x".repeat(2 * 1024 * 1024)
+  for (const send of [
+    () => loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: big }] })),
+    () => loaded.fetch("https://snap-access.cn-north-4.myhuaweicloud.com/api/v1/embeddings", { method: "POST", body: JSON.stringify({ input: big }) }),
+  ]) {
+    const res = await send()
+    assert.equal(res.status, 413)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    assert.match(await res.text(), /12 MB/)
+  }
+  assert.equal(chats, 2)
+  assert.equal(renewals, 0, "a body too large is not a stale credential")
+  // the sign-in is still usable: the next request goes out
+  await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [] }))
+  assert.equal(chats, 3)
+})
+
+test("a body over 12 MB is refused before it is signed or sent (#1121)", async () => {
+  const cred = await makeCred()
+  let calls = 0
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => { calls += 1; return new Response("{}") } })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  const image = "data:image/png;base64," + "A".repeat(13 * 1024 * 1024)
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] }))
+  assert.equal(res.status, 413)
+  assert.equal(res.headers.get("x-magpie-sign-in"), null)
+  assert.match(await res.text(), /13\.0 MB/)
+  assert.equal(calls, 0)
+})
 test("a 403 is a sign-in the account no longer has, on chats and other requests alike", async () => {
   const cred = await makeCred()
   const denied = '{"error_code":"APIG.0305","error_msg":"access denied"}'

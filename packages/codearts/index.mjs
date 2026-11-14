@@ -1361,6 +1361,22 @@ function errorMessageOf(text) {
   }
 }
 
+/**
+ * APIG signs a body of 12 MB at most. A larger one comes back as a 401
+ * `APIG.0301` "calc ak sk signature fail:body too large" after ~30s (#1121):
+ * the request's size, not the sign-in, so it is never renewed or marked.
+ */
+const MAX_SIGNED_BODY = 12 * 1024 * 1024
+
+function isBodyTooLarge(text) {
+  return /body too large/i.test(String(text ?? ""))
+}
+
+function bodyTooLargeResponse(bytes, code = "") {
+  const mb = (bytes / (1024 * 1024)).toFixed(1)
+  return errorResponse(413, code, `CodeArts 网关只接受 12 MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话，或去掉较大的图片后再试`)
+}
+
 /** A 401/400 that only means the temporary AK/SK/security-token went stale. */
 function isStaleCredential(text) {
   return /APIG\.0(301|307|602)|security token has expired|verify ak sk signature fail/i.test(String(text ?? ""))
@@ -1891,10 +1907,13 @@ async function signedFetch(cred, input, init, context) {
 
   // A sign-in known to be beyond renewal never reaches the network again.
   if (context.signInDead?.()) return signInExpiredResponse()
+  // A body APIG can't sign is refused here, not after its ~30s wait.
+  if (body.length > MAX_SIGNED_BODY) return bodyTooLargeResponse(body.length)
   if (!chat) {
     const res = await send()
     if (res.status !== 401 || !context.renewCredential) return withSignInMark(res)
     const text = await res.text().catch(() => "")
+    if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, errorCodeOf(text))
     const next = await context.renewCredential(active)
     if (!next) return unrenewedResponse(context, text)
     active = next
@@ -1944,6 +1963,7 @@ async function signedFetch(cred, input, init, context) {
         code = errorCodeOf(text)
       }
 
+      if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, code)
       if (res.status === 401 || isStaleCredential(text)) {
         if (!renewed && context.renewCredential) {
           renewed = true
