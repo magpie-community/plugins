@@ -950,6 +950,10 @@ const TEXT_CALL_OPEN = new RegExp(
     String.raw`<function=\w`,
     String.raw`<antml:function_calls>`,
     String.raw`<antml:invoke\s+name\s*=`,
+    // plugins#1114: OpenAI's own wire shape written as text,
+    // {"tool_calls":[{…}]}, on a line of its own. The match starts at the
+    // line's "{" (or its indent), so the line break before it stays prose.
+    String.raw`(?<=^|\n)[ \t]*\{\s*"tool_calls"\s*:\s*\[\s*\{`,
   ].join("|"),
   "i",
 )
@@ -1023,12 +1027,24 @@ const TEXT_CALL_MARKS = [
  * it would put the opener itself out as prose.
  */
 function textCallHold(s) {
+  const line = s.lastIndexOf("\n") + 1
+  const json = jsonCallHold(s.slice(line)) ? line : -1
   const at = s.lastIndexOf("<")
-  if (at < 0) return -1
+  if (at < 0) return json
   const tail = s.slice(at)
-  if (textCallAt(tail, true) === 0) return at
   const low = tail.toLowerCase()
-  return TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(low)) ? at : -1
+  const tag = textCallAt(tail, true) === 0 || TEXT_CALL_MARKS.some((m) => m.toLowerCase().startsWith(low)) ? at : -1
+  return json >= 0 && (tag < 0 || json < tag) ? json : tag
+}
+
+/**
+ * Whether a last line may still grow into {"tool_calls":[{ (plugins#1114).
+ * A line of indent alone is held too, so the indent before such a call
+ * isn't sent ahead of it; the next character settles it.
+ */
+function jsonCallHold(line) {
+  const bare = line.replace(/\s+/g, "")
+  return line !== "" && '{"tool_calls":[{'.startsWith(bare)
 }
 
 /** A call the model wrote as text, with nothing left to send. */
