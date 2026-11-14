@@ -153,8 +153,11 @@ Cursor completes by itself, which it writes and completes in the step but never
 starts on the client or sends to it; those count toward it too. When the count
 comes after the step's calls, a checkpoint whose state waits on exactly the
 calls the caller was given also ends the step (#550); a checkpoint between
-calls after a count sent ahead of them does not seal the batch early. The
-step's calls are the rest.
+calls after a count sent ahead of them does not seal the batch early. A
+partial or started MCP call can also precede the count while its exec follows
+the checkpoint. Until that call arrives as an exec or is completed by Cursor,
+the checkpoint cannot end the step merely because it lists only calls already
+sent. The step's calls are the rest.
 
 These are retention limits. A missing, expired, restarted, busy, incompatible,
 or full owner uses the original history reconstruction and stateless decoder
