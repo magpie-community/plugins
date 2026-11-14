@@ -105,6 +105,18 @@ test('middleware settings are validated, merged and detect stale values', () => 
   expect(Array.from(S.parseList('a/*, b/*\nc/*'))).toEqual(['a/*', 'b/*', 'c/*'])
   expect(S.fromOptions({ allowModels: { bad: true } }).invalid).toEqual(['allowModels'])
   expect(S.fromOptions({ allowModels: [null] }).invalid).toEqual(['allowModels'])
+  const clamped = S.fromOptions({ maxDepth: 500, scanChars: 500, maxNodes: 40000.5 })
+  expect(clamped.values.maxDepth).toBe(200)
+  expect(clamped.values.scanChars).toBe(1000)
+  expect(clamped.values.maxNodes).toBe(40000)
+  const savedClamped = S.apply(
+    { maxDepth: 500, scanChars: 500, maxNodes: 40000.5, disabledAgents: ['codex'] },
+    clamped.values,
+  )
+  expect(savedClamped.maxDepth).toBe(200)
+  expect(savedClamped.scanChars).toBe(1000)
+  expect(savedClamped.maxNodes).toBe(40000)
+  expect(S.fromOptions({ binaryPolicy: 'Guide' }).invalid).toEqual(['binaryPolicy'])
   expect(S.validate({ ...parsed.values, maxDepth: 0 }).map((error) => error.key)).toEqual(['maxDepth'])
   const many = Array.from({ length: 201 }, (_, i) => `model/${i}`)
   expect(S.parseList(many)).toHaveLength(201)

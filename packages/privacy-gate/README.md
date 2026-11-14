@@ -150,16 +150,20 @@ the same `ctx.options` the middleware reads, with no restart.
 ## Middleware settings page
 
 The **Middleware settings** tab on the plugin page edits the same `ctx.options`
-that previously required `magpie plugin options`: `binaryPolicy`,
-`allowUnknownProtocol`, `allowModels`, `localModels`, `localProviders`,
-`guideTools`, the blob thresholds, `scanChars`, `maxNodes`, `maxDepth`,
-`logMaxLines` and `logEveryRows`.
+that previously required `magpie plugin options`, grouped by privacy impact:
+
+- **Protection:** `binaryPolicy`, `allowUnknownProtocol`, `allowModels`,
+  `localModels`, `localProviders` and the blob thresholds
+- **Advanced inspection:** `scanChars`, `maxNodes`, `maxDepth`
+- **Diagnostics:** `guideTools`, `logMaxLines`, `logEveryRows`
 
 The form validates list shape and numeric ranges and preserves options it does
-not own. A malformed existing `allowModels` is reported and blocks saving rather
-than being silently replaced by an empty, allow-everything list. Saving re-reads
-the current options and reports a conflict if another surface changed a managed
-field.
+not own. Numeric values outside the middleware's range are displayed as the
+effective clamped value (floor, then `[min, max]`) rather than being replaced by
+a page default; an unknown select value is reported as invalid. A malformed
+existing `allowModels` is reported and blocks saving rather than being silently
+replaced by an empty, allow-everything list. Saving re-reads the current options
+and reports a conflict if another surface changed a managed field.
 
 ## Configuration
 

@@ -67,10 +67,19 @@
       } else if (field.type === 'bool') {
         values[field.key] = typeof raw === 'boolean' ? raw : field.default
       } else if (field.type === 'select') {
-        values[field.key] = field.options.indexOf(raw) !== -1 ? raw : field.default
+        if (raw === undefined) values[field.key] = field.default
+        else if (field.options.indexOf(raw) !== -1) values[field.key] = raw
+        else {
+          values[field.key] = field.default
+          invalid.push(field.key)
+        }
+      } else if (typeof raw === 'number' && isFinite(raw)) {
+        var effective = Math.floor(raw)
+        if (effective < field.min) effective = field.min
+        if (effective > field.max) effective = field.max
+        values[field.key] = effective
       } else {
-        var n = numberValue(raw, field)
-        values[field.key] = n === null || n < field.min || n > field.max ? field.default : n
+        values[field.key] = field.default
       }
     }
     return { values: values, invalid: invalid }

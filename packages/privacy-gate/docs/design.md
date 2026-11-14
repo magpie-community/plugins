@@ -185,12 +185,13 @@ policy selection:
   globs and values the UI cannot represent are kept verbatim, shown read-only,
   and merged back on save. The page seeds custom exact ids from
   `disabledAgents` so a custom bypass is not invisible.
-- The page's **Middleware settings** tab edits `binaryPolicy`,
-  `allowUnknownProtocol`, the model/provider/guide lists, the blob thresholds,
-  `scanChars`, `maxNodes`, `maxDepth`, `logMaxLines` and `logEveryRows`. It
-  validates ranges/list shape, preserves options it does not own, and blocks a
-  malformed `allowModels` rather than replacing it with an allow-everything empty
-  list.
+- The page's **Middleware settings** tab groups the options by privacy impact:
+  Protection (binary policy, protocol, model/provider and blob controls),
+  Advanced inspection (`scanChars`, `maxNodes`, `maxDepth`) and Diagnostics
+  (`guideTools`, log settings). It validates list shape, displays numeric values
+  clamped to the middleware's effective range, reports an unknown select as
+  invalid, preserves options it does not own, and blocks a malformed
+  `allowModels` rather than replacing it with an allow-everything empty list.
 - Saving starts from freshly read options and changes only the page-owned fields.
   A concurrent change to those fields is reported instead of overwritten;
   controls are disabled while a write is pending.

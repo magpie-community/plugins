@@ -57,11 +57,11 @@
     </section>
 
     <section id="settings-view" class="view" role="tabpanel" aria-labelledby="tab-settings">
-      <p class="view-lede" id="settings-lede">These are the plugin's middleware options. Fields not shown here are preserved unchanged.</p>
+      <p class="view-lede" id="settings-lede">Grouped by privacy impact. Fields not shown here are preserved unchanged.</p>
       <p class="form-error" id="settings-error" role="alert" hidden></p>
 
       <section class="settings-card" aria-labelledby="policy-title">
-        <h2 id="policy-title">Policy</h2>
+        <h2 id="policy-title">Protection</h2>
         <div class="field">
           <label for="opt-binary-policy">Binary content</label>
           <select id="opt-binary-policy">
@@ -89,26 +89,22 @@
           <textarea id="opt-local-providers" rows="2" spellcheck="false" placeholder="one provider id per line"></textarea>
           <p class="hint">Must agree with local models; onProvider checks the real provider id.</p>
         </div>
-        <div class="field">
-          <label for="opt-guide-tools">Guide-mode tools</label>
-          <textarea id="opt-guide-tools" rows="2" spellcheck="false" placeholder="one tool name per line"></textarea>
-          <p class="hint">Only used with binaryPolicy guide; names are included in the local-processing prompt.</p>
-        </div>
-      </section>
-
-      <section class="settings-card" aria-labelledby="limits-title">
-        <h2 id="limits-title">Limits</h2>
         <div class="grid-2">
           <div class="field">
             <label for="opt-blob-base64">Base64 blob threshold</label>
             <input id="opt-blob-base64" type="number" min="64" max="1000000" step="1">
-            <p class="hint">64–1,000,000 characters.</p>
+            <p class="hint">64–1,000,000 characters. Raising this lets larger encoded documents through.</p>
           </div>
           <div class="field">
             <label for="opt-blob-hex">Hex blob threshold</label>
             <input id="opt-blob-hex" type="number" min="64" max="1000000" step="1">
-            <p class="hint">64–1,000,000 characters.</p>
+            <p class="hint">64–1,000,000 characters. Raising this lets larger encoded documents through.</p>
           </div>
+        </div>
+      </section>
+
+      <section class="settings-card" aria-labelledby="limits-title">
+        <h2 id="limits-title">Advanced inspection</h2>
           <div class="field">
             <label for="opt-scan-chars">Scan characters</label>
             <input id="opt-scan-chars" type="number" min="1000" max="5000000" step="1">
@@ -124,6 +120,18 @@
             <input id="opt-max-depth" type="number" min="1" max="200" step="1">
             <p class="hint">1–200.</p>
           </div>
+        </div>
+      </section>
+
+      <section class="settings-card" aria-labelledby="diagnostics-title">
+        <h2 id="diagnostics-title">Diagnostics</h2>
+        <p class="hint">These settings affect prompt guidance and logging, not what content can leave the gate.</p>
+        <div class="field">
+          <label for="opt-guide-tools">Guide-mode tools</label>
+          <textarea id="opt-guide-tools" rows="2" spellcheck="false" placeholder="one tool name per line"></textarea>
+          <p class="hint">Only used with binaryPolicy guide; names are included in the local-processing prompt.</p>
+        </div>
+        <div class="grid-2">
           <div class="field">
             <label for="opt-log-max-lines">Max log lines</label>
             <input id="opt-log-max-lines" type="number" min="0" max="500" step="1">

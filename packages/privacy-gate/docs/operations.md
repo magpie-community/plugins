@@ -86,9 +86,10 @@ encoded blobs. Use it only for an agent whose traffic you have chosen to trust.
 ## Middleware settings page
 
 The page's **Middleware settings** tab edits the same options as
-`magpie plugin options`: binary policy, allowed/local models, local providers,
-guide tools, protocol handling, blob thresholds and inspection/log budgets.
-Ranges and list shape are checked before saving. Options outside the form are
+`magpie plugin options`, grouped as **Protection**, **Advanced inspection** and
+**Diagnostics**. Ranges and list shape are checked before saving. Numeric
+out-of-range values are shown at the effective clamped value the middleware
+uses; an unknown select is reported as invalid. Options outside the form are
 preserved. A malformed existing `allowModels` blocks saving instead of being
 replaced by an empty, allow-everything list; fix it in the form or with
 `magpie plugin options`.

@@ -1134,7 +1134,7 @@ export function onUsage(row, options) {
     if (status >= 500) usage.errors++;
     else if (row && (row.errorType || row.error_type)) usage.errors++;
 
-    var every = numOpt(opts, "logEveryRows", DEFAULTS.logEveryRows, 1, 10000);
+    var every = numOpt(opts, "logEveryRows", DEFAULTS.logEveryRows, 1, 100000);
     if (usage.rows === 1 || usage.rows % every === 0) {
       logLine(
         "privacy-gate: usage rows=" + usage.rows +
