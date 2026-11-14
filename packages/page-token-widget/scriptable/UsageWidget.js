@@ -231,6 +231,7 @@ const LINE_HEIGHT = 1.25;
 function line(parent, size, width) {
   const row = parent.addStack();
   row.size = new Size(width, Math.round(size * LINE_HEIGHT));
+  row.centerAlignContent();
   return row;
 }
 function compact(value) {
@@ -401,7 +402,7 @@ function subscriptionGrid(parent, cards, sharedWindow) {
   // so the bars of the cards sit on one line; when no card has one, the line
   // is not given away at all — the smallest medium widget has 84 points for a
   // card, and every point is needed there.
-  const reserveAccountLine = !large && !dense && style.account > 0 && cards.some(card => splitLabel(card.label).account);
+  const reserveAccountLine = !dense && style.account > 0 && cards.some(card => splitLabel(card.label).account);
   // Every name of the page takes the size that fits the narrowest of them, so
   // the cards keep one title size.
   // The dense large family has no line of its own for the account, so it
@@ -424,7 +425,12 @@ function subscriptionGrid(parent, cards, sharedWindow) {
       const inline = large && dense && parts.account;
       const accountSize = Math.max(7, Math.min(style.account || 9, nameSize - 3));
       const vendor = inline ? parts.vendor + " · " + parts.account : parts.vendor;
-      const titleRow = line(column, inline ? accountSize : nameSize, cellWidth);
+      // The line of the name has the same height for every card of the row.
+      // In the dense large family the name of a card that has an account goes
+      // with the account and is written smaller, but the line of it stays as
+      // tall as the others, so the bars of the row sit on one line.
+      const titleSize = large && dense ? nameSize : (inline ? accountSize : nameSize);
+      const titleRow = line(column, titleSize, cellWidth);
       text(titleRow, shortenName(vendor, inline ? accountSize : nameSize, cellWidth), inline ? accountSize : nameSize, colors.text, "medium");
       if (parts.account && style.account && !inline) {
         const accountRow = line(column, accountSize, cellWidth);

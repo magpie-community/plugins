@@ -592,10 +592,14 @@ class MeasuredStack {
   }
   height() {
     const heights = this.children.map(child => child.height());
-    if (!heights.length) return 0;
-    return this.vertical
-      ? heights.reduce((sum, value) => sum + value, 0)
-      : Math.max(...heights);
+    const content = !heights.length
+      ? 0
+      : this.vertical
+        ? heights.reduce((sum, value) => sum + value, 0)
+        : Math.max(...heights);
+    // A stack with a height of its own keeps it: a line whose height is
+    // pinned is as tall as it says, not as tall as the text inside it.
+    return this.size && this.size.height ? Math.max(content, this.size.height) : content;
   }
 }
 
@@ -722,11 +726,15 @@ test('a parameter that is a token says so instead of hunting for it', async () =
 // of the cards on different lines.
 const realCards = () => {
   const window = (label, used) => ({ label, usedPercent: used, remainingPercent: 100 - used, resetsAt: Date.now() + 3600000 });
+  // The cards are mixed on purpose: a card with an account of its own and a
+  // card without one stand next to each other, in the middle family as well
+  // as in the large one. A fixture that keeps the two kinds apart would let
+  // a row of one kind hide a card that sits a line too high.
   return [
-    { id: 'codex@liuzq1103', provider: 'codex', account: 'liuzq1103', label: 'Codex · liuzq1103', windows: [window('5h', 100), window('7d', 18)], usage: { today: { totalTokens: 7171104 } }, stale: false },
-    { id: 'codex@fangzt98', provider: 'codex', account: 'fangzt98', label: 'Codex · fangzt98', windows: [window('5h', 11), window('7d', 95)], usage: { today: { totalTokens: 1077940 } }, stale: false },
     { id: 'minimax', provider: 'minimax', account: null, label: 'MiniMax', windows: [window('5h', 96)], usage: { today: { totalTokens: 282669693 } }, stale: false },
+    { id: 'codex@liuzq1103', provider: 'codex', account: 'liuzq1103', label: 'Codex · liuzq1103', windows: [window('5h', 100), window('7d', 18)], usage: { today: { totalTokens: 7171104 } }, stale: false },
     { id: 'glm', provider: 'glm', account: null, label: 'GLM', windows: [window('5h', 7), window('7d', 40)], usage: { today: { totalTokens: 34228561 } }, stale: false },
+    { id: 'codex@fangzt98', provider: 'codex', account: 'fangzt98', label: 'Codex · fangzt98', windows: [window('5h', 11), window('7d', 95)], usage: { today: { totalTokens: 1077940 } }, stale: false },
   ];
 };
 

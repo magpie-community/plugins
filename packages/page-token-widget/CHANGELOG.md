@@ -17,7 +17,10 @@ port are the same as in 0.4.4.
   measured by itself, so the MiniMax and GLM bars sat a little higher than the
   two cards of Codex. Every line of a card now has a height of its own.
 - The large widget puts two cards in a row; the two bars of a row sit on one
-  line as well.
+  line as well. A row that mixes a card with an account and a card without one
+  had the same fault (the bars were 11 points apart), and the three-row layout
+  of the large widget now keeps the line of the name the same height for
+  every card too.
 - A test keeps it that way: the four cards of a real page are drawn and the
   line of every bar is read — 55, 55, 45, 45 before, one line now.
 
