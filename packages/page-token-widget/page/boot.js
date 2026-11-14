@@ -1,8 +1,9 @@
 // The Magpie window runs this page inside a sandboxed frame, so it cannot
 // fetch anything: the page only reads the theme and the service port, then
 // hands the whole window over to the service that runs on this computer.
-// The port the service of this package listens on. The plugin options may
-// name another one.
+//
+// The port the plugin declares is the one the page falls back to; what
+// Magpie hands over wins.
 const DEFAULT_PORT = 3498;
 
 (async () => {

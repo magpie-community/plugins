@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,7 +62,10 @@ export function find() {
   return null;
 }
 
-export async function call(args, timeout = 15000) {
+// The command is run. The runner may be given instead, so the tests can speak
+// with a mock of the command instead of the real one.
+export async function call(args, timeout = 15000, runner) {
+  if (runner) return runner(args, timeout);
   const binary = find();
   if (!binary) return { ok: false, error: 'Tailscale is not installed on this computer.' };
   try {
@@ -76,13 +79,45 @@ export async function call(args, timeout = 15000) {
   }
 }
 
-export async function status() {
-  const result = await call(['status', '--json']);
+export async function status(runner) {
+  const result = await call(['status', '--json'], 15000, runner);
   if (!result.ok) return { ok: false, error: result.error };
   try {
     return { ok: true, data: JSON.parse(result.stdout) };
   } catch {
     return { ok: false, error: 'tailscale status did not answer with JSON.' };
+  }
+}
+
+// The same command, but without waiting: it is used at the end of a run,
+// where there is no time left for a promise. The runner may be given as well,
+// but then it has to answer at once.
+export function callSync(args, timeout = 15000, runner) {
+  if (runner) {
+    const result = runner(args);
+    if (result && typeof result.then === 'function') {
+      return { ok: false, error: 'The runner has to answer at once.' };
+    }
+    return result;
+  }
+  const binary = find();
+  if (!binary) return { ok: false, error: 'Tailscale is not installed on this computer.' };
+  try {
+    const result = IS_WINDOWS
+      ? spawnSync('cmd.exe', ['/d', '/s', '/c', windowsCommand(binary, args)], {
+        timeout,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        encoding: 'utf8',
+      })
+      : spawnSync(binary, args, { timeout, windowsHide: true, encoding: 'utf8' });
+    if (result.error) return { ok: false, error: String(result.error.message || result.error) };
+    if (result.status !== 0) {
+      return { ok: false, error: String(result.stderr || '').trim() || 'tailscale failed' };
+    }
+    return { ok: true, stdout: String(result.stdout || '') };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
   }
 }
 
@@ -93,16 +128,135 @@ export function pickIP(data) {
   return ips.find(ip => /^100\.(6[4-9]|[789]\d|1[01]\d|12[0-7])\./.test(String(ip))) || null;
 }
 
+const isTailscaleIPv4 = ip => /^100\.(6[4-9]|[789]\d|1[01]\d|12[0-7])\./.test(String(ip));
+// The private addresses of a home network: 10.0.0.0/8, 172.16.0.0/12 and
+// 192.168.0.0/16.
+export const isPrivateIPv4 = ip => /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(String(ip));
+// The private addresses of IPv6: fc00::/7.
+export const isUlaIPv6 = ip => /^f[cd][0-9a-f]{2}:/i.test(String(ip));
+const isLinkLocal = ip => /^169\.254\./.test(String(ip)) || /^fe80:/i.test(String(ip));
+const isMulticast = ip => /^224\./.test(String(ip)) || /^ff[0-9a-f]{2}:/i.test(String(ip));
+const isLoopback = ip => ip === '127.0.0.1' || ip === '::1';
+
+// The kind of an interface, told apart by its name and by its addresses.
+export function interfaceKind(name, addresses = []) {
+  const text = String(name || '').toLowerCase();
+  const list = addresses || [];
+  if (text.includes('tailscale') || list.some(entry => isTailscaleIPv4(entry?.address))) return 'tailscale';
+  if (text.includes('loopback') || list.some(entry => entry?.internal === true)) return 'loopback';
+  if (/wi-?fi|wlan|wireless|airport|无线/.test(text)) return 'wifi';
+  // The virtual interfaces come before the physical ones: "vEthernet (WSL)"
+  // holds the word ethernet but is not a wire.
+  if (/docker|veth|vmware|virtualbox|vethernet|hyper-?v|wsl|tailscale|tun|tap|utun|bridge|virbr|hamachi|zerotier|npcap|vpn|virtual/.test(text)) return 'virtual';
+  if (/ethernet|以太网|eth\d|local area|本地连接/.test(text)) return 'ethernet';
+  return 'other';
+}
+
+// The length of the network part of an address, taken from the netmask of the
+// interface: a dotted mask for IPv4 and a number for IPv6.
+export function prefixLength(netmask, family) {
+  if (typeof netmask !== 'string') return null;
+  if (family === 'IPv6') return /^\d{1,3}$/.test(netmask) ? Number(netmask) : null;
+  const parts = netmask.split('.').map(part => Number(part));
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return parts.reduce((count, part) => count + part.toString(2).split('1').length - 1, 0);
+}
+
+// Every interface of the machine, with its addresses and its kind. The
+// addresses of the loopback, of the link local and of the multicast are left
+// out: they are of no use to anybody.
+export function interfaces(list = os.networkInterfaces()) {
+  const result = [];
+  for (const [name, addresses] of Object.entries(list || {})) {
+    const entries = addresses || [];
+    const kind = interfaceKind(name, entries);
+    const ipv4 = [];
+    const ipv6 = [];
+    let mac = null;
+    for (const entry of entries) {
+      const ip = String(entry?.address || '');
+      const family = entry?.family === 4 || entry?.family === 'IPv4' ? 'IPv4'
+        : entry?.family === 6 || entry?.family === 'IPv6' ? 'IPv6' : null;
+      if (entry?.mac && entry.mac !== '00:00:00:00:00:00') mac = entry.mac;
+      if (!family || !ip) continue;
+      if (isLoopback(ip) || isLinkLocal(ip) || isMulticast(ip)) continue;
+      const item = { address: ip, prefix: prefixLength(entry?.netmask, family) };
+      (family === 'IPv4' ? ipv4 : ipv6).push(item);
+    }
+    result.push({
+      name,
+      kind,
+      mac,
+      tailscale: kind === 'tailscale',
+      // A private address of the home network is what a phone on the same
+      // network could reach, if the service ever listened there.
+      lan: kind === 'wifi' || kind === 'ethernet'
+        ? [...ipv4.filter(item => isPrivateIPv4(item.address)), ...ipv6.filter(item => isUlaIPv6(item.address))]
+        : [],
+      ipv4,
+      ipv6,
+    });
+  }
+  return result;
+}
+
+// The addresses of the home network, all of them: a machine with more than
+// one network has more than one way out, and the first one is not always the
+// right one.
+export function lanCandidates(list = os.networkInterfaces()) {
+  return interfaces(list)
+    .filter(entry => entry.lan.length)
+    .map(entry => ({
+      name: entry.name,
+      kind: entry.kind,
+      addresses: entry.lan.map(item => item.address),
+    }));
+}
+
+// The way the tailnet reaches a peer: straight through the addresses of the
+// peer, through another device of the tailnet, or through a relay server.
+// A path that is not known is called unknown, never guessed.
+export function peerPath(peer) {
+  if (!peer || typeof peer !== 'object') return 'unknown';
+  if (peer.Online === false) return 'offline';
+  if (peer.PeerRelay) return 'relay';
+  if (peer.CurAddr) return 'direct';
+  if (peer.Relay) return 'derp';
+  return 'unknown';
+}
+
+// The path a ping answered with: "via 192.168.1.5" and "from 100.64.0.1" are
+// the wire of the network, "via hkg" is a relay server, "via peer relay" is
+// another device of the tailnet.
+export function pingPath(stdout) {
+  const text = String(stdout || '');
+  if (/peer relay/i.test(text)) return 'relay';
+  const hop = text.match(/via\s+([^\s(]+)/i) || text.match(/from\s+([^\s(]+)/i);
+  if (!hop) return 'unknown';
+  const place = hop[1];
+  if (isPrivateIPv4(place) || isTailscaleIPv4(place)) return 'direct';
+  if (/^[a-z]{2,3}$/i.test(place)) return 'derp';
+  if (/^\[?fd[0-9a-f]{2}:/i.test(place)) return 'direct';
+  return 'relay';
+}
+
+// A ping of one peer, asked for by the user and not by the clock.
+export async function ping(target, runner) {
+  const result = await call(['ping', '--c', '3', '--timeout', '3s', String(target)], 20000, runner);
+  if (!result.ok) return { ok: false, error: result.error, path: 'unknown' };
+  const stdout = String(result.stdout || '');
+  return { ok: true, stdout, path: pingPath(stdout) };
+}
+
 // The address of this computer inside the tailnet, read from the network
 // interfaces of the machine. It is there even when the tailscale command is
 // slow to answer, so the phone can be pointed at the right place at once.
-export function localIP() {
-  const interfaces = os.networkInterfaces();
-  for (const addresses of Object.values(interfaces)) {
+export function localIP(list = os.networkInterfaces()) {
+  for (const addresses of Object.values(list || {})) {
     for (const address of addresses || []) {
       const ip = String(address?.address || '');
       if (address?.family !== 'IPv4' && address?.family !== 4) continue;
-      if (/^100\.(6[4-9]|[789]\d|1[01]\d|12[0-7])\./.test(ip)) return ip;
+      if (isTailscaleIPv4(ip)) return ip;
     }
   }
   return null;
@@ -123,6 +277,8 @@ export function iosPeers(data) {
       return {
         name,
         ips: (peer.TailscaleIPs || []).filter(ip => /^100\./.test(String(ip))),
+        path: peerPath(peer),
+        online: peer?.Online !== false,
       };
     });
 }
@@ -137,28 +293,64 @@ export function dnsName(data) {
   return name.endsWith('.ts.net') ? name : null;
 }
 
-export async function detect() {
-  const result = await status();
+// The addresses of this computer that a phone of the own network of the user
+// could use: the cards of a cable, of a wi-fi, and the tunnels of a network
+// of one's own. The loopback is never a way in from outside. The 100.64/10
+// range IS in: a Headscale of the user's own hands out the same range
+// Tailscale uses, on an adapter that is not Tailscale's.
+export const isCgnatIPv4 = (ip) => /^100\.(6[4-9]|[789]\d|1[01]\d|12[0-7])\./.test(ip);
+
+export function bindCandidates(list = os.networkInterfaces()) {
+  const found = [];
+  for (const [name, addresses] of Object.entries(list || {})) {
+    if (!Array.isArray(addresses) || !addresses.length) continue;
+    const kind = interfaceKind(name, addresses);
+    // The loopback is never a way in from outside. The adapter of a tailnet
+    // is: it may be a Tailscale of this computer or a Headscale of the
+    // user's own, and the phone reaches the service on that address.
+    if (kind === 'loopback') continue;
+    for (const entry of addresses) {
+      if (!entry || entry.internal) continue;
+      const family = entry.family === 'IPv4' || entry.family === 4 ? 'IPv4' : 'IPv6';
+      if (family === 'IPv4') {
+        // The private addresses of a house or an office, and the range a
+        // Headscale of the user's own hands out (the same range Tailscale
+        // uses, on an adapter that is not Tailscale's).
+        if (!isPrivateIPv4(entry.address) && !isCgnatIPv4(entry.address)) continue;
+      } else if (!isUlaIPv6(entry.address)) continue;
+      found.push({ name, kind, address: entry.address });
+    }
+  }
+  return found;
+}
+
+export async function detect(runner) {
+  const result = await status(runner);
   if (!result.ok) {
     const ip = localIP();
+    // The command answered with nothing. The program may still be there: a
+    // mock stands in for a program that is there.
+    const installed = runner ? true : Boolean(find());
     return {
-      installed: false,
+      installed,
       connected: Boolean(ip),
       backendState: null,
       tailnetIP: ip,
       dnsName: null,
       ios: [],
+      path: 'unknown',
       error: result.error,
     };
   }
   const data = result.data;
   return {
     installed: true,
-    connected: !data?.BackendState || data.BackendState === 'Running',
+    connected: data?.BackendState === 'Running',
     backendState: data?.BackendState || null,
     tailnetIP: pickIP(data) || localIP(),
     dnsName: dnsName(data),
     ios: iosPeers(data),
+    path: peerPath(data?.Self),
     error: null,
   };
 }

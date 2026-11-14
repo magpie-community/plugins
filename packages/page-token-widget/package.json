@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/page-token-widget",
-  "version": "0.1.1",
-  "description": "A page in Magpie's window: an iPhone home screen widget that shows the remaining quota and the real token usage of Codex, MiniMax and GLM. Its local service reads Magpie's quota API and publishes the port in your Tailscale tailnet.",
+  "version": "0.2.0",
+  "description": "在 iPhone 主屏上放一个额度小组件：扫一次码，Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量就在手边。A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM.",
   "type": "module",
   "main": "./index.mjs",
   "files": [
@@ -10,13 +10,16 @@
     "mobile",
     "page",
     "scriptable",
+    "scripts",
     "ui",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "check:syntax": "node scripts/check-syntax.mjs"
   },
   "engines": {
     "magpie": ">=0.1.3681",
@@ -42,15 +45,16 @@
     "usage"
   ],
   "magpie": {
-    "name": "iPhone quota widget",
+    "name": "iPhone Quota Widget",
     "summary": {
-      "en": "An iPhone home screen widget for Magpie: scan a code, and the widget shows the remaining quota of Codex, MiniMax and GLM on the phone.",
-      "zh": "Magpie 的 iPhone 桌面额度组件：扫一次码，手机上就能看到 Codex、MiniMax、GLM 各家套餐的剩余额度。"
+      "en": "A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM. Unlike the usage pages listed above, the numbers land on another device, and the quota stays the quota window of the subscription rather than a per-model split of tokens; the phone reaches the local service over your Tailscale tailnet.",
+      "zh": "把额度组件放到 iPhone 桌面：扫一次码，组件显示 Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量。和上面那些用量页面不同，数字落在另一台设备上；额度保持订阅本身的额度窗口，而不是按模型摊开的 token；手机通过 Tailscale 尾网连进本机服务。"
     },
+    "icon": "page/icon.svg",
     "page": {
-      "title": "iPhone quota widget",
+      "title": "iPhone Quota Widget",
       "titles": {
-        "en": "iPhone quota widget",
+        "en": "iPhone Quota Widget",
         "zh": "iPhone 额度组件",
         "zh-TW": "iPhone 額度元件"
       },

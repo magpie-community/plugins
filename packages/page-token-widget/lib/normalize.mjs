@@ -218,6 +218,9 @@ export function normalizeQuotas(raw, cache = {}) {
       account: named ? account : null,
       alias,
       accountUsage,
+      // The day the number was taken on: a number of another day is not the
+      // number of today, and the day travels with it.
+      accountUsageDay: card?.accountUsageDay || null,
       // How many accounts of this vendor are known: a card of a vendor with
       // several accounts never shows the total of the vendor.
       accounts: familySize.get(provider.id) || 1,
@@ -366,20 +369,72 @@ export function normalizeUsage(raw) {
     computers: ranking(raw.computers, 'computer'),
   };
 }
+
+// The summary of the gateway carries the totals of the day, the hours, the
+// vendors and the accounts in one answer. The vendors are gathered from the
+// keys of the vendors and from the accounts, so a vendor whose calls come
+// from an account it holds is counted once.
+export function normalizeUsageSummary(raw) {
+  if (!raw || !['input', 'output', 'cache_read', 'cache_write', 'calls'].every(key =>
+    typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0)) throw new Error('Invalid usage response');
+  const groups = new Map();
+  const gather = (provider, row) => {
+    if (typeof provider !== 'string' || !provider) return;
+    const family = PROVIDERS[provider]?.id || provider;
+    const group = groups.get(family) || {
+      id: provider, calls: 0, errors: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0,
+    };
+    for (const field of ['calls', 'errors', 'input', 'output', 'cache_read', 'cache_write', 'reasoning']) {
+      group[field] += number(row?.[field]);
+    }
+    groups.set(family, group);
+  };
+  for (const key of Array.isArray(raw.providerKeys) ? raw.providerKeys : []) gather(key?.provider, key);
+  for (const account of Array.isArray(raw.accounts) ? raw.accounts : []) gather(account?.provider, account);
+  const accounts = (Array.isArray(raw.accounts) ? raw.accounts : [])
+    .filter(row => row && typeof row.provider === 'string' && typeof row.account === 'string' && row.account.includes('@'))
+    .map(row => ({
+      provider: row.provider,
+      family: PROVIDERS[row.provider]?.id || null,
+      account: row.account.trim(),
+      ...metrics(row),
+    }));
+  return {
+    metrics: metrics(raw),
+    trend: (Array.isArray(raw.series) ? raw.series : []).map((item, index) => ({
+      at: iso(item.time), label: iso(item.time) ? shanghaiDay(Date.parse(item.time)) : 'Day ' + (index + 1), ...metrics(item),
+    })),
+    providers: ranking([...groups.values()], 'provider'),
+    accounts,
+  };
+}
 export function sanitizeCachedLabels(data, key) {
   if (key === 'quotas') return normalizeQuotas({ data: data.map(card => ({
     provider: card.provider === 'glm' ? 'zhipu' : card.provider, plan: card.plan, readAt: card.updatedAt, stale: card.stale === true,
     account: card.account,
     alias: card.alias,
     accountUsage: card.accountUsage,
+    accountUsageDay: card.accountUsageDay || null,
     accounts: card.accounts,
     windows: card.windows.map(window => ({ ...window, name: window.label, used: window.usedPercent })),
   })) });
   const cleanRows = (rows, type) => (rows || []).map((row, index) => ({ ...row, label: typedLabel(row.label, type, index) }));
   return { ...data,
-    trend: data.trend.map((row, index) => ({ ...row, label: iso(row.at) ? shanghaiDay(Date.parse(row.at)) : 'Day ' + (index + 1) })),
+    trend: (data.trend || []).map((row, index) => ({ ...row, label: iso(row.at) ? shanghaiDay(Date.parse(row.at)) : 'Day ' + (index + 1) })),
     models: cleanRows(data.models, 'model'), providers: cleanRows(data.providers, 'provider'),
     agents: cleanRows(data.agents, 'agent'), computers: cleanRows(data.computers, 'computer'),
+  };
+}
+
+// The summary of today has its own shape: the vendors and the accounts, and
+// no models, agents or computers.
+export function sanitizeCachedSummary(data) {
+  if (!data || typeof data !== 'object') return data;
+  const cleanRows = (rows, type) => (rows || []).map((row, index) => ({ ...row, label: typedLabel(row.label, type, index) }));
+  return { ...data,
+    trend: (data.trend || []).map((row, index) => ({ ...row, label: iso(row.at) ? shanghaiDay(Date.parse(row.at)) : 'Day ' + (index + 1) })),
+    providers: cleanRows(data.providers, 'provider'),
+    accounts: (data.accounts || []).map(row => ({ ...row })),
   };
 }
 export const shanghaiDay = value => new Date(value + 8 * 3600_000).toISOString().slice(0, 10);
@@ -389,7 +444,7 @@ export const DEFAULT_DISPLAY = {
   modelLimit: 8, agentLimit: 6, providerLimit: 20, computerLimit: 20, subscriptions: ['codex', 'minimax', 'glm'],
 };
 // A subscription is a vendor family (codex) or one of its accounts
-// (codex@fangzt98). The family's case does not matter; the account's does.
+// (codex@alice). The family's case does not matter; the account's does.
 const splitSubscription = id => {
   const at = typeof id === 'string' ? id.indexOf('@') : -1;
   const family = (at < 0 ? String(id) : id.slice(0, at)).toLowerCase();
@@ -416,12 +471,26 @@ export function displayOptions(value = {}) {
     const { family, account } = splitSubscription(id);
     return SUBSCRIPTION_ID.test(family) && (!account || SUBSCRIPTION_ACCOUNT.test(account));
   }).map(subscriptionId);
+  // The direction of the widget and the card it shows are chosen on the
+  // plugin side. The Scriptable parameter may still override them.
+  const widgetMode = value.widgetMode === 'used' ? 'used' : 'remaining';
+  const widgetCard = (() => {
+    if (typeof value.widgetCard !== 'string') return '';
+    const wanted = value.widgetCard.trim();
+    if (!wanted) return '';
+    const { family, account } = splitSubscription(wanted);
+    if (!SUBSCRIPTION_ID.test(family)) return '';
+    if (account && !SUBSCRIPTION_ACCOUNT.test(account)) return '';
+    return subscriptionId(wanted);
+  })();
   return {
     modelLimit: limit(value.modelLimit, DEFAULT_DISPLAY.modelLimit),
     agentLimit: limit(value.agentLimit, DEFAULT_DISPLAY.agentLimit),
     providerLimit: limit(value.providerLimit, DEFAULT_DISPLAY.providerLimit),
     computerLimit: limit(value.computerLimit, DEFAULT_DISPLAY.computerLimit),
     subscriptions: subscriptions.length ? subscriptions : [...DEFAULT_DISPLAY.subscriptions],
+    widgetMode,
+    widgetCard,
   };
 }
 // Command line overrides for the configuration script. An empty value never
@@ -444,8 +513,52 @@ export function displayOverrides(argv = []) {
   }
   return overrides;
 }
-export function project(snapshot, now = Date.now(), display = {}) {
-  const options = displayOptions(display);
+// What the reading of today says about the numbers of the day: whether it is
+// of this day at all, which rows the vendors have, and how many accounts each
+// vendor has. The rules of the usage live in usageForCard, so the console and
+// the phone answer the same question about a card.
+export function todayContext(snapshot, now = Date.now()) {
+  const todayPart = snapshot?.parts?.today;
+  const day = shanghaiDay(now);
+  const outdated = !!todayPart && (todayPart.periodDay || shanghaiDay(Date.parse(todayPart.observedAt))) !== day;
+  const cards = snapshot?.parts?.quotas?.data || [];
+  const familySizes = new Map();
+  for (const card of cards) familySizes.set(card.provider, (familySizes.get(card.provider) || 0) + 1);
+  return { outdated, familySizes, day, todayProviders: outdated ? [] : (todayPart?.data?.providers || []) };
+}
+
+// The usage of a card for today: the account has only its own number, and a
+// vendor with several accounts cannot lend its total to one of them. A
+// reading of another day is not the usage of today — the number is given back
+// as nothing (the reader knows it is missing), so a card must not keep
+// yesterday's number and let it be read as today's. The number of an account
+// is bound to the day it was taken on, because it comes with the reading of
+// the quota and can outlive the day it was taken on.
+export function usageForCard(card, { outdated = false, todayProviders = [], familySizes = new Map(), day = '' } = {}) {
+  if (!card) return null;
+  if (outdated) return null;
+  if (card.account) {
+    if (!card.accountUsage) return null;
+    if (!day || card.accountUsageDay !== day) return null;
+    return card.accountUsage;
+  }
+  if ((card.accounts || familySizes.get(card.provider) || 0) > 1) return null;
+  const label = FAMILY_LABELS[card.provider];
+  const rows = label ? todayProviders.filter(row => String(row.label).trim().toLowerCase() === label.toLowerCase()) : [];
+  if (!rows.length) return null;
+  // A row of the usage of a vendor is only a number when it is a number: a
+  // row that is missing one makes the whole total unknown, not smaller.
+  const counted = rows.map(row => typeof row?.totalTokens === 'number' && Number.isFinite(row.totalTokens) &&
+    typeof row?.requests === 'number' && Number.isFinite(row.requests) ? row : null);
+  if (counted.some(row => !row)) return null;
+  return { today: {
+    totalTokens: counted.reduce((sum, row) => sum + row.totalTokens, 0),
+    requests: counted.reduce((sum, row) => sum + row.requests, 0),
+  } };
+}
+
+export function project(snapshot, now = Date.now(), display = {}, settings = {}) {
+  const choices = displayOptions(display);
   const sources = {};
   for (const key of ['quotas', 'today', 'week']) {
     const part = snapshot.parts[key];
@@ -454,6 +567,9 @@ export function project(snapshot, now = Date.now(), display = {}) {
       observedAt: part?.observedAt || null,
     };
   }
+  // A reading that ran out of time is given back marked as old, so the reader
+  // knows the numbers are not of this moment.
+  if (settings.expired) for (const key of Object.keys(sources)) if (sources[key].state === 'ok') sources[key].state = 'stale';
   const todayPart = snapshot.parts.today;
   const outdated = !!todayPart && (todayPart.periodDay || shanghaiDay(Date.parse(todayPart.observedAt))) !== shanghaiDay(now);
   if (outdated) { sources.today.state = 'stale'; sources.today.outdated = true; }
@@ -461,30 +577,8 @@ export function project(snapshot, now = Date.now(), display = {}) {
   // when it is the only account of that vendor: a widget that shows one
   // subscription then shows that subscription's own numbers.
   const cards = snapshot.parts.quotas?.data || [];
-  const familySizes = new Map();
-  for (const card of cards) familySizes.set(card.provider, (familySizes.get(card.provider) || 0) + 1);
-  const todayProviders = outdated ? [] : (todayPart?.data?.providers || []);
-  // A row of the usage of a vendor is only a number when it is a number: a
-  // row that is missing one makes the whole total unknown, not smaller.
-  const usageRow = row => typeof row?.totalTokens === 'number' && Number.isFinite(row.totalTokens) &&
-    typeof row?.requests === 'number' && Number.isFinite(row.requests) ? row : null;
-  const usageOf = card => {
-    if (card.account) return card.accountUsage || null;
-    // A vendor with several accounts cannot lend its total to one of them:
-    // the sum would count the other account's tokens as well.
-    if ((card.accounts || familySizes.get(card.provider) || 0) > 1) return null;
-    const label = FAMILY_LABELS[card.provider];
-    const rows = label ? todayProviders.filter(row => String(row.label).trim().toLowerCase() === label.toLowerCase()) : [];
-    if (!rows.length) return null;
-    const counted = rows.map(usageRow);
-    // A row without a number makes the total unknown: it is never a smaller
-    // number that looks right.
-    if (counted.some(row => !row)) return null;
-    return { today: {
-      totalTokens: counted.reduce((sum, row) => sum + row.totalTokens, 0),
-      requests: counted.reduce((sum, row) => sum + row.requests, 0),
-    } };
-  };
+  const { familySizes, todayProviders, day } = todayContext(snapshot, now);
+  const usageOf = card => usageForCard(card, { outdated, todayProviders, familySizes, day });
   const subscriptions = cards.map(card => ({
     ...card,
     usage: usageOf(card),
@@ -496,10 +590,10 @@ export function project(snapshot, now = Date.now(), display = {}) {
       expired: !!window.resetsAt && Date.parse(window.resetsAt) <= now,
     })),
   }));
-  const showAll = options.subscriptions.includes('*');
+  const showAll = choices.subscriptions.includes('*');
   // Without an explicit list the canonical family order is used; a provider that
   // is not listed sorts last instead of first.
-  const order = showAll ? PROVIDER_ORDER : options.subscriptions;
+  const order = showAll ? PROVIDER_ORDER : choices.subscriptions;
   // A card is ranked by the first entry that names it: its family, or the one
   // account of that family the list picked.
   const rank = card => {
@@ -507,20 +601,20 @@ export function project(snapshot, now = Date.now(), display = {}) {
     return index < 0 ? order.length : index;
   };
   const shown = subscriptions
-    .filter(card => showAll || options.subscriptions.includes(card.provider) || options.subscriptions.includes(card.id))
+    .filter(card => showAll || choices.subscriptions.includes(card.provider) || choices.subscriptions.includes(card.id))
     .sort((a, b) => rank(a) - rank(b));
   const week = snapshot.parts.week?.data;
   return {
     schemaVersion: 1, generatedAt: new Date(now).toISOString(), timezone: 'Asia/Shanghai', sources,
-    display: options,
+    display: choices,
     subscriptions: shown,
     usage: { today: outdated ? null : snapshot.parts.today?.data.metrics || null, week: week?.metrics || null },
     trend: week?.trend || [],
     rankings: {
-      models: (week?.models || []).slice(0, options.modelLimit),
-      agents: (week?.agents || []).slice(0, options.agentLimit),
-      providers: (week?.providers || []).slice(0, options.providerLimit),
-      computers: (week?.computers || []).slice(0, options.computerLimit),
+      models: (week?.models || []).slice(0, choices.modelLimit),
+      agents: (week?.agents || []).slice(0, choices.agentLimit),
+      providers: (week?.providers || []).slice(0, choices.providerLimit),
+      computers: (week?.computers || []).slice(0, choices.computerLimit),
     },
   };
 }

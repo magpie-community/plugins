@@ -19,4 +19,4 @@
 
 ## Runtime applications
 
-Scriptable, Tailscale and Magpie are separately installed applications with their own licences and terms. OpenAI, MiniMax and GLM names identify the subscriptions observed through Magpie. No proprietary logo assets or model lists are bundled.
+Scriptable, Tailscale and Magpie are separately installed applications with their own licences and terms. Tailscale is only needed for the default way of connecting; with an address of your own the plugin does not use it at all. OpenAI, MiniMax and GLM names identify the subscriptions observed through Magpie. No proprietary logo assets or model lists are bundled.

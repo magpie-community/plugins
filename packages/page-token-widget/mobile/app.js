@@ -1,11 +1,30 @@
 const $ = id => document.getElementById(id);
-const savedTheme = sessionStorage.getItem('usage-theme');
+// The token stays on this phone. Safari forgets a session when the tab is
+// closed, and the page is opened from the widget days later — asking for the
+// token every time was the wrong kind of careful. localStorage keeps it
+// until 「断开」 is pressed; a browser that refuses it falls back to the
+// session, which is the old behaviour.
+const store = {
+  get(key) {
+    try { return localStorage.getItem(key); } catch { /* A browser that refuses it. */ }
+    try { return sessionStorage.getItem(key); } catch { return null; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, value); return; } catch { /* A browser that refuses it. */ }
+    try { sessionStorage.setItem(key, value); } catch { /* Nothing to do. */ }
+  },
+  drop(key) {
+    try { localStorage.removeItem(key); } catch { /* Nothing to do. */ }
+    try { sessionStorage.removeItem(key); } catch { /* Nothing to do. */ }
+  },
+};
+const savedTheme = store.get('usage-theme');
 if (savedTheme) document.documentElement.dataset.theme = savedTheme;
 $('theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme === 'dark' || !document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches;
   const theme = dark ? 'light' : 'dark';
   document.documentElement.dataset.theme = theme;
-  sessionStorage.setItem('usage-theme', theme);
+  store.set('usage-theme', theme);
 });
 const compact = value => value == null ? '—' : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(value);
 const exact = value => new Intl.NumberFormat('en').format(value);
@@ -19,15 +38,33 @@ const node = (tag, className, text) => {
 };
 let token = new URLSearchParams(location.hash.slice(1)).get('token');
 history.replaceState(null, '', location.pathname);
-if (token) sessionStorage.setItem('usage-token', token);
-token ||= sessionStorage.getItem('usage-token');
+// The token is remembered for a while, not forever: it is a long-lived
+// credential and every script on that address can read the storage. Thirty
+// days is long enough for a daily look and short enough to be forgotten.
+// Tapping the widget brings the token again anyway.
+const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;
+const remember = value => store.set('usage-token', JSON.stringify({ token: value, at: Date.now() }));
+const recall = () => {
+  try {
+    const saved = JSON.parse(store.get('usage-token'));
+    if (saved && typeof saved.token === 'string') {
+      if (Date.now() - Number(saved.at || 0) < REMEMBER_MS) return saved.token;
+      // Past the window it is not only ignored, it is dropped: an old token
+      // should not stay readable in the storage.
+      store.drop('usage-token');
+    }
+  } catch { /* Nothing stored, or something that is not ours. */ }
+  return null;
+};
+if (token) remember(token);
+token ||= recall();
 let last;
-try { last = JSON.parse(sessionStorage.getItem('usage-overview')); } catch { /* No cached response. */ }
+try { last = JSON.parse(store.get('usage-overview')); } catch { /* No cached response. */ }
 // Percent direction and ranking tab are per-device viewing choices,
 // not changes to what the service projects.
-let quotaMode = sessionStorage.getItem('usage-quota-mode') === 'used' ? 'used' : 'remaining';
+let quotaMode = store.get('usage-quota-mode') === 'used' ? 'used' : 'remaining';
 const RANKING_TABS = ['models', 'providers', 'agents', 'computers'];
-let rankTab = RANKING_TABS.includes(sessionStorage.getItem('usage-ranking')) ? sessionStorage.getItem('usage-ranking') : 'models';
+let rankTab = RANKING_TABS.includes(store.get('usage-ranking')) ? store.get('usage-ranking') : 'models';
 function syncQuotaToggle() {
   for (const mode of ['remaining', 'used']) {
     const button = $('mode-' + mode);
@@ -44,13 +81,13 @@ function syncRankTabs() {
 }
 for (const mode of ['remaining', 'used']) $('mode-' + mode).addEventListener('click', () => {
   quotaMode = mode;
-  sessionStorage.setItem('usage-quota-mode', mode);
+  store.set('usage-quota-mode', mode);
   syncQuotaToggle();
   if (last) renderQuotas(last.subscriptions);
 });
 for (const id of RANKING_TABS) $('tab-' + id).addEventListener('click', () => {
   rankTab = id;
-  sessionStorage.setItem('usage-ranking', id);
+  store.set('usage-ranking', id);
   syncRankTabs();
   if (last) renderRankings(last);
 });
@@ -177,15 +214,18 @@ function speedText(metrics) {
 }
 function render(data, offline = false) {
   const stale = offline || Object.values(data.sources).some(source => source.state !== 'ok');
-  $('connection').textContent = offline ? '离线· 显示缓存' : stale ? '部分数据待更新' : '已连接· Tailscale';
+  $('connection').textContent = offline ? '离线· 显示缓存' : stale ? '部分数据待更新' : '已连接';
   $('status-dot').className = 'status-dot ' + (stale ? 'warn' : 'ok');
   const notices = [];
   if (data.demo) notices.push('演示模式· 所有数字、模型和设备用量均为虚构数据。');
   if (stale) notices.push('当前显示最后成功的统计，请查看下方更新时间；未获取到的数据以 — 表示。');
   $('notice').hidden = !notices.length; $('notice').textContent = notices.join(' ');
-  renderQuotas(data.subscriptions);
   const day = value => new Date(value + 8 * 3600000).toISOString().slice(0, 10);
   const oldDay = data.sources.today.outdated || data.sources.today.observedAt && day(Date.parse(data.sources.today.observedAt)) !== day(Date.now());
+  // A reading of another day is not the usage of today: the cards must not
+  // keep yesterday's number and let it be read as today's.
+  if (oldDay) for (const card of data.subscriptions || []) if (card) card.usage = null;
+  renderQuotas(data.subscriptions);
   const today = oldDay ? null : data.usage.today, week = data.usage.week;
   $('today-total').textContent = compact(today?.totalTokens);
   $('today-total').title = today ? exact(today.totalTokens) + ' Token' : '';
@@ -213,26 +253,92 @@ function auth(message = '') {
   $('auth-error').textContent = message;
   if (!$('auth').open) $('auth').showModal();
 }
+// A phone that is going away asks the service to take its row off the list of
+// the devices. The answer says whether the row is really gone.
+async function forget(dying) {
+  try {
+    const response = await fetch('/api/v1/device/forget', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + dying, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!response.ok) return false;
+    const answer = await response.json();
+    return !!(answer && answer.forgotten);
+  } catch {
+    return false;
+  }
+}
 async function load() {
   if (!token) { auth(); return; }
   $('refresh').disabled = true;
   try {
     const response = await fetch('/api/v1/overview', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (response.status === 401) {
-      token = null; sessionStorage.removeItem('usage-token'); auth('令牌无效，请重新输入。'); return;
+      // The service puts its name on every answer that refuses a token. A
+      // refusal without that name comes from something in front of the
+      // service, and the token of the phone may still be good — so it is
+      // kept, and only the truth is told.
+      if (response.headers.get('x-token-widget-service') === '@magpie-community/page-token-widget') {
+        // The service does not know this token. The phone says so, and its row
+        // on the PC goes with it — the same way a widget that reads a dead
+        // token cleans up after itself.
+        const dying = token;
+        token = null; store.drop('usage-token');
+        if (dying) void forget(dying);
+        auth('令牌无效，请重新输入。');
+      } else {
+        auth('服务返回 401：这个地址回的不是你的插件服务。令牌没有动。');
+      }
+      return;
     }
     if (!response.ok) throw new Error('Unavailable');
     const data = await response.json();
     if (data.schemaVersion !== 1) throw new Error('Unsupported response');
-    last = data; sessionStorage.setItem('usage-overview', JSON.stringify(data));
+    last = data; store.set('usage-overview', JSON.stringify(data));
     $('auth').close(); render(data);
   } catch {
     if (last) render(last, true);
-    else { $('connection').textContent = '连接失败'; $('notice').hidden = false; $('notice').textContent = '无法连接服务。请检查 PC 服务和 iPhone 的 Tailscale 连接。'; }
+    else { $('connection').textContent = '连接失败'; $('notice').hidden = false; $('notice').textContent = '无法连接服务。请检查 PC 服务和 iPhone 的网络（尾网或内网）。'; }
   } finally { $('refresh').disabled = false; }
 }
 $('auth-form').addEventListener('submit', event => {
-  event.preventDefault(); token = $('token').value.trim(); sessionStorage.setItem('usage-token', token); void load();
+  event.preventDefault(); token = $('token').value.trim(); remember(token); void load();
+});
+// 「断开」 puts the token away: the page forgets it, the row of this phone is
+// taken off the list of the devices, and the next visit asks for it again.
+// It asks once more before it does: the row on the PC goes with it, and that
+// is not always what the finger meant.
+let forgetArmed = 0;
+$('forget').addEventListener('click', () => {
+  if (Date.now() > forgetArmed) {
+    forgetArmed = Date.now() + 4000;
+    $('forget').textContent = '确定断开？';
+    setTimeout(() => { forgetArmed = 0; $('forget').textContent = '断开'; }, 4000);
+    return;
+  }
+  forgetArmed = 0; $('forget').textContent = '断开';
+  const dying = token;
+  token = null; store.drop('usage-token');
+  // The old numbers go with the token: they belong to the device that was
+  // just disconnected.
+  last = null; store.drop('usage-overview');
+  // The row on the PC goes as well, so a phone that is going away does not
+  // stay in the list. A token that has run out is enough for that.
+  const note = $('notice');
+  if (dying) {
+    void forget(dying).then(gone => {
+      note.hidden = false;
+      note.textContent = gone
+        ? '这台手机已经断开：令牌抹掉了，PC 名单上那一行也删掉了。下次打开这个页面会重新问你要。'
+        : '这台手机已经断开：令牌抹掉了。PC 名单上那一行还没删掉（服务没有答话），可以在控制台的设备管理里把它删掉。';
+    });
+  } else {
+    note.hidden = false;
+    note.textContent = '这台手机已经断开：令牌抹掉了。下次打开这个页面会重新问你要。';
+  }
+  $('connection').textContent = '已断开';
+  auth('已经断开了。');
 });
 $('auth').addEventListener('cancel', event => event.preventDefault());
 $('refresh').addEventListener('click', () => void load());

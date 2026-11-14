@@ -30,15 +30,25 @@ test("the launcher navigates instead of probing", () => {
 });
 
 test("plugin metadata speaks Chinese and English", () => {
-  assert.equal(pkg.magpie.name, "iPhone quota widget");
+  assert.equal(pkg.magpie.name, "iPhone Quota Widget");
   assert.equal(pkg.magpie.page.titles.zh, "iPhone 额度组件");
-  assert.equal(pkg.magpie.page.titles.en, "iPhone quota widget");
+  assert.equal(pkg.magpie.page.titles.en, "iPhone Quota Widget");
   assert.match(pkg.magpie.summary.zh, /额度/);
   assert.match(pkg.magpie.summary.en, /quota/);
-  assert.match(pkg.description, /A page in Magpie's window/);
+  assert.match(pkg.description, /quota/i);
+  assert.match(pkg.description, /额度/);
   const readme = read(dir, "README.md");
   assert.match(readme, /magpie plugin add @magpie-community\/page-token-widget/);
   assert.match(readme, /## 中文说明/);
+});
+
+test("the registry says the same thing as the package", () => {
+  const registry = JSON.parse(readFileSync(join(dir, "..", "..", "registry.json"), "utf8"));
+  const entry = registry.plugins.find((item) => item.package === pkg.name);
+  assert.ok(entry, "the package is in the registry");
+  assert.equal(entry.name, pkg.magpie.name);
+  assert.deepEqual(entry.summary, pkg.magpie.summary);
+  assert.equal(entry.kind, "page");
 });
 
 test("the declared port is the one the page falls back to", () => {
