@@ -204,7 +204,7 @@ If you added ModelScope to magpie earlier for chat, its key is already in
 `providers.json`. The bundled CLI logs the same token into the plugin:
 
 ```bash
-npx magpie-plugin-msmoli --status      # see both sides, change nothing
+npx magpie-plugin-msmoli --status      # see both sides, change nothing; exits 0 when they already agree, 1 when a login is pending
 npx magpie-plugin-msmoli --to-plugin   # copy the preset's key into the plugin
 ```
 
@@ -221,14 +221,14 @@ budgets this document describes.
 If you are on **0.2.0**, that version ships an older `bin/sync.mjs` with both
 directions, but it keeps the international site in a second provider and
 predates this round of fixes. Upgrade (`npm i -g magpie-plugin-msmoli@latest`
-or `magpie plugin update msmoli`) to get what this document describes.
+or `magpie plugin update`) to get what this document describes.
 
 It syncs the **domestic site only**: the built-in preset it reads is the
 `modelscope.cn` one. Sign an international account in by hand.
 
 | Flag | What it does |
 |---|---|
-| `--status` | Report both sides and the plan; write nothing |
+| `--status` | Report both sides and the plan; write nothing. Exit code 0 when there is nothing to do, 1 when the plan would run (or is refused) |
 | `--to-plugin` | Log the preset's key into the plugin |
 | `--to-preset` | The other way round; a preset that already holds a different key needs `--force` |
 | `--force` | Replace a single existing plugin account whose key differs |
@@ -392,7 +392,7 @@ flowchart LR
 
 | Outcome | Meaning |
 |---|---|
-| `done` | already claimed today, with the day's total |
+| `done` | already claimed today, with the day's total (plus anything the touch itself granted) |
 | `claimed` | this run claimed it, with the amount; a row that was there before the touch is never counted as this run's |
 | `inactive` | the sign-in went through but nothing was granted (from noon on, checked once more 30 minutes later before it stands for the day) |
 | `failed` | nothing was claimed, including "not yet time" (see below) |
@@ -460,6 +460,7 @@ to show), so changes apply without restarting magpie.
 | Value | Effect |
 |---|---|
 | `["08:30", "10:00"]` or `"08:30-10:00"` | claim inside that window |
+| `["09:00"]` or `"09:00"` | claim at 09:00 (the host's ask lands at that minute or the next one) |
 | `false`, `"off"`, `"no"` | no window; claim whenever magpie asks |
 | an unusable value (end before start, not a clock time) | falls back to the default |
 | an end past **23:00** | capped at 23:00; a window entirely past it falls back to the default |
@@ -592,7 +593,9 @@ The run readings give up on a body past 32 KiB and only the per-word pass
 runs: a body of thousands of one-word pieces ("s k - a n t" repeated) costs
 two orders of magnitude more reading than any message this pass exists for,
 and a key stored inside such a body as whole words is still masked. The
-bound exists so a hostile server's error cannot eat a hook's budget.
+bound exists so a hostile server's error cannot eat a hook's budget. A key
+cut by a space or a line break is still joined up to that bound, on the card
+and in the CLI alike.
 
 A piece is masked only when it carries ten characters of the key's own —
 **letters and digits, not the hyphens or spaces the token was written in**. A
@@ -627,8 +630,9 @@ The terms and risks are in
 
 - **Requests per day.** A check-in is three requests (ledger, touch, ledger);
   a day already claimed answers `done` in one ledger read when the nickname
-  is known, two otherwise; a ledger that hasn't caught up takes
-  four. A run longer than one ledger page adds one read per page walked back,
+  is known, two otherwise (the second is the ledger after the touch — a grant
+  can land with it even on a day already claimed); a ledger that hasn't caught
+  up takes four. A run longer than one ledger page adds one read per page walked back,
   up to seven — only while the streak is still going at the oldest row. A day
   whose own rows fill a page (a busy account) reads the next page too, up to
   four more, for both the check-in and the card. Asks before the window send
@@ -657,13 +661,20 @@ The terms and risks are in
   shape; a proxy's 403 page is reported as an ordinary refusal. A sign-in
   that was refused after the day's credits landed reports the expiry but
   keeps the day's answer.
-- **A body it doesn't understand fails; it never reads as zero.** A missing
-  `data`, a list where an object belongs, a missing or non-numeric
-  `available_balance`: each is a failure with its reason, because
-  "0 魔粒可用" would be a definite and false answer. Server text (a message, a
-  grant's title) has any key in it masked before it reaches the card or the log.
-- `MAGPIE_MSMOLI_CONFIG` overrides the config file's path. It exists for the
-  test suite, and works in production too.
+- **A body it doesn't understand is not read as zero.** A missing `data`, a
+  list where an object belongs, a missing or non-numeric `available_balance`:
+  a balance like that is a failure with its reason, because "0 魔粒可用"
+  would be a definite and false answer. A *ledger* that fails is the day
+  line's problem, not the card's: the balance was read before it and stays on
+  the card, the line carries the failure's own words
+  (`账单查询失败：… · 余额 100`), today's numbers are "not said" (no window
+  percentage) rather than 0, and the next poll reads the ledger again. A 401
+  is the sign-in's, and still answers expired. Server text (a message, a
+  grant's title) has any key in it masked before it reaches the card or the
+  log.
+- `MAGPIE_MSMOLI_CONFIG` overrides the config file's path. An absolute path
+  only: a relative one would be resolved against whatever folder magpie was
+  started in, so it is ignored.
 - The other 170 credits a day (liking items, posting AIGC works and models) have
   no API and would mean driving the web UI. This plugin doesn't touch them.
 
@@ -673,7 +684,7 @@ The terms and risks are in
 |---|---|
 | `没有登录信息，请先登录` | `printf 'ms-token\n' \| magpie plugin login msmoli` |
 | No credit window on the card, or no check-in | Restart magpie; the plugin host caches. |
-| `failed` with HTTP 401 | The token was revoked, or belongs to the other site; `modelscope.cn` and `modelscope.ai` don't share tokens. The message names the site that refused (国内站 / 国际站), or 任一站点 when both did. Make a new token there and sign in again. |
+| `failed` with HTTP 401 | The token was revoked, or belongs to the other site; `modelscope.cn` and `modelscope.ai` don't share tokens. The message names the site that refused (国内站 / 国际站), or 任一站点 when both did. When the key is spelled like a URL or a path, the message says so first — check the field, not the sign-in. Make a new token there and sign in again. |
 | `failed` with HTTP 403 | ModelScope's risk control refused the request; the token is fine. A check-in is asked again in 30 minutes; a usage read shows the 403 on the card until the next poll. |
 | Before the window: failed, with `09:56 后自动领取（北京时间，magpie 每半小时问一次，无需操作）` | Expected. See [When it claims](#when-it-claims-the-check-in-window). |
 | Check in now before the target minute answers failed with the same line | Expected. A manual press and the host's half-hourly ask reach the plugin the same way, so only the target minute starts the claim. |

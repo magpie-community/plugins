@@ -14,7 +14,7 @@ Magpie offers three plugins for Google Antigravity. All three **share the exact 
 | :--- | :--- | :--- | :--- |
 | **Backend / Endpoint** | Local `agy` CLI (`agy acp --worker`); downloads nothing | Local `agy` CLI (`agy acp`); downloads nothing | Direct HTTP calls to Google's internal API (no CLI needed) |
 | **Sign-in & Storage** | Isolated `0600` account dirs (no OS Keychain): browser OAuth, remote callback-URL paste, batch JSON/`refresh_token` import (Switcher / CLIProxyAPI), or one-click local `agy` login adoption | Single login stored in OS Keychain via manual `agy` shell sign-in | Multi-account OAuth tokens managed directly in Magpie |
-| **Multi-Account & Quota Failover** | Multi-account pool with automatic quota-aware switching (5h/weekly windows + Google AI Pro/Ultra badges) | Single-account only (`single: true`) | Multi-account supported |
+| **Multi-Account & Quota Failover** | Multi-account pool, quota-aware (5h/weekly windows + Google AI Pro/Ultra badges); automatic account switching is **off by default** (`account_failover`) | Single-account only (`single: true`) | Multi-account supported |
 | **Headless / Remote Host Setup** | Built-in callback URL paste & JSON token batch import | Requires interactive local `agy` login / keychain setup | Built-in OAuth flow |
 | **Client Tool Bridge** | Native loopback HTTP MCP (`127.0.0.1`) | Injects a wrapper `nc` script at the front of `PATH` (`--ide-mcp-port`) | Translated in HTTP payload |
 | **Media & Session Resilience** | Auto-downscales inline images (`>2000px` / `>5 MiB`) & strips expired `lostMedia` images to keep sessions alive | Standard `agy` CLI handling | Direct HTTP payload handling |
@@ -23,6 +23,24 @@ Magpie offers three plugins for Google Antigravity. All three **share the exact 
 
 - **`agy` CLI** `>= 1.5.0` installed on `PATH` (or set `AGY_PATH`)
 - **Magpie** `>= 0.1.3900`
+
+## Account and Terms of Service
+
+This plugin drives the `agy` CLI you installed, with the Google account you signed in with. Google's Antigravity Additional Terms of Service, section 6:
+
+> You must not abuse, harm, interfere with, or disrupt the Service. This includes, but is not limited to, using the Service in connection with products not provided by us. Using third party software, tools, or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement. Such actions may be grounds for suspension or termination of your Antigravity and/or Gemini CLI accounts.
+
+The Antigravity FAQ adds that wrapping `agy` inside third-party coding agents, or automating account rotation, is not supported under consumer plans.
+
+**What that means for this plugin.** It wraps `agy` for Magpie and OpenCode, which is the first named behaviour. It also performs the browser sign-in itself, using the same installed-app client identity that `agy` uses for its own login, and writes the resulting token into the account's isolated directory. It does not spoof a client identity, intercept TLS, or use a model the account cannot select.
+
+Account rotation is the second one, and it is now off by default: when an account's quota, sign-in or policy fails a turn, that error comes back and you choose the next account (see `account_failover` below). A disabled account answers with "This service has been disabled in this account for violation of Terms of Service"; the plugin surfaces that error and stops asking that account for six hours. Restoring an account is Google's decision, through the appeal form the message links to, and their own wording says a repeat violation is permanent. For a supported path, use a Vertex AI or AI Studio API key instead.
+
+`cloak_prompts` used to default to on. It rewrites system-prompt lines that identify a third-party harness so a vendor-side check stops refusing the request; that is a workaround for a vendor check, which the terms treat as circumvention, so it is off by default now and best left off.
+
+**Your account, your risk.** The maintainer cannot restore a disabled account. The
+clauses, the enforcement reports, and what one disabled account's logs showed are in
+[`docs/account-safety.md`](./docs/account-safety.md).
 
 ## Install & Sign In
 
@@ -59,8 +77,9 @@ magpie quota agy-acp
 
 | Option | Default | Description |
 |---|---|---|
-| `quota_routing` | `true` | Expose 5-hour/weekly buckets to Magpie routing so exhausted accounts fail over automatically |
-| `cloak_prompts` | `true` | Strip billing headers and cloak third-party harness phrases that trigger upstream 429 refusals |
+| `quota_routing` | `true` | Expose 5-hour/weekly buckets to Magpie routing so these windows show on each account |
+| `account_failover` | `false` | Switch accounts automatically after a failure. Off by default: a turn that fails on this account's quota, sign-in, credit or policy returns its own error (`409`, which Magpie does not fail over) and you pick the next account. On, Magpie may answer the same turn from another signed-in account, which the terms treat as automating account rotation. A vendor-wide `5xx` is retryable either way |
+| `cloak_prompts` | `false` | Rewords system-prompt lines that identify a third-party harness (and the two Codex lines in your own messages) that get answered as a spent quota. Off by default: it works around a vendor check. Add your own pairs with `cloak_said_as` (`"phrase=replacement; phrase2=replacement2"`) |
 | `minimal_agent` | `false` | Enable `excludeDefaultComponents` on the bridge agent to reduce built-in system prompt tokens |
 | `expose_thinking` | `true` | Emit ACP thought summaries as Anthropic `thinking` blocks |
 

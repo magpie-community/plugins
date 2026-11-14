@@ -1,6 +1,6 @@
 # Responses 跨资源修复
 
-Magpie 插件，用于缓解 OpenAI Responses API 的跨资源错误。`0.2.0` 增加供应商入口，覆盖 Magpie 自己生成上下文压缩摘要的请求。
+Magpie 插件，用于缓解 OpenAI Responses API 的跨资源错误。`0.3.0` 在供应商编辑页增加 Codex 请求头开关，覆盖模型查询、普通对话和 Magpie 压缩摘要。供应商模式复用 Magpie 的多账号与路由机制，每个 API Key 保存为一个独立账号。
 
 ```text
 The requested item was created under a different Azure OpenAI resource.
@@ -29,21 +29,45 @@ magpie plugin add github:JinPen-G/magpie-responses-shim
 已安装旧版时，在 Magpie 的插件页面更新本插件。然后完成以下设置。
 
 1. 在「AgentRouter 修复」供应商中填写自己的 AgentRouter API Key，或执行 `magpie plugin login agentrouter-shim`。登录信息由 Magpie 保存在配置目录的 `plugin-auth.json`。
-2. 选择该供应商列出的 `agentrouter-shim/模型名`。模型 ID 来自上游 `/models`，上下文长度等元数据以已有明确配置为准。
-3. 使用 Magpie 的摘要压缩模式，默认即为此模式。需要明确设置时，执行 `magpie provider set agentrouter-shim compaction=magpie`。压缩路由规则也应选用此供应商。
-4. 在原报错聊天验证普通回复、上下文压缩，以及压缩后的继续对话。
+2. 打开「供应商 → AgentRouter 修复 → 插件选项」。上游检查 Codex 客户端信息时，开启「对话请求带 Codex 头」。「查询模型时带 Codex 头」默认开启。首次使用的身份头准备方法见下节。
+3. 选择该供应商列出的 `agentrouter-shim/模型名`。模型 ID 来自上游 `/models`，上下文长度等元数据以已有明确配置为准。
+4. 使用 Magpie 的摘要压缩模式，默认即为此模式。需要明确设置时，执行 `magpie provider set agentrouter-shim compaction=magpie`。压缩路由规则也应选用此供应商。
+5. 在原报错聊天验证普通回复、上下文压缩，以及压缩后的继续对话。
 
 供应商模式由 Magpie 的 Bun 插件宿主运行。首次需要时由 Magpie 准备 Bun。Magpie 的「设置 → 隐私 → 订阅账号」控制账号型插件的可用性，使用此模式需要该设置允许读取插件登录。
 
 ### Codex 请求头
 
-AgentRouter 检查客户端信息时，在「AgentRouter 修复 → 编辑 → 高级 → Request headers to pass／透传请求头」中填写以下名称。
+在「供应商 → AgentRouter 修复」的编辑页中，插件声明以下两个开关。保存后，后续请求读取当前开关值。
 
-```text
-User-Agent, Originator, Version, Session-Id, Thread-Id, Session_id, X-Client-Request-Id, X-Codex-Turn-Metadata, X-Codex-Window-Id, X-Codex-Beta-Features
+| 开关 | 默认 | 作用 |
+| --- | --- | --- |
+| 对话请求带 Codex 头 | 关闭 | 为 Responses、压缩、输入 Token 计数及 Chat Completions 请求设置实际 Codex 身份头，并补齐当前会话头。关闭时按 Magpie 传入的客户端头发送。 |
+| 查询模型时带 Codex 头 | 开启 | 查询上游 `/models` 时发送实际 Codex 身份头。关闭时使用宿主客户端头，上游可能返回 401。 |
+
+也可以通过 CLI 设置。
+
+```sh
+magpie plugin options magpie-responses-shim '{"codex-headers":true,"models-codex-headers":true}'
 ```
 
-Magpie 按这些名称传递客户端实际发送的值。账号鉴权由供应商插件的 API Key 完成。已在 Magpie 0.1.3078 验证 `User-Agent`、`Originator` 和 `X-Codex-Turn-Metadata` 在压缩请求中的传递。
+`User-Agent`、`Originator`、`Version` 依次取自插件选项 `codexHeaders`、本次已经传入的 Codex 请求头，以及 Magpie 配置目录 `client-shapes.json` 的 `codex` 记录。记录缺少 `Version` 时，从实际 `User-Agent` 中的版本补齐。此记录由 Magpie 在转发真实 Codex 请求时保存。[Magpie 客户端记录实现](https://github.com/yetone/magpie/blob/v0.1.3078/internal/provider/test_as.go#L138)
+
+首次使用时，如果出现 `codex_headers_unavailable`，先让自己的 Codex 通过 Magpie 原有的 API Key 供应商发送一条普通请求，再回到「AgentRouter 修复」重新获取模型。也可在插件 JSON 选项的 `codexHeaders` 中填写自己实际使用的 `User-Agent`、`Originator` 和可选 `Version`。身份头读取失败会显示具体错误，模型查询开关关闭后可按宿主方式重新查询。
+
+对话开启后，`Session-Id`、`Session_id` 和 `Thread-Id` 的缺失值使用本次会话 ID 补齐，优先使用本次已传入的会话信息，其次使用 Magpie 的 `chat.headers` 会话 ID。`X-Codex-Turn-Metadata` 等逐请求元数据沿用实际收到的值。账号鉴权使用 Magpie 为本次请求选中的 Key。
+
+`0.2.0` 文档把普通 API Key 供应商的「Request headers to pass／透传请求头」输入框误写成了账号型插件供应商的选项。此前验证直接写入 `providers.json` 的 `passHeaders`，验证的是后端转发能力。`0.3.0` 使用 `auth.options` 声明编辑页开关，已在 Magpie `0.1.3078` 实际界面确认。[账号供应商编辑页](https://github.com/yetone/magpie/blob/v0.1.3078/internal/gui/assets/app.js#L9489) · [插件开关接口](https://github.com/yetone/magpie/blob/v0.1.3078/internal/plugin/host.js#L2123)
+
+### 多 Key 与路由
+
+1. 在「AgentRouter 修复 → 账号」中点「添加另一个 AgentRouter 修复 账号」，每次填写一个 Key。重复执行 `magpie plugin login agentrouter-shim` 也会添加新账号。
+2. 勾选参与请求的账号，并设置首选账号与顺序。
+3. 在同一编辑页的「路由」中选择「智能」「按顺序」「轮流」等策略，按需要设置「会话保持」。例如 `magpie provider set agentrouter-shim routing=smart`，轮流策略为 `routing=rotate`。
+
+Magpie 选择账号，插件在账号作用域中读取它的 Key 并清理每次请求。已用两个独立测试 Key 验证轮流路由，以及压缩时第一个账号返回 429 后改用第二个账号。每次账号尝试都执行清理。
+
+本插件目前提供模型列表和上游原始 HTTP 结果。AgentRouter 余额、套餐余量及重置时间尚待接入 `auth.usage` 用量接口，按这些数据排序需要对应的上游数据。其余路由、休息和会话保持沿用 Magpie 的当前规则。[Magpie 插件多账号实现](https://github.com/yetone/magpie/blob/v0.1.3078/internal/provider/plugin_accounts.go#L17)
 
 ### 本地开发
 
@@ -91,6 +115,7 @@ magpie plugin add ./magpie-responses-shim
 | `providers` | 中间件模式要处理的供应商 ID，默认 `agentrouter`。可填写多个准确 ID，空数组暂停中间件处理。 |
 | `log` | 为 `true` 时记录移除项数量和未解决的资源状态数量，默认关闭。日志内容仅含计数。 |
 | `upstream` | 供应商模式实际访问的上游 Base URL，默认 `https://agentrouter.org/v1`。应填写承接此 API Key 的真实服务地址。 |
+| `codexHeaders` | 可选对象，填写当前实际 Codex 的 `User-Agent`、`Originator` 和可选 `Version`。省略时读取收到的 Codex 身份头或 Magpie 已记录的身份。 |
 
 `magpie.options` 给出编辑器示例，代码也实现了相同默认值。中间件的供应商匹配使用 Magpie 中当前的实际 ID。已有 OpenCode 配置在 `config.provider["agentrouter-shim"].api` 明确指定地址时，该地址用于模型发现及请求传输。
 
@@ -124,14 +149,15 @@ npm test
 npm run test:magpie -- "C:\path\to\magpie.exe" "C:\path\to\bun.exe"
 ```
 
-`npm test` 检查清理边界、供应商范围、账号鉴权、取消、传输和历史内容保留。`test:magpie` 使用已有 Bun，在独立配置目录启动本机 Magpie，覆盖以下路径。
+`npm test` 的 20 项定向测试检查清理边界、供应商范围、多账号鉴权隔离、取消、请求头开关、身份读取和历史内容保留。`test:magpie` 使用已有 Bun，在独立配置目录启动本机 Magpie，覆盖以下路径。
 
 - 普通请求及 Codex 原样转发的中间件处理。
 - 默认摘要压缩跳过中间件的回归复现。
 - 供应商模式清理摘要请求，模拟上游拒绝未清理 ID。
-- 透传配置中的客户端请求头，生成 `magpie1:` 摘要后继续对话。
+- 模型查询与对话开关，使用已记录的 Codex 身份和当前会话，生成 `magpie1:` 摘要后继续对话。
+- 两个独立 Key 的轮流路由，以及第一个 Key 被 429 限流时的压缩失败切换。
 
-已在 Windows、Node.js 24.13.0、Bun 1.4.4 和 Magpie 0.1.3078 验证。真实 AgentRouter 和反馈者的原聊天仍待复测。
+已在 Windows、Node.js 24.13.0、Bun 1.4.4 和 Magpie 0.1.3078 验证，测试上游为本机模拟服务。2026-11-15 另在 Magpie 实际供应商编辑界面确认两个请求头开关、两个 Key 账号以及路由选项。真实 AgentRouter 和反馈者的原聊天仍待复测。
 
 临时环境统一位于本仓库 `output/.tmp/magpie-verification`。测试成功和失败均执行退出清理。
 

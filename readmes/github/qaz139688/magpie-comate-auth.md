@@ -29,6 +29,8 @@ magpie plugin add github:qaz139688/magpie-comate-auth
 
 登录凭据只保存在本机 Magpie 的数据目录中，不会提交到本仓库。请勿分享 `plugin-auth.json`、Cookie、License 或其他账号凭据。
 
+网页登录态失效时，插件会继续使用已保存的 License 调用模型；积分接口暂时不可用时，账号卡保留上一次读取的额度，并在计划文字后标注“额度为上次读取”。
+
 ## 模型上下文
 
 插件内置官方值的离线兜底，并自动请求：
