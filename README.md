@@ -40,8 +40,8 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [mimo](packages/mimo) | Xiaomi MiMo, with a Xiaomi account | `mimo-app` |
 | [nous](packages/nous) | Nous Portal models, with Nous Portal's device sign-in | `nous-portal` |
 | [openai-decisions](packages/openai-decisions) | OpenAI's native Decisions API as System One for magpie's classifiers and decision groups, with standard API-key sign-in and per-question refusal handling | `openai-decisions` |
-| [otari](packages/otari) | Otari gateway with your API key: live models, pricing, routing-policy tiers, per-request usage tags, budget/usage and Chat Completions | `otari` |
 | [opendesign](packages/opendesign) | Open Design Cloud (open-design.ai), with the Open Design CLI's device sign-in | `opendesign` |
+| [otari](packages/otari) | Otari gateway with your API key: live models, pricing, routing-policy tiers, per-request usage tags, budget/usage and Chat Completions | `otari` |
 | [qoder](packages/qoder) | Qoder subscription (qoder.com), with Qoder's device sign-in | `qoder` |
 | [qoder](packages/qoder) | Qoder CN subscription (qoder.cn), with Qoder CN's device sign-in | `qoder-cn` |
 | [raccoon](packages/raccoon) | SenseTime Raccoon (商汤小浣熊, xiaohuanxiong.com): account credits and daily check-in, with browser sign-in or Raccoon desktop's sign-in | `raccoon` |
