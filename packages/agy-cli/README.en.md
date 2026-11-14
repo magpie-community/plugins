@@ -239,8 +239,10 @@ start of the first prompt.
 Antigravity answers a 429 "Resource has been exhausted" to a few system
 prompt lines whatever quota is left (Claude Code's billing line, the Claude
 Agent SDK, Codex and Hermes Agent identities, oh-my-pi's RFC 2119 line). The
-plugin breaks each of them up with zero-width spaces before agy sends it, as
-the Antigravity provider does (`cloak.mjs`). Should such a 429 still come
+plugin breaks each of them up with zero-width spaces before agy sends it, and
+sends oh-my-pi's line as "RFC 2119 key words: …" (a broken-up copy of it was
+still turned away now and then), as the Antigravity provider does
+(`cloak.mjs`). Should such a 429 still come
 back, it is reported as a 400 about the prompt, not as a quota.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are

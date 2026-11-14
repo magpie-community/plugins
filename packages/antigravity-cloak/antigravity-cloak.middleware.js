@@ -18,7 +18,9 @@
 // each. This middleware puts one after the first letter of each word in
 // what Antigravity alone is sent (onProvider, ctx.provider.account): every
 // other provider, a Claude subscription above all, gets the prompt as the
-// agent wrote it. The model reads the words as before.
+// agent wrote it. The model reads the words as before. omp's line goes as
+// "RFC 2119 key words: …" instead (saidAs): broken up, Google still turned
+// it away now and then.
 //
 //   {"extraWords": [], "accounts": ["antigravity"], "off": false}
 //
@@ -31,6 +33,15 @@
 export const words = ["x-anthropic-billing-header", "Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."]
 
 const zwsp = "​"
+
+// saidAs are the words no zero-width space gets through reliably, each with
+// how it goes instead, a rewording that keeps its meaning: omp's line broken
+// up was still turned away 1 to 3 times in 10 on a real account on 11-14,
+// whatever the invisible character, while "key words", RFC 2119's own term,
+// went through 10 times in 10.
+const saidAs = {
+  "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.": (m) => m.replace(/(key)(words)/i, "$1 $2"),
+}
 
 export function onProvider(body, ctx) {
   const o = ctx.options || {}
@@ -80,11 +91,17 @@ function parts(list, text) {
 // run of three or more letters or digits in it. One after the first letter
 // only stopped working on 11-11, when Google turned
 // "x\u200b-anthropic-billing-header" and "C\u200blaude Agent SDK" away again.
+//
+// A word matches with any run of white space where it has a space: Google's
+// check read omp's line wrapped after "REQUIRED," or with a tab or a no-break
+// space for a space as it read the line itself (a real account, 11-14).
 function cloaker(list) {
-  const res = list.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"))
+  const res = list.map((w) => new RegExp(w.split(" ").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi"))
   const two = (m) => m.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + zwsp + w[1] + zwsp + w.slice(2))
   return (s) => {
-    for (const re of res) s = s.replace(re, two)
+    list.forEach((w, i) => {
+      s = s.replace(res[i], saidAs[w] ?? two)
+    })
     return s
   }
 }

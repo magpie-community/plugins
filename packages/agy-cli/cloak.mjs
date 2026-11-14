@@ -25,36 +25,52 @@ export const TURNED_AWAY = [
 
 const ZW = "​"
 
-export function turnsAway(system) {
-  const low = String(system ?? "").toLowerCase()
-  return TURNED_AWAY.some((l) => low.includes(l))
+// lineRe matches line in any case and with any run of white space between
+// its words, as Google's check does (a line break, a tab, two spaces or a
+// no-break space for one space; packages/antigravity's lineRe). \s takes no
+// zero-width space, so a line already broken up isn't matched again.
+const lineRe = (line) => new RegExp(line.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi")
+const TURNED_AWAY_RE = TURNED_AWAY.map(lineRe)
+const has = (s, re) => {
+  re.lastIndex = 0
+  const yes = re.test(s)
+  re.lastIndex = 0
+  return yes
 }
+const said = (system, line) => has(system, TURNED_AWAY_RE[TURNED_AWAY.indexOf(line)])
 
-const asciiLower = (s) => s.replace(/[A-Z]/g, (c) => c.toLowerCase())
+export function turnsAway(system) {
+  const s = String(system ?? "")
+  return TURNED_AWAY_RE.some((re) => has(s, re))
+}
 
 // breakUp puts a zero-width space after the first and after the second
 // character of every run of three or more letters or digits in a line.
 // One after the first letter only stopped working on 11-11.
 const breakUp = (line) => line.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + ZW + w[1] + ZW + w.slice(2))
 
+// SAID_AS are the lines no zero-width space gets through reliably, each
+// with how it goes instead: a rewording that keeps its meaning. omp's
+// RFC 2119 line, broken up as the others are (or after every character,
+// or with U+2060 or a soft hyphen), was still turned away 1 to 3 times in
+// 10 on a real account on 11-14, while "key words", the RFC's own term,
+// went through 10 times in 10 (eric_li8983 on X).
+const SAID_AS = {
+  "rfc 2119 keywords: must, required, should, recommended, may, optional.": (line) => line.replace(/(key)(words)/i, "$1 $2"),
+}
+
 export function cloak(system) {
   if (typeof system !== "string" || !turnsAway(system)) return system
-  const low = asciiLower(system)
   const at = []
-  for (const line of TURNED_AWAY) {
-    for (let i = 0; ; ) {
-      const j = low.indexOf(line, i)
-      if (j < 0) break
-      at.push([j, j + line.length])
-      i = j + line.length
-    }
-  }
+  TURNED_AWAY_RE.forEach((re, i) => {
+    for (const m of system.matchAll(re)) at.push([m.index, m.index + m[0].length, SAID_AS[TURNED_AWAY[i]] ?? breakUp])
+  })
   at.sort((a, b) => a[0] - b[0])
   let out = ""
   let prev = 0
-  for (const [from, to] of at) {
+  for (const [from, to, as] of at) {
     if (from < prev) continue
-    out += system.slice(prev, from) + breakUp(system.slice(from, to))
+    out += system.slice(prev, from) + as(system.slice(from, to))
     prev = to
   }
   return out + system.slice(prev)
@@ -90,12 +106,12 @@ const HERMES_HINT =
   "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats"
 
 const RFC_HINT =
-  "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie breaks that line up before it goes, so this one came from a copy of it that was worded another way"
+  "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way"
 
 export function hint(system) {
-  const low = String(system ?? "").toLowerCase()
-  if (low.includes("rfc 2119 keywords: must, required, should, recommended, may, optional.")) return RFC_HINT
-  if (low.includes("you are codex, an agent based on gpt-5") || low.includes("you are codex, a coding agent based on gpt-5")) return CODEX_HINT
-  if (low.includes("hermes agent, an intelligent ai assistant created by nous research")) return HERMES_HINT
+  system = String(system ?? "")
+  if (said(system, "rfc 2119 keywords: must, required, should, recommended, may, optional.")) return RFC_HINT
+  if (said(system, "you are codex, an agent based on gpt-5") || said(system, "you are codex, a coding agent based on gpt-5")) return CODEX_HINT
+  if (said(system, "hermes agent, an intelligent ai assistant created by nous research")) return HERMES_HINT
   return HINT
 }

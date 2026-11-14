@@ -100,14 +100,56 @@ test("a tool's images follow every response, for Claude", () => {
   expect(shape(g, "gemini-3-flash", "", "").contents[2].parts.length).toBe(5)
 })
 
-test("omp's RFC 2119 line is broken up, as the real account turned it away", () => {
+test("omp's RFC 2119 line goes as RFC 2119's own \"key words\", as the real account turned it away", () => {
   const line = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
   const sys = line + " `NEVER` = `MUST NOT`; `AVOID` = `SHOULD NOT`.\n\n§ Role"
   const out = cloak(sys)
-  expect(out).not.toBe(sys)
-  expect(out.replaceAll("\u200b", "")).toBe(sys)
-  expect(out).toContain("R\u200bF\u200bC 2\u200b1\u200b19 k\u200be\u200bywords: M\u200bU\u200bST,")
+  // a zero-width break of this line was turned away 1 to 3 times in 10 on
+  // 11-14; "key words" went through 10 of 10
+  expect(out).toBe(sys.replace("keywords", "key words"))
+  expect(out).not.toContain("\u200b")
   expect(cloak("RFC 2119 keywords: MUST")).toBe("RFC 2119 keywords: MUST")
+})
+
+// omp 18.20.0's first line, byte for byte (src/prompts/system/system-prompt.md),
+// and the copies of it a real account turned away on 11-14 although no
+// space in them is a single space: wrapped after "REQUIRED," with LF or
+// CRLF, wrapped after "RFC 2119", indented, a tab, two spaces, a no-break
+// space. The same account answered the line without its period, with no
+// space after a comma, or in another order, so those go as written.
+const OMP_LINE = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` = `MUST NOT`; `AVOID` = `SHOULD NOT`."
+const OMP_COPIES = [
+  "RFC 2119 keywords: MUST, REQUIRED,\nSHOULD, RECOMMENDED, MAY, OPTIONAL.",
+  "RFC 2119 keywords: MUST, REQUIRED,\r\nSHOULD, RECOMMENDED, MAY, OPTIONAL.\r\n",
+  "RFC 2119\nkeywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+  "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY,\n    OPTIONAL.",
+  "RFC 2119 keywords:\tMUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+  "RFC  2119 keywords:  MUST,  REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+  "RFC\u00a02119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+]
+const OMP_PASSED = [
+  "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL",
+  "RFC 2119 keywords: MUST,REQUIRED,SHOULD,RECOMMENDED,MAY,OPTIONAL.",
+  "RFC 2119 keywords: MUST, SHOULD, MAY, REQUIRED, RECOMMENDED, OPTIONAL.",
+  "RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+]
+
+test("omp's line is reworded wherever white space wraps or widens it", () => {
+  const { turnsAway, hint } = _internal
+  for (const line of [OMP_LINE, ...OMP_COPIES]) {
+    const sys = "<conventions>\n" + line + "\n</conventions>\n\n§ Role"
+    const out = cloak(sys)
+    expect(out).toBe(sys.replace("keywords", "key words"))
+    expect(turnsAway(out)).toBe(false)
+    expect(hint(sys)).toContain("oh-my-pi (omp)")
+    // every white space stays as it was
+    expect(shape({ systemInstruction: { parts: [{ text: sys }] }, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts[0].text).toBe(out)
+  }
+  for (const line of OMP_PASSED) expect(cloak(line)).toBe(line)
+  // the other lines take white space the same way (Hermes' and Codex's
+  // were turned away wrapped and with a tab on the same account)
+  expect(cloak("You are Hermes Agent, an intelligent\nAI assistant created by Nous Research.")).toContain("i\u200bn\u200btelligent\nAI a\u200bs\u200bsistant")
+  expect(cloak("You are Codex, an agent\tbased on GPT-5.")).toContain("a\u200bg\u200bent\tb\u200ba\u200bsed")
 })
 
 test("the lines Antigravity turns away are broken up", () => {

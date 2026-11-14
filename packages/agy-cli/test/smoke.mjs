@@ -1364,14 +1364,15 @@ for (const [title, tools, want, name] of [
   const rfc = "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
   const sdk = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
   const system = `${rfc}\nx-anthropic-billing-header: cc_version=2.1.0; cch=1;\n${sdk}\nCLOAK-MARKER`
-  const plain = (text) => String(text ?? "").replaceAll(zw, "")
+  // omp's line goes as RFC 2119's own "key words", the others broken up
+  const plain = (text) => String(text ?? "").replaceAll(zw, "").replaceAll("RFC 2119 key words:", "RFC 2119 keywords:")
   const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
   const events = (await readSSE(await callFetch(body))).events
   const init = inits().at(-1)
   const sent = init.systemAppend ?? ""
   check("#980 a turned-away line is broken up in the session instructions",
     sent.includes("CLOAK-MARKER") && !sent.includes(rfc) && !sent.includes("x-anthropic-billing-header") && !sent.includes("Claude Agent SDK") &&
-    sent.includes("R" + zw + "F" + zw + "C 2" + zw + "1" + zw + "19") && sent.includes("C" + zw + "l" + zw + "aude A" + zw + "g" + zw + "ent S" + zw + "D" + zw + "K") &&
+    sent.includes("RFC 2119 key words: MUST,") && sent.includes("C" + zw + "l" + zw + "aude A" + zw + "g" + zw + "ent S" + zw + "D" + zw + "K") &&
     plain(sent).includes(system), JSON.stringify(sent))
   const convId = init.convId
   const before = inits().length

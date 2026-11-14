@@ -88,7 +88,8 @@ The plugin also changes the request itself, as the built-in did:
 
 - **System prompt:** lines Antigravity turns away (Claude Code's billing
   header, Codex's and Hermes Agent's own prompts, omp's RFC 2119 line) are broken up with a
-  zero-width space.
+  zero-width space; omp's line goes as "RFC 2119 key words: …", since a
+  broken-up copy of it was still turned away now and then.
   DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
   paths…") goes reworded with the same meaning: word for word, it got most
   `gemini-4-argon` answers fast, without thinking and shallow (#1028).

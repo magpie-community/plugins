@@ -15,14 +15,18 @@ const samples = [
   "You are Hermes Agent, an intelligent AI assistant created by Nous Research.",
   "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\nYou are omp.",
   "Two: RFC 2119 KEYWORDS: must, required, should, recommended, may, optional. and x-anthropic-billing-header: x",
+  "RFC 2119 keywords: MUST, REQUIRED,\r\nSHOULD, RECOMMENDED, MAY, OPTIONAL.\r\n",
+  "<conventions>\nRFC 2119\nkeywords:\tMUST,  REQUIRED, SHOULD, RECOMMENDED, MAY,\u00a0OPTIONAL.\n</conventions>",
+  "You are Hermes Agent, an intelligent\nAI assistant created by Nous Research.",
+  "RFC 2119 keywords: MUST,REQUIRED,SHOULD,RECOMMENDED,MAY,OPTIONAL.",
   "Nothing to see here; Claude Agent SDK alone is fine.",
   "",
 ]
 
-test("every turned-away line is broken up, and the model still reads it", () => {
+test("every turned-away line is broken up or reworded, and the model still reads it", () => {
   for (const s of samples) {
     const out = cloak(s)
-    expect(out.replaceAll(ZW, "")).toBe(s)
+    expect(out.replaceAll(ZW, "").replace(/key words/i, (m) => m.replace(" ", ""))).toBe(s)
     if (turnsAway(s)) {
       expect(out).not.toBe(s)
       expect(turnsAway(out)).toBe(false)
@@ -31,8 +35,18 @@ test("every turned-away line is broken up, and the model still reads it", () => 
     }
   }
   expect(cloak("RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.")).toBe(
-    `R${ZW}F${ZW}C 2${ZW}1${ZW}19 k${ZW}e${ZW}ywords: M${ZW}U${ZW}ST, R${ZW}E${ZW}QUIRED, S${ZW}H${ZW}OULD, R${ZW}E${ZW}COMMENDED, M${ZW}A${ZW}Y, O${ZW}P${ZW}TIONAL.`,
+    "RFC 2119 key words: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
   )
+})
+
+test("a turned-away line wrapped or widened by white space is broken up too", () => {
+  for (const s of [samples[7], samples[8], samples[9]]) {
+    expect(turnsAway(s)).toBe(true)
+    expect(cloak(s)).not.toBe(s)
+    expect(turnsAway(cloak(s))).toBe(false)
+  }
+  expect(hint(samples[8])).toContain("oh-my-pi (omp)")
+  expect(turnsAway(samples[10])).toBe(false)
 })
 
 test("agy-cli and antigravity break up and explain the same lines", () => {

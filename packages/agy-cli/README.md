@@ -181,7 +181,7 @@ magpie quota refresh agy-cli --json
 
 Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex 和 Hermes Agent
 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
-agy 发出之前用零宽空格把这几行拆开，和 Antigravity 提供商的做法一样（`cloak.mjs`）。如果仍然
+agy 发出之前用零宽空格把这几行拆开，oh-my-pi 那行改成 "RFC 2119 key words: …" 发出（拆开的那行仍会时不时被拒），和 Antigravity 提供商的做法一样（`cloak.mjs`）。如果仍然
 回了这样的 429，会报成针对提示词的 400，而不是额度用完。
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
