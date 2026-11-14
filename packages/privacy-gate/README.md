@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-0D4B4E">
+  <img alt="version 0.4.1" src="https://img.shields.io/badge/version-0.4.1-0D4B4E">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-F2B35A">
 </p>
 

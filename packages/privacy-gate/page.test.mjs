@@ -136,7 +136,7 @@ test('the shared agent catalogue validates ids and keeps custom agents', () => {
 
 test('package declares the page, Agents panel and agent action', () => {
   const pkg = JSON.parse(read('../package.json'))
-  expect(pkg.version).toBe('0.5.0')
+  expect(pkg.version).toBe('0.4.1')
   expect(pkg.files).toContain('page')
   expect(pkg.magpie.page.file).toBe('page/index.html')
   expect(pkg.magpie.page.icon).toBe('page/icon.svg')
