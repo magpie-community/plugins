@@ -5,7 +5,7 @@ A magpie provider plugin that makes **DeepAI Code** models available to every ag
 and sends the **real device fingerprint** for the daily Theos grant, exactly like the
 official desktop app does.
 
-> Status: v0.2.1 — 61 unit tests green; real-account regression on 2026-11-06/07:
+> Status: v0.2.4 — 63 unit tests green; real-account regression on 2026-11-06/07:
 > chat, streaming, tool calls and image input all work; quota and check-in read live values.
 > Upstream thinking arrives in `reasoning`; magpie renders it natively (PROTOCOL.md §4).
 
@@ -77,7 +77,7 @@ Pass as the plugin's `options` (Plugins → installed → options, or
 | Option | Default | Meaning |
 |---|---|---|
 | `baseOrigin` | `https://api.deepai.org` | upstream origin |
-| `laneVersion` | `"auto"` | `X-DeepAI-Code-Theos` lane: probe `/models` (unauthenticated) for the accepted value and cache it; set an explicit value like `"4"` to pin it |
+| `laneVersion` | `"auto"` | `X-DeepAI-Code-Theos` lane: probe `/models` for the accepted value and cache it (the endpoint requires auth since 2026-11-14; the plugin sends the key); set an explicit value like `"4"` to pin it |
 | `secretDir` | `""` | desktop credentials dir (empty = auto-detect) |
 | `lang` | `zh` | UI language (`zh` \| `en`) |
 | `debug` | `false` | verbose `console.error` logging — field **names** only, never values |

@@ -56,6 +56,18 @@ id 变了缓存就丢。最近 1000 个会话的 id 留在内存里。
 
 Kilo 的 ChatGPT BYOK 连接仍需在 Kilo 的 [BYOK 页面](https://app.kilo.ai/byok)中完成。Kilo 官方说明，ChatGPT BYOK 请求经过 Kilo Gateway 后使用 ChatGPT 额度；Kilo 页面可以显示请求记录和 `$0` 成本，但没有向客户端提供 ChatGPT 实时剩余额度窗口。因此本插件不会伪造 ChatGPT quota 数据。
 
+## 与 `@magpie-community/agent-kilo` 的区别
+
+社区列表里还有一个 Kilo 相关的插件，两者不是一回事，可以共存：
+
+| | `@magpie-community/agent-kilo` | 本插件 `magpie-kilo-auth` |
+|---|---|---|
+| 类型 | agent（`kind: "agent"`） | provider（`providers: ["kilo"]`） |
+| 做什么 | 把 Kilo Code 这个 CLI agent 接到 magpie 的 Agents 页，让它改用 magpie 的模型 | 用 Kilo 账户登录，把 Kilo Gateway 的订阅模型作为 provider 供 magpie 后面的客户端调用 |
+| 登录 | 不登录任何服务，只改写 Kilo Code 的配置文件 | Kilo 账户 device OAuth |
+| 请求发往 | magpie 自己的网关 | Kilo Gateway |
+| 什么时候装它 | 你想让 Kilo Code 跑在 magpie 后面 | 你想在 magpie 里用 Kilo 订阅的 GPT / Codex 模型 |
+
 ## 安装
 
 在 Magpie 的 Plugins 页面搜索 Kilo Gateway 点 Install，或用命令行：

@@ -173,6 +173,17 @@ newapi/<siteLabel>/<group>/<model>
 | --- | --- | --- |
 | `runanytime.hxi.me` | 签到前多一道 PoW；状态接口挂着 Turnstile，所以签到不读状态 | `src/runanytime.mjs` |
 | `hyxware.com` | 一个 token 可以同时勾多个分组；`/api/token/` 列表只回 id/name/key/status，分组和额度在详情里 | `src/hyxware.mjs` |
+| `agentrouter.org`、`ps.air-outer.com` | 按用户组控制权限，忽略 token 分组，只取第一条可用 key | `src/agentrouter.mjs` |
+
+### AgentRouter
+
+这两个域名共用 `src/agentrouter.mjs` 的独立逻辑：
+
+- 分组取 `/api/user/self` 的当前用户组，不使用可选 token 分组表，也不使用 token 自带的 `group`。
+- 按站点返回的顺序选择第一条可用 token；只读取这一条的完整 key，不按分组分别取 key，也不按 id 重新排序。
+- 允许自动创建且账号没有可用 token 时，只创建一条，创建请求的 `group` 填当前用户组。站点即使把 token 分组存成 `default`，取回时仍归到当前用户组。
+- 已有 token 但没有读取 key 的权限时，提示手填当前用户组的 key，避免重复创建。
+- 登录和后续同步都只保留当前用户组；已有账号里旧的 token 分组会收敛到用户组，用户组变更后也会随同步更新。
 
 ### hyxware.com
 
@@ -278,6 +289,7 @@ npm run live
 - `src/runanytime.mjs`：runanytime.hxi.me 的签到（PoW 求解、不读状态）。
 - `src/sites.mjs`：按 host 分派特化站点；名单之外走原版路径。
 - `src/hyxware.mjs`：hyxware.com 的 token 读法（多分组 token、列表缺字段）。
+- `src/agentrouter.mjs`：AgentRouter 的用户组、第一条 key 与单 token 创建逻辑。
 - `src/state.mjs`：分组表、缓存、按分组取 key。
 - `test/mock-newapi.mjs`：本地假站点，覆盖掩码 key、拒绝 reveal、Turnstile、CF 页面、签到旧路径等。
 

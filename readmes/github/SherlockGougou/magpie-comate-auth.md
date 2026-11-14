@@ -6,7 +6,7 @@
 `comate/<模型 ID>`，不需要再开一个 IDE 窗口。插件只从 Comate 桌面客户端读取登录凭据，其余全部直连
 `https://comate.baidu.com`：模型目录、对话、图片和用量都走云端接口。
 
-当前版本 `0.5.20`。纯 JavaScript（`type: module`），没有第三方依赖、安装脚本和二进制，Mac 与
+当前版本 `0.5.21`。纯 JavaScript（`type: module`），没有第三方依赖、安装脚本和二进制，Mac 与
 Windows/Linux 使用同一份代码。
 
 | 你要的东西 | 插件的行为 |
@@ -39,7 +39,7 @@ magpie plugin add ./dist/magpie-comate-auth
 | 方式 | 适合 | 注意 |
 | --- | --- | --- |
 | GitHub | 日常使用 | 仓库带 `magpie-plugin` topic，出现在 **插件 → 发现 → 非官方插件**；GitHub 索引与 Magpie 的十分钟缓存可能延迟 |
-| Release zip | 离线、固定版本 | 下载 `magpie-comate-auth-0.5.20.zip`，不是自动生成的 Source code.zip；解压到长期保留的目录，登记后别移动或删除 |
+| Release zip | 离线、固定版本 | 下载 `magpie-comate-auth-0.5.21.zip`，不是自动生成的 Source code.zip；解压到长期保留的目录，登记后别移动或删除 |
 | 源码构建 | 改代码、自己验证 | 需要 Node.js 22+ 与 npm；`dist/` 由命令生成、不提交进 Git |
 
 同一个 Release 还提供 `.tgz`、`SHA256SUMS` 和 `BUILD-INFO.json`（记录源码提交、是否有未提交变更，以及每个运行文件的哈希）。
@@ -254,7 +254,7 @@ MAGPIE_BUN=/absolute/path/to/bun npm test                  # 加上宿主集成�
 | `usage.mjs` / `quota.mjs` / `points.mjs` / `checkin.mjs` | 用量估算、套餐额度、积分、签到 |
 | `discovery.mjs` | 本机 Comate 设置与 license 读取（含 JSONC 解析） |
 
-共 373 个用例，覆盖云端传输、宿主集成、用量、签到、积分与工具适配矩阵。搜索相关用例需要 PATH 上有
+共 376 个用例，覆盖云端传输、宿主集成、用量、签到、积分与工具适配矩阵。搜索相关用例需要 PATH 上有
 `ripgrep`，缺失时会跳过或失败；宿主集成测试需要显式给出 `MAGPIE_HOST` 和 `MAGPIE_BUN`，否则跳过，
 测试不会自行搜索邻近仓库。测试不读本机真实凭据，也不访问真实模型。
 
@@ -305,6 +305,7 @@ license 的方式，或在不同的机器上各装一份。
 
 | 版本 | 变更 |
 | --- | --- |
+| `0.5.21` | 客户端没有声明联网搜索函数时，模型的 `web_search` 调用改成一次可纠正的拒绝，不再让整个请求以 `api_error` 结束 |
 | `0.5.20` | 重写文档：按安装、登录、请求路径、工具、用量、开发分节，补常见问题；运行代码与 0.5.19 相同 |
 | `0.5.19` | 文件与读取能力改成通用阶梯（同名 → 等价能力 → 补丁 → shell），补 `read_file`/`glob_path` 的 shell 兜底；补丁目标不再固定叫 `apply_patch` |
 | `0.5.18` | 修复文本式原生函数调用被逐字符拆成参数键；整段参数 JSON 还原成对象后校验，Codex 可经补丁桥接使用云端文件工具 |

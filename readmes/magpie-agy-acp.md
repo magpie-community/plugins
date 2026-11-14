@@ -59,7 +59,7 @@ magpie quota agy-acp
 
 | Option | Default | Description |
 |---|---|---|
-| `quota_routing` | `false` | Expose 5-hour/weekly buckets to Magpie routing so exhausted accounts fail over automatically |
+| `quota_routing` | `true` | Expose 5-hour/weekly buckets to Magpie routing so exhausted accounts fail over automatically |
 | `cloak_prompts` | `true` | Strip billing headers and cloak third-party harness phrases that trigger upstream 429 refusals |
 | `minimal_agent` | `false` | Enable `excludeDefaultComponents` on the bridge agent to reduce built-in system prompt tokens |
 | `expose_thinking` | `true` | Emit ACP thought summaries as Anthropic `thinking` blocks |
