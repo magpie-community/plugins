@@ -15,7 +15,7 @@ process.env.AGY_BRIDGE_STATE_FILE = path.join(workspace, "sessions.json")
 process.env.HOME = workspace
 fs.writeFileSync(
   path.join(workspace, "bridge.mjs"),
-  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, instructionsIdentity };\n",
+  source + "\nexport { conversationKey, stripVolatileOpening, stripVolatileSystem, isContinuedOpening, openingTextOf, sameInstructions, historyKey, takeParked, park, instructionsIdentity, Turn };\n",
 )
 const {
   conversationKey,
@@ -28,6 +28,7 @@ const {
   takeParked,
   park,
   instructionsIdentity,
+  Turn,
 } = await import(pathToFileURL(path.join(workspace, "bridge.mjs")).href)
 after(() => fs.rmSync(workspace, { recursive: true, force: true }))
 
@@ -722,4 +723,43 @@ test("a reused flattened session keeps a new document on the grown first message
     assert.equal(text.includes("document body unique-xyz"), true, `dropped the new document: ${JSON.stringify(text)}`)
     assert.equal(text.includes("step one"), false, `resent the opening: ${JSON.stringify(text)}`)
   })
+})
+
+// plugins#1137: a tool loop of screenshots kept every request body and
+// copied each image whole into the history key on every round-trip.
+function screenshotHistory(data) {
+  return [
+    { role: "user", content: "look" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "view_image", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [
+      { type: "text", text: "shot" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data } },
+    ] }] },
+  ]
+}
+
+test("historyKey keys a tool_result image by its hash, not its bytes", () => {
+  const data = "A".repeat(200_000)
+  const key = historyKey(screenshotHistory(data))
+  assert.ok(key.length < 2_000, `key is ${key.length} chars`)
+  assert.ok(!key.includes("AAAAAAAAAAAAAAAA"))
+  assert.notEqual(key, historyKey(screenshotHistory("B".repeat(200_000))))
+  assert.equal(key, historyKey(screenshotHistory(data)))
+})
+
+test("a turn lets go of each earlier request body once the next one arrives", () => {
+  const proc = { estimatePromptTokens: () => 100 }
+  const turn = new Turn(proc, [{ role: "user", content: "hi" }])
+  const bodies = [1, 2, 3].map((n) => ({ messages: screenshotHistory("C".repeat(n)) }))
+  const steps = bodies.map((body) => {
+    const step = turn.registerResponse(body)
+    step.contentSnapshot = () => []
+    return step
+  })
+  assert.equal(steps[0].body, null)
+  assert.equal(steps[0].contentSnapshot, null)
+  assert.equal(steps[1].body, null)
+  assert.equal(steps[2].body, bodies[2], "the current step keeps its body for a late prompt")
+  assert.equal(typeof steps[2].contentSnapshot, "function")
+  assert.equal(turn.responseSteps.length, 3)
 })

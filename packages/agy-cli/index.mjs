@@ -1180,6 +1180,14 @@ class Turn {
   }
 
   registerResponse(body) {
+    // Only the current step's body is read again (a late prompt's estimate).
+    // An earlier one is dropped here: a tool loop sending screenshots kept
+    // every request's parsed body, 20MB+ each, for the whole turn (plugins#1137).
+    const previous = this.currentResponse
+    if (previous) {
+      previous.body = null
+      previous.contentSnapshot = null
+    }
     const estimate = this.proc.estimatePromptTokens(body)
     const pending = this.pendingPromptStep
     const step = {
@@ -3567,7 +3575,13 @@ function historyKey(messages) {
         ids.set(block.id, ordinal)
         value = { type: "tool_use", id: ordinal, name: block.name, input: block.input ?? {} }
       } else if (block.type === "tool_result") {
-        value = { type: "tool_result", id: ids.get(block.tool_use_id) ?? block.tool_use_id, ...toolResult(block) }
+        const result = toolResult(block)
+        // An image a tool returned is keyed by its hash, as a user's image
+        // is, not copied whole into the key on every round-trip (plugins#1137).
+        const content = result.content.map((part) => part.type === "image"
+          ? { type: "image", mimeType: part.mimeType, sha256: digest(part.data) }
+          : part)
+        value = { type: "tool_result", id: ids.get(block.tool_use_id) ?? block.tool_use_id, ...result, content }
       } else if (block.type === "server_tool_use" || block.type === "mcp_tool_use" ||
         block.type === "container_upload" || SERVER_TOOL_RESULT_BLOCK_TYPES.has(block.type)) {
         value = { type: block.type, name: block.name || "", content: renderServerAssistantBlock(block) }
