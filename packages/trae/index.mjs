@@ -99,9 +99,17 @@ const SITES = {
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
-    // so only a host that is one is taken, else the one gateway
+    // so only a host that is one is taken, else the one gateway. The
+    // enterprise console an enterprise (SaaS) sign-in names is not one
+    // either: a real tenant's seat answered every llm_utils_chat there with
+    // 4245, for every function and model, as TRAE SOLO chats through an
+    // agent protocol of its own instead; and the list it gives names the
+    // tenant's configs, which the gateway turns away (4001). The gateway
+    // takes the same login, so its models and chats go there, while its
+    // usage stays the console's (#1127)
     apiOf: (a) => {
       const h = traeHost(a?.api)
+      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return SITES["trae-cn"].hosts.api
       return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
     // whether a host named by a sign-in is one of the model hosts: an https

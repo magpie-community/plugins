@@ -94,6 +94,17 @@ test("a sign-in naming an enterprise Trae CN host keeps it, and requests go ther
   expect(String(e?.message)).toContain("https://ent-acme.trae.cn/api/agent/v3/llm_utils_chat")
 })
 
+// #1127 (shadow1606, a real Trae CN enterprise seat): the console the
+// sign-in names answers every llm_utils_chat with 4245, and its list names
+// the tenant's configs, which the consumer gateway refuses. Its models and
+// chats go to the gateway, which takes the same login; usage stays on the
+// console.
+test("an enterprise sign-in naming the console itself chats on the consumer gateway", async () => {
+  expect(CN.apiOf({ api: ENT, host: ENT })).toBe(CN.hosts.api)
+  expect(CN.apiOf({ api: "https://Console.Enterprise.Trae.CN" })).toBe(CN.hosts.api)
+  expect(CN.apiOf({ api: "https://ent-acme.trae.cn" })).toBe("https://ent-acme.trae.cn")
+})
+
 test("a personal sign-in is as before", async () => {
   f = fakeTrae()
   const got = await signIn({ UserID: "u-1", ScreenName: "Ann", Region: "CN", Host: "https://api.trae.cn" })
