@@ -291,8 +291,12 @@ or removed, and only when the forwarding still points where the plugin left it.
 A forwarding of somebody else is never touched.
 
 A process that was killed (a crash, a power cut) cannot clean up after itself;
-then the forwarding of Tailscale stays behind and is taken away by hand with the
-command above.
+then the forwarding of Tailscale stays behind. It is a setting of Tailscale, it
+outlives the plugin, and it is taken away by hand:
+
+```sh
+tailscale serve --tcp=3498 off
+```
 
 ## Privacy
 
