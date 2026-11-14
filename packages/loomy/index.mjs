@@ -270,11 +270,12 @@ function foldReasoning(body) {
 // data-URI images are turned into the marker and merged into the text before
 // them (agent2api images.rs). DeepSeek-V4.1-Flash takes image_url parts and
 // reads the marker as plain text (10k prompt tokens, an empty reply), so it
-// keeps the parts as sent (plugins#811)
+// keeps the parts as sent (plugins#811), and so does deepseek-v4-flash-1017
+// (plugins#1139). Loomy renames these freely, so only the old line the marker
+// was made for gets it; any other DeepSeek id keeps OpenAI's shape.
 function prefersTagFormat(model) {
-  const m = String(model ?? "").toLowerCase()
-  if (!m.includes("deepseek")) return false
-  return !/v4[.-]1(?![0-9])/.test(m)
+  const m = String(model ?? "").toLowerCase().replace(/^.*\//, "")
+  return /^deepseek-v4-flash(?:-0731)?$/.test(m)
 }
 function toTagText(part) {
   const kind = String(part?.type ?? "").trim().toLowerCase()
