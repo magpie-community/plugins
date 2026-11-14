@@ -50,7 +50,7 @@ function requireAuth(auth) {
   return auth
 }
 
-async function json(url, { auth, body, signal, optional = false, pending = false, inference = false } = {}) {
+async function json(url, { auth, body, signal, optional = false, pending = false, inference = false, timeout = 15000 } = {}) {
   const headers = new Headers({ accept: "application/json", "user-agent": AGENT })
   if (body) headers.set("content-type", "application/json")
   if (auth) {
@@ -62,7 +62,7 @@ async function json(url, { auth, body, signal, optional = false, pending = false
     method: body ? "POST" : "GET", headers,
     ...(body ? { body: JSON.stringify(body) } : {}),
     redirect: "error",
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
   })
   if (optional && [403, 404].includes(response.status)) {
     await response.body?.cancel()
@@ -341,6 +341,33 @@ export function usageWindows(go, budgets = [], upstream = "opencode-go", mode = 
   return windows
 }
 
+// These UI endpoints are optional and independent of quota and authentication state.
+function billingBalance(value) {
+  const raw = value?.availableMicroCents
+  if (value?.billingMode !== "prepaid" || typeof raw !== "string" || !/^[0-9]{1,128}$/.test(raw)) return undefined
+  const digits = raw.replace(/^0+(?=\d)/, "").padStart(9, "0")
+  const whole = digits.slice(0, -8)
+  const fraction = digits.slice(-8).replace(/0+$/, "").padEnd(2, "0")
+  return `$${whole}.${fraction}`
+}
+
+function goPlan(value) {
+  const labels = { go: "OpenCode Go", "go-plus": "OpenCode Go Plus", "go-teams": "OpenCode Go Teams" }
+  if (!object(value) || typeof value.product !== "string" || !Object.hasOwn(labels, value.product) || !object(value.access)) return {}
+  const end = value.access.endsAt
+  const timestamp = typeof end === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(end) ? Date.parse(end) : NaN
+  const until = Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 19) === end.slice(0, 19) ? end : undefined
+  let renew
+  if (until && Date.parse(until) > Date.now()) {
+    if (value.cancelAtPeriodEnd === true && value.access.cancelAtPeriodEnd === true) renew = "off"
+    else if (value.cancelAtPeriodEnd === false && value.access.cancelAtPeriodEnd === false &&
+      value.renewalProduct === value.product && value.renewalPending === false &&
+      value.renewalRetryAt == null && value.renewalAuthorizationRequired !== true && value.renewalPaymentAttemptId == null) renew = "auto"
+  }
+  return { plan: labels[value.product], ...(until ? { until } : {}), ...(renew ? { renew } : {}),
+    ...(typeof value.useBalance === "boolean" ? { extraUsage: value.useBalance } : {}) }
+}
+
 export function makePlugin(mode, input = {}) {
   const spec = specs[mode]
   const current = async (getAuth) => {
@@ -423,9 +450,11 @@ export function makePlugin(mode, input = {}) {
         const results = await Promise.allSettled([
           mode === "go" ? json(`${ORIGIN}/zen/go/v1/usage`, { auth, inference: true, optional: true, signal }) : Promise.resolve(undefined),
           json(`${CONSOLE}/api/policies/current-budgets`, { auth, optional: true, signal }),
+          json(`${CONSOLE}/api/billing/status`, { auth, signal, timeout: 3000 }),
+          mode === "go" ? json(`${CONSOLE}/api/go/status`, { auth, signal, timeout: 3000 }) : Promise.resolve(undefined),
         ])
         signal?.throwIfAborted()
-        const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason)
+        const errors = results.slice(0, 2).filter((r) => r.status === "rejected").map((r) => r.reason)
         const go = results[0].status === "fulfilled" ? results[0].value : undefined
         const budgetValue = results[1].status === "fulfilled" ? results[1].value : undefined
         const budgets = Array.isArray(budgetValue) ? budgetValue : []
@@ -434,16 +463,24 @@ export function makePlugin(mode, input = {}) {
         if (go !== undefined && invalidGoUsage(go)) errors.push(new Error("OpenCode Go 额度信息格式无效。"))
         const freeModels = mode === "go" ? (workspaceFreeModels.get(auth.metadata.orgID) ?? bootstrapFreeModels) : []
         const windows = usageWindows(go, budgets, spec.upstream, mode, freeModels)
+        const balance = results[2].status === "fulfilled" ? billingBalance(results[2].value) : undefined
+        const planDetails = results[3].status === "fulfilled" ? goPlan(results[3].value) : {}
         if (mode === "go" && !go && results[0].status === "fulfilled") errors.push(new Error("当前工作区没有可读取的 Go 订阅额度。"))
-        const authenticatedRead = (mode === "go" && go !== undefined) || budgetValue !== undefined
+        const authenticatedRead = (mode === "go" && go !== undefined) || budgetValue !== undefined ||
+          balance !== undefined || planDetails.until !== undefined || planDetails.extraUsage !== undefined
         const signIn = errors.some((e) => e.signIn === "expired") && !authenticatedRead ? "expired" : "kept"
         const message = errors.map((e) => e.message).join("；")
-        if (errors.length && windows.length) windows.push({ name: "Usage notice", display: message, aside: true })
+        const hasUsageWindows = windows.length > 0
+        if (errors.length && hasUsageWindows) windows.push({ name: "Usage notice", display: message, aside: true })
+        if (planDetails.extraUsage !== undefined) windows.push({ name: "Extra Usage", display: planDetails.extraUsage ? "Enabled" : "Disabled", aside: true })
         return {
           user: `${auth.metadata.email} · ${auth.metadata.orgName}`,
-          plan: mode === "go" ? "OpenCode Go" : "OpenCode Console",
+          plan: mode === "go" ? (planDetails.plan ?? "OpenCode Go") : "OpenCode Console",
+          ...(balance !== undefined ? { balance } : {}),
+          ...(planDetails.until ? { until: planDetails.until } : {}),
+          ...(planDetails.renew ? { renew: planDetails.renew } : {}),
           windows,
-          ...(errors.length ? { ...(!windows.length ? { error: message } : {}), signIn } : {}),
+          ...(errors.length ? { ...(!hasUsageWindows ? { error: message } : {}), signIn } : {}),
         }
       },
     },

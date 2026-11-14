@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-console-account-auth",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "OpenCode Console browser sign-in, Go and pay-as-you-go models, and workspace usage in Magpie",
   "type": "module",
   "main": "./opencode.mjs",

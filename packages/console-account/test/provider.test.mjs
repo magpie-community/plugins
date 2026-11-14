@@ -341,12 +341,12 @@ test("Go budgets are aside and Console per-model budgets use individual spend", 
   assert.equal(usageWindows(undefined, [mixed], "opencode", "console")[0].aside, true)
 })
 
-test("usage forwards host cancellation to both requests", async () => {
+test("usage forwards host cancellation to all requests", async () => {
   const controller = new AbortController(), seen = []
   globalThis.fetch = async (_url, init) => { seen.push(init.signal); return Response.json(_url.endsWith("/usage") ? { usage: { weekly: { percent: 1 } } } : []) }
   await makePlugin("go").auth.usage(async () => auth(), {}, { signal: controller.signal })
   controller.abort()
-  assert.equal(seen.length, 2)
+  assert.equal(seen.length, 4)
   assert.ok(seen.every((s) => s.aborted))
 })
 
@@ -528,4 +528,115 @@ test("package exposes the 2.x root and a legacy main entry", async () => {
   const modern = await import("@magpie-community/opencode-console-account-auth")
   assert.equal(typeof modern.default.setup, "function")
   assert.ok(modern.default.id)
+})
+
+test("optional billing and Go plan details are displayed independently of quota", async () => {
+  const plan = { product: "go", renewalProduct: "go", useBalance: false, cancelAtPeriodEnd: false, renewalPending: false, access: { endsAt: "2099-01-01T00:00:00Z", cancelAtPeriodEnd: false } }
+  let billing = { billingMode: "prepaid", balanceMicroCents: "999", availableMicroCents: "0" }
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init.redirect, "error")
+    if (url.endsWith("/billing/status")) return Response.json(billing)
+    if (url.endsWith("/go/status")) return Response.json(plan)
+    if (url.endsWith("/usage")) return Response.json({ usage: { weekly: { percent: 12 } } })
+    return Response.json([])
+  }
+  const plugin = makePlugin("go", { magpie: {} })
+  let result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.balance, "$0.00")
+  assert.equal(result.until, plan.access.endsAt)
+  assert.equal(result.renew, "auto")
+  assert.deepEqual(result.windows.find((w) => w.name === "Extra Usage"), { name: "Extra Usage", display: "Disabled", aside: true })
+  assert.equal(result.windows.find((w) => w.name === "7 days").used, 12)
+  billing = { billingMode: "prepaid", availableMicroCents: "123456789" }
+  result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.balance, "$1.23456789")
+  for (const value of [{ billingMode: "invoiced", availableMicroCents: "0" }, { billingMode: "prepaid", availableMicroCents: "-1" }, { billingMode: "prepaid", balanceMicroCents: "0" }]) {
+    billing = value
+    assert.equal((await plugin.auth.usage(async () => auth()).then((r) => r.balance)), undefined)
+  }
+  plan.cancelAtPeriodEnd = true
+  plan.access.cancelAtPeriodEnd = true
+  assert.equal((await plugin.auth.usage(async () => auth())).renew, "off")
+  plan.access.cancelAtPeriodEnd = false
+  assert.equal((await plugin.auth.usage(async () => auth())).renew, undefined)
+  plan.access.endsAt = "2000-01-01T00:00:00Z"
+  assert.equal((await plugin.auth.usage(async () => auth())).renew, undefined)
+})
+
+test("optional status failures do not change existing usage or sign-in", async () => {
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/billing/status")) return new Response(null, { status: 401 })
+    if (url.endsWith("/go/status")) return new Response(null, { status: 500 })
+    if (url.endsWith("/usage")) return Response.json({ usage: { weekly: { percent: 7 } } })
+    return Response.json([])
+  }
+  const result = await makePlugin("go", { magpie: {} }).auth.usage(async () => auth())
+  assert.equal(result.signIn, undefined)
+  assert.equal(result.balance, undefined)
+  assert.equal(result.until, undefined)
+  assert.equal(result.windows[0].used, 7)
+})
+
+test("optional reads use scoped GET requests, and Console skips Go status", async () => {
+  const calls = [], requests = []
+  globalThis.fetch = async (url, init) => {
+    calls.push(url)
+    if (url.endsWith("/billing/status") || url.endsWith("/go/status")) {
+      requests.push(init)
+      return Response.json({})
+    }
+    return Response.json(url.endsWith("/usage") ? { usage: { weekly: { percent: 1 } } } : [])
+  }
+  await makePlugin("go", { magpie: {} }).auth.usage(async () => auth())
+  assert.ok(calls.some((url) => url.endsWith("/go/status")))
+  assert.equal(requests.length, 2)
+  for (const init of requests) {
+    assert.equal(init.method, "GET")
+    assert.equal(init.redirect, "error")
+    assert.equal(init.headers.get("x-org-id"), auth().metadata.orgID)
+    assert.equal(init.headers.get("authorization"), `Bearer ${auth().access}`)
+  }
+  calls.length = 0
+  await makePlugin("console", { magpie: {} }).auth.usage(async () => auth())
+  assert.ok(calls.some((url) => url.endsWith("/billing/status")))
+  assert.ok(!calls.some((url) => url.endsWith("/go/status")))
+})
+
+test("validated optional reads keep login but do not hide core usage errors", async () => {
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/billing/status")) return Response.json({ billingMode: "prepaid", availableMicroCents: "0" })
+    if (url.endsWith("/go/status")) return Response.json({ product: "go", useBalance: false, access: {} })
+    return new Response(null, { status: 401 })
+  }
+  const result = await makePlugin("go", { magpie: {} }).auth.usage(async () => auth())
+  assert.equal(result.signIn, "kept")
+  assert.ok(result.error)
+  assert.equal(result.balance, "$0.00")
+  assert.equal(result.windows[0].name, "Extra Usage")
+})
+
+test("Go plan names and renewal state require recognized, unambiguous status", async () => {
+  const status = { product: "go-plus", renewalProduct: "go-plus", cancelAtPeriodEnd: false, renewalPending: false, access: { endsAt: "2099-01-01T00:00:00Z", cancelAtPeriodEnd: false } }
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/go/status") ? status : url.endsWith("/usage") ? { usage: { weekly: { percent: 1 } } } : [])
+  const usage = () => makePlugin("go", { magpie: {} }).auth.usage(async () => auth())
+  let result = await usage()
+  assert.equal(result.plan, "OpenCode Go Plus")
+  assert.equal(result.renew, "auto")
+  for (const [key, value] of [["renewalRetryAt", "2099-01-01T00:00:00Z"], ["renewalAuthorizationRequired", true], ["renewalPaymentAttemptId", "attempt"], ["renewalPending", true], ["renewalProduct", "go-teams"]]) {
+    const previous = status[key]
+    status[key] = value
+    result = await usage()
+    assert.equal(result.renew, undefined, key)
+    assert.equal(result.until, status.access.endsAt)
+    status[key] = previous
+  }
+  status.product = "go-teams"
+  assert.equal((await usage()).plan, "OpenCode Go Teams")
+  status.product = "unknown"
+  result = await usage()
+  assert.equal(result.plan, "OpenCode Go")
+  assert.equal(result.until, undefined)
+  status.product = "go"
+  status.access.endsAt = "tomorrow"
+  assert.equal((await usage()).until, undefined)
 })
