@@ -3589,6 +3589,88 @@
       "latest": "0.1.2",
       "readme": "# @magpie-community/middleware-codex-history\n\n**Magpie 原生历史过滤插件 / Native history compatibility middleware**\n\n缓解 Codex 切换供应商、账号或上游资源后，旧会话出现密文验证失败、部分历史 item ID 不属于当前资源的问题。只处理发出的 Responses 请求，不修改原会话文件或 Codex `base_url`。\n\n**插件只提供历史过滤，不包含 ModelTrace、降智检测或模型保护。** 无独立后台服务、管理端口、运行时依赖或额外模型请求。规则默认全部关闭，在 Magpie 自带的插件 Options 中按供应商设置。\n\n## 安装\n\n在 Magpie 的 **Plugins → Discover → Gateway middleware** 中安装 **Codex History Filter**，或使用命令行：\n\n```sh\nmagpie plugin add @magpie-community/middleware-codex-history\n```\n\n社区版本只发布历史过滤中间件；模型工作台单独本地维护，不包含在本包中。无需启动 Codex Filter Manager，不要同时启用两份过滤插件。需要支持 gateway middleware 及 `onProvider` 钩子的 Magpie；v0.1.2 已在 0.1.2131 的隔离实例中验证，其他版本需核对插件加载状态。\n\n## 设置\n\n打开 **Plugins → Installed → 本插件 → Options**，保存以下示例，替换 `demo` 和 `backup` 为你实际使用的 Magpie 供应商 ID：\n\n```json\n{\n  \"providers\": {\n    \"magpie:demo\": {\n      \"historyFilter\": true,\n      \"preserveEncryptedInclude\": true\n    },\n    \"magpie:backup\": {\n      \"historyFilter\": false,\n      \"preserveEncryptedInclude\": true\n    }\n  },\n  \"aliases\": {}\n}\n```\n\n- 请求模型为 `demo/gpt-6-astra` 时，使用 `magpie:demo` 的规则；ID 是模型前缀，不是供应商显示名称。\n- 通过 Magpie 路由组或 fallback 发出的请求（模型名是分组），在每次实际尝试某个供应商时，按该供应商 ID 的规则过滤。不需要、也不应该为路由组单独建规则。\n- `historyFilter: true` 开启过滤；`false`、删除该规则或空配置均为直通。不同会话按各自请求独立处理，可同时过滤多个供应商。\n- `preserveEncryptedInclude: true` 保留客户端对**新响应**中 `reasoning.encrypted_content` 的请求，推荐开启。它不会保留**旧历史**中的密文。省略或设置为 `false` 会移除这一 include 值，不影响其他 include 项。\n- 供应商改名后，旧会话可能仍发送旧前缀；可设置 `\"aliases\": {\"old-demo\": \"demo\"}`。别名同样作用于路由组中实际尝试的供应商 ID，只用于选择过滤规则，不改写请求模型，也不替代 Magpie 自己的路由别名。\n- 无 `供应商/模型` 前缀或非 Responses 协议的请求保持原样。未配置的供应商不会被自动过滤。\n\n保存 Options 后，Magpie 在后续请求加载规则。无需另开网页或重启 Codex；是否成功加载以 Magpie 插件页的错误统计为准。插件页的调用次数统计每次钩子调用：每个 Responses 请求经过 `onRequest`，每次供应商尝试经过 `onProvider`，没有命中规则、原样放行的请求也会计入，它不表示过滤次数。\n\n## 原理与边界\n\n开启后，插件移除旧 reasoning 条目、明确标记的加密内容，以及可独立携带内容的消息和工具条目中的可选服务器 ID；设置 `store: false`。保留正文、工具参数、结果、`call_id` 配对、文件引用及普通业务 ID，不改变请求模型或推理强度。\n\n**v0.1.1：历史搜索兼容修复。** 原生 `web_search_call` 可能依赖已删除的 reasoning，导致上游提示 `was provided without its required reasoning item`。开启过滤后，历史搜索条目转为带标记的助手文字，保留已记录的动作、查询、状态和来源数据，去除服务器条目 ID 与内部回合元数据；后续结论、引用及普通工具调用配对保持原样。不重新搜索、不补造未记录的结果。该处理适用于携带明文历史的普通对话和文字总结，不解密压缩历史。\n\n**v0.1.2：路由组与 fallback 兼容修复。** 经 Magpie 路由组或 fallback 发出的请求，模型名是分组而不是供应商，路由前的前缀匹配找不到规则，旧密文和条目 ID 会原样发给已开启过滤的成员，上游返回 `created under a different Azure OpenAI resource` 等错误。现在 `onProvider` 在每次供应商尝试时按该供应商规则过滤；直接选择供应商的请求仍在 `onRequest` 过滤，并通过 `ctx.state` 标记，不会重复处理。\n\n`previous_response_id`、`conversation`、`item_reference`、加密压缩历史和 `/responses/compact` 无法安全跨资源迁移时，会明确拒绝，提示整理文字摘要后新建会话，不会静默丢弃这些上下文。\n\n- 不能解密旧密文、迁移所有服务器资源引用，或保证消除全部 Azure 历史错误。移除内部推理状态也可能影响长任务连续性。\n- Magpie 请求钩子限时 250 毫秒；加载失败、异常或超时可能按 Magpie 的机制放行原请求。插件不是强制安全边界。\n- 只覆盖进入 Magpie agent middleware 的 Responses 请求；Magpie 自身的标题、分类器等内部请求不经过此钩子。WebSocket、Chat Completions、Lite HTTP 标头修改不在本插件范围内。\n- 直接选择供应商时按模型前缀选择规则；路由组和 fallback 按每次实际尝试的供应商选择。`onProvider` 不能拒绝请求，所以上述无法迁移的内容经路由组发出时只能原样发送，由上游报错；直接选择供应商时仍会被明确拒绝。其他插件若在本插件之后再改写请求，结果不受本插件控制。\n- 不采集或保存凭据、请求正文，不执行检测、重试或模型调用。上游正常请求仍按上游规则计费。\n\n## 停用、升级与旧版迁移\n\n在 Magpie 插件页关闭本插件即可停止全部过滤；删除某条供应商规则只停用该供应商。卸载也在 Magpie 中完成，不需要恢复 `base_url`。通过本地路径安装时，移动或删除目录前先卸载旧插件。\n\n若此前使用 Codex Filter Manager v1.0.5 自动安装的本地 `magpie-plugin`，先在旧管理页关闭该供应商的自动保护（若有旧设置），停止旧管理服务，再在 Magpie 中停用或卸载旧的本地历史插件，最后安装本插件并复制所需历史规则。原有规则的 `stripResponsesLiteHeader` 会被忽略，可删除。不要同时启用两份历史过滤插件。\n\n社区版本合并并完成 dist 发布后，可在 Magpie 插件页更新；现有 Options 无需改写，更新前可自行备份。不要上传 Magpie 的 `plugins.json`，它可能包含其他插件的私有设置。本插件不直接读写该文件，规则由宿主通过 Options 传入。\n\n## English\n\nOpt-in Magpie gateway middleware for Codex Responses history after switching providers or accounts. It strips old reasoning/encrypted items and optional server IDs from portable history, preserving readable content and tool-call pairing. **History filtering only: no model detector, guard, background server, credentials or extra upstream calls.**\n\nInstall from **Plugins → Discover → Gateway middleware**, or run `magpie plugin add @magpie-community/middleware-codex-history`. In the plugin's **Options**, configure `providers[\"magpie:<provider-id>\"]` as shown above. Every provider defaults to passthrough. A request to `provider/model` uses that prefix's rule. A request through a Magpie group or fallback is filtered on each provider try with the tried provider's rule, so a group needs no rule of its own. Requests from different sessions remain independent. `aliases` maps an old prefix or provider ID to a rule ID only. `preserveEncryptedInclude: true` keeps requests for new encrypted response content while still removing historical ciphertext.\n\nUnsafe server-only references and encrypted compaction are rejected explicitly when a provider is chosen directly. A provider try can't be refused, so through a group they are sent as they were. Magpie may fail open on plugin errors/timeouts. The Plugins page counts every hook call, passed-through requests included, not filtered requests. Disable or remove it in Magpie; it never edits Codex configuration.\n\nVersion 0.1.1 converts historical native `web_search_call` items to labeled assistant text after removing old reasoning. Recorded actions, queries, status and sources remain available; native item IDs and internal turn metadata are removed. Subsequent answers and ordinary tool-call pairs remain intact. No searches are rerun, absent results are not reconstructed, and encrypted compaction is not decrypted. The community package contains only the middleware; the optional model workbench is maintained separately for local use.\n\nVersion 0.1.2 filters group and fallback requests on each provider try (`onProvider`). Before it, a request named after a group matched no rule, so old ciphertext and item IDs reached providers whose filter was on. A direct request filtered by `onRequest` is marked in `ctx.state` and isn't filtered again.\n\n## 开发与来源\n\n```sh\nbun test packages/codex-history\n```\n\n测试只使用本地虚构数据，不调用模型。核心代码来自 [Codex Filter Manager](https://github.com/unisong/codex-filter-manager)（MIT），本包的镜像源码在 [magpie-codex-history-filter](https://github.com/unisong/magpie-codex-history-filter)，来源提交和 SHA-256 记录于 [PROVENANCE.json](PROVENANCE.json)。为匹配社区 middleware 包格式，将共用算法与请求钩子合并为单个无 import 文件。\n\n接口参考：[Magpie middleware 文档](https://usemagpie.ai/docs/plugins#middleware)。\n\nMIT，保留原项目贡献者署名，见 [LICENSE](LICENSE)。\n"
     },
+    "@magpie-community/middleware-company-guard": {
+      "versions": {
+        "0.4.3": {
+          "file": "tgz/magpie-community-middleware-company-guard-0.4.3.tgz",
+          "integrity": "sha512-xhf9ZXN+jQ2DEyVWir5hBi4l/1aVZOWSLr2yjunPNDeJAJRle/ao3HeJMWIAGTlgUeuc36AYazN8Cl+pGYdGCA==",
+          "time": "2026-11-14T03:28:55.982Z",
+          "manifest": {
+            "name": "@magpie-community/middleware-company-guard",
+            "version": "0.4.3",
+            "type": "module",
+            "license": "MIT",
+            "description": "Local company-name masking, reversible replies and session approvals for Magpie",
+            "files": [
+              "dist",
+              "src",
+              "vendor",
+              "company-guard.hooks.mjs",
+              "README.md",
+              "LICENSE",
+              "THIRD_PARTY_NOTICES.md",
+              "receipt-report.mjs",
+              "page",
+              "receipt-page.mjs"
+            ],
+            "magpie": {
+              "middleware": "./dist/company-guard.middleware.js",
+              "hooks": "./company-guard.hooks.mjs",
+              "options": {
+                "companies": [],
+                "gatewayTimeoutMs": 4000
+              },
+              "page": {
+                "title": "Company name protection",
+                "titles": {
+                  "zh": "公司名称保护",
+                  "zh-TW": "公司名稱保護"
+                },
+                "file": "page/index-0.3.3.html",
+                "service": {
+                  "port": 3469,
+                  "option": "receiptPort"
+                }
+              }
+            },
+            "main": "./receipt-page.mjs",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/magpie-community/plugins.git",
+              "directory": "packages/company-guard"
+            },
+            "homepage": "https://github.com/cyanask/magpie-company-guard#readme",
+            "bugs": {
+              "url": "https://github.com/cyanask/magpie-company-guard/issues"
+            },
+            "keywords": [
+              "magpie-plugin",
+              "magpie",
+              "middleware",
+              "privacy",
+              "data-masking",
+              "codex"
+            ],
+            "scripts": {
+              "build": "esbuild src/company-guard.js --bundle --format=esm --target=es2020 --outfile=dist/company-guard.middleware.js",
+              "test": "node --test test/*.test.mjs"
+            },
+            "devDependencies": {
+              "esbuild": "0.25.12"
+            },
+            "os": [
+              "darwin"
+            ],
+            "engines": {
+              "node": ">=20",
+              "magpie": ">=0.1.3841"
+            }
+          }
+        }
+      },
+      "latest": "0.4.3",
+      "readme": "# Magpie Company Guard\n\nLocal company-name masking and reversible replies for Magpie, with session approvals and local receipts.\n\n当前版本：**0.4.3**（macOS）。\n\n面向 Magpie 的公司名称保护插件：在模型请求发送前替换识别到的公司名称，在回复返回本机时还原；提供独立的“会话授权”和“脱敏回执”页面。\n\n## 功能与边界\n\n- 检查请求中的用户文字、历史、工具结果、工具参数和工具说明，支持 Responses、Chat Completions、Anthropic Messages、Gemini 协议。\n- 根据企业名称规则、明确的名称字段、简称定义及用户配置识别名称，同一会话内使用稳定代号。\n- 支持 Codex 单会话原名放行，可选指定名单或全部公司名称；其他会话、分叉和子任务不自动继承。\n- 保留最近 25 份回执；名称对应明细仅在插件宿主内存中限时保留，最长 30 分钟。磁盘回执不保存原名、代号或消息全文。\n\n这是规则识别工具，不能保证发现所有公司名称，也不能作为完整的数据防泄漏边界。图片、音频、文件二进制内容及绕过 Magpie 的连接不在检查范围内。宿主超时、回调缺失或请求被跳过时，不能视为已完成保护。\n\n本版仅支持 macOS，安装包已声明此限制；Windows 和 Linux 不在本版支持范围内。会话授权依赖 Codex 的会话元数据，其他客户端默认执行名称脱敏。插件不修改源文件或业务数据库，Magpie 自带的其他隐私保护继续按原配置运行。\n\n## 安装与首次运行\n\n支持 macOS，需要 Magpie 0.1.3841 或更新版本。运行时使用 Magpie 自带的 Bun，无需另外安装 Node.js 或 npm。只启用一份本插件，避免两份安装同时处理请求。\n\n在终端执行：\n\n```sh\nmagpie plugin add @magpie-community/middleware-company-guard\n```\n\n如果标准 App 已安装，但终端找不到 `magpie` 命令，可使用：\n\n```sh\n/Applications/magpie.app/Contents/MacOS/magpie plugin add @magpie-community/middleware-company-guard\n```\n\n安装后打开 Magpie → 公司名称保护。首次加载时，插件自动生成三个随机密钥，保存在本机状态目录的 `keys.json` 中，文件权限为 `0600`，目录权限为 `0700`。插件会把缺失的密钥同步到自身的 Magpie 选项，使中间件、请求 Hook 和页面使用同一套凭据；不需要手动运行配置脚本。\n\n已有有效密钥、会话授权、自定义端口和其他选项继续沿用。重启不会重新生成密钥。若已有文件权限不安全、密钥损坏或两处配置冲突，初始化会停止并保留原配置，请先排查重复安装或配置变动，不要通过删除密钥文件尝试恢复。\n\n默认页面端口为 `3469`，已核对本次社区插件源码未使用此端口。它只监听 `127.0.0.1`；可通过插件选项 `receiptPort` 调整。升级时已有端口设置不变，原来显式配置的 `3478` 仍会继续使用；如果同时安装 AtomCode 等使用该端口的插件，应为本插件另设端口。\n\n默认状态目录为 `~/.config/magpie/company-guard`；设置了绝对路径 `XDG_CONFIG_HOME` 时，使用该目录下的 `magpie/company-guard`。显式配置的 `stateDir` 优先。密钥、授权目录和含密钥的插件选项只留在本机，不要提交或发送给他人。\n\n## 会话授权\n\n1. 在目标 Codex 会话单独发送“申请取消脱敏”“取消脱敏”或“原名放行”。加粗、行内代码等常见格式也可识别。\n2. 打开“公司名称保护 → 会话授权”，核对会话和工作目录，选择范围并确认。申请本身不启用授权，待确认项保留 24 小时。\n3. 名单模式最多 32 个完整名称，别名须单独列入；全部名称模式也覆盖该会话后续请求携带的历史和工具文字。\n4. 在对应卡片点击“恢复脱敏”并确认，后续请求恢复默认处理。已经发送的原文不能撤回。\n\n授权只在本机保存，持续到用户主动撤销。普通回答结束、追问或中断后继续，不会自动撤销授权。页面批准、撤销使用独立凭据，回执读取凭据不能批准授权。\n\n## Codex 申请轮收尾\n\n可将以下规则加入你自己的 Codex 指导文件；安装本插件不会自动修改它。\n\n> 独立原名放行申请：按本会话编号和工作目录只读核对一次状态，如实最终答复并收尾，不等页面审批；原业务保留，续办按用户指令。\n\n## 回执\n\n在“脱敏回执”页面先选智能体，再选会话任务，查看替换数量和限时明细。任务列表随智能体选择变化，筛选范围仍是所有智能体合计保留的最近 25 个请求；某个智能体没有匹配回执时会显示空结果。处理结果保留在汇总和明细中。\n\n页面可见时默认每 10 秒刷新，展开明细时暂停；关闭自动刷新后，页面保留最近一次结果。刚发起的请求在回复结束前可能暂时等待确认，这与处理失败分别记录。\n\n同步检查和回复处理的确认会随回执保存，日志轮转不会抹去已保存的确认。同步检查、回复处理及正常流式结束事件均已确认时，可以据此确认完成；明细会区分流式确认与宿主确认。缺少必要检查、宿主明确报告失败或回复仍有本次代号残留时，不会标为完成。未命中不代表没有敏感名称。\n\n桌面版默认读取 macOS 的 `~/Library/Logs/magpie/app.log` 来核对处理确认。使用 `magpie web` 或自行重定向日志时，可在插件选项 `appLog` 中指定实际日志文件的绝对路径。保存的阶段确认和当前日志共同用于核对。必要依据仍不齐全时保留“未确认”，不会仅因等待时间较长而标为成功。\n\n可从源码目录读取本机计数报告：\n\n```sh\nnode receipt-report.mjs --json\n```\n\n本仓库不包含用户配置、授权名单、业务材料或本机验收记录。\n\n## 开发与测试\n\n```sh\nnpm ci\nnpm test\nnpm run build\n```\n\n开发和测试需要 Node.js 20 或更新版本。测试使用独立的临时配置和虚构名称，覆盖四种协议的往返处理、流式分段还原、工具参数、会话授权与撤销，以及首次初始化和密钥权限。同一套测试还验证已构建中间件与 Hook 的协作、日志轮转和回执淘汰后的快照核对，并检查失败通知和代号残留不会被提升为成功。\n\n`dist/` 已提交，可直接从 Git 安装，无需安装时构建。运行时使用 Magpie 自带的 Bun，无额外 npm 运行时依赖；esbuild 仅用于开发构建。社区版本由本仓库的分发流程提供；上述社区安装命令在 PR 合并并完成分发后可用。合并前，可从仓库根目录运行 `magpie plugin add ./packages/company-guard` 进行本地验证。\n\n插件接口见 [Magpie 官方文档](https://usemagpie.ai/docs/plugins)。提交问题时，请使用不含真实名称、凭据和会话内容的必要诊断信息。\n\n## 许可证\n\nMIT。第三方组件及其许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `vendor/LICENSE.*`。\n"
+    },
     "@magpie-community/middleware-empty-reply": {
       "versions": {
         "0.1.0": {
