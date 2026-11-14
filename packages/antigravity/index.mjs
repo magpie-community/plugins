@@ -38,6 +38,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.profile",
   "https://www.googleapis.com/auth/cclog",
   "https://www.googleapis.com/auth/experimentsandconfigs",
+  "https://www.googleapis.com/auth/aicode",
 ]
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 const TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -53,9 +54,14 @@ const BASE = DAILY + "/v1beta"
 const NPM = "@ai-sdk/google"
 
 const VERSION_URL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
-// the manifest's version on 2026-11-12; Google serves Gemini 4 only to
+// the manifest's version on 2026-11-14; Google serves Gemini 4 only to
 // releases about this new (2.9.1 got no Gemini 4, #1057)
-const DEFAULT_VERSION = "2.31.2"
+const DEFAULT_VERSION = "2.32.1"
+// CLS is the build changelist each release's language server puts in its
+// User-Agent (cl=), read from the shipped binary's requests. The manifest
+// names only the version, so a newer release goes with the newest known
+// changelist until it is added here.
+const CLS = { "2.32.1": "1021296516" }
 
 const SIGN_IN_TIMEOUT = 10 * 60 * 1000
 const MODELS_TTL = 10 * 60 * 1000
@@ -107,7 +113,8 @@ class SignedOut extends Error {}
 
 const GOOS = { darwin: "darwin", linux: "linux", win32: "windows" }
 const GOARCH = { arm64: "arm64", x64: "amd64" }
-const platform = () => `${GOOS[process.platform] ?? process.platform}/${GOARCH[process.arch] ?? process.arch}`
+const goos = () => GOOS[process.platform] ?? process.platform
+const goarch = () => GOARCH[process.arch] ?? process.arch
 
 const ver = { v: "", at: 0, pending: null }
 
@@ -146,7 +153,28 @@ async function version() {
   return ver.pending
 }
 
-const userAgent = async () => `antigravity/hub/${await version()} ${platform()}`
+// clOf is the changelist of a release: its own when known, else the
+// newest known release's
+function clOf(v) {
+  if (CLS[v]) return CLS[v]
+  const newest = Object.keys(CLS).sort((a, b) => cmpVersion(b, a))[0]
+  return CLS[newest]
+}
+
+function cmpVersion(a, b) {
+  const x = a.split(".").map(Number)
+  const y = b.split(".").map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0)
+  return 0
+}
+
+// userAgent is the app's language server's, as 2.32.1 sends it on every
+// Code Assist call:
+// antigravity/hub/2.32.1 (aidev_client; os_type=darwin; arch=arm64; cl=1021296516)
+const userAgent = async () => {
+  const v = await version()
+  return `antigravity/hub/${v} (aidev_client; os_type=${goos()}; arch=${goarch()}; cl=${clOf(v)})`
+}
 
 // ---- the sign-in as it is kept ---------------------------------------------------------
 
@@ -284,12 +312,9 @@ async function resolveProject(s) {
   if (own) return { id: own, plan: planOf(load), tier, paid, credits, at: Date.now() }
   const t = { ...defaultTier(load) }
   if (!t.id || t.id === "legacy-tier") t.id = "free-tier"
-  const ua = await userAgent()
-  const id = await onboard(
-    s,
-    { tier_id: t.id, metadata: { ide_type: "ANTIGRAVITY", ide_version: await version(), ide_name: "antigravity" } },
-    { "User-Agent": ua + " google-api-nodejs-client/10.3.0", "X-Goog-Api-Client": "gl-node/22.21.1" },
-  )
+  // as the app's language server asks it: camelCase, the IDE type only,
+  // and no headers of its own
+  const id = await onboard(s, { tierId: t.id, metadata: { ideType: "ANTIGRAVITY" } })
   if (!id) {
     const why = (load.ineligibleTiers ?? []).find((x) => x?.reasonMessage)?.reasonMessage
     throw new Error(why ? "Antigravity won't serve this Google account: " + why : "Antigravity hasn't set this Google account up (it gave no project); sign in to the Antigravity app with it once, then try again")
@@ -415,6 +440,7 @@ function listed(res) {
   let out = []
   for (const id of Object.keys(models).sort()) {
     const m = models[id] ?? {}
+    if (typeof m.model === "string" && m.model) enums.set(id, { model: m.model, provider: typeof m.modelProvider === "string" ? m.modelProvider : "" })
     if (HIDDEN.has(id) || id.startsWith("chat_") || id.startsWith("tab_") || m.disabled) continue
     const mi = { id, name: m.displayName ?? "", context: m.maxTokens || 0, output: m.maxOutputTokens || 0, imageInput: typeof m.supportsImages === "boolean" ? m.supportsImages : undefined, remaining: -1, resets: "" }
     if (isObj(m.quotaInfo)) {
@@ -1202,15 +1228,58 @@ function sessionOf(req, headers) {
   return "-" + n.toString()
 }
 
+// enums is each model id's enum and maker, as fetchAvailableModels lists
+// them (gemini-3-flash is MODEL_PLACEHOLDER_M18, made by
+// MODEL_PROVIDER_GOOGLE); the app labels each request with them
+const enums = new Map()
+
+// uuidOf is a UUID-shaped id made from text, the same for the same text
+function uuidOf(text) {
+  const h = crypto.createHash("sha256").update(text).digest("hex")
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${((parseInt(h[16], 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`
+}
+
+// envelope is the request as the app's language server sends it, keys in
+// its order (2.32.1): project, requestId, request, model, userAgent,
+// requestType. A conversation is one cascade with one trajectory, so its
+// ids are made from its session; the step is how far into it the request
+// is.
 function envelope(req, sent, projectID, credits = false, headers = undefined) {
+  const sessionId = sessionOf(req, headers)
+  const rawSession = headerOf(headers, SESSION).trim()
+  const cascade = uuidOf("cascade\0" + sessionId)
+  const root = headerOf(headers, SUBAGENT).trim() && rawSession ? uuidOf("cascade\0" + rawSession) : cascade
+  const trajectory = uuidOf("trajectory\0" + sessionId)
+  const contents = Array.isArray(req?.contents) ? req.contents : []
+  const step = Math.max(0, contents.length - 1)
+  const turns = contents.filter((c) => c?.role === "model").length
+  const known = enums.get(sent)
+  const claude = known?.provider === "MODEL_PROVIDER_ANTHROPIC" || /^claude/.test(sent)
+  const gemini = known ? known.provider === "MODEL_PROVIDER_GOOGLE" : /^gemini/.test(sent)
+  const labels = {
+    cascade_id: cascade,
+    last_step_index: String(step),
+    ...(known ? { model_enum: known.model } : {}),
+    request_id: `${trajectory}-${turns}`,
+    root_cascade_id: root,
+    trajectory_id: trajectory,
+    used_claude: String(claude),
+    used_claude_conservative: String(claude),
+    used_non_gemini_model: String(!gemini),
+  }
+  // the request's own keys in the app's order, labels before
+  // generationConfig, the session last
+  const { sessionId: _, labels: __, contents: c, systemInstruction, tools, toolConfig, generationConfig, ...rest } = isObj(req) ? req : {}
+  const request = { contents: c, systemInstruction, tools, toolConfig, ...rest, labels, generationConfig, sessionId }
+  for (const k of Object.keys(request)) if (request[k] === undefined) delete request[k]
   return {
-    model: sent,
     project: projectID,
+    requestId: `agent/${cascade}/${Date.now()}/${trajectory}/${step + 1}`,
+    request,
+    model: sent,
     ...(credits ? { enabled_credit_types: [CREDIT] } : {}),
     userAgent: "antigravity",
     requestType: "agent",
-    requestId: "agent-" + crypto.randomBytes(6).toString("hex"),
-    request: { ...req, sessionId: sessionOf(req, headers) },
   }
 }
 
@@ -1452,7 +1521,7 @@ async function complete(s, url, init, magpie) {
   const send = (credits) =>
     fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": ua },
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok, "User-Agent": ua },
       body: JSON.stringify(envelope(req, sent, l.project.id, credits, init?.headers)),
       signal: init?.signal,
     })
@@ -2048,7 +2117,7 @@ async function webSearch({ query, count } = {}, ctx = {}) {
   const ua = await userAgent()
   const res = await fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: "Bearer " + tok, "User-Agent": ua },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok, "User-Agent": ua },
     body: JSON.stringify(envelope(req, sent, l.project.id, false)),
     signal: ctx.abort,
   })
@@ -2191,4 +2260,8 @@ export const _internal = {
   VERSION_TTL,
   VERSION_RETRY,
   DEFAULT_VERSION,
+  CLS,
+  clOf,
+  enums,
+  userAgent,
 }

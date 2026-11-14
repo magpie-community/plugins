@@ -69,14 +69,24 @@ up.
 ## Requests
 
 The plugin sends every request to `v1internal:streamGenerateContent`,
-wrapped in the app's envelope (`{model, project, userAgent: "antigravity",
-requestType: "agent", requestId, request}`):
+wrapped in the app's envelope, keys in the order the app's language server
+sends them (`{project, requestId, request, model, userAgent: "antigravity",
+requestType: "agent"}`, captured from 2.32.1):
 
-- The User-Agent is `antigravity/hub/<version> <os>/<arch>`. The version is
+- The User-Agent is the language server's: `antigravity/hub/<version>
+  (aidev_client; os_type=<os>; arch=<arch>; cl=<changelist>)`. The version is
   read from the app's update manifest every 6 hours. Google lists Gemini 4
   only to new enough releases, so a manifest that can't be read is asked
   again after a minute, and the model list is read again when the version
-  changes.
+  changes. The changelist is each release's own, from a table in the
+  plugin; a release newer than the table goes with the newest one known.
+- A conversation is one cascade: `requestId` is
+  `agent/<cascade>/<ms>/<trajectory>/<step>`, and `request.labels` carries the
+  cascade and trajectory ids, the step, the model's enum from
+  `fetchAvailableModels` and whether it is Claude or not Gemini, as the app
+  labels its requests.
+- `onboardUser` is asked as the language server asks it:
+  `{tierId, metadata: {ideType: "ANTIGRAVITY"}}`.
 - The session id is a number made from the host's session header when named,
   else the conversation's first real user prompt (skipping injected
   `AGENTS.md` and environment preambles), so unrelated conversations that

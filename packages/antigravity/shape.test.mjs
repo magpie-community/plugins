@@ -216,8 +216,39 @@ test("a conversation keeps its session", () => {
   expect(sessionOf({ contents: [{ role: "user", parts: [{ text: "other" }] }] })).not.toBe(sessionOf(a))
   const env = envelope(a, "gemini-3-flash", "ag-proj")
   expect(env).toMatchObject({ model: "gemini-3-flash", project: "ag-proj", userAgent: "antigravity", requestType: "agent" })
-  expect(env.requestId).toMatch(/^agent-[0-9a-f]{12}$/)
   expect(env.request.sessionId).toBe(sessionOf(a))
+})
+
+test("the envelope is the app's: key order, request id and labels", () => {
+  const { enums } = _internal
+  enums.set("gemini-3-flash", { model: "MODEL_PLACEHOLDER_M18", provider: "MODEL_PROVIDER_GOOGLE" })
+  enums.set("claude-sonnet-4-6", { model: "MODEL_PLACEHOLDER_M35", provider: "MODEL_PROVIDER_ANTHROPIC" })
+  const a = { generationConfig: { maxOutputTokens: 9 }, contents: [{ role: "user", parts: [{ text: "hello there" }] }], systemInstruction: { role: "user", parts: [{ text: "s" }] } }
+  const env = envelope(a, "gemini-3-flash", "ag-proj")
+  expect(Object.keys(env)).toEqual(["project", "requestId", "request", "model", "userAgent", "requestType"])
+  expect(Object.keys(env.request)).toEqual(["contents", "systemInstruction", "labels", "generationConfig", "sessionId"])
+  const u = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+  expect(env.requestId).toMatch(new RegExp(`^agent/${u}/\\d{13}/${u}/1$`))
+  const l = env.request.labels
+  expect(Object.keys(l)).toEqual(["cascade_id", "last_step_index", "model_enum", "request_id", "root_cascade_id", "trajectory_id", "used_claude", "used_claude_conservative", "used_non_gemini_model"])
+  expect(l).toMatchObject({ last_step_index: "0", model_enum: "MODEL_PLACEHOLDER_M18", request_id: l.trajectory_id + "-0", root_cascade_id: l.cascade_id, used_claude: "false", used_non_gemini_model: "false" })
+  expect(env.requestId).toBe(`agent/${l.cascade_id}/${env.requestId.split("/")[2]}/${l.trajectory_id}/1`)
+  // the same conversation, further on: same ids, later step
+  const b = { contents: [...a.contents, { role: "model", parts: [{ text: "hi" }] }, { role: "user", parts: [{ text: "more" }] }] }
+  const later = envelope(b, "claude-sonnet-4-6", "ag-proj").request.labels
+  expect(later).toMatchObject({ cascade_id: l.cascade_id, trajectory_id: l.trajectory_id, last_step_index: "2", request_id: l.trajectory_id + "-1", model_enum: "MODEL_PLACEHOLDER_M35", used_claude: "true", used_non_gemini_model: "true" })
+  // a model not listed yet has no enum, and its maker is read from its id
+  const unknown = envelope(a, "gpt-oss-120b-medium", "ag-proj").request.labels
+  expect(unknown.model_enum).toBeUndefined()
+  expect(unknown.used_non_gemini_model).toBe("true")
+})
+
+test("the user agent is the language server's, with the release's changelist", async () => {
+  const { clOf, CLS } = _internal
+  expect(clOf("2.32.1")).toBe(CLS["2.32.1"])
+  // a release newer than every known one goes with the newest known changelist
+  const newest = Object.keys(CLS).sort((x, y) => (x < y ? 1 : -1))[0]
+  expect(clOf("9.0.0")).toBe(CLS[newest])
 })
 
 test("sessions with shared AGENTS.md preambles or distinct host headers don't collide", () => {
