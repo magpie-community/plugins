@@ -1240,15 +1240,21 @@ function errorResponse(status, message, signIn) {
 }
 
 // unwrap turns Code Assist's stream, each chunk {response: <chunk>}, back
-// into Gemini's own
-function unwrap(body) {
+// into Gemini's own. With say, an INVALID_ARGUMENT error in it, as a data
+// event or a bare line, is told in say's words
+function unwrap(body, say) {
   const dec = new TextDecoder()
   const enc = new TextEncoder()
   let buf = ""
   const line = (l) => {
-    if (!l.startsWith("data:")) return l
-    const j = parse(l.slice(5).trim())
-    if (isObj(j) && isObj(j.response)) return "data: " + JSON.stringify(j.response)
+    const data = l.startsWith("data:")
+    if (!data && !(say && l.trimStart().startsWith("{"))) return l
+    const j = parse(data ? l.slice(5).trim() : l)
+    if (say && isObj(j) && isObj(j.error) && badCall(JSON.stringify(j))) {
+      const e = { ...j.error, message: say(j.error.message) }
+      return (data ? "data: " : "") + JSON.stringify({ ...j, error: e })
+    }
+    if (data && isObj(j) && isObj(j.response)) return "data: " + JSON.stringify(j.response)
     return l
   }
   return body.pipeThrough(
@@ -1284,6 +1290,15 @@ const RETRY_BAD_CALL = 2
 // after that reaches the client as it is.
 const retry400 = { floorMs: 3000, pauseMs: 300, holdMax: 512 * 1024, holdMs: 10_000 }
 const isGemini4 = (id) => /^gemini-4/i.test(String(id ?? ""))
+
+// badCallSaid is what the client is told of Gemini 4's INVALID_ARGUMENT
+// after the model ran, asked n times: the vendor's words alone read as a
+// request magpie got wrong, or a region block (Lawson0112 on X), which
+// Google refuses at once and names (FAILED_PRECONDITION "User location is
+// not supported…"). The words stay clear of what magpie's gateway reads as
+// another fault: "model" before "invalid" reads as a model not served
+const badCallSaid = (id, n) => (message) =>
+  `${id} turned down a call it built while thinking, asked ${n} time${n === 1 ? "" : "s"} (Google: ${String(message ?? "").trim() || "INVALID_ARGUMENT"}). Not a region or account refusal: Google names those`
 
 // badCall is whether a reply's body is Google's INVALID_ARGUMENT
 function badCall(text) {
@@ -1325,13 +1340,24 @@ async function holdThoughts(res, signal) {
   let pending
   let timer
   const late = new Promise((r) => (timer = setTimeout(r, retry400.holdMs, LATE)))
+  // loose is the lines of a JSON value written with no "data:" before it,
+  // as Code Assist writes its late error: after the thinking events, a
+  // line of its own, {"error":{"code":400,…,"status":"INVALID_ARGUMENT"}}
+  // (zRain's capture, magpie's sse_bare.go), maybe over several lines
+  let loose = ""
   const scan = (final) => {
     let i
-    while (!release && ((i = buf.indexOf("\n")) >= 0 || (final && buf))) {
-      const l = i >= 0 ? buf.slice(0, i) : buf
+    while (!release && !bad && ((i = buf.indexOf("\n")) >= 0 || (final && buf))) {
+      const l = (i >= 0 ? buf.slice(0, i) : buf).replace(/\r$/, "")
       buf = i >= 0 ? buf.slice(i + 1) : ""
-      if (!l.startsWith("data:")) continue
-      const j = parse(l.slice(5).trim())
+      let j
+      if (l.startsWith("data:")) j = parse(l.slice(5).trim())
+      else if (loose || l.trimStart().startsWith("{")) {
+        loose += l + "\n"
+        j = parse(loose)
+        if (j === undefined && loose.length <= retry400.holdMax) continue
+        loose = ""
+      } else continue
       if (!isObj(j)) continue
       if ((j.error || j.response?.error) && badCall(JSON.stringify(j))) bad = true
       else if (showsAnswer(j)) release = true
@@ -1464,16 +1490,22 @@ async function complete(s, url, init, magpie) {
   // comes back fast is the request's own fault and is returned as it is.
   const again400 = isGemini4(sent) || isGemini4(model)
   let res, refusal
+  // asks is how many times the model was asked; slow, whether the last
+  // 400 took long enough to be the model's own (retry400.floorMs)
+  let asks = 0
+  let slow = false
   for (let n = 0; ; n++) {
     const t0 = Date.now()
     ;({ res, refusal } = await attempt())
+    asks = n + 1
+    slow = Date.now() - t0 >= retry400.floorMs
     const left = again400 && n < RETRY_BAD_CALL && !init?.signal?.aborted
     if (!left) break
     if (!res.ok) {
       if (res.status !== 400) break
       const text = refusal ?? (await res.text())
       refusal = text
-      if (!badCall(text) || Date.now() - t0 < retry400.floorMs) break
+      if (!badCall(text) || !slow) break
       await sleep(retry400.pauseMs)
       continue
     }
@@ -1488,6 +1520,7 @@ async function complete(s, url, init, magpie) {
   if (!res.ok) {
     const text = refusal ?? (await res.text())
     const msg = apiError(text, res.status)
+    if (again400 && res.status === 400 && slow && badCall(text)) return errorResponse(400, badCallSaid(sent, asks)(msg))
     if (res.status === 401) return errorResponse(401, `Antigravity: ${msg}`, "kept")
     if (res.status === 404) return errorResponse(404, `model ${sent} not found`)
     if (res.status === 429 && /resource has been exhausted/i.test(text) && turnsAway(system)) {
@@ -1501,7 +1534,7 @@ async function complete(s, url, init, magpie) {
     }
     return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } })
   }
-  if (stream) return new Response(unwrap(res.body), { status: 200, headers: RESPONSE_HEADERS })
+  if (stream) return new Response(unwrap(res.body, again400 ? badCallSaid(sent, asks) : undefined), { status: 200, headers: RESPONSE_HEADERS })
   return new Response(JSON.stringify(await whole(res)), { status: 200, headers: { "content-type": "application/json" } })
 }
 

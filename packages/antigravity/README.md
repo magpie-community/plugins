@@ -122,7 +122,7 @@ The plugin also changes the request itself, as the built-in did:
 |---|---|
 | 429 "Resource has been exhausted" to a system prompt with a turned-away line | 400 "turned this request away as from an unapproved channel", with what to change (it isn't a quota, so nothing is rested) |
 | 429 from a plan's quota, the account having Google AI credits | with the Use AI credits switch on (off by default), the request is asked again once with `enabled_credit_types: ["GOOGLE_ONE_AI"]`, as the app's Use AI Credits does; with it off, the 429 says the switch would spend them |
-| Gemini 4's 400 INVALID_ARGUMENT after it ran (in the stream after thinking, or a slow 400) | asked again, up to twice. A stream's thinking is held back for up to 10 seconds, or until the answer starts, so a retry sends nothing twice; past 10 seconds the thinking streams live, and a 400 after that reaches the client as it is |
+| Gemini 4's 400 INVALID_ARGUMENT after it ran (in the stream after thinking, or a slow 400) | asked again, up to twice. A stream's thinking is held back for up to 10 seconds, or until the answer starts, so a retry sends nothing twice; past 10 seconds the thinking streams live, and a 400 after that reaches the client. Code Assist writes the stream's error as a bare JSON line with no `data:`, read as well. A 400 that still comes says the model turned down a call it built, and how many times it was asked, since Google's words alone read as a region or account block |
 | 401 | 401, sign-in kept |
 | 404 | 404 "model … not found" |
 | Refresh refused | 401, `x-magpie-sign-in: expired` |

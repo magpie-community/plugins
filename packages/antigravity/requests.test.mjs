@@ -367,3 +367,65 @@ test("a generateContent reply is asked again the same way", async () => {
   expect(JSON.stringify(await res.json())).toContain("functionCall")
   expect(calls(seen)).toBe(2)
 })
+
+// Code Assist's real late error is a bare line, no "data:" before it, after
+// the thinking events (zRain's capture of gemini-4-argon-high, the bytes in
+// magpie's internal/gateway/sse_bare.go)
+const bareErr = '{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}'
+
+test("Code Assist's bare INVALID_ARGUMENT line after thinking is asked again too (Lawson0112 on X)", async () => {
+  _internal.retry400.floorMs = 3000
+  let n = 0
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), dataOf(think), bareErr) : sse(think, answer)) })
+  const f = await loaderFetch(auth())
+  const res = await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  const text = await res.text()
+  expect(text).not.toContain("INVALID_ARGUMENT")
+  expect(text.split("hmm").length - 1).toBe(1)
+  expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("a bare error written over several lines is read whole", async () => {
+  let n = 0
+  const pretty = JSON.stringify(JSON.parse(bareErr), null, 2)
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => (n++ < 1 ? raw(dataOf(think), pretty) : sse(answer)) })
+  const f = await loaderFetch(auth())
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(text).toContain("functionCall")
+  expect(calls(seen)).toBe(2)
+})
+
+test("gemini-4's bad call that keeps coming says what it is, not a region or account refusal", async () => {
+  const seen = fake({ fetchAvailableModels: G4, streamGenerateContent: () => raw(dataOf(think), bareErr) })
+  const f = await loaderFetch(auth())
+  const text = await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).text()
+  expect(calls(seen)).toBe(3)
+  const line = text.split("\n").find((l) => l.includes("INVALID_ARGUMENT"))
+  const e = JSON.parse(line.replace(/^data:\s*/, "")).error
+  expect(e.code).toBe(400)
+  expect(e.status).toBe("INVALID_ARGUMENT")
+  expect(e.message).toContain("gemini-4-carbon turned down a call it built while thinking, asked 3 times")
+  expect(e.message).toContain("Request contains an invalid argument.")
+  expect(e.message).toContain("Not a region or account refusal")
+  // magpie's gateway reads "model … invalid" as a model not served
+  expect(e.message).not.toMatch(/model.{0,80}invalid/i)
+
+  _internal.retry400.floorMs = 0
+  fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const g = await loaderFetch(auth())
+  const res = await g(URL_("gemini-4-carbon"), { method: "POST", body: ask() })
+  expect(res.status).toBe(400)
+  expect((await res.json()).error.message).toContain("asked 3 times")
+})
+
+test("a fast 400 and another model's errors keep Google's words", async () => {
+  fake({ fetchAvailableModels: G4, streamGenerateContent: bad400 })
+  const f = await loaderFetch(auth())
+  _internal.retry400.floorMs = 3000
+  expect((await (await f(URL_("gemini-4-carbon"), { method: "POST", body: ask() })).json()).error.message).toBe("Request contains an invalid argument.")
+  fake({ fetchAvailableModels: G4, streamGenerateContent: () => raw(dataOf(think), bareErr) })
+  const g = await loaderFetch(auth())
+  const text = await (await g(URL_("gemini-3-flash"), { method: "POST", body: ask() })).text()
+  expect(text).toContain(bareErr)
+})
