@@ -56,19 +56,19 @@ test("the sign-in takes ZCode's account and key, and follows ZCode after", async
   expect(got.access).toBe("id1.secret1")
   expect(JSON.parse(got.refresh).source).toBe("zcode")
   const auth = { ...got, type: "oauth" }
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
 
   // ZCode signs in again with a new key
   const ada = JSON.stringify({ email: "ada@phone.local" })
   zcodeHas({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": ada })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
 
   // and switches to a team's plan
   zcodeHas(
     { [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:access_token": "tok-team", "oauth:zai:user_info": ada },
     { providerFamilyConnectionSelections: { zai: { kind: "team-coding-plan", organizationId: "org1", projectId: "p1" } } },
   )
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "", token: "tok-team", org: "org1", project: "p1", jwt: "j2" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "", token: "tok-team", org: "org1", project: "p1", jwt: "j2" })
 })
 
 test("with ZCode signed out, the sign-in says so", async () => {
@@ -80,9 +80,9 @@ test("with ZCode signed out, the sign-in says so", async () => {
   expect(got.error).toContain("ZCode isn't signed in")
 })
 
-test("a sign-in not ZCode's keeps its own key", () => {
+test("a sign-in not ZCode's keeps its own key", async () => {
   zcodeHas({ [KEY]: "id9.secret9" })
-  const s = _internal.stateOf({ type: "oauth", access: "mine.k", refresh: JSON.stringify({ site: "zai", key: "mine.k" }) })
+  const s = await _internal.stateOf({ type: "oauth", access: "mine.k", refresh: JSON.stringify({ site: "zai", key: "mine.k" }) })
   expect(s.key).toBe("mine.k")
 })
 
@@ -108,8 +108,8 @@ test("an app sign-in for A doesn't send with B's key once ZCode is signed in to 
   const b = await appSignIn()
   expect([a.accountId, b.accountId]).toEqual(["alice@x.local", "bob@x.local"])
 
-  expect(_internal.stateOf(a)).toMatchObject({ key: "idA.secretA", jwt: "jA" })
-  expect(_internal.stateOf(b)).toMatchObject({ key: "idB.secretB", jwt: "jB" })
+  expect(await _internal.stateOf(a)).toMatchObject({ key: "idA.secretA", jwt: "jA" })
+  expect(await _internal.stateOf(b)).toMatchObject({ key: "idB.secretB", jwt: "jB" })
 
   _internal.routes?.clear?.()
   const sent = []
@@ -140,7 +140,7 @@ test("an app sign-in for A whose saved session has lapsed, with ZCode on B, says
   zcodeHas({ zcodejwttoken: "Bearer " + expiredJWT, "oauth:zai:user_info": JSON.stringify({ email: "alice@x.local" }) })
   const a = await appSignIn()
   zcodeHas({ zcodejwttoken: "Bearer jB-live", "oauth:zai:user_info": JSON.stringify({ email: "bob@x.local" }) })
-  expect(_internal.stateOf(a).jwt).toBe(expiredJWT)
+  expect((await _internal.stateOf(a)).jwt).toBe(expiredJWT)
 
   _internal.routes?.clear?.()
   const sent = []
@@ -174,15 +174,15 @@ test("ZCode 3.15's plan key is read from its config.json", async () => {
   expect(got.type).toBe("success")
   expect(got.access).toBe("bm.secret")
   const auth = { ...got, type: "oauth" }
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret", jwt: "j1", base: "https://open.bigmodel.cn/api/anthropic", site: "bigmodel" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "bm.secret", jwt: "j1", base: "https://open.bigmodel.cn/api/anthropic", site: "bigmodel" })
 
   // one written encrypted reads too; one that isn't a key doesn't
   config({ "builtin:zai-coding-plan": { options: { apiKey: "{env:ZAI_KEY}" } }, "builtin:bigmodel-coding-plan": { options: { apiKey: enc("bm.secret2") } } })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "bm.secret2", base: "https://open.bigmodel.cn/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "bm.secret2", base: "https://open.bigmodel.cn/api/anthropic" })
 
   // a key in credentials.json still comes first
   zcodeHas({ [KEY]: "id1.secret1", zcodejwttoken: "j1", "oauth:bigmodel:user_info": bm })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", base: "https://api.z.ai/api/anthropic" })
   config({})
 })
 
@@ -202,12 +202,12 @@ test("the app's sign-in keeps the user id, and follows ZCode by it", async () =>
   const auth = { ...got, type: "oauth" }
 
   zcodeHas({ [KEY]: "id2.secret2", zcodejwttoken: "j2", "oauth:zai:user_info": as("u1") })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
-  expect(_internal.stateOf(auth).uid).toBeUndefined()
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id2.secret2", jwt: "j2" })
+  expect(await _internal.stateOf(auth).uid).toBeUndefined()
 
   // another account named Ada: A's entry keeps what it saved
   zcodeHas({ [KEY]: "id3.secret3", zcodejwttoken: "j3", "oauth:zai:user_info": as("u2") })
-  expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1" })
 })
 
 // meraki7304 (#410): ZCode 3.16.3 on a Mac keeps no plan key at all, in
@@ -242,7 +242,7 @@ test("ZCode 3.16's key location gives the coding plan its key", async () => {
   const got = await (await m.authorize()).callback()
   expect(got.type).toBe("success")
   const auth = { ...got, type: "oauth" }
-  const s = await _internal.located(_internal.stateOf(auth))
+  const s = await _internal.located(await _internal.stateOf(auth))
   expect(s).toMatchObject({ key: "k7.sec7", site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic" })
   expect(sent[0]).toEqual(["GET", "https://bigmodel.cn/api/biz/v1/organization/org7/projects/proj7/api_keys/copy/k7", "tok-bm"])
   // nothing is made
@@ -262,7 +262,7 @@ test("ZCode 3.16's key location gives the coding plan its key", async () => {
   )
   sent.length = 0
   const z = await (await m.authorize()).callback()
-  const zs = await _internal.located(_internal.stateOf({ ...z, type: "oauth" }))
+  const zs = await _internal.located(await _internal.stateOf({ ...z, type: "oauth" }))
   expect(zs.key).toBe("")
   // asked at the site's own API, never the record's foreign origin, as a Bearer
   expect(sent[0]).toEqual(["GET", "https://api.z.ai/api/biz/v1/organization/o/projects/p/api_keys/copy/gone", "Bearer tok-z"])
@@ -347,7 +347,7 @@ test("3.18's vault-encrypted credentials read like the older ones", async () => 
     expect(got.accountId).toBe("ada@example.com")
     expect(got.access).toBe("id1.secret1")
     const auth = { ...got, type: "oauth" }
-    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+    expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
 
     // a fingerprint the vault doesn't name reads as nothing, without
     // taking the older values down with it
@@ -356,7 +356,7 @@ test("3.18's vault-encrypted credentials read like the older ones", async () => 
       zcodejwttoken: "enc:v2:os:deadbeefdeadbeefdeadbeef:aa.bb.cc",
       "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
     })
-    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "" })
+    expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "" })
   } finally {
     delete process.env.ZCODE_CREDENTIAL_V2_SECRET
   }

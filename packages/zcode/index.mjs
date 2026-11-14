@@ -16,7 +16,7 @@
 // `refresh` the rest of it as JSON (site, base, key, jwt, team project,
 // plan, device id), `accountId` the account's email.
 
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { createDecipheriv, createHash } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
@@ -1556,7 +1556,16 @@ function secret() {
 // Encryption", is known). The fingerprint guards against a vault that
 // has rotated since; ZCODE_CREDENTIAL_V2_SECRET (base64url) stands in
 // for the vault, as ZCODE_CREDENTIAL_SECRET does for the machine user.
-let vaulted = null
+// Both hits and misses are remembered per fingerprint: the keychain item
+// is ZCode's, so unless the caller is on its access list macOS shows an
+// "allow access" dialog per read, and a miss retried on every decrypt
+// would be a dialog per request. A hit is kept for good (until another
+// fingerprint comes), a miss for a few minutes, then one more try — the
+// user may have allowed access by then. Denied is a different miss from
+// "the item isn't there": denyKeychain tells them apart for the message.
+const VAULT_MISS = 5 * 60_000
+const vault = new Map()
+let denyKeychain = false
 function v2Key(fp) {
   const standIn = process.env.ZCODE_CREDENTIAL_V2_SECRET
   if (standIn) {
@@ -1567,17 +1576,30 @@ function v2Key(fp) {
       return null
     }
   }
-  if (vaulted && vaulted.fp === fp) return vaulted.key
+  const now = Date.now()
+  const had = vault.get(fp)
+  if (had && (had.key || now < had.until)) return had.key || null
   if (process.platform !== "darwin") return null
-  try {
-    const out = execFileSync("security", ["find-generic-password", "-s", "ZCode Credential Encryption", "-w"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim()
-    const key = Buffer.from(out, "base64url")
-    if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) return null
-    vaulted = { fp, key }
-    return key
-  } catch {
-    return null
-  }
+  denyKeychain = false
+  return new Promise((resolve) => {
+    execFile("security", ["find-generic-password", "-s", "ZCode Credential Encryption", "-w"], { encoding: "utf8", timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        // errcode 45 is the user's no on the dialog; 44/51/128 aren't on
+        // the list or name nothing — only a denial is worth remembering
+        // as one, and only a denial gets its own words later
+        if (String(err.code ?? "") === "45") denyKeychain = true
+        vault.set(fp, { key: null, until: now + VAULT_MISS })
+        return resolve(null)
+      }
+      const key = Buffer.from(stdout.trim(), "base64url")
+      if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) {
+        vault.set(fp, { key: null, until: now + VAULT_MISS })
+        return resolve(null)
+      }
+      vault.set(fp, { key })
+      resolve(key)
+    })
+  })
 }
 
 function gcm(key, body) {
@@ -1593,18 +1615,31 @@ function gcm(key, body) {
   }
 }
 
+// decryptSync is the v1 form only: the helpers that stay sync
+// (configKey, ownTeam, ownLocation — the 3.15/3.16 shapes) can't reach
+// 3.18's vault, whose key is behind an async keychain read.
+function decryptSync(key, v) {
+  if (typeof v !== "string" || !v.startsWith("enc:v1:")) return null
+  return gcm(key, v.slice(7))
+}
+
+// decrypt is the v1 form; the v2 vault form reads through decryptV2.
 function decrypt(key, v) {
+  if (typeof v !== "string" || !v.startsWith("enc:v1:")) return null
+  return gcm(key, v.slice(7))
+}
+
+// decryptV2 is decrypt for 3.18's vault form, whose key lives behind an
+// async keychain read. Called where its callers already await.
+async function decryptV2(key, v) {
   if (typeof v !== "string" || !v.startsWith("enc:")) return null
-  // enc:v2:<vault>:<fingerprint>:<iv>.<tag>.<data> — the key is v2Key's,
-  // not the machine user's the caller holds
   if (v.startsWith("enc:v2:")) {
     const head = v.slice(7).split(":")
     if (head.length !== 3) return null
-    const k = v2Key(head[1])
+    const k = await v2Key(head[1])
     return k ? gcm(k, head[2]) : null
   }
-  if (!v.startsWith("enc:v1:")) return null
-  return gcm(key, v.slice(7))
+  return decrypt(key, v)
 }
 
 function readJSON(path) {
@@ -1640,10 +1675,10 @@ function ownTeam(store, key) {
       }
     }
     if (!org || !project) continue
-    const tok = first(decrypt(key, store[`oauth:${fam}:access_token`]))
+    const tok = first(decryptSync(key, store[`oauth:${fam}:access_token`]))
     if (!tok) continue
     // a stale token ZCode won't use either
-    if (fam === "bigmodel" && first(decrypt(key, store.zcodejwttoken)) === tok) continue
+    if (fam === "bigmodel" && first(decryptSync(key, store.zcodejwttoken)) === tok) continue
     return { site: fam, base: SITES[fam].base, key: "", token: tok, org, project }
   }
   return null
@@ -1695,18 +1730,18 @@ function ownLocation(store, key) {
     if (!Array.isArray(at) || at[3] !== null || String(at[4]) !== "1" || !fams.includes(at[1])) continue
     let loc
     try {
-      loc = JSON.parse(decrypt(key, v) ?? "")
+      loc = JSON.parse(decryptSync(key, v) ?? "")
     } catch {}
     const org = first(loc?.organizationId), project = first(loc?.projectId), apiKeyId = first(loc?.apiKeyId)
     if (!org || !project || !apiKeyId) continue
     found.push({ site: at[1], origin: typeof at[0] === "string" ? at[0] : "", account: String(at[2] ?? ""), org, project, apiKeyId })
   }
   for (const site of fams) {
-    const token = first(decrypt(key, store[`oauth:${site}:access_token`]))
+    const token = first(decryptSync(key, store[`oauth:${site}:access_token`]))
     if (!token) continue
     let me = ""
     try {
-      me = String(JSON.parse(decrypt(key, store[`oauth:${site}:user_info`]) ?? "{}")?.id ?? "")
+      me = String(JSON.parse(decryptSync(key, store[`oauth:${site}:user_info`]) ?? "{}")?.id ?? "")
     } catch {}
     const mine = found.filter((l) => l.site === site && (!me || l.account === me))
     if (!mine.length) continue
@@ -1824,8 +1859,9 @@ function planFullUntil(key) {
 
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
-// it is switched to; null when it has none of them.
-function ownSignIn() {
+// it is switched to; null when it has none of them. 3.18's vault form
+// reads through an async keychain read, so this is async too.
+async function ownSignIn() {
   const store = readJSON(join(zcodeDir(), "credentials.json"))
   if (!store || typeof store !== "object") return null
   const key = secret()
@@ -1833,7 +1869,7 @@ function ownSignIn() {
   for (const [name, v] of Object.entries(store)) {
     // account-provider:coding-plan:account:zai-individual-coding-plan:account:<uuid>:api-key
     if (!name.includes(":coding-plan:") || !name.endsWith(":api-key")) continue
-    const k = decrypt(key, v)
+    const k = await decryptV2(key, v)
     if (!k || !k.includes(".")) continue
     const base = name.includes(":bigmodel-") ? BIGMODEL_BASE : ZAI_BASE
     // Z.ai's first, as ZCode lists it
@@ -1844,14 +1880,20 @@ function ownSignIn() {
   if (!s.key) s = configKey(key) || s
   // ZCode 3.16 keeps neither: only where the key is (#410)
   if (!s.key) s = ownLocation(store, key) || s
-  const jwt = first(first(decrypt(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
+  const jwt = first(first(await decryptV2(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
   const team = ownTeam(store, key)
   if (team) s = { ...team, jwt }
   else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
-  if (!s.key && !s.jwt && !isTeam(s)) return null
+  if (!s.key && !s.jwt && !isTeam(s)) {
+    // every value unreadable and the vault denied us: say so, rather than
+    // "no ZCode session", so the user knows what to allow
+    if (denyKeychain && Object.values(store).some((v) => typeof v === "string" && v.startsWith("enc:v2:")))
+      throw new Error("ZCode's keychain access was denied; allow magpie's plugin host to read " + "ZCode Credential Encryption, or sign in to Z.ai or BigModel here")
+    return null
+  }
   let info = {}
   for (const name of ["oauth:zai:user_info", "oauth:bigmodel:user_info"]) {
-    const v = decrypt(key, store[name])
+    const v = await decryptV2(key, store[name])
     if (v && !first(info.email, info.name, info.user_id)) {
       try {
         info = JSON.parse(v)
@@ -1868,7 +1910,7 @@ function asZCode() {
     instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account.",
     method: "auto",
     async callback() {
-      const own = ownSignIn()
+      const own = await ownSignIn()
       if (!own) return { type: "failed", error: "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
       const { user, uid, ...s } = own
       const state = { source: "zcode", device: anyDevice, ...s }
@@ -1877,8 +1919,10 @@ function asZCode() {
   }
 }
 
-// stateOf is a stored sign-in as the requests need it.
-function stateOf(auth) {
+// stateOf is a stored sign-in as the requests need it. A ZCode-sourced
+// sign-in re-reads its credentials now, which 3.18's vault form reads
+// through an async keychain read, so this is async too.
+async function stateOf(auth) {
   if (auth?.type === "oauth") {
     let s = {}
     try {
@@ -1890,7 +1934,7 @@ function stateOf(auth) {
       // what it was when this was signed in: another account's key would
       // send this account's requests as that one, and an expired session
       // says sign in again (EXPIRED) rather than borrowing another's.
-      const own = ownSignIn()
+      const own = await ownSignIn()
       // (by user id where both have one: another account may share the name)
       if (own && own.user === String(auth.accountId ?? "") && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
         const { user, uid: _uid, ...now } = own
@@ -2986,7 +3030,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         // first, as a request does, or plansOf takes the keyless sign-in
         // for a Start Plan one and lists that plan's models (#439). A key
         // that can't be read throws, and magpie keeps the list it had.
-        const s = await located(stateOf(auth))
+        const s = await located(await stateOf(auth))
         if (!s) return provider.models
         const { start, gift: known } = await plansOf(s).catch(() => ({ start: false, gift: null }))
         const gift = start ? await startPlan(s.jwt, s.device).catch(() => null) : known
@@ -3063,7 +3107,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         },
       ],
       async loader(getAuth, provider) {
-        const s0 = stateOf(await getAuth())
+        const s0 = await stateOf(await getAuth())
         if (!s0) return {}
         const id = provider?.id ?? PROVIDER
         return {
@@ -3085,7 +3129,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             const auth = await getAuth()
             let s
             try {
-              s = await located(stateOf(auth))
+              s = await located(await stateOf(auth))
             } catch (e) {
               // the plan's key couldn't be read for the network: a wall,
               // sent once (wallAnswer), not a 502 asked again (#1020)
@@ -3389,7 +3433,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
       // its expired Start Plan sign-in among them, and cleared none
       async usage(getAuth, provider) {
         const auth = await getAuth()
-        const s = stateOf(auth)
+        const s = await stateOf(auth)
         if (!s) return { error: "not signed in", signIn: "kept" }
         try {
           await located(s)
@@ -3450,7 +3494,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
       // right away. See claimDaily.
       async checkin(getAuth) {
         try {
-          return await claimDaily(stateOf(await getAuth()))
+          return await claimDaily(await stateOf(await getAuth()))
         } catch (e) {
           return { outcome: "failed", message: e?.message ?? String(e) }
         }
