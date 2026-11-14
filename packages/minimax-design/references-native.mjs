@@ -48,6 +48,8 @@ const fixture = http.createServer(async (request, response) => {
       const body = JSON.parse(bytes)
       assert.equal(body.model, "future-openai-image")
       assert.equal(body.async, true)
+      assert.equal(body.quality, "high")
+      assert.equal(body.output_format, "webp")
       assert.deepEqual(body.images, referenceBytes.map((bytes) => `data:image/png;base64,${bytes.toString("base64")}`))
       response.end(JSON.stringify({ task_id: "gpt" }))
     } else if (request.url === "/v1beta/models/future-native-image:generateContent") {
@@ -97,7 +99,8 @@ fs.writeFileSync(path.join(config, "plugins.json"), JSON.stringify({ plugins: [{
       "future-native-image": { name: "Future native", mode: "gemini",
         capabilities: { generate: true, edit: true, maxReferences: 6, aspectRatios: ["1:1", "16:9"], resolutions: ["1K", "2K"] } },
       "future-openai-image": { name: "Future standard", mode: "openai",
-        capabilities: { generate: true, edit: true, maxReferences: 6 } },
+        capabilities: { generate: true, edit: true, maxReferences: 6,
+          qualities: ["low", "high"], outputFormats: ["png", "webp"] } },
     } },
 }] }))
 fs.mkdirSync(path.dirname(paths.control), { recursive: true })
@@ -147,7 +150,8 @@ try {
     assert.equal(JSON.parse(fs.readFileSync(path.join(paths.store, "models", model.id, "spec.json"))).references.image.max, 6)
     const adapter = await import(`file://${paths.store}/models/${model.id}/adapter.js`)
     const request = { type: "image", model: model.upstreamModel, prompt: "reference fixture",
-      params: model.upstreamModel.includes("gemini") ? { aspect_ratio: "16:9", resolution: "2K" } : {},
+      params: model.upstreamModel.includes("gemini") ? { aspect_ratio: "16:9", resolution: "2K" } :
+        { quality: "high", output_format: "webp" },
       images: referenceBytes.map((bytes) => ({
         mime: "image/png", base64: bytes.toString("base64"), dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
       })) }
@@ -164,6 +168,7 @@ try {
   assert.equal(calls.length, 2)
   console.log("PASS: persisted plugin options and shared source capabilities synchronize automatically")
   console.log("PASS: real Magpie forwards four exact images through renamed models using both source protocols")
+  console.log("PASS: declared quality and output format reach the source through the existing gateway")
   console.log(`Fixture evidence: ${root}`)
 } finally {
   const exited = once(processHandle, "exit")

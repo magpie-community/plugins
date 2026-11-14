@@ -45,6 +45,22 @@ Executable/URL whitespace and environment/header key whitespace are normalized
 before native storage and ownership comparison, matching Design's handling of
 these fields; genuine local configuration edits still block replacement.
 
+The ownership receipt also keeps the last staged runtime definitions, so
+switching from direct servers to a router can clean matching old entries.
+Each name retains exact candidates for the Library definition and Design's
+native runtime projection, including native enabled/timeout fields. A
+same-name update retains both prior and current candidates until cleanup
+succeeds; changed runtime fields that match neither remain conflicts.
+A ready receipt does not bypass checking for a restored runtime bridge.
+For installations predating these receipts, `syncMcpStore` accepts
+`legacyManaged` definitions recovered from verified prior Library application
+records and a matching runtime snapshot. It does not infer ownership from
+a server's name or endpoint.
+
+Discovery defaults to 60 seconds unless Library provides an explicit timeout.
+This covers Magpie's 40-second hub listing budget; Design's default 30-second
+proxy request could connect successfully yet fail a later `tools/list`.
+
 Vault changes wait while Design runs. Existing services are not adopted
 silently; name conflicts and local config edits stop the sync. Native
 enabled switches survive refresh unless Library changes its enabled state.

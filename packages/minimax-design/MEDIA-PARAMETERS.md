@@ -4,8 +4,9 @@ Verified November 14, 2026, with Magpie 0.1.4040 and Design 4.0.10.
 
 The bridge discovers models and refreshes their specifications automatically.
 Selecting a model loads its options; users do not edit configuration files.
-`自动` omits an override so the route retains its own defaults. Optional
-durations are also omitted when unset. No inference is performed during sync.
+`自动` uses a source's validated, unconditional default when one is declared;
+otherwise it omits the override. Optional durations without a declared default
+remain unset. No inference is performed during sync.
 
 ## Source order
 
@@ -33,6 +34,24 @@ durations are also omitted when unset. No inference is performed during sync.
    explicit reference-count schema.
 
 ## Portable configuration
+
+Source reference limits are distinct from this bridge's verified 16-image
+budget. A valid source declaration such as 0–30 remains unchanged in model
+metadata and is retained as `sourceReferences` in the generated adapter.
+Design's spec and request validation use the smaller bridge/mode limit.
+A minimum above the usable limit is rejected explicitly. The budget is a
+bridge constraint, not a claim about the vendor's maximum or Design's
+ultimate capacity. OpenRouter endpoint intersections also retain their
+source limits before this projection.
+
+The current host may omit extended model metadata from `/v1/models`.
+Startup `config.provider` fills that gap only for declarations it contains;
+it does not guarantee live discovery of new models' complete controls.
+`media_request` and combined `size` encodings remain opt-in plugin
+extensions. Design interprets the existing native `parameter_config` shape
+described below inside this plugin; no Magpie core change or new shared
+contract is required. Parameters without a verified request
+mapping are not advertised; explicit unrecognized controls are rejected.
 
 Plugin options are persisted by Magpie in `plugins.json` and passed to the
 companion's factory. The package declares empty defaults; no routing
@@ -95,6 +114,15 @@ Count metadata alone does not establish a new multi-image mode; unknown video
 routes accept at most one first frame. A minimum above the mapped maximum
 fails synchronization rather than installing an unusable specification.
 
+Generic video sources may explicitly declare `media_request.reference_modes`
+using `first-frame`, `first-last-frame`, and/or `reference`. These correspond to
+the existing gateway `input_reference`, `last_frame`, and `reference_images`
+fields; they do not enable video editing or reference audio/video. Reference
+budgets still come from `input_references` and are capped at 16 by the bridge,
+or two for frames alone. An empty mode list disables references.
+`media_request.frame_ratio: "auto"` rejects a manual ratio with frame input.
+This contract is independent of provider IDs and model names.
+
 ## Automatic reference modes and preflight
 
 No images means text generation; one video image defaults to first frame.
@@ -130,8 +158,9 @@ sends `size: "16:9@2K"` (or `auto@2K` / `16:9@auto`); the source plugin must
 decode it before calling its vendor. This is an explicit plugin contract,
 not an upstream provider size format. Pixel routes can declare `"pixels"`.
 
-Declared image `quality` and `background` enums are passed through generic
-image routes. A generic video route can declare `generate_audio` with
+Declared image `quality`, `background` and `output_format` enums are passed through generic
+image routes. An optional nonempty `title` preserves source terminology such
+as inference effort without conflating it with resolution. A generic video route can declare `generate_audio` with
 `type: "boolean"` and an optional boolean `default`; a declared default gives
 Design a switch, while an unspecified default preserves its optional control.
 False remains false in the submitted JSON. Specialized transports do not
@@ -139,7 +168,63 @@ inherit these fields when their gateway mapping cannot carry them (MiniMax
 Image already uses `quality` for resolution). Screenshots establish native
 presentation, not another provider's supported values.
 
+## Design-owned defaults and constraints
+
+Validated `supported_parameters` defaults configure native controls and are
+also applied by the generated adapter when an option is left automatic or
+unset. Explicit selections win. Duration defaults follow the declared step;
+pixel-size defaults resolve back to their exact ratio/tier pair. Image
+adaptive defaults use `auto@tier`, never `adaptive@tier`. Video adaptive
+defaults use the existing `size` field. For smart first/last-frame input,
+an automatic ratio omits the source default so framing follows the image;
+an explicitly selected incompatible ratio is rejected.
+
+When a source already supplies `capabilities.parameter_config`, the Design
+plugin converts its `ratio`, `resolution`, `duration` and `effort` dimensions
+to native keys. The source schema's numeric ratio IDs are translated to
+their declared protocol meanings; provider IDs and model names do not select
+this adapter. `active_when_any` is checked against selected values and known
+source defaults, and enabled `available_combinations` are checked before
+HTTP. An unknown condition value is left to the source, rather than guessed.
+These checks do not make Design's dropdowns dynamically dependent: the
+installed native spec parser does not preserve that feature.
+
+An explicit `total_limit` further caps the usable image reference budget
+without rewriting `sourceReferences`. Only reference images are exposed by
+this bridge. Source-only video/audio inputs, editing modes, and fields the
+gateway cannot faithfully carry remain outside the native controls.
+
+This is a consumer adaptation of existing source declarations, not a new
+Magpie standard. Sources without this schema keep their own submit-time
+validation; undeclared defaults and combinations are not invented.
+
 ## Evidence
+
+November 14 Design-owned adaptation: all 19 live XiaoYunQue model declarations
+passed 43 read-only `spec → buildSubmit → source normalizeRequest` cases using
+native defaults, reference images and ordered frames. A further 659-case
+single-control matrix passed 647 source checks and rejected 12 incompatible
+frame/ratio choices inside Design; none of its accepted requests failed
+source validation. The installed Design
+parser/executor preserved declared defaults and output format and rejected
+invalid source combinations before HTTP. An isolated packaged Magpie gateway
+forwarded quality, output format and four exact references through the image
+source plugin; all vendor responses were local fixtures. This does not
+constitute paid generation or acceptance of the running desktop instance.
+
+November 14 contract alignment: Node passed 65 tests with one Bun-only skip;
+Bun passed all 66. Image Models passed 34 tests with
+`DESIGN_CONTRACT_ROOT` pointing to this package, including its consumer
+contract fixtures. The installed Design runtime parser/executor accepted
+the projected 30-image source budget and submitted all 16 permitted
+references to a fixture. A read-only XiaoYunQue catalogue check generated
+specs for all 19 models and validated requests with declared ratios against
+the source normalizer; no uploads or paid requests were made. Some video
+models reject an omitted ratio at the source: this is not evidence that
+every model's automatic settings were valid at that checkpoint. The Design-owned
+adaptation above subsequently verifies automatic settings for the current
+19-model catalogue. Dynamic metadata propagation through the host and
+conditional dropdown updates remain separate gaps.
 
 - Repository `packages/minimax/matrix-tools.json`: tool schemas checked
   November 3 and November 11, 2026; `packages/minimax/native.mjs`:
@@ -154,6 +239,16 @@ presentation, not another provider's supported values.
 - https://docs.x.ai/developers/model-capabilities/video/reference-to-video
 - https://docs.qwencloud.com/api-reference/image-generation/qwen-text-to-image
 - https://docs.rightapi.ai/docs/rc_draw/openai.html
+
+On November 14, 2026, the installed Xiaoyunque source was queried read-only:
+11 image models and eight video models were converted with unrelated provider
+IDs, then their generated requests were checked by the source's normalizer.
+This covered independent resolution/effort and the declared reference budget.
+The native Design executor fixture also preserved 12 subject images, ordered
+first/last frames, and a 30-second duration. No paid generation was submitted.
+Models with no declared reference count retain the existing conservative
+budget; source-specific conditions and combinations still run in Xiaoyunque
+before upload. They are not yet dynamic dropdown dependencies in Design.
 
 Tests cover generated adapters, metadata precedence, public-schema intersection,
 automatic defaults, reference counts, modes and illegal combinations. The

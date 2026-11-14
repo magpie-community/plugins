@@ -32,6 +32,21 @@ const controlsFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-image
     aspect_ratio: { type: "enum", values: ["1:1", "16:9"] },
     resolution: { type: "enum", values: ["1K", "2K"] },
   } }))
+const constrainedCapability = mediaCapability({ ref: "unrelated/conditional-image", type: "image",
+  mediaRequest: { size: "aspect-resolution" },
+  parameters: {
+    resolution: { type: "enum", values: ["1K", "2K"], default: "2K" },
+    quality: { type: "enum", values: ["low", "high"], default: "high" },
+    output_format: { type: "enum", values: ["png", "webp"], default: "png" },
+  },
+  sourceCapabilities: { parameter_config: {
+    dimensions: [{ key: "resolution" }, { key: "effort" }],
+    need_available_combinations: true,
+    combination_dimension_keys: ["resolution", "effort"],
+    available_combinations: [{ option_values: { resolution: "2K", effort: "high" } }],
+  } } })
+const constrainedAdapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
+  .replace("const capability = null", () => `const capability = ${JSON.stringify(constrainedCapability)}`)
 const soundFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-video", type: "video",
   parameters: { generate_audio: { type: "boolean", default: true },
     seconds: { type: "range", min: 5, max: 30 } } }))
@@ -39,6 +54,16 @@ const pixelCapability = mediaCapability({ ref: "unrelated/pixel-image", type: "i
   parameters: { size: { type: "enum", values: ["512x512", "1536x1024", "1584x1056", "3072x3072"] } } })
 const pixelAdapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
   .replace("const capability = null", () => `const capability = ${JSON.stringify(pixelCapability)}`)
+const referenceCapability = mediaCapability({ ref: "unrelated/reference-video", type: "video", images: true,
+  mediaRequest: { reference_modes: ["first-last-frame", "reference"], frame_ratio: "auto" },
+  parameters: { seconds: { type: "range", min: 4, max: 30 },
+    input_references: { type: "range", min: 0, max: 12 } } })
+const referenceAdapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
+  .replace("const capability = null", () => `const capability = ${JSON.stringify(referenceCapability)}`)
+const largeReferenceCapability = mediaCapability({ ref: "unrelated/large-image-budget", type: "image",
+  parameters: { input_references: { type: "range", min: 0, max: 30 } } })
+const largeReferenceAdapter = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
+  .replace("const capability = null", () => `const capability = ${JSON.stringify(largeReferenceCapability)}`)
 const bootstrap = source.lastIndexOf("bootstrap().catch(")
 assert.ok(bootstrap > 0)
 const driver = `
@@ -131,6 +156,28 @@ const fakeFetch = async (url, init) => {
   throw new Error("Unexpected fixture URL: " + address.pathname);
 };
 const common = { bundle: imageBundle, endpoint, fetch: fakeFetch };
+const constrainedSpec = parseMediaSpec(${JSON.stringify(mediaSpec(constrainedCapability))});
+assert.equal(constrainedSpec.params.find(param => param.key === "resolution").default, "2K");
+assert.equal(constrainedSpec.params.find(param => param.key === "quality").default, "high");
+let constrainedRequests = 0;
+const constrainedOptions = { bundle: { source: ${JSON.stringify(constrainedAdapter)} }, endpoint,
+  fetch: async (url, init) => {
+    constrainedRequests++;
+    const body = JSON.parse(init.body);
+    assert.equal(body.size, "auto@2K");
+    assert.equal(body.quality, "high");
+    assert.equal(body.output_format, "png");
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString("base64") }] }),
+      { headers: { "content-type": "application/json" } });
+  } };
+const constrainedResult = await submitOnce({ ...constrainedOptions, job: {
+  type: "image", model: "unrelated/conditional-image", prompt: "defaults fixture", params: {}, references: {} } });
+assert.equal(constrainedResult.kind, "done");
+await assert.rejects(submitOnce({ ...constrainedOptions, job: {
+  type: "image", model: "unrelated/conditional-image", prompt: "invalid combination",
+  params: { resolution: "1K", quality: "high" }, references: {} } }));
+assert.equal(constrainedRequests, 1);
+console.log("PASS: native defaults and output format reach HTTP, unsupported source combinations stop before HTTP");
 let pixelRequests = 0;
 for (const [ratio, resolution, size] of [
   ["1:1", "0.5K", "512x512"], ["3:2", "1.5K (1536x1024)", "1536x1024"],
@@ -160,6 +207,37 @@ console.log("PASS: Design's actual executor resolves image fixture output");
 const referencePath = ${JSON.stringify(path.join(root, "reference.png"))};
 fs.writeFileSync(referencePath, png);
 const reference = { path: referencePath, mime: "image/png", name: "reference.png", size: png.length, blob: async () => new Blob([png], { type: "image/png" }) };
+const largeReferenceSpec = parseMediaSpec(${JSON.stringify(mediaSpec(largeReferenceCapability))});
+assert.equal(largeReferenceSpec.references.image.max, 16);
+const largeReferenceResult = await submitOnce({ bundle: { source: ${JSON.stringify(largeReferenceAdapter)} }, endpoint,
+  fetch: async (url, init) => {
+    assert.equal(JSON.parse(init.body).images.length, 16);
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString("base64") }] }),
+      { headers: { "content-type": "application/json" } });
+  },
+  job: { type: "image", model: "unrelated/large-image-budget", prompt: "native fixture", params: {},
+    references: { image: Array(16).fill(reference) } } });
+assert.equal(largeReferenceResult.kind, "done");
+console.log("PASS: a 30-image source budget projects to Design's 16-image bridge limit and submits all sixteen");
+const referenceSpec = parseMediaSpec(${JSON.stringify(mediaSpec(referenceCapability))});
+assert.ok(referenceSpec.params.find(param => param.key === "image_mode").enum.includes("reference"));
+for (const [image_mode, count] of [["reference", 12], ["first-last-frame", 2]]) {
+  let sent = false;
+  const result = await submitOnce({ bundle: { source: ${JSON.stringify(referenceAdapter)} }, endpoint,
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.seconds, "30");
+      if (image_mode === "reference") assert.equal(body.reference_images.length, 12);
+      else assert.ok(body.input_reference && body.last_frame);
+      sent = true;
+      return new Response(JSON.stringify({ id: "reference-fixture" }), { headers: { "content-type": "application/json" } });
+    },
+    job: { type: "video", model: "unrelated/reference-video", prompt: "reference fixture",
+      params: { duration: "30", image_mode }, references: { image: Array(count).fill(reference) } } });
+  assert.ok(sent);
+  assert.equal(result.kind, "task");
+}
+console.log("PASS: native video executor preserves declared subject/frame modes and 30 second duration");
 for (const [bundle, model] of [[geminiBundle, "rightimage/gemini-nano-banana-2.1"], [gptBundle, "rightimage/gpt-image-2.6-flare"]]) {
   const output = await submitOnce({ bundle, endpoint, fetch: fakeFetch, job: {
     type: "image", model, prompt: "four reference fixture", params: {}, references: { image: Array(4).fill(reference) },

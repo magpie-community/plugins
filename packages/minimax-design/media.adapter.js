@@ -43,13 +43,35 @@ export function buildSubmit(request) {
       return { method: "POST", path: "/audio/speech", response: "binary",
         body: { model: request.model, input: request.prompt, ...speech } }
     }
+    const explicit = new Set(Object.keys(params))
+    Object.assign(params, { ...capability.defaults, ...params })
+    if (request.images.length && (request.images.length > 1 || !capability.modes.includes("首帧"))) {
+      mode = capability.defaultMode
+    }
+    if (params.image_mode === "reference") mode = "主体参考"
+    if (params.image_mode === "first-last-frame") mode = request.images.length > 1 ? "首尾帧" : "首帧"
+    if (request.images.length && mode !== "主体参考" &&
+        (capability.transport === "minimax-video" || capability.frameRatio === "auto") && !explicit.has("aspect_ratio")) {
+      delete params.aspect_ratio
+    }
+    if (capability.constraints) {
+      const rules = capability.constraints
+      const values = Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value).toLowerCase()]))
+      const effective = { ...rules.defaults, ...values }
+      for (const condition of rules.conditions) {
+        if (values[condition.key] !== undefined && !condition.any.some((selection) =>
+          Object.entries(selection).every(([key, allowed]) => effective[key] === undefined || allowed.includes(effective[key])))) {
+          throw new Error(`${condition.title}在当前参数组合下不适用。请重新选择。`)
+        }
+      }
+      const selectedKeys = rules.keys?.filter((key) => effective[key] !== undefined) ?? []
+      if (selectedKeys.length && !rules.combinations.some((selection) =>
+        selectedKeys.every((key) => selection[key] === effective[key]))) {
+        throw new Error("模型不支持所选参数组合。请重新选择。")
+      }
+    }
     params.ratio = params.aspect_ratio
     if (params.duration !== undefined) params.seconds = Number(params.duration)
-    if (params.image_mode === "first-last-frame") {
-      params.referenceMode = request.images.length > 1 ? "首尾帧" : "首帧"
-    } else if (params.image_mode === "reference") {
-      params.referenceMode = "主体参考"
-    }
     if (capability.pixelSizes) {
       if (params.resolution && !params.ratio) throw new Error("指定清晰度时，请同时选择比例。")
       if (params.ratio) {
@@ -63,6 +85,7 @@ export function buildSubmit(request) {
     if (capability.transport === "generic" && request.type === "video" && params.resolution) body.resolution = params.resolution
     if (params.quality) body.quality = params.quality
     if (params.background) body.background = params.background
+    if (params.output_format) body.output_format = params.output_format
     if (params.generate_audio !== undefined) body.generate_audio = params.generate_audio
     if (capability.transport === "image-size" && (params.ratio || params.resolution)) {
       body.size = `${params.ratio ?? "auto"}@${params.resolution ?? "auto"}`
@@ -79,7 +102,6 @@ export function buildSubmit(request) {
         throw new Error("指定清晰度时，请同时选择比例。")
       } else body.size = params.ratio
     }
-    mode = params.referenceMode || (request.images.length > 1 ? capability.defaultMode : "首帧")
     if (request.images.length && !capability.modes.includes(mode) && request.type === "video") throw new Error("模型不支持该参考图用途。")
     if (request.type === "video" && ((mode === "首帧" && request.images.length > 1) || (mode === "首尾帧" && request.images.length !== 2))) {
       throw new Error(mode === "首尾帧" ? "首尾帧需要按顺序提供两张图。" : "首帧模式只接受一张图。")
@@ -90,7 +112,8 @@ export function buildSubmit(request) {
     }
     if (mode === "主体参考" && params.resolution && capability.referenceResolutions &&
         !capability.referenceResolutions.includes(params.resolution)) throw new Error("主体参考模式最高支持 720p。")
-    if (capability.transport === "minimax-video" && request.images.length && mode !== "主体参考" && params.ratio) {
+    if ((capability.transport === "minimax-video" || capability.frameRatio === "auto") &&
+        request.images.length && mode !== "主体参考" && params.ratio) {
       throw new Error("首帧/首尾帧自动沿用图片比例，请将比例设为自动。")
     }
     if (capability.presets && params.preset) Object.assign(body, capability.presets[params.preset])
