@@ -1,7 +1,8 @@
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import { test } from "node:test"
-import { enrichMediaParameters, mediaCapability, mediaSpec } from "./media-capabilities.mjs"
+import { mediaCapability, mediaSpec } from "./media-capabilities.mjs"
+import { discoverMedia } from "./media-sync.mjs"
 
 const source = fs.readFileSync(new URL("./media.adapter.js", import.meta.url), "utf8")
 const image = { dataUrl: "data:image/png;base64,AA==" }
@@ -125,44 +126,36 @@ test("Magpie parameter enums and limits override verified defaults", async () =>
     parameters: { aspect_ratio: { type: "enum", values: ["0:0"] } } }), /aspect ratio/)
 })
 
-test("OpenRouter refresh intersects endpoints, keeps credentials local and projects only faithful options", async () => {
+test("OpenRouter discovery uses only gateway metadata and projects only faithful options", async () => {
   const original = globalThis.fetch
   let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++
-    assert.equal(url, "https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-5/endpoints")
-    assert.equal(options.headers, undefined)
-    return { ok: true, json: async () => ({ endpoints: [10, 6].map((max) => ({ supported_parameters: {
+    assert.equal(url, "http://127.0.0.1:8000/v1/models")
+    assert.equal(options.headers.Authorization, "Bearer fixture-key")
+    return Response.json({ data: [{ id: "openrouter/bytedance-seed/seedream-5-5", kind: "image",
+      modalities: { input: ["text", "image"], output: ["image"] }, supported_parameters: {
       aspect_ratio: { type: "enum", values: ["16:9", "4:5", "1:1", "auto"] },
-      resolution: { type: "enum", values: ["1K", "1.5K", "2K"] }, input_references: { type: "range", min: 0, max },
-    } })) }) }
+      resolution: { type: "enum", values: ["1K", "1.5K", "2K"] }, input_references: { type: "range", min: 0, max: 6 },
+    } }] })
   }
   try {
-    const [model] = await enrichMediaParameters([{ ref: "openrouter/bytedance-seed/seedream-5-5", owner: "openrouter", type: "image", images: true, imageOnly: true }])
+    const [model] = await discoverMedia({ baseURL: "http://127.0.0.1:8000/v1", key: "fixture-key" })
     const capability = mediaCapability(model)
     assert.equal(capability.references.max, 6)
-    assert.equal(capability.source, "openrouter-endpoints")
+    assert.equal(capability.source, "magpie")
     assert.deepEqual(capability.params.map((parameter) => parameter.key), ["aspect_ratio", "resolution"])
     assert.deepEqual(capability.params[1].enum, ["自动", "2K"])
-    await enrichMediaParameters([{ ...model, parameters: { size: { type: "enum", values: ["1024x1024"] } } }])
-    assert.equal(calls, 2)
-    globalThis.fetch = async () => ({ ok: false, status: 503 })
-    await assert.rejects(enrichMediaParameters([{ ...model, parameters: undefined }]), /503/)
+    assert.equal(calls, 1)
   } finally { globalThis.fetch = original }
 })
 
-test("OpenRouter enrichment preserves source limits above the bridge budget", async () => {
-  const original = globalThis.fetch
-  globalThis.fetch = async () => Response.json({ endpoints: [30, 24].map((max) => ({
-    supported_parameters: { input_references: { type: "range", min: 0, max } },
-  })) })
-  try {
-    const [model] = await enrichMediaParameters([{ ref: "openrouter/unrelated/image", type: "image" }])
-    assert.equal(model.parameters.input_references.max, 24)
-    const capability = mediaCapability(model)
-    assert.equal(capability.sourceReferences.max, 24)
-    assert.equal(capability.references.max, 16)
-  } finally { globalThis.fetch = original }
+test("OpenRouter metadata preserves source limits above the bridge budget", () => {
+  const model = { ref: "openrouter/unrelated/image", type: "image",
+    parameters: { input_references: { type: "range", min: 0, max: 24 } } }
+  const capability = mediaCapability(model)
+  assert.equal(capability.sourceReferences.max, 24)
+  assert.equal(capability.references.max, 16)
 })
 
 test("OpenRouter chat image routes expose ratios without ineffective pixel resolution presets", async () => {
@@ -453,24 +446,33 @@ test("pixel tiers retain small and intermediate sizes and require an explicit ra
   assert.deepEqual(Object.values(pixel.capability.pixelSizes).flatMap(Object.values).sort(), [...sizes].sort())
 })
 
-test("remote and direct OpenRouter discover one shared schema and preserve explicit limits", async () => {
+test("remote and direct OpenRouter use source declarations without external discovery", async () => {
   const original = globalThis.fetch
   let calls = 0
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url) => {
     calls++
-    return { ok: true, json: async () => ({ endpoints: [{ supported_parameters: {
+    assert.equal(url, "http://127.0.0.1:8000/v1/models")
+    return Response.json({ data: ["openrouter/new-vendor/new-image",
+      "remote-magpie/openrouter/new-vendor/new-image", "openrouter/unknown/image"].map((id) => ({
+      id, kind: "image", modalities: { output: ["image"] },
+      supported_parameters: id === "openrouter/unknown/image" ? undefined :
+        { input_references: { type: "range", min: 0, max: 2 } },
+    })) })
+  }
+  try {
+    const declarations = { supported_parameters: {
       aspect_ratio: { type: "enum", values: ["1:1", "4:5", "16:9"] },
       resolution: { type: "enum", values: ["2K", "4K"] },
       input_references: { type: "range", min: 0, max: 10 },
-    } }] }) }
-  }
-  try {
-    const models = await enrichMediaParameters(["openrouter/new-vendor/new-image",
-      "remote-magpie/openrouter/new-vendor/new-image"].map((ref) => ({
-      ref, type: "image", imageOnly: true,
-      parameters: { input_references: { type: "range", min: 0, max: 2 } },
-    })))
+    } }
+    const models = await discoverMedia({ baseURL: "http://127.0.0.1:8000/v1", key: "fixture-key" }, {}, {
+      openrouter: { models: { "new-vendor/new-image": declarations } },
+      "remote-magpie": { models: { "openrouter/new-vendor/new-image": declarations } },
+    })
     assert.equal(calls, 1)
+    const unknown = models.pop()
+    assert.equal(unknown.parameters, undefined)
+    assert.deepEqual(mediaCapability(unknown).params, [])
     for (const model of models) {
       const { capability, submit } = await configured(model.ref, "image", model)
       assert.equal(capability.references.max, 2)
