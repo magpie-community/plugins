@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "magpie-plugin-melete", "name": "Melete Magpie", "kind": "page",
+      "summary": { "en": "Reflect with DSH or Codex: the selected agent reads its local history and uses its configured model to produce evidence-linked review cards.", "zh": "回顾与 DSH 或 Codex 的协作：所选 Agent 读取本机记录，并使用其配置的模型生成带出处的复盘卡片。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
