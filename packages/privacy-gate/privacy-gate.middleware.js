@@ -43,6 +43,11 @@
 //   binaryPolicy: 'fail'|'guide'  fail (default) returns 403 for a binary part; guide
 //                                withholds every binary part and injects a local-tool prompt.
 //   guideTools: string[]          tool names advertised to the model in guide mode.
+//   disabledAgents: string[]      Magpie agent ids that bypass this gate completely.
+//                                [] (default) protects every agent. Only explicit ids
+//                                (or globs) are bypassed; new agents stay protected.
+//   protectUnknownAgent: bool    true (default). When false, a request whose
+//                                ctx.agent is empty is allowed through unchanged.
 //   allowUnknownProtocol: bool   false (default). When false, a request whose
 //                                ctx.protocol is not chat/responses/anthropic/
 //                                gemini is rejected (the gate cannot classify it).
@@ -111,6 +116,8 @@ var DEFAULTS = {
   localModels: [],
   localProviders: [],
   binaryPolicy: 'fail',
+  disabledAgents: [],
+  protectUnknownAgent: true,
   allowUnknownProtocol: false,
   // A one-page invoice PDF is ~1-3 KB: ~1.4-4 k base64 chars, ~2-6 k hex chars. The
   // threshold is deliberately below that, because a smaller encoded document was a real
@@ -176,6 +183,22 @@ function strList(opts, key) {
     if (typeof v[i] === "string" && v[i].length > 0 && v[i].length < 200) out.push(v[i]);
   }
   return out;
+}
+
+// The agent id magpie classified for this request. It is host-supplied metadata,
+// never a User-Agent string, so it is safe to use for policy selection.
+function agentOf(ctx) {
+  try {
+    return ctx && typeof ctx.agent === "string" ? clip(ctx.agent, 120) : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function agentEnabled(opts, ctx) {
+  var agent = agentOf(ctx);
+  if (agent === "") return boolOpt(opts, "protectUnknownAgent", DEFAULTS.protectUnknownAgent);
+  return !matchesAny(opts.disabledAgents, agent);
 }
 
 function allowModelsOpt(opts) {
@@ -584,6 +607,8 @@ function resolvedOptions(raw) {
     localModels: strList(source, "localModels"),
     localProviders: strList(source, "localProviders"),
     binaryPolicy: policyOpt(source, "binaryPolicy", DEFAULTS.binaryPolicy),
+    disabledAgents: strList(source, "disabledAgents"),
+    protectUnknownAgent: boolOpt(source, "protectUnknownAgent", DEFAULTS.protectUnknownAgent),
     guideTools: strList(source, "guideTools"),
     allowUnknownProtocol: boolOpt(source, "allowUnknownProtocol", DEFAULTS.allowUnknownProtocol),
     blobBase64Chars: numOpt(source, "blobBase64Chars", DEFAULTS.blobBase64Chars, 64, 1000000),
@@ -972,6 +997,7 @@ function guideBody(body, ctx, opts) {
 // fail-closed outcome available here; returning nothing would send the body.
 export function onRequest(body, ctx) {
   var opts = gateOptions(ctx);
+  if (!agentEnabled(opts, ctx)) return body;
   counters.requests++;
   var decision;
   try {
@@ -1041,6 +1067,7 @@ function findFirstBinary(value, partContext, depth, state, opts, atRoot) {
 // middleware's injection, or a timed-out onRequest could still put bytes here.
 export function onProvider(body, ctx) {
   var opts = gateOptions(ctx);
+  if (!agentEnabled(opts, ctx)) return body;
   var decision;
   try {
     decision = inspect(body, ctx);

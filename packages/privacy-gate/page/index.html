@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShyPie</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <img class="logo" src="icon.svg" width="56" height="56" alt="">
+      <div class="hero-copy">
+        <p class="kicker" id="kicker">ShyPie Filter</p>
+        <h1 id="title">Per-agent protection</h1>
+        <p class="lede" id="lede">Choose which Magpie agents ShyPie protects. A disabled agent bypasses the gate entirely.</p>
+      </div>
+      <p class="count" id="count" aria-live="polite"></p>
+    </header>
+
+    <section class="toolbar" aria-label="Agent filter">
+      <label class="search">
+        <span class="sr-only" id="search-label">Search agents</span>
+        <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search agents">
+      </label>
+      <button id="reload" class="secondary" type="button">Reload</button>
+    </section>
+
+    <div class="warning" id="warning" role="status" hidden></div>
+    <section class="list" id="list" aria-label="Agents"></section>
+    <p class="empty" id="empty" hidden>No agents match that search.</p>
+
+    <section class="patterns" id="patterns" aria-labelledby="patterns-title" hidden>
+      <h2 id="patterns-title">Policy patterns</h2>
+      <p class="hint" id="patterns-hint">Raw entries in disabledAgents that this page cannot show as a switch. They are preserved on save; edit them with the JSON options or CLI.</p>
+      <ul class="pattern-list" id="pattern-list"></ul>
+    </section>
+
+    <section class="add" aria-labelledby="add-title">
+      <div>
+        <h2 id="add-title">Add another agent id</h2>
+        <p class="hint" id="add-hint">For a plugin-added or not-yet-listed Magpie agent. You can also use an agent's row menu on the Agents page.</p>
+      </div>
+      <div class="add-row">
+        <label class="sr-only" for="add-id">Agent id</label>
+        <input id="add-id" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my-agent" maxlength="64">
+        <button id="add-agent" class="secondary" type="button">Add</button>
+      </div>
+      <p class="form-error" id="add-error" role="alert" hidden></p>
+    </section>
+
+    <footer class="actions">
+      <span class="status" id="status" role="status" aria-live="polite"></span>
+      <button id="save" type="button" disabled>Save changes</button>
+    </footer>
+  </main>
+  <script src="_magpie/bridge.js"></script>
+  <script src="agents.js"></script>
+  <script src="policy.js"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
