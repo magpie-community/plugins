@@ -46,9 +46,10 @@ connection changes every five seconds and refreshes the catalogue every
 minute while Magpie is running.
 Design's model-access settings have displayed the synchronized image/video
 entries and Hailuo's generated parameter options. Restart Design after the
-first synchronization if its canvas lists remain stale. Canvas generation
-selection and output insertion remain acceptance items; the automated test
-covers its native media loader and executor.
+first synchronization if its canvas lists remain stale. Real MCP image generation,
+reference editing and speech output insertion have passed on macOS. Live video
+output remains unaccepted because the tested accounts returned quota errors;
+the automated test covers its native media loader and executor.
 
 The bridge uses explicit image/video kinds from Magpie's authenticated model
 list. It automatically builds model-specific dropdowns and reference budgets

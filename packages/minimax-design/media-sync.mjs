@@ -81,11 +81,13 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
   if (!response.ok) throw new Error(`Media discovery returned HTTP ${response.status}.`)
   const body = await response.json()
   if (!Array.isArray(body.data)) throw new Error("Media discovery returned no model catalogue.")
+  const sourceModels = new Map(Object.entries(providers).flatMap(([id, provider]) =>
+    Object.entries(provider.models ?? {}).map(([modelID, model]) => [`${id}/${modelID}`, model])))
   const models = new Map()
   for (const model of body.data) {
     let type = model.kind
     if (!["image", "video"].includes(type)) {
-      if (!speechModel(model)) continue
+      if (!speechModel(model) && !speechModel(sourceModels.get(model.id) ?? {})) continue
       type = "speech"
     }
     if (!validModelID(model.id)) {
@@ -106,8 +108,6 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
     models.set(`image:${model.ref}`, { ...replacement, ref: model.ref, name: model.name, requestModel: replacement.ref })
     models.delete(`image:${replacement.ref}`)
   }
-  const sourceModels = new Map(Object.entries(providers).flatMap(([id, provider]) =>
-    Object.entries(provider.models ?? {}).map(([modelID, model]) => [`${id}/${modelID}`, model])))
   for (const model of models.values()) {
     const ref = model.requestModel ?? model.ref
     const source = sourceModels.get(ref)

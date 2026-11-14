@@ -87,3 +87,30 @@ test("speech accepts binary audio and refuses JSON errors, empty and non-audio s
   assert.equal(adapter.parseSubmit({ body: { error: { message: "no quota" } } }, request).error, "no quota")
 })
 
+test("source speech declarations discover renamed models and supply automatic parameters", async () => {
+  const original = globalThis.fetch
+  const providers = { portable: { models: {
+    voice: { native_endpoints: ["/v1/audio/speech"], supported_parameters: {
+      voice: { type: "enum", values: ["warm"] },
+      response_format: { type: "enum", values: ["wav"] },
+    } },
+    asr: { native_endpoints: ["/v1/audio/transcriptions"] },
+    chat: { modalities: { output: ["audio"] } },
+    unavailable: { native_endpoints: ["/v1/audio/speech"] },
+  } } }
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [
+    { id: "portable/voice", supported_parameters: ["tools"] },
+    { id: "portable/asr" }, { id: "portable/chat" },
+  ] }) })
+  try {
+    const models = await discoverMedia({ baseURL: "http://renamed-gateway/v1", key: "fixture" }, {}, providers)
+    assert.equal(models.length, 1)
+    assert.equal(models[0].ref, "portable/voice")
+    assert.equal(models[0].type, "speech")
+    const { submit } = await configured(models[0])
+    assert.deepEqual(submit().body, {
+      model: "portable/voice", input: "测试配音", voice: "warm", response_format: "wav",
+    })
+  } finally { globalThis.fetch = original }
+})
+

@@ -29,7 +29,26 @@ Agent switch also owns a Magpie provider in Design's native media store.
    Keep the PR Draft until remaining desktop acceptance requirements are
    satisfied. The shared directory entry removes the host platform prerequisite.
 
-## Implementation status
+## Current acceptance — 0.4.3
+
+The installed unmodified Magpie passed native Agent/Library/MCP acceptance.
+Real Design MCP image generation and reference editing completed and placed
+their outputs. A real local speech task also completed and placed a WAV output.
+Speech discovery now reads explicit source plugin endpoint declarations as well
+as gateway declarations, with a renamed-provider regression.
+
+Native media runtime fixtures cover image references, video submit/poll/content
+and speech. Real video attempts reached two upstream providers but failed on
+account quota/subscription limits; no usable video output was produced.
+Windows/macOS CI jobs now run the regression suites on their native runners,
+including the shared entry and companion lifecycle. These jobs do not install
+Design or establish native Windows desktop acceptance.
+
+The PR is ready for review; upstream workflow approval and merge still require
+maintainer access. The historical counts and blockers below describe earlier
+versions, not the current installed acceptance.
+
+## Earlier implementation status
 
 Steps 1–6 are implemented with fixture-based native runtime validation.
 The local companion is installed and has synchronized 22 image and 7 video
