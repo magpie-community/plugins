@@ -10,6 +10,15 @@ function select(key, title, values) {
 const range = (key, title, min, max) => ({ key, title, type: "integer", min, max })
 const pixels = ["1024x1024", "1536x1024", "1024x1536", "2048x1152", "1152x2048", "2048x2048", "3840x2160", "2160x3840"]
 
+function pixelTier(size) {
+  const longEdge = Math.max(...size.split("x").map(Number))
+  if (longEdge <= 1280) return "1K"
+  if (longEdge <= 1792) return "1.5K"
+  if (longEdge <= 2560) return "2K"
+  if (longEdge <= 4608) return "4K"
+  return `${Math.round(longEdge / 1024 * 10) / 10}K`
+}
+
 export async function enrichMediaParameters(models) {
   const endpoints = new Map()
   for (const model of models) {
@@ -226,14 +235,19 @@ export function mediaCapability(model) {
         return { value, error: Math.abs(width / height / (horizontal / vertical) - 1) }
       }).sort((left, right) => left.error - right.error)[0]
       const ratio = nearest.error < 0.015 ? nearest.value : `${width / unit}:${height / unit}`
-      const resolution = `${Math.max(width, height)}px`
+      const resolution = pixelTier(size)
       choices[ratio] ??= {}
-      choices[ratio][resolution] = size
+      const current = choices[ratio][resolution]
+      if (!current || Math.max(...size.split("x").map(Number)) < Math.max(...current.split("x").map(Number))) {
+        choices[ratio][resolution] = size
+      }
     }
     capability.pixelSizes = choices
     capability.params = capability.params.filter((parameter) => !["size", "ratio", "resolution"].includes(parameter.key))
+    const tiers = [...new Set(Object.values(choices).flatMap(Object.keys))]
+      .sort((left, right) => Number.parseFloat(left) - Number.parseFloat(right))
     capability.params.unshift(select("ratio", "比例", Object.keys(choices)),
-      select("resolution", "清晰度（像素长边）", [...new Set(Object.values(choices).flatMap(Object.keys))]))
+      select("resolution", "清晰度", tiers))
   }
   capability.params = capability.params.map((parameter) => {
     if (parameter.key === "resolution" && !capability.pixelSizes) return { ...parameter, title: "清晰度" }

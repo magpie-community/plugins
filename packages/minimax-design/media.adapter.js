@@ -51,10 +51,10 @@ export function buildSubmit(request) {
       params.referenceMode = "主体参考"
     }
     if (capability.pixelSizes) {
-      const choices = params.ratio ? Object.values(capability.pixelSizes[params.ratio]) :
-        Object.values(capability.pixelSizes).flatMap(Object.values)
-      const size = params.resolution ? choices.find((value) =>
-        `${Math.max(...value.split("x").map(Number))}px` === params.resolution) : choices[0]
+      const choices = params.ratio ? capability.pixelSizes[params.ratio] : undefined
+      const size = params.resolution ?
+        (choices ? choices[params.resolution] : Object.values(capability.pixelSizes).map((entry) => entry[params.resolution]).find(Boolean)) :
+        (choices ? Object.values(choices)[0] : Object.values(capability.pixelSizes).flatMap(Object.values)[0])
       if (!size) throw new Error("模型不支持所选比例和清晰度组合。请重新选择。")
       if (params.ratio || params.resolution) body.size = size
     }
