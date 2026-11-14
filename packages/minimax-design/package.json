@@ -1,11 +1,13 @@
 {
   "name": "@magpie-community/agent-minimax-design",
-  "version": "0.1.0",
-  "description": "MiniMax Design (design.minimax.io) as a magpie agent: one switch points Design's custom text model at magpie's gateway, with magpie's model list synced automatically",
+  "version": "0.4.4",
+  "description": "MiniMax Design as a Magpie agent, with native text/image/video/speech model sync and Library skills/MCP",
   "type": "module",
-  "files": ["minimax-design.agent.js", "README.md", "COMPATIBILITY.md"],
+  "main": "./index.mjs",
+  "files": ["minimax-design.agent.js", "index.mjs", "mcp-sync.mjs", "mcp-store.mjs", "skill-sync.mjs", "runtime", "media-sync.mjs", "media-capabilities.mjs", "media-constraints.mjs", "speech.mjs", "media.adapter.js", "README.md", "COMPATIBILITY.md", "MEDIA-PARAMETERS.md", "MANAGEMENT.md", "REFERENCES-VERIFICATION.md"],
   "keywords": ["magpie", "magpie-agent", "minimax", "minimax-design", "llm-gateway"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/minimax-design" },
-  "magpie": { "agent": "./minimax-design.agent.js", "icon": "https://design.minimax.io/favicon.ico" }
+  "magpie": { "agent": "./minimax-design.agent.js", "icon": "https://design.minimax.io/favicon.ico",
+    "options": { "imageRoutes": {}, "mediaParameters": {} } }
 }

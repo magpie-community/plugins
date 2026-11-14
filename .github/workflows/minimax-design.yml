@@ -1,0 +1,30 @@
+name: MiniMax Design portability
+
+on:
+  pull_request:
+    paths:
+      - "packages/minimax-design/**"
+      - ".github/workflows/minimax-design.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - name: Node regressions
+        shell: bash
+        run: node --test packages/minimax-design/*.test.mjs
+      - name: Bun regressions
+        shell: bash
+        run: bun test packages/minimax-design/*.test.mjs
