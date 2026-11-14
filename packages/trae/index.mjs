@@ -1787,6 +1787,38 @@ class TextTools {
       const sm = this.buf.match(STRAY_AT)
       const s = sm ? sm.index : -1
       const x = this.buf.search(XML_AT)
+      const j = jsonCallAt(this.buf, this.sent + text)
+      if (j >= 0 && [i, d, r, x, s].every((y) => y < 0 || j < y)) {
+        // OpenAI's own wire shape written as text, {"tool_calls":[{…}]} on
+        // a line of its own (plugins#1114): whole and readable, its calls;
+        // cut short, a failure; in code or not readable, text
+        const head = this.buf.slice(0, j)
+        const brace = this.buf.indexOf("{", j)
+        const o = quoted(this.sent + text + head) ? -2 : objectEnd(this.buf, brace)
+        if (o === -1 && !end) {
+          text += head
+          this.buf = this.buf.slice(j)
+          break
+        }
+        if (o === -1) {
+          this.buf = ""
+          text += head
+          this.sent += text
+          return { text, calls, reasoning, error: CUT_SHORT }
+        }
+        const got = o > 0 ? jsonCalls(this.buf.slice(brace, o)) : null
+        if (!got) {
+          text += this.buf.slice(0, brace + 1)
+          this.buf = this.buf.slice(brace + 1)
+          continue
+        }
+        text += head
+        calls.push(...got)
+        this.mark = this.sent.length + text.length
+        this.buf = this.buf.slice(o)
+        this.after = true
+        continue
+      }
       if (s >= 0 && [i, d, r, x].every((y) => y < 0 || s < y)) {
         // a close with no call open, with what GLM left before it
         // (}}</tool_call>, magpie#1945): not the answer, dropped; in code,
@@ -1949,7 +1981,7 @@ class TextTools {
       this.buf = ""
     } else {
       // keep back an opened block, or what may be the start of one
-      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD)].filter((x) => x >= 0)
+      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD), jsonCallAt(this.buf, this.sent + text), jsonHoldAt(this.buf, this.sent + text)].filter((x) => x >= 0)
       let keep = at.length ? this.buf.length - Math.min(...at) : 0
       if (!keep) for (let k = Math.min(MARK_MAX - 1, this.buf.length); k > 0; k--) if (MARKS.some((m) => m.startsWith(this.buf.slice(-k)))) { keep = k; break }
       // and braces, brackets, quotes or a > a close may still come after
@@ -2103,6 +2135,46 @@ class TextTools {
     if (/^\s*[\w.:-]{1,128}\s*<arg_key>/.test(body)) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
     return { text: true }
   }
+}
+
+// A {"tool_calls":[{ at a line's start (plugins#1114); before refers to
+// what came before buf, the start of a line only after a line break or
+// blanks.
+const JSON_CALL_AT = /(^|\n)[ \t]*\{\s*"tool_calls"\s*:\s*\[\s*\{/g
+const JSON_CALL_KEY = '{"tool_calls":[{'
+const atLineStart = (before) => !/\S/.test(before.slice(before.lastIndexOf("\n") + 1))
+
+// jsonCallAt is where in buf the line holding such an object starts, or -1
+function jsonCallAt(buf, before) {
+  for (const m of buf.matchAll(JSON_CALL_AT)) {
+    const at = m.index + m[1].length
+    if (at > 0 || atLineStart(before)) return at
+  }
+  return -1
+}
+
+// jsonHoldAt is where buf's last line starts when it may still grow into
+// one (its indent alone too), or -1
+function jsonHoldAt(buf, before) {
+  const k = buf.lastIndexOf("\n") + 1
+  if (k === 0 && !atLineStart(before)) return -1
+  const line = buf.slice(k)
+  return line && JSON_CALL_KEY.startsWith(line.replace(/\s+/g, "")) ? k : -1
+}
+
+// jsonCalls reads such an object's calls: {"name","arguments"} entries or
+// OpenAI's {"type":"function","function":{…}}; null when there are none or
+// one has no name
+function jsonCalls(s) {
+  const list = looseJSON(s)?.tool_calls
+  if (!Array.isArray(list) || !list.length) return null
+  const out = []
+  for (const e of list) {
+    const f = e?.function ?? e
+    if (!f || typeof f.name !== "string" || !f.name) return null
+    out.push({ name: f.name, arguments: callArgs(f) })
+  }
+  return out
 }
 
 const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
