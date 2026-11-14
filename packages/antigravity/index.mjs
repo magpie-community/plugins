@@ -965,10 +965,20 @@ const SAID_AS = {
   "rfc 2119 keywords: must, required, should, recommended, may, optional.": (line) => line.replace(/(key)(words)/i, "$1 $2"),
 }
 
-function cloak(system) {
+// USER_TURNED_AWAY are the lines Antigravity also turns away in a user's
+// turn: since 11-14 Codex's GPT-5 lines there got a bare 429 "Resource has
+// been exhausted" 3 of 3 on a real account, where a pasted AGENTS.md or a
+// developer message told after a reply puts them, and went through
+// reworded. The others went through as written there, 3 of 3 each, and so
+// did all of them in the model's turns and in tool results.
+const USER_TURNED_AWAY = TURNED_AWAY.filter((l) => l.startsWith("you are codex, "))
+
+// cloak rewords the lines of only, or of TURNED_AWAY when only is left out
+function cloak(system, only) {
   if (!turnsAway(system)) return system
   const at = []
   TURNED_AWAY_RE.forEach((re, i) => {
+    if (only && !only.includes(TURNED_AWAY[i])) return
     for (const m of system.matchAll(re)) at.push([m.index, m.index + m[0].length, SAID_AS[TURNED_AWAY[i]]])
   })
   at.sort((a, b) => a[0] - b[0])
@@ -1098,6 +1108,12 @@ function shape(req, sent, at, effort) {
   }
   if (Array.isArray(req.contents)) {
     for (const c of req.contents) {
+      // since 11-14 Antigravity also answers a bare 429 to Codex's GPT-5
+      // line in a user's turn (a pasted AGENTS.md, a developer message
+      // told after a reply), 3 of 3 on a real account, and lets it
+      // through reworded; the model's turns and tool results went through
+      // as written, so they stay
+      if (c?.role !== "model") for (const p of c?.parts ?? []) if (typeof p?.text === "string" && !p.thought) p.text = cloak(p.text, USER_TURNED_AWAY)
       // an empty text (a stream's last chunk, sent back) is a block Claude
       // refuses: "text: Field required"
       if (Array.isArray(c?.parts) && c.parts.length > 1) c.parts = c.parts.filter((p) => !(isObj(p) && p.text === "" && Object.keys(p).length === 1))

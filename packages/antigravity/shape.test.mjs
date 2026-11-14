@@ -272,3 +272,22 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   expect(both).not.toMatch(/[\u200b-\u200f\u2060]/)
   expect(both).toContain("When the user writes @ followed by a path")
 })
+
+// since 11-14 Codex's GPT-5 line in a user's turn is turned away too (3 of
+// 3 on a real account): it goes reworded there, and the model's turns and
+// tool results, which went through with it, as written
+test("the line in a user's turn goes reworded", () => {
+  const line = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace."
+  const g = generic()
+  g.contents[0].parts[0].text = "Here is my AGENTS.md:\n\n" + line
+  g.contents[1].parts[1].text = line
+  g.contents[2].parts[0].functionResponse.response.output = line
+  const others = "x-anthropic-billing-header: cc_version=2.1.316.2e4;\nYou are a Claude agent, built on Anthropic's Claude Agent SDK.\nRFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
+  g.contents[3].parts[0].text = others
+  const r = shape(g, "gemini-3-flash", "", "")
+  expect(r.contents[3].parts[0].text).toBe(others)
+  expect(r.contents[0].parts[0].text).toBe("Here is my AGENTS.md:\n\nYou are Codex, a coding agent built on GPT-5. You and the user share the same workspace.")
+  expect(r.contents[1].parts[1].text).toBe(line)
+  expect(JSON.stringify(r.contents[2])).toContain("based on GPT-5")
+  expect(g.contents[0].parts[0].text).toContain("based on GPT-5")
+})

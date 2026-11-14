@@ -16,6 +16,11 @@
 // (a Codex thread begun on a GPT model keeps its prompt after /model or a
 // fork onto an Antigravity one)
 //
+// Since 11-14 Codex's two lines are turned away in a user's turn too (a
+// pasted AGENTS.md, a developer message told after a reply), so they go
+// reworded there as well; the other lines, tool results and the model's
+// turns go as written.
+//
 // Up to 0.1.6 this middleware put zero-width spaces (U+200B) inside them.
 // Since 11-14 Google's check reads past invisible characters: two U+200B in
 // each word, one after every character, or U+2060 instead, each line was
@@ -76,26 +81,34 @@ export function onProvider(body, ctx) {
   const accounts = Array.isArray(o.accounts) && o.accounts.length ? o.accounts : ["antigravity"]
   if (!accounts.includes(ctx.provider?.account)) return
   const cloak = cloaker(o)
+  const cloakUser = cloaker({}, userLines)
   let changed = false
-  const text = (s) => {
+  const by = (f) => (s) => {
     if (typeof s !== "string") return s
-    const t = cloak(s)
+    const t = f(s)
     if (t !== s) changed = true
     return t
   }
+  const text = by(cloak)
+  const said = by(cloakUser)
   switch (ctx.protocol) {
     case "anthropic":
       body.system = typeof body.system === "string" ? text(body.system) : parts(body.system, text)
+      for (const m of Array.isArray(body.messages) ? body.messages : []) user(m, said)
       break
     case "chat":
       if (Array.isArray(body.messages)) body.messages = body.messages.filter((m) => system(m, text))
+      for (const m of Array.isArray(body.messages) ? body.messages : []) user(m, said)
       break
     case "responses":
       body.instructions = text(body.instructions)
+      if (typeof body.input === "string") body.input = said(body.input)
       if (Array.isArray(body.input)) body.input = body.input.filter((m) => system(m, text))
+      for (const m of Array.isArray(body.input) ? body.input : []) user(m, said)
       break
     case "gemini":
       for (const k of ["systemInstruction", "system_instruction"]) if (body[k]) body[k].parts = parts(body[k].parts, text)
+      for (const c of Array.isArray(body.contents) ? body.contents : []) if (c && c.role !== "model") user({ role: "user", content: c.parts }, said)
       break
   }
   return changed ? body : undefined
@@ -109,6 +122,26 @@ function system(m, text) {
   const had = typeof m.content === "string" ? m.content !== "" : Array.isArray(m.content) && m.content.length > 0
   m.content = typeof m.content === "string" ? text(m.content) : parts(m.content, text)
   return !had || (typeof m.content === "string" ? m.content !== "" : !Array.isArray(m.content) || m.content.length > 0)
+}
+
+// user rewrites the text a user's message says itself, a string or text
+// parts, in place: since 11-14 Antigravity also answers a bare 429 to
+// Codex's GPT-5 line in a user's turn (a pasted AGENTS.md, a developer
+// message magpie tells after a reply), 3 of 3 on a real account, and lets
+// it through reworded (userLines). The other lines went through there as
+// written, 3 of 3 each, and tool results and the model's turns went through
+// with every line, so they stay.
+function user(m, text) {
+  if (!m || m.role !== "user") return
+  if (typeof m.content === "string") {
+    m.content = text(m.content)
+    return
+  }
+  for (const p of Array.isArray(m.content) ? m.content : []) {
+    if (!p || typeof p.text !== "string" || p.thought) continue
+    if (p.type !== undefined && p.type !== "text" && p.type !== "input_text") continue
+    p.text = text(p.text)
+  }
 }
 
 // parts rewrites each part's text, and leaves out a part that had text and
@@ -126,10 +159,14 @@ function parts(list, text) {
   return out
 }
 
-// cloaker rewords every line where it appears, then each of saidAs' and
-// extraWords' phrases.
-function cloaker(o) {
-  const rules = lines.map((l, i) => [lineRe(l, i === 0), saidAs[i]])
+// userLines are the lines, by their index in lines, Antigravity also turns
+// away in a user's turn: Codex's GPT-5 lines.
+const userLines = [2, 3]
+
+// cloaker rewords every line where it appears, or only those of only, then
+// each of saidAs' and extraWords' phrases.
+function cloaker(o, only) {
+  const rules = lines.map((l, i) => [lineRe(l, i === 0), saidAs[i], i]).filter(([, , i]) => !only || only.includes(i)).map(([re, as]) => [re, as])
   if (o.saidAs && typeof o.saidAs === "object") {
     for (const [from, to] of Object.entries(o.saidAs)) if (from.length > 1 && typeof to === "string") rules.push([lineRe(from, false), () => to])
   }
