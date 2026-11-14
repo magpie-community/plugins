@@ -343,3 +343,21 @@ test('the cards of the medium widget keep their bars on one line', async () => {
   assert.match(widget, /const first = \(sharedWindow \? "" : windowLabel\(primary\) \+ " · "\) \+ shortReset\(primary\)/);
   assert.match(widget, /const weekly = windowLabel\(secondary\) \+ " " \+ percent\(secondary\)/);
 });
+
+
+// The window of a quota is written the same way on the phone: the gateway
+// calls one window "5 hours" and another one "4 hours", and the page used
+// to write the second one as it came.
+test('the window of a quota is written the same way on the phone', async () => {
+  const phone = await read('mobile/app.js');
+  const start = phone.indexOf('function windowName(');
+  const end = phone.indexOf('\n}', start) + 2;
+  assert.ok(start > 0 && end > start, 'the phone page has a windowName');
+  const make = new Function('quotaMode', `${phone.slice(start, end)}\nreturn windowName;`);
+  const name = make('remaining');
+  assert.equal(name('5 hours'), '5 小时剩余');
+  assert.equal(name('4 hours'), '4 小时剩余');
+  assert.equal(name('7 days'), '本周剩余');
+  assert.equal(name('hours'), '小时剩余');
+  assert.equal(make('used')('4 hours'), '4 小时已用');
+});

@@ -103,7 +103,16 @@ function resetLabel(window) {
 }
 function windowName(name) {
   const suffix = quotaMode === 'used' ? '已用' : '剩余';
-  return /5\s*h|5\s*hour/i.test(name) ? '5 小时' + suffix : /7\s*d|7\s*day|week/i.test(name) ? '本周' + suffix : name + suffix;
+  // The name of a window comes from the provider: "5 hours", "4 hours", "7
+  // days". The unit is written the same way for every provider, so that no
+  // card says "hours" and another one says "h".
+  const text = String(name || '');
+  const hours = /^\s*(\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)(?![a-z])/i.exec(text);
+  if (hours) return (hours[1] ? hours[1] + ' ' : '') + '小时' + suffix;
+  const days = /^\s*(\d+(?:\.\d+)?)?\s*(?:days?|d)(?![a-z])/i.exec(text);
+  if (days) return (days[1] && days[1] !== '7' ? days[1] + ' 天' : '本周') + suffix;
+  if (/week/i.test(text)) return '本周' + suffix;
+  return text + suffix;
 }
 function progress(value, className, label) {
   const bar = node('progress', className);

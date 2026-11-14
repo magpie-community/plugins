@@ -768,3 +768,46 @@ test('the bars of the cards of the large widget sit on one line', async () => {
   assert.equal(levels[0], levels[1], 'the two cards of the first row are not on one line: ' + levels.join(', '));
   assert.equal(levels[2], levels[3], 'the two cards of the second row are not on one line: ' + levels.join(', '));
 });
+
+// The unit of a window is written the same way for every provider. The
+// gateway calls one window "5 hours" and another one "4 hours"; the widget
+// used to write "5h" for the first and "4 hours" for the second.
+test('the unit of a window is written the same way for every provider', async () => {
+  const cards = realCards().map(card => ({
+    ...card,
+    windows: card.windows.map(entry => ({
+      ...entry,
+      label: entry.label === '5h' ? '5 hours' : '7 days',
+    })),
+  }));
+  cards[0].windows = [{ ...cards[0].windows[0], label: '4 hours' }];
+  const answering = class {
+    constructor() { this.response = { statusCode: 200 }; }
+    async loadJSON() {
+      return overview({ subscriptions: cards.map(card => card.id) }, cards);
+    }
+  };
+  const { tree } = await runWidget({ request: answering, config: { widgetFamily: 'large' } });
+  const texts = [];
+  const walk = node => {
+    if (node.type === 'text') texts.push(String(node.element.text || ''));
+    if (node.type === 'stack') node.stack.children.forEach(walk);
+  };
+  walk({ type: 'stack', stack: tree });
+  const written = texts.join(' | ');
+  assert.match(written, /4h/);
+  assert.match(written, /5h/);
+  assert.match(written, /7d/);
+  assert.doesNotMatch(written, /hours/i);
+});
+
+// The name of a card and the number below it stand at the left of the card.
+// A version of the widget centred them, and a name that was written in the
+// middle of its card looked like it belonged to the card next to it.
+test('the name of a card and its number stand at the left', () => {
+  const start = source.indexOf('function line(');
+  assert.ok(start > 0, 'the widget has a line helper');
+  const helper = source.slice(start, start + 400);
+  assert.doesNotMatch(helper, /centerAlignContent/);
+  assert.doesNotMatch(source, /valueRow\.centerAlignContent/);
+});

@@ -231,7 +231,6 @@ const LINE_HEIGHT = 1.25;
 function line(parent, size, width) {
   const row = parent.addStack();
   row.size = new Size(width, Math.round(size * LINE_HEIGHT));
-  row.centerAlignContent();
   return row;
 }
 function compact(value) {
@@ -315,8 +314,21 @@ function shortReset(window) {
   if (mins < 1440) return Math.floor(mins / 60) + "时" + String(mins % 60).padStart(2, "0") + "分";
   return Math.floor(mins / 1440) + "天" + Math.floor(mins % 1440 / 60) + "时";
 }
+// The name of a window comes from the provider: "5 hours", "4 hours", "7
+// days", or something of its own. The unit is written the same way for every
+// provider: h for hours, d for days. The number is kept when there is one.
+function windowUnit(label) {
+  const text = String(label || "");
+  const hours = /^\s*(\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)(?![a-z])/i.exec(text);
+  if (hours) return (hours[1] ? hours[1] : "") + "h";
+  const days = /^\s*(\d+(?:\.\d+)?)?\s*(?:days?|d)(?![a-z])/i.exec(text);
+  if (days) return (days[1] ? days[1] : "") + "d";
+  if (/week/i.test(text)) return "7d";
+  if (/month/i.test(text)) return "30d";
+  return text;
+}
 function windowLabel(window) {
-  return /5\s*h|5\s*hour/i.test(window.label) ? "5h" : /7\s*d|7\s*day|week/i.test(window.label) ? "7d" : window.label;
+  return windowUnit(window.label);
 }
 function clock(value) {
   if (!value) return "未更新";
@@ -445,7 +457,7 @@ function subscriptionGrid(parent, cards, sharedWindow) {
         text(emptyRow, " ", accountSize, colors.muted);
       }
       column.addSpacer(style.titleGap);
-      const valueRow = line(column, style.value, cellWidth); valueRow.centerAlignContent();
+      const valueRow = line(column, style.value, cellWidth);
       // A narrow cell has no room for the whole word, and the footer of the
       // widget says which way the numbers are read.
       const word = large || cellWidth >= 78 ? direction() : (showUsed ? "用" : "剩");

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.6 · 2026-11-14
+
+The unit of a quota window is written the same way for every provider, and the
+name of a card stands at the left of its card again.
+
+> 额度的单位统一了：网关那边有的窗口叫「5 hours」、有的叫「4 hours」，组件以前一个写「5h」、
+> 一个原样写「4 hours」；现在统一写「5h」「4h」「7d」。组件上的厂商名和数字回到左边——0.4.5
+> 为了让卡片的高度稳当把文字居中了，这一版去掉。
+
+### Fixed
+
+- **The unit of a window is the same for every provider.** The gateway names
+  one window "5 hours" and another one "4 hours"; the widget wrote "5h" for
+  the first and "4 hours" for the second. Every hour-ish label is now
+  written "<n>h" and every day-ish label "<n>d". The phone page writes the
+  same window as "5 小时剩余" and "4 小时剩余".
+- **The name of a card and the number under it stand at the left.** The 0.4.5
+  release centred the text of a line to keep the height of every card the
+  same; the text stands at the left again.
+
 ## 0.4.5 · 2026-11-14
 
 The bars of the cards of the medium widget sit on one line now. Nothing else
