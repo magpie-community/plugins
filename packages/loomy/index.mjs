@@ -341,6 +341,32 @@ function catalogModel(entry) {
   return { id, config }
 }
 
+// listedModel is the vendor's entry as the models hook gives it: the
+// config's fields, and the capabilities OpenCode (and magpie's host) read
+// a listed model by. The config's fields alone left the vendor's vision,
+// reasoning and tool calls unread, so deepseek-v4-flash-1017, which
+// models.dev doesn't know, went as a text-only model of no known
+// vision (plugins#1141). What the vendor doesn't say keeps what was known
+// of the model (models.dev, the static table).
+function listedModel(was, m, entry) {
+  const caps = entry?.capabilities ?? {}
+  const had = was?.capabilities ?? { temperature: true, toolcall: true, input: { text: true }, output: { text: true } }
+  const capabilities = { ...had, input: { ...(had.input ?? { text: true }) } }
+  if (typeof caps.reasoning === "boolean") capabilities.reasoning = caps.reasoning
+  if (typeof caps.function_calling === "boolean") capabilities.toolcall = caps.function_calling
+  if (typeof caps.vision === "boolean") {
+    capabilities.input.image = caps.vision
+    capabilities.attachment = caps.vision
+  }
+  return {
+    ...(was ?? {}),
+    ...m.config,
+    id: m.id,
+    limit: { ...(was?.limit ?? {}), ...(m.config.limit ?? {}) },
+    capabilities,
+  }
+}
+
 // ── the plugin ─────────────────────────────────────────────────────────────
 
 export async function LoomyAuthPlugin({ client } = {}) {
@@ -641,7 +667,7 @@ export async function LoomyAuthPlugin({ client } = {}) {
           for (const entry of entries) {
             const m = catalogModel(entry)
             if (!m) continue
-            p.models[m.id] = m.config
+            p.models[m.id] = listedModel(p.models[m.id], m, entry)
           }
           return p.models
         } catch {

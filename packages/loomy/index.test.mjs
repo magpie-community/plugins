@@ -299,6 +299,23 @@ describe("models", () => {
     expect(list["plain"].rate).toBeUndefined()
     expect(list["plain"].name).toBe("No Suffix At All")
   })
+
+  // plugins#1141: the host reads a listed model by OpenCode's shape
+  // (capabilities.input.image, capabilities.reasoning, capabilities.toolcall),
+  // so the vendor's vision and reasoning go there too.
+  test("the vendor's capabilities, in the shape the host reads", async () => {
+    const p = { models: { "deepseek-v4-flash": { id: "deepseek-v4-flash", name: "DS", limit: { context: 1000000, output: 64000 }, capabilities: { temperature: true, reasoning: false, attachment: false, toolcall: true, input: { text: true, image: false }, output: { text: true } }, api: { id: "deepseek-v4-flash", npm: "@ai-sdk/openai-compatible" } } } }
+    const list = await plugin.provider.models(p, { auth: saved })
+    expect(list["glm-5.3-flash"].capabilities.input.image).toBe(true)
+    expect(list["glm-5.3-flash"].capabilities.attachment).toBe(true)
+    expect(list["spark-x"].capabilities.reasoning).toBe(true)
+    expect(list["spark-x"].capabilities.toolcall).toBe(true)
+    expect(list["spark-x"].capabilities.input.image).toBe(false)
+    // what the vendor doesn't say keeps what was known of the model
+    expect(list["deepseek-v4-flash"].limit.context).toBe(1000000)
+    expect(list["deepseek-v4-flash"].api.npm).toBe("@ai-sdk/openai-compatible")
+    expect(list["deepseek-v4-flash"].rate).toBe("x3.0")
+  })
 })
 
 describe("usage", () => {
