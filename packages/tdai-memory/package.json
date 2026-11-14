@@ -1,0 +1,38 @@
+{
+  "name": "@magpie-community/gateway-tdai-memory",
+  "version": "0.1.0",
+  "description": "Shared long-term memory for every agent behind magpie from your own TencentDB Agent Memory (TDAI) memory-core, with no proxy: recall before each turn, and opt-in capture of finished turns and memory tools",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib.mjs", "tdai-memory.hooks.mjs", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-gateway", "tdai", "tencentdb-agent-memory", "agent-memory", "memory", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/tdai-memory"
+  },
+  "scripts": { "test": "node --test" },
+  "magpie": {
+    "hooks": "./tdai-memory.hooks.mjs",
+    "options": {
+      "url": "http://127.0.0.1:8420",
+      "apiKey": "local",
+      "serviceId": "default",
+      "teamId": "default",
+      "agentId": "shared",
+      "userId": "default",
+      "perAgent": false,
+      "agents": ["claude", "codex", "opencode", "crush", "pi", "omp"],
+      "recall": true,
+      "capture": false,
+      "remote": false,
+      "tools": false,
+      "requireTools": true,
+      "recallLimit": 5,
+      "maxInjectChars": 6000,
+      "includeCwd": true,
+      "gatewayTimeoutMs": 2500
+    }
+  }
+}
