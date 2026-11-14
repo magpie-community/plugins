@@ -61,7 +61,7 @@ Agent Space Manager includes **13 built-in Agent Profiles** (`agents.mjs` & `ada
 
 ### 6. Centralized Weekly Upstream Checking & Storage Rules Prompt
 - **Centralized Monday Update Check**: Checks upstream repository links for all stored components once per week on Monday startup (`/api/central-update-check`), and automatically prunes legacy decentralized update scripts (`update_checker.mjs`, `update_check_state.json`).
-- **Copy Prompt (`V1.4`)**: One-click button in the **Storage & Upstream Rules** tile that copies standardized instructions for your AI agent to enforce the Hub layout, record mandatory `upstream` URLs, perform complete plugin removal cleanup, save manifests in strict UTF-8 without BOM, respect one-time rearrangement stability, and preserve the `shared/` cross-agent IPC/handoff directory.
+- **Copy Prompt (`V1.5`)**: One-click button in the **Storage & Upstream Rules** tile that copies standardized instructions for your AI agent to enforce the Hub layout, record mandatory `upstream` URLs, perform complete plugin removal cleanup (including trimming Smart Middleware intents), save manifests in strict UTF-8 without BOM, respect one-time rearrangement stability, preserve the `shared/` cross-agent IPC/handoff directory, and maintain dynamic Smart Middleware intent keywords in `shared/middleware-intents.json` (auto-seeded on initial run from existing components).
 
 ### 7. Smart Middleware Tool Gateway & OmniRoute Integration
 - **Dynamic Intent-Based Tool Filtering (`smart-tools.middleware.js`)**:

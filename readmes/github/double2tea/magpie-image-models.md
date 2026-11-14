@@ -51,9 +51,17 @@ magpie tool generate_image \
 
 magpie tool generate_image \
   --model image-models/wavespeed/bytedance/seedream-v5.5 \
-  --size 2048x1152 --reference_images /absolute/reference.png \
+  --size 16:9@2K --reference_images /absolute/reference.png \
   "edit prompt"
 ```
+
+WaveSpeed 的 `size` 可写 `16:9`、`2K`、`16:9@2K` 或 `2048x1152`。
+插件将比例与分辨率分别传给渠道；像素值转换成比例与档位，不保证精确输出像素。
+不传其中一项时由渠道决定，不自动补 1K。支持的比例和档位取决于模型及编辑入口；
+不支持的组合在提交前报错。WaveSpeed 通过本插件每次只接受一张，`n > 1` 报错。
+三个渠道的 `complexity` 尚未确认有效，传入时明确报错。
+GPT 的像素尺寸统一写为 `WIDTHxHEIGHT`；输入中的 `×` 和空格会规范化。
+编辑入口必须带参考图。Right Code Gemini 每次只接受一张输出，`n > 1` 明确报错。
 
 ## 结构
 

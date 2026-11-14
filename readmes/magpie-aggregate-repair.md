@@ -1,6 +1,8 @@
-# aggregate-repair
+# 渠道切换修复 · Responses 400
 
-Magpie 图形化中间件，用于处理**切换上游渠道后，同一会话中的 Responses 对象失效并导致 400**的问题。
+Magpie 图形化中间件，用于修复 **Codex 等 Responses 客户端切换上游渠道后，同一会话中的对象失效并导致 400 报错**的问题，包括 Azure OpenAI 资源 ID 不匹配。
+
+英文名称：Channel Switch Repair · Responses 400。原名“渠道会话修复”，npm 包名为 `magpie-aggregate-repair`。
 
 常见错误：
 
@@ -28,7 +30,7 @@ Codex → Magpie(middleware) → 上游渠道
 插件启用后，左侧“插件”分组会出现：
 
 ```text
-渠道会话修复
+渠道切换修复 · Responses 400
 ```
 
 设置页可以修改：
@@ -101,6 +103,8 @@ Codex → Magpie(middleware) → 上游渠道
 
 ## 安装
 
+在 Magpie 的插件搜索中输入 `渠道切换`、`会话修复`、`Responses`、`400` 或 `Codex`，找到“渠道切换修复 · Responses 400”。也可以用完整包名 `magpie-aggregate-repair` 查找。
+
 从 npm 安装：
 
 ```powershell
@@ -113,7 +117,7 @@ magpie plugin add npm:magpie-aggregate-repair
 magpie plugin add github:xwyjh3612/aggregate-repair
 ```
 
-安装后，在 Magpie 的插件设置中启用“渠道会话修复”。
+安装后，在 Magpie 的插件设置中启用“渠道切换修复 · Responses 400”。
 
 如果已下载插件文件或克隆源码，请先解压完整目录，再双击：
 

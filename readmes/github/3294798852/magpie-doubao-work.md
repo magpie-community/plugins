@@ -46,21 +46,13 @@ magpie accounts import doubaowork /absolute/path/doubao-accounts.json --yes
 
 账号开关、代理、路由和签到在 Magpie 中管理。开启签到后，由 Magpie 调度，插件在领取请求前持久记录当日提交状态。结果待确认时，后续操作回查上游状态。
 
-### 710022004 与设备参数
+### 710022004 与设备上下文
 
-桌面接口使用 `device_id` 及对应的 `fp=verify_<device_id>`。插件优先使用账号快照中的 `deviceId`，其次使用 `device_id` Cookie，再读取本机豆包客户端 `Local State` 的 `aha.device.device_id`。文件读取结果缓存 60 秒。
+0.6.3 的浏览器登录会自动从豆包官网取得该会话的 Web ID、应用 ID和客户端版本，连同浏览器指纹、User-Agent 和官网签发的 Cookie 一并保存。模型、聊天、额度和签到使用对应的 Web 参数，无需安装豆包桌面客户端。
 
-0.5.2 在登录、导入和旧账号首次加载时，把取得的设备上下文写入 Magpie 登录资料。迁移到其他电脑或无客户端的服务器后，继续使用账号携带的设备信息。每个账号的设备信息来自该用户自己的会话、客户端或账号备份。
+旧账号缺少设备上下文且本机客户端文件不可用时，正常加载会自动获取并保存官网上下文。已有完整桌面会话继续使用保存的信息。v2/v3 账号备份保留完整会话，支持迁入其他电脑和无图形界面的 Linux 服务器。
 
-- Windows 使用 `%LOCALAPPDATA%\Doubao\User Data\Local State`。
-- Linux 使用 `$XDG_CONFIG_HOME/Doubao/Local State`，默认位于 `~/.config/Doubao/Local State`。
-- macOS 使用 `~/Library/Application Support/Doubao/Local State`。
-
-同时兼容上述路径中的 `DoubaoWork` 产品目录。无桌面客户端的 Linux 可使用包含 `session.deviceId` 的账号备份。0.5.2 网关会自动将设备信息写入导出文件，目标设备通过导入取得完整会话。设备号与登录凭据保存在用户本机。
-
-Windows 网关导出到隔离 Ubuntu 的真实账号迁移已通过，Ubuntu 网关和 Magpie Bun 宿主均返回 `OK`。迁移目标使用独立用户目录，网关的本机设备查询次数为零。详细范围见[验证记录](docs/verification.md)。
-
-官网和客户端正常、网关持续返回 `710022004` 时，检查插件版本和设备参数。修复参数后，已暂停账号需重新登录恢复。上游继续要求人工验证时，使用同一个账号在豆包官网完成验证，再在 Magpie 重新登录。
+`710022004` 表示上游要求验证。使用同一个账号完成官网验证后，重新测试模型或发送新请求，完整成功回复会清除旧验证状态。持续失败的既有桌面会话可重新浏览器登录。自动获取路径和验证结果见[设备上下文修复说明](docs/web-device-context.md)。
 
 ## 从网关内置插件迁移
 

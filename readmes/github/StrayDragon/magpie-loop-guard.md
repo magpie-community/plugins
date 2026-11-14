@@ -66,11 +66,50 @@ magpie plugin    # 确认列表里有 loop-guard(Gateway middleware)
 
 **配置则生效**：本插件遵循白名单约定——写了的选项才生效，不写任何 options 就不拦截。Options 编辑器会预填建议配置（`targets: ["*"]` 阈值 5 保护全部模型，外加一条 `dsv41flash-let-me-loop` 注入预设示例），保存一次即生效。
 
-## 可视化配置的现状
+## 自带页面：看事件、改配置
 
-magpie（核查到 v0.1.3757）对中间件 options 提供的可视化能力是：Plugins → Installed → 该中间件卡片上的 **Options 按钮 + JSON 编辑器**，初始内容取自本插件 `package.json` 的 `magpie.options` 示例。**尚不支持**按字段生成表单的 schema 机制（唯一的表单是供应商登录开关，与本插件无关）。
+loop-guard 是一个完整插件，除中间件外还声明了两部分：
 
-所以现在的"可视化配置"路径是：界面里打开 Options 编辑器 → 从预填示例改出自己要的预设 → 保存热生效（≤1s）。改用命令行等价：
+| package.json | 运行位置 | 做什么 |
+| --- | --- | --- |
+| `magpie.middleware` | 网关进程内的 moejs | 判定与处置（拒绝 / 注入 / 只记录）——原有能力，不变 |
+| `magpie.hooks` | 插件宿主的 Bun | 只观测：命中时写一条事件 |
+| `magpie.page` + `magpie.page.service` | Bun 宿主内的 HTTP 服务 | 页面：事件列表 + 字段表单 |
+
+**为什么拆成三份**：中间件跑在 moejs，除 `console` 外没有文件、网络或定时器，写不了文件也发不了请求；拦截能力又只有中间件有（Bun hooks 不能拒绝请求）。所以中间件继续负责拦截，观测放在 Bun 侧。两者用同一个 `inspect()` 判定，结论不可能不一致。
+
+### 页面显示什么
+
+只显示**被处理过的请求**。没有命中的请求不产生任何记录，页面上是空的。每行一条：
+
+- 时间
+- 请求 id（会话标识，可悬停看全）
+- 模型 / agent
+- 命中的 preset 名（未命名规则显示 `default`）
+- 触发类型（连续重复 / 碎片复读）
+- 第几轮（实际次数 / 阈值）
+- 处置（拒绝 / 注入纠正语 / 仅记录）
+
+顶部是计数卡片：共处理多少、按处置方式分、按 preset 和模型的前三名。
+
+### 页面怎么改配置
+
+下半部分是表单，对应 `targets` / `threshold` / `mode` / `prompt` / `fragment` 五个字段，保存后下一轮请求生效（中间件 ≤1s 内重载）。复杂预设（多条 `models` 规则）点「编辑 JSON」直接改整份配置。
+
+保存走 `magpie plugin options`，与界面里的 Options 按钮是同一条路径。
+
+> 页面由插件自己的服务提供（默认 `127.0.0.1:3477`，可用 `port` 选项改）。magpie 的插件页面沙箱是 `connect-src 'none'`，窗口里的页面不能 fetch，所以页面从自己的服务打开，走 `magpie.service` 给出的地址。**桌面窗口不代理这个服务，只有 `magpie web`（浏览器）能用**；桌面里请用命令行或 Options 按钮。
+
+### 不用页面也行
+
+事件同时以 JSONL 写在插件目录的 `events.jsonl`（保留最新 500 条，已加 `.gitignore`）：
+
+```sh
+# 最近 20 条命中
+tail -20 events.jsonl | jq -r '[.at, .model, .preset, .why, .run] | @tsv'
+```
+
+配置仍可以用命令行改：
 
 ```sh
 magpie plugin options loop-guard '{…}'
@@ -250,10 +289,17 @@ cd verify && go run . -file ../loop-guard.middleware.js -bench    # 大请求体
 
 ```
 magpie-loop-guard/
-├── loop-guard.middleware.js   # 中间件本体(magpie 加载的唯一文件)
-├── package.json               # magpie.middleware 入口与示例选项
+├── loop-guard.middleware.js   # 中间件本体：判定与处置(moejs，网关进程内)
+├── loop-guard.hooks.js        # Bun hook：只观测，命中时写 events.jsonl
+├── loop-guard.server.js       # 插件自带的 HTTP 服务(magpie.page.service)
+├── page/
+│   ├── index.html             # 事件列表 + 设置表单
+│   ├── app.js
+│   └── style.css
+├── package.json               # magpie.middleware / hooks / page 三入口与示例选项
 ├── cases.json                 # 72 个用例(三种引擎共用)
 ├── test.mjs                   # node/bun 测试器
+├── test.hooks.mjs             # Bun 侧(hook)的测试器
 ├── verify/                    # Go + moejs 验证器与基准(CI 的 moejs 任务)
 ├── deploy/                    # docker-compose、注入脚本、远端安装器
 └── .github/workflows/ci.yml   # node 矩阵 / bun / moejs+成本红线 / 交叉编译 / 部署资产 lint

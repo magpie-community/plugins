@@ -1,20 +1,20 @@
 # TokenHarbor Provider Plugin
 
-这是一个供 magpie 使用的 TokenHarbor provider 插件，目标是该宿主提供的 OpenCode 兼容 provider 插件接口。本文中的安装命令使用 magpie 自己的 CLI。它通过宿主标准的 API Key 登录入口保存密钥，并将 OpenAI 兼容请求发送到 TokenHarbor。
+这是一个供 magpie 使用的 TokenHarbor provider 插件，使用该宿主提供的 provider 插件接口。本文中的安装命令使用 magpie 自己的 CLI。它通过宿主标准的 API Key 登录入口保存密钥，并将 OpenAI 兼容请求发送到 TokenHarbor。
 
 ## 安装
 
 推荐直接把插件源码目录交给宿主 CLI：
 
 ```sh
-magpie plugin add /absolute/path/to/opencode-tokenharbor-provider
+magpie plugin add /absolute/path/to/magpie-plugin-tokenharbor
 ```
 
 如果通过 `.tgz` 归档交付，先解包，再添加解包得到的 `package/` 目录：
 
 ```sh
 mkdir -p /tmp/tokenharbor-plugin
-tar -xzf opencode-tokenharbor-provider-0.1.0.tgz -C /tmp/tokenharbor-plugin
+tar -xzf magpie-plugin-tokenharbor-0.1.0.tgz -C /tmp/tokenharbor-plugin
 magpie plugin add /tmp/tokenharbor-plugin/package
 ```
 
@@ -28,7 +28,7 @@ provider 和插件发现卡片使用 TokenHarbor 官网公开的图标，源文�
 
 宿主的 Usage 卡片会显示 TokenHarbor 文档接口提供的 Pass 与免费模型额度百分比、耗尽状态和七天窗口重置时间。Pass 与免费模型额度分别显示，但共用 `reset_at` 窗口。百分比是四舍五入后的整数；插件以 `plan_exhausted` 和 `exhausted` 标记显示“已耗尽/可用”，不会仅凭 `100%` 推断耗尽。缺少活动 Pass 或免费模型未启用/未激活时，不会生成虚假的免费额度窗口。
 
-当前宿主没有自动按界面语言翻译插件 Usage 文案。支持宿主选项 API 的宿主默认显示中文；在 **Providers → TokenHarbor → Plugin options** 开启 **English usage text** 可显示英文。OpenCode 和较旧宿主没有该选项 API，会保留英文文案。
+当前宿主没有自动按界面语言翻译插件 Usage 文案。支持宿主选项 API 的宿主默认显示中文；在 **Providers → TokenHarbor → Plugin options** 开启 **English usage text** 可显示英文。较旧宿主没有该选项 API，会保留英文文案。
 
 这些卡片只用于 Usage 展示，不参与宿主的模型路由判断。TokenHarbor 没有在此接口中承诺钱包美元余额，因此插件不会显示或估算 USD 余额。重置时间缺失时，卡片不显示猜测的时间。宿主按自己的 Usage 刷新策略读取；TokenHarbor 说明额度接口可能缓存最多 15 秒。
 

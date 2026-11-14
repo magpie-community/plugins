@@ -122,6 +122,24 @@ magpie plugin options poxian '{"override":true,"override_mode":"replace"}'
 
 全部选项（含 `dry_run`、报文清洗、日志轮转、载荷上限等）见 [docs/options.md](docs/options.md)。
 
+## 注入档位（省 token）
+
+默认 `inject_mode: "always"`：每轮全量，行为与 0.2.7 完全一致。省 token 是可选档，不是新默认——**载荷越短服从率越低**（大狗 2364 tok → 35%，富江精简 897 tok → 26%），把降档设成默认等于拿效果换钱，而换亏了。
+
+| 档位 | 行为 | 适用 |
+|---|---|---|
+| `always`（默认） | 每轮全量 | 正常使用 |
+| `tiered` | 首轮 / 拒答后 / 高风险预判 / 每 N 轮 → 全量；其余 → 骨架（默认 `fujiang-lite`） | 长会话、非缓存渠道 |
+| `on_refusal` | 只有拒答锁存命中才注入，其余零 token | 极端省法，接受首轮裸奔 |
+
+回本判据只有一条：`Δp < k / H`——`k` 是每轮省下的 token（1497−897≈600），`H` 是一次重问要重发的历史（实测约 7.5K）。**骨架让通过率掉超过 8 个百分点，省下的就全赔回去。**
+
+```bash
+magpie plugin options poxian '{"inject_mode":"tiered","skeleton_prompt":"fujiang-lite"}'
+```
+
+锁存在内存里（Map，TTL 300 s，上限 512 条），重启全清；会话键是 `agent|model|首条 user 文本` 的指纹，历史被压缩后会断——所以 `tiered` 里始终有首轮与风险预判兜底，不指望锁存当唯一依据。全部选项见 [docs/options.md](docs/options.md)。
+
 ## 验证注入生效
 
 用提示词规定的激活词打一拍——裸模型不可能知道握手行：
