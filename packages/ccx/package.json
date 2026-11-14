@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/tools-ccx",
+  "version": "0.1.0",
+  "description": "Claude Code and Codex conversations as tools for every coding agent, through magpie's MCP server: list them and read one to carry on the task",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "ccx.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-tools", "mcp", "opencode", "opencode-plugin", "claude-code", "codex", "handoff"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/ccx" }
+}
