@@ -85,7 +85,11 @@ test("a 429 to a turned-away system prompt is a 400, not a quota", async () => {
   for (const [sys, says] of [
     ["x-anthropic-billing-header: cc_version=2.1", "Claude Code and the Claude Agent SDK"],
     ["You are Codex, a coding agent based on GPT-5.", "Codex's own system prompt"],
-    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "Hermes Agent's earlier default persona"],
+    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "Hermes Agent's default persona"],
+    ["You are Hermes Agent, built by Nous Research.", "Hermes Agent's default persona"],
+    ["You are opencode, an interactive CLI tool that helps users with software engineering tasks.", "OpenCode's system prompt"],
+    ["You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.", "Codex's prompt for a model it has none of its own for"],
+    ["You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.", "pi's default system prompt"],
     ["RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\n\n§ Role", "oh-my-pi (omp)'s system prompt"],
     ["RFC 2119 keywords: MUST, REQUIRED,\r\nSHOULD, RECOMMENDED, MAY, OPTIONAL.\r\n\r\n§ Role", "oh-my-pi (omp)'s system prompt"],
   ]) {

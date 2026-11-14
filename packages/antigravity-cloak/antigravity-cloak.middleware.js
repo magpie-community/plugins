@@ -8,10 +8,20 @@
 //                    (Claude Desktop's Code tab and its subagents)
 //   "You are Codex, an agent based on GPT-5"         Codex's own prompt
 //   "You are Codex, a coding agent based on GPT-5"   for its GPT-5 models
-//   "Hermes Agent, an intelligent AI assistant created by Nous Research"
-//                    Hermes Agent's earlier default persona (its SOUL.md)
 //   "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."
 //                    the first line of oh-my-pi (omp)'s system prompt
+//   "You are Hermes Agent"   Hermes Agent's persona (its SOUL.md), the
+//                    current one and the earlier one
+//   "You are OpenCode"       OpenCode's prompts
+//   "You are a coding agent running in the Codex CLI"
+//                    Codex's prompt for a model it has none of its own for
+//   "a coding assistant running inside pi"   pi's default prompt
+//
+// The last four are turned away since the evening of 11-14 (Lmohn39 and
+// ZhouYimingsjtu on X), 3 of 3 or 5 of 5 each on a real account, and go
+// through as "You're …" and "running within pi". Hermes' earlier persona
+// ("…, an intelligent AI assistant created by Nous Research") is turned
+// away as "You're …" too, so its "created by" goes "built by" as before.
 //
 // (a Codex thread begun on a GPT model keeps its prompt after /model or a
 // fork onto an Antigravity one)
@@ -40,21 +50,27 @@
 // After hexiaolv's magpie-antigravity-cloak (MIT), which does the same to
 // every request whatever provider it goes to.
 
-export const lines = ["x-anthropic-billing-header:", "built on Anthropic's Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "Hermes Agent, an intelligent AI assistant created by Nous Research", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."]
+export const lines = ["x-anthropic-billing-header:", "built on Anthropic's Claude Agent SDK", "You are Codex, an agent based on GPT-5", "You are Codex, a coding agent based on GPT-5", "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.", "You are Hermes Agent", "an intelligent AI assistant created by Nous Research", "You are OpenCode", "You are a coding agent running in the Codex CLI", "a coding assistant running inside pi"]
 
 // saidAs is how each line goes, given the line as it was matched with its
 // invisible characters taken out and its white space kept: Claude Code's
 // billing line not at all (no Antigravity model reads it), the Agent SDK's
 // as "built on the Claude Agent SDK by Anthropic", Codex's as "built on
-// GPT-5", Hermes' as "built by Nous Research" (as its current persona says
-// it), omp's with RFC 2119's own "key words".
+// GPT-5", omp's with RFC 2119's own "key words", Hermes', OpenCode's and
+// Codex CLI's as "You're …" (Hermes' earlier "created by" as "built by"),
+// pi's as "running within pi".
+const youre = (m) => m.replace(/^(you)\s+are/i, "$1're")
 const saidAs = [
   () => "",
   (m) => m.replace(/^(built\s+on\s+)anthropic's(\s+)(claude\s+agent\s+sdk)$/i, "$1the$2$3 by Anthropic"),
   (m) => m.replace(/based(\s+)on/i, "built$1on"),
   (m) => m.replace(/based(\s+)on/i, "built$1on"),
-  (m) => m.replace(/created(\s+)by/i, "built$1by"),
   (m) => m.replace(/(key)(words)/i, "$1 $2"),
+  youre,
+  (m) => m.replace(/created(\s+)by/i, "built$1by"),
+  youre,
+  youre,
+  (m) => m.replace(/inside/i, "within"),
 ]
 
 const zwsp = "​"

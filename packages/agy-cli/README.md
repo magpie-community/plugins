@@ -180,9 +180,9 @@ magpie quota refresh agy-cli --json
 支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在
 第一条提示词开头）。
 
-Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex 和 Hermes Agent
-的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
-agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"built by Nous Research"、"RFC 2119 key words: …"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。如果仍然
+Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex、Hermes Agent、OpenCode
+和 pi 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
+agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"RFC 2119 key words: …"、"You're Hermes Agent / OpenCode / a coding agent running in the Codex CLI"、"running within pi"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。如果仍然
 回了这样的 429，会报成针对提示词的 400，而不是额度用完。
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样

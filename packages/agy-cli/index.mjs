@@ -126,6 +126,12 @@ const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const ATTEMPT_CORE = "⚠ API error (attempt "
 const ATTEMPT_MARKER = "\n" + ATTEMPT_CORE
 const ATTEMPT_LINE = /^⚠ API error \(attempt \d+\): ?(.*)$/
+// The bare 429 Antigravity answers a system prompt it turns away, whatever
+// quota is left. agy 1.5.9 retries it in the same turn with a banner each
+// time, and only ends the turn after its last retry: to the client the turn
+// hung (Lmohn39 on X, pi through agy-cli, 11-14). A banner with it ends the
+// turn at once, as the 429 ending would.
+const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail)
 // agy writes this into the reply when the model's first call came back with
 // neither text nor tool calls, then calls the model again in the same turn.
 // It is agy's, not the model's, and the turn goes on (#1124).
@@ -1155,6 +1161,7 @@ class Turn {
     this.textTail = ""
     this.openBanner = -1
     this.attemptDetail = ""
+    this.refusedDetail = ""
     this.agentErrorCore = ""
     this.timer = null
     this.cleanupTimer = null
@@ -1332,6 +1339,14 @@ class Turn {
   // they start a line (#1124, #1136); one whose line hasn't ended is held.
   pushText(chunk) {
     if (this.done || this.agentError) return
+    this.pushHeld(chunk)
+    if (this.refusedDetail && !this.done) {
+      this.heldText = ""
+      this.proc.refuseTurn(this, this.refusedDetail)
+    }
+  }
+
+  pushHeld(chunk) {
     let text = this.dropRetryBanner(this.heldText + chunk)
     this.heldText = ""
     if (this.openBanner >= 0) {
@@ -1381,10 +1396,14 @@ class Turn {
       let end = attempt ? text.indexOf("\n", at) : at + RETRY_CORE.length
       if (end < 0) end = text.length
       if (end === text.length && !final) {
+        // agy waits before its next try with the line still open
+        const open = attempt ? ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() : ""
+        if (open && refused429(open)) this.refusedDetail ||= open
         this.openBanner = start
         return text
       }
       if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
+      if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
       text = text.slice(0, start) + text.slice(end)
       from = start
@@ -2124,7 +2143,7 @@ class Proc {
     }
     if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail)) {
       return new AgentTurnError(
-        `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}`,
+        `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}${refused429(detail) ? " — Antigravity answers this same bare 429 to a system prompt it turns away whatever quota is left, so if quota is left it is not a quota and waiting won't help: something in this agent's system prompt is being matched" : ""}`,
         "rate_limit_error",
       )
     }
@@ -2151,6 +2170,16 @@ class Proc {
     timer.unref?.()
     turn.settled.then(() => clearTimeout(timer))
     return true
+  }
+
+  // A try Antigravity answered with the bare 429 ends the turn now, with the
+  // same error as agy's own 429 ending, instead of after agy's retries: the
+  // process goes, as on a timeout, since agy is still retrying in it.
+  refuseTurn(turn, detail) {
+    if (this.turn !== turn || turn.done) return
+    turn.fail(this.#formatAgentError(detail))
+    dropFromPool(this)
+    this.stop().catch(() => {})
   }
 
   timeoutTurn(turn, error) {

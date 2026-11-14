@@ -938,3 +938,50 @@ test("#1136: the model quoting an attempt banner or the network ending mid-line 
     assert.equal(replyText(parsed), chunks.join(""))
   })
 })
+
+// Lmohn39 on X (11-14): pi through agy-cli never answered. Antigravity gave
+// every try the bare 429 it answers a turned-away system prompt with, and
+// agy retried it in the same turn, a banner each time, before its 429
+// ending. The first such banner ends the turn, with the same error.
+const REFUSED_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).`
+
+test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after agy's retries", async () => {
+  const PI = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code."
+  for (const [system, chunks, want, kind] of [
+    // the banner's line still open while agy waits to try again
+    [PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
+    [PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
+    ["You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+  ]) {
+    await withKit({}, async (kit) => {
+      let tries = 0
+      kit.defaultPrompt = async (agent) => {
+        tries++
+        for (const chunk of chunks) await agent.text(chunk)
+        // agy waits, then tries again: never, here
+        await new Promise(() => {})
+      }
+      const reply = kit.request(baseBody({ metadata: { user_id: "refused-attempt" }, system,
+        messages: [{ role: "user", content: "hello" }] })).then((response) => response.text())
+      const text = await Promise.race([reply, sleep(5_000).then(() => "still waiting after 5s")])
+      assert.equal(tries, 1)
+      assert.match(text, want)
+      assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+    })
+  }
+})
+
+test("Lmohn39: a try that fails another way still waits for agy's next one", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.text("\n⚠ API error (attempt 1): UNAVAILABLE (code 503): try again.")
+      await agent.text("\nanswer")
+      return { stopReason: "end_turn" }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "other-attempt" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), "answer")
+  })
+})

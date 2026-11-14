@@ -13,14 +13,38 @@
 // prompt as the client wrote it.
 
 // TURNED_AWAY are the lines, lower-cased, Antigravity answers a 429 to
-// whatever quota is left. Each goes as SAID_AS says instead.
+// whatever quota is left. Each goes as SAID_AS says instead. The last four
+// are turned away since the evening of 11-14 (Lmohn39 and ZhouYimingsjtu on
+// X), each 3 of 3 or 5 of 5 on a real account, on gemini-3-flash and
+// claude-sonnet-4-6 alike:
+//   - "You are Hermes Agent": Hermes' current persona ("You are Hermes
+//     Agent, built by Nous Research.") and its earlier one, and the earlier
+//     one as magpie reworded it up to 0.1.15 ("… built by Nous Research").
+//     The earlier one ("…, an intelligent AI assistant created by Nous
+//     Research.") is turned away as "You're Hermes Agent, …" too, 3 of 3,
+//     so its "created by" goes "built by" as before as well.
+//   - "You are OpenCode", whichever of OpenCode 2.0.25's lines follows it
+//     ("a coding agent that helps users…", "an interactive CLI tool…", "the
+//     best coding agent on the planet").
+//   - "You are a coding agent running in the Codex CLI", Codex's prompt for
+//     a model it has no prompt of its own for (Codex 0.165).
+//   - "a coding assistant running inside pi", pi 1.5.0's default prompt
+//     ("You are a coding assistant running inside pi, a coding agent
+//     harness."), as "agent" for "assistant" and "that runs inside pi" are.
+// Codex's prompt for GPT-6 ("You are Codex, an agent based on GPT-6."),
+// Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
+// Droid's, Kimi CLI's, Aider's and Cursor's went through as written.
 export const TURNED_AWAY = [
   "x-anthropic-billing-header:",
   "built on anthropic's claude agent sdk",
   "you are codex, an agent based on gpt-5",
   "you are codex, a coding agent based on gpt-5",
-  "hermes agent, an intelligent ai assistant created by nous research",
   "rfc 2119 keywords: must, required, should, recommended, may, optional.",
+  "you are hermes agent",
+  "an intelligent ai assistant created by nous research",
+  "you are opencode",
+  "you are a coding agent running in the codex cli",
+  "a coding assistant running inside pi",
 ]
 
 // INVISIBLE are the characters Google's check reads past: since 11-14 a
@@ -72,17 +96,24 @@ export function turnsAway(system) {
 //     line (Claude Desktop's Code tab and its subagents), goes as "built on
 //     the Claude Agent SDK by Anthropic".
 //   - Codex's GPT-5 lines go "built on GPT-5" for "based on GPT-5".
-//   - Hermes' earlier persona goes "built by Nous Research", as Hermes'
-//     current one says it, for "created by".
+//   - "You are Hermes Agent", "You are OpenCode" and Codex CLI's line go
+//     as "You're …" (5 of 5 each), and Hermes' earlier "created by Nous
+//     Research" as "built by" (3 of 3 together).
+//   - pi's line goes "running within pi" (5 of 5 on both models).
 //   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
 //     on 11-14, eric_li8983 on X).
+const youre = (line) => line.replace(/^(you)\s+are/i, "$1're")
 const SAID_AS = {
   "x-anthropic-billing-header:": () => "",
   "built on anthropic's claude agent sdk": (line) => line.replace(/^(built\s+on\s+)anthropic's(\s+)(claude\s+agent\s+sdk)$/i, "$1the$2$3 by Anthropic"),
   "you are codex, an agent based on gpt-5": (line) => line.replace(/based(\s+)on/i, "built$1on"),
   "you are codex, a coding agent based on gpt-5": (line) => line.replace(/based(\s+)on/i, "built$1on"),
-  "hermes agent, an intelligent ai assistant created by nous research": (line) => line.replace(/created(\s+)by/i, "built$1by"),
   "rfc 2119 keywords: must, required, should, recommended, may, optional.": (line) => line.replace(/(key)(words)/i, "$1 $2"),
+  "you are hermes agent": youre,
+  "an intelligent ai assistant created by nous research": (line) => line.replace(/created(\s+)by/i, "built$1by"),
+  "you are opencode": youre,
+  "you are a coding agent running in the codex cli": youre,
+  "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
 }
 
 export function cloak(system) {
@@ -130,7 +161,14 @@ const HINT =
 const CODEX_HINT =
   "Antigravity answers this 429 to Codex's own system prompt for GPT-5 models whatever quota is left, so it is not a quota and waiting won't help; a Codex chat begun on a GPT model keeps that prompt after a model switch or a fork, so start a new chat on this model"
 const HERMES_HINT =
-  "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats"
+  "Antigravity answers this 429 to Hermes Agent's default persona (\"You are Hermes Agent, …\" in its SOUL.md), the current one and the earlier one alike, whatever quota is left, so it is not a quota and waiting won't help; magpie sends it as \"You're Hermes Agent, …\", which goes through, so start SOUL.md another way, or use another provider for these chats"
+
+const PI_HINT =
+  "Antigravity answers this 429 to pi's default system prompt (\"You are a coding assistant running inside pi\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"running within pi\", which goes through, so give pi a system prompt of your own (--system-prompt) or use another provider for these chats"
+const OPENCODE_HINT =
+  "Antigravity answers this 429 to OpenCode's system prompt (\"You are OpenCode, …\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're OpenCode, …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
+const CODEX_CLI_HINT =
+  "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
 
 const RFC_HINT =
   "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way"
@@ -139,6 +177,9 @@ export function hint(system) {
   system = String(system ?? "")
   if (said(system, "rfc 2119 keywords: must, required, should, recommended, may, optional.")) return RFC_HINT
   if (said(system, "you are codex, an agent based on gpt-5") || said(system, "you are codex, a coding agent based on gpt-5")) return CODEX_HINT
-  if (said(system, "hermes agent, an intelligent ai assistant created by nous research")) return HERMES_HINT
+  if (said(system, "you are a coding agent running in the codex cli")) return CODEX_CLI_HINT
+  if (said(system, "you are hermes agent") || said(system, "an intelligent ai assistant created by nous research")) return HERMES_HINT
+  if (said(system, "you are opencode")) return OPENCODE_HINT
+  if (said(system, "a coding assistant running inside pi")) return PI_HINT
   return HINT
 }

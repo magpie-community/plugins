@@ -240,10 +240,12 @@ start of the first prompt.
 
 Antigravity answers a 429 "Resource has been exhausted" to a few system
 prompt lines whatever quota is left (Claude Code's billing line, the Claude
-Agent SDK, Codex and Hermes Agent identities, oh-my-pi's RFC 2119 line). The
+Agent SDK, Codex, Hermes Agent, OpenCode and pi identities, oh-my-pi's RFC
+2119 line). The
 plugin leaves the billing line out and rewords the others with the same
 meaning before agy sends them ("built on the Claude Agent SDK by Anthropic",
-"built on GPT-5", "built by Nous Research", "RFC 2119 key words: …"), as the
+"built on GPT-5", "RFC 2119 key words: …", "You're Hermes Agent / OpenCode /
+a coding agent running in the Codex CLI", "running within pi"), as the
 Antigravity provider does (`cloak.mjs`). Zero-width spaces no longer help:
 since 11-14 Google's check reads past them. Should such a 429 still come
 back, it is reported as a 400 about the prompt, not as a quota.

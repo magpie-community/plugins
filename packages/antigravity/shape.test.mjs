@@ -148,7 +148,9 @@ test("omp's line is reworded wherever white space wraps or widens it", () => {
   for (const line of OMP_PASSED) expect(cloak(line)).toBe(line)
   // the other lines take white space the same way (Hermes' and Codex's
   // were turned away wrapped and with a tab on the same account)
-  expect(cloak("You are Hermes Agent, an intelligent\nAI assistant created by Nous Research.")).toBe("You are Hermes Agent, an intelligent\nAI assistant built by Nous Research.")
+  expect(cloak("You are  Hermes\nAgent, an intelligent\nAI assistant created by Nous Research.")).toBe("You're  Hermes\nAgent, an intelligent\nAI assistant built by Nous Research.")
+  expect(cloak("running\tinside pi")).toBe("running\tinside pi")
+  expect(cloak("a coding assistant running\ninside pi")).toBe("a coding assistant running\nwithin pi")
   expect(cloak("You are Codex, an agent\tbased on GPT-5.")).toBe("You are Codex, an agent\tbuilt on GPT-5.")
 })
 
@@ -190,7 +192,16 @@ test("a line someone broke up with invisible characters is reworded as the line"
     [SUBAGENT, "You are a Claude agent, built on the Claude Agent SDK by Anthropic."],
     ["You are Codex, an agent based on GPT-5.", "You are Codex, an agent built on GPT-5."],
     ["You are Codex, a coding agent based on GPT-5.", "You are Codex, a coding agent built on GPT-5."],
-    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "You are Hermes Agent, an intelligent AI assistant built by Nous Research."],
+    // as "You're" alone it was turned away 3 of 3 on 11-14
+    ["You are Hermes Agent, an intelligent AI assistant created by Nous Research.", "You're Hermes Agent, an intelligent AI assistant built by Nous Research."],
+    // 0.1.15's own rewording of it is turned away too since 11-14
+    ["You are Hermes Agent, an intelligent AI assistant built by Nous Research.", "You're Hermes Agent, an intelligent AI assistant built by Nous Research."],
+    ["You are Hermes Agent, built by Nous Research.", "You're Hermes Agent, built by Nous Research."],
+    ["You are OpenCode, a coding agent that helps users with software engineering tasks.", "You're OpenCode, a coding agent that helps users with software engineering tasks."],
+    ["You are opencode, an interactive CLI tool that helps users with software engineering tasks.", "You're opencode, an interactive CLI tool that helps users with software engineering tasks."],
+    ["You are OpenCode, the best coding agent on the planet.", "You're OpenCode, the best coding agent on the planet."],
+    ["You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.", "You're a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful."],
+    ["You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.", "You are a coding assistant running within pi, a coding agent harness. Help users inspect files, run commands, and modify code."],
     ["RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.", "RFC 2119 key words: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL."],
   ]
   // the break-ups also reach words outside the turned-away part, which go as
