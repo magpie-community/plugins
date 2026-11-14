@@ -1,0 +1,71 @@
+{
+  "name": "@magpie-community/middleware-company-guard",
+  "version": "0.4.3",
+  "type": "module",
+  "license": "MIT",
+  "description": "Local company-name masking, reversible replies and session approvals for Magpie",
+  "files": [
+    "dist",
+    "src",
+    "vendor",
+    "company-guard.hooks.mjs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "receipt-report.mjs",
+    "page",
+    "receipt-page.mjs"
+  ],
+  "magpie": {
+    "middleware": "./dist/company-guard.middleware.js",
+    "hooks": "./company-guard.hooks.mjs",
+    "options": {
+      "companies": [],
+      "gatewayTimeoutMs": 4000
+    },
+    "page": {
+      "title": "Company name protection",
+      "titles": {
+        "zh": "公司名称保护",
+        "zh-TW": "公司名稱保護"
+      },
+      "file": "page/index-0.3.3.html",
+      "service": {
+        "port": 3469,
+        "option": "receiptPort"
+      }
+    }
+  },
+  "main": "./receipt-page.mjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/company-guard"
+  },
+  "homepage": "https://github.com/cyanask/magpie-company-guard#readme",
+  "bugs": {
+    "url": "https://github.com/cyanask/magpie-company-guard/issues"
+  },
+  "keywords": [
+    "magpie-plugin",
+    "magpie",
+    "middleware",
+    "privacy",
+    "data-masking",
+    "codex"
+  ],
+  "scripts": {
+    "build": "esbuild src/company-guard.js --bundle --format=esm --target=es2020 --outfile=dist/company-guard.middleware.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.3841"
+  }
+}
