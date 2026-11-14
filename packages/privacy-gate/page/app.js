@@ -242,7 +242,7 @@
     }
     var parsed = S.fromOptions(state.options)
     state.settings = parsed.values
-    state.settingsLoaded = JSON.parse(JSON.stringify(parsed.values))
+    state.settingsLoaded = S.snapshot(state.options)
     state.settingsInvalidKeys = parsed.invalid.slice()
     fillSettingsForm(state.settings)
     showSettingsError(state.settingsInvalidKeys.length > 0 ? t('settingsInvalid') : '')
@@ -389,6 +389,10 @@
     $('reload').disabled = state.busy
     $('add-agent').disabled = state.busy
     $('add-id').disabled = state.busy
+    Object.keys(SETTING_IDS).forEach(function (key) {
+      var control = $(SETTING_IDS[key])
+      if (control) control.disabled = state.busy
+    })
     var status = $('status')
     if (state.error) {
       status.textContent = state.error

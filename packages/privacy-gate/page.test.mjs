@@ -104,7 +104,13 @@ test('middleware settings are validated, merged and detect stale values', () => 
   expect(parsed.invalid).toEqual([])
   expect(Array.from(S.parseList('a/*, b/*\nc/*'))).toEqual(['a/*', 'b/*', 'c/*'])
   expect(S.fromOptions({ allowModels: { bad: true } }).invalid).toEqual(['allowModels'])
+  expect(S.fromOptions({ allowModels: [null] }).invalid).toEqual(['allowModels'])
   expect(S.validate({ ...parsed.values, maxDepth: 0 }).map((error) => error.key)).toEqual(['maxDepth'])
+  const many = Array.from({ length: 201 }, (_, i) => `model/${i}`)
+  expect(S.parseList(many)).toHaveLength(201)
+  expect(S.validate({ ...parsed.values, allowModels: many }).map((error) => error.key)).toEqual(['allowModels'])
+  const rawSnapshot = S.snapshot({ ...parsed.values })
+  expect(S.same({ allowModels: null }, S.snapshot({ allowModels: [] }))).toBe(false)
   const merged = S.apply(
     { binaryPolicy: 'fail', future: 'keep' },
     { ...parsed.values, binaryPolicy: 'guide', localProviders: ['ollama'] },
@@ -112,8 +118,8 @@ test('middleware settings are validated, merged and detect stale values', () => 
   expect(merged.binaryPolicy).toBe('guide')
   expect(Array.from(merged.localProviders)).toEqual(['ollama'])
   expect(merged.future).toBe('keep')
-  expect(S.same({ ...parsed.values }, parsed.values)).toBe(true)
-  expect(S.same({ ...parsed.values, blobBase64Chars: 500 }, parsed.values)).toBe(false)
+  expect(S.same({ ...parsed.values }, rawSnapshot)).toBe(true)
+  expect(S.same({ ...parsed.values, blobBase64Chars: 500 }, rawSnapshot)).toBe(false)
 })
 
 test('the shared agent catalogue validates ids and keeps custom agents', () => {

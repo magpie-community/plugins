@@ -29,7 +29,7 @@
     if (typeof value !== 'string') return []
     var parts = value.split(/[\n,]+/)
     var out = []
-    for (var i = 0; i < parts.length && out.length < 200; i++) {
+    for (var i = 0; i < parts.length; i++) {
       var item = parts[i].trim()
       if (item !== '' && out.indexOf(item) === -1) out.push(item)
     }
@@ -53,8 +53,14 @@
       var raw = source[field.key]
       if (field.type === 'list') {
         if (raw === undefined) values[field.key] = []
-        else if (Array.isArray(raw)) values[field.key] = parseList(raw)
-        else {
+        else if (Array.isArray(raw)) {
+          var listOk = raw.length <= 200
+          for (var j = 0; j < raw.length; j++) {
+            if (typeof raw[j] !== 'string' || raw[j].length === 0 || raw[j].length >= 200) listOk = false
+          }
+          values[field.key] = parseList(raw)
+          if (!listOk) invalid.push(field.key)
+        } else {
           values[field.key] = []
           invalid.push(field.key)
         }
@@ -118,15 +124,23 @@
     return next
   }
 
-  function same(current, snapshot) {
-    if (!snapshot || typeof snapshot !== 'object') return false
-    var now = fromOptions(current).values
+  function snapshot(options) {
+    var source = options && typeof options === 'object' ? options : {}
+    var out = {}
     for (var i = 0; i < FIELDS.length; i++) {
       var key = FIELDS[i].key
-      if (JSON.stringify(now[key]) !== JSON.stringify(snapshot[key])) return false
+      out[key] = Object.prototype.hasOwnProperty.call(source, key)
+        ? { present: true, value: source[key] }
+        : { present: false }
     }
-    return true
+    return out
   }
+
+  function same(current, savedSnapshot) {
+    if (!savedSnapshot || typeof savedSnapshot !== 'object') return false
+    return JSON.stringify(snapshot(current)) === JSON.stringify(savedSnapshot)
+  }
+
 
   root.ShyPieSettings = {
     FIELDS: FIELDS,
@@ -135,6 +149,7 @@
     fromOptions: fromOptions,
     validate: validate,
     apply: apply,
+    snapshot: snapshot,
     same: same
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this)
