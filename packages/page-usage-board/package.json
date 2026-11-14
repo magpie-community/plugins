@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-usage-board",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "在 magpie 窗口里查看用量：额度到期卡片墙 + 每日/模型/provider 用量图表 + 可选远端归因，由插件自带的本机服务供数。A usage dashboard page in magpie's window: quota cards with expiry tiers, daily and per-provider charts, optional remote attribution, served by the plugin's own local service.",
   "type": "module",
   "main": "./index.mjs",

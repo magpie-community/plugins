@@ -136,14 +136,24 @@ the page follows `navigator.language` automatically.
 
 ## Brand logos
 
-The quota wall shows provider brand icons. Their only source is magpie's own
-`plugin-providers.json` — the registry magpie maintains next to `usage.jsonl`
-(`MAGPIE_PROVIDERS_FILE` overrides the path). At startup the service reads that file once,
-keeps only `data:image/...` URIs (each capped at 2 MB, at most 4 MB injected in total) and
-injects them into the served HTML. There is no plugin-directory scanning, no download, no
-disk cache and no `/logos` route: `https://` icons are deliberately not fetched, so the
-board never contacts a third-party CDN on your behalf — providers without a data-URI icon
-fall back to a colored first-letter block.
+The quota wall shows provider brand icons. Everything is assembled from files that already
+exist on this machine; the board itself never downloads an image:
+
+- `plugin-providers.json` — magpie's provider registry (`MAGPIE_PROVIDERS_FILE` overrides the
+  path). Only `data:image/...` URIs are kept (2 MB per icon, 4 MB total).
+- `quotas.json` + `icons/` — magpie's own per-account icon cache, read as data URIs.
+- Remote providers (the `magpie-direct/*` cards) are not registered locally, so their
+  id→icon mapping comes from the remote magpie's `/v1/magpie/usage/requests` `providers[]`
+  (and the `icon` names carried by `/v1/magpie/quotas/cards`), only when remote attribution
+  is enabled. The icon bytes themselves are read from the local `icons/` cache
+  (`file:<name>` entries) — no third-party request is made.
+- If a brand still has no icon, the board also consults its own legacy
+  `<config>/usage-board/logos/` directory (written by older builds of this plugin), but only
+  for provider ids that the current quota cards actually show.
+
+There is no download, no `/logos` route and no plugin-directory scanning, so the board never
+contacts a third-party CDN on your behalf. Providers with no icon anywhere fall back to a
+colored first-letter block.
 
 ## Data and privacy
 
@@ -151,11 +161,13 @@ fall back to a colored first-letter block.
   no telemetry; its Content-Security-Policy allows no third-party host at all.
 - **Remote attribution is opt-in and off by default.** Only `ATTRIBUTION=remote` (or manifest
   `options.attribution: "remote"`) enables it: the service then makes read-only requests to
-  the configured remote magpie's own `/v1/magpie/usage/requests`, using the provider key
-  already configured in this machine's `providers.json` — that key is sent to that remote
-  magpie and nowhere else. Rows are filtered by `REMOTE_CALLERS` (no default filter) and
-  aggregated locally; no prompts or message bodies are involved. There is no second service
-  and no separate page key.
+  the configured remote magpie's own `/v1/magpie/usage/requests` (rows plus the `providers[]`
+  icon metadata) and, when that remote magpie does not aggregate its account cards into
+  `/v1/magpie/quotas`, to `/v1/magpie/quotas/cards` — all with the provider key already
+  configured in this machine's `providers.json`, which is sent to that remote magpie and
+  nowhere else. Rows are filtered by `REMOTE_CALLERS` (no default filter) and aggregated
+  locally; no prompts or message bodies are involved. There is no second service and no
+  separate page key.
 - The page and its assets are served from `127.0.0.1`. The trust boundary is the local
   machine: other local users can reach a loopback-bound board, and remote attribution reads
   every caller's rows on the shared remote magpie (filtered for display, disclosed in the
@@ -188,6 +200,6 @@ npm run build:echarts   # rebuild static/echarts.min.js byte-for-byte (verify: g
 ## License
 
 MIT. `static/echarts.min.js` is a custom Apache-2.0 build of Apache ECharts, reproducible
-byte-for-byte with `npm run build:echarts` (see `NOTICE`). Provider logos are collected at
-runtime from magpie's `plugin-providers.json` and are the trademarks of their owners, used
-only to identify providers (see `NOTICE`).
+byte-for-byte with `npm run build:echarts` (see `NOTICE`). Provider logos are read at
+runtime from magpie's local `plugin-providers.json` and `icons/` cache and are the
+trademarks of their owners, used only to identify providers (see `NOTICE`).
