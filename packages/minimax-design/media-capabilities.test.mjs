@@ -34,6 +34,24 @@ test("known image settings use gateway fields, automatic omits overrides and sup
   assert.throws(() => submit({ resolution: "8K" }), /不支持参数/)
 })
 
+test("source reference budgets remain intact while Design applies its own limit", async () => {
+  for (const type of ["image", "video"]) {
+    const parameters = { input_references: { type: "range", min: 0, max: 30 } }
+    const { capability, submit } = await configured(`unrelated/${type}-model`, type, {
+      parameters,
+      ...(type === "video" ? { mediaRequest: { reference_modes: ["reference"] } } : {}),
+    })
+    assert.deepEqual(capability.sourceReferences, { min: 0, max: 30 })
+    assert.deepEqual(parameters.input_references, { type: "range", min: 0, max: 30 })
+    assert.deepEqual(mediaSpec(capability).references.image, { min: 0, max: 16 })
+    const request = submit({}, Array(16).fill(image))
+    assert.equal((request.body.images ?? request.body.reference_images).length, 16)
+    assert.throws(() => submit({}, Array(17).fill(image)), /数量/)
+  }
+  assert.throws(() => mediaCapability({ ref: "unrelated/edit", type: "image",
+    parameters: { input_references: { type: "range", min: 17, max: 30 } } }), /reference requirements/)
+})
+
 test("Hailuo exposes only legal duration-resolution pairs and rejects stale parameters", async () => {
   const { submit, capability } = await configured("minimax-code/MiniMax-Hailuo-2.3", "video")
   assert.deepEqual(capability.params[0].enum, ["自动", "768P", "1080P"])
@@ -133,6 +151,20 @@ test("OpenRouter refresh intersects endpoints, keeps credentials local and proje
   } finally { globalThis.fetch = original }
 })
 
+test("OpenRouter enrichment preserves source limits above the bridge budget", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ endpoints: [30, 24].map((max) => ({
+    supported_parameters: { input_references: { type: "range", min: 0, max } },
+  })) })
+  try {
+    const [model] = await enrichMediaParameters([{ ref: "openrouter/unrelated/image", type: "image" }])
+    assert.equal(model.parameters.input_references.max, 24)
+    const capability = mediaCapability(model)
+    assert.equal(capability.sourceReferences.max, 24)
+    assert.equal(capability.references.max, 16)
+  } finally { globalThis.fetch = original }
+})
+
 test("OpenRouter chat image routes expose ratios without ineffective pixel resolution presets", async () => {
   for (const upstream of ["google/gemini-3-pro-image-preview", "openai/gpt-5-image", "vendor/new-image"]) {
     const { capability, submit } = await configured(`openrouter/${upstream}`, "image", {
@@ -156,6 +188,175 @@ test("video count metadata cannot promise reference modes the adapter cannot sub
   assert.equal(known.submit({}, [image, image]).body.last_frame, image.dataUrl)
   assert.throws(() => mediaCapability({ ref: "custom/video", type: "video", images: true,
     parameters: { input_references: { type: "range", min: 2, max: 4 } } }), /verified gateway mapping/)
+})
+
+test("explicit source video modes enable portable references without model-name profiles", async () => {
+  const { capability, submit } = await configured("another-vendor/future-video", "video", {
+    mediaRequest: { reference_modes: ["first-last-frame", "reference"], frame_ratio: "auto" },
+    parameters: { input_references: { type: "range", min: 0, max: 12 },
+      seconds: { type: "range", min: 4, max: 30 },
+      resolution: { type: "enum", values: ["480p", "720p", "1080p", "4k"] } },
+  })
+  assert.equal(capability.references.max, 12)
+  assert.equal(submit({ duration: "30", resolution: "4k" }, Array(12).fill(image)).body.reference_images.length, 12)
+  const frames = submit({ image_mode: "first-last-frame" }, [image, image])
+  assert.equal(frames.body.last_frame, image.dataUrl)
+  assert.throws(() => submit({ aspect_ratio: "16:9", image_mode: "first-last-frame" }, [image]), /不支持参数|自动沿用/)
+  const unavailable = await configured("different/video", "video", {
+    mediaRequest: { reference_modes: [] },
+    parameters: { input_references: { type: "range", min: 0, max: 0 } },
+  })
+  assert.equal(unavailable.capability.references.max, 0)
+  assert.throws(() => submit({}, Array(13).fill(image)), /数量/)
+  assert.throws(() => mediaCapability({ ref: "bad/video", type: "video",
+    mediaRequest: { reference_modes: ["video-edit"] } }), /mapping/)
+})
+
+test("source effort labels remain separate from resolution and use the verified quality field", async () => {
+  const { capability, submit } = await configured("portable/new-image", "image", {
+    mediaRequest: { size: "aspect-resolution" },
+    parameters: {
+      resolution: { type: "enum", values: ["1K", "2K", "4K"] },
+      quality: { type: "enum", values: ["low", "medium", "high", "xhigh", "max"], title: "推理强度" },
+    },
+  })
+  assert.equal(capability.params.find((parameter) => parameter.key === "quality").title, "推理强度")
+  assert.equal(submit({ resolution: "4K", quality: "max" }).body.size, "auto@4K")
+  assert.equal(submit({ resolution: "4K", quality: "max" }).body.quality, "max")
+  assert.equal(submit().body.quality, undefined)
+})
+
+test("declared defaults configure native controls and automatic requests without model-name matching", async () => {
+  const { capability, submit } = await configured("new-source/renamed-image", "image", {
+    mediaRequest: { size: "aspect-resolution" },
+    parameters: {
+      aspect_ratio: { type: "enum", values: ["16:9", "1:1"], default: "16:9" },
+      resolution: { type: "enum", values: ["1K", "2K"], default: "2K" },
+      quality: { type: "enum", values: ["low", "high"], default: "low" },
+    },
+  })
+  assert.equal(capability.params.find((parameter) => parameter.key === "resolution").default, "2K")
+  assert.equal(submit().body.size, "16:9@2K")
+  assert.equal(submit({ aspect_ratio: "自动", resolution: "自动" }).body.size, "16:9@2K")
+  assert.equal(submit({ resolution: "1K", quality: "high" }).body.quality, "high")
+  assert.throws(() => mediaCapability({ ref: "new/image", type: "image", parameters: {
+    quality: { type: "enum", values: ["low"], default: "high" },
+  } }), /default/)
+  const video = await configured("new-source/renamed-video", "video", {
+    mediaRequest: { reference_modes: ["first-last-frame", "reference"], frame_ratio: "auto" },
+    parameters: {
+      aspect_ratio: { type: "enum", values: ["adaptive", "16:9"], default: "adaptive" },
+      seconds: { type: "range", min: 4, max: 30, step: 2, default: 10 },
+      input_references: { type: "range", min: 0, max: 6 },
+    },
+  })
+  assert.equal(video.capability.params.find((parameter) => parameter.key === "duration").default, "10")
+  assert.equal(video.submit().body.size, "adaptive")
+  assert.equal(video.submit().body.seconds, "10")
+  assert.equal(video.submit({}, [image]).body.size, undefined)
+  assert.throws(() => video.submit({ duration: "5" }), /不支持参数/)
+  const adaptive = await configured("renamed/adaptive-image", "image", {
+    mediaRequest: { size: "aspect-resolution" },
+    parameters: {
+      aspect_ratio: { type: "enum", values: ["adaptive", "16:9"], default: "adaptive" },
+      resolution: { type: "enum", values: ["1.5K", "2K"], default: "2K" },
+    },
+  })
+  assert.equal(adaptive.submit().body.size, "auto@2K")
+  const framed = await configured("renamed/framed-video", "video", {
+    mediaRequest: { reference_modes: ["first-last-frame"], frame_ratio: "auto" },
+    parameters: { aspect_ratio: { type: "enum", values: ["16:9"], default: "16:9" },
+      input_references: { type: "range", min: 0, max: 2 } },
+  })
+  assert.equal(framed.capability.params.find((parameter) => parameter.key === "aspect_ratio").default, "自动")
+  assert.equal(framed.submit().body.size, "16:9")
+  assert.equal(framed.submit({}, [image]).body.size, undefined)
+  assert.throws(() => framed.submit({ aspect_ratio: "16:9" }, [image]), /自动沿用/)
+})
+
+test("native source conditions and combinations reject invalid requests inside Design", async () => {
+  const sourceCapabilities = { parameter_config: {
+    dimensions: [
+      { key: "resolution", default_value: "2K" },
+      { key: "effort", active_when_any: [{ resolution: ["2K"] }] },
+    ],
+    need_available_combinations: true,
+    combination_dimension_keys: ["resolution", "effort"],
+    available_combinations: [
+      { option_values: { resolution: "1k", effort: "low" } },
+      { option_values: { resolution: "2k", effort: "high" } },
+      { option_values: { resolution: "2k", effort: "low" }, disabled: true },
+    ],
+  } }
+  const { submit } = await configured("arbitrary/image", "image", {
+    sourceCapabilities, mediaRequest: { size: "aspect-resolution" },
+    parameters: {
+      resolution: { type: "enum", values: ["1K", "2K"], default: "2K" },
+      quality: { type: "enum", values: ["low", "high"] },
+    },
+  })
+  assert.equal(submit({ quality: "high" }).body.size, "auto@2K")
+  assert.throws(() => submit({ resolution: "1K", quality: "high" }), /不适用/)
+  assert.throws(() => submit({ resolution: "2K", quality: "low" }), /组合/)
+  assert.equal(submit({ resolution: "1K" }).body.size, "auto@1K")
+  const ratios = await configured("arbitrary/conditional-ratio", "image", {
+    sourceCapabilities: { parameter_config: {
+      dimensions: [{ key: "effort", active_when_any: [{ ratio: [2] }] }],
+      need_available_combinations: true, combination_dimension_keys: ["ratio", "effort"],
+      available_combinations: [{ option_values: { ratio: 2, effort: "HIGH" } }],
+    } },
+    mediaRequest: { size: "aspect-resolution" },
+    parameters: {
+      aspect_ratio: { type: "enum", values: ["1:1", "16:9"] },
+      quality: { type: "enum", values: ["high"] },
+    },
+  })
+  assert.equal(ratios.submit({ aspect_ratio: "16:9", quality: "high" }).body.size, "16:9@auto")
+  assert.throws(() => ratios.submit({ aspect_ratio: "1:1", quality: "high" }), /不适用/)
+  assert.equal(ratios.submit({ quality: "high" }).body.quality, "high")
+  const limited = await configured("arbitrary/video", "video", {
+    mediaRequest: { reference_modes: ["reference"] },
+    parameters: { input_references: { type: "range", min: 0, max: 12 } },
+    sourceCapabilities: { total_limit: 3 },
+  })
+  assert.equal(mediaSpec(limited.capability).references.image.max, 3)
+  assert.deepEqual(limited.capability.sourceReferences, { min: 0, max: 12 })
+  assert.throws(() => limited.submit({}, Array(4).fill(image)), /数量/)
+})
+
+test("invalid defaults and source constraints stop synchronization before installing adapters", async () => {
+  for (const extra of [
+    { parameters: { seconds: { type: "range", min: 4, max: 12, step: 2, default: 5 } } },
+    { sourceCapabilities: { parameter_config: { dimensions: {} } } },
+    { sourceCapabilities: { parameter_config: { need_available_combinations: true } } },
+    { sourceCapabilities: { total_limit: -1 } },
+  ]) {
+    assert.throws(() => mediaCapability({ ref: "unrelated/video", type: "video", ...extra }), /Invalid/)
+  }
+  const pixel = await configured("arbitrary/pixel-default", "image", {
+    parameters: { size: { type: "enum", values: ["1024x1024", "1536x1024"], default: "1536x1024" } },
+  })
+  assert.equal(pixel.submit().body.size, "1536x1024")
+  assert.equal(pixel.capability.params.find((parameter) => parameter.key === "resolution").default, "1.5K")
+  const unspecified = mediaCapability({ ref: "arbitrary/image", type: "image",
+    sourceCapabilities: { total_limit: null },
+    parameters: { input_references: { type: "range", min: 0, max: 6 } } })
+  assert.equal(unspecified.references.max, 6)
+})
+
+test("declared image output formats use the existing gateway field without forwarding unmapped options", async () => {
+  const { capability, submit } = await configured("arbitrary/formatted-image", "image", {
+    parameters: {
+      output_format: { type: "enum", values: ["png", "webp", "jpeg"], default: "png" },
+      edit_precision: { type: "enum", values: ["low", "high"] },
+    },
+  })
+  assert.equal(capability.params.find((parameter) => parameter.key === "output_format").title, "输出格式")
+  assert.equal(submit().body.output_format, "png")
+  assert.equal(submit({ output_format: "webp" }).body.output_format, "webp")
+  assert.equal(submit().body.response_format, "b64_json")
+  assert.throws(() => submit({ output_format: "gif" }), /不支持参数/)
+  assert.throws(() => submit({ edit_precision: "high" }), /不支持参数/)
 })
 
 test("reference schemas survive incomplete modalities independently of provider or model names", async () => {

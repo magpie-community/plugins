@@ -17,6 +17,14 @@ export function installMcpBridge(control) {
   fs.renameSync(temporary, file)
 }
 
+export function hasMcpBridge(control, managed) {
+  const file = path.join(path.dirname(control), "ai-runtime/config-home/opencode/opencode.json")
+  if (!fs.existsSync(file)) return false
+  const config = JSON.parse(fs.readFileSync(file, "utf8"))
+  return config.plugin?.includes(runtimePlugin) ||
+    Object.keys(managed).some((name) => Object.hasOwn(config.mcp ?? {}, name))
+}
+
 export function removeMcpBridge(control, managed) {
   const file = path.join(path.dirname(control), "ai-runtime/config-home/opencode/opencode.json")
   if (!fs.existsSync(file)) return
@@ -24,7 +32,8 @@ export function removeMcpBridge(control, managed) {
   const config = JSON.parse(original)
   for (const [name, entry] of Object.entries(managed)) {
     if (!Object.hasOwn(config.mcp ?? {}, name)) continue
-    if (!isDeepStrictEqual(config.mcp[name], entry)) {
+    const candidates = Array.isArray(entry) ? entry : [entry]
+    if (!candidates.some((candidate) => isDeepStrictEqual(config.mcp[name], candidate))) {
       throw new Error(`Design MCP runtime config conflicts with Library; retained: ${name}`)
     }
     delete config.mcp[name]

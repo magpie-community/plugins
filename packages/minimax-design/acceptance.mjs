@@ -304,9 +304,8 @@ try {
   syncSkills(skillPaths, JSON.parse)
   assert.equal(readMcpVault(configFile).servers["magpie-probe"], undefined)
   const withdrawn = JSON.parse(fs.readFileSync(mcpFile))
-  delete withdrawn.mcp["magpie-probe"]
-  writeJSON(mcpFile, withdrawn)
-  assert.ok(JSON.parse(fs.readFileSync(mcpFile)).mcp.mine)
+  assert.equal(withdrawn.mcp["magpie-probe"], undefined)
+  assert.ok(withdrawn.mcp.mine)
   assert.equal(fs.existsSync(skill), false)
   const afterSkills = await (await fetch(`${desktopURL}/api/skills`)).json()
   assert.equal(afterSkills.some((entry) => entry.name === skillName), false)

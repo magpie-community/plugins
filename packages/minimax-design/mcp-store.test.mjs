@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { readMcpVault, syncMcpStore } from "./mcp-store.mjs"
+import { nativeMcpServer, readMcpVault, syncMcpStore } from "./mcp-store.mjs"
 
 function sandbox(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "design-mcp-store-"))
@@ -28,6 +28,135 @@ test("native MCP is encrypted locally and changes wait until Design exits", (t) 
   fixture.write({})
   syncMcpStore(fixture, { isRunning: false })
   assert.deepEqual(readMcpVault(fixture.control).servers, {})
+})
+
+test("native discovery budget covers a router list and preserves explicit timeouts", () => {
+  const remote = { type: "remote", url: "https://example.invalid/mcp" }
+  assert.equal(nativeMcpServer("router", remote).config.timeoutMs, 60000)
+  assert.equal(nativeMcpServer("direct", { ...remote, timeout: 12000 }).config.timeoutMs, 12000)
+})
+
+test("ready migration still detects a reintroduced bridge and owned runtime entry", (t) => {
+  const fixture = sandbox(t)
+  const remote = { type: "remote", url: "https://example.invalid/mcp" }
+  fixture.write({ router: remote })
+  syncMcpStore(fixture, { isRunning: false })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  const plugin = new URL("./runtime/mcp-runtime.mjs", import.meta.url).href
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { router: remote }, plugin: [plugin, "mine"] }))
+  assert.equal(syncMcpStore(fixture, { isRunning: true }).pending, true)
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)), { mcp: {}, plugin: ["mine"] })
+})
+
+test("verified legacy ownership cleans withdrawn direct entries when staging becomes a router", (t) => {
+  const fixture = sandbox(t)
+  const legacyManaged = { docs: { type: "remote", url: "https://docs.invalid/mcp" } }
+  fixture.write({ router: { type: "remote", url: "https://router.invalid/mcp" } })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  const mine = { type: "remote", url: "https://mine.invalid/mcp" }
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { ...legacyManaged, mine } }))
+  assert.equal(syncMcpStore(fixture, { isRunning: true, legacyManaged }).pending, true)
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, { ...legacyManaged, mine })
+  syncMcpStore(fixture, { isRunning: false, legacyManaged })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, { mine })
+  assert.deepEqual(Object.keys(readMcpVault(fixture.control).servers), ["router"])
+})
+
+test("verified legacy ownership cannot remove a locally edited direct server", (t) => {
+  const fixture = sandbox(t)
+  fixture.write({})
+  const legacyManaged = { docs: { type: "remote", url: "https://docs.invalid/mcp" } }
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  const original = JSON.stringify({ mcp: { docs: { ...legacyManaged.docs, enabled: false } } })
+  fs.writeFileSync(runtime, original)
+  assert.throws(() => syncMcpStore(fixture, { isRunning: false, legacyManaged }), /runtime config conflicts/)
+  assert.equal(fs.readFileSync(runtime, "utf8"), original)
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: legacyManaged }))
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+})
+
+test("ownership remembers prior direct configs across a switch to a router", (t) => {
+  const fixture = sandbox(t)
+  const direct = { type: "remote", url: "https://docs.invalid/mcp" }
+  fixture.write({ docs: direct })
+  syncMcpStore(fixture, { isRunning: false })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: direct } }))
+  fixture.write({ router: { type: "remote", url: "https://router.invalid/mcp" } })
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+  assert.deepEqual(Object.keys(readMcpVault(fixture.control).servers), ["router"])
+})
+
+test("withdrawal removes the exact runtime projection emitted by native Design", (t) => {
+  const fixture = sandbox(t)
+  const remote = { type: "remote", url: "https://docs.invalid/mcp" }
+  fixture.write({ docs: remote })
+  syncMcpStore(fixture, { isRunning: false })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: { ...remote, enabled: true, timeout: 60000 } } }))
+  fixture.write({})
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+  assert.deepEqual(readMcpVault(fixture.control).servers, {})
+})
+
+test("withdrawing a natively disabled managed server cleans its disabled runtime projection", (t) => {
+  const fixture = sandbox(t)
+  const remote = { type: "remote", url: "https://docs.invalid/mcp" }
+  fixture.write({ docs: remote })
+  syncMcpStore(fixture, { isRunning: false })
+  const vault = readMcpVault(fixture.control)
+  vault.servers.docs.enabled = false
+  fs.writeFileSync(fixture.control, JSON.stringify({ customMcpVault: JSON.stringify(vault) }))
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: { ...remote, enabled: false, timeout: 60000 } } }))
+  fixture.write({})
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+})
+
+test("same-name Library updates retain both runtime definitions until cleanup succeeds", (t) => {
+  const fixture = sandbox(t)
+  const old = { type: "remote", url: "https://old.invalid/mcp" }
+  const current = { type: "remote", url: "https://new.invalid/mcp" }
+  fixture.write({ docs: old })
+  syncMcpStore(fixture, { isRunning: false })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: old } }))
+  fixture.write({ docs: current })
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+  assert.equal(readMcpVault(fixture.control).servers.docs.config.url, current.url)
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: { ...current, enabled: false } } }))
+  assert.throws(() => syncMcpStore(fixture, { isRunning: false }), /runtime config conflicts/)
+  assert.equal(JSON.parse(fs.readFileSync(runtime)).mcp.docs.enabled, false)
+})
+
+test("failed cleanup retains the old definition across retries after a same-name update", (t) => {
+  const fixture = sandbox(t)
+  const old = { type: "remote", url: "https://old.invalid/mcp" }
+  const current = { type: "remote", url: "https://new.invalid/mcp" }
+  fixture.write({ docs: old })
+  syncMcpStore(fixture, { isRunning: false })
+  const runtime = path.join(fixture.root, "ai-runtime/config-home/opencode/opencode.json")
+  fs.mkdirSync(path.dirname(runtime), { recursive: true })
+  fs.writeFileSync(runtime, "invalid-json")
+  fixture.write({ docs: current })
+  assert.throws(() => syncMcpStore(fixture, { isRunning: false }), SyntaxError)
+  fs.writeFileSync(runtime, JSON.stringify({ mcp: { docs: old } }))
+  syncMcpStore(fixture, { isRunning: false })
+  assert.deepEqual(JSON.parse(fs.readFileSync(runtime)).mcp, {})
+  assert.equal(readMcpVault(fixture.control).servers.docs.config.url, current.url)
 })
 
 test("native MCP preserves unrelated services and refuses name conflicts", (t) => {
@@ -192,7 +321,7 @@ test("native field normalization and key order do not prevent refresh or withdra
   assert.equal(vault.servers.remote.config.url, "https://example.invalid/mcp")
   assert.deepEqual(vault.servers.remote.config.headers, { "X-Test": "value" })
   vault.servers.local.config = {
-    env: { TEST: "value" }, args: ["run.mjs"], command: "/fixture/node", transport: "stdio",
+    env: { TEST: "value" }, args: ["run.mjs"], command: "/fixture/node", transport: "stdio", timeoutMs: 60000,
   }
   fs.writeFileSync(fixture.control, JSON.stringify({ customMcpVault: JSON.stringify(vault) }))
   assert.equal(syncMcpStore(fixture, { isRunning: false }).changed, false)
@@ -207,7 +336,7 @@ test("pre-normalization ownership remains manageable after Design trims fields",
   const original = { name: "local", enabled: true, config: {
     transport: "stdio", command: " /fixture/node ", args: [], env: { " TEST ": "value" },
   } }
-  const normalized = { ...original, config: { transport: "stdio", command: "/fixture/node", args: [], env: { TEST: "value" } } }
+  const normalized = { ...original, config: { transport: "stdio", command: "/fixture/node", args: [], env: { TEST: "value" }, timeoutMs: 60000 } }
   const ownership = path.join(fixture.root, ".magpie-mcp/ownership.json")
   fs.mkdirSync(path.dirname(ownership))
   fs.writeFileSync(ownership, JSON.stringify({ servers: { local: original }, nativeReady: true }))

@@ -34,8 +34,11 @@ Library controls as other agents:
 - Native MCP toggles are preserved until Library explicitly changes its
   enabled state. Existing user services, local edits and naming conflicts
   are retained. Withdrawal affects only plugin-owned entries.
+  Unless Library supplies a timeout, native MCP discovery uses 60 seconds
+  to cover Magpie's 40-second router listing budget.
 - Migration backs up the control and runtime files, removes matching old
   direct MCP definitions and removes this installation's runtime bridge.
+  It rechecks runtime residue even after a previous migration marked ready.
 - Global instructions are not offered: no always-read instruction file
   has been established for this desktop.
 
@@ -56,7 +59,8 @@ the automated test covers its native media loader and executor.
 The bridge uses explicit image/video kinds from Magpie's authenticated model
 list. It automatically builds model-specific dropdowns and reference budgets
 from explicit parameter metadata, OpenRouter's public endpoint schemas, or
-verified route profiles. `自动` retains the selected route's defaults.
+verified route profiles. `自动` applies a validated source default when
+declared, otherwise it retains the selected route's defaults.
 Source plugins can publish reference limits in Magpie's shared provider
 configuration; the bridge reads these without requiring a model-name match.
 Optional `imageRoutes` and `mediaParameters` plugin settings provide explicit
@@ -68,6 +72,8 @@ Video references automatically select a first frame, subject collection, or
 ordered first/last frames according to the model and image count. Hailuo has
 one resolution/duration dropdown containing only legal pairs. Other invalid
 reference/parameter combinations are rejected before HTTP submission.
+Design also reads existing source parameter conditions and allowed
+combinations inside this plugin, with no modified Magpie build required.
 Design's custom specifications do not support dynamic cross-field rules;
 see [MEDIA-PARAMETERS.md](MEDIA-PARAMETERS.md) for exact limits, sources and
 gateway mappings. Unsupported video/audio references and ineffective

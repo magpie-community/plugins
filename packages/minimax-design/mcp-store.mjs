@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import { removeMcpBridge } from "./mcp-sync.mjs"
+import { hasMcpBridge, removeMcpBridge } from "./mcp-sync.mjs"
 
 function designRunning() {
   if (process.platform === "darwin") {
@@ -94,10 +94,32 @@ export function nativeMcpServer(name, entry) {
     }
     config.timeoutMs = entry.timeout
   }
+  config.timeoutMs ??= 60000
   return { name, enabled: entry.enabled !== false, config: normalizeConfig(config) }
 }
 
-export function syncMcpStore({ control }, { isRunning } = {}) {
+function runtimeMcpServer(server) {
+  const { config } = server
+  let transport
+  if (config.transport === "stdio") {
+    transport = {
+      type: "local", command: [config.command, ...config.args ?? []],
+      ...(config.env && Object.keys(config.env).length ? { environment: config.env } : {}),
+    }
+  } else {
+    transport = {
+      type: "remote", url: config.url,
+      ...(config.headers && Object.keys(config.headers).length ? { headers: config.headers } : {}),
+    }
+  }
+  return {
+    ...transport,
+    enabled: server.enabled,
+    ...(config.timeoutMs ? { timeout: config.timeoutMs } : {}),
+  }
+}
+
+export function syncMcpStore({ control }, { isRunning, legacyManaged = {} } = {}) {
   const directory = path.dirname(control)
   const input = path.join(directory, "library-mcp.json")
   if (!fs.existsSync(input)) return { changed: false }
@@ -109,11 +131,20 @@ export function syncMcpStore({ control }, { isRunning } = {}) {
   }
   const identities = Object.keys(managed).map(serverIdentity)
   if (new Set(identities).size !== identities.length) throw new Error("Conflicting Library MCP server identities.")
+  for (const [name, entry] of Object.entries(legacyManaged)) nativeMcpServer(name, entry)
   const desired = Object.fromEntries(Object.entries(managed)
     .map(([name, entry]) => [name, nativeMcpServer(name, entry)]))
   const vault = readMcpVault(control)
   const servers = { ...vault.servers }
   const records = { ...vault.records }
+  const priorRuntime = {}
+  for (const [name, old] of Object.entries(previous.servers)) {
+    priorRuntime[name] = [runtimeMcpServer(old)]
+    const existing = servers[name]
+    if (existing && isDeepStrictEqual(normalizeConfig(existing.config), normalizeConfig(old.config))) {
+      priorRuntime[name].push(runtimeMcpServer(existing))
+    }
+  }
   const next = {}
   for (const [name, server] of Object.entries(desired)) {
     const identity = serverIdentity(name)
@@ -146,7 +177,20 @@ export function syncMcpStore({ control }, { isRunning } = {}) {
     delete records[name]
   }
   const changed = !isDeepStrictEqual(vault.servers, servers) || !isDeepStrictEqual(vault.records ?? {}, records)
-  if (!changed && isDeepStrictEqual(previous.servers, next) && previous.nativeReady === true) return { changed: false }
+  const currentRuntime = Object.fromEntries(Object.keys(desired).map((name) => [
+    name, [managed[name], runtimeMcpServer(servers[name])],
+  ]))
+  const cleanup = {}
+  for (const entries of [previous.runtime, legacyManaged, priorRuntime, currentRuntime]) {
+    for (const [name, entry] of Object.entries(entries ?? {})) {
+      cleanup[name] ??= []
+      for (const candidate of Array.isArray(entry) ? entry : [entry]) {
+        if (!cleanup[name].some((existing) => isDeepStrictEqual(existing, candidate))) cleanup[name].push(candidate)
+      }
+    }
+  }
+  if (!changed && isDeepStrictEqual(previous.servers, next) && previous.nativeReady === true &&
+      !hasMcpBridge(control, cleanup)) return { changed: false }
   if (isRunning === undefined) isRunning = designRunning()
   if (isRunning) return { changed: false, pending: true }
   fs.mkdirSync(path.dirname(ownership), { recursive: true, mode: 0o700 })
@@ -170,11 +214,13 @@ export function syncMcpStore({ control }, { isRunning } = {}) {
     fs.renameSync(`${control}.magpie-mcp.tmp`, control)
   }
   function saveOwnership(nativeReady) {
-    fs.writeFileSync(`${ownership}.tmp`, JSON.stringify({ servers: next, nativeReady }, null, 2) + "\n", { mode: 0o600 })
+    fs.writeFileSync(`${ownership}.tmp`, JSON.stringify({
+      servers: next, runtime: nativeReady ? currentRuntime : cleanup, nativeReady,
+    }, null, 2) + "\n", { mode: 0o600 })
     fs.renameSync(`${ownership}.tmp`, ownership)
   }
   saveOwnership(false)
-  removeMcpBridge(control, managed)
+  removeMcpBridge(control, cleanup)
   saveOwnership(true)
   return { changed }
 }

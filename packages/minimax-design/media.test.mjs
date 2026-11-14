@@ -217,3 +217,18 @@ test("shared provider capabilities fill catalogue gaps without overriding explic
     assert.equal(mediaCapability(models[2]).references.max, 1)
   } finally { globalThis.fetch = original }
 })
+
+test("discovery retains native constraints while gateway declarations take precedence", async () => {
+  const original = globalThis.fetch
+  const parameter_config = { dimensions: [{ key: "resolution", default_value: "2K" }] }
+  globalThis.fetch = async () => Response.json({ data: [
+    { id: "portable/image", kind: "image", capabilities: { total_limit: 4 } },
+  ] })
+  try {
+    const [model] = await discoverMedia(gateway, {}, { portable: { models: {
+      image: { capabilities: { total_limit: 9, parameter_config } },
+    } } })
+    assert.equal(model.sourceCapabilities.total_limit, 4)
+    assert.deepEqual(model.sourceCapabilities.parameter_config, parameter_config)
+  } finally { globalThis.fetch = original }
+})

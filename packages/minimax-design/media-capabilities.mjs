@@ -1,6 +1,8 @@
+import { mediaConstraints } from "./media-constraints.mjs"
 import { speechCapability } from "./speech.mjs"
 
 const auto = "自动"
+const designReferenceLimit = 16
 const commonRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]
 const grokRatios = [...commonRatios, "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"]
 function select(key, title, values) {
@@ -50,7 +52,7 @@ export async function enrichMediaParameters(models) {
     }
     if (references.every((entry) => entry?.type === "range" && Number.isInteger(entry.min) && Number.isInteger(entry.max))) {
       merged.input_references = { type: "range", min: Math.max(...references.map((entry) => entry.min)),
-        max: Math.min(...references.map((entry) => entry.max), 16) }
+        max: Math.min(...references.map((entry) => entry.max)) }
     }
     model.parameters = { ...merged, ...model.parameters }
     model.parameterSource ??= "openrouter-endpoints"
@@ -107,8 +109,29 @@ export function mediaCapability(model) {
     capability.params = []
   }
   const metadata = model.parameters
-  if (model.mediaRequest !== undefined && (!model.mediaRequest || typeof model.mediaRequest !== "object" ||
-      !["pixels", "aspect-resolution"].includes(model.mediaRequest.size))) throw new Error("Invalid media_request size mapping.")
+  if (model.mediaRequest !== undefined) {
+    const mapping = model.mediaRequest
+    if (!mapping || typeof mapping !== "object" || Array.isArray(mapping) ||
+        (mapping.size !== undefined && !["pixels", "aspect-resolution"].includes(mapping.size)) ||
+        (mapping.frame_ratio !== undefined && mapping.frame_ratio !== "auto") ||
+        (mapping.reference_modes !== undefined && (model.type !== "video" || !Array.isArray(mapping.reference_modes) ||
+          mapping.reference_modes.some((mode) => !["first-frame", "first-last-frame", "reference"].includes(mode))))) {
+      throw new Error("Invalid media_request mapping.")
+    }
+    if (mapping.reference_modes !== undefined && capability.transport === "generic") {
+      const modes = { "first-frame": "首帧", "first-last-frame": "首尾帧", reference: "主体参考" }
+      capability.modes = [...new Set(mapping.reference_modes.map((mode) => modes[mode]))]
+      if (capability.modes.includes("首尾帧")) capability.modes.unshift("首帧")
+      capability.defaultMode = capability.modes.includes("主体参考") ? "主体参考" : capability.modes.at(-1)
+      const declaredMax = metadata?.input_references?.max ?? (imageInput ? 1 : 0)
+      let mappedMax = 0
+      if (capability.modes.includes("主体参考")) mappedMax = designReferenceLimit
+      else if (capability.modes.includes("首尾帧")) mappedMax = 2
+      else if (capability.modes.includes("首帧")) mappedMax = 1
+      capability.references.max = Math.min(declaredMax, mappedMax)
+      capability.frameRatio = mapping.frame_ratio
+    }
+  }
   if (metadata !== undefined) {
     if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error("Invalid media supported_parameters.")
     if (route.startsWith("openrouter/") && model.type === "image") {
@@ -157,11 +180,15 @@ export function mediaCapability(model) {
       capability.params.push(select(mapped, title, parameter.values))
       capability.source = model.parameterSource ?? "magpie"
     }
-    for (const [key, title] of [["size", "尺寸"], ["seconds", "时长（秒）"], ["quality", "画质"], ["background", "背景"]]) {
+    for (const [key, title] of [["size", "尺寸"], ["seconds", "时长（秒）"], ["quality", "画质"],
+      ["background", "背景"], ["output_format", "输出格式"]]) {
       if (metadata[key] === undefined) continue
-      if (["quality", "background"].includes(key) &&
+      if (["quality", "background", "output_format"].includes(key) &&
           (model.type !== "image" || !["generic", "image-size"].includes(capability.transport))) continue
       const parameter = metadata[key]
+      if (parameter?.title !== undefined && (typeof parameter.title !== "string" || !parameter.title.trim())) {
+        throw new Error(`Invalid media parameter title: ${key}.`)
+      }
       let control
       if (key === "seconds" && parameter?.type === "enum") {
         if (!Array.isArray(parameter.values) || !parameter.values.length ||
@@ -175,7 +202,7 @@ export function mediaCapability(model) {
         control = { key, title, type: "integer", enum: [...new Set(parameter.values.map(Number))] }
       } else if (parameter?.type === "enum" && Array.isArray(parameter.values) && parameter.values.length > 0 &&
           parameter.values.every((value) => typeof value === "string" && value.length > 0 && value !== auto)) {
-        control = select(key, title, parameter.values)
+        control = select(key, parameter.title ?? title, parameter.values)
       } else if (key === "seconds" && parameter?.type === "range" && Number.isInteger(parameter.min) &&
           Number.isInteger(parameter.max) && parameter.min >= 1 && parameter.max >= parameter.min) {
         const step = parameter.step ?? 1
@@ -200,17 +227,24 @@ export function mediaCapability(model) {
     }
     const references = metadata.input_references
     if (references !== undefined) {
-      if (references?.type !== "range" || !Number.isInteger(references.min) || !Number.isInteger(references.max) ||
-          references.min < 0 || references.max < references.min || references.max > 16) {
+      if (references?.type !== "range" || !Number.isSafeInteger(references.min) || !Number.isSafeInteger(references.max) ||
+          references.min < 0 || references.max < references.min) {
         throw new Error("Invalid media input_references schema.")
       }
-      let max = references.max
+      capability.sourceReferences = { min: references.min, max: references.max }
+      let max = Math.min(references.max, designReferenceLimit)
       if (model.type === "video") max = Math.min(max, capability.references.max)
       if (references.min > max) throw new Error("Media reference requirements exceed the verified gateway mapping.")
       capability.references = { min: references.min, max }
       capability.referenceSource = model.parameterSource ?? "magpie"
       capability.source = model.parameterSource ?? "magpie"
     }
+  }
+  const totalLimit = model.sourceCapabilities?.total_limit
+  if (totalLimit !== undefined && totalLimit !== null) {
+    if (!Number.isSafeInteger(totalLimit) || totalLimit < 0) throw new Error("Invalid media total reference limit.")
+    capability.references.max = Math.min(capability.references.max, totalLimit)
+    if (capability.references.min > capability.references.max) throw new Error("Media reference requirements exceed the total limit.")
   }
   if (model.type === "video" && capability.references.max > 0 && capability.modes.length > 1) {
     capability.params.push(select("referenceMode", "参考图用途", capability.modes))
@@ -270,6 +304,33 @@ export function mediaCapability(model) {
     }
     return parameter
   })
+  const defaults = {}
+  for (const parameter of capability.params) {
+    const schema = metadata?.[parameter.key === "duration" ? "seconds" : parameter.key]
+    if (schema?.default === undefined) continue
+    const value = parameter.key === "duration" ? String(schema.default) : schema.default
+    const automatic = value === "auto" || value === "adaptive"
+    if (parameter.enum) {
+      if (!parameter.enum.includes(automatic ? auto : value) || (schema.values && !schema.values.includes(schema.default))) {
+        throw new Error(`Invalid media default: ${parameter.key}.`)
+      }
+    } else if (typeof value !== parameter.type) throw new Error(`Invalid media default: ${parameter.key}.`)
+    parameter.default = automatic || (parameter.key === "aspect_ratio" && capability.frameRatio === "auto") ? auto : value
+    if (value !== "auto" && !(model.type === "image" && value === "adaptive")) defaults[parameter.key] = value
+  }
+  if (capability.pixelSizes && metadata?.size?.default !== undefined) {
+    const value = metadata.size.default
+    if (value !== "auto") {
+      const choice = Object.entries(capability.pixelSizes).flatMap(([ratio, tiers]) =>
+        Object.entries(tiers).filter(([, size]) => size === value).map(([tier]) => ({ aspect_ratio: ratio, resolution: tier })))[0]
+      if (!choice) throw new Error("Invalid media default: size.")
+      Object.assign(defaults, choice)
+      for (const parameter of capability.params) if (choice[parameter.key]) parameter.default = choice[parameter.key]
+    }
+  }
+  if (Object.keys(defaults).length) capability.defaults = defaults
+  const constraints = mediaConstraints(model, capability)
+  if (constraints) capability.constraints = constraints
   return capability
 }
 
