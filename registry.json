@@ -52,7 +52,7 @@
     { "package": "@magpie-community/opencode-cursor-auth", "name": "Cursor", "icon": "cursor", "providers": ["cursor"], "community": true, "replaces": "cursor",
       "summary": { "en": "Cursor Pro, Pro+, Ultra and Teams — every model your plan has, with tool calls.", "zh": "Cursor Pro、Pro+、Ultra 与 Teams：套餐里的所有模型，支持工具调用。" } },
     { "package": "@magpie-community/opencode-kiro-auth", "name": "Kiro", "icon": "kiro-color", "providers": ["kiro"], "community": true, "replaces": "kiro",
-      "summary": { "en": "Kiro Free, Pro, Pro+ and Power — Kiro's sign-in, kiro-cli's, or an API key.", "zh": "Kiro Free、Pro、Pro+ 与 Power：Kiro 登录、沿用 kiro-cli 的登录，或 API key。" } },
+      "summary": { "en": "Kiro Free, Pro, Pro+ and Power — Kiro's sign-in, kiro-cli's, an API key, or accounts imported by refresh token.", "zh": "Kiro Free、Pro、Pro+ 与 Power：Kiro 登录、沿用 kiro-cli 的登录、API key，或按 refresh token 导入账号。" } },
     { "package": "@magpie-community/opencode-minimax-auth", "name": "MiniMax Code", "icon": "minimax-color", "providers": ["minimax-code", "minimax-code-global"], "community": true,
       "summary": { "en": "MiniMax Code credits and M Plan with device sign-in, native web search, image/video generation and media tools through Magpie MCP.", "zh": "MiniMax Code 积分与 M Plan、设备登录，提供原生网络搜索、生图、生视频及多模态 MCP 工具。" } },
     { "package": "@magpie-community/opencode-warp-auth", "name": "Warp", "icon": "warp", "providers": ["warp"], "community": true,
