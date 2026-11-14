@@ -12,11 +12,15 @@ import { randomBytes, timingSafeEqual } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { dirname, join, normalize, sep } from "node:path"
 import { fileURLToPath } from "node:url"
-import { toolsLog, usageLog } from "./lib/paths.mjs"
+import { toolsLog, usageLog, tasksLog } from "./lib/paths.mjs"
 import { createToolsReader } from "./lib/tools.mjs"
+import { createCodexReader } from "./lib/codex-rollout.mjs"
+import { validTaskEvent, TASK_RETENTION_MS } from "./lib/task-duration.mjs"
 import { createUsageReader } from "./lib/usage.mjs"
+import { summarizeProviders } from "./lib/providers.mjs"
 import { PERIODS, summarize } from "./lib/summarize.mjs"
 import { createBrands } from "./lib/brands.mjs"
+import { createProviderBrands } from "./lib/provider-brands.mjs"
 import { activity } from "./lib/activity.mjs"
 // the same table the page imports, so both sides speak one language
 import { pageLanguage, languageTags } from "./app/i18n.mjs"
@@ -58,7 +62,10 @@ export function createHandler(options = {}) {
 
   const usage = createUsageReader(usageLog(options))
   const tools = createToolsReader(toolsLog(options))
+  const tasks = createToolsReader(tasksLog(options))
+  const codex = createCodexReader(options)
   const brands = createBrands(options)
+  const providerBrands = createProviderBrands(options)
 
   return async function handle(req, res) {
     const url = new URL(req.url ?? "/", "http://127.0.0.1")
@@ -87,14 +94,19 @@ export function createHandler(options = {}) {
         return json(res, 200, activity.snapshot(tools.file))
       }
       if (url.pathname === "/api/summary") {
-        await Promise.all([usage.refresh(), tools.refresh(), brands.refresh()])
+        let usageReadError = false, toolReadError = false, taskReadError = false, codexReadError = false
+        await Promise.all([usage.refresh().catch(() => { usageReadError = true }), tools.refresh().catch(() => { toolReadError = true }), brands.refresh(),
+          tasks.refresh().catch(() => { taskReadError = true }), codex.refresh().catch(() => { codexReadError = true })])
+        codexReadError ||= codex.error()
         const period = PERIODS[url.searchParams.get("period")] ? url.searchParams.get("period") : "7d"
         const tz = Number(url.searchParams.get("tz"))
         // the page sends the language it rendered in, so the insights it gets
         // back are in the same language as the rest of the page
         const lang = pageLanguage(url.searchParams.get("lang"))
+        const now = Date.now()
         const body = summarize({
-          usage: usage.rows(), tools: tools.rows(), period,
+          now,
+          usage: usageReadError ? [] : usage.rows(), tools: toolReadError ? [] : tools.rows(), tasks: tasks.rows(), codexTasks: codex.rows(), taskReadError, codexReadError, period,
           showClients: url.searchParams.get("clients") === "1",
           tzOffsetMin: Number.isFinite(tz) ? tz : 0,
           nameOf: (a) => brands.of(a).name,
@@ -104,7 +116,25 @@ export function createHandler(options = {}) {
           const b = brands.of(a.agent)
           Object.assign(a, { name: b.name, icon: await brands.dataUri(b.icon) })
         }
-        body.sources = { usageLog: usage.file, toolsLog: tools.file, usageRows: usage.rows().length, toolRows: tools.rows().length }
+        body.providerView = summarizeProviders(usageReadError ? [] : usage.rows(), {
+          since: now - PERIODS[period], now,
+          showClients: url.searchParams.get("clients") === "1",
+          model: url.searchParams.get("providerModel") || "",
+        })
+        body.providerView.brands = await providerBrands(body.providerView.providerOptions)
+        const validEvents = rows => rows.filter(r => validTaskEvent(r) && r.t <= now && r.t >= now - TASK_RETENTION_MS)
+        const logEvents = taskReadError ? [] : validEvents(tasks.rows())
+        const codexEvents = codexReadError ? [] : validEvents(codex.rows())
+        const latest = rows => rows.reduce((max, row) => Math.max(max, row.t), 0) || null
+        body.telemetry = {
+          request: { state: usageReadError ? "read-error" : body.lastUsage ? "observed" : usage.present() ? "no-events" : "missing", latestAt: body.lastUsage },
+          tools: { state: toolReadError ? "read-error" : body.lastTool ? "observed" : tools.present() ? "no-events" : "missing", latestAt: body.lastTool },
+          tasks: {
+            eventLog: { state: taskReadError ? "read-error" : logEvents.length ? "observed" : tasks.present() ? "no-events" : "missing", latestAt: latest(logEvents) },
+            codex: { state: codexReadError ? "read-error" : codexEvents.length ? "observed" : "no-completions", latestCompletedAt: latest(codexEvents) },
+          },
+        }
+        body.sources = { usageLog: usage.file, toolsLog: tools.file, tasksLog: tasks.file, usageRows: usageReadError ? 0 : usage.rows().length, toolRows: toolReadError ? 0 : tools.rows().length, taskRows: taskReadError ? 0 : tasks.rows().length, codexRows: codexReadError ? 0 : codex.rows().length, codexReadError, codexReadIssues: codex.issues() }
         cors()
         return json(res, 200, body)
       }

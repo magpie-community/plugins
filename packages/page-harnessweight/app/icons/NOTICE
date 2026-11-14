@@ -4,3 +4,23 @@ copied from the community plugin @magpie-community/page-agent-office
 @lobehub/icons (https://github.com/lobehub/lobe-icons, MIT, Copyright (c) 2023
 LobeHub). Each mark remains the trademark of its owner; it is shown only to
 name the agent it belongs to.
+
+Additional model-family marks (gemini-color.svg, openai.svg, xiaomimimo.svg,
+nvidia-color.svg, zai.svg, inception.svg) were copied unchanged from
+https://github.com/lobehub/lobe-icons/tree/master/packages/static-svg/icons
+on 2026-11-11, under the same MIT license. These identify models, not the
+harness that sent the request. Embedded copies in model-icons.js and
+provider-icons.js preserve the original SVG content for host sandbox support.
+
+ZCode (zcode.png) and Volcengine (volcengine-color.svg) provider marks were
+copied unchanged from @magpie-community/page-free-tokens/page/brand (MIT),
+whose src/icons.js maps 智谱 ZCode and 火山方舟 to these assets; its
+src/mapping.js identifies the ZCode provider as zcode. This is the ZCode
+provider mark, distinct from the unrelated Zoo Code agent mark zoo-code.png.
+The upstream NOTICE attributes these assets to magpie and LobeHub (MIT).
+
+OpenRouter, Cloudflare, Vercel, TypeSafe and magpie built-in provider marks were
+copied unchanged from magpie internal/gui/assets/icons (MIT):
+https://github.com/yetone/magpie/tree/main/internal/gui/assets/icons
+Custom provider icons are loaded only from the user's local magpie icon
+store at runtime; they are not bundled or copied into this repository.

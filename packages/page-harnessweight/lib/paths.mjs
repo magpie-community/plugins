@@ -62,3 +62,8 @@ export function toolsLog(options = {}) {
   }
   return join(dir, "tools.jsonl")
 }
+
+// Explicit harness lifecycle events, separate from model-request samples.
+export function tasksLog(options = {}) {
+  return join(dirname(toolsLog(options)), "tasks.jsonl")
+}

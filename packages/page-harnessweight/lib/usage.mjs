@@ -4,6 +4,7 @@
 import { createReadStream } from "node:fs"
 import { open, stat } from "node:fs/promises"
 import { createInterface } from "node:readline"
+import { errorReason } from "./errors.mjs"
 
 // Rows older than this are not kept in memory: the page offers 30 days.
 export const KEEP_MS = 31 * 24 * 60 * 60 * 1000
@@ -49,6 +50,9 @@ export function parseUsageLine(line) {
     // id let us measure how long one session actually lasts
     session: d.session ? intern(String(d.session)) : "",
     model: intern(String(d.model || "unknown")),
+    provider: intern(String(d.provider || "unknown")),
+    status,
+    errorReason: failed ? errorReason(status, d.err_type, d.err) : null,
     protocol: protocolOf(d.ep),
     in: num(d.in), out: num(d.out),
     cacheRead: num(d.cache_read), cacheWrite: num(d.cache_write),
@@ -71,13 +75,14 @@ function num(v) { return typeof v === "number" && Number.isFinite(v) ? v : 0 }
 export function createUsageReader(file) {
   let offset = 0
   let rows = []
+  let present = false
   let reading = null
 
   async function refresh() {
     if (reading) return reading
     reading = (async () => {
       let st
-      try { st = await stat(file) } catch { rows = []; offset = 0; return }
+      try { st = await stat(file); present = true } catch (error) { if (error.code !== "ENOENT") throw error; present = false; rows = []; offset = 0; return }
       if (st.size < offset) { rows = []; offset = 0 }
       if (st.size === offset) return
       // a last line still being written has no newline yet: stop before it
@@ -100,7 +105,7 @@ export function createUsageReader(file) {
     return reading
   }
 
-  return { refresh, rows: () => rows, file }
+  return { refresh, rows: () => rows, present: () => present, file }
 }
 
 // The position of the last newline in [from, size), or from-1 when none.

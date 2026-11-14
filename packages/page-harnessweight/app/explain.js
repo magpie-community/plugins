@@ -22,6 +22,7 @@ export function explainFor(key, lang) {
 // [key, label key, is numeric, tooltip key]
 export const COLS = [
   ["agent", "col.agent", false, null],
+  ["taskDuration", "col.taskDuration", true, "taskDuration"],
   ["calls", "col.calls", true, "calls"],
   ["prompt", "col.prompt", true, "prompt"],
   ["avgPrompt", "col.avgPrompt", true, "avgPrompt"],
@@ -45,6 +46,7 @@ export const CARD_SORTS = [
   ["fullPrice", "col.fullPrice", "fullPrice"],
   ["errorRate", "col.errorRate", "errorRate"],
   ["p50ms", "col.p50ms", "p50ms"],
+  ["taskDuration", "col.taskDuration", "taskDuration"],
   ["p50ttft", "col.p50ttft", "p50ttft"],
   ["toolTokens", "sort.toolTokens", "toolTokens"],
 ]
