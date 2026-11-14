@@ -23,6 +23,22 @@ function enc(text) {
   const data = Buffer.concat([c.update(text, "utf8"), c.final()])
   return "enc:v1:" + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
 }
+
+// ZCode 3.18's vault form: the key stands in for the OS keychain, named by
+// ZCODE_CREDENTIAL_V2_SECRET, and the fingerprint is sha256(key) as 24 hex
+const V2_KEY = randomBytes(32)
+const V2_FP = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
+function encV2(text) {
+  const iv = randomBytes(12)
+  const c = createCipheriv("aes-256-gcm", V2_KEY, iv)
+  const data = Buffer.concat([c.update(text, "utf8"), c.final()])
+  return `enc:v2:os:${V2_FP}:` + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+}
+function zcodeHas2(store, setting = {}) {
+  mkdirSync(dir(), { recursive: true })
+  writeFileSync(join(dir(), "credentials.json"), JSON.stringify(store))
+  writeFileSync(join(dir(), "setting.json"), JSON.stringify(setting))
+}
 function zcodeHas(store, setting = {}) {
   mkdirSync(dir(), { recursive: true })
   writeFileSync(join(dir(), "credentials.json"), JSON.stringify(Object.fromEntries(Object.entries(store).map(([k, v]) => [k, enc(v)]))))
@@ -356,9 +372,10 @@ test.each(["zai_cn", "zai", "bigmodel"])("the app's active %s identity wins over
   expect(auth.uid).toBe(`user-${active}`)
 })
 
-// ZCode 3.18 writes credentials.json's values as "enc:v2:os:…", which this
-// plugin can't read: the sign-in and the card say so, never "sign in again"
-// (#1196). The values are the shape the reporter showed, not real ones.
+// ZCode 3.18 also writes credentials.json's values as "enc:v2:os:…", a
+// different shape whose body carries no dots; this plugin can't read it, so
+// the sign-in and the card say so, never "sign in again" (#1196). The values
+// are the shape the reporter showed, not real ones.
 test("ZCode 3.18's enc:v2 credentials are named as unreadable, not as signed out", async () => {
   mkdirSync(dir(), { recursive: true })
   const v2 = "enc:v2:os:" + "A".repeat(24) + ":" + "B".repeat(312)
@@ -368,15 +385,45 @@ test("ZCode 3.18's enc:v2 credentials are named as unreadable, not as signed out
   const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
   const got = await (await m.authorize()).callback()
   expect(got.type).toBe("failed")
-  expect(got.error).toMatch(/ZCode 3\.18 keeps its sign-in in a new form/)
+  expect(got.error).toMatch(/ZCode keeps its sign-in in a form this plugin can't read/)
 
   // an account signed in before: its card's gift line says why, too
   const line = _internal.giftSignIn({ source: "zcode", key: "id1.secret1" }, false)
-  expect(line.display).toMatch(/ZCode 3\.18 keeps its sign-in in a new form/)
+  expect(line.display).toMatch(/ZCode keeps its sign-in in a form this plugin can't read/)
   // a browser sign-in with no session is still asked to sign in again
   expect(_internal.giftSignIn({ key: "id1.secret1" }, false).display).toBe("this sign-in has no ZCode session: sign in again")
 
   // enc:v1 again: back to the old words
   zcodeHas({})
   expect(_internal.giftSignIn({ source: "zcode", key: "id1.secret1" }, false).display).toBe("this sign-in has no ZCode session: sign in again")
+})
+
+test("3.18's vault-encrypted credentials read like the older ones", async () => {
+  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
+  try {
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: encV2("Bearer j1"),
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    const hooks = await ZCodeAuthPlugin({ client: {} })
+    const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+    const got = await (await m.authorize()).callback()
+    expect(got.type).toBe("success")
+    expect(got.accountId).toBe("ada@example.com")
+    expect(got.access).toBe("id1.secret1")
+    const auth = { ...got, type: "oauth" }
+    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+
+    // a fingerprint the vault doesn't name reads as nothing, without
+    // taking the older values down with it
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: "enc:v2:os:deadbeefdeadbeefdeadbeef:aa.bb.cc",
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "" })
+  } finally {
+    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  }
 })
