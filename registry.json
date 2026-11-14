@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-otari-auth", "name": "Otari", "icon": "https://otari.ai/apple-touch-icon-v2.png", "providers": ["otari"], "community": true,
+      "summary": { "en": "Otari as a Magpie provider: live models, pricing, routing-policy tiers, per-request usage tags, key budget, balance and Chat Completions.", "zh": "把 Otari 接成 Magpie 供应商：动态模型、价格、路由策略档位、按请求打用量标签、Key 预算、余额与对话调用。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
