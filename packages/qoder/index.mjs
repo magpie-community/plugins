@@ -2036,6 +2036,71 @@ function quoted(text) {
 // the XML function form
 const callish = (v) => v.trimStart().startsWith("{") || v.includes("\x3cfunction=")
 
+// plugins#1113: a reply that is one JSON object holding OpenAI's own
+// tool_calls array, written as text ({"tool_calls":[{"name", "arguments"}]}),
+// is those calls. It is told apart from text by where it starts: a line of
+// its own whose object opens with the "tool_calls" key, outside code.
+const JSON_KEY = '{"tool_calls"'
+const JSON_AT_ALL = /(^|\n)[ \t]*\{\s*"tool_calls"\s*:/g
+
+// jsonHold is how much of comb's end may still become JSON_KEY on a line
+// of its own (start says comb starts a line), so it is held for more
+function jsonHold(comb, start) {
+  const n = comb.lastIndexOf("\n")
+  if (n < 0 && !start) return 0
+  const line = comb.slice(n + 1)
+  const s = line.replace(/\s+/g, "")
+  if (!JSON_KEY.startsWith(s)) return 0
+  return line.length
+}
+
+// jsonEnd is where the JSON object at the start of v ends, -1 while it is
+// not whole yet
+function jsonEnd(v) {
+  let depth = 0
+  let str = false
+  for (let k = 0; k < v.length; k++) {
+    const c = v[k]
+    if (str) {
+      if (c === "\\") k++
+      else if (c === '"') str = false
+    } else if (c === '"') str = true
+    else if (c === "{" || c === "[") depth++
+    else if (c === "}" || c === "]") {
+      if (--depth === 0) return k + 1
+    }
+  }
+  return -1
+}
+
+// jsonCalls reads a whole {"tool_calls": [...]} object: its calls, null
+// when it holds none (it stays text), or false when one can't be read
+function jsonCalls(v) {
+  let f
+  try {
+    f = JSON.parse(v)
+  } catch {
+    return false
+  }
+  const list = f?.tool_calls
+  if (!Array.isArray(list) || !list.length) return null
+  const calls = []
+  for (const e of list) {
+    const fn = e?.function ?? e
+    let args = fn?.arguments
+    if (typeof args === "string") {
+      try {
+        args = JSON.parse(args)
+      } catch {
+        return false
+      }
+    }
+    if (!String(fn?.name ?? "").trim() || !args || typeof args !== "object" || Array.isArray(args)) return false
+    calls.push({ name: fn.name.trim(), args: JSON.stringify(args) })
+  }
+  return calls
+}
+
 const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
 const UNREADABLE = "the model's tool call, written as text, can't be read; it is not sent on as the answer"
 
@@ -2054,6 +2119,7 @@ class Splitter {
   sawTool = false
   after = false // a bare call just ended: the closes and blanks after it are dropped
   sent = "" // the text given out so far, to tell a block in code from a call
+  jsonBuf = null // a {"tool_calls": ...} object being read (plugins#1113)
   constructor(tools = []) {
     this.tools = tools.filter((t) => (t?.function ?? t)?.name)
   }
@@ -2100,9 +2166,43 @@ class Splitter {
     this.after = false
     return rest
   }
+  // json reads the {"tool_calls": ...} object held in jsonBuf: the input
+  // left after it, null while it is not whole, or false when the turn
+  // ended in an error
+  json(out, end) {
+    const v = this.jsonBuf
+    const e = jsonEnd(v)
+    if (e < 0) {
+      if (!end) return null
+      this.jsonBuf = null
+      out.push({ error: CUT_SHORT })
+      return false
+    }
+    this.jsonBuf = null
+    const calls = jsonCalls(v.slice(0, e))
+    if (calls === false) {
+      out.push({ error: UNREADABLE })
+      return false
+    }
+    if (!calls) {
+      this.text(out, v.slice(0, e))
+      return v.slice(e)
+    }
+    this.sawTool = true
+    for (const c of calls) out.push({ call: c })
+    return v.slice(e).replace(/^\s+/, "")
+  }
   feed(input) {
     const out = []
     while (input) {
+      if (this.jsonBuf !== null) {
+        this.jsonBuf += input
+        const next = this.json(out, false)
+        if (next === false) return out
+        if (next === null) break
+        input = next
+        continue
+      }
       if (!this.inCall) {
         let comb = this.textBuf + input
         this.textBuf = ""
@@ -2117,6 +2217,25 @@ class Splitter {
         }
         const i = comb.indexOf(CALL_OPEN)
         const x = this.tools.length ? comb.search(XML_AT) : -1
+        const start = !this.sent || this.sent.endsWith("\n")
+        let k = -1
+        for (const jm of comb.matchAll(JSON_AT_ALL)) {
+          const at = jm.index + jm[1].length
+          if ((jm[1] || start) && !quoted(this.sent + comb.slice(0, at))) {
+            k = at
+            break
+          }
+        }
+        if (k >= 0 && (i < 0 || k < i) && (x < 0 || k < x)) {
+          if (k > 0) this.text(out, comb.slice(0, k))
+          this.jsonBuf = comb.slice(k).replace(/^[ \t]+/, "")
+          input = ""
+          const next = this.json(out, false)
+          if (next === false) return out
+          if (next === null) break
+          input = next
+          continue
+        }
         if (x >= 0 && (i < 0 || x < i)) {
           const next = this.bare(out, comb, x, false)
           if (next === false) return out
@@ -2134,6 +2253,7 @@ class Splitter {
               }
           const h = this.tools.length ? comb.search(XML_HOLD) : -1
           if (h >= 0) keep = Math.max(keep, comb.length - h)
+          keep = Math.max(keep, jsonHold(comb, !this.sent || this.sent.endsWith("\n")))
           if (keep < comb.length) this.text(out, comb.slice(0, comb.length - keep))
           this.textBuf = comb.slice(comb.length - keep)
           break
@@ -2166,6 +2286,12 @@ class Splitter {
     return out
   }
   flush() {
+    if (this.jsonBuf !== null) {
+      const out = []
+      const next = this.json(out, true)
+      if (next) this.text(out, next)
+      return out
+    }
     if (this.inCall) {
       const body = this.callBuf
       this.inCall = false
