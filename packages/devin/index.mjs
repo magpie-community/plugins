@@ -1523,7 +1523,11 @@ function build(chat, uid, key) {
       // completion has no field for a signature, and Claude's thinking
       // goes back only signed (plugins#665), so Claude gets none, as before.
       const reasoning = claude ? "" : reasoningOf(m)
-      msgs.push({ role: ASSISTANT, text, calls, ...(reasoning ? { thinking: { text: reasoning } } : {}) })
+      // a Gemini reply goes back with its thought signature, as the
+      // devin CLI sends it (thoughts)
+      const signed = thoughtFor(uid, calls, text)
+      const thinking = signed ? { text: reasoning, ...signed } : reasoning ? { text: reasoning } : null
+      msgs.push({ role: ASSISTANT, text, calls, ...(thinking ? { thinking } : {}) })
       // a copy: answering a call takes it off pending, never off the
       // reply that made it, which goes to Devin with every call it made
       pending = [...calls]
@@ -1665,6 +1669,7 @@ function encodeMsg(m) {
   if (m.thinking?.signature) {
     b.str(12, m.thinking.signature)
     if (m.thinking.type) b.str(18, m.thinking.type)
+    if (m.thinking.model) b.str(22, m.thinking.model)
   }
   return b.done()
 }
@@ -1682,6 +1687,37 @@ function rememberSigType(signature, type) {
   if (sigTypes.size > SIG_TYPES_KEPT) sigTypes.delete(sigTypes.keys().next().value)
 }
 const sigTypeOf = (signature) => sigTypes.get(signature) ?? "anthropic"
+
+// thoughts is each Gemini reply's thought signature, by the reply's tool
+// call ids (or, for a reply that made none, its text), for the request
+// that sends the reply back. The devin CLI sends a Gemini reply back with
+// its signature (12), its type "gemini" (18) and the model that wrote it
+// (22); without them Devin's Gemini models, deep in a tool loop, answer
+// with usage and nothing else (X, gemini-4-hydrogen in dsh). Neither a
+// chat completion nor a Messages tool_use has a field for it, so it is
+// kept here, as sigTypes are; the most recent are kept.
+const thoughts = new Map()
+const THOUGHTS_KEPT = 4096
+const isGemini = (uid) => /gemini/i.test(String(uid ?? ""))
+const textKey = (text) => "text:" + createHash("sha256").update(String(text).replace(/\s+/g, "")).digest("base64url")
+function rememberThought({ calls, text }, thought) {
+  const keys = calls.length ? calls : text ? [textKey(text)] : []
+  for (const k of keys) {
+    thoughts.delete(k)
+    thoughts.set(k, thought)
+    if (thoughts.size > THOUGHTS_KEPT) thoughts.delete(thoughts.keys().next().value)
+  }
+}
+// thoughtFor is the signature kept for a reply sent back with these calls
+// (Devin's ids) and text, to a Gemini model; null for none.
+function thoughtFor(uid, calls, text) {
+  if (!isGemini(uid)) return null
+  for (const c of calls) {
+    const t = thoughts.get(c.id)
+    if (t) return t
+  }
+  return (!calls.length && text && thoughts.get(textKey(text))) || null
+}
 
 // ---- the reply -----------------------------------------------------------------------
 
@@ -1719,10 +1755,12 @@ function failure(status, text) {
 // events turns the reply's frames into chat completion pieces: text,
 // reasoning, each tool call opened with its id and name, its arguments in
 // pieces after, then the finish with the usage.
-async function* events(it) {
+async function* events(it, uid = "") {
   let tools = -1
   let stop = 0
   let said = 0
+  // a Gemini reply's thought signature, to go back with it (thoughts)
+  const own = { calls: [], text: "", signature: "", type: "" }
   const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 }
   for (;;) {
     let r
@@ -1745,17 +1783,23 @@ async function* events(it) {
     for (const x of fields(f.data)) {
       if (x.num === 3 && x.wire === 2 && x.data.length) {
         said += x.data.length
-        yield { text: dec.decode(x.data) }
+        const text = dec.decode(x.data)
+        own.text += text
+        yield { text }
       } else if (x.num === 9 && x.wire === 2 && x.data.length) {
         said += x.data.length
         yield { reasoning: dec.decode(x.data) }
       } else if (x.num === 10 && x.wire === 2 && x.data.length) {
         // delta_signature: the thinking's signature, Claude's opaque state
         // to continue it from (plugins#665); no words of the reply
-        yield { signature: dec.decode(x.data) }
+        const signature = dec.decode(x.data)
+        own.signature += signature
+        yield { signature }
       } else if (x.num === 21 && x.wire === 2 && x.data.length) {
         // delta_signature_type: whose signature it is ("anthropic")
-        yield { signatureType: dec.decode(x.data) }
+        const signatureType = dec.decode(x.data)
+        own.type = signatureType
+        yield { signatureType }
       } else if (x.num === 6 && x.wire === 2) {
         let id = ""
         let name = ""
@@ -1767,7 +1811,9 @@ async function* events(it) {
         }
         if (name) {
           tools++
-          yield { tool: { index: tools, id: id ? outID(id) : "call_" + randomBytes(12).toString("hex"), name } }
+          const tool = { index: tools, id: id ? outID(id) : "call_" + randomBytes(12).toString("hex"), name }
+          own.calls.push(inID(tool.id))
+          yield { tool }
         }
         if (args && tools >= 0) yield { args: { index: tools, text: args } }
       } else if (x.num === 5 && x.wire === 0) stop = x.n
@@ -1786,6 +1832,8 @@ async function* events(it) {
     yield { error: { status: 502, message: "an empty reply (Devin returned no text, reasoning or tool call)" } }
     return
   }
+  if (own.signature && isGemini(uid) && (own.type || "gemini") === "gemini")
+    rememberThought(own, { signature: own.signature, type: own.type || "gemini", model: uid })
   if (!usage.output) usage.output = Math.floor((said + 3) / 4)
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite
   yield {
@@ -1860,7 +1908,7 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
     return e.status < 300 ? { status: 502, message: "an empty reply" } : e
   }
   // 先等到实际内容或错误，才能让网关在空回复时切换渠道。
-  const source = events(prepend(first.value, fr))
+  const source = events(prepend(first.value, fr), uid)
   const head = await source.next()
   if (head.done) return { status: 502, message: "an empty reply" }
   if (head.value.error) {
@@ -2033,6 +2081,14 @@ function buildMessages(req, uid, key) {
         own[own.length - 1].calls = calls
         own[own.length - 1].cache ||= mark
       } else if (thought && own.length && !own[own.length - 1].thinking) take(own[own.length - 1])
+      // a Gemini reply goes back with its thought signature, on the
+      // prompt with its calls (or its last words), as the devin CLI sends
+      // it (thoughts)
+      const signed = own.length ? thoughtFor(uid, calls, own.map((p) => p.text).join("")) : null
+      if (signed) {
+        const p = own[own.length - 1]
+        p.thinking = { text: p.thinking?.text ?? "", ...signed }
+      }
       if (!own.length) continue // a turn that only thought
       answer()
       msgs.push(...own)
@@ -3244,4 +3300,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

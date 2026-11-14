@@ -86,6 +86,13 @@ The plugin's `fetch` handles this:
   #275): Devin turns a body past 10 MiB away with 413.
 - It turns the streamed reply back into a chat completion, streamed or
   not: text, reasoning, tool calls and usage.
+- A Gemini model's reply goes back with its thought signature, as the CLI
+  sends it: on the prompt with the reply's calls (or its words), with
+  `signature_type` "gemini" and the model that wrote it (since 0.1.41).
+  Neither a chat completion nor a Messages `tool_use` carries one, so the
+  plugin keeps each reply's signature by its call ids for the next
+  request, in memory: after a restart, earlier turns go back unsigned, as
+  before.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
 - A reply with only metadata and usage is a 502, even when output tokens
