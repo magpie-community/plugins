@@ -8,9 +8,11 @@ import { promisify } from "node:util"
 import { test } from "node:test"
 import { mediaPaths } from "./media-sync.mjs"
 
-test("companion plugin starts, follows disconnect and leaves other plugins running", { timeout: 20000 }, async () => {
+test("companion plugin starts, follows disconnect and leaves other plugins running",
+  { timeout: 20000, skip: !["darwin", "win32"].includes(process.platform) }, async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "minimax-media-host-"))
-  const paths = mediaPaths(home, "darwin")
+  const appData = path.join(home, "AppData", "Roaming")
+  const paths = mediaPaths(home, process.platform, appData)
   const server = http.createServer((request, response) => {
     assert.equal(request.headers["x-magpie-drawers"], "1")
     assert.equal(request.headers["x-magpie-videomakers"], "1")
@@ -49,7 +51,7 @@ test("companion plugin starts, follows disconnect and leaves other plugins runni
   `
   try {
     const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
-      env: { ...process.env, HOME: home, USERPROFILE: home }, timeout: 16000,
+      env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData }, timeout: 16000,
     })
     assert.match(stdout, /host remains alive/)
   } finally {

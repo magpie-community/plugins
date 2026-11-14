@@ -59,6 +59,13 @@ provider transport. New models with explicit metadata are discovered on the
 next refresh without a code change; models lacking such information need a
 source declaration or a verified manual supplement.
 
+Speech discovery also accepts a source model's `native_endpoints` declaration
+containing `/v1/audio/speech` or `/audio/speech`. The model must already exist
+in the authenticated gateway catalogue. Its `supported_parameters` supplies
+voice, format and speed controls using the same precedence rules. Audio output
+modality alone does not identify speech: ASR, music and chat audio are excluded.
+No model-name pattern or user-specific endpoint is needed for this declaration.
+
 Metadata is validated before store writes. Invalid schemas or failed endpoint
 discovery keep the previously installed store and report the error. Parameters
 are only exposed when their transport mapping is established; unknown fields

@@ -144,3 +144,22 @@ No machine-specific proxy configuration or credential is included in the plugin.
 
 Release regression checks repeated successfully: Node and Bun each passed all
 36 tests, the registry check passed and `git diff --check` was clean.
+
+## Portable speech discovery and live media follow-up — 0.4.3
+
+A failing regression showed that a gateway-listed model was omitted when only
+its source plugin declared the speech endpoint. Discovery now reads that
+declaration before classifying the model, then applies source parameters as
+usual. Renamed providers/models and a different gateway URL pass; source-only
+models absent from the gateway and ASR/chat audio remain excluded.
+
+Node and Bun each pass 37 tests. The native Design media executor passes its
+image, video and speech fixtures. The companion lifecycle fixture now uses the
+actual runner platform and an isolated APPDATA directory. Added macOS/Windows
+CI exercises the real filesystem on each runner; remote results are pending.
+
+The real Design MCP completed a local Ming speech request and adopted its WAV
+into the acceptance Composition. A Grok video request failed with HTTP 403
+(credits/subscription). A four-second MiniMax H3 request failed with HTTP 502
+and an upstream quota/credits explanation. These failures were retained and
+not retried. Live video output and listening acceptance remain unverified.

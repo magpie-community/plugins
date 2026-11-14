@@ -1,5 +1,21 @@
 # Compatibility record
 
+## Current acceptance — November 14, 2026
+
+0.4.3 adds source-declared speech discovery and native Windows/macOS regression
+jobs. Local Node and Bun suites each pass 37 tests. The installed Design media
+executor passes image editing, four-reference forwarding, video fixture polling
+and content, and speech fixture output checks.
+
+Real Design MCP text-to-image and reference-image editing completed. A local
+Ming speech task completed, placed its output in a Composition and saved a WAV.
+This verifies execution and output delivery; listening acceptance is pending.
+Real Grok video returned HTTP 403 for credits/subscription, and MiniMax H3
+returned HTTP 502 with a quota/credits explanation. Neither produced a video.
+No automatic retry or alternate paid-provider fallback followed those failures.
+Native Windows desktop acceptance remains pending; CI tests alone do not
+establish it. The sections below retain version-specific historical evidence.
+
 ## macOS — verified on November 13, 2026
 
 MiniMax Design 4.0.10, domestic production build, Apple Silicon macOS.
