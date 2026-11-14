@@ -832,3 +832,37 @@ test("#1052: agy's own marker at the end of the prompt still fails the turn", as
     })
   }
 })
+
+test("#1124: agy's retry banner after an empty first call never reaches the client", async () => {
+  // The reporter's turn: thinking, agy's banner, thinking again, then the retry's text.
+  const banner = "\n⚠ Model produced invalid output."
+  for (const [steps, want] of [
+    [[["thought", "stay quiet"], ["text", banner], ["thought", "suggest one"], ["text", "梳理一下事件完整时间线"]], "梳理一下事件完整时间线"],
+    [[["text", banner + "\n"], ["text", "the retry's answer"]], "the retry's answer"],
+    [[["text", "\n⚠ Model produced "], ["text", "invalid output."], ["text", "\nretry"]], "retry"],
+    [[["text", banner]], ""],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        for (const [kind, text] of steps) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "retry-banner" },
+        messages: [{ role: "user", content: "suggest" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), want)
+    })
+  }
+})
+
+test("#1124: the model quoting the retry banner mid-line keeps it", async () => {
+  const chunks = ["agy printed `⚠ Model produced invalid output.` and", " then retried."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "retry-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})

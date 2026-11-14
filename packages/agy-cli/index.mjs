@@ -111,6 +111,11 @@ const STEP_USAGE_POLL_MS = 25
 // agy reports an upstream failure as an ordinary message chunk followed by end_turn.
 const AGENT_ERROR_MARKER = "\n⚠ Agent execution terminated due to error.\n"
 const AGENT_ERROR_CORE = AGENT_ERROR_MARKER.trim()
+// agy writes this into the reply when the model's first call came back with
+// neither text nor tool calls, then calls the model again in the same turn.
+// It is agy's, not the model's, and the turn goes on (#1124).
+const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
+const RETRY_CORE = RETRY_MARKER.trim()
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
 // with the client's system prompt in their place.
@@ -1131,6 +1136,7 @@ class Turn {
     this.cancelledMcpSockets = new Set()
     this.agentError = false
     this.heldText = ""
+    this.textTail = ""
     this.timer = null
     this.cleanupTimer = null
     this.logOffset = 0
@@ -1295,27 +1301,57 @@ class Turn {
 
   // Withholds agy's error marker, or a possible prefix of it, until it can be
   // classified. agy's own marker ends the prompt; one that more text follows
-  // was the model quoting it (#1052).
+  // was the model quoting it (#1052). agy's retry banner is dropped where it
+  // starts a line (#1124).
   pushText(chunk) {
     if (this.done || this.agentError) return
-    let text = this.heldText + chunk
+    let text = this.dropRetryBanner(this.heldText + chunk)
     this.heldText = ""
     const marker = text.lastIndexOf(AGENT_ERROR_CORE)
     if (marker >= 0 && !text.slice(marker + AGENT_ERROR_CORE.length).trim()) {
       const start = text[marker - 1] === "\n" ? marker - 1 : marker
       this.heldText = text.slice(start)
       text = text.slice(0, start)
-      if (text) this.push({ type: "text", text })
+      this.emitText(text)
       return
     }
     for (let keep = Math.min(text.length, AGENT_ERROR_MARKER.length - 1); keep > 0; keep--) {
-      if (AGENT_ERROR_MARKER.startsWith(text.slice(-keep))) {
-        this.heldText = text.slice(-keep)
+      const tail = text.slice(-keep)
+      if (AGENT_ERROR_MARKER.startsWith(tail) || (RETRY_MARKER.startsWith(tail) && keep > 1)) {
+        this.heldText = tail
         text = text.slice(0, -keep)
         break
       }
     }
-    if (text) this.push({ type: "text", text })
+    this.emitText(text)
+  }
+
+  // Removes agy's retry banner, with its leading and one trailing newline,
+  // wherever it starts a line. Text that only quotes it mid-line is kept.
+  // Until the turn's text is flushed, a banner that ends the buffer is left
+  // for pushText to hold, so its newline in the next chunk goes with it.
+  dropRetryBanner(text, final = false) {
+    let at = text.indexOf(RETRY_CORE)
+    while (at >= 0) {
+      const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
+      if (!lineStart) {
+        at = text.indexOf(RETRY_CORE, at + 1)
+        continue
+      }
+      const start = at > 0 ? at - 1 : at
+      let end = at + RETRY_CORE.length
+      if (end === text.length && !final) break
+      if (text[end] === "\n") end++
+      text = text.slice(0, start) + text.slice(end)
+      at = text.indexOf(RETRY_CORE, start)
+    }
+    return text
+  }
+
+  emitText(text) {
+    if (!text) return
+    this.textTail = text.slice(-1)
+    this.push({ type: "text", text })
   }
 
   // The prompt ended: a marker still held was agy's own.
@@ -1328,9 +1364,9 @@ class Turn {
 
   flushText() {
     if (!this.heldText || this.agentError) return
-    const text = this.heldText
+    const text = this.dropRetryBanner(this.heldText, true)
     this.heldText = ""
-    this.push({ type: "text", text })
+    this.emitText(text)
   }
 
   complete(result) {
