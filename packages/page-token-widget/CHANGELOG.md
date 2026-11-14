@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.7
+
+The phone gets the installer with one tap.
+
+- Scanning gives the phone the **usage page**: it carries that phone's
+  read-only token and reads the quota and the token usage. The **widget
+  script** is another thing -- it is a Scriptable script, and it can only be
+  made inside Scriptable. The instructions used to sit at the very bottom of
+  the phone page, inside a folded box, so the people who had just scanned the
+  code never saw them. The usage page now keeps a line in sight, "copy the
+  installer": one tap puts the whole installer on the clipboard; in Scriptable
+  choose "+" -> "new script", paste, run, and the token lands in the keychain,
+  so the widget never asks you for it again.
+- The "download the widget script" button of the pairing page has always been
+  there; it hands over the widget script itself. The two roads end in the same
+  place.
+- Nothing else changed: the token format, the port, the pairing and the widget
+  parameters are the same as in 0.4.6.
+
 ## 0.4.6 · 2026-11-14
 
 The unit of a quota window is written the same way for every provider, and the

@@ -99,6 +99,15 @@ computer is not the one to use).
    "Share → Open with Scriptable".
 5. Long press the home screen, add the Scriptable widget and pick `UsageWidget`.
 
+Scanning gives the phone the usage page: it carries that phone's read-only
+token and reads the quota and the token usage. To put a widget on the home
+screen as well, the phone needs a Scriptable script -- the usage page now keeps
+a line in sight, "copy the installer": one tap puts the whole installer on the
+clipboard; in Scriptable choose "+" -> "new script", paste, run, and the token
+lands in the keychain, so the widget never asks you for it again. The "download
+the widget script" button of the pairing page leads to the same place: that
+road hands over the widget script itself.
+
 The pairing code works once and lives ten minutes. The script carries only that
 one-time code; on its first run it exchanges the code for a token of its own and
 keeps it in the keychain of Scriptable. To pair without the camera, copy the
