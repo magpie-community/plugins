@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文 | [日本語](README.ja.md)
 
-[![npm version](https://img.shields.io/badge/npm%20version-0.0.4-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
+[![npm version](https://img.shields.io/badge/npm%20version-0.0.6-EA4335.svg)](https://www.npmjs.com/package/@magpie-community/opencode-cloudflare-workers-ai-auth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FBBC05.svg)](https://opensource.org/licenses/MIT)
 
 面向 [OpenCode](https://opencode.ai) 1.x 和 [magpie](https://usemagpie.ai) 的供应商插件：
@@ -24,7 +24,7 @@ Token 不需要选择任何 Zone。Free 与 Paid 两个计划均含 **每日 10,
 有 8 个前沿模型需要 Workers Paid 或 AI Gateway 预充值（下文有标注）。
 
 额度卡片以数值和可切换的已用／剩余百分比显示每日免费额度，每天 UTC 00:00 重置。
-付费或尚未确认的套餐仅展示这个窗口；只有确认是 Free 的套餐才会在免费额度耗尽后停止路由。
+付费或尚未确认的套餐仅展示这个窗口；只有确认是 Free 的套餐才会在免费额度耗尽后停止路由。如果 token 拿到的账号信息里没有套餐，用插件选项 `plan` 声明 `free` 或 `paid`。
 
 ## 在 magpie 中安装
 
@@ -100,6 +100,7 @@ magpie plugin options opencode-cloudflare-workers-ai-auth '{"accountId": "…", 
 | `apiKey` | — | 默认 token（登录时的 key 优先） |
 | `baseTemplate` | 见下方 | 插值目标，Account ID 会注入其中 |
 | `discoveryTTLMs` | `3600000` | 目录刷新间隔 |
+| `plan` | — | Cloudflare 的账号信息不返回套餐时，用 `free` 或 `paid` 声明：`free` 让每日 Neurons 窗口参与路由，`paid` 仅作展示 |
 
 **`baseTemplate` 默认值**（插值目标，Account ID 按账号注入）：
 
@@ -118,14 +119,14 @@ https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
 | 400 `No route for that URI` | 重新 `plugin add` 后仍出现，说明插件是旧版本——现版本代理已做 URL 归一化，可提 issue |
 | `Model … absent from the current catalog` | 模型 ID 不在 models.dev 的 cloudflare-workers-ai 分节里，请从列表中选择 |
 | (Paid) 模型返回 400 | 你的计划是 Free，该模型需要 Workers Paid 或 AI Gateway 预充值 |
-| quota 行显示套餐兜底文案 | token 缺 `Account Settings → Read`；仅影响显示，Neurons 窗口照常展示 |
+| quota 行显示套餐兜底文案，或路由说这个 key 的剩余额度未知 | Cloudflare 的账号信息里没有套餐（或 token 缺 `Account Settings → Read`）；Neurons 窗口照常展示。把插件选项 `plan` 设为 `free`（或 `paid`）后路由就会按它计算 |
 | quota 行显示 10,000 / 10,000 全部剩余，但请求报 used up your daily free allocation | token 缺 `Account Analytics → Read`，已用量未知，magpie 把额度当成没用过 —— 授权后刷新即可 |
 
 ## 开发
 
 ```sh
 node --check src/index.mjs       # 语法防线（本 fork 起初修的核心 bug）
-node --test                      # 23 项测试，无需联网
+node --test                      # 26 项测试，无需联网
 sh scripts/sandbox.sh login      # 在一个用完即弃的 HOME 里跑 magpie
 sh scripts/sandbox.sh test       # 沙盒内 provider test
 sh scripts/sandbox.sh json       # 沙盒内 plugin --json

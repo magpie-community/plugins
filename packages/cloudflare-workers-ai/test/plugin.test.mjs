@@ -459,6 +459,58 @@ test("a full window does not bench an account whose plan is unknown", async () =
   assert.equal(w.display, "");
 });
 
+// a token whose account answer names no plan: the state Cloudflare usually
+// leaves a Workers AI key in, and the one the plan option speaks to
+function noPlanOpts(neurons, extra = {}) {
+  const o = opts();
+  o.fetchImpl = async (url) => {
+    if (typeof url === "string" && url.includes("models.dev")) {
+      return new Response(JSON.stringify(fakeCatalog()));
+    }
+    if (typeof url === "string" && url.endsWith("/graphql")) {
+      return new Response(JSON.stringify({
+        data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: neurons } }] }] } },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200 }); // no plan in the answer
+  };
+  return Object.assign(o, extra);
+}
+
+test("a declared Free plan counts the free allowance for routing when the account tells no plan", async () => {
+  const plugin = await CloudflareWorkersAIPlugin({}, noPlanOpts(4000, { plan: "free" }));
+  const u = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u.plan, "Workers Free", "the declared plan names the account");
+  const w = u.windows[0];
+  assert.equal(w.amount, 4000);
+  assert.equal(w.limit, 10000);
+  assert.equal(w.used, 40);
+  assert.equal(w.aside, false, "a Free plan's free allowance is its hard cap, so routing counts it");
+  assert.equal(w.display, "");
+});
+
+test("a declared Paid plan keeps the free allowance informational when the account tells no plan", async () => {
+  const plugin = await CloudflareWorkersAIPlugin({}, noPlanOpts(4000, { plan: "paid" }));
+  const u = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+  assert.equal(u.plan, "Workers Paid");
+  const w = u.windows[0];
+  assert.equal(w.amount, 4000);
+  assert.equal(w.aside, true, "past the free allowance a Paid account is billed, not refused");
+});
+
+test("the declared plan wins over the account's own answer", async () => {
+  for (const [plan, wantsFree] of [["free", true], ["paid", false]]) {
+    const { o } = usageOpts(() => new Response(JSON.stringify({
+      data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 100 } }] }] } },
+    })), wantsFree ? "Workers Paid" : "Workers Free"); // the answer disagrees
+    o.plan = plan;
+    const plugin = await CloudflareWorkersAIPlugin({}, o);
+    const u = await plugin.auth.usage(async () => ({ key: "tok", metadata: { accountId: ACCOUNT_ID } }));
+    assert.equal(u.plan, wantsFree ? "Workers Free" : "Workers Paid");
+    assert.equal(u.windows[0].aside, !wantsFree);
+  }
+});
+
 test("Paid plan shows the free allowance percentage without stopping paid usage", async () => {
   const { o } = usageOpts(() => new Response(JSON.stringify({
     data: { viewer: { accounts: [{ aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 23821.83 } }] }] } },
