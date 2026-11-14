@@ -605,6 +605,9 @@ export const usageOf = (raw) => {
 // CACHE is the models.json format: 2 since the list comes from brief_list.
 const CACHE = 2
 
+// CHAT_ONLY are the 对话 menu's models, which 0.1.9 could list
+const CHAT_ONLY = ["快速", "专家"]
+
 // rateIn finds the multiple the model menu shows for the model named label:
 // its row is the one with that name, or that name and a badge ("Kimi K3
 // 0.65x") when no other model has the longer name.
@@ -660,6 +663,15 @@ export class Doubao {
         this.tableAt = d.at
         return this.table
       }
+      // an older one keeps its models, less the 对话 menu's, until the
+      // next read (#1117: a model picked from it was dropped when an
+      // update made it unreadable); it counts as never read
+      const old = Object.fromEntries(Object.entries(d?.models ?? {}).filter(([, m]) => m?.label && !CHAT_ONLY.includes(m.label)))
+      if (Object.keys(old).length) {
+        this.table = old
+        this.tableAt = 0
+        return this.table
+      }
     } catch {}
     this.table = { ...MODELS }
     this.tableAt = 0
@@ -690,8 +702,8 @@ export class Doubao {
   // another list. Nothing is sent, so no task runs. inTask says the page is
   // on a new work task already (ask), so its menu is read too, for the
   // multiple each model costs, which only the menu shows.
-  async discover({ signal, inTask = false } = {}) {
-    const page = await this.connect(signal)
+  async discover({ signal, inTask = false, launch = true } = {}) {
+    const page = await this.connect(signal, { launch })
     const old = this.modelList()
     let rows = null
     try { rows = listOf(await page.eval(LIST)) } catch {}
@@ -721,15 +733,16 @@ export class Doubao {
   // ensureList reads the menu once when it has never been read, for an
   // account that signed in before the plugin read menus (or whose sign-in
   // read failed): without it the list stays at the three built-in models
-  // until the first request. Only an app this plugin has started before
-  // (its data folder exists) is opened for it; a failed read is tried
-  // again after a minute. It queues behind a running ask.
+  // until the first request. It reads it only from a window already open:
+  // a model list is no reason to bring Doubao up (#1117), so a closed one
+  // is read on the next request. A failed read is tried again after a
+  // minute. It queues behind a running ask.
   async ensureList({ signal } = {}) {
     this.modelList()
-    if (this.tableAt || !this.app?.start || !this.cacheFile) return
-    if (!fs.existsSync(path.dirname(this.cacheFile)) || Date.now() - this.readAt < 60000) return
+    if (this.tableAt || !this.app?.running || !this.cacheFile) return
+    if (Date.now() - this.readAt < 60000) return
     this.readAt = Date.now()
-    const run = this.queue.then(() => this.tableAt || this.discover({ signal }))
+    const run = this.queue.then(() => this.tableAt || this.discover({ signal, launch: false }))
     this.queue = run.catch(() => {})
     try { await run } catch {}
   }
@@ -750,22 +763,28 @@ export class Doubao {
     return !!lookup(this.modelList(), model)
   }
 
-  // quota reads the plan's allowance through the app's page. Only an app
-  // this plugin has started before is opened for it (its data folder
-  // exists), so a usage read never launches Doubao for a user who has
-  // not signed in here.
+  // quota reads the plan's allowance through the app's page, from a
+  // window already open only: a usage read never brings Doubao up
+  // (#1117), it says the window is closed instead.
   async quota({ signal } = {}) {
     if (!(this.page && !this.page.closed)) {
       if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
       if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
     }
-    const page = await this.connect(signal)
+    const page = await this.connect(signal, { launch: false })
     return page.eval(QUOTA)
   }
 
-  async connect(signal) {
+  // connect gives the page of the app's chat window, starting the app
+  // when launch says so; without it a closed app is the app_closed error
+  async connect(signal, { launch = true } = {}) {
     if (this.page && !this.page.closed) return this.page
-    const port = await this.app.start({ signal })
+    let port
+    if (launch) port = await this.app.start({ signal })
+    else {
+      port = this.app?.running ? await this.app.running() : 0
+      if (!port) throw new DoubaoError("豆包工作窗口没有打开：额度和模型列表在它打开时读取，下一次请求会打开它。", "app_closed")
+    }
     this.page = await this.openPage(port, (t) => isChat(t.url))
     if (!this.page) throw new DoubaoError("豆包的对话窗口没有打开。请在豆包里打开一个对话窗口后再试。", "doubao_no_window")
     return this.page

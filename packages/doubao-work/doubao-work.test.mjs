@@ -2,7 +2,7 @@ import { test, expect } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { App, Page, copies } from "./cdp.mjs"
+import { App, Page, copies, portIn } from "./cdp.mjs"
 import { Doubao, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
@@ -457,6 +457,37 @@ test("App says at once that a copy the user opened keeps it from starting", asyn
     // its own copy, still starting, is waited for
     await expect(mk([`${bin} --user-data-dir=${path.join(dir, "profile")}`]).start({ timeout: 500 })).rejects.toMatchObject({ code: "app_start_timeout" })
     expect(spawned.length).toBe(1)
+    expect(fs.existsSync(path.join(dir, "port"))).toBe(false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// #1117: on Windows a second launch handed itself to the copy already up
+// on the plugin's profile, and start waited on a port nothing listened on
+test("App waits for its own copy on that copy's port instead of starting another", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dw-"))
+  try {
+    const bin = path.join(dir, "app.exe")
+    fs.writeFileSync(bin, "")
+    fs.writeFileSync(path.join(dir, "port"), "1111")
+    const spawned = []
+    const own = `"${bin}" --remote-debugging-port=4321 --user-data-dir=${path.join(dir, "profile")}`
+    let ready = false
+    setTimeout(() => (ready = true), 600)
+    const app = new App({
+      binary: bin, dataDir: dir, owns, platform: "win32",
+      // a copy the user opened on their own profile doesn't count on Windows
+      others: () => [`"${bin}"`, own],
+      spawn: (...a) => { spawned.push(a); return { unref() {} } },
+      fetchImpl: async (url) => {
+        if (!String(url).includes(":4321/") || !ready) throw Error("refused")
+        return Response.json([{ type: "page", url: "doubao://doubao-chat/chat" }])
+      },
+    })
+    expect(await app.start({ timeout: 5000 })).toBe(4321)
+    expect(spawned.length).toBe(0)
+    expect(fs.readFileSync(path.join(dir, "port"), "utf8")).toBe("4321")
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -464,6 +495,14 @@ test("App says at once that a copy the user opened keeps it from starting", asyn
 
 test("copies lists the binary's own processes only", () => {
   expect(copies("/no/such/binary-" + Date.now())).toEqual([])
+  const wmi = ["C:\\D\\Doubao.exe --remote-debugging-port=5 --user-data-dir=C:\\p", "C:\\D\\Doubao.exe --type=renderer --user-data-dir=C:\\p", "", "\"C:\\D\\Doubao.exe\""].join("\r\n")
+  let asked
+  expect(copies("C:\\D\\Doubao.exe", "win32", (cmd, args) => { asked = [cmd, args.at(-1)]; return wmi })).toEqual(["C:\\D\\Doubao.exe --remote-debugging-port=5 --user-data-dir=C:\\p", "\"C:\\D\\Doubao.exe\""])
+  expect(asked[0]).toBe("powershell.exe")
+  expect(asked[1]).toContain("Name='Doubao.exe'")
+  expect(copies("C:\\D\\Doubao.exe", "win32", () => { throw Error("no wmi") })).toEqual([])
+  expect(portIn("x --remote-debugging-port=9222 y")).toBe(9222)
+  expect(portIn("x")).toBe(0)
 
 })
 
@@ -675,7 +714,7 @@ test("a list never read from the menu is read when the plugin lists models, once
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
   const labels = ["自动", "豆包 2.1 Lite", "豆包 2.1 Pro", "DeepSeek V4.1 Flash", "Kimi K3.1 Pro", "Kimi K3.1 Pro 高速", "Kimi K3", "GLM 5.3", "GLM 5.3 Flash", "DeepSeek V4 Pro"]
   const page = fakePage([], { steps: { menu: { rows: labels.map((label) => ({ label })) } } })
-  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const d = new Doubao({ app: { start: async () => 1, running: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
   const p = I.createPlugin({ doubao: d })
   const listed = await p.provider.models({}, {})
   expect(Object.values(listed).map((m) => m.name)).toEqual(labels)
@@ -684,7 +723,7 @@ test("a list never read from the menu is read when the plugin lists models, once
   // a menu that fails is not asked again within the minute
   const bad = fakePage([], { steps: { menu: { error: "no model menu" } } })
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
-  const d2 = new Doubao({ app: { start: async () => 1, dataDir: dir2 }, openPage: async () => bad, poll: 1 })
+  const d2 = new Doubao({ app: { start: async () => 1, running: async () => 1, dataDir: dir2 }, openPage: async () => bad, poll: 1 })
   await d2.ensureList(); await d2.ensureList()
   expect(bad.calls.filter((c) => c === MENU).length).toBe(1)
   expect(Object.keys(d2.modelList())).toEqual(Object.keys(MODELS))
@@ -711,7 +750,7 @@ const SUMMARY = { status: 200, body: { data: { current_subscription: { display: 
 test("the plugin tells the plan's allowance from quota/summary instead of 暂无额度数据", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-quota-"))
   const page = fakePage([], { steps: { quota: SUMMARY } })
-  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const d = new Doubao({ app: { start: async () => 1, running: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
   const p = I.createPlugin({ doubao: d })
   const u = await p.auth.usage(async () => ({}))
   expect(u).toEqual({ plan: "标准套餐", windows: [{ name: "额度", used: 0 }] })
@@ -727,7 +766,7 @@ test("the plugin tells the plan's allowance from quota/summary instead of 暂无
 
 test("a quota that can't be read says why and keeps the sign-in", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-quota-"))
-  const mk = (quota, dataDir = dir) => I.createPlugin({ doubao: new Doubao({ app: { start: async () => 1, dataDir }, openPage: async () => fakePage([], { steps: { quota } }), poll: 1 }) })
+  const mk = (quota, dataDir = dir) => I.createPlugin({ doubao: new Doubao({ app: { start: async () => 1, running: async () => 1, dataDir }, openPage: async () => fakePage([], { steps: { quota } }), poll: 1 }) })
   for (const [quota, want] of [[{ status: 401, body: null }, "过期"], [{ status: 200, body: {} }, "没有额度数据"], [{ error: "Failed to fetch" }, "Failed to fetch"]]) {
     const u = await mk(quota).auth.usage(async () => ({}))
     expect(u.signIn).toBe("kept")
@@ -804,12 +843,47 @@ test("a models.json 0.1.9 wrote from the 对话 menu (快速, 专家) is read ag
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
   fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ at: Date.now(), models: tableFrom([{ label: "快速" }, { label: "专家" }]) }))
   const page = fakePage([], { steps: { list: BRIEF } })
-  const d = new Doubao({ app: { start: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
+  const d = new Doubao({ app: { start: async () => 1, running: async () => 1, dataDir: dir }, openPage: async () => page, poll: 1 })
   const p = I.createPlugin({ doubao: d })
   const listed = await p.provider.models({}, {})
   expect(Object.values(listed).map((m) => m.name)).toEqual(WORK)
   expect(JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf8")).v).toBe(2)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// #1117: listing models and reading usage brought Doubao up on Windows
+// whenever magpie asked, with no request sent
+test("models() and usage never start Doubao: they read from a window already open", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-closed-"))
+  fs.mkdirSync(path.join(dir, "profile"))
+  let started = 0
+  const app = { start: async () => { started++; return 1 }, running: async () => 0, dataDir: dir }
+  const page = fakePage([], { steps: { list: BRIEF, quota: SUMMARY } })
+  const d = new Doubao({ app, openPage: async () => page, poll: 1 })
+  const p = I.createPlugin({ doubao: d })
+  const listed = await p.provider.models({}, {})
+  expect(Object.keys(listed).length).toBeGreaterThan(0)
+  const u = await p.auth.usage(async () => ({}))
+  expect(u.signIn).toBe("kept")
+  expect(u.error).toContain("没有打开")
+  expect(started).toBe(0)
+  // open, the same window is read for both
+  app.running = async () => 1
+  d.readAt = 0
+  expect(Object.values(await p.provider.models({}, {})).map((m) => m.name)).toEqual(WORK)
+  expect((await p.auth.usage(async () => ({}))).error).toBeUndefined()
+  expect(started).toBe(0)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a models.json from an older version keeps its models until the list is read again", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "doubao-models-"))
+  const table = tableFrom([{ label: "快速" }, { label: "自动" }, { label: "Kimi K3.1 Pro" }])
+  fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify({ v: 1, at: Date.now(), models: table }))
+  const d = new Doubao({ app: { start: async () => 1, running: async () => 0, dataDir: dir }, poll: 1 })
+  expect(Object.keys(d.modelList())).toEqual(["auto", "kimi-k3.1-pro"])
+  expect(d.tableAt).toBe(0)
+  expect(await d.known("kimi-k3.1-pro")).toBe(true)
 })
 
 test("effortFor takes the client's reasoning effort to the nearest 推理强度 the model has", () => {
