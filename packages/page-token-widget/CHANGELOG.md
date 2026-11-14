@@ -1,9 +1,13 @@
 # Changelog
 
-## 0.2.0 · 2026-11-14
+## 0.4.4 · 2026-11-14
 
 The code of the standalone plugin (`magpie-page-token-widget`, 0.4.4) is now in this
 package, with the community's own name, port and data directory kept.
+
+The two versions are the same number from here on: this package follows the
+version of the standalone plugin, so that the two never drift apart in the eyes
+of a user. Nothing was published under 0.2.0, so the line starts here.
 
 > 这一版把独立插件（`magpie-page-token-widget` 0.4.4）的代码同步进社区包，保留社区自己的
 > 名字、端口和数据目录。最要紧的一件：谁能看控制台，由连接真正落在哪个监听器上决定，不再由

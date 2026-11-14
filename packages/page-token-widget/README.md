@@ -347,3 +347,8 @@ directory of this computer.
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).
+
+The version of this package is the version of the standalone plugin
+(`magpie-page-token-widget`), so the two never drift apart in the eyes of a
+user. The code of the standalone comes in as it is; the name, the port and the
+data directory are the community's own.
