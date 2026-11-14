@@ -11,6 +11,17 @@ magpie plugin add @magpie-community/opencode-catpaw-auth
 magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录态」/「手动粘贴 token」
 ```
 
+## 图标
+
+`icon.png` 是随包发布的猫爪标记（自绘图形，不是美团官方 logo）。`icon.mjs` 在加载时把它读成 data URI，接到两个运行时位置：
+
+- `config.provider.catpaw.icon` —— 模型列表 / 渠道卡片上的图标
+- `auth.icon` —— 登录方式、账号卡片上的图标
+
+`package.json` 的 `magpie.icon` 是同一张图的 data URI，供插件市场卡片在安装前显示。三处都取自同一个 PNG，`icon.png` 与 `icon.mjs` 已列入 `files`。读不到文件时 `iconData` 为空串，插件照常加载，只是不显示图标。
+
+图标由 [R227BOUT/magpie-meituan](https://github.com/R227BOUT/magpie-meituan) 贡献，按 MIT 许可使用，感谢原作者绘制并验证上述三个接法。
+
 ## 能力
 
 - **登录**：
