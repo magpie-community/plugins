@@ -86,7 +86,7 @@ test("device flow backs off and retains the workspace selected in the browser", 
 
 test("denied, expired and cancelled device attempts stop", async () => {
   globalThis.fetch = async () => Response.json({ error: "access_denied" }, { status: 400 })
-  await assert.rejects(finishDevice(device(), { sleep: async () => {} }), /拒绝或过期/)
+  await assert.rejects(finishDevice(device(), { sleep: async () => {} }), /已拒绝/)
   await assert.rejects(finishDevice({ ...device(), deadline: Date.now() - 1 }), /过期/)
   await assert.rejects(finishDevice(device(), { signal: AbortSignal.abort() }), { name: "AbortError" })
 })
@@ -110,11 +110,11 @@ test("refresh rotates tokens and preserves account metadata; invalid grant expir
 
 test("usage displays measured windows without treating unknown usage as zero", () => {
   const windows = usageWindows({ usage: { rolling: { percent: 42, resetsAt: "2026-11-14T12:00:00Z" }, monthly: { percent: 102 } } }, [{
-    ruleID: "model-budget", limitDollars: 20, spentDollars: 15, coverage: "models", models: [{ modelID: "gpt-6-luna" }],
-  }])
+    ruleID: "model-budget", limitDollars: 20, spentDollars: 15, coverage: "models", models: [{ providerID: "opencode-go", modelID: "gpt-6-luna" }],
+  }], "opencode-go", "console")
   assert.deepEqual(windows.map((w) => w.used), [42, 102, 75])
   assert.deepEqual(windows[2].models, ["gpt-6-luna"])
-  assert.equal(windows.find((w) => w.name === "每周"), undefined)
+  assert.equal(windows.find((w) => w.name === "7 days"), undefined)
 })
 
 test("request signing uses the selected account each time and preserves streaming", async () => {
@@ -159,30 +159,15 @@ test("Magpie-provided session IDs are preserved", async () => {
   await loader.fetch("https://opencode.ai/inference/go/openai/v1/chat/completions", { headers: { "x-magpie-session": "original-conversation" } })
 })
 
-test("standalone OpenCode refreshes a due token once and saves rotated credentials", async () => {
-  let saved = { ...auth(), expires: Date.now() - 1 }
-  let refreshes = 0, saves = 0
-  const plugin = makePlugin("go", { client: { auth: { async set({ path, body }) {
-    assert.equal(path.id, "opencode-go-account")
-    saved = body
-    saves++
-  } } } })
-  globalThis.fetch = async (input, init) => {
-    if (typeof input === "string" && input.endsWith("/auth/device/token")) {
-      refreshes++
-      return Response.json(token)
-    }
-    const headers = new Request(input, init).headers
-    assert.equal(headers.get("authorization"), "Bearer test-new-access")
-    return new Response("test")
-  }
-  const loader = await plugin.auth.loader(async () => saved)
-  const url = "https://opencode.ai/inference/go/openai/v1/chat/completions"
-  await Promise.all([loader.fetch(url), loader.fetch(url)])
-  assert.equal(refreshes, 1)
-  assert.equal(saves, 1)
-  assert.equal(saved.refresh, "test-new-refresh")
-  assert.equal(saved.metadata.orgID, "org-z")
+test("expired standalone credentials never exchange or save a rotating token", async () => {
+  let exchanges = 0, saves = 0
+  const plugin = makePlugin("go", { client: { auth: { async set() { saves++ } } } })
+  globalThis.fetch = async () => { exchanges++; return Response.json(token) }
+  const loader = await plugin.auth.loader(async () => ({ ...auth(), expires: Date.now() - 1 }))
+  await assert.rejects(loader.fetch("https://opencode.ai/inference/go/openai/v1/responses"), (e) => e.signIn === "expired")
+  assert.equal(exchanges, 0)
+  assert.equal(saves, 0)
+  assert.equal(plugin.auth.rotating, true)
 })
 
 test("Go refuses token forwarding to other hosts or plan endpoints", async () => {
@@ -216,7 +201,8 @@ test("quota reads use distinct workspace headers and retain partial results", as
   const result = await makePlugin("go").auth.usage(async () => auth())
   assert.equal(result.windows[0].used, 18)
   assert.equal(result.signIn, "kept")
-  assert.match(result.error, /502/)
+  assert.equal(result.error, undefined)
+  assert.match(result.windows[1].display, /502/)
   globalThis.fetch = async () => new Response(null, { status: 401 })
   assert.equal((await makePlugin("go").auth.usage(async () => auth())).signIn, "expired")
 })
@@ -234,4 +220,172 @@ test("session header hook is scoped to its own provider", async () => {
   assert.deepEqual(output.headers, {})
   await hook({ model: { providerID: "opencode-go-account" }, sessionID: "b" }, output)
   assert.equal(output.headers["x-opencode-session"], "b")
+})
+
+
+test("discovery rejects unusable catalogs and malformed workspace config while honoring disables", async () => {
+  let rows = [{ id: "broken-model" }], config = {}
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/models") ? { data: rows } : config)
+  const discover = () => makePlugin("go").provider.models({ models: { existing: {} } }, { auth: auth() })
+  await assert.rejects(discover(), /目录格式无效/)
+  rows = [null, { id: 42 }, ...catalog("go")]
+  config = null
+  await assert.rejects(discover(), /配置格式无效/)
+  config = { providers: { "opencode-go": { models: { bad: null } } } }
+  await assert.rejects(discover(), /配置格式无效/)
+  config = { providers: { "opencode-go": { disabled: true } } }
+  assert.equal(Object.keys(await discover()).length, 0)
+})
+
+test("catalog ignores unsafe or malformed entries without losing valid rows", () => {
+  const valid = catalog("go")[0]
+  const unsafe = { ...valid, id: "unsafe", api: { "chat-completions": { base_url: "https://example.invalid/inference/go/v1" } } }
+  assert.deepEqual(Object.keys(buildModels([null, unsafe, valid], "go")), [valid.id])
+})
+
+test("malformed quota successes report errors while retaining good windows", async () => {
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/usage") ? { usage: {} } : { unexpected: true })
+  let result = await makePlugin("go").auth.usage(async () => auth())
+  assert.equal(result.signIn, "kept")
+  assert.match(result.error, /额度信息格式无效/)
+  assert.match(result.error, /预算信息格式无效/)
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/usage") ? { usage: { weekly: { percent: 18 }, rolling: {} } } : [])
+  result = await makePlugin("go").auth.usage(async () => auth())
+  assert.equal(result.windows[0].used, 18)
+  assert.equal(result.error, undefined)
+  assert.match(result.windows[1].display, /额度信息格式无效/)
+})
+
+test("filtered and per-model budget spend is displayed aside without broad routing", () => {
+  const base = { ruleID: "test", limitDollars: 10, spentDollars: 5, coverage: "models" }
+  for (const models of [[{ providerID: "another", modelID: "same" }], [{ providerID: "opencode-go", modelID: "same", spentDollars: 2 }]]) {
+    const [w] = usageWindows(undefined, [{ ...base, models }])
+    assert.equal(w.aside, true)
+    assert.equal(w.models, undefined)
+  }
+})
+
+test("device polling honors long server intervals and rejects credential URLs", async () => {
+  let wait
+  globalThis.fetch = async () => Response.json({ error: "access_denied" }, { status: 400 })
+  await assert.rejects(finishDevice({ ...device(), interval: 90 }, { sleep: async (ms) => { wait = ms } }), /已拒绝/)
+  assert.equal(wait, 90000)
+  globalThis.fetch = async () => Response.json({ ...device(), user_code: "test", expires_in: 100, verification_uri_complete: "https://user:pass@opencode.ai/console/device" })
+  await assert.rejects(startDevice(), /授权地址/)
+})
+
+test("invalid authorization JSON and account shapes produce safe errors", async () => {
+  globalThis.fetch = async () => new Response("secret-invalid-json")
+  await assert.rejects(startDevice(), (e) => /JSON 格式无效/.test(e.message) && !e.message.includes("secret"))
+  globalThis.fetch = async (url) => url.endsWith("/token") ? Response.json(token) : Response.json(url.endsWith("/user") ? { id: 123, email: "x" } : [])
+  await assert.rejects(finishDevice(device(), { sleep: async () => {} }), /账户信息不完整/)
+})
+
+
+test("vendor-filtered budgets do not affect all-model routing", () => {
+  const [w] = usageWindows(undefined, [{ ruleID: "vendor", coverage: "all", vendors: [{ id: "v" }], limitDollars: 10, spentDollars: 4 }])
+  assert.equal(w.aside, true)
+})
+
+test("a pending device poll is cancelled at its deadline", async () => {
+  globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true })
+  })
+  await assert.rejects(finishDevice({ ...device(), deadline: Date.now() + 50 }, { sleep: async () => {} }), /过期/)
+})
+
+
+test("refresh keeps the workspace and rejects missing refresh credentials", async () => {
+  let calls = 0
+  globalThis.fetch = async () => { calls++; return Response.json({ ...token, org_id: "other" }) }
+  await assert.rejects(refreshAuth({ ...auth(), refresh: "" }), (e) => e.signIn === "expired")
+  assert.equal(calls, 0)
+  await assert.rejects(refreshAuth(auth()), (e) => e.signIn === "expired")
+  globalThis.fetch = async () => Response.json(token)
+  assert.equal((await makePlugin("go", { magpie: {} }).auth.refresh(auth())).metadata.orgID, "org-z")
+})
+
+test("device accounts distinguish workspaces and require a scoped selection", async () => {
+  let scoped = false
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/token")) return Response.json(scoped ? token : { ...token, org_id: null })
+    if (url.endsWith("/user")) return Response.json({ id: "u", email: "e@example.invalid" })
+    return Response.json([{ id: "org-z", name: "Z" }, { id: "other", name: "Other" }])
+  }
+  await assert.rejects(finishDevice(device(), { sleep: async () => {} }), /请选择/)
+  scoped = true
+  const result = await finishDevice(device(), { sleep: async () => {} })
+  assert.equal(result.accountId, "e@example.invalid · Z")
+  assert.match(result.uid, /^[a-f0-9]{64}$/)
+  assert.equal(result.metadata.orgID, "org-z")
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("/token")) return Response.json({ ...token, org_id: "other" })
+    if (url.endsWith("/user")) return Response.json({ id: "u", email: "e@example.invalid" })
+    return Response.json([{ id: "org-z", name: "Z" }, { id: "other", name: "Other" }])
+  }
+  const other = await finishDevice(device(), { sleep: async () => {} })
+  assert.equal(other.accountId, "e@example.invalid · Other")
+  assert.notEqual(other.uid, result.uid)
+})
+
+test("Go budgets are aside and Console per-model budgets use individual spend", () => {
+  const b = { coverage: "models", per: "model", scope: "each", limitDollars: 10, spentDollars: 8, models: [
+    { providerID: "opencode", modelID: "a", spentDollars: 2 },
+    { providerID: "opencode", modelID: "b", spentDollars: 8 },
+  ] }
+  assert.equal(usageWindows(undefined, [b], "opencode-go", "go")[0].aside, true)
+  const rows = usageWindows(undefined, [b], "opencode", "console")
+  assert.deepEqual(rows.map((r) => [r.amount, r.models]), [[2, ["a"]], [8, ["b"]]])
+  assert.ok(rows.every((r) => r.name.startsWith("Member budget")))
+  const mixed = { ...b, models: [b.models[0], { ...b.models[1], providerID: "other" }] }
+  assert.equal(usageWindows(undefined, [mixed], "opencode", "console")[0].aside, true)
+})
+
+test("usage forwards host cancellation to both requests", async () => {
+  const controller = new AbortController(), seen = []
+  globalThis.fetch = async (_url, init) => { seen.push(init.signal); return Response.json(_url.endsWith("/usage") ? { usage: { weekly: { percent: 1 } } } : []) }
+  await makePlugin("go").auth.usage(async () => auth(), {}, { signal: controller.signal })
+  controller.abort()
+  assert.equal(seen.length, 2)
+  assert.ok(seen.every((s) => s.aborted))
+})
+
+
+test("native quota labels and explicitly limited windows retain displayed percentage", () => {
+  const rows = usageWindows({ usage: { rolling: { percent: 98.9, status: "rate-limited" }, weekly: { percent: 12 }, monthly: { percent: 3 } } })
+  assert.deepEqual(rows.map((w) => w.name), ["5 hours", "7 days", "Monthly"])
+  assert.equal(rows[0].used, 100)
+  assert.equal(rows[0].display, "Rate limited · 98.9% reported")
+  assert.equal(rows[1].display, undefined)
+})
+
+test("unavailable budgets are distinct from an empty list and aborts propagate", async () => {
+  globalThis.fetch = async (url) => url.endsWith("/usage") ? Response.json({ usage: { weekly: { percent: 7 } } }) : new Response(null, { status: 403 })
+  const plugin = makePlugin("go")
+  const result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.windows[0].used, 7)
+  assert.equal(result.error, undefined)
+  assert.match(result.windows[1].display, /无法读取 Console 预算/)
+  assert.equal(result.windows[1].aside, true)
+  assert.equal(result.windows[1].used, undefined)
+  assert.equal(result.windows[1].amount, undefined)
+  assert.equal(result.windows[1].limit, undefined)
+  globalThis.fetch = async (url) => Response.json(url.endsWith("/usage") ? { usage: { weekly: { percent: 7 } } } : [])
+  assert.equal((await plugin.auth.usage(async () => auth())).error, undefined)
+  await assert.rejects(plugin.auth.usage(async () => auth(), {}, { signal: AbortSignal.abort() }), { name: "AbortError" })
+})
+
+
+test("partial authenticated usage remains visible after a 401 and a 404", async () => {
+  const plugin = makePlugin("go")
+  globalThis.fetch = async (url) => url.endsWith("/usage") ? Response.json({ usage: { weekly: { percent: 9 } } }) : new Response(null, { status: 401 })
+  let result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.signIn, "kept")
+  assert.equal(result.error, undefined)
+  assert.equal(result.windows[0].used, 9)
+  assert.equal(result.windows[1].aside, true)
+  globalThis.fetch = async (url) => url.endsWith("/usage") ? Response.json({ usage: { weekly: { percent: 9 } } }) : new Response(null, { status: 404 })
+  result = await plugin.auth.usage(async () => auth())
+  assert.equal(result.error, undefined)
+  assert.match(result.windows[1].display, /无法读取 Console 预算/)
 })

@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-console-account-auth",
-  "version": "0.1.3",
-  "description": "OpenCode Console and Go with browser device sign-in, workspace models and account usage",
+  "version": "0.1.4",
+  "description": "OpenCode Console browser sign-in, Go and pay-as-you-go models, and workspace usage in Magpie",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": {
