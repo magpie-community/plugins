@@ -275,8 +275,10 @@ under **Settings → Usage → Plugins**.
 First written by [yuweihao17](https://github.com/yuweihao17/codearts); this version carries the
 fixes of [yuweihao17/codearts#8](https://github.com/yuweihao17/codearts/pull/8). It builds on the
 measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pull/6) and
-[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel of
-[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model).
+[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel that
+[iJetLi](https://gitee.com/iJetLi) wrote in
+[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts), as
+[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model) carried it.
 
 ## 中文
 
@@ -374,7 +376,8 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   输的一方重试，只有 token 一直是被消费状态才标记需重新登录。
   另外，`officeace-auth` 与本包不能同时服务 `officeace` 这个 provider id，magpie 会让你选一个，装之前先卸掉旧的。
 - **致谢**：原作者 [yuweihao17](https://github.com/yuweihao17/codearts)；HuHong-Tao、ReachForStar 的
-  实测与实现；[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
+  实测与实现；CodeArts 渠道的原作者 [iJetLi](https://gitee.com/iJetLi)（[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts)），
+  以及转载它的 [Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
 
 ## License
 
