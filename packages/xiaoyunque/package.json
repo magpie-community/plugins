@@ -1,0 +1,38 @@
+{
+  "name": "@magpie-community/opencode-xiaoyunque-auth",
+  "version": "0.1.0",
+  "description": "小云雀图片和视频供应商：网页登录或 Access Key、动态模型、积分和媒体生成",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/xiaoyunque" },
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    "./server": "./index.mjs",
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "api.mjs",
+    "auth.mjs",
+    "media.mjs",
+    "tools.mjs",
+    "delivery.mjs",
+    "icons/xiaoyunque.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "check": "node --check index.mjs && node --check opencode.mjs && node --check opencode2.mjs && node --check api.mjs && node --check auth.mjs && node --check media.mjs && node --check tools.mjs && node --check delivery.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "keywords": ["magpie", "magpie-plugin", "opencode", "xiaoyunque", "pippit", "image", "video"],
+  "magpie": {
+    "name": "小云雀",
+    "maxConcurrency": 4,
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNSIgZmlsbD0iIzhDNjhGOCIvPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSIyLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+CiAgICA8cGF0aCBkPSJNMTAgMjNsMTAgMThtMC0xOEwxMCA0MU0yNyAyM2w1IDkgNS05bS01IDl2OSIvPgogICAgPHJlY3QgeD0iNDQiIHk9IjIzIiB3aWR0aD0iMTIiIGhlaWdodD0iMTgiIHJ4PSI2Ii8+CiAgICA8cGF0aCBkPSJNNTEgMzZsNiA3Ii8+CiAgPC9nPgo8L3N2Zz4K"
+  },
+  "license": "MIT"
+}

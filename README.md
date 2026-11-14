@@ -56,6 +56,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [trae](packages/trae) | Trae CN (trae.cn) and Trae international (trae.ai), free tier included, with Trae's browser sign-in (experimental) | `trae-cn`, `trae-global` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (China build, CodeBuddy plan) | `workbuddy` |
 | [workbuddy](packages/workbuddy) | WorkBuddy (international build) | `workbuddy-ai` |
+| [xiaoyunque](packages/xiaoyunque) | XiaoYunQue image and video models and account credits through the official Skill APIs, with browser sign-in or Access Key (community) | `xiaoyunque` |
 | [zcode](packages/zcode) | ZCode: Z.ai / BigModel (智谱) GLM Coding Plan, team seats, Start Plan, daily claim of its gift plans | `zcode` |
 | [zed](packages/zed) | Zed (Pro, Pro Trial, Student, Business): Anthropic, OpenAI, Google and xAI models hosted by Zed | `zed` |
 | [zen-free](packages/zen-free) | OpenCode Zen free models with the public credential | `opencode-zen-free` |
