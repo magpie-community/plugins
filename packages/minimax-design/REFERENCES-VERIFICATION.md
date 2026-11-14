@@ -124,3 +124,23 @@ protocols.
 Before upgrading an already connected pre-0.4.2 package, disconnect its Agent
 while Design is closed, so Magpie restores the old path's ownership record.
 Reconnect after updating to establish ownership under the shared entry.
+
+## Installed desktop generation acceptance — November 14, 2026
+
+The installed 0.4.2 integration completed two real image tasks through Design's
+MCP: text-to-image produced a yellow ceramic cup, then reference-image editing
+used that output to produce a blue cup. Both JPEG outputs were saved by Design
+and visually inspected. The reference-edit task completed with its output
+adopted into the composition. This verifies the exercised local route; it does
+not establish live generation coverage for every provider, video or speech.
+
+The installed native acceptance also passed connection, Design configuration
+validation, Library skill/MCP distribution, native tool execution, disconnect
+restoration, 101-model splitting and catalogue shrink.
+
+The desktop's offline banner cleared after restart and a temporary reset of
+the existing network tunnel. System proxy and tunnel settings were restored.
+No machine-specific proxy configuration or credential is included in the plugin.
+
+Release regression checks repeated successfully: Node and Bun each passed all
+36 tests, the registry check passed and `git diff --check` was clean.
