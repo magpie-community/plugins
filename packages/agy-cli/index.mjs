@@ -1963,8 +1963,10 @@ class Proc {
   async steerInSession(turn, results, history) {
     if (this.dead || this.stopping || this.retiring || this.turn !== turn || turn.steering || turn.done ||
       turn.finalized || !Array.isArray(history)) return false
-    // An image in a result is replayed in the prompt, as before.
-    if (results.some((item) => item.result.content.some((part) => part.type !== "text"))) return false
+    // agy offloads an image in an MCP result to a file the model can't open,
+    // so the call is answered with its text and the image goes in the
+    // steer's prompt (withoutAnswered keeps it there).
+    results = results.map((item) => ({ ...item, result: textOnlyResult(item.result) }))
     const deliveringLiveMcp = results.some(({ call }) =>
       (!call.deferred && !call.mcpResponded && call.ready && !turn.done) ||
       (call.deferred && !call.result && turn.awaitCalls.some((waiter) => waiter.target === call)))
@@ -2434,6 +2436,22 @@ function stillRunningText(call) {
 
 function resultText(result) {
   return (result?.content || []).map((part) => part?.type === "text" ? part.text : "[image returned by tool]").join("\n\n")
+}
+
+export const IMAGE_FOLLOWS = "[The image this tool returned is attached to the next message.]"
+
+function resultHasImage(result) {
+  return (result?.content || []).some((part) => part?.type === "image")
+}
+
+// A tool result as agy gets it over MCP: agy writes an MCP image to a file
+// ("[Resource offloaded to file://…/media_0.jpg]") and the model never sees
+// it, so each image is left out with a line saying where it went.
+function textOnlyResult(result) {
+  if (!resultHasImage(result)) return result
+  const content = result.content.filter((part) => part?.type !== "image")
+  content.push({ type: "text", text: IMAGE_FOLLOWS })
+  return { ...result, content }
 }
 
 function renderLateResults(calls) {
@@ -5610,10 +5628,16 @@ function streamResponse(proc, turn, body, signal) {
 
 // Tool results a kept session already holds (answered to its live MCP calls
 // when the user steered) are not sent again in the steer's prompt.
+// An answered result's images are the exception: the call got its text only
+// (textOnlyResult), so its images go in the prompt, under the result's id.
 function withoutAnswered(messages, answered) {
   if (!answered?.size) return messages
   return messages.map((message) => message.role === "user" && Array.isArray(message.content)
-    ? { ...message, content: message.content.filter((block) => !(block?.type === "tool_result" && answered.has(block.tool_use_id))) }
+    ? { ...message, content: message.content.flatMap((block) => {
+      if (!(block?.type === "tool_result" && answered.has(block.tool_use_id))) return [block]
+      const images = Array.isArray(block.content) ? block.content.filter((part) => part?.type === "image") : []
+      return images.length ? [{ ...block, content: images }] : []
+    }) }
     : message)
 }
 
@@ -5828,6 +5852,10 @@ export const AntigravityBridgePlugin = async () => {
                     }
                   }
                   if (!interrupted) proc.validateResults(results)
+                  // An image over MCP reaches agy's model as a path it can't
+                  // read, so a result with one takes the steer's way: the call
+                  // gets the text, the next prompt the image.
+                  const imageResult = proc.supportsImages && results.some((item) => resultHasImage(item.result))
                   const directIdsMatch = matches.every((item) => item.match?.call?.id === item.block.tool_use_id)
                   const historyMatches = directIdsMatch
                     ? proc.matchesPendingTurnHistory(turn, trailingMessages(body).history)
@@ -5835,7 +5863,7 @@ export const AntigravityBridgePlugin = async () => {
                   // A steer keeps the live session, so agy's prompt cache holds: the
                   // calls are answered with their real results, the step is
                   // cancelled, and the steer goes in as the next prompt.
-                  if (interrupted && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
+                  if ((interrupted || imageResult) && historyMatches && !proc.toolsGrew(tools) && proc.workDir === workDir &&
                     sameInstructions(proc.instructions, instructions) &&
                     await proc.steerInSession(turn, rawResults, trailingMessages(body).history)) {
                     keptSession = true
@@ -5844,7 +5872,7 @@ export const AntigravityBridgePlugin = async () => {
                         .filter((item) => !item.call.deferred || item.call.lateDelivered)
                         .map((item) => item.block.tool_use_id),
                     )
-                  } else if (interrupted || !historyMatches || proc.toolsGrew(tools) ||
+                  } else if (interrupted || imageResult || !historyMatches || proc.toolsGrew(tools) ||
                     proc.workDir !== workDir || !sameInstructions(proc.instructions, instructions)) {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the

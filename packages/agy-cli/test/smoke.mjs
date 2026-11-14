@@ -549,7 +549,7 @@ if (process.platform === "win32") {
 fs.chmodSync(wrapper, 0o755)
 process.env.AGY_PATH = wrapper
 
-const { default: pluginDefault } = await import("../index.mjs")
+const { default: pluginDefault, IMAGE_FOLLOWS } = await import("../index.mjs")
 const plugin = await pluginDefault.server({ client: null, directory: os.tmpdir() }, {})
 const loader = await plugin.auth.loader(async () => ({ key: "agy" }))
 let failures = 0
@@ -1956,13 +1956,38 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const final = (await readSSE(response)).events
   const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === convId).at(-1)
   const content = delivered?.result?.content || []
-  const texts = content.filter(part => part.type === "text").map(part => part.text).join("\n")
-  check("image dimension companion, teammate-message, and loop notice continue live turn",
+  const steer = lastOf("user")
+  // agy offloads an MCP image to a file its model can't open (distinceeeee
+  // on X): the call gets the text, and the image goes in the next prompt
+  // of the same session, as an ACP image.
+  check("a tool result's image goes to agy as a prompt image in the same session, not over MCP",
     response.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
-    content[0]?.type === "image" &&
-    texts.includes("Multiply coordinates by 1.71") &&
-    texts.includes("worker-1") &&
-    texts.includes("prior /loop wakeups"), JSON.stringify(content))
+    !content.some(part => part.type === "image") &&
+    content.some(part => part.text === IMAGE_FOLLOWS) &&
+    steer.convId === convId &&
+    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.text.includes("Multiply coordinates by 1.71") &&
+    steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
+
+  // OpenCode's read tool: the image sits inside the tool_result, beside its text.
+  const readFirst = { model, messages: [{ role: "user", content: "TOOL opencode read image" }], tools: [echoTool] }
+  const readEvents = (await readSSE(await callFetch(readFirst))).events
+  const readConv = inits().at(-1).convId
+  const readBefore = inits().length
+  const readSecond = continuation(readFirst, readEvents, [
+    { type: "text", text: "Image read successfully" },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+  ])
+  const readResponse = await callFetch(readSecond)
+  const readFinal = (await readSSE(readResponse)).events
+  const readDelivered = logs().filter(event => event.type === "mcpResult" && event.convId === readConv).at(-1)?.result?.content || []
+  const readSteer = lastOf("user")
+  check("an image inside a tool_result goes to agy as a prompt image, its text over MCP",
+    readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
+    JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
+    readSteer.convId === readConv && readSteer.images === 1 &&
+    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const searchFirst = { model, messages: [{ role: "user", content: "TOOLSEARCHCALL load WebFetch" }], tools: [searchTool] }

@@ -75,7 +75,9 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Streaming with thought summaries**: summaries come back as `thinking` blocks.
   Set `AGY_BRIDGE_THINKING=0` to turn them off.
 - **Image input**: inline base64 PNG, JPEG, GIF and WebP. This needs agy 1.5.0 or
-  newer, because the ACP server has to advertise image support.
+  newer, because the ACP server has to advertise image support. An image a tool
+  returns (a screenshot from `read`) goes to agy as a prompt image too: over MCP,
+  agy would save it to a file the model can't open.
 - **Tool calls**: parallel and consecutive calls both work. A tool that runs past
   150 seconds first gets a "still running" placeholder; once the real result
   arrives, the same turn continues, and the client executes each call exactly once.
