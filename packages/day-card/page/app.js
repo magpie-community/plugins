@@ -476,11 +476,19 @@
 
   // ---- the day menu: the days that had calls, newest first ----
   const menu = $("menu");
-  function openMenu() {
+  let menuOpening = 0;
+  async function openMenu() {
     const d = state.day;
     if (!d) return;
-    const days = (d.days || []).slice().reverse().slice(0, 120);
-    if (!days.some((x) => x.date === d.today)) days.unshift({ date: d.today, tokens: 0 });
+    // a day or span in the past knows only the days up to it: the days
+    // after it come from a read of today's
+    let latest = d.days;
+    if (d.date !== d.today) {
+      const n = ++menuOpening;
+      try { latest = (await magpie.read("usage:day", { date: "", tz: zone })).days; } catch { latest = null; }
+      if (n !== menuOpening || state.day !== d) return;
+    }
+    const days = V.menuDays(d.days, d.today, latest);
     menu.replaceChildren(...days.map((x) => {
       const li = document.createElement("li");
       li.setAttribute("role", "option");
@@ -501,6 +509,7 @@
     menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }
   function closeMenu() {
+    menuOpening++;
     if (menu.hidden) return;
     $("date").setAttribute("aria-expanded", "false");
     menu.classList.add("closing");

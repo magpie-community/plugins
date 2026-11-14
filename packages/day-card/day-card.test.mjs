@@ -334,3 +334,25 @@ test("the blur and dim sliders stay put while a slider is dragged (#957)", () =>
   for (const id of [...B.list.map((b) => b.id), "custom"]) expect([id, typeof B.meta(id).photo]).toEqual([id, "boolean"])
   expect(read("app.js")).toContain('pop.classList.toggle("photo", B.meta(bg.bg).photo === true)')
 })
+
+test("a day or a span in the past still lists every later day in the menu, not today right above it (shangyuan0818 on X)", () => {
+  // usage:day's days stop at the date read (usageapi.SpanOf), so a week
+  // ending 11-04, read on 11-09, knows nothing of 11-06 to 11-09
+  const past = { ...day, from: "2026-10-29", date: "2026-11-04", days: day.days.filter((d) => d.date <= "2026-11-04") }
+  const latest = day.days
+  const dates = (list) => list.map((d) => d.date)
+  expect(dates(V.menuDays(past.days, past.today, latest))).toEqual(["2026-11-09", "2026-11-08", "2026-11-07", "2026-11-06", "2026-11-01"])
+  // today with no calls yet is still first, and no day is listed twice
+  const quiet = latest.slice(0, -1)
+  expect(dates(V.menuDays(past.days, "2026-11-09", quiet))).toEqual(["2026-11-09", "2026-11-08", "2026-11-07", "2026-11-06", "2026-11-01"])
+  // the latest read's numbers win for a day both know
+  expect(V.menuDays([{ date: "2026-11-01", tokens: 5 }], "2026-11-09", [{ date: "2026-11-01", tokens: 9 }]).at(-1).tokens).toBe(9)
+  // with no read of today's days the menu doesn't pretend: it lists the
+  // days it has, and no today above a gap
+  expect(dates(V.menuDays(past.days, past.today, null))).toEqual(["2026-11-01"])
+  // the day read stays in the menu however long the list
+  const many = Array.from({ length: 300 }, (_, i) => ({ date: V.shift("2026-11-09", -i), tokens: 1 })).reverse()
+  const old = V.shift("2026-11-09", -200)
+  expect(V.menuDays(many.filter((d) => d.date <= old), "2026-11-09", many).some((d) => d.date === old)).toBe(true)
+  expect(read("app.js")).toContain("V.menuDays(")
+})

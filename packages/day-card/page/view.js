@@ -207,6 +207,24 @@
     return to > today ? today : to;
   }
 
+  // the day menu: the days that had calls, newest first, and today on top.
+  // usage:day's days stop at the date it read, so a day or span in the past
+  // takes the days after it from latest, a read of today's days; without
+  // that the menu lists only the days it has, never today above a gap
+  function menuDays(days, today, latest) {
+    const by = new Map();
+    for (const x of days || []) by.set(x.date, x);
+    if (latest) {
+      for (const x of latest) by.set(x.date, x);
+      if (!by.has(today)) by.set(today, { date: today, tokens: 0 });
+    }
+    const list = [...by.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    // the newest 120, and as far back as the day read
+    const read = (days || []).length ? days[days.length - 1].date : "";
+    const keep = Math.max(120, list.filter((x) => x.date >= read).length);
+    return list.slice(0, keep);
+  }
+
   // when the card was drawn: "NOV 9, 2026 AT 23:04", by this computer's clock
   function issued(now, lang) {
     const p = (n) => String(n).padStart(2, "0");
@@ -327,5 +345,5 @@
   // the file a saved card is named
   const fileName = (date, span, from) => (span === "all" ? `magpie all ${date}` : span && span !== "day" && from ? `magpie ${from} to ${date}` : `magpie ${date}`);
 
-  globalThis.DayView = { TEXT, langOf, text, count, money, tokensOf, hitRate, percent, shift, dateLabel, receiptDate, receiptRange, SPANS, spanFrom, stepDate, issued, streak, average, versus, card, fileName };
+  globalThis.DayView = { TEXT, langOf, text, count, money, tokensOf, hitRate, percent, shift, dateLabel, receiptDate, receiptRange, SPANS, spanFrom, stepDate, menuDays, issued, streak, average, versus, card, fileName };
 })();
