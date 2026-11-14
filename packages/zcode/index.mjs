@@ -263,13 +263,20 @@ async function plansOf(s) {
     // Plan's 405 until the route was read again (#369)
     if (start) sure = !(s.key && r && !r.start)
   } catch {
-    // the plan list could not be read: a key account takes the dual route
-    // (start stays false, the gift is kept, a minute's ttl), so a gift
-    // refusal still replays to the coding plan rather than blacking out
-    try {
-      gift = await startPlan(s.jwt, s.device)
-      sure = false
-    } catch {}
+    // the plan list could not be read. An account the last read found with
+    // no coding plan stays on the Start Plan for the minute: the dual route
+    // would send its key to the coding plan's host, which bills a key with
+    // no plan pay-as-you-go while the free quota sits unspent (bg5eau on
+    // X). Any other key account takes the dual route (start stays false,
+    // the gift is kept, a minute's ttl), so a gift refusal still replays to
+    // the coding plan rather than blacking out
+    if (r?.start) start = true
+    else {
+      try {
+        gift = await startPlan(s.jwt, s.device)
+      } catch {}
+    }
+    sure = false
   }
   const out = { start, gift, at: Date.now(), ttl: Math.min(sure ? 600_000 : 60_000, gift?.ttl ?? 600_000) }
   routes.set(id, out)
@@ -724,6 +731,26 @@ async function claimHint(s) {
 // only that there is none. Kept ten minutes per session, so an agent
 // retrying the pick doesn't read the feed each time; a read that fails
 // names none and is not kept.
+// aloneSeen is a gift-only account's balance as last read (the model list
+// reads it), kept ten minutes. A request reads no balance on its own: only
+// a model the kept balance doesn't name has it read again (aloneGift), so
+// a gift claimed since is not refused. A read that fails is not kept.
+const aloneSeen = new Map()
+const aloneNames = (s) => {
+  const c = aloneSeen.get(s.jwt)
+  return c && Date.now() - c.at < 600_000 ? giftNames(c.gift) : []
+}
+async function aloneGift(s) {
+  let gift
+  try {
+    gift = await startPlan(s.jwt, s.device)
+  } catch {
+    return null
+  }
+  aloneSeen.set(s.jwt, { at: Date.now(), gift })
+  return gift
+}
+
 const unclaimedSeen = new Map()
 async function unclaimed(s) {
   if (!s.jwt || jwtExpired(s.jwt)) return []
@@ -2992,7 +3019,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
         const s = await located(stateOf(auth))
         if (!s) return provider.models
         const { start, gift: known } = await plansOf(s).catch(() => ({ start: false, gift: null }))
-        const gift = start ? await startPlan(s.jwt, s.device).catch(() => null) : known
+        const gift = start ? await aloneGift(s) : known
         const base = start ? START_BASE : s.base
         const cfg = await zcodeConfig().catch(() => null)
         let ms = modelsOf(cfg, planID(base))
@@ -3169,6 +3196,25 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 m = raw
                 freeGift = true
                 giftName = giftID(raw)
+              } else if (alone && /\/v1\/messages$/.test(new URL(url).pathname)) {
+                // a gift-only account's Start Plan serves the models its
+                // balance names, and ZCode's app offers only those
+                // (resolveStartPlanBalanceAvailability). Any other model
+                // spends none of the free quota, so it is not sent: an
+                // agent left on another model would be billed while the
+                // gift stayed unspent (bg5eau on X). The balance is the
+                // one the model list read (aloneSeen); a model it doesn't
+                // name has it read again before the refusal. One not read
+                // yet, one that fails, or one naming none leaves the
+                // request as it was.
+                const named = (ns) => ns.some((x) => x.toLowerCase() === m.toLowerCase())
+                const kept0 = aloneNames(s)
+                const names = kept0.length && !named(kept0) ? giftNames(await aloneGift(s)) : []
+                if (names.length && !named(names)) {
+                  const shown = uniqueModels(names.map(wireModel))
+                  const error = { type: "invalid_request_error", message: `ZCode's Start Plan on this account serves ${shown.join(", ")}; ${m} is not among them and would spend none of its free quota, so it was not sent. Pick ${shown.length > 1 ? "one of those" : shown[0]} for this account` }
+                  return kept(new Response(JSON.stringify({ type: "error", error }), { status: 400, headers: { "content-type": "application/json" } }))
+                }
               }
               start = alone || forcedGift || freeGift
             }
@@ -3524,4 +3570,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

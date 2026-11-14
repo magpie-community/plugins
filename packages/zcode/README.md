@@ -117,7 +117,14 @@ the plans again on the next request:
   (`/api/biz/subscription/list`), its requests go to that plan. A model
   the account's gift plans also serve is listed again as
   `<model>-Trial`; asking that entry spends the gift (see below).
-- Otherwise they go to the gift plans.
+- Otherwise they go to the gift plans. A model the gift plans' balance
+  doesn't name (an agent left on GLM-5.2 while the gift serves only
+  GLM-5.3-Flash) would spend none of the free quota, so it is answered
+  with the models the balance names and not sent. The balance is the one
+  the model list read; a model it doesn't name has it read again first.
+  When the plan list can't be read, an account whose last read found no
+  plan stays on the gift plans rather than sending its key to the coding
+  plan's host, which bills a key with no plan pay-as-you-go.
 
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.
