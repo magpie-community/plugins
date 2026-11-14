@@ -1,0 +1,74 @@
+{
+  "name": "@magpie-community/page-token-widget",
+  "version": "0.4.7",
+  "description": "在 iPhone 主屏上放一个额度小组件：扫一次码，Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量就在手边。A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "lib",
+    "mobile",
+    "page",
+    "scriptable",
+    "scripts",
+    "ui",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "check:syntax": "node scripts/check-syntax.mjs"
+  },
+  "engines": {
+    "magpie": ">=0.1.3681",
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-token-widget"
+  },
+  "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/page-token-widget",
+  "bugs": {
+    "url": "https://github.com/magpie-community/plugins/issues"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "scriptable",
+    "iphone",
+    "tailscale",
+    "quota",
+    "usage"
+  ],
+  "magpie": {
+    "name": "iPhone Quota Widget",
+    "summary": {
+      "en": "A quota widget on the home screen of your iPhone: scan one code and the widget shows the remaining quota, the reset countdown and the real token usage of Codex, MiniMax and GLM. Unlike the usage pages listed above, the numbers land on another device, and the quota stays the quota window of the subscription rather than a per-model split of tokens; the phone reaches the local service over your Tailscale tailnet.",
+      "zh": "把额度组件放到 iPhone 桌面：扫一次码，组件显示 Codex、MiniMax、GLM 各家套餐的剩余额度、重置倒计时和真实 Token 用量。和上面那些用量页面不同，数字落在另一台设备上；额度保持订阅本身的额度窗口，而不是按模型摊开的 token；手机通过 Tailscale 尾网连进本机服务。"
+    },
+    "icon": "page/icon.svg",
+    "page": {
+      "title": "iPhone Quota Widget",
+      "titles": {
+        "en": "iPhone Quota Widget",
+        "zh": "iPhone 额度组件",
+        "zh-TW": "iPhone 額度元件"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3498,
+        "option": "port"
+      }
+    },
+    "permissions": [],
+    "options": {
+      "port": 3498,
+      "gatewayURL": "http://127.0.0.1:3425"
+    }
+  }
+}

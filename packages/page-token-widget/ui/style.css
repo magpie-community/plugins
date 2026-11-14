@@ -1,0 +1,423 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6f2;
+  --card: #ffffff;
+  --fg: #232523;
+  --muted: #8a8f85;
+  --line: #e4e8e1;
+  --soft: #f0f3ee;
+  --accent: #4c544a;
+}
+[data-theme="dark"] {
+  --bg: #1f221e;
+  --card: #232722;
+  --fg: #ebeee7;
+  --muted: #92998d;
+  --line: #2f342d;
+  --soft: #262b24;
+  --accent: #b9c8b0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1f221e;
+    --card: #232722;
+    --fg: #ebeee7;
+    --muted: #92998d;
+    --line: #2f342d;
+    --soft: #262b24;
+    --accent: #b9c8b0;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 20px 18px 44px;
+}
+
+/* One rail with the code, one sheet with everything else. The lists that
+   grow with the machine (the cards, the addresses) are folded away, so the
+   page stays the same length on a laptop and on a workstation. */
+.layout {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 880px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rail {
+    position: static;
+  }
+}
+.rail {
+  position: sticky;
+  top: 20px;
+  /* The rail is taller than a short window; it scrolls inside itself so the
+     steps at the bottom stay reachable while the sheet is long. */
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 15px 16px 12px;
+}
+.sheet {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0 16px;
+}
+/* A wide window gets two columns: the left one holds what is read often,
+   the right one what is touched rarely. A narrow window stacks them. */
+@media (min-width: 1180px) {
+  .sheet {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 30px;
+    align-items: start;
+  }
+}
+.col > section {
+  padding: 13px 0;
+  border-top: 1px solid var(--line);
+}
+.col > section:first-child {
+  border-top: 0;
+}
+@media (max-width: 1179px) {
+  .col + .col > section:first-child {
+    border-top: 1px solid var(--line);
+  }
+}
+.rail-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 9px;
+}
+.lead {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.countdown {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.qr {
+  display: grid;
+  place-items: center;
+  padding: 6px 0 2px;
+}
+.qr img {
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+  border-radius: 6px;
+}
+.qr.empty {
+  min-height: 110px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.center {
+  text-align: center;
+}
+#pairingURL {
+  display: grid;
+  gap: 1px;
+  margin: 8px 0 0;
+}
+#pairingURL .code {
+  color: var(--fg);
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: center;
+  margin-top: 12px;
+}
+.actions.left {
+  justify-content: flex-start;
+}
+button {
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--card);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+/* The buttons that sit in a row next to an input are smaller. Only the
+   ones that are a direct child of the row; the ones inside .actions keep the
+   size of a real button. */
+.row > button {
+  padding: 4px 9px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+button.quiet {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--line);
+}
+dl {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 12.5px;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  min-width: 0;
+}
+.checks {
+  display: grid;
+  /* The track may be narrower than what is inside it. Without this a row of
+     long names would decide the width of the whole column and push the
+     buttons of a card out of the card. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  font-size: 12.5px;
+}
+/* A row of the subscription list: the name on the left, the parameter of the
+   small widget on the right. The row is flex, not grid: in a grid the track of
+   the parameter keeps the whole width of its text and pushes the row out of
+   the card; in a flex row both texts give up width a little at a time. */
+.checks label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--soft);
+  border-radius: 7px;
+  min-width: 0;
+}
+.checks input {
+  accent-color: var(--accent);
+  margin: 0;
+  flex: 0 0 auto;
+}
+.checks label .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The ways of refreshing sit on one line: they are four names, not four
+   things to read. */
+.checks.inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.checks.inline label {
+  display: inline-flex;
+  padding: 3px 9px;
+}
+.checks .param {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
+}
+/* A row that can be dragged into another order: the handle on the left, the
+   checkbox, the name, the parameter on the right. */
+.checks label.sub .grip {
+  flex: 0 0 auto;
+}
+.grip {
+  cursor: grab;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+}
+.checks label.over {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+ol {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.note {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.list {
+  display: grid;
+  /* The track may be narrower than what is inside it: a row that says a lot
+     must not decide the width of the column and stick out of the card. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.list .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 9px;
+  background: var(--soft);
+  border-radius: 8px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.list .row .note {
+  margin: 0;
+  flex: 1 1 100%;
+}
+.list .row .actions {
+  margin: 0;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+.list .row.gone {
+  opacity: 0.62;
+}
+/* A device is one line when there is room: the name, when it was paired and
+   last seen, and the buttons. The meta line gives up its width first when the
+   row gets tight; when even that is not enough the buttons move to a line of
+   their own rather than out of the card. */
+.list .row.device {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.list .row.device .device-name {
+  flex: 0 1 auto;
+  min-width: 64px;
+  max-width: 180px;
+}
+.list .row.device .note {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list .row.device .actions {
+  flex: 0 0 auto;
+  margin: 0;
+  margin-left: auto;
+}
+/* The question is asked inside the row. The Magpie window runs this page in
+   a sandboxed frame, and a sandbox without "allow-modals" has no dialogs. */
+.ask {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ask-question {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.ask button {
+  padding: 4px 9px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+.tag {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.device-name {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  min-width: 130px;
+}
+button.danger {
+  background: transparent;
+  color: #b4483c;
+  border-color: #e0bdb7;
+}
+.row.manual {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.row.manual input {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  min-width: 150px;
+}
+[data-theme="dark"] button.danger {
+  color: #e29186;
+  border-color: #4a3632;
+}
+details {
+  margin-top: 10px;
+}
+details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+details[open] summary {
+  margin-bottom: 8px;
+}

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh" data-theme="__THEME__">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="service-token" content="__SERVICE_TOKEN__" />
+    <title>iPhone 额度组件</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <div class="layout">
+        <aside class="rail">
+          <h1>iPhone 额度组件</h1>
+          <p class="lead">扫一次码，手机就能自己装好组件。</p>
+
+          <div class="qr"><img id="qr" alt="配对二维码" /></div>
+          <p class="center mono" id="pairingURL">—</p>
+          <p class="countdown" id="pairCountdown"></p>
+          <div class="actions">
+            <button id="copyLink" type="button">复制配对链接</button>
+            <button id="rotate" type="button" class="quiet">重新生成配对码</button>
+            <button id="reconnect" type="button" class="quiet" hidden>重新连接</button>
+          </div>
+          <p class="note" id="pairNote"></p>
+
+          <div class="rail-block">
+            <h2>在 iPhone 上</h2>
+            <ol>
+              <li>手机和电脑连在同一个 Tailscale 里（用自定义地址时，让 iPhone 能访问那个地址就行）。</li>
+              <li>用相机扫上面的二维码，打开配对页。</li>
+              <li>在下载列表里用 Scriptable 打开下载的脚本。</li>
+              <li>长按 iPhone 桌面，添加 Scriptable 小组件，选 UsageWidget。</li>
+            </ol>
+            <p class="note" id="lifetime"></p>
+          </div>
+        </aside>
+
+        <div class="sheet">
+          <!-- Two columns on a wide window: the left one holds what is read
+               often, the right one what is touched rarely. -->
+          <div class="col">
+            <section>
+              <h2>状态</h2>
+              <dl id="facts"></dl>
+            </section>
+
+            <section>
+              <h2>数据更新</h2>
+              <div id="refresh" class="checks inline"></div>
+              <p class="note" id="refreshNote"></p>
+            </section>
+
+            <section>
+              <h2>显示哪些订阅</h2>
+              <div id="subscriptions" class="checks"></div>
+              <p class="note">
+                这里改的是中号和大号组件里的内容。勾上的账号会显示；拖动左边的把手可以换顺序，手机和组件都按这个顺序排。
+              </p>
+              <p class="note" id="subNote"></p>
+            </section>
+
+            <section>
+              <h2>小组件</h2>
+              <div id="widgetSettings" class="checks"></div>
+              <p class="note">
+                这里选的是小组件的样子：数字是「剩余」还是「已用」，小号组件显示哪一张卡片。不用再去 Scriptable 里敲参数了。手机上那个参数还能临时改一次，改完只影响那一个组件。「跟着第一个有数的」= 今天网关报过数的那一张；网关今天没报这个账号，组件上就只有一个破折号。
+              </p>
+              <p class="note" id="widgetNote"></p>
+            </section>
+          </div>
+
+          <div class="col">
+            <section>
+              <h2>设备管理</h2>
+              <div id="devices" class="list"></div>
+              <p class="note" id="deviceNote"></p>
+              <p class="note">
+                扫码的时候手机自己换到一枚只读的令牌，服务这边只留它的指纹。令牌是每台手机一枚，所以撤销哪一台就只停哪一台。撤销之后这一行还留在名单里（当作个记录），再点「删除」才把它从名单上划掉；一台自己走掉的手机（组件读到令牌作废、或手机页面按了「断开」）也会把自己的行带走。扫码这条路你一次也不用手抄令牌。
+              </p>
+              <div class="row manual">
+                <input id="manualName" type="text" placeholder="新手机的名字" />
+                <button id="manualToken" type="button">给这台手机一个令牌</button>
+              </div>
+              <p class="note" id="manualNote"></p>
+            </section>
+
+            <section>
+              <h2>网络连接</h2>
+              <div class="row">
+                <input id="external" type="text" placeholder="http://192.168.1.50:3499" />
+                <button id="saveExternal" type="button">保存地址</button>
+              </div>
+              <p class="note" id="externalNote"></p>
+              <div class="actions left">
+                <button id="diagnose" type="button">诊断连接</button>
+                <button id="restoreTailscale" type="button" class="quiet">恢复 Tailscale 默认连接</button>
+              </div>
+              <p class="note" id="diagnoseNote"></p>
+              <p class="note" id="restoreNote"></p>
+
+              <details>
+                <summary id="peersSummary">尾网里的 iPhone</summary>
+                <div id="peers" class="list"></div>
+              </details>
+              <details>
+                <summary id="interfacesSummary">这台电脑的网卡</summary>
+                <div id="interfaces" class="list"></div>
+                <p class="note" id="lanNote"></p>
+              </details>
+              <details>
+                <summary id="bindSummary">手机可以从这里连</summary>
+                <div id="bindList" class="list"></div>
+              </details>
+            </section>
+
+            <section>
+              <details>
+                <summary>高级设置</summary>
+                <dl id="advanced"></dl>
+                <p class="note" id="portNote"></p>
+              </details>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

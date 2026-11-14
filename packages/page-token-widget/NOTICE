@@ -1,0 +1,22 @@
+# Third-party notices
+
+## Magpie
+
+[Magpie](https://github.com/yetone/magpie), MIT, supplies the local observation APIs used at runtime. No Magpie source, account configuration or provider credentials are bundled. The product is independently implemented and is not an official Magpie client.
+
+## ScriptableTokenWidgets
+
+[liuzq1103/ScriptableTokenWidgets](https://github.com/liuzq1103/ScriptableTokenWidgets), MIT, copyright 2026 liuzq1103. The collector, the projection of the snapshot and the widget script of the phone are taken from that project and are changed for this plugin. The same licence and the same author apply.
+
+## Reference projects
+
+- [DaleXiao/ScriptableTokenWidgets](https://github.com/DaleXiao/ScriptableTokenWidgets): inspiration for the iPhone widget concept. No source files copied.
+- [Hj714110-oss/ScriptableTokenTrackerV2](https://github.com/Hj714110-oss/ScriptableTokenTrackerV2): MIT, copyright 2026 Hj714110-oss. Reviewed for feature organization and Scriptable caching approaches. No source files copied.
+
+## Bundled libraries
+
+- [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator), MIT, copyright 2009 Kazuhiko Arase. The library is vendored at `lib/vendor/qrcode-generator.cjs` so that the plugin carries no dependency that has to be installed.
+
+## Runtime applications
+
+Scriptable, Tailscale and Magpie are separately installed applications with their own licences and terms. Tailscale is only needed for the default way of connecting; with an address of your own the plugin does not use it at all. OpenAI, MiniMax and GLM names identify the subscriptions observed through Magpie. No proprietary logo assets or model lists are bundled.
