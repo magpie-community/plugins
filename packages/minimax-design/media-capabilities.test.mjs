@@ -202,9 +202,15 @@ test("native canvas keys and exact pixel choices work for unrelated models witho
     parameters: { size: { type: "enum", values: ["1024x1024", "2048x2048", "1664x928"] } },
   })
   assert.deepEqual(pixel.capability.params.map((parameter) => parameter.key), ["aspect_ratio", "resolution"])
+  assert.deepEqual(pixel.capability.params[1].enum, ["自动", "1K", "1.5K", "2K"])
   assert.equal(pixel.submit({ aspect_ratio: "16:9" }).body.size, "1664x928")
-  assert.equal(pixel.submit({ aspect_ratio: "1:1", resolution: "2048px" }).body.size, "2048x2048")
-  assert.throws(() => pixel.submit({ aspect_ratio: "16:9", resolution: "2048px" }), /组合/)
+  assert.equal(pixel.submit({ aspect_ratio: "1:1", resolution: "2K" }).body.size, "2048x2048")
+  assert.throws(() => pixel.submit({ aspect_ratio: "16:9", resolution: "1K" }), /组合/)
+  const collision = await configured("another-provider/collision-image", "image", {
+    parameters: { size: { type: "enum", values: ["1536x1024", "1584x1056"] } },
+  })
+  assert.deepEqual(collision.capability.params[1].enum, ["自动", "1.5K"])
+  assert.equal(collision.submit({ aspect_ratio: "3:2", resolution: "1.5K" }).body.size, "1536x1024")
   const custom = await configured("unrelated-source/new-image", "image", {
     mediaRequest: { size: "aspect-resolution" },
     parameters: { aspect_ratio: { type: "enum", values: ["16:9", "1:1"] },
