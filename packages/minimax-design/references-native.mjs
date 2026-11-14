@@ -59,6 +59,8 @@ const fixture = http.createServer(async (request, response) => {
         assert.deepEqual(Buffer.from(part.inline_data.data, "base64"), referenceBytes[index])
       }
       assert.equal(body.async, true)
+      assert.equal(body.generationConfig.imageConfig.aspectRatio, "16:9")
+      assert.equal(body.generationConfig.imageConfig.imageSize, "2K")
       response.end(JSON.stringify({ task_id: "gemini" }))
     } else throw new Error(`Unexpected upstream route: ${request.url}`)
     calls.push(request.url)
@@ -93,7 +95,7 @@ fs.writeFileSync(path.join(config, "plugins.json"), JSON.stringify({ plugins: [{
   spec: sourcePlugin, options: { onlyProvider: "image-models/rightimage", baseURL: `${upstream}/v1`,
     models: {
       "future-native-image": { name: "Future native", mode: "gemini",
-        capabilities: { generate: true, edit: true, maxReferences: 6 } },
+        capabilities: { generate: true, edit: true, maxReferences: 6, aspectRatios: ["1:1", "16:9"], resolutions: ["1K", "2K"] } },
       "future-openai-image": { name: "Future standard", mode: "openai",
         capabilities: { generate: true, edit: true, maxReferences: 6 } },
     } },
@@ -144,7 +146,8 @@ try {
   for (const model of migrated) {
     assert.equal(JSON.parse(fs.readFileSync(path.join(paths.store, "models", model.id, "spec.json"))).references.image.max, 6)
     const adapter = await import(`file://${paths.store}/models/${model.id}/adapter.js`)
-    const request = { type: "image", model: model.upstreamModel, prompt: "reference fixture", params: {},
+    const request = { type: "image", model: model.upstreamModel, prompt: "reference fixture",
+      params: model.upstreamModel.includes("gemini") ? { aspect_ratio: "16:9", resolution: "2K" } : {},
       images: referenceBytes.map((bytes) => ({
         mime: "image/png", base64: bytes.toString("base64"), dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
       })) }

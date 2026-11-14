@@ -18,6 +18,7 @@ export function buildSubmit(request) {
       const rule = capability.params.find((parameter) => parameter.key === key)
       if (!rule || (rule.type === "string" && typeof value !== "string") ||
           (rule.type === "integer" && !Number.isInteger(value)) ||
+          (rule.type === "boolean" && typeof value !== "boolean") ||
           (rule.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) ||
           (rule.enum && !rule.enum.includes(value)) ||
           (rule.min !== undefined && value < rule.min) || (rule.max !== undefined && value > rule.max)) {
@@ -41,6 +42,41 @@ export function buildSubmit(request) {
       }
       return { method: "POST", path: "/audio/speech", response: "binary",
         body: { model: request.model, input: request.prompt, ...speech } }
+    }
+    params.ratio = params.aspect_ratio
+    if (params.duration !== undefined) params.seconds = Number(params.duration)
+    if (params.image_mode === "first-last-frame") {
+      params.referenceMode = request.images.length > 1 ? "首尾帧" : "首帧"
+    } else if (params.image_mode === "reference") {
+      params.referenceMode = "主体参考"
+    }
+    if (capability.pixelSizes) {
+      const choices = params.ratio ? Object.values(capability.pixelSizes[params.ratio]) :
+        Object.values(capability.pixelSizes).flatMap(Object.values)
+      const size = params.resolution ? choices.find((value) =>
+        `${Math.max(...value.split("x").map(Number))}px` === params.resolution) : choices[0]
+      if (!size) throw new Error("模型不支持所选比例和清晰度组合。请重新选择。")
+      if (params.ratio || params.resolution) body.size = size
+    }
+    if (params.ratio && capability.transport === "generic" && !capability.pixelSizes) body.size = params.ratio
+    if (capability.transport === "generic" && request.type === "video" && params.resolution) body.resolution = params.resolution
+    if (params.quality) body.quality = params.quality
+    if (params.background) body.background = params.background
+    if (params.generate_audio !== undefined) body.generate_audio = params.generate_audio
+    if (capability.transport === "image-size" && (params.ratio || params.resolution)) {
+      body.size = `${params.ratio ?? "auto"}@${params.resolution ?? "auto"}`
+    }
+    if (capability.transport === "openrouter-image") {
+      if (params.resolution && params.ratio) {
+        if (capability.pixelRatios && !capability.pixelRatios.includes(params.ratio)) {
+          throw new Error("当前网关无法同时传递该比例和清晰度。请将清晰度设为自动。")
+        }
+        const sides = params.ratio.split(":").map(Number)
+        const scale = Number.parseFloat(params.resolution) * 1024 / Math.max(...sides)
+        body.size = `${Math.round(sides[0] * scale)}x${Math.round(sides[1] * scale)}`
+      } else if (params.resolution) {
+        throw new Error("指定清晰度时，请同时选择比例。")
+      } else body.size = params.ratio
     }
     mode = params.referenceMode || (request.images.length > 1 ? capability.defaultMode : "首帧")
     if (request.images.length && !capability.modes.includes(mode) && request.type === "video") throw new Error("模型不支持该参考图用途。")

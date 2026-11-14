@@ -5,6 +5,7 @@ import path from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { applyMedia, mediaPaths } from "./media-sync.mjs"
+import { mediaCapability, mediaSpec } from "./media-capabilities.mjs"
 
 const app = process.env.MINIMAX_APP
 if (!app) throw new Error("Set MINIMAX_APP for native media validation.")
@@ -26,6 +27,14 @@ const speechFolder = path.join(paths.store, "models", generated.models.find((mod
 const geminiFolder = path.join(paths.store, "models", generated.models.find((model) => model.name === "Fixture Gemini").id)
 const gptFolder = path.join(paths.store, "models", generated.models.find((model) => model.name === "Fixture GPT").id)
 const source = fs.readFileSync(path.join(app, "Contents/Resources/gateway/dist/main.js"), "utf8")
+const controlsFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-image", type: "image",
+  mediaRequest: { size: "aspect-resolution" }, parameters: {
+    aspect_ratio: { type: "enum", values: ["1:1", "16:9"] },
+    resolution: { type: "enum", values: ["1K", "2K"] },
+  } }))
+const soundFixture = mediaSpec(mediaCapability({ ref: "unrelated/future-video", type: "video",
+  parameters: { generate_audio: { type: "boolean", default: true },
+    seconds: { type: "range", min: 5, max: 30 } } }))
 const bootstrap = source.lastIndexOf("bootstrap().catch(")
 assert.ok(bootstrap > 0)
 const driver = `
@@ -33,6 +42,18 @@ const driver = `
 const { default: assert } = await import("node:assert/strict");
 const { default: fs } = await import("node:fs");
 const service = CustomMediaModelsService.at(${JSON.stringify(paths.store)});
+const controlsSpec = parseMediaSpec(${JSON.stringify(controlsFixture)});
+for (const param of controlsSpec.params) {
+  assert.equal(ownParam(param)[1].widget, "select");
+  assert.ok(param.enum.length > 1);
+}
+assert.deepEqual(controlsSpec.params.map(param => param.key), ["aspect_ratio", "resolution"]);
+const soundSpec = parseMediaSpec(${JSON.stringify(soundFixture)});
+const soundParam = soundSpec.params.find(param => param.key === "generate_audio");
+assert.equal(ownParam(soundParam)[1].presentation.widget, "switch");
+assert.equal(soundParam.default, true);
+assert.deepEqual(soundSpec.params.find(param => param.key === "duration").enum, Array.from({length: 26}, (_, index) => String(index + 5)));
+console.log("PASS: actual Design parser produces selects and sound switch for unrelated declared models");
 const models = await service.models();
 assert.equal(models.length, 5);
 assert.deepEqual(models.map(model => model.type).sort(), ["image", "image", "image", "speech", "video"]);
@@ -40,7 +61,7 @@ console.log("PASS: installed Design loads image, speech and video models and ada
 const imageSpec = parseMediaSpec(JSON.parse(fs.readFileSync(${JSON.stringify(path.join(imageFolder, "spec.json"))})));
 const videoSpec = parseMediaSpec(JSON.parse(fs.readFileSync(${JSON.stringify(path.join(videoFolder, "spec.json"))})));
 assert.equal(imageSpec.references.image.max, 16);
-assert.deepEqual(videoSpec.params[0].enum, ["自动", "768P · 6秒", "768P · 10秒", "1080P · 6秒"]);
+assert.deepEqual(videoSpec.params[0].enum, ["自动", "768P", "1080P"]);
 assert.equal(videoSpec.params[0].default, "自动");
 const imageBundle = { source: fs.readFileSync(${JSON.stringify(path.join(imageFolder, "adapter.js"))}, "utf8") };
 const videoBundle = { source: fs.readFileSync(${JSON.stringify(path.join(videoFolder, "adapter.js"))}, "utf8") };
@@ -122,10 +143,10 @@ const edit = await submitOnce({ ...common, job: { type: "image", model: "minimax
 assert.equal(edit.kind, "done");
 common.bundle = videoBundle;
 const beforeInvalid = requests.length;
-await assert.rejects(submitOnce({ ...common, job: { type: "video", model: "minimax-code/MiniMax-Hailuo-2.3", prompt: "invalid", params: { preset: "1080P · 10秒" }, references: {} } }));
+await assert.rejects(submitOnce({ ...common, job: { type: "video", model: "minimax-code/MiniMax-Hailuo-2.3", prompt: "invalid", params: { resolution: "1080P", duration: "10" }, references: {} } }));
 assert.equal(requests.length, beforeInvalid);
 console.log("PASS: native enum/default/reference limits and invalid combination rejected before HTTP");
-const video = await submitOnce({ ...common, job: { type: "video", model: "minimax-code/MiniMax-Hailuo-2.3", prompt: "native fixture", params: { preset: "1080P · 6秒" }, references: {} } });
+const video = await submitOnce({ ...common, job: { type: "video", model: "minimax-code/MiniMax-Hailuo-2.3", prompt: "native fixture", params: { resolution: "1080P", duration: "6" }, references: {} } });
 assert.equal(video.kind, "task");
 const task = { id: video.taskId };
 assert.equal((await pollOnce({ ...common, task })).kind, "running");

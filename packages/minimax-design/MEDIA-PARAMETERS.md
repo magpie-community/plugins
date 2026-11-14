@@ -1,6 +1,6 @@
 # Automatic media parameters
 
-Verified November 13, 2026, with Magpie 0.1.4040 and Design 4.0.10.
+Verified November 14, 2026, with Magpie 0.1.4040 and Design 4.0.10.
 
 The bridge discovers models and refreshes their specifications automatically.
 Selecting a model loads its options; users do not edit configuration files.
@@ -27,8 +27,8 @@ durations are also omitted when unset. No inference is performed during sync.
    profile; routing groups and arbitrary aliases cannot.
 5. Plugin option `mediaParameters` supplies missing fields using the same
    enum/range schema. Explicit source and gateway fields take precedence.
-6. Unidentified routes retain optional manual size/duration and provider
-   defaults. Known routes whose gateway cannot carry a parameter expose no
+6. Unidentified routes retain provider defaults and expose only declared,
+   transferable options. Known routes whose gateway cannot carry a parameter expose no
    ineffective control. Missing image modality alone does not override an
    explicit reference-count schema.
 
@@ -78,14 +78,14 @@ are not blindly passed through.
 | minimax-code/MiniMax-Image | Common ratios within 1:3–3:1; 1K/2K/4K; up to 16 images | ratio → size, resolution → quality low/medium/high |
 | minimax-code/MiniMax-H3 | Six ratios; 768P/2K; 4–15 seconds; first/last frames or up to 9 subject images | resolution → size, ratio → ratio, duration → seconds |
 | minimax-code/MiniMax-H3-Max | Six ratios; 480P/768P; 5–15 seconds; up to 2 ordered frames | Same mapping; no subject collections |
-| minimax-code/MiniMax-Hailuo-2.3 | 768P/6s, 768P/10s, 1080P/6s; one first frame | One combined preset supplies size and seconds |
+| minimax-code/MiniMax-Hailuo-2.3 | 768P/1080P; 6s/10s; one first frame | Separate resolution/duration; 1080P with 10s rejected before HTTP |
 | grok/grok-imagine-video | Seven ratios; 480p/720p; 1–15 seconds; up to 7 subject images | ratio/resolution → pixel size; subjects limited to 10 seconds |
 | grok/grok-imagine-video-1.5 | Seven ratios; 480p/720p/1080p; 1–15 seconds; up to 14 subject images | Subjects limited to 720p; no tail-frame control |
 | grok image / quality; xai/grok-imagine-image | Thirteen ratios | size → aspect_ratio; catalogue decides reference support |
 | qwen-cn or bailian-token-plan/qwen-image-3.0-pro | Verified pixel presets; automatic size | WIDTHxHEIGHT; never send a ratio as size |
 | rightimage GPT Image 2, 2.5, 2.6 routes | Verified pixel presets | size; no unverified reference-count or quality expansion |
-| rightimage Gemini routes | Provider defaults | Current route cannot faithfully carry size/resolution |
-| OpenRouter images | Live ratios and reference budget; 2K combinations only for the verified `bytedance-seed/seedream-5-5` Images API route | size; chat image routes expose ratios without resolution controls |
+| rightimage Gemini routes | Provider defaults on the original route; declared ratios/resolutions on a configured image-source route | Source plugin declaring `aspect-resolution` encodes both through size |
+| OpenRouter images | Live ratios and reference budget; declared 2K/4K for image-only routes | size; chat image routes expose ratios without resolution controls |
 
 For image models with declared image input but no verified count, the bridge
 retains its existing one-image bridge budget; this is not a vendor maximum.
@@ -103,13 +103,36 @@ frames for H3 Max. A reference-purpose selector permits an explicit override.
 Frames and subjects are never silently mixed or truncated.
 
 Design's custom `spec.json` supports enum dropdowns, defaults, ranges and
-reference budgets, but discards cross-field `paramRules`. Hailuo therefore
-uses a single legal-combination dropdown. Other reference-dependent rules
+reference budgets, but discards cross-field `paramRules`. Hailuo's illegal
+resolution/duration pair and other reference-dependent rules
 run in `buildSubmit` before any HTTP request, with an actionable message.
 First/last-frame H3 requires automatic ratio. For Grok, choosing resolution
 with a reference requires an explicit ratio because the gateway encodes both
 in `size`; leaving both automatic preserves upstream image-driven framing.
 The adapter has no decoded image dimensions and does not claim to infer them.
+
+## Native canvas controls
+
+All media specifications use Design's canonical `aspect_ratio`, `resolution`,
+`duration` and `image_mode` keys. String options always have a nonempty enum;
+unknown size strings are not exposed as empty text controls. Pixel-only size
+lists become ratio and pixel-long-edge choices with an exact lookup back to
+the original size. Unsupported combinations fail before HTTP.
+
+Sources that can encode independent image ratio and resolution in the standard
+image API declare `media_request: { "size": "aspect-resolution" }`. The bridge
+sends `size: "16:9@2K"` (or `auto@2K` / `16:9@auto`); the source plugin must
+decode it before calling its vendor. This is an explicit plugin contract,
+not an upstream provider size format. Pixel routes can declare `"pixels"`.
+
+Declared image `quality` and `background` enums are passed through generic
+image routes. A generic video route can declare `generate_audio` with
+`type: "boolean"` and an optional boolean `default`; a declared default gives
+Design a switch, while an unspecified default preserves its optional control.
+False remains false in the submitted JSON. Specialized transports do not
+inherit these fields when their gateway mapping cannot carry them (MiniMax
+Image already uses `quality` for resolution). Screenshots establish native
+presentation, not another provider's supported values.
 
 ## Evidence
 
