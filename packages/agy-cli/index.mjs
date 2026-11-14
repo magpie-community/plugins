@@ -13,6 +13,7 @@ import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
+import { fitTools } from "./tool-budget.mjs"
 import { hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
@@ -1798,7 +1799,16 @@ class Proc {
     // the server marks it always loaded; tools with larger schemas were left out
     // and the model could not reach them (#989). Every client-declared tool is
     // one the client means the model to see.
-    return this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } }))
+    //
+    // agy holds them all in a 20,000-token budget and drops whole tools,
+    // the largest first, past it; fitTools shortens their descriptions
+    // instead, so every tool stays (plugins#1140). The trimmed list is kept
+    // per catalog: agy asks again on every tools/list_changed.
+    if (this.fittedFor !== this.toolsSignature) {
+      this.fitted = fitTools(this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
+      this.fittedFor = this.toolsSignature
+    }
+    return this.fitted
   }
 
   addWatcher(socket) {
