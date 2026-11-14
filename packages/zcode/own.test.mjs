@@ -23,6 +23,22 @@ function enc(text) {
   const data = Buffer.concat([c.update(text, "utf8"), c.final()])
   return "enc:v1:" + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
 }
+
+// ZCode 3.18's vault form: the key stands in for the OS keychain, named by
+// ZCODE_CREDENTIAL_V2_SECRET, and the fingerprint is sha256(key) as 24 hex
+const V2_KEY = randomBytes(32)
+const V2_FP = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
+function encV2(text) {
+  const iv = randomBytes(12)
+  const c = createCipheriv("aes-256-gcm", V2_KEY, iv)
+  const data = Buffer.concat([c.update(text, "utf8"), c.final()])
+  return `enc:v2:os:${V2_FP}:` + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+}
+function zcodeHas2(store, setting = {}) {
+  mkdirSync(dir(), { recursive: true })
+  writeFileSync(join(dir(), "credentials.json"), JSON.stringify(store))
+  writeFileSync(join(dir(), "setting.json"), JSON.stringify(setting))
+}
 function zcodeHas(store, setting = {}) {
   mkdirSync(dir(), { recursive: true })
   writeFileSync(join(dir(), "credentials.json"), JSON.stringify(Object.fromEntries(Object.entries(store).map(([k, v]) => [k, enc(v)]))))
@@ -314,4 +330,34 @@ test("ZCode 3.16's key location lists the coding plan's models", async () => {
   )
   _internal.routes.clear()
   await expect(hooks.provider.models({ models: {} }, { auth: { ...z, type: "oauth" } })).rejects.toThrow("coding plan key")
+})
+
+test("3.18's vault-encrypted credentials read like the older ones", async () => {
+  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
+  try {
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: encV2("Bearer j1"),
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    const hooks = await ZCodeAuthPlugin({ client: {} })
+    const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+    const got = await (await m.authorize()).callback()
+    expect(got.type).toBe("success")
+    expect(got.accountId).toBe("ada@example.com")
+    expect(got.access).toBe("id1.secret1")
+    const auth = { ...got, type: "oauth" }
+    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1", base: "https://api.z.ai/api/anthropic" })
+
+    // a fingerprint the vault doesn't name reads as nothing, without
+    // taking the older values down with it
+    zcodeHas2({
+      [KEY]: encV2("id1.secret1"),
+      zcodejwttoken: "enc:v2:os:deadbeefdeadbeefdeadbeef:aa.bb.cc",
+      "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })),
+    })
+    expect(_internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "" })
+  } finally {
+    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  }
 })

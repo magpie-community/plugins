@@ -16,6 +16,7 @@
 // `refresh` the rest of it as JSON (site, base, key, jwt, team project,
 // plan, device id), `accountId` the account's email.
 
+import { execFileSync } from "node:child_process"
 import { createDecipheriv, createHash } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
@@ -1505,8 +1506,11 @@ async function authorize(site, log, onTeam = false) {
 
 // ---- ZCode's own sign-in ------------------------------------------------------------
 // ZCode keeps its sign-in in ~/.zcode/v2/credentials.json, each value
-// encrypted (AES-256-GCM, "enc:v1:<iv>.<tag>.<data>") with a key made from
-// the machine's user; ~/.zcode/v2/setting.json says whether it is on a
+// encrypted (AES-256-GCM). Up to 3.17 the value reads
+// "enc:v1:<iv>.<tag>.<data>" with a key made from the machine's user;
+// 3.18 instead reads "enc:v2:<vault>:<fingerprint>:<iv>.<tag>.<data>",
+// the key living in the OS vault (macOS keychain) and the fingerprint
+// being sha256(key) as 24 hex. ~/.zcode/v2/setting.json says whether it is on a
 // team's plan. An account signed in "as ZCode" reads them for every
 // request, so it follows ZCode's own sign-in, its renewed session and its
 // switches between plans, as magpie's built-in did (zcode.go zcodeOwn).
@@ -1547,9 +1551,37 @@ function secret() {
   return createHash("sha256").update(seed).digest()
 }
 
-function decrypt(key, v) {
-  if (typeof v !== "string" || !v.startsWith("enc:v1:")) return null
-  const parts = v.slice(7).split(".")
+// v2Key is the key ZCode 3.18 encrypts its credentials with, from the
+// vault the value names (only macOS's keychain, service "ZCode Credential
+// Encryption", is known). The fingerprint guards against a vault that
+// has rotated since; ZCODE_CREDENTIAL_V2_SECRET (base64url) stands in
+// for the vault, as ZCODE_CREDENTIAL_SECRET does for the machine user.
+let vaulted = null
+function v2Key(fp) {
+  const standIn = process.env.ZCODE_CREDENTIAL_V2_SECRET
+  if (standIn) {
+    try {
+      const key = Buffer.from(standIn, "base64url")
+      return key.length === 32 && createHash("sha256").update(key).digest("hex").slice(0, 24) === fp ? key : null
+    } catch {
+      return null
+    }
+  }
+  if (vaulted && vaulted.fp === fp) return vaulted.key
+  if (process.platform !== "darwin") return null
+  try {
+    const out = execFileSync("security", ["find-generic-password", "-s", "ZCode Credential Encryption", "-w"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim()
+    const key = Buffer.from(out, "base64url")
+    if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) return null
+    vaulted = { fp, key }
+    return key
+  } catch {
+    return null
+  }
+}
+
+function gcm(key, body) {
+  const parts = body.split(".")
   if (parts.length !== 3) return null
   try {
     const [iv, tag, data] = parts.map((p) => Buffer.from(p.replace(/=+$/, ""), "base64url"))
@@ -1559,6 +1591,20 @@ function decrypt(key, v) {
   } catch {
     return null
   }
+}
+
+function decrypt(key, v) {
+  if (typeof v !== "string" || !v.startsWith("enc:")) return null
+  // enc:v2:<vault>:<fingerprint>:<iv>.<tag>.<data> — the key is v2Key's,
+  // not the machine user's the caller holds
+  if (v.startsWith("enc:v2:")) {
+    const head = v.slice(7).split(":")
+    if (head.length !== 3) return null
+    const k = v2Key(head[1])
+    return k ? gcm(k, head[2]) : null
+  }
+  if (!v.startsWith("enc:v1:")) return null
+  return gcm(key, v.slice(7))
 }
 
 function readJSON(path) {
