@@ -419,6 +419,7 @@ export async function createBridgeKit(options = {}) {
     modelsSpawns: [],
     acpSpawns: [],
     otherSpawns: [],
+    helpSpawns: [],
     spawnSyncs: [],
     execFiles: [],
     modelsBehavior: options.modelsBehavior ?? { stdout: modelsOutput(BASE_MODEL_ROWS) },
@@ -469,6 +470,16 @@ export async function createBridgeKit(options = {}) {
   })
   const spawn = (file, args = [], opts = {}) => {
     if (args[0] === "models") return spawnModels(kit, file, args)
+    if (args[0] === "acp" && args.includes("--help")) {
+      // agy's flag usage goes to stderr; an older agy doesn't list the flag
+      kit.helpSpawns.push({ file, args })
+      const child = new FakeChild(kit, file, args)
+      setImmediate(() => {
+        if (options.acpHelp) child.stderr.emit("data", options.acpHelp)
+        child.finish(0)
+      })
+      return child
+    }
     if (args[0] === "acp") {
       const child = new FakeChild(kit, file, args)
       kit.acpSpawns.push({ file, args, env: opts.env })

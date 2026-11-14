@@ -1020,3 +1020,28 @@ test("the same opening sent to several models at once is answered for each", asy
     assert.equal(arrived, ids.length)
   })
 })
+
+// ------------------------------------------- #1166 machine customizations
+
+test("#1166: an agy whose acp --help lists the flag starts without the machine's own skills, asked once", async () => {
+  await withKit({ acpHelp: "Usage of acp:\n  --include-default-customizations\n    \tload the default customizations (default true)\n" }, async (kit) => {
+    scriptedAgent(kit)
+    for (const user of ["custom-a", "custom-b"]) {
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: user }, messages: [{ role: "user", content: "hello " + user } ] })))
+      assert.equal(reply.stopReason, "end_turn")
+    }
+    assert.equal(kit.acpSpawns.length, 2, "two conversations, two processes")
+    for (const spawn of kit.acpSpawns) assert.ok(spawn.args.includes("--include-default-customizations=false"), spawn.args.join(" "))
+    assert.equal(kit.helpSpawns.length, 1, "acp --help is asked once per agy binary")
+  })
+})
+
+test("#1166: an agy without the flag is never given it, so it still starts", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "custom-old" }, messages: [{ role: "user", content: "hello old" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(!kit.acpSpawns[0].args.some((arg) => arg.startsWith("--include-default-customizations")), kit.acpSpawns[0].args.join(" "))
+  })
+})

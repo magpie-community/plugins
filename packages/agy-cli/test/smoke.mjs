@@ -88,6 +88,11 @@ if (argv.includes("models")) {
   process.stdout.write("gemini-test-medium\tGemini Test (Medium)\ngemini-test-high\tGemini Test (High)\ngemini-test-low\tGemini Test (Low)\nclaude-test-medium\tClaude Test (Medium)\n")
   process.exit(0)
 }
+if (argv[0] === "acp" && argv.includes("--help")) {
+  log({ type: "acpHelp" })
+  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n")
+  process.exit(0)
+}
 if (argv[0] !== "acp") {
   process.stderr.write("unknown subcommand\n")
   process.exit(2)
@@ -475,7 +480,7 @@ async function handle(message) {
       model = "gemini-test-medium"
       await connectIde()
       log({
-        type: "init", pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
+        type: "init", args: argv, pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
         cwd: process.cwd(), addDir, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
         tools, idePort,
       })
@@ -2818,6 +2823,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
 }
 
+{
+  // the bridge's sessions; the bare `agy acp` model probe only lists models
+  const sessions = inits().filter(event => event.args.includes("--agent"))
+  const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
+  check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
+}
 check("all ACP children disable auto update when the user set nothing", inits().length > 0 && inits().every(event => event.update === "true"))
 check("child launches never mutate the parent's update setting", process.env.AGY_CLI_DISABLE_AUTO_UPDATE === undefined)
 if (originalAutoUpdate === undefined) delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE

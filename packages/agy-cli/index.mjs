@@ -200,6 +200,32 @@ function findAgy() {
   return null
 }
 
+// agy loads the machine's own skills (~/.gemini/skills, ~/.agents/skills, …)
+// into an ACP session even when the agent says inheritCustomizations: false.
+// They share agy's 20,000-token customization budget with the client's tools,
+// and over it agy drops the largest tools (plugins#1166). agy 1.5.9's acp
+// takes --include-default-customizations=false to leave them out, but an
+// agy without the flag refuses to start on it, so it is passed only when
+// `agy acp --help` lists it. The answer is kept per binary (path, mtime,
+// size), so an agy update asks again; a probe that failed is asked again.
+const customizationFlag = new Map()
+export function noDefaultCustomizationsArgs(agyPath) {
+  let key = agyPath
+  try {
+    const st = fs.statSync(agyPath)
+    key += `\0${st.mtimeMs}\0${st.size}`
+  } catch {}
+  let probe = customizationFlag.get(key)
+  if (!probe) {
+    probe = execOnce(agyPath, ["acp", "--help"], { timeoutMs: 10_000 }).then(({ err, stdout, stderr, timedOut }) => {
+      if (err || timedOut) customizationFlag.delete(key)
+      return /--include-default-customizations\b/.test(stdout + stderr)
+    })
+    customizationFlag.set(key, probe)
+  }
+  return probe.then((ok) => (ok ? ["--include-default-customizations=false"] : []))
+}
+
 function execOnce(file, args, opts = {}) {
   return new Promise((resolve) => {
     let child
@@ -1639,6 +1665,7 @@ class Proc {
       "--ide-mcp-port", String(controlServer.address().port),
     ]
     if (this.workDir) args.push("--add-dir", this.workDir)
+    args.push(...await noDefaultCustomizationsArgs(this.agyPath))
     try {
       const childEnv = { ...process.env }
       const inheritedPath = process.env.PATH || childEnv.Path || ""
