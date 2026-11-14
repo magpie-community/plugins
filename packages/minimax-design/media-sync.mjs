@@ -98,6 +98,8 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
     models.set(`${type}:${model.id}`, { ref: model.id, type, name: name.slice(0, 60),
       images: model.modalities?.input?.includes("image") === true ||
         model.supported_endpoint_types?.includes("image-edit") === true, owner: model.owned_by,
+      imageOnly: model.modalities?.output?.includes("image") === true && !model.modalities.output.includes("text"),
+      mediaRequest: model.media_request,
       parameters: type === "speech" && Array.isArray(model.supported_parameters) ? undefined : model.supported_parameters })
   }
   for (const [from, to] of Object.entries(routes)) {
@@ -112,6 +114,7 @@ export async function discoverMedia(gateway, options = {}, providers = {}) {
     const ref = model.requestModel ?? model.ref
     const source = sourceModels.get(ref)
     if (!source) continue
+    model.mediaRequest ??= source.media_request
     if (source.modalities?.input?.includes("image")) model.images = true
     const declared = { ...source.supported_parameters }
     const limit = source.capabilities?.maxReferences
