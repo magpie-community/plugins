@@ -201,29 +201,62 @@ function findAgy() {
 }
 
 // agy loads the machine's own skills (~/.gemini/skills, ~/.agents/skills, …)
-// into an ACP session even when the agent says inheritCustomizations: false.
-// They share agy's 20,000-token customization budget with the client's tools,
-// and over it agy drops the largest tools (plugins#1166). agy 1.5.9's acp
-// takes --include-default-customizations=false to leave them out, but an
-// agy without the flag refuses to start on it, so it is passed only when
-// `agy acp --help` lists it. The answer is kept per binary (path, mtime,
-// size), so an agy update asks again; a probe that failed is asked again.
-const customizationFlag = new Map()
-export function noDefaultCustomizationsArgs(agyPath) {
+// and its global MCP servers into an ACP session even when the agent says
+// inheritCustomizations: false. They share agy's 20,000-token customization
+// budget with the client's tools, and over it agy drops the largest tools
+// (plugins#1166). agy 1.5.9's acp takes --include-default-customizations=false,
+// but on Windows it still loaded all 120 of a user's skills; --gemini-dir
+// pointed at a folder of the bridge's own leaves them all out (the reporter
+// ran it: no skills, every client tool listed). agy's Google sign-in is in
+// the system keyring, not in that folder (signin.mjs), so it still applies.
+// An agy without these flags refuses to start on them, so each is passed
+// only when `agy acp --help` lists it. The answer is kept per binary (path,
+// mtime, size), so an agy update asks again; a probe that failed is asked
+// again.
+const acpHelpText = new Map()
+function acpHelp(agyPath) {
   let key = agyPath
   try {
     const st = fs.statSync(agyPath)
     key += `\0${st.mtimeMs}\0${st.size}`
   } catch {}
-  let probe = customizationFlag.get(key)
+  let probe = acpHelpText.get(key)
   if (!probe) {
     probe = execOnce(agyPath, ["acp", "--help"], { timeoutMs: 10_000 }).then(({ err, stdout, stderr, timedOut }) => {
-      if (err || timedOut) customizationFlag.delete(key)
-      return /--include-default-customizations\b/.test(stdout + stderr)
+      if (err || timedOut) acpHelpText.delete(key)
+      return stdout + stderr
     })
-    customizationFlag.set(key, probe)
+    acpHelpText.set(key, probe)
   }
-  return probe.then((ok) => (ok ? ["--include-default-customizations=false"] : []))
+  return probe
+}
+
+export function noDefaultCustomizationsArgs(agyPath) {
+  return acpHelp(agyPath).then((help) => (/--include-default-customizations\b/.test(help) ? ["--include-default-customizations=false"] : []))
+}
+
+// The bridge's own agy folder, kept across restarts so agy finds a
+// conversation again on session/resume. AGY_BRIDGE_GEMINI_DIR names another;
+// "default" (or 0, off, …) leaves agy on its own ~/.gemini, skills and all.
+export function bridgeGeminiDir(env = process.env) {
+  const named = env.AGY_BRIDGE_GEMINI_DIR || ""
+  if (/^(?:default|0|false|off|no|disabled)$/i.test(named)) return null
+  if (named) return path.resolve(named)
+  const base = env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state")
+  return path.join(base, "magpie-agy-bridge", "agy-home")
+}
+
+// geminiDirArgs gives agy the bridge's own folder when its acp lists
+// --gemini-dir and the folder can be made, else nothing (agy's ~/.gemini).
+export async function geminiDirArgs(agyPath, env = process.env) {
+  const dir = bridgeGeminiDir(env)
+  if (!dir || !/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
+  try {
+    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
+  } catch {
+    return { args: [], dir: null }
+  }
+  return { args: ["--gemini-dir", dir], dir }
 }
 
 function execOnce(file, args, opts = {}) {
@@ -1666,6 +1699,12 @@ class Proc {
     ]
     if (this.workDir) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
+    const own = await geminiDirArgs(this.agyPath)
+    args.push(...own.args)
+    // agy writes the conversation's steps under the folder it was given
+    this.conversationsDir = own.dir && !process.env.AGY_BRIDGE_CONVERSATIONS_DIR
+      ? path.join(own.dir, "antigravity-cli", "conversations")
+      : null
     try {
       const childEnv = { ...process.env }
       const inheritedPath = process.env.PATH || childEnv.Path || ""
@@ -2067,7 +2106,9 @@ class Proc {
       if (model) await this.#setModel(model, selection)
       const stepUsageEnabled = this.stepUsageTrusted &&
         !/^(?:0|false|off|no|disabled)$/i.test(process.env.AGY_BRIDGE_STEP_USAGE || "")
-      turn.stepsFile = stepUsageEnabled ? sessionDbPath(this.sessionId) : null
+      turn.stepsFile = stepUsageEnabled
+        ? sessionDbPath(this.sessionId, this.conversationsDir ? { AGY_BRIDGE_CONVERSATIONS_DIR: this.conversationsDir } : process.env)
+        : null
       turn.stepCursor = turn.stepsFile ? modelUsageCursor(turn.stepsFile) : null
       if (turn.stepsFile && turn.stepCursor === null) this.stepUsageTrusted = false
       // Content a cancelled turn never delivered still belongs to the session.

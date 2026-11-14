@@ -1042,6 +1042,36 @@ test("#1166: an agy without the flag is never given it, so it still starts", asy
     const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "custom-old" }, messages: [{ role: "user", content: "hello old" }] })))
     assert.equal(reply.stopReason, "end_turn")
     assert.equal(kit.acpSpawns.length, 1)
-    assert.ok(!kit.acpSpawns[0].args.some((arg) => arg.startsWith("--include-default-customizations")), kit.acpSpawns[0].args.join(" "))
+    assert.ok(!kit.acpSpawns[0].args.some((arg) => arg.startsWith("--include-default-customizations") || arg === "--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+  })
+})
+
+const GEMINI_DIR_HELP = "Usage of acp:\n  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n  --include-default-customizations\n    \tInclude default customizations (default true)\n"
+
+test("#1166: an agy whose acp --help lists --gemini-dir runs in the bridge's own folder, kept across conversations", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    scriptedAgent(kit)
+    for (const user of ["home-a", "home-b"]) {
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: user }, messages: [{ role: "user", content: "hello " + user }] })))
+      assert.equal(reply.stopReason, "end_turn")
+    }
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+    assert.equal(kit.acpSpawns.length, 2)
+    for (const spawn of kit.acpSpawns) {
+      const at = spawn.args.indexOf("--gemini-dir")
+      assert.ok(at >= 0 && spawn.args[at + 1] === own, spawn.args.join(" "))
+    }
+    assert.ok(fs.statSync(own).isDirectory(), "the folder is made before agy starts")
+    assert.equal(kit.helpSpawns.length, 1, "acp --help is asked once for both flags")
+  })
+})
+
+test("#1166: AGY_BRIDGE_GEMINI_DIR=default leaves agy on the machine's own folder", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP, env: { AGY_BRIDGE_GEMINI_DIR: "default" } }, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "home-default" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+    assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
   })
 })
