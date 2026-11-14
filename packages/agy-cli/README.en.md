@@ -246,7 +246,10 @@ plugin leaves the billing line out and rewords the others with the same
 meaning before agy sends them ("built on the Claude Agent SDK by Anthropic",
 "built on GPT-5", "RFC 2119 key words: …", "You're Hermes Agent / OpenCode /
 a coding agent running in the Codex CLI", "running within pi"), as the
-Antigravity provider does (`cloak.mjs`). Zero-width spaces no longer help:
+Antigravity provider does (`cloak.mjs`). Codex's two GPT-5 lines
+("You are Codex, a coding agent based on GPT-5", "You are Codex, an agent based on GPT-5")
+are turned away in a user's turn too (AGENTS.md, a `<system-reminder>`),
+so they go as "built on GPT-5" there as well. Zero-width spaces no longer help:
 since 11-14 Google's check reads past them. Should such a 429 still come
 back, it is reported as a 400 about the prompt, not as a quota.
 

@@ -116,10 +116,23 @@ const SAID_AS = {
   "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
 }
 
-export function cloak(system) {
+// USER_TURNED_AWAY are the lines Antigravity also turns away in a user's
+// turn: since 11-14 Codex's GPT-5 lines there got a bare 429 "Resource has
+// been exhausted" 3 of 3 on a real account, where a pasted AGENTS.md or a
+// developer message told after a reply puts them, and went through
+// reworded. The others went through as written there, 3 of 3 each, and so
+// did all of them in the model's turns and in tool results
+// (packages/antigravity's USER_TURNED_AWAY). Everything agy-cli hands agy as
+// a prompt goes to Antigravity in a user's turn, the history it replays and
+// the tool results it renders included, so cloakUser runs over all of it.
+export const USER_TURNED_AWAY = TURNED_AWAY.filter((l) => l.startsWith("you are codex, "))
+
+// cloak rewords the lines of only, or of TURNED_AWAY when only is left out
+export function cloak(system, only) {
   if (typeof system !== "string" || !turnsAway(system)) return system
   const at = []
   TURNED_AWAY_RE.forEach((re, i) => {
+    if (only && !only.includes(TURNED_AWAY[i])) return
     for (const m of system.matchAll(re)) at.push([m.index, m.index + m[0].length, SAID_AS[TURNED_AWAY[i]]])
   })
   at.sort((a, b) => a[0] - b[0])
@@ -150,6 +163,10 @@ export function reword(system) {
   for (const [from, to] of REWORDED) if (system.includes(from)) system = system.split(from).join(to)
   return system
 }
+
+// cloakUser is the text of a prompt agy is handed (a user's turn upstream)
+// with USER_TURNED_AWAY's lines reworded and everything else as written
+export const cloakUser = (text) => cloak(text, USER_TURNED_AWAY)
 
 // outgoing is system text as agy is handed it: each turned-away line and
 // each paragraph of REWORDED reworded

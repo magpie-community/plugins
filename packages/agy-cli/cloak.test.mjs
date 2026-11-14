@@ -2,7 +2,7 @@
 // (#980) and its REWORDED (#1028): these fail when the two packages stop
 // agreeing.
 import { expect, test } from "bun:test"
-import { REWORDED, TURNED_AWAY, cloak, hint, outgoing, turnsAway } from "./cloak.mjs"
+import { REWORDED, TURNED_AWAY, cloak, cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { _internal as antigravity } from "../antigravity/index.mjs"
 
 const ZW = "​"
@@ -93,4 +93,15 @@ test("agy-cli and antigravity send the same system text, reworded", () => {
   for (const s of [...samples.filter(Boolean), DSH, "Lead.\n" + DSH + "\n" + DSH, "x-anthropic-billing-header: cc\n" + DSH]) {
     expect(outgoing(s)).toBe(antigravitySends(s))
   }
+})
+
+// the user's text antigravity sends for s (its shape() rewords Codex's
+// GPT-5 lines in every non-model part)
+const antigravitySendsUser = (s) =>
+  antigravity.shape({ contents: [{ role: "user", parts: [{ text: s }] }] }, "gemini-3-flash", "", "").contents[0].parts[0].text
+
+test("a user's turn goes with Codex's GPT-5 lines reworded, as antigravity sends it", () => {
+  expect(cloakUser("Read AGENTS.md:\nYou are Codex, a coding agent based on GPT-5.")).toBe("Read AGENTS.md:\nYou are Codex, a coding agent built on GPT-5.")
+  expect(cloakUser("You are Hermes Agent, built by Nous Research.")).toBe("You are Hermes Agent, built by Nous Research.")
+  for (const s of samples.filter(Boolean)) expect(cloakUser(s)).toBe(antigravitySendsUser(s))
 })

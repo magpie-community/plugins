@@ -14,7 +14,7 @@ import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
 import { fitTools } from "./tool-budget.mjs"
-import { hint, outgoing, turnsAway } from "./cloak.mjs"
+import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
@@ -2086,6 +2086,9 @@ class Proc {
         turn.arm()
         unpark(this.convKey)
         this.hasSentFirstTurn = true
+        // agy hands Antigravity the prompt as a user's turn, where Codex's
+        // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY)
+        promptParts = userTurnParts(promptParts)
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         turn.promptInFlight = true
         let result
@@ -2563,6 +2566,13 @@ function toPromptParts(content) {
   return out
 }
 
+// userTurnParts is parts with each text part as cloakUser says
+function userTurnParts(parts) {
+  return parts.map((part) => part?.type === "text" && typeof part.text === "string"
+    ? { ...part, text: cloakUser(part.text) }
+    : part)
+}
+
 function mergePromptParts(first, second) {
   const a = toPromptParts(first)
   const b = toPromptParts(second)
@@ -2749,6 +2759,7 @@ function park(proc) {
     historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
     toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
     instructionsHash: digest(sentInstructionsIdentity(proc.instructions)),
+    userCloak: USER_CLOAK,
     workDir: proc.workDir,
     at: Date.now(),
   })
@@ -2764,7 +2775,8 @@ function takeParked(convKey, opts) {
   unparked.add(convKey)
   saveParked()
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions))) return null
+    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
+    entry.userCloak !== USER_CLOAK) return null
   const incoming = digest(historyKey(opts.history))
   if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history }
   // Sans-inputs resume needs the hashes written by current park(). Old
@@ -3377,6 +3389,12 @@ function instructionsIdentity(text) {
 // rewords keeps that line in its own copy, and every turn on it is turned
 // away, so when the rewording changes, the session is not resumed and a
 // new one is opened with the instructions as they go now (#1151).
+// USER_CLOAK marks a session parked since its prompts went as cloakUser
+// says. One parked before keeps a user's turn with Codex's GPT-5 line as
+// written in agy's own copy, and every turn on it would be turned away, so
+// it is not resumed: a new session gets the history as it goes now.
+const USER_CLOAK = 1
+
 function sentInstructionsIdentity(text) {
   return compactIdentity(outgoing(stripVolatileSystem(text)))
 }
