@@ -108,10 +108,14 @@ function windowName(name) {
   // card says "hours" and another one says "h".
   const text = String(name || '');
   const hours = /^\s*(\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)(?![a-z])/i.exec(text);
-  if (hours) return (hours[1] ? hours[1] + ' ' : '') + '小时' + suffix;
+  if (hours) return (hours[1] ? hours[1] : '1') + ' 小时' + suffix;
   const days = /^\s*(\d+(?:\.\d+)?)?\s*(?:days?|d)(?![a-z])/i.exec(text);
-  if (days) return (days[1] && days[1] !== '7' ? days[1] + ' 天' : '本周') + suffix;
+  if (days) {
+    const count = days[1] ? days[1] : '1';
+    return (count === '7' ? '本周' : count + ' 天') + suffix;
+  }
   if (/week/i.test(text)) return '本周' + suffix;
+  if (/month/i.test(text)) return '30 天' + suffix;
   return text + suffix;
 }
 function progress(value, className, label) {

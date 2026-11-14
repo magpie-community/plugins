@@ -320,9 +320,9 @@ function shortReset(window) {
 function windowUnit(label) {
   const text = String(label || "");
   const hours = /^\s*(\d+(?:\.\d+)?)?\s*(?:hours?|hrs?|h)(?![a-z])/i.exec(text);
-  if (hours) return (hours[1] ? hours[1] : "") + "h";
+  if (hours) return (hours[1] ? hours[1] : "1") + "h";
   const days = /^\s*(\d+(?:\.\d+)?)?\s*(?:days?|d)(?![a-z])/i.exec(text);
-  if (days) return (days[1] ? days[1] : "") + "d";
+  if (days) return (days[1] ? days[1] : "1") + "d";
   if (/week/i.test(text)) return "7d";
   if (/month/i.test(text)) return "30d";
   return text;
@@ -557,7 +557,7 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
     }
     else text(name, windowLabel(primary), 9, colors.muted);
     widget.addSpacer(3);
-    const value = widget.addStack(); value.centerAlignContent();
+    const value = widget.addStack();
     text(value, direction(), 13, colors.muted);
     value.addSpacer(4);
     text(value, percent(primary), 34, accent(primary), "medium");

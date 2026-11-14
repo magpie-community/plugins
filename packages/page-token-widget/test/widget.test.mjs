@@ -780,7 +780,12 @@ test('the unit of a window is written the same way for every provider', async ()
       label: entry.label === '5h' ? '5 hours' : '7 days',
     })),
   }));
-  cards[0].windows = [{ ...cards[0].windows[0], label: '4 hours' }];
+  cards[0].windows = [{ ...cards[0].windows[0], label: '4 hours' }, { ...cards[0].windows[1], label: '5 hours' }];
+  // A window of one hour without a number, a window of a month and a window
+  // of a plain day: they are written the same way as the others.
+  cards[1].windows = [{ ...cards[1].windows[0], label: 'hour' }, { ...cards[1].windows[1], label: '7 days' }];
+  cards[2].windows = [{ ...cards[2].windows[0], label: 'monthly' }];
+  cards[3].windows = [{ ...cards[3].windows[0], label: 'day' }];
   const answering = class {
     constructor() { this.response = { statusCode: 200 }; }
     async loadJSON() {
@@ -798,16 +803,23 @@ test('the unit of a window is written the same way for every provider', async ()
   assert.match(written, /4h/);
   assert.match(written, /5h/);
   assert.match(written, /7d/);
+  assert.match(written, /1h/);
+  assert.match(written, /1d/);
+  assert.match(written, /30d/);
   assert.doesNotMatch(written, /hours/i);
+  assert.doesNotMatch(written, /monthly/i);
 });
 
-// The name of a card and the number below it stand at the left of the card.
-// A version of the widget centred them, and a name that was written in the
-// middle of its card looked like it belonged to the card next to it.
-test('the name of a card and its number stand at the left', () => {
+// The name of a card and the number below it are not centred in their row.
+// The 0.4.5 release centred every line of a card, so the name of a card
+// floated in the middle of its own row instead of standing where the row
+// begins.
+test('the name of a card and its number are not centred in their row', () => {
   const start = source.indexOf('function line(');
-  assert.ok(start > 0, 'the widget has a line helper');
-  const helper = source.slice(start, start + 400);
+  const end = source.indexOf('\n}', start) + 2;
+  assert.ok(start > 0 && end > start, 'the widget has a line helper');
+  const helper = source.slice(start, end);
   assert.doesNotMatch(helper, /centerAlignContent/);
   assert.doesNotMatch(source, /valueRow\.centerAlignContent/);
+  assert.doesNotMatch(source, /value\.centerAlignContent/);
 });

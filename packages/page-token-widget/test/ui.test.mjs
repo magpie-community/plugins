@@ -358,6 +358,10 @@ test('the window of a quota is written the same way on the phone', async () => {
   assert.equal(name('5 hours'), '5 小时剩余');
   assert.equal(name('4 hours'), '4 小时剩余');
   assert.equal(name('7 days'), '本周剩余');
-  assert.equal(name('hours'), '小时剩余');
+  assert.equal(name('2 days'), '2 天剩余');
+  assert.equal(name('hours'), '1 小时剩余');
+  assert.equal(name('day'), '1 天剩余');
+  assert.equal(name('weekly'), '本周剩余');
+  assert.equal(name('monthly'), '30 天剩余');
   assert.equal(make('used')('4 hours'), '4 小时已用');
 });
