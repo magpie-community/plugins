@@ -144,6 +144,22 @@ magpie plugin login packycode
 
 ---
 
+## 2026-11 的线路变化
+
+控制台和推理现在不在同一台主机上：
+
+| 用途 | 主机 |
+| --- | --- |
+| 价目表、令牌、日志、用量（`/api/*`） | **www.packyapi.com**（需要代理；slb 的 `/api` 现在返回空 body） |
+| 推理（`/v1/*`） | **slb-v1.api.fan**（直连可用），或 `cf.api.fan` / `www.packyapi.com` |
+
+所以「接口线路」选项里，`slb` / `cf` 都表示「控制台走 www、推理走各自主机」；`www` 表示两边都走主站。
+控制台返回空价目表时插件会明确报错，而不是让模型列表变空。
+
+另外 `www.packyapi.com` 前面有 Cloudflare：密集请求会返回 **429 / error 1015**。插件会把最近一次
+成功拿到的价目表存到 `~/.config/magpie/packycode-pricing.json`，控制台被限流时继续用这份快照路由
+（价格变动很少），已经建好的令牌也照常使用；只有连快照都没有时才会报错。
+
 ## 它是怎么选路的
 
 一次请求（用 `packycode/claude-sonnet-5-5` 举例）：

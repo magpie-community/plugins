@@ -1,19 +1,23 @@
 # agy-acp
 
+English | [Simplified Chinese](./README.zh-CN.md)
+
 Multi-account **Antigravity CLI (`agy acp`)** model provider plugin for [Magpie](https://usemagpie.ai) and [OpenCode](https://opencode.ai).
 
 `agy-acp` drives your installed `agy` binary over the official Agent Client Protocol (`agy acp`), exposing Gemini, Claude, and GPT-OSS models offered to `agy` under provider ID **`agy-acp`** while keeping tool execution 100% client-owned.
 
-## How It Differs
+## Choosing an Antigravity Plugin
 
-| Capability | `agy-acp` (this plugin) | `agy-cli` (`@magpie-community/opencode-agy-cli-auth`) | `antigravity` (`@magpie-community/opencode-antigravity-auth`) |
-|---|---|---|---|
-| Upstream transport | Local `agy acp` subprocess pool | Local `agy acp` subprocess pool | Direct HTTP API with OAuth token |
-| Multi-account pool | **Yes** — isolated per-account credentials + host login | No (`single: true`, one keychain login) | Yes |
-| Client tool bridge | Native Streamable-HTTP MCP (`127.0.0.1`) | `PATH` `nc` wrapper over stdio | Direct wire tool calls |
-| Session & cache handling | Warm worker affinity + `session/resume` + WAL SQLite per-step cache accounting | Warm worker pool + `session/resume` | Stateless HTTP |
+Magpie offers three plugins for Google Antigravity. All three **share the exact same Google Antigravity subscription quota pool** (5-hour and weekly windows) when using the same Google account:
 
-> Note: On the same Google account, `agy-acp`, `agy-cli`, and `antigravity` draw from the same Antigravity subscription quota pool.
+| Feature | `magpie-agy-acp` (`agy-acp`, this plugin) | `opencode-agy-cli-auth` (`agy-cli`) | `opencode-antigravity-auth` (`antigravity`) |
+| :--- | :--- | :--- | :--- |
+| **Backend / Endpoint** | Local `agy` CLI (`agy acp --worker`); downloads nothing | Local `agy` CLI (`agy acp`); downloads nothing | Direct HTTP calls to Google's internal API (no CLI needed) |
+| **Sign-in & Storage** | Isolated `0600` account dirs (no OS Keychain): browser OAuth, remote callback-URL paste, batch JSON/`refresh_token` import (Switcher / CLIProxyAPI), or one-click local `agy` login adoption | Single login stored in OS Keychain via manual `agy` shell sign-in | Multi-account OAuth tokens managed directly in Magpie |
+| **Multi-Account & Quota Failover** | Multi-account pool with automatic quota-aware switching (5h/weekly windows + Google AI Pro/Ultra badges) | Single-account only (`single: true`) | Multi-account supported |
+| **Headless / Remote Host Setup** | Built-in callback URL paste & JSON token batch import | Requires interactive local `agy` login / keychain setup | Built-in OAuth flow |
+| **Client Tool Bridge** | Native loopback HTTP MCP (`127.0.0.1`) | Injects a wrapper `nc` script at the front of `PATH` (`--ide-mcp-port`) | Translated in HTTP payload |
+| **Media & Session Resilience** | Auto-downscales inline images (`>2000px` / `>5 MiB`) & strips expired `lostMedia` images to keep sessions alive | Standard `agy` CLI handling | Direct HTTP payload handling |
 
 ## Requirements
 
@@ -24,14 +28,19 @@ Multi-account **Antigravity CLI (`agy acp`)** model provider plugin for [Magpie]
 
 ```sh
 magpie plugin add github:sidkang/agy-acp
+# Or, once published on npm:
+# magpie plugin add magpie-agy-acp
+
 magpie plugin login agy-acp
 ```
+
+> The npm package name is `magpie-agy-acp`; the Magpie/OpenCode provider ID remains **`agy-acp`**.
 
 Models are served as `agy-acp/<model>` (for example `agy-acp/gemini-3.8-flash`, `agy-acp/gemini-4-hydrogen`, `agy-acp/claude-sonnet-5-5`, `agy-acp/claude-opus-5-5`).
 
 ### Sign-In & Import Modes
 
-Run `magpie plugin login agy-acp` or add accounts in **Magpie › Providers › Antigravity ACP**:
+Run `magpie plugin login agy-acp` or add accounts in **Magpie › Providers › Antigravity (multi-account local agy CLI)**:
 
 1. **Sign in with Google (browser)** *(default)* — opens Google OAuth and finishes automatically via a local callback listener (or paste the `Callback URL` when running Magpie on a remote server / Docker). Writes isolated `0600` credentials under `$XDG_DATA_HOME/agy-acp/accounts/<uuid>` without touching your system Keychain.
 2. **Import from a file / JSON or refresh token** — use **Import from a file instead…** (supports single/multi-account JSON exports from Antigravity Switcher, CLIProxyAPI, `antigravity-oauth-token`, or newline-separated `refresh_token`s) or paste JSON / a refresh token directly under **Other ways to sign in…**.
@@ -46,7 +55,7 @@ magpie quota agy-acp
 
 ## Options
 
-### Provider Switches (Magpie › Providers › Antigravity ACP)
+### Provider Switches (Magpie › Providers › Antigravity (multi-account local agy CLI))
 
 | Option | Default | Description |
 |---|---|---|
@@ -62,6 +71,7 @@ magpie quota agy-acp
   "maxGlobalWorkers": 36,
   "maxPerAccountWorkers": 18,
   "idleTimeoutMs": 3600000,
+  "awaitingToolTimeoutMs": 600000,
   "waitTimeoutMs": 60000,
   "maxWaiters": 128,
   "maxWorkerRssBytes": 1073741824
