@@ -113,6 +113,13 @@ them, are under "Other ways to sign in…".
     email either is `Kiro account <8 hex>`, from its file's token, so two
     such stay two accounts. Importing an account signed in already replaces
     it.
+  - A file's `profileArn` is kept only in the shape Kiro gives one
+    (`arn:aws:codewhisperer:<region>:<12 digits>:profile/<id>`); any other
+    is dropped and Kiro is asked for the profile. As for every sign-in
+    (the IDE's file, kiro-cli's, a saved one), the API's region is taken
+    from the profile only when it is one of Kiro's (us-east-1,
+    eu-central-1), and a region that isn't an AWS region's shape is refused
+    before anything is sent, so no file decides where a token goes.
   - A sign-in Kiro refuses, one of an unknown `provider`, an AWS one without
     its client, and a company's own identity provider (`ExternalIdp`) are
     listed as not imported, with why; the others are imported. One sign-in

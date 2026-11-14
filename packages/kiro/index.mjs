@@ -60,10 +60,15 @@ const BASE = "https://runtime.us-east-1.kiro.dev" // what OpenCode is given; the
 
 const PORTAL = "https://app.kiro.dev"
 const AUTH_SERVICE = "https://prod.us-east-1.auth.desktop.kiro.dev"
-const oidc = (region) => `https://oidc.${region}.amazonaws.com`
-const runtime = (region) => `https://runtime.${region}.kiro.dev`
-const management = (region) => `https://management.${region}.kiro.dev`
-const refreshURL = (region) => `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`
+// a region read from a file goes into these host names: one that isn't a region's shape is refused
+const inHost = (region) => {
+  if (!AWS_REGION.test(String(region))) throw new Error(`${JSON.stringify(region)} isn't an AWS region`)
+  return region
+}
+const oidc = (region) => `https://oidc.${inHost(region)}.amazonaws.com`
+const runtime = (region) => `https://runtime.${inHost(region)}.kiro.dev`
+const management = (region) => `https://management.${inHost(region)}.kiro.dev`
+const refreshURL = (region) => `https://prod.${inHost(region)}.auth.desktop.kiro.dev/refreshToken`
 // the ports Kiro's sign-in page sends the browser back to, the IDE's
 const CALLBACK_PORTS = [3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153]
 // what the IDE asks AWS for
@@ -176,7 +181,7 @@ async function readCLI() {
       const m = get(key)
       if (!m?.access_token) continue
       const c = { access: m.access_token, refresh: m.refresh_token ?? "", expires: time(m.expires_at), region: m.region || "us-east-1",
-        profile: m.profile_arn ?? "", dbKey: key }
+        profile: arnOf(m.profile_arn), dbKey: key }
       if (kind === "social") c.method = "social"
       else if (kind === "odic") {
         c.method = "idc"
@@ -209,7 +214,7 @@ async function readIDE() {
   }
   if (!t?.accessToken) return null
   const c = { access: t.accessToken, refresh: t.refreshToken ?? "", expires: time(t.expiresAt), region: t.region || "us-east-1",
-    profile: t.profileArn ?? "", method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
+    profile: arnOf(t.profileArn), method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
   if (t.clientIdHash) {
     try {
       const reg = JSON.parse(await readFile(join(ideDir(), t.clientIdHash + ".json"), "utf8"))
@@ -345,12 +350,17 @@ function authHeaders(a) {
 const tokenType = (c) => (c.method === "apikey" ? "API_KEY" : c.method === "external-idp" ? "EXTERNAL_IDP" : "")
 
 // region is where the account's API is: the region its profile is in, else
-// the nearer of Kiro's two to where it signed in.
+// the nearer of Kiro's two to where it signed in. It goes into the API's host
+// name, so only Kiro's own regions are taken from a profile.
 function regionOf(profile, signedIn) {
   const parts = String(profile ?? "").split(":")
-  if (parts.length > 4 && parts[3]) return parts[3]
+  if (parts.length > 4 && CREDIT_REGIONS.includes(parts[3])) return parts[3]
   return String(signedIn ?? "").startsWith("eu-") ? "eu-central-1" : "us-east-1"
 }
+// arnOf is a profile ARN as Kiro gives one, else "": one read from a file
+// that isn't is left for profileOf to ask Kiro for
+const PROFILE_ARN = /^arn:aws:codewhisperer:[a-z]{2}(?:-[a-z]+)+-\d{1,2}:\d{12}:profile\/[A-Za-z0-9_-]+$/
+const arnOf = (s) => (PROFILE_ARN.test(String(s ?? "").trim()) ? String(s).trim() : "")
 
 // STATUS_TEXT is Go's http.StatusText for the answers Kiro gives.
 const STATUS_TEXT = { 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 408: "Request Timeout",
@@ -699,7 +709,7 @@ async function credOf(auth) {
   if (auth.source === "kiro") return (await readCLI()) ?? (await readIDE())
   if (!auth.access) return null
   return { access: auth.access, refresh: auth.refresh ?? "", expires: auth.expires ?? 0, method: auth.method || "social",
-    region: auth.region || "us-east-1", profile: auth.profileArn ?? "", clientId: auth.clientId ?? "", clientSecret: auth.clientSecret ?? "",
+    region: auth.region || "us-east-1", profile: arnOf(auth.profileArn), clientId: auth.clientId ?? "", clientSecret: auth.clientSecret ?? "",
     builderID: isBuilderID(auth.loginProvider), own: true,
     ...(auth.profiles && typeof auth.profiles === "object" && !Array.isArray(auth.profiles) ? { profiles: { ...auth.profiles } } : {}) }
 }
@@ -3216,7 +3226,7 @@ function entryOf(o) {
   if (!AWS_REGION.test(region)) return { error: `${JSON.stringify(region)} isn't an AWS region`, email }
   return { email, c: { access: pick(o, "accessToken", "access_token", "access"), refresh: pick(o, "refreshToken", "refresh_token", "refresh"),
     expires: whenOf(o.expiresAt ?? o.expires_at ?? o.expires), method: social ? "social" : "idc", loginProvider, region,
-    profile: pick(o, "profileArn", "profile_arn"), clientId, clientSecret, builderID: isBuilderID(loginProvider) } }
+    profile: arnOf(pick(o, "profileArn", "profile_arn")), clientId, clientSecret, builderID: isBuilderID(loginProvider) } }
 }
 
 // signInsIn are the sign-ins a file's text holds; the clients registered
