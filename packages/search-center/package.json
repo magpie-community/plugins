@@ -1,0 +1,28 @@
+{
+  "name": "@magpie-community/tools-search-center",
+  "version": "0.8.0-beta.1",
+  "type": "module",
+  "main": "index.mjs",
+  "description": "搜索中心：渠道、凭据组、真实测试和调用记录",
+  "license": "MIT",
+  "repository": {"type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/search-center"},
+  "homepage": "https://github.com/reshdh/magpie-search-center#readme",
+  "bugs": {"url": "https://github.com/reshdh/magpie-search-center/issues"},
+  "os": ["win32"],
+  "engines": {"node": ">=20"},
+  "keywords": ["magpie-plugin", "search", "mcp", "grok"],
+  "files": ["*.mjs", "worker.py", "local_secrets.py", "quota.py", "stdio.py", "requirements.txt", "scripts/setup.ps1", "scripts/doctor.mjs", "backend/**/*.py", "page/search-center.html", "page/open.js", "page/icon.svg", "ui", "licenses", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "README.zh-CN.md", "docs/images", "CHANGELOG.md", "tests/*.test.mjs"],
+  "scripts": {"test": "node --test tests/*.test.mjs", "doctor": "node scripts/doctor.mjs", "prepack": "node scripts/audit-package.mjs"},
+  "magpie": {
+    "options": {
+      "port": 3487
+    },
+    "page": {
+      "title": "搜索中心",
+      "file": "page/search-center.html",
+      "icon": "page/icon.svg",
+      "service": { "port": 3487, "option": "port" },
+      "keepAlive": false
+    }
+  }
+}

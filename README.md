@@ -116,6 +116,7 @@ These give tools to every agent magpie connects. magpie serves them on its MCP s
 | [search1api](packages/search1api) | Web search, news, agentic search, page retrieval, sitemaps and trends, with Search1API OAuth or an API key |
 | [specstream](packages/specstream) | `web_search` (live web answers with the source page of each value) and `extract` (page text from up to 20 URLs a call), with a SpecStream API key; also listed under Web search |
 | [calc](packages/calc) | `eval` exact arithmetic in fractions, `convert` units (data, time, length, mass, angle, temperature), `date` calendar date math across time zones and DST. No network, no key |
+| [search-center](packages/search-center) | Per-request source and Grok model/web/X selection; a Magpie page for multiple keys, live search tests and citation history. Windows, Python 3.12+; overlaps magpie-websearch and magpie-search-mix sources, with explicit per-call selection and unified account management |
 
 ```sh
 magpie plugin add @magpie-community/tools-<name>
