@@ -863,6 +863,9 @@ test("models() and usage never start Doubao: they read from a window already ope
   const p = I.createPlugin({ doubao: d })
   const listed = await p.provider.models({}, {})
   expect(Object.keys(listed).length).toBeGreaterThan(0)
+  // the built-in three aren't the account's list: magpie keeps the one it
+  // had, and the models picked from it (Archivemylife on X, agy-cli's sibling)
+  expect(listed[Symbol.for("magpie.fellBack")]).toBe(true)
   const u = await p.auth.usage(async () => ({}))
   expect(u.signIn).toBe("kept")
   expect(u.error).toContain("没有打开")
@@ -870,7 +873,9 @@ test("models() and usage never start Doubao: they read from a window already ope
   // open, the same window is read for both
   app.running = async () => 1
   d.readAt = 0
-  expect(Object.values(await p.provider.models({}, {})).map((m) => m.name)).toEqual(WORK)
+  const read = await p.provider.models({}, {})
+  expect(Object.values(read).map((m) => m.name)).toEqual(WORK)
+  expect(read[Symbol.for("magpie.fellBack")]).toBeUndefined()
   expect((await p.auth.usage(async () => ({}))).error).toBeUndefined()
   expect(started).toBe(0)
   fs.rmSync(dir, { recursive: true, force: true })

@@ -79,7 +79,12 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
         // a list never read from the menu is read now, so an account that
         // signed in before the plugin read menus isn't left with three
         if (typeof doubao?.ensureList === "function") await doubao.ensureList({ signal: AbortSignal.timeout(25000) })
-        return models(modelTable(doubao))
+        const out = models(modelTable(doubao))
+        // a menu still never read (Doubao closed, or the read failed) gives
+        // the built-in three or an older cache: not the account's list, so
+        // magpie keeps the one it had and the models picked from it
+        if (typeof doubao?.modelList !== "function" || doubao.tableAt === 0) out[Symbol.for("magpie.fellBack")] = true
+        return out
       },
     },
     auth: {
