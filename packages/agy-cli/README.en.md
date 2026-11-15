@@ -176,10 +176,11 @@ After installing, sign in from Magpie; no terminal needed.
    plugin never stores them, and counts the sign-in as done only once
    `agy models` lists the account's models. Magpie names the account by the
    Google email agy stored (the one thing read from the keyring for it).
-   agy holds one Google account, so a second one can't be added beside it. To
-   change accounts, click Sign in and pick "Switch to another Google account":
-   agy runs its Google sign-in even while signed in, and the new account
-   replaces the old one.
+   agy holds one Google sign-in at a time. To save several accounts, click
+   Sign in and pick "Add another Google account" for each one: the new account
+   takes agy's keyring slot and the previous one is kept by the plugin. When
+   one runs out of quota, the plugin rotates to the next saved account (see
+   "Account rotation").
 2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.
@@ -204,6 +205,35 @@ After installing, sign in from Magpie; no terminal needed.
   construction has unit tests; end-to-end runs on real Windows hardware are still
   pending.
 
+## Account rotation
+
+agy holds one Google sign-in at a time (one system-keyring slot). The plugin
+keeps a record of every account that signed in through it
+(`$XDG_STATE_HOME/magpie-agy-bridge/accounts.json`, readable by the user alone;
+the Google credentials themselves stay with agy's keyring — the plugin only
+writes the chosen account's value back into that slot when rotating):
+
+- **Adding accounts**: click Sign in and pick "Add another Google account" for
+  each one. An account you sign in to with `agy` in a terminal is adopted too.
+- **Automatic rotation**: when a request reports quota exhausted (429 /
+  RESOURCE_EXHAUSTED), the current account is marked (until its known reset
+  time, or 15 minutes when unknown) and the **next** request automatically
+  moves to the next account that isn't spent. The request that failed is never
+  retried mid-flight. When every account is spent, the plugin stays on the
+  current one until the earliest resets.
+- **Recovery**: a quota read (`magpie quota`) that shows headroom clears the
+  account's spent mark.
+- **Session safety**: after a rotation, idle agy processes from the old
+  account are stopped and their sessions aren't resumed, so no later request
+  lands on the old account's session.
+- **The switch**: "Rotate accounts on quota" (`multi_account`) in the
+  Providers page, on by default. Turned off, the plugin behaves exactly as
+  the single-account version; with one saved account the switch changes
+  nothing anyway.
+
+A Google account disabled for Terms of Service is not a quota problem:
+rotation doesn't trigger for it — sign in again (see "Troubleshooting").
+
 ## Usage quota
 
 ```sh
@@ -212,8 +242,10 @@ magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed
-in to the CLI, broken down by model group. The plugin never writes Google tokens
-or sends them anywhere; it always reports the account agy is signed in to. A window with no
+in to the CLI, broken down by model group. The plugin never sends Google tokens
+anywhere; when account rotation switches accounts, it writes the chosen
+account's token back into agy's keyring slot (see "Account rotation"). It
+always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
@@ -242,7 +274,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | How long a suspended tool turn whose client disconnected may keep its pool slot |
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688 (112 KiB) | Byte budget for the replayed history prompt |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | Total time budget for a usage query, capped at 18000 |
-| `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading agy's stored sign-in |
+| `AGY_BRIDGE_STORED_SIGNIN` | unset | `skip` stops the plugin from reading or writing agy's stored sign-in (account rotation is disabled with it) |
 | `AGY_BRIDGE_MCP_TRACE` | unset | Writes MCP channel traffic to the given file; for debugging only |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
 | `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |

@@ -37,6 +37,7 @@ export const LOGIN_FILE = path.join(REPO_DIR, "login.mjs")
 export const RE2_PATTERN_FILE = path.join(REPO_DIR, "re2-pattern.mjs")
 export const STEP_USAGE_FILE = path.join(REPO_DIR, "step-usage.mjs")
 export const SIGNIN_FILE = path.join(REPO_DIR, "signin.mjs")
+export const ACCOUNTS_FILE = path.join(REPO_DIR, "accounts.mjs")
 export const TOOL_SCHEMA_FILE = path.join(REPO_DIR, "tool-schema.mjs")
 export const TOOL_BUDGET_FILE = path.join(REPO_DIR, "tool-budget.mjs")
 export const INSTALL_FILE = path.join(REPO_DIR, "install.mjs")
@@ -542,6 +543,7 @@ export async function createBridgeKit(options = {}) {
   const re2Url = pathToFileURL(RE2_PATTERN_FILE).href
   const stepUsageUrl = pathToFileURL(STEP_USAGE_FILE).href
   const signinUrl = pathToFileURL(SIGNIN_FILE).href
+  const accountsUrl = pathToFileURL(ACCOUNTS_FILE).href
   const toolSchemaUrl = pathToFileURL(TOOL_SCHEMA_FILE).href
   const toolBudgetUrl = pathToFileURL(TOOL_BUDGET_FILE).href
   const installUrl = pathToFileURL(INSTALL_FILE).href
@@ -559,6 +561,7 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./re2-pattern.mjs") module = sourceModule(RE2_PATTERN_FILE, "", re2Url)
     else if (key === "./step-usage.mjs") module = sourceModule(STEP_USAGE_FILE, "", stepUsageUrl)
     else if (key === "./signin.mjs") module = sourceModule(SIGNIN_FILE, "", signinUrl)
+    else if (key === "./accounts.mjs") module = sourceModule(ACCOUNTS_FILE, "", accountsUrl)
     else if (key === "./tool-schema.mjs") module = sourceModule(TOOL_SCHEMA_FILE, "", toolSchemaUrl)
     else if (key === "./tool-budget.mjs") module = sourceModule(TOOL_BUDGET_FILE, "", toolBudgetUrl)
     else if (key === "./install.mjs") module = sourceModule(INSTALL_FILE, "", installUrl)

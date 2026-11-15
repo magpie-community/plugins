@@ -1383,9 +1383,25 @@ for (const [title, tools, want, name] of [
 }
 
 {
+  const { accountsPath, readAccounts, writeAccounts } = await import("../accounts.mjs")
+  const value = (email, refresh) => JSON.stringify({ token: { access_token: "a", refresh_token: refresh }, auth_method: "consumer", id_token_email: email })
+  writeAccounts({ v: 1, active: "first@example.com", accounts: [
+    { email: "first@example.com", value: value("first@example.com", "one"), exhaustedUntil: 0 },
+    { email: "second@example.com", value: value("second@example.com", "two"), exhaustedUntil: 0 },
+  ] })
   const { events } = await readSSE(await callFetch({ model, messages: [{ role: "user", content: "QUOTA exhausted" }] }))
   const error = events.find(event => event.event === "error")?.data?.error
   check("split error marker and quota map to rate_limit_error", error?.type === "rate_limit_error" && error.message.includes("quota exhausted") && textOf(events) === "", JSON.stringify({ error, text: textOf(events) }))
+  // Marking the account is deliberately after the response: the failed turn
+  // keeps its 429, and only the next request moves to the saved account.
+  let store = readAccounts()
+  for (let i = 0; i < 40 && store.active !== "second@example.com"; i++) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    store = readAccounts()
+  }
+  check("a quota error saves exhaustion and selects the next account", store.active === "second@example.com" && store.accounts[0].exhaustedUntil > Date.now() && store.accounts[1].exhaustedUntil === 0, JSON.stringify(store))
+  check("rotation never writes the keyring when stored sign-in access is off", store.accounts.every(account => account.value.includes(account.email)), "account values changed")
+  fs.rmSync(accountsPath(), { force: true })
 }
 
 // #1151 (KevinXC5; niyezaimenglima on X, Windows): Claude Code's own

@@ -8,7 +8,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, readStoredRaw, setStoredSignIn, storedEmail, storedEmailNow, storedSignInNow } from "./signin.mjs"
+import { markExhausted, markRestored, pickAccount, readAccounts, resetTimesOf, rotateOff, withAccount, writeAccounts } from "./accounts.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
@@ -1677,6 +1678,9 @@ class Proc {
   constructor(agyPath, convKey, opts) {
     this.agyPath = agyPath
     this.convKey = convKey
+    // The account this process started under. Rotating the keyring bumps the
+    // generation, so an old process is never resumed or parked for a new one.
+    this.accountGeneration = accountGeneration
     this.model = opts.model
     this.selection = opts.selection
     this.tools = opts.tools
@@ -2842,6 +2846,10 @@ function unpark(convKey) {
 // Remember a session so a later request, or a restarted bridge, resumes it
 // instead of replaying history. Called after every completed turn and on retire.
 function park(proc) {
+  // A turn that outlived an account switch may finish, but its session belongs
+  // to the old account and must not be resumed by a later request. Proc sets an
+  // accountGeneration; plain fixtures (tests) don't, and park as current.
+  if (typeof proc.accountGeneration === "number" && proc.accountGeneration !== accountGeneration) return
   if (!proc.canPark()) return
   loadParked()
   parked.delete(proc.convKey)
@@ -3001,6 +3009,13 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
 async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey])) {
   await evictIdle()
   let existing = pool.get(convKey)
+  // An idle process from before an account switch can't serve this request.
+  // A busy one is left to finish its stream; the next request retires it.
+  if (existing && existing.accountGeneration !== accountGeneration && !existing.turn) {
+    dropFromPool(existing)
+    await existing.stop().catch(() => {})
+    existing = null
+  }
   if (existing?.turn?.cancelRequested) {
     await Promise.race([existing.turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
   }
@@ -3060,6 +3075,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
       isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
+      existing.accountGeneration === accountGeneration &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
       (existing.matchesHistory(matchedHistory) || continuedFresh)
     if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
@@ -5646,7 +5662,14 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           }
           if (event.type === "error") {
             closeBlock()
-            send("error", { type: "error", error: streamErrorOf(event.error) })
+            const streamError = streamErrorOf(event.error)
+            // A spent quota is the one failure another saved account can
+            // answer: mark the account and pick the next one for the next
+            // request. This stream keeps its error; nothing is retried after
+            // output may have been emitted. A refused system prompt is a 400
+            // (invalid_request_error), so it never rotates accounts.
+            if (streamError.type === "rate_limit_error") quotaExhausted(body.model)
+            send("error", { type: "error", error: streamError })
             if (!event.error?.keepProcess) {
               dropFromPool(proc)
               await proc.stop().catch(() => {})
@@ -5904,6 +5927,132 @@ async function signedInAs() {
   return { type: "success", key: "agy", ...(email ? { metadata: { email } } : {}) }
 }
 
+// ── Accounts, for when one runs out of quota ─────────────────────────────
+//
+// agy keeps one Google sign-in (the system keyring's slot on Windows and
+// macOS). The plugin keeps the accounts that signed in through it in its own
+// store (accounts.mjs). When a turn says the quota is spent, the account is
+// marked and the NEXT request runs on another one, by writing it into the
+// slot first. The slot is shared: the write is serialized, and pooled agy
+// processes started under the old account are stopped, so nothing serves a
+// request on an account nobody picked. A user can turn the whole thing off
+// (auth.options, `multi_account`), and without a second account nothing
+// changes from the single-account behavior.
+
+let multiAccountEnabled = () => true
+let accountsGate = Promise.resolve()
+
+// gated runs account work one step at a time: only one request may compare,
+// write and record at once, and the write itself is one keyring operation.
+function gated(fn) {
+  const run = accountsGate.then(fn, fn)
+  accountsGate = run.then(() => {}, () => {})
+  return run
+}
+
+// lastUsageResets is the most recent usage read's reset times, when it said
+// anything: a quota error is held against the account until the earliest
+// window it could be in resets, when the usage read itself doesn't say.
+let lastUsageResets = new Map()
+
+// rememberUsage keeps a usage read's reset times and clears the exhaustion
+// of the account it was read for when it shows quota: usage is read on the
+// account in the slot, so a good read says the account may serve again.
+function rememberUsage(usage) {
+  lastUsageResets = resetTimesOf(usage)
+  const windows = Array.isArray(usage?.windows) ? usage.windows : []
+  if (!windows.some((w) => typeof w?.used === "number" && w.used < 100)) return
+  gated(() => {
+    const store = readAccounts()
+    if (!store.accounts.length) return
+    const email = storedEmailNow() || store.active
+    if (!email) return
+    const next = markRestored(store, email)
+    if (next.changed) writeAccounts(next.store)
+  }).catch(() => {})
+}
+
+// servingAccount is the account the next request runs on, or null to run on
+// whatever agy's keyring already holds (signed in outside the plugin, or
+// single-account). Picks an unspent account, writes it into the slot when it
+// isn't the one there, and adopts a keyring account it doesn't know so a
+// sign-in in a terminal also joins the rotation.
+async function servingAccount() {
+  if (!multiAccountEnabled()) return null
+  return gated(async () => {
+    let store = readAccounts()
+    if (!store.accounts.length) {
+      // First run after the feature lands: adopt the account agy already
+      // holds, so a later "Add another Google account" has something to
+      // rotate back to. Without a readable account nothing changes.
+      const email = await storedEmail()
+      const raw = email ? await readStoredRaw() : null
+      if (!raw) return null
+      store = withAccount(store, { email, value: raw, active: true })
+      if (!writeAccounts(store)) return null
+    }
+    const picked = pickAccount(store)
+    if (!picked) return null
+    let keyringEmail = storedEmailNow()
+    if (!keyringEmail) keyringEmail = await storedEmail()
+    if (keyringEmail && keyringEmail.toLowerCase() === picked.account.email.toLowerCase()) return picked.account
+    if (keyringEmail && !store.accounts.some((a) => a.email && a.email.toLowerCase() === keyringEmail.toLowerCase())) {
+      // agy holds an account the store doesn't know (signed in in a
+      // terminal): keep it, and keep it in the store for later rotation.
+      const raw = await readStoredRaw()
+      if (raw) {
+        const next = withAccount(store, { email: keyringEmail, value: raw, active: true })
+        if (writeAccounts(next)) {
+          stopPooledProcs()
+          return next.accounts.find((a) => a.email.toLowerCase() === keyringEmail.toLowerCase()) ?? null
+        }
+      }
+      return null
+    }
+    // Write the picked account into the slot. In-flight streams keep their
+    // own process; only idle processes are stopped, and old session resumes
+    // are invalidated, so a later request can't continue on the old account.
+    if (!(await setStoredSignIn(picked.account.value))) return null
+    stopPooledProcs()
+    return picked.account
+  })
+}
+
+// stopPooledProcs retires idle agy processes after the keyring slot moves.
+// An in-flight turn is left alone: its process finishes the stream on the
+// account it started with, and accountGeneration keeps it from being parked
+// or reused afterward. Saved session resumes belong to the old account too.
+let accountGeneration = 0
+function stopPooledProcs() {
+  accountGeneration++
+  loadParked()
+  for (const key of [...parked.keys()]) unpark(key)
+  const idle = new Set([...pool.values()].filter((proc) => !proc.turn))
+  for (const proc of idle) {
+    dropFromPool(proc)
+    proc.stop().catch(() => {})
+  }
+}
+
+// quotaExhausted marks the account a rate-limit error came from and moves
+// the store's pick to the next unspent one for the following request. The
+// failing request already has its error; this only changes what runs next.
+function quotaExhausted(model) {
+  gated(async () => {
+    if (!multiAccountEnabled()) return
+    const store = readAccounts()
+    if (!store.accounts.length) return
+    const email = storedEmailNow() || store.active
+    if (!email) return
+    const resets = lastUsageResets
+    const until = resets.get(model) ?? resets.get("") ?? 0
+    let next = markExhausted(store, email, until)
+    const off = rotateOff(next.store, email)
+    if (off.changed) next = { store: off.store, changed: true }
+    if (next.changed || off.changed) writeAccounts(next.store)
+  }).catch(() => {})
+}
+
 // googleSignIn runs agy's own Google sign-in: its link, then the code the
 // page shows.
 async function googleSignIn(agy) {
@@ -5924,12 +6073,41 @@ async function googleSignIn(agy) {
       forgetOffered()
       const probe = await probeSignedIn(agy)
       if (!probe.ok) return { type: "failed", error: `agy signed in, but ${probe.why}` }
+      // The sign-in is an account the store keeps for rotation: the next
+      // time this one's quota runs out, another saved one takes its place.
+      saveSignedInAccount()
       return signedInAs()
     },
   }
 }
 
-export const AntigravityBridgePlugin = async () => {
+// saveSignedInAccount puts the account agy just signed in to into the store,
+// so it survives a later rotation away from it. The store's active account
+// follows: the sign-in put it in agy's slot.
+function saveSignedInAccount() {
+  gated(async () => {
+    const raw = await readStoredRaw()
+    if (!raw) return
+    const email = await storedEmail()
+    const store = readAccounts()
+    const next = withAccount(store, { email, value: raw, active: true })
+    writeAccounts(next)
+  }).catch(() => {})
+}
+
+export const AntigravityBridgePlugin = async ({ client, magpie } = {}, options = {}) => {
+  // The account rotation switch (auth.options below). A host that has the
+  // provider's options (magpie) is asked first; a plugin's own options come
+  // second; on is the default, and one account in the store means the switch
+  // changes nothing anyway.
+  const MULTI_ACCOUNT = "multi_account"
+  multiAccountEnabled = () => {
+    const fromMagpie = magpie?.options?.(PROVIDER_ID)?.[MULTI_ACCOUNT]
+    if (fromMagpie !== undefined) return fromMagpie !== false && fromMagpie !== "false"
+    const own = options?.[MULTI_ACCOUNT]
+    if (own !== undefined) return own !== false && own !== "false"
+    return true
+  }
   const readUsage = createUsageReader(findAgy)
   keepAgyCurrent(findAgy)
   return {
@@ -5950,7 +6128,33 @@ export const AntigravityBridgePlugin = async () => {
         },
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
-      usage: async () => readUsage(),
+      usage: async () => {
+        // Read the account the next request would serve, not a spent one left
+        // in the slot. Rotation stays best-effort; agy's current account is
+        // the fallback when the keyring can't be written.
+        try { await servingAccount() } catch {}
+        const out = await readUsage()
+        // A read that shows quota says the account it was read for may serve
+        // again; its reset times say when an exhausted one comes back.
+        if (multiAccountEnabled()) rememberUsage(out)
+        return out
+      },
+      // What magpie shows as switches under the provider. OpenCode ignores
+      // this extension.
+      options: [
+        {
+          key: MULTI_ACCOUNT,
+          label: "Rotate accounts on quota",
+          description: "When one Google account's quota runs out, the next saved one takes its place. Sign in more than once to save several accounts.",
+          labels: { zh: "额度耗尽自动换号", "zh-TW": "額度耗盡自動換號", ja: "クォータ切れでアカウントを切り替える" },
+          descriptions: {
+            zh: "一个 Google 账号额度耗尽时，自动切到下一个已保存的账号。多次登录即可保存多个账号。",
+            "zh-TW": "一個 Google 帳號額度耗盡時，自動切到下一個已儲存的帳號。多次登入即可儲存多個帳號。",
+            ja: "ある Google アカウントのクォータが尽きると、次に保存されたアカウントへ自動で切り替わります。複数回サインインすれば複数アカウントを保存できます。",
+          },
+          default: true,
+        },
+      ],
       methods: [
         {
           // agy's own Google sign-in (`agy acp --login`): magpie opens its
@@ -5965,20 +6169,23 @@ export const AntigravityBridgePlugin = async () => {
             const agy = findAgy()
             if (!agy) return noAgy()
             if ((await probeSignedIn(agy)).ok) {
-              return { url: "", instructions: "", method: "auto", callback: async () => signedInAs() }
+              return { url: "", instructions: "", method: "auto", callback: async () => {
+                saveSignedInAccount()
+                return signedInAs()
+              } }
             }
             return googleSignIn(agy)
           },
         },
         {
-          // agy keeps one Google account (the system keyring's), so a
-          // second account isn't added beside the first: this signs agy in
-          // to another one in its place, even while it is signed in. The
-          // first way, signed in already, ends at once with nothing changed
-          // (Archivemylife on X: "Sign in again" did nothing).
+          // A second Google account for the rotation: agy signs in to it in
+          // the keyring's place, and the plugin keeps the first one saved
+          // for when this one's quota runs out (and the other way around).
+          // Turn the rotation off (multi_account) and this is just agy's
+          // account switch, as before.
           type: "oauth",
-          label: "Switch to another Google account (agy holds one)",
-          labels: { zh: "换一个 Google 账号（agy 只能登录一个）", "zh-TW": "換一個 Google 帳號（agy 只能登入一個）", ja: "別の Google アカウントに切り替える（agy は 1 つだけ）" },
+          label: "Add another Google account",
+          labels: { zh: "添加另一个 Google 账号", "zh-TW": "新增另一個 Google 帳號", ja: "別の Google アカウントを追加" },
           authorize: async () => {
             const agy = findAgy()
             if (!agy) return noAgy()
@@ -6016,6 +6223,11 @@ export const AntigravityBridgePlugin = async () => {
 
             const agy = findAgy()
             if (!agy) return jsonError(503, "agy CLI not found on this machine")
+            // The account this request runs on: with several saved and the
+            // current one's quota spent, the slot is switched to another
+            // before the turn starts. A failure to switch runs on the
+            // account agy already holds, as before.
+            try { await servingAccount() } catch { /* run on agy's current account */ }
             // nothing stored to sign agy in with: agy would only start its
             // own Google sign-in, so the account is told to sign in again
             // (from the last read; a request doesn't wait for a new one)

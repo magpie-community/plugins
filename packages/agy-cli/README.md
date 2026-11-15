@@ -124,8 +124,9 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    里也一样。登录的有效期是 15 分钟。Google 凭据始终由 agy 自己保管（系统钥匙串），
    插件不保存；agy 列出账号的模型（`agy models`）后才算登录成功。账号在 Magpie 里以 agy
    存的 Google 邮箱命名（只从钥匙串里读这一项）。
-   agy 只能登录一个 Google 账号，所以不能并列添加第二个。要换账号，点 Sign in 后选
-   「换一个 Google 账号」：agy 即使已经登录也会重新走 Google 登录，新账号替换旧账号。
+   agy 自己一次只登录一个 Google 账号。想保存多个账号，点 Sign in 后选
+   「添加另一个 Google 账号」再走一次 Google 登录：新账号写进 agy 的钥匙串槽位，
+   旧账号由插件保存。额度耗尽时插件自动切到下一个保存的账号（见「多账号轮换」）。
 2. 模型名写成 `agy-cli/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。
@@ -144,6 +145,26 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
 - **原生 Windows**：支持 `.exe`、`.cmd`、`.bat` 的查找与启动，后台更新检查不弹控制台窗口，
   并支持 `magpie quota`。目前只有命令构造的单元测试，尚未在 Windows 实机完成端到端验证。
 
+## 多账号轮换
+
+agy 一次只认一个 Google 账号（系统钥匙串的一个槽位）。插件自己保存每次登录的账号
+（`$XDG_STATE_HOME/magpie-agy-bridge/accounts.json`，仅本用户可读；Google 凭据本体
+仍由 agy 的钥匙串保管，插件只在换号时把所选账号的凭据写回那个槽位）：
+
+- **加入账号**：点 Sign in 选「添加另一个 Google 账号」，每登录一次就多保存一个。
+  插件也会自动收编你在终端里用 `agy` 登录的账号。
+- **自动换号**：某次请求报额度耗尽（429/RESOURCE_EXHAUSTED 类）时，当前账号被标记
+  （知道重置时间就记到那时，否则 15 分钟），**下一个**请求自动切到下一个未耗尽的账号。
+  已开始的那次请求不会中途换号重试。全部账号都耗尽时保持原账号，等最早的一个恢复。
+- **恢复**：额度查询（`magpie quota`）看到有余量时，该账号的耗尽标记自动清除。
+- **会话安全**：换号后旧的空闲 agy 进程被停掉，旧会话不再续接，避免新请求落在
+  旧账号的会话上。
+- **开关**：Providers 页的「额度耗尽自动换号」（`multi_account`，默认开）。关掉后
+  插件就是原来的单账号行为；只保存了一个账号时开关没有影响。
+
+账号被 Google 停用（Terms of Service 封禁）不属于额度耗尽：轮换不会因此触发，
+按「常见排查」重新登录即可。
+
 ## 额度
 
 ```sh
@@ -152,7 +173,7 @@ magpie quota refresh agy-cli --json
 ```
 
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
-分别列出。插件不写 Google 令牌，也不把它发往任何地方，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
+分别列出。插件不把 Google 令牌发往任何地方；多账号轮换换号时，会把所选账号的令牌写回 agy 的钥匙串槽位（见「多账号轮换」）。查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
@@ -178,7 +199,7 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_DETACHED_EVICT_MS` | 30000 | 客户端已断开的挂起工具回合，最多占用进程池槽位这么久 |
 | `AGY_BRIDGE_MAX_PROMPT_BYTES` | 114688（112 KiB） | 重放历史提示词的字节预算 |
 | `AGY_BRIDGE_USAGE_TIMEOUT_MS` | 15000 | 额度查询的总时间预算，最高 18000 |
-| `AGY_BRIDGE_STORED_SIGNIN` | 未设置 | 设为 `skip` 时插件不读 agy 存的登录 |
+| `AGY_BRIDGE_STORED_SIGNIN` | 未设置 | 设为 `skip` 时插件不读也不写 agy 存的登录（多账号轮换随之停用） |
 | `AGY_BRIDGE_MCP_TRACE` | 未设置 | 把 MCP 通道流量写入指定文件，仅用于排查 |
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
 | `AGY_BRIDGE_PREFILL` | 开启 | 设为 `0` 恢复对 assistant 预填尾巴的原生 400 拒绝，见「助手预填」 |

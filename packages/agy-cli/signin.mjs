@@ -117,6 +117,57 @@ export function emailOf(raw) {
   return typeof email === "string" ? email.trim().slice(0, 200) : ""
 }
 
+// writeStoredValue writes agy's keyring value on this computer. The value is
+// the same JSON agy writes (token, auth_method, id_token_email), kept
+// verbatim from what a read returned, so whatever encoding agy used survives
+// a round trip. Writing lets the plugin rotate between several stored
+// accounts on a computer where agy keeps one sign-in in the system keyring.
+// Tests turn it off with AGY_BRIDGE_STORED_SIGNIN=skip.
+const WINDOWS_WRITE_SCRIPT = (base64) => `
+$ErrorActionPreference = 'Stop'
+Add-Type -Namespace MagpieAgy -Name CredW -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct CREDENTIAL {
+  public uint Flags; public uint Type; public string TargetName; public string Comment;
+  public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+  public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
+  public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+}
+[DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool CredWrite(ref CREDENTIAL credential, uint flags);
+'@
+$bytes = [Convert]::FromBase64String('${base64}')
+$ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+try {
+  [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, 0, $bytes.Length)
+  $cred = [MagpieAgy.CredW+CREDENTIAL]::new()
+  $cred.Type = 1
+  $cred.TargetName = '${SERVICE}:${USER}'
+  $cred.UserName = '${USER}'
+  $cred.Persist = 2
+  $cred.CredentialBlobSize = [uint32]$bytes.Length
+  $cred.CredentialBlob = $ptr
+  if (-not [MagpieAgy.CredW]::CredWrite([ref]$cred, 0)) { exit 1 }
+} finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr) }
+`
+
+async function writeStoredValue(raw, { platform = process.platform, exec = run, env = process.env } = {}) {
+  if (env.AGY_BRIDGE_STORED_SIGNIN === "skip") return false
+  if (platform === "darwin") {
+    const r = await exec("/usr/bin/security", ["add-generic-password", "-s", SERVICE, "-a", USER, "-w", raw, "-U"])
+    return r.code === 0
+  }
+  if (platform === "win32") {
+    // go-keyring on Windows stores the value's UTF-8 bytes as they are
+    const r = await exec("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+      WINDOWS_WRITE_SCRIPT(Buffer.from(raw, "utf8").toString("base64")),
+    ])
+    return r.code === 0
+  }
+  return false
+}
+
 // readStoredValue reads agy's keyring value on this computer: { raw }, or
 // { state } when there is none ("missing") or it can't be read ("unknown").
 async function readStoredValue({ platform = process.platform, exec = run, env = process.env } = {}) {
@@ -129,7 +180,7 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
     // 44: errSecItemNotFound
     if (r.code === 44) return { state: "missing" }
     if (r.code !== 0) return { state: "unknown" }
-    return { raw: r.stdout }
+    return { raw: r.stdout.trim() }
   }
   if (platform === "win32") {
     const r = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT])
@@ -142,6 +193,17 @@ async function readStoredValue({ platform = process.platform, exec = run, env = 
     return { raw: Buffer.from(out.slice(3), "base64").toString("utf8") }
   }
   return { state: "unknown" }
+}
+
+// readStoredRaw is the keyring value verbatim, null when there isn't one or
+// it can't be read: an account is kept exactly as agy wrote it.
+export async function readStoredRaw(opts) {
+  try {
+    const v = await readStoredValue(opts)
+    return "raw" in v ? v.raw : null
+  } catch {
+    return null
+  }
 }
 
 // readStoredSignIn reads agy's stored sign-in on this computer.
@@ -159,6 +221,17 @@ export async function storedEmail(opts) {
   } catch {
     return ""
   }
+}
+
+// storedEmailNow is the last read's email without waiting for one ("" before
+// the first read), starting a new read when it is old: requests aren't held
+// up by a keyring read just to learn which account is signed in.
+let emailCache = null
+export function storedEmailNow() {
+  if (!emailCache || Date.now() - emailCache.at >= CACHE_MS) {
+    storedEmail().then((email) => { emailCache = { at: Date.now(), email } }).catch(() => {})
+  }
+  return emailCache?.email ?? ""
 }
 
 // cannotSignIn is why a stored sign-in can't serve agy without a new
@@ -218,9 +291,22 @@ export async function backgroundBlocked(opts) {
   return cannotSignIn(s) || (isDead(s) ? "agy's sign-in no longer works" : "")
 }
 
+// setStoredSignIn writes an account's token into the keyring and updates the
+// cached read so the next request sees the new account. This is the only way
+// to switch accounts on Windows/macOS, where agy uses a single keyring slot.
+export async function setStoredSignIn(raw, opts = {}) {
+  const ok = await writeStoredValue(raw, opts)
+  if (!ok) return false
+  cached = { at: Date.now(), value: parseStored(raw, opts.now ?? Date.now()) }
+  reading = null
+  try { emailCache = { at: Date.now(), email: emailOf(raw) } } catch { emailCache = null }
+  return true
+}
+
 // forgetStoredSignIn drops the cached read (after a sign-in, and in tests).
 export function forgetStoredSignIn({ dead: clearDead = false } = {}) {
   cached = null
   reading = null
+  emailCache = null
   if (clearDead) dead.clear()
 }

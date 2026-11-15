@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredRaw, readStoredSignIn, setStoredSignIn, storedEmail, storedEmailNow, storedSignIn, storedSignInNow } from "../signin.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -118,4 +118,42 @@ test("storedEmail is the Google account agy's keyring is signed in to, on macOS 
   assert.equal(await storedEmail({ platform: "darwin", exec: async () => { throw new Error("no security") }, env: {} }), "")
   assert.equal(await storedEmail({ platform: "win32", exec: mac(0, "OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), "someone@example.com")
   assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value)), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), "")
+})
+
+test("setStoredSignIn writes the keyring value and the next read sees the new account", async () => {
+  forgetStoredSignIn({ dead: true })
+  const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-14T00:00:00Z" })
+  const calls = []
+  const mac = () => (file, args) => { calls.push([file, ...args]); return Promise.resolve({ code: 0, stdout: "" }) }
+  const ok = await setStoredSignIn(value, { platform: "darwin", exec: mac(), env: {}, now: NOW })
+  assert.equal(ok, true)
+  assert.deepEqual(calls[0], ["/usr/bin/security", "add-generic-password", "-s", "gemini", "-a", "antigravity", "-w", value, "-U"])
+  assert.equal(storedSignInNow().state, "present")
+  assert.equal(storedEmailNow(), "someone@example.com")
+
+  forgetStoredSignIn({ dead: true })
+  calls.length = 0
+  const win = () => async (file, args) => { calls.push([file, ...args]); return { code: 0, stdout: "" } }
+  assert.equal(await setStoredSignIn(value, { platform: "win32", exec: win(), env: {}, now: NOW }), true)
+  assert.equal(calls[0][0], "powershell.exe")
+  assert.ok(calls[0].some((a) => typeof a === "string" && a.includes("CredWriteW")))
+  assert.ok(calls[0].some((a) => typeof a === "string" && a.includes(Buffer.from(value, "utf8").toString("base64"))))
+
+  // skip short-circuits without attempting a write
+  forgetStoredSignIn({ dead: true })
+  calls.length = 0
+  assert.equal(await setStoredSignIn(value, { platform: "darwin", exec: mac(), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" }, now: NOW }), false)
+  assert.equal(calls.length, 0)
+  forgetStoredSignIn({ dead: true })
+})
+
+test("readStoredRaw returns the keyring value verbatim, null when none", async () => {
+  const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-14T00:00:00Z" })
+  const b = b64(value)
+  const mac = (stdout = "", code = 0) => async () => ({ code, stdout })
+  assert.equal(await readStoredRaw({ platform: "darwin", exec: mac(b + "\n"), env: {} }), b)
+  assert.equal(await readStoredRaw({ platform: "darwin", exec: mac("  " + b + "  \n"), env: {} }), b)
+  assert.equal(await readStoredRaw({ platform: "win32", exec: mac("OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), value)
+  assert.equal(await readStoredRaw({ platform: "linux", exec: mac(""), env: {} }), null)
+  assert.equal(await readStoredRaw({ platform: "darwin", exec: mac(b), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), null)
 })
