@@ -645,7 +645,14 @@ async function availablePoints(token) {
   try {
     const points = await apiGetJson("/api/web/points/v1/balance", token)
     const n = Number(points?.available_points)
-    if (Number.isFinite(n)) return Math.floor(n)
+    if (Number.isFinite(n)) {
+      // daily_points is the daily-grant pool the vendor keeps itself (300/day,
+      // each grant lasting 7 days). It includes remainders of grants already
+      // past expire_at but not swept yet, so it is the authoritative "free
+      // credits still left"; the bills only say when the next slice expires.
+      const d = Number(points?.daily_points)
+      return { avail: Math.floor(n), daily: Number.isFinite(d) ? Math.floor(d) : null }
+    }
     first = new Error("balance has no available_points")
   } catch (e) {
     if (e?.signIn === "expired") throw e
@@ -660,7 +667,7 @@ async function availablePoints(token) {
   }
   const n = Number(info?.available_points)
   if (!Number.isFinite(n)) throw first
-  return Math.floor(n)
+  return { avail: Math.floor(n), daily: null }
 }
 
 // topBalance holds, per account and per set of grants, the highest balance
@@ -709,12 +716,22 @@ function saveTop(account, grants, top) {
   } catch {}
 }
 
+// The daily pool: 300 credits granted per day, each slice lasting 7 days, so
+// the ceiling the vendor's own rule implies is 2,100. This is only the window's
+// limit; the remaining side always comes from the vendor's daily_points, never
+// from this arithmetic. A vendor that grants more per day still reads right,
+// because the bills' unexpired daily grants are summed too and the limit takes
+// whichever is larger.
+const DAILY_POOL_CAP = 2100
+
 async function queryUsage(token, account = "") {
-  const [avail, entitlement, bills] = await Promise.all([
+  const [pool, entitlement, bills] = await Promise.all([
     availablePoints(token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
     allBills(token).catch(() => null),
   ])
+
+  const avail = pool.avail
 
   // entitlement_info answers 403 too (plugins #520): an unread plan is
   // left unsaid, not read as Free.
@@ -729,6 +746,12 @@ async function queryUsage(token, account = "") {
   let grantedFromBills = 0
   let soonestExpMs = 0
   let expiringPts = 0
+  // The daily pool's own slice: what will expire inside the vendor's 7-day
+  // window, and when. Kept apart from the aggregate so the card can show it
+  // on its own line (300/day, 7 days deep).
+  let dailyUnexpired = 0
+  let dailySoonestMs = 0
+  let dailySoonestPts = 0
   const expired = []
   const grantKeys = []
   const now = Date.now()
@@ -743,6 +766,15 @@ async function queryUsage(token, account = "") {
       continue
     }
     grantedFromBills += pts
+    if (String(item?.biz_type ?? "") === "daily_grant" && expMs > now) {
+      dailyUnexpired += pts
+      if (!dailySoonestMs || expMs < dailySoonestMs) {
+        dailySoonestMs = expMs
+        dailySoonestPts = pts
+      } else if (expMs === dailySoonestMs) {
+        dailySoonestPts += pts
+      }
+    }
     if (expMs > now) {
       if (!soonestExpMs || expMs < soonestExpMs) {
         soonestExpMs = expMs
@@ -779,30 +811,66 @@ async function queryUsage(token, account = "") {
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
 
+  // The daily pool comes first when the vendor reports it: 300 credits a day,
+  // each slice good for 7 days, so what will lapse is the vendor's
+  // daily_points - not the aggregate. Same reading direction as the aggregate
+  // (used / limit), so the card reads one way. The aggregate is display-only
+  // beside it: it also holds reward/top-up credits that never lapse, and the
+  // pool that expires is what routing should weigh. When the vendor says no
+  // daily_points (the setting_info fallback), the aggregate stays the only
+  // window and keeps its routing weight - nothing is left unweighed.
+  const windows = []
+  // A pool of 0 shows nothing: the account may have no daily grants at all,
+  // and a "2,100 / 2,100 used" line would read the whole account as spent.
+  // Credits then keeps its routing weight.
+  const dailyRemain = typeof pool.daily === "number" && pool.daily > 0 ? Math.floor(pool.daily) : null
+  if (dailyRemain !== null) {
+    // The limit is the vendor's 300/day x 7 days, but never less than what it
+    // says is left or than the unexpired daily grants in bills already add up
+    // to - so a larger grant schedule reads as "0% used" instead of a negative
+    // one, and the percentage stays honest.
+    const limit = Math.max(DAILY_POOL_CAP, dailyRemain, dailyUnexpired)
+    const usedPts = Math.max(0, limit - dailyRemain)
+    const dailySoonestAt = dailySoonestMs ? new Date(dailySoonestMs).toISOString() : null
+    windows.push({
+      name: "Daily pool",
+      used: limit > 0 ? (100 * usedPts) / limit : 0,
+      display: `${usedPts} / ${limit}`,
+      amount: usedPts,
+      limit,
+      unit: "credits",
+      ...(dailySoonestAt ? { runsOutAt: dailySoonestAt, runsOut: Math.min(dailyRemain, dailySoonestPts || dailyRemain) } : {}),
+    })
+  }
+
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
+    windows.push({
+      name: "Credits",
+      used: (100 * used) / grantedFromBills,
+      display: `${used} / ${grantedFromBills}`,
+      amount: used,
+      limit: grantedFromBills,
+      unit: "credits",
+      // Display-only only while the daily pool is on the card too; alone it
+      // is the window routing weighs.
+      ...(dailyRemain !== null ? { aside: true } : {}),
+      ...(runsOutAt ? { runsOutAt, runsOut } : {}),
+    })
+  }
+
+  if (windows.length === 0) {
     return {
       ...(plan ? { plan } : {}),
       ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-      windows: [
-        {
-          name: "Credits",
-          used: (100 * used) / grantedFromBills,
-          display: `${used} / ${grantedFromBills}`,
-          amount: used,
-          limit: grantedFromBills,
-          unit: "credits",
-          ...(runsOutAt ? { runsOutAt, runsOut } : {}),
-        },
-      ],
+      balance: `${avail} credits`,
+      windows,
     }
   }
-
   return {
     ...(plan ? { plan } : {}),
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-    balance: `${avail} credits`,
-    windows: [],
+    windows,
   }
 }
 
