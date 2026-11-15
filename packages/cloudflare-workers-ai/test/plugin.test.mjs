@@ -523,3 +523,21 @@ test("any other 429 keeps its own words: no Retry-After is added", async () => {
   assert.equal(resp.headers.get("retry-after"), null, "only a 3036 may name the midnight rest");
   assert.equal(JSON.parse(await resp.text()).errors[0].code, 700003, "body preserved");
 });
+
+// Archivemylife on X (agy-cli's sibling): a list handed back as the
+// account's own after a failed read dropped the models the user picked
+test("provider.models after a failed read keeps the fell-back mark", async () => {
+  let fail = false;
+  const o = opts();
+  o.discoveryTTLMs = 0;
+  o.fetchImpl = async () => (fail ? new Response("boom", { status: 502 }) : new Response(JSON.stringify(fakeCatalog())));
+  const plugin = await CloudflareWorkersAIPlugin({}, o);
+  const auth = { type: "api", key: "tok", metadata: { accountId: ACCOUNT_ID } };
+  const good = await plugin.provider.models({ models: {} }, { auth });
+  assert.ok(good["@cf/meta/llama-3-8b-instruct"]);
+  assert.equal(good[Symbol.for("magpie.fellBack")], undefined);
+  fail = true;
+  const kept = await plugin.provider.models({ models: {} }, { auth });
+  assert.deepEqual(Object.keys(kept), Object.keys(good));
+  assert.equal(kept[Symbol.for("magpie.fellBack")], true);
+});
