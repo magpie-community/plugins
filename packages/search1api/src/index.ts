@@ -4,7 +4,7 @@ import { CATEGORIES, DESCRIPTION, feedbackBody } from "./feedback.ts";
 import { startOAuth } from "./oauth.ts";
 import { AuthenticationError, request } from "./request.ts";
 import { filters, maxResults, query, searchBody, validate, type ArgumentsSchema, type Schema } from "./tools.ts";
-import { API_BASE, PROVIDER, serviceURL, type Options, type PluginInput, type StoredOAuth } from "./types.ts";
+import { API_BASE, PROVIDER, serviceURL, type Options, type PluginInput, type StoredAuth, type StoredOAuth } from "./types.ts";
 
 export const Search1APIPlugin = async (input: PluginInput, options: Options = {}) => {
   if (options.apiKey !== undefined && typeof options.apiKey !== "string")
@@ -56,6 +56,35 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
     additionalProperties: false,
   };
 
+  // magpie's web search (Settings › Models › Web search): the account magpie
+  // picked, already renewed, comes from ctx.getAuth(). Errors keep their HTTP
+  // status so magpie rests that account and asks the next search API.
+  async function webSearch(
+    { query, count }: { query?: unknown; count?: unknown },
+    ctx: { abort: AbortSignal; getAuth?: () => Promise<StoredAuth | undefined> },
+  ) {
+    if (typeof query !== "string" || !query.trim()) throw new Error("query is required.");
+    let token = credentials.override();
+    if (!token && ctx.getAuth) {
+      const auth = await ctx.getAuth();
+      if (auth?.type === "api" && auth.key) token = auth.key;
+      else if (auth?.type === "oauth" && auth.access) token = auth.access;
+    }
+    token ??= (await credentials.token(ctx.abort)).token;
+    const n = Math.trunc(Number(count));
+    const result = await request(baseUrl, "search", token, {
+      query: query.trim(),
+      search_service: "google",
+      max_results: n >= 1 ? Math.min(n, 50) : 10,
+      crawl_results: 0,
+    }, ctx.abort) as { results?: unknown };
+    const text = (v: unknown) => (typeof v === "string" ? v : "");
+    return (Array.isArray(result?.results) ? result.results : [])
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+      .map((r) => ({ title: text(r.title), url: text(r.link), text: text(r.snippet), age: text(r.published_date) }))
+      .filter((r) => r.url);
+  }
+
   return {
     config: async (config: { provider?: Record<string, unknown> }) => {
       config.provider ??= {};
@@ -71,6 +100,9 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
       ],
       refreshLead: 60_000,
       refresh: (auth: StoredOAuth) => credentials.renew(auth),
+    },
+    search: {
+      search1api: { name: "Search1API", auth: PROVIDER, execute: webSearch },
     },
     tool: {
       search: tool("search",
