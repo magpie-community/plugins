@@ -557,11 +557,22 @@ test("a final structured error takes precedence over contradictory diagnostics",
   assert.throws(() => parseUsageReport({ status: "ERROR", error: "connection reset", response: "Authentication required" }), e => e.kind !== "auth")
 })
 
-test("a renewable token timing out amid OAuth diagnostics is not marked dead", async t => {
+test("a timeout with only OAuth diagnostics backs off and recovers with the same sign-in", async t => {
+  forgetStoredSignIn({ dead: true })
+  t.after(() => forgetStoredSignIn({ dead: true }))
   const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: startupAuthLogs })
   const stored = { state: "present", fp: "refreshing", canRenew: true, expired: true }
-  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 1500, signIn: async () => stored })
+  let clock = 0
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
   assert.equal((await read()).signIn, "kept")
+  const runs = (await f.logs()).length
+  assert.equal(runs, 2, "the report child must have started")
+  assert.equal((await read()).signIn, "kept")
+  assert.equal((await f.logs()).length, runs)
+  f.env.TEST_MODE = ""
+  clock += 10 * 60 * 1000
+  assert.equal((await read()).windows.length, 1)
+  await f.assertClean()
 })
 
 test("backoff doubles per failure up to six hours", async t => {
@@ -631,28 +642,37 @@ test("a sign-in agy failed on isn't run again in the background until another is
   await f.assertClean()
 })
 
-test("a timeout with a renewable expired token preserves the sign-in and retries after backoff", async t => {
-  forgetStoredSignIn({ dead: true })
-  t.after(() => forgetStoredSignIn({ dead: true }))
-  const f = await fixture(t, { TEST_MODE: "hang" })
-  const stored = { state: "present", fp: "hung", canRenew: true, expiresAt: 1, expired: true }
-  let clock = 0
-  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
-  const result = await read()
-  assert.equal(result.signIn, "kept")
-  const runs = (await f.logs()).length
-  assert.equal((await read()).signIn, "kept")
-  assert.equal((await f.logs()).length, runs)
-  f.env.TEST_MODE = ""
-  clock += 10 * 60 * 1000
-  assert.equal((await read()).windows.length, 1)
-  // a hang with a live access token is a hang, not a sign-in
-  const g = await fixture(t, { TEST_MODE: "hang" })
+test("a hung sign-in with an ended token is never restarted until the credential changes", async t => {
+  for (const output of ["", "Open https://accounts.google.com/ to sign in", startupAuthLogs + "\nWaiting for browser authentication"]) {
+    forgetStoredSignIn({ dead: true })
+    t.after(() => forgetStoredSignIn({ dead: true }))
+    const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: output })
+    let stored = { state: "present", fp: "hung", canRenew: true, expiresAt: 1, expired: true }
+    let clock = 0
+    const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
+    assert.equal((await read()).signIn, "expired")
+    const runs = (await f.logs()).length
+    assert.equal(runs, 2, "the report child must have started")
+    f.env.TEST_MODE = ""
+    for (const hours of [0, 7, 24]) {
+      clock = hours * 60 * 60 * 1000
+      assert.equal((await read()).signIn, "expired")
+      assert.equal((await f.logs()).length, runs, "background polling must not reopen the browser")
+    }
+    stored = { ...stored, fp: "signed-in-again", expired: false }
+    const result = await read()
+    assert.equal(result.signIn, "renewed")
+    assert.equal(result.windows.length, 1)
+    await f.assertClean()
+  }
+})
+
+test("a timeout with a live access token preserves the sign-in", async t => {
+  const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: "Waiting for browser authentication" })
   const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
-  const other = await createUsageReader(() => g.executable, { ...g.options, timeoutMs: 3000, signIn: async () => live })()
-  assert.equal(other.signIn, "kept")
+  const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, signIn: async () => live })()
+  assert.equal(result.signIn, "kept")
   await f.assertClean()
-  await g.assertClean()
 })
 
 test("invalid and oversized stdout/stderr reports fail within the output budget", async t => {

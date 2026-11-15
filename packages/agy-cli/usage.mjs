@@ -19,15 +19,20 @@ class UsageError extends Error {
   }
 }
 
+const SIGN_IN_TALK = /accounts\.google\.com|oauth|sign[ -]?in|log[ -]?in|authenticat|browser/i
+
 const text = value => typeof value === "string" ? value.trim() : ""
 const field = (value, camel, snake) => value?.[camel] ?? value?.[snake]
 
-function commandFailure(output) {
-  // agy logs unauthenticated cache lookups before loading its keyring.
-  const diagnosticFree = output.split(/\r?\n/)
+// agy logs unauthenticated cache lookups before loading its keyring.
+function withoutDiagnostics(output) {
+  return output.split(/\r?\n/)
     .filter(line => !/^\s*[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+[^\]]+\]/.test(line))
     .join("\n")
-  if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(diagnosticFree)) {
+}
+
+function commandFailure(output) {
+  if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(withoutDiagnostics(output))) {
     return new UsageError("agy usage needs authentication. Run `agy` in a terminal to sign in again.", { kind: "auth" })
   }
   const eligibility = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i.test(output)
@@ -314,8 +319,9 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 //   there is none, or it has ended with nothing to renew it: the read says
 //   the sign-in has expired (signIn "expired"), which magpie shows on the
 //   account, and nothing starts a Google sign-in in the background.
-// - an explicit authentication rejection marks that stored sign-in dead.
-//   Timeouts cannot distinguish failed renewal from a slow network.
+// - an explicit authentication rejection, or an ended token hanging silently
+//   or with sign-in talk, blocks further background runs for that credential.
+//   Diagnostic-only output isn't evidence of a browser sign-in.
 // - any other failure isn't run again for backoff(n).
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
@@ -351,7 +357,9 @@ export function createUsageReader(resolveAgy, options = {}) {
     } catch (error) {
       const message = error instanceof UsageError ? error.message : "agy usage query failed. Check the CLI and temporary-directory permissions."
       if (error?.kind === "cancel") return { windows: [], error: message, signIn: "kept" }
-      const auth = error?.kind === "auth"
+      const output = String(error.output ?? "")
+      const auth = error?.kind === "auth" || error?.kind === "timeout" && stored?.state === "present" && stored.expired &&
+        (!output.trim() || SIGN_IN_TALK.test(withoutDiagnostics(output)))
       if (auth && stored?.state === "present") {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
