@@ -2308,3 +2308,177 @@ test("#1166: an agy given the bridge's own --gemini-dir has its steps read from 
     assert.equal(responses[0].usage.input_tokens, 1800, JSON.stringify(responses[0].usage))
   })
 })
+
+test("AGY_BRIDGE_REPORT_CLIENT_CONTEXT=1：重放裁剪时按客户端估算补回 cache_read_input_tokens，且不污染内部校准", async () => {
+  await withKit({ env: { AGY_BRIDGE_REPORT_CLIENT_CONTEXT: "1" } }, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/repo/a.ts" })
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 10_000, cachedReadTokens: 80_000, cachedWriteTokens: 0, outputTokens: 120, totalTokens: 90_120 },
+      }
+    })
+
+    const historyTurn = "historical context line for client reporting verification. ".repeat(900)
+    const messages = []
+    for (let i = 0; i < 11; i++) {
+      messages.push({ role: "user", content: `turn ${i}: ${historyTurn}` })
+      messages.push({ role: "assistant", content: `ack ${i}: ${historyTurn}` })
+    }
+    messages.push({ role: "user", content: "continue" })
+    const body = await padBodyToTokens(kit, baseBody({ messages }), 360_000)
+    const rawEstimate = await kit.countTokens(body)
+    assert.equal(rawEstimate, 360_000)
+
+    const { bodies, responses } = await runTurn(kit, body)
+    assert.equal(responses.length, 2)
+    const step0Estimate = await kit.countTokens(bodies[0])
+    const step1Estimate = await kit.countTokens(bodies[1])
+    assert.equal(usageTotal(responses[0].usage), step0Estimate)
+    assert.ok(responses[0].usage.input_tokens < 120_000, "uncached input 仍按实际裁剪窗口结算")
+    assert.equal(responses[0].usage.cache_read_input_tokens, step0Estimate - responses[0].usage.input_tokens)
+    assert.equal(usageTotal(responses[1].usage), step1Estimate)
+
+    // 内部校准用的 step.usage 仍保持真实裁剪窗口，不被补齐值污染
+    const [turn] = kit.turns
+    assert.ok(usageTotal(turn.responseSteps[0].usage) < 120_000)
+    assert.ok(usageTotal(turn.responseSteps[1].usage) < 150_000)
+  })
+})
+
+test("report_client_context 开关与单步/同代/非流式/超额保护行为", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, read = 0, write = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output),
+    ...(write ? [0x20, ...varint(write)] : []),
+    ...(read ? [0x28, ...varint(read)] : []),
+  ])))
+
+  let optionEnabled = true
+  await withKit({
+    pluginContext: {
+      magpie: {
+        option: (provider, key) => provider === "agy-cli" && key === "report_client_context" && optionEnabled,
+      },
+    },
+  }, async (kit) => {
+    const opt = kit.plugin.auth.options.find((item) => item.key === "report_client_context")
+    assert.ok(opt)
+    assert.match(opt.key, /^[a-z0-9_-]{1,40}$/)
+    assert.equal(opt.default, false)
+    assert.ok(opt.label.length > 0 && opt.label.length <= 60)
+    assert.ok(opt.description.length > 0 && opt.description.length <= 300)
+    for (const lang of ["zh", "zh-TW", "ja", "de"]) {
+      assert.ok(typeof opt.labels?.[lang] === "string" && opt.labels[lang].length > 0 && opt.labels[lang].length <= 60, `labels.${lang}`)
+      assert.ok(typeof opt.descriptions?.[lang] === "string" && opt.descriptions[lang].length > 0 && opt.descriptions[lang].length <= 300, `descriptions.${lang}`)
+    }
+
+    const convDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      const db = openSqlite(path.join(convDir, `${agent.sessionId}.db`))
+      try {
+        db.run("PRAGMA journal_mode = WAL")
+        db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        // agy 内部仅用了 5,000 context，远低于客户端请求体积
+        db.run("INSERT INTO gen_metadata VALUES (0, ?)", genBlob({ input: 1000, read: 3500, write: 500, output: 40 }))
+      } finally {
+        db.close()
+      }
+      await agent.tool("Read", { path: "/a.ts" })
+      // 同一次生成里的第二个工具步：保持 0，不虚增累计用量
+      await agent.tool("Read", { path: "/b.ts" })
+      await agent.text("done")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 1000, cachedReadTokens: 3500, cachedWriteTokens: 500, outputTokens: 40, totalTokens: 5040 },
+      }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("turn 2 ok")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 500, cachedReadTokens: 4500, cachedWriteTokens: 0, outputTokens: 10, totalTokens: 5010 },
+      }
+    })
+    kit.prompts.push(async (agent) => {
+      await agent.text("turn 3 larger than client")
+      return {
+        stopReason: "end_turn",
+        usage: { inputTokens: 20_000, cachedReadTokens: 180_000, cachedWriteTokens: 0, outputTokens: 10, totalTokens: 200_010 },
+      }
+    })
+
+    const body = await padBodyToTokens(kit, baseBody(), 40_000)
+    const { bodies, responses } = await runTurn(kit, body)
+    assert.equal(responses.length, 3)
+    assert.equal(usageTotal(responses[0].usage), await kit.countTokens(bodies[0]))
+    assert.equal(responses[0].usage.input_tokens, 1000)
+    assert.equal(responses[0].usage.cache_creation_input_tokens, 500)
+    assert.deepEqual(plain(responses[1].usage), {
+      input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0,
+    })
+    // final 步即使共享同代也要保证报出客户端上下文
+    assert.equal(usageTotal(responses[2].usage), await kit.countTokens(bodies[2]))
+
+    // 关闭开关后立刻按真实 agy 用量返回；支持 stream: false
+    optionEnabled = false
+    const turn2Body = {
+      ...body,
+      stream: false,
+      messages: [
+        ...bodies.at(-1).messages,
+        { role: "assistant", content: plain(responses.at(-1).content) },
+        { role: "user", content: "follow up off" },
+      ],
+    }
+    const turn2Json = await readJson(await kit.request(turn2Body))
+    assert.equal(usageTotal(turn2Json.usage), 5000)
+
+    // 打开开关且 agy 上报已大于客户端估算时，绝不向下缩减
+    optionEnabled = true
+    const turn3Body = {
+      ...turn2Body,
+      messages: [
+        ...turn2Body.messages,
+        { role: "assistant", content: plain(turn2Json.content) },
+        { role: "user", content: "follow up on" },
+      ],
+    }
+    const turn3Json = await readJson(await kit.request(turn3Body))
+    assert.equal(usageTotal(turn3Json.usage), 200_000)
+    assert.equal(turn3Json.usage.cache_read_input_tokens, 180_000)
+  })
+})
+
+test("AGY_BRIDGE_REPORT_CLIENT_CONTEXT 环境变量覆盖 magpie.option，且无 magpie 上下文时不报错", async () => {
+  await withKit({ pluginContext: null }, async (kit) => {
+    assert.ok(kit.plugin.auth.options.some((opt) => opt.key === "report_client_context"))
+    kit.prompts.push(async (agent) => {
+      await agent.text("ok")
+      return { stopReason: "end_turn", usage: { inputTokens: 1000, cachedReadTokens: 2000, cachedWriteTokens: 0, outputTokens: 20, totalTokens: 3020 } }
+    })
+    const body = await padBodyToTokens(kit, baseBody({ stream: false }), 20_000)
+    const json = await readJson(await kit.request(body))
+    assert.equal(usageTotal(json.usage), 3000)
+  })
+
+  await withKit({
+    env: { AGY_BRIDGE_REPORT_CLIENT_CONTEXT: "0" },
+    pluginContext: {
+      magpie: {
+        option: () => true,
+      },
+    },
+  }, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.text("forced off")
+      return { stopReason: "end_turn", usage: { inputTokens: 1000, cachedReadTokens: 2000, cachedWriteTokens: 0, outputTokens: 20, totalTokens: 3020 } }
+    })
+    const body = await padBodyToTokens(kit, baseBody({ stream: false }), 20_000)
+    const json = await readJson(await kit.request(body))
+    assert.equal(usageTotal(json.usage), 3000)
+  })
+})

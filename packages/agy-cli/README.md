@@ -68,6 +68,7 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
 - **助手预填**：以 assistant 结尾的预填请求（SillyTavern 预设、继续写、bot 框架）不再
   400 拒绝：预填留在本轮并渲染为续写载体，会话跨轮保持对齐，见下文「助手预填」。
 - **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口，仅作展示，额度耗尽时不会自动拦截请求。
+- **客户端上下文大小上报**：`agy` 裁剪或重放截断历史时，可在 Magpie 的 `agy-cli` 提供商设置 → **插件选项**打开 **上报客户端上下文大小**（或设置 `AGY_BRIDGE_REPORT_CLIENT_CONTEXT=1`），将 `cache_read_input_tokens` 补齐至请求估算值，使 Codex 等客户端按时触发压缩；默认关闭。
 
 ## 助手预填（assistant prefill）
 
@@ -183,6 +184,7 @@ magpie quota refresh agy-cli --json
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
 | `AGY_BRIDGE_PREFILL` | 开启 | 设为 `0` 恢复对 assistant 预填尾巴的原生 400 拒绝，见「助手预填」 |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | 英文系统提示行 | 预填片段渲染时的提示行文本（发给模型） |
+| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | 关闭 | 设为 `1`（或在 Magpie 的 `agy-cli` 提供商设置 → **插件选项** 打开 **上报客户端上下文大小**）时，若 `agy` 上报上下文小于当前客户端请求估算值，把差值补进 `cache_read_input_tokens`，让 Codex 等客户端按真实请求体积触发压缩；注意这会抬高上报的缓存读取用量 |
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 

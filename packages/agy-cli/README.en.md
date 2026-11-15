@@ -98,6 +98,11 @@ MCP server. The control port listens on loopback only, with a token per process.
   "Assistant prefill" below.
 - **Usage visibility**: Magpie shows the agy subscription usage windows. They are
   informational only; running out of quota does not block requests automatically.
+- **Client context reporting**: When `agy` trims or compacts history, turn on
+  **Report client context size** under `agy-cli`'s **Plugin options** in Magpie
+  (or set `AGY_BRIDGE_REPORT_CLIENT_CONTEXT=1`) to pad `cache_read_input_tokens`
+  up to the client request's estimated token count so clients such as Codex
+  trigger compaction on time; off by default.
 
 ## Assistant prefill
 
@@ -247,6 +252,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
 | `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | English system note | The note line rendered before a prefill fragment (sent to the model) |
+| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | off | Set to `1` (or turn on **Report client context size** under `agy-cli`'s **Plugin options** in Magpie) to pad `cache_read_input_tokens` up to the client request's estimated token count when `agy` trims or compacts context, so clients such as Codex trigger compaction on time; inflates reported cached read usage |
 
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
 

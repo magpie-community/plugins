@@ -158,6 +158,19 @@ const minimalAgent = () => process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
 const systemAppend = () => /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_SYSTEM_APPEND || "")
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
+// Opt-in compatibility switch for clients (such as Codex) that watch reported
+// input/cached usage to trigger compaction: when agy trims or compacts history,
+// pad cache_read_input_tokens up to the request's own token estimate.
+const REPORT_CLIENT_CONTEXT_OPTION = "report_client_context"
+function reportClientContextEnabled(magpie) {
+  const raw = process.env.AGY_BRIDGE_REPORT_CLIENT_CONTEXT
+  if (raw !== undefined && raw.trim() !== "") {
+    if (/^(?:1|true|on|yes)$/i.test(raw.trim())) return true
+    if (/^(?:0|false|off|no|disabled)$/i.test(raw.trim())) return false
+  }
+  return magpie?.option?.(PROVIDER_ID, REPORT_CLIENT_CONTEXT_OPTION) === true
+}
+
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
 // models a client gets, and the plugin serves no more than it offers.
 const FALLBACK_MODELS = [
@@ -1313,10 +1326,12 @@ class Turn {
       previous.contentSnapshot = null
     }
     const estimate = this.proc.estimatePromptTokens(body)
+    const clientInputEstimate = body ? estimateInputTokens(body) : estimate
     const pending = this.pendingPromptStep
     const step = {
       body,
       inputEstimate: estimate,
+      clientInputEstimate,
       estimateIndex: pending?.estimateIndex ?? this.stepInputEstimates.length,
       promptNumbers: pending?.promptNumbers || [],
       settled: false,
@@ -5453,6 +5468,25 @@ async function settleUsage(proc, turn, step, content, result) {
   }
 }
 
+// Adjust only what the client receives in message_delta; Turn.recordResponseUsage
+// keeps the unpadded usage so internal window calibration stays true to agy.
+// Intermediate agy_same_generation steps stay zero to avoid inflating step
+// totals across sequential tool calls from one model generation.
+function clientReportedUsage(step, usage, final, enabled) {
+  if (!enabled || !usage) return usage
+  if (step?.usageKind === "agy_same_generation" && !final) return usage
+  const target = tokenCount(step?.clientInputEstimate)
+  if (!target) return usage
+  const actual = tokenCount(usage.input_tokens) +
+    tokenCount(usage.cache_read_input_tokens) +
+    tokenCount(usage.cache_creation_input_tokens)
+  if (target <= actual) return usage
+  return {
+    ...usage,
+    cache_read_input_tokens: tokenCount(usage.cache_read_input_tokens) + (target - actual),
+  }
+}
+
 // agy's ACP stream carries thought summaries without the model's own signature.
 // Clients keep and replay a thinking block only with a signature, so the bridge
 // issues one: an HMAC over the session and text under a per-process key. It is
@@ -5465,7 +5499,7 @@ function thinkingSignature(sessionId, thinking) {
     createHmac("sha256", THINKING_KEY).update(String(sessionId) + "\n" + thinking).digest("base64url")
 }
 
-function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body)) {
+function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body), { reportClientContext = false } = {}) {
   const encoder = new TextEncoder()
   const responseContent = []
   const forwardThinking = FORWARD_THINKING && body.thinking?.type !== "disabled"
@@ -5547,10 +5581,11 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         abortHandler = null
       }
       const stopMessage = (stopReason, usage, final = false, calibrate = final) => {
+        const reportedUsage = clientReportedUsage(step, usage, final, reportClientContext)
         send("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage,
+          usage: reportedUsage,
         })
         turn.recordResponseUsage(step, usage, final, calibrate)
         send("message_stop", { type: "message_stop" })
@@ -5831,11 +5866,11 @@ async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
   })
 }
 
-function streamResponse(proc, turn, body, signal) {
+function streamResponse(proc, turn, body, signal, options = {}) {
   turn.attach()
   const step = turn.registerResponse(body)
   const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24)
-  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step)
+  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step, options)
   if (body.stream === false) {
     return jsonResponseFromStream(stream, body.model, msgId)
   }
@@ -5936,13 +5971,34 @@ async function googleSignIn(agy) {
   }
 }
 
-export const AntigravityBridgePlugin = async () => {
+export const AntigravityBridgePlugin = async (input = {}) => {
+  const magpie = input?.magpie
   const readUsage = createUsageReader(findAgy)
   keepAgyCurrent(findAgy)
   return {
     auth: {
       provider: PROVIDER_ID,
       single: true,
+      options: [
+        {
+          key: REPORT_CLIENT_CONTEXT_OPTION,
+          label: "Report client context size",
+          labels: {
+            zh: "上报客户端上下文大小",
+            "zh-TW": "回報用戶端上下文大小",
+            ja: "クライアントのコンテキストサイズを報告",
+            de: "Client-Kontextgröße melden",
+          },
+          description: "Pads cache_read_input_tokens up to the client request's estimated token count when agy trims or compacts context, so clients such as Codex trigger compaction on time. Off by default because it inflates reported cached read usage.",
+          descriptions: {
+            zh: "当 agy 裁剪或压缩上下文时，将 cache_read_input_tokens 补齐到客户端请求的估算 token 数，使 Codex 等客户端按时触发压缩。默认关闭，因为会抬高上报的缓存读取用量。",
+            "zh-TW": "當 agy 裁切或壓縮上下文時，將 cache_read_input_tokens 補齊到用戶端請求的估算 token 數，使 Codex 等用戶端按時觸發壓縮。預設關閉，因為會抬高回報的快取讀取用量。",
+            ja: "agy がコンテキストを削減・圧縮した際、Codex などが適切なタイミングで圧縮を行えるよう cache_read_input_tokens をリクエストの推定トークン数まで補完します。報告されるキャッシュ読取量が増えるため既定では無効です。",
+            de: "Füllt cache_read_input_tokens auf die geschätzte Token-Zahl der Client-Anfrage auf, wenn agy Kontext kürzt oder komprimiert, damit Clients wie Codex rechtzeitig komprimieren. Standardmäßig aus, da es die gemeldete Cache-Lesenutzung erhöht.",
+          },
+          default: false,
+        },
+      ],
       // Magpie's hook for the CLI a plugin runs through: a sign-in on a
       // machine without agy (magpie in Docker) installs it first, into the
       // plugin's own folder (install.mjs). OpenCode ignores it.
@@ -6081,6 +6137,8 @@ export const AntigravityBridgePlugin = async () => {
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "" }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
+              const respond = (proc, turn) => streamResponse(proc, turn, body, init.signal,
+                { reportClientContext: reportClientContextEnabled(magpie) })
               let keptSession = false
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks)
@@ -6156,7 +6214,7 @@ export const AntigravityBridgePlugin = async () => {
                       proc.continueWith(results)
                       proc.recordToolResults(turn, body.messages)
                     }
-                    return streamResponse(proc, turn, body, init.signal)
+                    return respond(proc, turn)
                   }
                 }
                 const held = pool.get(convKey)
@@ -6178,7 +6236,7 @@ export const AntigravityBridgePlugin = async () => {
                   // replay this request's own tool round once, under one lock.
                   const recovery = await recoverStaleTurn({ agy, convKey, proc: held, turn: held.turn,
                     body, resultBlocks, acquireOpts, isFresh, begin, attempts })
-                  if (recovery.kind === "replayed") return streamResponse(recovery.proc, recovery.turn, body, init.signal)
+                  if (recovery.kind === "replayed") return respond(recovery.proc, recovery.turn)
                   if (recovery.kind === "active") {
                     return jsonError(409, "agy bridge: no active MCP call matches these tool results")
                   }
@@ -6209,7 +6267,7 @@ export const AntigravityBridgePlugin = async () => {
                 resultBlocks.length > 0 && !keptSession,
                 begin,
               )
-              return streamResponse(proc, turn, body, init.signal)
+              return respond(proc, turn)
             } catch (error) {
               return jsonError(error.statusCode ?? 502, error.message, error.code, { noRetry: error.noRetry })
             }
