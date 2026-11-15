@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import path from "node:path"
+import { accountEnv, currentHome } from "./account.mjs"
 
 export function agyCandidates(env, home, platform = process.platform) {
   const windows = platform === "win32"
@@ -86,11 +87,13 @@ export function agySpawnSpec(file, args, platform = process.platform, env = proc
 // AGY_CLI_DISABLE_AUTO_UPDATE (in the parent's environment or the caller's)
 // is kept as written. Only when nobody set it do the plugin's children run
 // with auto-update off, so a pool of ACP processes doesn't update the binary
-// under each other; the user's own `agy` runs keep updating.
+// under each other; the user's own `agy` runs keep updating. Work for an
+// account with a home of its own (account.mjs) runs agy in that home.
 export function childEnv(parent = process.env, extra = {}, platform = process.platform) {
   const env = {}
   const names = new Map()
-  for (const source of [parent, extra]) {
+  const home = currentHome()
+  for (const source of [parent, extra, home ? accountEnv(home, platform) : null]) {
     for (const [key, value] of Object.entries(source || {})) {
       if (value === undefined) continue
       // Windows treats env names case-insensitively; keep the caller's PATH.

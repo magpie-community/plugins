@@ -12,6 +12,7 @@ import { storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
+import { currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome } from "./account.mjs"
 import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
@@ -283,6 +284,9 @@ export function fileSignIn(home = os.homedir()) {
 }
 
 export async function geminiDirArgs(agyPath, env = process.env) {
+  // an account with a home of its own (account.mjs) keeps its sign-in in
+  // a file under that home's .gemini, which agy reads only as its own
+  if (currentHome()) return { args: [], dir: null }
   const dir = bridgeGeminiDir(env)
   if (!dir || (!env.AGY_BRIDGE_GEMINI_DIR && fileSignIn())) return { args: [], dir: null }
   if (!/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
@@ -1757,9 +1761,11 @@ class Proc {
     const own = await geminiDirArgs(this.agyPath)
     args.push(...own.args)
     // agy writes the conversation's steps under the folder it was given
-    this.conversationsDir = own.dir && !process.env.AGY_BRIDGE_CONVERSATIONS_DIR
-      ? path.join(own.dir, "antigravity-cli", "conversations")
-      : null
+    const home = currentHome()
+    this.conversationsDir = process.env.AGY_BRIDGE_CONVERSATIONS_DIR ? null
+      : own.dir ? path.join(own.dir, "antigravity-cli", "conversations")
+        : home ? path.join(home, ".gemini", "antigravity-cli", "conversations")
+          : null
     try {
       const childEnv = { ...process.env }
       const inheritedPath = process.env.PATH || childEnv.Path || ""
@@ -5904,25 +5910,34 @@ function noAgy() {
 }
 
 // signedInAs is the sign-in's result, named by the Google account agy is
-// signed in to when its keyring says (magpie shows the account by it,
-// not as "API key").
-async function signedInAs() {
+// signed in to when its keyring (or token file) says (magpie shows the
+// account by it, not as "API key"). An account with a home of its own
+// (account.mjs) keeps the home's name with it, and a key of its own, so
+// two accounts whose email can't be read aren't taken for one.
+async function signedInAs(homeId = "") {
   const email = await storedEmail()
-  return { type: "success", key: "agy", ...(email ? { metadata: { email } } : {}) }
+  const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
+  return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }
 
 // googleSignIn runs agy's own Google sign-in: its link, then the code the
-// page shows.
-async function googleSignIn(agy) {
-  const login = await startLogin(agy)
-  if (login.error) return { type: "failed", error: login.error }
+// page shows. account ({ id, home }) is a new account's own home: agy
+// signs in there, and the home goes again when the sign-in fails.
+async function googleSignIn(agy, account = null) {
+  const home = account?.home ?? null
+  const fail = (error) => {
+    if (account) dropHome(home)
+    return { type: "failed", error }
+  }
+  const login = await inAccount(home, () => startLogin(agy))
+  if (login.error) return fail(login.error)
   return {
     url: login.url,
     instructions: "",
     method: "code",
-    callback: async (code, opts = {}) => {
+    callback: (code, opts = {}) => inAccount(home, async () => {
       const done = await login.finish(code, { signal: opts.signal })
-      if (done.error) return { type: "failed", error: done.error }
+      if (done.error) return fail(done.error)
       // agy stored a new sign-in: read it again, and let what
       // failed with the old one run again
       forgetStoredSignIn({ dead: true })
@@ -5930,19 +5945,34 @@ async function googleSignIn(agy) {
       // before the sign-in, is asked again.
       forgetOffered()
       const probe = await probeSignedIn(agy)
-      if (!probe.ok) return { type: "failed", error: `agy signed in, but ${probe.why}` }
-      return signedInAs()
-    },
+      if (!probe.ok) return fail(`agy signed in, but ${probe.why}`)
+      return signedInAs(account?.id ?? "")
+    }),
   }
 }
 
+// homeOfAuth is the home of the account a saved sign-in is, null for
+// agy's own.
+async function homeOfAuth(getAuth) {
+  let auth
+  try { auth = typeof getAuth === "function" ? await getAuth() : getAuth } catch {}
+  return homeOf(homeIdOfAuth(auth))
+}
+
+// One usage reader per account: each holds its own last report.
+const usageReaders = new Map()
+function readUsageOf(home) {
+  const key = home ?? ""
+  let read = usageReaders.get(key)
+  if (!read) usageReaders.set(key, (read = createUsageReader(findAgy)))
+  return inAccount(home, () => read())
+}
+
 export const AntigravityBridgePlugin = async () => {
-  const readUsage = createUsageReader(findAgy)
   keepAgyCurrent(findAgy)
   return {
     auth: {
       provider: PROVIDER_ID,
-      single: true,
       // Magpie's hook for the CLI a plugin runs through: a sign-in on a
       // machine without agy (magpie in Docker) installs it first, into the
       // plugin's own folder (install.mjs). OpenCode ignores it.
@@ -5957,7 +5987,7 @@ export const AntigravityBridgePlugin = async () => {
         },
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
-      usage: async () => readUsage(),
+      usage: async (getAuth) => readUsageOf(await homeOfAuth(getAuth)),
       methods: [
         {
           // agy's own Google sign-in (`agy acp --login`): magpie opens its
@@ -5978,26 +6008,35 @@ export const AntigravityBridgePlugin = async () => {
           },
         },
         {
-          // agy keeps one Google account (the system keyring's), so a
-          // second account isn't added beside the first: this signs agy in
-          // to another one in its place, even while it is signed in. The
-          // first way, signed in already, ends at once with nothing changed
-          // (Archivemylife on X: "Sign in again" did nothing).
+          // Another Google account beside the first: agy signs in to it in
+          // a home of its own (account.mjs), so the one agy has stays.
+          // Always a new sign-in, even while agy is signed in (the first
+          // way, signed in already, ends at once with nothing changed:
+          // Archivemylife on X, "Sign in again" did nothing).
           type: "oauth",
-          label: "Switch to another Google account (agy holds one)",
-          labels: { zh: "换一个 Google 账号（agy 只能登录一个）", "zh-TW": "換一個 Google 帳號（agy 只能登入一個）", ja: "別の Google アカウントに切り替える（agy は 1 つだけ）" },
+          label: "Add another Google account",
+          labels: { zh: "添加另一个 Google 账号", "zh-TW": "新增另一個 Google 帳號", ja: "別の Google アカウントを追加" },
           authorize: async () => {
             const agy = findAgy()
             if (!agy) return noAgy()
-            return googleSignIn(agy)
+            let account
+            try {
+              account = newHome()
+            } catch (error) {
+              return { type: "failed", error: `couldn't make a folder for the account: ${error.message}` }
+            }
+            return googleSignIn(agy, account)
           },
         },
       ],
-      loader: async () => {
+      loader: async (getAuth) => {
+        // the account's own home, null for agy's own sign-in: every agy
+        // its requests run is started there
+        const home = await homeOfAuth(getAuth)
         return {
           baseURL: "agy://local",
           apiKey: "agy",
-          fetch: async (fetchInput, init = {}) => {
+          fetch: (fetchInput, init = {}) => inAccount(home, async () => {
             const requestUrl = typeof fetchInput === "string"
               ? fetchInput
               : fetchInput instanceof URL
@@ -6048,7 +6087,8 @@ export const AntigravityBridgePlugin = async () => {
             body = { ...canonicalBody(body), model: requestedModel }
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
-            const convKey = conversationKey(body)
+            // an account's conversations are its own: its agy has them
+            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
@@ -6213,7 +6253,7 @@ export const AntigravityBridgePlugin = async () => {
             } catch (error) {
               return jsonError(error.statusCode ?? 502, error.message, error.code, { noRetry: error.noRetry })
             }
-          },
+          }),
         }
       },
     },
@@ -6223,7 +6263,7 @@ export const AntigravityBridgePlugin = async () => {
       // Not an OpenCode hook: the adapter in opencode2.mjs reads the list
       // once more when this background work ends.
       warming: () => catalogWarming(),
-      models: async () => {
+      models: async (_given, ctx) => inAccount(await homeOfAuth(ctx?.auth), async () => {
         const agy = findAgy()
         // Never force a refresh here: Magpie times models() out after about two seconds.
         const catalog = await loadModelCatalog(agy, { probeOffered: true })
@@ -6255,7 +6295,7 @@ export const AntigravityBridgePlugin = async () => {
           }
         }
         return out
-      },
+      }),
     },
   }
 }

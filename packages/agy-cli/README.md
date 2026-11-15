@@ -124,8 +124,10 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    里也一样。登录的有效期是 15 分钟。Google 凭据始终由 agy 自己保管（系统钥匙串），
    插件不保存；agy 列出账号的模型（`agy models`）后才算登录成功。账号在 Magpie 里以 agy
    存的 Google 邮箱命名（只从钥匙串里读这一项）。
-   agy 只能登录一个 Google 账号，所以不能并列添加第二个。要换账号，点 Sign in 后选
-   「换一个 Google 账号」：agy 即使已经登录也会重新走 Google 登录，新账号替换旧账号。
+   要再加一个 Google 账号，点 agy-cli 的 Add another account（或 Sign in），选「添加另一个
+   Google 账号」。新账号有自己的 agy 主目录（`~/.local/state/magpie-agy-bridge/accounts/`
+   下），它的登录保存在那个目录里的文件中，不动系统钥匙串里原来那个账号。每个账号单独一行，
+   用量分开显示，可以像其他 provider 的账号一样切换和轮换。
 2. 模型名写成 `agy-cli/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。

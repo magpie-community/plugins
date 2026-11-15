@@ -176,10 +176,12 @@ After installing, sign in from Magpie; no terminal needed.
    plugin never stores them, and counts the sign-in as done only once
    `agy models` lists the account's models. Magpie names the account by the
    Google email agy stored (the one thing read from the keyring for it).
-   agy holds one Google account, so a second one can't be added beside it. To
-   change accounts, click Sign in and pick "Switch to another Google account":
-   agy runs its Google sign-in even while signed in, and the new account
-   replaces the old one.
+   To add another Google account, click agy-cli's Add another account (or
+   Sign in) and pick "Add another Google account". The new account gets an
+   agy home of its own (under `~/.local/state/magpie-agy-bridge/accounts/`),
+   and agy keeps its sign-in in a file there, leaving the account in the
+   system keyring as it is. Each account has its own row and its own usage,
+   and is switched and rotated like any provider's accounts.
 2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.

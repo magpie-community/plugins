@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
+import fs from "node:fs"
+import { currentHome, tokenFile } from "./account.mjs"
 
 // What agy's own sign-in looks like on this computer, read without running
 // agy. agy keeps its Google token in the system keyring through go-keyring,
@@ -119,7 +121,16 @@ export function emailOf(raw) {
 
 // readStoredValue reads agy's keyring value on this computer: { raw }, or
 // { state } when there is none ("missing") or it can't be read ("unknown").
-async function readStoredValue({ platform = process.platform, exec = run, env = process.env } = {}) {
+async function readStoredValue({ platform = process.platform, exec = run, env = process.env, home = currentHome() } = {}) {
+  // an account with a home of its own (account.mjs): agy keeps its
+  // sign-in in a file there, the same JSON
+  if (home) {
+    try {
+      return { raw: await fs.promises.readFile(tokenFile(home), "utf8") }
+    } catch (error) {
+      return { state: error?.code === "ENOENT" ? "missing" : "unknown" }
+    }
+  }
   // tests, and setups this reading doesn't fit, turn it off
   if (env.AGY_BRIDGE_STORED_SIGNIN === "skip") return { state: "unknown" }
   // agy signs in with these instead of a stored Google sign-in
@@ -182,32 +193,42 @@ export function isDead(s) {
   return s?.state === "present" && dead.has(s.fp)
 }
 
-let cached = null
-let reading = null
+// The last read and the read under way, per account home ("" for agy's
+// own sign-in).
+const reads = new Map()
+
+function readsOf(home) {
+  const key = home ?? ""
+  let r = reads.get(key)
+  if (!r) reads.set(key, (r = { cached: null, reading: null }))
+  return r
+}
 
 // storedSignIn is readStoredSignIn, shared for CACHE_MS and while one read
 // is under way.
 export async function storedSignIn({ read = readStoredSignIn, fresh = false } = {}) {
-  if (!fresh && cached && Date.now() - cached.at < CACHE_MS) return cached.value
-  if (!reading) {
-    const r = Promise.resolve().then(() => read()).catch(() => ({ state: "unknown" })).then((value) => {
-      if (reading === r) {
-        cached = { at: Date.now(), value }
-        reading = null
+  const r = readsOf(currentHome())
+  if (!fresh && r.cached && Date.now() - r.cached.at < CACHE_MS) return r.cached.value
+  if (!r.reading) {
+    const p = Promise.resolve().then(() => read()).catch(() => ({ state: "unknown" })).then((value) => {
+      if (r.reading === p) {
+        r.cached = { at: Date.now(), value }
+        r.reading = null
       }
       return value
     })
-    reading = r
+    r.reading = p
   }
-  return reading
+  return r.reading
 }
 
 // storedSignInNow is the last read without waiting for one (null before
 // the first), starting a new read when it is old: a request isn't held up
 // by a keyring read (on Windows, PowerShell).
 export function storedSignInNow({ read = readStoredSignIn } = {}) {
-  if (!cached || Date.now() - cached.at >= CACHE_MS) storedSignIn({ read }).catch(() => {})
-  return cached?.value ?? null
+  const r = readsOf(currentHome())
+  if (!r.cached || Date.now() - r.cached.at >= CACHE_MS) storedSignIn({ read }).catch(() => {})
+  return r.cached?.value ?? null
 }
 
 // backgroundBlocked is why agy must not be run for work nobody asked for
@@ -220,7 +241,6 @@ export async function backgroundBlocked(opts) {
 
 // forgetStoredSignIn drops the cached read (after a sign-in, and in tests).
 export function forgetStoredSignIn({ dead: clearDead = false } = {}) {
-  cached = null
-  reading = null
+  reads.delete(currentHome() ?? "")
   if (clearDead) dead.clear()
 }

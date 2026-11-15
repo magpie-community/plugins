@@ -45,11 +45,15 @@ function windowsAclPrivate(file) {
 fs.writeFileSync(fakeAgy, String.raw`
 import { spawn } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import readline from "node:readline"
 
 const argv = process.argv.slice(2)
-const log = value => fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify(value) + "\n")
+// where agy's home is (HOME, USERPROFILE on Windows) and whether it keeps
+// its sign-in in a file there (SSH_CONNECTION: agy reads it as SSH)
+const where = { home: os.homedir(), ssh: process.env.SSH_CONNECTION ?? null }
+const log = value => fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ ...where, ...value }) + "\n")
 const send = value => process.stdout.write(JSON.stringify(value) + "\n")
 
 if (argv.includes("--version")) {
@@ -71,6 +75,15 @@ if (argv[0] === "acp" && argv.includes("--login")) {
   log({ type: "login-code", code: line })
   if (/^(good-code|https:\/\/antigravity\.google\/oauth-callback\?code=good-code(&.*)?)$/.test(line.trim())) {
     if (!fs.existsSync(path.join(process.env.FAKE_AGY_STATE, "login-keeps-signed-out"))) fs.rmSync(signedOut, { force: true })
+    // agy with no keyring to use keeps the sign-in in a file in its home
+    if (process.env.FAKE_AGY_FILE_EMAIL && where.ssh) {
+      const dir = path.join(where.home, ".gemini", "antigravity-cli")
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, "antigravity-oauth-token"), JSON.stringify({
+        token: { access_token: "ya29.fake", token_type: "Bearer", refresh_token: "1//fake", expiry: "2099-01-01T00:00:00Z" },
+        auth_method: "consumer", id_token_email: process.env.FAKE_AGY_FILE_EMAIL,
+      }))
+    }
     process.stdout.write("Logged in as test@example.com.\n")
     process.exit(0)
   }
@@ -753,7 +766,7 @@ const legacyModel = "agy-cli/gemini-test-low"
   const before = logs().filter(event => event.type === "models").length
   const result = await plugin.auth.methods[0].authorize()
   const probes = logs().filter(event => event.type === "models").slice(before)
-  check("sign-in is agy's Google sign-in, an oauth way, and a way to switch accounts", plugin.auth.methods.length === 2 && plugin.auth.methods.every(m => m.type === "oauth"))
+  check("sign-in is agy's Google sign-in, an oauth way, and a way to add another account", plugin.auth.methods.length === 2 && plugin.auth.methods.every(m => m.type === "oauth"))
   check("signed in to agy already, the sign-in opens nothing", result.url === "" && result.method === "auto")
   check("signed in to agy already, the sign-in saves agy", (await result.callback())?.type === "success")
   check("authorize login probe disables auto update", probes.length === 1 && probes[0].update === "true")
@@ -761,16 +774,68 @@ const legacyModel = "agy-cli/gemini-test-low"
 }
 
 {
-  // Archivemylife on X: signed in already, "Sign in again" changed nothing.
-  // agy holds one Google account; the second way signs it in to another in
-  // its place, even while it is signed in.
-  const switcher = plugin.auth.methods[1]
-  const before = logs().filter(event => event.type === "login").length
-  const a = await switcher.authorize()
-  check("signed in already, switching accounts still opens Google's link", /^https:\/\/accounts\.google\.com\//.test(a.url ?? "") && a.method === "code", JSON.stringify(a))
-  check("switching accounts runs agy's own sign-in", logs().filter(event => event.type === "login").length === before + 1)
-  const good = await a.callback("good-code")
-  check("the other account's sign-in saves agy", good?.type === "success" && good.key === "agy", JSON.stringify(good))
+  // tongzhenbao on X: more than one account, each with its own usage, as
+  // the old plugin had. agy keeps one sign-in where it looks for it, so the
+  // second way signs another Google account in to an agy whose home is the
+  // account's own, beside agy's own sign-in. It opens Google's link even
+  // while agy is signed in (Archivemylife on X: "Sign in again" changed
+  // nothing).
+  const savedState = process.env.XDG_STATE_HOME
+  const xdg = path.join(stateDir, "xdg-state")
+  process.env.XDG_STATE_HOME = xdg
+  process.env.FAKE_AGY_FILE_EMAIL = "second@example.com"
+  try {
+    const adder = plugin.auth.methods[1]
+    check("the second way adds another Google account", adder.type === "oauth" && /another Google account/.test(adder.label) && !/one\)/.test(adder.label), adder.label)
+    check("more than one account may be signed in", plugin.auth.single !== true)
+    const before = logs().filter(event => event.type === "login").length
+    const a = await adder.authorize()
+    check("signed in already, adding an account still opens Google's link", /^https:\/\/accounts\.google\.com\//.test(a.url ?? "") && a.method === "code", JSON.stringify(a))
+    const login = logs().filter(event => event.type === "login")
+    check("adding an account runs agy's own sign-in", login.length === before + 1)
+    const accounts = path.join(xdg, "magpie-agy-bridge", "accounts")
+    const home = login.at(-1)?.home ?? ""
+    check("the added account's agy signs in with a home of its own", path.dirname(home) === accounts, home)
+    check("the added account's agy keeps its sign-in in a file there, not the keyring", login.at(-1)?.ssh === "127.0.0.1 0 127.0.0.1 0", login.at(-1)?.ssh)
+    const good = await a.callback("good-code")
+    check("the added account is saved beside agy's own, named by its Google account",
+      good?.type === "success" && good.key !== "agy" && good.metadata?.email === "second@example.com" && good.metadata?.agyHome === path.basename(home), JSON.stringify(good))
+    const second = { type: "api", key: good?.key, metadata: good?.metadata }
+
+    const usageBefore = logs().filter(event => event.type === "usage").length
+    const usage = await plugin.auth.usage(async () => second, {})
+    const usageRuns = logs().filter(event => event.type === "usage").slice(usageBefore)
+    check("the added account's usage is its own agy's", usage.windows?.length > 0 && usageRuns.length === 1 && usageRuns[0].home === home && !!usageRuns[0].ssh, JSON.stringify(usageRuns))
+
+    const secondLoader = await plugin.auth.loader(async () => second)
+    const initsBefore = inits().length
+    await readSSE(await secondLoader.fetch("agy://local/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "the second account " + Date.now() }] }),
+    }))
+    const secondInit = inits().slice(initsBefore).find(event => event.args.includes("--agent"))
+    check("the added account's requests run agy in its home", secondInit?.home === home && !!secondInit.ssh && !secondInit.args.includes("--gemini-dir"), JSON.stringify(secondInit && { home: secondInit.home, ssh: secondInit.ssh, args: secondInit.args }))
+
+    const firstBefore = inits().length
+    await readSSE(await callFetch({ model, messages: [{ role: "user", content: "the first account " + Date.now() }] }))
+    const firstInit = inits().slice(firstBefore).find(event => event.args.includes("--agent"))
+    check("agy's own account still runs in the user's home", firstInit?.home === os.homedir() && firstInit.ssh !== "127.0.0.1 0 127.0.0.1 0", JSON.stringify(firstInit && { home: firstInit.home, ssh: firstInit.ssh }))
+    const firstUsageBefore = logs().filter(event => event.type === "usage").length
+    await plugin.auth.usage(async () => ({ key: "agy" }), {})
+    const firstUsage = logs().filter(event => event.type === "usage").slice(firstUsageBefore)
+    check("agy's own account's usage is read in the user's home", firstUsage.length === 1 && firstUsage[0].home === os.homedir(), JSON.stringify(firstUsage))
+
+    // a sign-in that fails leaves no home behind
+    const c = await adder.authorize()
+    const failedHome = logs().filter(event => event.type === "login").at(-1)?.home ?? ""
+    const bad = await c.callback("4/wrong-code")
+    check("a failed added sign-in saves nothing and leaves no home", bad?.type === "failed" && failedHome !== home && !fs.existsSync(failedHome), JSON.stringify(bad))
+  } finally {
+    delete process.env.FAKE_AGY_FILE_EMAIL
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = savedState
+  }
 }
 
 {

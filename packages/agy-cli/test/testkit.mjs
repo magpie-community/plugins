@@ -41,6 +41,7 @@ export const SIGNIN_FILE = path.join(REPO_DIR, "signin.mjs")
 export const TOOL_SCHEMA_FILE = path.join(REPO_DIR, "tool-schema.mjs")
 export const TOOL_BUDGET_FILE = path.join(REPO_DIR, "tool-budget.mjs")
 export const INSTALL_FILE = path.join(REPO_DIR, "install.mjs")
+export const ACCOUNT_FILE = path.join(REPO_DIR, "account.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -547,6 +548,7 @@ export async function createBridgeKit(options = {}) {
   const toolSchemaUrl = pathToFileURL(TOOL_SCHEMA_FILE).href
   const toolBudgetUrl = pathToFileURL(TOOL_BUDGET_FILE).href
   const installUrl = pathToFileURL(INSTALL_FILE).href
+  const accountUrl = pathToFileURL(ACCOUNT_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -565,6 +567,7 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./tool-schema.mjs") module = sourceModule(TOOL_SCHEMA_FILE, "", toolSchemaUrl)
     else if (key === "./tool-budget.mjs") module = sourceModule(TOOL_BUDGET_FILE, "", toolBudgetUrl)
     else if (key === "./install.mjs") module = sourceModule(INSTALL_FILE, "", installUrl)
+    else if (key === "./account.mjs") module = sourceModule(ACCOUNT_FILE, "", accountUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)
