@@ -78,18 +78,25 @@ function run(file, args) {
   })
 }
 
-// parseStored is what a stored value says, "unknown" when it isn't the
-// shape agy writes.
-export function parseStored(raw, now = Date.now()) {
+// decodeStored is a stored value's JSON as go-keyring wrote it, or null
+// when it isn't that.
+function decodeStored(raw) {
   let value = String(raw ?? "").trim()
-  const fp = createHash("sha256").update(value).digest("hex").slice(0, 32)
   if (value.startsWith("go-keyring-base64:")) {
     value = Buffer.from(value.slice("go-keyring-base64:".length), "base64").toString("utf8")
   } else if (value.startsWith("go-keyring-encoded:")) {
     value = Buffer.from(value.slice("go-keyring-encoded:".length), "hex").toString("utf8")
   }
-  let stored
-  try { stored = JSON.parse(value) } catch { return { state: "unknown" } }
+  try { return JSON.parse(value) } catch { return null }
+}
+
+// parseStored is what a stored value says, "unknown" when it isn't the
+// shape agy writes. It says nothing of who: the account's email isn't kept
+// with the cached read (storedEmail reads it when a sign-in names it).
+export function parseStored(raw, now = Date.now()) {
+  const fp = createHash("sha256").update(String(raw ?? "").trim()).digest("hex").slice(0, 32)
+  const stored = decodeStored(raw)
+  if (!stored) return { state: "unknown" }
   // a Gemini API key needs no Google sign-in
   if (typeof stored?.api_key === "string" && stored.api_key !== "") return { state: "unknown" }
   const token = stored?.token
@@ -103,8 +110,16 @@ export function parseStored(raw, now = Date.now()) {
   return { state: "present", fp, canRenew, expiresAt, expired: expiresAt > 0 && now >= expiresAt }
 }
 
-// readStoredSignIn reads agy's stored sign-in on this computer.
-export async function readStoredSignIn({ platform = process.platform, exec = run, now = Date.now(), env = process.env } = {}) {
+// emailOf is the Google account a stored value is signed in to, "" when
+// it doesn't say.
+export function emailOf(raw) {
+  const email = decodeStored(raw)?.id_token_email
+  return typeof email === "string" ? email.trim().slice(0, 200) : ""
+}
+
+// readStoredValue reads agy's keyring value on this computer: { raw }, or
+// { state } when there is none ("missing") or it can't be read ("unknown").
+async function readStoredValue({ platform = process.platform, exec = run, env = process.env } = {}) {
   // tests, and setups this reading doesn't fit, turn it off
   if (env.AGY_BRIDGE_STORED_SIGNIN === "skip") return { state: "unknown" }
   // agy signs in with these instead of a stored Google sign-in
@@ -114,7 +129,7 @@ export async function readStoredSignIn({ platform = process.platform, exec = run
     // 44: errSecItemNotFound
     if (r.code === 44) return { state: "missing" }
     if (r.code !== 0) return { state: "unknown" }
-    return parseStored(r.stdout, now)
+    return { raw: r.stdout }
   }
   if (platform === "win32") {
     const r = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_SCRIPT])
@@ -124,9 +139,26 @@ export async function readStoredSignIn({ platform = process.platform, exec = run
     if (out === "MISSING") return { state: "missing" }
     if (!out.startsWith("OK ")) return { state: "unknown" }
     // go-keyring on Windows stores the value's bytes as they are (UTF-8)
-    return parseStored(Buffer.from(out.slice(3), "base64").toString("utf8"), now)
+    return { raw: Buffer.from(out.slice(3), "base64").toString("utf8") }
   }
   return { state: "unknown" }
+}
+
+// readStoredSignIn reads agy's stored sign-in on this computer.
+export async function readStoredSignIn({ now = Date.now(), ...opts } = {}) {
+  const v = await readStoredValue(opts)
+  return "raw" in v ? parseStored(v.raw, now) : v
+}
+
+// storedEmail is the Google account agy is signed in to on this computer,
+// "" when it can't tell: a sign-in names its account by it.
+export async function storedEmail(opts) {
+  try {
+    const v = await readStoredValue(opts)
+    return "raw" in v ? emailOf(v.raw) : ""
+  } catch {
+    return ""
+  }
 }
 
 // cannotSignIn is why a stored sign-in can't serve agy without a new

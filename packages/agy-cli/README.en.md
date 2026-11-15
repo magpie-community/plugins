@@ -162,8 +162,13 @@ After installing, sign in from Magpie; no terminal needed.
    code the page shows (or the page's whole address) back into Magpie. This
    works with Magpie on a server or in Docker too. The sign-in waits 15
    minutes. Google credentials stay with agy (in the system keyring); the
-   plugin never reads or stores them, and counts the sign-in as done only once
-   `agy models` lists the account's models.
+   plugin never stores them, and counts the sign-in as done only once
+   `agy models` lists the account's models. Magpie names the account by the
+   Google email agy stored (the one thing read from the keyring for it).
+   agy holds one Google account, so a second one can't be added beside it. To
+   change accounts, click Sign in and pick "Switch to another Google account":
+   agy runs its Google sign-in even while signed in, and the new account
+   replaces the old one.
 2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.

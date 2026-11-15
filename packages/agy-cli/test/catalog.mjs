@@ -545,3 +545,54 @@ test("慢刷新与失败刷新都不会挂住 Node 退出（独立子进程实�
   assert.ok(report.a > 0 && report.b > 0)
   assert.ok(wall < 8_000, `子进程 ${wall}ms 才退出，疑似被定时器挂住`)
 })
+
+// Archivemylife on X: picks saved in magpie were gone on the next open. A
+// cold host served the static list (or Gemini alone, before agy acp said
+// what it offers) as if it were the account's, and magpie set aside every
+// pick it didn't name. Such a list says it fell back, so magpie keeps the
+// one it had; the account's own list doesn't.
+const FELL_BACK = Symbol.for("magpie.fellBack")
+
+test("静态目录与探测前只有 Gemini 的目录都标为 fell back，账号自己的目录不标", async () => {
+  await withKit({ agyPath: null }, async (kit) => {
+    assert.equal((await kit.models())[FELL_BACK], true, "没有 agy 的静态目录没标 fell back")
+  })
+  await withKit({ platform: "darwin", storedSignIn: "missing", modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    assert.equal((await kit.models())[FELL_BACK], true, "没登录的静态目录没标 fell back")
+    await warmed(kit)
+  })
+  await withKit(SLOW_AGY, async (kit) => {
+    const first = await kit.models()
+    assertFallbackPresent(first)
+    assert.equal(first[FELL_BACK], true, "冷启动的静态目录没标 fell back")
+    await warmed(kit)
+    const listed = await kit.models()
+    assertClaudeListed(listed, "热身后的 models()")
+    assert.equal(listed[FELL_BACK], undefined, "账号自己的目录标成了 fell back")
+  })
+})
+
+test("agy models 答了、探测还没答时只有 Gemini 的目录标 fell back", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK, sessionNewDelayMs: SLOW_MS, offeredModels: OFFERED_CLAUDE }, async (kit) => {
+    const first = await kit.models()
+    assert.ok(!Object.keys(first).some(id => id.startsWith("claude-")), Object.keys(first).join(","))
+    assert.equal(first[FELL_BACK], true, "探测前只有 Gemini 的目录没标 fell back")
+    await warmed(kit)
+    const listed = await kit.models()
+    assertClaudeListed(listed, "探测后的 models()")
+    assert.equal(listed[FELL_BACK], undefined)
+  })
+})
+
+test("已登录时登录结果用 agy 存的 Google 账号命名，而不是一个 API key", async () => {
+  const value = "go-keyring-base64:" + Buffer.from(JSON.stringify({ token: { access_token: "a", refresh_token: "r", expiry: "2020-01-01T00:00:00Z" }, id_token_email: "second@example.com" })).toString("base64")
+  await withKit({ platform: "darwin", storedSignIn: value + "\n", modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.equal(started.method, "auto")
+    const done = await started.callback()
+    assert.equal(done.type, "success")
+    assert.equal(done.key, "agy")
+    assert.deepEqual(done.metadata, { email: "second@example.com" })
+    await warmed(kit)
+  })
+})

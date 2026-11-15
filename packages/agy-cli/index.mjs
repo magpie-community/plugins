@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { createUsageReader } from "./usage.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
@@ -5872,6 +5872,43 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   return proc.startTurn(contentParts, body.messages, model, selection)
 }
 
+function noAgy() {
+  return { type: "failed", error: "agy CLI not found. Install Antigravity CLI first: https://antigravity.google/docs/cli" }
+}
+
+// signedInAs is the sign-in's result, named by the Google account agy is
+// signed in to when its keyring says (magpie shows the account by it,
+// not as "API key").
+async function signedInAs() {
+  const email = await storedEmail()
+  return { type: "success", key: "agy", ...(email ? { metadata: { email } } : {}) }
+}
+
+// googleSignIn runs agy's own Google sign-in: its link, then the code the
+// page shows.
+async function googleSignIn(agy) {
+  const login = await startLogin(agy)
+  if (login.error) return { type: "failed", error: login.error }
+  return {
+    url: login.url,
+    instructions: "",
+    method: "code",
+    callback: async (code, opts = {}) => {
+      const done = await login.finish(code, { signal: opts.signal })
+      if (done.error) return { type: "failed", error: done.error }
+      // agy stored a new sign-in: read it again, and let what
+      // failed with the old one run again
+      forgetStoredSignIn({ dead: true })
+      // A new account: what agy offered the last one, or refused
+      // before the sign-in, is asked again.
+      forgetOffered()
+      const probe = await probeSignedIn(agy)
+      if (!probe.ok) return { type: "failed", error: `agy signed in, but ${probe.why}` }
+      return signedInAs()
+    },
+  }
+}
+
 export const AntigravityBridgePlugin = async () => {
   const readUsage = createUsageReader(findAgy)
   return {
@@ -5885,41 +5922,33 @@ export const AntigravityBridgePlugin = async () => {
           // agy's own Google sign-in (`agy acp --login`): magpie opens its
           // link and takes the code the page shows. agy keeps the token;
           // the plugin's account is only "agy", saved once agy says the
-          // sign-in took and lists the account's models.
+          // sign-in took and lists the account's models. Signed in to agy
+          // already, nothing opens: the account agy has is the one saved.
           type: "oauth",
           label: "Sign in with Google",
+          labels: { zh: "使用 Google 登录", "zh-TW": "使用 Google 登入", ja: "Google でサインイン" },
           authorize: async () => {
             const agy = findAgy()
-            if (!agy) {
-              return {
-                type: "failed",
-                error: "agy CLI not found. Install Antigravity CLI first: https://antigravity.google/docs/cli",
-              }
-            }
-            // signed in to agy already: nothing to open
+            if (!agy) return noAgy()
             if ((await probeSignedIn(agy)).ok) {
-              return { url: "", instructions: "", method: "auto", callback: async () => ({ type: "success", key: "agy" }) }
+              return { url: "", instructions: "", method: "auto", callback: async () => signedInAs() }
             }
-            const login = await startLogin(agy)
-            if (login.error) return { type: "failed", error: login.error }
-            return {
-              url: login.url,
-              instructions: "",
-              method: "code",
-              callback: async (code, opts = {}) => {
-                const done = await login.finish(code, { signal: opts.signal })
-                if (done.error) return { type: "failed", error: done.error }
-                // agy stored a new sign-in: read it again, and let what
-                // failed with the old one run again
-                forgetStoredSignIn({ dead: true })
-                // A new account: what agy offered the last one, or refused
-                // before the sign-in, is asked again.
-                forgetOffered()
-                const probe = await probeSignedIn(agy)
-                if (!probe.ok) return { type: "failed", error: `agy signed in, but ${probe.why}` }
-                return { type: "success", key: "agy" }
-              },
-            }
+            return googleSignIn(agy)
+          },
+        },
+        {
+          // agy keeps one Google account (the system keyring's), so a
+          // second account isn't added beside the first: this signs agy in
+          // to another one in its place, even while it is signed in. The
+          // first way, signed in already, ends at once with nothing changed
+          // (Archivemylife on X: "Sign in again" did nothing).
+          type: "oauth",
+          label: "Switch to another Google account (agy holds one)",
+          labels: { zh: "换一个 Google 账号（agy 只能登录一个）", "zh-TW": "換一個 Google 帳號（agy 只能登入一個）", ja: "別の Google アカウントに切り替える（agy は 1 つだけ）" },
+          authorize: async () => {
+            const agy = findAgy()
+            if (!agy) return noAgy()
+            return googleSignIn(agy)
           },
         },
       ],
@@ -6158,6 +6187,14 @@ export const AntigravityBridgePlugin = async () => {
         // Never force a refresh here: Magpie times models() out after about two seconds.
         const catalog = await loadModelCatalog(agy, { probeOffered: true })
         const out = {}
+        // Not the account's list yet: the static one (no agy, signed out,
+        // or agy hasn't answered), or Gemini alone while agy acp is still
+        // asked what it offers. magpie keeps the list it had and the
+        // user's picks with it; a cold host's short list dropped every
+        // other pick (Archivemylife on X: the picks didn't stick).
+        if (cachedModelCatalog.isFallback || (!acpOfferedModels && (modelCatalogRefreshPromise || offeredProbePromise))) {
+          out[Symbol.for("magpie.fellBack")] = true
+        }
         for (const model of catalog.models) {
           const imageModel = /^(?:gemini-|claude-)/.test(model.id)
           out[model.id] = {

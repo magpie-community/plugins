@@ -753,11 +753,24 @@ const legacyModel = "agy-cli/gemini-test-low"
   const before = logs().filter(event => event.type === "models").length
   const result = await plugin.auth.methods[0].authorize()
   const probes = logs().filter(event => event.type === "models").slice(before)
-  check("sign-in is agy's Google sign-in, an oauth way", plugin.auth.methods.length === 1 && plugin.auth.methods[0].type === "oauth")
+  check("sign-in is agy's Google sign-in, an oauth way, and a way to switch accounts", plugin.auth.methods.length === 2 && plugin.auth.methods.every(m => m.type === "oauth"))
   check("signed in to agy already, the sign-in opens nothing", result.url === "" && result.method === "auto")
   check("signed in to agy already, the sign-in saves agy", (await result.callback())?.type === "success")
   check("authorize login probe disables auto update", probes.length === 1 && probes[0].update === "true")
   check("signed in already, agy's sign-in isn't started", !logs().some(event => event.type === "login"))
+}
+
+{
+  // Archivemylife on X: signed in already, "Sign in again" changed nothing.
+  // agy holds one Google account; the second way signs it in to another in
+  // its place, even while it is signed in.
+  const switcher = plugin.auth.methods[1]
+  const before = logs().filter(event => event.type === "login").length
+  const a = await switcher.authorize()
+  check("signed in already, switching accounts still opens Google's link", /^https:\/\/accounts\.google\.com\//.test(a.url ?? "") && a.method === "code", JSON.stringify(a))
+  check("switching accounts runs agy's own sign-in", logs().filter(event => event.type === "login").length === before + 1)
+  const good = await a.callback("good-code")
+  check("the other account's sign-in saves agy", good?.type === "success" && good.key === "agy", JSON.stringify(good))
 }
 
 {

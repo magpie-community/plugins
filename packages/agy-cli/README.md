@@ -116,7 +116,10 @@ magpie plugin add @magpie-community/opencode-agy-cli-auth
    没登录时插件运行 agy 自己的 Google 登录（`agy acp --login`），Magpie 打开登录页，
    登录后把页面显示的授权码（或整个页面地址）粘贴回 Magpie。Magpie 在服务器或 Docker
    里也一样。登录的有效期是 15 分钟。Google 凭据始终由 agy 自己保管（系统钥匙串），
-   插件不读取、不保存；agy 列出账号的模型（`agy models`）后才算登录成功。
+   插件不保存；agy 列出账号的模型（`agy models`）后才算登录成功。账号在 Magpie 里以 agy
+   存的 Google 邮箱命名（只从钥匙串里读这一项）。
+   agy 只能登录一个 Google 账号，所以不能并列添加第二个。要换账号，点 Sign in 后选
+   「换一个 Google 账号」：agy 即使已经登录也会重新走 Google 登录，新账号替换旧账号。
 2. 模型名写成 `agy-cli/<模型>`。agy 对同一模型不同思考等级给出的多个模型 ID，
    在这里会合并成一个模型的多个变体，请求时再映射回对应的 agy ID。
 3. 在客户端里选用这个模型即可。

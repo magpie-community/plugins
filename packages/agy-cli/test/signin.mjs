@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, storedSignIn, storedSignInNow } from "../signin.mjs"
+import { backgroundBlocked, cannotSignIn, emailOf, forgetStoredSignIn, isDead, noteDead, parseStored, readStoredSignIn, storedEmail, storedSignIn, storedSignInNow } from "../signin.mjs"
 
 const NOW = Date.parse("2026-11-13T00:00:00Z")
 const stored = (token, extra = {}) => JSON.stringify({ token, auth_method: "consumer", id_token_email: "someone@example.com", ...extra })
@@ -101,4 +101,21 @@ test("storedSignInNow answers from the last read without waiting, and reads agai
   assert.deepEqual(storedSignInNow({ read }), { state: "missing" })
   assert.equal(reads, 1)
   forgetStoredSignIn({ dead: true })
+})
+
+// Archivemylife on X: the account showed as "API key", and signing in to
+// another Google account looked like nothing happened. A sign-in names the
+// account by the email agy stored; the cached read still doesn't carry it.
+test("storedEmail is the Google account agy's keyring is signed in to, on macOS and Windows", async () => {
+  const value = stored({ access_token: "a", refresh_token: "r", expiry: "2026-11-12T00:00:00Z" })
+  assert.equal(emailOf(b64(value)), "someone@example.com")
+  assert.equal(emailOf(value), "someone@example.com")
+  assert.equal(emailOf(stored({ access_token: "a" }, { id_token_email: undefined })), "")
+  assert.equal(emailOf("garbage"), "")
+  const mac = (code, stdout = "") => async () => ({ code, stdout })
+  assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value) + "\n"), env: {} }), "someone@example.com")
+  assert.equal(await storedEmail({ platform: "darwin", exec: mac(44), env: {} }), "")
+  assert.equal(await storedEmail({ platform: "darwin", exec: async () => { throw new Error("no security") }, env: {} }), "")
+  assert.equal(await storedEmail({ platform: "win32", exec: mac(0, "OK " + Buffer.from(value).toString("base64") + "\r\n"), env: {} }), "someone@example.com")
+  assert.equal(await storedEmail({ platform: "darwin", exec: mac(0, b64(value)), env: { AGY_BRIDGE_STORED_SIGNIN: "skip" } }), "")
 })
