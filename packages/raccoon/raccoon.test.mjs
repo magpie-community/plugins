@@ -12,6 +12,7 @@ function fakeJwt(claims) {
 
 let server = null
 let tempDir = null
+let topDir = null
 
 // No test may reach the real network: a test that starts no server points at a
 // port nothing listens on.
@@ -19,6 +20,9 @@ let tempDir = null
 // depend on the network — review #486, point 1.)
 beforeEach(() => {
   process.env.RACCOON_MAIN_SITE_URL = "http://127.0.0.1:9"
+  // the top balance a past host saw is kept on disk: never the real ~/.config
+  topDir = mkdtempSync(join(tmpdir(), "raccoon-top-"))
+  process.env.RACCOON_TOP_BALANCE_FILE = join(topDir, "raccoon-top-balance.json")
 })
 
 afterEach(() => {
@@ -30,6 +34,10 @@ afterEach(() => {
   }
   delete process.env.RACCOON_MAIN_SITE_URL
   delete process.env.RACCOON_BOX_AGENT_CONFIG_DIR
+  delete process.env.RACCOON_TOP_BALANCE_FILE
+  if (topDir) rmSync(topDir, { recursive: true, force: true })
+  topDir = null
+  _internal.topBalance.clear()
   _internal.renewed.clear()
   _internal.renewing.clear()
 })
@@ -579,6 +587,54 @@ test("spending under a balance over every grant counts as used (plugins #1030)",
   grants.unshift({ bill_id: "g7", biz_type: "daily_grant", points: 300, expire_at: "2099-11-18T23:59:59+08:00" })
   avail = 10240
   expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 10240 })
+})
+
+// plugins #1182: what was spent read 0 again after every restart, since the
+// highest balance seen was kept in memory only.
+test("what was spent survives a restart (plugins #1182)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  let avail = 9965
+  const grants = [
+    { bill_id: "g2", biz_type: "daily_grant", points: 300, expire_at: "2099-11-17T23:59:59+08:00" },
+    { bill_id: "g1", biz_type: "reward_grant", points: 9600 },
+  ]
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: avail } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () => Response.json({ code: 0, data: { items: grants } }),
+  })
+  const read = async (accountId = "Raccoon-1182") => {
+    const hooks = await RaccoonAuthPlugin({ client: {} })
+    return hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId }))
+  }
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 9965 })
+  avail = 9940
+  expect((await read()).windows[0]).toMatchObject({ amount: 25, limit: 9965 })
+  _internal.topBalance.clear() // the host restarts
+  expect((await read()).windows[0]).toMatchObject({ amount: 25, limit: 9965, display: "25 / 9965" })
+  // another account is still counted on its own
+  expect((await read("Raccoon-other")).windows[0]).toMatchObject({ amount: 0, limit: 9940 })
+  // a new grant starts the count again, on disk too
+  grants.unshift({ bill_id: "g3", biz_type: "daily_grant", points: 300, expire_at: "2099-11-18T23:59:59+08:00" })
+  avail = 10240
+  expect((await read()).windows[0]).toMatchObject({ amount: 0, limit: 10240 })
+  avail = 10230
+  _internal.topBalance.clear()
+  expect((await read()).windows[0]).toMatchObject({ amount: 10, limit: 10240 })
+})
+
+test("an unreadable top-balance file starts from the balance read (plugins #1182)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  writeFileSync(process.env.RACCOON_TOP_BALANCE_FILE, "{not json")
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 9965 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({ code: 0, data: { items: [{ bill_id: "g1", biz_type: "reward_grant", points: 9900 }] } }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000, accountId: "A" }))
+  expect(u.windows[0]).toMatchObject({ amount: 0, limit: 9965 })
 })
 
 test("a readable balance asks setting_info nothing (plugins #520)", async () => {

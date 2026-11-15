@@ -6,11 +6,11 @@
 // (read-only; desktopAuthCandidates lists where). Chats are OpenAI-compatible
 // chat completions at /api/web/llm/v2/chat/completions.
 
-import { randomUUID, randomBytes } from "node:crypto"
+import { createHash, randomUUID, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
-import { readFileSync, statSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 const PROVIDER_ID = "raccoon"
 const PROVIDER_NAME = "商汤小浣熊"
@@ -668,9 +668,46 @@ async function availablePoints(token) {
 // grant total to measure spending against, so the window's total is that
 // highest balance and what was spent since is what it has gone down by
 // (plugins #1030: 9,965 then 9,964 read 0 / 9,965 then 0 / 9,964). A new
-// or expired grant changes the set and starts it again. Kept in memory: a
-// restarted host starts from the balance it reads.
+// or expired grant changes the set and starts it again. It is kept on disk
+// too (plugins #1182: what was spent read 0 again after every restart), one
+// entry per account, so a restarted host goes on from the same top.
 const topBalance = new Map()
+
+const topBalanceFile = () =>
+  process.env.RACCOON_TOP_BALANCE_FILE ||
+  join(process.env.MAGPIE_CONFIG_DIR || join(homedir(), ".config", "magpie"), "raccoon-top-balance.json")
+
+function readTops() {
+  try {
+    const raw = JSON.parse(readFileSync(topBalanceFile(), "utf8"))
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+// savedTop is the top a past host saw for this account and set of grants,
+// or 0 when it saw none (or the file can't be read).
+function savedTop(account, grants) {
+  const e = readTops()[account]
+  const n = Number(e?.top)
+  return e?.grants === grants && Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// saveTop writes through a temp file and a rename, so a host reading it
+// mid-write never sees half of it. A failed write keeps the memory copy.
+function saveTop(account, grants, top) {
+  try {
+    const file = topBalanceFile()
+    const all = readTops()
+    if (all[account]?.grants === grants && all[account]?.top === top) return
+    all[account] = { grants, top }
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(all))
+    renameSync(tmp, file)
+  } catch {}
+}
 
 async function queryUsage(token, account = "") {
   const [avail, entitlement, bills] = await Promise.all([
@@ -731,9 +768,12 @@ async function queryUsage(token, account = "") {
   // the card still shows one. A balance far over the bills is left
   // balance-only: the bills don't explain it.
   if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
-    const key = `${account}\n${grantKeys.sort().join("\n")}`
-    const top = Math.max(avail, topBalance.get(key) ?? 0)
+    const grants = createHash("sha256").update(grantKeys.sort().join("\n")).digest("hex")
+    const key = `${account}\n${grants}`
+    if (!topBalance.has(key)) topBalance.set(key, savedTop(account, grants))
+    const top = Math.max(avail, topBalance.get(key))
     topBalance.set(key, top)
+    saveTop(account, grants, top)
     grantedFromBills = top
   }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
@@ -1278,6 +1318,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 }
 
 export const _internal = {
+  topBalance,
   browserSignIn,
   desktopAuthPath,
   desktopAuthCandidates,
