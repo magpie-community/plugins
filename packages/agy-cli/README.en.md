@@ -17,8 +17,10 @@ response.
 
 - The work is done by the real agy CLI over the ACP channel it ships with. The
   ACP handshake's `clientInfo` is the plugin's own package name and version
-  (`opencode-agy-cli-auth`), not Zed or any other editor, and the plugin does
-  not call Google's internal endpoints directly.
+  (`opencode-agy-cli-auth`), not Zed or any other editor. The plugin calls
+  Google's endpoints itself in one case only: when agy refuses `/usage` for
+  the account's region, it reads the quota the way agy does (see "Usage
+  quota").
 - Tools that belong to the client, such as file reads, writes and shell commands,
   are exposed to the model over MCP. The client runs them and the results flow
   back into the same agy conversation, so the model sees ordinary native tool
