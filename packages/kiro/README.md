@@ -181,6 +181,7 @@ request:
     that can't be read or brought under is replaced by a short note, so the
     conversation goes on (#428). Smaller images are sent as they are.
   - Tools the history used but the request doesn't offer are declared.
+  - Signed reasoning is replayed as `reasoningContent.reasoningText` with its original text and signature, or as a reasoning input item's `encrypted_content` on CreateResponse. The client's signature carries the native envelope and its account, region and model scope. Raw signatures and envelopes from another scope are omitted. Kiro's signature errors are returned to the client.
   - A tool's input schema says `type: "object"` at its root, as Kiro
     wants: one that says no type (or object-or-null) is sent saying so, and
     an empty one as an object with no properties. Kiro answers 400
@@ -191,19 +192,7 @@ request:
   events (streamed) or one message. The reply includes text, thinking,
   tool calls and usage. When Kiro reports only how full the context is,
   input tokens are estimated from that.
-- Thinking (Claude models and Auto) is asked for the way kiro-cli asks, in
-  the prompt, with a budget: low 10k, medium 20k, high 30k, xhigh and max
-  50k (as magpie's built-in Kiro: #120). The
-  `<thinking>` block of the reply comes back as thinking.
-  A model whose Kiro catalog lists effort levels with adaptive thinking
-  (`additionalModelRequestFieldsSchema`) is sent the level instead, as Kiro
-  IDE sends it: `additionalModelRequestFields` with `thinking.type:
-  "adaptive"` and `output_config.effort` (or `reasoning.effort`), and no
-  budget. So xhigh and max stay apart there (#538).
-  Thinking is asked for only when the request's `thinking` is `enabled` or
-  `adaptive`. An effort with no `thinking`, or with it `disabled` (Claude
-  Code's title requests, or a turn with thinking off), is sent with no
-  thinking at any level.
+- Claude models and Auto use prompt thinking budgets of low 10k, medium 20k, high 30k, and xhigh/max 50k when their catalog has no native adaptive settings. Models whose catalog advertises adaptive thinking receive `additionalModelRequestFields.thinking.type: "adaptive"` and the selected effort under `output_config.effort` or `reasoning.effort`. Claude thinking requires `thinking.type` to be `enabled` or `adaptive`. GPT and Grok models that advertise `reasoning.effort` receive that field directly, with the levels from their catalog. GPT thinking disabled maps to `none` when the model offers it. Cold request-time catalog lookups are optional and shared by account and region for ten minutes, including failures and missing models. A failed lookup does not block chat. Request-time native settings are cached separately for each account and region, and a failed refresh retains that account's last successful settings.
 - Anthropic's hosted web search is answered with Kiro's own web search
   (see [Web search](#web-search)).
 - Kiro's failures keep their meaning:
@@ -295,7 +284,7 @@ the `provider.models` hook replaces it with the account's own list from
 context window, output limit and whether it takes images, and its credit
 multiplier as `rate` (Kiro's `rateMultiplier` when `rateUnit` is `Credit`:
 1.3 for claude-sonnet-4.5, 0.4 for claude-haiku-4.5), which magpie shows
-beside the model. Claude models and Auto have the thinking variants.
+beside the model. Claude models and Auto have thinking budget variants. Models with native `reasoning.effort` have the effort levels from their catalog.
 
 ## Usage in magpie
 

@@ -315,3 +315,43 @@ test("ZCode 3.16's key location lists the coding plan's models", async () => {
   _internal.routes.clear()
   await expect(hooks.provider.models({ models: {} }, { auth: { ...z, type: "oauth" } })).rejects.toThrow("coding plan key")
 })
+
+// ZCode 3.18's China sign-in keeps its identity under zai_cn. Losing it
+// makes every gift-only account "ZCode" and lets it follow a different
+// account's session when the app switches users.
+test("the app's China sign-in keeps its identity and follows only that user", async () => {
+  const as = (id) => JSON.stringify({ email: "ada@phone.local", user_id: id })
+  zcodeHas({
+    zcodejwttoken: "Bearer china-a",
+    "oauth:active_provider": "zai_cn",
+    "oauth:zai_cn:user_info": as("china-user-a"),
+  })
+  const auth = await appSignIn()
+  expect(auth.accountId).toBe("ada")
+  expect(auth.uid).toBe("china-user-a")
+
+  zcodeHas({
+    zcodejwttoken: "Bearer china-renewed",
+    "oauth:active_provider": "zai_cn",
+    "oauth:zai_cn:user_info": as("china-user-a"),
+  })
+  expect((await _internal.stateOf(auth)).jwt).toBe("china-renewed")
+
+  // Two accounts may share the same display name; the uid guards them.
+  zcodeHas({
+    zcodejwttoken: "Bearer china-b",
+    "oauth:active_provider": "zai_cn",
+    "oauth:zai_cn:user_info": as("china-user-b"),
+  })
+  expect((await _internal.stateOf(auth)).jwt).toBe("china-a")
+})
+
+test.each(["zai_cn", "zai", "bigmodel"])("the app's active %s identity wins over another provider's cached profile", async (active) => {
+  const store = { zcodejwttoken: "Bearer active-session", "oauth:active_provider": active }
+  for (const family of ["zai", "zai_cn", "bigmodel"])
+    store[`oauth:${family}:user_info`] = JSON.stringify({ email: `${family}@example.com`, user_id: `user-${family}` })
+  zcodeHas(store)
+  const auth = await appSignIn()
+  expect(auth.accountId).toBe(`${active}@example.com`)
+  expect(auth.uid).toBe(`user-${active}`)
+})

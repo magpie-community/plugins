@@ -80,8 +80,11 @@ const beijingMidnight = () => Math.floor((Date.now() + 8 * 3600e3) / 86400e3) * 
 // wallet has spent; the permanent balance has nothing spent to tell, so the
 // total is spent of spent + left, and with nothing left it is all used. It
 // renews with the daily wallet at Beijing midnight, when the daily credits
-// left are lost (runsOutAt, runsOut), so routing spends those first. null
-// with neither wallet told.
+// left are lost (runsOutAt, runsOut), so routing spends those first. With
+// the daily credits spent and permanent ones left, midnight loses nothing,
+// so the total names no reset: smart routing puts an account whose reset
+// does lose credits first (plugins#1153). Used up, it names midnight, when
+// it is back. null with neither wallet told.
 function totalOf(dailyWallet, dailyLeft, permanent) {
   if (dailyLeft == null && permanent == null) return null
   const spent = dailyWallet?.amount ?? 0
@@ -96,8 +99,12 @@ function totalOf(dailyWallet, dailyLeft, permanent) {
     unit: "credits",
   }
   if (dailyWallet) {
-    w.resetsAt = beijingMidnight()
-    if (dailyWallet.span) w.span = dailyWallet.span
+    // no span either: magpie reads a window with a span and no reset as
+    // renewing a span from now, which would rank it again
+    if (dailyLeft > 0 || left === 0) {
+      w.resetsAt = beijingMidnight()
+      if (dailyWallet.span) w.span = dailyWallet.span
+    }
     if (dailyLeft > 0) Object.assign(w, { runsOutAt: w.resetsAt, runsOut: dailyLeft })
   }
   return w
@@ -270,11 +277,12 @@ function foldReasoning(body) {
 // data-URI images are turned into the marker and merged into the text before
 // them (agent2api images.rs). DeepSeek-V4.1-Flash takes image_url parts and
 // reads the marker as plain text (10k prompt tokens, an empty reply), so it
-// keeps the parts as sent (plugins#811)
+// keeps the parts as sent (plugins#811), and so does deepseek-v4-flash-1017
+// (plugins#1139). Loomy renames these freely, so only the old line the marker
+// was made for gets it; any other DeepSeek id keeps OpenAI's shape.
 function prefersTagFormat(model) {
-  const m = String(model ?? "").toLowerCase()
-  if (!m.includes("deepseek")) return false
-  return !/v4[.-]1(?![0-9])/.test(m)
+  const m = String(model ?? "").toLowerCase().replace(/^.*\//, "")
+  return /^deepseek-v4-flash(?:-0731)?$/.test(m)
 }
 function toTagText(part) {
   const kind = String(part?.type ?? "").trim().toLowerCase()
@@ -338,6 +346,32 @@ function catalogModel(entry) {
   if (caps.vision) config.modalities = { input: ["text", "image"], output: ["text"] }
   if (rate) config.rate = rate
   return { id, config }
+}
+
+// listedModel is the vendor's entry as the models hook gives it: the
+// config's fields, and the capabilities OpenCode (and magpie's host) read
+// a listed model by. The config's fields alone left the vendor's vision,
+// reasoning and tool calls unread, so deepseek-v4-flash-1017, which
+// models.dev doesn't know, went as a text-only model of no known
+// vision (plugins#1141). What the vendor doesn't say keeps what was known
+// of the model (models.dev, the static table).
+function listedModel(was, m, entry) {
+  const caps = entry?.capabilities ?? {}
+  const had = was?.capabilities ?? { temperature: true, toolcall: true, input: { text: true }, output: { text: true } }
+  const capabilities = { ...had, input: { ...(had.input ?? { text: true }) } }
+  if (typeof caps.reasoning === "boolean") capabilities.reasoning = caps.reasoning
+  if (typeof caps.function_calling === "boolean") capabilities.toolcall = caps.function_calling
+  if (typeof caps.vision === "boolean") {
+    capabilities.input.image = caps.vision
+    capabilities.attachment = caps.vision
+  }
+  return {
+    ...(was ?? {}),
+    ...m.config,
+    id: m.id,
+    limit: { ...(was?.limit ?? {}), ...(m.config.limit ?? {}) },
+    capabilities,
+  }
 }
 
 // ── the plugin ─────────────────────────────────────────────────────────────
@@ -640,7 +674,7 @@ export async function LoomyAuthPlugin({ client } = {}) {
           for (const entry of entries) {
             const m = catalogModel(entry)
             if (!m) continue
-            p.models[m.id] = m.config
+            p.models[m.id] = listedModel(p.models[m.id], m, entry)
           }
           return p.models
         } catch {

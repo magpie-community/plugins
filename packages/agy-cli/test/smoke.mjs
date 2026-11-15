@@ -88,6 +88,11 @@ if (argv.includes("models")) {
   process.stdout.write("gemini-test-medium\tGemini Test (Medium)\ngemini-test-high\tGemini Test (High)\ngemini-test-low\tGemini Test (Low)\nclaude-test-medium\tClaude Test (Medium)\n")
   process.exit(0)
 }
+if (argv[0] === "acp" && argv.includes("--help")) {
+  log({ type: "acpHelp" })
+  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n")
+  process.exit(0)
+}
 if (argv[0] !== "acp") {
   process.stderr.write("unknown subcommand\n")
   process.exit(2)
@@ -475,7 +480,7 @@ async function handle(message) {
       model = "gemini-test-medium"
       await connectIde()
       log({
-        type: "init", pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
+        type: "init", args: argv, pid: process.pid, convId: session.id, resumed: message.method === "session/resume", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE,
         cwd: process.cwd(), addDir, agentConfig, clientInfo, systemAppend: params._meta?.antigravity?.systemPrompt?.append ?? null,
         tools, idePort,
       })
@@ -549,7 +554,7 @@ if (process.platform === "win32") {
 fs.chmodSync(wrapper, 0o755)
 process.env.AGY_PATH = wrapper
 
-const { default: pluginDefault } = await import("../index.mjs")
+const { default: pluginDefault, IMAGE_FOLLOWS } = await import("../index.mjs")
 const plugin = await pluginDefault.server({ client: null, directory: os.tmpdir() }, {})
 const loader = await plugin.auth.loader(async () => ({ key: "agy" }))
 let failures = 0
@@ -870,9 +875,22 @@ async function launchedModel(body) {
   check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false"].every(line => init.agentConfig.includes(line)), init.agentConfig)
   check("agy keeps its own prompt components by default", !init.agentConfig.includes("excludeDefaultComponents"), init.agentConfig)
   check("ACP client names itself, not an editor", init.clientInfo?.name === "opencode-agy-cli-auth" && init.clientInfo?.version === JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, JSON.stringify(init.clientInfo))
-  check("client system prompt is appended to the session instructions", init.systemAppend?.includes("SYSTEM-PROMPT-MARKER"))
-  check("fresh prompt carries only the user text", user.text === "hello world", JSON.stringify(user.text))
+  // bzs_1 on X (11-15): Antigravity turns away agents' prompts appended to
+  // agy's own with a bare 429, so they go in the first user turn by default.
+  check("client system prompt is not appended to agy's own", init.systemAppend === null, JSON.stringify(init.systemAppend))
+  check("client system prompt goes in the first user turn",
+    user.text.startsWith("<external_system_instructions>\nSYSTEM-PROMPT-MARKER\n</external_system_instructions>") &&
+    user.text.includes("<current_turn>\nhello world"), JSON.stringify(user.text))
   check("client tools are served through the ide-tools port", !!init.idePort && !logs().some(event => event.type === "ncExit"))
+}
+
+{
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  await readSSE(await callFetch({ model, system: "APPEND-OPT-IN-MARKER", messages: [{ role: "user", content: "hello append" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  check("AGY_BRIDGE_SYSTEM_APPEND=1 appends the client system prompt to the session instructions",
+    inits().at(-1).systemAppend?.includes("APPEND-OPT-IN-MARKER"), JSON.stringify(inits().at(-1).systemAppend))
+  check("an appended system prompt leaves the prompt the user text alone", lastOf("user").text === "hello append", JSON.stringify(lastOf("user").text))
 }
 
 {
@@ -950,7 +968,8 @@ for (const [name, system, headers, expectedDir, named] of [
   const final = (await readSSE(await callFetch(body, headers))).events
   const init = inits().at(-1)
   check(`${name} uses only an available absolute add-dir`, stopOf(final) === "end_turn" && init.addDir === expectedDir)
-  check(`${name} identifies where client tools run`, init.systemAppend?.includes(JSON.stringify(named)) && init.systemAppend.includes("where every tool runs"))
+  const told = lastOf("user").text
+  check(`${name} identifies where client tools run`, told.includes(JSON.stringify(named)) && told.includes("where every tool runs"), told)
   check(`${name} keeps agent configuration isolated`, init.cwd !== expectedDir && init.cwd.includes("magpie-agy-bridge-"))
 }
 
@@ -1370,6 +1389,7 @@ for (const [title, tools, want, name] of [
   const sdkSaid = "You are a Claude agent, built on the Claude Agent SDK by Anthropic."
   const want = `${rfc.replace("keywords", "key words")}\n${sdkSaid}\nCLOAK-MARKER`
   const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const events = (await readSSE(await callFetch(body))).events
   const init = inits().at(-1)
   const sent = init.systemAppend ?? ""
@@ -1379,6 +1399,7 @@ for (const [title, tools, want, name] of [
   const convId = init.convId
   const before = inits().length
   await readSSE(await callFetch(nextTurn(body, events, "cloak second turn")))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
   check("#980 the reworded instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
     JSON.stringify({ inits: inits().length - before, user: lastOf("user") }))
 
@@ -1407,9 +1428,17 @@ for (const [title, tools, want, name] of [
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
     turnedError?.type === "invalid_request_error" && turnedError.message.includes("answered 429 to this system prompt") &&
     turnedError.message.includes("RFC 2119") && !/quota or rate limit reached/.test(turnedError.message), JSON.stringify(turnedError))
+  // plugins#1151: magpie reads a stream error's status from its own status
+  // field before its words, which quote Antigravity's "code 429"
+  check("#1151 the turned-away error names status 400, so the client doesn't retry it as a 429",
+    turnedError?.status === 400, JSON.stringify(turnedError))
+  const turnedWhole = await callFetch({ model, system: system + " T429W", stream: false, messages: [{ role: "user", content: "TURNED429 whole" }] })
+  const turnedWholeBody = await turnedWhole.json()
+  check("#1151 a turned-away prompt asked for a whole reply is a 400",
+    turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
-  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error", JSON.stringify(quotaError))
+  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
 }
 
 // antigravity #1028: DeepSeek Harness's @-path paragraph reaches agy
@@ -1420,7 +1449,9 @@ for (const [title, tools, want, name] of [
   const dsh = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
   const reworded = "When the user writes @ followed by a path, they are pointing at that file or folder."
   const system = `You are DeepSeek Harness.\n\n${dsh}\n\nDSH-MARKER`
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: "dsh session instructions" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
   const sent = inits().at(-1).systemAppend ?? ""
   check("#1028 DSH's @-path paragraph goes reworded in the session instructions",
     sent.includes("DSH-MARKER") && !sent.includes("Tokens prefixed with @") && sent.includes(reworded), JSON.stringify(sent))
@@ -1665,6 +1696,22 @@ for (const location of ["inline", "system", "developer", "user"]) {
   await readSSE(await again.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited) }))
   check("a changed history is not resumed", inits().at(-1).resumed === false)
 
+  // A session opened with its instructions appended keeps them in agy's own
+  // system instruction, where they are turned away, so it is not resumed
+  // once they go in the first user turn.
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  const appended = { model, system: "APPENDED-PARKED-MARKER", messages: [{ role: "user", content: "MEMORY appended before restart" }] }
+  const appendedEvents = (await readSSE(await callFetch(appended))).events
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  const appendedInit = inits().at(-1)
+  const { default: thirdDefault } = await import("../index.mjs?restart-3")
+  const third = await (await thirdDefault.server({ client: null, directory: os.tmpdir() }, {})).auth.loader(async () => ({ key: "agy" }))
+  await readSSE(await third.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextTurn(appended, appendedEvents, "MEMORY appended after restart")) }))
+  const reopened = inits().at(-1)
+  check("a session parked with appended instructions is not resumed", appendedInit.systemAppend?.includes("APPENDED-PARKED-MARKER") &&
+    reopened.resumed === false && reopened.systemAppend === null && lastOf("user").text.includes("APPENDED-PARKED-MARKER"),
+    JSON.stringify({ reopened, text: lastOf("user").text }))
+
   const crashFirst = { model, messages: [{ role: "user", content: "MEMORY before mid-turn crash" }] }
   const crashFirstEvents = (await readSSE(await callFetch(crashFirst))).events
   const crashTarget = inits().at(-1)
@@ -1694,7 +1741,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     u1.text.includes("<system-reminder>\nSessionStart hook additional context: ok") &&
     !u1.text.includes("<conversation_history>"), u1.text)
   check("caller working directory is recognized from initial trailing system message",
-    init1.systemAppend?.includes('"/remote-wsl/project"'), init1.systemAppend)
+    u1.text.includes('"/remote-wsl/project"'), u1.text)
 
   const turn2 = {
     ...turn1,
@@ -1956,13 +2003,38 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const final = (await readSSE(response)).events
   const delivered = logs().filter(event => event.type === "mcpResult" && event.convId === convId).at(-1)
   const content = delivered?.result?.content || []
-  const texts = content.filter(part => part.type === "text").map(part => part.text).join("\n")
-  check("image dimension companion, teammate-message, and loop notice continue live turn",
+  const steer = lastOf("user")
+  // agy offloads an MCP image to a file its model can't open (distinceeeee
+  // on X): the call gets the text, and the image goes in the next prompt
+  // of the same session, as an ACP image.
+  check("a tool result's image goes to agy as a prompt image in the same session, not over MCP",
     response.status === 200 && stopOf(final) === "end_turn" && inits().length === before &&
-    content[0]?.type === "image" &&
-    texts.includes("Multiply coordinates by 1.71") &&
-    texts.includes("worker-1") &&
-    texts.includes("prior /loop wakeups"), JSON.stringify(content))
+    !content.some(part => part.type === "image") &&
+    content.some(part => part.text === IMAGE_FOLLOWS) &&
+    steer.convId === convId &&
+    steer.content.some(part => part.type === "image" && part.data === "AAAA") &&
+    steer.text.includes("Multiply coordinates by 1.71") &&
+    steer.text.includes("worker-1"), JSON.stringify({ content, steer: steer.content }))
+
+  // OpenCode's read tool: the image sits inside the tool_result, beside its text.
+  const readFirst = { model, messages: [{ role: "user", content: "TOOL opencode read image" }], tools: [echoTool] }
+  const readEvents = (await readSSE(await callFetch(readFirst))).events
+  const readConv = inits().at(-1).convId
+  const readBefore = inits().length
+  const readSecond = continuation(readFirst, readEvents, [
+    { type: "text", text: "Image read successfully" },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "cmVhZGltYWdl" } },
+  ])
+  const readResponse = await callFetch(readSecond)
+  const readFinal = (await readSSE(readResponse)).events
+  const readDelivered = logs().filter(event => event.type === "mcpResult" && event.convId === readConv).at(-1)?.result?.content || []
+  const readSteer = lastOf("user")
+  check("an image inside a tool_result goes to agy as a prompt image, its text over MCP",
+    readResponse.status === 200 && stopOf(readFinal) === "end_turn" && inits().length === readBefore &&
+    JSON.stringify(readDelivered) === JSON.stringify([{ type: "text", text: "Image read successfully" }, { type: "text", text: IMAGE_FOLLOWS }]) &&
+    readSteer.convId === readConv && readSteer.images === 1 &&
+    readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
+    !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const searchFirst = { model, messages: [{ role: "user", content: "TOOLSEARCHCALL load WebFetch" }], tools: [searchTool] }
@@ -2793,6 +2865,12 @@ for (const location of ["inline", "system", "developer", "user"]) {
   check("AGY_BRIDGE_MINIMAL_AGENT=1 turns on the minimal agent", !!init && init.agentConfig.includes("excludeDefaultComponents: true"), init?.agentConfig)
 }
 
+{
+  // the bridge's sessions; the bare `agy acp` model probe only lists models
+  const sessions = inits().filter(event => event.args.includes("--agent"))
+  const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
+  check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
+}
 check("all ACP children disable auto update when the user set nothing", inits().length > 0 && inits().every(event => event.update === "true"))
 check("child launches never mutate the parent's update setting", process.env.AGY_CLI_DISABLE_AUTO_UPDATE === undefined)
 if (originalAutoUpdate === undefined) delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE

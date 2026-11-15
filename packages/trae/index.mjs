@@ -186,6 +186,7 @@ const SITES = {
               aside: true,
             }
             if (c.until) w.resetsAt = new Date(c.until).toISOString()
+            if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
             windows.push(w)
           }
           if (windows.length) out.windows = windows
@@ -203,6 +204,7 @@ const SITES = {
           // English balance line beside it (yetone/magpie#694)
           const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
           if (c.until) w.resetsAt = new Date(c.until).toISOString()
+          if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
           out.windows = [w]
         }
         return out
@@ -3233,12 +3235,16 @@ const effortOf = (levels, effort) => {
 // ---- usage ------------------------------------------------------------------------
 
 // credits adds up the account's entitlement packs as the IDE shows them:
-// each pack with a credit limit (-1 unlimited) and what it used
-function credits(v) {
+// each pack with a credit limit (-1 unlimited) and what it used. until is
+// the soonest end of a pack that still has credits left and has not ended:
+// a spent daily pack or one already past its end changes nothing on the
+// account, so it does not name the date the credits turn over (#718, #1157).
+function credits(v, now = Date.now()) {
   let limit = 0
   let used = 0
   let unlimited = false
   let soonest = 0
+  let lapsing = 0
   for (const p of v?.user_entitlement_pack_list ?? []) {
     const bi = p?.entitlement_base_info ?? {}
     const l = Number(bi?.quota?.credits_limit)
@@ -3248,9 +3254,17 @@ function credits(v) {
     else if (l >= 0) limit += l
     if (u > 0) used += u
     const end = whenOf(bi.end_time ?? bi.expire_time ?? p.end_time)
-    if (end && (!soonest || end < soonest)) soonest = end
+    const left = l === -1 || (l > 0 && u < l)
+    if (!(end && end > now && left)) continue
+    // what a finite pack has left is lost at its end, whether or not a
+    // new pack follows: lapsing is the credits that go at the soonest end
+    // (#718: a TraeCode CN account's sign-in rewards are 31-day packs of
+    // 100, one a day)
+    const rest = l === -1 ? 0 : Math.max(0, l - Math.max(0, u))
+    if (!soonest || end < soonest) (soonest = end), (lapsing = rest)
+    else if (end === soonest) lapsing += rest
   }
-  return { limit, used, unlimited, until: soonest }
+  return { limit, used, unlimited, until: soonest, lapsing }
 }
 
 const round = (n) => Math.round(n * 100) / 100

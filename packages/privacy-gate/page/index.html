@@ -12,41 +12,139 @@
       <img class="logo" src="icon.svg" width="56" height="56" alt="">
       <div class="hero-copy">
         <p class="kicker" id="kicker">ShyPie Filter</p>
-        <h1 id="title">Per-agent protection</h1>
-        <p class="lede" id="lede">Choose which Magpie agents ShyPie protects. A disabled agent bypasses the gate entirely.</p>
+        <h1 id="title">Middleware settings</h1>
+        <p class="lede" id="lede">Choose which agents ShyPie protects and how its Magpie middleware behaves.</p>
       </div>
       <p class="count" id="count" aria-live="polite"></p>
     </header>
 
-    <section class="toolbar" aria-label="Agent filter">
-      <label class="search">
-        <span class="sr-only" id="search-label">Search agents</span>
-        <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search agents">
-      </label>
-      <button id="reload" class="secondary" type="button">Reload</button>
+    <nav class="tabs" role="tablist" aria-label="ShyPie sections">
+      <button id="tab-agents" class="tab" role="tab" type="button" aria-selected="false" aria-controls="agents-view">Agents</button>
+      <button id="tab-settings" class="tab" role="tab" type="button" aria-selected="true" aria-controls="settings-view">Middleware settings</button>
+    </nav>
+
+    <section id="agents-view" class="view" role="tabpanel" aria-labelledby="tab-agents" hidden>
+      <section class="toolbar" aria-label="Agent filter">
+        <label class="search">
+          <span class="sr-only" id="search-label">Search agents</span>
+          <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search agents">
+        </label>
+        <button id="reload" class="secondary" type="button">Reload</button>
+      </section>
+
+      <div class="warning" id="warning" role="status" hidden></div>
+      <section class="list" id="list" aria-label="Agents"></section>
+      <p class="empty" id="empty" hidden>No agents match that search.</p>
+
+      <section class="patterns" id="patterns" aria-labelledby="patterns-title" hidden>
+        <h2 id="patterns-title">Policy patterns</h2>
+        <p class="hint" id="patterns-hint">Raw entries in disabledAgents that this page cannot show as a switch. They are preserved on save; edit them with the JSON options or CLI.</p>
+        <ul class="pattern-list" id="pattern-list"></ul>
+      </section>
+
+      <section class="add" aria-labelledby="add-title">
+        <div>
+          <h2 id="add-title">Add another agent id</h2>
+          <p class="hint" id="add-hint">For a plugin-added or not-yet-listed agent. You can also use the agent row menu on the Agents page.</p>
+        </div>
+        <div class="add-row">
+          <label class="sr-only" for="add-id">Agent id</label>
+          <input id="add-id" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my-agent" maxlength="64">
+          <button id="add-agent" class="secondary" type="button">Add</button>
+        </div>
+        <p class="form-error" id="add-error" role="alert" hidden></p>
+      </section>
     </section>
 
-    <div class="warning" id="warning" role="status" hidden></div>
-    <section class="list" id="list" aria-label="Agents"></section>
-    <p class="empty" id="empty" hidden>No agents match that search.</p>
+    <section id="settings-view" class="view" role="tabpanel" aria-labelledby="tab-settings">
+      <p class="view-lede" id="settings-lede">Grouped by privacy impact. Fields not shown here are preserved unchanged.</p>
+      <p class="form-error" id="settings-error" role="alert" hidden></p>
 
-    <section class="patterns" id="patterns" aria-labelledby="patterns-title" hidden>
-      <h2 id="patterns-title">Policy patterns</h2>
-      <p class="hint" id="patterns-hint">Raw entries in disabledAgents that this page cannot show as a switch. They are preserved on save; edit them with the JSON options or CLI.</p>
-      <ul class="pattern-list" id="pattern-list"></ul>
-    </section>
+      <section class="settings-card" aria-labelledby="policy-title">
+        <h2 id="policy-title">Protection</h2>
+        <div class="field">
+          <label for="opt-binary-policy">Binary content</label>
+          <select id="opt-binary-policy">
+            <option value="fail">fail — reject the request with 403</option>
+            <option value="guide">guide — withhold bytes and ask for local processing</option>
+          </select>
+          <p class="hint">fail is the strict default; guide keeps the model in the loop without forwarding bytes.</p>
+        </div>
+        <div class="field checkbox-field">
+          <label class="checkbox-label"><input id="opt-allow-unknown" type="checkbox"> Allow unknown protocols</label>
+          <p class="hint">Off rejects protocols outside chat / responses / anthropic / gemini.</p>
+        </div>
+        <div class="field">
+          <label for="opt-allow-models">Allowed models</label>
+          <textarea id="opt-allow-models" rows="3" spellcheck="false" placeholder="one glob per line; empty allows every model"></textarea>
+          <p class="hint">Globs such as deepseek/* or copilot/*, one per line. Empty means every model is allowed.</p>
+        </div>
+        <div class="field">
+          <label for="opt-local-models">Local models</label>
+          <textarea id="opt-local-models" rows="2" spellcheck="false" placeholder="one glob per line"></textarea>
+          <p class="hint">Models that may receive binary parts because they run locally. Leave empty to withhold every binary part.</p>
+        </div>
+        <div class="field">
+          <label for="opt-local-providers">Local providers</label>
+          <textarea id="opt-local-providers" rows="2" spellcheck="false" placeholder="one provider id per line"></textarea>
+          <p class="hint">Must agree with local models; onProvider checks the real provider id.</p>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="opt-blob-base64">Base64 blob threshold</label>
+            <input id="opt-blob-base64" type="number" min="64" max="1000000" step="1">
+            <p class="hint">64–1,000,000 characters. Raising this lets larger encoded documents through.</p>
+          </div>
+          <div class="field">
+            <label for="opt-blob-hex">Hex blob threshold</label>
+            <input id="opt-blob-hex" type="number" min="64" max="1000000" step="1">
+            <p class="hint">64–1,000,000 characters. Raising this lets larger encoded documents through.</p>
+          </div>
+        </div>
+      </section>
 
-    <section class="add" aria-labelledby="add-title">
-      <div>
-        <h2 id="add-title">Add another agent id</h2>
-        <p class="hint" id="add-hint">For a plugin-added or not-yet-listed Magpie agent. You can also use an agent's row menu on the Agents page.</p>
-      </div>
-      <div class="add-row">
-        <label class="sr-only" for="add-id">Agent id</label>
-        <input id="add-id" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my-agent" maxlength="64">
-        <button id="add-agent" class="secondary" type="button">Add</button>
-      </div>
-      <p class="form-error" id="add-error" role="alert" hidden></p>
+      <section class="settings-card" aria-labelledby="limits-title">
+        <h2 id="limits-title">Advanced inspection</h2>
+          <div class="field">
+            <label for="opt-scan-chars">Scan characters</label>
+            <input id="opt-scan-chars" type="number" min="1000" max="5000000" step="1">
+            <p class="hint">1,000–5,000,000.</p>
+          </div>
+          <div class="field">
+            <label for="opt-max-nodes">Max nodes</label>
+            <input id="opt-max-nodes" type="number" min="1000" max="5000000" step="1">
+            <p class="hint">1,000–5,000,000.</p>
+          </div>
+          <div class="field">
+            <label for="opt-max-depth">Max depth</label>
+            <input id="opt-max-depth" type="number" min="1" max="200" step="1">
+            <p class="hint">1–200.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card" aria-labelledby="diagnostics-title">
+        <h2 id="diagnostics-title">Diagnostics</h2>
+        <p class="hint">These settings affect prompt guidance and logging, not what content can leave the gate.</p>
+        <div class="field">
+          <label for="opt-guide-tools">Guide-mode tools</label>
+          <textarea id="opt-guide-tools" rows="2" spellcheck="false" placeholder="one tool name per line"></textarea>
+          <p class="hint">Only used with binaryPolicy guide; names are included in the local-processing prompt.</p>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="opt-log-max-lines">Max log lines</label>
+            <input id="opt-log-max-lines" type="number" min="0" max="500" step="1">
+            <p class="hint">0–500; 0 silences the log self-cap.</p>
+          </div>
+          <div class="field">
+            <label for="opt-log-every-rows">Log every rows</label>
+            <input id="opt-log-every-rows" type="number" min="1" max="100000" step="1">
+            <p class="hint">1–100,000 usage rows.</p>
+          </div>
+        </div>
+      </section>
+
     </section>
 
     <footer class="actions">
@@ -57,6 +155,7 @@
   <script src="_magpie/bridge.js"></script>
   <script src="agents.js"></script>
   <script src="policy.js"></script>
+  <script src="settings.js"></script>
   <script src="app.js" defer></script>
 </body>
 </html>

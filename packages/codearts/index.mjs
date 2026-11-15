@@ -9,8 +9,9 @@
 // with OAuth.
 //
 // This plugin implements exactly that flow, mirroring the real CodeArts agent
-// (and the `Ebony-Vinyl/dsh-our-free-model` CodeArts channel, which this plugin
-// is modelled on):
+// (and the CodeArts channel this plugin is modelled on: iJetLi's
+// gitee.com/iJetLi/deepseek-harness-codearts, as `Ebony-Vinyl/dsh-our-free-model`
+// carried it):
 //
 //   1. `auth.methods[0]` is `{ type: "oauth" }`. `authorize()` starts a
 //      loopback callback server on 127.0.0.1 (port >= 10000), returns the

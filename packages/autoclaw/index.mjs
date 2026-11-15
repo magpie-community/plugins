@@ -904,12 +904,15 @@ function campaignLabel(entry, md) {
 }
 
 /**
- * 活动流水 → { claimed, expired, remaining, labels }（窗口内事实）。
+ * 活动流水 → { claimed, expired, remaining, labels, lapseAt, lapsing }（窗口内事实）。
  * 按 wallet 实例分组：每实例 remaining = credit − debit − expire（截 0）。
  * 入账掉出窗口的旧实例（窗口内只剩消耗/失效）按 0 计，其失效额仍进「过期」。
+ * lapseAt：还有剩余、尚未到期的实例里最早的 wallet_expires_at（毫秒，0 = 不知道）；
+ * lapsing：在那一刻到期的实例剩余之和（plugins#1157：每条流水顶层都带
+ * wallet_expires_at，epoch 秒；wallets 接口没有到期字段）。
  */
-function campaignBreakdown(entries) {
-  const instances = new Map(); // wallet_id → { credit, debit, expire, label }
+function campaignBreakdown(entries, now = Date.now()) {
+  const instances = new Map(); // wallet_id → { credit, debit, expire, label, expires }
   let claimed = 0;
   let expired = 0;
   for (const e of Array.isArray(entries) ? entries : []) {
@@ -923,7 +926,9 @@ function campaignBreakdown(entries) {
     if (!Number.isFinite(amount)) continue;
     const id = String(e.wallet_id ?? "?");
     let inst = instances.get(id);
-    if (!inst) { inst = { credit: 0, debit: 0, expire: 0, label: "" }; instances.set(id, inst); }
+    if (!inst) { inst = { credit: 0, debit: 0, expire: 0, label: "", expires: 0 }; instances.set(id, inst); }
+    const exp = Number(e.wallet_expires_at);
+    if (Number.isFinite(exp) && exp > 0) inst.expires = exp * 1000;
     if (type === "credit") {
       inst.credit += amount;
       claimed += amount;
@@ -938,12 +943,17 @@ function campaignBreakdown(entries) {
   }
   if (instances.size === 0) return null; // 没有活动历史
   let remaining = 0;
+  let lapseAt = 0;
+  let lapsing = 0;
   const labels = [];
   for (const inst of instances.values()) {
     const left = inst.credit - inst.debit - inst.expire;
     if (left > 0) { remaining += left; if (inst.label) labels.push(inst.label); }
+    if (!(left > 0 && inst.expires > now)) continue;
+    if (!lapseAt || inst.expires < lapseAt) (lapseAt = inst.expires), (lapsing = left);
+    else if (inst.expires === lapseAt) lapsing += left;
   }
-  return { claimed, expired, remaining, labels: [...new Set(labels)] };
+  return { claimed, expired, remaining, labels: [...new Set(labels)], lapseAt, lapsing };
 }
 
 /** 活动积分的三位分组（确定性手写，不用 toLocaleString——CI/locale 无关）。 */
@@ -1616,6 +1626,13 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
           try {
             const entries = await campaignCached(signinAccountKey(providerId, auth), () => fetchCampaignLedger(token, hosts));
             const camp = campaignBreakdown(entries);
+            // 活动积分到期作废：在余额窗口上标出何时丢多少（runsOutAt / runsOut），
+            // 路由会在那之前先花这个账号。不另开带 balance 的窗口——那会被
+            // 当成第二个资金池。丢的不会多于账户总余额。
+            if (camp?.lapseAt && camp.lapsing > 0 && total > 0) {
+              const bal = windows.find((w) => w.name === "积分余额");
+              if (bal) Object.assign(bal, { runsOutAt: new Date(camp.lapseAt).toISOString(), runsOut: Math.min(total, camp.lapsing) });
+            }
             if (camp && (camp.claimed > 0 || camp.expired > 0)) {
               const label = camp.labels.length === 1 ? `（${camp.labels[0].slice(0, 40)}）`
                 : camp.labels.length > 1 ? `（${camp.labels.length} 个活动）` : "";

@@ -117,7 +117,14 @@ the plans again on the next request:
   (`/api/biz/subscription/list`), its requests go to that plan. A model
   the account's gift plans also serve is listed again as
   `<model>-Trial`; asking that entry spends the gift (see below).
-- Otherwise they go to the gift plans.
+- Otherwise they go to the gift plans. A model the gift plans' balance
+  doesn't name (an agent left on GLM-5.2 while the gift serves only
+  GLM-5.3-Flash) would spend none of the free quota, so it is answered
+  with the models the balance names and not sent. The balance is the one
+  the model list read; a model it doesn't name has it read again first.
+  When the plan list can't be read, an account whose last read found no
+  plan stays on the gift plans rather than sending its key to the coding
+  plan's host, which bills a key with no plan pay-as-you-go.
 
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.
@@ -275,6 +282,19 @@ the slots. An account whose slots are taken elsewhere is narrowed to one
 within a few refusals and then refused alone, so the firewall hold still
 comes before the 405.
 
+Since 0.1.64 the request that brought about such a narrowing is not
+failed either. Up to 0.1.63 it went back to magpie as a 429 after its
+re-asks, so two sessions on an account served one at a time showed a 429
+every time the narrowing ran out (JJLIN070414 on X), and with one account
+the agent was told it. Now it gives its slot back at once, without the 2s
+re-ask, and waits at the head of the queue until one of the account's
+other requests has ended, then is sent again, as ZCode's own client
+(its dynamic-workflow governor) cuts its cap and queues a capped request
+rather than failing it. The waits share the gate's two minutes, after
+which it is answered here with the queue's 429. A request refused alone,
+or free first's gift (which goes to the coding plan), is answered as
+before.
+
 ## Two accounts at once
 
 Three ZCode accounts used at once from one address can get the address
@@ -337,8 +357,12 @@ menu bar pass it over. The name is a fixed sentence magpie can
 translate; the count and the plan's own name are the display. Reading
 the card never claims one. A preview that fails, or lists nothing, adds
 no line at all, and a card that is an error keeps its error. Claim the
-plan in the ZCode app (open it once), or let the daily claim below do it;
-the next read shows it as an ordinary gift bucket.
+plan in the ZCode app (open it once); while ZCode asks its security check
+for a claim, as it does now, the daily claim below posts none. The next
+read shows it as an ordinary gift bucket: its `-Trial` entry is listed and
+free first spends it. Until then a `-Trial` pick that finds no gift is
+refused with the held plan's name and "claim it in the ZCode app", not
+only "no active limited quota" (heduian and bg5eau on X, 11-14).
 
 ## The daily claim
 

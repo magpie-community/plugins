@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-0D4B4E">
+  <img alt="version 0.4.1" src="https://img.shields.io/badge/version-0.4.1-0D4B4E">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-F2B35A">
 </p>
 
@@ -52,7 +52,7 @@ Codex, Cursor, Claude Code and scripts.
 | **Default policy** | `binaryPolicy: fail` — binary part for a non-local model → **403** |
 | **Alternative** | `binaryPolicy: guide` — withholds bytes, injects type/media/size metadata + a neutral local-tool prompt |
 | **Text masking** | **Not here.** Use Magpie **Settings → Privacy** |
-| **Tests** | 72 middleware cases + 4 page/policy checks through the repository harness |
+| **Tests** | 72 middleware cases + 5 page/policy/settings checks through the repository harness |
 
 ## Install
 
@@ -146,6 +146,24 @@ globs or raw policy entries; the page preserves them verbatim and lists them
 read-only, and it seeds custom disabled ids so their bypass is visible. The page
 warns before a request can leave without protection; saving its switches updates
 the same `ctx.options` the middleware reads, with no restart.
+
+## Middleware settings page
+
+The **Middleware settings** tab on the plugin page edits the same `ctx.options`
+that previously required `magpie plugin options`, grouped by privacy impact:
+
+- **Protection:** `binaryPolicy`, `allowUnknownProtocol`, `allowModels`,
+  `localModels`, `localProviders` and the blob thresholds
+- **Advanced inspection:** `scanChars`, `maxNodes`, `maxDepth`
+- **Diagnostics:** `guideTools`, `logMaxLines`, `logEveryRows`
+
+The form validates list shape and numeric ranges and preserves options it does
+not own. Numeric values outside the middleware's range are displayed as the
+effective clamped value (floor, then `[min, max]`) rather than being replaced by
+a page default; an unknown select value is reported as invalid. A malformed
+existing `allowModels` is reported and blocks saving rather than being silently
+replaced by an empty, allow-everything list. Saving re-reads the current options
+and reports a conflict if another surface changed a managed field.
 
 ## Configuration
 
@@ -374,6 +392,17 @@ flowchart LR
 `disabledAgents` 中的 ID（或在 `protectUnknownAgent: false` 时没有
 `ctx.agent` 的请求）才会跳过防护。页面会在请求可能失去保护时提示；保存开关
 会更新中间件读取的同一份 `ctx.options`，无需重启。
+
+## 中间件设置页面
+
+插件页面的 **中间件设置** 标签可直接编辑此前只能用 `magpie plugin options`
+设置的 `ctx.options`：`binaryPolicy`、`allowUnknownProtocol`、`allowModels`、
+`localModels`、`localProviders`、`guideTools`、两个 blob 阈值、`scanChars`、
+`maxNodes`、`maxDepth`、`logMaxLines` 和 `logEveryRows`。
+
+表单会校验列表和数值范围，并保留页面不管理的选项。已有的 `allowModels`
+如果格式错误会阻止保存，而不会被静默替换成允许全部模型的空列表。保存前会
+重新读取当前配置；其他位置修改了受管字段时会提示冲突。
 
 ## 配置
 

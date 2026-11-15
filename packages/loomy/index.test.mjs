@@ -157,6 +157,10 @@ describe("chat", () => {
     expect(_internal.prefersTagFormat("deepseek-v4.1-flash")).toBe(false)
     expect(_internal.prefersTagFormat("deepseek-v4-flash-0731")).toBe(true)
     expect(_internal.prefersTagFormat("deepseek-v4-flash")).toBe(true)
+    expect(_internal.prefersTagFormat("loomy/deepseek-v4-flash-0731")).toBe(true)
+    // plugins#1139: 1017 reads image_url parts (232 vs 7,368 prompt tokens)
+    expect(_internal.prefersTagFormat("deepseek-v4-flash-1017")).toBe(false)
+    expect(_internal.prefersTagFormat("DeepSeek-V4-Flash-1017")).toBe(false)
     expect(_internal.prefersTagFormat("GLM-5.3-Flash")).toBe(false)
     expect(_internal.prefersTagFormat(undefined)).toBe(false)
   })
@@ -295,6 +299,23 @@ describe("models", () => {
     expect(list["plain"].rate).toBeUndefined()
     expect(list["plain"].name).toBe("No Suffix At All")
   })
+
+  // plugins#1141: the host reads a listed model by OpenCode's shape
+  // (capabilities.input.image, capabilities.reasoning, capabilities.toolcall),
+  // so the vendor's vision and reasoning go there too.
+  test("the vendor's capabilities, in the shape the host reads", async () => {
+    const p = { models: { "deepseek-v4-flash": { id: "deepseek-v4-flash", name: "DS", limit: { context: 1000000, output: 64000 }, capabilities: { temperature: true, reasoning: false, attachment: false, toolcall: true, input: { text: true, image: false }, output: { text: true } }, api: { id: "deepseek-v4-flash", npm: "@ai-sdk/openai-compatible" } } } }
+    const list = await plugin.provider.models(p, { auth: saved })
+    expect(list["glm-5.3-flash"].capabilities.input.image).toBe(true)
+    expect(list["glm-5.3-flash"].capabilities.attachment).toBe(true)
+    expect(list["spark-x"].capabilities.reasoning).toBe(true)
+    expect(list["spark-x"].capabilities.toolcall).toBe(true)
+    expect(list["spark-x"].capabilities.input.image).toBe(false)
+    // what the vendor doesn't say keeps what was known of the model
+    expect(list["deepseek-v4-flash"].limit.context).toBe(1000000)
+    expect(list["deepseek-v4-flash"].api.npm).toBe("@ai-sdk/openai-compatible")
+    expect(list["deepseek-v4-flash"].rate).toBe("x3.0")
+  })
 })
 
 describe("usage", () => {
@@ -340,13 +361,19 @@ describe("usage", () => {
       // the daily wallet at 100% is shown, set aside
       expect(ws.find((w) => w.name === "每日赠送积分")).toMatchObject({ used: 100, aside: true })
       expect(ws.find((w) => w.name === "永久积分")).toMatchObject({ display: "1200 credits", aside: true })
-      // nothing of the daily wallet left: nothing lapses at midnight
+      // nothing of the daily wallet left: nothing lapses at midnight, so the
+      // total names no reset and smart routing puts accounts whose reset
+      // loses credits ahead of it (plugins#1153); the daily wallet beside it
+      // still shows midnight
       expect(total.runsOutAt).toBeUndefined()
-      expect(total.resetsAt).toBe(_internal.beijingMidnight())
+      expect(total.resetsAt).toBeUndefined()
+      expect(total.span).toBeUndefined()
+      expect(ws.find((w) => w.name === "每日赠送积分").resetsAt).toBe(_internal.beijingMidnight())
 
       // both gone: used up, back at Beijing midnight
       ws = await read({ balance: 0, dailyBalance: 0, dailyLimitPoints: 5000, dailyRemainingPoints: 0 })
       expect(counted(ws)[0]).toMatchObject({ used: 100, amount: 5000, limit: 5000 })
+      expect(counted(ws)[0].resetsAt).toBe(_internal.beijingMidnight())
 
       // 3,000 daily credits left are lost at midnight: runsOutAt / runsOut
       ws = await read({ balance: 1200, dailyBalance: 3000, dailyLimitPoints: 5000, dailyRemainingPoints: 3000 })

@@ -2267,3 +2267,44 @@ test("同会话工具中途 steer：等待 tool_call_update 提交后再发 sess
     assert.equal(proc.stepUsageTrusted, false, "已进入生成输出的取消回合必须关闭 stepUsageTrusted")
   })
 })
+
+test("#1166: an agy given the bridge's own --gemini-dir has its steps read from there", { skip: !openSqlite }, async () => {
+  const varint = (n) => { const out = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128) } out.push(n); return out }
+  const field = (n, bytes) => [n * 8 + 2, ...varint(bytes.length), ...bytes]
+  const genBlob = ({ input, output, read = 0 }) => new Uint8Array(field(1, field(4, [
+    0x10, ...varint(input), 0x18, ...varint(output), ...(read ? [0x28, ...varint(read)] : []),
+  ])))
+
+  await withKit({ acpHelp: "  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n" }, async (kit) => {
+    const own = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "agy-home")
+    const convDir = path.join(own, "antigravity-cli", "conversations")
+    // the machine's own folder holds a different count, which must not be read
+    const machineDir = path.join(kit.home, ".gemini", "antigravity-cli", "conversations")
+    fs.mkdirSync(convDir, { recursive: true })
+    fs.mkdirSync(machineDir, { recursive: true })
+    kit.prompts.push(async (agent) => {
+      for (const dir of [convDir, machineDir]) {
+        const db = openSqlite(path.join(dir, `${agent.sessionId}.db`))
+        try {
+          db.run("CREATE TABLE IF NOT EXISTS gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        } finally {
+          db.close()
+        }
+      }
+      for (const [dir, input] of [[convDir, 1800], [machineDir, 9999]]) {
+        const db = openSqlite(path.join(dir, `${agent.sessionId}.db`))
+        try {
+          db.run("INSERT INTO gen_metadata VALUES (1, ?)", genBlob({ input, read: 18_200, output: 32 }))
+        } finally {
+          db.close()
+        }
+      }
+      await agent.tool("Read", { path: "/step1.ts" })
+      await agent.text("done reading")
+      return { stopReason: "end_turn", usage: { inputTokens: 3900, cachedReadTokens: 38_100, cachedWriteTokens: 0, outputTokens: 82, totalTokens: 3900 + 38_100 + 82 } }
+    })
+    const { responses } = await runTurn(kit, baseBody())
+    assert.ok(kit.acpSpawns[0].args.join(" ").includes(`--gemini-dir ${own}`), kit.acpSpawns[0].args.join(" "))
+    assert.equal(responses[0].usage.input_tokens, 1800, JSON.stringify(responses[0].usage))
+  })
+})

@@ -3374,8 +3374,10 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
             // conversation_checkpoint_update: Cursor's state. Once the step
             // has its count after the calls, a state waiting on just the
             // calls handed to the caller is a step Cursor has finished: what
-            // more the count says will not come (plugins#550)
-            if (listed && step.listedAfter && calls > 0 && pendingCalls(m.data, fields) === calls) {
+            // more the count says will not come (plugins#550). An announced
+            // MCP call without an exec or completion must still be awaited,
+            // even if this checkpoint omits it.
+            if (listed && step.listedAfter && !step.pendingMcp && calls > 0 && pendingCalls(m.data, fields) === calls) {
               note?.("waited on")
               yield await settled()
               return

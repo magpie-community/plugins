@@ -276,9 +276,11 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
         };
         try {
           // The plan is asked before the catalogue: coverage that names no
-          // models ends here, and /models is never called.
-          const covered = await coveredOrThrow();
-          if (!covered.size) return {};
+          // models ends here, and /models is never called. A key-only account
+          // has no console token to read the plan with, so what its key lists
+          // is all there is to go on (plugins#1158).
+          const covered = auth.type === "api" ? null : await coveredOrThrow();
+          if (covered && !covered.size) return {};
           // the listing reads the catalogue raw: the live row is the authority
           // for what a model takes (curated knowledge stays in the bootstrap
           // config, where nothing live has answered yet)
@@ -298,7 +300,7 @@ export async function SenseNovaAuthPlugin({ client, magpie } = {}, options = {})
             { images: hostIsMagpie },
           );
           if (!live.length) return fellBack(declared);
-          const filtered = filterByPlan(live, covered);
+          const filtered = covered ? filterByPlan(live, covered) : live;
           if (!filtered.length) return {};
           return Object.fromEntries(
             filtered.map((m) => [

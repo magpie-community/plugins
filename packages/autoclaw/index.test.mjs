@@ -3188,3 +3188,72 @@ test("signInHolds: taken on any host is true, refused everywhere false, otherwis
     globalThis.fetch = realFetch
   }
 })
+
+// plugins#1157（gcq909893267）：活动积分到期作废。原样取自其账号的两条流水：
+// 一个还剩 5000、今晚 23:59:59 到期的实例，一个已被清零的旧实例。
+const liveCredit = (expires = 1794758399) => ({
+  id: "2139248", asset_type: "point", wallet_type: "earned", wallet_id: "wlt_6872d6eff7be7a8990bd",
+  wallet_scope: "campaign", mutation_type: "credit", amount: 5000, source: "campaign", description: "每周限时激励",
+  metadata: {
+    activity_id: "autoclaw_user_active_reward_202609", description: "每周限时激励", event_time: "1794154294",
+    event_type: "autoclaw_user_active", grant_date: "2026-11-09", period_id: "514", public_wallet_type: "reward",
+    reward_config_hash: "6504aa7a2d35e007", reward_points: "5000", reward_rule: "flat", reward_source: "flat",
+    reward_strategy: "flat", wallet_id: "wlt_6872d6eff7be7a8990bd", wallet_instance_balance_after: "5000",
+    wallet_instance_balance_before: "0", wallet_instance_balance_delta: "5000", wallet_scope: "campaign",
+  },
+  occurred_at: "2026-11-09T00:11:34.129+08:00", wallet_expires_at: expires,
+})
+const sweptExpire = {
+  id: "2138987", wallet_id: "wlt_6bfa1bb0696371cc4553", wallet_scope: "campaign", mutation_type: "expire",
+  amount: -5000, source: "manual", description: "活动积分到期失效",
+  metadata: {
+    expiration_reason: "expired_sweep", expiration_trigger: "wallet-expiry-balance-zeroing", expired_amount: "5000",
+    expired_original_at: "1794153599", wallet_id: "wlt_6bfa1bb0696371cc4553", wallet_instance_balance_after: "0",
+    wallet_instance_balance_before: "5000", wallet_instance_balance_delta: "-5000", wallet_scope: "campaign",
+    writeoff_amount: "5000",
+  },
+  occurred_at: "2026-11-09T00:00:00.077+08:00", wallet_expires_at: 1794153599,
+}
+
+test("campaign: a live instance's wallet_expires_at is when its credits lapse", () => {
+  const noon = Date.parse("2026-11-15T12:00:00+08:00")
+  const b = _internal.campaignBreakdown([liveCredit(), sweptExpire], noon)
+  expect(b.remaining).toBe(5000)
+  expect(b.lapseAt).toBe(1794758399 * 1000)
+  expect(b.lapsing).toBe(5000)
+  // 一个更早到期但已花完的实例不算；同一秒到期的两个实例相加
+  const spent = { ...liveCredit(1794700000), wallet_id: "w-spent" }
+  const spentDebit = { wallet_id: "w-spent", wallet_scope: "campaign", mutation_type: "debit", amount: -5000 }
+  const twin = { ...liveCredit(), wallet_id: "w-twin", amount: 300 }
+  const c = _internal.campaignBreakdown([liveCredit(), spent, spentDebit, twin], Date.parse("2026-11-14T00:00:00+08:00"))
+  expect(c.lapseAt).toBe(1794758399 * 1000)
+  expect(c.lapsing).toBe(5300)
+  // 过了到期时间（清扫还没到）就不再报
+  expect(_internal.campaignBreakdown([liveCredit()], Date.parse("2026-11-16T00:00:01+08:00")).lapseAt).toBe(0)
+  // 没有 wallet_expires_at 的旧流水：不知道就不报，绝不猜
+  const bare = liveCredit()
+  delete bare.wallet_expires_at
+  expect(_internal.campaignBreakdown([bare], noon)).toMatchObject({ remaining: 5000, lapseAt: 0, lapsing: 0 })
+})
+
+test("campaign: the balance window says how much lapses and when, with no second pool", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-lapse-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const tonight = Math.floor(Date.now() / 1000) + 3600
+  globalThis.fetch = campFetch({ total: 6400, ledger: [liveCredit(tonight), sweptExpire] })
+  try {
+    const hooks = await campHooks()
+    const u = await hooks.auth.usage(async () => campAuth("lapse"))
+    const bal = u.windows.find((w) => w.name === "积分余额")
+    expect(bal).toEqual({ name: "积分余额", balance: 6400, unit: "积分", runsOutAt: new Date(tonight * 1000).toISOString(), runsOut: 5000 })
+    expect(u.windows.filter((w) => w.balance !== undefined)).toHaveLength(1)
+    // 丢的不会多于账户总余额
+    _internal.clearCampaignLedger()
+    globalThis.fetch = campFetch({ total: 1200, ledger: [liveCredit(tonight)] })
+    const low = await hooks.auth.usage(async () => campAuth("lapse-low"))
+    expect(low.windows.find((w) => w.name === "积分余额").runsOut).toBe(1200)
+  } finally {
+    campCleanup(realFetch, dir)
+  }
+})

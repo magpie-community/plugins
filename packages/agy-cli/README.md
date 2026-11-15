@@ -55,7 +55,8 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   历史保留。
 - **流式输出与思考摘要**：思考摘要以 `thinking` 块返回，设置 `AGY_BRIDGE_THINKING=0` 可关闭。
 - **图片输入**：支持内联 base64 的 PNG、JPEG、GIF、WebP。需要 agy 1.5.0 或更新版本，
-  因为图片能力要由 ACP 服务端声明。
+  因为图片能力要由 ACP 服务端声明。工具返回的图片（如 `read` 读到的截图）也作为提示里的
+  图片交给 agy：走 MCP 的话，agy 会把它存成文件，模型看不到。
 - **工具调用**：支持并行和连续调用。运行超过 150 秒的工具会先收到 "still running" 的
   占位响应，真正的结果送达后继续同一轮对话，每个调用只在客户端执行一次。
 - **会话续接**：每轮结束后记录会话。重启 Magpie 或插件后，只要历史和指令的哈希一致，
@@ -159,6 +160,7 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
+| `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
@@ -175,13 +177,18 @@ magpie quota refresh agy-cli --json
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 
-默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词附加在后面（agy 声明
-支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在
-第一条提示词开头）。
+默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词作为
+`<external_system_instructions>` 放在第一条提示词开头。Antigravity 对附加在 agy 系统提示词
+后面的越来越多 agent 的提示词直接回 429（11-15 起包括 Claude Code 的 "You are an interactive
+agent that helps users with software engineering tasks."，改成 "You're …" 也一样），只用 agy
+自己的提示词时同一个账号能正常回答，所以默认不再用 agy 的 `systemPrompt.append`。设
+`AGY_BRIDGE_SYSTEM_APPEND=1` 恢复以前的做法（agy 声明支持时附加到会话）。代价：客户端的系统
+提示词和重放的历史共用第一条提示词的字节预算（`AGY_BRIDGE_MAX_PROMPT_BYTES`），agy 压缩上下文时
+它也可能被概括掉。
 
-Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex 和 Hermes Agent
-的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
-agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"built by Nous Research"、"RFC 2119 key words: …"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。如果仍然
+Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex、Hermes Agent、OpenCode
+和 pi 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
+agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"RFC 2119 key words: …"、"You're Hermes Agent / OpenCode / a coding agent running in the Codex CLI"、"running within pi"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。Codex 的两句 GPT-5 行（"You are Codex, a coding agent based on GPT-5"、"You are Codex, an agent based on GPT-5"）出现在用户的轮次里（AGENTS.md、`<system-reminder>`）也会被拒，所以用户轮次里也换成 "built on GPT-5"。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。如果仍然
 回了这样的 429，会报成针对提示词的 400，而不是额度用完。
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
@@ -203,7 +210,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 - **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力（需要 1.5.0 以上）。另外只接受
   内联 base64，URL 图片和 PDF 等二进制文档都会被拒绝。
 - **回复里出现 "Agent execution terminated due to error."**：这是 agy 的错误标记。插件会
-  从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。
+  从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
+  "There was a network issue connecting to the server" 和 "Your AI credits balance is
+  too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
+  重试中的提示行会被去掉。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
 - **想关掉思考摘要**：设置 `AGY_BRIDGE_THINKING=0`，或者在请求里带上
