@@ -918,6 +918,20 @@ class UnsupportedContent extends Error {
 
 // An upstream failure inside a healthy agy session. The process keeps its
 // conversation, so a client retry continues without replaying history.
+// streamErrorOf is the error event a failed turn ends its stream with. A
+// refusal of the request itself (invalid_request_error: a system prompt
+// Antigravity turns away) names its status, 400: magpie's gateway reads a
+// stream error's status from the error's own status field first and from
+// its words after, and this one's words quote Antigravity's "code 429", so
+// without it the client got a 429 and retried a request that can't pass
+// every minute (plugins#1151).
+export function streamErrorOf(error) {
+  const type = error?.kind || "api_error"
+  const out = { type, message: String(error?.message ?? error) }
+  if (type === "invalid_request_error") out.status = 400
+  return out
+}
+
 class AgentTurnError extends Error {
   constructor(message, kind = "api_error") {
     super(message)
@@ -5595,10 +5609,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           }
           if (event.type === "error") {
             closeBlock()
-            send("error", {
-              type: "error",
-              error: { type: event.error?.kind || "api_error", message: String(event.error?.message ?? event.error) },
-            })
+            send("error", { type: "error", error: streamErrorOf(event.error) })
             if (!event.error?.keepProcess) {
               dropFromPool(proc)
               await proc.stop().catch(() => {})
@@ -5764,7 +5775,7 @@ async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
   if (buffer.trim()) processBlock(buffer)
 
   if (streamError) {
-    const status = streamError.type === "rate_limit_error" ? 429 : 502
+    const status = streamError.status || (streamError.type === "rate_limit_error" ? 429 : 502)
     return new Response(JSON.stringify({ type: "error", error: streamError }), {
       status,
       headers: { "Content-Type": "application/json" },

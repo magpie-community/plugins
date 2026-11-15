@@ -1412,9 +1412,17 @@ for (const [title, tools, want, name] of [
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
     turnedError?.type === "invalid_request_error" && turnedError.message.includes("answered 429 to this system prompt") &&
     turnedError.message.includes("RFC 2119") && !/quota or rate limit reached/.test(turnedError.message), JSON.stringify(turnedError))
+  // plugins#1151: magpie reads a stream error's status from its own status
+  // field before its words, which quote Antigravity's "code 429"
+  check("#1151 the turned-away error names status 400, so the client doesn't retry it as a 429",
+    turnedError?.status === 400, JSON.stringify(turnedError))
+  const turnedWhole = await callFetch({ model, system: system + " T429W", stream: false, messages: [{ role: "user", content: "TURNED429 whole" }] })
+  const turnedWholeBody = await turnedWhole.json()
+  check("#1151 a turned-away prompt asked for a whole reply is a 400",
+    turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
-  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error", JSON.stringify(quotaError))
+  check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
 }
 
 // antigravity #1028: DeepSeek Harness's @-path paragraph reaches agy
