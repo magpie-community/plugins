@@ -35,8 +35,13 @@
 // by DeepSeek Harness.", is turned away too (#1171, huangzhenhao90, on a
 // real account through agy on gemini-4-hydrogen): "powered by DeepSeek."
 // alone, "an agent" for "an AI agent" and "You're …" each went through.
+// Since 11-15 Claude Code's identity line, "You are Claude Code,
+// Anthropic's official CLI for Claude." (its CLI's, and with ", running
+// within the Claude Agent SDK" its SDK's), is turned away too (#1151,
+// KevinXC5, 3 of 3 through agy on gemini-4-hydrogen with Claude Code
+// 2.1.325); "You're …" and "This agent is …" each went through 3 of 3.
 // Codex's prompt for GPT-6 ("You are Codex, an agent based on GPT-6."),
-// Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
+// the rest of Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
 // Droid's, Kimi CLI's, Aider's and Cursor's went through as written.
 export const TURNED_AWAY = [
   "x-anthropic-billing-header:",
@@ -50,6 +55,7 @@ export const TURNED_AWAY = [
   "you are a coding agent running in the codex cli",
   "a coding assistant running inside pi",
   "you are an ai agent powered by deepseek harness",
+  "you are claude code, anthropic's official cli for claude",
 ]
 
 // INVISIBLE are the characters Google's check reads past: since 11-14 a
@@ -105,7 +111,8 @@ export function turnsAway(system) {
 //     as "You're …" (5 of 5 each), and Hermes' earlier "created by Nous
 //     Research" as "built by" (3 of 3 together).
 //   - pi's line goes "running within pi" (5 of 5 on both models).
-//   - DeepSeek Harness's line goes as "You're …" (#1171).
+//   - DeepSeek Harness's line goes as "You're …" (#1171), and so does
+//     Claude Code's identity line (#1151).
 //   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
 //     on 11-14, eric_li8983 on X).
 const youre = (line) => line.replace(/^(you)\s+are/i, "$1're")
@@ -121,6 +128,7 @@ const SAID_AS = {
   "you are a coding agent running in the codex cli": youre,
   "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
   "you are an ai agent powered by deepseek harness": youre,
+  "you are claude code, anthropic's official cli for claude": youre,
 }
 
 // USER_TURNED_AWAY are the lines Antigravity also turns away in a user's
