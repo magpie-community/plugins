@@ -19,14 +19,15 @@ class UsageError extends Error {
   }
 }
 
-// What agy prints when it starts its own Google sign-in.
-const SIGN_IN_TALK = /accounts\.google\.com|oauth|sign[ -]?in|log[ -]?in|authenticat|browser/i
-
 const text = value => typeof value === "string" ? value.trim() : ""
 const field = (value, camel, snake) => value?.[camel] ?? value?.[snake]
 
 function commandFailure(output) {
-  if (/not (?:logged|signed) in|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again/i.test(output)) {
+  // agy logs unauthenticated cache lookups before loading its keyring.
+  const diagnosticFree = output.split(/\r?\n/)
+    .filter(line => !/^\s*[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+[^\]]+\]/.test(line))
+    .join("\n")
+  if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(diagnosticFree)) {
     return new UsageError("agy usage needs authentication. Run `agy` in a terminal to sign in again.", { kind: "auth" })
   }
   const eligibility = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i.test(output)
@@ -66,7 +67,7 @@ export function parseUsageReport(value) {
     throw new UsageError("agy returned an invalid usage report.")
   }
   if (report?.status !== "SUCCESS" || report?.command?.name !== "usage") {
-    throw commandFailure(`${text(report?.error)} ${text(report?.response)}`)
+    throw commandFailure(text(report?.error) || text(report?.response))
   }
   const groups = report.command.data?.groups
   const windows = []
@@ -268,7 +269,14 @@ export async function fetchUsage(agy, {
     if (version.code !== 0) throw commandFailure(version.stderr)
     if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
-    if (result.code !== 0) throw commandFailure(result.stderr + "\n" + result.stdout)
+    if (result.code !== 0) {
+      let failure
+      try { failure = JSON.parse(result.stdout) } catch {}
+      if (failure?.status && failure.status !== "SUCCESS") {
+        throw commandFailure(text(failure.error) || text(failure.response))
+      }
+      throw commandFailure(result.stderr + "\n" + result.stdout)
+    }
     return parseUsageReport(result.stdout)
   } finally {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -306,9 +314,8 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 //   there is none, or it has ended with nothing to renew it: the read says
 //   the sign-in has expired (signIn "expired"), which magpie shows on the
 //   account, and nothing starts a Google sign-in in the background.
-// - a run agy failed for want of a sign-in (it said so, or it hung with an
-//   ended access token, as an agy waiting on its browser sign-in does) marks
-//   that stored sign-in dead: agy isn't run again until another is stored.
+// - an explicit authentication rejection marks that stored sign-in dead.
+//   Timeouts cannot distinguish failed renewal from a slow network.
 // - any other failure isn't run again for backoff(n).
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
@@ -344,8 +351,7 @@ export function createUsageReader(resolveAgy, options = {}) {
     } catch (error) {
       const message = error instanceof UsageError ? error.message : "agy usage query failed. Check the CLI and temporary-directory permissions."
       if (error?.kind === "cancel") return { windows: [], error: message, signIn: "kept" }
-      const auth = error?.kind === "auth" || error?.kind === "timeout" && stored?.state === "present" && stored.expired &&
-        (!String(error.output ?? "").trim() || SIGN_IN_TALK.test(error.output))
+      const auth = error?.kind === "auth"
       if (auth && stored?.state === "present") {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
