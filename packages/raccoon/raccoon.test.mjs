@@ -351,13 +351,25 @@ test("usage reports Credits window when unexpired bills account for total grante
     expires: Date.now() + 3600_000,
   }))
   expect(u.balance).toBeUndefined()
-  expect(u.windows.length).toBe(1)
+  // the daily pool (daily_points: 519) is reported on its own line first,
+  // the aggregate beside it, display-only
+  expect(u.windows.length).toBe(2)
   expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 1581,
+    limit: 2100,
+    display: "1581 / 2100",
+    unit: "credits",
+    runsOutAt: "2029-10-17T15:59:59.000Z",
+    runsOut: 300,
+  })
+  expect(u.windows[1]).toMatchObject({
     name: "Credits",
     amount: 81,
     limit: 9600,
     display: "81 / 9600",
     unit: "credits",
+    aside: true,
     runsOutAt: "2029-10-17T15:59:59.000Z",
     runsOut: 300,
   })
@@ -389,6 +401,93 @@ test("usage asks for income bills so a busy account keeps its Credits window", a
   expect(u.balance).toBeUndefined()
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 1200, limit: 6300, display: "1200 / 6300" })
   expect(asked).toEqual([{ type: "income", limit: 200 }])
+})
+
+test("the daily pool reads used / limit like the aggregate, and a swept-late grant shows in it", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  const now = Date.now()
+  startServer({
+    // daily_points (1,956) also holds remainders of grants past expire_at
+    // that the vendor has not swept yet; the bills only know about the live ones
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({
+        code: 0,
+        data: { available_points: 9500, daily_points: 1956, reward_points: 9000, monthly_points: 0, topup_points: 0 },
+      }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d2", biz_type: "daily_grant", points: 300, expire_at: iso(now + day) },
+            { bill_id: "d1", biz_type: "daily_grant", points: 300, expire_at: iso(now - day) },
+            { bill_id: "r1", biz_type: "reward_grant", points: 9000 },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  // remaining 1,956 of 2,100: 144 used, same direction as the Credits line
+  expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 144,
+    limit: 2100,
+    display: "144 / 2100",
+    unit: "credits",
+    runsOutAt: new Date(Date.parse(iso(now + day))).toISOString(),
+    runsOut: 300,
+  })
+})
+
+test("a daily_points over 2,100 raises the pool's limit instead of reading negative", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    // a vendor granting 500/day (2,500 after 5 days) would break a hard 2,100
+    "GET /api/web/points/v1/balance": () =>
+      Response.json({
+        code: 0,
+        data: { available_points: 9500, daily_points: 2500, reward_points: 9000, monthly_points: 0, topup_points: 0 },
+      }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: {
+          items: [
+            { bill_id: "d1", biz_type: "daily_grant", points: 500, expire_at: iso(Date.now() + day) },
+            { bill_id: "r1", biz_type: "reward_grant", points: 9000 },
+          ],
+        },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.windows[0]).toMatchObject({
+    name: "Daily pool",
+    amount: 0,
+    limit: 2500,
+    display: "0 / 2500",
+  })
+})
+
+test("no daily_points in the balance keeps the card as it was (Credits only, no aside)", async () => {
+  const validTok = fakeJwt({ iss: "74350b", name: "Mason", exp: Math.floor(Date.now() / 1000) + 3600 })
+  startServer({
+    "GET /api/web/points/v1/balance": () => Response.json({ code: 0, data: { available_points: 9519 } }),
+    "GET /api/web/auth/v1/entitlement_info": () => Response.json({ code: 0, data: {} }),
+    "GET /api/web/points/v1/bills": () =>
+      Response.json({
+        code: 0,
+        data: { items: [{ bill_id: "r1", biz_type: "reward_grant", points: 9600 }] },
+      }),
+  })
+  const hooks = await RaccoonAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
+  expect(u.windows.length).toBe(1)
+  expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 81, limit: 9600 })
+  expect(u.windows[0].aside).toBeUndefined()
 })
 
 test("usage falls back to paged bills when the vendor refuses type=income (plugins #223)", async () => {
@@ -454,7 +553,11 @@ test("setting_info's balance fills the Credits window the bills account for (plu
   const hooks = await RaccoonAuthPlugin({ client: {} })
   const u = await hooks.auth.usage(async () => ({ type: "oauth", access: validTok, refresh: "rt1", expires: Date.now() + 3600_000 }))
   expect(u.plan).toBe("Free")
+  // the fallback path has no daily_points: Credits stays the only window and
+  // keeps its routing weight (no aside)
+  expect(u.windows.length).toBe(1)
   expect(u.windows[0]).toMatchObject({ name: "Credits", amount: 81, limit: 9600 })
+  expect(u.windows[0].aside).toBeUndefined()
 })
 
 // The balance in plugins #936's screenshot (9,623 credits) is more than the
