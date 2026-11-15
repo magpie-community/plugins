@@ -31,6 +31,10 @@
 //   - "a coding assistant running inside pi", pi 1.5.0's default prompt
 //     ("You are a coding assistant running inside pi, a coding agent
 //     harness."), as "agent" for "assistant" and "that runs inside pi" are.
+// Since 11-15 DeepSeek Harness's first line, "You are an AI agent powered
+// by DeepSeek Harness.", is turned away too (#1171, huangzhenhao90, on a
+// real account through agy on gemini-4-hydrogen): "powered by DeepSeek."
+// alone, "an agent" for "an AI agent" and "You're …" each went through.
 // Codex's prompt for GPT-6 ("You are Codex, an agent based on GPT-6."),
 // Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
 // Droid's, Kimi CLI's, Aider's and Cursor's went through as written.
@@ -45,6 +49,7 @@ export const TURNED_AWAY = [
   "you are opencode",
   "you are a coding agent running in the codex cli",
   "a coding assistant running inside pi",
+  "you are an ai agent powered by deepseek harness",
 ]
 
 // INVISIBLE are the characters Google's check reads past: since 11-14 a
@@ -100,6 +105,7 @@ export function turnsAway(system) {
 //     as "You're …" (5 of 5 each), and Hermes' earlier "created by Nous
 //     Research" as "built by" (3 of 3 together).
 //   - pi's line goes "running within pi" (5 of 5 on both models).
+//   - DeepSeek Harness's line goes as "You're …" (#1171).
 //   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
 //     on 11-14, eric_li8983 on X).
 const youre = (line) => line.replace(/^(you)\s+are/i, "$1're")
@@ -114,6 +120,7 @@ const SAID_AS = {
   "you are opencode": youre,
   "you are a coding agent running in the codex cli": youre,
   "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
+  "you are an ai agent powered by deepseek harness": youre,
 }
 
 // USER_TURNED_AWAY are the lines Antigravity also turns away in a user's
@@ -187,6 +194,9 @@ const OPENCODE_HINT =
 const CODEX_CLI_HINT =
   "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
 
+const DSH_HINT =
+  "Antigravity answers this 429 to DeepSeek Harness's system prompt (\"You are an AI agent powered by DeepSeek Harness.\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
+
 const RFC_HINT =
   "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way"
 
@@ -198,5 +208,6 @@ export function hint(system) {
   if (said(system, "you are hermes agent") || said(system, "an intelligent ai assistant created by nous research")) return HERMES_HINT
   if (said(system, "you are opencode")) return OPENCODE_HINT
   if (said(system, "a coding assistant running inside pi")) return PI_HINT
+  if (said(system, "you are an ai agent powered by deepseek harness")) return DSH_HINT
   return HINT
 }

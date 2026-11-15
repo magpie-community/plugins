@@ -24,6 +24,7 @@ const samples = [
   "You are OpenCode, the best coding agent on the planet.",
   "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.",
   "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.",
+  "You are an AI agent powered by DeepSeek Harness.\n\nYou can read files.",
   "Codex's GPT-6 prompt goes as written: You are Codex, an agent based on GPT-6.",
   "You're Hermes Agent, an intelligent AI assistant created by Nous Research.",
   "Nothing to see here; Claude Agent SDK alone is fine.",
@@ -81,4 +82,10 @@ test("each reworded paragraph goes as REWORDED says", () => {
 test("a user's turn goes with Codex's GPT-5 lines reworded, the others as written", () => {
   expect(cloakUser("Read AGENTS.md:\nYou are Codex, a coding agent based on GPT-5.")).toBe("Read AGENTS.md:\nYou are Codex, a coding agent built on GPT-5.")
   expect(cloakUser("You are Hermes Agent, built by Nous Research.")).toBe("You are Hermes Agent, built by Nous Research.")
+})
+
+test("DeepSeek Harness's first line goes as \"You're …\", and the variants that went through as written (#1171)", () => {
+  expect(cloak("You are an AI agent powered by DeepSeek Harness.\n\nBe brief.")).toBe("You're an AI agent powered by DeepSeek Harness.\n\nBe brief.")
+  expect(hint("You are an AI agent powered by DeepSeek Harness.")).toContain("DeepSeek Harness's system prompt")
+  for (const s of ["You are an AI agent powered by DeepSeek.", "You are an agent powered by DeepSeek Harness.", "You're an AI agent powered by DeepSeek Harness."]) expect(cloak(s)).toBe(s)
 })
