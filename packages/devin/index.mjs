@@ -2065,7 +2065,7 @@ function buildMessages(req, uid, key) {
         if (thought) [p.thinking, thought] = [thought, null]
         return p
       }
-      for (const b of t.blocks) {
+      for (const [i, b] of t.blocks.entries()) {
         if (b?.type === "text" && typeof b.text === "string") {
           if (b.text) own.push(take({ role: ASSISTANT, text: b.text, calls: [], cache: marked(b) }))
           else if (marked(b) && own.length) own[own.length - 1].cache = true
@@ -2073,7 +2073,10 @@ function buildMessages(req, uid, key) {
           calls.push({ id: inID(b.id), name: b.name, args: JSON.stringify(b.input ?? {}) })
           mark ||= marked(b)
         } else if (b?.type === "thinking" && claude && typeof b.signature === "string" && b.signature) {
-          // two in a row: the first has a prompt of its own
+          // Devin rejects a signed thought on an otherwise empty assistant prompt.
+          // A gateway search can leave adjacent thoughts; keep the last one intact.
+          const next = t.blocks[i + 1]
+          if (next?.type === "thinking" && typeof next.signature === "string" && next.signature) continue
           if (thought) own.push(take({ role: ASSISTANT, text: "", calls: [] }))
           thought = { text: typeof b.thinking === "string" ? b.thinking : "", signature: b.signature, type: sigTypeOf(b.signature) }
         } else if (b?.type === "thinking" && !claude && typeof b.thinking === "string" && b.thinking) {
