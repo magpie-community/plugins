@@ -1,12 +1,15 @@
 # opencode-perch-auth
 
-> Perch Terminal (`app.perchai.app`) as a magpie / OpenCode provider: browser sign-in
-> (Google / GitHub), Perch-hosted models streamed through the CLI surface.
+> Unofficial Perch Terminal provider for magpie / OpenCode. Direct API access
+> requires a Perch plan or written agreement that explicitly includes it.
 
 把 Perch Terminal（`app.perchai.app`）的托管模型接成 magpie / OpenCode 的供应商插件。
 
-插件自己负责：读 CLI 会话 → 续期 Supabase token → 换单轮票据 → 发 Perch 的 SSE 请求 →
-把 Perch 的自定义事件流翻译成 OpenAI `chat.completion.chunk`。
+插件通过浏览器登录或导入本地会话获取 Supabase token，向 Perch 换取票据后发起模型请求。
+上游接受请求并返回 SSE 时，插件把事件流翻译成 OpenAI `chat.completion.chunk`。
+Perch 的 Starter、Pro 和 Ultra 套餐提供官方 Web、Desktop 和 CLI 内的托管模型使用权。
+在第三方工具中直接调用内部接口，需要 Perch 明确授予直接 API 访问权限。
+见 [Perch FAQ](https://www.perchai.app/faq) 和[服务条款第 6、7 节](https://www.perchai.app/terms)。
 
 ---
 
@@ -71,20 +74,20 @@ magpie plugin add ./magpie-plugin-perch        # 本地目录，改完重启生�
 `supabaseUrl` / `supabaseAnonKey` / `providers` / `redirectHost`，再按 S256 PKCE
 拼 `/auth/v1/authorize`，回调收到 `code` 后用
 `POST /auth/v1/token?grant_type=pkce {auth_code, code_verifier}` 换成会话。
-登录成功后 magpie 保存 `access` / `refresh` / `expires`，账号名取自 token 里的 email。
+浏览器登录成功后，插件向 magpie 返回 `access`、`refresh`、`expires` 和账号标识。
 
-插件在 access token 到期前 5 分钟自动续期（`refreshLead`），续期失败抛
-`signIn: "expired"`，magpie 会提示重新登录。
+插件向 magpie 声明提前 5 分钟续期（`refreshLead`）。缺少 refresh token 或 Supabase
+拒绝续期时，插件用 `signIn: "expired"` 提示重新登录。登录和续期只处理会话凭据。
 
 ### 同时写出 CLI 会话文件（可选）
 
-想让 `perch` 命令直接复用这次登录，给插件加选项：
+如需将浏览器登录获得的会话另存为 CLI 会话文件，可配置以下选项。
 
 ```json
 { "writeSessionFile": true, "sessionPath": "~/.perch/cli-auth-session.json" }
 ```
 
-写出的内容与官方 CLI 完全同构：
+文件包含以下字段。
 
 ```json
 {
@@ -127,36 +130,41 @@ magpie plugin add ./magpie-plugin-perch        # 本地目录，改完重启生�
 > `manualModelOptionId: "openrouter-deepseek-deepseek-v4-1-flash"`，
 > 服务端才路由到 `deepseek/deepseek-v4.1-flash-1017`。插件默认已经带上。
 > 排查时用 `PERCH_DEBUG_MODEL=1` 把 `done.model` 打到 stderr。
-传 `perch-auto` 则不带 `preferredModelId`，交回服务端路由；
+`perch-auto` 发送 `preferredModelId: null` 并省略 `manualModelOptionId`，由服务端选择模型。
 其它不认识的 id 会当作 `preferredModelId` 直接转发。
 
-## 为什么必须用 `perch login` 的会话
+## 如何判断 403 出在哪一步
 
-服务端有一道表面（surface）校验。用桌面端「登录」得到的会话，即使请求体里
-声明 `"surface":"cli"`、`clientSurface:"cli"`，换票端点仍然返回：
+orinsid 报告使用插件内置 GitHub OAuth 登录并选择 Starter 后，`turn-ticket` 返回
+`ok: true`、`surface: "cli"`、`enforced: false`，`runId` 以 `tkt-cli-` 开头。
+随后 `model-call` 返回 HTTP 403 和 `perch_surface_required`。手动指定模型和自动路由得到相同结果。
+见 [Issue #2](https://github.com/Thebanditsare/opencode-perch-auth/issues/2)。
 
-```
-HTTP 403
-{"ok":false,"errorCode":"perch_surface_required",
- "error":"Your plan includes Perch-hosted models for use in Perch AI Web, Desktop,
-          and CLI only. Direct API access is not included. ..."}
-```
+票据成功只说明本次换票被接受。实际模型调用有自己的响应，报错时应记录返回错误的端点。
+这次拒绝符合 Perch 对第三方直连的公开限制。具体命中了哪条服务端规则、是否涉及会话签发渠道，
+需要 Perch 确认。票据字段、JWT 中的登录提供方以及本地会话文件都不足以回答这些问题。
 
-JWT 里没有表面字段，判定绑定在会话的签发方式上。只有 `perch login` 产出的会话
-能通过，换票后 `runId` 形如 `tkt-cli-...`。
-
-插件不会伪造这个标记：它用的就是 CLI 自己的会话和 CLI 自己的换票请求体。
+如要在官方 CLI 中使用 GitHub 账号，Perch 当前文档列出了 `perch login github`。
+无法运行 CLI 的平台可以直接使用 Perch Web。需要在 magpie / OpenCode 直连的用户，应向
+Perch 确认适用的集成方案和对应接口。导入 CLI 会话本身不会授予这种权限。
+见 [CLI 登录文档](https://www.perchai.app/docs/using-perch/cli) 和 [Perch FAQ](https://www.perchai.app/faq)。
 
 ## 错误处理
 
-| 上游 | 插件返回 |
-|---|---|
-| 401 | 401 + `X-Magpie-Sign-In: expired`（触发重新登录） |
-| 403 `perch_surface_required` | 403，错误信息原样透出 |
-| 其它非 2xx | 同状态码，body 里的 `error` / `errorCode` 转成 OpenAI 错误结构 |
-| 网络不可达 | 502 `upstream_unreachable` |
+对于下列请求错误，`error.stage` 标明失败端点（`turn-ticket` 或 `model-call`）。
+客户端只显示 `error.message` 时，也能从消息中识别失败阶段。
 
-上游非 2xx 会被 magpie 当作"供应商的正式答复"，因此不会静默 failover 到别的模型。
+| 上游结果 | 插件返回 |
+|---|---|
+| HTTP 401 | 保留 401，设置 `X-Magpie-Sign-In: expired` 提示重新登录 |
+| HTTP 403，`perch_surface_required` | 保留 403 和错误码，标明哪一步被拒绝，本次请求到此结束 |
+| 其他上游 HTTP 错误 | 保留 HTTP 状态码，并将可用的上游错误码与消息转换为 OpenAI 错误结构 |
+| 换票返回 2xx，但响应无法解析或缺少可用票据 | 502 `bad_upstream`，阶段为 `turn-ticket` |
+| 无法连接上游 | 502 `upstream_unreachable`，标明失败阶段 |
+
+0.1.0 在取不到票时可能仍发出模型请求，掩盖最初的换票错误。修正后，换票失败即返回错误，
+成功取得可用票据才会继续调用模型。
+宿主续期或切换账号后，下一次请求会使用新的 access token 重新换票。
 
 ## 代理
 
@@ -198,5 +206,3 @@ magpie plugin off magpie-plugin-perch && magpie plugin on magpie-plugin-perch
 - 只实现 chat completions 路径，没有 embeddings / images。
 - `stream_restart` 在流式端无法回收已发出的文本，插件会丢掉后续重来的片段标记，
   客户端可能看到重复段落。上游故障切换本身很少触发。
-- 票据换取失败时不阻断请求（与桌面端一致：`ticketRequiredForCurrentTurn = false`），
-  真正的判定在 `model-call`。

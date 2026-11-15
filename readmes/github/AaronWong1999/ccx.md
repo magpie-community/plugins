@@ -1,6 +1,12 @@
 <h1 align="center">ccx - claudecodex</h1>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/NEW-Antigravity_support-14b8a6?style=for-the-badge" alt="NEW: Antigravity support"><br>
+  <b>Now with Antigravity: switch between Claude Code, Codex and Antigravity, in any direction.</b><br>
+  <b>新增 Antigravity 支持：Claude Code、Codex、Antigravity 三个现在可以互相切换。</b>
+</p>
+
+<p align="center">
   <b>Hit a limit in Claude Code, Codex or Antigravity? Hand the task to another agent with its context, then switch back.</b><br>
   Claude Code、Codex 或 Antigravity 额度用完了？带着上下文换一个 agent 接着干，随时再切回来。
 </p>
@@ -17,7 +23,7 @@
   <img src="docs/hero.png" alt="ccx - claudecodex: Claude Code ⇄ Codex ⇄ Antigravity. 1. One agent hits its limit. 2. Choose another app from ⇄. 3. Gemini in Antigravity picks up the task." width="100%">
 </p>
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/515f88d4-9b50-4b0d-ad6c-8485409a99d3"><b>🎬 Watch 30 second demo · Claude ⇄ Codex 双端演示</b></a>
+  <a href="https://github.com/user-attachments/assets/6dc89886-d055-4cdc-97ad-a3edc97386e1"><b>🎬 Watch 30 second demo · 看 30 秒演示</b></a>
 </p>
 
 ## Why ccx · 为什么需要它
