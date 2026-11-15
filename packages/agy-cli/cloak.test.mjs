@@ -1,9 +1,8 @@
-// cloak.mjs is a copy of packages/antigravity's TURNED_AWAY, cloak and hint
-// (#980) and its REWORDED (#1028): these fail when the two packages stop
-// agreeing.
+// cloak.mjs began as a copy of packages/antigravity's TURNED_AWAY, cloak and
+// hint (#980) and its REWORDED (#1028). antigravity 0.2.0 sends nothing any
+// more, so cloak.mjs is the one copy now.
 import { expect, test } from "bun:test"
 import { REWORDED, TURNED_AWAY, cloak, cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
-import { _internal as antigravity } from "../antigravity/index.mjs"
 
 const ZW = "​"
 
@@ -57,24 +56,14 @@ test("a turned-away line wrapped or widened by white space is reworded too", () 
   expect(turnsAway(samples[10])).toBe(false)
 })
 
-test("agy-cli and antigravity reword and explain the same lines", () => {
+test("a turned-away line broken up by invisible characters is reworded too", () => {
   for (const line of [...TURNED_AWAY, ...samples.filter((s) => turnsAway(s)).map((s) => s.replace(/[A-Za-z0-9]{3,}/g, (w) => w[0] + ZW + w[1] + ZW + w.slice(2)))]) {
-    expect(antigravity.turnsAway(line)).toBe(true)
-    expect(cloak(line)).toBe(antigravity.cloak(line))
-    expect(hint(line)).toBe(antigravity.hint(line))
-  }
-  for (const s of samples) {
-    expect(turnsAway(s)).toBe(antigravity.turnsAway(s))
-    expect(cloak(s)).toBe(antigravity.cloak(s))
-    expect(hint(s)).toBe(antigravity.hint(s))
+    expect(turnsAway(line)).toBe(true)
+    expect(turnsAway(cloak(line))).toBe(false)
   }
 })
 
 const DSH = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
-
-// the system text antigravity sends for s (its shape() runs outgoing on it)
-const antigravitySends = (s) =>
-  antigravity.shape({ systemInstruction: { parts: [{ text: s }] }, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts[0].text
 
 test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1028)", () => {
   const sys = "You are DeepSeek Harness.\n\n" + DSH + "\n\nBe brief."
@@ -85,23 +74,11 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   expect(both).toContain("When the user writes @ followed by a path")
 })
 
-test("agy-cli and antigravity send the same system text, reworded", () => {
-  for (const [from, to] of REWORDED) {
-    expect(outgoing(from)).toBe(to)
-    expect(antigravitySends(from)).toBe(to)
-  }
-  for (const s of [...samples.filter(Boolean), DSH, "Lead.\n" + DSH + "\n" + DSH, "x-anthropic-billing-header: cc\n" + DSH]) {
-    expect(outgoing(s)).toBe(antigravitySends(s))
-  }
+test("each reworded paragraph goes as REWORDED says", () => {
+  for (const [from, to] of REWORDED) expect(outgoing(from)).toBe(to)
 })
 
-// the user's text antigravity sends for s (its shape() rewords Codex's
-// GPT-5 lines in every non-model part)
-const antigravitySendsUser = (s) =>
-  antigravity.shape({ contents: [{ role: "user", parts: [{ text: s }] }] }, "gemini-3-flash", "", "").contents[0].parts[0].text
-
-test("a user's turn goes with Codex's GPT-5 lines reworded, as antigravity sends it", () => {
+test("a user's turn goes with Codex's GPT-5 lines reworded, the others as written", () => {
   expect(cloakUser("Read AGENTS.md:\nYou are Codex, a coding agent based on GPT-5.")).toBe("Read AGENTS.md:\nYou are Codex, a coding agent built on GPT-5.")
   expect(cloakUser("You are Hermes Agent, built by Nous Research.")).toBe("You are Hermes Agent, built by Nous Research.")
-  for (const s of samples.filter(Boolean)) expect(cloakUser(s)).toBe(antigravitySendsUser(s))
 })

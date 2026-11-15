@@ -1,8 +1,8 @@
 // System prompt lines Antigravity turns away, and paragraphs it answers
 // badly, the same lists and the same rewrites as
-// packages/antigravity/index.mjs (TURNED_AWAY, SAID_AS, cloak, hint,
+// packages/antigravity/index.mjs up to 0.1.18 (TURNED_AWAY, SAID_AS, cloak, hint,
 // REWORDED, reword, outgoing). Each package ships on its own, so the code is
-// a copy; cloak.test.mjs fails when the two give a different answer.
+// a copy, and since antigravity 0.2.0 sends nothing this is the only one.
 //
 // Antigravity answers a 429 "Resource has been exhausted" to a request whose
 // system prompt has one of these lines, whatever quota is left, and lets the
