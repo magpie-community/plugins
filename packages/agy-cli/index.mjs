@@ -12,7 +12,8 @@ import { storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
-import { currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome } from "./account.mjs"
+import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
+import { IMPORT_FROM, importedAccounts, tokenFileText } from "./import.mjs"
 import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
@@ -5951,6 +5952,64 @@ async function googleSignIn(agy, account = null) {
   }
 }
 
+// homeOfEmail is the id of the account home already signed in to email
+// ("" for agy's own sign-in), or null when none is.
+async function homeOfEmail(email) {
+  const want = email.toLowerCase()
+  if ((await storedEmail({ home: null })).toLowerCase() === want) return ""
+  let ids = []
+  try { ids = fs.readdirSync(accountsDir()) } catch {}
+  for (const id of ids) {
+    const home = homeOf(id)
+    if (home && (await storedEmail({ home })).toLowerCase() === want) return id
+  }
+  return null
+}
+
+// importSignIns brings in the accounts the texts hold (import.mjs): each
+// one an account home of its own, whose token file is the sign-in, kept
+// once agy lists the account's models with it. An account signed in here
+// already is left as it is and named again, so it isn't added twice.
+async function importSignIns(texts) {
+  const accounts = importedAccounts(texts)
+  if (!accounts.length) return { type: "failed", error: "no Antigravity sign-in in it: take the retired Antigravity plugin's sign-in or agy's token file" }
+  const agy = findAgy()
+  if (!agy) return noAgy()
+  const out = []
+  for (const a of accounts) {
+    const failed = (error) => ({ type: "failed", error, ...(a.email ? { accountId: a.email } : {}) })
+    if (a.email) {
+      const had = await homeOfEmail(a.email)
+      if (had !== null) {
+        out.push(await inAccount(homeOf(had), () => signedInAs(had)))
+        continue
+      }
+    }
+    let account
+    try {
+      account = newHome()
+      const file = tokenFile(account.home)
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(file, tokenFileText(a), { mode: 0o600 })
+    } catch (error) {
+      if (account) dropHome(account.home)
+      out.push(failed(`couldn't make a folder for the account: ${error.message}`))
+      continue
+    }
+    out.push(await inAccount(account.home, async () => {
+      forgetStoredSignIn()
+      forgetOffered()
+      const probe = await probeSignedIn(agy)
+      if (!probe.ok) {
+        dropHome(account.home)
+        return failed(`agy couldn't sign in with it: ${probe.why}`)
+      }
+      return signedInAs(account.id)
+    }))
+  }
+  return out
+}
+
 // homeOfAuth is the home of the account a saved sign-in is, null for
 // agy's own.
 async function homeOfAuth(getAuth) {
@@ -5988,6 +6047,11 @@ export const AntigravityBridgePlugin = async () => {
       },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
       usage: async (getAuth) => readUsageOf(await homeOfAuth(getAuth)),
+      // magpie's "Import accounts from a file…" (OpenCode ignores it): the
+      // retired Antigravity plugin's sign-ins, which magpie's Move hands over
+      importFrom: IMPORT_FROM.en,
+      importFroms: IMPORT_FROM.froms,
+      import: (texts) => importSignIns(Array.isArray(texts) ? texts : [texts]),
       methods: [
         {
           // agy's own Google sign-in (`agy acp --login`): magpie opens its

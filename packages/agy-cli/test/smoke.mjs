@@ -90,6 +90,13 @@ if (argv[0] === "acp" && argv.includes("--login")) {
   process.stderr.write('couldn\'t log in: token exchange failed: oauth2: "invalid_grant" "Bad Request"\n')
   process.exit(1)
 }
+// an account home whose token file Google turned away (a revoked sign-in)
+const homeToken = path.join(where.home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+if (argv.includes("models") && where.ssh && fs.existsSync(homeToken) && fs.readFileSync(homeToken, "utf8").includes("1//revoked")) {
+  log({ type: "models", revoked: true })
+  process.stderr.write('Error: oauth2: "invalid_grant" "Token has been expired or revoked."\n')
+  process.exit(1)
+}
 if (argv.includes("models") && fs.existsSync(signedOut)) {
   log({ type: "models", update: process.env.AGY_CLI_DISABLE_AUTO_UPDATE, signedOut: true })
   process.stdout.write("Fetching available models...\n")
@@ -833,6 +840,53 @@ const legacyModel = "agy-cli/gemini-test-low"
     check("a failed added sign-in saves nothing and leaves no home", bad?.type === "failed" && failedHome !== home && !fs.existsSync(failedHome), JSON.stringify(bad))
   } finally {
     delete process.env.FAKE_AGY_FILE_EMAIL
+    if (savedState === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = savedState
+  }
+}
+
+{
+  // tongzhenbao on X: the retired Antigravity plugin's accounts move here
+  // in one go. Its sign-ins were made with Antigravity's own Google client,
+  // the one agy signs in with, so each becomes an account home whose token
+  // file is that sign-in, kept once agy lists its models with it.
+  const savedState = process.env.XDG_STATE_HOME
+  const xdg = path.join(stateDir, "xdg-import")
+  process.env.XDG_STATE_HOME = xdg
+  const accounts = path.join(xdg, "magpie-agy-bridge", "accounts")
+  try {
+    check("accounts can be brought in from a file", typeof plugin.auth.import === "function" && /Antigravity/.test(plugin.auth.importFrom) && !!plugin.auth.importFroms?.zh)
+    const old = {
+      antigravity: { type: "oauth", refresh: "1//moved-a|proj-a", access: "ya29.a", expires: 1700000000000, accountId: "moved-a@example.com" },
+      "antigravity#2": { type: "oauth", refresh: "1//revoked|proj-b", access: "", expires: 0, accountId: "revoked@example.com" },
+    }
+    const got = await plugin.auth.import([JSON.stringify(old), JSON.stringify({ type: "oauth", refresh: "1//moved-a|proj-a", accountId: "moved-a@example.com" })])
+    check("each account is tried once", Array.isArray(got) && got.length === 2, JSON.stringify(got))
+    const [moved, revoked] = got
+    check("a moved sign-in is kept as an account home, named by its email",
+      moved?.type === "success" && moved.key === `agy:${moved.metadata?.agyHome}` && moved.metadata?.email === "moved-a@example.com", JSON.stringify(moved))
+    const home = path.join(accounts, moved?.metadata?.agyHome ?? "none")
+    const file = path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    const kept = JSON.parse(fs.readFileSync(file, "utf8"))
+    check("its token file is agy's own shape, with the plugin's refresh token and no project",
+      kept.token?.refresh_token === "1//moved-a" && kept.token.access_token === "ya29.a" && kept.token.expiry === new Date(1700000000000).toISOString() && kept.auth_method === "consumer" && kept.id_token_email === "moved-a@example.com", JSON.stringify(kept))
+    if (process.platform !== "win32") check("the token file is the user's alone", (fs.statSync(file).mode & 0o077) === 0)
+    const probe = logs().filter(event => event.type === "models" && event.home === home)
+    check("agy was asked with it in the account's home, from the file", probe.length >= 1 && probe.every(event => event.ssh === "127.0.0.1 0 127.0.0.1 0"), JSON.stringify(probe))
+    check("a sign-in agy can't use is turned away and leaves no home",
+      revoked?.type === "failed" && revoked.accountId === "revoked@example.com" && /invalid_grant/.test(revoked.error) && fs.readdirSync(accounts).length === 1, JSON.stringify(revoked))
+
+    const again = await plugin.auth.import([JSON.stringify(old.antigravity)])
+    check("moved twice, an account is named again, not added twice",
+      again?.[0]?.type === "success" && again[0].key === moved.key && fs.readdirSync(accounts).length === 1, JSON.stringify(again))
+
+    const agyOwn = JSON.stringify({ token: { access_token: "ya29.c", refresh_token: "1//own-c", expiry: "2026-01-01T00:00:00Z", token_type: "Bearer" }, auth_method: "consumer", id_token_email: "own-c@example.com" })
+    const fromFile = await plugin.auth.import(["go-keyring-base64:" + Buffer.from(agyOwn).toString("base64")])
+    check("agy's own stored sign-in is taken too", fromFile?.[0]?.type === "success" && fromFile[0].metadata?.email === "own-c@example.com", JSON.stringify(fromFile))
+
+    const other = await plugin.auth.import([JSON.stringify({ refresh_token: "1//someone-else", client_id: "x.apps.googleusercontent.com" }), "1//bare-token"])
+    check("a refresh token that may be another client's isn't taken", other?.type === "failed" && /no Antigravity sign-in/.test(other.error), JSON.stringify(other))
+  } finally {
     if (savedState === undefined) delete process.env.XDG_STATE_HOME
     else process.env.XDG_STATE_HOME = savedState
   }

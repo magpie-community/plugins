@@ -182,6 +182,12 @@ After installing, sign in from Magpie; no terminal needed.
    and agy keeps its sign-in in a file there, leaving the account in the
    system keyring as it is. Each account has its own row and its own usage,
    and is switched and rotated like any provider's accounts.
+   Accounts signed in on the retired Antigravity plugin (`antigravity`) move
+   over from the line Magpie shows over its Providers list (Move), or from
+   agy-cli's Import accounts from a file…, which takes that plugin's sign-in or
+   agy's own token file. They are Antigravity's own Google sign-ins: each gets
+   an agy home of its own and is added once agy signs in with it, and the
+   credential goes nowhere else.
 2. Refer to models as `agy-cli/<model>`. When agy lists separate model IDs
    for different thinking levels, they are grouped here as variants of one model,
    and each request is mapped back to the matching agy ID.
