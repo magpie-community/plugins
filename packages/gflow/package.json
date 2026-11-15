@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-gflow-auth",
   "version": "0.1.0",
-  "description": "Google Flow (Nano Banana Pro, 2.1, 2 Lite) as native magpie image models: magpie-managed accounts with Chrome sign-in, live credit balance, and Veo video tools",
+  "description": "Google Flow (Nano Banana Pro, 2.1, 2 Lite; Veo 3.1) as native magpie image and video models: magpie-managed accounts with Chrome sign-in, live credit balance, and Veo video tools",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": { ".": "./opencode2.mjs" },
@@ -26,8 +26,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/magpie-community/plugins.git",
-    "directory": "packages/gflow"
+    "url": "git+https://github.com/lkl-hubo/gflow-plugin.git"
   },
   "scripts": {
     "test": "node --test index.test.mjs"
@@ -35,8 +34,8 @@
   "magpie": {
     "name": "Google Flow",
     "summary": {
-      "en": "Google Flow with magpie-managed accounts: Nano Banana Pro, 2.1 and 2 Lite as native image models, Chrome sign-in, live credit balance, and Veo video as tools.",
-      "zh": "账号由 magpie 管理的 Google Flow：Nano Banana Pro / 2.1 / 2 Lite 三个原生生图模型，Chrome 登录、实时额度余额，Veo 视频以 tools 提供。"
+      "en": "Google Flow with magpie-managed accounts: Nano Banana Pro, 2.1 and 2 Lite as native image models, Veo 3.1 (Fast, Quality, Lite) as native video models, Chrome sign-in, live credit balance, and video extension tools.",
+      "zh": "账号由 magpie 管理的 Google Flow：Nano Banana Pro / 2.1 / 2 Lite 三个原生生图模型，Veo 3.1（Fast / Quality / Lite）三个原生视频模型，Chrome 登录、实时额度余额，并保留视频续写等 tools。"
     },
     "maxConcurrency": 1
   }

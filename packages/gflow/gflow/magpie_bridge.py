@@ -23,9 +23,9 @@ from typing import Any
 
 from gflow.account_info import (AccountInfoError, CreditsUnavailable,
                                 read_account_info, read_identity)
-from gflow.api.client import IMAGE_MODELS, FlowClient
-from gflow.api.models import (Asset, ExtendVideoRequest, GenerateImageRequest,
-                              GenerateVideoRequest)
+from gflow.api.client import FlowAPIError, FlowClient, IMAGE_MODELS, VIDEO_MODELS
+from gflow.api.models import (Asset, AssetType, ExtendVideoRequest,
+                              GenerateImageRequest, GenerateVideoRequest)
 from gflow.auth import browser_auth
 
 
@@ -235,6 +235,9 @@ def image(request: dict[str, Any]) -> dict[str, Any]:
 
 VIDEO_ASPECTS = frozenset({"square", "portrait", "landscape", "16:9", "9:16", "1:1"})
 VIDEO_STATE_VERSION = 1
+DEFAULT_VIDEO_MODEL = "veo-3.1"
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+MAX_VIDEO_JOBS = 64
 
 
 def _seed_of(request: dict[str, Any]) -> int | None:
@@ -242,6 +245,96 @@ def _seed_of(request: dict[str, Any]) -> int | None:
     if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
         raise BridgeError("seed must be an integer")
     return seed
+
+
+def _video_seed_of(request: dict[str, Any]) -> int | None:
+    seed = request.get("seed")
+    if seed is None or seed == "":
+        return None
+    if isinstance(seed, bool):
+        raise BridgeError("seed must be an integer")
+    if isinstance(seed, int):
+        return seed
+    if isinstance(seed, str) and re.fullmatch(r"[+-]?[0-9]{1,12}", seed.strip()):
+        return int(seed.strip())
+    raise BridgeError("seed must be an integer")
+
+
+def video_model_of(request: dict[str, Any]) -> str:
+    raw = request.get("model")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_VIDEO_MODEL
+    value = str(raw).strip()
+    model = value.split("/", 1)[1] if value.startswith("gflow/") else value
+    if model not in VIDEO_MODELS:
+        raise BridgeError(f"unknown Flow video model {value!r}; expected one of {sorted(VIDEO_MODELS)}")
+    return model
+
+
+def video_aspect_of(request: dict[str, Any]) -> str:
+    raw_aspect = request.get("aspect_ratio")
+    if raw_aspect is not None and str(raw_aspect).strip():
+        aspect = str(raw_aspect).strip().lower()
+        if aspect not in VIDEO_ASPECTS:
+            raise BridgeError(f"unsupported aspect_ratio {aspect!r}; use {', '.join(sorted(VIDEO_ASPECTS))}")
+        return ASPECTS.get(aspect, aspect)
+    size = str(request.get("size") or "").strip().lower()
+    if not size:
+        return "landscape"
+    if size in ASPECTS:
+        return ASPECTS[size]
+    if size in VIDEO_ASPECTS:
+        return size
+    match = re.fullmatch(r"([1-9][0-9]{0,4})x([1-9][0-9]{0,4})", size)
+    if match:
+        width, height = int(match.group(1)), int(match.group(2))
+        if width > height:
+            return "landscape"
+        if width < height:
+            return "portrait"
+        return "square"
+    raise BridgeError(
+        f"unsupported video size {size!r}; use WIDTHxHEIGHT (e.g. 1280x720, 720x1280, 720x720) "
+        f"or {', '.join(sorted(VIDEO_ASPECTS))}"
+    )
+
+
+def _video_id_of(request: dict[str, Any]) -> str:
+    vid = str(request.get("video_id") or request.get("id") or "").strip()
+    if not vid or ".." in vid or not VIDEO_ID_RE.fullmatch(vid):
+        raise BridgeError("invalid video id", 400)
+    return vid
+
+
+def _openai_video_object(
+    video_id: str,
+    *,
+    model: str,
+    created_at: int,
+    status: str,
+    progress: int,
+    prompt: str = "",
+    size: str = "",
+    seconds: str = "",
+    error: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    obj: dict[str, Any] = {
+        "id": video_id,
+        "object": "video",
+        "created_at": int(created_at),
+        "status": status,
+        "progress": int(progress),
+        "model": model,
+    }
+    if prompt:
+        obj["prompt"] = prompt
+    if size:
+        obj["size"] = size
+    if seconds:
+        obj["seconds"] = seconds
+    if error:
+        obj["error"] = error
+    return obj
 
 
 def _video_state_path(account: str) -> Path:
@@ -262,14 +355,21 @@ def _read_video_state(account: str) -> dict[str, Any]:
 
 def _save_video_state(client: FlowClient, account: str, state: dict[str, Any]) -> None:
     # The bridge is a new process for every request; continuity must survive
-    # process boundaries without writing cookies or raw API responses to disk.
+    # process boundaries without writing cookies, user prompts, or raw API
+    # responses to disk.
     state["account"] = account
     state["version"] = VIDEO_STATE_VERSION
     state["updated_at"] = time.time()
+    if getattr(client, "_project_id", ""):
+        state["project_id"] = str(client._project_id)
     if getattr(client, "_workflow_id", ""):
         state["workflow_id"] = str(client._workflow_id)
     if getattr(client, "_primary_media_id", ""):
         state["primary_media_id"] = str(client._primary_media_id)
+    jobs = state.get("jobs")
+    if isinstance(jobs, dict) and len(jobs) > MAX_VIDEO_JOBS:
+        keep_keys = list(jobs.keys())[-MAX_VIDEO_JOBS:]
+        state["jobs"] = {k: jobs[k] for k in keep_keys}
     path = _video_state_path(account)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
@@ -338,6 +438,7 @@ def video(request: dict[str, Any], extend: bool = False) -> dict[str, Any]:
     account = str(request.get("account") or "default")
     state = _read_video_state(account)
     with FlowClient(cookies, debug=False, interactive_auth=False) as client:
+        client._project_id = str(state.get("project_id") or "")
         client._workflow_id = str(state.get("workflow_id") or "")
         client._primary_media_id = str(state.get("primary_media_id") or "")
         if extend:
@@ -345,15 +446,196 @@ def video(request: dict[str, Any], extend: bool = False) -> dict[str, Any]:
             if not media_id:
                 raise BridgeError("media_id is required for video extension")
             submitted = client.extend_video(ExtendVideoRequest(
-                prompt=prompt, media_id=media_id, aspect_ratio=aspect,
+                prompt=prompt, media_id=media_id, model=video_model_of(request),
+                aspect_ratio=aspect,
                 workflow_id=str(request.get("workflow_id") or ""),
                 seed=_seed_of(request),
             ))
         else:
             submitted = client.generate_video(GenerateVideoRequest(
-                prompt=prompt, aspect_ratio=aspect, seed=_seed_of(request),
+                prompt=prompt, model=video_model_of(request),
+                aspect_ratio=aspect, seed=_seed_of(request),
             ))
         return _video_result(client, account, submitted, request, state)
+
+
+def _video_seconds_of(request: dict[str, Any]) -> tuple[str, int | None]:
+    raw_seconds = request.get("seconds")
+    if raw_seconds is None or raw_seconds == "" or isinstance(raw_seconds, bool):
+        return "", None
+    text = str(raw_seconds).strip()
+    if not text:
+        return "", None
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise BridgeError("seconds must be a positive integer", 400) from exc
+    if value < 1:
+        raise BridgeError("seconds must be at least 1", 400)
+    return str(value), value
+
+
+def video_start(request: dict[str, Any]) -> dict[str, Any]:
+    cookies = cookies_from(request)
+    for unsupported in ("input_reference", "last_frame", "reference_images"):
+        val = request.get(unsupported)
+        if val is not None and val != "" and val != []:
+            raise BridgeError(
+                f"{unsupported} is not supported by gflow video models yet (text-to-video only)",
+                400,
+            )
+    prompt = str(request.get("prompt") or "").strip()
+    if not prompt:
+        raise BridgeError("prompt is required")
+    model = video_model_of(request)
+    aspect = video_aspect_of(request)
+    seed = _video_seed_of(request)
+    size = str(request.get("size") or "").strip()
+    seconds, seconds_int = _video_seconds_of(request)
+    account = str(request.get("account") or "default")
+    state = _read_video_state(account)
+    created_at = int(time.time())
+    with FlowClient(cookies, debug=False, interactive_auth=False) as client:
+        client._project_id = str(state.get("project_id") or "")
+        client._workflow_id = str(state.get("workflow_id") or "")
+        client._primary_media_id = str(state.get("primary_media_id") or "")
+        media_id_to_extend = str(request.get("media_id") or "").strip()
+        if media_id_to_extend:
+            submitted = client.extend_video(ExtendVideoRequest(
+                prompt=prompt, media_id=media_id_to_extend, model=model,
+                aspect_ratio=aspect,
+                workflow_id=str(request.get("workflow_id") or ""),
+                seed=seed,
+            ))
+        else:
+            submitted = client.generate_video(GenerateVideoRequest(
+                prompt=prompt, model=model, aspect_ratio=aspect,
+                seconds=seconds_int, seed=seed,
+            ))
+        media_ids = [a.id for a in submitted if a.id]
+        if not media_ids:
+            raise BridgeError("Flow returned no media IDs for polling", 502)
+        media_id = media_ids[0]
+        state["last_media_ids"] = media_ids
+        jobs = dict(state.get("jobs") if isinstance(state.get("jobs"), dict) else {})
+        job_entry: dict[str, Any] = {
+            "project_id": str(getattr(client, "_project_id", "") or state.get("project_id") or ""),
+            "model": model,
+            "created_at": created_at,
+        }
+        if size:
+            job_entry["size"] = size
+        if seconds:
+            job_entry["seconds"] = seconds
+        jobs[media_id] = job_entry
+        state["jobs"] = jobs
+        _save_video_state(client, account, state)
+        # Return bare model id so magpie's asOurs prefixes "gflow/" once.
+        return _openai_video_object(
+            media_id,
+            model=model,
+            created_at=created_at,
+            status="in_progress",
+            progress=0,
+            prompt=prompt,
+            size=size,
+            seconds=seconds,
+        )
+
+
+def video_status(request: dict[str, Any]) -> dict[str, Any]:
+    cookies = cookies_from(request)
+    video_id = _video_id_of(request)
+    account = str(request.get("account") or "default")
+    state = _read_video_state(account)
+    jobs = state.get("jobs") if isinstance(state.get("jobs"), dict) else {}
+    job = jobs.get(video_id) if isinstance(jobs.get(video_id), dict) else {}
+    with FlowClient(cookies, debug=False, interactive_auth=False) as client:
+        client._project_id = str(job.get("project_id") or state.get("project_id") or "")
+        prev_project_id = client._project_id
+        data = client.check_video_status([video_id])
+        if client._project_id and client._project_id != prev_project_id:
+            _save_video_state(client, account, state)
+        media_list = data.get("media") if isinstance(data, dict) else None
+        if not isinstance(media_list, list) or not media_list:
+            raise BridgeError(f"video {video_id!r} not found", 404)
+        item = next((m for m in media_list if isinstance(m, dict) and m.get("name") == video_id), None)
+        if item is None and len(media_list) == 1 and isinstance(media_list[0], dict):
+            item = media_list[0]
+        if item is None:
+            raise BridgeError(f"video {video_id!r} not found", 404)
+        media_status = ((item.get("mediaMetadata") or {}).get("mediaStatus") or {}) if isinstance(item.get("mediaMetadata"), dict) else {}
+        raw_status = str(media_status.get("mediaGenerationStatus") or item.get("status") or "")
+        err_obj: dict[str, str] | None = None
+        if raw_status in client._VIDEO_DONE_STATUSES:
+            status, progress = "completed", 100
+        elif raw_status in client._VIDEO_FAIL_STATUSES:
+            reason = (
+                str(media_status.get("failureReason") or "")
+                or str(media_status.get("errorMessage") or "")
+                or str(media_status.get("reason") or "")
+                or "Video generation failed"
+            )[:300]
+            status, progress = "failed", 0
+            err_obj = {"code": "video_generation_failed", "message": reason}
+        elif raw_status == "MEDIA_GENERATION_STATUS_PENDING":
+            status, progress = "queued", 0
+        else:
+            raw_prog = media_status.get("progressPercentage", media_status.get("progress", 0))
+            progress = int(raw_prog) if isinstance(raw_prog, (int, float)) and not isinstance(raw_prog, bool) else 0
+            status, progress = "in_progress", max(0, min(100, progress))
+        return _openai_video_object(
+            video_id,
+            model=str(job.get("model") or DEFAULT_VIDEO_MODEL),
+            created_at=int(job.get("created_at") or state.get("updated_at") or time.time()),
+            status=status,
+            progress=progress,
+            size=str(job.get("size") or ""),
+            seconds=str(job.get("seconds") or ""),
+            error=err_obj,
+        )
+
+
+def video_content(request: dict[str, Any]) -> dict[str, Any]:
+    cookies = cookies_from(request)
+    video_id = _video_id_of(request)
+    account = str(request.get("account") or "default")
+    state = _read_video_state(account)
+    jobs = state.get("jobs") if isinstance(state.get("jobs"), dict) else {}
+    job = jobs.get(video_id) if isinstance(jobs.get(video_id), dict) else {}
+    with FlowClient(cookies, debug=False, interactive_auth=False) as client:
+        client._project_id = str(job.get("project_id") or state.get("project_id") or "")
+        try:
+            media_detail = client.get_flow_media(video_id)
+        except FlowAPIError as exc:
+            msg = sanitize_error(exc)
+            if "404" in msg or "not found" in msg.lower():
+                raise BridgeError(f"video {video_id!r} not found", 404) from exc
+            raise BridgeError(msg, 502) from exc
+        vid_data = ((media_detail.get("video") or {}).get("generatedVideo") or {}) if isinstance(media_detail, dict) else {}
+        fife_url = str(vid_data.get("fifeUrl") or "")
+        asset = Asset(
+            id=video_id,
+            name=f"video-{video_id[:8]}",
+            asset_type=AssetType.VIDEO,
+            url=fife_url,
+            raw=vid_data if isinstance(vid_data, dict) else {},
+        )
+        safe_name = hashlib.sha256(video_id.encode("utf-8")).hexdigest()[:24]
+        target = Path(os.environ["GFLOW_HOME"]) / "videos" / f"video-{safe_name}.mp4"
+        saved = client.save_video(asset, target)
+        if not saved.exists() or not saved.stat().st_size:
+            raise BridgeError("Flow downloaded an empty video file", 502)
+        try:
+            saved.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "id": video_id,
+            "path": str(saved),
+            "content_type": "video/mp4",
+            "bytes": saved.stat().st_size,
+        }
 
 
 FLOW_URLS = (
@@ -698,6 +980,12 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
         return video(request)
     if command == "extend_video":
         return video(request, extend=True)
+    if command == "video_start":
+        return video_start(request)
+    if command == "video_status":
+        return video_status(request)
+    if command == "video_content":
+        return video_content(request)
     if command == "browser_login_start":
         return browser_login_start(request)
     if command == "browser_login_wait":
@@ -718,9 +1006,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(json.dumps(result, separators=(",", ":")))
         return 0
     except BridgeError as exc:
-        sys.stdout.write(json.dumps({"error": {"message": str(exc), "type": "bridge_error"}},
-                                   separators=(",", ":")))
-        return exc.status
+        sys.stdout.write(json.dumps(
+            {"error": {"message": str(exc), "type": "bridge_error", "status": exc.status}},
+            separators=(",", ":"),
+        ))
+        return 1
     except Exception as exc:
         sys.stdout.write(json.dumps({"error": {"message": sanitize_error(exc), "type": exc.__class__.__name__}},
                                    separators=(",", ":")))

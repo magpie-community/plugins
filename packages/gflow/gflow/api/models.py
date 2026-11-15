@@ -47,8 +47,10 @@ class GenerateImageRequest(BaseModel):
 class GenerateVideoRequest(BaseModel):
     """Request to generate a video using Veo 3.1."""
     prompt: str
+    model: str = "veo-3.1"
     aspect_ratio: str = "landscape"
     duration: str = "short"  # "short", "medium", "long"
+    seconds: int | None = None
     seed: int | None = None
 
 
@@ -59,6 +61,7 @@ class ExtendVideoRequest(BaseModel):
     """
     prompt: str  # Describe what happens next
     media_id: str  # Media ID of the video to extend
+    model: str = "veo-3.1"
     aspect_ratio: str = "landscape"
     workflow_id: str = ""  # Flow workflow ID (optional, for project continuity)
     seed: int | None = None

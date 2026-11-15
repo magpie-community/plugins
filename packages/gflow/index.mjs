@@ -1,16 +1,18 @@
 // One exported plugin function. magpie invokes every exported function as a
 // plugin, so all helpers live in imported modules or inside GflowPlugin.
-// config declares the native image models; auth owns accounts; provider.fetch
-// translates magpie's OpenAI images API into the stateless Python bridge.
-// Video tools use the same bridge and magpie account, never the CLI session.
+// config declares the native image and video models; auth owns accounts;
+// auth.loader.fetch translates magpie's OpenAI images and videos APIs into the
+// stateless Python bridge. Video MCP tools use the same bridge and account.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { check, checkAuth, savedFiles } from "./gflow.mjs";
 
 const PROVIDER_ID = "gflow";
 const DEFAULT_MODEL_ID = "nano-banana-2.1";
+const DEFAULT_VIDEO_MODEL_ID = "veo-3.1";
 // Flow's three image menu entries → wire imageModelName (see gflow/api/client.py).
 // These are native magpie provider models, not MCP tools: any agent talks to
 // magpie's OpenAI-compatible /images/generations endpoint and picks one by id.
@@ -19,7 +21,14 @@ const IMAGE_MODELS = [
   { id: "nano-banana-2.1", name: "Google Flow · Nano Banana 2.1", wire: "BELUGA" },
   { id: "nano-banana-2-lite", name: "Google Flow · Nano Banana 2 Lite", wire: "HARBOR_SEAL" },
 ];
+const VIDEO_MODELS = [
+  { id: "veo-3.1", name: "Google Flow · Veo 3.1", wire: "veo_3_1_t2v_fast_ultra" },
+  { id: "veo-3.1-quality", name: "Google Flow · Veo 3.1 Quality", wire: "veo_3_1_t2v" },
+  { id: "veo-3.1-lite", name: "Google Flow · Veo 3.1 Lite", wire: "veo_3_1_t2v_lite" },
+];
 const MODEL_IDS = new Set(IMAGE_MODELS.map((m) => m.id));
+const VIDEO_MODEL_IDS = new Set(VIDEO_MODELS.map((m) => m.id));
+const VIDEO_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const NPM = "@ai-sdk/openai-compatible";
 const API_BASE = "plugin://gflow/v1";
 const VIDEO_ASPECTS = ["square", "portrait", "landscape", "16:9", "9:16", "1:1"];
@@ -42,6 +51,29 @@ function imageModel({ id, name, wire }, base = API_BASE) {
       output: { text: false, image: true, audio: false, video: false, pdf: false },
     },
     modalities: { input: ["text"], output: ["image"] },
+    cost: { input: 0, output: 0 },
+    status: "active",
+    release_date: "",
+    tool_call: false,
+    reasoning: false,
+    free: false,
+  };
+}
+
+function videoModel({ id, name }, base = API_BASE) {
+  return {
+    id,
+    name,
+    api: { id, url: base, npm: NPM },
+    limit: { context: 1, output: 1 },
+    capabilities: {
+      temperature: false,
+      reasoning: false,
+      toolcall: false,
+      input: { text: true, image: false, audio: false, video: false, pdf: false },
+      output: { text: false, image: false, audio: false, video: true, pdf: false },
+    },
+    modalities: { input: ["text"], output: ["video"] },
     cost: { input: 0, output: 0 },
     status: "active",
     release_date: "",
@@ -196,11 +228,15 @@ function pythonBridge(command, cookies, payload, o = {}, hostAccount = PROVIDER_
       const clean = String(err).replace(/\x1b\[[0-9;]*m/g, "").slice(-1000);
       if (code !== 0) {
         let message = clean || `gflow bridge exited ${code}`;
+        let status;
         try {
           const parsed = JSON.parse(out);
           if (parsed?.error?.message) message = String(parsed.error.message);
+          if (Number.isInteger(parsed?.error?.status)) status = parsed.error.status;
         } catch { /* keep the bounded Python stderr */ }
-        reject(new Error(message));
+        const failure = new Error(message);
+        if (status !== undefined) failure.status = status;
+        reject(failure);
         return;
       }
       try { resolvePromise(JSON.parse(out)); }
@@ -228,8 +264,9 @@ function jsonResponse(body, status = 200, extra = {}) {
 
 function bridgeFailure(e, fallbackStatus = 502) {
   const message = String(e?.message ?? e).slice(0, 500);
-  const auth = /cookie|session expired|401|unauthorized|sign in|reCAPTCHA|CDP/i.test(message);
-  const status = auth ? 401 : fallbackStatus;
+  const explicit = Number(e?.status);
+  const auth = explicit === 401 || /cookie|session expired|401|unauthorized|sign in|reCAPTCHA|CDP/i.test(message);
+  const status = auth ? 401 : (Number.isInteger(explicit) && explicit >= 400 && explicit < 600 ? explicit : fallbackStatus);
   return jsonResponse({ error: { message, type: "gflow_bridge_error" } }, status,
     auth ? { "x-magpie-sign-in": "kept" } : {});
 }
@@ -256,20 +293,39 @@ function normalizedModelId(raw) {
   return id;
 }
 
-function bodyOf(init) {
+function normalizedVideoModelId(raw) {
+  const value = String(raw ?? "").trim() || DEFAULT_VIDEO_MODEL_ID;
+  const id = value.startsWith(`${PROVIDER_ID}/`) ? value.slice(PROVIDER_ID.length + 1) : value;
+  if (!VIDEO_MODEL_IDS.has(id)) {
+    throw new Error(`unknown gflow video model ${JSON.stringify(value)}; expected one of ${[...VIDEO_MODEL_IDS].join(", ")}`);
+  }
+  return id;
+}
+
+function decodeVideoId(raw) {
+  let id;
+  try { id = decodeURIComponent(String(raw ?? "")).trim(); }
+  catch { throw new Error("invalid gflow video id encoding"); }
+  if (!id || id.includes("..") || !VIDEO_ID_RE.test(id)) {
+    throw new Error(`invalid gflow video id ${JSON.stringify(id)}`);
+  }
+  return id;
+}
+
+function bodyOf(init, routeName = "images/generations") {
   const b = init?.body;
   let body;
   if (typeof b === "string") body = JSON.parse(b || "{}");
   else if (b instanceof Uint8Array) body = JSON.parse(Buffer.from(b).toString("utf8") || "{}");
   else if (ArrayBuffer.isView(b)) body = JSON.parse(Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("utf8") || "{}");
   else if (b && typeof b === "object") body = b;
-  else throw new Error("images/generations request body is missing");
+  else throw new Error(`${routeName} request body is missing`);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("images/generations request body must be an object");
+    throw new Error(`${routeName} request body must be an object`);
   }
   const reserved = Object.keys(body).filter((key) => RESERVED_BRIDGE_KEYS.has(key));
   if (reserved.length) {
-    throw new Error(`images/generations request body contains reserved fields: ${reserved.join(", ")}`);
+    throw new Error(`${routeName} request body contains reserved fields: ${reserved.join(", ")}`);
   }
   return body;
 }
@@ -389,19 +445,29 @@ export async function GflowPlugin(input, options = {}) {
   return {
     async config(config) {
       config.provider ??= {};
-      // ??= keeps a user's own provider/model overrides. Every model must be
-      // OpenAI-compatible and image-output only to be discovered as a drawer.
+      // ??= keeps a user's own provider/model overrides. Image and video
+      // models declare explicit non-text outputs so magpie discovers them as
+      // drawers and videomakers without mixing them into agent chat lists.
       config.provider[PROVIDER_ID] ??= {
         name: "Google Flow",
         npm: NPM,
         api: base,
-        models: Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, {
-          name: m.name,
-          limit: { context: 1, output: 1 },
-          tool_call: false,
-          reasoning: false,
-          modalities: { input: ["text"], output: ["image"] },
-        }])),
+        models: {
+          ...Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, {
+            name: m.name,
+            limit: { context: 1, output: 1 },
+            tool_call: false,
+            reasoning: false,
+            modalities: { input: ["text"], output: ["image"] },
+          }])),
+          ...Object.fromEntries(VIDEO_MODELS.map((m) => [m.id, {
+            name: m.name,
+            limit: { context: 1, output: 1 },
+            tool_call: false,
+            reasoning: false,
+            modalities: { input: ["text"], output: ["video"] },
+          }])),
+        },
       };
       return config;
     },
@@ -411,6 +477,7 @@ export async function GflowPlugin(input, options = {}) {
       models: async (provider) => ({
         ...provider.models,
         ...Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, imageModel(m, base)])),
+        ...Object.fromEntries(VIDEO_MODELS.map((m) => [m.id, videoModel(m, base)])),
       }),
     },
 
@@ -556,30 +623,98 @@ export async function GflowPlugin(input, options = {}) {
         if (auth?.type !== "api" || !auth.key) throw new Error("No Google Flow account is signed in. Add its cookies in magpie Settings → Providers.");
         const cookies = auth.key;
         return {
-          // pluginFetch replaces this base with the URL under /images/generations;
-          // the custom fetch below never sends a network request to it.
+          // pluginFetch rewrites plugin://gflow/v1/* onto this base; the custom
+          // fetch below intercepts images and videos locally without dialing it.
           baseURL: "https://gflow.invalid/v1",
           apiKey: "gflow",
           headers: { "x-gflow-cookies": cookies },
           async fetch(req, init = {}) {
             const url = String(req?.url ?? req ?? "");
-            if (!/\/images\/generations(?:\?|$)/.test(url)) {
-              return jsonResponse({ error: { message: `Unsupported gflow provider route: ${new URL(url).pathname}` } }, 404);
-            }
-            let payload;
-            try {
-              payload = bodyOf(init);
-              payload = { ...payload, model: normalizedModelId(payload.model) };
-            }
-            catch (e) { return jsonResponse({ error: { message: e.message } }, 400); }
+            let pathname;
+            try { pathname = new URL(url).pathname; }
+            catch { return jsonResponse({ error: { message: `Invalid gflow provider URL: ${url}` } }, 400); }
+            const method = String(init?.method ?? req?.method ?? "POST").toUpperCase();
             const effectiveCookies = cookiesFromHeaders(init, cookies);
-            try {
-              const answer = await pythonBridge("image", effectiveCookies, payload, o, hostAccount(), init?.signal);
-              if (Array.isArray(answer?.data)) return jsonResponse(answer, 200);
-              return jsonResponse({ error: { message: "gflow bridge returned no images" } }, 502);
-            } catch (e) {
-              return bridgeFailure(e);
+
+            if (method === "POST" && /\/images\/generations$/.test(pathname)) {
+              let payload;
+              try {
+                payload = bodyOf(init, "images/generations");
+                payload = { ...payload, model: normalizedModelId(payload.model) };
+              }
+              catch (e) { return jsonResponse({ error: { message: e.message } }, 400); }
+              try {
+                const answer = await pythonBridge("image", effectiveCookies, payload, o, hostAccount(), init?.signal);
+                if (Array.isArray(answer?.data)) return jsonResponse(answer, 200);
+                return jsonResponse({ error: { message: "gflow bridge returned no images" } }, 502);
+              } catch (e) {
+                return bridgeFailure(e);
+              }
             }
+
+            if (method === "POST" && /\/videos$/.test(pathname)) {
+              let payload;
+              try {
+                payload = bodyOf(init, "videos");
+                for (const key of ["input_reference", "last_frame", "reference_images"]) {
+                  const v = payload[key];
+                  if (v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && v.length === 0)) {
+                    throw new Error(`${key} is not supported by gflow video models yet (text-to-video only)`);
+                  }
+                }
+                payload = { ...payload, model: normalizedVideoModelId(payload.model) };
+              } catch (e) {
+                return jsonResponse({ error: { message: e.message } }, 400);
+              }
+              try {
+                const answer = await pythonBridge("video_start", effectiveCookies, payload, o, hostAccount(), init?.signal);
+                if (typeof answer?.id === "string" && answer.id.trim()) return jsonResponse(answer, 200);
+                return jsonResponse({ error: { message: "gflow bridge started no video" } }, 502);
+              } catch (e) {
+                return bridgeFailure(e);
+              }
+            }
+
+            const contentMatch = method === "GET" ? pathname.match(/\/videos\/([^/]+)\/content$/) : null;
+            if (contentMatch) {
+              let videoId;
+              try { videoId = decodeVideoId(contentMatch[1]); }
+              catch (e) { return jsonResponse({ error: { message: e.message } }, 400); }
+              try {
+                const answer = await pythonBridge("video_content", effectiveCookies, { video_id: videoId }, o, hostAccount(), init?.signal);
+                const filePath = typeof answer?.path === "string" ? answer.path : "";
+                let st;
+                try { st = filePath ? statSync(filePath) : null; } catch { st = null; }
+                if (!st || !st.isFile() || st.size <= 0) {
+                  return jsonResponse({ error: { message: "gflow bridge returned no video file" } }, 502);
+                }
+                return new Response(Readable.toWeb(createReadStream(filePath)), {
+                  status: 200,
+                  headers: {
+                    "content-type": String(answer.content_type || "video/mp4"),
+                    "content-length": String(st.size),
+                  },
+                });
+              } catch (e) {
+                return bridgeFailure(e);
+              }
+            }
+
+            const statusMatch = method === "GET" ? pathname.match(/\/videos\/([^/]+)$/) : null;
+            if (statusMatch) {
+              let videoId;
+              try { videoId = decodeVideoId(statusMatch[1]); }
+              catch (e) { return jsonResponse({ error: { message: e.message } }, 400); }
+              try {
+                const answer = await pythonBridge("video_status", effectiveCookies, { video_id: videoId }, o, hostAccount(), init?.signal);
+                if (typeof answer?.id === "string" && answer.object === "video") return jsonResponse(answer, 200);
+                return jsonResponse({ error: { message: "gflow bridge returned invalid video status" } }, 502);
+              } catch (e) {
+                return bridgeFailure(e);
+              }
+            }
+
+            return jsonResponse({ error: { message: `Unsupported gflow provider route: ${pathname}` } }, 404);
           },
         };
       },
@@ -614,7 +749,7 @@ export async function GflowPlugin(input, options = {}) {
           catch (e) { cliStatus = { authenticated: false, raw: String(e.message ?? e) }; }
           return {
             provider: PROVIDER_ID,
-            native_models: IMAGE_MODELS.map((m) => `${PROVIDER_ID}/${m.id}`),
+            native_models: [...IMAGE_MODELS, ...VIDEO_MODELS].map((m) => `${PROVIDER_ID}/${m.id}`),
             magpie_accounts: Object.keys(accounts).length,
             video_auth_account: Object.keys(accounts).length === 1 ? Object.keys(accounts)[0] : null,
             cli_authenticated: cliStatus.authenticated,

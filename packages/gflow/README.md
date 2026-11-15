@@ -1,10 +1,18 @@
-# @magpie-community/opencode-gflow-auth
+# gflow-plugin
 
-[OpenCode](https://opencode.ai) / [magpie](https://usemagpie.ai) provider 插件：**Google Flow**——账号由 magpie 管理，Nano Banana 三个生图模型作为原生 image models，Veo 视频以 tools 提供。
+[OpenCode](https://opencode.ai) / [magpie](https://usemagpie.ai) provider 插件：**Google Flow**——账号由 magpie 管理，Nano Banana 三个生图模型作为原生 image models，Veo 3.1 作为原生 video model（`POST /v1/videos` 异步任务流），并保留视频续写等 MCP tools。
 
 插件只有一个导出函数 `GflowPlugin`，返回 `config` / `provider` / `auth` / `tool` 四个钩子；`index.mjs` 是唯一实现，`opencode.mjs` 与 `opencode2.mjs` 分别是 OpenCode 1.x 与 2.x 的入口。
 
 ## 安装
+
+从本仓库直接装（不需要 npm、不需要先发版）：
+
+```
+magpie plugin add github:lkl-hubo/gflow-plugin
+```
+
+合并进 [magpie-community/plugins](https://github.com/magpie-community/plugins) 后也可以用包名：
 
 ```
 magpie plugin add @magpie-community/opencode-gflow-auth
@@ -59,11 +67,36 @@ agent → magpie POST /images/generations
 
 Flow 生图需要真实浏览器 reCAPTCHA：账号对应的 Chrome/CDP 会话必须可用，且有打开的 `https://flow.google.com/` 页面。bridge 设 `GFLOW_NONINTERACTIVE=1`，CDP 不可用时直接报错，不自动启动浏览器、不写 `~/.gflow/env`。
 
-## 视频 tools
+## 原生视频模型与视频 tools
+
+三个 Veo 3.1 模型经 `config.provider` + `provider.models` 注册为 magpie 原生 video models（`capabilities.output.video: true`、`modalities.output: ["video"]`）。客户端可直接走 magpie gateway 的 OpenAI Video API：
+
+| 模型 id | Settings 显示名 | Flow wire `videoModelKey` |
+| --- | --- | --- |
+| `gflow/veo-3.1` | Google Flow · Veo 3.1 | `veo_3_1_t2v_fast_ultra` / `veo_3_1_t2v_fast` |
+| `gflow/veo-3.1-quality` | Google Flow · Veo 3.1 Quality | `veo_3_1_t2v` |
+| `gflow/veo-3.1-lite` | Google Flow · Veo 3.1 Lite | `veo_3_1_t2v_lite` |
+
+```bash
+# 1) 创建异步视频任务
+curl -s "$MAGPIE_GATEWAY/v1/videos" \
+  -H "Authorization: Bearer $MAGPIE_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"gflow/veo-3.1","prompt":"ocean waves at sunset","size":"1280x720"}'
+
+# 2) 轮询任务状态（返回 gflow.<account>.<media_id>）
+curl -s "$MAGPIE_GATEWAY/v1/videos/$VIDEO_ID" -H "Authorization: Bearer $MAGPIE_KEY"
+
+# 3) 下载 MP4 二进制流
+curl -s "$MAGPIE_GATEWAY/v1/videos/$VIDEO_ID/content" -H "Authorization: Bearer $MAGPIE_KEY" -o out.mp4
+```
+
+`size` 支持 `WIDTHxHEIGHT`（按宽高比映射为 `landscape` / `portrait` / `square`）及 `landscape` / `portrait` / `square` / `16:9` / `9:16` / `1:1`；`extra` 支持 `aspect_ratio`、`seed`、`media_id`（续写）。当前仅支持文生视频与 `media_id` 续写，传 `input_reference` / `last_frame` / `reference_images` 返回 400。
+
+同时保留三个 MCP tools（原生 `/v1/videos` 协议无独立 `extend` 端点，续写仍可走 `gflow_extend_video`）：
 
 | Tool | 说明 |
 | --- | --- |
-| `gflow_generate_video` | Veo 3.1 生成，返回保存的文件路径与 operation id |
+| `gflow_generate_video` | Veo 3.1 同步等待生成并落盘，返回保存的文件路径与 operation id |
 | `gflow_extend_video` | 续写上一段视频，需要上一次的 `media_id` |
 | `gflow_auth_status` | 查看 magpie 账号数与 gflow CLI 登录状态，不打印 Cookie |
 
@@ -79,7 +112,7 @@ Cookie 只经 stdin 与进程内 header 传给 Python bridge，不进 argv、不
 
 ## 与已有条目的区别
 
-本包接的是 **Google Flow 的图像生成**（Nano Banana 系列），不是 Gemini 对话。生图走 Flow 的 `flowMedia:batchGenerateImages`，需要浏览器 reCAPTCHA 会话；模型是三个 image-only 的原生 image models，不是 chat 模型。`opencode-antigravity-auth` 虽然也走 Google 账号，但提供的是 Gemini / Claude / GPT-OSS 对话模型，与 Flow 生图是不同通道。
+本包接的是 **Google Flow 的图像与视频生成**（Nano Banana 系列 + Veo 3.1），不是 Gemini 对话。生图走 `flowMedia:batchGenerateImages`，视频走 `video:batchAsyncGenerateVideoText` + 状态轮询 + `fifeUrl` MP4 下载，均需要真实浏览器 reCAPTCHA 会话；注册的是 image-only 与 video-only 的原生媒体模型，不是 chat 模型。`opencode-antigravity-auth` 虽然也走 Google 账号，但提供的是 Gemini / Claude / GPT-OSS 对话模型，与 Flow 媒体生成是不同通道。
 
 ## 测试
 
@@ -87,7 +120,7 @@ Cookie 只经 stdin 与进程内 header 传给 Python bridge，不进 argv、不
 node --test index.test.mjs
 ```
 
-23 个用例，覆盖四个钩子的形状、额度映射与共享 deadline、模型声明、Cookie 处理、视频 tools 与 `package.json` 元数据。测试用假 bridge 与假解释器，不登录、不发请求。
+26 个用例，覆盖四个钩子的形状、额度映射与共享 deadline、原生生图与视频模型声明、`/v1/videos` 异步三阶段协议与 `project_id` 跨进程持久化、Cookie 处理、视频 tools 与 `package.json` 元数据。测试用假 bridge 与假解释器，不登录、不发请求。
 
 ## License
 

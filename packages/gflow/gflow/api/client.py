@@ -59,6 +59,12 @@ IMAGE_MODELS = {
     "nano-banana-2-lite":        "HARBOR_SEAL",
 }
 VIDEO_MODEL = "veo_3_1_t2v_fast_ultra"  # Veo 3.1 fast/ultra
+VIDEO_MODELS = {
+    # public id           default wire videoModelKey
+    "veo-3.1":            VIDEO_MODEL,
+    "veo-3.1-quality":    "veo_3_1_t2v",
+    "veo-3.1-lite":       "veo_3_1_t2v_lite",
+}
 TOOL_NAME = "PINHOLE"  # Flow's internal tool name
 
 # Aspect ratio mapping
@@ -782,13 +788,44 @@ class FlowClient:
         """
         Generate a video using Veo 3.1 (async).
 
-        POST /v1/video:batchAsyncGenerateVideoText
+        Tries Flow's current batchexecute YhhmEf RPC first (when a live Chrome
+        session is available), falling back to legacy aisandbox-pa REST.
         """
+        try:
+            import gflow.api.newflow as _newflow
+        except Exception:
+            _newflow = None
+        if _newflow is not None:
+            try:
+                assets = _newflow.generate_video(
+                    prompt=req.prompt,
+                    aspect_ratio=req.aspect_ratio,
+                    model=req.model,
+                    seed=req.seed,
+                    seconds=req.seconds,
+                    workflow_id=self._workflow_id or None,
+                    debug=self.debug,
+                )
+                if assets:
+                    raw = assets[0].raw or {}
+                    if raw.get("projectId"):
+                        self._project_id = str(raw["projectId"])
+                    if raw.get("workflowId"):
+                        self._workflow_id = str(raw["workflowId"])
+                    self._primary_media_id = assets[0].id
+                return assets
+            except _newflow.NewFlowUnavailable as exc:
+                if self.debug:
+                    logger.info("newflow video unavailable (%s); trying legacy REST", exc)
+            except _newflow.NewFlowError as exc:
+                raise FlowAPIError(str(exc), status_code=502) from exc
+
         self._ensure_token()
         project_id = self._ensure_project()
 
         url = f"{SANDBOX_BASE}/v1/video:batchAsyncGenerateVideoText"
         aspect = VIDEO_ASPECT_MAP.get(req.aspect_ratio.lower(), "VIDEO_ASPECT_RATIO_LANDSCAPE")
+        video_model_key = VIDEO_MODELS.get(req.model, VIDEO_MODEL)
         seed = req.seed if req.seed is not None else random.randint(10000, 99999)
         batch_id = str(uuid.uuid4())
 
@@ -809,7 +846,7 @@ class FlowClient:
                             "parts": [{"text": req.prompt}],
                         },
                     },
-                    "videoModelKey": VIDEO_MODEL,
+                    "videoModelKey": video_model_key,
                     "metadata": {},
                 }],
                 "useV2ModelConfig": True,
@@ -862,13 +899,37 @@ class FlowClient:
         """
         Extend a video using Veo 3.1 extend.
 
-        POST /v1/video:batchAsyncGenerateVideoExtendVideo
-
-        Takes an existing video's media ID and generates a continuation
-        based on the extend prompt.  Requires a valid workflowId in
-        metadata — obtained from the base video generation response or
-        created explicitly.
+        Tries Flow's current batchexecute fZytfe RPC first, falling back to
+        legacy aisandbox-pa REST.
         """
+        try:
+            import gflow.api.newflow as _newflow
+        except Exception:
+            _newflow = None
+        if _newflow is not None:
+            try:
+                assets = _newflow.extend_video(
+                    media_id=req.media_id,
+                    prompt=req.prompt,
+                    aspect_ratio=req.aspect_ratio,
+                    model=req.model,
+                    workflow_id=req.workflow_id or self._workflow_id or None,
+                    debug=self.debug,
+                )
+                if assets:
+                    raw = assets[0].raw or {}
+                    if raw.get("projectId"):
+                        self._project_id = str(raw["projectId"])
+                    if raw.get("workflowId"):
+                        self._workflow_id = str(raw["workflowId"])
+                    self._primary_media_id = assets[0].id
+                return assets
+            except _newflow.NewFlowUnavailable as exc:
+                if self.debug:
+                    logger.info("newflow extend unavailable (%s); trying legacy REST", exc)
+            except _newflow.NewFlowError as exc:
+                raise FlowAPIError(str(exc), status_code=502) from exc
+
         self._ensure_token()
         project_id = self._ensure_project()
 
@@ -930,12 +991,32 @@ class FlowClient:
         """
         Check status of async video generation.
 
-        POST /v1/video:batchCheckAsyncVideoGenerationStatus
-
-        Real payload format (from network sniff):
-          {"media": [{"name": "uuid", "projectId": "uuid"}]}
+        Tries Flow's current batchexecute jwpduf RPC first, falling back to
+        POST /v1/video:batchCheckAsyncVideoGenerationStatus.
         """
+        try:
+            import gflow.api.newflow as _newflow
+        except Exception:
+            _newflow = None
+        if _newflow is not None:
+            try:
+                res = _newflow.check_video_status(
+                    operation_names,
+                    project_id=self._project_id or None,
+                    debug=self.debug,
+                )
+                if isinstance(res, dict) and res.get("projectId"):
+                    self._project_id = str(res["projectId"])
+                return res
+            except _newflow.NewFlowUnavailable as exc:
+                if self.debug:
+                    logger.info("newflow status unavailable (%s); trying legacy REST", exc)
+            except _newflow.NewFlowError as exc:
+                raise FlowAPIError(str(exc), status_code=502) from exc
+
         self._ensure_token()
+        if not self._project_id:
+            self._ensure_project()
 
         url = f"{SANDBOX_BASE}/v1/video:batchCheckAsyncVideoGenerationStatus"
 
@@ -959,11 +1040,22 @@ class FlowClient:
         """
         Get full media details including fifeUrl for download.
 
-        GET /v1/flowMedia/{name}
-
-        The status check endpoint does NOT return fifeUrl — only this
-        endpoint does.  Call it after status shows SUCCESSFUL.
+        Tries Flow's current batchexecute iFxMud / jwpduf RPC first, falling back
+        to GET /v1/flowMedia/{name}.
         """
+        try:
+            import gflow.api.newflow as _newflow
+        except Exception:
+            _newflow = None
+        if _newflow is not None:
+            try:
+                return _newflow.get_flow_media(media_name, project_id=self._project_id or None)
+            except _newflow.NewFlowUnavailable as exc:
+                if self.debug:
+                    logger.info("newflow get_flow_media unavailable (%s); trying legacy REST", exc)
+            except _newflow.NewFlowError as exc:
+                raise FlowAPIError(str(exc), status_code=502) from exc
+
         self._ensure_token()
         url = f"{SANDBOX_BASE}/v1/flowMedia/{media_name}"
 
