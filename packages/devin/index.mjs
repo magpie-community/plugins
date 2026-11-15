@@ -605,6 +605,12 @@ function runtimeModel(m) {
 
 // withImages is a list of models with what entries (listed's) say of their
 // images on them; a model they say nothing of is left as it was.
+// fellBack marks a list that isn't the account's own (magpie's plugin
+// host reads Symbol.for("magpie.fellBack"))
+function fellBack(models) {
+  return Object.assign(models, { [Symbol.for("magpie.fellBack")]: true })
+}
+
 function withImages(models, entries) {
   const by = new Map(entries.map((m) => [m.id, m.image]))
   return Object.fromEntries(
@@ -3292,7 +3298,10 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
         const images = await imagesFor(key, server)
         const { free, prices } = await configsFor(key, server)
         const families = await ownFamilies(key, server)
-        if (!families) return withImages(provider.models, listed(familiesOf(SNAPSHOT), Object.keys(provider?.models ?? {}), images))
+        // neither Devin nor the CLI named the account's models: the list
+        // is the snapshot's, so magpie keeps the account's last good list
+        // (and the models the user picked from it) over this one
+        if (!families) return fellBack(withImages(provider.models, listed(familiesOf(SNAPSHOT), Object.keys(provider?.models ?? {}), images)))
         return Object.fromEntries(listed(families, Object.keys(provider?.models ?? {}), images, free, prices).map((m) => [m.id, runtimeModel(m)]))
       },
     },
