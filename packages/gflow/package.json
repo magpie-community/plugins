@@ -4,7 +4,9 @@
   "description": "Google Flow (Nano Banana Pro, 2.1, 2 Lite; Veo 3.1) as native magpie image and video models: magpie-managed accounts with Chrome sign-in, live credit balance, and Veo video tools",
   "type": "module",
   "main": "./opencode.mjs",
-  "exports": { ".": "./opencode2.mjs" },
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
   "files": [
     "index.mjs",
     "gflow.mjs",
@@ -26,7 +28,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lkl-hubo/gflow-plugin.git"
+    "url": "git+https://github.com/hubo1989/gflow-plugin.git"
   },
   "scripts": {
     "test": "node --test index.test.mjs"

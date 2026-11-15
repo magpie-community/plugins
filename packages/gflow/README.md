@@ -9,7 +9,7 @@
 从本仓库直接装（不需要 npm、不需要先发版）：
 
 ```
-magpie plugin add github:lkl-hubo/gflow-plugin
+magpie plugin add github:hubo1989/gflow-plugin
 ```
 
 合并进 [magpie-community/plugins](https://github.com/magpie-community/plugins) 后也可以用包名：
