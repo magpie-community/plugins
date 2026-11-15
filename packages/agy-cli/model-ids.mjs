@@ -44,7 +44,7 @@ export function nameIndex() {
   index = new Map()
   if (rows) {
     const families = new Map()
-    const aliases = []
+    const claims = new Map() // display name -> the families that use it
     for (const model of rows) {
       const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(model.id)?.[1]?.toLowerCase() || ""
       const family = effort ? model.id.slice(0, -(effort.length + 1)) : model.id
@@ -52,15 +52,19 @@ export function nameIndex() {
       families.get(family).add(model.id)
       const name = normalizeName(model.name)
       if (!name) continue
-      if (index.has(name) && index.get(name).family !== family) continue // one name, two families: no match
-      aliases.push([name, family], [stripEffortSuffix(name), family])
+      for (const alias of [name, stripEffortSuffix(name)]) {
+        if (!claims.has(alias)) claims.set(alias, new Set())
+        claims.get(alias).add(family)
+      }
     }
     for (const [family, ids] of families) {
       // the bare id the catalog serves even when agy lists no variant of it
       ids.add(family)
     }
-    for (const [name, family] of aliases) {
-      if (index.has(name) && index.get(name).family !== family) continue
+    for (const [name, owners] of claims) {
+      // one name, two families: no match, rather than whichever came first
+      if (owners.size !== 1) continue
+      const [family] = owners
       index.set(name, { family, ids: families.get(family) })
     }
   }

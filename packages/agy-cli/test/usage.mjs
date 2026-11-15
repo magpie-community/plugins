@@ -102,12 +102,14 @@ test("ids on windows follow the catalog, and names agy adds match nothing until 
   // The separator list "A, B and C" also splits with no comma before "and".
   storeCatalogRows([{ id: "m1", name: "Model One" }, { id: "m2", name: "Model Two" }])
   assert.deepEqual(modelsInGroup({ description: "Models within this group: Model One and Model Two" }), ["m1", "m2"])
+  // One display name used by two families matches neither.
+  storeCatalogRows([{ id: "a-high", name: "Twin (High)", effort: "high" }, { id: "b", name: "Twin" }, { id: "c", name: "Solo" }])
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Twin, Solo" }), ["c"])
   storeCatalogRows(null)
 })
 
 const report = groups => ({ status: "SUCCESS", command: { name: "usage", data: { groups } } })
 const group = (buckets, name = "Gemini Models", description = "For paid Pro plans, Argon quota is separate.") => ({ name, description, buckets })
-const groupNoDesc = (buckets, name = "Gemini Models") => ({ name, buckets })
 const bucket = (overrides = {}) => ({ id: "gemini-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 0.75, ...overrides })
 
 test("maps all groups/cadences to display-only Magpie windows, without invented identity", () => {
