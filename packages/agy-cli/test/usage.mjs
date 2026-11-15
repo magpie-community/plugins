@@ -7,10 +7,107 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { createUsageReader, fetchUsage, parseUsageReport } from "../usage.mjs"
+import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
+// Live data captured from `agy -p /usage --output-format json` (agy 1.5.9,
+// 2026-11-15), group descriptions pasted verbatim.
+const LIVE_REPORT = {
+  status: "SUCCESS",
+  command: {
+    name: "usage",
+    data: {
+      description: "Within each group, models share a weekly limit and a 5-hour limit. Quota is consumed proportionally to the cost of the tokens. Thus, limits will last longer with shorter tasks or using more cost-effective models. The 5-hour limit smooths out aggregate demand to fairly distribute global capacity across all users, while your weekly limit is tied directly to your individual tier.",
+      groups: [
+        {
+          name: "Gemini Models",
+          description: "Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash",
+          buckets: [
+            { id: "gemini-weekly", name: "Weekly Limit Remaining", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-22T11:19:33Z" },
+            { id: "gemini-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 1, reset_time: "2026-11-15T16:19:33Z" },
+          ],
+        },
+        {
+          name: "Claude and GPT models",
+          description: "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B",
+          buckets: [
+            { id: "3p-weekly", name: "Weekly Limit Remaining", description: "You have used some of your weekly limit, it will fully refresh in 4 days, 21 hours.", window: "weekly", remaining_fraction: 0.3360503911972046, reset_time: "2026-11-20T09:01:10Z" },
+            { id: "3p-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 1, reset_time: "2026-11-15T16:19:33Z" },
+          ],
+        },
+        {
+          name: "Gemini 4 Argon",
+          description: "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.",
+          buckets: [
+            { id: "gemini-argon-wtu-weekly", name: "Gemini 4 Argon Weekly Limit", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-22T11:19:33Z" },
+          ],
+        },
+      ],
+    },
+  },
+}
+
+// The rows `agy models` listed for the same account, verbatim.
+const LIVE_MODEL_ROWS = [
+  { id: "gemini-4-argon-medium", name: "Gemini 4 Argon (Medium)", effort: "medium" },
+  { id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", effort: "high" },
+  { id: "gemini-4-argon-low", name: "Gemini 4 Argon (Low)", effort: "low" },
+  { id: "gemini-4-hydrogen-high", name: "Gemini 4 Hydrogen (High)", effort: "high" },
+  { id: "gemini-4-hydrogen-xhigh", name: "Gemini 4 Hydrogen (XHigh)", effort: "xhigh" },
+  { id: "gemini-4-hydrogen-medium", name: "Gemini 4 Hydrogen (Medium)", effort: "medium" },
+  { id: "gemini-4-hydrogen-low", name: "Gemini 4 Hydrogen (Low)", effort: "low" },
+  { id: "gemini-pro-orchestrator-g1-pro", name: "Orchestrator (Argon)" },
+  { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", effort: "high" },
+  { id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", effort: "medium" },
+  { id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", effort: "low" },
+  { id: "claude-opus-5-5-low", name: "Claude Opus 5.5 (Low)", effort: "low" },
+  { id: "claude-opus-5-5-medium", name: "Claude Opus 5.5 (Medium)", effort: "medium" },
+  { id: "claude-opus-5-5-high", name: "Claude Opus 5.5 (High)", effort: "high" },
+  { id: "claude-sonnet-5-5-low", name: "Claude Sonnet 5.5 (Low)", effort: "low" },
+  { id: "claude-sonnet-5-5-medium", name: "Claude Sonnet 5.5 (Medium)", effort: "medium" },
+  { id: "claude-sonnet-5-5-high", name: "Claude Sonnet 5.5 (High)", effort: "high" },
+  { id: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)", effort: "medium" },
+]
+
+test("a live report names on each window the ids the listed catalog serves", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  assert.deepEqual(result.windows.map(w => w.models), [
+    ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
+    ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
+    ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b", "gpt-oss-120b-medium"],
+    ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b", "gpt-oss-120b-medium"],
+    // Argon's description names no model; its group name is a catalog name.
+    ["gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-4-argon-medium"],
+  ])
+  assert.deepEqual(result.windows.map(w => w.used), [0, 0, 66.394961, 0, 0])
+  // agy names a family in the description even though it lists no bare id.
+  assert.ok(result.windows[2].models.includes("gpt-oss-120b"))
+  storeCatalogRows(null)
+})
+
+test("ids on windows follow the catalog, and names agy adds match nothing until it lists them", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  // A renamed model: the description keeps the old name, the catalog the new.
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Claude Opus 5.5", name: "x" }),
+    ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium"])
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Claude Opus 6", name: "x" }), [])
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Claude Opus 5.5 and Claude Opus 6", name: "x" }),
+    ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium"])
+  // A group whose name matches no catalog name gets no ids, not guesses.
+  assert.deepEqual(modelsInGroup({ name: "Veo models" }), [])
+  // No catalog yet: no ids at all, windows stay account-level.
+  storeCatalogRows(null)
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Claude Opus 5.5" }), [])
+  // The separator list "A, B and C" also splits with no comma before "and".
+  storeCatalogRows([{ id: "m1", name: "Model One" }, { id: "m2", name: "Model Two" }])
+  assert.deepEqual(modelsInGroup({ description: "Models within this group: Model One and Model Two" }), ["m1", "m2"])
+  storeCatalogRows(null)
+})
+
 const report = groups => ({ status: "SUCCESS", command: { name: "usage", data: { groups } } })
-const group = (buckets, name = "Gemini Models") => ({ name, buckets })
+const group = (buckets, name = "Gemini Models", description = "For paid Pro plans, Argon quota is separate.") => ({ name, description, buckets })
+const groupNoDesc = (buckets, name = "Gemini Models") => ({ name, buckets })
 const bucket = (overrides = {}) => ({ id: "gemini-5h", name: "Five Hour Limit Remaining", window: "5h", remaining_fraction: 0.75, ...overrides })
 
 test("maps all groups/cadences to display-only Magpie windows, without invented identity", () => {
