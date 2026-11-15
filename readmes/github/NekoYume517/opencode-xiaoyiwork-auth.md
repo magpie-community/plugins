@@ -327,3 +327,7 @@ D:\software\xiaoyiwork\resources\icon.ico
 ## 许可
 
 MIT
+
+## 上下文长度
+
+上游不返回窗口大小，实测约 1M tokens（针测试记录见 [docs/context-length.md](docs/context-length.md)）。插件里填 1000000。
