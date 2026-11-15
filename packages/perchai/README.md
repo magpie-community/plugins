@@ -104,20 +104,23 @@ not match it:
   and the duration. The record is filed after the answer has gone out, and a failed
   filing never fails the turn.
 
-## The host's own name is rewritten out
+## The host's own boilerplate is rewritten out
 
-The agent that drives this plugin writes its product name into the system prompt: an
-opener, a paragraph about its source checkout, a paragraph about its web GUI, and two
-runtime-context lines carrying the checkout path and the GUI URL. None of that is
-anything Perch needs to read, so every string headed for Perch goes through
-`unbrand()` first — messages, tool descriptions, and the prompt filed with the turn
-record.
+The agent that drives this plugin writes a few fixed sentences about itself into the
+system prompt: an opener, a paragraph about its source checkout, a paragraph about its
+web GUI, and two runtime-context lines carrying the checkout path and the GUI URL.
+Those sentences say nothing about the user's question, so the plugin rewrites them on
+the way out — **system messages only**.
 
-Only the product name changes. Paths, URLs, commands and identifiers come out exactly
-as they went in: `dsh web`, `pnpm dsh`, `DSH_HOME` and `window.__DSH_BOOT__` all
-survive, because the rewrite matches whole phrases and, for the bare acronym, requires
-a word boundary that an underscore does not satisfy. The replacements are the `BRAND`
-table in `index.mjs`; anything it does not match passes through byte for byte.
+Nothing else is touched. A user message, an assistant message, a tool result and every
+tool schema go to Perch exactly as they came in, so a question that mentions the
+harness by name is still that question, and a file or a note the user wrote is still
+their text. The rewrite is a fixed list of whole sentences (`BOILERPLATE` in
+`index.mjs`); there is no catch-all, so any other occurrence of the name passes
+through byte for byte. Paths, URLs, commands and identifiers survive as well —
+`dsh web`, `pnpm dsh`, `DSH_HOME` and `window.__DSH_BOOT__` are not in any pattern, and
+the two runtime-context patterns stop before the value, so the path and the URL come
+out intact.
 
 ## Accounts Perch suspends
 

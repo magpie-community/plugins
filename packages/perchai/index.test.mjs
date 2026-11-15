@@ -112,9 +112,10 @@ describe("the canary", () => {
   })
 })
 
-describe("what Perch is allowed to see", () => {
-  // Every string the host harness puts in a prompt, plus its two runtime-context lines.
-  const branded = [
+describe("the host's own boilerplate, and only that", () => {
+  // Every fixed sentence the host harness puts in a system prompt, plus its two
+  // runtime-context lines.
+  const boilerplate = [
     "You are an AI agent powered by DeepSeek Harness.",
     "The runtime context names the DeepSeek Harness implementation checkout. The checkout location and current working directory are separate values and may differ; never infer the working directory from the checkout path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.",
     'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to "this page", they mean this GUI.',
@@ -124,54 +125,80 @@ describe("what Perch is allowed to see", () => {
     'Current DeepSeek Harness Web GUI URL: "http://127.0.0.1:57457".',
   ]
 
-  test("leaves no brand in any prompt line", () => {
-    for (const text of branded) expect(_internal.unbrand(text)).not.toContain("DeepSeek Harness")
+  test("leaves no boilerplate in any prompt line", () => {
+    for (const text of boilerplate) expect(_internal.stripBoilerplate(text)).not.toContain("DeepSeek Harness")
   })
 
   test("leaves no bare DSH in the source paragraph", () => {
-    expect(_internal.unbrand(branded[1])).not.toMatch(/\bDSH\b/)
+    expect(_internal.stripBoilerplate(boilerplate[1])).not.toMatch(/\bDSH\b/)
   })
 
   test("keeps the checkout path", () => {
-    expect(_internal.unbrand(branded[5])).toContain('"D:\\\\dsh"')
+    expect(_internal.stripBoilerplate(boilerplate[5])).toContain('"D:\\\\dsh"')
   })
 
   test("keeps the GUI URL", () => {
-    expect(_internal.unbrand(branded[6])).toContain("57457")
+    expect(_internal.stripBoilerplate(boilerplate[6])).toContain("57457")
   })
 
   test("leaves identifiers that contain DSH alone", () => {
     const line = "Set DSH_HOME, then run pnpm dsh --profile web; window.__DSH_BOOT__ is injected."
-    expect(_internal.unbrand(line)).toBe(line)
+    expect(_internal.stripBoilerplate(line)).toBe(line)
   })
 
   test("passes ordinary text through untouched", () => {
     const line = "Read AGENTS.md, then run `dsh web`."
-    expect(_internal.unbrand(line)).toBe(line)
+    expect(_internal.stripBoilerplate(line)).toBe(line)
   })
 
-  test("rewrites the request body without touching a tool's name", () => {
+  // The user's own words are never edited, in any role, and neither are tool schemas.
+  test("leaves a user message exactly as it came in", () => {
+    const message = { role: "user", content: "Why does DeepSeek Harness rewrite my prompt? And what is DSH?" }
+    expect(_internal.stripSystemBoilerplate([message])[0]).toBe(message)
+  })
+
+  test("leaves an assistant message exactly as it came in", () => {
+    const message = { role: "assistant", content: "DeepSeek Harness is the program you are talking to." }
+    expect(_internal.stripSystemBoilerplate([message])[0]).toBe(message)
+  })
+
+  test("leaves a tool result exactly as it came in", () => {
+    const message = { role: "tool", content: "DSH_HOME=C:\\dsh\nDeepSeek Harness 0.1.0" }
+    expect(_internal.stripSystemBoilerplate([message])[0]).toBe(message)
+  })
+
+  test("sends tool schemas byte for byte", () => {
+    const tools = [{ type: "function", function: { name: "read", description: "Reads a file. Powered by DeepSeek Harness.", parameters: {} } }]
+    const sent = _internal.callBody({ messages: [{ role: "user", content: "hi" }], tools }, null)
+    expect(sent.request.tools[0].function.description).toBe("Reads a file. Powered by DeepSeek Harness.")
+    expect(JSON.stringify(sent.request.tools)).toBe(JSON.stringify(tools))
+  })
+
+  test("rewrites the host's opener, and only in a system message", () => {
     const sent = _internal.callBody(
       {
         messages: [
-          { role: "system", content: branded[0] },
-          { role: "user", content: [{ type: "text", text: branded[6] }] },
+          { role: "system", content: boilerplate[0] },
+          { role: "user", content: "Which program am I talking to? Is it DeepSeek Harness?" },
         ],
-        tools: [{ type: "function", function: { name: "read", description: `Reads a file. ${branded[0]}`, parameters: {} } }],
       },
       null,
     )
-    const wire = JSON.stringify(sent.request)
-    expect(wire).not.toContain("DeepSeek Harness")
-    expect(wire).toContain("http://127.0.0.1:57457")
-    expect(sent.request.messages[2].content[0].text.startsWith("Current Web GUI URL:")).toBe(true)
-    expect(sent.request.tools[0].function.name).toBe("read")
+    expect(sent.request.messages[0].content.startsWith("Source discrimination:")).toBe(true)
+    expect(sent.request.messages[1].content).toBe("You are an AI agent.")
+    expect(sent.request.messages[2].content).toBe("Which program am I talking to? Is it DeepSeek Harness?")
   })
 
-  test("keeps rewritten tools valid JSON", () => {
-    expect(JSON.stringify(_internal.unbrandTools([{ description: "x" }]))).not.toContain("undefined")
+  test("rewrites a runtime-context text part and keeps the value", () => {
+    const sent = _internal.callBody(
+      { messages: [{ role: "system", content: [{ type: "text", text: boilerplate[6] }] }] },
+      null,
+    )
+    expect(sent.request.messages[1].content[0].text.startsWith("Current Web GUI URL:")).toBe(true)
+    expect(sent.request.messages[1].content[0].text).toContain("http://127.0.0.1:57457")
   })
 })
+
 
 describe("the Starter aliases", () => {
   test("are listed with the option ids Perch pins them by", () => {
