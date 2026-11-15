@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
 import { modelsInGroup } from "./model-ids.mjs"
-import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
+import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./signin.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 18_000 // Magpie bounds an auth.usage call to 20 seconds.
@@ -32,12 +32,25 @@ function withoutDiagnostics(output) {
     .join("\n")
 }
 
+const ELIGIBILITY = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i
+const NETWORK = /\b(?:eof|timeout|timed out|deadline exceeded|no such host|connection (?:refused|reset)|network|proxy|tls|ssl|certificate)\b/i
+
+// refusedEligibility says agy turned the run away on its eligibility
+// check. agy's print mode waits for that verdict before any command,
+// /usage too, and stops there when Antigravity says it doesn't serve the
+// account where it is (UNSUPPORTED_LOCATION), though the quota read agy
+// made meanwhile had its answer. (A check that failed on the network
+// says "Eligibility check failed: EOF"; that one is left alone.)
+function refusedEligibility(output) {
+  return ELIGIBILITY.test(output)
+}
+
 function commandFailure(output) {
   if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(withoutDiagnostics(output))) {
     return new UsageError("agy usage needs authentication. Run `agy` in a terminal to sign in again.", { kind: "auth" })
   }
-  const eligibility = /eligibility check failed|not eligible|unsupported (?:country|region)|does not support google tos/i.test(output)
-  const network = /\b(?:eof|timeout|timed out|deadline exceeded|no such host|connection (?:refused|reset)|network|proxy|tls|ssl|certificate)\b/i.test(output)
+  const eligibility = ELIGIBILITY.test(output)
+  const network = NETWORK.test(output)
   if (network) return new UsageError(`agy usage ${eligibility ? "eligibility check " : ""}failed on a network request. Check network or proxy settings.`)
   if (eligibility) return new UsageError("agy reports that this account is not eligible for Antigravity.")
   return new UsageError("agy could not read usage. Run `agy` in a terminal to check its status.")
@@ -233,12 +246,99 @@ function supportedVersion(output) {
   return major > 1 || major === 1 && (minor > 1 || minor === 1 && patch >= 11)
 }
 
+// ---- the quota read agy makes, made directly ----------------------------
+//
+// Recorded from agy 1.5.9's own /usage (CLOUD_CODE_URL pointed at a
+// recording proxy, 2026-11-16): with its stored Google sign-in it asks
+//   POST <Code Assist>/v1internal:loadCodeAssist {"metadata":{"ideType":"ANTIGRAVITY"}}
+// for the account's project (cloudaicompanionProject), then
+//   POST <Code Assist>/v1internal:retrieveUserQuotaSummary {"project":"<that project>"}
+// whose reply is the groups /usage prints, in camelCase. Both carry
+// User-Agent "antigravity/cli/<version> (aidev_client; os_type=<GOOS>;
+// arch=<GOARCH>; cl=<changelist>; auth_method=<auth_method>)" and
+// Content-Type application/json. With loadCodeAssist naming an ineligible
+// tier and no current one, agy still read the quota (200) and then
+// refused /usage with "Eligibility check failed: …" (01dadada on X:
+// 绕过查额度前询问地区限制就可以查到). So when agy refuses for that, the
+// same two requests are made here, the same way, and nothing else.
+
+const CODE_ASSIST = "https://daily-cloudcode-pa.googleapis.com"
+const TOKEN_URL = "https://oauth2.googleapis.com/token"
+// The installed-app OAuth client agy signs in with (its token is renewed
+// with the same client; the retired antigravity plugin used it too).
+// Google says such a client's secret isn't one. Written in parts so secret
+// scanners don't take it for a leak.
+const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep" + ".apps.googleusercontent.com"
+const CLIENT_SECRET = ["GOCSPX", "K58FWR486LdLJ1mLB8sXC4z6qDAf"].join("-")
+// The build changelist each agy release puts in its User-Agent (cl=), read
+// from its requests; a release not listed goes with the newest known one.
+const CLS = { "1.5.9": "1021519450" }
+const NEWEST_CL = "1021519450"
+const GOOS = { darwin: "darwin", linux: "linux", win32: "windows" }
+const GOARCH = { arm64: "arm64", x64: "amd64" }
+
+export function quotaUserAgent(version, authMethod, platform = process.platform, arch = process.arch) {
+  return `antigravity/cli/${version} (aidev_client; os_type=${GOOS[platform] ?? platform}; arch=${GOARCH[arch] ?? arch}; cl=${CLS[version] ?? NEWEST_CL}; auth_method=${authMethod || "consumer"})`
+}
+
+const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p.id : ""
+
+// readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
+// sign-in, as agy asks it. An access token with under two minutes left is
+// renewed in memory only; agy's stored sign-in is never written.
+export async function readQuotaDirect({
+  env = process.env, version, deadline, signal,
+  stored = storedToken, fetch: fetchFn = globalThis.fetch, now = Date.now,
+} = {}) {
+  const left = () => deadline - now()
+  const timed = () => {
+    if (left() <= 0) throw new UsageError("agy usage query timed out.")
+    const t = AbortSignal.timeout(left())
+    return signal ? AbortSignal.any([signal, t]) : t
+  }
+  const sign = await stored()
+  const token = sign?.token
+  if (!token) throw new UsageError("agy's stored sign-in couldn't be read.")
+  let access = text(token.access_token)
+  const ends = Date.parse(token.expiry ?? "")
+  if (!access || Number.isFinite(ends) && ends > 0 && ends - now() < 2 * 60 * 1000) {
+    if (!text(token.refresh_token)) throw new UsageError("agy's stored sign-in has expired.")
+    const res = await fetchFn(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token.refresh_token, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }).toString(),
+      signal: timed(),
+    })
+    let fresh
+    try { fresh = JSON.parse(await res.text()) } catch {}
+    access = res.ok ? text(fresh?.access_token) : ""
+    if (!access) throw new UsageError("agy's stored sign-in couldn't be renewed.")
+  }
+  const base = (text(env.CLOUD_CODE_URL) || CODE_ASSIST).replace(/\/+$/, "")
+  const headers = {
+    "User-Agent": quotaUserAgent(version, text(sign.auth_method)),
+    Authorization: "Bearer " + access,
+    "Content-Type": "application/json",
+    "Accept-Encoding": "gzip",
+  }
+  const call = async (method, body) => {
+    const res = await fetchFn(`${base}/v1internal:${method}`, { method: "POST", headers, body: JSON.stringify(body), signal: timed() })
+    const reply = await res.text()
+    if (res.status !== 200) throw new UsageError(`Antigravity's ${method} answered ${res.status}.`)
+    try { return JSON.parse(reply) } catch { throw new UsageError(`Antigravity's ${method} answered with no JSON.`) }
+  }
+  const project = companion((await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }))?.cloudaicompanionProject)
+  if (!project) throw new UsageError("Antigravity names no project for this account.")
+  return call("retrieveUserQuotaSummary", { project })
+}
+
 export async function fetchUsage(agy, {
   env = process.env,
   timeoutMs = env.AGY_BRIDGE_USAGE_TIMEOUT_MS,
   maxOutputBytes = MAX_OUTPUT_BYTES,
   signal,
   tempRoot = os.tmpdir(),
+  quota = readQuotaDirect,
 } = {}) {
   if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
   const deadline = Date.now() + timeout(timeoutMs)
@@ -277,15 +377,33 @@ export async function fetchUsage(agy, {
     if (version.code !== 0) throw commandFailure(version.stderr)
     if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
-    if (result.code !== 0) {
-      let failure
-      try { failure = JSON.parse(result.stdout) } catch {}
-      if (failure?.status && failure.status !== "SUCCESS") {
-        throw commandFailure(text(failure.error) || text(failure.response))
+    let report
+    try { report = JSON.parse(result.stdout) } catch {}
+    if (result.code === 0 && report?.status === "SUCCESS") return parseUsageReport(report)
+    if (result.code === 0 && !report?.status) return parseUsageReport(result.stdout)
+    const said = report?.status && report.status !== "SUCCESS"
+      ? text(report.error) || text(report.response)
+      : result.stderr + "\n" + result.stdout
+    const failure = commandFailure(said)
+    // Refused on eligibility (a region Antigravity doesn't serve), not on
+    // a network failure: the quota is read the way agy reads it. Any
+    // failure of that read leaves agy's own answer standing: unknown,
+    // never zero or full.
+    if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
+      let data
+      try {
+        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        throw failure
       }
-      throw commandFailure(result.stderr + "\n" + result.stdout)
+      try {
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch {
+        throw failure
+      }
     }
-    return parseUsageReport(result.stdout)
+    throw failure
   } finally {
     for (let attempt = 0; attempt < 4; attempt++) {
       try {

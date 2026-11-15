@@ -161,6 +161,21 @@ export async function readStoredSignIn({ now = Date.now(), ...opts } = {}) {
   return "raw" in v ? parseStored(v.raw, now) : v
 }
 
+// storedToken is agy's stored sign-in itself for the current account
+// ({ token: { access_token, refresh_token, expiry }, auth_method, … }), or
+// null when there is none or it can't be read. Only usage.mjs's direct
+// quota read uses it, and it never writes it back: agy owns the sign-in.
+export async function storedToken(opts) {
+  try {
+    const v = await readStoredValue(opts)
+    if (!("raw" in v)) return null
+    const stored = decodeStored(v.raw)
+    return stored?.token && typeof stored.token === "object" ? stored : null
+  } catch {
+    return null
+  }
+}
+
 // storedEmail is the Google account agy is signed in to on this computer,
 // "" when it can't tell: a sign-in names its account by it.
 export async function storedEmail(opts) {

@@ -221,8 +221,16 @@ magpie quota refresh agy-cli --json
 
 The numbers come from agy's own `/usage` report for whichever account is signed
 in to the CLI, broken down by model group. The plugin never writes Google tokens
-or sends them anywhere; it always reports the account agy is signed in to. A window with no
+or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
+
+Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
+("not currently available in your location") even though the quota read it
+made had its answer. The plugin then makes that read itself, the way agy makes
+it: with agy's stored sign-in it asks Google's Code Assist server
+(`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
+An access token about to end is renewed in memory and never stored. If that
+read fails too, the account shows agy's refusal and no numbers.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored

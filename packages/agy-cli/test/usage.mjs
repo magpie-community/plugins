@@ -6,7 +6,8 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { createUsageReader, fetchUsage, parseUsageReport } from "../usage.mjs"
+import { createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect } from "../usage.mjs"
+import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
 
@@ -834,4 +835,135 @@ test("missing executables and filesystem failures do not leak local paths", asyn
   const result = await createUsageReader(() => f.executable, { ...f.options, tempRoot: f.executable })()
   assert.ok(result.error)
   assert.doesNotMatch(result.error, /agy-usage-test-/)
+})
+
+// ---- an account agy refuses for its region (01dadada on X) -----------------
+//
+// agy 1.5.9's own answer when loadCodeAssist names an ineligible tier
+// (UNSUPPORTED_LOCATION) and no current one, captured 2026-11-16 through
+// CLOUD_CODE_URL; its own retrieveUserQuotaSummary had answered 200.
+const REFUSED = JSON.stringify({
+  conversation_id: "", status: "ERROR", response: "",
+  error: "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.",
+  duration_seconds: 0, num_turns: 0,
+  usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, thinking_tokens: 0 },
+  finished_reason: "error",
+})
+// Its loadCodeAssist and retrieveUserQuotaSummary replies (trimmed).
+const LOAD = {
+  allowedTiers: [{ id: "free-tier", name: "Antigravity", isDefault: true }],
+  ineligibleTiers: [{ reasonCode: "UNSUPPORTED_LOCATION", reasonMessage: "Your current account is not eligible for Antigravity, because it is not currently available in your location." }],
+  cloudaicompanionProject: "aicode-consumers",
+}
+const SUMMARY = {
+  groups: [{
+    displayName: "Gemini Models",
+    description: "Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash",
+    buckets: [
+      { bucketId: "gemini-weekly", displayName: "Weekly Limit Remaining", window: "weekly", resetTime: "2026-11-22T11:19:33Z", remainingFraction: 0.75 },
+      { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", resetTime: "2026-11-16T16:19:33Z", remainingFraction: 0.5 },
+    ],
+  }],
+}
+const STORED = { token: { access_token: "ya29.live", refresh_token: "1//refresh", expiry: "0001-01-01T00:00:00Z", token_type: "Bearer" }, auth_method: "consumer", id_token_email: "secret@example.com" }
+
+async function codeAssist(t, answer = {}) {
+  const calls = []
+  const server = http.createServer((req, res) => {
+    let body = ""
+    req.on("data", c => { body += c })
+    req.on("end", () => {
+      calls.push({ method: req.method, url: req.url, headers: req.headers, body: JSON.parse(body || "null") })
+      const name = req.url.replace(/^\/v1internal:/, "")
+      const [status, reply] = answer[name] ?? [200, name === "loadCodeAssist" ? LOAD : SUMMARY]
+      res.writeHead(status, { "Content-Type": "application/json" })
+      res.end(JSON.stringify(reply))
+    })
+  })
+  await new Promise(r => server.listen(0, "127.0.0.1", r))
+  t.after(() => new Promise(r => server.close(r)))
+  return { url: `http://127.0.0.1:${server.address().port}`, calls }
+}
+
+test("an account agy refuses for its region has its quota read the way agy reads it", async t => {
+  const api = await codeAssist(t)
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9", CLOUD_CODE_URL: api.url })
+  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
+  const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
+  assert.equal(result.error, undefined)
+  assert.equal(result.signIn, "kept")
+  assert.deepEqual(result.windows.map(w => [w.name, w.used, w.resetsAt]), [
+    ["Gemini · 7 days", 25, "2026-11-22T11:19:33.000Z"],
+    ["Gemini · 5 hours", 50, "2026-11-16T16:19:33.000Z"],
+  ])
+  // the two requests agy makes, as it makes them
+  assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
+    ["POST", "/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
+    ["POST", "/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
+  ])
+  for (const c of api.calls) {
+    assert.equal(c.headers.authorization, "Bearer ya29.live")
+    assert.equal(c.headers["content-type"], "application/json")
+    assert.equal(c.headers["user-agent"], quotaUserAgent("1.5.9", "consumer"))
+  }
+  await f.assertClean()
+})
+
+test("the direct read's User-Agent is agy's", () => {
+  assert.equal(quotaUserAgent("1.5.9", "consumer", "darwin", "arm64"),
+    "antigravity/cli/1.5.9 (aidev_client; os_type=darwin; arch=arm64; cl=1021519450; auth_method=consumer)")
+  assert.match(quotaUserAgent("1.6.0", "", "win32", "x64"), /^antigravity\/cli\/1\.6\.0 \(aidev_client; os_type=windows; arch=amd64; cl=\d+; auth_method=consumer\)$/)
+})
+
+test("an access token about to end is renewed in memory for the direct read, never stored", async t => {
+  const api = await codeAssist(t)
+  const renewals = []
+  const fetchFn = async (url, init) => {
+    if (String(url).startsWith("https://oauth2.googleapis.com/token")) {
+      renewals.push(Object.fromEntries(new URLSearchParams(init.body)))
+      return new Response(JSON.stringify({ access_token: "ya29.fresh", expires_in: 3599 }), { status: 200 })
+    }
+    return fetch(url, init)
+  }
+  const ending = structuredClone(STORED)
+  ending.token.expiry = new Date(Date.now() + 30_000).toISOString()
+  const data = await readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ending, fetch: fetchFn })
+  assert.deepEqual(data, SUMMARY)
+  assert.equal(renewals.length, 1)
+  assert.equal(renewals[0].grant_type, "refresh_token")
+  assert.equal(renewals[0].refresh_token, "1//refresh")
+  assert.ok(api.calls.every(c => c.headers.authorization === "Bearer ya29.fresh"))
+  assert.equal(ending.token.access_token, "ya29.live")
+})
+
+test("a direct read that fails leaves the region refusal standing: unknown, never zero or full", async t => {
+  for (const [answer, stored] of [
+    [{ retrieveUserQuotaSummary: [403, { error: { code: 403, message: "secret@example.com" } }] }, STORED],
+    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined }] }, STORED],
+    [{ retrieveUserQuotaSummary: [200, { groups: [] }] }, STORED],
+    [{}, null],
+  ]) {
+    const api = await codeAssist(t, answer)
+    const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.9", CLOUD_CODE_URL: api.url })
+    const quota = o => readQuotaDirect({ ...o, stored: async () => stored })
+    const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
+    assert.deepEqual(result.windows, [])
+    assert.equal(result.signIn, "kept")
+    assert.match(result.error, /not eligible/)
+    assert.doesNotMatch(result.error, /secret/)
+  }
+})
+
+test("only a region refusal reads the quota directly", async t => {
+  for (const error of [
+    "Eligibility check failed: EOF",
+    "Authentication required",
+    "quota request timed out",
+  ]) {
+    let asked = 0
+    const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: JSON.stringify({ status: "ERROR", error }) })
+    const result = await createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY } })()
+    assert.deepEqual(result.windows, [])
+    assert.equal(asked, 0, error)
+  }
 })
