@@ -4,7 +4,7 @@ import { _internal } from "./index.mjs"
 const { buildKiro, events, reply, generate, features, sealReasoning, unsealReasoning } = _internal
 const scope = "account-region-model"
 const native = { reasoningText: { text: "The path costs 35.", signature: "CAQSbmF0aXZlLXNpZ25hdHVyZQ==" } }
-const creds = async () => ({ token: "t", tokenType: "SSO_OIDC", idc: true, profile: "arn:aws:codewhisperer:us-east-1:1:profile/P", region: "us-east-1" })
+const creds = async () => ({ token: "t", tokenType: "SSO_OIDC", idc: true, profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P", region: "us-east-1" })
 const auth = { accountId: "account", uid: "enterprise" }
 const model = "claude-opus-5.5"
 const req = { model, messages: [{ role: "user", content: "Compute the path, then ask for confirmation." }] }
@@ -164,7 +164,7 @@ test("the first native-model request loads its schema and applies magpie's effor
   }
   try {
     const plugin = await KiroAuthPlugin()
-    const loader = await plugin.auth.loader(async () => ({ type: "oauth", access: "t", expires: Date.now() + 3600000, accountId: "account", uid: "google", loginProvider: "Google", profileArn: "arn:aws:codewhisperer:us-east-1:1:profile/P", region: "us-east-1" }))
+    const loader = await plugin.auth.loader(async () => ({ type: "oauth", access: "t", expires: Date.now() + 3600000, accountId: "account", uid: "google", loginProvider: "Google", profileArn: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P", region: "us-east-1" }))
     const res = await loader.fetch("https://kiro.test/v1/messages", { method: "POST", headers: { "x-magpie-effort": "low" }, body: JSON.stringify({ model: "gpt-5.6-luna", output_config: { effort: "max" }, messages: req.messages }) })
     await res.text()
     expect(paths).toContain("/List-Available-Models")
