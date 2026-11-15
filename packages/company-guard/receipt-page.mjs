@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import {recordRuleRevision,readAuditHistory} from "./src/rule-history.mjs";
 import {constants} from "node:fs";
 import {createServer} from "node:http";
 import {timingSafeEqual, randomBytes, randomUUID} from "node:crypto";
@@ -10,8 +11,8 @@ import {readDetails} from "./src/receipt-details.mjs";
 import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant} from "./src/grant-store.mjs";
 import {retainReceipts, readTail, receiptAgent} from "./src/receipts.mjs";
 import {validName,namePattern} from "./src/policy.js";
-import {readAuthorization, signAuthorization} from "./src/session-authorization.js";
-import {initializeOptions} from "./src/local-options.mjs";
+import {readAuthorization, planAuthorizationEntries, AUTHORIZATION_ENTRY_LIMIT} from "./src/session-authorization.js";
+import {initializeOptions,validateCompanyRules,companyRulesRevision} from "./src/local-options.mjs";
 
 const services = new Map();
 const agentNames={codex:"Codex",claude:"Claude Code","claude-code":"Claude Code",pi:"Pi",opencode:"OpenCode","deepseek-harness":"DeepSeek Harness",deepseek:"DeepSeek",hermes:"Hermes","nero-banker":"NERO Banker"};
@@ -92,13 +93,27 @@ export const ReceiptPage = async (_input, options = {}) => {
     console.warn("company_guard_receipt_page_not_configured"); return {};
   }
   const root = stateRoot(options.stateDir);
+  try{await recordRuleRevision(root,options.companies);}catch{console.warn("company_guard_rule_history_failed");}
   try { await retainReceipts(root, undefined, options.appLog); } catch { console.warn("company_guard_receipt_retention_failed"); }
   const assets = new Map();
-  for (const [route,file,type] of [["/","page/dashboard.html","text/html"],["/session-authorization.html","page/authorization.html","text/html"],["/authorization.js","page/authorization.js","text/javascript"],["/app.js","page/app.js","text/javascript"],["/style.css","page/style.css","text/css"],["/bridge.js","vendor/magpie-pagebridge.js","text/javascript"]]) {
+  for (const [route,file,type] of [["/","page/dashboard.html","text/html"],["/session-authorization.html","page/authorization.html","text/html"],["/rules.html","page/rules.html","text/html"],["/rules.js","page/rules.js","text/javascript"],["/rules.css","page/rules.css","text/css"],["/authorization.js","page/authorization.js","text/javascript"],["/app.js","page/app.js","text/javascript"],["/style.css","page/style.css","text/css"],["/bridge.js","vendor/magpie-pagebridge.js","text/javascript"]]) {
     assets.set(route, {body:await fs.readFile(new URL(file,import.meta.url)),type});
   }
   if (services.has(port)) return {};
   const nonce=randomBytes(32).toString("hex");
+  const canWrite=req=>{
+    const writeKey=req.headers["x-authorization-key"];
+    return req.headers.origin==="null"&&req.headers["x-authorization-nonce"]===nonce&&req.headers["content-type"]==="application/json"&&/^[a-f0-9]{64}$/.test(options.authorizationKey||"")&&typeof writeKey==="string"&&/^[a-f0-9]{64}$/.test(writeKey)&&timingSafeEqual(Buffer.from(writeKey),Buffer.from(options.authorizationKey));
+  };
+  const rules=async(req,res,url,send)=>{
+    if(req.method==="GET"&&url.pathname==="/rules")return send(200,{nonce,revision:companyRulesRevision(options.companies),ruleCount:(options.companies||[]).length});
+    if(req.method!=="POST"||url.pathname!=="/rules/validate")return send(405,{error:"method_not_allowed"});
+    if(!canWrite(req))return send(403,{error:"forbidden"});
+    let raw="";for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>384*1024)return send(413,{error:"too_many_names"});}
+    let body;try{body=JSON.parse(raw);}catch{return send(400,{error:"invalid_json"});}
+    if(!body||body.revision!==companyRulesRevision(options.companies))return send(409,{error:"rules_changed"});
+    try{return send(200,validateCompanyRules(body.companies));}catch(error){return send(400,{error:error.message,conflicts:error.conflicts});}
+  };
   const operationFile=id=>path.join(root,"authorization-operations",id+".json");
   const readOperation=async id=>{
     if(!/^[a-f0-9-]{36}$/.test(id))throw new Error("invalid_operation");
@@ -108,13 +123,12 @@ export const ReceiptPage = async (_input, options = {}) => {
   };
   const authorization=async(req,res,url,send)=>{
     if(req.method==="GET"){
-      const pending=await listAuthorizationRequests(root),legacy=(await legacyTaskGrants(root)).map(g=>({session:g.session,workspace:g.workspace,coverage:"names",nameCount:g.names.length,created:g.created,legacy:true}));
+      const pending=await listAuthorizationRequests(root),legacy=(await legacyTaskGrants(root)).map(g=>({session:g.session,workspace:g.workspace,coverage:"names",nameCount:g.names.length,names:g.names,created:g.created,legacy:true}));
       const rows=await withTaskTitles([...pending,...legacy]);
       return send(200,{nonce,revision:options.sessionAuthorizationRevision,pending:rows.slice(0,pending.length),legacy:rows.slice(pending.length)});
     }
     if(req.method!=="POST")return send(405,{error:"method_not_allowed"});
-    const writeKey=req.headers["x-authorization-key"];
-    if(req.headers.origin!=="null"||req.headers["x-authorization-nonce"]!==nonce||req.headers["content-type"]!=="application/json"||!/^[a-f0-9]{64}$/.test(options.authorizationKey||"")||typeof writeKey!=="string"||!/^[a-f0-9]{64}$/.test(writeKey)||!timingSafeEqual(Buffer.from(writeKey),Buffer.from(options.authorizationKey)))return send(403,{error:"forbidden"});
+    if(!canWrite(req))return send(403,{error:"forbidden"});
     let raw="";for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>4*1024*1024)return send(413,{error:"authorization_too_large"});}
     let body;try{body=JSON.parse(raw);}catch{return send(400,{error:"invalid_json"});}
     if(["/authorization/commit","/authorization/cancel"].includes(url.pathname)){
@@ -131,9 +145,9 @@ export const ReceiptPage = async (_input, options = {}) => {
       await fs.rm(path.join(root,"authorization-operations","lock.json"),{force:true});
       return send(200,{ok:true});
     }
-    if(!Array.isArray(body.entries)||body.entries.length>64||body.entries.some(e=>!readAuthorization(e,options.authKey)))return send(400,{error:"invalid_registry"});
+    if(!Array.isArray(body.entries)||body.entries.length>AUTHORIZATION_ENTRY_LIMIT||body.entries.some(e=>!readAuthorization(e,options.authKey)))return send(400,{error:"invalid_registry"});
     const ids=new Set(body.entries.map(e=>e.session));if(ids.size!==body.entries.length)return send(400,{error:"invalid_registry"});
-    if(url.pathname==="/authorization/state")return send(200,{active:await withTaskTitles(body.entries.map(e=>readAuthorization(e,options.authKey)).filter(r=>r.state==="active").map(r=>({session:r.session,workspace:r.workspace,coverage:r.coverage,nameCount:r.names.length,created:r.created,requestId:r.requestId})))});
+    if(url.pathname==="/authorization/state")return send(200,{active:await withTaskTitles(body.entries.map(e=>readAuthorization(e,options.authKey)).filter(r=>r.state==="active").map(r=>({session:r.session,workspace:r.workspace,coverage:r.coverage,nameCount:r.names.length,names:r.names,created:r.created,requestId:r.requestId})))});
     if(url.pathname!=="/authorization/plan")return send(404,{error:"not_found"});
     let request, prior;
     const legacy=await legacyTaskGrants(root);
@@ -150,9 +164,10 @@ export const ReceiptPage = async (_input, options = {}) => {
     if(coverage==="names"&&(!names.length||names.length>32||names.some(n=>!validName(n))))return send(400,{error:"invalid_names"});
     const target=request||prior;
     const record={v:1,session:target.session,workspace:target.workspace,requestId:request?.id,coverage,names,pattern:coverage==="names"?namePattern(names):"",state:body.action==="revoke"?"revoked":"active",created:Date.now()};
-    const legacySessions=new Set(legacy.map(r=>r.session));
-    const entry=signAuthorization(record,options.authKey),entries=body.entries.filter(e=>e.session!==record.session&&(readAuthorization(e,options.authKey).state==="active"||legacySessions.has(e.session))).concat(entry);
-    if(entries.length>64||JSON.stringify(entries).length>3*1024*1024)return send(413,{error:"authorization_too_large"});
+    let plan;
+    try{plan=planAuthorizationEntries(body.entries,record,options.authKey,new Set(legacy.map(r=>r.session)));}
+    catch(error){if(error.message==="authorization_too_large")return send(413,{error:"authorization_too_large"});throw error;}
+    const {entry,entries}=plan;
     const op={id:randomUUID(),action:body.action,session:record.session,requestId:request?.id,entryMac:entry.mac,coverage:record.coverage,nameCount:names.length,created:Date.now()};
     const dir=path.dirname(operationFile(op.id));await secureDir(root,true);await secureDir(dir,true);
     const lock=path.join(dir,"lock.json");
@@ -184,10 +199,14 @@ export const ReceiptPage = async (_input, options = {}) => {
     }
     const supplied = req.headers["x-receipt-key"];
     if (typeof supplied !== "string" || !/^[a-f0-9]{64}$/.test(supplied) || !timingSafeEqual(Buffer.from(supplied), Buffer.from(key))) return send(401, {error:"unauthorized"});
+    if(url.pathname==="/rules"||url.pathname.startsWith("/rules/")){
+      try{return await rules(req,res,url,send);}catch{console.warn("company_guard_rules_unavailable");return send(400,{error:"rules_unavailable"});}
+    }
     if(url.pathname==="/authorization"||url.pathname.startsWith("/authorization/")){
       try{return await authorization(req,res,url,send);}catch{console.warn("company_guard_authorization_unavailable");return send(400,{error:"authorization_unavailable"});}
     }
     if (req.method !== "GET") return send(405, {error:"read_only"});
+    if(url.pathname==="/audit"){try{return send(200,await readAuditHistory(root));}catch{return send(500,{error:"audit_unavailable"});}}
     if (url.pathname === "/details") {
       const id=url.searchParams.get("id") || "";
       if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) return send(400,{error:"invalid_id"});

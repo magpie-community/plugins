@@ -3,6 +3,7 @@ import {sign, same, validKey, digest} from "./crypto.js";
 const PREFIX = "nero.session.authorization.v1\0";
 const validId = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(value);
 export const AUTHORIZATION_REQUEST = "申请本会话原名放行";
+export const AUTHORIZATION_ENTRY_LIMIT = 100;
 
 export function sessionIdentity(body, ctx) {
   if (ctx?.agent !== "codex" || (ctx.origin && !["local", "magpie-key"].includes(ctx.origin))) return null;
@@ -51,11 +52,23 @@ export function readAuthorization(envelope, key, verifyContents=true) {
   return record;
 }
 
+export function planAuthorizationEntries(entries, record, key, legacySessions = new Set()) {
+  const retained = entries.filter(envelope => {
+    const prior = readAuthorization(envelope, key);
+    if (!prior) throw new Error("invalid_registry");
+    // Keep a revocation while an independent legacy grant could still revive it.
+    return envelope.session !== record.session && (prior.state === "active" || legacySessions.has(envelope.session));
+  });
+  const entry = signAuthorization(record, key), next = retained.concat(entry);
+  if (next.length > AUTHORIZATION_ENTRY_LIMIT || JSON.stringify(next).length > 3 * 1024 * 1024) throw new Error("authorization_too_large");
+  return {entry, entries:next};
+}
+
 export function resolveAuthorization(body, ctx) {
   const id = sessionIdentity(body,ctx);
   if (!id) return {record:null, reason:"request_identity_unavailable", managed:false};
   const entries = ctx.options?.sessionAuthorizations;
-  if (!Array.isArray(entries) || entries.length > 64) return {record:null, managed:false};
+  if (!Array.isArray(entries) || entries.length > AUTHORIZATION_ENTRY_LIMIT) return {record:null, managed:false};
   const matching = entries.filter(e => e?.session === id.session);
   if (!matching.length) return {record:null, managed:false};
   if (matching.length !== 1) return {record:null, managed:true, reason:"authorization_invalid"};

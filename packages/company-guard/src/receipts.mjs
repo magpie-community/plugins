@@ -5,8 +5,9 @@ import os from "node:os";
 import {createHash, randomUUID} from "node:crypto";
 import {retainDetails} from "./receipt-details.mjs";
 import {secureDir, stateRoot} from "./grant-store.mjs";
+import {companyRulesRevision} from "./local-options.mjs";
 
-export const RECEIPT_VERSION = "0.4.3";
+export const RECEIPT_VERSION = "0.4.6";
 const writes = new Map();
 export const RECEIPT_LIMIT = 25;
 
@@ -33,17 +34,31 @@ export async function readReceiptConfirmations(ids, appLog, text) {
 // and replace complete files so readers never observe a partial JSON line.
 export function retainReceipts(root, incoming, appLog) {
   const prior = writes.get(root) || Promise.resolve();
-  const next = prior.catch(() => {}).then(() => retain(root, incoming, appLog));
+  const next = prior.catch(() => {}).then(() => retain(root, incoming, appLog)).catch(async error => {
+    try { await saveReceiptHealth(root, {writeFailed:true}); } catch {}
+    throw error;
+  });
   writes.set(root, next);
   next.finally(() => { if (writes.get(root) === next) writes.delete(root); }).catch(() => {});
   return next;
+}
+
+async function saveReceiptHealth(root, update) {
+  const file=path.join(root,"receipt-health.json");
+  let prior={};try{prior=JSON.parse(await readTail(file,8192));}catch{}
+  const value={lastSuccessfulWrite:prior.lastSuccessfulWrite||null,recoveredFiles:prior.recoveredFiles||0,...update};
+  const temp=file+"."+randomUUID()+".tmp";
+  try {const fd=await fs.open(temp,"wx",0o600);try{await fd.writeFile(JSON.stringify(value));await fd.sync();}finally{await fd.close();}await fs.rename(temp,file);}finally{await fs.rm(temp,{force:true});}
+}
+export async function receiptHealth(root) {
+  try {const value=JSON.parse(await readTail(path.join(root,"receipt-health.json"),8192));return {available:true,writeFailed:value.writeFailed===true,lastSuccessfulWrite:value.lastSuccessfulWrite||null,recoveredFiles:Number.isSafeInteger(value.recoveredFiles)?value.recoveredFiles:0};}catch{return {available:false,writeFailed:false,lastSuccessfulWrite:null,recoveredFiles:0};}
 }
 
 async function retain(root, incoming, appLog) {
   const dir = path.join(root, "receipts");
   await secureDir(root, true); await secureDir(dir, true);
   const files = (await fs.readdir(dir)).filter(n => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).sort();
-  const originals = new Map(), groups = new Map();
+  const originals = new Map(), groups = new Map();let recoveredFiles=0;
   const add = row => {
     if (!/^[a-f0-9-]{36}$/i.test(row.id || "") || !["prepared", "response_observed", "request_checked", "reply_processed"].includes(row.phase) || !/^\d{4}-\d{2}-\d{2}T/.test(row.startedAt || "")) throw new Error("invalid_receipt_record");
     if (["request_checked", "reply_processed"].includes(row.phase)) {
@@ -60,7 +75,15 @@ async function retain(root, incoming, appLog) {
       const stat = await fd.stat();
       if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 64*1024*1024) throw new Error("unsafe_receipt_file");
       const text = await fd.readFile("utf8"); originals.set(name,text);
-      for (const line of text.split("\n")) if (line.trim()) add(JSON.parse(line));
+      let damaged=false;
+      for (const line of text.split("\n")) if (line.trim()) {try{add(JSON.parse(line));}catch{damaged=true;}}
+      if(damaged){
+        const recovery=path.join(root,"receipt-recovery");await secureDir(recovery,true);
+        // Preserve the entire source before replacing it with readable records.
+        const backup=path.join(recovery,name+"."+randomUUID()+".bak"),saved=await fs.open(backup,"wx",0o600);
+        try{await saved.writeFile(text);await saved.sync();}finally{await saved.close();}
+        recoveredFiles++;
+      }
     } finally { await fd.close(); }
   }
   if (incoming) add(incoming);
@@ -84,6 +107,8 @@ async function retain(root, incoming, appLog) {
   }
   for (const name of originals.keys()) if (!output.has(name)) await fs.unlink(path.join(dir,name));
   retainDetails(root,new Set(kept.map(([id])=>id)));
+  const health=await receiptHealth(root);
+  await saveReceiptHealth(root,{writeFailed:false,lastSuccessfulWrite:new Date().toISOString(),recoveredFiles:health.recoveredFiles+recoveredFiles});
   return {retained:kept.length,removed:groups.size-kept.length};
 }
 const opaqueId = value => {
@@ -100,7 +125,7 @@ export const receiptAgent = value => typeof value === "string" && /^[a-z0-9][a-z
 export async function appendReceipt(ctx, base, phase, details = {}) {
   try {
     const count = n => Number.isSafeInteger(n) && n >= 0 ? n : 0;
-    const row = {...base, phase, at: new Date().toISOString()};
+    const row = {...base, phase, at: new Date().toISOString(),rulesRevision:companyRulesRevision(ctx.options?.companies)};
     if (phase === "prepared") {
       row.status = ["replaced", "no_match", "authorized", "failed"].includes(details.status) ? details.status : "failed";
       row.errorCode = details.error ? "preparation_failed" : null;

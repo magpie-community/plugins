@@ -68,12 +68,21 @@ export function inspectRequest(body, protocol) {
   add(body, "instructions", {source: "instruction", index: -1});
   if (typeof body.system === "string") add(body, "system", {source: "instruction", index: -1}); else blocks(body.system, {source: "instruction", index: -1});
   if (body.systemInstruction) blocks(body.systemInstruction.parts, {source: "instruction", index: -1});
+  const schemaValue = (owner, key, depth) => {
+    if (++nodes > 50000 || depth > 48) throw new Error("input_structure_limit");
+    const value = owner[key];
+    if (typeof value === "string") add(owner, key, {source:"schema", index:-1});
+    else if (value && typeof value === "object") for (const k of Object.keys(value)) schemaValue(value, k, depth + 1);
+  };
   const schema = (v, depth = 0) => {
     if (!v || typeof v !== "object") return;
     if (++nodes > 50000 || depth > 48) throw new Error("input_structure_limit");
     for (const k of Object.keys(v)) {
       if (["description", "title"].includes(k)) add(v, k, {source: "schema", index: -1});
-      else if (k === "enum" && Array.isArray(v[k])) for (let i = 0; i < v[k].length; i++) add(v[k], i, {source: "schema", index: -1});
+      else if (["enum", "const", "default", "examples"].includes(k)) schemaValue(v, k, depth + 1);
+      else if (["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"].includes(k) && v[k] && typeof v[k] === "object") {
+        for (const child of Object.values(v[k])) schema(child, depth + 1);
+      }
       else if (typeof v[k] === "object") schema(v[k], depth + 1);
     }
   };

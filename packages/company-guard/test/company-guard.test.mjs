@@ -10,8 +10,10 @@ import {onRequest as hookRequest, onResponse as hookResponse} from "../company-g
 import {retainReceipts} from "../src/receipts.mjs";
 import {getReceiptReport} from "../src/receipt-report.mjs";
 import {onRequest as middlewareRequest, onResponse as middlewareResponse, onEvent as middlewareEvent} from "../dist/company-guard.middleware.js";
-import {initializeOptions} from "../src/local-options.mjs";
-import {signAuthorization} from "../src/session-authorization.js";
+import {initializeOptions,validateCompanyRules,companyRulesRevision} from "../src/local-options.mjs";
+import {signAuthorization,readAuthorization,planAuthorizationEntries,AUTHORIZATION_ENTRY_LIMIT} from "../src/session-authorization.js";
+import * as pageEntry from "../receipt-page.mjs";
+import {recordRuleRevision,readAuditHistory} from '../src/rule-history.mjs';
 
 // Synthetic fixtures only: no user credentials, companies, grants or history.
 const NAME = ["单元", "测试", "科技", "有限", "公司"].join("");
@@ -20,6 +22,24 @@ const TURN = "22222222-2222-4222-8222-222222222222";
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const keyFields = ["authKey", "receiptReadKey", "authorizationKey"];
 const newKeys = () => Object.fromEntries(keyFields.map(field => [field, randomBytes(32).toString("hex")]));
+test("plugin entry exposes only the host factory",()=>assert.deepEqual(Object.keys(pageEntry),["ReceiptPage"]));
+test("rule editing validates the same names as the request processor without mutating options",()=>{
+  const companies=[{name:NAME,aliases:[NAME.slice(0,4),NAME.slice(0,2)]}],before=JSON.stringify(companies);
+  const result=validateCompanyRules(companies);
+  assert.equal(result.ruleCount,1);assert.equal(result.nameCount,3);
+  assert.equal(result.revision,companyRulesRevision(companies));
+  assert.equal(result.revision,companyRulesRevision([{aliases:companies[0].aliases,name:NAME}]));
+  assert.equal(JSON.stringify(companies),before);
+  assert.notEqual(result.revision,companyRulesRevision([NAME]));
+  assert.deepEqual(validateCompanyRules([]),{ruleCount:0,nameCount:0,revision:companyRulesRevision([])});
+});
+test("rule editing rejects malformed, numeric, repeated and oversized lists",()=>{
+  for(const value of [null,{},[null],[{name:NAME,aliases:NAME}]])assert.throws(()=>validateCompanyRules(value),/invalid_rules/);
+  for(const value of [[SESSION],[NAME+'\n'],[{name:NAME,aliases:[null]}]])assert.throws(()=>validateCompanyRules(value),/invalid_names/);
+  assert.throws(()=>validateCompanyRules([NAME,NAME]),/duplicate_names/);
+  assert.throws(()=>validateCompanyRules([{name:NAME,aliases:[NAME]}]),/duplicate_names/);
+  assert.throws(()=>validateCompanyRules(Array(513).fill(NAME)),/too_many_names/);
+});
 function context(protocol, options = {}) {
   return {protocol, origin:"local", agent:"codex", session:SESSION, cwd:"/tmp/company-guard-fixture", state:{},
     options:{...newKeys(), companies:[NAME], ...options}, reject(status, message) { throw new Error(status + ": " + message); }};
@@ -44,6 +64,28 @@ function prepare(protocol, options) {
   assert(token?.startsWith("[[NERO_ORG_"));
   return {ctx, body, token};
 }
+
+test("multiple aliases each match and restore their original spelling",()=>{
+  const aliases=[NAME.slice(0,4),NAME.slice(0,2)],original=[NAME,...aliases].join("\n");
+  const ctx=context("responses",{companies:[{name:NAME,aliases}]}),body=request("responses",original);
+  prepareRequest(body,ctx);
+  assert.equal(ctx.state.guard.metrics.replacedNames,3);
+  assert.deepEqual(new Set(Object.values(ctx.state.guard.reverse)),new Set([NAME,...aliases]));
+  const response={output:[{type:"message",content:[{type:"output_text",text:body.input[0].content[0].text}]}]};
+  onResponse(response,ctx);assert.equal(response.output[0].content[0].text,original);
+});
+
+test("schema value fields are protected by source and released middleware without changing structural keys",()=>{
+  for(const prepare of [prepareRequest,middlewareRequest]){
+    const ctx=context('responses'),body=request('responses');
+    body.tools=[{type:'function',name:'lookup',parameters:{type:'object',properties:{default:{type:'string',const:NAME,default:NAME,examples:[NAME,{company:NAME}]}},required:['default']}}];
+    prepare(body,ctx);
+    const schema=body.tools[0].parameters;
+    assert.equal(body.tools[0].name,'lookup');assert.equal(schema.properties.default.type,'string');assert.deepEqual(schema.required,['default']);
+    assert(!JSON.stringify(schema).includes(NAME));
+    assert(Object.values(ctx.state.guard.reverse).includes(NAME));
+  }
+});
 
 for (const protocol of ["responses", "chat", "anthropic", "gemini"]) {
   test(protocol + ": request masking and reply restoration", () => {
@@ -119,6 +161,42 @@ for (const coverage of ["names", "all"]) {
     assert.equal(ctx.state.guard.metrics.authorizationReason, "session_revoked");
   });
 }
+test("revoked sessions do not exhaust authorization slots; active and legacy limits remain enforced", () => {
+  const ctx=context("responses"),key=ctx.options.authKey;
+  const record=(session,state="active")=>({v:1,session,workspace:ctx.cwd,state,coverage:"all",names:[],created:Date.now()});
+  let entries=[];
+  for(let index=0;index<AUTHORIZATION_ENTRY_LIMIT+6;index++){
+    const session=SESSION+"_"+index;
+    entries=planAuthorizationEntries(entries,record(session),key).entries;
+    entries=planAuthorizationEntries(entries,record(session,"revoked"),key).entries;
+    assert.equal(entries.length,1);
+    assert.equal(readAuthorization(entries[0],key).state,"revoked");
+  }
+  entries=planAuthorizationEntries(entries,record(SESSION),key).entries;
+  assert.equal(entries.length,1);
+  ctx.options.sessionAuthorizations=entries;
+  const approved=request("responses");prepareRequest(approved,ctx);
+  assert(JSON.stringify(approved).includes(NAME));
+
+  const fullRevoked=Array.from({length:64},(_,index)=>signAuthorization(record(SESSION+"_"+index,"revoked"),key));
+  assert.equal(planAuthorizationEntries(fullRevoked,record(SESSION),key).entries.length,1,"existing 64 revoked records must recover without hand-editing options");
+  const fullActive=Array.from({length:AUTHORIZATION_ENTRY_LIMIT},(_,index)=>signAuthorization(record(SESSION+"_"+index),key));
+  ctx.options.sessionAuthorizations=fullActive;ctx.session=fullActive.at(-1).session;
+  const last=request("responses");last.client_metadata.thread_id=ctx.session;
+  prepareRequest(last,ctx);assert(JSON.stringify(last).includes(NAME),"the request runtime must honor the last grant in a full table");
+  const before=JSON.stringify(fullActive);
+  assert.throws(()=>planAuthorizationEntries(fullActive,record(SESSION),key),/authorization_too_large/);
+  assert.equal(JSON.stringify(fullActive),before,"capacity rejection cannot evict active grants");
+  const revoked=planAuthorizationEntries(fullActive,record(SESSION+"_0","revoked"),key).entries;
+  assert.equal(planAuthorizationEntries(revoked,record(SESSION),key).entries.length,AUTHORIZATION_ENTRY_LIMIT,"revoking a full table frees a slot for the next approval");
+
+  const legacySession=SESSION+"_legacy",marker=signAuthorization(record(legacySession,"revoked"),key);
+  const protectedPlan=planAuthorizationEntries([marker],record(SESSION),key,new Set([legacySession]));
+  assert(protectedPlan.entries.some(e=>e.session===legacySession),"legacy-backed revocation cannot be discarded");
+  assert(!planAuthorizationEntries(protectedPlan.entries,record(TURN),key).entries.some(e=>e.session===legacySession),"marker can be removed once the independent grant is gone");
+  const large=Array.from({length:63},(_,index)=>signAuthorization({...record(SESSION+"_"+index),workspace:"/"+"x".repeat(50000)},key));
+  assert.throws(()=>planAuthorizationEntries(large,{...record(SESSION),workspace:"/"+"x".repeat(50000)},key),/authorization_too_large/,"the size limit remains in force");
+});
 test("authorization cannot cross sessions or workspaces; altered seals do not authorize", () => {
   const ctx = context("responses"), approved = authorization(ctx);
   ctx.options.sessionAuthorizations = [approved];
@@ -152,6 +230,11 @@ test("fresh install generates three private persistent keys and preserves unrela
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   assert.deepEqual(saved.plugins[1], setup.config.plugins[1]); assert.deepEqual(saved.prefer, setup.config.prefer);
   const again = await initializeOptions({...saved.plugins[0].options});
+  const auditRoot=path.dirname(setup.keyFile);
+  await recordRuleRevision(auditRoot,options.companies);await recordRuleRevision(auditRoot,options.companies);
+  const history=await readAuditHistory(auditRoot);
+  assert.equal(history.rules.length,1);assert.equal(history.rules[0].revision,companyRulesRevision(options.companies));
+  assert(!JSON.stringify(history).includes(NAME));
   for (const field of keyFields) assert.equal(again[field], options[field]);
   assert.equal((await fs.stat(setup.configFile)).mode & 0o777, 0o600);
 });
@@ -163,7 +246,7 @@ test("a pinned GitHub installation initializes without a local-path registration
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   for (const field of keyFields) assert.equal(saved.plugins[0].options[field], options[field]);
 });
-for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.3"]) {
+for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.6"]) {
   test("community installation initializes: " + spec, async t => {
     const setup = await installation(t);
     setup.config.plugins[0].spec = spec;
@@ -257,6 +340,21 @@ test("fresh hook preparation and native middleware share keys and remove the pri
   assert.equal((await report()).agent,"codex");
   await fs.writeFile(appLog,"");
   assert.equal((await report()).statusCode,"completed","persisted confirmations survive log rotation");
+  const original=await fs.readFile(file,'utf8'),damaged=original+JSON.stringify(records[0]).slice(0,-1);
+  await fs.writeFile(file,damaged);
+  await retainReceipts(root,undefined,appLog);
+  assert.equal((await report()).statusCode,'completed');
+  const backups=await fs.readdir(path.join(root,'receipt-recovery'));
+  assert.equal(backups.length,1);
+  assert.equal(await fs.readFile(path.join(root,'receipt-recovery',backups[0]),'utf8'),damaged);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.recoveredFiles,1);
+  await retainReceipts(root,records[0],appLog);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,false);
+  await fs.chmod(file,0o644);
+  await assert.rejects(retainReceipts(root,undefined,appLog),/unsafe_receipt_file/);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,true);
+  await fs.chmod(file,0o600);await retainReceipts(root,undefined,appLog);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,false);
   await fs.unlink(file);
   assert.equal((await report(records)).statusCode,"completed","fixed snapshots survive recent-window eviction");
   assert.equal((await report(records.filter(r=>r.phase!=="request_checked"))).statusCode,"request_confirmation_missing");

@@ -814,13 +814,21 @@ function inspectRequest(body, protocol) {
   if (typeof body.system === "string") add(body, "system", { source: "instruction", index: -1 });
   else blocks(body.system, { source: "instruction", index: -1 });
   if (body.systemInstruction) blocks(body.systemInstruction.parts, { source: "instruction", index: -1 });
+  const schemaValue = (owner, key, depth) => {
+    if (++nodes > 5e4 || depth > 48) throw new Error("input_structure_limit");
+    const value = owner[key];
+    if (typeof value === "string") add(owner, key, { source: "schema", index: -1 });
+    else if (value && typeof value === "object") for (const k of Object.keys(value)) schemaValue(value, k, depth + 1);
+  };
   const schema = (v, depth = 0) => {
     if (!v || typeof v !== "object") return;
     if (++nodes > 5e4 || depth > 48) throw new Error("input_structure_limit");
     for (const k of Object.keys(v)) {
       if (["description", "title"].includes(k)) add(v, k, { source: "schema", index: -1 });
-      else if (k === "enum" && Array.isArray(v[k])) for (let i = 0; i < v[k].length; i++) add(v[k], i, { source: "schema", index: -1 });
-      else if (typeof v[k] === "object") schema(v[k], depth + 1);
+      else if (["enum", "const", "default", "examples"].includes(k)) schemaValue(v, k, depth + 1);
+      else if (["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"].includes(k) && v[k] && typeof v[k] === "object") {
+        for (const child of Object.values(v[k])) schema(child, depth + 1);
+      } else if (typeof v[k] === "object") schema(v[k], depth + 1);
     }
   };
   schema(body.tools);
@@ -853,6 +861,7 @@ function safeInput(body, protocol) {
 // src/session-authorization.js
 var PREFIX = "nero.session.authorization.v1\0";
 var validId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(value);
+var AUTHORIZATION_ENTRY_LIMIT = 100;
 function sessionIdentity(body, ctx) {
   if (ctx?.agent !== "codex" || ctx.origin && !["local", "magpie-key"].includes(ctx.origin)) return null;
   let meta = body?.client_metadata?.["x-codex-turn-metadata"] || body?.client_metadata;
@@ -901,7 +910,7 @@ function resolveAuthorization(body, ctx) {
   const id = sessionIdentity(body, ctx);
   if (!id) return { record: null, reason: "request_identity_unavailable", managed: false };
   const entries = ctx.options?.sessionAuthorizations;
-  if (!Array.isArray(entries) || entries.length > 64) return { record: null, managed: false };
+  if (!Array.isArray(entries) || entries.length > AUTHORIZATION_ENTRY_LIMIT) return { record: null, managed: false };
   const matching = entries.filter((e) => e?.session === id.session);
   if (!matching.length) return { record: null, managed: false };
   if (matching.length !== 1) return { record: null, managed: true, reason: "authorization_invalid" };
