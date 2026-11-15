@@ -33,6 +33,7 @@ export function fakeLoomy() {
     dailyBalance: 3000, // the day's first first-login refreshes it to 5000
     recordsReads: 0,
     modelsReads: 0,
+    modelsCode: null, // set to a business code to answer the models read 200 with it
     // onboarding: done[key]=true once its complete call lands (idempotent)
     onboardingDone: {},
     onboardingQueries: 0,
@@ -48,6 +49,7 @@ export function fakeLoomy() {
       state.dailyBalance = 3000
       state.recordsReads = 0
       state.modelsReads = 0
+      state.modelsCode = null
       state.onboardingDone = {}
       state.onboardingQueries = 0
       state.onboardingCompletes = 0
@@ -108,6 +110,7 @@ export function fakeLoomy() {
 
       if (url.pathname === "/api/v1/models") {
         state.modelsReads++
+        if (state.modelsCode) return json(200, { code: state.modelsCode, desc: "系统繁忙" })
         return json(200, {
           data: [
             { id: "spark-x", name: "Spark X2.5 (x0.1)", capabilities: { reasoning: true, function_calling: true, vision: false }, context_window: 128000, max_tokens: 8192 },

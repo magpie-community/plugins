@@ -669,7 +669,10 @@ export async function LoomyAuthPlugin({ client } = {}) {
         if (auth?.type !== "oauth" || !auth.access) return p.models
         try {
           const payload = await tokenRequest("GET", "/api/v1/models", auth.access)
-          if (codeOf(payload) && codeOf(payload) !== OK) return p.models
+          // a refusal in a 200 lists nothing: what was given (the static
+          // table at first) isn't the account's list, so magpie keeps the
+          // one it had and the models picked from it
+          if (codeOf(payload) && codeOf(payload) !== OK) return fellBack(p.models)
           const entries = Array.isArray(payload?.data) ? payload.data : []
           for (const entry of entries) {
             const m = catalogModel(entry)
@@ -678,11 +681,17 @@ export async function LoomyAuthPlugin({ client } = {}) {
           }
           return p.models
         } catch {
-          return p.models
+          return fellBack(p.models)
         }
       },
     },
   }
+}
+
+// fellBack marks a list that isn't the account's own (magpie's plugin
+// host reads Symbol.for("magpie.fellBack"))
+function fellBack(models) {
+  return Object.defineProperty(models, Symbol.for("magpie.fellBack"), { value: true, configurable: true })
 }
 
 // for tests

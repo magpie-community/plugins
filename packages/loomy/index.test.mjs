@@ -298,6 +298,17 @@ describe("models", () => {
     expect(list["glm-5.3-flash"].modalities).toEqual({ input: ["text", "image"], output: ["text"] })
     expect(list["plain"].rate).toBeUndefined()
     expect(list["plain"].name).toBe("No Suffix At All")
+    expect(list[Symbol.for("magpie.fellBack")]).toBeUndefined()
+  })
+
+  // Archivemylife on X (agy-cli's sibling): a list that isn't the account's
+  // own, handed back as if it were, dropped the models the user picked
+  test("a refusal in a 200 gives the static table marked as not the account's", async () => {
+    fake.state.modelsCode = "100500"
+    const p = { models: { ..._internal.STATIC_MODELS } }
+    const list = await plugin.provider.models(p, { auth: saved })
+    expect(Object.keys(list)).toEqual(Object.keys(_internal.STATIC_MODELS))
+    expect(list[Symbol.for("magpie.fellBack")]).toBe(true)
   })
 
   // plugins#1141: the host reads a listed model by OpenCode's shape
