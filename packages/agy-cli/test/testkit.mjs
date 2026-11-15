@@ -30,6 +30,7 @@ export const REPO_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)
 // AGY_BRIDGE_TEST_INDEX 只用于反向验证（让同一套用例跑修复前的旧副本，确认能抓到旧缺陷）。
 export const INDEX_FILE = process.env.AGY_BRIDGE_TEST_INDEX || path.join(REPO_DIR, "index.mjs")
 export const USAGE_FILE = path.join(REPO_DIR, "usage.mjs")
+export const MODEL_IDS_FILE = path.join(REPO_DIR, "model-ids.mjs")
 export const PLATFORM_FILE = path.join(REPO_DIR, "platform.mjs")
 export const ARRAY_ITEMS_FILE = path.join(REPO_DIR, "array-items.mjs")
 export const CLOAK_FILE = path.join(REPO_DIR, "cloak.mjs")
@@ -535,6 +536,7 @@ export async function createBridgeKit(options = {}) {
   const cache = new Map([[RUNTIME_SPECIFIER, runtime]])
   const indexUrl = pathToFileURL(path.join(REPO_DIR, "index.mjs")).href
   const usageUrl = pathToFileURL(USAGE_FILE).href
+  const modelIdsUrl = pathToFileURL(MODEL_IDS_FILE).href
   const platformUrl = pathToFileURL(PLATFORM_FILE).href
   const arrayItemsUrl = pathToFileURL(ARRAY_ITEMS_FILE).href
   const cloakUrl = pathToFileURL(CLOAK_FILE).href
@@ -552,6 +554,7 @@ export async function createBridgeKit(options = {}) {
     if (cache.has(key)) return cache.get(key)
     let module
     if (key === "./usage.mjs") module = sourceModule(USAGE_FILE, "", usageUrl)
+    else if (key === "./model-ids.mjs") module = sourceModule(MODEL_IDS_FILE, "", modelIdsUrl)
     else if (key === "./platform.mjs") module = sourceModule(PLATFORM_FILE, "", platformUrl)
     else if (key === "./array-items.mjs") module = sourceModule(ARRAY_ITEMS_FILE, "", arrayItemsUrl)
     else if (key === "./cloak.mjs") module = sourceModule(CLOAK_FILE, "", cloakUrl)

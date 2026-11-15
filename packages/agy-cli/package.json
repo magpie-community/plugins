@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-agy-cli-auth",
-  "version": "0.1.64",
+  "version": "0.1.65",
   "description": "Magpie/OpenCode model provider that connects your local agy CLI through the Agent Client Protocol (agy acp), so Antigravity subscription models run through the real CLI",
   "type": "module",
   "main": "./opencode.mjs",
@@ -18,6 +18,7 @@
     "step-usage.mjs",
     "tool-schema.mjs", "tool-budget.mjs",
     "usage.mjs",
+    "model-ids.mjs",
     "signin.mjs",
     "README.md",
     "README.en.md",

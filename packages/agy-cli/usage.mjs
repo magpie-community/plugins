@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
+import { modelsInGroup } from "./model-ids.mjs"
 import { cannotSignIn, isDead, noteDead, storedSignIn } from "./signin.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -90,10 +91,12 @@ export function parseUsageReport(value) {
         ?? (remaining?.case === "remainingFraction" ? remaining.value : undefined)
       const known = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
       const resetsAt = resetTime(field(bucket, "resetTime", "reset_time"))
+      const ids = modelsInGroup(group)
       windows.push({
         name: `${pool} · ${period.name}`,
         // This feature displays quota only; it must not change model routing.
         aside: true,
+        ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
         ...(period.span ? { span: period.span } : {}),
         ...(resetsAt ? { resetsAt } : {}),
