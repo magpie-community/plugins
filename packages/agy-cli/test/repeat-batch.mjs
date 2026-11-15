@@ -130,6 +130,20 @@ test("A6: findAgy searches again when PATH changes instead of keeping the first 
   })
 })
 
+test("A6b: an agy removed after it was found is not found again", async () => {
+  // magpie's sign-in asks whether agy is there and installs it when not;
+  // a cached path to a removed agy answered yes and the sign-in failed
+  // with ENOENT spawning it (magpie's container, 11-15)
+  await withKit({ agyPath: null }, async (kit) => {
+    const findAgy = kit.module.__agyTestFindAgy
+    const agy = kit.makeFakeAgy("gone")
+    kit.env.PATH = path.dirname(agy)
+    assert.equal(findAgy(), agy)
+    fs.rmSync(agy)
+    assert.equal(findAgy(), null, "the removed agy's cached path was handed out")
+  })
+})
+
 // ------------------------------------------------ A7 no-progress repeat limit
 
 async function pendingToolTurn(kit, body) {

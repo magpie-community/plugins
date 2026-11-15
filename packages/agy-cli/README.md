@@ -25,8 +25,8 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
 两者的区别：
 
 - **运行的程序**：Antigravity ACP 自己下载 Google 的 ACP 服务端（`agy_acp_server.par`，
-  约 400 MB），依赖 Antigravity IDE 的登录。本插件不下载任何东西，运行你自己装好、自己
-  登录过的 `agy` CLI（`agy acp`）。
+  约 400 MB），依赖 Antigravity IDE 的登录。本插件运行 `agy` CLI（`agy acp`）：用你自己装好的；
+  机器上没有时，在 Magpie 里登录会按 Google 官方安装脚本的方式装一份（见「环境要求」）。
 - **会话**：Antigravity ACP 每个请求开一个新会话，把历史当作上下文带上。本插件维护一个
   agy 进程池，同一段对话复用同一个 agy 会话，重启后用 `session/resume` 接上；只有接不上时
   才在字节预算内重放历史。
@@ -88,7 +88,11 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
 
 ## 环境要求
 
-- Antigravity CLI（`agy`），带 `acp` 子命令。在 Magpie 里登录需要 1.5.0 起的 agy（`agy acp --login`）；更早的版本请先在终端运行一次 `agy` 登录。
+- Antigravity CLI（`agy`），带 `acp` 子命令。机器上没有 agy 时（比如 Magpie 的 Docker 容器里），
+  Magpie 0.1.4246 起在 Magpie 里点 Sign in 会先装好它：从 Google 官方安装脚本用的同一个地址下载、
+  校验 sha512，放在数据目录里（`$XDG_DATA_HOME/magpie-agy-cli/agy`，没设时是
+  `~/.local/share/magpie-agy-cli/agy`；Windows 是 `%LOCALAPPDATA%\magpie-agy-cli\agy.exe`）。
+  容器的数据目录在 /config 卷里，重启后还在。你自己装的 agy 优先。在 Magpie 里登录需要 1.5.0 起的 agy（`agy acp --login`）；更早的版本请先在终端运行一次 `agy` 登录。
   文本与工具调用已在 1.4.12 和 1.5.0 上验证；图片输入需要 1.5.0。
 - 支持 OpenCode 风格 provider 插件的 Magpie。额度查询已在 Magpie 0.1.1599 上验证。
 - agy 版本低于 1.4.12 时，会话会被拒绝（见「工具桥接」）；低于 1.1.11 时，额度查询也会被
@@ -96,7 +100,9 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
 - **自动更新**：插件启动的 agy 进程默认带 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，免得进程池里的
   多个进程同时更新同一个可执行文件。你自己在终端里运行的 agy 不受影响，照常更新。你自己设置了
   `AGY_CLI_DISABLE_AUTO_UPDATE`（包括设为 `false`）时，插件原样使用你的值。只通过本插件使用
-  agy 的话，请定期在终端里运行一次 `agy` 让它更新：版本过旧本身也更显眼。
+  agy 的话，请定期在终端里运行一次 `agy` 让它更新：版本过旧本身也更显眼。插件自己装的那份由插件
+  保持最新：启动一分钟后查一次，之后每 6 小时查一次，有新版就下载、校验、试运行后替换；你设置了
+  `AGY_CLI_DISABLE_AUTO_UPDATE` 时不更新。
 
 ## 安装
 
@@ -204,7 +210,8 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 
 ## 常见排查
 
-- **找不到 agy**：设置 `AGY_PATH` 指向可执行文件，或确认 `agy` 在 PATH 里。
+- **找不到 agy**：在 Magpie 里点 Sign in 让它装一份（需要 Magpie 0.1.4246 起），或设置 `AGY_PATH`
+  指向可执行文件，或确认 `agy` 在 PATH 里。
 - **Sign in 失败或 agy 报登录相关错误**：再点一次 Sign in 重新登录，或在终端运行一次 `agy` 登录。
 - **HTTP 503**：进程池满。提高 `AGY_BRIDGE_MAX_PROCS` 和 Providers 页的 Concurrency，
   或者减少同时进行的会话。

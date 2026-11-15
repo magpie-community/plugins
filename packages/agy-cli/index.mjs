@@ -11,6 +11,7 @@ import { createUsageReader } from "./usage.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
+import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
 import { fitTools } from "./tool-budget.mjs"
@@ -197,8 +198,15 @@ function findAgy() {
   // LOCALAPPDATA, home): a cached path from an old environment may be gone.
   const home = os.homedir()
   const env = process.env
-  const searchKey = JSON.stringify([env.AGY_PATH, env.PATH, env.Path, env.LOCALAPPDATA, home])
-  if (cachedAgyPath && cachedAgySearchKey === searchKey) return cachedAgyPath
+  const searchKey = JSON.stringify([env.AGY_PATH, env.PATH, env.Path, env.LOCALAPPDATA, env.XDG_DATA_HOME, home])
+  // and whenever the path found is gone: an agy removed while magpie ran
+  // is installed again by the next sign-in, not spawned where it was
+  if (cachedAgyPath && cachedAgySearchKey === searchKey) {
+    try {
+      fs.accessSync(cachedAgyPath, fs.constants.X_OK)
+      return cachedAgyPath
+    } catch {}
+  }
   cachedAgyPath = null
   cachedAgySearchKey = searchKey
   const candidates = agyCandidates(env, home)
@@ -5872,8 +5880,10 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   return proc.startTurn(contentParts, body.messages, model, selection)
 }
 
+// A magpie that installs a plugin's CLI (auth.cli) installs agy before it
+// gets here; an older one, or OpenCode, doesn't.
 function noAgy() {
-  return { type: "failed", error: "agy CLI not found. Install Antigravity CLI first: https://antigravity.google/docs/cli" }
+  return { type: "failed", error: `agy CLI not found. Update magpie and sign in again to have it installed, or install Antigravity CLI yourself: ${AGY_MANUAL}` }
 }
 
 // signedInAs is the sign-in's result, named by the Google account agy is
@@ -5911,10 +5921,24 @@ async function googleSignIn(agy) {
 
 export const AntigravityBridgePlugin = async () => {
   const readUsage = createUsageReader(findAgy)
+  keepAgyCurrent(findAgy)
   return {
     auth: {
       provider: PROVIDER_ID,
       single: true,
+      // Magpie's hook for the CLI a plugin runs through: a sign-in on a
+      // machine without agy (magpie in Docker) installs it first, into the
+      // plugin's own folder (install.mjs). OpenCode ignores it.
+      cli: {
+        name: "Antigravity CLI",
+        manual: AGY_MANUAL,
+        installed: async () => findAgy() !== null,
+        install: async ({ signal } = {}) => {
+          if (findAgy()) return
+          await installAgy({ signal })
+          if (!findAgy()) throw new Error("agy was installed, but the plugin can't run it")
+        },
+      },
       // Magpie's usage hook; OpenCode ignores this extension. agy owns auth.
       usage: async () => readUsage(),
       methods: [

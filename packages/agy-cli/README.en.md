@@ -33,8 +33,9 @@ channel: Antigravity's models over ACP. The differences:
 
 - **What runs**: Antigravity ACP downloads Google's ACP server
   (`agy_acp_server.par`, about 400 MB) and rides the Antigravity IDE's sign-in.
-  This plugin downloads nothing; it runs the `agy` CLI you installed and signed
-  in to yourself (`agy acp`).
+  This plugin runs the `agy` CLI (`agy acp`): your own when you have one, and
+  when the machine has none, signing in from Magpie installs one the way
+  Google's own installer does (see "Requirements").
 - **Sessions**: Antigravity ACP opens a new session per request and carries the
   history as context. This plugin keeps a pool of agy processes, reuses one agy
   session for one conversation, and picks it up again with `session/resume`
@@ -122,7 +123,14 @@ turn); the models a client gets remain agy's decision.
 
 ## Requirements
 
-- The Antigravity CLI (`agy`) with the `acp` subcommand. Signing in from Magpie
+- The Antigravity CLI (`agy`) with the `acp` subcommand. On a machine without
+  agy (Magpie's Docker container, say), Sign in in Magpie 0.1.4246 or later
+  installs it first: downloaded from where Google's install script gets it,
+  checked against its sha512, and kept in the data folder
+  (`$XDG_DATA_HOME/magpie-agy-cli/agy`, else `~/.local/share/magpie-agy-cli/agy`;
+  `%LOCALAPPDATA%\magpie-agy-cli\agy.exe` on Windows). In the container that
+  folder is on the /config volume, so it survives a restart. An agy you
+  installed yourself comes first. Signing in from Magpie
   needs agy 1.5.0 or later (`agy acp --login`); with an older one, run `agy` in
   a terminal once to sign in. Text and tool calls have been verified on 1.4.12
   and 1.5.0; image input needs 1.5.0.
@@ -137,7 +145,10 @@ turn); the models a client gets remain agy's decision.
   affected and update as usual. If you set `AGY_CLI_DISABLE_AUTO_UPDATE`
   yourself (`false` included), the plugin passes your value on as written. If
   you use agy only through this plugin, run `agy` in a terminal now and then so
-  it updates: an old version stands out too.
+  it updates: an old version stands out too. The copy the plugin installed is
+  kept current by the plugin: checked a minute after it starts and every 6
+  hours after, and a new version is downloaded, checked and tried before it
+  replaces the old one. Not when you set `AGY_CLI_DISABLE_AUTO_UPDATE`.
 
 ## Install
 
@@ -281,8 +292,9 @@ off unless you turn it on.
 
 ## Troubleshooting
 
-- **agy cannot be found**: set `AGY_PATH` to the executable, or make sure `agy`
-  is on PATH.
+- **agy cannot be found**: click Sign in in Magpie to have it installed (Magpie
+  0.1.4246 or later), set `AGY_PATH` to the executable, or make sure `agy` is
+  on PATH.
 - **Sign in fails, or agy reports a login problem**: click Sign in again, or run
   `agy` in a terminal to sign in there.
 - **HTTP 503**: the pool is full. Raise `AGY_BRIDGE_MAX_PROCS` and the Providers

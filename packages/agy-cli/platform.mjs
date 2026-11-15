@@ -17,7 +17,24 @@ export function agyCandidates(env, home, platform = process.platform) {
     paths.join(home, ".gemini", "bin"),
   ] : [paths.join(home, ".local", "bin"), paths.join(home, ".gemini", "bin"), "/usr/local/bin", "/opt/homebrew/bin"]
   for (const directory of directories) candidates.push(...names.map(name => paths.join(directory, name)))
+  // the copy the plugin installed itself (install.mjs), last: an agy the
+  // user installed wins
+  candidates.push(ownAgyPath(env, home, platform))
   return candidates
+}
+
+// Where the plugin installs agy when the machine has none (install.mjs):
+// a folder of its own under the user's data folder, never one an agy the
+// user installed is in, so it never writes over theirs. In magpie's Docker
+// image XDG_DATA_HOME is /config/data, on the volume, so it outlives the
+// container.
+export function ownAgyPath(env, home, platform = process.platform) {
+  if (platform === "win32") {
+    const local = env.LOCALAPPDATA || path.win32.join(home, "AppData", "Local")
+    return path.win32.join(local, "magpie-agy-cli", "agy.exe")
+  }
+  const data = env.XDG_DATA_HOME && path.posix.isAbsolute(env.XDG_DATA_HOME) ? env.XDG_DATA_HOME : path.posix.join(home, ".local", "share")
+  return path.posix.join(data, "magpie-agy-cli", "agy")
 }
 
 // The cmd.exe escaping algorithm is adapted from node-cross-spawn:
