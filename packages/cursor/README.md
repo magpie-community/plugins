@@ -96,6 +96,10 @@ plugin's `fetch` answers them on Cursor's agent API:
   before.
   Failures keep their statuses: 401 to sign in again, 429 at the
   usage limit, 400 for a prompt too long, 403 for a region refusal.
+  Cursor's explicit "The provider refused to serve this request based on
+  the content" is a 400 request refusal even when Cursor labels it
+  unauthenticated. Its message is kept without a sign-in hint; the
+  account is kept, and this does not make the refused request succeed.
 
 Tool results can continue a retained Run in the same plugin process. The owner
 uses the same session/cache key and first user message as `conversation_id`, so

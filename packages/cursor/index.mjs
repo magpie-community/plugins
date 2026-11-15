@@ -1686,6 +1686,9 @@ function statusOf(status, code, msg) {
   const low = msg.toLowerCase()
   // magpie names the provider before the message itself
   const out = (status, message) => ({ status, message })
+  // Cursor labels this prompt refusal unauthenticated too. Asking the user
+  // to sign in again would misdiagnose a request error as an account fault.
+  if (low.includes("the provider refused to serve this request based on the content")) return out(400, msg)
   if (regional(msg)) return out(403, msg + " — Cursor serves your team only in some regions and turned this request away; signing in again won't change that")
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))
