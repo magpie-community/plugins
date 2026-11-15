@@ -205,6 +205,21 @@ instead of on `/v2/report`; whether WorkBuddy reads it for the daily credit
 is not known. Anything the caller put in `extra_vars` is kept. The China
 build's chats go without it.
 
+Since 0.2.35 a WorkBuddy AI chat is also reported on `POST /v2/report`, as
+WorkBuddy AI 5.9.4's client reports one (#691): once the reply has been
+read to its end, `chat_message_send`, then `chat_message_response` and
+`chat_message_status` (with `chat_request_send` first when the user's own
+message opened the step, and `chat_request_response` last when the step
+ends the turn), then `agent_task_completed` and `chat_response_complete`
+for a step that ends it. They carry the chat's ids, model, token counts and
+finish reason, and the client's common fields: the account's id and name,
+WorkBuddy's version, this computer's OS, CPU and memory, and a machine id
+that is a hash of the host's and user's names. Only the user's own chats
+are reported, never a message of the plugin's own; a reply cut off, a
+refusal, a key account and the China build send none, and a report that
+fails is dropped. Whether the daily credit reads these reports is not
+known yet.
+
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
 
