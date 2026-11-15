@@ -1375,6 +1375,28 @@ for (const [title, tools, want, name] of [
   check("split error marker and quota map to rate_limit_error", error?.type === "rate_limit_error" && error.message.includes("quota exhausted") && textOf(events) === "", JSON.stringify({ error, text: textOf(events) }))
 }
 
+// #1151 (KevinXC5; niyezaimenglima on X, Windows): Claude Code's own
+// opening lines, its CLI's and its Agent SDK's, got a 429 with quota left.
+// By default none of it reaches agy's system instruction, and in the first
+// turn no line Antigravity turns away goes as written.
+{
+  const { turnsAway } = await import("../cloak.mjs")
+  const heads = {
+    cli: "You are Claude Code, Anthropic's official CLI for Claude.",
+    sdk: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  }
+  for (const [name, head] of Object.entries(heads)) {
+    const system = `x-anthropic-billing-header: cc_version=2.1.325; cc_entrypoint=cli; cch=1;\n${head}\n\nYou are an interactive agent that helps users with software engineering tasks. CC-${name}`
+    await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: `claude code ${name} turn` }] }))
+    const init = inits().at(-1)
+    const text = lastOf("user").text
+    check(`#1151 Claude Code's ${name} prompt stays out of agy's system instruction`, init.systemAppend == null, JSON.stringify(init.systemAppend))
+    check(`#1151 Claude Code's ${name} prompt goes in the turn with no line Antigravity turns away`,
+      text.includes(`CC-${name}`) && text.includes("You're Claude Code, Anthropic's official CLI for Claude") &&
+      !text.includes("x-anthropic-billing-header") && !turnsAway(text), JSON.stringify(text))
+  }
+}
+
 // #980: the system lines Antigravity turns away are reworded before agy
 // sends them, in the session instructions, in the prompt when agy can't take
 // them, and in a later system message; a 429 to such a prompt is not a quota.
