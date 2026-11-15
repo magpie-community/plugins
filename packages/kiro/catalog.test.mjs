@@ -3,7 +3,7 @@ import { test, expect } from "bun:test"
 const model = "glm-5"
 const request = { model, output_config: { effort: "high" }, messages: [{ role: "user", content: "hi" }] }
 const account = { accountId: "account-a", uid: "enterprise" }
-const credentials = { token: "t", tokenType: "SSO_OIDC", idc: true, profile: "arn:aws:codewhisperer:us-east-1:1:profile/P", region: "us-east-1" }
+const credentials = { token: "t", tokenType: "SSO_OIDC", idc: true, profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P", region: "us-east-1" }
 
 function answer() {
   const header = Buffer.concat(Object.entries({ ":message-type": "event", ":event-type": "assistantResponseEvent" }).map(([key, value]) =>
@@ -103,7 +103,7 @@ test("failed catalog lookups expire and are separate for each account and region
     await call(account, { ...credentials, token: "refreshed" })
     expect(s.reads).toHaveLength(1)
     await call({ ...account, accountId: "account-b" }, credentials)
-    await call(account, { ...credentials, region: "eu-central-1", profile: "arn:aws:codewhisperer:eu-central-1:1:profile/P" })
+    await call(account, { ...credentials, region: "eu-central-1", profile: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/P" })
     expect(s.reads).toHaveLength(3)
     now += 10 * 60 * 1000 + 1
     await call(account, credentials)
@@ -128,7 +128,7 @@ test("native fields use the selected account's regional catalog", async () => {
   try {
     await call(account, credentials)
     await call({ ...account, accountId: "account-b" }, { ...credentials, token: "other" })
-    await call(account, { ...credentials, region: "eu-central-1", profile: "arn:aws:codewhisperer:eu-central-1:1:profile/P" })
+    await call(account, { ...credentials, region: "eu-central-1", profile: "arn:aws:codewhisperer:eu-central-1:123456789012:profile/P" })
     await call(account, credentials)
     expect(s.reads).toHaveLength(3)
     expect(s.calls.map(body => body.additionalModelRequestFields)).toEqual([

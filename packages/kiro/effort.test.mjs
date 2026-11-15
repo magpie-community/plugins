@@ -33,7 +33,7 @@ const listed = (models) => {
     if (new URL(String(input)).pathname !== "/List-Available-Models") throw new Error("no network in tests")
     return Response.json({ defaultModel: { modelId: "auto" }, models })
   }
-  return _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:1:profile/P" })
+  return _internal.listModels({ region: "us-east-1", token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/P" })
     .finally(() => (globalThis.fetch = was))
 }
 const model = (modelId, schema) => ({ modelId, modelName: modelId, tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 128000 },
