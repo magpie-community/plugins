@@ -95,6 +95,17 @@ The plugin's `fetch` handles this:
   before.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
+- Devin answers "There is an issue with this request, please try a
+  different model" to a long conversation it can't take, and every turn
+  after fails the same (since 0.1.44):
+  - A picture is sent as the type its bytes are (PNG, JPEG, GIF, WebP),
+    not the one it was said to be: Devin refuses a PNG labelled JPEG.
+  - A user message of white space alone isn't sent.
+  - Thinking signed somewhere Devin can't check is sent again once
+    without the signatures.
+  - Past half the model's window (about four bytes a token), the refusal
+    is a 400 "input is too long for the model's context", so the agent
+    compacts.
 - A reply with only metadata and usage is a 502, even when output tokens
   were counted. The plugin waits for actual content before opening a
   successful stream, so the gateway can try another channel.

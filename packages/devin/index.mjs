@@ -1464,7 +1464,22 @@ function inlineImage(p) {
   if (p?.type !== "image_url") return null
   const u = typeof p.image_url === "string" ? p.image_url : p.image_url?.url ?? ""
   const d = /^data:([^,]*),(.*)$/s.exec(u)
-  return d && d[2] ? { data: d[2], type: d[1].replace(/;base64$/, "") || "image/png" } : null
+  return d && d[2] ? { data: d[2], type: imageType(d[2], d[1].replace(/;base64$/, "") || "image/png") } : null
+}
+
+// imageType is the type an image's bytes (base64) are, by their first
+// bytes, else the type it was said to be. Devin answers "There is an issue
+// with this request, please try a different model" (invalid_argument) to
+// a PNG said to be a JPEG or a WebP, on every Claude model, and the
+// picture stays in the conversation, so every turn after fails the same:
+// a tool that names a screenshot by its file's extension is enough.
+function imageType(data, said) {
+  const b = Buffer.from(String(data).slice(0, 24), "base64")
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png"
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg"
+  if (b.length >= 6 && b.toString("latin1", 0, 4) === "GIF8") return "image/gif"
+  if (b.length >= 12 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP") return "image/webp"
+  return said
 }
 
 // A chat's tool message holds text alone, so magpie's gateway (buildChat's
@@ -1485,7 +1500,7 @@ function noted(text) {
 
 // build is the GetChatMessage request for a chat completion, to the model
 // uid.
-function build(chat, uid, key) {
+function build(chat, uid, key, opts = {}) {
   const claude = isClaude(uid)
   const msgs = []
   let pending = [] // calls the last reply made, not yet answered
@@ -1531,7 +1546,7 @@ function build(chat, uid, key) {
       const reasoning = claude ? "" : reasoningOf(m)
       // a Gemini reply goes back with its thought signature, as the
       // devin CLI sends it (thoughts)
-      const signed = thoughtFor(uid, calls, text)
+      const signed = opts.unsigned ? null : thoughtFor(uid, calls, text)
       const thinking = signed ? { text: reasoning, ...signed } : reasoning ? { text: reasoning } : null
       msgs.push({ role: ASSISTANT, text, calls, ...(thinking ? { thinking } : {}) })
       // a copy: answering a call takes it off pending, never off the
@@ -1576,7 +1591,9 @@ function build(chat, uid, key) {
       }
     }
     settleResults()
-    const text = texts.join("\n\n")
+    // words that are only white space are none: Devin turns a user prompt
+    // of them away (invalid_argument), as it does an empty one
+    const text = texts.join("\n\n").trim() ? texts.join("\n\n") : ""
     if (!text && !images.length) continue
     answer()
     msgs.push({ role: USER, text, images })
@@ -1650,7 +1667,30 @@ function encodeRequest(msgs, tools, chat, uid, key) {
   }
   const bytes = assemble([], chat.max || 128000) // the server holds max to the model's own
   pingOf.set(bytes, () => assemble([encodeMsg({ role: USER, text: "continue" })], 1))
+  sentOf.set(bytes, { signed: msgs.some((m) => m.thinking?.signature), tokens: estimate(msgs, toolParts) })
   return bytes
+}
+
+// sentOf is what each request carried that its failure is read by: any
+// signed thinking, and about how many tokens its prompt is (estimate)
+const sentOf = new WeakMap()
+
+// estimate is about how many tokens msgs and the tools offered come to,
+// a token counted as four bytes of text and an image as 1,600 tokens (a
+// picture's base64 is no measure of its tokens): text runs under four
+// bytes a token, code nearer three (Devin counted 991,278 tokens of
+// 2,350,000 bytes of Go), so this is low, never high, and it is read
+// against half the window (TOO_LONG_AT).
+function estimate(msgs, toolParts) {
+  let bytes = 0
+  let images = 0
+  for (const m of msgs) {
+    bytes += Buffer.byteLength(m.text ?? "") + Buffer.byteLength(m.thinking?.text ?? "")
+    for (const c of m.calls ?? []) bytes += Buffer.byteLength(c.name ?? "") + Buffer.byteLength(c.args ?? "")
+    images += m.images?.length ?? 0
+  }
+  for (const t of toolParts) bytes += t.length
+  return Math.ceil(bytes / 4) + images * 1600
 }
 
 // pingOf is each request's keepalive ping, made when one is first sent
@@ -1752,7 +1792,7 @@ function failure(status, text) {
   if (low.includes("content policy")) return { status: 400, message: msg }
   if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
     return { status: 400, message: "input is too long for the model's context: " + msg }
-  if (code === "invalid_argument") return { status: 400, message: msg }
+  if (code === "invalid_argument") return { status: 400, message: msg, code }
   if (code === "unavailable") return { status: 503, message: msg }
   if (code) return { status: 502, message: msg }
   return { status, message: msg }
@@ -1880,9 +1920,33 @@ const rpcHeaders = (key, body) => ({ "Content-Type": "application/connect+proto"
 
 // keep, when given, is the conversation's cache keepalive (keepaliveFor):
 // once the reply has finished, its pings are scheduled.
+//
+// Devin answers "There is an issue with this request, please try a
+// different model" (invalid_argument) to a conversation past the model's
+// window and to a thinking signature it didn't give (another vendor's
+// Claude, or one a client changed), alike. Either stays in the
+// conversation, so every turn after fails the same while a new session
+// works (a1pha1nthefog on X). A request with signed thinking that is
+// turned away is sent again once with no signature, its Claude thinking
+// left out, as Anthropic takes a past turn's; one still turned away at
+// half the model's window or more (TOO_LONG_AT) is told as too long, so
+// the agent compacts the conversation rather than stopping.
 async function roundtrip({ key, server, families, keep }, chat, signal, wire = CHAT_WIRE) {
   const uid = variantFor(families, chat.model, wire.effort(chat))
-  const msg = wire.build(chat, uid, key)
+  let msg = wire.build(chat, uid, key)
+  let r = await askOnce(key, server, msg, signal, uid)
+  if (r.code === "invalid_argument" && sentOf.get(msg)?.signed && !signal?.aborted) {
+    msg = wire.build(chat, uid, key, { unsigned: true })
+    r = await askOnce(key, server, msg, signal, uid)
+  }
+  if (r.code === "invalid_argument") r = tooLongFor(r, sentOf.get(msg)?.tokens ?? 0, windowOf(families, uid), uid)
+  if (!r.it) return r
+  return { it: keep ? keptAfter(r.it, keep, { key, server, msg, sentAt: r.sentAt }) : r.it, uid }
+}
+
+// askOnce sends one GetChatMessage, msg, and answers with its event iterator
+// and when it was sent, or an error ({status, message, code}).
+async function askOnce(key, server, msg, signal, uid) {
   const body = frame(msg)
   // when Devin was asked, which its cache's 5 minutes run from: the pings
   // are timed from it, not from the reply's end (plugins#626)
@@ -1921,8 +1985,26 @@ async function roundtrip({ key, server, families, keep }, chat, signal, wire = C
     await fr.return?.()
     return head.value.error
   }
-  const it = prepend(head.value, source)
-  return { it: keep ? keptAfter(it, keep, { key, server, msg, sentAt }) : it, uid }
+  return { it: prepend(head.value, source), sentAt }
+}
+
+// TOO_LONG_AT is how much of a model's window a request Devin turns away
+// (invalid_argument) must be estimated at to be told as too long: the
+// estimate runs low (estimate), and Devin says nothing of length.
+const TOO_LONG_AT = 0.5
+
+// tooLongFor is e, a request turned away, as too long for the model's
+// window when it was estimated at TOO_LONG_AT of it or more; e otherwise.
+function tooLongFor(e, tokens, window, uid) {
+  if (!window || tokens < window * TOO_LONG_AT) return e
+  return { status: 400, message: `input is too long for the model's context: about ${tokens} tokens or more, for ${uid}'s window of ${window} (Devin answered: ${e.message})` }
+}
+
+// windowOf is the context window of the model uid, from the account's
+// list or else the snapshot's; 0 when neither says.
+function windowOf(families, uid) {
+  for (const fs of [families, SNAPSHOT_FAMILIES]) for (const f of fs ?? []) for (const m of f.models ?? []) if (m.id === uid && m.context) return m.context
+  return 0
 }
 
 // complete answers a chat completion through GetChatMessage.
@@ -2003,7 +2085,7 @@ const marked = (b) => !!(b && typeof b === "object" && b.cache_control && typeof
 function anthropicImage(b) {
   const s = b?.type === "image" ? b.source : null
   if (s?.type !== "base64" || !s.data) return null
-  return { data: s.data, type: s.media_type || "image/png" }
+  return { data: s.data, type: imageType(s.data, s.media_type || "image/png") }
 }
 
 // anthropicEffort is the effort a Messages request asks for, as magpie
@@ -2026,7 +2108,7 @@ function anthropicEffort(req) {
 // (#566). Every boundary is kept, not only the marked ones: a mark moves
 // forward as the history grows, and the prompts it passed must stay as
 // they were sent for the cache to be read (yetone/magpie#3835).
-function buildMessages(req, uid, key) {
+function buildMessages(req, uid, key, opts = {}) {
   const claude = isClaude(uid)
   // Messages alternate roles; a client that sends two of one role in a row
   // means one turn
@@ -2072,7 +2154,7 @@ function buildMessages(req, uid, key) {
         } else if (b?.type === "tool_use" && b.name) {
           calls.push({ id: inID(b.id), name: b.name, args: JSON.stringify(b.input ?? {}) })
           mark ||= marked(b)
-        } else if (b?.type === "thinking" && claude && typeof b.signature === "string" && b.signature) {
+        } else if (b?.type === "thinking" && claude && !opts.unsigned && typeof b.signature === "string" && b.signature) {
           // Devin rejects a signed thought on an otherwise empty assistant prompt.
           // A gateway search can leave adjacent thoughts; keep the last one intact.
           const next = t.blocks[i + 1]
@@ -2093,7 +2175,7 @@ function buildMessages(req, uid, key) {
       // a Gemini reply goes back with its thought signature, on the
       // prompt with its calls (or its last words), as the devin CLI sends
       // it (thoughts)
-      const signed = own.length ? thoughtFor(uid, calls, own.map((p) => p.text).join("")) : null
+      const signed = own.length && !opts.unsigned ? thoughtFor(uid, calls, own.map((p) => p.text).join("")) : null
       if (signed) {
         const p = own[own.length - 1]
         p.thinking = { text: p.thinking?.text ?? "", ...signed }
@@ -2123,7 +2205,9 @@ function buildMessages(req, uid, key) {
         continue
       }
       if (b?.type === "text" && typeof b.text === "string") {
-        if (!b.text) {
+        // a block of white space alone is none: Devin turns a user prompt
+        // of it away (invalid_argument), as it does an empty one
+        if (!b.text.trim()) {
           if (marked(b) && words) words.cache = true
           continue
         }
@@ -3312,4 +3396,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
