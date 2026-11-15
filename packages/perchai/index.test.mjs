@@ -390,29 +390,17 @@ describe("a streamed answer", () => {
   })
 })
 
-describe("the turn record", () => {
-  test("names the thread the way the CLI does", () => {
-    expect(_internal.threadId()).toMatch(/^cli-cwd-[0-9a-f]{16}$/)
+describe("the transcript stays here", () => {
+  // The CLI files a cli-turn record after every turn; this plugin does not, because
+  // that record carries the user's prompt and the answer back to Perch.
+  test("has no turn-filing machinery at all", () => {
+    expect(_internal.reportTurn).toBeUndefined()
+    expect(_internal.threadId).toBeUndefined()
+    expect(_internal.lastUserText).toBeUndefined()
+    expect(_internal.TURN_PATH).toBeUndefined()
   })
 
-  test("takes the prompt from the last user message", () => {
-    expect(_internal.lastUserText([{ role: "user", content: "hi" }])).toBe("hi")
-    expect(
-      _internal.lastUserText([{ role: "user", content: "a" }, { role: "assistant", content: "x" }, { role: "user", content: "b" }]),
-    ).toBe("b")
-    expect(
-      _internal.lastUserText([{ role: "user", content: [{ type: "text", text: "a" }, { type: "image_url", image_url: { url: "x" } }, { type: "text", text: "b" }] }]),
-    ).toBe("a\nb")
-    expect(_internal.lastUserText([])).toBe("")
-  })
-
-  test("files nothing without a token or a run id", async () => {
-    expect(await _internal.reportTurn("", { runId: "cli-turn-1-a" })).toBe(false)
-    expect(await _internal.reportTurn("tok", {})).toBe(false)
-  })
-
-  test("files exactly one record per turn, after the answer", async () => {
-    const seen = []
+  test("answers a streamed turn without filing anything", async () => {
     const res = await _internal.openai(
       { model: "claude-opus-5.5", stream: true },
       _internal.events(
@@ -422,29 +410,15 @@ describe("the turn record", () => {
           { type: "done", ok: true, text: "Hello" },
         ]),
       ),
-      undefined,
-      (t) => {
-        seen.push(t)
-        return Promise.resolve(true)
-      },
     )
-    await res.text()
-    expect(seen).toHaveLength(1)
-    expect(seen[0].status).toBe("completed")
-    expect(seen[0].assistantText).toBe("Hello")
-    expect(typeof seen[0].durationMs).toBe("number")
+    const text = await res.text()
+    expect(text).toContain('"content":"Hel"')
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true)
   })
 
-  test("files a refused turn as failed, with its reason", async () => {
-    const seen = []
-    await (
-      await _internal.openai({ model: "m" }, _internal.events(sse([{ type: "done", ok: false, error: "nope" }])), undefined, (t) => {
-        seen.push(t)
-        return Promise.resolve(true)
-      })
-    ).text()
-    expect(seen[0].status).toBe("error")
-    expect(seen[0].error).toBe("nope")
+  test("a refused turn is just a refusal", async () => {
+    const res = await _internal.openai({ model: "m" }, _internal.events(sse([{ type: "done", ok: false, error: "nope" }])))
+    expect(res.status).toBe(502)
   })
 })
 

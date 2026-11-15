@@ -835,80 +835,6 @@ const locale = () => {
   return { "x-perch-locale": l && /^[a-z]{2}-[A-Z]{2}$/.test(l) ? l : "zh-CN" }
 }
 
-// lastUserText is the prompt the turn was asked with: the last user message,
-// flattened to text, which is what the CLI files as `prompt`.
-function lastUserText(messages) {
-  const list = Array.isArray(messages) ? messages : []
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    const m = list[i]
-    if (m?.role !== "user") continue
-    const c = m.content
-    if (typeof c === "string") return c
-    if (Array.isArray(c)) {
-      const parts = c.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text)
-      if (parts.length) return parts.join("\n")
-    }
-    return ""
-  }
-  return ""
-}
-
-// reportTurn persists the turn the way perchai-cli's own `qfe()` does.
-//
-// This is the difference Perch actually notices. Its CLI never runs a model call
-// without filing a cli-turn record for it, so a client that calls model-call and
-// files nothing looks, from the server, exactly like an outside app replaying
-// Perch's own requests — which is what `not_authorized` bans accounts for. The
-// call itself is already allowed through (lane and system prompt are what gate
-// that); this is the record that says a real turn happened, and it is sent on
-// every call, streaming or not.
-const TURN_PATH = "/api/perch-terminal/cli-turn"
-
-// threadId is the CLI's: `cli-cwd-<sha256(cwd) first 16 hex>`. Perch groups a
-// conversation by it, so a stable value per working directory is what it expects.
-function threadId() {
-  const cwd = process.cwd()
-  return `cli-cwd-${createHash("sha256").update(cwd).digest("hex").slice(0, 16)}`
-}
-
-async function reportTurn(token, turn) {
-  if (!token || !turn?.runId) return false
-  const body = JSON.stringify({
-    prompt: String(turn.prompt ?? "").slice(0, 8000),
-    assistantText: String(turn.assistantText ?? "").slice(0, 200_000),
-    threadId: turn.threadId ?? threadId(),
-    runId: turn.runId,
-    chatMode: turn.chatMode === "ask" ? "ask" : "agents",
-    personaId: null,
-    status: turn.status === "running" ? "streaming" : turn.status === "error" ? "failed" : "completed",
-    durationMs: Math.max(0, Math.round(Number(turn.durationMs) || 0)),
-    error: turn.error ? String(turn.error).slice(0, 500) : null,
-    events: [],
-    contextSnapshot: null,
-    systemInitiated: false,
-    attachments: [],
-    ...(turn.workspaceRootPath ? { workspaceRootPath: String(turn.workspaceRootPath) } : {}),
-  })
-  // The CLI retries 5xx and 429 (its `xVo = 3`), and gives up on anything else.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)))
-    try {
-      const res = await fetch(`${APP}${TURN_PATH}`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body,
-        signal: AbortSignal.timeout(12_000),
-      })
-      await res.text().catch(() => "")
-      if (res.ok) return true
-      if (!(res.status >= 500 || res.status === 429)) return false
-    } catch {
-      if (attempt === 2) return false
-    }
-  }
-  return false
-}
-
 // turnTicket mints the ticket a Perch turn runs under. The CLI never calls
 // model-call without one: the ticket's own runId is what it sends as runId, and
 // the ticket rides back as x-perch-turn-ticket. A null answer means Perch would
@@ -1130,11 +1056,10 @@ function callBody(req, optionId, who, ticketRunId) {
 // A stream_restart (Perch re-running the turn on another model) cannot be
 // retracted once bytes are out, so the earlier text stays and the rest is
 // appended; the non-streaming path is exact because it never emits early.
-async function openai(req, it, abort, report) {
+async function openai(req, it, abort) {
   const id = `chatcmpl-${randomBytes(12).toString("hex")}`
   const created = Math.floor(Date.now() / 1000)
   const model = String(req.model ?? PROVIDER)
-  const startedAt = Date.now()
 
   if (!req.stream) {
     let text = ""
@@ -1159,11 +1084,7 @@ async function openai(req, it, abort, report) {
         }
       } else if (e.type === "error") failureBody = { error: String(e.message ?? "Perch's stream failed") }
     }
-    if (failureBody) {
-      await report?.({ status: "error", error: failureBody.error, assistantText: "", durationMs: Date.now() - startedAt })
-      return failure(502, JSON.stringify(failureBody))
-    }
-    await report?.({ status: "completed", assistantText: text, durationMs: Date.now() - startedAt })
+    if (failureBody) return failure(502, JSON.stringify(failureBody))
     const message = { role: "assistant", content: text || (calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
     if (calls.length) message.tool_calls = calls
@@ -1240,13 +1161,6 @@ async function openai(req, it, abort, report) {
         put(enc.encode("data: [DONE]\n\n"))
         if (!gone) ctl.close()
       } catch {}
-      // Filed after the answer is out, so the caller never waits on it.
-      report?.({
-        status: failed ? "error" : "completed",
-        assistantText: said,
-        error: why,
-        durationMs: Date.now() - startedAt,
-      })?.catch?.(() => {})
     },
     cancel() {
       gone = true
@@ -1403,9 +1317,7 @@ export async function PerchAuthPlugin({ client }) {
             // runId. Without one Perch still answers, but this is the shape it sees
             // from its own client, so the request goes out the same way.
             const ticket = await turnTicket(a.access)
-            // Without a ticket the call still goes out, under a runId of its own —
-            // and that is the runId the turn gets filed under, so a turn that could
-            // not be ticketed is still a turn Perch sees a record for.
+            // Without a ticket the call still goes out, under a runId of its own.
             const runId = ticket?.runId || turnId()
             let res
             try {
@@ -1416,17 +1328,9 @@ export async function PerchAuthPlugin({ client }) {
             }
             if (!res.ok || !res.body) {
               const text = await res.text().catch(() => "")
-              // A refused call is still a turn Perch's own client would have filed.
-              void reportTurn(a.access, {
-                runId,
-                prompt: lastUserText(req.messages),
-                status: "error",
-                error: text.slice(0, 300),
-              })
               return failure(res.status, text)
             }
-            const report = (turn) => reportTurn(a.access, { ...turn, runId, prompt: lastUserText(req.messages) })
-            return openai(req, events(res), () => ac.abort(), report)
+            return openai(req, events(res), () => ac.abort())
           },
         }
       },
@@ -1539,9 +1443,6 @@ export const _internal = {
   resolveWorkspace,
   readUsage,
   renew,
-  reportTurn,
-  lastUserText,
-  threadId,
   supabaseFetch,
   stripBoilerplate,
   stripSystemBoilerplate,
