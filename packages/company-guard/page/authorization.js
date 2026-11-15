@@ -18,8 +18,12 @@ async function authorizationPost(route,body){
 function sessionCard(row,kind){
   const card=el('article',undefined,'authorization-card'),text=el('div',undefined,'authorization-task'),scope=el('div',undefined,'authorization-scope');
   const title=el('h3',row.taskTitle || '会话 '+short(row.session));title.title=row.taskTitle || row.session;
-  const identity=el('p',undefined,'authorization-identity');identity.append(el('span',row.agentLabel || '来源未记录','agent-source'),el('span',row.session,'mono'),el('span',row.workspace,'authorization-workspace'));
-  text.append(title,identity);
+  const heading=el('div',undefined,'authorization-title'),agent=el('span',undefined,'authorization-agent');
+  agent.append(el('span','智能体','authorization-agent-label'),el('strong',row.agentLabel || '来源未记录'));
+  heading.append(agent,title);
+  const identity=el('p',undefined,'authorization-identity');identity.append(el('span',row.session,'mono'),el('span',row.workspace,'authorization-workspace'));
+  text.append(heading,identity);
+  if(kind!=='pending'){const details=el('details',undefined,'authorization-range');details.append(el('summary','查看授权范围'));if(row.coverage==='all')details.append(el('p','此会话内全部公司名称，包括后续历史和工具文字。'));else{const list=el('ul');for(const name of row.names||[])list.append(el('li',name));details.append(list,el('p','仅上述写法放行；简称与别名不会自动随全称放行。'));}text.append(details);}
   scope.append(el('span',kind==='pending'?'等待确认':row.coverage==='all'?'全部公司名称':`${Number(row.nameCount).toLocaleString('zh-CN')} 个名称`,'authorization-scope-label'));
   if(kind!=='pending'&&row.coverage!=='all')scope.append(el('span',row.legacy?'已有名单授权':'指定名单','detail-message'));
   const at=kind==='pending'?row.requestedAt:row.created;
@@ -53,7 +57,7 @@ function openAuthorization(row){
 function closeAuthorization(){$('authorization-editor').hidden=true;editingRequest=null;$('authorization-name-list').value='';$('authorization-file').value='';}
 function updateAuthorizationScope(){
   const all=$('authorization-form').elements.coverage.value==='all';$('authorization-names').hidden=all;
-  $('authorization-scope-note').textContent=all?'此会话后续发送的历史和工具文字也会保留公司原名。其他会话、分叉和子任务照常脱敏。':'名单外名称继续脱敏。其他会话、分叉和子任务不会自动取得授权。';
+  $('authorization-scope-note').textContent=all?'此会话后续发送的历史和工具文字也会保留公司原名。其他会话、分叉和子任务照常脱敏。':'按填写的具体名称放行，简称和别名需逐项填写，不会随全称自动放行。名单外名称继续脱敏；其他会话、分叉和子任务不会自动取得授权。';
 }
 function openRevocation(row,card){
   document.querySelector('.revocation-confirm')?.remove();revocationOpen=true;const confirm=el('div',undefined,'revocation-confirm');
@@ -100,3 +104,12 @@ $('authorization-approve').addEventListener('click',event=>{if(!event.isTrusted|
 
 async function start(){try{await magpie.ready;const options=await magpie.options.get();readKey=options.receiptReadKey;authorizationKey=options.authorizationKey;if(!/^[a-f0-9]{64}$/.test(readKey||"")||!/^[a-f0-9]{64}$/.test(authorizationKey||""))throw new Error("授权服务尚未配置，请联系维护。");base=new URL(".",location.href).href;await refreshAuthorizations();magpie.onVisibility?.(visible=>{if(visible&&!editingRequest&&!authorizationBusy&&!revocationOpen)refreshAuthorizations();});setInterval(()=>{if(magpie.visible&&!editingRequest&&!authorizationBusy&&!revocationOpen)refreshAuthorizations();},10000);}catch(error){authorizationNotice(error.message||"授权服务暂不可用，请重新打开此页。",true);}}
 start();
+
+$('authorization-history').parentElement.addEventListener('toggle',async()=>{
+  if(!$('authorization-history').parentElement.open)return;
+  try{const data=await api('audit');$('authorization-history').replaceChildren();
+    for(const row of data.authorizations){const line=el('p',undefined,'history-row'),time=el('time',new Date(row.at).toLocaleString('zh-CN'));time.dateTime=row.at;
+      line.append(time,el('span',(row.action==='approve'?'批准放行':'恢复脱敏')+' · 会话 '+row.session.slice(0,8)+' · '+(row.action==='revoke'?'恢复默认脱敏':row.coverage==='all'?'全部名称':row.nameCount+' 个名称')));$('authorization-history').append(line);}
+    if(!data.authorizations.length)$('authorization-history').textContent='暂无可用记录。';
+  }catch{$('authorization-history').textContent='记录暂时无法读取，请重新展开重试。';}
+});

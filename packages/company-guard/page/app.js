@@ -5,7 +5,10 @@ const count = value => value ?? '—';
 const label = status => status==='已替换，回复处理完成'?'已替换 · 回复完成':status;
 const statusOf = r => r.statusLabel || r.status;
 const agentsOf = r => r.agentIds?.length ? r.agentIds : [r.agent || 'unknown'];
-let report=null,busy=false,pageVisible=true,base,readKey,expanded=null,expiryTimer;
+let report=null,busy=false,pageVisible=true,base,readKey,expanded=null,expiryTimer,selectedCategory='';
+const category=r=>r.status==='处理失败'?'attention':['已替换，回复处理完成','授权放行','未命中'].includes(r.status)?'completed':r.statusCode==='awaiting_completion'?'waiting':'attention';
+const categories=[['','全部请求'],['completed','已完成'],['waiting','待完成确认'],['attention','需关注']];
+const categoryHelp={'':'当前日期、智能体和任务筛选下保留的请求。',completed:'已取得完成确认，包括已脱敏、授权放行和未命中。',waiting:'尚未取得完整完成确认，不代表请求仍在运行。',attention:'确认缺失、调用未完成或处理失败；请打开明细查看原因。'};
 function el(tag,text,cls) {const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function agentRows() {const selected=$('agent').value;return (report?.rows || []).filter(r=>!selected || agentsOf(r).includes(selected));}
 function updateTasks() {
@@ -48,6 +51,11 @@ async function showDetail(r,tr,button) {
   cell.append(el('div','替换内容','detail-title'),content);content.append(el('p','正在读取本机明细…','detail-message'));
   for(const [k,v] of [['智能体',r.agentLabel || '来源未记录'],['处理结果',label(statusOf(r))],['同步检查',r.requestChecked?'已确认':'缺少确认'],['回复处理',r.replyProcessingOK===true?'成功':r.replyProcessingOK===false?'未成功':'缺少确认'],['完成确认',r.completionSource==='stream'?'流式回复已正常结束':r.hostCompletionObserved===true?'宿主已完成':r.hostCompletionObserved===false?'调用未完成':'尚未取得']])meta.append(el('span',k+'：'+v));
   for(const [key,s] of Object.entries(r.scopes || {}))meta.append(el('span',`${scopeNames[key] || key} ${s.replacements} 处 / 检查 ${s.checkedTexts} 段`));
+  const reasonNames={session_all_active:'全部名称授权有效',session_names_active:'指定名单授权有效',task_not_active:'授权已失效',task_request_too_large:'请求超出授权检查容量',grant_state_unavailable:'授权记录暂不可用',request_identity_unavailable:'无法核验授权身份',authorization_invalid:'授权校验未通过',session_revoked:'此会话已恢复脱敏',task_identity_mismatch:'会话或工作目录不匹配',session_active:'会话授权有效',session_task_active:'会话授权有效',turn_grant_active:'本轮授权有效',no_matching_grant:'没有匹配授权'};
+  meta.append(el('span','保护方式：'+({original:'按授权放行',public_lookup:'公开查询范围放行',masked:'默认脱敏'}[r.authorization]||'未记录')),el('span','授权范围：'+({all:'全部名称',names:'指定名单',none:'无'}[r.authorizationCoverage]||'未记录')),el('span','放行处数：'+(r.authorization==='original'&&r.authorizationCoverage==='all'?'全部名称授权，不逐项统计':count(r.allowedOccurrences))),el('span','授权核对：'+(reasonNames[r.authorizationReason]||'详见当前授权范围')));
+  meta.append(el('span','采用自动简称：'+count(r.taskAliases)),el('span','简称冲突：'+count(r.aliasConflicts)));
+  if(r.aliasLimitReached||r.aliasConflicts)cell.append(el('p','部分自动简称未采用：'+(r.aliasLimitReached?'超过本次识别数量上限。':'存在指向不同主体的冲突。')+'请核对材料，必要时补充自定义规则。','detail-message'));
+  if(r.rulesRevision)meta.append(el('span','规则版本：'+r.rulesRevision.slice(0,12)));
   cell.append(meta);if(r.statusReason)cell.append(el('p',r.statusReason,'detail-message'));
   cell.append(el('div',`任务 ${r.taskTitle ? r.taskTitle+' · ' : ''}${r.task || r.thread || '未知'} · 请求 ${r.id} · 插件 ${r.version || '未知'}`,'identity mono'));row.append(cell);tr.after(row);
   try {
@@ -62,9 +70,11 @@ async function showDetail(r,tr,button) {
 }
 function render() {
   closeDetail();const selected=$('task').value;
-  const rows=agentRows().filter(r=>!selected || (r.task || r.thread || '')===selected);
+  const matching=agentRows().filter(r=>!selected || (r.task || r.thread || '')===selected),rows=matching.filter(r=>!selectedCategory||category(r)===selectedCategory);
   $('totals').replaceChildren();
-  for(const [n,name] of [[rows.length,'请求'],[rows.filter(r=>r.status==='已替换，回复处理完成').length,'替换与回复完成'],[rows.filter(r=>r.status==='未确认' && statusOf(r)!=='调用未完成').length,'证据待齐'],[rows.filter(r=>statusOf(r)==='调用未完成').length,'调用未完成'],[rows.filter(r=>r.status==='处理失败').length,'失败']]){const v=el('span');v.append(el('b',n),document.createTextNode(name));$('totals').append(v);}
+  for(const [id,name] of categories){const n=id?matching.filter(r=>category(r)===id).length:matching.length,button=el('button');button.type='button';button.className='summary-filter';button.title=categoryHelp[id];button.setAttribute('aria-label',`${n} ${name}。${categoryHelp[id]}`);button.setAttribute('aria-pressed',String(id===selectedCategory));button.append(el('b',n),document.createTextNode(' '+name));button.addEventListener('click',()=>{selectedCategory=id;render();});$('totals').append(button);}
+  const health=report?.health;$('receipt-health').textContent=health?.available===false?'尚未取得回执保存状态，请刷新核对。':health?.writeFailed?'回执保存异常：下方记录可能不是最新。请保留本机日志并检查存储。':health?.recoveredFiles?'已隔离损坏回执并保留原件，后续保存已恢复。':'';$('receipt-health').hidden=!$('receipt-health').textContent;
+  if(health?.lastSuccessfulWrite)$('receipt-health').title='最近保存成功：'+new Date(health.lastSuccessfulWrite).toLocaleString('zh-CN');
   const diagnosticCount=report?.diagnostics?.observed || 0;$('diagnostics').hidden=!diagnosticCount;
   $('diagnostics').textContent=diagnosticCount?`当日跨任务记录到 ${diagnosticCount} 次插件处理超时或异常；日志没有请求编号，无法归到某一条回执。`:'';
   $('rows').replaceChildren();

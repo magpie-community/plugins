@@ -10,8 +10,10 @@ import {onRequest as hookRequest, onResponse as hookResponse} from "../company-g
 import {retainReceipts} from "../src/receipts.mjs";
 import {getReceiptReport} from "../src/receipt-report.mjs";
 import {onRequest as middlewareRequest, onResponse as middlewareResponse, onEvent as middlewareEvent} from "../dist/company-guard.middleware.js";
-import {initializeOptions} from "../src/local-options.mjs";
+import {initializeOptions,validateCompanyRules,companyRulesRevision} from "../src/local-options.mjs";
 import {signAuthorization} from "../src/session-authorization.js";
+import * as pageEntry from "../receipt-page.mjs";
+import {recordRuleRevision,readAuditHistory} from '../src/rule-history.mjs';
 
 // Synthetic fixtures only: no user credentials, companies, grants or history.
 const NAME = ["单元", "测试", "科技", "有限", "公司"].join("");
@@ -20,6 +22,24 @@ const TURN = "22222222-2222-4222-8222-222222222222";
 const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const keyFields = ["authKey", "receiptReadKey", "authorizationKey"];
 const newKeys = () => Object.fromEntries(keyFields.map(field => [field, randomBytes(32).toString("hex")]));
+test("plugin entry exposes only the host factory",()=>assert.deepEqual(Object.keys(pageEntry),["ReceiptPage"]));
+test("rule editing validates the same names as the request processor without mutating options",()=>{
+  const companies=[{name:NAME,aliases:[NAME.slice(0,4),NAME.slice(0,2)]}],before=JSON.stringify(companies);
+  const result=validateCompanyRules(companies);
+  assert.equal(result.ruleCount,1);assert.equal(result.nameCount,3);
+  assert.equal(result.revision,companyRulesRevision(companies));
+  assert.equal(result.revision,companyRulesRevision([{aliases:companies[0].aliases,name:NAME}]));
+  assert.equal(JSON.stringify(companies),before);
+  assert.notEqual(result.revision,companyRulesRevision([NAME]));
+  assert.deepEqual(validateCompanyRules([]),{ruleCount:0,nameCount:0,revision:companyRulesRevision([])});
+});
+test("rule editing rejects malformed, numeric, repeated and oversized lists",()=>{
+  for(const value of [null,{},[null],[{name:NAME,aliases:NAME}]])assert.throws(()=>validateCompanyRules(value),/invalid_rules/);
+  for(const value of [[SESSION],[NAME+'\n'],[{name:NAME,aliases:[null]}]])assert.throws(()=>validateCompanyRules(value),/invalid_names/);
+  assert.throws(()=>validateCompanyRules([NAME,NAME]),/duplicate_names/);
+  assert.throws(()=>validateCompanyRules([{name:NAME,aliases:[NAME]}]),/duplicate_names/);
+  assert.throws(()=>validateCompanyRules(Array(513).fill(NAME)),/too_many_names/);
+});
 function context(protocol, options = {}) {
   return {protocol, origin:"local", agent:"codex", session:SESSION, cwd:"/tmp/company-guard-fixture", state:{},
     options:{...newKeys(), companies:[NAME], ...options}, reject(status, message) { throw new Error(status + ": " + message); }};
@@ -44,6 +64,28 @@ function prepare(protocol, options) {
   assert(token?.startsWith("[[NERO_ORG_"));
   return {ctx, body, token};
 }
+
+test("multiple aliases each match and restore their original spelling",()=>{
+  const aliases=[NAME.slice(0,4),NAME.slice(0,2)],original=[NAME,...aliases].join("\n");
+  const ctx=context("responses",{companies:[{name:NAME,aliases}]}),body=request("responses",original);
+  prepareRequest(body,ctx);
+  assert.equal(ctx.state.guard.metrics.replacedNames,3);
+  assert.deepEqual(new Set(Object.values(ctx.state.guard.reverse)),new Set([NAME,...aliases]));
+  const response={output:[{type:"message",content:[{type:"output_text",text:body.input[0].content[0].text}]}]};
+  onResponse(response,ctx);assert.equal(response.output[0].content[0].text,original);
+});
+
+test("schema value fields are protected by source and released middleware without changing structural keys",()=>{
+  for(const prepare of [prepareRequest,middlewareRequest]){
+    const ctx=context('responses'),body=request('responses');
+    body.tools=[{type:'function',name:'lookup',parameters:{type:'object',properties:{default:{type:'string',const:NAME,default:NAME,examples:[NAME,{company:NAME}]}},required:['default']}}];
+    prepare(body,ctx);
+    const schema=body.tools[0].parameters;
+    assert.equal(body.tools[0].name,'lookup');assert.equal(schema.properties.default.type,'string');assert.deepEqual(schema.required,['default']);
+    assert(!JSON.stringify(schema).includes(NAME));
+    assert(Object.values(ctx.state.guard.reverse).includes(NAME));
+  }
+});
 
 for (const protocol of ["responses", "chat", "anthropic", "gemini"]) {
   test(protocol + ": request masking and reply restoration", () => {
@@ -152,6 +194,11 @@ test("fresh install generates three private persistent keys and preserves unrela
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   assert.deepEqual(saved.plugins[1], setup.config.plugins[1]); assert.deepEqual(saved.prefer, setup.config.prefer);
   const again = await initializeOptions({...saved.plugins[0].options});
+  const auditRoot=path.dirname(setup.keyFile);
+  await recordRuleRevision(auditRoot,options.companies);await recordRuleRevision(auditRoot,options.companies);
+  const history=await readAuditHistory(auditRoot);
+  assert.equal(history.rules.length,1);assert.equal(history.rules[0].revision,companyRulesRevision(options.companies));
+  assert(!JSON.stringify(history).includes(NAME));
   for (const field of keyFields) assert.equal(again[field], options[field]);
   assert.equal((await fs.stat(setup.configFile)).mode & 0o777, 0o600);
 });
@@ -163,7 +210,7 @@ test("a pinned GitHub installation initializes without a local-path registration
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   for (const field of keyFields) assert.equal(saved.plugins[0].options[field], options[field]);
 });
-for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.3"]) {
+for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.6"]) {
   test("community installation initializes: " + spec, async t => {
     const setup = await installation(t);
     setup.config.plugins[0].spec = spec;
@@ -257,6 +304,21 @@ test("fresh hook preparation and native middleware share keys and remove the pri
   assert.equal((await report()).agent,"codex");
   await fs.writeFile(appLog,"");
   assert.equal((await report()).statusCode,"completed","persisted confirmations survive log rotation");
+  const original=await fs.readFile(file,'utf8'),damaged=original+JSON.stringify(records[0]).slice(0,-1);
+  await fs.writeFile(file,damaged);
+  await retainReceipts(root,undefined,appLog);
+  assert.equal((await report()).statusCode,'completed');
+  const backups=await fs.readdir(path.join(root,'receipt-recovery'));
+  assert.equal(backups.length,1);
+  assert.equal(await fs.readFile(path.join(root,'receipt-recovery',backups[0]),'utf8'),damaged);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.recoveredFiles,1);
+  await retainReceipts(root,records[0],appLog);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,false);
+  await fs.chmod(file,0o644);
+  await assert.rejects(retainReceipts(root,undefined,appLog),/unsafe_receipt_file/);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,true);
+  await fs.chmod(file,0o600);await retainReceipts(root,undefined,appLog);
+  assert.equal((await getReceiptReport({day,root,appLog})).health.writeFailed,false);
   await fs.unlink(file);
   assert.equal((await report(records)).statusCode,"completed","fixed snapshots survive recent-window eviction");
   assert.equal((await report(records.filter(r=>r.phase!=="request_checked"))).statusCode,"request_confirmation_missing");

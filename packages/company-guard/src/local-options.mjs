@@ -2,9 +2,10 @@ import fs from "node:fs/promises";
 import {constants} from "node:fs";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {randomBytes, randomUUID} from "node:crypto";
+import {randomBytes, randomUUID, createHash} from "node:crypto";
 import {secureDir, stateRoot, configRoot} from "./grant-store.mjs";
 import {validKey} from "./crypto.js";
+import {configuredNames} from "./policy.js";
 
 const fields = ["authKey", "receiptReadKey", "authorizationKey"];
 const pluginRoot = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
@@ -29,8 +30,7 @@ async function writeTemporary(file, text) {
 }
 
 function owns(spec) {
-  return spec === pluginRoot || /^@magpie-community\/middleware-company-guard(?:@[^/\s]+)?$/.test(spec || "") ||
-    /^(?:github:cyanask\/magpie-company-guard|(?:git\+)?https:\/\/github\.com\/cyanask\/magpie-company-guard(?:\.git)?)(?:#.*)?$/.test(spec || "");
+  return spec === pluginRoot || /^@magpie-community\/middleware-company-guard(?:@[^/\s]+)?$/.test(spec || "") || /^(?:github:cyanask\/magpie-company-guard|(?:git\+)?https:\/\/github\.com\/cyanask\/magpie-company-guard(?:\.git)?)(?:#.*)?$/.test(spec || "");
 }
 
 // The Bun hooks, page bridge and synchronous middleware must share the same
@@ -86,4 +86,20 @@ export async function initializeOptions(options = {}) {
   await publishKeys(keys, root);
   Object.assign(options, keys);
   return options;
+}
+
+export function validateCompanyRules(companies) {
+  if(!Array.isArray(companies)||companies.some(c=>typeof c!=="string"&&(!c||typeof c!=="object"||Array.isArray(c)||typeof c.name!=="string"||(c.aliases!==undefined&&!Array.isArray(c.aliases)))))throw new Error("invalid_rules");
+  const names=companies.flatMap(c=>typeof c==="string"?[c]:[c.name,...(c.aliases||[])]);
+  if(names.length>512)throw new Error("too_many_names");
+  try{configuredNames({companies});}catch{throw new Error("invalid_names");}
+  const seen=new Map();
+  for(let rule=0;rule<companies.length;rule++){const row=companies[rule],values=typeof row==='string'?[row]:[row.name,...row.aliases||[]];for(let field=0;field<values.length;field++){const key=values[field].toLowerCase();if(seen.has(key)){const error=new Error('duplicate_names');error.conflicts=[seen.get(key),{rule:rule+1,field}];throw error;}seen.set(key,{rule:rule+1,field});}}
+  return {ruleCount:companies.length,nameCount:names.length,revision:companyRulesRevision(companies)};
+}
+export function companyRulesRevision(companies) {
+  // The host serializes option objects with a different key order. Compare
+  // their content while retaining the order of rules and aliases.
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+  return createHash("sha256").update(JSON.stringify(canonical(companies||[]))).digest("hex");
 }
