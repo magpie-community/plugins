@@ -252,7 +252,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | `true` for the plugin's agy processes | agy's own variable. When you set it, agy gets your value; see "Requirements" |
 | `AGY_BRIDGE_PREFILL` | on | Set to `0` to restore the stock 400 reject for assistant prefill tails; see "Assistant prefill" |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | English system note | The note line rendered before a prefill fragment (sent to the model) |
-| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | off | Set to `1` (or turn on **Report client context size** under `agy-cli`'s **Plugin options** in Magpie) to pad `cache_read_input_tokens` up to the client request's estimated token count when `agy` trims or compacts context, so clients such as Codex trigger compaction on time; inflates reported cached read usage |
+| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | off | Set to `1` (or turn on **Report client context size** under `agy-cli`'s **Plugin options** in Magpie) to pad `cache_read_input_tokens` up to the client request's estimated token count when `agy` trims or compacts context, so clients such as Codex trigger compaction on time; Magpie's Usage page prices `cache_read_input_tokens`, so the padded tokens also show up as spent cache reads and increase the cost shown in Magpie |
 
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
 

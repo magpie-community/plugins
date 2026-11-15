@@ -184,7 +184,7 @@ magpie quota refresh agy-cli --json
 | `AGY_CLI_DISABLE_AUTO_UPDATE` | 插件启动的 agy 设为 `true` | agy 自己的变量。你设置了就原样传给 agy，见「环境要求」 |
 | `AGY_BRIDGE_PREFILL` | 开启 | 设为 `0` 恢复对 assistant 预填尾巴的原生 400 拒绝，见「助手预填」 |
 | `AGY_BRIDGE_PREFILL_CARRIER_NOTE` | 英文系统提示行 | 预填片段渲染时的提示行文本（发给模型） |
-| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | 关闭 | 设为 `1`（或在 Magpie 的 `agy-cli` 提供商设置 → **插件选项** 打开 **上报客户端上下文大小**）时，若 `agy` 上报上下文小于当前客户端请求估算值，把差值补进 `cache_read_input_tokens`，让 Codex 等客户端按真实请求体积触发压缩；注意这会抬高上报的缓存读取用量 |
+| `AGY_BRIDGE_REPORT_CLIENT_CONTEXT` | 关闭 | 设为 `1`（或在 Magpie 的 `agy-cli` 提供商设置 → **插件选项** 打开 **上报客户端上下文大小**）时，若 `agy` 上报上下文小于当前客户端请求估算值，把差值补进 `cache_read_input_tokens`，让 Codex 等客户端按真实请求体积触发压缩；注意 Magpie 的 Usage 页面会对 `cache_read_input_tokens` 计价，因此开启后补齐的 token 也会计入缓存读取用量并抬高 Magpie 中显示的费用 |
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 
