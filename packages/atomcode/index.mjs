@@ -641,6 +641,21 @@ export async function AtomCodePlugin(input = {}, options = {}) {
       };
     },
 
+    /**
+     * Magpie's per-conversation session id → the gateway's session header.
+     *
+     * `chat.headers` runs on every gateway request, and `input.sessionID`
+     * stays constant across the turns of one conversation — the same scope
+     * the official client sends under `x-atomcode-session-id`. The loader
+     * falls back to the per-account UUID on hosts or paths where this hook
+     * did not run (OpenCode entry points, older hosts).
+     */
+    "chat.headers": async (input, output) => {
+      if (input?.model?.providerID === PROVIDER && input?.sessionID) {
+        output.headers["x-atomcode-session-id"] = String(input.sessionID);
+      }
+    },
+
     provider: {
       id: PROVIDER,
       /**
@@ -1004,8 +1019,12 @@ export async function AtomCodePlugin(input = {}, options = {}) {
               requestHeaders.set("authorization", `Bearer ${current.access}`);
               requestHeaders.set("user-agent", userAgentOf(clientVersion));
               // glm5.3-flash and the other reasoning groups answer 403
-              // "access disabled by request policy" without it.
-              requestHeaders.set("x-atomcode-session-id", sessionIdFor(current.uid));
+              // "access disabled by request policy" without this header. The
+              // chat.headers hook fills it with magpie's per-conversation id;
+              // this per-account UUID only fills in when that did not run.
+              if (!requestHeaders.has("x-atomcode-session-id")) {
+                requestHeaders.set("x-atomcode-session-id", sessionIdFor(current.uid));
+              }
 
               const forwarded = {
                 ...(isRequest

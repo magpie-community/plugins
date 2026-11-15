@@ -83,15 +83,10 @@
     },
     "page": {
       "title": "AtomCode diagnostics",
-      "titles": {
-        "zh": "AtomCode 诊断"
-      },
+      "titles": { "zh": "AtomCode 诊断" },
       "file": "page/index.html",
       "icon": "page/icon.svg",
-      "service": {
-        "port": 3478,
-        "option": "diagnosticsPort"
-      }
+      "service": { "port": 3478, "option": "diagnosticsPort" }
     }
   }
 }

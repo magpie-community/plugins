@@ -526,6 +526,55 @@ test("loader：session-id 每账号稳定、账号间隔离", async () => {
   }
 });
 
+test("chat.headers：magpie 会话 id 原样上头，且只对本供应商", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    assert.equal(typeof plugin["chat.headers"], "function", "chat.headers 钩子要导出");
+
+    const output = { headers: {} };
+    await plugin["chat.headers"](
+      { model: { providerID: "atomcode" }, sessionID: "sess-abc-123" },
+      output,
+    );
+    assert.equal(
+      output.headers["x-atomcode-session-id"],
+      "sess-abc-123",
+      "同一对话各轮共享 magpie 的会话 id（官方客户端语义）",
+    );
+
+    const other = { headers: {} };
+    await plugin["chat.headers"](
+      { model: { providerID: "acme" }, sessionID: "sess-abc-123" },
+      other,
+    );
+    assert.equal(other.headers["x-atomcode-session-id"], undefined, "别的供应商不加这个头");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("loader：chat.headers 已带会话头时不覆盖（per-conversation 优先）", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    const { fetch: patched } = await plugin.auth.loader(async () => AUTH);
+    await patched(`${GATEWAY}/chat/completions`, {
+      method: "POST",
+      body: "{}",
+      headers: { "x-atomcode-session-id": "sess-from-magpie" },
+    });
+    const call = stub.calls.find((c) => c.url.includes("chat/completions"));
+    assert.equal(
+      call.headers.get("x-atomcode-session-id"),
+      "sess-from-magpie",
+      "magpie 会话 id 优先于每账号兜底",
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
 test("loader：校验后冻结目标字符串，URL 在取凭证期间被改也不能换目的地", async () => {
   const stub = stubFetch({ statusBody: VALID_STATUS });
   try {
