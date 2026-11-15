@@ -22,6 +22,8 @@
  * @module magpie-atomcode
  */
 
+import { randomUUID } from "node:crypto";
+
 import {
   DEFAULT_CLIENT_VERSION,
   DEFAULT_CODING_PLAN_API_URL,
@@ -201,6 +203,27 @@ export async function AtomCodePlugin(input = {}, options = {}) {
    * host cannot pass this comparison either.
    */
   const gatewayOrigin = originOf(opts.gatewayURL);
+
+  /**
+   * One stable conversation id per signed-in account, sent as
+   * `x-atomcode-session-id`.
+   *
+   * Since 2026-11 the upstream serves at least the glm5.3-flash model group
+   * only to requests carrying this header; the identical signed body otherwise
+   * fails with 403 "access disabled by request policy". The official client
+   * sends a stable UUID per conversation; this plugin has no conversation
+   * boundary, so one UUID per account is the closest stable analogue and keeps
+   * the gateway's prefix-cache affinity per account.
+   */
+  const sessionIds = new Map();
+  const sessionIdFor = (uid) => {
+    let id = sessionIds.get(uid);
+    if (!id) {
+      id = randomUUID();
+      sessionIds.set(uid, id);
+    }
+    return id;
+  };
 
   const log = (level, message) => {
     try {
@@ -980,6 +1003,9 @@ export async function AtomCodePlugin(input = {}, options = {}) {
               }
               requestHeaders.set("authorization", `Bearer ${current.access}`);
               requestHeaders.set("user-agent", userAgentOf(clientVersion));
+              // glm5.3-flash and the other reasoning groups answer 403
+              // "access disabled by request policy" without it.
+              requestHeaders.set("x-atomcode-session-id", sessionIdFor(current.uid));
 
               const forwarded = {
                 ...(isRequest

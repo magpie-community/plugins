@@ -491,7 +491,36 @@ test("loader：发往网关的请求照常带凭证与签名", async () => {
     assert.equal(call.headers.get("authorization"), "Bearer tok");
     assert.match(call.headers.get("x-atomcode-sig") ?? "", /^v1:[0-9a-f]{64}$/);
     assert.equal(call.headers.get("user-agent"), "atomcode/5.2.3");
+    assert.match(
+      call.headers.get("x-atomcode-session-id") ?? "",
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      "glm5.3-flash 等模型组的上游准入要求 session-id（无它 → 403 policy disabled）",
+    );
     assert.equal(call.redirect, "error");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("loader：session-id 每账号稳定、账号间隔离", async () => {
+  const stub = stubFetch({ statusBody: VALID_STATUS });
+  try {
+    const plugin = await AtomCodePlugin({}, { autoVersion: false });
+    const { fetch: patched } = await plugin.auth.loader(async () => AUTH);
+    await patched(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    await patched(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    const ids = stub.calls
+      .filter((c) => c.url.includes("chat/completions"))
+      .map((c) => c.headers.get("x-atomcode-session-id"));
+    assert.equal(ids.length, 2);
+    assert.ok(ids[0] && ids[0] === ids[1], "同一账号的连续请求共享一个稳定会话 id");
+
+    const { fetch: patched2 } = await plugin.auth.loader(async () => ({ ...AUTH, uid: "u2" }));
+    await patched2(`${GATEWAY}/chat/completions`, { method: "POST", body: "{}" });
+    const other = stub.calls
+      .filter((c) => c.url.includes("chat/completions"))
+      .map((c) => c.headers.get("x-atomcode-session-id"))[2];
+    assert.ok(other && other !== ids[0], "不同账号的会话 id 互不相同");
   } finally {
     stub.restore();
   }
