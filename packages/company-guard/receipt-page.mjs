@@ -11,7 +11,7 @@ import {readDetails} from "./src/receipt-details.mjs";
 import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant} from "./src/grant-store.mjs";
 import {retainReceipts, readTail, receiptAgent} from "./src/receipts.mjs";
 import {validName,namePattern} from "./src/policy.js";
-import {readAuthorization, signAuthorization} from "./src/session-authorization.js";
+import {readAuthorization, planAuthorizationEntries, AUTHORIZATION_ENTRY_LIMIT} from "./src/session-authorization.js";
 import {initializeOptions,validateCompanyRules,companyRulesRevision} from "./src/local-options.mjs";
 
 const services = new Map();
@@ -145,7 +145,7 @@ export const ReceiptPage = async (_input, options = {}) => {
       await fs.rm(path.join(root,"authorization-operations","lock.json"),{force:true});
       return send(200,{ok:true});
     }
-    if(!Array.isArray(body.entries)||body.entries.length>64||body.entries.some(e=>!readAuthorization(e,options.authKey)))return send(400,{error:"invalid_registry"});
+    if(!Array.isArray(body.entries)||body.entries.length>AUTHORIZATION_ENTRY_LIMIT||body.entries.some(e=>!readAuthorization(e,options.authKey)))return send(400,{error:"invalid_registry"});
     const ids=new Set(body.entries.map(e=>e.session));if(ids.size!==body.entries.length)return send(400,{error:"invalid_registry"});
     if(url.pathname==="/authorization/state")return send(200,{active:await withTaskTitles(body.entries.map(e=>readAuthorization(e,options.authKey)).filter(r=>r.state==="active").map(r=>({session:r.session,workspace:r.workspace,coverage:r.coverage,nameCount:r.names.length,names:r.names,created:r.created,requestId:r.requestId})))});
     if(url.pathname!=="/authorization/plan")return send(404,{error:"not_found"});
@@ -164,8 +164,10 @@ export const ReceiptPage = async (_input, options = {}) => {
     if(coverage==="names"&&(!names.length||names.length>32||names.some(n=>!validName(n))))return send(400,{error:"invalid_names"});
     const target=request||prior;
     const record={v:1,session:target.session,workspace:target.workspace,requestId:request?.id,coverage,names,pattern:coverage==="names"?namePattern(names):"",state:body.action==="revoke"?"revoked":"active",created:Date.now()};
-    const entry=signAuthorization(record,options.authKey),entries=body.entries.filter(e=>e.session!==record.session).concat(entry);
-    if(entries.length>64||JSON.stringify(entries).length>3*1024*1024)return send(413,{error:"authorization_too_large"});
+    let plan;
+    try{plan=planAuthorizationEntries(body.entries,record,options.authKey,new Set(legacy.map(r=>r.session)));}
+    catch(error){if(error.message==="authorization_too_large")return send(413,{error:"authorization_too_large"});throw error;}
+    const {entry,entries}=plan;
     const op={id:randomUUID(),action:body.action,session:record.session,requestId:request?.id,entryMac:entry.mac,coverage:record.coverage,nameCount:names.length,created:Date.now()};
     const dir=path.dirname(operationFile(op.id));await secureDir(root,true);await secureDir(dir,true);
     const lock=path.join(dir,"lock.json");

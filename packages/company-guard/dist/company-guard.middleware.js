@@ -861,6 +861,7 @@ function safeInput(body, protocol) {
 // src/session-authorization.js
 var PREFIX = "nero.session.authorization.v1\0";
 var validId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(value);
+var AUTHORIZATION_ENTRY_LIMIT = 100;
 function sessionIdentity(body, ctx) {
   if (ctx?.agent !== "codex" || ctx.origin && !["local", "magpie-key"].includes(ctx.origin)) return null;
   let meta = body?.client_metadata?.["x-codex-turn-metadata"] || body?.client_metadata;
@@ -909,7 +910,7 @@ function resolveAuthorization(body, ctx) {
   const id = sessionIdentity(body, ctx);
   if (!id) return { record: null, reason: "request_identity_unavailable", managed: false };
   const entries = ctx.options?.sessionAuthorizations;
-  if (!Array.isArray(entries) || entries.length > 64) return { record: null, managed: false };
+  if (!Array.isArray(entries) || entries.length > AUTHORIZATION_ENTRY_LIMIT) return { record: null, managed: false };
   const matching = entries.filter((e) => e?.session === id.session);
   if (!matching.length) return { record: null, managed: false };
   if (matching.length !== 1) return { record: null, managed: true, reason: "authorization_invalid" };
