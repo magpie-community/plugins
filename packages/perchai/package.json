@@ -10,7 +10,6 @@
     "index.mjs",
     "opencode.mjs",
     "opencode2.mjs",
-    "bridge.py",
     "README.md",
     "LICENSE"
   ],
@@ -37,3 +36,4 @@
     "maxConcurrency": 2
   }
 }
+

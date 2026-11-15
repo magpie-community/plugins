@@ -10,12 +10,10 @@
 // host calls every exported function as if it were a plugin.
 
 import { createServer } from "node:http"
-import { spawn } from "node:child_process"
-import { createHash, randomBytes, randomUUID } from "node:crypto"
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { createHash, randomBytes } from "node:crypto"
+import { existsSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
 
 const PROVIDER = "perchai"
 const APP = "https://app.perchai.app"
@@ -193,59 +191,21 @@ async function authConfig() {
 
 const authDir = () => process.env.PERCH_CLI_AUTH_DIR?.trim() || join(homedir(), ".perch")
 
-// Supabase's edge drops non-browser TLS with a bare reset, so a direct request
-// from Node or Bun can fail on a network where the service is perfectly up.
-// bridge.py repeats the request with a Chrome fingerprint; it is only spawned
-// after a direct attempt fails, and only if python with curl_cffi is present.
-const BRIDGE = fileURLToPath(new URL("./bridge.py", import.meta.url))
-
-function bridge(url, init) {
-  const payload = JSON.stringify({
-    method: init?.method ?? "GET",
-    url,
-    headers: init?.headers ?? {},
-    body: typeof init?.body === "string" ? init.body : undefined,
-  })
-  return new Promise((resolve, reject) => {
-    const ps = spawn(process.env.PERCH_BRIDGE_PYTHON?.trim() || "python", [BRIDGE], { windowsHide: true })
-    let out = ""
-    let err = ""
-    const timer = setTimeout(() => {
-      ps.kill()
-      reject(new Error("the bridge timed out"))
-    }, 45_000)
-    ps.stdout.setEncoding("utf8").on("data", (d) => (out += d))
-    ps.stderr.setEncoding("utf8").on("data", (d) => (err += d))
-    ps.on("error", (e) => {
-      clearTimeout(timer)
-      reject(new Error(`the bridge could not start (${e?.message ?? e}); set PERCH_BRIDGE_PYTHON`))
-    })
-    ps.on("close", () => {
-      clearTimeout(timer)
-      const v = parseJSON(out.trim())
-      if (!v) return reject(new Error(err.trim() || "the bridge said nothing"))
-      if (v.error) return reject(new Error(String(v.error)))
-      resolve(
-        new Response(typeof v.body === "string" ? v.body : "", {
-          status: Number(v.status) || 502,
-          headers: v.headers && typeof v.headers === "object" ? v.headers : {},
-        }),
-      )
-    })
-    ps.stdin.end(payload)
-  })
-}
-
-// supabaseFetch is a direct request with the bridge as its fallback.
+// Supabase's edge sometimes drops a non-browser TLS handshake with a bare reset
+// even when the service is up. That is a network problem, and it is reported as
+// one: a request that fails is retried once on a fresh connection, and then the
+// failure is passed on to the caller. Nothing here tries to look like a browser,
+// and nothing here needs an interpreter installed alongside the plugin.
 async function supabaseFetch(url, init) {
   try {
     return await fetch(url, init)
   } catch (e) {
-    const direct = e?.cause?.code ?? e?.code ?? e?.message ?? String(e)
+    await new Promise((r) => setTimeout(r, 250))
     try {
-      return await bridge(url, init)
-    } catch (b) {
-      throw new Error(`${direct}; the bridge could not help either (${b?.message ?? b})`)
+      return await fetch(url, init)
+    } catch {
+      const why = e?.cause?.code ?? e?.code ?? e?.message ?? String(e)
+      throw new Error(`Perch's sign-in server could not be reached (${why}); check the network and try again`)
     }
   }
 }
@@ -280,13 +240,21 @@ function readCliSession(file = join(authDir(), "cli-auth-session.json")) {
 
 // ---- auth: read the sign-in this machine already has ------------------------------------
 //
-// Perch stores its session as a Supabase auth cookie, `sb-<ref>-auth-token`,
-// split across `.0`/`.1` in the desktop app's Chromium cookie jar. The values
-// are plaintext (Chromium only encrypts with an OS keyring when one is set up),
-// so the pair can be joined, base64-decoded and used exactly like a CLI
+// Perch's desktop app stores its own session as a Supabase auth cookie,
+// `sb-<ref>-auth-token`, split across `.0`/`.1` in its Chromium cookie jar.
+// The values are plaintext (Chromium only encrypts with an OS keyring when one
+// is set up), so the pair can be joined and base64-decoded exactly like a CLI
 // sign-in. Nothing is decrypted, and nothing leaves the machine.
+//
+// Only Perch's own jars are opened. A browser profile's jar is not this
+// plugin's to read: it holds every site the user signed in to, and the point
+// here is one provider's session, not a search across the machine. Even inside
+// Perch's jar the query is pinned to cookies Perch itself set, so a Supabase
+// session belonging to some other site can never be picked up and renewed
+// against Perch's auth server.
 
 const SESSION_COOKIE = /^sb-[a-z0-9]+-auth-token(?:\.(\d+))?$/
+const PERCH_HOSTS = ["perchai.app", "app.perchai.app", "chat.perchai.app"]
 
 // Every place this machine might keep a Perch session file, most authoritative
 // first. The CLI and the desktop app both write `cli-auth-session.json`; the
@@ -307,18 +275,12 @@ function sessionFiles() {
   })
 }
 
-// Every place this machine might keep a Perch session, most specific first.
+// Perch's own cookie jar, and nothing else.
 function cookieStores() {
   const home = homedir()
   const appData = process.env.APPDATA || join(home, "AppData", "Roaming")
-  const localAppData = process.env.LOCALAPPDATA || join(home, "AppData", "Local")
-  const chromium = (base) => ["Default", "Profile 1", "Profile 2", "Profile 3"].map((p) => join(base, p, "Network", "Cookies"))
   return [
     ...["Perch AI Desktop", "Perch Terminal", "perch-desktop"].map((n) => join(appData, n, "Network", "Cookies")),
-    ...chromium(join(localAppData, "Google", "Chrome", "User Data")),
-    ...chromium(join(localAppData, "Microsoft", "Edge", "User Data")),
-    ...chromium(join(localAppData, "BraveSoftware", "Brave-Browser", "User Data")),
-    ...chromium(join(localAppData, "Chromium", "User Data")),
     join(home, ".config", "perch", "Cookies"),
   ].filter((p) => {
     try {
@@ -354,11 +316,11 @@ async function cookieRows(file) {
     const db = new open(copy, { readOnly: true })
     try {
       const cols = db.prepare("PRAGMA table_info(cookies)").all().map((c) => c.name)
-      if (!cols.includes("name") || !cols.includes("value")) return []
+      if (!cols.includes("name") || !cols.includes("value") || !cols.includes("host_key")) return []
       return db
         .prepare("SELECT name, value, host_key FROM cookies WHERE name LIKE ?")
         .all("%auth-token%")
-        .filter((r) => typeof r.value === "string" && r.value.length > 20)
+        .filter((r) => typeof r.value === "string" && r.value.length > 20 && isPerchHost(r.host_key))
     } finally {
       db.close?.()
     }
@@ -369,6 +331,14 @@ async function cookieRows(file) {
   }
 }
 
+// A cookie belongs to Perch only if the host it was set for is Perch's. Leading
+// dots are how a cookie marks its whole domain, so they are stripped first.
+function isPerchHost(host) {
+  if (typeof host !== "string") return false
+  const h = host.replace(/^\./, "").toLowerCase()
+  return PERCH_HOSTS.some((p) => h === p || h.endsWith(`.${p}`))
+}
+
 // A joined Supabase session is `base64-<json>`; the JSON holds the token pair.
 function sessionFromCookie(rows) {
   const parts = new Map()
@@ -376,6 +346,7 @@ function sessionFromCookie(rows) {
   for (const r of rows) {
     const m = SESSION_COOKIE.exec(r.name)
     if (!m) continue
+    if (!isPerchHost(r.host_key)) continue
     const ref = r.name.slice(0, r.name.indexOf("-auth-token"))
     if (prefix && ref !== prefix) continue
     prefix = ref
@@ -1551,7 +1522,6 @@ export const _internal = {
   CANARY,
   authConfig,
   authDir,
-  bridge,
   browserSignIn,
   callBody,
   decodeJwt,

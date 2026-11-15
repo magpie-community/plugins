@@ -221,8 +221,8 @@ describe("the sign-in this machine already has", () => {
   const value = `base64-${Buffer.from(JSON.stringify(session)).toString("base64url")}`
   const half = Math.ceil(value.length / 2)
   const rows = [
-    { name: "sb-abcdefghij-auth-token.0", value: value.slice(0, half) },
-    { name: "sb-abcdefghij-auth-token.1", value: value.slice(half) },
+    { name: "sb-abcdefghij-auth-token.0", value: value.slice(0, half), host_key: "app.perchai.app" },
+    { name: "sb-abcdefghij-auth-token.1", value: value.slice(half), host_key: "app.perchai.app" },
   ]
 
   test("joins a split cookie back into a session", () => {
@@ -237,15 +237,35 @@ describe("the sign-in this machine already has", () => {
 
   test("ignores a jar with nothing usable in it", () => {
     expect(_internal.sessionFromCookie([])).toBeNull()
-    expect(_internal.sessionFromCookie([{ name: "unrelated", value: "x".repeat(64) }])).toBeNull()
-    expect(_internal.sessionFromCookie([{ name: "sb-abcdefghij-auth-token.0", value: "base64-not-json" }])).toBeNull()
+    expect(_internal.sessionFromCookie([{ name: "unrelated", value: "x".repeat(64), host_key: "app.perchai.app" }])).toBeNull()
+    expect(_internal.sessionFromCookie([{ name: "sb-abcdefghij-auth-token.0", value: "base64-not-json", host_key: "app.perchai.app" }])).toBeNull()
     expect(
-      _internal.sessionFromCookie([{ name: "sb-abcdefghij-auth-token.0", value: `base64-${Buffer.from("{}").toString("base64url")}` }]),
+      _internal.sessionFromCookie([
+        { name: "sb-abcdefghij-auth-token.0", value: `base64-${Buffer.from("{}").toString("base64url")}`, host_key: "app.perchai.app" },
+      ]),
     ).toBeNull()
   })
 
-  test("enumerates the cookie stores", () => {
-    expect(Array.isArray(_internal.cookieStores())).toBe(true)
+  // Only Perch's own cookies count: another site's Supabase session must never be
+  // joined, renewed against Perch's auth server, or sent anywhere.
+  test("refuses another site's session in the same jar", () => {
+    expect(_internal.sessionFromCookie(rows.map((r) => ({ ...r, host_key: "some-other-site.example" })))).toBeNull()
+  })
+
+  test("accepts Perch's domain with a leading dot", () => {
+    expect(_internal.sessionFromCookie(rows.map((r) => ({ ...r, host_key: ".perchai.app" }))).access).toBe("access-abc")
+  })
+
+  test("does not mistake a lookalike host for Perch", () => {
+    expect(
+      _internal.sessionFromCookie([{ name: "sb-abcdefghij-auth-token.0", value, host_key: "evil-perchai.app" }]),
+    ).toBeNull()
+  })
+
+  test("enumerates only Perch's own cookie stores", () => {
+    const stores = _internal.cookieStores()
+    expect(Array.isArray(stores)).toBe(true)
+    for (const p of stores) expect(p).toMatch(/perch/i)
   })
 
   // The desktop app writes the same session file into its own user-data

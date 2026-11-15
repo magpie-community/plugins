@@ -26,18 +26,21 @@ magpie's `plugin-auth.json` (permissions 600), and renewed in place by
 
 ### Where the machine's sign-in is read from
 
-Three sources, freshest wins:
+Two sources, freshest wins:
 
 - `~/.perch/cli-auth-session.json` — written by `perch login`. Override the
   directory with `PERCH_CLI_AUTH_DIR`.
 - `%APPDATA%\Perch AI Desktop\cli-auth-session.json` — the desktop app writes the
   same file shape into its own user-data folder, never into `~/.perch`.
   `Perch Terminal` and `perch-desktop` folders are checked too.
-- The desktop app's Chromium cookie jar,
-  `%APPDATA%\Perch AI Desktop\Network\Cookies`. Perch keeps its Supabase session
-  there as `sb-<ref>-auth-token.0` + `.1`; the values are plaintext, so the halves
-  are joined, base64-decoded and used as the token pair. Chrome, Edge, Brave and
-  Chromium profiles that signed in to `perchai.app` are scanned as well.
+
+Perch's own cookie jar (`%APPDATA%\Perch AI Desktop\Network\Cookies`) is a third
+source, for a desktop app that has not written the session file. Perch keeps its
+session there as `sb-<ref>-auth-token.0` + `.1`; the values are plaintext, so the
+halves are joined and base64-decoded. **Only Perch's jar is opened** — a browser
+profile's jar is not this plugin's to read — and inside it only cookies whose
+`host_key` is `perchai.app` or a subdomain of it are considered, so a Supabase
+session belonging to any other site is never joined, renewed, or sent anywhere.
 
 Nothing is decrypted and nothing leaves the machine. The jar is copied to a temp
 file before it is read (another process holds it open), and the read is skipped
@@ -47,13 +50,9 @@ app and picking **Use this machine's sign-in** switches the provider to it;
 **Login with Perch** always opens the authorization page instead of reusing what
 is on disk.
 
-`*.supabase.co` is unreachable from some networks — the TLS handshake is reset by
-SNI. When that happens the plugin retries through `bridge.py`, which uses
-`curl_cffi` with a Chrome TLS fingerprint until an attempt gets through. That
-needs Python with `curl_cffi` (`pip install curl_cffi`); set
-`PERCH_BRIDGE_PYTHON` if `python` is not the right name. Without it, sign-in and
-renewal fail with the connection error and nothing else changes. On a host whose
-Bun has `HTTPS_PROXY` set, the direct path works and the bridge is never reached.
+On a network that resets the TLS handshake for `*.supabase.co` (an SNI-level
+block), sign-in and renewal fail with the connection error after one retry.
+Nothing else changes, and no interpreter or extra dependency is involved.
 
 ## Models
 
@@ -84,17 +83,17 @@ events become OpenAI's:
 | `stream_restart` | the text restarts (streaming can only append, so a restart continues) |
 | `error` / `done.ok:false` | an `error` frame |
 
-Four details of the request shape are load-bearing, and all four are what Perch's
-own CLI sends:
+Four details of the request shape matter, and all four are simply what Perch's own
+CLI sends — the endpoint is written for that one client and refuses requests that do
+not match it:
 
 - **No `lane` inside `request`.** `lane` sits beside `request`. A `lane` on the
-  request itself makes Perch answer `perch_surface_required` — it reads that as a
-  call from something other than Perch.
-- **A system prompt Perch recognises.** The same gate also fires on a call whose
-  messages it does not recognise as its own, and length is not what it measures: a
-  20,000-character prompt of your own passes, a two-line one can be refused. Every
-  request therefore opens with `CANARY` — a sentence taken from Perch's own
-  prompt — and the caller's system prompt follows it untouched.
+  request itself is answered `perch_surface_required`.
+- **A system prompt the endpoint accepts.** It also refuses a call whose messages it
+  does not recognise, and length is not what it measures: a 20,000-character prompt
+  of your own passes, a two-line one can be refused. Every request therefore opens
+  with `CANARY`, a sentence taken from Perch's own prompt, and the caller's system
+  prompt follows it untouched.
 - **A turn ticket.** Each turn mints one at `/api/perch-terminal/turn-ticket`, runs
   under the ticket's `runId`, and sends it back as `x-perch-turn-ticket`. A turn
   without one still goes out, the way the CLI sends it when no ticket can be
@@ -102,10 +101,8 @@ own CLI sends:
 - **A `cli-turn` record per turn.** After every call — answered or refused,
   streaming or not — the turn is filed at `POST /api/perch-terminal/cli-turn` with
   the prompt, the answer, the thread id (`cli-cwd-<sha256(cwd)[:16]>`), the run id
-  and the duration. The CLI never runs a model call without filing one, so a
-  client that calls `model-call` and files nothing is exactly what an outside app
-  replaying Perch's requests looks like from the server. The record is filed after
-  the answer has gone out, and a failed filing never fails the turn.
+  and the duration. The record is filed after the answer has gone out, and a failed
+  filing never fails the turn.
 
 ## The host's own name is rewritten out
 
@@ -135,11 +132,18 @@ memberships and `rpc("perch_ai_select_starter_with_data_notice")` answers
 `{ok:false,error:"banned"}`. Lifting it is a support matter
 (`support@perchai.app`).
 
-The evidence Perch acts on is the shape of a session, not a single request. The
-four details above are what makes a session look like Perch's own; a turn record
-in particular is something the real CLI files on every turn and the web app never
-files. Whether that is enough is not something this package can promise — treat a
-fresh account as something to spend carefully, not as a supply.
+**This is the risk you take by installing this.** Perch's terms cover its own apps;
+a plugin that drives the same endpoint from magpie is not one of them, and the
+account it drives can be suspended for it. That is Perch's decision to make, not
+something this package can argue with or work around. The four details above are
+there because the endpoint only serves its own client, not to disguise who is
+calling — if you need hosted models under terms that allow third-party clients, use
+Perch's BYOK path (`models.byok.enabled`) with your own provider key, or a provider
+that offers an API.
+
+Three accounts were suspended while this plugin was being built, at the exact
+timestamps of its first real calls. Treat a fresh account as something to spend
+carefully, not as a supply.
 
 ## Tests
 
@@ -157,5 +161,4 @@ bun test
 - `opencode.mjs` — re-export only: OpenCode 1.x refuses an entry point that
   exports anything else.
 - `opencode2.mjs` — the OpenCode 2.x adapter, byte for byte from `scripts/`.
-- `bridge.py` — the TLS fallback described above.
 - `index.test.mjs` — the offline suite.
