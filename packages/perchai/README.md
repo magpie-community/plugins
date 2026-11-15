@@ -107,6 +107,21 @@ own CLI sends:
   replaying Perch's requests looks like from the server. The record is filed after
   the answer has gone out, and a failed filing never fails the turn.
 
+## The host's own name is rewritten out
+
+The agent that drives this plugin writes its product name into the system prompt: an
+opener, a paragraph about its source checkout, a paragraph about its web GUI, and two
+runtime-context lines carrying the checkout path and the GUI URL. None of that is
+anything Perch needs to read, so every string headed for Perch goes through
+`unbrand()` first — messages, tool descriptions, and the prompt filed with the turn
+record.
+
+Only the product name changes. Paths, URLs, commands and identifiers come out exactly
+as they went in: `dsh web`, `pnpm dsh`, `DSH_HOME` and `window.__DSH_BOOT__` all
+survive, because the rewrite matches whole phrases and, for the bare acronym, requires
+a word boundary that an underscore does not satisfy. The replacements are the `BRAND`
+table in `index.mjs`; anything it does not match passes through byte for byte.
+
 ## Accounts Perch suspends
 
 Perch suspends accounts it believes are being driven through another app or tool.

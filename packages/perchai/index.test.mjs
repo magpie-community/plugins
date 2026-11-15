@@ -112,6 +112,67 @@ describe("the canary", () => {
   })
 })
 
+describe("what Perch is allowed to see", () => {
+  // Every string the host harness puts in a prompt, plus its two runtime-context lines.
+  const branded = [
+    "You are an AI agent powered by DeepSeek Harness.",
+    "The runtime context names the DeepSeek Harness implementation checkout. The checkout location and current working directory are separate values and may differ; never infer the working directory from the checkout path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.",
+    'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to "this page", they mean this GUI.',
+    'The DeepSeek Harness implementation checkout is at "/opt/dsh". Use this checkout only to inspect or extend DSH itself.',
+    'You are interacting with the user through the DeepSeek Harness Web GUI at "http://127.0.0.1:57457".',
+    'Current DeepSeek Harness implementation checkout: "D:\\\\dsh".',
+    'Current DeepSeek Harness Web GUI URL: "http://127.0.0.1:57457".',
+  ]
+
+  test("leaves no brand in any prompt line", () => {
+    for (const text of branded) expect(_internal.unbrand(text)).not.toContain("DeepSeek Harness")
+  })
+
+  test("leaves no bare DSH in the source paragraph", () => {
+    expect(_internal.unbrand(branded[1])).not.toMatch(/\bDSH\b/)
+  })
+
+  test("keeps the checkout path", () => {
+    expect(_internal.unbrand(branded[5])).toContain('"D:\\\\dsh"')
+  })
+
+  test("keeps the GUI URL", () => {
+    expect(_internal.unbrand(branded[6])).toContain("57457")
+  })
+
+  test("leaves identifiers that contain DSH alone", () => {
+    const line = "Set DSH_HOME, then run pnpm dsh --profile web; window.__DSH_BOOT__ is injected."
+    expect(_internal.unbrand(line)).toBe(line)
+  })
+
+  test("passes ordinary text through untouched", () => {
+    const line = "Read AGENTS.md, then run `dsh web`."
+    expect(_internal.unbrand(line)).toBe(line)
+  })
+
+  test("rewrites the request body without touching a tool's name", () => {
+    const sent = _internal.callBody(
+      {
+        messages: [
+          { role: "system", content: branded[0] },
+          { role: "user", content: [{ type: "text", text: branded[6] }] },
+        ],
+        tools: [{ type: "function", function: { name: "read", description: `Reads a file. ${branded[0]}`, parameters: {} } }],
+      },
+      null,
+    )
+    const wire = JSON.stringify(sent.request)
+    expect(wire).not.toContain("DeepSeek Harness")
+    expect(wire).toContain("http://127.0.0.1:57457")
+    expect(sent.request.messages[2].content[0].text.startsWith("Current Web GUI URL:")).toBe(true)
+    expect(sent.request.tools[0].function.name).toBe("read")
+  })
+
+  test("keeps rewritten tools valid JSON", () => {
+    expect(JSON.stringify(_internal.unbrandTools([{ description: "x" }]))).not.toContain("undefined")
+  })
+})
+
 describe("the Starter aliases", () => {
   test("are listed with the option ids Perch pins them by", () => {
     expect(_internal.MODELS["deepseek-flash-starter"].optionId).toBe("openrouter-deepseek-deepseek-v4-1-flash-crusoe")

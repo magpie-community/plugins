@@ -1028,11 +1028,76 @@ async function* events(res) {
 // accounting off that shape, so the same shape is used here.
 const turnId = () => `cli-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
+// Perch is meant to see the turn, not the name of the program that produced it.
+// The harness opens its system prompt with a fixed identity line, names its own
+// checkout and Web GUI in two later sections, and states both values again as
+// runtime context. Every one of those strings is rewritten on the way out.
+// Paths, commands and tool schemas are left exactly as they are, so a checkout
+// path, `pnpm dsh`, `dsh web` or an env var still reads the way it did.
+const BRAND = [
+  [/You are an AI agent powered by DeepSeek Harness\./g, "You are an AI agent."],
+  [
+    /The runtime context names the DeepSeek Harness implementation checkout\./g,
+    "The runtime context names the implementation checkout.",
+  ],
+  [
+    /You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names\./g,
+    "You are interacting with the user through the Web GUI whose URL the runtime context names.",
+  ],
+  // The frozen paragraphs earlier releases embedded their values in.
+  [/The DeepSeek Harness implementation checkout is at /g, "The implementation checkout is at "],
+  [/You are interacting with the user through the DeepSeek Harness Web GUI at /g, "You are interacting with the user through the Web GUI at "],
+  // The two runtime-context lines, value and all.
+  [/Current DeepSeek Harness implementation checkout: /g, "Current implementation checkout: "],
+  [/Current DeepSeek Harness Web GUI URL: /g, "Current Web GUI URL: "],
+  [/Use this checkout only to inspect or extend DSH itself\./g, "Use this checkout only to inspect or extend it."],
+  // Anything left over, in prose the harness or the workspace wrote.
+  [/DeepSeek Harness/g, "the environment"],
+  // Bare DSH, never `DSH_HOME` or `window.__DSH_BOOT__`: an underscore is a word
+  // character, so \b cannot match inside those identifiers.
+  [/\bDSH\b/g, "this tool"],
+]
+
+function unbrand(text) {
+  let out = String(text ?? "")
+  for (const [re, to] of BRAND) out = out.replace(re, to)
+  return out
+}
+
+// Message content is either a string or a list of parts; only text is rewritten.
+// A message with nothing to rewrite comes back as the same object, so a caller
+// comparing identity still sees its own message.
+function unbrandMessages(messages) {
+  const list = Array.isArray(messages) ? messages : []
+  return list.map((m) => {
+    if (!m || typeof m !== "object") return m
+    if (typeof m.content === "string") {
+      const next = unbrand(m.content)
+      return next === m.content ? m : { ...m, content: next }
+    }
+    if (!Array.isArray(m.content)) return m
+    let changed = false
+    const parts = m.content.map((part) => {
+      if (!part || typeof part !== "object" || typeof part.text !== "string") return part
+      const next = unbrand(part.text)
+      if (next === part.text) return part
+      changed = true
+      return { ...part, text: next }
+    })
+    return changed ? { ...m, content: parts } : m
+  })
+}
+
+// Tool schemas travel to Perch too, and a tool description can name the
+// harness. Round-tripping through JSON rewrites every string in them at once;
+// no replacement inserts a quote or a backslash, so the JSON stays valid.
+const unbrandTools = (tools) => (Array.isArray(tools) ? JSON.parse(unbrand(JSON.stringify(tools))) : tools)
+
 // withCanary puts the Perch-shaped system message in front of the caller's own
 // messages. A caller that already sends a system prompt keeps it, in order,
 // right behind the canary; one that sends none gets the canary alone.
 function withCanary(messages) {
-  const rest = Array.isArray(messages) ? messages : []
+  const rest = unbrandMessages(messages)
   if (rest.some((m) => m?.role === "system" && String(m.content ?? "").includes(CANARY))) return rest
   return [{ role: "system", content: CANARY }, ...rest]
 }
@@ -1064,7 +1129,7 @@ function callBody(req, optionId, who, ticketRunId) {
   // The lane belongs beside `request`, where the CLI puts it.
   const request = {
     messages: withCanary(req.messages),
-    ...(Array.isArray(req.tools) && req.tools.length ? { tools: req.tools } : {}),
+    ...(Array.isArray(req.tools) && req.tools.length ? { tools: unbrandTools(req.tools) } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     ...(req.tool_choice !== undefined ? { toolChoice: req.tool_choice } : {}),
@@ -1385,13 +1450,13 @@ export async function PerchAuthPlugin({ client }) {
               // A refused call is still a turn Perch's own client would have filed.
               void reportTurn(a.access, {
                 runId,
-                prompt: lastUserText(req.messages),
+                prompt: unbrand(lastUserText(req.messages)),
                 status: "error",
                 error: text.slice(0, 300),
               })
               return failure(res.status, text)
             }
-            const report = (turn) => reportTurn(a.access, { ...turn, runId, prompt: lastUserText(req.messages) })
+            const report = (turn) => reportTurn(a.access, { ...turn, runId, prompt: unbrand(lastUserText(req.messages)) })
             return openai(req, events(res), () => ac.abort(), report)
           },
         }
@@ -1510,6 +1575,9 @@ export const _internal = {
   lastUserText,
   threadId,
   supabaseFetch,
+  unbrand,
+  unbrandMessages,
+  unbrandTools,
   withCanary,
   toolCallsOf,
   turnTicket,
