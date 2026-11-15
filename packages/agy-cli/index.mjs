@@ -208,7 +208,8 @@ function findAgy() {
 // but on Windows it still loaded all 120 of a user's skills; --gemini-dir
 // pointed at a folder of the bridge's own leaves them all out (the reporter
 // ran it: no skills, every client tool listed). agy's Google sign-in is in
-// the system keyring, not in that folder (signin.mjs), so it still applies.
+// the system keyring, not in that folder (signin.mjs), so it still applies;
+// with no keyring it is a file in the folder, and see fileSignIn.
 // An agy without these flags refuses to start on them, so each is passed
 // only when `agy acp --help` lists it. The answer is kept per binary (path,
 // mtime, size), so an agy update asks again; a probe that failed is asked
@@ -248,9 +249,22 @@ export function bridgeGeminiDir(env = process.env) {
 
 // geminiDirArgs gives agy the bridge's own folder when its acp lists
 // --gemini-dir and the folder can be made, else nothing (agy's ~/.gemini).
+// Where no keyring is (a Docker container, a Linux with no D-Bus session),
+// agy keeps its Google sign-in in a file under its folder instead, and a
+// folder of the bridge's own would have no sign-in (plugins#1165): then agy
+// stays on its own, unless AGY_BRIDGE_GEMINI_DIR names one.
+export function fileSignIn(home = os.homedir()) {
+  try {
+    return fs.statSync(path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token")).isFile()
+  } catch {
+    return false
+  }
+}
+
 export async function geminiDirArgs(agyPath, env = process.env) {
   const dir = bridgeGeminiDir(env)
-  if (!dir || !/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
+  if (!dir || (!env.AGY_BRIDGE_GEMINI_DIR && fileSignIn())) return { args: [], dir: null }
+  if (!/--gemini[-_]dir\b/.test(await acpHelp(agyPath))) return { args: [], dir: null }
   try {
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
   } catch {

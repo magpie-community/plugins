@@ -1066,6 +1066,33 @@ test("#1166: an agy whose acp --help lists --gemini-dir runs in the bridge's own
   })
 })
 
+test("#1165: with agy's sign-in in a file under ~/.gemini (no keyring, Docker), agy stays on that folder", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const token = path.join(kit.env.HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}", { mode: 0o600 })
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token" }, messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
+    assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
+  })
+})
+
+test("#1165: a folder AGY_BRIDGE_GEMINI_DIR names is used even with a file sign-in", async () => {
+  await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
+    const named = path.join(kit.env.HOME, "named-agy")
+    kit.env.AGY_BRIDGE_GEMINI_DIR = named
+    const token = path.join(kit.env.HOME, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, "{}")
+    scriptedAgent(kit)
+    await readSse(await kit.request(baseBody({ metadata: { user_id: "file-token-named" }, messages: [{ role: "user", content: "hello" }] })))
+    const args = kit.acpSpawns[0].args
+    assert.equal(args[args.indexOf("--gemini-dir") + 1], named, args.join(" "))
+  })
+})
+
 test("#1166: AGY_BRIDGE_GEMINI_DIR=default leaves agy on the machine's own folder", async () => {
   await withKit({ acpHelp: GEMINI_DIR_HELP, env: { AGY_BRIDGE_GEMINI_DIR: "default" } }, async (kit) => {
     scriptedAgent(kit)
