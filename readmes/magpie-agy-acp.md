@@ -36,7 +36,7 @@ The Antigravity FAQ adds that wrapping `agy` inside third-party coding agents, o
 
 Account rotation is the second one, and it is now off by default: when an account's quota, sign-in or policy fails a turn, that error comes back and you choose the next account (see `account_failover` below). A disabled account answers with "This service has been disabled in this account for violation of Terms of Service"; the plugin surfaces that error and stops asking that account for six hours. Restoring an account is Google's decision, through the appeal form the message links to, and their own wording says a repeat violation is permanent. For a supported path, use a Vertex AI or AI Studio API key instead.
 
-`cloak_prompts` used to default to on. It rewrites system-prompt lines that identify a third-party harness so a vendor-side check stops refusing the request; that is a workaround for a vendor check, which the terms treat as circumvention, so it is off by default now and best left off.
+`cloak_prompts` is on by default, as in the standalone bridge for this vendor. It rewrites system-prompt lines that identify a third-party harness, which a vendor-side check answers as a spent quota whatever quota is left, so a request carrying them never had a chance. That is still a workaround for a vendor check, which the terms treat as circumvention: turn it off to send prompts as written.
 
 **Your account, your risk.** The maintainer cannot restore a disabled account. The
 clauses, the enforcement reports, and what one disabled account's logs showed are in
@@ -79,7 +79,7 @@ magpie quota agy-acp
 |---|---|---|
 | `quota_routing` | `true` | Expose 5-hour/weekly buckets to Magpie routing so these windows show on each account |
 | `account_failover` | `false` | Switch accounts automatically after a failure. Off by default: a turn that fails on this account's quota, sign-in, credit or policy returns its own error (`409`, which Magpie does not fail over) and you pick the next account. On, Magpie may answer the same turn from another signed-in account, which the terms treat as automating account rotation. A vendor-wide `5xx` is retryable either way |
-| `cloak_prompts` | `false` | Rewords system-prompt lines that identify a third-party harness (and the two Codex lines in your own messages) that get answered as a spent quota. Off by default: it works around a vendor check. Add your own pairs with `cloak_said_as` (`"phrase=replacement; phrase2=replacement2"`) |
+| `cloak_prompts` | `true` | Rewords system-prompt lines that identify a third-party harness (and the two Codex lines in your own messages) that get answered as a spent quota. On by default, as in the standalone bridge: those lines are refused whatever quota is left. It works around a vendor check, which the terms treat as circumvention, so turn it off to send prompts as written. Add your own pairs with `cloak_said_as` (`"phrase=replacement; phrase2=replacement2"`) |
 | `minimal_agent` | `false` | Enable `excludeDefaultComponents` on the bridge agent to reduce built-in system prompt tokens |
 | `expose_thinking` | `true` | Emit ACP thought summaries as Anthropic `thinking` blocks |
 
@@ -108,6 +108,8 @@ bun install
 bun x tsc --noEmit
 HOME=$(mktemp -d) bun test
 ```
+
+Releases are built by `.github/workflows/release.yml`. The workflow attempts npm publishing with OIDC Trusted Publishing (or `NPM_TOKEN` when configured); any publish failure fails the job. Set the repository Actions variable `SKIP_NPM_PUBLISH=true` to publish only the GitHub release.
 
 ## Credits & License
 

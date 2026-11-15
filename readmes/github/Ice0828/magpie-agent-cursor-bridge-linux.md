@@ -80,6 +80,7 @@ Original upstream (`nodlles`) and community enhanced forks are predominantly gea
    - No reboot is required.
 3. **Use inside Cursor**:
    - Open Cursor, click the model selector dropdown in Chat or Composer;
+   - If Cursor was already running when you toggled the plugin on, restart Cursor to reload the model catalog;
    - Your configured Magpie models appear automatically. Select one and enjoy coding!
 
 ---

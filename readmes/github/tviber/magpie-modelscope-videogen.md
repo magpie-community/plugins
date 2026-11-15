@@ -55,7 +55,7 @@ and exported in manifests:
 
 | Parameter | Behavior |
 | --- | --- |
-| `accelerate_lora` | H3 default true, others false; true uses 4 steps |
+| `accelerate_lora` | Available only for MiniMax-H3; defaults true there and uses 4 steps. Other models reject `true`. |
 | `num_inference_steps` | 1–50, requires acceleration off unless set to 4 |
 | `guidance_scale` | 1.5–20; omitted uses the official model default if present |
 | `checkpoint_version_id` / `vae_version_id` | Compatible custom version IDs from model search |
@@ -300,11 +300,10 @@ logins, routing preferences and wallet history; its display name is ModelScope V
 
 The adapter discovers `MINIMAX_H3` and its current checkpoint version from
 ModelScope's `defaultTemplateV2`; it does not pin a checkpoint ID. New H3 jobs default to `accelerate_lora: true` (4 steps), matching the web UI.
-Other models default to false, matching the current web UI, which only shows
-this switch for H3. Explicit acceleration is forwarded for every model; a quote
-alone does not prove that a model's accelerated generation works. Disable
-acceleration to use custom sampling steps. Old queued records without saved
-parameters retain acceleration off. Text-only generation is available through
+The web UI only exposes this switch for H3. The plugin advertises this capability
+on H3 and rejects `accelerate_lora: true` for every other model, including WAN.
+Custom sampling steps remain available when acceleration is off. Old queued
+records without saved parameters retain acceleration off. Text-only generation is available through
 `videogen_generate_t2v`; Omni Reference inputs are not exposed.
 
 Live official quotes verified on **2026-11-13** using a signed-in headless
