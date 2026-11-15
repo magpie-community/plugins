@@ -815,6 +815,32 @@ test("a session parked before a user's turn was cloaked is not resumed", () => {
   assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
 })
 
+test("a session parked with its instructions appended to agy's is resumed only while they still go there", () => {
+  // bzs_1 on X (11-15): agy keeps appended instructions in its own system
+  // instruction, which Antigravity turns away, so a session opened that way
+  // is not resumed once they go in the first user turn.
+  const convKey = "test-parked-append"
+  const history = [{ role: "user", content: STABLE }, { role: "assistant", content: "ok" }]
+  const proc = {
+    convKey, sessionId: "sess-append", expectedMessages: history, instructions: "Rules.\n", instructionsInSession: true,
+    workDir: "/tmp/agy-park-test", hasSentFirstTurn: true, historyInvalid: false, turn: null, dead: false,
+    canPark() { return true },
+  }
+  park(proc)
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
+  park(proc)
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  try {
+    assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history })?.sessionId, "sess-append")
+  } finally {
+    delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  }
+  // the same entry as an older version wrote it, when instructions were appended
+  park({ ...proc, instructionsInSession: false })
+  delete parked.get(convKey).instructionsInSession
+  assert.equal(takeParked(convKey, { workDir: "/tmp/agy-park-test", instructions: "Rules.\n", history }), null)
+})
+
 test("a user's turn goes to agy with Codex's GPT-5 lines reworded", async () => {
   await withKit({}, async (kit) => {
     const sent = []

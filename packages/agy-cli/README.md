@@ -160,6 +160,7 @@ magpie quota refresh agy-cli --json
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
+| `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | 回收后的会话可续接的时长（6 小时） |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | 会话状态文件路径 |
@@ -176,9 +177,14 @@ magpie quota refresh agy-cli --json
 
 ## 精简 agent（`AGY_BRIDGE_MINIMAL_AGENT=1`）
 
-默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词附加在后面（agy 声明
-支持 `systemPrompt.append` 时放进会话，否则作为 `<external_system_instructions>` 放在
-第一条提示词开头）。
+默认情况下，agy 用它自己的系统提示词跑每个请求，客户端的系统提示词作为
+`<external_system_instructions>` 放在第一条提示词开头。Antigravity 对附加在 agy 系统提示词
+后面的越来越多 agent 的提示词直接回 429（11-15 起包括 Claude Code 的 "You are an interactive
+agent that helps users with software engineering tasks."，改成 "You're …" 也一样），只用 agy
+自己的提示词时同一个账号能正常回答，所以默认不再用 agy 的 `systemPrompt.append`。设
+`AGY_BRIDGE_SYSTEM_APPEND=1` 恢复以前的做法（agy 声明支持时附加到会话）。代价：客户端的系统
+提示词和重放的历史共用第一条提示词的字节预算（`AGY_BRIDGE_MAX_PROMPT_BYTES`），agy 压缩上下文时
+它也可能被概括掉。
 
 Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex、Hermes Agent、OpenCode
 和 pi 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在

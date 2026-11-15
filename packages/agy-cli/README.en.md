@@ -217,6 +217,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
+| `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_RESUME_TTL_MS` | 21600000 | How long a reclaimed session stays resumable (6 hours) |
 | `AGY_BRIDGE_STATE_FILE` | `$XDG_STATE_HOME/magpie-agy-bridge/sessions.json` | Where resumable session records are kept |
@@ -234,9 +235,16 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 ## Minimal agent (`AGY_BRIDGE_MINIMAL_AGENT=1`)
 
 By default agy runs every request with its own system prompt, and the
-client's system prompt is added to it: in the session when agy advertises
-`systemPrompt.append`, otherwise as `<external_system_instructions>` at the
-start of the first prompt.
+client's system prompt goes as `<external_system_instructions>` at the start
+of the first prompt. Antigravity answers a bare 429 to a growing set of
+agents' prompts appended to agy's own (since 11-15 Claude Code's "You are an
+interactive agent that helps users with software engineering tasks.", even
+as "You're …"), while the same account answers with agy's prompt alone, so
+agy's `systemPrompt.append` is no longer used by default.
+`AGY_BRIDGE_SYSTEM_APPEND=1` goes back to it (in the session, when agy
+advertises it). The cost: the client's system prompt shares the first
+prompt's byte budget with replayed history (`AGY_BRIDGE_MAX_PROMPT_BYTES`),
+and agy's context compaction may summarise it.
 
 Antigravity answers a 429 "Resource has been exhausted" to a few system
 prompt lines whatever quota is left (Claude Code's billing line, the Claude

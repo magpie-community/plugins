@@ -875,9 +875,22 @@ async function launchedModel(body) {
   check("ACP session uses the isolated agent", ["tools: []", "inheritMcp: false", "inheritCustomizations: false"].every(line => init.agentConfig.includes(line)), init.agentConfig)
   check("agy keeps its own prompt components by default", !init.agentConfig.includes("excludeDefaultComponents"), init.agentConfig)
   check("ACP client names itself, not an editor", init.clientInfo?.name === "opencode-agy-cli-auth" && init.clientInfo?.version === JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, JSON.stringify(init.clientInfo))
-  check("client system prompt is appended to the session instructions", init.systemAppend?.includes("SYSTEM-PROMPT-MARKER"))
-  check("fresh prompt carries only the user text", user.text === "hello world", JSON.stringify(user.text))
+  // bzs_1 on X (11-15): Antigravity turns away agents' prompts appended to
+  // agy's own with a bare 429, so they go in the first user turn by default.
+  check("client system prompt is not appended to agy's own", init.systemAppend === null, JSON.stringify(init.systemAppend))
+  check("client system prompt goes in the first user turn",
+    user.text.startsWith("<external_system_instructions>\nSYSTEM-PROMPT-MARKER\n</external_system_instructions>") &&
+    user.text.includes("<current_turn>\nhello world"), JSON.stringify(user.text))
   check("client tools are served through the ide-tools port", !!init.idePort && !logs().some(event => event.type === "ncExit"))
+}
+
+{
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  await readSSE(await callFetch({ model, system: "APPEND-OPT-IN-MARKER", messages: [{ role: "user", content: "hello append" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  check("AGY_BRIDGE_SYSTEM_APPEND=1 appends the client system prompt to the session instructions",
+    inits().at(-1).systemAppend?.includes("APPEND-OPT-IN-MARKER"), JSON.stringify(inits().at(-1).systemAppend))
+  check("an appended system prompt leaves the prompt the user text alone", lastOf("user").text === "hello append", JSON.stringify(lastOf("user").text))
 }
 
 {
@@ -955,7 +968,8 @@ for (const [name, system, headers, expectedDir, named] of [
   const final = (await readSSE(await callFetch(body, headers))).events
   const init = inits().at(-1)
   check(`${name} uses only an available absolute add-dir`, stopOf(final) === "end_turn" && init.addDir === expectedDir)
-  check(`${name} identifies where client tools run`, init.systemAppend?.includes(JSON.stringify(named)) && init.systemAppend.includes("where every tool runs"))
+  const told = lastOf("user").text
+  check(`${name} identifies where client tools run`, told.includes(JSON.stringify(named)) && told.includes("where every tool runs"), told)
   check(`${name} keeps agent configuration isolated`, init.cwd !== expectedDir && init.cwd.includes("magpie-agy-bridge-"))
 }
 
@@ -1375,6 +1389,7 @@ for (const [title, tools, want, name] of [
   const sdkSaid = "You are a Claude agent, built on the Claude Agent SDK by Anthropic."
   const want = `${rfc.replace("keywords", "key words")}\n${sdkSaid}\nCLOAK-MARKER`
   const body = { model, system, messages: [{ role: "user", content: "cloak session instructions" }] }
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const events = (await readSSE(await callFetch(body))).events
   const init = inits().at(-1)
   const sent = init.systemAppend ?? ""
@@ -1384,6 +1399,7 @@ for (const [title, tools, want, name] of [
   const convId = init.convId
   const before = inits().length
   await readSSE(await callFetch(nextTurn(body, events, "cloak second turn")))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
   check("#980 the reworded instructions keep the conversation in its session", inits().length === before && lastOf("user").convId === convId,
     JSON.stringify({ inits: inits().length - before, user: lastOf("user") }))
 
@@ -1433,7 +1449,9 @@ for (const [title, tools, want, name] of [
   const dsh = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
   const reworded = "When the user writes @ followed by a path, they are pointing at that file or folder."
   const system = `You are DeepSeek Harness.\n\n${dsh}\n\nDSH-MARKER`
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   await readSSE(await callFetch({ model, system, messages: [{ role: "user", content: "dsh session instructions" }] }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
   const sent = inits().at(-1).systemAppend ?? ""
   check("#1028 DSH's @-path paragraph goes reworded in the session instructions",
     sent.includes("DSH-MARKER") && !sent.includes("Tokens prefixed with @") && sent.includes(reworded), JSON.stringify(sent))
@@ -1678,6 +1696,22 @@ for (const location of ["inline", "system", "developer", "user"]) {
   await readSSE(await again.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(edited) }))
   check("a changed history is not resumed", inits().at(-1).resumed === false)
 
+  // A session opened with its instructions appended keeps them in agy's own
+  // system instruction, where they are turned away, so it is not resumed
+  // once they go in the first user turn.
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
+  const appended = { model, system: "APPENDED-PARKED-MARKER", messages: [{ role: "user", content: "MEMORY appended before restart" }] }
+  const appendedEvents = (await readSSE(await callFetch(appended))).events
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  const appendedInit = inits().at(-1)
+  const { default: thirdDefault } = await import("../index.mjs?restart-3")
+  const third = await (await thirdDefault.server({ client: null, directory: os.tmpdir() }, {})).auth.loader(async () => ({ key: "agy" }))
+  await readSSE(await third.fetch("agy://local/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextTurn(appended, appendedEvents, "MEMORY appended after restart")) }))
+  const reopened = inits().at(-1)
+  check("a session parked with appended instructions is not resumed", appendedInit.systemAppend?.includes("APPENDED-PARKED-MARKER") &&
+    reopened.resumed === false && reopened.systemAppend === null && lastOf("user").text.includes("APPENDED-PARKED-MARKER"),
+    JSON.stringify({ reopened, text: lastOf("user").text }))
+
   const crashFirst = { model, messages: [{ role: "user", content: "MEMORY before mid-turn crash" }] }
   const crashFirstEvents = (await readSSE(await callFetch(crashFirst))).events
   const crashTarget = inits().at(-1)
@@ -1707,7 +1741,7 @@ for (const location of ["inline", "system", "developer", "user"]) {
     u1.text.includes("<system-reminder>\nSessionStart hook additional context: ok") &&
     !u1.text.includes("<conversation_history>"), u1.text)
   check("caller working directory is recognized from initial trailing system message",
-    init1.systemAppend?.includes('"/remote-wsl/project"'), init1.systemAppend)
+    u1.text.includes('"/remote-wsl/project"'), u1.text)
 
   const turn2 = {
     ...turn1,

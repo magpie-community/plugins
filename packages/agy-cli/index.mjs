@@ -142,6 +142,18 @@ const HOLD_MAX = Math.max(...AGENT_ERROR_MARKERS.map((marker) => marker.length))
 // tokens a model call, against ~500 without them), so the request goes upstream
 // with the client's system prompt in their place.
 const minimalAgent = () => process.env.AGY_BRIDGE_MINIMAL_AGENT === "1"
+// Opt-in. agy's ACP server offers to append the client's system prompt to
+// its own (session instructions), and Antigravity sends that upstream as
+// part of the system instruction, where Google's check turns away a widening
+// set of agents' identity lines with a bare 429 "Resource has been
+// exhausted" whatever quota is left: since 11-15 "You are an interactive
+// agent that helps users with software engineering tasks." even as "You're
+// …" (#1151), and with only agy's own prompt the same account answers
+// (bzs_1 on X, 11-15). The client's system prompt goes in the first user
+// turn instead, as <external_system_instructions>, where only Codex's GPT-5
+// lines were turned away (cloak.mjs, USER_TURNED_AWAY). AGY_BRIDGE_SYSTEM_APPEND=1
+// goes back to the session instructions.
+const systemAppend = () => /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_SYSTEM_APPEND || "")
 const FORWARD_THINKING = process.env.AGY_BRIDGE_THINKING !== "0"
 
 // Until `agy models` answers. Gemini only: agy's ACP server decides which other
@@ -1807,7 +1819,7 @@ class Proc {
       capabilities.prompt_capabilities?.image === true
     const appendable = capabilities._meta?.antigravity?.systemPrompt?.append === true
     const resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
-    this.instructionsInSession = appendable && !!this.instructions
+    this.instructionsInSession = appendable && systemAppend() && !!this.instructions
     const meta = this.instructionsInSession
       ? { _meta: { antigravity: { systemPrompt: { append: outgoing(this.instructions) } } } }
       : {}
@@ -2829,6 +2841,7 @@ function park(proc) {
     toolUseIdentitiesHash: digest(toolUseIdentitiesKey(proc.expectedMessages) ?? ""),
     instructionsHash: digest(sentInstructionsIdentity(proc.instructions)),
     userCloak: USER_CLOAK,
+    instructionsInSession: !!proc.instructionsInSession,
     workDir: proc.workDir,
     at: Date.now(),
   })
@@ -2845,7 +2858,7 @@ function takeParked(convKey, opts) {
   saveParked()
   if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
     entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
-    entry.userCloak !== USER_CLOAK) return null
+    entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
   const incoming = digest(historyKey(opts.history))
   if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history }
   // Sans-inputs resume needs the hashes written by current park(). Old
@@ -3463,6 +3476,12 @@ function instructionsIdentity(text) {
 // written in agy's own copy, and every turn on it would be turned away, so
 // it is not resumed: a new session gets the history as it goes now.
 const USER_CLOAK = 1
+// A parked entry's instructionsInSession says where its instructions went.
+// A session agy opened with them appended keeps them in its own system
+// instruction, so every turn on it is turned away as before; it is resumed
+// only while they still go there (AGY_BRIDGE_SYSTEM_APPEND=1). One parked
+// before the field was written is not resumed: a new session gets them in
+// its first turn.
 
 function sentInstructionsIdentity(text) {
   return compactIdentity(outgoing(stripVolatileSystem(text)))
