@@ -9802,9 +9802,111 @@
               }
             }
           }
+        },
+        "0.3.1": {
+          "file": "tgz/magpie-community-opencode-atomcode-auth-0.3.1.tgz",
+          "integrity": "sha512-p8VS5wDIbNLl8tLzLQ43GRaE/8sRHvn84kp5iMTou1Aa6j+18yHA+KHA0pAmD9h+SdPP/ClucF8fpL19blJZmw==",
+          "time": "2026-11-15T15:23:50.873Z",
+          "manifest": {
+            "name": "@magpie-community/opencode-atomcode-auth",
+            "version": "0.3.1",
+            "description": "AtomCode (AtomGit CodingPlan) for Magpie and OpenCode: browser OAuth or local CLI sign-in, signed requests, persistent diagnostics, native plan claim, live models and quota windows",
+            "type": "module",
+            "main": "./opencode.mjs",
+            "exports": {
+              ".": "./opencode2.mjs"
+            },
+            "files": [
+              "index.mjs",
+              "opencode.mjs",
+              "opencode2.mjs",
+              "internal.mjs",
+              "auth-file.mjs",
+              "request-body.mjs",
+              "sign.mjs",
+              "oauth.mjs",
+              "codingplan.mjs",
+              "quota.mjs",
+              "models.mjs",
+              "errors.mjs",
+              "state.mjs",
+              "diagnostics.mjs",
+              "page/index.html",
+              "page/boot.js",
+              "page/diagnostics.html",
+              "page/app.css",
+              "page/app.js",
+              "page/icon.svg",
+              "i18n.mjs",
+              "version.mjs",
+              "assets/",
+              "README.md",
+              "README.zh-CN.md",
+              "CHANGELOG.md",
+              "NOTICE.md",
+              "SECURITY.md",
+              "LICENSE"
+            ],
+            "keywords": [
+              "magpie",
+              "magpie-plugin",
+              "opencode",
+              "opencode-plugin",
+              "opencode-auth",
+              "opencode-provider",
+              "atomcode",
+              "atomgit",
+              "codingplan",
+              "openai-compatible"
+            ],
+            "license": "MIT",
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/magpie-community/plugins",
+              "directory": "packages/atomcode"
+            },
+            "homepage": "https://github.com/magpie-community/plugins/tree/main/packages/atomcode#readme",
+            "bugs": {
+              "url": "https://github.com/magpie-community/plugins/issues"
+            },
+            "engines": {
+              "node": ">=20",
+              "magpie": ">=0.1.2629"
+            },
+            "scripts": {
+              "test": "bun test",
+              "test:coverage": "node --experimental-test-coverage --test test/*.test.mjs",
+              "test:coverage:enforce": "node --experimental-test-coverage --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=85 --test test/*.test.mjs",
+              "test:live": "node scripts/live-smoke.mjs",
+              "pack:check": "npm pack --dry-run --json"
+            },
+            "magpie": {
+              "icon": "https://atomgit.com/favicon.ico",
+              "maxConcurrency": 8,
+              "options": {
+                "locale": "auto",
+                "clientVersion": "5.2.3",
+                "quotaTtlMs": 60000,
+                "maxOutputTokens": 32768,
+                "diagnosticsPort": 3478
+              },
+              "page": {
+                "title": "AtomCode diagnostics",
+                "titles": {
+                  "zh": "AtomCode 诊断"
+                },
+                "file": "page/index.html",
+                "icon": "page/icon.svg",
+                "service": {
+                  "port": 3478,
+                  "option": "diagnosticsPort"
+                }
+              }
+            }
+          }
         }
       },
-      "latest": "0.3.0",
+      "latest": "0.3.1",
       "readme": "# AtomCode\n\n[中文](README.zh-CN.md) | English\n\nAn (unofficial) provider plugin for [magpie](https://usemagpie.ai) that brings **ATOMCODE (AtomGit CodingPlan)** in.\n\nAfter signing in through AtomGit or reusing the official AtomCode CLI's local\nsign-in, the CodingPlan models appear in magpie as the **ATOMCODE** provider.\nAny agent — Claude Code, Codex, OpenCode — can use `atomcode/<model>`. The plan,\nthe daily check-in and rolling quota windows show up on the account row, in\n`magpie quota`, and in settings.\n\n```\nAgent (Claude Code / Codex / OpenCode / …)\n   │ any API\n   ▼\nmagpie gateway ──► magpie-atomcode (adds atomcode-signing-v1 headers + UA)\n   ▼\nhttps://llm-api.atomgit.com/v1 (OpenAI-compatible, SSE streams back untouched)\n```\n\n## Features\n\n- **Two sign-in methods**: browser OAuth via the AtomGit broker, or reuse of\n  `~/.atomcode/auth.toml` from the official AtomCode CLI. CLI-backed accounts\n  are re-read before use and renewed tokens are atomically written back with\n  `0600` permissions.\n- **Resilient renewal**: single-flight refresh plus an in-memory result cache\n  prevents a rotated refresh token from being reused; a gateway 401 retries\n  once with a fresh token, including on older hosts without `auth.refresh`.\n- **Direct to AtomGit**: no Atom2Api instance needed; streaming, tool calls and\n  reasoning-effort variants are declared to the host.\n- **Daily check-in (`checkin`)**: scheduled by magpie's native check-in toggle. Plan valid → done; expired/missing → the official Max→Pro→Lite cascade re-claims it; quota exhausted → failed with the upstream reason.\n- **Quota windows**: plan name, expiry, every upstream rate-limit window, and a\n  token window only when upstream supplies token-specific fields without call\n  counters (or explicitly declares token units), updating live.\n- **Native controls**: `auto_claim` and `auto_version` appear as provider\n  switches in Magpie and default on; the older camelCase options still override\n  them for compatibility.\n- **Restart-safe fallback**: the last successful model catalog and quota\n  snapshot survive restarts. A transient refresh failure shows the stale quota\n  with a clear marker instead of blanking the account row.\n- **Auto version tracking**: follows the AtomCode repo's current version by default (the official client force-updates); falls back to the built-in anchor, never blocking a request.\n- **Live model catalog**: each account pulls its own (varies by plan/tier), with a built-in snapshot as the offline fallback.\n- **Offline diagnostics**: a loopback-only troubleshooting workspace at\n  `http://127.0.0.1:3478/` summarizes local readiness, quota windows, model\n  catalog, account and version state, then offers a network-free signature\n  self-check and a human-readable redacted report. It opens inside Magpie's\n  sandboxed plugin frame or directly in a browser.\n\n## Current models (snapshot 2026-11-02)\n\n| Model | Context | Reasoning efforts | Vision |\n|---|---|---|---|\n| `glm5.3-flash` | 512K | low / high | ✓ |\n| `qwen3.8-27b` | 256K | low / medium / xhigh | ✓ |\n| `deepseek-flash` | 1M | high / max | ✓ |\n\nThe catalog varies per account and plan — the live list wins after sign-in.\n\n## Install\n\n```bash\nmagpie plugin add @magpie-community/opencode-atomcode-auth\n# Or load a checkout directly:\nmagpie plugin add /path/to/plugins/packages/atomcode\n```\n\nThe package targets magpie `>=0.1.2629`. It exposes separate OpenCode 1.x and\n2.x entry points, but real OpenCode host-contract verification remains\nexperimental.\n\n## Sign in & check-in\n\n```bash\nmagpie plugin login atomcode 1   # browser OAuth\nmagpie plugin login atomcode 2   # reuse the official AtomCode CLI login\n```\n\n- CLI reuse reads `~/.atomcode/auth.toml`, verifies that it is a private regular\n  file, and refuses to follow symlinks or wide permissions. Renewals are written\n  back atomically so the official CLI and magpie keep the same refresh chain.\n- The second sign-in method asks for an optional `auth.toml` path. Leave it blank\n  for the default, or enter an absolute path / `~/...`; relative paths and\n  `~other-user` are rejected.\n- The local CLI file is shared state. If its account changes, sign in again so\n  magpie never signs requests with one account's `uid` and another account's\n  access token.\n- The official CLI serializes renewals with `auth-refresh.lock`. This plugin\n  does not take that Rust `fs2` lock. If both renew at the same instant and the\n  broker rotates the refresh token, the client that loses the race must sign in\n  again.\n- Check-in: the toggle in magpie's plugin settings (\"has the ATOMCODE plugin sign in every signed-in account, daily\"). Even when off, an expired plan is re-claimed automatically while reading quota/catalog (30-min cooldown).\n- Plan quotas: Lite 1000/day; Pro trial 100/day released at 10:00. When the daily pool is out, the check-in fails with the upstream message — try again tomorrow.\n\n## Options (`options` in `plugins.json`; all have defaults)\n\n| Option | Default | Meaning |\n|---|---|---|\n| `locale` | auto | `zh` / `en` |\n| `autoVersion` | `true` | legacy override for the native `auto_version` switch |\n| `clientVersion` | `5.2.3` | fallback version anchor (used when `autoVersion` is off or the fetch fails) |\n| `autoClaim` | `true` | legacy override for the native `auto_claim` switch |\n| `masterKeyHex` | built-in | escape hatch when upstream rotates its signing key |\n| `platformBaseURL` | `https://acs.atomgit.com` | OAuth broker |\n| `codingPlanAPIURL` | `https://api.gitcode.com/api/v5` | CodingPlan REST |\n| `quotaTtlMs` | `60000` | quota cache |\n| `maxOutputTokens` | `32768` | default model output ceiling |\n| `diagnosticsPort` | `3478` | loopback diagnostics port (must stay in `1024..65535`) |\n\n`auto_claim` and `auto_version` are the preferred controls and default on. Set\nthem in the provider editor or with:\n\n```bash\nmagpie plugin options atomcode '{\"auto_claim\":false}'\nmagpie plugin options atomcode '{\"auto_version\":false}'\n```\n\nThe manifest defaults each AtomCode account to 8 simultaneous requests. This\nhelps when several agents, sessions or sub-tasks run in parallel; it does not\nmake a single streamed completion faster. A controlled live probe at 4, 8 and\n12 simultaneous short requests returned HTTP 200 without 429 or 5xx responses,\nso 8 is the conservative default and the provider editor can override it.\n\n## Security boundaries\n\nAll of these are enforced in code, and `npm test` covers each one:\n\n- **The gateway is the only destination.** `loader.fetch` freezes the validated\n  URL before any asynchronous credential read, then compares its origin against\n  `https://llm-api.atomgit.com`. A caller cannot mutate a `URL` object during the\n  await and redirect signed traffic. Scheme and port are part of the comparison.\n- **Upstream cannot move the destination.** A model row's `base_url` is honoured only when its origin exactly matches the signed gateway; otherwise that model falls back to the official gateway and the plugin logs that it did.\n- **Endpoint options use exact hosts.** `platformBaseURL` may only be\n  `acs.atomgit.com`; `codingPlanAPIURL` may only be `api.gitcode.com` (path\n  overrides are allowed). Both must be HTTPS on port 443. Anything else falls\n  back to the official endpoint with a redacted warning.\n- **Bounded reads and redirects.** Version, OAuth and CodingPlan response bodies are capped at 1 MiB *while* streaming; every metadata call has a timeout and refuses redirects. A broker-supplied login URL must also stay on AtomGit.\n- **Signable request bodies only.** Strings, byte buffers, typed arrays,\n  `ArrayBuffer` and `Blob` are signed exactly as sent. Streams, `FormData` and\n  `URLSearchParams` are rejected rather than signing bytes that differ from the\n  wire representation. Buffered request bodies are capped at 64 MiB.\n- **Final bytes are signed.** Streaming Chat Completions requests without an\n  explicit `stream_options.include_usage` receive `include_usage: true`; the\n  signature is computed after serialization.\n- **Logs are redacted.** Upstream response bodies are not copied into errors,\n  and invalid option values, bearer tokens, emails and long secrets are not\n  logged.\n- **Credential failures are separated from entitlement failures.** A 401 or an\n  explicit credential/session 403 may trigger one refresh. Quota, plan,\n  permission and other non-credential 403 responses keep the account signed in\n  and return `x-magpie-sign-in: kept`.\n- **Diagnostics stay local and read-only.** The service listens only on\n  `127.0.0.1`, checks the request `Host`, requires a random per-process token for\n  APIs, checks `Origin` on POST, and serves a restrictive CSP. The page never\n  probes AtomGit or the LLM gateway.\n\nBrowser credentials live in magpie's own store. CLI credentials stay in\n`~/.atomcode/auth.toml`; renewals are atomically replaced with `0600`\npermissions while unrelated TOML content is preserved. Credentials are never\nprinted or logged and are only attached to the exact official hosts above.\n\nMagpie also writes `<plugin data directory>/atomcode-state.json` for the\ndiagnostics view. It is schema-filtered and atomically written with `0600`\npermissions. It may contain model names, quota windows, version provenance and\na redacted last error, but never tokens, a full user id, email addresses,\nprompts or raw upstream responses.\n\n### What runs by default\n\nBoth defaults are on out of the box, and both act without being asked:\n\n| Default | What it actually does | Turn off with |\n|---|---|---|\n| `auto_claim: true` | Starts the CodingPlan `claim-v2` after sign-in and retries the idempotent claim when the plan has expired. After sign-in it runs in the background. | `magpie plugin options atomcode '{\"auto_claim\":false}'` |\n| `auto_version: true` | Refreshes the version manifest from `raw.atomgit.com` in the background (12 h cache). Requests immediately use the current cached version, including the built-in fallback. | `magpie plugin options atomcode '{\"auto_version\":false}'` |\n\n## Troubleshooting\n\nFor a 401 during sign-in or provider testing:\n\n1. Run `magpie version` and note the failure stage: OAuth callback, model catalog, quota, or chat request.\n2. Open the plugin's **AtomCode diagnostics** page. The status summary separates local readability from upstream availability; quota, model, account and version details follow, with the redacted last error, offline self-check and expandable runtime metadata below.\n3. Try `atomcode login` with the official AtomCode client using the same account. If that also returns 401, the account is likely refused upstream rather than by this plugin.\n4. Open a bug report with the redacted report from the diagnostics page. Never include access tokens, refresh tokens, OAuth state, `plugin-auth.json`, email addresses, account IDs, or unredacted home-directory paths.\n\nSecurity issues should follow [SECURITY.md](SECURITY.md). Development and review expectations are in the [community plugin guide](https://github.com/magpie-community/plugins#write-your-own).\n\n## Development\n\n```bash\ncd ../..\nnpm test                       # Node test suite from the workspace root\nnpm run test:bun               # Bun host/runtime suite\nnpm run test:coverage:enforce  # line/branch/function gates\nnpm run pack:check             # verify the published tarball contents\n```\n\nLive validation spends a small amount of quota and is disabled by default:\n\n```bash\nATOMCODE_LIVE=1 npm run test:live\n```\n\nIt is capped at nine requests, disables automatic claiming, never runs check-in,\nand prints no tokens, prompts or model response text.\n\nCI runs the suite on Node 20, 22 and 24 plus a pinned Bun, enforces coverage\nthresholds, and installs the packed tarball into a clean project for an import\nsmoke test. Release publishing is prepared through npm trusted publishing with\nprovenance and is triggered only by a GitHub release.\n\nSandbox verification (never touches your real magpie):\n\n```bash\nSB=$(mktemp -d)\nPLUGIN_ROOT=\"$(pwd)/packages/atomcode\"\nsb() { env HOME=\"$SB\" USERPROFILE=\"$SB\" XDG_CONFIG_HOME=\"$SB/.config\" XDG_CACHE_HOME=\"$SB/.cache\" \\\n  MAGPIE_ADDR=127.0.0.1:3499 MAGPIE_PLUGIN_MARKET=off magpie \"$@\"; }\nsb plugin add \"$PLUGIN_ROOT\"\nsb plugin list\nsb plugin options atomcode\n```\n\nThe same code loads as an OpenCode plugin (v1 shape); magpie-only hooks\n(`auth.usage`, `auth.refresh`, `auth.checkin`) are ignored by OpenCode. OpenCode\nsupport remains experimental because its OAuth type does not declare the `uid`\nfield required by AtomCode request signing. The diagnostics service and native\nprovider switches are Magpie-only.\n\n## Disclaimer\n\nUnofficial, not affiliated with or endorsed by AtomGit / AtomCode. Upstream protocols may change at any time; usage you choose may breach terms of service and risks account restriction or bans — Atom2Api carries the same warning. See [NOTICE.md](NOTICE.md) for attribution.\n"
     },
     "@magpie-community/opencode-autoclaw-auth": {
