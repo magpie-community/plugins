@@ -107,6 +107,23 @@ test("a refused sign-in throws with magpie's expired mark", async () => {
   }
 })
 
+test("an HTML error page's 403 fails the check-in without the expired mark (#1199)", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response('<!DOCTYPE html>\n<html lang="en">\n<head><title>Service Unavailable</title></head><body></body></html>', {
+      status: 403,
+      headers: { "content-type": "text/html" },
+    })
+  try {
+    await assert.rejects(
+      () => checkinOf(creds),
+      (error) => error.signIn === undefined && /Service Unavailable/.test(error.message) && !/refused the sign-in/.test(error.message),
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test("the status call asks for the scene the service takes", async () => {
   const { calls, restore } = stub({ status: open({ signed_today: true }) })
   try {

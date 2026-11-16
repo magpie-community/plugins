@@ -219,6 +219,51 @@ test("a premium-only model's 403 does not mark the sign-in", async () => {
   }
 })
 
+// #1199: the reporter's page, from something in front of Tabbit's API
+const EDGE_PAGE = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Service Unavailable</title>\n</head>\n<body><h1>Service Unavailable</h1></body>\n</html>\n'
+
+test("a 403 that is an HTML error page does not mark the sign-in (#1199)", async () => {
+  const original = globalThis.fetch
+  const hosts = new Set()
+  globalThis.fetch = async (input) => {
+    hosts.add(new URL(typeof input === "string" ? input : input.url).host)
+    return new Response(EDGE_PAGE, { status: 403, headers: { "content-type": "text/html" } })
+  }
+  try {
+    const hooks = await TabbitPlugin()
+    const loader = await hooks.auth.loader(async () => auth)
+    const res = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "Default", messages: [{ role: "user", content: "hi" }] }),
+    })
+    assert.equal(res.status, 403)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    const text = await res.text()
+    assert.match(text, /Service Unavailable/)
+    assert.doesNotMatch(text, /refused the sign-in/)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test("a 403 with Tabbit's own JSON still marks the sign-in", async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ detail: "invalid bearer token" }, { status: 403 })
+  try {
+    const hooks = await TabbitPlugin()
+    const loader = await hooks.auth.loader(async () => auth)
+    const res = await loader.fetch(`${loader.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "Default", messages: [{ role: "user", content: "hi" }] }),
+    })
+    assert.equal(res.headers.get("x-magpie-sign-in"), "expired")
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test("credsOf accepts a bare JWT and a full cookie string", () => {
   const bare = credsOf({ key: "aaa.bbb.ccc", metadata: { userId: "u9" } })
   assert.match(bare.header, /token=aaa\.bbb\.ccc/)
