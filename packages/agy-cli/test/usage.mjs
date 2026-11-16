@@ -716,7 +716,7 @@ test("never runs agy while it has no stored sign-in, or one that ended with noth
   let stored = { state: "missing" }
   const read = createUsageReader(() => f.executable, { ...f.options, signIn: async () => stored })
   assert.equal((await read()).signIn, "expired")
-  stored = { state: "present", fp: "b", canRenew: true, expiresAt: 1, expired: true }
+  stored = { state: "present", fp: "b", canRenew: true, expiresAt: 0, expired: false }
   const back = await read()
   assert.equal(back.windows.length, 1)
   assert.equal(back.signIn, "renewed")
@@ -729,7 +729,7 @@ test("a sign-in agy failed on isn't run again in the background until another is
   t.after(() => forgetStoredSignIn({ dead: true }))
   const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "You are not logged in. Please sign in." })
   let clock = 0
-  let stored = { state: "present", fp: "old", canRenew: true, expiresAt: 1, expired: true }
+  let stored = { state: "present", fp: "old", canRenew: true, expiresAt: 0, expired: false }
   const read = createUsageReader(() => f.executable, { ...f.options, now: () => clock, signIn: async () => stored })
   assert.equal((await read()).signIn, "expired")
   const runs = (await f.logs()).length
@@ -750,7 +750,7 @@ test("a hung sign-in with an ended token is never restarted until the credential
     forgetStoredSignIn({ dead: true })
     t.after(() => forgetStoredSignIn({ dead: true }))
     const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: output })
-    let stored = { state: "present", fp: "hung", canRenew: true, expiresAt: 1, expired: true }
+    let stored = { state: "present", fp: "hung", canRenew: true, expired: true }
     let clock = 0
     const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
     assert.equal((await read()).signIn, "expired")
@@ -954,6 +954,89 @@ test("a direct read that fails leaves the region refusal standing: unknown, neve
     assert.equal(result.signIn, "kept")
     assert.match(result.error, /not eligible/)
     assert.doesNotMatch(result.error, /secret/)
+  }
+})
+
+// plugins#1234 (qiankun229): agy run for usage with an ended access token
+// renews it first, and when that failed for a moment (a DNS miss at
+// Windows startup, a 10s keyring timeout) it opened Google's sign-in in the
+// browser. With such a token agy -p isn't run: the quota is read directly.
+test("an ended or ending access token with a refresh token is read without running agy -p", async t => {
+  for (const ends of [1, 1_000_000 + 60_000]) {
+    const f = await fixture(t, { TEST_VERSION: "1.5.9" })
+    const asked = []
+    const quota = async o => { asked.push(o.version); return SUMMARY }
+    const stored = { state: "present", fp: "ended", canRenew: true, expiresAt: ends, expired: ends === 1 }
+    const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => 1_000_000, signIn: async () => stored })
+    const result = await read()
+    assert.equal(result.error, undefined)
+    assert.equal(result.signIn, "kept")
+    assert.equal(result.windows.length, 2)
+    assert.deepEqual(asked, ["1.5.9"])
+    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+    await f.assertClean()
+  }
+  // a token with time left still goes through agy
+  const f = await fixture(t)
+  let asked = 0
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: 1_000_000 + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY }, now: () => 1_000_000, signIn: async () => stored })
+  assert.equal((await read()).windows.length, 1)
+  assert.equal(asked, 0)
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+})
+
+test("a renewal that fails for a moment backs off and keeps the sign-in; one Google refuses asks for a new sign-in", async t => {
+  forgetStoredSignIn({ dead: true })
+  t.after(() => forgetStoredSignIn({ dead: true }))
+  const f = await fixture(t)
+  let clock = 1_000_000
+  let fail = () => { throw new TypeError("fetch failed: getaddrinfo ENOTFOUND oauth2.googleapis.com") }
+  let asked = 0
+  const quota = async () => { asked++; return fail() }
+  const stored = { state: "present", fp: "blip", canRenew: true, expiresAt: 1, expired: true }
+  const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => clock, signIn: async () => stored })
+  const first = await read()
+  assert.equal(first.signIn, "kept")
+  assert.match(first.error, /network or proxy/)
+  assert.equal((await read()).signIn, "kept")
+  assert.equal(asked, 1, "held until the backoff ends")
+  clock += 10 * 60 * 1000
+  fail = () => SUMMARY
+  const back = await read()
+  assert.equal(back.windows.length, 2)
+  assert.equal(back.signIn, "kept")
+  assert.ok((await f.logs()).every(l => l.args[0] === "--version"), "agy -p never ran")
+  // Google refusing the refresh token: the sign-in is over, and nothing runs for it again
+  const refused = { ...stored, fp: "revoked" }
+  const api = async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }), { status: 400 })
+  const ended = structuredClone(STORED)
+  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
+  const read2 = createUsageReader(() => f.executable, {
+    ...f.options, now: () => clock, signIn: async () => refused,
+    quota: o => readQuotaDirect({ ...o, stored: async () => ended, fetch: api }),
+  })
+  const over = await read2()
+  assert.equal(over.signIn, "expired")
+  assert.match(over.error, /Sign in again/)
+  clock += 7 * 60 * 60 * 1000
+  assert.equal((await read2()).signIn, "expired")
+  await f.assertClean()
+})
+
+test("the direct read's renewal: invalid_grant is a sign-in that no longer works, anything else a failed read", async t => {
+  const ended = structuredClone(STORED)
+  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
+  for (const [status, body, kind] of [
+    [400, { error: "invalid_grant" }, "auth"],
+    [401, { error: "invalid_grant" }, "auth"],
+    [400, { error: "invalid_request" }, ""],
+    [503, { error: "backendError" }, ""],
+    [500, "not json", ""],
+  ]) {
+    const fetchFn = async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status })
+    await assert.rejects(readQuotaDirect({ env: {}, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ended, fetch: fetchFn }),
+      e => e.kind === kind && /sign-in/.test(e.message), `${status} ${JSON.stringify(body)}`)
   }
 })
 

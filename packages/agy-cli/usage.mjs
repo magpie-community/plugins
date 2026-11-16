@@ -395,6 +395,11 @@ export async function readQuotaDirect({
     let fresh
     try { fresh = JSON.parse(await res.text()) } catch {}
     access = res.ok ? text(fresh?.access_token) : ""
+    // Google's answer for a refresh token it no longer takes: only a new
+    // sign-in mends it
+    if (!access && (res.status === 400 || res.status === 401) && fresh?.error === "invalid_grant") {
+      throw new UsageError("agy's stored sign-in no longer works.", { kind: "auth" })
+    }
     if (!access) throw new UsageError("agy's stored sign-in couldn't be renewed.")
   }
   const base = (text(env.CLOUD_CODE_URL) || CODE_ASSIST).replace(/\/+$/, "")
@@ -422,6 +427,7 @@ export async function fetchUsage(agy, {
   signal,
   tempRoot = os.tmpdir(),
   quota = readQuotaDirect,
+  direct = false,
 } = {}) {
   if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
   const deadline = Date.now() + timeout(timeoutMs)
@@ -459,6 +465,23 @@ export async function fetchUsage(agy, {
     })
     if (version.code !== 0) throw commandFailure(version.stderr)
     if (!supportedVersion(version.stdout)) throw new UsageError("agy usage reports require a verified agy version 1.1.11 or later. Update the CLI.")
+    // agy's access token has ended (or is about to): agy renews it when it
+    // runs, and when that renewal fails, even for a moment (DNS at startup,
+    // a slow keyring), agy starts its own Google sign-in, which on Windows
+    // opens the browser past every shim (plugins#1234). So the quota is
+    // read the way agy reads it, renewing the token in memory, and agy -p
+    // isn't run: a failed renewal is a failed read, never a sign-in.
+    if (direct) {
+      let data
+      try {
+        data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        if (error instanceof UsageError) throw error
+        throw new UsageError("agy's stored sign-in couldn't be renewed. Check the network or proxy.")
+      }
+      return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+    }
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
     let report
     try { report = JSON.parse(result.stdout) } catch {}
@@ -523,6 +546,9 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 //   there is none, or it has ended with nothing to renew it: the read says
 //   the sign-in has expired (signIn "expired"), which magpie shows on the
 //   account, and nothing starts a Google sign-in in the background.
+// - while its access token has ended with a refresh token to renew it, agy
+//   -p isn't run either: the quota is read directly (fetchUsage's direct),
+//   so a renewal that fails for a moment can't start one (plugins#1234).
 // - an explicit authentication rejection, or an ended token hanging silently
 //   or with sign-in talk, blocks further background runs for that credential.
 //   Diagnostic-only output isn't evidence of a browser sign-in.
@@ -548,8 +574,11 @@ export function createUsageReader(resolveAgy, options = {}) {
     }
     try {
       const agy = resolveAgy()
+      // an access token that has ended or ends within two minutes, with a
+      // refresh token: read without running agy (fetchUsage's direct)
+      const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
       if (!pending.has(agy)) {
-        const query = fetchUsage(agy, fetchOptions).finally(() => {
+        const query = fetchUsage(agy, { ...fetchOptions, direct }).finally(() => {
           if (pending.get(agy) === query) pending.delete(agy)
         })
         pending.set(agy, query)
