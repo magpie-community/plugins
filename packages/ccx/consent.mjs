@@ -52,12 +52,9 @@ export function isAllowed({ cwd, id }) {
 // projects and conversations on offer, and the one command that allows one.
 export const INSTRUCTIONS =
   "These tools read your Claude Code and Codex conversations, and what they return is sent to the model that asks for it. " +
-  "Nothing is read until you allow it. To allow a project, run:\n" +
-  "  magpie plugin allow-ccx project <folder>\n" +
-  "To allow a single conversation, run:\n" +
-  "  magpie plugin allow-ccx conversation <id>\n" +
-  "Allowed projects and conversations are kept in " +
-  stateFile()
+  "Nothing is read until you allow it. Ask the agent to allow it (ccx_allow), or write it yourself in:\n" +
+  `  ${stateFile()}\n` +
+  '  {"projects": ["/Users/me/app"], "conversations": ["<id>"]}'
 
 export function notAllowed(candidates) {
   const lines = []

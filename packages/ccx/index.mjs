@@ -91,7 +91,7 @@ export const CcxTools = async () => ({
       description:
         "Allows these tools to read one project folder or one conversation, after the user asked for it. " +
         "The choice is kept in the package's own state file and lasts until it is removed. " +
-        "The user can also allow it themselves with `magpie plugin allow-ccx project <folder>`.",
+        "The user can also write it themselves in ~/.config/magpie/tools-ccx.json.",
       args: {
         type: "object",
         properties: {

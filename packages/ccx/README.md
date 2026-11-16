@@ -17,12 +17,11 @@ magpie serves the tools on its MCP server, `/mcp/magpie/tools`, as `ccx_sessions
 
 So the package asks first. **Nothing is listed and nothing is read until you allow it.** You allow a project folder or a single conversation, and the choice is kept in this package's own state file (`~/.config/magpie/tools-ccx.json`):
 
-```sh
-magpie plugin allow-ccx project /Users/me/app
-magpie plugin allow-ccx conversation 01a1e3b1-7071-7731-ae71-c5b64dfbd374
+```json
+{ "projects": ["/Users/me/app"], "conversations": ["01a1e3b1-7071-7731-ae71-c5b64dfbd374"] }
 ```
 
-`ccx_allow` does the same thing from inside a conversation, once you have asked for it. `ccx_state` shows what is allowed right now.
+`ccx_allow` writes that file from inside a conversation, once you have asked for it: `ccx_allow {scope: "project", target: "/Users/me/app"}` allows a folder, `{scope: "conversation", target: "<id>"}` allows one conversation. `ccx_state` shows what is allowed right now. Until then the tools refuse, and say how to allow it.
 
 ## How it reads
 
@@ -57,4 +56,4 @@ bun test packages/ccx
 
 The test runs against a fake home and recorded answers from both sides, so it needs neither Claude Code nor Codex.
 
-中文：让 magpie 连接的每个 agent 都能读 Claude Code 和 Codex 的对话：`sessions` 列出对话，`read` 分页读取一段对话的精简内容（消息、工具调用摘要、计划），换一个 agent 或模型也能接着干，不用重新解释任务。**读到的对话会发给提问的模型**，所以默认什么都不读——需要你手动允许某个项目目录或某一条对话（`magpie plugin allow-ccx project <folder>`），选择记在 `~/.config/magpie/tools-ccx.json`。Claude Code 的记录由本包直接读 `~/.claude/projects` 下的 JSONL；Codex 走它自带的 app-server API。只读不写，不打开任何 App。
+中文：让 magpie 连接的每个 agent 都能读 Claude Code 和 Codex 的对话：`sessions` 列出对话，`read` 分页读取一段对话的精简内容（消息、工具调用摘要、计划），换一个 agent 或模型也能接着干，不用重新解释任务。**读到的对话会发给提问的模型**，所以默认什么都不读——需要你手动允许某个项目目录或某一条对话（`ccx_allow`），选择记在 `~/.config/magpie/tools-ccx.json`。Claude Code 的记录由本包直接读 `~/.claude/projects` 下的 JSONL；Codex 走它自带的 app-server API。只读不写，不打开任何 App。
