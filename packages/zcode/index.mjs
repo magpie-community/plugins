@@ -1099,7 +1099,11 @@ async function claimDaily(s) {
 // translate it; why goes in the display. Set aside: it stops nothing.
 const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
 function giftSignIn(s, key) {
-  if (!s.jwt) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: key ? "not read with an API key: add the account with a ZCode sign-in" : "this sign-in has no ZCode session: sign in again" }
+  if (!s.jwt) {
+    if (key) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+    if (s.source === "zcode" && ownStoreUnreadable()) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: UNREADABLE_SIGN_IN }
+    return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
+  }
   if (jwtExpired(s.jwt)) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "ZCode's sign-in has expired: sign in again" }
   return null
 }
@@ -1610,6 +1614,20 @@ function decrypt(key, v) {
   }
 }
 
+// UNREADABLE_SIGN_IN says why a sign-in "as ZCode" has no session to
+// read: ZCode 3.18 writes credentials.json's values as "enc:v2:os:…",
+// which looks bound to the system's own key store, and this plugin reads
+// enc:v1 alone (#1196).
+const UNREADABLE_SIGN_IN = "ZCode 3.18 keeps its sign-in in a new form this plugin can't read yet: add the account with a Z.ai or BigModel sign-in"
+
+// ownStoreUnreadable says whether ZCode's credentials.json holds values
+// in a form decrypt can't read.
+function ownStoreUnreadable() {
+  const store = readJSON(join(zcodeDir(), "credentials.json"))
+  if (!store || typeof store !== "object") return false
+  return Object.values(store).some((v) => typeof v === "string" && v.startsWith("enc:") && !v.startsWith("enc:v1:"))
+}
+
 function readJSON(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"))
@@ -1876,7 +1894,7 @@ function asZCode() {
     method: "auto",
     async callback() {
       const own = ownSignIn()
-      if (!own) return { type: "failed", error: "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
+      if (!own) return { type: "failed", error: ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
       const { user, uid, ...s } = own
       const state = { source: "zcode", device: anyDevice, ...s }
       return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user, ...(uid ? { uid } : {}) }
@@ -3570,4 +3588,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }

@@ -355,3 +355,28 @@ test.each(["zai_cn", "zai", "bigmodel"])("the app's active %s identity wins over
   expect(auth.accountId).toBe(`${active}@example.com`)
   expect(auth.uid).toBe(`user-${active}`)
 })
+
+// ZCode 3.18 writes credentials.json's values as "enc:v2:os:…", which this
+// plugin can't read: the sign-in and the card say so, never "sign in again"
+// (#1196). The values are the shape the reporter showed, not real ones.
+test("ZCode 3.18's enc:v2 credentials are named as unreadable, not as signed out", async () => {
+  mkdirSync(dir(), { recursive: true })
+  const v2 = "enc:v2:os:" + "A".repeat(24) + ":" + "B".repeat(312)
+  writeFileSync(join(dir(), "credentials.json"), JSON.stringify({ zcodejwttoken: v2, "oauth:bigmodel:access_token": v2, "oauth:active_provider": v2 }))
+  writeFileSync(join(dir(), "setting.json"), "{}")
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("failed")
+  expect(got.error).toMatch(/ZCode 3\.18 keeps its sign-in in a new form/)
+
+  // an account signed in before: its card's gift line says why, too
+  const line = _internal.giftSignIn({ source: "zcode", key: "id1.secret1" }, false)
+  expect(line.display).toMatch(/ZCode 3\.18 keeps its sign-in in a new form/)
+  // a browser sign-in with no session is still asked to sign in again
+  expect(_internal.giftSignIn({ key: "id1.secret1" }, false).display).toBe("this sign-in has no ZCode session: sign in again")
+
+  // enc:v1 again: back to the old words
+  zcodeHas({})
+  expect(_internal.giftSignIn({ source: "zcode", key: "id1.secret1" }, false).display).toBe("this sign-in has no ZCode session: sign in again")
+})
