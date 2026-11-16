@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import { processExists } from "./proc.mjs"
 
 export const API = "https://api.gumloop.com/api/v1"
 export const WS = "https://ws.gumloop.com/api/v1"
@@ -301,14 +302,7 @@ function ledgerLock(file, onChoosing = undefined, waitMs = LOCK_WAIT_MS) {
     retryFs(() => renameSync(temporary, participant))
   }
   const isAlive = (pid, alive) => {
-    if (!alive.has(pid)) {
-      try {
-        process.kill(pid, 0)
-        alive.set(pid, true)
-      } catch (e) {
-        alive.set(pid, e?.code !== "ESRCH")
-      }
-    }
+    if (!alive.has(pid)) alive.set(pid, processExists(pid))
     return alive.get(pid)
   }
   const isStale = (path) => {

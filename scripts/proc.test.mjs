@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -85,7 +87,7 @@ test("non-Linux platforms do not require procfs", () => {
 });
 
 test("runtime proc copies match the canonical implementation", () => {
-  assert.equal(procTargets.length, 15);
+  assert.equal(procTargets.length, 17);
   for (const relative of procTargets) {
     const target = `${root}${relative}`;
     assert.deepEqual(readFileSync(target, "utf8"), canonical, relative);
@@ -95,7 +97,9 @@ test("runtime proc copies match the canonical implementation", () => {
       "agent-office": ["lib/scan.mjs", "lib/jump.mjs"],
       "agy-cli": ["index.mjs"],
       astudio: ["browser.mjs"],
+      deepzora: ["bridge.mjs"],
       "gcp-ai": ["lib/lock.mjs"],
+      gumloop: ["gumloop.mjs"],
       goanyapi: ["src/auth.ts"],
       "kimi-desktop": ["adapter.mjs"],
       mclaw: ["browser.mjs"],
@@ -115,4 +119,24 @@ test("runtime proc copies match the canonical implementation", () => {
       );
     }
   }
+});
+
+// #1164: a kill(pid, 0) of its own takes a zombie for a live process. A
+// package that asks whether a pid lives goes through its proc.mjs copy.
+test("no package asks kill(pid, 0) beside its proc.mjs", () => {
+  const { readdirSync } = require("node:fs");
+  const { join, relative } = require("node:path");
+  const skip = /(^|\/)(node_modules|dist|test|tests|scripts|\.git)(\/|$)|\.test\.|(^|\/)proc\.mjs$|\.min\.js$|vendor/;
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      const rel = relative(root, path);
+      if (skip.test(rel)) continue;
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(mjs|js|cjs|ts|mts)$/.test(entry.name) && /process\.kill\(\s*[\w.$]+\s*,\s*0\s*\)/.test(readFileSync(path, "utf8"))) found.push(rel);
+    }
+  };
+  walk(join(root, "packages"));
+  assert.deepEqual(found, []);
 });
