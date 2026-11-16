@@ -80,9 +80,6 @@ Lorca 的 Provider 凭证保存在 `~/.lorca/credentials.json`，自定义项置
 
 ```json
 {
-  "changed_at": {
-    "custom:magpie": 1794836955.842
-  },
   "custom": {
     "custom:magpie": {
       "name": "Magpie",

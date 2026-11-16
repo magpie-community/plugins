@@ -113,9 +113,5 @@ export function connect({ gateway, models }) {
       models: list,
       created_at: Math.floor(now / 1000),
     },
-    // Lorca's "this provider changed" clock, written as a plain key beside the
-    // merged provider: it must not be merged itself, or connect's whole result
-    // is expanded into the merge and magpie reads it as "nothing to write".
-    ["changed_at." + PROVIDER]: now / 1000,
   };
 }

@@ -45,7 +45,6 @@ test("connect maps models, gateway and thinking levels correctly", () => {
   expect(provider.base_url).toBe("http://127.0.0.1:3425/v1")
   expect(provider.api_key).toBe("magpie-lorca")
   expect(typeof provider.created_at).toBe("number")
-  expect(typeof out["changed_at.custom:magpie"]).toBe("number")
 
   expect(provider.models).toHaveLength(2)
   expect(provider.models[0]).toEqual({
