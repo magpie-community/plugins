@@ -75,6 +75,8 @@ Fishundersea · 58,847 积分 · 2026-11-10 到期
 
 按 magpie 的**预付费钱包**窗口给出：窗口只有 `balance` + `unit`、不写 `used`/`limit`，所以卡片显示数字而不是百分比条；`runsOutAt` 是最近一批还没用完的积分的到期日。手填项目服务 AK 的登录读不到积分账户，卡片会说明要用浏览器授权。
 
+另有一条只读的「每日登录」窗口：展示 Meoo 官方「每日首次登录赠送积分」的额度（当前 2,000 积分/日，见 [订阅套餐&积分说明](https://docs.meoo.com/pricing.md)）；权益接口如果一并回了今日是否已发，就补一句「今日已到账」。插件**不代签、不自动领取**——每日赠送仍由你在 meoo.com 正常登录时由服务端发放。
+
 ## 思考强度
 
 模型默认带三档思考强度，对应会话 UI 里的 **快速 / 适中 / 极致**（`reasoning_effort: low / medium / high`）。网关实测该参数真实生效（low 档思考 tokens 约为 high 档的 60%~70%，`enable_thinking:false` 可完全关闭，但为避免不可控行为未暴露「关闭」档）。不选档位时走上游默认思考。
@@ -171,13 +173,14 @@ opencode auth login   # 选 Meoo
 
 - 凭证（token、AK）只存在宿主的账号记录里：Magpie 的 `plugin-auth.json`、OpenCode 的 `auth.json`。本插件自己不落地任何文件。
 - 「复用本机登录态」是严格只读的，不会写 dsh-meoo-connect / meoo-proxy 的文件，也不消耗它们的 refresh token 之外的东西（续期结果只写回 Magpie 自己的记录）。
+- 不代签：插件只读积分与套餐权益（`/account/points`、`/account/entitlement`），不模拟登录、不调用任何领取接口。
 - 调用消耗 Meoo 账号自身额度，插件不绕过任何计费；与 Meoo 官方无关联，是第三方集成。
 
 ## 开发
 
 ```bash
 node --check index.mjs && node --check opencode.mjs
-node --test test/offline.test.mjs   # 23 项：假 fetch + 假 client，含浏览器 PKCE loopback 全流程
+node --test test/offline.test.mjs   # 27 项：假 fetch + 假 client，含浏览器 PKCE loopback 全流程
 ```
 
 Windows 沙箱里跑测试要关掉测试隔离（沙箱禁命名管道，`spawn EPERM`）：

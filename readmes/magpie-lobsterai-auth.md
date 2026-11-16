@@ -23,6 +23,7 @@ English: [README.en.md](README.en.md)
 - **思考档位**：复刻 LobsterAI 的 `lobsterai_options` 请求字段；Kimi K3 按其固定契约发送。
 - **自动续期**：提供 `auth.refresh`，并在请求前检查 JWT 过期时间。
 - **积分用量**：读取 `/api/user/quota`，在 Magpie 账号卡片和 `magpie quota` 中显示套餐积分。
+- **每日签到**：提供 `auth.checkin`，手动或每天自动领取 LobsterAI 的每日签到积分。
 - **多账号**：Magpie 的账号作用域内工作，不会把一个账号的 token 用到另一个账号。
 - **企业账号**：识别登录响应里的企业上下文，并发送 `X-LobsterAI-Account-Mode` /
   `X-LobsterAI-Enterprise-Id`。
@@ -111,6 +112,39 @@ https://lobsterai-server.youdao.com/api/proxy/v1/chat/completions
 
 Magpie 把插件账号保存在自己的 `plugin-auth.json`（权限 600）。插件**不会读取** LobsterAI
 桌面端的数据库、Cookie 或凭据文件，也不会把 token 写进日志。
+
+## 每日签到
+
+插件提供 Magpie 的 `auth.checkin` 钩子，走 LobsterAI 自己的活动接口：
+
+- 手动：`magpie accounts checkin`（或账号卡片上的签到按钮），立刻执行一次。
+- 自动：在 `设置 → 用量 → 插件` 里打开每日签到，Magpie 每天为每个账号调用一次。
+
+流程是 `GET /api/client-activities/slot` 找当前活动，`GET …/context` 看今天是否已领，
+没领就 `POST …/actions/check_in`。结果映射：
+
+- 领取成功 → `claimed`，带上本次到账积分和连续天数。
+- 今天已经领过 → `done`，不会再发请求。
+- 活动没开、已结束或不是每日签到 → `inactive`，当天不再重试。
+- 登录过期 → `failed`，并标记 `signIn: "expired"`。
+
+返回里的 `until` 是活动时区（LobsterAI 用 `Asia/Shanghai`）的次日 0 点，Magpie 到那个
+时间再问，而不是按本机时区猜。LobsterAI 的「登录送积分」一次性活动不在签到钩子里处理。
+
+## 与 Providers Hub 的关系
+
+Magpie 插件市场里的 `magpie-providers-hub` 也接了 LobsterAI 渠道（provider id
+`hub-lobsterai`），登录方式和模型接口与本插件相同。两者的区别：
+
+- 那个是十一个渠道的聚合包，本插件是只做 LobsterAI 的独立包，升级和排错都互不影响。
+- 本插件发送 LobsterAI 的 `lobsterai_options` 思考档位，并遵守 Kimi K3 的固定请求契约；
+  聚合包没有这两个。
+- 本插件从 `/api/user/quota` 显示套餐积分用量，聚合包的 LobsterAI 条目没有用量钩子。
+- 本插件提供每日签到（`auth.checkin`），聚合包的 LobsterAI 条目没有签到钩子。
+- 本插件识别登录响应里的企业上下文，发送 `X-LobsterAI-Account-Mode` /
+  `X-LobsterAI-Enterprise-Id`。
+
+同一个账号在两个插件里登录的是同一条渠道，积分池也是同一个。
 
 ## 开发
 

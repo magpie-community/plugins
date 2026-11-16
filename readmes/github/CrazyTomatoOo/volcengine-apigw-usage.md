@@ -34,7 +34,7 @@ magpie plugin login volcengine-apigw
 会依次询问：
 
 1. **API Key** — 网关签发的个人推理 Key（UUID 形式 `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`）
-2. **网关基础地址** — 如 `https://xxxxxxxxxx.apigateway-cn-beijing.volceapi.com`（只填到域名即可；带不带 `/v1` 都会规范化）
+2. **网关基础地址** — 如 `https://xxxxxxxxxx.apigateway-cn-beijing.volceapi.com`（只填到域名即可；带不带 `/v1` 都会规范化）。留空则使用内置默认地址 `https://st8tp3ajl0df3n8b8l8qu.apigateway-cn-beijing.volceapi.com`。
 
 > 路径约定：推理请求发往 `<网关地址>/v1/chat/completions`。openai-compatible SDK 只会在 baseURL 后拼 `/chat/completions`，不会补 `/v1`；网关对裸 `/chat/completions` 一律返回 `404 model_not_found`，所以插件内部把 baseURL 固定成带 `/v1` 的形式。
 

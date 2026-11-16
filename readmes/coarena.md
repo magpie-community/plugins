@@ -4,15 +4,15 @@
 
 为 **Magpie、OpenCode 1.x 和 OpenCode 2.x** 接入 Coarena Model API 的独立插件。Provider ID 为 `coarena`，首版使用 OpenAI Chat Completions 兼容协议，基址为 `https://coarena.ai/api/v1`。
 
-**当前状态：P0 代码与离线验证已完成，真实账号和宿主验收尚未完成。** 源码仓库：[Mars-Sea/coarena](https://github.com/Mars-Sea/coarena)，npm 包：[`coarena`](https://www.npmjs.com/package/coarena)。Magpie 收录进度见 [分发记录](https://github.com/Mars-Sea/coarena/blob/main/docs/DISTRIBUTION.md)，验证边界见 [验证报告](https://github.com/Mars-Sea/coarena/blob/main/docs/VALIDATION.md)。
+**当前状态：新免费规则与 credits 支持已实现；Magpie 免费徽标已实机确认，真实推理及付费账号仍未验收。** 源码仓库：[Mars-Sea/coarena](https://github.com/Mars-Sea/coarena)，npm 包：[`coarena`](https://www.npmjs.com/package/coarena)。Magpie 收录进度见 [分发记录](https://github.com/Mars-Sea/coarena/blob/main/docs/DISTRIBUTION.md)，验证边界见 [验证报告](https://github.com/Mars-Sea/coarena/blob/main/docs/VALIDATION.md)。
 
-支持宿主保存 API Key、公开动态模型目录、工具与图片能力映射，以及 Magpie 的每日美元额度与请求次数显示。普通请求和流式响应交给宿主的 OpenAI Compatible SDK；插件不自行解析 SSE。Responses、Anthropic 原生协议、提额、评价和历史查询留待后续版本。
+支持宿主保存 API Key、公开动态模型目录、工具与图片能力映射，以及 Magpie 的免费每日额度、credits 余额与请求次数显示。普通请求和流式响应交给宿主的 OpenAI Compatible SDK；插件不自行解析 SSE。Responses、Anthropic 原生协议、提额、评价和历史查询留待后续版本。
 
 Coarena 官方 OpenAPI 说明：**服务端会保存提示词和响应，即使请求指定 `store:false`。** 请按此事实决定发送哪些内容。
 
 ## 安装
 
-运行环境为 Node.js 22+ 或兼容的 Bun；插件没有生产依赖。安装宿主后，请先用当前版本的 `--help` 核对命令；以下方式基于宿主文档，尚未在真实 CLI 中执行。可使用 npm 包安装，或从 GitHub 加载源码。
+运行环境为 Node.js 22+ 或兼容的 Bun；插件没有生产依赖。安装宿主后，请先用当前版本的 `--help` 核对命令；以下安装方式基于宿主文档；本地目录加载与重载已在 Magpie 0.1.4282 确认，npm 安装及 OpenCode 仍未实机验收。可使用 npm 包安装，或从 GitHub 加载源码。
 
 ### Magpie
 
@@ -77,14 +77,18 @@ Magpie 的插件列表 / 详情页图标通过 `package.json` 的 `magpie.icon` 
 
 ## 模型、缓存与额度
 
-- 模块导入及 config 完全离线，使用带来源日期的 20 模型 bootstrap；已有 `coarena` 配置通过 `??=` 保留。
+Magpie 的模型选择项后显示宿主原生免费徽标（中文界面为“免费”，英文为“Free”），并提供宿主的“只选免费”按钮。2026-11-16 官方账号模型页确认免费模型为 **GPT-6 Luna、Gemini 3.8 Flash、DeepSeek V4.1 Flash 1017**；其他模型保留可选，需要 credits。标签表示免费套餐的使用资格，付费账号仍按 credits 规则计费。
+
+公开 `/models` 当前不提供免费资格，且付费模型的 `pricing` 仍为 0；因此不能由价格推断免费。本插件使用带来源和核对日期的 `free-tier.json`；免费名单变化时需要更新该文件并重新加载插件。若未来目录明确返回布尔 `free`，优先采用服务端值。模型名称和请求 ID 保持原值。
+
+- 模块导入及 config 完全离线，使用带来源日期的 18 模型 bootstrap；已有 `coarena` 配置通过 `??=` 保留。
 - 公开 `/models` 请求不附带 Key。成功结果缓存 5 分钟，失败退避 15 秒；失败保留上次成功目录或 bootstrap，并向宿主标记回退。有效空目录会清空模型。退休模型不列出，别名不重复列出。
 - v2 在 setup、重新加载插件、账号变化时读取目录；TTL 仅控制这些读取，不是后台刷新定时器。凭据未变化的长期会话可通过重新加载更新。
 - 工具和图片能力只接受服务端明确的 `true`。`efforts` 保留为元数据；虽然离线 SDK 测试确认 `reasoningEffort` 可序列化为 `reasoning_effort`，宿主的变体到请求映射仍待验证，因此首版不提供推理强度选项。
 - 未知 token 限额在业务模型中保留为 `0`；v2 继承参考桥接的默认值：context 为 128000，output 为 8192。这是客户端默认，不是官方模型承诺。非零价格单位未知时不推算价格；宿主仍可能把缺失价格显示为 0，runtime cache read/write 的 0 也是宿主默认。
-- `auth.usage` 只读取 `/limits`。额度成功缓存 30 秒，按完整 Key 的 SHA-256 摘要隔离；到期失败返回明确错误，不把旧额度标作新读取成功。
+- `auth.usage` 读取 `/limits` 与 `/credits`，两者均支持 inference:read 或 inference:write。成功结果一起缓存 30 秒，按完整 Key 的 SHA-256 摘要隔离；任一读取失败都返回明确错误，不把旧额度或旧套餐标作新读取成功。
 - 每日额度的 `amount = used_usd + held_usd`，进度 `used` 是 0–100 的百分比，预占不会重复扣减。显示服务端剩余金额；缺少字段显示“未知”（英文为 `unknown`），不视为零。零额度显示无可用额度；超额时保留原始 amount。
-- 额度是每日重置的 USD 使用上限，不是永久钱包。有限每日次数单列；RPM、并发和申请状态仅作说明。授权有效期与每日重置时间分开显示。
+- Free 套餐仍有每日免费额度；Paid 套餐显示 credits 总余额、预占与可用余额，不显示每日金额进度或重置时间。Credits 不过期，按余额扣费；购买 credits 会结束免费每日额度。有限每日次数单列；RPM、并发和申请状态仅按账号接口返回显示，不固定为官网示例中的 30 次。授权有效期与每日重置时间分开显示。
 - 模型目录和额度辅助读取超时为 15 秒，并支持独立取消；该超时不施加到推理流。
 
 ## 故障处理
@@ -94,6 +98,8 @@ Magpie 的插件列表 / 详情页图标通过 `package.json` 的 `magpie.icon` 
 | 401 且明确 `invalid_api_key` / revoked / expired | 宿主标记凭据失效，重新输入 Key |
 | 401 `conflicting_credentials` 或 `api_keys_disabled` | 检查冲突的鉴权配置或服务状态；保留凭据 |
 | 403 scope / account 问题 | 检查 Key 权限和账号状态；保留凭据 |
+| 402 payment_required / insufficient_balance | 使用免费模型，或检查官方账单页 credits；保留凭据 |
+| 403 billing_suspended | 检查官方账单页；保留凭据 |
 | 429 额度、频率或并发限制 | 查看错误码、`Retry-After` 和重置时间，等待或到账号页检查；不自动重试推理 |
 | 5xx、网络错误、超时、非法响应 | 额度显示读取错误；目录使用回退；保留凭据 |
 | 模型列表看起来过旧 | 重新加载插件，结合 5 分钟缓存与 15 秒失败退避判断 |
@@ -121,7 +127,7 @@ npm 发布由 GitHub Actions 的 **Publish npm** workflow 负责：稳定版 Git
 
 `bunfig.toml` 将默认测试限定在 `tests/`，不运行 `docs/reference` 下的参考插件测试。默认测试不读取真实凭据；网络守卫只允许合成服务的 `127.0.0.1` HTTP，其余请求全部拒绝。SDK `2.0.41` 仅为开发依赖，用于匹配参考桥接；宿主负责实际 SDK 的加载。
 
-`bun run bootstrap` 从已归档的公开 `docs/reference/coarena/models.json` 重建 bootstrap，不访问网络。包清单仅含运行时模块、官网 SVG、bootstrap、README 与许可证，不含参考仓库、测试、缓存或凭据文件。开发 SDK 的已知审计结果、确切测试版本与尚未验证项见 [验证报告](docs/VALIDATION.md)。
+`bun run bootstrap` 从已归档的公开 `docs/reference/coarena/2026-11-16/models.json` 重建 bootstrap，不访问网络。包清单仅含运行时模块、官网 SVG、bootstrap、README 与许可证，不含参考仓库、测试、缓存或凭据文件。开发 SDK 的已知审计结果、确切测试版本与尚未验证项见 [验证报告](docs/VALIDATION.md)。
 
 真实 `/limits`、两家厂商推理、宿主加载、代理和账号切换仍需用户提供测试环境后验收；当前离线测试不能代替这些结果。
 

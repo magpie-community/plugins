@@ -4,20 +4,27 @@
 
 让 Trae CN 使用 Magpie 中配置的模型和路由组。接入后，在 Trae 自己的模型菜单中切换带“· Magpie”的条目。
 
-这是非官方 Agent 适配器。目前验证范围是 **Windows、Magpie 0.1.3078 和 Trae CN 3.4.18 的指定构建**。插件调用 Trae 客户端内部接口，并校验客户端文件哈希。其他版本、国际版、macOS 和 Linux 尚未适配。
+这是非官方 Agent 适配器，支持 **Windows 上已核验的 Trae CN 3.4.18 和 3.4.20 构建**。插件调用 Trae 客户端内部接口，并校验客户端文件哈希。其他构建、国际版、macOS 和 Linux 尚未适配。
+
+0.3.4 修复了 Trae 升级到 3.4.20 后无法新增模型的问题，并适配新版客户端的菜单刷新组件。凭据模块仍逐一核对两个 DLL 的 SHA-256。客户端入口备份按 Trae 版本分别保存，恢复时使用对应版本的原文件。
+
+| Trae CN | 验证环境 | 验证范围 |
+| --- | --- | --- |
+| 3.4.18 指定构建 | Windows、Magpie 0.1.3078 | 保留 0.3.3 已验证的目录同步、窗口刷新和 DeepSeek 聊天支持 |
+| 3.4.20 指定构建 | Windows、Magpie 0.1.3960 | 0.3.4 已验证模型新增、修改、删除和回读，用户重启后确认增删模型与菜单刷新正常 |
 
 ## 安装
 
 先安装并登录 Trae CN，在 Magpie 配置可用的模型，然后运行：
 
 ```powershell
-magpie plugin add "github:lmy414/magpie-agent-trae#v0.3.3"
+magpie plugin add "github:lmy414/magpie-agent-trae#v0.3.4"
 ```
 
 也可以下载 [Release](https://github.com/lmy414/magpie-agent-trae/releases) 中的源码，进入解压后的目录，运行 `magpie plugin add .`。
 
 1. 在 Magpie 的 Agent 页面找到 Trae，打开接入开关。列表较长时，展开底部“显示其余”区域。
-2. 首次安装客户端刷新组件后，自行重启 Trae 一次。
+2. 首次安装客户端刷新组件，或 Trae 升级后重新安装该组件时，自行重启 Trae 一次。
 3. 在 Trae 的模型菜单选择带“· Magpie”的条目。之后新增、移除模型和断开接入会自动刷新已打开的窗口。
 
 保持 Magpie 运行、Trae 登录。插件不会切换窗口焦点、修改输入框或自动选择模型。只安装本仓库与社区包中的一个版本，避免两个运行时同时管理同一套配置。
@@ -39,7 +46,7 @@ magpie plugin add "github:lmy414/magpie-agent-trae#v0.3.3"
 
 插件把 Magpie 中选中的模型登记为 Trae 的自定义模型，并在本机启动一个请求桥接服务。TraeWork 仍使用 Trae 云端编排会话。模型调用经 Trae 原生反向隧道回到本机，再由桥接服务交给 Magpie。
 
-以下图示对应 `v0.3.3`，源码基线为 [`7cea0df`](https://github.com/lmy414/magpie-agent-trae/tree/7cea0df1c9e7fde864479fe9ac81a89c98021bf9)。支持范围为 Windows 上已核验的 Trae CN 3.4.18 构建。
+以下图示保留 `v0.3.3` 的实现快照，源码基线为 [`7cea0df`](https://github.com/lmy414/magpie-agent-trae/tree/7cea0df1c9e7fde864479fe9ac81a89c98021bf9)。0.3.4 沿用这些请求和同步流程，并增加对 Trae CN 3.4.20 指定构建的支持。图中的可选取消补丁仍只适用于 3.4.18。
 
 ![Magpie 与 Trae 的聊天请求、模型目录和凭据使用路径](assets/architecture.zh-CN.svg)
 
@@ -119,7 +126,7 @@ node cli.mjs models
 | 模型恢复日志 | 同目录的 `managed-models.json` |
 | 同步状态 | 同目录的 `sync-status.json` |
 | 客户端刷新记录 | 同目录的 `client-refresh-status.json` |
-| 客户端入口备份 | 同目录的 `client-backups\3.4.18` |
+| 客户端入口备份 | 同目录的 `client-backups\<Trae 版本>`，3.4.18 和 3.4.20 分别保存 |
 
 连接信息和恢复日志可能包含凭据，请勿上传到 Issue。报告问题时提供版本、错误代码及已去除凭据的状态信息即可。
 
@@ -136,11 +143,15 @@ npm pack
 
 0.3.3 的验证包括 54 项单元测试、9 项隔离 Magpie 集成检查，以及已打开 TraeWork 窗口中的新增、替换和断开测试。目录核对完成后的菜单更新约需 1.1～1.6 秒。实际 DeepSeek 聊天已通过验证；该结果不代表所有上游模型都已验证。
 
+0.3.4 的 56 项单元测试在 Node 和 Bun 下通过，增加了跨版本备份恢复和未知 DLL 构建拒绝检查。9 项隔离 Magpie 集成检查也通过。在 Trae CN 3.4.20 上，已验证临时模型的新增、修改、删除和回读，测试条目随后已清理。用户重启后确认实际增删模型与菜单刷新正常。
+
+本次兼容修复不包含长会话的 `3003 / SSE finish` 修复。排查中观察到工具结果提交后的续接失败，以及 Trae 云端返回 500；尚未确认其根因，不能据此认定上下文超限。
+
 ## 可选的取消兼容修复
 
 Trae CN 3.4.18 存在一种会话状态竞态：请求已经结束，旧的延迟状态仍把会话标记为运行中，随后取消会等待一个不会再到来的结束事件。
 
-源码目录提供单独的、按构建哈希校验的修复脚本。它丢弃旧订阅的延迟状态，在无活动流的取消确认后核对后端终态。该脚本不随插件自动执行，也不包含在运行安装包中：
+源码目录提供单独的、按构建哈希校验的修复脚本。它丢弃旧订阅的延迟状态，在无活动流的取消确认后核对后端终态。**该脚本仅适用于已核验的 3.4.18 构建，未适配 3.4.20。** 它不随插件自动执行，也不包含在运行安装包中：
 
 ```powershell
 node scripts/trae-cancel-patch.mjs --check

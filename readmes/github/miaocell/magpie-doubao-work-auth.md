@@ -4,13 +4,18 @@
 
 **无需登录豆包客户端，本机无需下载豆包工作。** 把豆包工作（Doubao Work）的订阅额度接成 [magpie](https://usemagpie.ai) 网关上的一组模型：登录一次之后，Claude Code、Codex、OpenCode 或任何走 OpenAI 兼容接口的客户端都能直接调用，消耗的是这个豆包工作账号的积分。
 
-三句话说完它是什么：
-
 - **不用装客户端。** 模型调用、积分查询、签到状态全走 HTTP。登录用浏览器扫码或粘贴 Cookie 即可。
 - **九个模型，带真实倍率。** 账号订阅里有什么就出什么，`DeepSeek V4.1 Flash` 和 `豆包 2.1 Lite` 只要 **0.01x**。
 - **多账号。** 每次登录一个独立账号，凭据各自加密，互不干扰。
+- **不要中间层。** 不需要 Agent2API，不需要浏览器常驻。
 
-不需要 Agent2API 之类的中间层，不需要浏览器常驻。
+## 近期更新
+
+> 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
+
+- **支持 Codex 的 Responses 协议**（`029a866`）。之前 Codex 调用会失败，报 `server_error` 或 `delegated input protocol violation`——插件只认 chat completions 的 `messages`，而 Codex 发的是 `input`。同时补上了 `usage` 字段，客户端不再显示 0 token。
+- **倍率改用原生 `rate` 字段**（`4f3c3f1`）。显示成标准徽章，不再拼进模型名。
+- **补上市场卡片图标**（`fe1977b`）。
 
 ## 拿到的模型
 

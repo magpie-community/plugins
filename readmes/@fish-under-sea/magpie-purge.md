@@ -9,7 +9,7 @@
 | --- | --- |
 | npm | [`@fish-under-sea/magpie-purge`](https://www.npmjs.com/package/@fish-under-sea/magpie-purge) |
 | 仓库 | <https://github.com/Fish-under-sea/magpie-purge> |
-| 侧栏名字 | 破甲 · Purge（`magpie.page.titles`） |
+| 侧栏名字 | 破甲&注入（`magpie.page.titles`） |
 | 许可 | MIT |
 
 ## 致谢
@@ -160,7 +160,7 @@ magpie plugin add "./magpie-purge"
 magpie plugin list
 ```
 
-装好后 magpie 的侧栏会多出一页「破甲 · Purge」；插件页第一次打开时，后端会清点包内内容与已导入的文件，
+装好后 magpie 的侧栏会多出一页「破甲&注入」；插件页第一次打开时，后端会清点包内内容与已导入的文件，
 写出三份产物，页面读后两份。
 
 ### 三份产物分别放哪
@@ -169,7 +169,7 @@ magpie plugin list
 | --- | --- | --- |
 | `catalog.json`、`imports/`、`last.json` | `~/.magpie/purge/` | 用户数据。放包目录里会被 npm 升级整目录替换掉，导入的副本每次更新都丢 |
 | `page/catalog.js` | 包内 `page/` | **只有元数据的**快照，页面用 `<script src>` 载入 |
-| `page/catalog.json` | 包内 `page/` | **完整快照**（含正文），页面用 `fetch` 取 |
+| `page/catalog.json` | 包内 `page/` | **完整快照**（含正文），页面通过 `page/hostread.js` 取（见下） |
 
 ### 为什么把正文拆出去（重要）
 
@@ -178,15 +178,19 @@ magpie plugin list
 `Trojan:Script/Wacatac.C!ml`。正文挪进 `.json` 之后，脚本里只剩条目名、类型、字数这类元数据
 （实测 104 KB → 18 KB，正文 0 条），不再落在脚本引擎的扫描范围里。
 
-代价是页面要读正文就得多一条通道，而 magpie 插件页的 CSP 是 `connect-src 'none'`：
+代价是页面要读正文就得多一条通道，而 magpie 插件页的 CSP 是 `connect-src 'none'`——
+页面自己 `fetch` 一定被拦。所以正文走 `page/hostread.js`，两条通道按顺序试：
 
-| 宿主的 CSP | 页面表现 |
-| --- | --- |
-| `connect-src 'none'`（现状） | 列表、预算、注入判定全部正常；**「查看原文 / 编辑」不可用**，按钮置灰并说明原因 |
-| 放行页面读自身目录 | `fetch('catalog.json')` 成功，正文自动补回，功能完整 |
+| 顺序 | 通道 | 什么时候用得上 |
+| --- | --- | --- |
+| 1 | 页面直连 `fetch('catalog.json')` | 宿主哪天把 `connect-src` 放开到自身目录，这条最快 |
+| 2 | 请宿主窗口代取（`parent.postMessage({method:'asset'})`，magpie 用它给页面取页内文件） | **现在的真机走这条**：CSP 拦得住页面，拦不住窗口自己的 fetch |
 
-也就是说：**插件这边已经不依赖宿主改动也能正常用**（只少了原文预览）；想要完整的原文与编辑，
-需要 magpie 上游把插件页 CSP 里的 `connect-src 'none'` 放开到自身目录。
+两条都断时（老宿主、或页面被单独打开），「查看原文」仍然可点：点开是一段说明，写清两条通道
+分别为什么失败、文件在哪个路径——而不是一个点了没反应的灰色按钮。
+
+也就是说：**原文与编辑不依赖上游改 CSP 也能用**；只用到了 magpie 现有的 asset 资产通道，
+它若在某版里不可用，页面会如实降级成「取不到」，不会静默装成空正文。
 
 旧版本把 `state/` 放在包目录里；升级后第一次扫描会自动把它搬到新位置，不覆盖已有文件。
 
@@ -302,7 +306,8 @@ Purge in Magpie/
 │   ├── bundled.mjs        读包内 skills/ 与 personas/，标 builtin
 │   └── state.mjs          快照落盘（state/catalog.json + page/catalog.js）
 ├── page/                  插件页：index.html / app.js / style.css / icon.*
-│   ├── icon.svg           侧栏与页面标签的图标（空心盾牌）
+│   ├── hostread.js        取正文的两条通道：直连 fetch → 宿主窗口代取（CSP connect-src 'none' 下走后者）
+│   ├── icon-lock.svg      侧栏与页面标签的图标（实心锁）
 │   └── card.png           插件卡片的图（由 tools/card-icon.mjs 内联进 package.json）
 ├── preview/               本地预览：mock 宿主 + 演示快照 + 单文件 purge-preview.html
 ├── tools/
@@ -321,7 +326,7 @@ magpie 的两个 icon 键管的是不同地方，改错一个就会影响另一�
 | `magpie.icon` | 插件**卡片** | **必须是 `https://` 或 `data:image/`**——magpie 的 `iconOf()` 会直接丢掉相对路径 |
 | `magpie.page.icon` | **侧栏**标签与页面 tab | 可以是包内相对路径 |
 
-所以卡片图走 `tools/card-icon.mjs` 内联成 data URI（约 41 KiB），侧栏仍是 `page/icon.svg` 的空心盾牌。
+所以卡片图走 `tools/card-icon.mjs` 内联成 data URI（约 41 KiB），侧栏仍是 `page/icon-lock.svg` 的实心锁。
 换了卡片图就重跑一次脚本；`npm run prepack` 会顺带校验。
 
 ## 预览整个界面
@@ -362,6 +367,10 @@ npm run preview:serve            # → http://127.0.0.1:55172
 | `?theme=dark` / `?theme=light` | 深色 / 浅色 |
 | `?row=0` | 预选第几条，直接看检查器（0 起） |
 | `?watch=0` | 关掉热重载 |
+
+`--csp=magpie` 让预览用真机同款 CSP（`connect-src 'none'`）发页面文件：这时页面自己的 `fetch`
+会被拦，正文只能走宿主代取（`preview/host.html` 模拟了 magpie 的 asset 应答）——用来复现和回归
+「查看原文取不到正文」那条路径。
 
 默认**不预选任何条目**——右栏默认显示「注入组装」，那是最该看的一屏。
 不带 `--demo` 时读的是真机生成的 `page/catalog.js`；`--demo=blocked` 是「什么都没就绪」那一屏。
@@ -418,6 +427,9 @@ node tools/scan.mjs --json
 
 | 版本 | 要点 |
 | --- | --- |
+| `0.6.5` | 修「查看原文」对所有条目都点不动：正文取回先试 `fetch`，被 CSP 拦下就让宿主窗口代取（`page/hostread.js`）；两条都断时按钮仍可点，点开写明原因与文件位置 |
+| `0.6.4` | 侧栏图标改用独立 `icon-lock.svg`，避开已打开窗口沿用旧图标缓存；侧栏名称与锁形不变 |
+| `0.6.3` | 侧栏名字改为「破甲&注入」，图标换成黑白单色实心锁 |
 | `0.6.2` | 正文一律不落盘（`.js`、`.json`、`state/catalog.json` 全都不含），注入时按 `source.root/rel` 现读——彻底止住 Defender 对聚合文件的反复上传 |
 | `0.6.1` | 修：注入关闭时人设行恒显示「未启用」、点它没有反应（判定把人设一起清空了） |
 | `0.6.0` | 正文移出 `page/catalog.js`、改写成 `page/catalog.json` 按需取，修 Defender `Trojan:Script/Wacatac.C!ml` 误判；配色换莓石；详情改浮层；分组可折叠；整页不滚；模式去掉 off 改由开关控制 |
