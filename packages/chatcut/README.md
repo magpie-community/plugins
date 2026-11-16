@@ -1,9 +1,9 @@
 # ChatCut Desktop
 
 Adds **ChatCut** to Magpie's Agents page. Choose a model or routing group there,
-then choose **Magpie Use** in ChatCut Desktop and start a new chat.
+then choose **Magpie** in ChatCut Desktop and start a new chat.
 
-Requires the ChatCut Desktop release containing Magpie Use. Earlier versions do
+Requires the ChatCut Desktop release containing the Magpie agent entry. Earlier versions do
 not read this configuration. This plugin does not install or upgrade ChatCut.
 ChatCut creates `~/.config/chatcut` when it starts, which makes the agent visible.
 
@@ -23,18 +23,21 @@ the selected model can come from any compatible Magpie provider. ChatCut supplie
 its own project tools and skills. Media-generation tools retain their own service
 requirements and billing.
 
-Model changes apply to new chats. Existing chats remain bound to their running
-configuration; after a restart a changed connection requires a new chat rather
+Model changes apply to new chats. Existing chats retain their accepted connection
+when ChatCut restarts their agent process, refreshes MCP tools or retries a failed
+refresh. After restarting ChatCut, a changed connection requires a new chat rather
 than silently resuming against a different connection. Disconnect in Magpie to
-restore the fields the plugin changed. New Magpie Use sessions require a valid
+restore the fields the plugin changed. New Magpie sessions require a valid
 connection; there is no automatic fallback to another model service.
 
 ## 中文
 
 在 Magpie 的 Agent 页增加独立的 **ChatCut** 条目。选择模型或路由组后，在
-ChatCut 桌面端选择 **Magpie Use** 并开始新对话。需要支持此入口的 ChatCut 版本；
+ChatCut 桌面端选择 **Magpie** 并开始新对话。需要支持此入口的 ChatCut 版本；
 插件本身不安装或升级 ChatCut。
 
 配置仅写入 `~/.config/chatcut/magpie.json`。首版固定使用 ChatCut 自带的 Codex
 harness，模型由 Magpie 管理；不修改终端 Codex 的设置或登录。修改模型后开始新对话。
+已经启动的对话在刷新 MCP 工具或重试进程启动时继续使用原连接；重启 ChatCut 后，
+如果连接已变化，需要开始新对话。
 生图、视频生成等工具仍按各自服务的要求和计费方式运行。
