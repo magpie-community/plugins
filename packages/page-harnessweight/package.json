@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/page-harnessweight",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "HarnessWeight: a magpie page that weighs every agent harness behind your gateway, by agent rather than by model: input tokens, cache hit rate, tokens at full price, failures, latency, and the tool definitions each harness re-sends every turn",
   "type": "module",
   "files": [
@@ -11,6 +11,7 @@
     "page",
     "app",
     "brand/assets",
+    "lib/proc.mjs",
     "README.md",
     "LICENSE"
   ],

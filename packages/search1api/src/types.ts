@@ -1,7 +1,7 @@
 export const PROVIDER = "search1api";
 export const API_BASE = "https://api.search1api.com";
 // Identifies Magpie traffic to Search1API; keep in step with package.json.
-export const USER_AGENT = "search1api-magpie/0.1.1";
+export const USER_AGENT = "search1api-magpie/0.1.2";
 
 export interface StoredOAuth {
   type: "oauth";
