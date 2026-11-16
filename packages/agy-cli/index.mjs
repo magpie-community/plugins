@@ -1509,11 +1509,13 @@ class Turn {
       previous.body = null
       previous.contentSnapshot = null
     }
+    const rawEstimate = estimateInputTokens(body)
     const estimate = this.proc.estimatePromptTokens(body)
     const pending = this.pendingPromptStep
     const step = {
       body,
       inputEstimate: estimate,
+      rawInputEstimate: Math.max(rawEstimate, pending?.rawInputEstimate ?? 0),
       estimateIndex: pending?.estimateIndex ?? this.stepInputEstimates.length,
       promptNumbers: pending?.promptNumbers || [],
       settled: false,
@@ -1542,22 +1544,29 @@ class Turn {
       const results = extractToolResults(body)
       const alreadyInHistory = lateCalls?.length && lateCalls.every((call) =>
         results.some((block) => block.tool_use_id === call.id))
-      const estimate = this.proc.estimatePromptTokens({
+      const lateBody = {
         ...body,
         messages: [
           ...history,
           ...(content.length ? [{ role: "assistant", content }] : []),
           ...(alreadyInHistory ? [] : [{ role: "user", content: parts }]),
         ],
-      })
+      }
+      const rawLateEstimate = estimateInputTokens(lateBody)
+      const estimate = this.proc.estimatePromptTokens(lateBody)
       if (step && !step.settled && !step.promptNumbers.length) {
         // This late prompt continues the newly registered HTTP step. Replace
         // its denominator entry rather than counting that model step twice.
         this.stepInputEstimates[step.estimateIndex] = estimate
+        step.rawInputEstimate = Math.max(step.rawInputEstimate || 0, rawLateEstimate)
       } else {
         const index = this.stepInputEstimates.push(estimate) - 1
-        if (step && !step.settled) step.estimateIndex = index
-        else this.pendingPromptStep = { estimateIndex: index, promptNumbers: [number] }
+        if (step && !step.settled) {
+          step.estimateIndex = index
+          step.rawInputEstimate = Math.max(step.rawInputEstimate || 0, rawLateEstimate)
+        } else {
+          this.pendingPromptStep = { estimateIndex: index, promptNumbers: [number], rawInputEstimate: rawLateEstimate }
+        }
       }
     }
     if (step && !step.settled) step.promptNumbers.push(number)
@@ -1580,17 +1589,18 @@ class Turn {
     return this.rawUsage
   }
 
-  recordResponseUsage(step, usage, final, calibrate = final) {
+  recordResponseUsage(step, usage, final, calibrate = final, calibrationUsage = usage) {
     if (step.settled) return
     step.settled = true
     step.usage = usage
     this.emittedOutputTokens = tokenCount(this.emittedOutputTokens + usage.output_tokens)
     if (!final) this.toolResponseCount++
-    const total = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+    const cal = calibrationUsage || usage
+    const total = cal.input_tokens + cal.cache_read_input_tokens + cal.cache_creation_input_tokens
     const estimate = this.stepInputEstimates[step.estimateIndex] || step.inputEstimate
     if (calibrate && total > 0) {
       this.proc.inputTokenScale = Math.max(0.5, Math.min(1.5, total / estimate))
-      this.proc.lastCacheRatio = Math.max(0, Math.min(1, usage.cache_read_input_tokens / total))
+      this.proc.lastCacheRatio = Math.max(0, Math.min(1, cal.cache_read_input_tokens / total))
     }
   }
 
@@ -1951,6 +1961,7 @@ class Proc {
     // it, including a recorded 0. Distinct from a calibrated miss.
     this.lastCacheRatio = undefined
     this.omittedHistoryTokens = 0
+    this.promptTruncated = false
     this.stepUsageTrusted = true
     this.configOptions = []
     this.configMethodUnsupported = false
@@ -5013,6 +5024,12 @@ function renderTurnMessagesParts(messages) {
 function maxInitialPromptBytes() {
   return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROMPT_BYTES, 112 * 1024)
 }
+
+function compactTargetTokens() {
+  const raw = process.env.AGY_BRIDGE_COMPACT_TARGET
+  if (raw != null && /^(?:0|false|off|no|disabled)$/i.test(String(raw).trim())) return 0
+  return positiveTimeout(raw, 350_000)
+}
 const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
@@ -5257,7 +5274,7 @@ function fillHistoryTail(entries, floor, left, noteBytes) {
 }
 
 // `reserveBytes` is text the caller appends after </current_turn>.
-function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
+function renderInitialPromptReport(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
   const { history, messages: current } = trailingMessages(body)
   const budget = Math.max(0, maxInitialPromptBytes() - reserveBytes)
   const head = []
@@ -5268,7 +5285,12 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   }
   const currentParts = renderTurnMessagesParts(current)
   // A fresh conversation needs no wrapper; it would only add tokens.
-  if (!head.length && !history.length) return clipPartsToBytes(currentParts, budget)
+  if (!head.length && !history.length) {
+    const clipped = clipPartsToBytes(currentParts, budget)
+    return { parts: clipped, truncated: promptTextBytes(currentParts) > budget, historyTruncated: false }
+  }
+  let truncated = false
+  let historyTruncated = false
   const historyOpen = history.length ? "<conversation_history>\n" : ""
   const historyClose = history.length ? HISTORY_RECORD_NOTE + "</conversation_history>\n\n" : ""
   const turnOpen = "<current_turn>\n"
@@ -5280,6 +5302,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   let headParts = head
   let turn = currentParts
   if (promptTextBytes(headParts) + frame + promptTextBytes(turn) > budget) {
+    truncated = true
     const forTurn = Math.max(0, budget - frame - promptTextBytes(headParts))
     turn = clipPartsToBytes(turn, Math.max(forTurn, Math.min(promptTextBytes(turn), Math.floor((budget - frame) / 2))))
     headParts = clipPartsToBytes(headParts, Math.max(0, budget - frame - promptTextBytes(turn)))
@@ -5293,10 +5316,19 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   // A replay that fits is sent whole; only one that does not has its big
   // blocks clipped first (#1055).
   let entries = history.map(render)
-  if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
+  if (overRoom(entries)) {
+    const clippedEntries = history.map((message) => render(clipHistoryMessage(message)))
+    if (clippedEntries.some((entry, idx) => entry.bytes < entries[idx].bytes)) {
+      truncated = true
+      historyTruncated = true
+    }
+    entries = clippedEntries
+  }
   let kept = entries
   let showOpeningDone = false
   if (overRoom(entries)) {
+    truncated = true
+    if (history.length > 0) historyTruncated = true
     const noteBytes = utf8Bytes(HISTORY_OMITTED_NOTE)
     const inToolLoop = current.some(isToolResultMessage)
     const loopStart = inToolLoop ? lastCompletedTurnEnd(history) : history.length
@@ -5379,7 +5411,16 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   appendPrompt(out, turnOpen)
   appendPrompt(out, turn)
   appendPrompt(out, turnClose)
-  return promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget)
+  if (promptTextBytes(out) > budget) {
+    truncated = true
+    if (history.length > 0) historyTruncated = true
+    return { parts: clipPartsToBytes(out, budget), truncated, historyTruncated }
+  }
+  return { parts: out, truncated, historyTruncated }
+}
+
+function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
+  return renderInitialPromptReport(body, callerWorkDir, instructionsInSession, reserveBytes).parts
 }
 
 function renderContinuedTurnParts(messages) {
@@ -6079,6 +6120,7 @@ async function measuredUsage(turn, step, content, result) {
     output_tokens: output, thinking_tokens: thinking,
     context_tokens: last.input + last.read + last.write,
     local_context_estimate: last.context,
+    ...(turn.proc.omittedHistoryTokens > 0 ? { omitted_history_tokens: turn.proc.omittedHistoryTokens } : {}),
   })
   return {
     input_tokens: last.input,
@@ -6086,6 +6128,34 @@ async function measuredUsage(turn, step, content, result) {
     cache_creation_input_tokens: last.write,
     output_tokens: output,
     ...(thinking > 0 ? { output_tokens_details: { thinking_tokens: thinking } } : {}),
+  }
+}
+
+// When session_new replays a truncated history (proc.omittedHistoryTokens > 0),
+// agy only sees and bills the 112 KiB replay slice. Returning that small number
+// verbatim prevents clients such as Claude Desktop from hitting their auto-compact
+// window (e.g. 350K). Add the omitted-history context onto cache_read_input_tokens
+// for non-zero model steps while keeping internal calibration on raw agy usage.
+function clientReportedUsage(proc, step, usage) {
+  if (!usage || typeof usage !== "object") return usage
+  const omitted = tokenCount(proc?.omittedHistoryTokens)
+  if (omitted <= 0) return usage
+  const agyInput = tokenCount(usage.input_tokens)
+  const agyCacheRead = tokenCount(usage.cache_read_input_tokens)
+  const agyCacheWrite = tokenCount(usage.cache_creation_input_tokens)
+  const agyContext = agyInput + agyCacheRead + agyCacheWrite
+  if (agyContext <= 0) return usage
+  const rawEstimate = tokenCount(step?.rawInputEstimate)
+  const compactTarget = compactTargetTokens()
+  let targetContext = Math.max(agyContext + omitted, rawEstimate)
+  if (compactTarget > 0 && rawEstimate >= compactTarget) {
+    targetContext = Math.max(targetContext, compactTarget)
+  }
+  const extra = Math.max(0, targetContext - agyContext)
+  if (extra <= 0) return usage
+  return {
+    ...usage,
+    cache_read_input_tokens: agyCacheRead + extra,
   }
 }
 
@@ -6199,13 +6269,13 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         if (signal && abortHandler) signal.removeEventListener("abort", abortHandler)
         abortHandler = null
       }
-      const stopMessage = (stopReason, usage, final = false, calibrate = final) => {
+      const stopMessage = (stopReason, usage, final = false, calibrate = final, calibrationUsage = usage) => {
         send("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
           usage,
         })
-        turn.recordResponseUsage(step, usage, final, calibrate)
+        turn.recordResponseUsage(step, usage, final, calibrate, calibrationUsage)
         send("message_stop", { type: "message_stop" })
       }
       const partial = () => {
@@ -6264,6 +6334,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
             // Calls agy issued together leave in the same response. Separate MCP
             // sockets can arrive in adjacent event-loop turns, so wait a bounded
             // window for the whole batch (never a debounce that restarts per call).
+            const settledBefore = step.settled
             const emittedIds = new Set([event.call.id])
             const batchDeadline = performance.now() + TOOL_BATCH_WINDOW_MS
             for (;;) {
@@ -6286,7 +6357,9 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
             }
             const usage = await settleUsage(proc, turn, step, responseContent)
             if (finished) return
-            stopMessage("tool_use", usage, false, step.usageKind === "agy_model_call")
+            const overlayToolSteps = /^(?:1|true|on|yes)$/i.test(process.env.AGY_BRIDGE_OVERLAY_TOOL_STEPS || "")
+            const reported = (settledBefore || !overlayToolSteps) ? usage : clientReportedUsage(proc, step, usage)
+            stopMessage("tool_use", reported, false, step.usageKind === "agy_model_call", usage)
             proc.recordAssistantResponse(turn, responseContent)
             detach()
             controller.close()
@@ -6295,9 +6368,13 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           if (event.type === "result") {
             closeBlock()
             turn.rawUsage = event.result.usage ?? turn.rawUsage
-            const usage = await settleUsage(proc, turn, step, responseContent, event.result)
+            const settledBefore = step.settled
+            const rawUsage = await settleUsage(proc, turn, step, responseContent, event.result)
             if (finished) return
-            stopMessage(STOP_REASONS[event.result.stopReason] || "end_turn", usage, true, event.result.stopReason !== "cancelled")
+            const usage = (settledBefore || event.result.stopReason === "cancelled")
+              ? rawUsage
+              : clientReportedUsage(proc, step, rawUsage)
+            stopMessage(STOP_REASONS[event.result.stopReason] || "end_turn", usage, true, event.result.stopReason !== "cancelled", rawUsage)
             proc.recordAssistantResponse(turn, responseContent)
             proc.finalizeTurn(turn)
             detach()
@@ -6520,12 +6597,15 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
+  const initialReport = !isFirstTurn
+    ? null
+    : renderInitialPromptReport(body, callerWorkDir, proc.instructionsInSession,
+      reminder.length ? promptTextBytes(reminder) + 2 : 0)
   const baseParts = !isFirstTurn
     ? renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
-    : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
-      reminder.length ? promptTextBytes(reminder) + 2 : 0)
+    : initialReport.parts
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
     if (isFirstTurn) {
@@ -6534,18 +6614,28 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
     }
     throw new UnsupportedContent("image input with this agy ACP server; update to an image-capable agy version")
   }
+  let replayStats = null
   if (isFirstTurn) {
     const rawEstimate = estimateInputTokens(body)
     const sessionOverhead = (proc.instructionsInSession && body.system
       ? estimateInputTokens({ system: body.system, messages: [] })
       : 0) + (Array.isArray(body.tools) && body.tools.length ? estimateTextTokens(JSON.stringify(body.tools)) : 0)
     const sentEstimate = Math.max(1, sessionOverhead + estimatePromptPartsTokens(contentParts))
-    const clipThreshold = Math.min(HISTORY_BLOCK_CLIP_BYTES, maxInitialPromptBytes())
-    const promptClipped = utf8Bytes(JSON.stringify(body.messages)) > clipThreshold &&
-      rawEstimate > sentEstimate + 64
+    const promptClipped = Boolean(initialReport?.historyTruncated) && rawEstimate > sentEstimate
     proc.omittedHistoryTokens = promptClipped ? rawEstimate - sentEstimate : 0
+    proc.promptTruncated = promptClipped
+    if (promptClipped) {
+      replayStats = {
+        omitted_history_tokens: proc.omittedHistoryTokens,
+        raw_estimate: rawEstimate,
+        sent_estimate: sentEstimate,
+        compact_target: compactTargetTokens(),
+      }
+    }
   }
-  return proc.startTurn(contentParts, body.messages, model, selection)
+  const turn = proc.startTurn(contentParts, body.messages, model, selection)
+  if (replayStats) logBridgeEvent(proc, turn, "replay_usage_overlay", "prompt_truncated", {}, replayStats)
+  return turn
 }
 
 // A magpie that installs a plugin's CLI (auth.cli) installs agy before it
