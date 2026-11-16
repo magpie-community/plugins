@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-chatcut",
+  "version": "0.1.0",
+  "description": "ChatCut Desktop as a Magpie agent, with an isolated Codex harness and models managed in Magpie",
+  "type": "module",
+  "files": ["chatcut.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "chatcut", "video-editor"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/chatcut" },
+  "magpie": { "agent": "./chatcut.agent.js" }
+}
