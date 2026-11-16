@@ -1,0 +1,11 @@
+body { margin: 0; padding: 20px 24px 32px; }
+main { max-width: 36rem; }
+label { display: block; font-weight: 600; margin: 1rem 0 .35rem; }
+input { box-sizing: border-box; width: 100%; }
+p { color: var(--magpie-muted, #6e6e73); }
+#hint, #steps { margin: .5rem 0 .75rem; }
+#error { color: var(--magpie-red, #d70015); }
+#error:empty { margin: 0; }
+.link-row { display: flex; gap: .5rem; }
+.link-row input { min-width: 0; }
+.link-row button { white-space: nowrap; }
