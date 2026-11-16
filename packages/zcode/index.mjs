@@ -1604,9 +1604,66 @@ function secret() {
   return createHash("sha256").update(seed).digest()
 }
 
+// The keychain is the one place a sign-in reaches the OS, and it is one
+// object so a test can stand in for it: attrs says whether ZCode's item is
+// there without reading its secret, so asking it cannot raise an access
+// prompt; read fetches the secret and says which of four things happened.
+const SECURITY = process.platform === "darwin" ? "/usr/bin/security" : "security"
+const VAULT_SERVICE = "ZCode Credential Encryption"
+// VAULT_ACCOUNT is the item's account: ZCode's own, sha256 of the
+// credentials file's path (zcode.cjs ETo).
+const vaultAccount = () => createHash("sha256").update(join(zcodeDir(), "credentials.json")).digest("hex")
+// VAULT_READ_MS is a person's pace: the first read of the item waits on a
+// macOS dialog, and a shorter timeout cuts the read off under the person at
+// the keyboard. VAULT_ATTRS_MS is short because the probe runs before the
+// sign-in method is shown and cannot hold it back: two seconds is longer
+// than the attributes of an item take, and short enough that a stuck
+// keychain doesn't keep the sheet from opening.
+const VAULT_READ_MS = 120_000
+const VAULT_ATTRS_MS = 2_000
+// DENIED is the substring that says a keychain refusal came back; DENIED_SAID
+// is what the user reads. It names security, the tool macOS asks about, so
+// they know what to allow.
+const DENIED = "keychain access was denied"
+const DENIED_SAID =
+  "ZCode's keychain access was denied. Allow security to read ZCode Credential Encryption when macOS asks, then try again, or sign in to Z.ai or BigModel here."
+
+function runSecurity(args, timeout) {
+  return new Promise((resolve) => {
+    execFile(SECURITY, args, { encoding: "utf8", timeout }, (err, stdout) => resolve({ err, stdout: String(stdout ?? "") }))
+  })
+}
+
+const keychain = {
+  // attrs needs no secret and no fingerprint of the vault: the item is named
+  // by its service and account, which is the credentials file's path.
+  async attrs() {
+    if (process.platform !== "darwin") return "unknown"
+    const { err } = await runSecurity(["find-generic-password", "-s", VAULT_SERVICE, "-a", vaultAccount()], VAULT_ATTRS_MS)
+    if (!err) return "found"
+    return String(err.code ?? "") === "44" ? "absent" : "unknown"
+  },
+  // read is one keychain read: {key} read the secret, {miss} the item is not
+  // there (44, or no security tool at all), {denied} the user said no
+  // (128 UserCanceled, 51 AuthFailed), {killed} it ran past its timeout.
+  async read(fp) {
+    if (process.platform !== "darwin") return { miss: true }
+    const { err, stdout } = await runSecurity(["find-generic-password", "-s", VAULT_SERVICE, "-a", vaultAccount(), "-w"], VAULT_READ_MS)
+    if (err) {
+      if (err.killed || err.signal) return { killed: true }
+      const code = String(err.code ?? "")
+      return code === "128" || code === "51" ? { denied: true } : { miss: true }
+    }
+    const key = Buffer.from(stdout.trim(), "base64url")
+    // a key the fingerprint doesn't name is no key: the vault rotated
+    if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) return { miss: true }
+    return { key }
+  },
+}
+
 // v2Key is the key ZCode 3.18 encrypts its credentials with, from the
 // vault the value names (only macOS's keychain, service "ZCode Credential
-// Encryption", item account sha256(credentials.json path) — the account
+// Encryption", item account sha256(credentials.json path), the account
 // ZCode itself keeps (zcode.cjs ETo)). The fingerprint guards against a
 // vault that has rotated since; ZCODE_CREDENTIAL_V2_SECRET (32 base64url
 // bytes) stands in for the vault, as ZCODE_CREDENTIAL_SECRET does for the
@@ -1615,64 +1672,67 @@ function secret() {
 // macOS shows an "allow access" dialog per read, and a miss retried on
 // every decrypt would be a dialog per request. A hit is kept for good
 // (until another fingerprint comes), a miss for a few minutes, then one
-// more try — the user may have allowed access by then. Concurrent reads
-// of one fingerprint share the read (in-flight): six callers, one spawn.
-// A read cut off (timeout) names nothing, so it is not remembered: the
-// next read tries again at once. Denied is a different miss from "the
-// item isn't there": denyKeychain tells them apart for the message. The
-// exit code is the OSStatus's low byte: UserCanceled -128 → 128,
-// AuthFailed -25293 → 51; 45 (DuplicateItem) never happens on a read.
+// more try, because the user may have allowed access by then. Concurrent
+// reads of one fingerprint share the read (in-flight): six callers, one
+// spawn. A read cut off by its timeout is a short miss, not no miss: it may
+// be a dialog nobody answered, and asking again at once would stack
+// dialogs, while a minute's wait still follows a slow person. Denied is a
+// different miss from "the item isn't there": denyKeychain tells them apart
+// for the message. The exit code is the OSStatus's low byte: UserCanceled
+// -128 → 128, AuthFailed -25293 → 51; 45 (DuplicateItem) never happens on a
+// read.
+//
+// fresh is the user's own sign-in: it forgets the fingerprint's miss, so a
+// sign-in made after saying no reads again instead of answering the
+// remembered no. background is a request's read: it answers from what this
+// run has already read and never asks the OS, so no request path (#1154)
+// can raise a dialog.
 const VAULT_MISS = 5 * 60_000
-const VAULT_READ_MS = 5000
+const VAULT_STALL = 30_000
 const vault = new Map()
 const vaultInFlight = new Map()
 let denyKeychain = false
-function v2Key(fp) {
+function v2Key(fp, { fresh = false, background = false } = {}) {
   const standIn = process.env.ZCODE_CREDENTIAL_V2_SECRET
   if (standIn !== undefined) {
     if (!/^[A-Za-z0-9_-]{43}$/.test(standIn)) return null
     const key = Buffer.from(standIn, "base64url")
     return key.length === 32 && createHash("sha256").update(key).digest("hex").slice(0, 24) === fp ? key : null
   }
-  const now = Date.now()
   const had = vault.get(fp)
-  if (had && (had.key || now < had.until)) return had.key || null
-  if (process.platform !== "darwin") return null
-  let flying = vaultInFlight.get(fp)
+  if (had?.key) return had.key
+  if (fresh) vault.delete(fp)
+  else if (had && Date.now() < had.until) return null
+  if (background) return null
+  const flying = vaultInFlight.get(fp)
   if (flying) return flying
   denyKeychain = false
-  flying = new Promise((resolve) => {
-    execFile(
-      "security",
-      ["find-generic-password", "-s", "ZCode Credential Encryption", "-a", createHash("sha256").update(join(zcodeDir(), "credentials.json")).digest("hex"), "-w"],
-      { encoding: "utf8", timeout: VAULT_READ_MS },
-      (err, stdout) => {
-        vaultInFlight.delete(fp)
-        if (err) {
-          // a cut-off read (timeout) says nothing about the vault: no miss
-          // kept, the next read tries again at once; otherwise the exit
-          // code is the OSStatus's low byte, and a denial (128 UserCanceled,
-          // 51 AuthFailed) is the user's no — remembered as a miss, and
-          // said in its own words later. 44 is "the item isn't there"
-          if (err.killed || err.signal || err.code === undefined || err.code === null) return resolve(null)
-          const code = String(err.code)
-          if (code === "128" || code === "51") denyKeychain = true
-          if (code !== "128" && code !== "51" && code !== "44") return resolve(null)
-          vault.set(fp, { key: null, until: now + VAULT_MISS })
-          return resolve(null)
-        }
-        const key = Buffer.from(stdout.trim(), "base64url")
-        if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) {
-          vault.set(fp, { key: null, until: now + VAULT_MISS })
-          return resolve(null)
-        }
-        vault.set(fp, { key })
-        resolve(key)
-      },
-    )
+  const read = keychain.read(fp).then((got) => {
+    vaultInFlight.delete(fp)
+    if (got?.key) {
+      vault.set(fp, { key: got.key })
+      return got.key
+    }
+    if (got?.denied) denyKeychain = true
+    vault.set(fp, { key: null, until: Date.now() + (got?.killed ? VAULT_STALL : VAULT_MISS) })
+    return null
   })
-  vaultInFlight.set(fp, flying)
-  return flying
+  vaultInFlight.set(fp, read)
+  return read
+}
+
+// probeKeychain says what the sign-in method can promise before macOS asks:
+// "none" when nothing here needs the keychain (another platform, or a store
+// with no vault value), "found" when ZCode's item is there, "absent" when
+// the key is gone (the sign-in has to be made again), and "unknown" when the
+// item's attributes couldn't be read, so nothing is promised either way.
+async function probeKeychain() {
+  if (process.platform !== "darwin") return "none"
+  const store = readJSON(join(zcodeDir(), "credentials.json"))
+  if (!store || typeof store !== "object") return "none"
+  const v2 = Object.values(store).find((v) => typeof v === "string" && v.startsWith("enc:v2:"))
+  if (!v2) return "none"
+  return keychain.attrs(v2.slice(7).split(":")[1] ?? "")
 }
 
 function gcm(key, body) {
@@ -1699,13 +1759,14 @@ function decrypt(key, v) {
 }
 
 // decryptV2 is decrypt for 3.18's vault form, whose key lives behind an
-// async keychain read. Called where its callers already await.
-async function decryptV2(key, v) {
+// async keychain read. Called where its callers already await. opts is what
+// the caller's read is (fresh or background), passed on to v2Key.
+async function decryptV2(key, v, opts) {
   if (typeof v !== "string" || !v.startsWith("enc:")) return null
   if (v.startsWith("enc:v2:")) {
     const head = v2Parts(v)
     if (!head) return null
-    const k = await v2Key(head[1])
+    const k = await v2Key(head[1], opts)
     return k ? gcm(k, head[2]) : null
   }
   return decrypt(key, v)
@@ -1742,7 +1803,7 @@ function readJSON(path) {
 
 // ownTeam is the team plan ZCode switched to, when it did. 3.18's vault
 // form reads through decryptV2, so this is async.
-async function ownTeam(store, key) {
+async function ownTeam(store, key, opts) {
   const set = readJSON(join(settingDir(), "setting.json"))
   if (!set) return null
   const families = set.providerFamilyDomain === "zai" || set.providerFamilyDomain === "bigmodel" ? [set.providerFamilyDomain] : ["zai", "bigmodel"]
@@ -1766,10 +1827,10 @@ async function ownTeam(store, key) {
       }
     }
     if (!org || !project) continue
-    const tok = first(await decryptV2(key, store[`oauth:${fam}:access_token`]))
+    const tok = first(await decryptV2(key, store[`oauth:${fam}:access_token`], opts))
     if (!tok) continue
     // a stale token ZCode won't use either
-    if (fam === "bigmodel" && first(await decryptV2(key, store.zcodejwttoken)) === tok) continue
+    if (fam === "bigmodel" && first(await decryptV2(key, store.zcodejwttoken, opts)) === tok) continue
     return { site: fam, base: SITES[fam].base, key: "", token: tok, org, project }
   }
   return null
@@ -1779,7 +1840,7 @@ async function ownTeam(store, key) {
 // coding plan provider, Z.ai's first, as ZCode lists them; ZCode reads it
 // as it is, and one written encrypted is read too — 3.18's vault form
 // through decryptV2, so this is async.
-async function configKey(key) {
+async function configKey(key, opts) {
   const providers = readJSON(join(zcodeDir(), "config.json"))?.provider
   if (!providers || typeof providers !== "object") return null
   for (const [ids, base] of [
@@ -1790,7 +1851,7 @@ async function configKey(key) {
       let k = providers[id]?.options?.apiKey
       if (typeof k !== "string") continue
       k = k.trim()
-      if (k.startsWith("enc:")) k = first(await decryptV2(key, k))
+      if (k.startsWith("enc:")) k = first(await decryptV2(key, k, opts))
       if (k.includes(".") && !/[\s{$]/.test(k)) return { key: k, base }
     }
   }
@@ -1807,7 +1868,7 @@ async function configKey(key) {
 // ZCode is on first, else Z.ai's, as ZCode lists them; one of another
 // account the profile names is left alone (meraki7304, #410).
 const LOCATION = "project-key-location:v1:"
-async function ownLocation(store, key) {
+async function ownLocation(store, key, opts) {
   const set = readJSON(join(settingDir(), "setting.json"))
   const fams = set?.providerFamilyDomain === "bigmodel" ? ["bigmodel", "zai"] : ["zai", "bigmodel"]
   const found = []
@@ -1822,18 +1883,18 @@ async function ownLocation(store, key) {
     if (!Array.isArray(at) || at[3] !== null || String(at[4]) !== "1" || !fams.includes(at[1])) continue
     let loc
     try {
-      loc = JSON.parse((await decryptV2(key, v)) ?? "")
+      loc = JSON.parse((await decryptV2(key, v, opts)) ?? "")
     } catch {}
     const org = first(loc?.organizationId), project = first(loc?.projectId), apiKeyId = first(loc?.apiKeyId)
     if (!org || !project || !apiKeyId) continue
     found.push({ site: at[1], origin: typeof at[0] === "string" ? at[0] : "", account: String(at[2] ?? ""), org, project, apiKeyId })
   }
   for (const site of fams) {
-    const token = first(await decryptV2(key, store[`oauth:${site}:access_token`]))
+    const token = first(await decryptV2(key, store[`oauth:${site}:access_token`], opts))
     if (!token) continue
     let me = ""
     try {
-      me = String(JSON.parse((await decryptV2(key, store[`oauth:${site}:user_info`])) ?? "{}")?.id ?? "")
+      me = String(JSON.parse((await decryptV2(key, store[`oauth:${site}:user_info`], opts)) ?? "{}")?.id ?? "")
     } catch {}
     const mine = found.filter((l) => l.site === site && (!me || l.account === me))
     if (!mine.length) continue
@@ -1952,8 +2013,12 @@ function planFullUntil(key) {
 // ownSignIn is what ZCode is signed in to now: the account, its coding
 // plan key, ZCode's session token (the Start Plan's key) and the team plan
 // it is switched to; null when it has none of them. 3.18's vault form
-// reads through an async keychain read, so this is async too.
-async function ownSignIn() {
+// reads through an async keychain read, so this is async too. fresh and
+// background are the caller's, and every read the sign-in makes is that
+// kind of read (see v2Key): the sign-in method reads fresh, a request
+// stays on what this run has.
+async function ownSignIn({ fresh = false, background = false } = {}) {
+  const read = { fresh, background }
   const store = readJSON(join(zcodeDir(), "credentials.json"))
   if (!store || typeof store !== "object") return null
   const key = secret()
@@ -1961,7 +2026,7 @@ async function ownSignIn() {
   for (const [name, v] of Object.entries(store)) {
     // account-provider:coding-plan:account:zai-individual-coding-plan:account:<uuid>:api-key
     if (!name.includes(":coding-plan:") || !name.endsWith(":api-key")) continue
-    const k = await decryptV2(key, v)
+    const k = await decryptV2(key, v, read)
     if (!k || !k.includes(".")) continue
     const base = name.includes(":bigmodel-") ? BIGMODEL_BASE : ZAI_BASE
     // Z.ai's first, as ZCode lists it
@@ -1969,27 +2034,26 @@ async function ownSignIn() {
   }
   // ZCode 3.15 keeps no plan key in its credentials; the one it uses sits
   // in config.json, the provider's options.apiKey (yetone/magpie#2130)
-  if (!s.key) s = (await configKey(key)) || s
+  if (!s.key) s = (await configKey(key, read)) || s
   // ZCode 3.16 keeps neither: only where the key is (#410)
-  if (!s.key) s = (await ownLocation(store, key)) || s
-  const jwt = first(first(await decryptV2(key, store.zcodejwttoken)).replace(/^Bearer /, ""))
-  const team = await ownTeam(store, key)
+  if (!s.key) s = (await ownLocation(store, key, read)) || s
+  const jwt = first(first(await decryptV2(key, store.zcodejwttoken, read)).replace(/^Bearer /, ""))
+  const team = await ownTeam(store, key, read)
   if (team) s = { ...team, jwt }
   else s = { ...s, jwt, base: s.base || ZAI_BASE, site: s.base === BIGMODEL_BASE ? "bigmodel" : "zai" }
   if (!s.key && !s.jwt && !isTeam(s)) {
     // every value unreadable and the vault denied us: say so, rather than
     // "no ZCode session", so the user knows what to allow
-    if (denyKeychain && Object.values(store).some((v) => typeof v === "string" && v.startsWith("enc:v2:")))
-      throw new Error("ZCode's keychain access was denied; allow magpie's plugin host to read " + "ZCode Credential Encryption, or sign in to Z.ai or BigModel here")
+    if (denyKeychain && Object.values(store).some((v) => typeof v === "string" && v.startsWith("enc:v2:"))) throw new Error(DENIED_SAID)
     return null
   }
   let info = {}
   // The JWT belongs to the app's active sign-in. Cached profiles from
   // another provider must not name it, and 3.18's China sign-in is zai_cn.
-  const active = await decryptV2(key, store["oauth:active_provider"])
+  const active = await decryptV2(key, store["oauth:active_provider"], read)
   const families = [...new Set([active, "zai", "zai_cn", "bigmodel"].filter((x) => ["zai", "zai_cn", "bigmodel"].includes(x)))]
   for (const name of families.map((x) => `oauth:${x}:user_info`)) {
-    const v = await decryptV2(key, store[name])
+    const v = await decryptV2(key, store[name], read)
     if (v && !first(info.email, info.name, info.user_id)) {
       try {
         info = JSON.parse(v)
@@ -2000,13 +2064,32 @@ async function ownSignIn() {
 }
 
 // asZCode is the sign-in "as ZCode": what it reads is ZCode's own.
-function asZCode() {
+const AS_ZCODE_GATE =
+  "Reading ZCode's saved sign-in may ask macOS once whether security, the tool that reads it, may read the keychain item ZCode Credential Encryption."
+const AS_ZCODE_FOUND =
+  "✓ ZCode's saved sign-in is on this computer. macOS asks once whether security, the tool that reads it, may read the keychain item ZCode Credential Encryption. Read once, then kept for this run."
+const AS_ZCODE_ABSENT =
+  "✗ ZCode's file holds a vault-encrypted sign-in, but the key that decrypts it is gone from this computer. Sign in to ZCode again, then add this sign-in."
+const AS_ZCODE_PLAIN = "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account."
+
+// The instructions say what macOS is about to ask, before it asks: a probe
+// that couldn't read the item keeps the plain words, because a promise it
+// can't keep is worse than no promise.
+async function asZCode() {
+  const probed = await probeKeychain()
   return {
     url: "",
-    instructions: "Uses the account the ZCode app is signed in to, and follows it while ZCode stays signed in to that account.",
+    instructions: probed === "found" ? AS_ZCODE_FOUND : probed === "absent" ? AS_ZCODE_ABSENT : AS_ZCODE_PLAIN,
     method: "auto",
     async callback() {
-      const own = await ownSignIn()
+      // the user asked for this sign-in now: a remembered no is not an answer
+      let own = null
+      try {
+        own = await ownSignIn({ fresh: true })
+      } catch (e) {
+        if (!String(e?.message ?? "").includes(DENIED)) throw e
+        return { type: "failed", error: DENIED_SAID }
+      }
       if (!own) return { type: "failed", error: ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
       const { user, uid, ...s } = own
       const state = { source: "zcode", device: anyDevice, ...s }
@@ -2033,19 +2116,21 @@ async function stateOf(auth) {
       // A denied vault read says itself only where there is nothing saved:
       // a sign-in that served before keeps serving (the denial is about
       // the fresh read, not the saved account).
+      // a request reads what this run has read and never asks the OS: a
+      // dialog on the request path would be a dialog nobody asked for
       let own = null
       let denied = false
       try {
-        own = await ownSignIn()
+        own = await ownSignIn({ background: true })
       } catch (e) {
-        if (!String(e?.message ?? "").includes("keychain access was denied")) throw e
+        if (!String(e?.message ?? "").includes(DENIED)) throw e
         denied = true
       }
       if (own && own.user === String(auth.accountId ?? "") && (!own.uid || !auth.uid || own.uid === String(auth.uid))) {
         const { user, uid: _uid, ...now } = own
         s = { source: "zcode", device: s.device, plan: s.plan, ...now }
       } else if (denied && !s.key && !s.jwt) {
-        throw new Error("ZCode's keychain access was denied; allow magpie's plugin host to read " + "ZCode Credential Encryption, or sign in to Z.ai or BigModel here")
+        throw new Error(DENIED_SAID)
       }
     }
     const site = siteOf(s.site)
@@ -3730,7 +3815,36 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
           ],
           authorize: (inputs) => authorize(inputs?.site === "bigmodel" ? "bigmodel" : "zai", log, true),
         },
-        { type: "oauth", label: "ZCode app's sign-in", authorize: async () => asZCode() },
+        {
+          type: "oauth",
+          label: "ZCode app's sign-in",
+          // A select with one option is magpie's way to wait for a person:
+          // the button is on screen before the keychain is read, so macOS
+          // asks after the person said go, not in the middle of the sheet.
+          // magpie asks through ask(), which lets the line above the button
+          // say whether the item is there: the probe reads attributes only,
+          // so it cannot raise the dialog it is talking about. OpenCode has
+          // no ask hook and uses the prompt below, which promises nothing.
+          async ask(inputs) {
+            if (inputs?.read) return null
+            const probed = await probeKeychain()
+            return {
+              type: "select",
+              key: "read",
+              message: probed === "found" ? AS_ZCODE_FOUND : probed === "absent" ? AS_ZCODE_ABSENT : AS_ZCODE_GATE,
+              options: [{ label: "Read it now", value: "yes" }],
+            }
+          },
+          prompts: [
+            {
+              type: "select",
+              key: "read",
+              message: AS_ZCODE_GATE,
+              options: [{ label: "Read it now", value: "yes" }],
+            },
+          ],
+          authorize: async () => asZCode(),
+        },
         {
           type: "api",
           label: "GLM Coding Plan API key",
@@ -3755,8 +3869,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-<<<<<<< Updated upstream
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots, secret, zcodeDir, vault, vaultInFlight, v2Key, denyKeychain, decryptV2 }
-=======
 export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots, secret, zcodeDir, vault, vaultInFlight, v2Key, denyKeychain, decryptV2, keychain, probeKeychain, staleVault }
->>>>>>> Stashed changes

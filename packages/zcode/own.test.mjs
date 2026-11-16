@@ -4,30 +4,33 @@
 // signed in anew, uses what ZCode has now.
 import { test, expect, beforeAll, afterEach } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { createCipheriv, createHash, randomBytes } from "node:crypto"
 import { join } from "node:path"
 
-let ZCodeAuthPlugin, _internal, secret, zcodeDir
-// a security(1) shim: records its args in $SHIM_LOG (one JSON array per
-// line), answers as $SHIM_EXIT (0 by default), sleeping $SHIM_MS first.
-// Keychain reads in tests never touch the real one.
-const SHIM = mkdtempSync(join(tmpdir(), "zcode-shim-"))
-writeFileSync(join(SHIM, "security"), `#!/usr/bin/env python3
-import json, os, sys, time
-with open(os.environ.get('SHIM_LOG') or os.devnull, 'a') as f:
-    f.write(json.dumps(sys.argv[1:]) + '\\n')
-ms = os.environ.get('SHIM_MS')
-if ms:
-    time.sleep(int(ms) / 1000)
-raise SystemExit(int(os.environ.get('SHIM_EXIT') or 0))
-`)
-chmodSync(join(SHIM, "security"), 0o755)
+let ZCodeAuthPlugin, _internal, secret
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
   process.env.ZCODE_CREDENTIAL_SECRET = "test-seed"
   ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
-  ;({ secret, zcodeDir } = _internal)
+  ;({ secret } = _internal)
+})
+
+// the keychain is one object, and the tests stand in for it: nothing here
+// spawns security(1), so these tests say the same on any CI platform. The
+// baseline answers "nothing there"; a test that reads sets its own answer.
+const noKey = async () => ({ miss: true })
+const noAttrs = async () => "unknown"
+// starting a read is what clears the denial flag (v2Key sets it before
+// asking), so one injected miss is what a fresh run's first read leaves
+// behind; then the next test starts with an empty vault, as a fresh run does
+afterEach(async () => {
+  _internal.keychain.read = noKey
+  _internal.keychain.attrs = noAttrs
+  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+  await _internal.v2Key("reset")
+  _internal.vault.clear()
+  _internal.vaultInFlight.clear()
 })
 
 const dir = () => join(homedir(), ".zcode", "v2")
@@ -40,15 +43,18 @@ function enc(text) {
 }
 
 // ZCode 3.18's vault form: the key stands in for the OS keychain, named by
-// ZCODE_CREDENTIAL_V2_SECRET, and the fingerprint is sha256(key) as 24 hex
-const V2_KEY = randomBytes(32)
-const V2_FP = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
-function encV2(text) {
+// ZCODE_CREDENTIAL_V2_SECRET or read from the keychain, and the fingerprint
+// is sha256(key) as 24 hex
+const fpOf = (key) => createHash("sha256").update(key).digest("hex").slice(0, 24)
+function vaultEnc(key, text) {
   const iv = randomBytes(12)
-  const c = createCipheriv("aes-256-gcm", V2_KEY, iv)
+  const c = createCipheriv("aes-256-gcm", key, iv)
   const data = Buffer.concat([c.update(text, "utf8"), c.final()])
-  return `enc:v2:os:${V2_FP}:` + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
+  return `enc:v2:os:${fpOf(key)}:` + [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".")
 }
+const V2_KEY = randomBytes(32)
+const V2_FP = fpOf(V2_KEY)
+const encV2 = (text) => vaultEnc(V2_KEY, text)
 function zcodeHas2(store, setting = {}) {
   mkdirSync(dir(), { recursive: true })
   writeFileSync(join(dir(), "credentials.json"), JSON.stringify(store))
@@ -487,119 +493,257 @@ test("3.18's vault reads the team plan, the key location and config.json's key",
   }
 })
 
-// keychain denials: the exit code is the OSStatus's low byte, and a denial
-// (UserCanceled -128, AuthFailed -25293) must say itself instead of reading
-// as "not signed in" (adv3's codes repro). A denial with a usable saved
-// sign-in keeps it (adv1/adv2's c_fallback repro).
-test("a keychain denial says itself, exit 128/51; 45 is no denial", async () => {
+// keychain answers: only a denial must say itself instead of reading as
+// "not signed in" (adv3's codes repro); a miss and a read cut off by its
+// timeout are both no key, said plainly.
+test("a keychain denial says itself, a miss and a stall do not", async () => {
   zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
-  const exits = async (code, deny) => {
+  const answer = async (got) => {
     _internal.vault.clear()
-    _internal.denyKeychain = false
-    process.env.PATH = SHIM + ":" + process.env.PATH
-    process.env.SHIM_EXIT = String(code)
-    try {
-      if (deny) await expect(_internal.ownSignIn()).rejects.toThrow("keychain access was denied")
-      else expect(await _internal.ownSignIn()).toBe(null)
-    } finally {
-      process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
-      delete process.env.SHIM_EXIT
-    }
+    _internal.keychain.read = async () => got
+    if (got.denied) await expect(_internal.ownSignIn()).rejects.toThrow("keychain access was denied")
+    else expect(await _internal.ownSignIn()).toBe(null)
   }
-  // security names no exit 45 on a read: 45 is errSecDuplicateItem, no
-  // denial said, the store reads as signed out
-  await exits(45, false)
-  await exits(128, true)
-  await exits(51, true)
+  // no item is not a denial: the store reads as signed out
+  await answer({ miss: true })
+  // a cut-off read is not one either
+  await answer({ killed: true })
+  await answer({ denied: true })
 })
 
-test("a keychain denial keeps the saved sign-in it served before", async () => {
-  process.env.ZCODE_CREDENTIAL_V2_SECRET = V2_KEY.toString("base64url")
-  try {
-    zcodeHas2({ [KEY]: encV2("id1.secret1"), zcodejwttoken: encV2("Bearer j1"), "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })) })
-    const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+// a no is remembered for minutes, so a request in that window neither waits
+// on macOS nor shows the dialog again; a request reads the remembered no
+test("a denial is remembered for minutes, and says itself on the request path too", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  let reads = 0
+  _internal.keychain.read = async () => {
+    reads += 1
+    return { denied: true }
+  }
+  await expect(_internal.ownSignIn()).rejects.toThrow("keychain access was denied")
+  expect(reads).toBe(1)
+  const miss = _internal.vault.get(V2_FP)
+  expect(miss.key).toBe(null)
+  expect(miss.until - Date.now()).toBeGreaterThan(4 * 60_000)
+
+  await expect(_internal.ownSignIn({ background: true })).rejects.toThrow("keychain access was denied")
+  expect(reads).toBe(1)
+
+  // the sign-in the user picks tries once more, and says it in words
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("failed")
+  expect(got.error).toContain("keychain access was denied")
+  expect(got.error).toContain("Allow security to read ZCode Credential Encryption when macOS asks")
+  expect(reads).toBe(2)
+})
+
+// a saved sign-in served before keeps serving when ZCode's vault is one this
+// run has not read: a request does not read it (adv1/adv2's c_fallback repro)
+test("a saved sign-in keeps serving when ZCode's vault is new to this run", async () => {
+  zcodeHas2({ [KEY]: encV2("id1.secret1"), zcodejwttoken: encV2("Bearer j1"), "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })) })
+  _internal.keychain.read = async () => ({ key: V2_KEY })
+  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("success")
+  const auth = { ...got, type: "oauth" }
+
+  // ZCode rotates its vault: the file names another key now
+  const rotated = randomBytes(32)
+  zcodeHas2({
+    [KEY]: vaultEnc(rotated, "id2.secret2"),
+    zcodejwttoken: vaultEnc(rotated, "Bearer j2"),
+    "oauth:zai:user_info": vaultEnc(rotated, JSON.stringify({ email: "ada@example.com" })),
+  })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1" })
+})
+
+// a request reads what this run has read and asks the OS nothing, so no
+// request path can raise the macOS dialog (#1154); the sign-in the user
+// picks is the one read, and the request path follows it from the cache
+test("a request reads nothing new from the keychain", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  let reads = 0
+  _internal.keychain.read = async () => {
+    reads += 1
+    return { key: V2_KEY }
+  }
+  const auth = { type: "oauth", access: "", refresh: JSON.stringify({ source: "zcode" }) }
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "" })
+  expect(await _internal.stateOf(auth)).toMatchObject({ key: "" })
+  expect(reads).toBe(0)
+
+  expect(await _internal.ownSignIn({ fresh: true })).toMatchObject({ jwt: "j1" })
+  expect(reads).toBe(1)
+  expect(await _internal.ownSignIn({ background: true })).toMatchObject({ jwt: "j1" })
+  expect(reads).toBe(1)
+})
+
+// the user saying no is remembered, but a sign-in asked for now is a question
+// asked again: the user may have allowed it since
+test("a sign-in made after saying no reads again", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  let reads = 0
+  _internal.keychain.read = async () => {
+    reads += 1
+    return { denied: true }
+  }
+  await expect(_internal.ownSignIn()).rejects.toThrow("keychain access was denied")
+  _internal.keychain.read = async () => {
+    reads += 1
+    return { key: V2_KEY }
+  }
+  expect(await _internal.ownSignIn({ fresh: true })).toMatchObject({ jwt: "j1" })
+  expect(reads).toBe(2)
+})
+
+// three decrypts at once share one read: the first asks, the rest await it,
+// so one page of requests can't stack up three macOS dialogs
+test("concurrent decrypts share one keychain read", async () => {
+  let reads = 0
+  _internal.keychain.read = async () => {
+    reads += 1
+    await new Promise((r) => setTimeout(r, 20))
+    return { key: V2_KEY }
+  }
+  const value = encV2("id1.secret1")
+  const got = await Promise.all(Array.from({ length: 3 }, () => _internal.decryptV2(secret(), value)))
+  expect(got).toEqual(["id1.secret1", "id1.secret1", "id1.secret1"])
+  expect(reads).toBe(1)
+})
+
+// a read cut off by its timeout is remembered for half a minute, so one slow
+// read doesn't bring the dialog back on every request that follows
+test("a cut-off read is remembered for half a minute, not for minutes", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  let reads = 0
+  _internal.keychain.read = async () => {
+    reads += 1
+    return { killed: true }
+  }
+  expect(await _internal.decryptV2(secret(), encV2("id1.secret1"))).toBe(null)
+  expect(reads).toBe(1)
+  const stall = _internal.vault.get(V2_FP)
+  expect(stall.key).toBe(null)
+  expect(stall.until - Date.now()).toBeGreaterThan(20_000)
+  expect(stall.until - Date.now()).toBeLessThanOrEqual(30_000)
+  // what follows reads the remembered stall, not the keychain
+  expect(await _internal.decryptV2(secret(), encV2("id1.secret1"))).toBe(null)
+  expect(await _internal.ownSignIn({ background: true })).toBe(null)
+  expect(reads).toBe(1)
+})
+
+// the probe is what lets the sign-in say what macOS is about to ask, before
+// it asks: the item is there, its key is gone, or nothing is known (another
+// platform, a store with no vault value, or attributes that couldn't be read)
+test("the probe says what the sign-in can promise before macOS asks", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  const asked = []
+  const answering = (got) => {
+    _internal.keychain.attrs = async (fp) => {
+      asked.push(fp)
+      return got
+    }
+  }
+  if (process.platform !== "darwin") {
+    // no keychain to ask: nothing is known, and nothing is asked
+    answering("found")
+    expect(await _internal.probeKeychain()).toBe("none")
+    expect(asked).toEqual([])
+    return
+  }
+  for (const state of ["found", "absent", "unknown"]) {
+    answering(state)
+    expect(await _internal.probeKeychain()).toBe(state)
+  }
+  // it asks about the vault the value names, not one guessed
+  expect(asked).toEqual([V2_FP, V2_FP, V2_FP])
+  // a store with no vault value never asks: there is nothing to read
+  zcodeHas({ zcodejwttoken: "Bearer j1" })
+  answering("found")
+  expect(await _internal.probeKeychain()).toBe("none")
+  expect(asked).toHaveLength(3)
+})
+
+// what the user reads before macOS asks: the item is there and macOS will ask
+// once (found), the key is gone and ZCode has to sign in again (absent), or
+// the plain words, which promise nothing about the keychain
+test("the sign-in says what macOS will ask, before it asks", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  const instructions = async () => {
+    const hooks = await ZCodeAuthPlugin({ client: {} })
     const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
-    const got = await (await m.authorize()).callback()
-    expect(got.type).toBe("success")
-    const auth = { ...got, type: "oauth" }
-
-    // ZCode rotates its vault; the new key's read is denied, the saved
-    // sign-in still serves its key
-    const rotated = randomBytes(32)
-    process.env.ZCODE_CREDENTIAL_V2_SECRET = rotated.toString("base64url")
-    zcodeHas2({ [KEY]: encV2("id2.secret2"), zcodejwttoken: encV2("Bearer j2"), "oauth:zai:user_info": encV2(JSON.stringify({ email: "ada@example.com" })) })
-    _internal.vault.clear()
-    _internal.denyKeychain = false
-    process.env.PATH = SHIM + ":" + process.env.PATH
-    process.env.SHIM_EXIT = "128"
-    try {
-      expect(await _internal.stateOf(auth)).toMatchObject({ key: "id1.secret1", jwt: "j1" })
-    } finally {
-      process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
-      delete process.env.SHIM_EXIT
-    }
-  } finally {
-    delete process.env.ZCODE_CREDENTIAL_V2_SECRET
+    return (await m.authorize()).instructions
   }
+  const at = async (got) => {
+    _internal.keychain.attrs = async () => got
+    return instructions()
+  }
+  const plain = "Uses the account the ZCode app is signed in to"
+  if (process.platform !== "darwin") {
+    // no keychain to ask: the plain words, whatever the store holds
+    for (const state of ["found", "absent", "unknown"]) expect((await at(state)).startsWith(plain)).toBe(true)
+    return
+  }
+  const found = await at("found")
+  expect(found.startsWith("✓ ZCode's saved sign-in is on this computer.")).toBe(true)
+  expect(found).toContain("security")
+  const absent = await at("absent")
+  expect(absent.startsWith("✗ ZCode's file holds a vault-encrypted sign-in,")).toBe(true)
+  expect(absent).toContain("Sign in to ZCode again, then add this sign-in.")
+  // an unreadable item promises nothing either way
+  expect((await at("unknown")).startsWith(plain)).toBe(true)
+  // and neither does a store with no vault value
+  zcodeHas({ zcodejwttoken: "Bearer j1" })
+  expect((await instructions()).startsWith(plain)).toBe(true)
 })
 
-// concurrent decrypts share one keychain read: the first spawns, the rest
-// await it; a read cut off by its timeout is not remembered as a miss for
-// minutes (adv2's a_concurrency and f_slowtimeout repros)
-test("concurrent vault reads spawn one keychain read, and a slow one isn't a miss", async () => {
-  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
-  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
-  const log = join(SHIM, "log")
-  process.env.PATH = SHIM + ":" + process.env.PATH
-  process.env.SHIM_LOG = log
-  try {
-    // six concurrent reads, one spawn, and the read answers slower than
-    // its timeout: cut off, nothing remembered, the next read tries again
-    process.env.SHIM_EXIT = "0"
-    process.env.SHIM_MS = "5100"
-    _internal.vault.clear()
-    const fp = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
-    const value = "enc:v2:os:" + fp + ":aa.bb.cc"
-    const reads = await Promise.all(Array.from({ length: 6 }, () => _internal.decryptV2(secret(), value)))
-    expect(reads.every((r) => r === null)).toBe(true)
-    expect(_internal.vault.size).toBe(0)
-    expect(readFileSync(log, "utf8").split("\n").filter(Boolean).length).toBe(1)
-
-    // and, cut off or not, the in-flight read is shared: six callers, one spawn
-    process.env.SHIM_MS = "400"
-    rmSync(log, { force: true })
-    await Promise.all(Array.from({ length: 6 }, () => _internal.decryptV2(secret(), value)))
-    const spawnLines = readFileSync(log, "utf8").split("\n").filter(Boolean)
-    expect(spawnLines.length).toBe(1)
-    expect(JSON.parse(spawnLines[0]).filter((a) => a === "-a")).toHaveLength(1)
-  } finally {
-    process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
-    delete process.env.SHIM_MS
-    delete process.env.SHIM_EXIT
-    delete process.env.SHIM_LOG
+// the sheet's own button is the control: the keychain is read after the
+// person says go, not while the sheet is still being read. magpie asks
+// through ask(), so the line above the button can say whether the item is
+// there; the probe behind it reads attributes, never the secret
+test("the sign-in waits for a person before it reads the keychain", async () => {
+  const reads = []
+  _internal.keychain.read = async (fp) => {
+    reads.push(fp)
+    return { miss: true }
   }
-}, 12000)
-
-test("a keychain read names the account ZCode keeps, not one guessed", async () => {
-  delete process.env.ZCODE_CREDENTIAL_V2_SECRET
   zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
-  _internal.vault.clear()
-  const log = join(SHIM, "log")
-  rmSync(log, { force: true })
-  process.env.PATH = SHIM + ":" + process.env.PATH
-  process.env.SHIM_EXIT = "0"
-  process.env.SHIM_LOG = log
-  try {
-    const fp = createHash("sha256").update(V2_KEY).digest("hex").slice(0, 24)
-    await _internal.decryptV2(secret(), "enc:v2:os:" + fp + ":aa.bb.cc")
-    const args = JSON.parse(readFileSync(log, "utf8").split("\n").filter(Boolean)[0])
-    expect(args.filter((a) => a === "-a")).toHaveLength(1)
-    expect(args[args.indexOf("-a") + 1]).toBe(createHash("sha256").update(join(zcodeDir(), "credentials.json")).digest("hex"))
-  } finally {
-    process.env.PATH = process.env.PATH.slice(SHIM.length + 1)
-    delete process.env.SHIM_EXIT
-    delete process.env.SHIM_LOG
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  // listing the ways to sign in reads nothing
+  expect(reads).toHaveLength(0)
+  // OpenCode's channel: the static prompt, which promises nothing
+  expect(m.prompts).toHaveLength(1)
+  const [gate] = m.prompts
+  expect(gate.type).toBe("select")
+  expect(gate.options).toHaveLength(1)
+  expect(gate.options[0].label).toBe("Read it now")
+  expect(gate.message).toContain("may ask macOS once")
+  expect(gate.message).toContain("security")
+  expect(gate.message).toContain("ZCode Credential Encryption")
+  // magpie's channel: the same button, a line that knows the answer
+  if (process.platform === "darwin") {
+    _internal.keychain.attrs = async () => "found"
+    const found = await m.ask({})
+    expect(found.type).toBe("select")
+    expect(found.key).toBe("read")
+    expect(found.options).toEqual([{ label: "Read it now", value: "yes" }])
+    expect(found.message.startsWith("✓ ZCode's saved sign-in is on this computer.")).toBe(true)
+    _internal.keychain.attrs = async () => "absent"
+    expect((await m.ask({})).message.startsWith("✗ ZCode's file holds a vault-encrypted sign-in,")).toBe(true)
+    _internal.keychain.attrs = async () => "unknown"
+  } else {
+    // no keychain to ask: the promise-free line, whatever the store holds
+    expect((await m.ask({})).message).toContain("may ask macOS once")
   }
+  expect((await m.ask({})).message).toContain("may ask macOS once")
+  // answered once: the same question is not put again
+  expect(await m.ask({ read: "yes" })).toBe(null)
+  // the probe read attributes, never the secret
+  expect(reads).toHaveLength(0)
 })
 
 test("a stand-in key that isn't 32 base64url bytes stands in for nothing", async () => {

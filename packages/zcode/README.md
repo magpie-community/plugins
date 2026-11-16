@@ -73,14 +73,19 @@ over Anthropic's Messages API. Provider id: `zcode`.
     models and allowance. Plain models spend the team plan; trial entries
     spend the personal gift, with no fallback to the team on refusal.
 - **ZCode app's sign-in**
-  - Uses the account the ZCode app on this computer is signed in to. For
-    every request it reads ZCode's own credentials (`~/.zcode/v2`), so it
-    follows ZCode as it signs in again, renews its session or switches to a
-    team's plan, but only while ZCode is signed in to that same account.
-    Once ZCode signs out, or signs in to another account, the sign-in uses
-    what it saved when it was added; when that session has run out, it
-    asks to be signed in again. It never sends one account's requests with
-    another's credentials: to use both, add the app's sign-in once for each.
+  - Uses the account the ZCode app on this computer is signed in to. It
+    reads ZCode's own credentials (`~/.zcode/v2`) once, when the sign-in is
+    added, and keeps the key it read there for this run: requests follow
+    ZCode as it renews its session or switches to a team's plan, without a
+    keychain read of their own. A request never starts a read, so no
+    request can bring up the macOS dialog.
+  - ZCode signing in again can rotate the key that decrypts its file;
+    adding this sign-in again reads the new one. It follows ZCode only
+    while ZCode is signed in to that same account: once ZCode signs out, or
+    signs in to another account, the sign-in uses what it saved when it was
+    added, and when that session has run out it asks to be signed in again.
+    It never sends one account's requests with another's credentials: to
+    use both, add the app's sign-in once for each.
 - **GLM Coding Plan API key**
   - Paste a key (`<id>.<secret>`) and say which site it is from.
   - A key reaches the GLM Coding Plan alone. ZCode's gift plans (the
@@ -103,6 +108,24 @@ In OpenCode's `auth.json` (magpie: `plugin-auth.json`), under `zcode`:
 
 The plugin never writes ZCode's own credential store. It reads it only for
 the ZCode app's sign-in (`refresh` then holds `"source": "zcode"`).
+
+On macOS, the key that decrypts ZCode 3.18's credentials is an item in the
+keychain, `ZCode Credential Encryption`, whose account name is the first 24
+hex digits of the sha256 of the `~/.zcode/v2/credentials.json` path (the
+item ZCode itself keeps). The read is made by `/usr/bin/security`, so the
+dialog macOS shows names `security`, the tool that asks, not magpie. The
+sheet says what is about to happen and waits: its line says whether the
+item is there, and its "Read it now" button is what starts the read, so
+macOS asks after the person said go, not while they are still reading. macOS asks once: choosing Always Allow keeps it
+from asking again. A locked login keychain asks for its password in the
+same dialog, so the read waits for a person: it is given two minutes, not
+the five seconds an unattended call would get. A request never reads the
+keychain, so a request never brings that dialog up.
+
+`ZCODE_CREDENTIAL_SECRET` (the key the older form is read with) and
+`ZCODE_CREDENTIAL_V2_SECRET` (the vault's key, 32 base64url bytes) are
+stand-ins for tests and for machines without a keychain: set, a sign-in
+reads the same values from them. Normal use needs neither.
 
 ## How requests are routed
 
