@@ -4,12 +4,12 @@
 // port-file → CDP cookie read → graceful close → key creation path runs here.
 import "./nonet.mjs"
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync, readdirSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
-import { renewSilently, signInWithBrowser } from "./lib/browser.mjs"
+import { accountProfileDir, renewSilently, signInWithBrowser } from "./lib/browser.mjs"
 import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
 
 let fakeExe = ""
@@ -81,7 +81,7 @@ beforeAll(() => {
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
   // save what we override: bun test runs every file in one process, so these
   // would leak into whatever test file runs next
-  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "FAKE_BROWSER_HOLD_COOKIE", "DISPLAY"]) {
+  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "FAKE_BROWSER_HOLD_COOKIE", "FAKE_BROWSER_COOKIE_VALUE", "FAKE_BROWSER_FOREIGN_COOKIE", "DISPLAY"]) {
     savedEnv[key] = process.env[key]
   }
   process.env.MAGPIE_INKSTONE_PROFILE = profile
@@ -99,6 +99,9 @@ afterAll(() => {
   }
   try {
     rmSync(profile, { recursive: true, force: true })
+    // the tests create accounts/ under the same parent; leave the temp dir as
+    // they found it (an empty parent would outlive the run otherwise)
+    rmSync(join(profile, "..", "inkstone-browser-accounts"), { recursive: true, force: true })
   } catch {}
   // the profile is per-run; the compiled fake browser is not (fixed path,
   // rebuilt only when its source changes), so removing it here would make
@@ -111,11 +114,26 @@ afterEach(() => {
 })
 
 /** The plugin configured for the fake browser, with logs surfaced for debugging. */
-async function pluginWithFakeBrowser(options = {}) {
-  return InkStoneAuthPlugin(
-    { client: { auth: { set: async () => {} }, app: { log: (b) => console.log("[log]", b?.body?.message ?? "") } } },
+async function pluginWithFakeBrowser(options = {}, magpie = undefined) {
+  const logs = []
+  const p = await InkStoneAuthPlugin(
+    {
+      client: {
+        auth: { set: async () => {} },
+        app: {
+          log: (b) => {
+            const message = b?.body?.message ?? ""
+            logs.push(message)
+            console.log("[log]", message)
+          },
+        },
+      },
+      ...(magpie ? { magpie } : {}),
+    },
     { browser: fakeExe, loginTimeoutMs: 30_000, waitForLogin: async () => "console", ...options },
   )
+  p.logs = logs
+  return p
 }
 
 function serveKeyRoutes() {
@@ -170,7 +188,8 @@ test("a renewed token is written back where the api entry keeps it, under metada
 test("a full browser sign-in opens the login window, reads the session, and creates the key", async () => {
   f = fakeInkStone()
   const keys = serveKeyRoutes()
-  const p = await pluginWithFakeBrowser()
+  // the window path: reuse off, so the sign-in cannot finish on a kept session
+  const p = await pluginWithFakeBrowser({ reuse_kept_session: false })
   const browser = p.auth.methods[0]
   const result = browser.authorize({})
   expect(result.method).toBe("auto")
@@ -196,7 +215,7 @@ test("a full browser sign-in opens the login window, reads the session, and crea
 test("repeated sign-ins stay inside the key budget: the newest two remain, the rest go", async () => {
   f = fakeInkStone()
   const keys = serveKeyRoutes()
-  const p = await pluginWithFakeBrowser()
+  const p = await pluginWithFakeBrowser({ reuse_kept_session: false })
   const browser = p.auth.methods[0]
   for (let i = 0; i < 3; i++) {
     const saved = await browser.authorize({}).callback("", {})
@@ -213,7 +232,7 @@ test("repeated sign-ins stay inside the key budget: the newest two remain, the r
 test("prune_keys off leaves every key alone, whatever the count", async () => {
   f = fakeInkStone()
   const keys = serveKeyRoutes()
-  const p = await pluginWithFakeBrowser({ prune_keys: false })
+  const p = await pluginWithFakeBrowser({ prune_keys: false, reuse_kept_session: false })
   const browser = p.auth.methods[0]
   for (let i = 0; i < 3; i++) {
     const saved = await browser.authorize({}).callback("", {})
@@ -221,6 +240,261 @@ test("prune_keys off leaves every key alone, whatever the count", async () => {
   }
   expect(keys.length).toBe(3)
 }, 60_000)
+
+test("with the option on, a browser sign-in finishes on the console session the profile holds", async () => {
+  // The wiring through the plugin itself: default config, so the kept-session
+  // reuse runs. The headless stand-in serves the token, the fake console's
+  // users/validate accepts it — no window, no close signal.
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const marker = join(profile, "close-signal.txt")
+  try { rmSync(marker, { force: true }) } catch {}
+  const p = await pluginWithFakeBrowser()
+  const saved = await p.auth.methods[0].authorize({}).callback("", {})
+  expect(saved.type).toBe("success")
+  expect(saved.uaaToken).toBe("fake-uaa-token-for-tests")
+  expect(keys.length).toBe(1)
+  // the log proves which path ran: reuse announces the account it reused
+  expect(p.logs.some((l) => l.includes("reusing the profile's console session"))).toBe(true)
+  expect(p.logs.some((l) => l.includes("opening the sign-in window"))).toBe(false)
+  // a window would have written the close signal; none opened
+  expect(existsSync(marker)).toBe(false)
+}, 60_000)
+
+test("with the option off, the same sign-in opens the window instead", async () => {
+  // The switch the "add a second account" case relies on: reuse off must
+  // always mean a window, even though the profile holds a session the server
+  // would accept.
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const marker = join(profile, "close-signal.txt")
+  try { rmSync(marker, { force: true }) } catch {}
+  const p = await pluginWithFakeBrowser({ reuse_kept_session: false })
+  const saved = await p.auth.methods[0].authorize({}).callback("", {})
+  expect(saved.type).toBe("success")
+  expect(saved.uaaToken).toBe("fake-uaa-token-for-tests")
+  expect(keys.length).toBe(1)
+  expect(p.logs.some((l) => l.includes("reusing the profile's console session"))).toBe(false)
+  expect(p.logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
+  if (process.platform !== "win32") {
+    expect(readFileSync(marker, "utf8")).toBe("SIGTERM")
+  }
+}, 60_000)
+
+test("a second magpie account signs in on its own clean profile, leaving the kept one alone", async () => {
+  // 同一个供应商下加第二个账号：共用 profile 时窗口一打开就是第一个账号的
+  // 登录态——不退登登不进去，退登又把第一个账号的会话销毁。magpie 给出的
+  // 账号 key 让每个账号各用一个 profile。
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const marker = join(profile, "legacy-marker.txt")
+  writeFileSync(marker, "kept")
+  const key = "intern-inkstone#second"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  rmSync(join(profile, "close-signal.txt"), { force: true })
+  try {
+    const p = await pluginWithFakeBrowser({}, { account: () => key })
+    const saved = await p.auth.methods[0].authorize({}).callback("", {})
+    expect(saved.type).toBe("success")
+    expect(keys.length).toBe(1)
+    // the window ran in the account's own (new, empty) profile…
+    expect(existsSync(join(own, "close-signal.txt"))).toBe(true)
+    // …not in the kept one, whose contents were left alone
+    expect(existsSync(join(profile, "close-signal.txt"))).toBe(false)
+    expect(readFileSync(marker, "utf8")).toBe("kept")
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+    rmSync(marker, { force: true })
+  }
+}, 60_000)
+
+test("the first magpie account gets its own profile too, not the shared legacy one", async () => {
+  // The account key says nothing about which account a shared profile holds:
+  // reusing it would complete the sign-in on whoever is logged in there.
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const marker = join(profile, "legacy-marker.txt")
+  writeFileSync(marker, "kept")
+  const own = accountProfileDir("intern-inkstone")
+  rmSync(own, { recursive: true, force: true })
+  rmSync(join(profile, "close-signal.txt"), { force: true })
+  try {
+    const p = await pluginWithFakeBrowser({}, { account: () => "intern-inkstone" })
+    const saved = await p.auth.methods[0].authorize({}).callback("", {})
+    expect(saved.type).toBe("success")
+    expect(keys.length).toBe(1)
+    expect(existsSync(join(own, "close-signal.txt"))).toBe(true)
+    expect(existsSync(join(profile, "close-signal.txt"))).toBe(false)
+    expect(readFileSync(marker, "utf8")).toBe("kept")
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+    rmSync(marker, { force: true })
+  }
+}, 60_000)
+
+test("the silent renewal can be pointed at an account's own profile", async () => {
+  const own = accountProfileDir("intern-inkstone#renew")
+  mkdirSync(own, { recursive: true })
+  try {
+    expect(await renewSilently({ browserPath: fakeExe, profile: own })).toBe("fake-uaa-token-for-tests")
+    // no profile for that account yet: renew nothing rather than the wrong account
+    expect(await renewSilently({ browserPath: fakeExe, profile: join(profile, "missing-account") })).toBe("")
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("adding an account after removing the first one never finishes on the removed account", async () => {
+  // magpie hands the provider's own key to the next sign-in when no account
+  // holds it: remove the only account, add another, and the key is the same.
+  // Its profile still holds the removed account's live session — reusing it
+  // would sign the new account in as the removed one, with no window.
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  const key = "intern-inkstone"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  mkdirSync(own, { recursive: true })
+  writeFileSync(join(own, "removed-account.txt"), "A")
+  try {
+    const p = await pluginWithFakeBrowser({}, { account: () => key })
+    const saved = await p.auth.methods[0].authorize({}).callback("", {})
+    expect(saved.type).toBe("success")
+    expect(keys.length).toBe(1)
+    // a window opened (the user could log in as anyone), the stale session was
+    // not reused, and the key's profile is now this sign-in's, not the old one
+    expect(p.logs.some((l) => l.includes("reusing the profile's console session"))).toBe(false)
+    expect(p.logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
+    expect(existsSync(join(own, "close-signal.txt"))).toBe(true)
+    expect(existsSync(join(own, "removed-account.txt"))).toBe(false)
+    // no leftover .pending- directory next to it
+    expect(readdirSync(join(own, "..")).filter((n) => n.startsWith(".pending-"))).toEqual([])
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("the production users/validate decides reuse: a 401 opens the window", async () => {
+  // The plugin's own validateToken must go through usersValidate: with the
+  // console refusing the kept session, reuse has to give way to a window.
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  f.route("GET /api/tokenplan/v1/users/validate", () => json({ code: 401, msg: "unauthorized", data: null }, 401))
+  const key = "intern-inkstone#refused-401"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  mkdirSync(own, { recursive: true })
+  try {
+    const p = await pluginWithFakeBrowser({}, { account: () => key })
+    const saved = await p.auth.methods[0].authorize({}).callback("", {})
+    expect(saved.type).toBe("success")
+    expect(keys.length).toBe(1)
+    expect(p.logs.some((l) => l.includes("is no longer accepted"))).toBe(true)
+    expect(p.logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
+    expect(p.logs.some((l) => l.includes("reusing the profile's console session"))).toBe(false)
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("the production users/validate decides reuse: a 200 with code != 0 opens the window", async () => {
+  f = fakeInkStone()
+  const keys = serveKeyRoutes()
+  f.route("GET /api/tokenplan/v1/users/validate", () => fail(-1, "expired"))
+  const key = "intern-inkstone#refused-code"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  mkdirSync(own, { recursive: true })
+  try {
+    const p = await pluginWithFakeBrowser({}, { account: () => key })
+    const saved = await p.auth.methods[0].authorize({}).callback("", {})
+    expect(saved.type).toBe("success")
+    expect(keys.length).toBe(1)
+    expect(p.logs.some((l) => l.includes("is no longer accepted"))).toBe(true)
+    expect(p.logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("renewal through auth.usage reads the account's own profile, not the shared one", async () => {
+  // The renewal's profile choice is only guaranteed at the call site: this
+  // goes through auth.usage -> renew -> renewSilently with magpie.account set.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
+  f.route("GET /api/tokenplan/v1/credits/packages", () => ok(packagesFixture()))
+  const key = "intern-inkstone#renew-wire"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  mkdirSync(own, { recursive: true })
+  try {
+    const writes = []
+    const p = await InkStoneAuthPlugin(
+      { client: { auth: { set: async (req) => writes.push(structuredClone(req.body)) } }, magpie: { account: () => key } },
+      { browser: fakeExe },
+    )
+    const auth = { type: "oauth", access: "", uaaToken: jwtOf({ exp: Math.floor(Date.now() / 1000) - 60 }), accountId: "张三" }
+    // a port file left by an earlier test would hide whether the shared
+    // profile was opened now
+    rmSync(join(profile, "DevToolsActivePort"), { force: true })
+    const u = await p.auth.usage(async () => auth)
+    expect(u.error).toBeUndefined()
+    expect(writes.length).toBe(1)
+    expect(writes[0].uaaToken).toBe("fake-uaa-token-for-tests")
+    // the browser ran in the account's profile; the shared one was not opened
+    expect(existsSync(join(own, "DevToolsActivePort"))).toBe(true)
+    expect(existsSync(join(profile, "DevToolsActivePort"))).toBe(false)
+  } finally {
+    rmSync(own, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("a 0.1.5 shared profile is moved to the account whose session it holds", async () => {
+  // Upgrading must not cost every existing user their silent renewal: the
+  // shared profile's session is validated and, when it is this account's,
+  // the whole profile moves under the account's key.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  f.route("GET /api/tokenplan/v1/credits/balance", () => ok(poolUsageFixture()))
+  f.route("GET /api/tokenplan/v1/credits/packages", () => ok(packagesFixture()))
+  const savedProfile = process.env.MAGPIE_INKSTONE_PROFILE
+  const shared = mkdtempSync(join(tmpdir(), "inkstone-shared-"))
+  process.env.MAGPIE_INKSTONE_PROFILE = shared
+  const key = "intern-inkstone#migrated"
+  const own = accountProfileDir(key)
+  rmSync(own, { recursive: true, force: true })
+  try {
+    const writes = []
+    const p = await InkStoneAuthPlugin(
+      { client: { auth: { set: async (req) => writes.push(structuredClone(req.body)) } }, magpie: { account: () => key } },
+      { browser: fakeExe },
+    )
+    const auth = { type: "oauth", access: "", uaaToken: jwtOf({ exp: Math.floor(Date.now() / 1000) - 60 }), accountId: "张三" }
+    const u = await p.auth.usage(async () => auth)
+    expect(u.error).toBeUndefined()
+    expect(writes.length).toBe(1)
+    expect(writes[0].uaaToken).toBe("fake-uaa-token-for-tests")
+    expect(existsSync(own)).toBe(true)
+    expect(existsSync(shared)).toBe(false)
+  } finally {
+    process.env.MAGPIE_INKSTONE_PROFILE = savedProfile
+    rmSync(own, { recursive: true, force: true })
+    rmSync(shared, { recursive: true, force: true })
+  }
+}, 60_000)
+
+test("a uaa-token on another org.cn host is not the console session", async () => {
+  // The CDP read is filtered by the console's registrable domain: a cookie
+  // served first for .other.org.cn must not win over the console's own.
+  process.env.FAKE_BROWSER_FOREIGN_COOKIE = "1"
+  try {
+    expect(await renewSilently({ browserPath: fakeExe })).toBe("fake-uaa-token-for-tests")
+  } finally {
+    delete process.env.FAKE_BROWSER_FOREIGN_COOKIE
+  }
+}, 30_000)
 
 test("the reuse method keeps a pasted key instead of creating one", async () => {
   f = fakeInkStone()
@@ -260,36 +534,126 @@ test("off Windows the production wiring closes the window on a new cookie", asyn
   expect(logs.some((l) => l.includes("cookie store"))).toBe(true)
 }, 30_000)
 
-test("off Windows an old cookie in the kept profile is not this sign-in", async () => {
+test("a kept row is never this sign-in by itself, unexpired or not", async () => {
   // B1 end-to-end with the real sqlite probe: keep_sign_in's profile carries
-  // the previous uaa-token. The launch baseline must keep it from counting as
-  // "console" (if the baseline is dropped, this immediately sees "console"
-  // and goes red). The stand-in writes no new cookie in this run.
+  // the previous uaa-token. Reuse needs the positive check (validateToken,
+  // see the tests below); the window wait alone must never take the row for
+  // this sign-in. The timeout is deliberately longer than the Windows title
+  // path's settle — the guarantee is not a matter of how long we wait.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  const writeRow = (expiresAt) => {
+    try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+    mkdirSync(join(profile, "Default"), { recursive: true })
+    const { Database } = require("bun:sqlite")
+    const db = new Database(join(profile, "Default", "Cookies"))
+    db.query("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)").run()
+    const old = (Date.now() - 3600_000 + 11644473600000) * 1000
+    db.query(
+      "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.intern-ai.org.cn', 'uaa-token', 'old', ?, ?, ?)",
+    ).run(old, old, expiresAt)
+    db.close()
+  }
+  const waitOnce = async (timeoutMs) => {
+    const logs = []
+    await signInWithBrowser({
+      browserPath: fakeExe,
+      keepSignIn: true,
+      timeoutMs,
+      loginWait: { platform: "linux", pollMs: 50 },
+      log: (...args) => logs.push(args.map(String).join(" ")),
+    }).catch(() => "")
+    return logs
+  }
+  process.env.FAKE_BROWSER_HOLD_COOKIE = "1"
+  try {
+    // an unexpired old row, waited out past the settle: still not "console"
+    writeRow((Date.now() + 86400_000 + 11644473600000) * 1000)
+    expect((await waitOnce(7000)).some((l) => l.includes("login window finished (console)"))).toBe(false)
+    // an expired old row: not "console" either
+    writeRow((Date.now() - 3600_000 + 11644473600000) * 1000)
+    expect((await waitOnce(2500)).some((l) => l.includes("login window finished (console)"))).toBe(false)
+  } finally {
+    delete process.env.FAKE_BROWSER_HOLD_COOKIE
+    try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  }
+}, 30_000)
+
+test("a kept console session the server still accepts finishes the sign-in without a window", async () => {
+  // The positive signal: the token read out of the profile is checked with the
+  // console. No settle, no window — the sign-in ends on that session.
+  try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  const logs = []
+  const checked = []
+  const token = await signInWithBrowser({
+    browserPath: fakeExe,
+    keepSignIn: true,
+    timeoutMs: 6000,
+    loginWait: { platform: "linux", pollMs: 50 },
+    reuseKeptSession: true,
+    validateToken: async (t) => {
+      checked.push(t)
+      return "张三"
+    },
+    log: (...args) => logs.push(args.map(String).join(" ")),
+  })
+  expect(token).toBe("fake-uaa-token-for-tests")
+  expect(checked).toEqual(["fake-uaa-token-for-tests"])
+  expect(logs.some((l) => l.includes("reusing the profile's console session (张三)"))).toBe(true)
+  // the window path logs this every time it runs
+  expect(logs.some((l) => l.includes("opening the sign-in window"))).toBe(false)
+}, 30_000)
+
+test("a kept session the server refuses opens the window for a real sign-in", async () => {
+  // A row on disk can outlive the server's session (password changed, signed
+  // out elsewhere): the check fails, and the window must open so the user can
+  // log in again — the dead row must not lock the flow.
   f = fakeInkStone()
   serveKeyRoutes()
   try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
-  mkdirSync(join(profile, "Default"), { recursive: true })
-  const { Database } = require("bun:sqlite")
-  const db = new Database(join(profile, "Default", "Cookies"))
-  db.query("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)").run()
-  const old = (Date.now() - 3600_000 + 11644473600000) * 1000
-  db.query(
-    "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.intern-ai.org.cn', 'uaa-token', 'old', ?, ?, ?)",
-  ).run(old, old, old + 86400_000_000)
-  db.close()
-  process.env.FAKE_BROWSER_HOLD_COOKIE = "1"
   const logs = []
+  const token = await signInWithBrowser({
+    browserPath: fakeExe,
+    keepSignIn: true,
+    timeoutMs: 6000,
+    loginWait: { platform: "linux", pollMs: 50 },
+    reuseKeptSession: true,
+    validateToken: async () => {
+      throw Object.assign(new Error("401"), { status: 401 })
+    },
+    log: (...args) => logs.push(args.map(String).join(" ")),
+  })
+  expect(token).toBe("fake-uaa-token-for-tests")
+  expect(logs.some((l) => l.includes("is no longer accepted"))).toBe(true)
+  expect(logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
+  // the fake window's new row is what finished this one
+  expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(true)
+}, 30_000)
+
+test("a kept session about to expire is not reused", async () => {
+  const logs = []
+  const checked = []
+  process.env.FAKE_BROWSER_COOKIE_VALUE = jwtOf({ exp: Math.floor(Date.now() / 1000) + 60 })
+  process.env.FAKE_BROWSER_HOLD_COOKIE = "1"
   try {
     await signInWithBrowser({
       browserPath: fakeExe,
       keepSignIn: true,
       timeoutMs: 2500,
       loginWait: { platform: "linux", pollMs: 50 },
+      reuseKeptSession: true,
+      validateToken: async (t) => {
+        checked.push(t)
+        return "张三"
+      },
       log: (...args) => logs.push(args.map(String).join(" ")),
     }).catch(() => "")
-    expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(false)
+    // five minutes of margin: a one-minute token is not worth reusing
+    expect(checked).toEqual([])
+    expect(logs.some((l) => l.includes("about to expire"))).toBe(true)
+    expect(logs.some((l) => l.includes("opening the sign-in window"))).toBe(true)
   } finally {
+    delete process.env.FAKE_BROWSER_COOKIE_VALUE
     delete process.env.FAKE_BROWSER_HOLD_COOKIE
-    try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
   }
 }, 30_000)
