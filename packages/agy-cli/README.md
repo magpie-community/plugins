@@ -53,7 +53,9 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   就不会出现在列表里。列模型时插件会先用 `agy acp` 开一个会话（不发 prompt）问 agy 开放了哪些，
   问到之前只列 Gemini。上次 agy 列出并开放的模型存在会话状态文件旁边的 `models.json`，
   重启后先列它，同时再问一次 agy。模型和思考等级可以在会话中切换，
-  历史保留。
+  历史保留。`agy models` 带 `--settings '{"modelProvider":""}'` 运行，所以
+  settings.json 里的 `"modelProvider": "gemini"`（AI Studio 密钥）不影响这里的列表，
+  列出的是 Google 账号的模型；AI Studio 密钥请在 Magpie 的 Providers 页加成 Google Gemini。
 - **流式输出与思考摘要**：思考摘要以 `thinking` 块返回，设置 `AGY_BRIDGE_THINKING=0` 可关闭。
 - **图片输入**：支持内联 base64 的 PNG、JPEG、GIF、WebP。需要 agy 1.5.0 或更新版本，
   因为图片能力要由 ACP 服务端声明。工具返回的图片（如 `read` 读到的截图）也作为提示里的

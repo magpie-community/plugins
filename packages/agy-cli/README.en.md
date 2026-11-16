@@ -75,6 +75,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   state file, so after a restart that list is served while agy is asked again.
   Models and thinking levels can be switched mid-conversation without losing
   history.
+  `agy models` runs with `--settings '{"modelProvider":""}'`, so a
+  `"modelProvider": "gemini"` (AI Studio key) in settings.json doesn't change
+  this list: it lists the Google account's models. An AI Studio key is added on
+  magpie's Providers page as Google Gemini.
 - **Streaming with thought summaries**: summaries come back as `thinking` blocks.
   Set `AGY_BRIDGE_THINKING=0` to turn them off.
 - **Image input**: inline base64 PNG, JPEG, GIF and WebP. This needs agy 1.5.0 or

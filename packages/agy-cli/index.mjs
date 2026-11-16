@@ -258,6 +258,38 @@ function acpHelp(agyPath) {
   return probe
 }
 
+// `agy models` reads the user's own settings.json, while a turn runs agy acp
+// on the bridge's folder and the Google sign-in. With "modelProvider":
+// "gemini" there (an AI Studio key), `agy models` lists API-key mode's
+// built-in models, or fails when magpie's environment has no
+// GEMINI_API_KEY, and the catalog kept a list acp doesn't serve
+// (plugins#1218). agy 1.5.9 takes --settings, a session-only settings.json
+// object, before the subcommand; an agy whose help doesn't list it gets the
+// bare command, as before. Asked once per binary, like acpHelp.
+const topHelpText = new Map()
+function topHelp(agyPath) {
+  let key = agyPath
+  try {
+    const st = fs.statSync(agyPath)
+    key += `\0${st.mtimeMs}\0${st.size}`
+  } catch {}
+  let probe = topHelpText.get(key)
+  if (!probe) {
+    probe = execOnce(agyPath, ["--help"], { timeoutMs: 10_000, unrefTimer: true }).then(({ err, stdout, stderr, timedOut }) => {
+      if (err || timedOut) topHelpText.delete(key)
+      return stdout + stderr
+    })
+    topHelpText.set(key, probe)
+  }
+  return probe
+}
+
+export const MODELS_SETTINGS = JSON.stringify({ modelProvider: "" })
+
+export async function modelsArgs(agyPath) {
+  return /^\s*--settings\b/m.test(await topHelp(agyPath)) ? ["--settings", MODELS_SETTINGS, "models"] : ["models"]
+}
+
 export function noDefaultCustomizationsArgs(agyPath) {
   return acpHelp(agyPath).then((help) => (/--include-default-customizations\b/.test(help) ? ["--include-default-customizations=false"] : []))
 }
@@ -352,7 +384,7 @@ async function listAgyModels(agyPath) {
   // a listing nobody asked for doesn't run an agy that would start its own
   // Google sign-in (signin.mjs); the catalog it has stays
   if (await backgroundBlocked()) return null
-  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000, unrefTimer: true })
+  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000, unrefTimer: true })
   // null, not FALLBACK_MODELS: a failed listing must not overwrite a dynamic catalog.
   if (err || timedOut || code !== 0) {
     if (!err && !timedOut) noteRefusal(agyRefusal(`${stderr}\n${stdout}`))
@@ -383,7 +415,7 @@ function refusalOf() {
 async function refusalNow(agyPath) {
   if (refusals.has(currentHome() ?? "")) return refusalOf()
   if (!agyPath || await backgroundBlocked()) return ""
-  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000 })
+  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000 })
   if (err || timedOut || code === 0) return ""
   const why = agyRefusal(`${stderr}\n${stdout}`)
   noteRefusal(why)
@@ -419,7 +451,7 @@ async function probeSignedIn(agy) {
   // caller goes on to magpie's own sign-in link instead
   const blocked = await backgroundBlocked({ fresh: true })
   if (blocked) return { ok: false, why: blocked }
-  const probe = await execOnce(agy, ["models"], { timeoutMs: 15_000 })
+  const probe = await execOnce(agy, await modelsArgs(agy), { timeoutMs: 15_000 })
   const listed = !probe.err && !probe.timedOut && probe.code === 0 &&
     probe.stdout.split("\n").some(line => /^\S+\s+\S/.test(line.trim()))
   if (listed) {

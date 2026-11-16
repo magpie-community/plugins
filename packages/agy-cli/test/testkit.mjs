@@ -179,9 +179,9 @@ class FakeChild extends EventEmitter {
 }
 
 function spawnModels(kit, file, args) {
-  kit.modelsSpawns.push({ file, at: kit.clock.now() })
+  kit.modelsSpawns.push({ file, args, at: kit.clock.now() })
   const raw = typeof kit.modelsBehavior === "function"
-    ? kit.modelsBehavior({ file, count: kit.modelsSpawns.length })
+    ? kit.modelsBehavior({ file, args, count: kit.modelsSpawns.length })
     : kit.modelsBehavior
   const behavior = raw || { hang: true }
   if (behavior.throwSync) throw Object.assign(new Error("spawn EACCES (test)"), { code: "EACCES" })
@@ -436,6 +436,7 @@ export async function createBridgeKit(options = {}) {
     acpSpawns: [],
     otherSpawns: [],
     helpSpawns: [],
+    topHelpSpawns: [],
     spawnSyncs: [],
     execFiles: [],
     modelsBehavior: options.modelsBehavior ?? { stdout: modelsOutput(BASE_MODEL_ROWS) },
@@ -490,7 +491,18 @@ export async function createBridgeKit(options = {}) {
     },
   })
   const spawn = (file, args = [], opts = {}) => {
-    if (args[0] === "models") return spawnModels(kit, file, args)
+    // agy's own flags before the subcommand (--settings for `agy models`)
+    const sub = args[0] === "--settings" ? args[2] : args[0]
+    if (args[0] === "--help") {
+      kit.topHelpSpawns.push({ file, args })
+      const child = new FakeChild(kit, file, args)
+      setImmediate(() => {
+        if (options.topHelp) child.stderr.emit("data", options.topHelp)
+        child.finish(0)
+      })
+      return child
+    }
+    if (sub === "models") return spawnModels(kit, file, args)
     if (args[0] === "acp" && args.includes("--help")) {
       // agy's flag usage goes to stderr; an older agy doesn't list the flag
       kit.helpSpawns.push({ file, args })

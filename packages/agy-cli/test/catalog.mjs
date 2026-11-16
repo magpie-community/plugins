@@ -686,3 +686,48 @@ test("#3501 请求：会话一个型号都不开放时答 403 和 Google 的原�
     await settle(kit)
   })
 })
+
+// plugins#1218 (shenggxhz on X): settings.json's "modelProvider": "gemini"
+// (an AI Studio key) made a bare `agy models` fail without GEMINI_API_KEY in
+// magpie's environment, and the old catalog stayed. agy 1.5.9's own help
+// lines; the fake answers like that agy: bare, the API-key error; with
+// --settings '{"modelProvider":""}', the Google sign-in's list.
+const AGY_159_TOP_HELP = [
+  "Usage of agy:",
+  "  --add-dir                       Add a directory to the workspace (repeatable) (default [])",
+  "  --sandbox                       Run in a sandbox with terminal restrictions enabled",
+  "  --settings                      Settings for this session only, never saved: a JSON object of settings.json keys, inline or as a file path",
+  "",
+  "Available subcommands:",
+  "  models          List available models",
+  "",
+].join("\n")
+const GEMINI_PROVIDER_ERROR = 'modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set'
+function geminiSettingsAgy() {
+  return ({ args }) => {
+    const i = args.indexOf("--settings")
+    const provider = i >= 0 ? JSON.parse(args[i + 1]).modelProvider : "gemini"
+    return provider === "gemini" ? { stderr: GEMINI_PROVIDER_ERROR + "\n", code: 1 } : DYNAMIC_OK
+  }
+}
+
+test("#1218 agy models runs with modelProvider cleared when agy takes --settings, so a gemini settings.json doesn't keep a stale list", async () => {
+  await withKit({ topHelp: AGY_159_TOP_HELP, modelsBehavior: geminiSettingsAgy() }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    const listed = await kit.models()
+    assert.ok(listed["gemini-9-test"], `agy's own list should be read, got ${ids(listed).join(", ")}`)
+    assert.ok(kit.modelsSpawns.length >= 1)
+    for (const spawn of kit.modelsSpawns) assert.deepEqual(spawn.args, ["--settings", '{"modelProvider":""}', "models"])
+    assert.equal(kit.topHelpSpawns.length, 1, "agy --help is asked once per binary")
+  })
+})
+
+test("#1218 an agy whose help doesn't list --settings still runs a bare agy models", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    assert.ok((await kit.models())["gemini-9-test"])
+    for (const spawn of kit.modelsSpawns) assert.deepEqual(spawn.args, ["models"])
+  })
+})
