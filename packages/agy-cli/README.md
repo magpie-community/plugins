@@ -255,6 +255,9 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   violation of Terms of Service"，会按禁止重试的 403 语义 `permission_error` 返回，而不是
   当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
   并带上 agy 记下的验证链接；没有链接时说明去哪里验证。
+  结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
+  按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
+  magpie 据此让这个账号歇到重置，并改问下一个账号。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
   Hermes Agent 会把一次批量的 `tool_call({"calls": [...]})` 在自己的历史里拆成每项一次调用，

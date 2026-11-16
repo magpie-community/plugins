@@ -132,6 +132,15 @@ const AGENT_ERROR_MARKERS = [
   "\n⚠ Verification Required\n",
 ]
 const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
+// agy's ending for an account whose own quota is used up, with Google's
+// time until it is back on the same line: "⚠ Individual quota reached.
+// Please upgrade your subscription to increase your limits. Resets in
+// 1h18m40s." Its tail changes, so it is matched by its start, as a line of
+// its own that nothing follows. Answered as text, it was the whole reply
+// and the next account was never asked (@Airan_FS on X, 11-17).
+const QUOTA_CORE = "⚠ Individual quota reached"
+const QUOTA_MARKER = "\n" + QUOTA_CORE
+const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
@@ -161,7 +170,7 @@ const CAP_TAIL_CORE = "Please continue from where you left off, keeping your res
 const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length,
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1665,9 +1674,15 @@ class Turn {
         return
       }
     }
+    const quota = this.quotaEnding(text)
+    if (quota >= 0) {
+      this.heldText = text.slice(quota)
+      this.emitText(text.slice(0, quota))
+      return
+    }
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
         (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           CAP_MARKER.startsWith(tail)))) {
         this.heldText = tail
@@ -1676,6 +1691,17 @@ class Turn {
       }
     }
     this.emitText(text)
+  }
+
+  // Where agy's quota ending (QUOTA_CORE) starts in text, with the newline
+  // before it: a line of its own that only whitespace follows, so far. -1
+  // when there is none; one more text follows was the model quoting it.
+  quotaEnding(text) {
+    const at = text.lastIndexOf(QUOTA_CORE)
+    if (at < 0) return -1
+    const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
+    if (!lineStart || text.slice(at).trimEnd().includes("\n")) return -1
+    return at > 0 ? at - 1 : at
   }
 
   // Removes agy's retry banners, each with its leading and one trailing
@@ -1754,6 +1780,11 @@ class Turn {
     if (core) {
       this.agentError = true
       this.agentErrorCore = core
+      this.heldText = ""
+    } else if (this.quotaEnding(this.heldText) >= 0) {
+      this.agentError = true
+      this.agentErrorCore = QUOTA_CORE
+      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
     }
   }
@@ -2516,6 +2547,11 @@ class Proc {
 
   async #agentError(turn) {
     const core = turn.agentErrorCore
+    if (core === QUOTA_CORE) {
+      // Google's own words, the reset with them: magpie rests the account
+      // until then and asks the next one
+      return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.quotaNotice}`, "rate_limit_error")
+    }
     if (core === VERIFY_CORE) {
       // the link, when agy logged Google's error whole; the reply has none
       const logged = await logTail(this.logPath, turn.logOffset)
@@ -2541,7 +2577,7 @@ class Proc {
         "invalid_request_error",
       )
     }
-    if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail)) {
+    if (/QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|code 429\b/i.test(detail) || quotaReached(detail)) {
       return new AgentTurnError(
         `agy bridge: Antigravity quota or rate limit reached${detail ? ": " + detail : ""}${refused429(detail) ? " — Antigravity answers this same bare 429 to a system prompt it turns away whatever quota is left, so if quota is left it is not a quota and waiting won't help: something in this agent's system prompt is being matched" : ""}`,
         "rate_limit_error",

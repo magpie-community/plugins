@@ -1208,6 +1208,73 @@ test("the model quoting the Verification Required ending with more text after ke
   })
 })
 
+// @Airan_FS on X (11-17): an account out of its own quota got agy's
+// ending as the whole reply, and magpie never asked the next account. The
+// line is Google's words with the time until the quota is back.
+const QUOTA_LINE = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."
+const QUOTA = "\n" + QUOTA_LINE + "\n"
+
+test("agy's Individual quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [QUOTA],
+    [QUOTA.slice(0, 12), QUOTA.slice(12, 40), QUOTA.slice(40)],
+    [QUOTA_LINE],
+    ["\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6d2h."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "quota-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "rate_limit_error")
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + chunks.join("").trim().replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's Individual quota reached ending after words the model wrote keeps them and fails the turn", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", QUOTA.slice(0, 30), QUOTA.slice(30)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-partial" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const parsed = await readSse(new Response(text))
+    assert.equal(replyText(parsed), "Let me look")
+    assert.equal(sseError(text).type, "rate_limit_error")
+    assert.match(sseError(text).message, /Resets in 1h18m40s\.$/)
+  })
+})
+
+test("agy's Individual quota reached ending fails a non-stream request as an HTTP 429", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [QUOTA])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.equal(body.error.type, "rate_limit_error")
+    assert.match(body.error.message, /Individual quota reached\. .*Resets in 1h18m40s\./)
+  })
+})
+
+test("the model quoting the Individual quota reached ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Individual quota", " reached. Please upgrade. Resets in 1h.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Individual quota reached. Resets in 1h.` when it is out."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "quota-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {

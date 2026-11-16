@@ -356,6 +356,10 @@ off unless you turn it on.
   `permission_error` with 403 semantics, not as normal reply text. So is the
   "Verification Required" ending (Google wants the account verified), with
   the link to verify it at when agy logged one, else where to verify it.
+  The "⚠ Individual quota reached. … Resets in 1h18m40s." ending (the
+  account's own quota is used up) ends the turn as a rate limit
+  (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
+  reset, so magpie rests the account until then and asks the next one.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
