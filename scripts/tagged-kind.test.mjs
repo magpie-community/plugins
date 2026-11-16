@@ -19,15 +19,23 @@ test("hooks alone are a hooks plugin, and their file is the one to find", () => 
   expect(entryOf(pj, "hooks", true)).toBe("./model-watch.hooks.js")
 })
 
-test("a module of its own keeps middleware, a page and hooks a provider, as before", () => {
-  for (const mg of [{ middleware: "m.js" }, { page: { file: "p.html" } }, { hooks: "h.js" }]) {
+test("a page stays a page when it also has a module and service", () => {
+  for (const mg of [{ middleware: "m.js" }, { hooks: "h.js" }]) {
     expect(kindOf({ main: "index.mjs", magpie: mg })).toBe("")
     expect(kindOf({ exports: { ".": "./i.mjs" }, magpie: mg })).toBe("")
   }
+  const page = { main: "server/index.mjs", keywords: ["magpie-page"], magpie: { page: { file: "page/index.html", service: { port: 3489 } } } }
+  expect(kindOf(page)).toBe("page")
+  expect(entryOf(page, "page", true)).toBe("server/index.mjs")
   expect(kindOf({ main: "index.mjs" })).toBe("")
   expect(kindOf({ magpie: { middleware: "m.js" } })).toBe("middleware")
   expect(kindOf({ magpie: { page: { file: "p.html" } } })).toBe("page")
   // installed from npm, a provider loads npm's index file
   expect(entryOf({ main: "index.mjs" }, "", false)).toBe("index.js")
   expect(entryOf({ exports: { ".": { bun: "./b.mjs" } } }, "", true)).toBe("./b.mjs")
+})
+
+test("a page with main needs the magpie-page keyword", () => {
+  const page = { main: "server/index.mjs", magpie: { page: { file: "page/index.html" } } }
+  expect(kindOf(page)).toBe("")
 })
