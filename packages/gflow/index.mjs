@@ -99,6 +99,11 @@ function explicitPythonOf(o) {
 }
 
 function pythonCandidates(o) {
+  // A test/CI hook: when set, replaces the candidate list entirely so the
+  // no-usable-python path can be exercised deterministically. Not documented
+  // as a user option; production installs never set it.
+  const override = o.pythonCandidatesOverride ?? process.env.GFLOW_TEST_PYTHON_CANDIDATES;
+  if (override) return override.split("::");
   const list = [explicitPythonOf(o), "python3"];
   const home = process.env.HOME || "";
   if (home) {
@@ -132,7 +137,9 @@ function pythonProbe(candidate, cwd, timeoutMs = 8000) {
   if (r.error || r.status !== 0) return null;
   try {
     const answer = JSON.parse(String(r.stdout || "").trim().split("\n").pop());
-    return answer.ok ? answer : null;
+    // Return the full answer (ok true or false) so callers can show the
+    // probe's reason string; they gate on answer.ok, not on truthiness.
+    return answer ?? null;
   } catch {
     return null;
   }
@@ -150,13 +157,33 @@ function pythonOf(o, deadline = Infinity) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("gflow bridge timed out while locating Python");
     const answer = pythonProbe(candidate, cwd, Math.min(8000, remaining));
-    if (answer) {
+    if (answer?.ok) {
       cachedPython = { key, value: candidate };
       return candidate;
     }
-    problems.push(`${candidate}: incompatible, missing gflow or missing requests/pydantic/websocket`);
+    // Keep the per-candidate reason (e.g. "ModuleNotFoundError: No module
+    // named 'websocket'") so the magpie panel can show exactly which
+    // package is missing instead of a generic "not usable" line.
+    problems.push(`${candidate}: ${answer ? answer.reason || "incompatible" : "failed to run"}`);
   }
-  throw new Error(`No usable Python >=3.10 for the gflow bridge (${problems.join("; ")})`);
+  // Panel slice is 300 chars AFTER the 32-char "Flow cookies validation
+  // failed: " prefix (authorize catch) — 268 usable. A 6-candidate detail
+  // dump cannot fit, so lead with the two facts the user acts on: the
+  // missing package and the install command. Overflow guard swaps the
+  // platform note for a candidate count so nothing is cut mid-word.
+  const firstReason = problems[0]?.match(/No module named '[^']+'|SyntaxError[^;]*|TypeError[^;]*/)?.[0] ?? "";
+  const fixLine =
+    `No usable Python >=3.10 (gflow bridge)` +
+    (firstReason ? `: ${firstReason}` : "") +
+    `. Fix: "python3 -m pip install --user requests pydantic websocket-client" then ` +
+    `"python3 -I -c \\"import requests, pydantic, websocket; print('OK')\\"", retry, or GFLOW_PYTHON.`;
+  const notes = {
+    win32: ` (PowerShell: "python")`,
+    darwin: ` (/usr/bin/python3 is 3.9)`,
+  };
+  const note = notes[process.platform] ?? "";
+  const full = fixLine + note;
+  throw new Error(full.length <= 268 ? full : fixLine + ` [${problems.length} candidates probed]`);
 }
 
 function pythonArgs(cwd) {
@@ -187,7 +214,7 @@ function pythonBridge(command, cookies, payload, o = {}, hostAccount = PROVIDER_
     let commandPath;
     try {
       commandPath = pythonOf(o, deadline);
-      if (explicitPythonOf(o) && !pythonProbe(commandPath, cwd, Math.min(8000, deadline - Date.now()))) {
+      if (explicitPythonOf(o) && !pythonProbe(commandPath, cwd, Math.min(8000, deadline - Date.now()))?.ok) {
         if (Date.now() >= deadline) throw new Error("gflow bridge timed out while probing Python");
         throw new Error(`Configured Python cannot import gflow/requests/pydantic/websocket from ${cwd}: ${commandPath}`);
       }

@@ -330,6 +330,42 @@ exit 1
   assert.match(result.error, /Configured Python cannot import gflow\/requests\/pydantic\/websocket/);
 });
 
+test("no-usable-python error names the missing module and tells the user how to fix it", async () => {
+  // A PATH-shimmed "python3" answers like a Python 3.12 missing
+  // websocket-client — the exact field failure behind "No usable Python
+  // >=3.10?" — and every later candidate fails too, so the error comes from
+  // the candidate loop in pythonOf (no explicit python option involved).
+  const lackingPython = join(testDir, "lacking-python");
+  writeFileSync(lackingPython, `#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-c" ]; then
+  printf '%s\\n' '{"ok":false,"version":"3.12.2","python":"lacking","cwd":"test","reason":"ModuleNotFoundError: No module named '"'"'websocket'"'"'"}'
+  exit 0
+fi
+exit 1
+`);
+  chmodSync(lackingPython, 0o700);
+  // Route the candidate loop at the fake interpreter via the test hook, so
+  // the test is deterministic regardless of how healthy this Mac's real
+  // Python setup is (a healthy candidate would win the probe and never
+  // reach the error path). The hook reads process.env, so set it around the
+  // call and restore in finally.
+  const savedHook = process.env.GFLOW_TEST_PYTHON_CANDIDATES;
+  process.env.GFLOW_TEST_PYTHON_CANDIDATES = lackingPython;
+  try {
+    const hooks = await GflowPlugin(inputFor("", join(tmpdir(), "gflow-plugin-noprobe")));
+    const result = await hooks.auth.methods[0].authorize({ cookies: COOKIES });
+    assert.equal(result.type, "failed");
+    assert.match(result.error, /No usable Python >=3\.10/);
+    assert.match(result.error, /No module named 'websocket'/, "panel must show which package is missing");
+    assert.match(result.error, /pip install --user requests pydantic websocket-client/);
+    assert.match(result.error, /import requests, pydantic, websocket; print\('OK'\)/s, "must include the verify command");
+    assert.match(result.error, /GFLOW_PYTHON/, "must mention the escape hatch for non-standard installs");
+  } finally {
+    if (savedHook === undefined) delete process.env.GFLOW_TEST_PYTHON_CANDIDATES;
+    else process.env.GFLOW_TEST_PYTHON_CANDIDATES = savedHook;
+  }
+});
+
 test("Python bridge uses a sys.path bootstrap instead of -m", async () => {
   const spyPython = join(testDir, "spy-python");
   const log = join(testDir, "spy-python.log");
