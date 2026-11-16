@@ -134,7 +134,7 @@ test("the key read is bounded", async () => {
     return ok({ secretKey: "sec7" })
   })
   const { auth } = await signedIn()
-  await _internal.located(_internal.stateOf(auth))
+  await _internal.located(await _internal.stateOf(auth))
   expect(signal).toBeInstanceOf(AbortSignal)
 })
 
@@ -155,7 +155,7 @@ test("the last key read serves while a read fails", async () => {
   // ZCode renewed its token, and the read with the new one is dropped
   fail = true
   const next = await signedIn("tok-b")
-  const s = await _internal.located(_internal.stateOf(next.auth))
+  const s = await _internal.located(await _internal.stateOf(next.auth))
   expect(s.key).toBe("k7.sec7")
   expect((await post(next.opts)).status).toBe(200)
   expect(tries.key).toBe(2)
