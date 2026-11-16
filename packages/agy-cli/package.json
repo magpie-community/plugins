@@ -15,7 +15,6 @@
     "login.mjs",
     "mcp-server.mjs",
     "output-limit.mjs",
-    "prompt-guard.mjs",
     "step-usage.mjs",
     "tool-schema.mjs",
     "upstream-error.mjs",
