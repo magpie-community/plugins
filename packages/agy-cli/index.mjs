@@ -3427,6 +3427,30 @@ function staleTurnVerdict(proc, turn, now = Date.now()) {
   return { stale: false, reason: pendingCallCount(turn) ? "pending_tool" : "running" }
 }
 
+// A detached turn the conversation went on without: after its last call in
+// the client's history comes a tool round of calls the bridge never made (an
+// id of another shape than its own). A sibling request that only leaves the
+// turn's calls out (a side request, a compaction fork) is not this and still
+// gets 409. A routing
+// group that moved the conversation to another provider and failed back to
+// agy-cli with that provider's tool results does this (#1051): no later
+// request can answer the held turn, so waiting for three unmatched requests
+// before replaying only costs the client two 409s.
+function movedOnVerdict(turn, messages) {
+  if (!turn || turn.attached || turn.steering || turn.cancelRequested || !Array.isArray(messages)) return null
+  if (!pendingCallCount(turn)) return null
+  const own = new Set(turn.calls.map((call) => call.id))
+  let last = -1
+  messages.forEach((message, index) => {
+    if (Array.isArray(message?.content) && message.content.some((block) =>
+      (block?.type === "tool_use" && own.has(block.id)) || (block?.type === "tool_result" && own.has(block.tool_use_id)))) last = index
+  })
+  if (last < 0) return null
+  const foreign = messages.slice(last + 1).some((message) => message?.role === "assistant" && Array.isArray(message.content) &&
+    message.content.some((block) => block?.type === "tool_use" && typeof block.id === "string" && block.id && !BRIDGE_CALL_ID.test(block.id)))
+  return foreign ? { stale: true, reason: "moved_on" } : null
+}
+
 // A pending tool turn only owns its own line of history, not a sibling request
 // that continues its base without carrying any of the emitted tool calls.
 function lineageVerdict(proc, turn, opts) {
@@ -3522,7 +3546,7 @@ async function recoverStaleTurn(ctx) {
       return { kind: "conflict", turnId }
     }
     if (held.cancelRequested) return { kind: "fallthrough" }
-    const verdict = staleTurnVerdict(current, held)
+    const verdict = movedOnVerdict(held, ctx.body?.messages) ?? staleTurnVerdict(current, held)
     // Lineage supersession belongs to acquisition of a new prompt. Unmatched
     // results alone reclaim an unexpired owner only at the repeat limit.
     if (!verdict.stale && (!forced || verdict.reason === "attached" || verdict.reason === "steering")) {
@@ -6553,7 +6577,7 @@ export const AntigravityBridgePlugin = async () => {
                 }
                 const held = pool.get(convKey)
                 if (held?.turn && !held.turn.cancelRequested) {
-                  const verdict = staleTurnVerdict(held, held.turn)
+                  const verdict = movedOnVerdict(held.turn, body.messages) ?? staleTurnVerdict(held, held.turn)
                   let attempts
                   if (!verdict.stale) {
                     // An attached stream is live progress; only a quiet turn counts.

@@ -185,6 +185,49 @@ test("A7: the third unmatched repeat against a quiet turn replays the request's 
   })
 })
 
+// A routing group served the held call's result on another provider, whose
+// own tool round then failed back to agy-cli (#1051).
+function movedOnRound(body, first, foreignId) {
+  const use = first.content.find((block) => block.type === "tool_use")
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content: [use] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: use.id, content: "answered elsewhere" }] },
+      { role: "assistant", content: [{ type: "text", text: "another provider's step" },
+        { type: "tool_use", id: foreignId, name: "Read", input: { path: "/other" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: foreignId, content: "FOREIGN RESULT" }] },
+    ],
+  }
+}
+
+test("A7: a turn the conversation went on without is replayed at the first unmatched request (#1051)", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "FOREIGN RESULT": "replayed after the group came back" })
+    const body = baseBody({ metadata: { user_id: "moved-on" }, messages: [{ role: "user", content: "TOOL start" }] })
+    const first = await pendingToolTurn(kit, body)
+    const response = await kit.request(movedOnRound(body, first, "toolu_01AbCdEfGhIjKlMnOpQrStUv"))
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const parsed = await readSse(response)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(parsed.content.find((block) => block.type === "text")?.text, "replayed after the group came back")
+    assert.equal(kit.acpSpawns.length, 2, "the replay runs on a fresh process")
+  })
+})
+
+test("A7: a later round with the bridge's own id shape is not taken as the conversation moving on (#1051)", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const body = baseBody({ metadata: { user_id: "moved-on-own-shape" }, messages: [{ role: "user", content: "TOOL start" }] })
+    const first = await pendingToolTurn(kit, body)
+    const response = await kit.request(movedOnRound(body, first, "toolu_0123456789abcdef01234567"))
+    assert.equal(response.status, 409)
+    await response.text()
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
 test("A7: a third repeat that cannot be replayed ends in a terminal 400 with attempts and turn_id", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)
