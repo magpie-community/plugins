@@ -1,4 +1,6 @@
 # Agnes-Code
+> **Canonical 副本在 monorepo**：`magpie-plugins/agnes-code`（`C:/Users/JY806/.skills-monorepo/magpie-plugins/agnes-code`）。本仓用于 GitHub 发布与提 PR，功能/测试改动必须同步回 canonical；两份不一致时本机 `task-health` 会报 `repo-sync` FAIL。
+
 
 把 **Agnes Code 桌面端** 的账号额度接入 [magpie](https://usemagpie.ai/) 与 [OpenCode](https://opencode.ai/)：复用桌面端登录态（会话文件解密），直连云端 OpenAI 兼容网关，agent 以 `agnes/<model>` 使用它的模型；支持「每日登录送积分」自动观测与积分余额显示。
 
