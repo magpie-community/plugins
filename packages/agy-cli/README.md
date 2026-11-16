@@ -247,7 +247,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
   "There was a network issue connecting to the server" 和 "Your AI credits balance is
   too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
-  重试中的提示行会被去掉。若结尾是 "This service has been disabled in this account for
+  重试中的提示行会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
+  （"Your previous response was cut off because it exceeded the output token limit"、
+  它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
+  输出。若结尾是 "This service has been disabled in this account for
   violation of Terms of Service"，会按禁止重试的 403 语义 `permission_error` 返回，而不是
   当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
   并带上 agy 记下的验证链接；没有链接时说明去哪里验证。
