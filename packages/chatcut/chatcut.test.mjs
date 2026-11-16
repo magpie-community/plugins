@@ -18,7 +18,7 @@ test("does not invent the context size for an unknown model or routing group", (
   expect(connect({ gateway: { v1: "http://localhost:3425/v1", key: "k" }, model: { context: 0 } }).contextWindow).toBeNull()
 })
 
-test("publishes only its declarative module and README", async () => {
+test("publishes a declarative package without runtime dependencies", async () => {
   const pkg = await Bun.file(new URL("./package.json", import.meta.url)).json()
   expect(pkg.magpie.agent).toBe("./chatcut.agent.js")
   expect(pkg).not.toHaveProperty("main")

@@ -8,6 +8,9 @@ or routing group from Magpie while keeping its history and native thread.
 Requires the ChatCut Desktop release containing the Magpie agent entry. Earlier versions do
 not read this configuration. This plugin does not install or upgrade ChatCut.
 ChatCut creates `~/.config/chatcut` when it starts, which makes the agent visible.
+The Agents row and plugin listing use the official ChatCut logomark, supplied by
+ChatCut and included as `icon.svg`. The same SVG is embedded as a data URI so the
+icon works offline and follows the system color scheme, without a remote image request.
 
 ```sh
 magpie plugin add @magpie-community/agent-chatcut
@@ -39,6 +42,10 @@ connection; there is no automatic fallback to another model service.
 在 Magpie 的 Agent 页增加独立的 **ChatCut** 条目。选择模型或路由组后，在
 ChatCut 桌面端选择 **Magpie** 并开始新对话。需要支持此入口的 ChatCut 版本；
 插件本身不安装或升级 ChatCut。
+
+Agents 条目和插件列表使用 ChatCut 提供的官方品牌图标，与 Desktop 的图形一致。
+原始 SVG 随包发布为 `icon.svg`，同时内嵌为 data URI，离线可显示并跟随系统配色，
+不向外部图片地址发送请求。
 
 配置仅写入 `~/.config/chatcut/magpie.json`。首版固定使用 ChatCut 自带的 Codex
 harness，默认模型由 Magpie 管理；不修改终端 Codex 的设置或登录。ChatCut 的模型菜单
