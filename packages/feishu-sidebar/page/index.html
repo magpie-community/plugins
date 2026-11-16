@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feishu sidebar</title>
+<link rel="stylesheet" href="style.css">
+<script src="_magpie/bridge.js"></script>
+<script src="applink.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <h1 data-t="title">Feishu sidebar</h1>
+  <p data-t="setup">Enable Browser access in Magpie, or run magpie web.</p>
+  <label for="web-url" data-t="address">Magpie Web address</label>
+  <input id="web-url" type="text" inputmode="url" spellcheck="false" autocomplete="off"
+         placeholder="http://127.0.0.1:3430" aria-describedby="hint error">
+  <p id="hint" data-t="hint">Use the address without the sign-in key. Use HTTPS for another computer.</p>
+  <button id="generate" type="button" data-t="generate">Generate Feishu link</button>
+  <p id="error" role="alert"></p>
+  <section id="result" hidden>
+    <label for="applink" data-t="link">Feishu link</label>
+    <div class="link-row">
+      <input id="applink" type="text" readonly aria-describedby="steps">
+      <button id="select" type="button" data-t="select">Select link</button>
+    </div>
+    <p id="steps" data-t="steps">Copy the link to your own Feishu chat and open it in Feishu desktop. Sign in on Magpie’s page, then right-click the sidebar tab to pin it.</p>
+  </section>
+</main>
+</body>
+</html>

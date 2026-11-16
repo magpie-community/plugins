@@ -185,6 +185,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 
 | Package | Page | Reads |
 |---|---|---|
+| [feishu-sidebar](packages/feishu-sidebar) | Generate an AppLink to open Magpie Web in Feishu desktop’s left sidebar | none |
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 | [free-tokens](packages/free-tokens) | AIHOT's Token freebies in three tiers (already configured and usable / needs one more plugin / no plugin yet), with the plugin to install or the exact login step for each | none; its host part reads magpie's folder (providers/checkin) and fetches aihot.news/free-tokens.data once each time the plugin host starts |
 | [amp-usage](packages/amp-usage) | Amp usage: requests, input/output tokens, cache reads and writes and cache hit rate from Amp's cloud exports and legacy local threads, synced in the background into Magpie's usage ledger for its usage pages and Day card | none; its host part runs the Amp CLI, reads Amp's local thread files and reports usage to the local Magpie |
