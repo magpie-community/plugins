@@ -6,7 +6,8 @@
 // another way is read again whole, not only the repositories pushed to.
 // 2: an agent plugin with a module of its own is an agent, and hooks are
 // read (#1200).
-export const READ = 2
+// 3: a page plugin with a local service is a page even when it has main.
+export const READ = 3
 
 export const named = (e) => !!e && (typeof e !== "object" || Object.keys(e).length > 0)
 
