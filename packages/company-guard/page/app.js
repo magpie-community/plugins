@@ -20,7 +20,8 @@ function updateTasks() {
 }
 function updateAgents() {
   const selected=$('agent').value,previousLabel=$('agent').selectedOptions[0]?.textContent;
-  const choices=new Map((report?.agentOptions || []).map(a=>[a.id,a.label]));
+  const present=new Set((report?.rows||[]).flatMap(agentsOf));
+  const choices=new Map((report?.agentOptions || []).filter(a=>present.has(a.id)).map(a=>[a.id,a.label]));
   for(const r of report?.rows || [])for(const id of agentsOf(r))if(!choices.has(id))choices.set(id,r.agentLabel || (id==='unknown'?'来源未记录':id));
   // Keep an explicitly selected agent when its requests leave the recent window.
   if(selected&&!choices.has(selected))choices.set(selected,previousLabel || selected);
@@ -77,14 +78,16 @@ function render() {
   if(health?.lastSuccessfulWrite)$('receipt-health').title='最近保存成功：'+new Date(health.lastSuccessfulWrite).toLocaleString('zh-CN');
   const diagnosticCount=report?.diagnostics?.observed || 0;$('diagnostics').hidden=!diagnosticCount;
   $('diagnostics').textContent=diagnosticCount?`当日跨任务记录到 ${diagnosticCount} 次插件处理超时或异常；日志没有请求编号，无法归到某一条回执。`:'';
-  $('rows').replaceChildren();
+  $('receipt-table').querySelectorAll('tbody').forEach(body=>body.remove());
+  const body=el('tbody');
   for(const r of rows){
     const tr=el('tr'),d=new Date(r.at),time=el('td',Number.isNaN(d.getTime())?'未知':d.toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}));time.title=r.at || '';tr.append(time);
     tr.append(el('td',r.agentLabel || '来源未记录','agent-source'));
-    const ids=el('td'),task=el('span',r.taskTitle || '会话 '+short(r.task || r.thread),'task-name');task.title=r.taskTitle || r.task || r.thread || '未知';ids.append(task,el('span',short(r.task || r.thread)+' / '+short(r.id),'mono muted'));ids.title=(r.task || r.thread || '未知')+' / '+r.id;tr.append(ids);
+    const ids=el('td'),task=el('span',r.taskTitle||'会话 '+short(r.task||r.thread),'task-name');task.title=r.taskTitle||r.task||r.thread||'未知';ids.append(task,el('span',short(r.task||r.thread)+' / '+short(r.id),'mono muted'));ids.title=(r.task||r.thread||'未知')+' / '+r.id;tr.append(ids);
     tr.append(el('td',count(r.replacedNames)+' / '+count(r.replacements),'number'),el('td',count(r.restoredNames),'number'),el('td',r.processingMs==null?'—':r.processingMs+' ms','number'));
-    const cell=el('td'),button=el('button','查看','view');button.type='button';button.setAttribute('aria-expanded','false');button.addEventListener('click',()=>showDetail(r,tr,button));cell.append(button);tr.append(cell);$('rows').append(tr);
+    const cell=el('td'),button=el('button','查看','view');button.type='button';button.setAttribute('aria-label','查看请求 '+short(r.id));button.setAttribute('aria-expanded','false');button.addEventListener('click',()=>showDetail(r,tr,button));cell.append(button);tr.append(cell);body.append(tr);
   }
+  $('receipt-table').append(body);
   $('empty').hidden=rows.length!==0;
 }
 async function refresh() {

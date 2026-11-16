@@ -8,12 +8,13 @@ import {randomBytes} from "node:crypto";
 import {prepareRequest, onRequest, onResponse, onEvent, PREPARED} from "../src/company-guard.js";
 import {onRequest as hookRequest, onResponse as hookResponse} from "../company-guard.hooks.mjs";
 import {retainReceipts} from "../src/receipts.mjs";
-import {getReceiptReport} from "../src/receipt-report.mjs";
+import {getReceiptReport,getRetainedReceiptRows} from "../src/receipt-report.mjs";
 import {onRequest as middlewareRequest, onResponse as middlewareResponse, onEvent as middlewareEvent} from "../dist/company-guard.middleware.js";
 import {initializeOptions,validateCompanyRules,companyRulesRevision} from "../src/local-options.mjs";
-import {signAuthorization,readAuthorization,planAuthorizationEntries,AUTHORIZATION_ENTRY_LIMIT} from "../src/session-authorization.js";
+import {signAuthorization,readAuthorization,planAuthorizationEntries,AUTHORIZATION_ENTRY_LIMIT,receiptAuthorizationTarget,receiptAuthorizationSessions} from "../src/session-authorization.js";
+import {queueAuthorizationRequest,listAuthorizationRequests,closeAuthorizationRequest} from '../src/grant-store.mjs';
 import * as pageEntry from "../receipt-page.mjs";
-import {recordRuleRevision,readAuditHistory} from '../src/rule-history.mjs';
+import {recordRuleRevision,recordAuthorizationEvent,readAuditHistory} from '../src/rule-history.mjs';
 
 // Synthetic fixtures only: no user credentials, companies, grants or history.
 const NAME = ["单元", "测试", "科技", "有限", "公司"].join("");
@@ -246,7 +247,7 @@ test("a pinned GitHub installation initializes without a local-path registration
   const saved = JSON.parse(await fs.readFile(setup.configFile));
   for (const field of keyFields) assert.equal(saved.plugins[0].options[field], options[field]);
 });
-for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.6"]) {
+for (const spec of ["@magpie-community/middleware-company-guard", "@magpie-community/middleware-company-guard@0.4.7"]) {
   test("community installation initializes: " + spec, async t => {
     const setup = await installation(t);
     setup.config.plugins[0].spec = spec;
@@ -362,4 +363,54 @@ test("fresh hook preparation and native middleware share keys and remove the pri
   assert.equal((await report(records)).statusCode,"call_incomplete","explicit failed completion is never promoted by a stream checkpoint");
   await hookResponse({output:[{content:[{type:"output_text",text:token}]}]},{...hook,success:true});
   assert.equal((await report(records)).statusCode,"restoration_residue","actual residual tokens still fail");
+});
+
+test("receipt requests require a verified Codex directory and session states survive receipt eviction",()=>{
+  const ctx=context("responses"),row={id:TURN,task:SESSION,thread:SESSION,agent:"codex",at:new Date().toISOString(),authorizationWorkspace:ctx.cwd};
+  assert.equal(receiptAuthorizationTarget(row).workspace,ctx.cwd);
+  for(const invalid of [{...row,agent:"claude"},{...row,thread:TURN},{...row,authorizationWorkspace:null},{...row,authorizationWorkspace:"relative"}])assert.equal(receiptAuthorizationTarget(invalid),null);
+  const all=authorization(ctx,"active","all"),names=authorization(ctx,"active","names");
+  assert.equal(receiptAuthorizationSessions([],[all],ctx.options.authKey)[0].authorizationState,"all");
+  assert.equal(receiptAuthorizationSessions([row,{...row,id:SESSION,authorizationWorkspace:null,agent:null}],[],ctx.options.authKey).length,1,"old receipt display merges only when one verified directory is known");
+  assert.equal(receiptAuthorizationSessions([row],[names],ctx.options.authKey)[0].authorizationState,"names");
+  const different=receiptAuthorizationSessions([{...row,authorizationWorkspace:ctx.cwd+"/other"}],[all],ctx.options.authKey);
+  assert(different.some(r=>r.workspace===ctx.cwd+"/other"&&r.authorizationState==="masked"));
+  const pending=receiptAuthorizationSessions([row],[],ctx.options.authKey,[{session:SESSION,workspace:ctx.cwd}]);assert(pending[0].pending);assert.equal(pending[0].receiptId,TURN);
+  assert(receiptAuthorizationSessions([row],[{...all,mac:"0".repeat(64)}],ctx.options.authKey).every(r=>r.authorizationState!=="all"));
+});
+test("receipt application reuses the pending queue and cannot grant authorization",async t=>{
+  const setup=await installation(t),root=path.dirname(setup.keyFile),before=await fs.readFile(setup.configFile,"utf8");
+  const first=await queueAuthorizationRequest(root,{session:SESSION,turn:TURN},ROOT);
+  const again=await queueAuthorizationRequest(root,{session:SESSION,turn:SESSION},ROOT);
+  assert.equal(first.id,again.id);const pending=await listAuthorizationRequests(root);assert.equal(pending.length,1);assert.equal(pending[0].source,"receipt");
+  assert.equal(await fs.readFile(setup.configFile,"utf8"),before);await assert.rejects(fs.stat(path.join(root,"grants")),{code:"ENOENT"});
+  const closed=await closeAuthorizationRequest(root,first.id,'rejected');assert.equal((await listAuthorizationRequests(root)).length,0);assert.equal(closed.resolution,'rejected');assert(closed.closedAt);
+  await recordAuthorizationEvent(root,{at:closed.closedAt,session:SESSION,action:'reject',coverage:'none',nameCount:0,requestId:first.id});
+  const audit=await readAuditHistory(root);assert.equal(audit.authorizations[0].action,'reject');assert.equal(audit.authorizations[0].session,SESSION);assert.equal(await fs.readFile(setup.configFile,'utf8'),before);
+  await assert.rejects(closeAuthorizationRequest(root,first.id,'rejected'),/request_expired/);
+  assert.equal(await queueAuthorizationRequest(root,{session:SESSION,turn:TURN},ROOT),null,'a retry of the rejected turn cannot recreate its pending application');
+  const rejected=await listAuthorizationRequests(root,{rejected:true});assert.equal(rejected.length,1);assert.equal(rejected[0].id,first.id);
+  const stale={id:TURN,task:SESSION,thread:SESSION,agent:'codex',at:new Date().toISOString(),authorizationWorkspace:null};
+  const state=receiptAuthorizationSessions([stale],[],setup.options.authKey,[],rejected)[0];assert.equal(state.reapplyRequestId,first.id);assert.equal(state.workspace,ROOT);assert.equal(state.authorizationState,'masked');
+  assert(receiptAuthorizationSessions([{...stale,authorizationWorkspace:ROOT+'/other'}],[],setup.options.authKey,[],rejected).every(r=>r.workspace!==ROOT+'/other'||!r.reapplyRequestId),'a different verified workspace never reuses the rejected scope');
+  const renewed=await queueAuthorizationRequest(root,{session:SESSION,turn:SESSION},ROOT);assert.notEqual(renewed.id,first.id);assert.equal((await listAuthorizationRequests(root)).length,1);assert.equal(await fs.readFile(setup.configFile,'utf8'),before);
+});
+test("full-session approval suppresses ordinary receipts; partial approvals and failures remain visible",async t=>{
+  const setup=await installation(t),options=await initializeOptions(setup.options),root=path.dirname(setup.keyFile);
+  const all=context("responses",options);all.options.sessionAuthorizations=[authorization(all,"active","all")];
+  await hookRequest(request("responses"),all);assert.equal(all.state.receiptSuppressed,true);all.success=true;
+  await hookResponse({output:[{content:[{type:"output_text",text:NAME}]}]},all);
+  assert.equal((await getReceiptReport({root})).rows.length,0);
+  const partial=context("responses",options);partial.options.sessionAuthorizations=[authorization(partial,"active","names")];
+  await hookRequest(request("responses"),partial);assert.equal(partial.state.receiptSuppressed,false);
+  let report=await getReceiptReport({root});assert.equal(report.rows.length,1);assert.equal(report.rows[0].authorizationCoverage,"names");assert.equal(report.rows[0].authorizationWorkspace,partial.cwd);
+  let recent=await getRetainedReceiptRows(root);assert.deepEqual(recent.map(r=>r.id),report.rows.map(r=>r.id));assert.equal(recent[0].authorizationWorkspace,partial.cwd);
+  const failed=context("responses",options);failed.options.sessionAuthorizations=[authorization(failed,"active","all")];
+  await hookRequest(request("responses"),failed);failed.success=false;await hookResponse({},failed);
+  report=await getReceiptReport({root});assert.equal(report.rows.find(r=>r.id===failed.state.receipt.id).statusCode,"call_incomplete");
+  const revoked=context("responses",options);revoked.options.sessionAuthorizations=[authorization(revoked,"revoked","all")];
+  await hookRequest(request("responses"),revoked);assert.equal(revoked.state.receiptSuppressed,false);
+  assert((await getReceiptReport({root})).rows.some(r=>r.id===revoked.state.receipt.id&&r.authorizationReason==="session_revoked"));
+  recent=await getRetainedReceiptRows(root);assert.equal(new Set(recent.map(r=>r.id)).size,3,"multiple receipt phases count once per request");
+  const sessions=receiptAuthorizationSessions(recent,revoked.options.sessionAuthorizations,options.authKey).filter(r=>r.requestCount>0);assert.equal(sessions.reduce((n,s)=>n+s.requestCount,0),3);assert(sessions.every(r=>r.latestAt));
 });

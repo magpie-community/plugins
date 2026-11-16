@@ -78,3 +78,41 @@ export function resolveAuthorization(body, ctx) {
   if (sessionWorkspace(body,ctx) !== record.workspace) return {record:null, managed:true, reason:"task_identity_mismatch"};
   return {record, managed:true, reason:record.coverage === "all" ? "session_all_active" : "session_names_active"};
 }
+
+export function receiptAuthorizationTarget(row) {
+  const workspace=row?.authorizationWorkspace;
+  if(row?.agent!=="codex"||!validId(row.id)||!validId(row.task)||row.task!==row.thread||typeof workspace!=="string"||!workspace.startsWith("/")||workspace.length>4096||/[\u0000-\u001f\u007f]/.test(workspace))return null;
+  return {session:row.task,workspace,turn:row.id};
+}
+
+export function reapplicationTarget(request){
+  if(request?.state!=="closed"||request.resolution!=="rejected"||!/^[a-f0-9]{64}$/.test(request.id||""))return null;
+  return receiptAuthorizationTarget({id:request.id,task:request.session,thread:request.session,agent:"codex",authorizationWorkspace:request.workspace});
+}
+
+export function receiptAuthorizationSessions(rows, entries, key, pending = [], rejected = []) {
+  const counts=new Map();
+  for(const e of Array.isArray(entries)?entries:[])counts.set(e?.session,(counts.get(e?.session)||0)+1);
+  const active=Array.isArray(entries)&&entries.length<=AUTHORIZATION_ENTRY_LIMIT?entries.map(e=>readAuthorization(e,key)).filter(r=>r?.state==="active"&&counts.get(r.session)===1):[];
+  const sessions=new Map(),keyOf=(session,workspace,agent)=>JSON.stringify([session,workspace,agent]);
+  const known=new Map(),remember=(session,workspace)=>{const scopes=known.get(session)||new Set();scopes.add(workspace);known.set(session,scopes);};
+  for(const r of active)remember(r.session,r.workspace);
+  for(const r of rejected){const target=reapplicationTarget(r);if(target)remember(target.session,target.workspace);}
+  for(const row of rows){const target=receiptAuthorizationTarget(row);if(target)remember(target.session,target.workspace);}
+  for(const r of active)sessions.set(keyOf(r.session,r.workspace,"codex"),{session:r.session,task:r.session,thread:r.session,workspace:r.workspace,agent:"codex",authorizationState:r.coverage==="all"?"all":"names",requestCount:0,receiptId:null});
+  for(const row of rows){
+    const session=row.task||row.thread;if(!session)continue;
+    const target=receiptAuthorizationTarget(row),scopes=(!row.agent||row.agent==="codex")&&known.get(session),fallback=scopes?.size===1?[...scopes][0]:"",workspace=target?.workspace||fallback||"",agent=row.agent||(fallback?"codex":null),id=keyOf(session,workspace,agent);
+    const current=sessions.get(id)||{session,task:session,thread:session,workspace,agent,authorizationState:"masked",requestCount:0,receiptId:null};
+    current.requestCount++;
+    if(row.at&&(!current.latestAt||row.at>current.latestAt))current.latestAt=row.at;
+    if(target&&!current.receiptId){current.receiptId=row.id;current.receiptDate=row.at?.slice(0,10);}
+    sessions.set(id,current);
+  }
+  for(const row of sessions.values()){
+    row.pending=pending.some(r=>r.session===row.session&&r.workspace===row.workspace);
+    const prior=rejected.find(r=>{const target=reapplicationTarget(r);return target&&row.agent==="codex"&&target.session===row.session&&target.workspace===row.workspace;});
+    if(prior&&!row.pending&&row.authorizationState!=="all")row.reapplyRequestId=prior.id;
+  }
+  return [...sessions.values()];
+}
