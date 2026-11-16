@@ -1163,6 +1163,55 @@ function frame(msg) {
   return out
 }
 
+// QUIET is how long Devin may send nothing (no reply head, no byte of a
+// reply) before the request is given up as stalled and answered 504, so
+// the agent or the gateway's next account sends it again. Devin, asked and
+// answering, sends frames all through a reply, thinking included: a real
+// GetChatMessage on Claude Opus 5.5 Max and GPT-6 Astra XHigh (11-16) went
+// at most 13s between frames, and its first came 2.5s after the request.
+// A request Devin took and never answered held the agent with keepalives
+// and nothing else, for 10 to 20 minutes, until the user changed the
+// effort or the conversation (wu_chong4136 on X). Only the wait on Devin
+// counts: a reader that is slow to take the next frame is not Devin's.
+let QUIET = 5 * 60_000
+
+// Quiet is the error a request Devin stopped answering ends with.
+class Quiet extends Error {
+  constructor() {
+    super(`Devin sent nothing for ${QUIET >= 60_000 && QUIET % 60_000 === 0 ? QUIET / 60_000 + " minutes" : QUIET + "ms"}; the request was given up so it can be sent again`)
+    this.status = 504
+  }
+}
+
+// quietFetch is fetch with the reply's head waited on for QUIET at most.
+async function quietFetch(url, init = {}) {
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(new Quiet()), QUIET)
+  try {
+    return await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, ac.signal]) : ac.signal })
+  } catch (e) {
+    if (ac.signal.aborted && !init.signal?.aborted) throw ac.signal.reason
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+// quietRead is reader.read(), given up (and the body cancelled) when
+// nothing comes for QUIET.
+async function quietRead(reader) {
+  let t
+  const quiet = new Promise((_, reject) => (t = setTimeout(() => reject(new Quiet()), QUIET)))
+  try {
+    return await Promise.race([reader.read(), quiet])
+  } catch (e) {
+    if (e instanceof Quiet) reader.cancel(e).catch(() => {})
+    throw e
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 // frames reads a Connect stream: each message, or its end with its JSON.
 async function* frames(body) {
   let buf = new Uint8Array(0)
@@ -1179,7 +1228,7 @@ async function* frames(body) {
         if (flags & 1) data = new Uint8Array(gunzipSync(data))
         yield { end: !!(flags & 2), data }
       }
-      const { value, done } = await reader.read()
+      const { value, done } = await quietRead(reader)
       if (done) {
         if (buf.length) throw new Error("unexpected EOF")
         return
@@ -1190,7 +1239,9 @@ async function* frames(body) {
       buf = next
     }
   } finally {
-    reader.releaseLock()
+    try {
+      reader.releaseLock()
+    } catch {}
   }
 }
 
@@ -1813,7 +1864,7 @@ async function* events(it, uid = "") {
     try {
       r = await it.next()
     } catch (e) {
-      yield { error: { status: 502, message: "the reply broke off: " + e.message } }
+      yield { error: { status: e instanceof Quiet ? 504 : 502, message: "the reply broke off: " + e.message } }
       return
     }
     if (r.done) break
@@ -1953,14 +2004,14 @@ async function askOnce(key, server, msg, signal, uid) {
   const sentAt = now()
   let res
   try {
-    res = await fetch(server + CHAT_RPC, {
+    res = await quietFetch(server + CHAT_RPC, {
       method: "POST",
       headers: rpcHeaders(key, body),
       body,
       signal,
     })
   } catch (e) {
-    return { status: 502, message: e.message }
+    return { status: e instanceof Quiet ? 504 : 502, message: e.message }
   }
   if (!res.ok) return failure(res.status, (await res.text()).slice(0, 1 << 20))
   // an error comes as the stream's end, before anything else: read that
@@ -1970,7 +2021,7 @@ async function askOnce(key, server, msg, signal, uid) {
   try {
     first = await fr.next()
   } catch (e) {
-    return { status: 502, message: "the reply broke off: " + e.message }
+    return { status: e instanceof Quiet ? 504 : 502, message: "the reply broke off: " + e.message }
   }
   if (first.done) return { status: 502, message: "the reply broke off: EOF" }
   if (first.value.end) {
@@ -2555,7 +2606,7 @@ function hookExit() {
 async function pingOnce(server, key, body, signal) {
   let res
   try {
-    res = await fetch(server + CHAT_RPC, { method: "POST", headers: rpcHeaders(key, body), body, signal })
+    res = await quietFetch(server + CHAT_RPC, { method: "POST", headers: rpcHeaders(key, body), body, signal })
   } catch (e) {
     return { status: 0, error: String(e?.message || e || "fetch failed") }
   }
@@ -3396,4 +3447,4 @@ export async function DevinAuthPlugin({ client, magpie } = {}, options = {}) {
 }
 
 // for tests
-export const _internal = { imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { quietFor: (ms) => (QUIET = ms ?? 5 * 60_000), imageType, estimate, windowOf, TOO_LONG_AT, sigTypeOf, forgetSigTypes: () => sigTypes.clear(), forgetThoughts: () => thoughts.clear(), thoughtFor, keepaliveKey, keepaliveSettings, keepalivePing, scheduleKeepalive, stopKeepalive, stopAllKeepalive, keeping: () => [...keeps.keys()], useTimers: (t) => (timers = t ?? realTimers), KEEPALIVE, buildMessages, completeMessages, anthropicEffort, encodeMsg, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
