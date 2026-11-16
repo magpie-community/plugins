@@ -1,6 +1,6 @@
 # moonup Magpie 插件
 
-用 moonup API Key 在 [Magpie](https://usemagpie.ai) 中调用模型，查看钱包余额、订阅和 Key 限额。支持 `https://moonup.dev` 和 `https://api.moonup.dev`，登录时选择地址。插件无运行时依赖，无需构建。Magpie 使用 Bun 运行插件，本地测试需要 Node.js 20 或更高版本。
+用 moonup API Key 在 [Magpie](https://usemagpie.ai) 中调用模型，查看钱包余额、订阅和 Key 限额。添加账号时直接填写 Key，默认使用 `https://moonup.dev`，也可预设 `https://api.moonup.dev` 或其他部署地址。插件无运行时依赖，无需构建。Magpie 使用 Bun 运行插件，本地测试需要 Node.js 20 或更高版本。
 
 ## 安装和连接
 
@@ -11,16 +11,41 @@ magpie plugin add github:ferguson089347/magpie-moonup
 magpie plugin login moonup
 ```
 
-登录时先选择 `moonup.dev` 或 `api.moonup.dev`，再填写 API Key。不需要手动输入网址、账号名、模型列表或协议。没有提交地址选择时默认使用 `moonup.dev`。
+添加账号时直接粘贴 API Key，不需要站点选择、网页登录或控制台令牌。无需手动输入网址、账号名、模型列表或协议。
 
-如果固定使用一个地址，可以预设该地址。之后添加账号时只填 API Key：
+如果要通过 `api.moonup.dev` 或其他部署地址添加新 Key，先预设地址：
 
 ```sh
 magpie plugin options magpie-moonup '{"baseURL":"https://api.moonup.dev"}'
 magpie plugin login moonup
 ```
 
-`baseURL` 是新账号的默认地址，已保存账号继续使用自己的地址。高级配置也可以通过它指定测试或自托管地址。重复登录可添加其他 Key。新账号显示为 `moonup.dev · 密钥尾号 cbed`，完整地址和 Key 的摘要保存在内部，用于区分同尾号账号。已有账号保留身份和模型设置，因此更新后仍可能显示旧名称。提供商显示为 `moonup`，模型显示为 `moonup/<模型 ID>`，复合 Key 的分组前缀会保留。
+`baseURL` 是新账号的默认地址，已保存账号继续使用自己的地址。高级配置也可以通过它指定测试或自托管地址。重复运行命令，或在提供商的账号区域添加另一个账号，即可添加其他 Key。新账号显示为 `moonup.dev · 密钥尾号 cbed`，完整地址和 Key 的摘要保存在内部，用于区分同尾号账号。已有账号保留身份和模型设置，因此更新后仍可能显示旧名称。提供商显示为 `moonup`，模型显示为 `moonup/<模型 ID>`，复合 Key 的分组前缀会保留。
+
+### 密钥添加表单
+
+`0.1.5` 声明了原生 Key 表单信息，配合 [Magpie 兼容补丁](compat/README.md) 提供：
+
+- **获取密钥**：打开 `https://moonup.dev/keys`；自托管 TokenRouter 使用其部署路径下的 `/keys`。
+- **名称**：可选，作为新账号显示名；相同名称的不同 Key 仍通过内部身份区分。
+- **粘贴 Key**：单个输入框隐藏密钥内容；粘贴多个 Key 时自动切换到批量模式。
+- **批量粘贴**：支持换行、空格、逗号和分号，自动去重；部分失败时保留尚未处理的 Key，重试不会重新提交已成功的部分。
+- **协议**：任意协议、Anthropic、Responses、Chat Completions、Gemini。选择会影响该 Key 的模型发现和实际请求转发；服务端明确禁止的协议不会被覆盖。
+- **添加与取消**：沿用 Magpie 原生控件和菜单；窄窗口下自动换行。
+
+这不是现有 Magpie 的官方 `keyForm` 接口，而是本仓库附带的配套宿主扩展。已对照官方文档和 sub2api、Packycode 的实现：插件账号原本只能使用认证表单，不能仅通过插件字段启用普通提供商的完整 Key 编辑器。补丁在保留插件账号存储和路由的前提下补齐表单支持，具体接口及验证方式见兼容说明。
+
+**仅更新插件、未更新 Magpie 宿主时**，仍可直接填写单个 Key，按钮可能继续显示「登录」；完整表单需要兼容补丁并重新构建 Magpie。命令行 `magpie plugin login moonup` 继续保持只填 Key 的原有行为。
+
+### 从旧版升级
+
+升级无需删除账号、重新填 Key 或手动转换凭据文件：
+
+- 旧账号保存的 `metadata.baseURL` 始终优先于插件默认地址，包括 `api.moonup.dev` 和自定义部署路径。
+- 保留旧账号的 `accountId`、`uid` 和其他元数据，不改账号身份；Magpie 中按账号保存的模型选择、限额和路由设置继续使用原来的标识。
+- 缺少站点元数据的 Key 使用已配置的 `baseURL`，否则使用 `https://moonup.dev`。
+- 仍接受旧界面已提交的两个内置站点选择，兼容升级时尚未结束的添加流程。
+- 旧账号没有名称或协议元数据时，保留原来的显示身份和自动协议选择。新账号的名称与协议单独保存在 `metadata.name`、`metadata.protocol`，不会改变 Key 或旧账号的站点。
 
 插件通过 GitHub 分发，尚未发布 npm。安装后运行 `magpie plugin update` 更新。
 

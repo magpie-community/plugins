@@ -1,70 +1,72 @@
 # magpie-breeze-blue
 
-## 1. 这是什么
+## 1. What it is
 
-`magpie-breeze-blue` 是 Magpie 的 Breeze Blue TTS provider 插件。它把 Magpie 网关的 OpenAI 兼容 `POST /v1/audio/speech` 请求转换成 Breeze 官方 `/v1/text-to-speech/{voice_id}` 请求，并通过 `auth.usage` 把 Breeze 余额显示在 Magpie 的 provider 卡片/usage 中。
+`magpie-breeze-blue` is a [Breeze Blue](https://breezeblue.ai/) TTS provider plugin for Magpie. It turns Magpie gateway's OpenAI-compatible `POST /v1/audio/speech` requests into Breeze's [`/v1/text-to-speech/{voice_id}`](https://docs.breezeblue.ai/api-reference/text-to-speech/convert-text-to-speech) requests, and shows the Breeze balance on Magpie's provider card and usage through `auth.usage`.
 
-- provider id：`breeze`
-- 显示名：`BreezeBlue`
-- 模型：`breeze-tts-2`（显示名 `Breeze TTS 2`）
-- 联网目标只有 `https://api.breeze.blue`
-- 图标：`magpie.icon` 指向 BreezeBlue 官方 `https://breezeblue.ai/favicon.png`，不打包进本项目；图标版权归 BreezeBlue，如官方不希望第三方使用，可删除该字段或换回自绘图标。
+- provider id: `breeze`
+- display name: `BreezeBlue`
+- model: `breeze-tts-2` (display name `Breeze TTS 2`, `text` input, `audio` output)
+- UI copy: `en` / `zh` / `zh-TW` / `ja` / `de`, falling back to English
+- only network target: `https://api.breeze.blue`
+- icon: `magpie.icon` points to BreezeBlue's official `https://breezeblue.ai/favicon.png`; it is not bundled here. The icon belongs to BreezeBlue; remove the field or use your own icon if the vendor objects.
+- README languages: `README.md` (English), `README.zh-CN.md`, `README.zh-TW.md`, `README.ja.md`, `README.de.md`
 
-## 2. 安装
+## 2. Installation
 
-在项目根目录执行：
+Run this in the project folder:
 
 ```bash
-magpie plugin add ./            # 本地目录
-# 或发布后：magpie plugin add magpie-breeze-blue
+magpie plugin add ./            # local folder
+# or after publishing: magpie plugin add magpie-breeze-blue
 magpie plugin login breeze
 ```
 
-登录时填入 Breeze API Key（`brz_…`）。Key 保存在 Magpie 中，不会写进本项目的文件。
+Enter your [Breeze API key](https://docs.breezeblue.ai/authentication) (`brz_…`). Magpie keeps the key; nothing is written into this project.
 
-## 3. 使用 `/v1/audio/speech`
+## 3. Using `/v1/audio/speech`
 
-Magpie 网关默认监听 `http://127.0.0.1:3425`。请求体与 OpenAI TTS 一致：
+Magpie's gateway listens on `http://127.0.0.1:3425` by default. `breeze/breeze-tts-2` is declared audio-only, so it does not appear in `/v1/models` or Magpie's chat model picker; `/v1/audio/speech` still resolves it by `provider/model`. The body is OpenAI TTS-compatible:
 
 ```json
 {
   "model": "breeze/breeze-tts-2",
-  "input": "晚安啦",
+  "input": "Good night.",
   "voice": "voc_...",
   "response_format": "mp3",
-  "instructions": "用温柔的语气说",
+  "instructions": "Say it softly.",
   "speed": 1.05
 }
 ```
 
-`voice` 必须是 Breeze 账号下的真实音色 ID（`voc_…`），本项目不硬编码任何用户的音色。
+`voice` must be a real [Breeze voice id](https://docs.breezeblue.ai/api-reference/voices/list-voices) (`voc_…`) in your account; this project hardcodes no user's voice.
 
-对应的 `curl`：
+The matching `curl`:
 
 ```bash
 curl http://127.0.0.1:3425/v1/audio/speech \
   -H 'content-type: application/json' \
-  -d '{"model":"breeze/breeze-tts-2","input":"晚安啦","voice":"voc_...","response_format":"mp3","instructions":"用温柔的语气说","speed":1.05}' \
+  -d '{"model":"breeze/breeze-tts-2","input":"Good night.","voice":"voc_...","response_format":"mp3","instructions":"Say it softly.","speed":1.05}' \
   --output out.mp3
 ```
 
-### 3.1 参数
+### 3.1 Parameters
 
-| 字段 | 必填 | 默认 | 说明 |
+| Field | Required | Default | Notes |
 | --- | --- | --- | --- |
-| `input` | 是 | — | 要朗读的文本；空白字符串会返回 400 |
-| `voice` | 是 | — | Breeze 音色 ID，例如 `voc_...`；会作为 URL path 段编码 |
-| `response_format` | 否 | `mp3` | 见 3.2 的格式映射；未知值按 `mp3` |
-| `speed` | 否 | `1` | 夹取到 0.5–2；等于 1 时不发送 |
-| `instructions` | 否 | 不发送 | 语气/情绪指令 |
-| `language_code` | 否 | `zh` | Breeze 扩展字段，两位 ISO 639-1 代码 |
-| `model_id` | 否 | `breeze-tts-2` | Breeze 扩展字段 |
-| `guidance_scale` | 否 | `1` | Breeze 扩展字段，夹取到 1–10；等于 1 时不发送 |
-| `use_speaker_boost` | 否 | `false` | Breeze 扩展字段；仅当值为 `true` 时发送 |
+| `input` | yes | — | Text to read; a blank string returns 400 |
+| `voice` | yes | — | Breeze voice id, e.g. `voc_...`; URL-path encoded |
+| `response_format` | no | `mp3` | See 3.2 for the mapping; unknown values use `mp3` |
+| `speed` | no | `1` | Clamped to 0.5–2; not sent when 1 |
+| `instructions` | no | not sent | Tone or emotion instructions |
+| `language_code` | no | `zh` | Breeze extension, two-letter ISO 639-1 code |
+| `model_id` | no | `breeze-tts-2` | Breeze extension |
+| `guidance_scale` | no | `1` | Breeze extension, clamped to 1–10; not sent when 1 |
+| `use_speaker_boost` | no | `false` | Breeze extension; sent only when `true` |
 
-`voice_settings` 只在 `speed`、`guidance_scale` 或 `use_speaker_boost` 有非默认值时才出现在 Breeze 请求体中。
+`voice_settings` appears in the Breeze request body only when `speed`, `guidance_scale`, or `use_speaker_boost` has a non-default value.
 
-### 3.2 格式映射
+### 3.2 Format mapping
 
 | `response_format` | Breeze `output_format` |
 | --- | --- |
@@ -74,13 +76,13 @@ curl http://127.0.0.1:3425/v1/audio/speech \
 | `aac` | `aac_24000_128` |
 | `flac` | `flac_24000` |
 | `pcm` | `pcm_24000` |
-| 其他值 | `mp3` |
+| other values | `mp3` |
 
-成功时原样返回 Breeze 的音频二进制和 `content-type`；Breeze 没有给出时默认 `audio/mpeg`。
+On success the plugin returns Breeze's audio bytes and `content-type` unchanged; it defaults to `audio/mpeg` when Breeze gives none.
 
-### 3.3 错误
+### 3.3 Errors
 
-Breeze 返回 `{code, detail, error}` 时，插件保留 HTTP 状态，并转换成 OpenAI 形状：
+When Breeze returns `{code, detail, error}`, the plugin keeps the HTTP status and converts the body to OpenAI's shape:
 
 ```json
 {
@@ -93,45 +95,51 @@ Breeze 返回 `{code, detail, error}` 时，插件保留 HTTP 状态，并转换
 }
 ```
 
-本地校验失败返回 400；非 `/v1/audio/speech` 路径返回 404；非 POST 返回 405。所有错误都不会把 API Key 写进消息或日志。
+Local validation failures return 400; paths other than `/v1/audio/speech` return 404; methods other than POST return 405. No error ever puts the API key into a message or log.
 
-## 4. 余额
+## 4. Balance
 
-`auth.usage` 会请求 Breeze `GET /v1/balance`，并返回 Magpie 的 wallet window：
+`auth.usage` requests Breeze [`GET /v1/balance`](https://docs.breezeblue.ai/api-reference/account/get-account-balance) and returns a Magpie wallet window:
 
 ```js
 {
   plan: 'BreezeBlue',
-  windows: [{ name: '余额', balance: 1635.6, unit: '积分' }]
+  windows: [{ name: 'Balance', balance: 1635.6, unit: 'Credits' }]
 }
 ```
 
-`settlement_pending` 为 `true` 时，窗口会带上 `aside: true`，避免路由把它当作会立即耗尽账户的额度。查询失败时返回 `windows: []` 和 `error` 文本，不会把异常抛到 Magpie 外层。
+When `settlement_pending` is `true`, the window carries `aside: true` so routing does not treat it as an allowance that runs out immediately. A failed read returns `windows: []` and an `error` string; nothing is thrown to Magpie.
 
-余额只显示在 Magpie 的 provider 卡片/usage 中。用量卡片还会显示一行「在 breezeblue.ai/app 手动领取」的提示。
+The balance appears only on Magpie's provider card and usage. The usage card also shows a daily-credits window pointing at [`breezeblue.ai/app`](https://breezeblue.ai/app) for manual claiming.
 
-## 5. 网络与安全
+### 4.1 UI languages
 
-- 插件只访问 `https://api.breeze.blue`：`/v1/text-to-speech/{voice_id}` 和 `/v1/balance`。
-- 自定义 `fetch` 只处理 `/v1/audio/speech`，其他路径直接返回 JSON 错误，不会转发到 Breeze。
-- 发往 Breeze 的请求只带 Breeze 的 `xi-api-key`；不会转发 Magpie 收到的 `authorization` 等请求头。
-- API Key 不会出现在日志、错误消息或返回体中。
-- 包本身不引入任何 npm 运行时依赖。
+- `Balance`, `Credits`, and `Manual` are Magpie's English canonical names, translated by Magpie into the current UI language; `display` stays a language-neutral URL.
+- `auth.methods[].labels` provides sign-in copy for `zh`, `zh-TW`, `ja`, and `de`; other languages fall back to the English `label`.
+- `magpie.summary` provides the plugin summary for `en`, `zh`, `ja`, and `de`; Magpie's Discover card selects by two-letter language code, so `zh-TW` falls back to `zh`.
 
-## 6. 兼容性
+## 5. Network and security
 
-需要支持 provider 插件与 `/v1/audio/speech` 的 Magpie 版本。开发时参考 Magpie `0.1.2800` 的插件接口（`config` / `auth.loader` / `auth.usage` / `provider.models`）；更低版本未验证。
+- The plugin talks only to `https://api.breeze.blue`: `/v1/text-to-speech/{voice_id}` and `/v1/balance`.
+- The custom `fetch` handles only `/v1/audio/speech`; every other path returns a JSON error and is never forwarded to Breeze.
+- Requests to Breeze carry only Breeze's `xi-api-key`; headers such as Magpie's `authorization` are not forwarded.
+- The API key never appears in logs, error messages, or response bodies.
+- The package has no npm runtime dependencies.
 
-测试运行器需要 Node.js 18 或更高版本；插件本身运行在 Magpie 的插件宿主中。
+## 6. Compatibility
 
-## 7. 开发与测试
+Developed and verified against Magpie `0.1.4280` and its plugin interfaces (`config` / `auth.loader` / `auth.usage` / `provider.models`); older versions are unverified.
+
+The test runner requires Node.js 18 or newer; the plugin itself runs in Magpie's plugin host.
+
+## 7. Development and tests
 
 ```bash
 node --test
 ```
 
-测试使用 `node:test`，通过注入 `fetchImpl` 覆盖请求映射、错误透传和余额解析，不访问真实 Breeze 网络。
+The tests use `node:test` and inject `fetchImpl` to cover request mapping, error pass-through, and balance parsing without touching the real Breeze network.
 
-## 8. 许可证
+## 8. License
 
-MIT，见 `LICENSE`。
+MIT, see `LICENSE`.

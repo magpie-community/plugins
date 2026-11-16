@@ -35,6 +35,9 @@
 
 共 8 个模型。推理挡位、流式输出、`reasoning_content`、function calling 都保留。
 
+模型是否能实际调用仍取决于账号和上游开通状态。未开通的条目会返回
+`404 model_unavailable`，插件不会因此把整个账号标记为登录失效。
+
 ## 安装
 
 ```bash

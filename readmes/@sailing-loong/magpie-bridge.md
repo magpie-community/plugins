@@ -100,7 +100,7 @@ Codex 使用已安装官方客户端的登录流程，支持现有文件凭据�
 LoongPass 的 Magpie 插件安装、独立发布、账号授权与社区收录说明见
 [LoongPass for Magpie](docs/magpie-plugin.md)。可在 Magpie 的手动安装框输入
 `github:SailingLoong/LoongPass`，或运行 `magpie plugin add github:SailingLoong/LoongPass`。
-插件连接本机 LoongPass；多账号、辅助自动签到、余额与到期管理、即将过期的适用积分优先使用、
+插件连接本机 LoongPass；多账号、辅助签到、余额与到期管理、即将过期的适用积分优先使用、
 官方 App 账号切换等能力由 LoongPass 提供，各平台支持与验收范围分别说明。
 
 插件授权到 LoongPass 本机服务，使用应用保存的账号与逐账号本地调用授权。
