@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/page-vibe-astock",
+  "version": "0.1.1",
+  "description": "A page in magpie's window that wires Vibe AStock (A-share short-line workbench) to this gateway: the base URL, key and model names to paste, in four steps",
+  "files": [
+    "page",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "vibe-astock",
+    "a-share",
+    "gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/vibe-astock"
+  },
+  "magpie": {
+    "page": {
+      "title": "Vibe AStock",
+      "titles": {
+        "en": "Connect Vibe AStock",
+        "zh": "Vibe AStock 接入"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg"
+    }
+  }
+}
