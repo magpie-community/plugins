@@ -341,7 +341,9 @@ off unless you turn it on.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
-  than guessing.
+  than guessing. Hermes Agent writes one batching `tool_call({"calls": [...]})`
+  into its history as one call per entry; the plugin folds those back into the
+  one call agy made, with one result (#1150).
 - **Turning thought summaries off**: set `AGY_BRIDGE_THINKING=0`, or send
   `thinking: { "type": "disabled" }` with the request.
 

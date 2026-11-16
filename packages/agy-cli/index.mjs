@@ -4131,6 +4131,81 @@ function lastAssistantCalls(messages) {
     ? message.content.filter(block => block.type === "tool_use") : [])
 }
 
+// A bridge call's id, as #handleMcpCall makes it.
+const BRIDGE_CALL_ID = /^toolu_[0-9a-f]{24}$/
+
+// Hermes Agent unrolls a batching call it executes, tool_call({calls: [a, b,
+// c]}), into one tool_call per entry in its own history: the first keeps the
+// bridge's id, the others get ids of Hermes' own (call_<hex>), and each gets
+// a result (NieiR, plugins#1150). No call but the first is agy's, so their
+// results matched nothing and the turn ended in 409. Folded back here, the
+// round is the one agy made: one call, its input's array the entries joined
+// in order, and one result, the entries' results joined in order. Folded
+// only when a run of same-named calls opens with a bridge id, every other
+// one has an id the bridge never makes, and every input is an object with
+// the same single array field.
+function foldSplitCalls(body) {
+  const messages = body?.messages
+  if (!Array.isArray(messages)) return body
+  let changed = false
+  const out = messages.map((message) => message)
+  for (let index = 0; index < out.length; index++) {
+    const message = out[index]
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue
+    const uses = message.content.filter((block) => block?.type === "tool_use")
+    if (uses.length < 2) continue
+    const head = uses[0]
+    if (!BRIDGE_CALL_ID.test(head.id ?? "") || uses.slice(1).some((use) => BRIDGE_CALL_ID.test(use.id ?? "") || !use.id)) continue
+    if (uses.some((use) => use.name !== head.name)) continue
+    const keyOf = (use) => {
+      const input = use.input
+      if (!input || typeof input !== "object" || Array.isArray(input)) return null
+      const keys = Object.keys(input)
+      return keys.length === 1 && Array.isArray(input[keys[0]]) ? keys[0] : null
+    }
+    const key = keyOf(head)
+    if (!key || uses.some((use) => keyOf(use) !== key)) continue
+    const ids = new Set(uses.map((use) => use.id))
+    if (ids.size !== uses.length) continue
+    // the results: in the messages after this one, up to the next assistant
+    const results = []
+    let end = index + 1
+    while (end < out.length && out[end]?.role !== "assistant") end++
+    for (let at = index + 1; at < end; at++) {
+      const content = out[at]?.content
+      if (!Array.isArray(content)) continue
+      for (const block of content) if (block?.type === "tool_result" && ids.has(block.tool_use_id)) results.push(block)
+    }
+    // a round still waiting has no results; one with some missing is left as it is
+    if (results.length && results.length !== uses.length) continue
+    const folded = { ...head, input: { [key]: uses.flatMap((use) => use.input[key]) } }
+    out[index] = { ...message, content: message.content.filter((block) => block?.type !== "tool_use" || block === head).map((block) => (block === head ? folded : block)) }
+    if (results.length) {
+      const byId = new Map(results.map((block) => [block.tool_use_id, block]))
+      const parts = (block) => typeof block.content === "string" ? [{ type: "text", text: block.content }]
+        : Array.isArray(block.content) ? block.content : block.content == null ? [] : [block.content]
+      const ordered = uses.map((use) => byId.get(use.id))
+      const merged = { ...byId.get(head.id), content: ordered.flatMap(parts) }
+      if (ordered.every((block) => block.is_error)) merged.is_error = true
+      else delete merged.is_error
+      for (let at = index + 1; at < end; at++) {
+        const content = out[at]?.content
+        if (!Array.isArray(content) || !content.some((block) => block?.type === "tool_result" && ids.has(block.tool_use_id))) continue
+        out[at] = { ...out[at], content: content.flatMap((block) => {
+          if (block?.type !== "tool_result" || !ids.has(block.tool_use_id)) return [block]
+          return block.tool_use_id === head.id ? [merged] : []
+        }) }
+      }
+      // a message left with nothing (its results all folded away) goes
+      for (let at = end - 1; at > index; at--) {
+        if (Array.isArray(out[at]?.content) && out[at].content.length === 0) { out.splice(at, 1); end-- }
+      }
+    }
+    changed = true
+  }
+  return changed ? { ...body, messages: out } : body
+}
+
 function matchToolResults(body, blocks) {
   const direct = blocks.map(block => ({ block, match: toolCalls.get(block.tool_use_id) }))
   if (direct.every(item => item.match)) return direct
@@ -6360,7 +6435,7 @@ export const AntigravityBridgePlugin = async () => {
             // One canonical form for both opening-system layouts, before anything
             // derives a key, instructions or history from the body.
             const layout = requestLayout(body)
-            body = { ...canonicalBody(body), model: requestedModel }
+            body = { ...foldSplitCalls(canonicalBody(body)), model: requestedModel }
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }

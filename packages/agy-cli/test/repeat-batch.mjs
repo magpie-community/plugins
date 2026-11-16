@@ -227,6 +227,67 @@ test("A9: tool calls agy issues across adjacent event-loop turns leave in one re
   })
 })
 
+// ------------------------------------- A9b a batching call split by the client
+
+const BATCH_TOOL = {
+  name: "tool_call",
+  description: "Run several tools in one call.",
+  input_schema: { type: "object", properties: { calls: { type: "array", items: { type: "object" } } }, required: ["calls"] },
+}
+
+// Hermes Agent runs tool_call({calls: [a, b, c]}) and writes it into its
+// history as three tool_calls of one entry each, the first under the bridge's
+// id and the others under ids of its own, each with a result (plugins#1150).
+function splitByClient(body, first, results) {
+  const use = first.content.find((block) => block.type === "tool_use")
+  const ids = [use.id, "call_0a1b2c3d4e5f", "call_6a7b8c9d0e1f"]
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content: use.input.calls.map((entry, index) => ({ type: "tool_use", id: ids[index], name: use.name, input: { calls: [entry] } })) },
+      { role: "user", content: ids.map((id, index) => ({ type: "tool_result", tool_use_id: id, content: results[index] })) },
+    ],
+  }
+}
+
+test("A9b: a batching call the client split into one call per entry is one result for agy (#1150)", async () => {
+  await withKit({}, async (kit) => {
+    let reply
+    const calls = [{ name: "web_search", arguments: { q: "a" } }, { name: "web_search", arguments: { q: "b" } }, { name: "terminal", arguments: { cmd: "c" } }]
+    kit.prompts.push(async (agent) => {
+      reply = await agent.tool("tool_call", { calls })
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    })
+    const body = baseBody({ metadata: { user_id: "split" }, tools: [BATCH_TOOL] })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.stopReason, "tool_use")
+    const response = await kit.request(splitByClient(body, first, ["result a", "result b", "result c"]))
+    const status = response.status
+    const final = status === 200 ? await readSse(response) : await response.text()
+    assert.equal(status, 200, typeof final === "string" ? final : "")
+    assert.equal(final.stopReason, "end_turn")
+    const text = (reply?.result?.content ?? reply?.content ?? []).map((part) => part.text).join("\n")
+    assert.match(text, /result a[\s\S]*result b[\s\S]*result c/)
+  })
+})
+
+test("A9b: separate calls the bridge made are never folded into one (#1150)", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      await agent.tools([["tool_call", { calls: [{ name: "x" }] }], ["tool_call", { calls: [{ name: "y" }] }]])
+      await agent.text("done")
+      return { stopReason: "end_turn" }
+    })
+    const body = baseBody({ metadata: { user_id: "apart" }, tools: [BATCH_TOOL] })
+    const first = await readSse(await kit.request(body))
+    assert.equal(first.content.filter((block) => block.type === "tool_use").length, 2)
+    const final = await readSse(await kit.request(continueWithToolResults(body, first)))
+    assert.equal(final.stopReason, "end_turn")
+  })
+})
+
 // ------------------------------------------------- A10 canonical system rule
 
 test("A10: only the opening system prefix is lifted, so a trailing system context keeps the key across turns", async () => {
