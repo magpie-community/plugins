@@ -26,6 +26,7 @@ for (const [name, mocks] of [
   ["tool-summary.mjs", false],
   ["usage-settlement.mjs", false],
   ["steer-in-session.mjs", false],
+  ["dropped-call.mjs", false],
   ["repeat-batch.mjs", false],
   ["conversation-key.mjs", false],
   ["windows-nc.mjs", false],

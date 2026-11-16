@@ -98,6 +98,7 @@ const NO_PROGRESS_REPEAT_WINDOW_MS = 10 * 60 * 1000
 const NO_PROGRESS_REPEAT_MAX_ENTRIES = 256
 const POOL_PRESSURE_NOTE = "agy bridge: this tool call was closed to free an agy process for another conversation; stop this turn"
 const SUPERSEDED_NOTE = "agy bridge: this tool call was superseded because the client conversation continued without it; stop this turn"
+const DROPPED_NOTE = "agy bridge: cancelled by the client, not executed; the conversation continues with the next message"
 const SELF_POLL_IDLE_TIMEOUT_MS = positiveTimeout(process.env.AGY_BRIDGE_SELF_POLL_IDLE_TIMEOUT_MS, 20 * 60 * 1000)
 const SELF_POLL_LIMIT = positiveTimeout(process.env.AGY_BRIDGE_SELF_POLL_LIMIT, 8)
 // A conflict retrying can never fix: SDKs that honour this header (Anthropic
@@ -3322,7 +3323,13 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     existing = null
   }
   if (existing && !existing.dead && existing.turn) {
-    const lineage = lineageVerdict(existing, existing.turn, opts)
+    let lineage = lineageVerdict(existing, existing.turn, opts)
+    if (lineage === "dropped") {
+      const held = existing.turn
+      const kept = await keepDroppedTurn(existing, held, opts)
+      logBridgeEvent(existing, held, kept ? "kept" : "keep_failed", "lineage_dropped", opts)
+      if (!kept) lineage = "fork"
+    }
     if (lineage === "fork" || lineage === "answered") {
       const orphan = existing.turn
       logBridgeEvent(existing, orphan, "superseded", lineage === "fork" ? "lineage_fork" : "lineage_answered", opts,
@@ -3581,7 +3588,33 @@ function lineageVerdict(proc, turn, opts) {
   if (!carried && !recorded && Array.isArray(expected) && expected.length > base.length &&
     history.length === expected.length &&
     historyKey(withoutInputs(history)) === historyKey(withoutInputs(expected))) return null
+  // Codex keeps the text of a reply it interrupts (a sub-agent's message at a
+  // sampling boundary) but drops the reply's tool calls, then sends on (#1231).
+  // The client's history is this session's with only the pending calls taken
+  // out, so the session can answer them as cancelled and go on, keeping its
+  // cached prefix, instead of replaying the conversation in a new one.
+  if (!carried && !recorded && !opts.hasToolResults && droppedPendingCalls(turn, expected, base, history)) return "dropped"
   return carried || recorded ? "conflict" : "fork"
+}
+
+// The recorded history with the turn's unanswered calls removed is exactly the
+// client's, and the reply that carried them kept something else (its text).
+function droppedPendingCalls(turn, expected, base, history) {
+  if (!Array.isArray(expected) || expected.length <= base.length || history.length !== expected.length) return false
+  const pending = new Set(turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => call.id))
+  if (!pending.size) return false
+  let removed = 0
+  const stripped = expected.map((message) => {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) return message
+    const content = message.content.filter((block) => !(block?.type === "tool_use" && pending.has(block.id)))
+    removed += message.content.length - content.length
+    return { ...message, content }
+  })
+  if (removed !== pending.size) return false
+  const last = stripped.at(-1)
+  if (last?.role !== "assistant" || !last.content.some((block) => block?.type === "text" && block.text?.trim())) return false
+  if (stripped.slice(base.length).some((message) => Array.isArray(message.content) && !message.content.length)) return false
+  return historyKey(stripped) === historyKey(history)
 }
 
 // Every tool_use of the turn's calls in messages has a tool_result after it.
@@ -3614,6 +3647,24 @@ function replayHistoryProblem(body, resultBlocks) {
     answered.add(block.tool_use_id)
   }
   return answered.size === ids.size ? null : "missing_tool_result"
+}
+
+// Answers the calls the client dropped as cancelled and leaves the session at
+// the client's history, ready for its next message. False when the session
+// can't take it as it is; the caller then replays, as for a fork.
+async function keepDroppedTurn(proc, turn, opts) {
+  if (proc.toolsGrew(opts.tools) || proc.workDir !== opts.workDir ||
+    !sameInstructions(proc.instructions, opts.instructions)) return false
+  const results = turn.calls.filter((call) => call.id && !call.result && !call.mcpResponded).map((call) => ({
+    block: { tool_use_id: call.id },
+    call,
+    result: { content: [{ type: "text", text: DROPPED_NOTE }], isError: true },
+  }))
+  try {
+    return await proc.steerInSession(turn, results, opts.history)
+  } catch {
+    return false
+  }
 }
 
 async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn closed") {
