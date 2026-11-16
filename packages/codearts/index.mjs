@@ -3744,21 +3744,26 @@ const OA_SERVICE = "apic"
 /** The OAuth client OfficeAce's own sign-in uses (its old package's refreshes). */
 const OA_AGENTARTS_CLIENT_ID = "pdp5_for_agentarts"
 const OA_RATES_TTL_MS = 20 * 60 * 1000
+const OA_RATES_RETRY_MS = 400
 const OA_REFRESH_LEAD_MS = 10 * 60 * 1000
 const OA_TOKEN_TIMEOUT_MS = 30_000
 
-/** The models OfficeAce shows before anyone is signed in (its own desktop list). */
+/**
+ * The models shown before a sign-in, and while an account's rates table has
+ * never been read: the ids a signed-in account could call (catalog ∩ rates),
+ * as measured on 2026-11-16 (#1197). Kept to that set, so a fallback never
+ * lists an id the catalog has dropped.
+ */
 const OA_FALLBACK_MODELS = {
   "glm-5.3": { name: "GLM-5.3", context: 1_000_000, output: 128_000 },
+  "glm-5.3-flash": { name: "GLM-5.3-Flash", context: 1_000_000, output: 128_000 },
   "glm-5.2": { name: "GLM-5.2", context: 1_000_000, output: 128_000 },
   "glm-5.1": { name: "GLM-5.1", context: 1_000_000, output: 128_000 },
-  "deepseek-v4": { name: "DeepSeek-V4", context: 1_000_000, output: 128_000 },
-  "deepseek-v4.1": { name: "DeepSeek-V4.1", context: 1_000_000, output: 128_000 },
-  "qwen3-30b": { name: "Qwen3 30B", context: 1_000_000, output: 128_000 },
-  "qwen3-32b": { name: "Qwen3 32B", context: 1_000_000, output: 128_000 },
-  "kimi-k2.6": { name: "Kimi-K2.6", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-pro": { name: "盘古 2.0 Pro", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-flash": { name: "盘古 2.0 Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4-flash-0731": { name: "DeepSeek-V4-Flash-0731", context: 1_000_000, output: 128_000 },
+  "kimi-k3": { name: "Kimi-K3", context: 1_000_000, output: 128_000 },
+  "kimi-k3.1-pro-highspeed": { name: "Kimi-K3.1-Pro-HighSpeed", context: 1_000_000, output: 128_000 },
+  "openpangu-2.1-pro": { name: "openPangu-2.1-Pro", context: 1_000_000, output: 128_000 },
 }
 
 /**
@@ -4048,16 +4053,32 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     return hit?.map ?? new Map()
   }
 
+  // A read with no table to fall back on is tried once more: a start-up blip
+  // would otherwise leave the account on the fallback list until the next
+  // listing (#1197).
+  const tries = hit ? 1 : 2
+  let map = new Map()
+  for (let i = 0; i < tries && map.size === 0; i++) {
+    if (i > 0) await new Promise((res) => setTimeout(res, OA_RATES_RETRY_MS))
+    map = await readOfficeAceTokenRates(cred, fetcher).catch(() => new Map())
+  }
+  if (map.size === 0) return keepStale()
+  oaRatesCache.set(identity, { at: Date.now(), map })
+  return map
+}
+
+/** One read of the billable list; an unreadable answer is an empty table. */
+async function readOfficeAceTokenRates(cred, fetcher) {
   const r = await officeAceSigned(cred, `${OA_SUBSCRIPTION_BASE}${OA_TOKEN_RATES_PATH}`, "GET", undefined, fetcher)
-  if (!r.ok) return keepStale()
+  const map = new Map()
+  if (!r.ok) return map
   let j
   try {
     j = JSON.parse(r.text)
   } catch {
-    return keepStale()
+    return map
   }
   const rows = Array.isArray(j) ? j : Array.isArray(j?.models) ? j.models : Array.isArray(j?.data) ? j.data : Array.isArray(j?.rates) ? j.rates : []
-  const map = new Map()
   for (const row of rows) {
     const raw = row?.model_name ?? row?.modelName ?? row?.model ?? row?.name
     // the vendor's `model_name` carries a trailing newline ("kimi-k3\n")
@@ -4065,8 +4086,6 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     const rate = Number(row?.cost_coefficient ?? row?.costCoefficient ?? row?.rate)
     if (name && Number.isFinite(rate)) map.set(name, rate)
   }
-  if (map.size === 0) return keepStale()
-  oaRatesCache.set(identity, { at: Date.now(), map })
   return map
 }
 
@@ -4787,11 +4806,14 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
             rates = null
           }
           // An empty rates table means "never read", not "no model is billable":
-          // fall back to the static table rather than the registry's 26 ids, 19
-          // of which the user can select and then only fail at chat.
+          // never the registry's 26 ids, 19 of which the user can select and then
+          // only fail at chat. The catalog cut to the known-callable ids instead,
+          // so an id the catalog has dropped is not listed either (#1197).
           if (!rates || rates.size === 0) {
-            log("倍率表不可用（空表）—— 目录降级为静态表，不列出注册表占位 id", "warn")
-            return provider.models
+            log("倍率表不可用（空表）—— 目录只列出已知可调用的 id", "warn")
+            const known = rows.filter((row) => Object.hasOwn(OA_FALLBACK_MODELS, row.id))
+            const live = officeAceLiveModels(known, base, null)
+            return Object.keys(live).length > 0 ? live : provider.models
           }
           const live = officeAceLiveModels(rows, base, rates)
           if (Object.keys(live).length === 0) {

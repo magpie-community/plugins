@@ -3518,16 +3518,51 @@ test("a failed rates read keeps the last good table; one that never read it fall
   const after = await plugin.provider.models(cfg.provider.officeace, { auth: first.record })
   assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort())
 
-  // an account that never read a rates table gets the static list, never the registry
+  // an account that never read a rates table gets the catalog cut to the
+  // known-callable ids: never the registry, and never a fallback id the
+  // catalog has dropped (#1197)
   const fresh = await officeAceAuthRecord({}, "iam::d1:user:hw0201")
-  const { fetcher: downFetcher } = oaFetcher((url) =>
+  const { fetcher: downFetcher, seen: downSeen } = oaFetcher((url) =>
     url.endsWith("/v2/models") ? new Response(JSON.stringify(oaCatalogBody()), { status: 200 }) : undefined,
   )
   const other = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: downFetcher })
   const cfg2 = { provider: {} }
   await other.config(cfg2)
   const fallback = await other.provider.models(cfg2.provider.officeace, { auth: fresh.record })
-  assert.deepEqual(Object.keys(fallback).sort(), Object.keys(oa.OA_FALLBACK_MODELS).sort())
+  assert.deepEqual(Object.keys(fallback).sort(), ["glm-5.3", "kimi-k3"])
+  for (const id of Object.keys(fallback)) assert.ok(Object.hasOwn(oa.OA_FALLBACK_MODELS, id))
+  // with no table to keep, a failed read was tried a second time
+  assert.ok(downSeen.filter((c) => c.url.includes("/v1/model-token-rates")).length >= 2)
+})
+
+test("a rates read that fails once at start-up is tried again, and the account gets its own list (#1197)", async () => {
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0202")
+  let ratesCalls = 0
+  const { fetcher } = oaFetcher((url) => {
+    if (url.endsWith("/v2/models")) return new Response(JSON.stringify(oaCatalogBody()), { status: 200 })
+    if (url.includes("/v1/model-token-rates")) {
+      ratesCalls++
+      return ratesCalls === 1 ? new Response("blip", { status: 502 }) : new Response(JSON.stringify(oaRatesBody()), { status: 200 })
+    }
+    return undefined
+  })
+  // one read, as the catalog makes it: the blip is tried again inside it
+  const rates = await oa.fetchOfficeAceTokenRates(oa.officeAceCredentialOf(record), fetcher)
+  assert.equal(rates.size, 5)
+  assert.equal(ratesCalls, 2)
+  // and the listing that follows is the account's own, from the table now held
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const cfg = { provider: {} }
+  await plugin.config(cfg)
+  const models = await plugin.provider.models(cfg.provider.officeace, { auth: record })
+  assert.deepEqual(Object.keys(models).sort(), ["deepseek-v4.1-flash-0930", "glm-5.3", "kimi-k3"])
+  assert.equal(ratesCalls, 2)
+})
+
+test("the fallback list holds no id OfficeAce has dropped (#1197)", () => {
+  for (const id of ["deepseek-v4", "deepseek-v4.1", "qwen3-30b", "qwen3-32b", "kimi-k2.6", "pangu-2.0-pro", "pangu-2.0-flash"]) {
+    assert.equal(Object.hasOwn(oa.OA_FALLBACK_MODELS, id), false, id)
+  }
 })
 
 test("before a sign-in the OfficeAce provider still lists its models", async () => {
