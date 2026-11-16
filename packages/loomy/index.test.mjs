@@ -175,6 +175,48 @@ describe("chat", () => {
     expect(res.status).toBe(401)
   })
 
+  // the real gateway refuses a dropped session with HTTP 200 and code
+  // 100002, a stream asked for too; passed through as a 200 it was a
+  // success to magpie, which took the account's signed-out mark off until
+  // the next usage read put it back (jenxingyoung on X, "轮着掉登录")
+  test("a dropped session's 200 with code 100002 is a 401 that says the sign-in expired", async () => {
+    for (const stream of [true, false]) {
+      saved = { type: "oauth", access: "dropped", expires: 0 }
+      const loader = await plugin.auth.loader(getAuth)
+      const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({ model: "spark-x", stream, messages: [{ role: "user", content: "hi" }] }),
+      })
+      expect(res.status).toBe(401)
+      expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+      expect((await res.json()).error.message).toContain("登录已失效")
+    }
+  })
+
+  test("another business code in a 200 is a 502 with the vendor's words, the sign-in left alone", async () => {
+    fake.state.chatCode = { code: "100005", desc: "积分不足" }
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "spark-x", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(502)
+    expect(res.headers.get("x-magpie-sign-in")).toBeNull()
+    const msg = (await res.json()).error.message
+    expect(msg).toContain("积分不足")
+    expect(msg).toContain("100005")
+  })
+
+  test("a completion that isn't streamed comes back whole", async () => {
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "spark-x", stream: false, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ id: "c1", model: "spark-x", choices: [{ index: 0, message: { role: "assistant", content: "你好" }, finish_reason: "stop" }] })
+  })
+
   test("only chat completions and image generations are served", async () => {
     const loader = await plugin.auth.loader(getAuth)
     for (const path of ["/api/v1/embeddings", "/api/v1/images/edits"]) {
@@ -221,6 +263,15 @@ describe("images (#609)", () => {
       expect(res.status).toBe(401)
       expect((await res.json()).error.message).toContain("登录态已失效")
     }
+  })
+
+  test("a dropped session's 200 with code 100002 is a 401 that says the sign-in expired", async () => {
+    saved = { type: "oauth", access: "dropped", expires: 0 }
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
+    expect(res.status).toBe(401)
+    expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+    expect(fake.state.imageCalls).toHaveLength(0)
   })
 
   test("another upstream error keeps its status and says what came back", async () => {
