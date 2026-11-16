@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const source = "scripts/proc.mjs";
 export const procTargets = [
   "packages/agent-console/lib/proc.mjs",
