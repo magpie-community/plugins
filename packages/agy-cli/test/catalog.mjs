@@ -731,3 +731,32 @@ test("#1218 an agy whose help doesn't list --settings still runs a bare agy mode
     for (const spawn of kit.modelsSpawns) assert.deepEqual(spawn.args, ["models"])
   })
 })
+
+// #1229: two accounts on different plans. agy offers one Claude and the
+// other Gemini only; each account's models() lists its own, and neither
+// account's session changes what the other lists.
+test("#1229 每个账号列自己开放的型号，互不覆盖", async () => {
+  const otherAuth = { type: "oauth", metadata: { agyHome: "otheracct1" } }
+  await withKit({
+    modelsBehavior: DYNAMIC_OK,
+    offeredModels: (home) => /otheracct1$/.test(home) ? OFFERED_ALL.filter(([id]) => id.startsWith("gemini-")) : OFFERED_CLAUDE,
+  }, async (kit) => {
+    // the other account is signed in in its own home, as agy writes it
+    const token = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "otheracct1", ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, JSON.stringify({ token: { access_token: "test-access", refresh_token: "test-refresh", expiry: "0001-01-01T00:00:00Z" } }))
+    const own = () => kit.plugin.provider.models()
+    const other = () => kit.plugin.provider.models(undefined, { auth: otherAuth })
+    await own()
+    await warmed(kit)
+    assertClaudeListed(await own(), "默认账号")
+    await other()
+    await warmed(kit)
+    const otherList = await other()
+    assert.ok(otherList["gemini-4-argon"])
+    assert.deepEqual(ids(otherList).filter(id => /^(?:claude|gpt)-/.test(id)), [], "另一个账号列出了它没开放的型号")
+    // the other account's probe didn't change the first account's list
+    assertClaudeListed(await own(), "另一个账号探测之后的默认账号")
+    assert.ok(kit.acpSpawns.some(spawn => /otheracct1$/.test(spawn.env?.HOME ?? "")), "另一个账号该在自己的 HOME 里探测")
+  })
+})

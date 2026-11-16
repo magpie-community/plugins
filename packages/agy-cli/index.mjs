@@ -8,7 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
-import { storeCatalogRows } from "./model-ids.mjs"
+import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
@@ -464,7 +464,7 @@ async function probeSignedIn(agy) {
     if (list) {
       useAgyPath(agy)
       storeListedCatalog(agy, list, Date.now())
-      wantOfferedProbe = true
+      ms().wantOfferedProbe = true
       await briefly(probeOfferedOnce(agy), OFFERED_SIGNIN_WAIT_MS)
     }
     return { ok: true }
@@ -486,18 +486,44 @@ const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
 const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000
 const MODEL_CATALOG_FAST_WAIT_MS = 500
 const MODEL_CATALOG_RETRY_MS = 5_000
-let modelCatalogRefreshPromise = null
-let cachedModelCatalog = fallbackModelCatalog()
-// A caller lists models (provider.models), so a listing that lands asks agy
-// acp what it offers right away, not on the next models() call (#1064).
-let wantOfferedProbe = false
 
-// `agy models` lists every model of the account, while agy's ACP server offers
-// a client only some of them. A session's model option (and its
-// models.availableModels) says which; the catalog keeps to that. Before any
-// session has said, only Gemini models are served.
-let acpOfferedModels = null
-let acpOfferedKey = ""
+// What is learnt of the models is each account's own (#1229): accounts on
+// different plans list and are offered different models, so one account's
+// session no longer changes what another lists. magpie asks every
+// account's models() in that account (inAccount), serves their union, and
+// sends a request for a model only to an account that lists it.
+//
+// - cachedModelCatalog: the last `agy models` list (static until one).
+// - modelCatalogRefreshPromise: the listing running now.
+// - wantOfferedProbe: a caller lists models (provider.models), so a listing
+//   that lands asks agy acp what it offers right away, not on the next
+//   models() call (#1064).
+// - acpOfferedModels, acpOfferedKey: `agy models` lists every model of the
+//   account, while agy's ACP server offers a client only some of them. A
+//   session's model option (and its models.availableModels) says which;
+//   the catalog keeps to that. Before any session has said, only Gemini
+//   models are served.
+// - offeredProbePromise, offeredProbeAt, offeredGen: the probe below.
+const modelStates = new Map()
+
+function ms() {
+  const home = currentHome() ?? ""
+  let state = modelStates.get(home)
+  if (!state) {
+    state = {
+      cachedModelCatalog: fallbackModelCatalog(),
+      modelCatalogRefreshPromise: null,
+      wantOfferedProbe: false,
+      acpOfferedModels: null,
+      acpOfferedKey: "",
+      offeredProbePromise: null,
+      offeredProbeAt: null,
+      offeredGen: 0,
+    }
+    modelStates.set(home, state)
+  }
+  return state
+}
 
 function offeredModelsOf(configOptions, models) {
   const out = []
@@ -515,23 +541,23 @@ function noteOfferedModels(configOptions, models) {
   if (!offered.length) return
   const names = new Map(offered.map(model => [model.id, typeof model.name === "string" && model.name ? model.name : model.id]))
   const key = [...names.keys()].sort().join("\n")
-  if (key === acpOfferedKey) return
-  acpOfferedModels = names
-  acpOfferedKey = key
-  if (cachedModelCatalog?.agyPath) saveCatalog(cachedModelCatalog.agyPath, { offered: [...names].map(([id, name]) => ({ id, name })) })
+  if (key === ms().acpOfferedKey) return
+  ms().acpOfferedModels = names
+  ms().acpOfferedKey = key
+  if (ms().cachedModelCatalog?.agyPath) saveCatalog(ms().cachedModelCatalog.agyPath, { offered: [...names].map(([id, name]) => ({ id, name })) })
 }
 
 // A model the session offers that `agy models` did not list is served as is.
 function withOffered(list) {
-  if (!acpOfferedModels) return list
+  if (!ms().acpOfferedModels) return list
   const covered = new Set(list.flatMap(model => [model.id, modelFamilyId(model)]))
-  return [...list, ...[...acpOfferedModels].filter(([id]) => !covered.has(id)).map(([id, name]) => ({ id, name }))]
+  return [...list, ...[...ms().acpOfferedModels].filter(([id]) => !covered.has(id)).map(([id, name]) => ({ id, name }))]
 }
 
 function offeredFilter(list) {
-  if (!acpOfferedModels) return list.filter(model => /^gemini-/i.test(model.id))
-  return withOffered(list.filter(model => acpOfferedModels.has(model.id) ||
-    (modelFamilyId(model) && acpOfferedModels.has(modelFamilyId(model)))))
+  if (!ms().acpOfferedModels) return list.filter(model => /^gemini-/i.test(model.id))
+  return withOffered(list.filter(model => ms().acpOfferedModels.has(model.id) ||
+    (modelFamilyId(model) && ms().acpOfferedModels.has(modelFamilyId(model)))))
 }
 
 // Before any request has opened a session, ask agy itself: a short `agy acp`
@@ -540,19 +566,16 @@ function offeredFilter(list) {
 // yulong-ge's antigravity-official-acp (#854).
 const OFFERED_PROBE_TIMEOUT_MS = 30_000
 const OFFERED_PROBE_RETRY_MS = 60_000
-let offeredProbePromise = null
-let offeredProbeAt = null
 // Bumped when what was learnt about an agy no longer holds (another
 // executable, a new sign-in): a probe still running for the old one is
 // not believed.
-let offeredGen = 0
 
 function forgetOffered() {
-  acpOfferedModels = null
-  acpOfferedKey = ""
-  offeredProbePromise = null
-  offeredProbeAt = null
-  offeredGen++
+  ms().acpOfferedModels = null
+  ms().acpOfferedKey = ""
+  ms().offeredProbePromise = null
+  ms().offeredProbeAt = null
+  ms().offeredGen++
 }
 
 // briefly waits for a promise at most ms, and never throws.
@@ -577,7 +600,9 @@ function killQuietly(child) {
 }
 
 async function probeOfferedModels(agyPath) {
-  const gen = offeredGen
+  const state = ms()
+  const home = currentHome()
+  const gen = state.offeredGen
   let workspace = null
   let child = null
   let conn = null
@@ -606,7 +631,7 @@ async function probeOfferedModels(agyPath) {
       })
       if (agyTooOld(init?.agentInfo?.version ?? null)) return
       const session = await conn.request("session/new", { cwd: workspace, mcpServers: [] })
-      if (gen === offeredGen) noteOfferedModels(session?.configOptions, session?.models)
+      if (gen === state.offeredGen) inAccount(home, () => noteOfferedModels(session?.configOptions, session?.models))
       const caps = init?.agentCapabilities ?? {}
       if (session?.sessionId && (caps.sessionCapabilities?.close ?? caps.session_capabilities?.close)) {
         await conn.request("session/close", { sessionId: session.sessionId }).catch(() => {})
@@ -623,24 +648,24 @@ async function probeOfferedModels(agyPath) {
 }
 
 function probeOfferedOnce(agyPath) {
-  if (acpOfferedModels || offeredProbePromise) return offeredProbePromise
+  if (ms().acpOfferedModels || ms().offeredProbePromise) return ms().offeredProbePromise
   const now = Date.now()
-  if (offeredProbeAt !== null && now - offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
-  offeredProbeAt = now
+  if (ms().offeredProbeAt !== null && now - ms().offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
+  ms().offeredProbeAt = now
   const probe = probeOfferedModels(agyPath).finally(() => {
-    if (offeredProbePromise === probe) offeredProbePromise = null
+    if (ms().offeredProbePromise === probe) ms().offeredProbePromise = null
   })
-  offeredProbePromise = probe
+  ms().offeredProbePromise = probe
   return probe
 }
 
 function catalogOf(entry) {
-  if (entry.offeredKey !== acpOfferedKey || !entry.catalog) {
+  if (entry.offeredKey !== ms().acpOfferedKey || !entry.catalog) {
     entry.catalog = buildModelCatalog(offeredFilter(entry.list))
     // A request is routed by every model agy lists: the first request for a
     // model comes before any session has said what it offers.
     entry.catalog.routing = buildModelCatalog(withOffered(entry.list))
-    entry.offeredKey = acpOfferedKey
+    entry.offeredKey = ms().acpOfferedKey
   }
   return entry.catalog
 }
@@ -726,9 +751,10 @@ function buildModelCatalog(list) {
   return { models, routes, rawIds }
 }
 
-function fallbackModelCatalog(agyPath = null) {
-  // The usage reader names ids on its windows from the catalog being served.
-  storeCatalogRows(FALLBACK_MODELS)
+function fallbackModelCatalog(agyPath = null, { replace = false } = {}) {
+  // The usage reader names ids on its windows from the catalog being served;
+  // a new account's static start doesn't replace another account's real list.
+  if (replace || !catalogRows()) storeCatalogRows(FALLBACK_MODELS)
   return { agyPath, list: FALLBACK_MODELS, catalog: null, offeredKey: null, isFallback: true, fetchedAt: 0, lastAttemptAt: null }
 }
 
@@ -742,6 +768,14 @@ function modelCatalogFile() {
   return path.join(path.dirname(sessionStateFile()), "models.json")
 }
 
+// catalogKey is the account's entry for agyPath in models.json: agy's own
+// account keeps the executable's path as before, another account adds its
+// home (#1229).
+function catalogKey(agyPath) {
+  const home = currentHome()
+  return home ? `${agyPath}#${path.basename(home)}` : agyPath
+}
+
 function validModelRow(row) {
   return row && typeof row.id === "string" && /^\S+$/.test(row.id) && typeof row.name === "string" &&
     (row.effort === undefined || EFFORT_ORDER.includes(row.effort))
@@ -751,7 +785,7 @@ function readSavedCatalog(agyPath) {
   if (!agyPath) return null
   try {
     const data = JSON.parse(fs.readFileSync(modelCatalogFile(), "utf8"))
-    const entry = data?.version === 1 && data.byAgy && Object.hasOwn(data.byAgy, agyPath) ? data.byAgy[agyPath] : null
+    const entry = data?.version === 1 && data.byAgy && Object.hasOwn(data.byAgy, catalogKey(agyPath)) ? data.byAgy[catalogKey(agyPath)] : null
     if (!entry || !Number.isFinite(entry.at) || Date.now() - entry.at > SAVED_CATALOG_MAX_AGE_MS) return null
     // A half-written or hand-edited file means "unknown": the fallback serves.
     if (!Array.isArray(entry.list) || !entry.list.length || !entry.list.every(validModelRow)) return null
@@ -781,11 +815,12 @@ function saveCatalog(agyPath, change) {
         const data = JSON.parse(fs.readFileSync(file, "utf8"))
         if (data?.version === 1 && data.byAgy && typeof data.byAgy === "object") byAgy = data.byAgy
       } catch {}
-      const entry = { ...(byAgy[agyPath] || {}), at: Date.now() }
+      const key = catalogKey(agyPath)
+      const entry = { ...(byAgy[key] || {}), at: Date.now() }
       if (change.list) entry.list = change.list.map(savedRow)
       if (change.offered) entry.offered = change.offered
       if (!Array.isArray(entry.list)) return
-      byAgy[agyPath] = entry
+      byAgy[key] = entry
       const temp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
       fs.writeFileSync(temp, JSON.stringify({ version: 1, byAgy }) + "\n", { mode: 0o600 })
       fs.renameSync(temp, file)
@@ -795,11 +830,11 @@ function saveCatalog(agyPath, change) {
 
 function startingModelCatalog(agyPath) {
   const saved = readSavedCatalog(agyPath)
-  if (!saved) return fallbackModelCatalog(agyPath)
+  if (!saved) return fallbackModelCatalog(agyPath, { replace: true })
   // What agy acp offered last time, until a session of this run says.
-  if (saved.offered && !acpOfferedModels) {
-    acpOfferedModels = new Map(saved.offered.map(({ id, name }) => [id, name]))
-    acpOfferedKey = [...acpOfferedModels.keys()].sort().join("\n")
+  if (saved.offered && !ms().acpOfferedModels) {
+    ms().acpOfferedModels = new Map(saved.offered.map(({ id, name }) => [id, name]))
+    ms().acpOfferedKey = [...ms().acpOfferedModels.keys()].sort().join("\n")
   }
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(saved.list)
@@ -809,18 +844,18 @@ function startingModelCatalog(agyPath) {
 // useAgyPath starts over when the executable changes: an old executable's
 // dynamic additions and offer must not route to, or list for, a new one.
 function useAgyPath(agyPath) {
-  if (cachedModelCatalog.agyPath === agyPath) return
+  if (ms().cachedModelCatalog.agyPath === agyPath) return
   // The first agy this process finds is not a change of one.
-  if (cachedModelCatalog.agyPath !== null) forgetOffered()
-  cachedModelCatalog = startingModelCatalog(agyPath)
-  modelCatalogRefreshPromise = null
+  if (ms().cachedModelCatalog.agyPath !== null) forgetOffered()
+  ms().cachedModelCatalog = startingModelCatalog(agyPath)
+  ms().modelCatalogRefreshPromise = null
 }
 
 function storeListedCatalog(agyPath, list, lastAttemptAt) {
   saveCatalog(agyPath, { list })
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(list)
-  cachedModelCatalog = {
+  ms().cachedModelCatalog = {
     agyPath,
     list,
     catalog: null,
@@ -836,10 +871,12 @@ function storeListedCatalog(agyPath, list, lastAttemptAt) {
 // is none. Hosts that read the list once (OpenCode 2.x's adapter) read it
 // again when this ends.
 function catalogWarming() {
-  if (!modelCatalogRefreshPromise && !offeredProbePromise) return null
+  // every account's: the host reading the list is in no account's scope
+  // A listing that lands starts the probe, so look again after each wait.
+  const pending = () => [...modelStates.values()].flatMap(state => [state.modelCatalogRefreshPromise, state.offeredProbePromise]).find(Boolean)
+  if (!pending()) return null
   return (async () => {
-    if (modelCatalogRefreshPromise) await modelCatalogRefreshPromise.catch(() => {})
-    if (offeredProbePromise) await offeredProbePromise.catch(() => {})
+    for (let promise; (promise = pending());) await promise.catch(() => {})
     return true
   })()
 }
@@ -851,8 +888,8 @@ function catalogWarming() {
 // request that is about to open a session of its own.
 async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
   useAgyPath(agyPath)
-  if (probeOffered) wantOfferedProbe = true
-  const current = cachedModelCatalog
+  if (probeOffered) ms().wantOfferedProbe = true
+  const current = ms().cachedModelCatalog
   if (!agyPath) return catalogOf(current)
   const now = Date.now()
   if (!current.isFallback && now - current.fetchedAt < MODEL_CATALOG_TTL_MS) {
@@ -860,28 +897,28 @@ async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
     if (probeOffered) probeOfferedOnce(agyPath)
     return catalogOf(current)
   }
-  if (!modelCatalogRefreshPromise &&
+  if (!ms().modelCatalogRefreshPromise &&
       (current.lastAttemptAt === null || now - current.lastAttemptAt >= MODEL_CATALOG_RETRY_MS)) {
     current.lastAttemptAt = now
     const refresh = listAgyModels(agyPath).then((list) => {
-      if (list?.length && cachedModelCatalog === current) {
+      if (list?.length && ms().cachedModelCatalog === current) {
         storeListedCatalog(agyPath, list, current.lastAttemptAt)
         // `agy models` answered, so agy is signed in: ask what agy acp
         // offers now, while the host still waits for its first list.
-        if (wantOfferedProbe) probeOfferedOnce(agyPath)
+        if (ms().wantOfferedProbe) probeOfferedOnce(agyPath)
       }
     }).catch(() => {
       // Keep the last successful catalog, including dynamic-only models.
     }).finally(() => {
-      if (modelCatalogRefreshPromise === refresh) modelCatalogRefreshPromise = null
+      if (ms().modelCatalogRefreshPromise === refresh) ms().modelCatalogRefreshPromise = null
     })
-    modelCatalogRefreshPromise = refresh
+    ms().modelCatalogRefreshPromise = refresh
   }
-  if (modelCatalogRefreshPromise) {
+  if (ms().modelCatalogRefreshPromise) {
     let timer
     try {
       await Promise.race([
-        modelCatalogRefreshPromise,
+        ms().modelCatalogRefreshPromise,
         new Promise((resolve) => { timer = setTimeout(resolve, MODEL_CATALOG_FAST_WAIT_MS) }),
       ])
     } finally {
@@ -891,9 +928,9 @@ async function loadModelCatalog(agyPath, { probeOffered = false } = {}) {
   // `agy models` answered, so agy is signed in: learn what its ACP server
   // offers this client, waiting for it as briefly as for the listing.
   // A saved list (fetchedAt 0) is not an answer from this agy yet.
-  const probe = probeOffered && !cachedModelCatalog.isFallback && cachedModelCatalog.fetchedAt > 0 ? probeOfferedOnce(agyPath) : null
+  const probe = probeOffered && !ms().cachedModelCatalog.isFallback && ms().cachedModelCatalog.fetchedAt > 0 ? probeOfferedOnce(agyPath) : null
   if (probe) await briefly(probe, MODEL_CATALOG_FAST_WAIT_MS)
-  return catalogOf(cachedModelCatalog)
+  return catalogOf(ms().cachedModelCatalog)
 }
 
 function modelLimits(id) {
@@ -1809,6 +1846,10 @@ class Turn {
 class Proc {
   constructor(agyPath, convKey, opts) {
     this.agyPath = agyPath
+    // the account this agy runs for: what its sessions offer is that
+    // account's, also when agy's output arrives outside the account's
+    // scope (#1229)
+    this.home = currentHome()
     this.#assign(convKey, opts)
     this.workDir = opts.workDir
     this.spareKey = null
@@ -2032,7 +2073,7 @@ class Proc {
     // A resumed session reports the account default; always apply the selection.
     this.currentModel = session?.models?.currentModelId ?? null
     this.configOptions = Array.isArray(session?.configOptions) ? session.configOptions : []
-    noteOfferedModels(this.configOptions, session?.models)
+    inAccount(this.home, () => noteOfferedModels(this.configOptions, session?.models))
     if (this.model) await this.#setModel(this.model, this.selection, this.resumed)
     if (this.tools.length) await this.#waitForToolList(this.toolsVersion)
   }
@@ -2186,7 +2227,7 @@ class Proc {
     if (params.update?.sessionUpdate === "config_option_update" && Array.isArray(params.update.configOptions)) {
       this.configOptions = params.update.configOptions
       this.currentSelectionKey = null
-      noteOfferedModels(this.configOptions)
+      inAccount(this.home, () => noteOfferedModels(this.configOptions))
       return
     }
     const turn = this.turn
@@ -6794,7 +6835,7 @@ export const AntigravityBridgePlugin = async () => {
         // asked what it offers. magpie keeps the list it had and the
         // user's picks with it; a cold host's short list dropped every
         // other pick (Archivemylife on X: the picks didn't stick).
-        if (cachedModelCatalog.isFallback || (!acpOfferedModels && (modelCatalogRefreshPromise || offeredProbePromise))) {
+        if (ms().cachedModelCatalog.isFallback || (!ms().acpOfferedModels && (ms().modelCatalogRefreshPromise || ms().offeredProbePromise))) {
           out[Symbol.for("magpie.fellBack")] = true
         }
         for (const model of catalog.models) {

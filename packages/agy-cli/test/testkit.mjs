@@ -223,6 +223,9 @@ class FakeAgy {
     this.cancelWaiters = []
     this.cancelPending = false
     child.onStdin = (chunk) => this.onStdin(chunk)
+    // offeredModels may be a function of the agy's HOME: accounts on
+    // different plans are offered different models (#1229).
+    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "") : kit.offeredModels
     child.onKill = () => {
       for (const waiter of this.cancelWaiters.splice(0)) waiter()
     }
@@ -270,7 +273,7 @@ class FakeAgy {
       this.sessionId = params.sessionId
       if (this.token) this.control({ kind: "list" })
       const models = { currentModelId: this.kit.initialAgyModel }
-      if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
+      if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/new") {
       this.sessionId = `fake-session-${++this.kit.sessionSerial}`
@@ -279,7 +282,7 @@ class FakeAgy {
       if (this.token) this.control({ kind: "list" })
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
-      if (this.kit.offeredModels) models.availableModels = this.kit.offeredModels.map(([modelId, name]) => ({ modelId, name }))
+      if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
       if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
       else this.respond(id, { sessionId: this.sessionId, models })
