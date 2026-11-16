@@ -963,7 +963,7 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { mkdir as mkdir2, readFile as readFile3, writeFile as writeFile2 } from "fs/promises";
 import path2, { basename, extname, join as join4, resolve as resolve2 } from "path";
 // package.json
-var version = "0.1.5";
+var version = "0.1.6";
 
 // src/diagnostics.ts
 var DIAGNOSTICS_SCHEMA = "window-warmup-diagnostics/1";
@@ -2524,30 +2524,63 @@ function defaultDir(env = process.env) {
   return join5(xdgConfigHome(env), "magpie", "window-warmup");
 }
 var instances = new Map;
+var waiting = new Set;
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var inUse = (e) => e?.code === "EADDRINUSE";
+function start(listen, dir) {
+  let instance = instances.get(listen);
+  if (!instance) {
+    instance = (async () => {
+      await migrateLegacyState(dir);
+      return startService({ port: listen, dir, base: gatewayBase() });
+    })().catch((e) => {
+      instances.delete(listen);
+      throw e;
+    });
+    instances.set(listen, instance);
+  }
+  return instance;
+}
+function startWhenFree(listen, dir) {
+  if (waiting.has(listen))
+    return;
+  waiting.add(listen);
+  (async () => {
+    try {
+      for (;; ) {
+        await sleep(1000);
+        if (instances.has(listen))
+          return;
+        if (await alreadyServing(listen))
+          continue;
+        try {
+          await start(listen, dir);
+          console.log(`[window-warmup] \u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5DF2\u677E\u624B\uFF0C${listen} \u63A5\u4E0A\u4E86`);
+          return;
+        } catch (e) {
+          if (!inUse(e)) {
+            console.error(`[window-warmup] ${listen} \u8D77\u4E0D\u6765\uFF1A${e instanceof Error ? e.message : String(e)}`);
+            return;
+          }
+        }
+      }
+    } finally {
+      waiting.delete(listen);
+    }
+  })();
+}
 var plugin_default = {
   id: "magpie-window-warmup",
   server: async (_input, opts = {}) => {
     const port = Number(opts?.port);
     const listen = Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT;
-    if (await alreadyServing(listen))
+    const dir = defaultDir();
+    if (!instances.has(listen) && await alreadyServing(listen)) {
+      console.log(`[window-warmup] ${listen} \u88AB\u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5360\u7740\uFF0C\u5B83\u4E00\u677E\u624B\u5C31\u63A5\u4E0A`);
+      startWhenFree(listen, dir);
       return {};
-    let instance = instances.get(listen);
-    if (!instance) {
-      instance = (async () => {
-        const dir = defaultDir();
-        await migrateLegacyState(dir);
-        return startService({
-          port: listen,
-          dir,
-          base: gatewayBase()
-        });
-      })().catch((e) => {
-        instances.delete(listen);
-        throw e;
-      });
-      instances.set(listen, instance);
     }
-    await instance;
+    await start(listen, dir);
     return {};
   }
 };
