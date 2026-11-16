@@ -17,6 +17,7 @@ import { IMPORT_FROM, importedAccounts, tokenFileText } from "./import.mjs"
 import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
+import { processExists } from "./proc.mjs"
 import { fitTools } from "./tool-budget.mjs"
 import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
@@ -2901,9 +2902,7 @@ function withStateLock(file, fn) {
           if (Date.now() - fs.statSync(lock).mtimeMs > 5_000) {
             const owner = JSON.parse(fs.readFileSync(lock, "utf8"))
             if (Number.isSafeInteger(owner.pid) && owner.pid > 0) {
-              try { process.kill(owner.pid, 0) } catch (error) {
-                if (error.code === "ESRCH") fs.unlinkSync(lock)
-              }
+              if (!processExists(owner.pid)) fs.unlinkSync(lock)
             }
           }
         } catch {}

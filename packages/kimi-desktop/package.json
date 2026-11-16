@@ -1,10 +1,11 @@
 {
   "name": "@magpie-community/agent-kimi-desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Kimi desktop Work as a Magpie agent, using the models configured in Magpie",
   "type": "module",
   "main": "./index.mjs",
   "files": [
+    "proc.mjs",
     "kimi-desktop.agent.js",
     "index.mjs",
     "adapter.mjs",

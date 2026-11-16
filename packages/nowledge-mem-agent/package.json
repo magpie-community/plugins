@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-nowledge-mem",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Manage Nowledge Mem Default, AI Now and Background models from Magpie",
   "type": "module",
   "main": "./index.mjs",
@@ -18,6 +18,7 @@
     "index.mjs",
     "cli.mjs",
     "lib/",
+    "lib/proc.mjs",
     "README.md",
     "VALIDATION.md",
     "LICENSE",

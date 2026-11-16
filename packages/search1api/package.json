@@ -1,10 +1,10 @@
 {
   "name": "@magpie-community/tools-search1api",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Search1API web search, news, agentic search, pages, sitemaps and trends for Magpie, with OAuth or API key sign-in",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["index.mjs", "src", "README.md", "LICENSE"],
+  "files": ["src/proc.mjs", "index.mjs", "src", "README.md", "LICENSE"],
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -15,6 +15,7 @@ import { kernelFamily, runnerGeneration } from './runtime-family.mjs';
 import { inspectRolePlugins, disableRolePluginsSync } from './role-plugin-state.mjs';
 import { validateModelOptions, applyReasoningOptions } from './model-options.mjs';
 import { countContextTokens } from './context-budget.mjs';
+import { processExists } from './proc.mjs';
 
 const PROVIDER = 'daimon-kimi-code';
 const TOOL_ORIGIN = 'https://agent-gw.kimi.com';
@@ -269,8 +270,7 @@ export class KimiAdapter {
       try { owner = JSON.parse(before); } catch { throw Error('adapter_lock_invalid'); }
       if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || owner.pid > 2147483647
           || typeof owner.ownerID !== 'string' || !owner.ownerID) throw Error('adapter_lock_invalid');
-      let alive = true;
-      try { process.kill(owner.pid, 0); } catch (error) { alive = error.code !== 'ESRCH'; }
+      const alive = processExists(owner.pid);
       if (alive) return false;
       try {
         if (fs.readFileSync(this.lockFile, 'utf8') !== before) return false;

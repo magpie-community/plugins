@@ -260,7 +260,7 @@ describe("path normalization", () => {
 });
 
 describe("process utilities", () => {
-  it("pidAlive: EPERM counts as alive, ESRCH as dead", () => {
+  it("pidAlive: EPERM counts as alive, ESRCH as dead; Linux zombies are dead", () => {
     const err = (code: string) => () => {
       throw Object.assign(new Error(code), { code });
     };
@@ -269,6 +269,14 @@ describe("process utilities", () => {
     expect(pidAlive(123, () => true)).toBe(true);
     expect(pidAlive(0, () => true)).toBe(false);
     expect(pidAlive(process.pid)).toBe(true);
+    expect(pidAlive(123, () => true, {
+      platform: "linux",
+      procRoot: "/fake-proc",
+      readFile: (file: string) => {
+        if (file === "/fake-proc/123/stat") return "123 (comm)) Z 1";
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
+    })).toBe(false);
   });
 
   it("augmentPath: appends at the end, dedupes (case-insensitive on Windows), keeps the existing order", () => {

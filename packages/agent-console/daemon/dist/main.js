@@ -8218,7 +8218,7 @@ __export(legacy_exports, {
 });
 import { cp as cp2, mkdir as mkdir8, readdir as readdir6, readFile as readFile18 } from "node:fs/promises";
 import { existsSync as existsSync14 } from "node:fs";
-import { join as join20 } from "node:path";
+import { join as join21 } from "node:path";
 function stamp() {
   const d = /* @__PURE__ */ new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -8227,17 +8227,17 @@ function stamp() {
 async function migrateLegacy(dataDir, stores) {
   const settings = await stores.settings.get();
   if (settings.v1Migrated) return { migrated: 0, skipped: true };
-  const oldDir = join20(dataDir, "sessions");
-  const oldSettingsPath = join20(dataDir, "settings.json");
+  const oldDir = join21(dataDir, "sessions");
+  const oldSettingsPath = join21(dataDir, "settings.json");
   if (!existsSync14(oldDir) && !existsSync14(oldSettingsPath)) {
     await stores.settings.set({ v1Migrated: true });
     return { migrated: 0, skipped: true };
   }
-  const backup = join20(dataDir, "trash", `legacy-${stamp()}`);
+  const backup = join21(dataDir, "trash", `legacy-${stamp()}`);
   await mkdir8(backup, { recursive: true });
-  if (existsSync14(oldDir)) await cp2(oldDir, join20(backup, "sessions"), { recursive: true }).catch(() => {
+  if (existsSync14(oldDir)) await cp2(oldDir, join21(backup, "sessions"), { recursive: true }).catch(() => {
   });
-  if (existsSync14(oldSettingsPath)) await cp2(oldSettingsPath, join20(backup, "settings.json")).catch(() => {
+  if (existsSync14(oldSettingsPath)) await cp2(oldSettingsPath, join21(backup, "settings.json")).catch(() => {
   });
   const oldSettings = existsSync14(oldSettingsPath) ? JSON.parse(await readFile18(oldSettingsPath, "utf8").catch(() => "{}")) : {};
   const projectIdByPath = /* @__PURE__ */ new Map();
@@ -8253,13 +8253,13 @@ async function migrateLegacy(dataDir, stores) {
   }
   let sessionIds = [];
   try {
-    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync14(join20(oldDir, d, "meta.json")));
+    sessionIds = (await readdir6(oldDir)).filter((d) => validId(d) && existsSync14(join21(oldDir, d, "meta.json")));
   } catch {
   }
   const metas = [];
   for (const id2 of sessionIds) {
     try {
-      const m = JSON.parse(await readFile18(join20(oldDir, id2, "meta.json"), "utf8"));
+      const m = JSON.parse(await readFile18(join21(oldDir, id2, "meta.json"), "utf8"));
       if (m?.cwd) metas.push(m);
     } catch {
     }
@@ -8292,7 +8292,7 @@ async function migrateLegacy(dataDir, stores) {
     return best ? projectIdByPath.get(best) : null;
   };
   let migrated = 0;
-  const threadsDir = join20(dataDir, "threads");
+  const threadsDir = join21(dataDir, "threads");
   for (const m of metas) {
     try {
       const projectId = projectOf(m.cwd);
@@ -8329,10 +8329,10 @@ async function migrateLegacy(dataDir, stores) {
         importedFrom: m.cliSessionId ? { provider, sessionId: m.cliSessionId } : void 0,
         seq: 0
       };
-      const tdir = join20(threadsDir, meta.id);
+      const tdir = join21(threadsDir, meta.id);
       if (existsSync14(tdir)) meta.id = `t_${m.id}_v1`.slice(0, 80);
-      await mkdir8(join20(threadsDir, meta.id), { recursive: true });
-      const oldEvts = (await readFile18(join20(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
+      await mkdir8(join21(threadsDir, meta.id), { recursive: true });
+      const oldEvts = (await readFile18(join21(oldDir, m.id, "events.jsonl"), "utf8").catch(() => "")).split("\n").filter((l) => l.trim()).map((l) => {
         try {
           return JSON.parse(l);
         } catch {
@@ -8411,9 +8411,9 @@ async function migrateLegacy(dataDir, stores) {
         seq++;
         lines.push({ type: "tool_call", itemId: key, kind: "other", title: o.title, status: "failed", seq, ts: Date.now(), threadId: meta.id });
       }
-      for (const ev of lines) await appendJsonl(join20(threadsDir, meta.id, "timeline.jsonl"), ev);
+      for (const ev of lines) await appendJsonl(join21(threadsDir, meta.id, "timeline.jsonl"), ev);
       meta.seq = seq;
-      await writeJsonAtomic(join20(threadsDir, meta.id, "meta.json"), meta);
+      await writeJsonAtomic(join21(threadsDir, meta.id, "meta.json"), meta);
       migrated++;
     } catch (e) {
       log("warn", "\u8FC1\u79FB\uFF1A\u4F1A\u8BDD\u5931\u8D25", { id: m.id, err: String(e) });
@@ -8478,7 +8478,7 @@ var init_warm = __esm({
 
 // daemon/src/main.ts
 import { mkdirSync as mkdirSync2, rmSync as rmSync2, chmodSync as chmodSync2 } from "node:fs";
-import { join as join21, dirname as dirname9 } from "node:path";
+import { join as join22, dirname as dirname9 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // daemon/src/config.ts
@@ -10718,14 +10718,56 @@ var TerminalService = class {
 // daemon/src/util/proc.ts
 init_pathscan();
 import { delimiter } from "node:path";
-function pidAlive(pid, kill = (p, s) => process.kill(p, s)) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+
+// lib/proc.mjs
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join19 } from "node:path";
+var errCode = (error) => error && typeof error === "object" ? error.code : void 0;
+function validPid(pid) {
+  return Number.isSafeInteger(pid) && pid > 0;
+}
+function processZombie(pid, {
+  procRoot = "/proc",
+  readFile: readFile19 = (file) => readFileSync2(file, "utf8")
+} = {}) {
+  if (!validPid(pid)) return false;
+  let stat14;
+  try {
+    stat14 = readFile19(join19(procRoot, String(pid), "stat"));
+  } catch {
+    return false;
+  }
+  const commEnd = typeof stat14 === "string" ? stat14.lastIndexOf(")") : -1;
+  if (commEnd < 0) return false;
+  const state2 = stat14.slice(commEnd + 1).trim()[0];
+  return state2 === "Z" || state2 === "X";
+}
+function processAlive(pid, deps = {}) {
+  const state2 = processStatus(pid, deps).state;
+  return state2 === "alive" || state2 === "permission";
+}
+function processStatus(pid, deps = {}) {
+  const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
+  if (!validPid(pid)) return { state: "invalid" };
+  let permission = false;
   try {
     kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e?.code === "EPERM";
+  } catch (error) {
+    const code = errCode(error);
+    if (code === "ESRCH") return { state: "dead" };
+    if (code !== "EPERM") return { state: "unknown", error };
+    permission = true;
   }
+  if ((deps.platform ?? process.platform) !== "linux") {
+    return permission ? { state: "permission" } : { state: "alive" };
+  }
+  if (processZombie(pid, deps)) return { state: "dead" };
+  return permission ? { state: "permission" } : { state: "alive" };
+}
+
+// daemon/src/util/proc.ts
+function pidAlive(pid, kill = (p, s) => process.kill(p, s), deps = {}) {
+  return processAlive(pid, { ...deps, kill });
 }
 function augmentPath(env, nodeDir, platform = process.platform, home) {
   const win = platform === "win32";
@@ -10747,9 +10789,9 @@ function augmentPath(env, nodeDir, platform = process.platform, home) {
 init_proxy();
 
 // daemon/src/preview/ports.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 import { homedir as homedir11 } from "node:os";
-import { basename as basename5, dirname as dirname8, isAbsolute as isAbsolute5, join as join19 } from "node:path";
+import { basename as basename5, dirname as dirname8, isAbsolute as isAbsolute5, join as join20 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 var MAGPIE_DEFAULT_PORTS = [3425, 3430];
 var GATE_DEFAULT_PORT = 3488;
@@ -10782,13 +10824,13 @@ function magpieConfigDirs(env = process.env, where = {}) {
   const cwd = where.cwd ?? (env === process.env ? process.cwd() : "");
   if (cwd && basename5(cwd) === "plugin-work") add(dirname8(cwd));
   const x = env.XDG_CONFIG_HOME;
-  if (x && isAbsolute5(x)) add(join19(x, "magpie"));
+  if (x && isAbsolute5(x)) add(join20(x, "magpie"));
   const platform = where.platform ?? process.platform;
   const home = where.home ?? (env === process.env ? homedir11() : platform === "win32" ? env.USERPROFILE : env.HOME);
-  if (home) add(join19(home, ".config", "magpie"));
+  if (home) add(join20(home, ".config", "magpie"));
   return out;
 }
-function savedGatewayPort(file, read = (f) => readFileSync2(f, "utf8")) {
+function savedGatewayPort(file, read = (f) => readFileSync3(f, "utf8")) {
   let raw;
   try {
     raw = read(file);
@@ -10811,7 +10853,7 @@ function previewDeniedPorts(cfg2, env = process.env, opts = {}) {
     if (p) out.add(p);
   }
   for (const d of opts.configDirs ?? magpieConfigDirs(env)) {
-    const p = savedGatewayPort(join19(d, "settings.json"), opts.read);
+    const p = savedGatewayPort(join20(d, "settings.json"), opts.read);
     if (p) out.add(p);
   }
   const extra = env.AGENT_CONSOLE_PREVIEW_DENY;
@@ -10841,10 +10883,10 @@ process.on("unhandledRejection", (e) => {
 async function main() {
   initLog(cfg.dataDir);
   for (const d of ["threads", "attachments", "trash", "logs"]) {
-    mkdirSync2(join21(cfg.dataDir, d), { recursive: true });
+    mkdirSync2(join22(cfg.dataDir, d), { recursive: true });
   }
-  const appDir = join21(dirname9(fileURLToPath4(import.meta.url)), "..", "..", "app");
-  const attachments = new AttachmentStore(join21(cfg.dataDir, "attachments"));
+  const appDir = join22(dirname9(fileURLToPath4(import.meta.url)), "..", "..", "app");
+  const attachments = new AttachmentStore(join22(cfg.dataDir, "attachments"));
   const { bindAttachmentStore: bindAttachmentStore2 } = await Promise.resolve().then(() => (init_attachmentRefs(), attachmentRefs_exports));
   bindAttachmentStore2(attachments);
   const settings = new SettingsStore(cfg.dataDir);
@@ -10918,7 +10960,7 @@ async function main() {
     const { warmProviderCache: warmProviderCache2 } = await Promise.resolve().then(() => (init_warm(), warm_exports));
     await warmProviderCache2(await settings.get());
   })().catch((e) => log("warn", "Provider \u9884\u70ED\u5931\u8D25", { err: String(e) }));
-  const daemonJsonPath = join21(cfg.dataDir, "daemon.json");
+  const daemonJsonPath = join22(cfg.dataDir, "daemon.json");
   await writeJsonAtomic(daemonJsonPath, {
     pid: process.pid,
     port: cfg.port,

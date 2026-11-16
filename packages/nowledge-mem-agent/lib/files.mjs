@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { processExists } from './proc.mjs';
 
 export async function readJSON(file) {
   try { return JSON.parse(await fs.readFile(file, 'utf8')); }
@@ -30,8 +31,7 @@ export async function withLock(stateFile, run) {
       try {
         const owner = await readJSON(lock);
         if (Number.isSafeInteger(owner?.pid) && owner.pid > 0) {
-          try { process.kill(owner.pid, 0); }
-          catch (e) { if (e.code === 'ESRCH') stale = true; }
+          stale = !processExists(owner.pid);
         }
       } catch (e) {
         if (e.code === 'ENOENT') continue;
