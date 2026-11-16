@@ -1,0 +1,5 @@
+fastmcp==3.1.0
+httpx[socks]==0.28.1
+mcp[cli]==1.26.0
+pydantic==2.12.5
+tenacity==9.1.4
