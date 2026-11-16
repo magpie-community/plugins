@@ -150,7 +150,19 @@ const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been 
 // It is agy's, not the model's, and the turn goes on (#1124).
 const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
 const RETRY_CORE = RETRY_MARKER.trim()
-const HOLD_MAX = Math.max(...AGENT_ERROR_MARKERS.map((marker) => marker.length)) - 1
+// agy's own output-cap retry reaches the reply as three lines of its own:
+// what happened, its instruction to continue, and the retries left. The
+// model's answer goes on after them in the same turn, so the notice is agy's
+// and is dropped (#892). Wording as observed by lili-luo/dsh-plugin-bundle
+// (dsh-llm-antigravity-acp, MIT).
+const CAP_MARKER = "\n⚠ Your previous response was cut off because it exceeded the output token limit\n"
+const CAP_CORE = CAP_MARKER.trim()
+const CAP_TAIL_CORE = "Please continue from where you left off, keeping your response shorter"
+const CAP_RETRIES_CORE = "Retries remaining: "
+const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
+const HOLD_MAX = Math.max(
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length,
+) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
 // with the client's system prompt in their place.
@@ -1438,6 +1450,7 @@ class Turn {
     this.heldText = ""
     this.textTail = ""
     this.openBanner = -1
+    this.capPending = false
     this.attemptDetail = ""
     this.refusedDetail = ""
     this.agentErrorCore = ""
@@ -1614,7 +1627,7 @@ class Turn {
   // Withholds agy's error marker, or a possible prefix of it, until it can be
   // classified. agy's own marker ends the prompt; one that more text follows
   // was the model quoting it (#1052). agy's retry banners are dropped where
-  // they start a line (#1124, #1136); one whose line hasn't ended is held.
+  // they start a line (#1124, #1136, #892); one whose line hasn't ended is held.
   pushText(chunk) {
     if (this.done || this.agentError) return
     this.pushHeld(chunk)
@@ -1644,7 +1657,8 @@ class Turn {
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
       if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
-        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail)))) {
+        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
+          CAP_MARKER.startsWith(tail)))) {
         this.heldText = tail
         text = text.slice(0, -keep)
         break
@@ -1654,14 +1668,29 @@ class Turn {
   }
 
   // Removes agy's retry banners, each with its leading and one trailing
-  // newline, wherever one starts a line. Text that only quotes one mid-line is
-  // kept. Until the turn's text is flushed, a banner that ends the buffer is
-  // left in place and openBanner says where, so pushText holds it and its
-  // newline in the next chunk goes with it.
+  // newline, wherever one starts a line: the one-line retry and attempt
+  // banners, and the three-line output-cap notice (#892). Text that only
+  // quotes one mid-line is kept. Until the turn's text is flushed, a banner
+  // that ends the buffer is left in place and openBanner says where, so
+  // pushText holds it and its newline in the next chunk goes with it.
   dropRetryBanner(text, final = false) {
     this.openBanner = -1
     let from = 0
     for (;;) {
+      if (this.capPending) {
+        const end = text.indexOf("\n", from)
+        const line = text.slice(from, end < 0 ? text.length : end)
+        if (CAP_RETRIES_LINE.test(line)) {
+          this.capPending = false
+          text = text.slice(0, from) + text.slice(end < 0 ? text.length : end + 1)
+          continue
+        }
+        if (!final && CAP_RETRIES_CORE.startsWith(line)) {
+          this.openBanner = from
+          return text
+        }
+        this.capPending = false
+      }
       const at = nextBanner(text, from)
       if (at < 0) return text
       const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
@@ -1670,6 +1699,20 @@ class Turn {
         continue
       }
       const start = at > 0 ? at - 1 : at
+      if (text.startsWith(CAP_CORE, at)) {
+        const cap = capNoticeEnd(text, at, final)
+        if (cap.end < 0) {
+          // agy's notice is still streaming: hold it with its lines' newlines
+          this.openBanner = start
+          return text
+        }
+        // The notice's "Retries remaining" line is its own line, so it can
+        // arrive in the next chunk after the two lines before it.
+        this.capPending = cap.retries
+        text = text.slice(0, start) + text.slice(cap.end)
+        from = start
+        continue
+      }
       const attempt = !text.startsWith(RETRY_CORE, at)
       let end = attempt ? text.indexOf("\n", at) : at + RETRY_CORE.length
       if (end < 0) end = text.length
@@ -2953,13 +2996,40 @@ async function lastAgentError(file, offset) {
   return found.trim().slice(0, 1000)
 }
 
+// Where agy's output-cap notice ends, given where it starts. The notice is its
+// notice line, its "please continue" instruction and its "Retries remaining"
+// count; a line that is neither is the model's and stays. -1 means the buffer
+// still ends inside the notice; `retries` says the count line is still owed.
+function capNoticeEnd(text, at, final) {
+  const lineAt = (from) => {
+    const end = text.indexOf("\n", from)
+    return { value: text.slice(from, end < 0 ? text.length : end), end }
+  }
+  let pos = text.indexOf("\n", at)
+  if (pos < 0) return { end: final ? text.length : -1, retries: false }
+  pos += 1
+  const tail = lineAt(pos)
+  if (tail.value === CAP_TAIL_CORE) {
+    if (tail.end < 0) return { end: final ? text.length : -1, retries: false }
+    pos = tail.end + 1
+  } else if (!final && CAP_TAIL_CORE.startsWith(tail.value)) {
+    return { end: -1, retries: false }
+  } else {
+    return { end: pos, retries: false }
+  }
+  const retries = lineAt(pos)
+  if (CAP_RETRIES_LINE.test(retries.value)) {
+    return { end: retries.end < 0 ? text.length : retries.end + 1, retries: false }
+  }
+  return { end: pos, retries: !final }
+}
+
 // Where the next retry banner of either kind starts, from `from` on.
 function nextBanner(text, from) {
-  const retry = text.indexOf(RETRY_CORE, from)
-  const attempt = text.indexOf(ATTEMPT_CORE, from)
-  if (retry < 0) return attempt
-  if (attempt < 0) return retry
-  return Math.min(retry, attempt)
+  const found = [RETRY_CORE, ATTEMPT_CORE, CAP_CORE]
+    .map((core) => text.indexOf(core, from))
+    .filter((at) => at >= 0)
+  return found.length ? Math.min(...found) : -1
 }
 
 function dropFromPool(proc) {

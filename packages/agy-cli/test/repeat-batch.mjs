@@ -990,6 +990,46 @@ test("#1124: the model quoting the retry banner mid-line keeps it", async () => 
   })
 })
 
+// #892: agy's output cap, as it reaches the reply: agy's three-line notice and
+// then the model's answer, still in the same turn.
+const CAP_HEAD = "\n⚠ Your previous response was cut off because it exceeded the output token limit\n"
+const CAP_TAIL = "Please continue from where you left off, keeping your response shorter\n"
+const CAP_RETRIES = "Retries remaining: 3\n"
+const CAP_NOTICE = CAP_HEAD + CAP_TAIL + CAP_RETRIES
+
+test("#892: agy's output-cap notice never reaches the client", async () => {
+  const answer = "the rest of the answer"
+  for (const [chunks, want] of [
+    [[CAP_NOTICE + answer], answer],
+    [[CAP_NOTICE, answer], answer],
+    [[CAP_HEAD.slice(0, 20), CAP_HEAD.slice(20) + CAP_TAIL, CAP_RETRIES, answer], answer],
+    [[CAP_NOTICE.slice(0, 150), CAP_NOTICE.slice(150) + answer], answer],
+    [[CAP_HEAD, answer], answer],
+    [[CAP_NOTICE], ""],
+    [[CAP_HEAD + answer], answer],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-notice" },
+        messages: [{ role: "user", content: "write the long answer" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), want)
+    })
+  }
+})
+
+test("#892: the model quoting the output-cap notice mid-line keeps it", async () => {
+  const chunks = ["agy prints `⚠ Your previous response was cut off because it exceeded the output token limit`", " when it retries."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
 // #1136: agy 1.5.8's own words, byte for byte from the reporter's Codex rollout.
 const EOF_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF`
 const NETWORK = "\n⚠ There was a network issue connecting to the server, please try again.\n"
