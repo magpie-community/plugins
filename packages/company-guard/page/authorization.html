@@ -2,22 +2,31 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>会话授权</title><script src="bridge.js"></script><link rel="stylesheet" href="style.css"><script src="authorization.js" defer></script></head>
 <body class="authorization-page"><main><header class="page-topbar"><h1 class="sr-only">会话授权</h1><nav class="tabs" aria-label="公司名称保护"><a href="session-authorization.html" aria-current="page">会话授权</a><a href="rules.html">脱敏规则</a><a href="./">脱敏回执</a></nav><p class="page-description">默认脱敏，仅对你确认的会话和范围放行原名。</p></header>
-  <section id="authorization-panel" aria-label="会话原名授权">
-    <div class="authorization-heading"><p id="authorization-notice" role="status" aria-live="polite">正在读取授权…</p><button id="authorization-refresh" type="button">刷新授权</button></div>
-    <p class="authorization-boundary">目前仅支持 Codex 会话申请原名授权。授权按会话与工作目录生效，持续到主动恢复脱敏。</p>
-    <div class="authorization-guide"><span>申请放行</span><p>在目标会话单独发送 <code>申请本会话原名放行</code>，再到这里确认范围。</p><details><summary>使用说明</summary><p>待确认申请保留24小时，申请本身不会启用授权或暂停任务。任务名称只用于识别，授权以会话编号和工作目录为准。其他会话、分叉和子任务不会自动取得授权。</p></details></div>
-    <section id="authorization-pending-section" aria-labelledby="pending-title" hidden><h2 id="pending-title">待确认申请</h2><div id="authorization-pending" class="authorization-list"></div></section>
-    <section id="authorization-editor" class="authorization-editor" aria-labelledby="editor-title" hidden>
-      <div class="authorization-editor-heading"><h2 id="editor-title">确认这个会话的放行范围</h2><p id="authorization-existing" class="detail-message"></p></div><p id="authorization-target" class="identity"></p>
+  <section id="authorization-panel" aria-label="会话原名授权" class="authorization-layout">
+    <div class="authorization-main">
+      <p id="authorization-notice" role="status" aria-live="polite" hidden></p>
+      <section class="authorization-help" aria-labelledby="authorization-help-title"><h2 id="authorization-help-title">使用说明</h2><p class="authorization-boundary">目前仅支持 Codex 会话申请原名授权。授权按会话与工作目录生效，持续到主动恢复脱敏。</p><div class="authorization-guide"><span>申请放行</span><p>在右侧近期会话表中点击“申请取消脱敏”，或在目标会话单独发送 <code>申请本会话原名放行</code>，再确认范围。</p><details><summary>授权边界</summary><p>待确认申请保留24小时，申请本身不会启用授权或暂停任务。任务名称只用于识别，授权以会话编号和工作目录为准。其他会话、分叉和子任务不会自动取得授权。</p></details></div></section>
+      <section aria-labelledby="active-title"><h2 id="active-title">已启用授权</h2><div id="authorization-active"></div></section>
+      <p class="authorization-footnote">授权持续到你主动恢复脱敏。恢复仅影响后续请求，已发送原文不能撤回；图片不做文字识别。</p>
+      <details class="audit-history"><summary><svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg><span class="history-heading"><span class="history-title">授权变更记录</span><span class="history-description">查看放行、拒绝申请与恢复脱敏的历史</span></span><span class="history-action"><span class="history-open">查看记录</span><span class="history-close">收起记录</span><span aria-hidden="true">↗</span></span></summary><p>这里展示最近最多100条授权变更摘要，不含原名、密钥或会话正文。脱敏回执另按最近25个请求保留。旧摘要缺失不代表从未变更。</p><div id="authorization-history" role="status">展开后读取</div></details>
+    </div>
+    <div class="authorization-divider" aria-hidden="true"></div>
+    <aside class="authorization-sidebar" aria-label="近期会话与申请处理">
+      <section aria-labelledby="recent-sessions-title"><div class="recent-sessions-heading"><h2 id="recent-sessions-title">最近回执涉及的会话</h2><p id="recent-sessions-notice" class="detail-message" role="status">正在读取最近25条回执…</p></div><div class="recent-sessions-toolbar"><span id="recent-sessions-refresh-status" class="detail-message"></span><div class="recent-sessions-actions"><button id="authorization-refresh" type="button">刷新</button><label class="auto"><input id="authorization-auto" type="checkbox" checked>自动刷新</label></div></div><div id="recent-sessions"></div><p id="recent-session-action-notice" class="detail-message" role="status" aria-live="polite"></p><p class="detail-message">最近25条请求，跨日期汇总；移出窗口后自动移除。确认和查看范围时暂停刷新。</p></section>
+      <section id="authorization-pending-section" aria-labelledby="pending-title"><h2 id="pending-title">待确认申请</h2><div id="authorization-pending" class="authorization-list"></div></section>
+    </aside>
+    <dialog id="authorization-editor" class="authorization-editor" aria-labelledby="editor-title" aria-describedby="authorization-dialog-description">
+      <header class="authorization-editor-heading"><div><h2 id="editor-title">设置放行范围</h2><p id="authorization-dialog-description">核对申请会话与工作目录，再确认允许使用原名的范围。</p></div><button id="authorization-close" type="button" aria-label="关闭放行范围设置">×</button></header>
       <form id="authorization-form">
+        <div class="authorization-dialog-body">
+        <section id="authorization-target" class="authorization-dialog-target" aria-label="申请会话"></section>
+        <p id="authorization-existing" class="detail-message"></p>
         <fieldset><legend>放行范围</legend><label><input type="radio" name="coverage" value="names" checked>仅指定公司名单</label><label><input type="radio" name="coverage" value="all">本会话全部公司名称</label></fieldset>
         <div id="authorization-names"><label for="authorization-name-list">公司名称，每行一个，最多32个</label><textarea id="authorization-name-list" rows="3" placeholder="在本机粘贴需要放行的完整名称"></textarea><label class="file-label">或读取本地 UTF-8 文本名单<input id="authorization-file" type="file" accept=".txt,text/plain"></label><p id="authorization-file-status" class="detail-message"></p></div>
         <p id="authorization-scope-note">名单外名称继续脱敏。其他会话、分叉和子任务不会自动取得授权。</p>
-        <div class="authorization-footer"><label class="authorization-confirm"><input id="authorization-consent" type="checkbox" required>我确认对上述会话和范围授权</label><div class="authorization-actions"><button id="authorization-approve" type="button">确认放行</button><button id="authorization-cancel" type="button">取消</button></div></div>
+        </div>
+        <footer class="authorization-dialog-footer"><p id="authorization-editor-notice" role="status" aria-live="polite" hidden></p><div class="authorization-footer"><label class="authorization-confirm"><input id="authorization-consent" type="checkbox" required>我确认对上述会话和范围授权</label><div class="authorization-actions"><button id="authorization-cancel" type="button">取消</button><button id="authorization-approve" type="button" disabled>确认放行</button></div></div></footer>
       </form>
-    </section>
-    <section aria-labelledby="active-title"><h2 id="active-title">已启用授权</h2><div id="authorization-active" class="authorization-list"></div></section>
-    <p class="authorization-footnote">授权持续到你主动恢复脱敏。恢复仅影响后续请求，已发送原文不能撤回；图片不做文字识别。</p>
+    </dialog>
   </section>
-
-<details class="audit-history"><summary><svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg><span class="history-heading"><span class="history-title">授权变更记录</span><span class="history-description">查看批准放行与恢复脱敏的历史</span></span><span class="history-action"><span class="history-open">查看记录</span><span class="history-close">收起记录</span><span aria-hidden="true">↗</span></span></summary><p>这里展示最近最多100条授权变更摘要，不含原名、密钥或会话正文。脱敏回执另按最近25个请求保留。旧摘要缺失不代表从未变更。</p><div id="authorization-history" role="status">展开后读取</div></details></main></body></html>
+</main></body></html>

@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
-import {recordRuleRevision,readAuditHistory} from "./src/rule-history.mjs";
+import {recordRuleRevision,recordAuthorizationEvent,readAuditHistory} from "./src/rule-history.mjs";
 import {constants} from "node:fs";
 import {createServer} from "node:http";
 import {timingSafeEqual, randomBytes, randomUUID} from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import {gunzipSync} from "node:zlib";
-import {getReceiptReport} from "./src/receipt-report.mjs";
+import {getReceiptReport,getRetainedReceiptRows} from "./src/receipt-report.mjs";
 import {readDetails} from "./src/receipt-details.mjs";
-import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant} from "./src/grant-store.mjs";
+import {stateRoot, secureDir, listAuthorizationRequests, closeAuthorizationRequest, legacyTaskGrants, revokeGrant, queueAuthorizationRequest} from "./src/grant-store.mjs";
 import {retainReceipts, readTail, receiptAgent} from "./src/receipts.mjs";
 import {validName,namePattern} from "./src/policy.js";
-import {readAuthorization, planAuthorizationEntries, AUTHORIZATION_ENTRY_LIMIT} from "./src/session-authorization.js";
+import {readAuthorization, planAuthorizationEntries, AUTHORIZATION_ENTRY_LIMIT, receiptAuthorizationTarget, receiptAuthorizationSessions, reapplicationTarget} from "./src/session-authorization.js";
 import {initializeOptions,validateCompanyRules,companyRulesRevision} from "./src/local-options.mjs";
 
 const services = new Map();
@@ -21,7 +21,7 @@ const agentNames={codex:"Codex",claude:"Claude Code","claude-code":"Claude Code"
 // Read local indexes, never chat messages, and match complete session IDs.
 async function withTaskTitles(rows, day, availableAgents) {
   const idOf=row=>row.session || row.task || row.thread;
-  const ids=new Set(rows.map(idOf).filter(Boolean)),titles=new Map(),agents=new Map();
+  const ids=new Set(rows.map(idOf).filter(Boolean)),titles=new Map(),agents=new Map(),backgroundLabels=new Map();
   const addAgent=(id,value)=>{const agent=receiptAgent(value);if(agent){availableAgents?.add(agent);const found=agents.get(id)||new Set();found.add(agent);agents.set(id,found);}};
   for(const row of rows)addAgent(idOf(row),row.agent);
   if(ids.size)try{
@@ -42,7 +42,8 @@ async function withTaskTitles(rows, day, availableAgents) {
     }finally{await fd.close();}
   }catch{} // An unavailable title index must not affect grants or receipts.
   const missing=new Set([...ids].filter(id=>!titles.has(id)));
-  if(ids.size && /^\d{4}-\d{2}-\d{2}$/.test(day || "")){
+  const days=/^\d{4}-\d{2}-\d{2}$/.test(day||"")?[day]:[...new Set(rows.map(r=>(r.latestAt||r.at||"").slice(0,10)).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if(missing.size && days.length){
     // Hidden Codex tasks need not appear in its chat-title index. Magpie's
     // routing history already records their kinds, including older receipts.
     const labels=new Map([
@@ -50,12 +51,13 @@ async function withTaskTitles(rows, day, availableAgents) {
       ["guardian","后台审批复核"], ["guardian_review","后台审批复核"],
       ["thread_title","后台标题生成"], ["thread_title_reconsideration","后台标题更新"],
       ["composer_predictions","后台输入预测"], ["collab_spawn","子任务"],
+      ["ambient_suggestions","后台建议生成"],
       ["compact","上下文压缩"], ["review","后台审阅"]
     ]), kinds=new Map();
     const config=path.isAbsolute(process.env.XDG_CONFIG_HOME || "") ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(),".config");
     // Receipt dates use UTC; routes use local dates, which may be adjacent.
-    for(const offset of [-1,0,1])try{
-      const date=new Date(Date.parse(day+"T00:00:00Z")+offset*86400000).toISOString().slice(0,10);
+    const dates=new Set(days.flatMap(d=>[-1,0,1].map(offset=>new Date(Date.parse(d+"T00:00:00Z")+offset*86400000).toISOString().slice(0,10))));
+    for(const date of dates)try{
       const file=path.join(config,"magpie","routing",date+".jsonl");
       let content=await readTail(file);
       if(!content){
@@ -78,10 +80,10 @@ async function withTaskTitles(rows, day, availableAgents) {
     }catch{} // Missing, rotated or oversized history only affects the label.
     for(const [id,found] of kinds){
       // A session with ordinary or unknown calls must not acquire a false kind.
-      if(!found.has(""))titles.set(id,found.size===1 ? [...found][0] : "后台任务");
+      if(!found.has("")){const label=found.size===1 ? [...found][0] : "后台任务";titles.set(id,label);backgroundLabels.set(id,label);}
     }
   }
-  return rows.map(row=>{const own=receiptAgent(row.agent),found=own?[own]:[...(agents.get(idOf(row))||[])];return {...row,taskTitle:titles.get(idOf(row)) || "",agentIds:found,agentLabel:found.length?found.map(agent=>agentNames[agent]||agent).join("、"):"来源未记录"};});
+  return rows.map(row=>{const own=receiptAgent(row.agent),found=own?[own]:[...(agents.get(idOf(row))||[])];return {...row,taskTitle:titles.get(idOf(row)) || "",backgroundTask:backgroundLabels.has(idOf(row)),agentIds:found,agentLabel:found.length?found.map(agent=>agentNames[agent]||agent).join("、"):"来源未记录"};});
 }
 
 // Runs inside Magpie's existing plugin host; no separate daemon or model call.
@@ -115,6 +117,15 @@ export const ReceiptPage = async (_input, options = {}) => {
     try{return send(200,validateCompanyRules(body.companies));}catch(error){return send(400,{error:error.message,conflicts:error.conflicts});}
   };
   const operationFile=id=>path.join(root,"authorization-operations",id+".json");
+  const acquireOperationLock=async op=>{
+    const dir=path.dirname(operationFile(op.id));await secureDir(root,true);await secureDir(dir,true);const lock=path.join(dir,"lock.json");
+    try{const prior=JSON.parse(await fs.readFile(lock,"utf8"));if(prior.created<Date.now()-120000)await fs.unlink(lock);}catch(error){if(error.code!=="ENOENT")return false;}
+    try{await fs.writeFile(lock,JSON.stringify({id:op.id,created:op.created}),{flag:"wx",mode:0o600});return true;}catch{return false;}
+  };
+  const releaseOperationLock=async id=>{
+    const lock=path.join(root,"authorization-operations","lock.json");
+    try{const row=JSON.parse(await fs.readFile(lock,"utf8"));if(row.id===id)await fs.unlink(lock);}catch(error){if(error.code!=="ENOENT")throw error;}
+  };
   const readOperation=async id=>{
     if(!/^[a-f0-9-]{36}$/.test(id))throw new Error("invalid_operation");
     await secureDir(path.dirname(operationFile(id)));
@@ -125,7 +136,12 @@ export const ReceiptPage = async (_input, options = {}) => {
     if(req.method==="GET"){
       const pending=await listAuthorizationRequests(root),legacy=(await legacyTaskGrants(root)).map(g=>({session:g.session,workspace:g.workspace,coverage:"names",nameCount:g.names.length,names:g.names,created:g.created,legacy:true}));
       const rows=await withTaskTitles([...pending,...legacy]);
-      return send(200,{nonce,revision:options.sessionAuthorizationRevision,pending:rows.slice(0,pending.length),legacy:rows.slice(pending.length)});
+      let recent;
+      try{
+        const retained=await getRetainedReceiptRows(root),rejected=await listAuthorizationRequests(root,{rejected:true}),sessions=receiptAuthorizationSessions(retained,options.sessionAuthorizations||[],options.authKey,pending,rejected).filter(r=>r.requestCount>0).sort((a,b)=>(b.latestAt||"").localeCompare(a.latestAt||""));
+        recent={available:true,requestCount:retained.length,unidentifiedCount:retained.length-sessions.reduce((n,s)=>n+s.requestCount,0),sessions:await withTaskTitles(sessions),readAt:new Date().toISOString()};
+      }catch{recent={available:false,sessions:[],readAt:new Date().toISOString()};}
+      return send(200,{nonce,revision:options.sessionAuthorizationRevision,pending:rows.slice(0,pending.length),legacy:rows.slice(pending.length),recent});
     }
     if(req.method!=="POST")return send(405,{error:"method_not_allowed"});
     if(!canWrite(req))return send(403,{error:"forbidden"});
@@ -138,12 +154,39 @@ export const ReceiptPage = async (_input, options = {}) => {
         // A confirmed page operation replaces the old independent registration.
         await revokeGrant(root,op.session);
         if(op.requestId)await closeAuthorizationRequest(root,op.requestId);
-        const fd=await fs.open(path.join(root,"authorization-events.jsonl"),constants.O_WRONLY|constants.O_APPEND|constants.O_CREAT|constants.O_NOFOLLOW,0o600);
-        try{const stat=await fd.stat();if(stat.uid!==process.getuid()||(stat.mode&0o077))throw new Error("insecure_authorization_log");await fd.writeFile(JSON.stringify({at:new Date().toISOString(),session:op.session,action:op.action,coverage:op.coverage,nameCount:op.nameCount,operationId:op.id})+"\n");}finally{await fd.close();}
+        await recordAuthorizationEvent(root,{session:op.session,action:op.action,coverage:op.coverage,nameCount:op.nameCount,operationId:op.id});
       }
       await fs.unlink(operationFile(op.id));
       await fs.rm(path.join(root,"authorization-operations","lock.json"),{force:true});
       return send(200,{ok:true});
+    }
+    if(url.pathname==="/authorization/request"){
+      let row,target;
+      if(body.reapplyRequestId){
+        if(!/^[a-f0-9]{64}$/.test(body.reapplyRequestId))return send(400,{error:"invalid_request"});
+        const prior=(await listAuthorizationRequests(root,{rejected:true})).find(r=>r.id===body.reapplyRequestId);target=reapplicationTarget(prior);
+        if(target)row={id:target.turn,task:target.session,thread:target.session,agent:"codex",authorizationWorkspace:target.workspace};
+      }else{
+        if(!/^[a-f0-9-]{36}$/i.test(body.receiptId||"")||!/^\d{4}-\d{2}-\d{2}$/.test(body.date||""))return send(400,{error:"invalid_receipt"});
+        const report=await getReceiptReport({day:body.date,root,appLog:options.appLog});row=report.rows.find(r=>r.id===body.receiptId);target=receiptAuthorizationTarget(row);
+      }
+      if(!target)return send(409,{error:"receipt_target_unavailable"});
+      const sessions=receiptAuthorizationSessions([row],options.sessionAuthorizations||[],options.authKey);
+      if(sessions.some(s=>s.session===target.session&&s.workspace===target.workspace&&s.authorizationState==="all"))return send(409,{error:"already_authorized"});
+      const request=await queueAuthorizationRequest(root,{session:target.session,turn:randomUUID()},target.workspace,"receipt");
+      if(!request)return send(409,{error:"pending_capacity"});
+      return send(200,{requestId:request.id,pending:true});
+    }
+    if(url.pathname==="/authorization/reject"){
+      if(!/^[a-f0-9]{64}$/.test(body.requestId||""))return send(400,{error:"invalid_request"});
+      const op={id:randomUUID(),created:Date.now()};if(!await acquireOperationLock(op))return send(409,{error:"operation_busy"});
+      try{
+        const request=(await listAuthorizationRequests(root)).find(r=>r.id===body.requestId);if(!request)return send(409,{error:"request_expired"});
+        const closed=await closeAuthorizationRequest(root,request.id,"rejected");
+        try{await recordAuthorizationEvent(root,{at:closed.closedAt,session:request.session,action:"reject",coverage:"none",nameCount:0,requestId:request.id,operationId:op.id});}
+        catch{return send(500,{error:"rejection_history_unavailable"});}
+        return send(200,{ok:true,requestId:request.id});
+      }finally{await releaseOperationLock(op.id);}
     }
     if(!Array.isArray(body.entries)||body.entries.length>AUTHORIZATION_ENTRY_LIMIT||body.entries.some(e=>!readAuthorization(e,options.authKey)))return send(400,{error:"invalid_registry"});
     const ids=new Set(body.entries.map(e=>e.session));if(ids.size!==body.entries.length)return send(400,{error:"invalid_registry"});
@@ -169,10 +212,8 @@ export const ReceiptPage = async (_input, options = {}) => {
     catch(error){if(error.message==="authorization_too_large")return send(413,{error:"authorization_too_large"});throw error;}
     const {entry,entries}=plan;
     const op={id:randomUUID(),action:body.action,session:record.session,requestId:request?.id,entryMac:entry.mac,coverage:record.coverage,nameCount:names.length,created:Date.now()};
-    const dir=path.dirname(operationFile(op.id));await secureDir(root,true);await secureDir(dir,true);
-    const lock=path.join(dir,"lock.json");
-    try{const prior=JSON.parse(await fs.readFile(lock,"utf8"));if(prior.created<Date.now()-120000)await fs.unlink(lock);}catch(error){if(error.code!=="ENOENT")return send(409,{error:"operation_busy"});}
-    try{await fs.writeFile(lock,JSON.stringify({id:op.id,created:op.created}),{flag:"wx",mode:0o600});}catch{return send(409,{error:"operation_busy"});}
+    if(!await acquireOperationLock(op))return send(409,{error:"operation_busy"});
+    if(request&&!(await listAuthorizationRequests(root)).some(r=>r.id===request.id)){await releaseOperationLock(op.id);return send(409,{error:"request_expired"});}
     await fs.writeFile(operationFile(op.id),JSON.stringify(op)+"\n",{flag:"wx",mode:0o600});
     return send(200,{operationId:op.id,entryMac:entry.mac,entries,revision:op.id});
   };
@@ -206,7 +247,14 @@ export const ReceiptPage = async (_input, options = {}) => {
       try{return await authorization(req,res,url,send);}catch{console.warn("company_guard_authorization_unavailable");return send(400,{error:"authorization_unavailable"});}
     }
     if (req.method !== "GET") return send(405, {error:"read_only"});
-    if(url.pathname==="/audit"){try{return send(200,await readAuditHistory(root));}catch{return send(500,{error:"audit_unavailable"});}}
+    if(url.pathname==="/audit"){try{
+      const history=await readAuditHistory(root),rejected=await listAuthorizationRequests(root,{rejected:true}),pending=await listAuthorizationRequests(root);
+      history.authorizations=history.authorizations.map(row=>{
+        const prior=rejected.find(r=>r.id===row.requestId),target=reapplicationTarget(prior);if(row.action!=="reject"||!target)return row;
+        const scope=receiptAuthorizationSessions([{id:target.turn,task:target.session,thread:target.session,agent:"codex",authorizationWorkspace:target.workspace}],options.sessionAuthorizations||[],options.authKey,pending,rejected).find(s=>s.session===target.session&&s.workspace===target.workspace);
+        return {...row,...(scope&&!scope.pending&&scope.authorizationState!=="all"?{reapplyRequestId:prior.id}:{})};
+      });return send(200,history);
+    }catch{return send(500,{error:"audit_unavailable"});}}
     if (url.pathname === "/details") {
       const id=url.searchParams.get("id") || "";
       if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) return send(400,{error:"invalid_id"});
@@ -217,8 +265,9 @@ export const ReceiptPage = async (_input, options = {}) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(400, {error:"invalid_date"});
     try {
       const report = await getReceiptReport({day, root, appLog:options.appLog});
-      const availableAgents=new Set(),rows=await withTaskTitles(report.rows,day,availableAgents);
-      send(200, {...report,rows,agentOptions:[...availableAgents].sort().map(id=>({id,label:agentNames[id]||id})),readAt:new Date().toISOString()});
+      const pending=await listAuthorizationRequests(root),sessions=receiptAuthorizationSessions(report.rows,options.sessionAuthorizations||[],options.authKey,pending);
+      const availableAgents=new Set(),decorated=await withTaskTitles([...report.rows,...sessions],day,availableAgents),rows=decorated.slice(0,report.rows.length);
+      send(200, {...report,rows,sessions:decorated.slice(report.rows.length),agentOptions:[...availableAgents].sort().map(id=>({id,label:agentNames[id]||id})),readAt:new Date().toISOString()});
     } catch { console.warn("company_guard_receipt_page_read_failed"); send(500, {error:"receipt_read_failed"}); }
   });
   server.requestTimeout = 10000;

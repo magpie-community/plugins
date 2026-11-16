@@ -7,7 +7,7 @@ import {retainDetails} from "./receipt-details.mjs";
 import {secureDir, stateRoot} from "./grant-store.mjs";
 import {companyRulesRevision} from "./local-options.mjs";
 
-export const RECEIPT_VERSION = "0.4.6";
+export const RECEIPT_VERSION = "0.4.7";
 const writes = new Map();
 export const RECEIPT_LIMIT = 25;
 
