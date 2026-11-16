@@ -10,9 +10,7 @@ async function api(route,params={},timeout=8000) {
   if(!response.ok)throw new Error('read_failed');return response.json();
 }
 
-const authorizationErrors={invalid_names:'请填写有效公司名称，每行一个，最多32个；本次设置尚未改变。',request_expired:'申请已过期，请在目标会话重新提出申请。',operation_expired:'保存已过期，请刷新后重新确认。',operation_busy:'另一个窗口正在保存授权，请稍后刷新重试。',invalid_registry:'授权配置校验未通过，请保留当前设置并联系维护。',authorization_too_large:'名单或会话数量超过容量，请缩小范围。',authorization_unavailable:'本机授权服务暂不可用，请刷新重试。',authorization_not_found:'这份授权已变化，请刷新查看。'};
-Object.assign(authorizationErrors,{receipt_target_unavailable:'此回执已过期或缺少可核验的目录，请等待该会话的新请求。',already_authorized:'此会话已全部放行，请刷新查看。',pending_capacity:'待确认申请已满，请先处理已有申请。'});
-Object.assign(authorizationErrors,{request_expired:'申请已过期或已处理，请刷新核对。',rejection_history_unavailable:'申请已拒绝，但操作记录保存未成功；请保留本机记录并联系维护。'});
+const authorizationErrors={"invalid_names":"请填写有效公司名称，每行一个，最多32个；本次设置尚未改变。","request_expired":"申请已过期或已处理，请刷新核对。","operation_expired":"保存已过期，请刷新后重新确认。","operation_busy":"另一个窗口正在保存授权，请稍后刷新重试。","invalid_registry":"授权配置校验未通过，请保留当前设置并联系维护。","authorization_too_large":"名单或会话数量超过容量，请缩小范围。","authorization_unavailable":"本机授权服务暂不可用，请刷新重试。","authorization_not_found":"这份授权已变化，请刷新查看。","receipt_target_unavailable":"此回执已过期或缺少可核验的目录，请等待该会话的新请求。","already_authorized":"此会话已全部放行，请刷新查看。","pending_capacity":"待确认申请已满，请先处理已有申请。","rejection_history_unavailable":"申请已拒绝，但操作记录保存未成功；请保留本机记录并联系维护。"};
 function authorizationNotice(text,error=false){
   for(const id of ['authorization-notice',...($('authorization-editor').open?['authorization-editor-notice']:[])]){const notice=$(id);notice.textContent=text;notice.className=error?'error':'detail-message';notice.hidden=!text;}
 }

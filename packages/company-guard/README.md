@@ -2,7 +2,7 @@
 
 Local company-name masking and reversible replies for Magpie, with session approvals and local receipts.
 
-当前版本：**0.4.7**（macOS）。
+当前版本：**0.4.8**（macOS）。
 
 面向 Magpie 的公司名称保护插件：在模型请求发送前替换识别到的公司名称，在回复返回本机时还原；提供“会话授权”“脱敏规则”和“脱敏回执”三个页面。
 
@@ -80,6 +80,10 @@ node receipt-report.mjs --json
 ```
 
 本仓库不包含用户配置、授权名单、业务材料或本机验收记录。
+
+## 0.4.8 代码整理
+
+移除不再使用的授权页面样式，合并重复定义的错误提示表。页面布局、有效提示文案、授权范围和处理逻辑保持不变。
 
 ## 0.4.7 更新
 
