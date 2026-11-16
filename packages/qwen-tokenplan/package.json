@@ -1,0 +1,39 @@
+{
+  "name": "@magpie-community/opencode-qwen-tokenplan-auth",
+  "version": "0.1.0",
+  "description": "QianWen Token Plan usage in Magpie, using the official QianWen CLI's local sign-in",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs",
+    "./server": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "quota.mjs",
+    "credential.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "icon.svg",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "qianwen",
+    "qwen-tokenplan",
+    "tokenplan",
+    "quota"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/qwen-tokenplan"
+  },
+  "magpie": {
+    "icon": "qwen-color"
+  }
+}
