@@ -71,6 +71,11 @@ One enterprise sign-in has since been seen to name
 from that console (see Usage). The tenant and login-type fields are still
 kept and never sent.
 
+Such a seat chats on that console, where a chat bills the seat pool. Not
+every tenant's console takes chats: one that answers 4245 marks the
+account, and from then on it chats on the consumer gateway, which takes
+the same login but spends the login's own credits (#1127, #1155).
+
 The international deployment has an enterprise console too, at
 `console.enterprise.trae.ai`, and the same reading is done there — **not
 verified**, see Usage.

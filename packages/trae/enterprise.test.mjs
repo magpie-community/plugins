@@ -6,7 +6,7 @@
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
 import { TraeCNAuthPlugin, _internal } from "./index.mjs"
-import { fakeTrae, json, signedIn } from "./fake.mjs"
+import { fakeTrae, json, signedIn, sse } from "./fake.mjs"
 
 // the console's own answer, as a real enterprise account's is: the seat
 // pool in yuan, and each model's cost
@@ -94,15 +94,75 @@ test("a sign-in naming an enterprise Trae CN host keeps it, and requests go ther
   expect(String(e?.message)).toContain("https://ent-acme.trae.cn/api/agent/v3/llm_utils_chat")
 })
 
-// #1127 (shadow1606, a real Trae CN enterprise seat): the console the
-// sign-in names answers every llm_utils_chat with 4245, and its list names
-// the tenant's configs, which the consumer gateway refuses. Its models and
-// chats go to the gateway, which takes the same login; usage stays on the
-// console.
-test("an enterprise sign-in naming the console itself chats on the consumer gateway", async () => {
-  expect(CN.apiOf({ api: ENT, host: ENT })).toBe(CN.hosts.api)
-  expect(CN.apiOf({ api: "https://Console.Enterprise.Trae.CN" })).toBe(CN.hosts.api)
+// An enterprise seat chats on the console its sign-in names, which bills
+// the seat pool: #1155's (kenanor) does, and from 0.2.36 to 0.2.38 its
+// chats went to the consumer gateway and spent the login's own credits.
+// #1127's (shadow1606) console answers every llm_utils_chat with 4245: that
+// seat is marked, kept with its sign-in, and chats on the gateway.
+test("an enterprise sign-in naming the console chats there, and on the gateway once marked", async () => {
+  expect(CN.apiOf({ api: ENT, host: ENT })).toBe(CN.hosts.console)
+  expect(CN.apiOf({ api: "https://Console.Enterprise.Trae.CN" })).toBe(CN.hosts.console)
+  expect(CN.apiOf({ api: ENT, host: ENT, consoleChat: false })).toBe(CN.hosts.api)
   expect(CN.apiOf({ api: "https://ent-acme.trae.cn" })).toBe("https://ent-acme.trae.cn")
+})
+
+// the console on its own path of the fake, so the two hosts differ
+function consoleApart() {
+  f = fakeTrae()
+  CN.hosts.console = f.origin + "/console"
+  const saved = []
+  return { saved, client: { auth: { set: async ({ body }) => { saved.push(body) } } } }
+}
+async function chat(client, auth) {
+  const hooks = await TraeCNAuthPlugin({ client })
+  const opts = await hooks.auth.loader(async () => auth)
+  return opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }) })
+}
+const ok = () => sse([["output", { response: "ok" }], ["done", {}]])
+const chats = () => f.seen.filter((r) => r.path.endsWith("/api/agent/v3/llm_utils_chat")).map((r) => r.path)
+
+test("a seat whose console takes chats chats there, and nothing is marked", async () => {
+  const { saved, client } = consoleApart()
+  f.route("POST /console/api/agent/v3/llm_utils_chat", ok)
+  f.route("POST /api/agent/v3/llm_utils_chat", ok)
+  const res = await chat(client, signedIn({ api: ENT, host: ENT }))
+  expect(res.status).toBe(200)
+  expect(chats()).toEqual(["/console/api/agent/v3/llm_utils_chat"])
+  expect(saved).toEqual([])
+})
+
+for (const [how, refusal] of [
+  ["in a 200", () => json({ code: 4245, message: "not allowed" })],
+  ["as a 400", () => json({ code: 4245, message: "not allowed" }, 400)],
+  ["as a stream's error", () => sse([["error", { code: 4245, message: "not allowed" }]])],
+]) {
+  test(`a console that turns chats away (4245 ${how}) marks the seat, and the gateway answers`, async () => {
+    const { saved, client } = consoleApart()
+    f.route("POST /console/api/agent/v3/llm_utils_chat", refusal)
+    f.route("POST /api/agent/v3/llm_utils_chat", ok)
+    const res = await chat(client, signedIn({ api: ENT, host: ENT }))
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain("ok")
+    // one ask of the console (not one a function), then the gateway
+    expect(chats()).toEqual(["/console/api/agent/v3/llm_utils_chat", "/api/agent/v3/llm_utils_chat"])
+    expect(saved.length).toBe(1)
+    expect(saved[0].consoleChat).toBe(false)
+    expect(saved[0].host).toBe(ENT)
+    // the mark is read back: the next run goes to the gateway at once
+    f.seen.length = 0
+    const again = await chat(client, saved[0])
+    expect(again.status).toBe(200)
+    expect(chats()).toEqual(["/api/agent/v3/llm_utils_chat"])
+  })
+}
+
+test("a 4245 from the gateway itself is an error, not a mark", async () => {
+  const { saved, client } = consoleApart()
+  f.route("POST /api/agent/v3/llm_utils_chat", () => json({ code: 4245, message: "not allowed" }, 400))
+  const res = await chat(client, signedIn({ api: ENT, host: ENT, consoleChat: false }))
+  expect(res.status).toBe(400)
+  expect(await res.text()).toContain("4245")
+  expect(saved).toEqual([])
 })
 
 test("a personal sign-in is as before", async () => {

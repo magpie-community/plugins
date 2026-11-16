@@ -99,17 +99,20 @@ const SITES = {
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
-    // so only a host that is one is taken, else the one gateway. The
-    // enterprise console an enterprise (SaaS) sign-in names is not one
-    // either: a real tenant's seat answered every llm_utils_chat there with
-    // 4245, for every function and model, as TRAE SOLO chats through an
-    // agent protocol of its own instead; and the list it gives names the
-    // tenant's configs, which the gateway turns away (4001). The gateway
-    // takes the same login, so its models and chats go there, while its
-    // usage stays the console's (#1127)
+    // so only a host that is one is taken, else the one gateway.
+    //
+    // The enterprise console an enterprise (SaaS) sign-in names is the
+    // seat's own model host, and a chat there bills the seat pool. Not every
+    // tenant's seat takes chats there: #1127's (shadow1606) answered every
+    // llm_utils_chat with 4245, for every function and model, while
+    // #1155's (kenanor) chats there. A seat the console turns away is
+    // marked (consoleChat: false, kept with the sign-in) and chats on the
+    // consumer gateway, which takes the same login but bills the login's
+    // own credits — so the gateway is the fallback, never the first ask.
+    // The plugin's hostOf applies the mark; this is the host before it.
     apiOf: (a) => {
       const h = traeHost(a?.api)
-      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return SITES["trae-cn"].hosts.api
+      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return a?.consoleChat === false ? SITES["trae-cn"].hosts.api : SITES["trae-cn"].hosts.console
       return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
     // whether a host named by a sign-in is one of the model hosts: an https
@@ -524,6 +527,8 @@ function toAuth(s, site) {
     ...(traeHost(s.host) ? { host: traeHost(s.host) } : {}),
     ...(authHostOf(s.authHost, site) ? { authHost: authHostOf(s.authHost, site) } : {}),
     ...(s.account && Object.keys(s.account).length ? { account: s.account } : {}),
+    // an enterprise seat its console turned a chat away from (4245)
+    ...(s.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -545,6 +550,7 @@ function fromAuth(auth, site) {
     host: auth.host || "",
     authHost: authHostOf(auth.authHost, site),
     account: auth.account && typeof auth.account === "object" ? auth.account : {},
+    ...(auth.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -3510,6 +3516,21 @@ const makePlugin = (site) => async ({ client }) => {
     return { models: rec.done, expired: rec.expired }
   }
 
+  // the enterprise seats whose console turned a chat away (4245) in this
+  // run, by account: the mark is kept with the sign-in too, and this holds
+  // it when that save fails
+  const consoleRefused = new Set()
+  // hostOf is the account's model host, with that mark applied
+  const hostOf = (a) => {
+    const h = apiOf(a, site)
+    if (site.hosts.console && h === site.hosts.console && consoleRefused.has(a.uid || a.name)) return site.hosts.api
+    return h
+  }
+  // onConsole: the host is the enterprise console, where a 4245 is the
+  // seat's console refusing chats rather than this model or function
+  const onConsole = (host) => !!site.hosts.console && host === site.hosts.console && host !== site.hosts.api
+  const consoleRefuses = (code) => String(code) === "4245"
+
   const save = async (auth) => {
     try {
       await client?.auth?.set?.({ path: { id: site.id }, body: auth })
@@ -3831,7 +3852,7 @@ const makePlugin = (site) => async ({ client }) => {
   // SOLO CN's ai-agent asks (batch_get_detail_param): {function: entries}.
   // null when Trae answers it with no lists.
   const batchLists = async (a) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/batch_get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/batch_get_detail_param", {
       functions: site.functions, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
       mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
     })
@@ -3850,7 +3871,7 @@ const makePlugin = (site) => async ({ client }) => {
 
   // listOf is one function's model list, as the IDE asks for it
   const listOf = async (a, fn) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/get_detail_param", {
       function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true, mode_type: null, agent_type: null,
     })
     if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
@@ -4092,7 +4113,7 @@ const makePlugin = (site) => async ({ client }) => {
         const a0 = fromAuth(await getAuth(), site)
         if (!a0) return {}
         return {
-          baseURL: apiOf(a0, site) + "/v1",
+          baseURL: hostOf(a0) + "/v1",
           apiKey: "trae", // the engine's placeholder; the request carries the JWT
           async fetch(input, init = {}) {
             const r0 = input instanceof Request ? input : null
@@ -4165,46 +4186,68 @@ const makePlugin = (site) => async ({ client }) => {
             // the account answering it, so a failover inside one conversation
             // is not one Trae reads as another's
             const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})), who)
-            for (const fn of [...new Set(fns)]) {
-              const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
-                method: "POST",
-                headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
-                signal: ac.signal,
-              })
-              if (!res.ok) {
-                const text = await res.text()
-                const e = errorOf(text)
-                last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
-                if (res.status === 400 && wrongFunction(e.code)) continue
-                break
-              }
-              const ct = res.headers.get("content-type") ?? ""
-              if (!ct.includes("event-stream") && ct.includes("json")) {
-                // an answer that isn't a stream is an error in a 200
-                const e = errorOf(await res.text())
-                last = failure(site, 502, e.code, e.message)
-                if (wrongFunction(e.code)) continue
-                break
-              }
-              const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
-              const { held, done } = await first(it)
-              const err = held.find((p) => p.error)
-              if (err) {
-                last = failure(site, 502, err.code, err.error)
-                if (wrongFunction(err.code)) {
-                  // another function may take it: this answer's read goes
-                  // with the function it came from, not left hanging
-                  it.return?.()
-                  res.body.cancel?.().catch(() => {})
-                  continue
+            // an enterprise seat chats on its console, which bills the seat
+            // pool. One whose console turns chats away (4245, #1127) is
+            // marked, kept with its sign-in, and the same request is asked
+            // once more on the consumer gateway; its list is read from there
+            // next.
+            for (let round = 0; round < 2; round++) {
+              const host = hostOf(a)
+              let refused = false
+              for (const fn of [...new Set(fns)]) {
+                const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                  method: "POST",
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
+                  signal: ac.signal,
+                })
+                if (!res.ok) {
+                  const text = await res.text()
+                  const e = errorOf(text)
+                  last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (res.status === 400 && wrongFunction(e.code)) continue
+                  break
                 }
-                break
+                const ct = res.headers.get("content-type") ?? ""
+                if (!ct.includes("event-stream") && ct.includes("json")) {
+                  // an answer that isn't a stream is an error in a 200
+                  const e = errorOf(await res.text())
+                  last = failure(site, 502, e.code, e.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (wrongFunction(e.code)) continue
+                  break
+                }
+                const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
+                const { held, done } = await first(it)
+                const err = held.find((p) => p.error)
+                if (err) {
+                  last = failure(site, 502, err.code, err.error)
+                  if (onConsole(host) && consoleRefuses(err.code)) {
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    refused = true
+                    break
+                  }
+                  if (wrongFunction(err.code)) {
+                    // another function may take it: this answer's read goes
+                    // with the function it came from, not left hanging
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    continue
+                  }
+                  break
+                }
+                fnOf.set(who, fn)
+                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
               }
-              fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
-              out.headers.set("X-Magpie-Sign-In", signIn)
-              return out
+              if (!refused) break
+              consoleRefused.add(who)
+              a = { ...a, consoleChat: false }
+              await save(toAuth(a, site))
+              readAt.delete(who)
             }
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
