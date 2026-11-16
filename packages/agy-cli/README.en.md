@@ -255,6 +255,7 @@ usage reads wait 10 minutes before the next try, doubling up to 6 hours.
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
+| `AGY_BRIDGE_TELEMETRY` | off (agy reports nothing) | The bridge starts agy with `--disable-telemetry` when agy's `acp --help` lists it; set to `1` to keep agy's own reporting |
 | `AGY_BRIDGE_SYSTEM_APPEND` | off | Set to `1` to append the client's system prompt to agy's own instead of putting it in the first prompt; see below |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | How long a process may sit idle before it is reclaimed; the session can still resume |
 | `AGY_BRIDGE_SPARE` | on | Keeps one spare agy per account, started but with no session and no request sent, so a new conversation skips agy's start; set to `0` to turn it off |

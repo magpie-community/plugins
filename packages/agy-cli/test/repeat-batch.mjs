@@ -904,6 +904,33 @@ test("A16: under a tight budget, a mid-loop user steer beats an opening meta com
   })
 })
 
+// #896: agy reports the run to its vendor unless it is told not to; the flag
+// is passed only to an agy whose own acp --help lists it.
+const TELEMETRY_HELP = "Usage of acp:\n  --disable-telemetry\n    \tdisable telemetry (default false)\n"
+
+test("#896: an agy whose acp --help lists --disable-telemetry starts with telemetry off", async () => {
+  await withKit({ acpHelp: TELEMETRY_HELP }, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-listed" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
+  })
+})
+
+test("#896: an agy without the flag is never given it, and AGY_BRIDGE_TELEMETRY=1 keeps agy's own default", async () => {
+  for (const options of [{}, { acpHelp: TELEMETRY_HELP, env: { AGY_BRIDGE_TELEMETRY: "1" } }]) {
+    await withKit(options, async (kit) => {
+      scriptedAgent(kit)
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-unlisted" },
+        messages: [{ role: "user", content: "hello" }] })))
+      assert.equal(reply.stopReason, "end_turn")
+      assert.ok(!kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
+    })
+  }
+})
+
 // ----------------------------------------------- agy's error marker (#1052)
 
 function markerAgent(kit, chunks) {
