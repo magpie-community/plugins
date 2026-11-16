@@ -348,7 +348,9 @@ off unless you turn it on.
   latter as a rate limit), and its `⚠ API error (attempt N)` retry lines are
   dropped. An ending that says "This service has been disabled in this account
   for violation of Terms of Service" is returned as a no-retry
-  `permission_error` with 403 semantics, not as normal reply text.
+  `permission_error` with 403 semantics, not as normal reply text. So is the
+  "Verification Required" ending (Google wants the account verified), with
+  the link to verify it at when agy logged one, else where to verify it.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather

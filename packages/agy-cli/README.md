@@ -249,7 +249,8 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
   重试中的提示行会被去掉。若结尾是 "This service has been disabled in this account for
   violation of Terms of Service"，会按禁止重试的 403 语义 `permission_error` 返回，而不是
-  当成正常正文。
+  当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
+  并带上 agy 记下的验证链接；没有链接时说明去哪里验证。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
   Hermes Agent 会把一次批量的 `tool_call({"calls": [...]})` 在自己的历史里拆成每项一次调用，

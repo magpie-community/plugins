@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect } from "../usage.mjs"
+import { agyRefusal, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -989,4 +989,33 @@ test("agyRefusal: Google turning the account away, never a network failure or ag
     "PERMISSION_DENIED (code 403): Request had invalid credentials.",
     "This service has been disabled in this account for violation of Terms of Service.",
   ]) assert.equal(agyRefusal(other), "", other)
+})
+
+// Google's VALIDATION_REQUIRED at agy's eligibility check, in agy 1.5.9's
+// words (AuthStatus.EligibilityError, IneligibilityFromResult): the link
+// agy prints goes to the user whole, in the words magpie's gateway reads as
+// a verification (provider.verifyAdvice, verifyLink), never the VPN advice.
+test("agyRefusal: an account Google wants verified gets the link agy printed, or where to verify", () => {
+  const link = "https://accounts.google.com/signin/continue?sarp=1&scc=1&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&plt=AKgnsbv"
+  const linked = `Error: Eligibility check failed: Verify your account to continue.\n\nPlease verify your account in your browser to continue:\n${link}\n`
+  const said = agyRefusal(linked)
+  assert.ok(said.includes(`this Google account needs to be verified: open ${link} in a browser`), said)
+  assert.doesNotMatch(said, /VPN/)
+  assert.equal(verifyLinkIn(linked.replace(/\n/g, "\r\n")), link)
+  for (const bare of [
+    "Error: Eligibility check failed: Verification required. Please complete verification in your browser to continue.",
+    "Error: Eligibility check failed: Verify your account to continue.",
+  ]) {
+    const why = agyRefusal(bare)
+    assert.match(why, /this Google account needs to be verified: open the Antigravity app, or run `agy` in a terminal/, bare)
+    assert.doesNotMatch(why, /https:/)
+  }
+})
+
+test("verifyLinkIn: Google's validation link from a logged error, validation_link first, https only", () => {
+  const body = '{"error":{"code":403,"message":"Verify your account to continue.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","metadata":{"validation_url":"https://accounts.google.com/signin/continue?sarp=1\\u0026x=2","validation_link":"https://accounts.google.com/v?a=1\\u0026b=2"}}]}}'
+  assert.equal(verifyLinkIn(body), "https://accounts.google.com/v?a=1&b=2")
+  assert.equal(verifyLinkIn(body.replace(/,"validation_link":"[^"]+"/, "")), "https://accounts.google.com/signin/continue?sarp=1&x=2")
+  assert.equal(verifyLinkIn('validation_url: "http://example.com/x"'), "")
+  assert.equal(verifyLinkIn("Verification Required"), "")
 })

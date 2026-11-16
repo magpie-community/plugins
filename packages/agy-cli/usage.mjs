@@ -67,6 +67,49 @@ export const ACCOUNT_DISABLED_REFUSED = "Google has disabled this account's acce
   "for violating the Terms of Service (HTTP 403: \"This service has been disabled in this account " +
   "for violation of Terms of Service\"). Submit an appeal with Google before using this account again."
 
+// Google asks for the account to be verified (Cloud Code's 403
+// VALIDATION_REQUIRED). agy 1.5.9 words it three ways: a turn's model call
+// ends the reply with "⚠ Verification Required" alone (kidgpt on X, 11-16:
+// that bare line was the whole answer in Claude Code), and its eligibility
+// check says "…\n\nPlease verify your account in your browser to
+// continue:\n<link>", or "Verification required. Please complete
+// verification in your browser to continue." when Google gave no link.
+const VERIFY_REFUSAL = /please verify your account in your browser to continue|verification required\. please complete verification|verify your account to continue/i
+
+// The words magpie's gateway reads as Google's verification refusal
+// (provider.verifyAdvice), and its link in them (provider.verifyLink): it
+// rests the account as "verify" and shows Verify with the link, as it does
+// for the Antigravity and Gemini CLI routes.
+export const VERIFY_ADVICE = "this Google account needs to be verified"
+
+// verifyLinkIn is the https link agy's output or log gives to verify the
+// account at, "" when it gives none: taken as Gemini CLI takes it, the
+// validation_link before the validation_url, else the link agy prints after
+// "continue:", else an accounts.google.com one.
+export function verifyLinkIn(output) {
+  const said = String(output ?? "").replace(/\\u0026/g, "&").replace(/&amp;/g, "&")
+  const named = (key) => new RegExp(`"?${key}"?\\s*[:=]\\s*"?(https://[^\\s"'\\\\<>]+)`, "i").exec(said)?.[1]
+  const link = named("validation_?link") || named("validation_?url") ||
+    /in your browser to continue:\s*(https:\/\/[^\s"'\\<>]+)/i.exec(said)?.[1] ||
+    /(https:\/\/accounts\.google\.com\/[^\s"'\\<>]+)/i.exec(said)?.[1] || ""
+  const trimmed = link.replace(/[).,;\]}]+$/, "")
+  try {
+    const u = new URL(trimmed)
+    return u.protocol === "https:" && u.host ? trimmed : ""
+  } catch {
+    return ""
+  }
+}
+
+// verifyRefused is what the agent is told when Google wants the account
+// verified: with the link to do it at when agy gave one, else where to go.
+export function verifyRefused(link) {
+  const said = "Google wants this account verified before Antigravity serves it again (agy: \"Verification Required\")"
+  return link
+    ? `${said} — ${VERIFY_ADVICE}: open ${link} in a browser signed in to it, verify it, then try again`
+    : `${said} — ${VERIFY_ADVICE}: open the Antigravity app, or run \`agy\` in a terminal, signed in to it and do what it asks, then try again`
+}
+
 // agyRefusal is what to tell the user when agy's output says Google turned
 // the account away at its eligibility check, or "" when it doesn't: the
 // license refusal (#3501), or any other refusal of the check that isn't a
@@ -77,6 +120,7 @@ export function agyRefusal(output) {
   const said = withoutDiagnostics(String(output ?? ""))
   if (LICENSE_REFUSAL.test(said)) return LICENSE_REFUSED
   if (ACCOUNT_DISABLED_REFUSAL.test(said)) return ACCOUNT_DISABLED_REFUSED
+  if (VERIFY_REFUSAL.test(said)) return verifyRefused(verifyLinkIn(said))
   if (!ELIGIBILITY.test(said) || NETWORK.test(said)) return ""
   const line = said.split(/\r?\n/).map(l => l.trim().replace(/^error:\s*/i, "")).find(l => ELIGIBILITY.test(l)) || ""
   return `Google refuses this account for Antigravity: ${line.slice(0, 400)}. agy itself gets the same answer. ` +

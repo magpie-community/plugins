@@ -1086,6 +1086,61 @@ test("#1201: the model quoting the banned-account ending with more text after ke
   })
 })
 
+// kidgpt on X (11-16, Windows 11, Claude Code in VS Code, gemini-3.8-flash):
+// Google's 403 VALIDATION_REQUIRED on a model call reaches agy 1.5.9 as
+// "Verification Required" (CustomUserErrorMessageFromHTTPError), which it
+// ends the reply with, and the client got that bare line as the answer.
+const VERIFY = "\n⚠ Verification Required\n"
+
+function agyLogOf(kit) {
+  const args = kit.acpSpawns.at(-1).args
+  return args[args.indexOf("--log-file") + 1]
+}
+
+test("agy's Verification Required ending fails the stream as a no-retry 403 that says how to verify", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [VERIFY.slice(0, 9), VERIFY.slice(9)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-end" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /this Google account needs to be verified: open the Antigravity app, or run `agy` in a terminal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("agy's Verification Required ending carries the link agy logged, as a non-stream HTTP 403", async () => {
+  const link = "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=AKgnsbv"
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      fs.appendFileSync(agyLogOf(kit), `E1116 21:03:11.120000 6120 errorreport.go:224] agent executor error: generating and executing: PERMISSION_DENIED (code 403): Verify your account to continue. validation_url: ${link.replace(/&/g, "\\u0026")}\n`)
+      await agent.text(VERIFY)
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+    assert.ok(body.error.message.includes(`this Google account needs to be verified: open ${link} in a browser`), body.error.message)
+  })
+})
+
+test("the model quoting the Verification Required ending with more text after keeps it", async () => {
+  const chunks = ["agy said\n⚠ Verification", " Required\nThat line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "verify-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {

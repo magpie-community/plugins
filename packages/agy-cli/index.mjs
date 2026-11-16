@@ -7,7 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { agyRefusal, createUsageReader } from "./usage.mjs"
+import { agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
@@ -125,9 +125,14 @@ const AGENT_ERROR_MARKERS = [
   "\n⚠ Your AI credits balance is too low to continue.\n",
   "\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n",
   "\n⚠ PERMISSION_DENIED (code 403): This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n",
+  // Google's 403 VALIDATION_REQUIRED on a model call, in agy's words
+  // (CustomUserErrorMessageFromHTTPError): the account must be verified
+  // first. Answered as text, it was the whole reply (kidgpt on X, 11-16).
+  "\n⚠ Verification Required\n",
 ]
 const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
+const VERIFY_CORE = AGENT_ERROR_CORES[5]
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
 const ATTEMPT_CORE = "⚠ API error (attempt "
@@ -2414,6 +2419,11 @@ class Proc {
 
   async #agentError(turn) {
     const core = turn.agentErrorCore
+    if (core === VERIFY_CORE) {
+      // the link, when agy logged Google's error whole; the reply has none
+      const logged = await logTail(this.logPath, turn.logOffset)
+      return refusedError(verifyRefused(verifyLinkIn(`${turn.attemptDetail || ""}\n${logged}`)))
+    }
     // A failed connection is in the reply's last attempt line, not the log's
     // executor error (#1136).
     const detail = await lastAgentError(this.logPath, turn.logOffset) || turn.attemptDetail ||
@@ -2867,9 +2877,8 @@ async function fileSize(file) {
   try { return (await fs.promises.stat(file)).size } catch { return 0 }
 }
 
-// agy writes the real upstream error only to its log; read what this turn added.
-async function lastAgentError(file, offset) {
-  let text = ""
+// What agy logged since offset, its last LOG_TAIL_BYTES at most.
+async function logTail(file, offset) {
   try {
     const handle = await fs.promises.open(file, "r")
     try {
@@ -2877,13 +2886,19 @@ async function lastAgentError(file, offset) {
       const start = Math.max(offset || 0, size - LOG_TAIL_BYTES)
       const buffer = Buffer.alloc(Math.max(0, size - start))
       await handle.read(buffer, 0, buffer.length, start)
-      text = buffer.toString("utf8")
+      return buffer.toString("utf8")
     } finally {
       await handle.close()
     }
   } catch {
     return ""
   }
+}
+
+// agy writes the real upstream error only to its log; read what this turn added.
+async function lastAgentError(file, offset) {
+  const text = await logTail(file, offset)
+  if (!text) return ""
   let found = ""
   for (const line of text.split("\n")) {
     const match = /\] (?:agent executor error|failed to construct executor|inference connection failed[^:]*): (.+)$/.exec(line) ||
