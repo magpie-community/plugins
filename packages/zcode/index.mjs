@@ -2124,13 +2124,16 @@ function kept(res, text) {
 // the number declared below (DEFAULT_CONCURRENCY, on the auth hook and in
 // package.json), which a user raises on the account.
 const DEFAULT_CONCURRENCY = 3
-// DEFAULT_ACCOUNTS is how many of a user's ZCode accounts magpie sends
-// requests to at the same time (maxAccounts, on the auth hook and in
-// package.json): the first in the user's list, the next taking over once
-// one runs out or fails. 01huadalang on Discord: three accounts used at
-// once from one address got the address refused with a 405, two didn't. A
-// user sets their own on the provider (Accounts at once), 0 for no limit.
-const DEFAULT_ACCOUNTS = 2
+// No maxAccounts is declared: magpie sends requests to every ZCode account
+// of the user's, and a user still sets their own on the provider (Accounts
+// at once). 0.1.40 to 0.1.67 declared two, after 01huadalang's address was
+// refused with a 405 while three accounts took requests at once (Discord),
+// and the others sat in reserve until one ran out: a user with five gift
+// accounts saw two used (mathfournity on X). What the edge firewall counts
+// is this address's Start Plan requests in flight, not its accounts (see
+// busyHold), so that is what is held now, over every account (startGate's
+// address): as many as two accounts had in flight before, while a coding
+// plan account, on another host, is held to none of it.
 const BUSY_CODES = new Set(["3008", "3009", "3010"])
 // BUSY_WAITS are the waits before each ask again: ZCode's own client's,
 // 1s and 2s (kqo in its bundle). Past them the cap goes back to magpie,
@@ -2172,11 +2175,18 @@ const BUSY_HINT =
 // narrow is kept apart from lanes, which go when idle; now is its clock,
 // injectable for tests.
 const NARROW_FOR = 5 * 60_000
-const startGate = { inflight: 3, wait: 120_000, lanes: new Map(), narrow: new Map(), now: () => Date.now() }
+const startGate = { inflight: 3, address: 6, wait: 120_000, lanes: new Map(), narrow: new Map(), now: () => Date.now() }
+// ADDRESS is the lane every account's Start Plan requests share as well as
+// their own: zcode.z.ai sees one address, and its firewall refused the whole
+// of it with 405 once ~10 were in flight (busyHold). startGate.address is
+// six, what two accounts of three each sent when the plugin declared
+// maxAccounts two, which no 405 followed. It is never narrowed.
+const ADDRESS = "\0address"
 
 // limitOf is how many of the account's Start Plan requests go at once: the
 // gate's number, or less while the account is narrowed.
 function limitOf(key) {
+  if (key === ADDRESS) return startGate.address
   const n = startGate.narrow.get(key)
   if (!n) return startGate.inflight
   if (startGate.now() >= n.until) {
@@ -2256,6 +2266,34 @@ function startSlot(key, signal, { wait = startGate.wait, front = false } = {}) {
   })
 }
 
+// startSlots waits for a slot of the account's, then one of the address's
+// (ADDRESS), both within the one wait: { release } letting both go, or
+// { key } naming the lane whose wait ran out, nothing held. Every request
+// takes the account's first, so one holding the address's never waits for
+// an account's.
+async function startSlots(key, signal, { wait = startGate.wait, front = false } = {}) {
+  const until = Date.now() + wait
+  const mine = await startSlot(key, signal, { wait, front })
+  if (!mine) return { key }
+  let all
+  try {
+    all = await startSlot(ADDRESS, signal, { wait: until - Date.now(), front })
+  } catch (e) {
+    mine.release()
+    throw e
+  }
+  if (!all) {
+    mine.release()
+    return { key: ADDRESS }
+  }
+  return {
+    release() {
+      all.release()
+      mine.release()
+    },
+  }
+}
+
 // released hands res on and lets its slot go once ZCode's answer has come
 // to its end, failed, or been given up on (the agent's abort, the reader's
 // cancel) — the request is in flight at ZCode until then. The answer is read
@@ -2299,9 +2337,12 @@ function released(res, slot, signal) {
 // so it tries the next account, and a short Retry-After.
 function startQueueAnswer(key) {
   const n = limitOf(key)
+  const s = n === 1 ? "" : "s"
   const error = {
     type: "rate_limit_error",
-    message: `ZCode's free Start Plan serves this account ${n} request${n === 1 ? "" : "s"} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
+    message: key === ADDRESS
+      ? `ZCode's free Start Plan is sent ${n} request${s} at a time from this computer, over all its accounts, as more get the address refused; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`
+      : `ZCode's free Start Plan serves this account ${n} request${s} at a time; this one waited ${Math.round(startGate.wait / 1000)}s behind the others and was not sent. Run fewer agents or subagents on ZCode at once, or try again`,
   }
   return new Response(JSON.stringify({ type: "error", error }), {
     status: 429, statusText: STATUS_TEXT[429], headers: { "content-type": "application/json", "retry-after": "5" },
@@ -3090,9 +3131,6 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
       // of day, and a user who knows theirs can raise this on the account.
       // The Start Plan has the plugin's own gate below it (startGate)
       maxConcurrency: DEFAULT_CONCURRENCY,
-      // how many accounts take requests at once, the others in reserve
-      // (DEFAULT_ACCOUNTS); a magpie that doesn't read it uses them all
-      maxAccounts: DEFAULT_ACCOUNTS,
       // magpie's own switches (OpenCode never reads auth.options), read at
       // each request through input.magpie
       options: [
@@ -3194,7 +3232,7 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
                 m = raw
                 forcedGift = true
                 giftName = giftID(raw)
-              } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
+              } else if (!alone && !edgeHeld() && !busyHeld() && !startFull(gateKey) && !startFull(ADDRESS) && freeFirst(provider?.options) && s.jwt && known && giftUsable(s, known, m) && !giftSidelined(s, m)) {
                 // free first: the plain model spends the account's own live
                 // gift before it spends the coding plan, under the name the
                 // gift lists. The gift is the route's cache alone (a failed
@@ -3308,9 +3346,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
             // the account's Start Plan slots (startGate): a request past them
             // waits here for one rather than being sent to be refused
             if (start) {
-              own.slot = await startSlot(gateKey, opts.signal)
+              const got = await startSlots(gateKey, opts.signal)
               own.signal = opts.signal
-              if (!own.slot) return kept(startQueueAnswer(gateKey))
+              if (!got.release) return kept(startQueueAnswer(got.key))
+              own.slot = got
               // a hold may have armed while it waited
               if (edgeHeld()) return kept(edgeHeldAnswer())
               if (busyHeld()) return kept(busyHeldAnswer())
@@ -3373,8 +3412,10 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
               const until = Date.now() + startGate.wait
               for (let turn = 0; res.requeue && !freeGift && turn < REQUEUE_MAX; turn++) {
                 own.slot?.release()
-                own.slot = await startSlot(gateKey, opts.signal, { wait: until - Date.now(), front: true })
-                if (!own.slot) return kept(startQueueAnswer(gateKey))
+                own.slot = null
+                const got = await startSlots(gateKey, opts.signal, { wait: until - Date.now(), front: true })
+                if (!got.release) return kept(startQueueAnswer(got.key))
+                own.slot = got
                 if (edgeHeld()) return kept(edgeHeldAnswer())
                 if (busyHeld()) return kept(busyHeldAnswer())
                 res = await askBusy(url, opts, h, () => busyCap(gateKey))
@@ -3588,4 +3629,4 @@ export async function ZCodeAuthPlugin({ client, magpie } = {}, options = {}) {
 // config sets what zcodeConfig has read, for tests: null is ZCode's config
 // out of reach, undefined forgets it
 const config = (cfg) => (cfgCache = cfg === undefined ? null : { cfg, at: Date.now() })
-export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS }
+export const _internal = { wallAnswer, unreached, planFull, notePlan, planFullUntil, locatedKeys, lastKeys, edge, EDGE_HOLD, busyHold, startGate, NARROW_FOR, limitOf, BUSY_N, BUSY_WINDOW, BUSY_HOLD, busyCap, busyHeld, config, entry, limitWindows, termOf, startUsage, routes, blocked, sidelined, plansOf, giftOf, dualUsage, claimHint, unclaimed, unclaimedSeen, aloneGift, aloneSeen, aloneNames, claimDaily, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, giftSignIn, located, dress, queryOf, PROMPT, marked, keyDevice, sessionOf, busy, BUSY_WAITS, DEFAULT_CONCURRENCY, ADDRESS, startSlots }

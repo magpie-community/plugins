@@ -43,6 +43,7 @@ function routeToFake() {
     return real(`http://127.0.0.1:${server.port}/${new URL(host).host}${url.slice(host.length)}`, init)
   }
 }
+const ADDRESS_SLOTS = 6 // startGate.address
 afterEach(() => {
   globalThis.fetch = real
   got.length = 0
@@ -55,6 +56,7 @@ afterEach(() => {
   _internal.startGate.lanes.clear()
   _internal.startGate.narrow.clear()
   _internal.startGate.now = () => Date.now()
+  _internal.startGate.address = ADDRESS_SLOTS
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -703,6 +705,9 @@ test("caps that land after the hold armed change neither hits nor until (request
   _internal.BUSY_WAITS.push(1)
   try {
     routeToFake()
+    // twelve in flight at once, more than the address's gate lets go
+    // (startGate.address): what the hold does with such a run is under test
+    _internal.startGate.address = 12
     let clock = 1_000_000_000_000
     _internal.busyHold.now = () => clock
     const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })

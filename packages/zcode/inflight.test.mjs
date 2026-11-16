@@ -59,6 +59,7 @@ afterEach(() => {
   globalThis.fetch = real
   BUSY_WAITS.splice(0, BUSY_WAITS.length, ...WAITS)
   startGate.inflight = GATE.inflight
+  startGate.address = GATE.address
   startGate.wait = GATE.wait
   startGate.lanes.clear()
   startGate.narrow.clear()
@@ -146,6 +147,61 @@ test("each account has slots of its own", async () => {
   const rs = await Promise.all([...Array.from({ length: 5 }, () => one(a)), ...Array.from({ length: 5 }, () => one(b))])
   expect(rs.every((r) => r.status === 200)).toBe(true)
   expect([...now.peak.values()]).toEqual([3, 3])
+})
+
+test("every account's Start Plan requests share the address's six slots", async () => {
+  // mathfournity on X: every gift account takes requests now (no
+  // maxAccounts), so what reaches zcode.z.ai from this address is held to
+  // what two accounts sent before, three each, over all of them
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const accounts = await Promise.all([1, 2, 3, 4].map((n) => loader(startAuth(n))))
+  const rs = await Promise.all(accounts.flatMap((a) => Array.from({ length: 5 }, () => one(a))))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(messages().length).toBe(20)
+  expect(peak).toBe(startGate.address)
+  expect(Math.max(...now.peak.values())).toBeLessThanOrEqual(3)
+  expect(now.peak.size).toBe(4)
+})
+
+test("a wait for the address's slots that runs out says so, nothing sent, and lets the account's slot go", async () => {
+  startGate.address = 1
+  startGate.wait = 200
+  let release
+  answer = () => new Promise((r) => (release = () => r(OK())))
+  const [a, b] = await Promise.all([loader(startAuth(1)), loader(startAuth(2))])
+  const first = one(a)
+  while (!release) await sleep(5)
+  const res = await one(b)
+  expect(res.status).toBe(429)
+  expect(JSON.parse(res.text).error.message).toContain("over all its accounts")
+  expect(messages().length).toBe(1)
+  release()
+  expect((await first).status).toBe(200)
+  // neither lane is left holding a slot
+  expect(startGate.lanes.size).toBe(0)
+})
+
+test("the coding plan is held to none of the address's slots", async () => {
+  startGate.address = 1
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const opts = await loader(planAuth())
+  const rs = await Promise.all(Array.from({ length: 4 }, () => one(opts)))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(peak).toBe(4)
 })
 
 test("a slot is held across the re-asks, and let go when the answer has been read", async () => {
