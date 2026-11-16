@@ -110,7 +110,7 @@ if (argv.includes("models")) {
 }
 if (argv[0] === "acp" && argv.includes("--help")) {
   log({ type: "acpHelp" })
-  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n")
+  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n  --disable-telemetry\n    \tdisable telemetry (default false)\n")
   process.exit(0)
 }
 if (argv[0] !== "acp") {
@@ -3084,6 +3084,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const sessions = inits().filter(event => event.args.includes("--agent"))
   const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
   check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
+  const talkative = sessions.filter(event => !event.args.includes("--disable-telemetry"))
+  check("an agy whose acp --help lists it starts with telemetry off (#896)", sessions.length > 0 && talkative.length === 0, JSON.stringify(talkative.map(event => event.args)))
 }
 check("all ACP children disable auto update when the user set nothing", inits().length > 0 && inits().every(event => event.update === "true"))
 check("child launches never mutate the parent's update setting", process.env.AGY_CLI_DISABLE_AUTO_UPDATE === undefined)

@@ -312,6 +312,17 @@ export function noDefaultCustomizationsArgs(agyPath) {
   return acpHelp(agyPath).then((help) => (/--include-default-customizations\b/.test(help) ? ["--include-default-customizations=false"] : []))
 }
 
+// agy reports the run to its vendor unless it is told not to. The bridge turns
+// that off by default, as a privacy setting rather than a workaround: what the
+// user types here is the client's business and agy's vendor's logs are not the
+// place it lands. Passed only when `agy acp --help` lists the flag, since an
+// agy without it refuses to start on it; AGY_BRIDGE_TELEMETRY=1 keeps agy's
+// own default for anyone who wants the vendor's diagnostics.
+export function telemetryArgs(agyPath, env = process.env) {
+  if (/^(?:1|true|on|yes|enabled)$/i.test(env.AGY_BRIDGE_TELEMETRY || "")) return Promise.resolve([])
+  return acpHelp(agyPath).then((help) => (/--disable[-_]telemetry\b/.test(help) ? ["--disable-telemetry"] : []))
+}
+
 // The bridge's own agy folder, kept across restarts so agy finds a
 // conversation again on session/resume. AGY_BRIDGE_GEMINI_DIR names another;
 // "default" (or 0, off, …) leaves agy on its own ~/.gemini, skills and all.
@@ -1996,6 +2007,7 @@ class Proc {
     ]
     if (this.workDir) args.push("--add-dir", this.workDir)
     args.push(...await noDefaultCustomizationsArgs(this.agyPath))
+    args.push(...await telemetryArgs(this.agyPath))
     const own = await geminiDirArgs(this.agyPath)
     args.push(...own.args)
     // agy writes the conversation's steps under the folder it was given
@@ -3271,7 +3283,7 @@ async function launchKey(agyPath, workDir) {
   try { mtime = (await fs.promises.stat(agyPath)).mtimeMs } catch {}
   const own = await geminiDirArgs(agyPath)
   return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "",
-    await noDefaultCustomizationsArgs(agyPath), own.args, childEnv(process.env)]))
+    await noDefaultCustomizationsArgs(agyPath), await telemetryArgs(agyPath), own.args, childEnv(process.env)]))
 }
 
 function dropSpare(spare) {
