@@ -505,3 +505,52 @@ test("anti-ban isolation: passes --disable-telemetry and isolated --gemini-dir, 
     await Promise.all([reqA.then(readSse), reqB.then(readSse)])
   })
 })
+
+test("the active-turn cap never refuses a tool result for a turn that already holds its process", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_ACTIVE_TURNS: "2", AGY_BRIDGE_SPAWN_SPACING_MS: "0" } }, async (kit) => {
+    // A stops on a client tool, so it is waiting rather than generating and holds
+    // no active-turn slot.
+    kit.prompts.push(async (agent) => {
+      await agent.tool("Read", { path: "/cap/allowed.txt" })
+      await agent.text("read the file")
+      return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+    })
+    const bodyA = baseBody({ metadata: { user_id: "cap-continue-A" } })
+    const parsedA = await readSse(await kit.request(bodyA))
+    assert.equal(parsedA.content.filter(block => block.type === "tool_use").length, 1)
+
+    // Two other turns then fill the cap of two while A waits.
+    let releaseB
+    let releaseC
+    const readyB = new Promise((resolve) => {
+      kit.prompts.push(async (agent) => {
+        await agent.text("stream B")
+        resolve()
+        await new Promise((r) => { releaseB = r })
+        return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+      })
+    })
+    const readyC = new Promise((resolve) => {
+      kit.prompts.push(async (agent) => {
+        await agent.text("stream C")
+        resolve()
+        await new Promise((r) => { releaseC = r })
+        return { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } }
+      })
+    })
+    const reqB = kit.request(baseBody({ metadata: { user_id: "cap-continue-B" } }))
+    const reqC = kit.request(baseBody({ metadata: { user_id: "cap-continue-C" } }))
+    await Promise.all([readyB, readyC])
+
+    // A's tool result must still reach its own turn instead of a BusyError.
+    const continued = await kit.request(continueWithToolResults(bodyA, parsedA))
+    assert.equal(continued.status, 200, "a parked turn's tool result must not be refused by the cap")
+    const continuedParsed = await readSse(continued)
+    assert.equal(continuedParsed.stopReason, "end_turn")
+    assert.ok(continuedParsed.content.some(block => block.type === "text" && block.text.includes("read the file")))
+
+    releaseB()
+    releaseC()
+    await Promise.all([reqB.then(readSse), reqC.then(readSse)])
+  })
+})

@@ -60,6 +60,12 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   就用 `session/resume` 接上上下文。状态文件只存会话 ID 与哈希，不存消息原文。
 - **隔离运行**：不读取你的全局 MCP 配置。每个 agy 进程使用临时 agent。agy 发起的权限
   请求（shell、写文件、浏览器等）一律拒绝，真正的操作都在客户端侧完成。
+- **agy 状态与遥测**：插件启动的 agy 一律带 `--disable-telemetry`（隐私默认），会话状态放在
+  `$XDG_STATE_HOME/magpie-agy-bridge/agy-home`，不再写你交互用的
+  `~/.gemini/antigravity-cli`。设 `AGY_BRIDGE_ISOLATE_HOME=0` 可回到默认目录。
+  登录（`agy acp --login`）和额度查询仍走默认目录，因为它们要读你平时在终端登录的那个
+  账号；Google 凭据由 agy 放在系统钥匙串里，所以隔离出来的会话同样是登录状态（只在 macOS
+  上实测过，Linux 无钥匙串和 Windows 尚未验证；那些平台上可设 `AGY_BRIDGE_ISOLATE_HOME=0`）。
 - **额度查看**：在 Magpie 里查看 agy 订阅的用量窗口，仅作展示，额度耗尽时不会自动拦截请求。
 
 ## 环境要求
@@ -128,6 +134,10 @@ magpie quota refresh agy-cli --json
 |---|---|---|
 | `AGY_PATH` | 按 PATH 查找 | 指定 agy 可执行文件 |
 | `AGY_BRIDGE_MAX_PROCS` | 16 | agy 进程池上限 |
+| `AGY_BRIDGE_MAX_ACTIVE_TURNS` | 同进程池上限 | 同时在生成答复的回合数；调低可限流。已经在跑的回合补充工具结果不受它限制 |
+| `AGY_BRIDGE_SPAWN_SPACING_MS` | 0（关闭） | 连续启动 agy 进程时，两次启动之间的最小间隔 |
+| `AGY_BRIDGE_ISOLATE_HOME` | 开启 | 设为 `0` 让 agy 用回默认的 `~/.gemini/antigravity-cli` |
+| `AGY_BRIDGE_GEMINI_DIR` | `$XDG_STATE_HOME/magpie-agy-bridge/agy-home` | 隔离后的 agy 状态目录 |
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |

@@ -54,16 +54,22 @@ const IDLE_MS = positiveTimeout(process.env.AGY_BRIDGE_IDLE_MS, 10 * 60 * 1000)
 function maxProcs() {
   return positiveTimeout(process.env.AGY_BRIDGE_MAX_PROCS, 16)
 }
+// Concurrently generating turns. The default is the process pool, so the cap
+// never refuses a request the pool would have served; lower it with
+// AGY_BRIDGE_MAX_ACTIVE_TURNS to throttle a machine or an account.
 function maxActiveTurns() {
-  return positiveTimeout(process.env.AGY_BRIDGE_MAX_ACTIVE_TURNS, 4)
+  return positiveTimeout(process.env.AGY_BRIDGE_MAX_ACTIVE_TURNS, maxProcs())
 }
 function nonNegativeTimeout(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
+// Optional brake on a burst of fresh agy spawns: each start waits this long
+// after the previous one. Off by default; there is no measurement that says a
+// delay helps, so the plugin does not impose one unless you ask for it.
 function spawnSpacingMs() {
-  return nonNegativeTimeout(process.env.AGY_BRIDGE_SPAWN_SPACING_MS, 500)
+  return nonNegativeTimeout(process.env.AGY_BRIDGE_SPAWN_SPACING_MS, 0)
 }
 // A tool turn whose client detached this long ago yields its process under pool pressure.
 function detachedEvictMs() {
@@ -724,7 +730,8 @@ function agentDefinition() {
     "inheritMcp: false",
     "inheritCustomizations: false",
   ]
-  // Default on: the client's system prompt stands in for agy's own coding-agent prompt.
+  // Opt-in: with AGY_BRIDGE_MINIMAL_AGENT=1 the client's system prompt stands in
+  // for agy's own coding-agent prompt.
   if (minimalAgent()) lines.push("excludeDefaultComponents: true")
   lines.push(
     "---",
@@ -1833,7 +1840,9 @@ class Proc {
   continueWith(results) {
     const turn = this.turn
     if (!turn || turn.finalized) throw new BusyError("agy bridge: no response is waiting for these tool results")
-    assertActiveTurnCapacity(this)
+    // The turn already holds its process, so the active-turn cap does not apply:
+    // refusing here would strand a turn whose tool result is the only thing that
+    // can finish it.
     turn.touchClient()
     turn.flushText()
     for (const { call, result } of this.validateResults(results).values()) {

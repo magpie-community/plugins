@@ -230,3 +230,13 @@ test("detects in-band soft-ban, capacity and quota refusal banners without match
   assert.equal(detectInBandRefusal("⚠ Note: this function is deprecated.\n"), null)
   assert.equal(detectInBandRefusal("The error code MODEL_CAPACITY_EXHAUSTED means capacity is full.\n"), null)
 })
+
+// The banner check only looks at a turn's first line, so this is where the
+// false positive boundary sits: a reply that opens with such a sentence is read
+// as a refusal, and the same sentence later in the turn is ordinary content.
+test("a refusal-looking first line is the boundary; the same prose later is content", () => {
+  assert.equal(detectInBandRefusal("Error: rate limit exceeded"), "Error: rate limit exceeded")
+  assert.equal(detectInBandRefusal("Error: rate limit exceeded\nThat is the text you asked me to write."), "Error: rate limit exceeded")
+  assert.equal(detectInBandRefusal("Here is the text you asked for:\nError: rate limit exceeded"), null)
+  assert.equal(detectInBandRefusal("I printed:\n\nError: rate limit exceeded"), null)
+})

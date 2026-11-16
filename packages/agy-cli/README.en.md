@@ -81,6 +81,16 @@ MCP server. The control port listens on loopback only, with a token per process.
 - **Isolation**: your global MCP configuration is never read. Every agy process
   runs with a temporary agent, and every permission request agy raises (shell,
   file edits, browser) is refused. Real actions happen on the client side.
+- **agy state and telemetry**: the agy processes the plugin starts get
+  `--disable-telemetry` as a privacy default, and keep their session state in
+  `$XDG_STATE_HOME/magpie-agy-bridge/agy-home` instead of writing to the
+  `~/.gemini/antigravity-cli` you use yourself. Set `AGY_BRIDGE_ISOLATE_HOME=0`
+  to go back to the default directory. Sign-in (`agy acp --login`) and the usage
+  query still use the default directory, because they have to read the account
+  you signed in to from a terminal; agy holds the Google credentials in the
+  system keyring, so the isolated session is signed in too (verified on macOS
+  only — Linux without a keyring and Windows are untested, and
+  `AGY_BRIDGE_ISOLATE_HOME=0` is the way back there).
 - **Usage visibility**: Magpie shows the agy subscription usage windows. They are
   informational only; running out of quota does not block requests automatically.
 
@@ -170,6 +180,10 @@ measurable data shows "Limits not available" rather than a fake 0% or 100%.
 |---|---|---|
 | `AGY_PATH` | PATH lookup | Path to the agy executable |
 | `AGY_BRIDGE_MAX_PROCS` | 16 | Maximum number of agy processes in the pool |
+| `AGY_BRIDGE_MAX_ACTIVE_TURNS` | same as the pool | How many turns may generate at once; lower it to throttle. A tool result for a turn that is already running is never refused by it |
+| `AGY_BRIDGE_SPAWN_SPACING_MS` | 0 (off) | Minimum gap between two agy process starts |
+| `AGY_BRIDGE_ISOLATE_HOME` | on | Set to `0` to let agy use the default `~/.gemini/antigravity-cli` |
+| `AGY_BRIDGE_GEMINI_DIR` | `$XDG_STATE_HOME/magpie-agy-bridge/agy-home` | Where the isolated agy state lives |
 | `AGY_BRIDGE_THINKING` | on | Set to `0` to stop forwarding thought summaries |
 | `AGY_BRIDGE_EFFORT` | unset | Force a thinking level: `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | off | Set to `1` to drop agy's own prompt components; see "Minimal agent" below |
