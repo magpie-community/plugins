@@ -1197,6 +1197,99 @@ test("#1165: with agy's sign-in in a file under ~/.gemini (no keyring, Docker), 
   })
 })
 
+test("assistant tail with thinking+text blocks is accepted while thinking+tool_use is still rejected", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const accepted = await kit.request(baseBody({
+      metadata: { user_id: "thinking-tail-ok" },
+      messages: [
+        { role: "user", content: "summarize" },
+        { role: "assistant", content: [
+          { type: "thinking", thinking: "internal reasoning" },
+          { type: "text", text: "partial reply" },
+        ] },
+      ],
+    }))
+    assert.equal(accepted.status, 200, await accepted.clone().text())
+    const parsed = await readSse(accepted)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.ok(prompts(kit).at(-1).includes("partial reply"))
+
+    const rejected = await errorOf(await kit.request(baseBody({
+      metadata: { user_id: "thinking-tail-tool" },
+      messages: [
+        { role: "user", content: "read file" },
+        { role: "assistant", content: [
+          { type: "thinking", thinking: "need Read" },
+          { type: "tool_use", id: "toolu_tail", name: "Read", input: { path: "/a" } },
+        ] },
+      ],
+    })))
+    assert.equal(rejected.status, 400)
+    assert.match(rejected.body.error.message, /not from the user or a tool-result/)
+  })
+})
+
+test("live tool-turn drop logs drop_live and carries exact reason into session_new", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const body1 = baseBody({ metadata: { user_id: "drop-reason" }, messages: [{ role: "user", content: "TOOL read" }] })
+      const first = await readSse(await kit.request(body1))
+      assert.equal(first.stopReason, "tool_use")
+      const call = first.content.find((block) => block.type === "tool_use")
+      const tampered = baseBody({
+        metadata: { user_id: "drop-reason" },
+        messages: [
+          { role: "user", content: "ALTERED opening" },
+          { role: "assistant", content: [call] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "ok" }] },
+        ],
+      })
+      const second = await readSse(await kit.request(tampered))
+      assert.equal(second.stopReason, "end_turn")
+    })
+  } finally {
+    stderr.restore()
+  }
+  const drops = stderr.lines.filter((row) => row.action === "drop_live")
+  assert.equal(drops.length, 1)
+  assert.equal(drops[0].reason, "history_mismatch")
+  const sessionNews = stderr.lines.filter((row) => row.action === "session_new")
+  assert.equal(sessionNews.at(-1)?.reason, "history_mismatch")
+})
+
+test("A16: oversized history[0] cannot evict the newest history reply before <current_turn>", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROMPT_BYTES: String(16 * 1024) } }, async (kit) => {
+    scriptedAgent(kit)
+    const hugeOpening = Array.from({ length: 4 }, (_, i) => ({
+      type: "text",
+      text: `ANCHOR-${i} ` + "a".repeat(3 * 1024),
+    }))
+    const messages = [{ role: "user", content: hugeOpening }]
+    for (let i = 0; i < 6; i++) {
+      messages.push({ role: "assistant", content: `mid reply ${i} ` + "m".repeat(512) })
+      messages.push({ role: "user", content: `mid user ${i}` })
+    }
+    messages.push({
+      role: "assistant",
+      content: [
+        { type: "text", text: "NEWEST HEAD " + "n".repeat(2 * 1024) },
+        { type: "text", text: "t".repeat(4 * 1024) + " NEWEST TAIL" },
+      ],
+    })
+    messages.push({ role: "user", content: "CURRENT QUESTION" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "anchor-vs-tail" }, messages })))
+    assert.equal(parsed.stopReason, "end_turn")
+    const prompt = prompts(kit).at(-1)
+    assert.ok(bytes(prompt) <= 16 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("ANCHOR-0"), "opening anchor head is kept")
+    assert.ok(prompt.includes("NEWEST HEAD") && prompt.includes("NEWEST TAIL"), "newest history turn keeps head and tail")
+    assert.ok(prompt.includes("<current_turn>\nCURRENT QUESTION\n</current_turn>"))
+  })
+})
+
 test("#1165: a folder AGY_BRIDGE_GEMINI_DIR names is used even with a file sign-in", async () => {
   await withKit({ acpHelp: GEMINI_DIR_HELP }, async (kit) => {
     const named = path.join(kit.env.HOME, "named-agy")

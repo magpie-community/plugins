@@ -3247,7 +3247,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     const candidate = findLiveContinuedProc(opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
-  let why = "no_live"
+  let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
   let key = convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
     !opts.hasToolResults && !existing.turn.cancelRequested && existing.turn.model !== opts.model) {
@@ -4097,15 +4097,17 @@ const prefillTailEnabled = () => process.env.AGY_BRIDGE_PREFILL !== "0"
 const prefillCarrierNote = () => process.env.AGY_BRIDGE_PREFILL_CARRIER_NOTE
   || "(system note: the fragment below is part of your own unfinished reply; continue exactly from where it stops, and do not repeat it.)"
 
-// Concatenated text of an assistant message, or null when the message carries
-// anything other than plain text blocks. An empty string means "no content".
+// Concatenated text of an assistant message, skipping thinking metadata blocks,
+// or null when the message carries tool/non-text blocks. Empty string means "no content".
 function assistantTextOf(message) {
   if (!message || message.role !== "assistant") return null
   if (typeof message.content === "string") return message.content
   if (!Array.isArray(message.content)) return null
   let text = ""
   for (const block of message.content) {
-    if (!block || block.type !== "text" || typeof block.text !== "string") return null
+    if (!block) return null
+    if (block.type === "thinking" || block.type === "redacted_thinking") continue
+    if (block.type !== "text" || typeof block.text !== "string") return null
     text += block.text
   }
   return text
@@ -4935,6 +4937,34 @@ function keptSliceBytes(indices, totalLength, entries, noteBytes) {
   return bytes
 }
 
+function clipHistoryEntryParts(parts, limit) {
+  if (limit <= 0) return []
+  const needNewline = parts.at(-1)?.type === "text" && parts.at(-1).text.endsWith("\n")
+  const textLimit = needNewline ? Math.max(0, limit - 1) : limit
+  const clipped = clipPartsToBytes(parts, textLimit)
+  if (needNewline) {
+    const last = clipped.at(-1)
+    if (last?.type === "text" && !last.text.endsWith("\n")) last.text += "\n"
+  }
+  return promptTextBytes(clipped) <= limit ? clipped : clipPartsToBytes(clipped, limit)
+}
+
+function clipHistoryEntry(entry, limit) {
+  const parts = clipHistoryEntryParts(entry.parts, limit)
+  return { parts, bytes: promptTextBytes(parts) }
+}
+
+function fillHistoryTail(entries, floor, left, noteBytes) {
+  const tail = []
+  for (let i = entries.length - 1; i > floor; i--) {
+    const cost = entries[i].bytes - (i === floor + 1 ? noteBytes : 0)
+    if (cost > left) break
+    left -= cost
+    tail.unshift(i)
+  }
+  return { tail, left }
+}
+
 // `reserveBytes` is text the caller appends after </current_turn>.
 function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
   const { history, messages: current } = trailingMessages(body)
@@ -5012,13 +5042,27 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
         }
       }
       let left = room - keptSliceBytes(keep, entries.length, entries, noteBytes)
-      const tail = []
       const floor = keep.length ? keep.at(-1) : -1
-      for (let i = entries.length - 1; i > floor; i--) {
-        const cost = entries[i].bytes - (i === floor + 1 ? noteBytes : 0)
-        if (cost > left) break
-        left -= cost
-        tail.unshift(i)
+      let { tail, left: remainingLeft } = fillHistoryTail(entries, floor, left, noteBytes)
+      const lastIdx = entries.length - 1
+      if (lastIdx >= 0 && tail.length === 0 && !keep.includes(lastIdx)) {
+        // Never let an oversized history[0] squeeze out the newest turn before <current_turn>.
+        if (keep.length === 1 && keep[0] === 0 && lastIdx > 0 && room >= 4096 + noteBytes &&
+          entries[0].bytes > Math.floor((room - noteBytes) / 2) &&
+          remainingLeft < Math.min(entries[lastIdx].bytes, Math.floor((room - noteBytes) / 2))) {
+          const reservedLast = Math.min(entries[lastIdx].bytes, Math.floor((room - noteBytes) / 2))
+          entries[0] = clipHistoryEntry(entries[0], Math.max(2048, room - noteBytes - reservedLast))
+          left = room - keptSliceBytes(keep, entries.length, entries, noteBytes)
+          ;({ tail, left: remainingLeft } = fillHistoryTail(entries, floor, left, noteBytes))
+        }
+        if (tail.length === 0 && !keep.includes(lastIdx)) {
+          const gapSaved = keep.length === 0 ? 0 : (lastIdx === floor + 1 ? noteBytes : 0)
+          const avail = remainingLeft + gapSaved
+          if (avail >= 512) {
+            entries[lastIdx] = clipHistoryEntry(entries[lastIdx], avail)
+            tail.unshift(lastIdx)
+          }
+        }
       }
       const keptIndices = [...keep, ...tail]
       kept = []
@@ -6561,6 +6605,20 @@ export const AntigravityBridgePlugin = async () => {
                     // A changed context, a tool catalog that grew, or a
                     // user-interrupted tool turn needs a new session. Replay the
                     // real results without resolving the old process's calls.
+                    const dropReason = interrupted ? "interrupted"
+                      : imageResult ? "image_result"
+                      : !historyMatches ? "history_mismatch"
+                      : proc.toolsGrew(tools) ? "tools_grew"
+                      : proc.workDir !== workDir ? "work_dir"
+                      : "instructions"
+                    logBridgeEvent(proc, turn, "drop_live", dropReason, acquireOpts, {
+                      history: trailingMessages(body).history.length,
+                      expected_history: Array.isArray(proc.expectedMessages) ? proc.expectedMessages.length : null,
+                      tools_grew: !!proc.toolsGrew(tools),
+                      work_dir_changed: proc.workDir !== workDir,
+                      instructions_changed: !sameInstructions(proc.instructions, instructions),
+                    })
+                    acquireOpts.dropReason = dropReason
                     dropFromPool(proc)
                     proc.abandonTurn(turn)
                     await proc.stop()
