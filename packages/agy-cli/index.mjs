@@ -3231,9 +3231,10 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   }
   if (existing && !existing.dead && existing.turn) {
     const lineage = lineageVerdict(existing, existing.turn, opts)
-    if (lineage === "fork") {
+    if (lineage === "fork" || lineage === "answered") {
       const orphan = existing.turn
-      logBridgeEvent(existing, orphan, "superseded", "lineage_fork", opts, { superseded_turn_id: orphan.turnId })
+      logBridgeEvent(existing, orphan, "superseded", lineage === "fork" ? "lineage_fork" : "lineage_answered", opts,
+        { superseded_turn_id: orphan.turnId })
       await reclaimStaleTurn(existing, orphan, SUPERSEDED_NOTE)
       existing = null
     } else if (lineage === "conflict") {
@@ -3462,6 +3463,11 @@ function lineageVerdict(proc, turn, opts) {
   const ids = new Set(turn.calls.map((call) => call.id))
   const carried = (opts.messages || []).some((message) => Array.isArray(message?.content) &&
     message.content.some((block) => block?.type === "tool_use" && ids.has(block.id)))
+  // The client answered every call of this turn it carries, then wrote on past
+  // the round (a notice of its own, a new prompt), so the results sit in
+  // history, not the trailing (#1208). The round is settled on the client's
+  // side: the turn is left behind, and the replay carries those results.
+  if (carried && carriedAnswered(opts.messages, ids)) return "answered"
   if (history.length < base.length || historyKey(history.slice(0, base.length)) !== historyKey(base)) {
     // The client no longer continues this turn's base: it was shortened or its
     // prefix was rewritten (a compaction summary). A plain new request has left
@@ -3484,6 +3490,19 @@ function lineageVerdict(proc, turn, opts) {
     history.length === expected.length &&
     historyKey(withoutInputs(history)) === historyKey(withoutInputs(expected))) return null
   return carried || recorded ? "conflict" : "fork"
+}
+
+// Every tool_use of the turn's calls in messages has a tool_result after it.
+function carriedAnswered(messages, ids) {
+  const open = new Set()
+  for (const message of messages || []) {
+    if (!Array.isArray(message?.content)) continue
+    for (const block of message.content) {
+      if (block?.type === "tool_use" && ids.has(block.id)) open.add(block.id)
+      else if (block?.type === "tool_result") open.delete(block.tool_use_id)
+    }
+  }
+  return open.size === 0
 }
 
 function replayHistoryProblem(body, resultBlocks) {

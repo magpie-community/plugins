@@ -2947,6 +2947,26 @@ for (const location of ["inline", "system", "developer", "user"]) {
 }
 
 {
+  // #1208: the client answered the pending call, then wrote a notice of its own
+  // and a new prompt, so the result is in history, not the trailing.
+  const body = { model, metadata: { user_id: "buried-result" },
+    messages: [{ role: "user", content: "TOOL buried result" }], tools: [echoTool] }
+  const pending = (await readSSE(await callFetch(body))).events
+  const answered = continuation(body, pending, "buried result text")
+  const buried = { ...answered, messages: [...answered.messages,
+    { role: "assistant", content: "This turn did not complete. Some actions may already have run; verify their effects before resending." },
+    { role: "user", content: "continue after the notice" }] }
+  const response = await callFetch(buried)
+  const final = response.status === 200 ? (await readSSE(response)).events : []
+  if (response.status !== 200) console.error("buried result:", response.status, await response.text())
+  check("a result buried under a client notice continues instead of tool_state_conflict", response.status === 200 && final.length > 0)
+  check("the replay carries the buried result and the new prompt", lastOf("user").text.includes("buried result text") && lastOf("user").text.includes("continue after the notice"))
+  // The replayed opening still says TOOL, so the fake asks for a tool again.
+  const done = await drive(buried, final)
+  check("the conversation after a buried result runs to its end", stopOf(done.events) === "end_turn")
+}
+
+{
   // The existing LONGTOOL fake repeats identical calls until told to stop.
   // Speed up its MCP deadline, keeping the production default repeat cap of 8.
   process.env.AGY_BRIDGE_IDE_CALL_DEADLINE_MS = "25"
