@@ -1729,6 +1729,12 @@ const QUEUE = {
   recoveries: 10, // the queue waited out this many times, at most, for one request
   failures: 3, // status asks failing in a row that end the wait
   ask: 30_000, // the longest one status ask may take
+  // the longest a call waits for Qoder's first event (headers included).
+  // Qoder CN once held a call 15 minutes with nothing sent and nothing to
+  // log (#1204); after this it is a 504 that says so, which magpie can
+  // fail over from. A queued call answers its 10605 at once, and a
+  // thinking model streams its reasoning, so a real answer starts sooner.
+  silent: 120_000,
   now: () => Date.now(),
   // every calls fn each ms until the returned stop is called
   every: (fn, ms) => {
@@ -3792,11 +3798,22 @@ const makePlugin = (site) => async ({ client }) => {
         const call = new AbortController()
         const callSignal = signal ? AbortSignal.any([signal, call.signal]) : call.signal
         let res, open
+        let silent = false
+        const hush = setTimeout(() => {
+          silent = true
+          call.abort()
+        }, QUEUE.silent)
         try {
           res = await fetch(CHAT_URL, { method: "POST", headers, body: wire, signal: callSignal })
           if (res.ok) open = await opened(res, chat.tool_choice !== "none" ? (chat.tools ?? []).filter((t) => t?.type === "function") : [])
         } catch (e) {
+          if (silent) {
+            const who = siteOf(site, cred).name ?? "Qoder"
+            return errorResponse({ status: 504, message: `${who} sent nothing for ${Math.round(QUEUE.silent / 1000)}s after the request (${res ? "no first event" : "no reply headers"}); the call was dropped`, signIn: "" })
+          }
           return errorResponse({ status: 502, message: e.message })
+        } finally {
+          clearTimeout(hush)
         }
         const f = !res.ok ? failure(res.status, (await res.text()).slice(0, 1 << 20)) : open.first.value?.error
         if (f) call.abort()
