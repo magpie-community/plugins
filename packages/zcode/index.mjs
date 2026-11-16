@@ -17,9 +17,11 @@
 // plan, device id), `accountId` the account's email.
 
 import { createDecipheriv, createHash } from "node:crypto"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
-import { arch, homedir, release, userInfo } from "node:os"
-import { isAbsolute, join } from "node:path"
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { arch, homedir, release, tmpdir, userInfo } from "node:os"
+import { dirname, isAbsolute, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import PROMPT from "./prompt.mjs"
 
 const PROVIDER = "zcode"
@@ -1600,8 +1602,186 @@ function secret() {
   return createHash("sha256").update(seed).digest()
 }
 
+// ---- ZCode 3.18's vault (enc:v2:) --------------------------------------------------
+// 3.18 encrypts its credentials with a key kept in the OS vault instead of
+// the machine user: values read enc:v2:<vault>:<fingerprint>:<iv>.<tag>.<data>,
+// the fingerprint being sha256(key)'s first 24 hex. On Windows the vault is
+// Credential Manager, a generic credential named after the sha256 of the
+// credentials.json path (ZCode's own path join), whose blob is the
+// 43-char base64url key as UTF-16LE. The read goes through PowerShell's
+// CredRead, synchronously (decrypt's callers are sync), and is remembered
+// per fingerprint: a hit for good (until another fingerprint comes, that is
+// the vault rotated), a miss for five minutes, then one more try.
+// ZCODE_CREDENTIAL_V2_SECRET (43 base64url chars, read strictly as ZCode
+// reads its own) stands in for the vault, as ZCODE_CREDENTIAL_SECRET does
+// for the machine user, and answers enc:v2:env:. This covers Windows alone;
+// 3.18 on macOS keeps its key in the Keychain (#1116).
+const V2_SERVICE = "ZCode Credential Encryption"
+const V2_MISS_MS = 5 * 60_000
+const v2Keys = new Map() // fingerprint -> the 32-byte key
+const v2Misses = new Map() // fingerprint -> when the last read failed
+
+const v2Fingerprint = (key) => createHash("sha256").update(key).digest("hex").slice(0, 24)
+
+// v2Target is the credential's target name: sha256 of the credentials.json
+// path ZCode hashed when it made the item.
+function v2Target() {
+  return createHash("sha256").update(join(dataIn(), ".zcode", "v2", "credentials.json"), "utf8").digest("hex") + "." + V2_SERVICE
+}
+
+const V2_PS = `param([string]$Target = "")
+$source = @'
+using System;
+using System.Runtime.InteropServices;
+public class MagpieCredRead {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct CREDENTIAL {
+    public int Flags; public int Type; public string TargetName; public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public int CredentialBlobSize; public IntPtr CredentialBlob; public int Persist;
+    public int AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredRead(string target, int type, int flags, out IntPtr credPtr);
+  [DllImport("advapi32.dll")]
+  public static extern void CredFree(IntPtr cred);
+}
+'@
+Add-Type -TypeDefinition $source
+[IntPtr]$ptr = [IntPtr]::Zero
+if (-not [MagpieCredRead]::CredRead($Target, 1, 0, [ref]$ptr)) {
+  Write-Output ("ERR " + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error())
+  exit 1
+}
+$cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [type][MagpieCredRead+CREDENTIAL])
+$bytes = New-Object byte[] $cred.CredentialBlobSize
+[System.Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+[MagpieCredRead]::CredFree($ptr) | Out-Null
+Write-Output ("BLOB " + [Convert]::ToBase64String($bytes))
+`
+
+// v2Debug notes a failed vault read beside the plugin, in its own folder,
+// without any credential material, so a vault that misbehaves in magpie's
+// sanitized plugin-host env says why.
+function v2Debug(what) {
+  try {
+    writeFileSync(join(dirname(fileURLToPath(import.meta.url)), "zcode-vault-debug.log"), `${new Date().toISOString()} ${what}\n`, { flag: "a" })
+  } catch {}
+}
+
+// v2Env is the env a spawned PowerShell needs: magpie's plugin host runs
+// with a sanitized env (no PATH, no SystemRoot), and PowerShell's runtime
+// needs both to start. Its temp files go to the fresh folder each read
+// makes, never a shared one.
+function v2Env() {
+  const root = process.env.SystemRoot || "C:\\Windows"
+  const home = homedir()
+  return {
+    SystemRoot: root,
+    SystemDrive: process.env.SystemDrive || "C:",
+    PATH: join(root, "System32") + ";" + root,
+    USERPROFILE: home,
+    HOMEDRIVE: home.slice(0, 2),
+    HOMEPATH: home.slice(2),
+    APPDATA: process.env.APPDATA || join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: process.env.LOCALAPPDATA || join(home, "AppData", "Local"),
+    COMPUTERNAME: process.env.COMPUTERNAME || "PC",
+  }
+}
+
+// readVaultKey fetches the vault's key for a fingerprint, once: the first
+// read asks PowerShell and blocks the host a second or two, the rest are
+// memory hits. The script is written into a fresh mkdtempSync folder the
+// read deletes after, so nothing at a fixed path runs and nothing another
+// account planted is picked up; the target goes as data (-Target), never
+// inside the script. Windows alone; elsewhere, or without the item, it is
+// a miss.
+function readVaultKey(fingerprint) {
+  const hit = v2Keys.get(fingerprint)
+  if (hit) return hit
+  const missed = v2Misses.get(fingerprint)
+  if (missed !== undefined && Date.now() - missed < V2_MISS_MS) return null
+  let key = null
+  let temp = null
+  if (process.platform === "win32") {
+    const root = process.env.SystemRoot || "C:\\Windows"
+    const ps = join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    try {
+      temp = mkdtempSync(join(tmpdir(), "zcode-vault-"))
+      const script = join(temp, "zcode-vault-read.ps1")
+      writeFileSync(script, V2_PS)
+      const out = execFileSync(ps, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Target", v2Target()], { timeout: 15000, encoding: "utf8", windowsHide: true, env: { ...v2Env(), TEMP: temp, TMP: temp } })
+      const lines = String(out).split(/\r?\n/)
+      const line = lines.find((l) => l.startsWith("BLOB "))
+      const errLine = lines.find((l) => l.startsWith("ERR "))
+      if (!line) v2Debug(`read: no BLOB line${errLine ? ` (${errLine.trim()})` : ""}`)
+      if (line) {
+        const t = Buffer.from(line.slice(5).trim(), "base64").toString("utf16le").trim()
+        if (/^[A-Za-z0-9_-]{43}$/.test(t)) key = Buffer.from(t, "base64url")
+        else v2Debug("read: the blob is not the 43-char base64url key")
+      }
+    } catch (e) {
+      // a nonzero exit is the script's own answer (its ERR line), not a
+      // crash: the item is missing or CredRead refused, and the code says
+      // which
+      const out = String((e && e.stdout) || "")
+      const errLine = out.split(/\r?\n/).find((l) => l.startsWith("ERR "))
+      if (errLine) v2Debug(`read: ${errLine.trim()}`)
+      else v2Debug(`spawn threw: ${e && e.message} code=${e && e.code}`)
+    } finally {
+      if (temp) {
+        try {
+          rmSync(temp, { recursive: true, force: true })
+        } catch {}
+      }
+    }
+  }
+  if (key && v2Fingerprint(key) === fingerprint) {
+    v2Keys.set(fingerprint, key)
+    v2Misses.delete(fingerprint)
+    return key
+  }
+  if (key) v2Debug(`read: the key's fingerprint ${v2Fingerprint(key)} is not the value's ${fingerprint}`)
+  v2Misses.set(fingerprint, Date.now())
+  return null
+}
+
+// v2Secret is the stand-in for the vault, as secret() is for the machine
+// user: ZCODE_CREDENTIAL_V2_SECRET, 43 base64url chars, read strictly.
+function v2Secret() {
+  const s = process.env.ZCODE_CREDENTIAL_V2_SECRET
+  return typeof s === "string" && /^[A-Za-z0-9_-]{43}$/.test(s) ? Buffer.from(s, "base64url") : null
+}
+
+// decryptV2 reads an enc:v2: value: os is the Windows vault's, env the
+// stand-in's; the fingerprint must name the key either way.
+function decryptV2(v) {
+  const segs = v.split(":")
+  if (segs.length !== 5) return null
+  const parts = segs[4].split(".")
+  if (parts.length !== 3) return null
+  let key = null
+  if (segs[2] === "os") key = readVaultKey(segs[3])
+  else if (segs[2] === "env") {
+    const s = v2Secret()
+    if (!s || v2Fingerprint(s) !== segs[3]) return null
+    key = s
+  }
+  if (!key) return null
+  try {
+    const [iv, tag, data] = parts.map((p) => Buffer.from(p.replace(/=+$/, ""), "base64url"))
+    const d = createDecipheriv("aes-256-gcm", key, iv)
+    d.setAuthTag(tag)
+    return Buffer.concat([d.update(data), d.final()]).toString("utf8")
+  } catch {
+    return null
+  }
+}
+
 function decrypt(key, v) {
-  if (typeof v !== "string" || !v.startsWith("enc:v1:")) return null
+  if (typeof v !== "string" || !v.startsWith("enc:")) return null
+  if (v.startsWith("enc:v2:")) return decryptV2(v)
+  if (!v.startsWith("enc:v1:")) return null
   const parts = v.slice(7).split(".")
   if (parts.length !== 3) return null
   try {
