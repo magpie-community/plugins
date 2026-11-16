@@ -64,11 +64,15 @@ export const Search1APIPlugin = async (input: PluginInput, options: Options = {}
     ctx: { abort: AbortSignal; getAuth?: () => Promise<StoredAuth | undefined> },
   ) {
     if (typeof query !== "string" || !query.trim()) throw new Error("query is required.");
-    let token = credentials.override();
-    if (!token && ctx.getAuth) {
+    // The account magpie picked is the one sent, so a refusal rests the
+    // account that was refused. The option or environment key is used only
+    // where magpie gives no account (a host without getAuth).
+    let token: string | undefined;
+    if (ctx.getAuth) {
       const auth = await ctx.getAuth();
       if (auth?.type === "api" && auth.key) token = auth.key;
       else if (auth?.type === "oauth" && auth.access) token = auth.access;
+      else throw new Error("Not signed in to Search1API.");
     }
     token ??= (await credentials.token(ctx.abort)).token;
     const n = Math.trunc(Number(count));

@@ -155,8 +155,8 @@ like any other search API there.
 
 It takes no separate key: it searches as the Search1API account you signed in
 to above (OAuth or API key), which Magpie renews before each search. An
-`apiKey` option or `SEARCH1API_API_KEY` still takes precedence, but Magpie
-lists the entry as ready only while a Search1API sign-in exists. Each search
+`apiKey` option or `SEARCH1API_API_KEY` is not used here: a search always
+goes out as the account Magpie picked, so a refusal rests that account. Each search
 is a Search1API `search` call on Google with up to the number of results
 Magpie asks for, without page content. A refused request (401, 402, 429)
 keeps its status, so Magpie rests the account for search and asks the next

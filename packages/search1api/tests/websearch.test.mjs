@@ -71,11 +71,13 @@ test("web search asks /search with the account magpie chose and maps its pages",
   assert.equal(f.calls[2].body.max_results, 50);
 });
 
-test("an option key wins over the account; without getAuth the saved sign-in is used", async (t) => {
+test("the account magpie picked is sent even with an option key; without getAuth the saved sign-in is used", async (t) => {
   const f = await stub(t, found);
   const keyed = await Search1APIPlugin(f.input, { baseUrl, apiKey: "option-key" });
   await keyed.search.search1api.execute({ query: "q" }, ctx({ type: "api", key: "account-key" }));
-  assert.equal(f.calls[0].headers.Authorization, "Bearer option-key");
+  assert.equal(f.calls[0].headers.Authorization, "Bearer account-key");
+  await assert.rejects(keyed.search.search1api.execute({ query: "q" }, ctx({ type: "wellknown" })), /Not signed in/);
+  assert.equal(f.calls.length, 1);
 
   await f.save({ type: "api", key: "saved-key" });
   const plain = await Search1APIPlugin(f.input, { baseUrl });
