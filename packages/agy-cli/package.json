@@ -10,6 +10,7 @@
   "files": [
     "proc.mjs",
     "index.mjs",
+    "documents.mjs",
     "opencode.mjs",
     "opencode2.mjs",
     "platform.mjs",

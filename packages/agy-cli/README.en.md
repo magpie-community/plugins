@@ -330,7 +330,12 @@ off unless you turn it on.
   measurable data. For a version error, upgrade agy to 1.1.11 or later.
 - **Image requests return HTTP 400**: the running agy does not advertise image
   support (1.5.0 or later is needed). Only inline base64 is accepted; image URLs
-  and binary documents such as PDFs are rejected.
+  are rejected.
+- **Documents**: agy reads text and images only. A text document (plain text,
+  base64 text/JSON/XML) goes as its text, and a URL document goes as its URL,
+  for the model to fetch with a tool. A PDF read by a tool reaches the model as
+  a note to extract its text another way; a PDF attached to the message itself
+  gets HTTP 400 saying so. Paste its text or attach its pages as images instead.
 - **A reply contains "Agent execution terminated due to error."**: that is agy's
   in-band error marker. The plugin reads the real cause from agy's log and ends
   the turn with an error instead of passing the marker through as text. agy

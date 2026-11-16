@@ -15,6 +15,7 @@ import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
 import { IMPORT_FROM, importedAccounts, tokenFileText } from "./import.mjs"
 import { AGY_MANUAL, installAgy, keepAgyCurrent } from "./install.mjs"
+import { documentRefusal, documentText } from "./documents.mjs"
 import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
 import { processExists } from "./proc.mjs"
@@ -1011,8 +1012,8 @@ class ConflictError extends Error {
 }
 
 class UnsupportedContent extends Error {
-  constructor(what) {
-    super(`agy bridge: ${what} is not supported`)
+  constructor(what, hint) {
+    super(`agy bridge: ${what} is not supported${hint ? `. ${hint}` : ""}`)
     this.statusCode = 400
   }
 }
@@ -3599,24 +3600,14 @@ function parseUserImage(block) {
   return imageContent({ ...block, source: { ...block.source, media_type: mediaType === "image/jpg" ? "image/jpeg" : mediaType } })
 }
 
-function parseUserDocumentText(block) {
+function parseUserDocumentText(block, inToolResult = false) {
   if (block?.type !== "document") return ""
-  const title = typeof block.title === "string" && block.title.trim() ? block.title.trim() : ""
-  const src = block.source
-  let text = null
-  if (src?.type === "text" && typeof src.data === "string") {
-    text = src.data
-  } else if (src?.type === "content") {
-    if (typeof src.content === "string") {
-      text = src.content
-    } else if (Array.isArray(src.content) && src.content.every((part) => part?.type === "text" && typeof part.text === "string")) {
-      text = src.content.map((part) => part.text).join("\n")
-    }
-  }
+  const text = documentText(block, { inToolResult })
   if (text === null) {
-    throw new UnsupportedContent("a binary or URL document block in a user message (agy's ACP prompt accepts text and images only)")
+    const { what, hint } = documentRefusal(block)
+    throw new UnsupportedContent(what, hint)
   }
-  return title ? `[document: ${title}]\n${text}\n[end of document]` : text
+  return text
 }
 
 function parseSearchResultText(block) {
@@ -4524,6 +4515,7 @@ function blockText(block) {
     const inner = Array.isArray(block.content)
       ? block.content.map((part) => {
         if (part?.type === "image") return "[image returned by tool]"
+        if (part?.type === "document") return parseUserDocumentText(part, true)
         return blockText(part)
       }).join("")
       : String(block.content ?? "")
@@ -5185,7 +5177,7 @@ function toolResult(block) {
       if (part?.type === "tool_reference" && typeof part.tool_name === "string") {
         return { type: "text", text: `Loaded tool: ${part.tool_name}` }
       }
-      if (part?.type === "document") return { type: "text", text: parseUserDocumentText(part) }
+      if (part?.type === "document") return { type: "text", text: parseUserDocumentText(part, true) }
       if (part?.type === "search_result") return { type: "text", text: parseSearchResultText(part) }
       if (part?.type === "image" && part.source?.type === "base64" && part.source.data) {
         return {

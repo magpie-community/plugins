@@ -58,3 +58,9 @@ test("test/array-items-unit.mjs", () => {
   expect(output).toMatch(/ALL OK/)
   expect(code).toBe(0)
 }, 70_000)
+
+test("test/documents-unit.mjs", () => {
+  const { code, output } = run([path.join(dir, "documents-unit.mjs")], 60_000)
+  expect(output).toMatch(/ALL OK/)
+  expect(code).toBe(0)
+}, 70_000)

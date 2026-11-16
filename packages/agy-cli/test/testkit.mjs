@@ -44,6 +44,7 @@ export const PROC_FILE = path.join(REPO_DIR, "proc.mjs")
 export const INSTALL_FILE = path.join(REPO_DIR, "install.mjs")
 export const ACCOUNT_FILE = path.join(REPO_DIR, "account.mjs")
 export const IMPORT_FILE = path.join(REPO_DIR, "import.mjs")
+export const DOCUMENTS_FILE = path.join(REPO_DIR, "documents.mjs")
 export const MESSAGES_URL = "agy://local/v1/messages"
 export const COUNT_TOKENS_URL = "agy://local/v1/messages/count_tokens"
 export const CATALOG_TTL_MS = 5 * 60 * 1000
@@ -568,6 +569,7 @@ export async function createBridgeKit(options = {}) {
   const installUrl = pathToFileURL(INSTALL_FILE).href
   const accountUrl = pathToFileURL(ACCOUNT_FILE).href
   const importUrl = pathToFileURL(IMPORT_FILE).href
+  const documentsUrl = pathToFileURL(DOCUMENTS_FILE).href
   const linker = (specifier) => {
     const key = specifier.startsWith("node:") || specifier.startsWith("./") || specifier === RUNTIME_SPECIFIER
       ? specifier
@@ -589,6 +591,7 @@ export async function createBridgeKit(options = {}) {
     else if (key === "./install.mjs") module = sourceModule(INSTALL_FILE, "", installUrl)
     else if (key === "./account.mjs") module = sourceModule(ACCOUNT_FILE, "", accountUrl)
     else if (key === "./import.mjs") module = sourceModule(IMPORT_FILE, "", importUrl)
+    else if (key === "./documents.mjs") module = sourceModule(DOCUMENTS_FILE, "", documentsUrl)
     else if (key.startsWith("node:")) module = builtinModule(key, overrides[key])
     else throw new Error(`testkit: 未登记的依赖 ${specifier}`)
     cache.set(key, module)

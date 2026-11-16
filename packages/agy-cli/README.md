@@ -237,7 +237,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 - **额度显示 "Limits not available" 或报版本错误**：该窗口没有可测量的数据；版本错误则
   把 agy 升级到 1.1.11 以上。
 - **图片请求返回 HTTP 400**：当前 agy 没有声明图片能力（需要 1.5.0 以上）。另外只接受
-  内联 base64，URL 图片和 PDF 等二进制文档都会被拒绝。
+  内联 base64，URL 图片会被拒绝。
+- **文档**：agy 只读文字和图片。文本文档（纯文本，或 base64 的文本/JSON/XML）按文字发过去；
+  URL 文档发的是网址，由模型用工具去取。工具读到的 PDF 会变成一条说明，提示模型换个方式
+  提取文字；直接附在消息里的 PDF 返回 HTTP 400 并说明原因，请改为粘贴文字或把页面作为图片附上。
 - **回复里出现 "Agent execution terminated due to error."**：这是 agy 的错误标记。插件会
   从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
   "There was a network issue connecting to the server" 和 "Your AI credits balance is

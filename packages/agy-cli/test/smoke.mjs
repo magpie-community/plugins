@@ -2190,6 +2190,22 @@ for (const location of ["inline", "system", "developer", "user"]) {
     readSteer.content.some(part => part.type === "image" && part.data === "cmVhZGltYWdl" && part.mimeType === "image/jpeg") &&
     !readSteer.text.includes("Image read successfully"), JSON.stringify({ readDelivered, steer: readSteer.content }))
 
+  // Claude Code's Read of a PDF: the tool_result holds the file as a base64
+  // document. agy can't take it, so the model is told so and the turn goes on.
+  const pdfReadFirst = { model, messages: [{ role: "user", content: "TOOL claude code read pdf" }], tools: [echoTool] }
+  const pdfReadEvents = (await readSSE(await callFetch(pdfReadFirst))).events
+  const pdfReadConv = inits().at(-1).convId
+  const pdfReadBefore = inits().length
+  const pdfReadResponse = await callFetch(continuation(pdfReadFirst, pdfReadEvents, [
+    { type: "document", title: "paper.pdf", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" } },
+  ]))
+  const pdfReadFinal = (await readSSE(pdfReadResponse)).events
+  const pdfReadDelivered = JSON.stringify(logs().filter(event => event.type === "mcpResult" && event.convId === pdfReadConv).at(-1)?.result?.content || [])
+  check("a PDF inside a tool_result reaches agy as a note to read it another way, and the turn goes on",
+    pdfReadResponse.status === 200 && stopOf(pdfReadFinal) === "end_turn" && inits().length === pdfReadBefore &&
+    pdfReadDelivered.includes("paper.pdf") && pdfReadDelivered.includes("a PDF that could not be attached") &&
+    !pdfReadDelivered.includes("JVBERi0xLjQK"), pdfReadDelivered)
+
   const searchTool = { name: "ToolSearch", description: "Search deferred tools", input_schema: { type: "object" } }
   const searchFirst = { model, messages: [{ role: "user", content: "TOOLSEARCHCALL load WebFetch" }], tools: [searchTool] }
   const searchEvents = (await readSSE(await callFetch(searchFirst))).events
@@ -2448,7 +2464,31 @@ for (const location of ["inline", "system", "developer", "user"]) {
       content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" } }],
     }],
   })
-  check("binary PDF document block returns HTTP 400", pdfRes.status === 400)
+  const pdfError = await pdfRes.json()
+  check("binary PDF document block returns HTTP 400 that says what to do",
+    pdfRes.status === 400 && /PDF attached as a document is not supported/.test(pdfError.error?.message) &&
+    /Paste the document's text/.test(pdfError.error?.message), JSON.stringify(pdfError))
+
+  // A client's URL document (daoche_wuzui on X) and a base64 text file go
+  // to agy as text, instead of turning the request away.
+  const urlDocRes = await callFetch({
+    model,
+    stream: false,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "document", title: "spec", source: { type: "url", url: "https://example.com/spec.pdf" } },
+        { type: "document", title: "notes.txt", source: { type: "base64", media_type: "text/plain", data: Buffer.from("NOTES_MARKER_77").toString("base64") } },
+        { type: "text", text: "summarise the URL document" },
+      ],
+    }],
+  })
+  const urlDocBody = await urlDocRes.text()
+  const urlDocUser = lastOf("user")
+  check("a URL document goes as its URL, and a base64 text document as its text",
+    urlDocRes.status === 200 && urlDocUser.text.includes("https://example.com/spec.pdf") &&
+    urlDocUser.text.includes("not attached") && urlDocUser.text.includes("NOTES_MARKER_77"),
+    JSON.stringify({ status: urlDocRes.status, body: urlDocBody, text: urlDocUser?.text }))
 
   const refusalRes = await callFetch({ model, stream: false, messages: [{ role: "user", content: "REFUSAL_CLEAN" }] })
   const refusalMsg = await refusalRes.json()
