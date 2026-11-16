@@ -917,6 +917,11 @@ function replyText(parsed) {
   return parsed.content.filter((block) => block.type === "text").map((block) => block.text).join("")
 }
 
+function sseError(text) {
+  const line = text.split("\n").findLast((item) => item.startsWith("data:"))
+  return JSON.parse(line.slice(5)).error
+}
+
 test("#1052: the model quoting agy's error marker mid-reply does not end a healthy turn", async () => {
   for (const chunks of [
     ["agy prints `⚠ Agent execution terminated due to error.` when a turn fails;", " the real cause is in its log."],
@@ -1033,6 +1038,52 @@ test("#1136, #1151: agy's network, credit and 429 endings fail the turn", async 
       assert.ok(!text.includes("⚠"), "no banner reaches the client")
     })
   }
+})
+
+// #1201: agy 1.5.9 passes a banned account's Google 403 through as the reply.
+const BANNED = "\n⚠ PERMISSION_DENIED (code 403): This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n"
+
+test("#1201: agy's banned-account ending fails the stream as no-retry permission error", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 63), BANNED.slice(63)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-end" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get("x-should-retry"), null)
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("#1201: agy's banned-account ending fails a non-stream request as a no-retry HTTP 403", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED.slice(0, 63), BANNED.slice(63)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+    assert.match(body.error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!JSON.stringify(body).includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("#1201: the model quoting the banned-account ending with more text after keeps it", async () => {
+  const chunks = [BANNED.slice(0, 40), BANNED.slice(40) + "That line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "banned-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
 })
 
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {

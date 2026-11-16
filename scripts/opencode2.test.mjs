@@ -7,8 +7,11 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-const packages = new URL("../packages/", import.meta.url).pathname
+// a path, not a URL's pathname: on Windows that is "/C:/…", and
+// join made it "\C:\…", which no import finds
+const packages = fileURLToPath(new URL("../packages/", import.meta.url))
 // no request leaves these tests; fetch is put back after them, since a
 // root `bun test` runs every package's files in this one process
 const realFetch = globalThis.fetch

@@ -3,7 +3,7 @@ import { validKey } from "./src/crypto.js";
 import { PROOF, identity, taskSession, validName, TASK_NAME_LIMIT } from "./src/policy.js";
 import { inspectRequest } from "./src/protocols.js";
 import { readGrant, stateRoot, observeAuthorizationRequest } from "./src/grant-store.mjs";
-import {resolveAuthorization} from "./src/session-authorization.js";
+import {resolveAuthorization,sessionIdentity,sessionWorkspace} from "./src/session-authorization.js";
 
 async function attachGrant(body, ctx) {
   // Never accept a proof supplied by a caller, a tool result or an older request.
@@ -48,6 +48,8 @@ export async function onRequest(body, ctx) {
   if (!["authKey", "receiptReadKey", "authorizationKey"].every(field => validKey(ctx.options[field])))
     await initializeOptions(ctx.options);
   const started = Date.now(), receipt = newReceipt(ctx, identity(body));
+  const target=sessionIdentity(body,ctx),workspace=target&&sessionWorkspace(body,ctx);
+  if(workspace&&workspace.length<=4096&&!/[\u0000-\u001f\u007f]/.test(workspace))receipt.authorizationWorkspace=workspace;
   ctx.state ||= {}; ctx.state.receipt = receipt;
   delete body[PREPARED]; delete body[PROOF];
   const key = ctx.options?.authKey;
@@ -72,14 +74,23 @@ export async function onRequest(body, ctx) {
   const payload = JSON.stringify({v: 1, receiptId: receipt.id, thread: identity(body)?.thread || "", session: ctx.session || "", protocol: ctx.protocol, expires: Date.now() + 20000, reverse: state?.reverse || {}, schema, error});
   body[PREPARED] = {payload, mac: sign(key, payload)};
   const status = error || !state?.ready ? "failed" : state.metrics?.replacements ? "replaced" : state.metrics?.allowedOccurrences || state.metrics?.authorizationCoverage === "all" ? "authorized" : "no_match";
-  if (status !== "failed") rememberDetails(stateRoot(ctx.options?.stateDir), receipt, state?.reverse);
-  await appendReceipt(ctx, receipt, "prepared", {status, error: status === "failed", metrics: state?.metrics, processingMs: Date.now()-started});
+  const prepared={status, error: status === "failed", metrics: state?.metrics, processingMs: Date.now()-started};
+  ctx.state.receiptSuppressed=status!=="failed"&&state?.metrics?.authorizationCoverage==="all"&&state.metrics.authorizationReason==="session_all_active";
+  if(ctx.state.receiptSuppressed)ctx.state.receiptPrepared=prepared;
+  else {
+    if (status !== "failed") rememberDetails(stateRoot(ctx.options?.stateDir), receipt, state?.reverse);
+    await appendReceipt(ctx, receipt, "prepared", prepared);
+  }
   return body;
 }
 
 export async function onResponse(reply, ctx) {
   const receipt = ctx.state?.receipt;
   if (!receipt) return;
+  if(ctx.state.receiptSuppressed){
+    if(ctx.success===true)return;
+    await appendReceipt(ctx,receipt,"prepared",ctx.state.receiptPrepared);
+  }
   let remaining = 0;
   try {
     const tokens = new Set(ctx.state.receiptTokens || []);

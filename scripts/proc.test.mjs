@@ -3,6 +3,7 @@ const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processAlive, processExists, processProbe, processStatus, processZombie } from "./proc.mjs";
 import { procTargets } from "./sync-proc.mjs";
@@ -17,7 +18,8 @@ const deps = (content, killImpl = () => {}) => ({
   platform: "linux",
   readFile: (file) => {
     if (content === undefined) err("EACCES");
-    if (file === "/fake-proc/123/stat") return content;
+    // proc.mjs joins with the system's separator, "\" on Windows
+    if (file === join("/fake-proc", "123", "stat")) return content;
     err("ENOENT");
   },
   kill: killImpl,
@@ -125,13 +127,14 @@ test("runtime proc copies match the canonical implementation", () => {
 // package that asks whether a pid lives goes through its proc.mjs copy.
 test("no package asks kill(pid, 0) beside its proc.mjs", () => {
   const { readdirSync } = require("node:fs");
-  const { join, relative } = require("node:path");
+  const { relative, sep } = require("node:path");
   const skip = /(^|\/)(node_modules|dist|test|tests|scripts|\.git)(\/|$)|\.test\.|(^|\/)proc\.mjs$|\.min\.js$|vendor/;
   const found = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
-      const rel = relative(root, path);
+      // the skip list is written with "/", as relative() gives off Windows
+      const rel = relative(root, path).split(sep).join("/");
       if (skip.test(rel)) continue;
       if (entry.isDirectory()) walk(path);
       else if (/\.(mjs|js|cjs|ts|mts)$/.test(entry.name) && /process\.kill\(\s*[\w.$]+\s*,\s*0\s*\)/.test(readFileSync(path, "utf8"))) found.push(rel);

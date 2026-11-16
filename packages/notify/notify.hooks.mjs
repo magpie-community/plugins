@@ -11,7 +11,7 @@
 // message to the channels and returns at once. Nothing here throws, and
 // nothing is awaited on the request's path: a broken channel must never
 // touch the request.
-import { hasTools, opensTurn, ending, firstWords, compacting, continued, background, subagent } from "./turn.mjs"
+import { hasTools, opensTurn, ending, firstWords, compacting, continued, background, subagent, progressSummary } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 // open conversations: key -> { key, base, start, seen, agent, model, cwd, busy, waiting, nested, failed, background, compactedAt }
@@ -167,6 +167,11 @@ export function onRequest(body, ctx) {
       if (c) { c.compactedAt = t; c.seen = t }
       return undefined
     }
+    // a subagent's progress label (Claude Code 2.1.318+): its end_turn reply
+    // would end the subagent's turn, and the subagent's next request would
+    // then be taken for a conversation of its own once the parent has been
+    // quiet a while, pushing in the middle of the work
+    if (progressSummary(body, ctx?.protocol)) return undefined
     if (!hasTools(body, ctx.protocol)) return undefined
     let turn = turns.get(key)
     const resumed = !turn && continued(body, ctx.protocol)

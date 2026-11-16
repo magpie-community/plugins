@@ -151,6 +151,46 @@ function retryableRefusal(status, body) {
   })
 }
 
+// The gateway refuses a session with HTTP 200 and a business code, on the
+// model paths as on the others: a made-up or dropped session on
+// /api/v1/chat/completions, asked for a stream, got 200 application/json
+// {"code":"100002","desc":"登录已失效，请重新登录"} (measured 2026-11-16).
+// Passed through, that 200 was no answer for the agent, magpie didn't try
+// the next account, and as a success it took the account's signed-out mark
+// off, which the next usage read (100002) put back: the account was signed
+// out and in again over and over (jenxingyoung on X, "轮着掉登录").
+// So a JSON 200 with a code other than 000000 is a refusal: a sign-in code
+// is a 401 that says the sign-in expired, and any other a 502 with the
+// vendor's words. A model's own answer (an SSE stream, or a completion or
+// a draw, neither of which has a top-level code) goes through as it came.
+const REFUSAL_MAX = 64 << 10
+async function businessRefusal(res) {
+  const ct = res.headers.get("content-type") ?? ""
+  if (!/json/i.test(ct) || /event-stream/i.test(ct)) return res
+  const text = await res.text()
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const same = () => new Response(text, { status: res.status, statusText: res.statusText, headers })
+  if (text.length > REFUSAL_MAX) return same()
+  let payload
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    return same()
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return same()
+  const code = codeOf(payload)
+  if (!code || code === OK) return same()
+  const said = messageOf(payload)
+  if (AUTH_CODES.has(code)) {
+    const r = errorResponse(401, `Loomy 登录态已失效，请重新登录（${said || `code=${code}`}）`)
+    r.headers.set("x-magpie-sign-in", "expired")
+    return r
+  }
+  return errorResponse(502, `Loomy 拒绝了请求：${said || "无错误说明"}（code=${code}）`)
+}
+
 async function bodyText(input, init) {
   const b = init.body ?? (input instanceof Request ? await input.clone().text() : undefined)
   return typeof b === "string" ? b : new TextDecoder().decode(b)
@@ -486,7 +526,7 @@ export async function LoomyAuthPlugin({ client } = {}) {
             const raw = await res.text().catch(() => "")
             return errorResponse(res.status, `Loomy 上游返回 ${res.status}: ${raw.slice(0, 4096) || "无错误说明"}`)
           }
-          return res
+          return businessRefusal(res)
         }
         return {
           baseURL: modelBase(),
@@ -540,8 +580,9 @@ export async function LoomyAuthPlugin({ client } = {}) {
               if (refusal) return refusal
               return errorResponse(res.status, `Loomy 上游返回 ${res.status}: ${raw.slice(0, 4096) || "无错误说明"}`)
             }
-            // the answer streams through as it came (OpenAI-shaped)
-            return res
+            // the answer streams through as it came (OpenAI-shaped); a 200
+            // that is a refusal in the vendor's envelope is said as one
+            return businessRefusal(res)
           },
         }
       },
@@ -697,6 +738,7 @@ function fellBack(models) {
 // for tests
 export const _internal = {
   retryableRefusal,
+  businessRefusal,
   ID,
   NAME,
   STATIC_MODELS,

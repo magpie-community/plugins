@@ -62,6 +62,11 @@ export const LICENSE_REFUSED = "Google refuses this Google account for Antigravi
   "with a personal Google account (@gmail.com) rather than a Workspace one; unset AGY_ADC_AUTH " +
   "if it is set; and turn off a VPN or proxy that puts you in a region Antigravity isn't offered in."
 
+const ACCOUNT_DISABLED_REFUSAL = /PERMISSION_DENIED \(code 403\):\s*This\s+service\s+has\s+been\s+disabled\s+in\s+this\s+account\s+for\s+violation\s+of\s+Terms\s+of\s+Service\.\s*Please\s+submit\s+an\s+appeal\s+to\s+continue\s+using\s+this\s+product\./
+export const ACCOUNT_DISABLED_REFUSED = "Google has disabled this account's access to Antigravity " +
+  "for violating the Terms of Service (HTTP 403: \"This service has been disabled in this account " +
+  "for violation of Terms of Service\"). Submit an appeal with Google before using this account again."
+
 // agyRefusal is what to tell the user when agy's output says Google turned
 // the account away at its eligibility check, or "" when it doesn't: the
 // license refusal (#3501), or any other refusal of the check that isn't a
@@ -71,6 +76,7 @@ export const LICENSE_REFUSED = "Google refuses this Google account for Antigravi
 export function agyRefusal(output) {
   const said = withoutDiagnostics(String(output ?? ""))
   if (LICENSE_REFUSAL.test(said)) return LICENSE_REFUSED
+  if (ACCOUNT_DISABLED_REFUSAL.test(said)) return ACCOUNT_DISABLED_REFUSED
   if (!ELIGIBILITY.test(said) || NETWORK.test(said)) return ""
   const line = said.split(/\r?\n/).map(l => l.trim().replace(/^error:\s*/i, "")).find(l => ELIGIBILITY.test(l)) || ""
   return `Google refuses this account for Antigravity: ${line.slice(0, 400)}. agy itself gets the same answer. ` +
