@@ -24,7 +24,7 @@ test("a page stays a page when it also has a module and service", () => {
     expect(kindOf({ main: "index.mjs", magpie: mg })).toBe("")
     expect(kindOf({ exports: { ".": "./i.mjs" }, magpie: mg })).toBe("")
   }
-  const page = { main: "server/index.mjs", magpie: { page: { file: "page/index.html", service: { port: 3489 } } } }
+  const page = { main: "server/index.mjs", keywords: ["magpie-page"], magpie: { page: { file: "page/index.html", service: { port: 3489 } } } }
   expect(kindOf(page)).toBe("page")
   expect(entryOf(page, "page", true)).toBe("server/index.mjs")
   expect(kindOf({ main: "index.mjs" })).toBe("")
@@ -33,4 +33,9 @@ test("a page stays a page when it also has a module and service", () => {
   // installed from npm, a provider loads npm's index file
   expect(entryOf({ main: "index.mjs" }, "", false)).toBe("index.js")
   expect(entryOf({ exports: { ".": { bun: "./b.mjs" } } }, "", true)).toBe("./b.mjs")
+})
+
+test("a page with main needs the magpie-page keyword", () => {
+  const page = { main: "server/index.mjs", magpie: { page: { file: "page/index.html" } } }
+  expect(kindOf(page)).toBe("")
 })
