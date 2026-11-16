@@ -321,6 +321,37 @@ test("a console that names no seat pool is an error, not a blank card", async ()
   expect(u.windows).toBeUndefined()
 })
 
+// #1143 (shex816): a seat pool of nothing and no credits row gave a card
+// with a plan, a name and nothing else, and no word of why
+for (const [how, credits, says] of [
+  ["can't be read", () => json({ code: 0, message: "" }, 500), "could not be read"],
+  ["shows no allowance", () => json({ is_credits_billing: true, user_entitlement_pack_list: [] }), "shows no allowance"],
+]) {
+  test(`a seat pool of nothing, and a credits page that ${how}, is an error naming both`, async () => {
+    f = fakeTrae()
+    f.route("POST /trae/gtm/tob/api/v1/config/get_personal_quota", () => quota({ seat_pool_currency_quota: 0 }))
+    f.route("POST /trae/gtm/tob/api/v1/config/get_user_model_usage", () => spent([]))
+    f.route("POST /trae/gtm/tob/api/v1/config/get_personal_core_data", () => core())
+    f.route("POST /trae/api/v2/pay/ide_user_ent_usage", credits)
+    const hooks = await TraeCNAuthPlugin({ client: {} })
+    const u = await hooks.auth.usage(async () => signedIn({ host: ENT }))
+    expect(u.error).toBe(`Trae CN usage: the console gives this seat a pool of ¥0, and the credits page ${says}`)
+    expect(u.windows).toBeUndefined()
+  })
+}
+
+test("a seat pool of nothing beside a credits page with an allowance shows the credits", async () => {
+  f = fakeTrae()
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_quota", () => quota({ seat_pool_currency_quota: 0 }))
+  f.route("POST /trae/gtm/tob/api/v1/config/get_user_model_usage", () => spent([]))
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_core_data", () => core())
+  f.route("POST /trae/api/v2/pay/ide_user_ent_usage", () => page())
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn({ host: ENT }))
+  expect(u.error).toBeUndefined()
+  expect(u.windows).toEqual([creditsWindow])
+})
+
 // an administrator's console answers with every seat in the tenant: the card
 // counts the account's own, not the tenant's
 test("an administrator's card counts its own seat, not the tenant's", async () => {

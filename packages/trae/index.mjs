@@ -193,6 +193,10 @@ const SITES = {
             windows.push(w)
           }
           if (windows.length) out.windows = windows
+          // a pool of nothing and no credits row leave the card nothing to
+          // show: it says what the console and the page answered rather
+          // than standing empty (#1143)
+          else if (!out.balance) return { error: `Trae CN usage: the console gives this seat a pool of ¥${q.limit}, and the credits page ${!page ? "could not be read" : c?.unlimited ? "says unlimited" : "shows no allowance"}`, signIn, user: a.name || a.uid }
           return out
         },
       },
@@ -328,6 +332,8 @@ const SITES = {
           const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
           if (q.unlimited) out.balance = "unlimited"
           else if (q.limit > 0) out.windows = [seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), DOLLARS, "usd")]
+          // a pool of nothing leaves the card nothing to show (#1143)
+          else return { error: `Trae Global usage: the console gives this seat a pool of $${q.limit}`, signIn, user: a.name || a.uid }
           return out
         },
       },
