@@ -596,3 +596,58 @@ test("已登录时登录结果用 agy 存的 Google 账号命名，而不是一�
     await warmed(kit)
   })
 })
+
+// agy 1.5.9 when Google answers 403 #3501 at its eligibility check (run
+// against a fake Code Assist, 11-16): every command, `agy models` included,
+// ends with this and exit 1. Three people on X got a fallback list, "model …
+// is unavailable to this agy account" and "not eligible" from the plugin.
+const REFUSED_3501 = "Error: Eligibility check failed: PERMISSION_DENIED (code 403): You do not have a valid license of this product. Please contact your administrator to request a license. If you are not an enterprise user and believe you are receiving this message as an error, please try using the latest version and logging in again. (#3501). Please log out (/logout) and log back in (/login).\n"
+const REFUSED_LISTING = { code: 1, stderr: "I1116 10:34:03.760516     315 http_helpers.go:876] Failed to make code assist backend request\n" + REFUSED_3501 }
+
+test("#3501 Google 拒了账号：models() 说出原因，不给静态目录冒充账号的型号", async () => {
+  await withKit({ modelsBehavior: REFUSED_LISTING }, async (kit) => {
+    await kit.models().catch(() => {})
+    await warmed(kit)
+    const error = await kit.models().then(() => null, e => e)
+    assert.ok(error, "Google 拒了账号，models() 仍给了一份列表")
+    assert.match(error.message, /#3501/)
+    assert.match(error.message, /valid license/)
+    assert.match(error.message, /\/logout.*\/login/)
+    assert.match(error.message, /AGY_ADC_AUTH/)
+    // agy 又能列出了（重新登录、换了地区）：恢复正常目录
+    kit.modelsBehavior = DYNAMIC_OK
+    kit.clock.advance(CATALOG_TTL_MS)
+    await kit.models().catch(() => {})
+    await warmed(kit)
+    assert.ok((await kit.models())["gemini-9-test"], "agy 能列出后仍报拒绝")
+  })
+})
+
+test("#3501 别的失败（网络、超时、未知输出）仍给静态目录，不说成拒绝", async () => {
+  await withKit({ modelsBehavior: { code: 1, stderr: "Error: Eligibility check failed: EOF\n" } }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    assert.ok((await kit.models())["gemini-4-argon"])
+  })
+})
+
+test("#3501 请求：会话一个型号都不开放时答 403 和 Google 的原因，不说型号不可用", async () => {
+  for (const stream of [true, false]) {
+    await withKit({ modelsBehavior: REFUSED_LISTING, setModelError: { code: -32603, message: "Unknown model ID: gemini-4-argon-high" } }, async (kit) => {
+      const response = await kit.request(baseBody({ stream, model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] }))
+      assert.equal(response.status, 403, `stream=${stream}`)
+      const body = await response.json()
+      assert.equal(body.error.type, "permission_error")
+      assert.match(body.error.message, /#3501/)
+      assert.doesNotMatch(body.error.message, /unavailable to this agy account/)
+      await settle(kit)
+    })
+  }
+  // 账号没被拒，型号真的不可用：仍是 400
+  await withKit({ modelsBehavior: DYNAMIC_OK, setModelError: { code: -32603, message: "Unknown model ID: gemini-4-argon-high" } }, async (kit) => {
+    const response = await kit.request(baseBody({ model: "agy-cli/gemini-4-argon", tools: [], messages: [{ role: "user", content: "hi" }] }))
+    assert.equal(response.status, 400)
+    assert.match((await response.json()).error.message, /unavailable to this agy account/)
+    await settle(kit)
+  })
+})

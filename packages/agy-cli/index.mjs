@@ -7,7 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { createUsageReader } from "./usage.mjs"
+import { agyRefusal, createUsageReader } from "./usage.mjs"
 import { storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
@@ -349,10 +349,42 @@ async function listAgyModels(agyPath) {
   // a listing nobody asked for doesn't run an agy that would start its own
   // Google sign-in (signin.mjs); the catalog it has stays
   if (await backgroundBlocked()) return null
-  const { err, stdout, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000, unrefTimer: true })
+  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000, unrefTimer: true })
   // null, not FALLBACK_MODELS: a failed listing must not overwrite a dynamic catalog.
-  if (err || timedOut || code !== 0) return null
+  if (err || timedOut || code !== 0) {
+    if (!err && !timedOut) noteRefusal(agyRefusal(`${stderr}\n${stdout}`))
+    return null
+  }
+  noteRefusal("")
   return parseAgyModels(stdout)
+}
+
+// What the last `agy models` of each account said when Google turned the
+// account away at agy's eligibility check (agyRefusal), "" when it listed.
+// models() says it instead of serving a fallback list as if agy had
+// answered, and a turn that then can't pick its model says it too.
+const refusals = new Map()
+
+function noteRefusal(why) {
+  const home = currentHome() ?? ""
+  if (why) refusals.set(home, why)
+  else refusals.delete(home)
+}
+
+function refusalOf() {
+  return refusals.get(currentHome() ?? "") || ""
+}
+
+// refusalNow is the account's refusal, asking agy once when no listing of
+// it has said yet (a request before the first models()).
+async function refusalNow(agyPath) {
+  if (refusals.has(currentHome() ?? "")) return refusalOf()
+  if (!agyPath || await backgroundBlocked()) return ""
+  const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, ["models"], { timeoutMs: 15_000 })
+  if (err || timedOut || code === 0) return ""
+  const why = agyRefusal(`${stderr}\n${stdout}`)
+  noteRefusal(why)
+  return why
 }
 
 // parseAgyModels reads `agy models` output: one "<id>  <name>" per line.
@@ -396,6 +428,13 @@ async function probeSignedIn(agy) {
       await briefly(probeOfferedOnce(agy), OFFERED_SIGNIN_WAIT_MS)
     }
     return { ok: true }
+  }
+  // Google turned the account away (#3501): signing in again took, and
+  // Google still refuses it; say so, not agy's last line alone
+  const refused = !probe.err && !probe.timedOut ? agyRefusal(`${probe.stderr}\n${probe.stdout}`) : ""
+  if (refused) {
+    noteRefusal(refused)
+    return { ok: false, why: refused }
   }
   const why = probe.timedOut
     ? "`agy models` timed out after 15s"
@@ -961,6 +1000,9 @@ export function streamErrorOf(error) {
   const type = error?.kind || "api_error"
   const out = { type, message: String(error?.message ?? error) }
   if (type === "invalid_request_error") out.status = 400
+  // Google refused the account (refusedError): its status, so magpie
+  // reads it as the account's refusal, not as a failed reply.
+  if (type === "permission_error") out.status = 403
   return out
 }
 
@@ -970,6 +1012,15 @@ class AgentTurnError extends Error {
     this.kind = kind
     this.keepProcess = true
   }
+}
+
+// Google refused the account (agyRefusal): a 403 no retry of this request
+// fixes, the account's and not the model's.
+function refusedError(why) {
+  const error = new AgentTurnError(`agy bridge: ${why}`, "permission_error")
+  error.statusCode = 403
+  error.noRetry = true
+  return error
 }
 
 function shellQuote(value) {
@@ -1917,6 +1968,10 @@ class Proc {
         await this.conn.request("session/set_model", { sessionId: this.sessionId, modelId: model }, 30_000)
       }
     } catch (error) {
+      // Google turned the account away (#3501): agy's session offers no
+      // model at all, so every model is "unknown". That is the account.
+      const refused = await refusalNow(this.agyPath).catch(() => "")
+      if (refused) throw refusedError(refused)
       const wrapped = new Error(`agy bridge: model ${model} is unavailable to this agy account: ${error.message}`)
       wrapped.statusCode = 400
       throw wrapped
@@ -2281,6 +2336,8 @@ class Proc {
         "rate_limit_error",
       )
     }
+    const refused = agyRefusal(detail)
+    if (refused) return refusedError(refused)
     return new AgentTurnError(`agy bridge: agy stopped the turn because of an error${detail ? ": " + detail : ""}`)
   }
 
@@ -6331,6 +6388,11 @@ export const AntigravityBridgePlugin = async () => {
         const agy = findAgy()
         // Never force a refresh here: Magpie times models() out after about two seconds.
         const catalog = await loadModelCatalog(agy, { probeOffered: true })
+        // Google turned the account away (#3501): agy lists nothing, and a
+        // fallback list would read as models this account has. magpie
+        // keeps the list it had and shows why.
+        const refused = agy ? refusalOf() : ""
+        if (refused) throw new Error(refused)
         const out = {}
         // Not the account's list yet: the static one (no agy, signed out,
         // or agy hasn't answered), or Gemini alone while agy acp is still
@@ -6371,7 +6433,7 @@ function jsonError(status, message, code, { extra, headers, noRetry = false } = 
   return new Response(
     JSON.stringify({
       type: "error",
-      error: { type: status === 400 ? "invalid_request_error" : "api_error",
+      error: { type: status === 400 ? "invalid_request_error" : status === 403 ? "permission_error" : "api_error",
         ...(code ? { code } : {}), message: String(message || "unknown error"), ...(extra ?? {}) },
     }),
     { status, headers: { "Content-Type": "application/json",

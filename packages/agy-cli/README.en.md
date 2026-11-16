@@ -315,6 +315,14 @@ off unless you turn it on.
   on PATH.
 - **Sign in fails, or agy reports a login problem**: click Sign in again, or run
   `agy` in a terminal to sign in there.
+- **"You do not have a valid license of this product" (#3501)**: Google refuses
+  this account, and agy in a terminal gets the same answer. The plugin says so
+  in the model list on the Providers page and in the request's HTTP 403, instead
+  of offering the static catalog as if the account had those models. Try:
+  update agy and sign in again (Sign in in Magpie, or run `agy` in a terminal,
+  then /logout and /login); use a personal Google account (@gmail.com) rather
+  than a Workspace one; unset `AGY_ADC_AUTH` if it is set; turn off a VPN or
+  proxy that puts you in a region Antigravity isn't offered in.
 - **HTTP 503**: the pool is full. Raise `AGY_BRIDGE_MAX_PROCS` and the Providers
   page Concurrency, or reduce the number of simultaneous sessions.
 - **Usage shows "Limits not available" or a version error**: that window has no

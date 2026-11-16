@@ -226,6 +226,11 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
 - **找不到 agy**：在 Magpie 里点 Sign in 让它装一份（需要 Magpie 0.1.4246 起），或设置 `AGY_PATH`
   指向可执行文件，或确认 `agy` 在 PATH 里。
 - **Sign in 失败或 agy 报登录相关错误**：再点一次 Sign in 重新登录，或在终端运行一次 `agy` 登录。
+- **"You do not have a valid license of this product" (#3501)**：这是 Google 拒绝了这个账号，
+  终端里的 agy 本身也会这样答。插件会在 Providers 页的模型列表和请求的 HTTP 403 里写明这个原因，
+  不再拿静态目录冒充账号的型号。可以试：升级 agy 后重新登录（Magpie 里点 Sign in，或终端运行
+  `agy` 后 /logout 再 /login）；用个人 Google 账号（@gmail.com）而不是 Workspace 账号；如设置了
+  `AGY_ADC_AUTH` 就去掉；关掉把你放到 Antigravity 未开放地区的 VPN 或代理。
 - **HTTP 503**：进程池满。提高 `AGY_BRIDGE_MAX_PROCS` 和 Providers 页的 Concurrency，
   或者减少同时进行的会话。
 - **额度显示 "Limits not available" 或报版本错误**：该窗口没有可测量的数据；版本错误则

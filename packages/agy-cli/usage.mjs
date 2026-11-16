@@ -45,10 +45,43 @@ function refusedEligibility(output) {
   return ELIGIBILITY.test(output)
 }
 
+// Google's 403 #3501 at agy's eligibility check: Google turns the account
+// itself away, and agy refuses every command with it, `agy models`, print
+// mode and a turn alike (agy 1.5.9 against a Code Assist answering it):
+//   Eligibility check failed: PERMISSION_DENIED (code 403): You do not have
+//   a valid license of this product. ... (#3501). Please log out (/logout)
+//   and log back in (/login).
+// Three people on X (11-16) got only a list of fallback models, "model …
+// is unavailable to this agy account" or "not eligible" from the plugin.
+const LICENSE_REFUSAL = /valid license of this product|\(#3501\)/i
+
+export const LICENSE_REFUSED = "Google refuses this Google account for Antigravity " +
+  "(403 #3501: \"You do not have a valid license of this product\"). agy itself gets the same " +
+  "answer, so this account can't be used until Google accepts it. Update agy, then sign in to " +
+  "the account again (in magpie, or run `agy` in a terminal and /logout, then /login); sign in " +
+  "with a personal Google account (@gmail.com) rather than a Workspace one; unset AGY_ADC_AUTH " +
+  "if it is set; and turn off a VPN or proxy that puts you in a region Antigravity isn't offered in."
+
+// agyRefusal is what to tell the user when agy's output says Google turned
+// the account away at its eligibility check, or "" when it doesn't: the
+// license refusal (#3501), or any other refusal of the check that isn't a
+// network failure ("Eligibility check failed: EOF"), in agy's own words.
+// agy's diagnostic log lines are not read: a background poll it logs can
+// fail on its own.
+export function agyRefusal(output) {
+  const said = withoutDiagnostics(String(output ?? ""))
+  if (LICENSE_REFUSAL.test(said)) return LICENSE_REFUSED
+  if (!ELIGIBILITY.test(said) || NETWORK.test(said)) return ""
+  const line = said.split(/\r?\n/).map(l => l.trim().replace(/^error:\s*/i, "")).find(l => ELIGIBILITY.test(l)) || ""
+  return `Google refuses this account for Antigravity: ${line.slice(0, 400)}. agy itself gets the same answer. ` +
+    "Antigravity isn't offered in every region: turn off a VPN or proxy that puts you in another one, or use an account Google serves there."
+}
+
 function commandFailure(output) {
   if (/not (?:logged|signed) in(?:to)?\b|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|\binvalid_grant\b/i.test(withoutDiagnostics(output))) {
     return new UsageError("agy usage needs authentication. Run `agy` in a terminal to sign in again.", { kind: "auth" })
   }
+  if (LICENSE_REFUSAL.test(withoutDiagnostics(output))) return new UsageError(LICENSE_REFUSED)
   const eligibility = ELIGIBILITY.test(output)
   const network = NETWORK.test(output)
   if (network) return new UsageError(`agy usage ${eligibility ? "eligibility check " : ""}failed on a network request. Check network or proxy settings.`)

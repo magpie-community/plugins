@@ -198,6 +198,7 @@ function spawnModels(kit, file, args) {
       return
     }
     if (behavior.stdout) child.stdout.emit("data", behavior.stdout)
+    if (behavior.stderr) child.stderr.emit("data", behavior.stderr)
     child.finish(behavior.code ?? 0)
   }
   if (!behavior.hang) {
@@ -275,7 +276,9 @@ class FakeAgy {
       else this.respond(id, { sessionId: this.sessionId, models })
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
-      this.respond(id, {})
+      // agy whose account Google turned away offers no model: every one is unknown
+      if (this.kit.setModelError) this.send({ id, error: this.kit.setModelError })
+      else this.respond(id, {})
     } else if (method === "session/prompt") {
       this.runPrompt(id, params)
     } else if (method === "session/cancel") {
@@ -434,6 +437,7 @@ export async function createBridgeKit(options = {}) {
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
     sessionNewError: options.sessionNewError ?? null,
+    setModelError: options.setModelError ?? null,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
     sessionResume: options.sessionResume ?? false,
     agentVersion: options.agentVersion ?? "1.5.0",

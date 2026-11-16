@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect } from "../usage.mjs"
+import { agyRefusal, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -587,6 +587,9 @@ test("reports sanitized failures and preserves the bridge sign-in; failures back
     ["Not logged in secret@example.com https://secret.invalid/token", /sign in again/, "expired"],
     ["Eligibility check failed: EOF secret@example.com", /eligibility check failed on a network/, "kept"],
     ["not eligible secret@example.com", /not eligible/, "kept"],
+    // Google's 403 #3501 (agy 1.5.9's words, three people on X on 11-16):
+    // the account, with what to do about it, not "not eligible"
+    ["Eligibility check failed: PERMISSION_DENIED (code 403): You do not have a valid license of this product. Please contact your administrator to request a license. If you are not an enterprise user and believe you are receiving this message as an error, please try using the latest version and logging in again. (#3501). Please log out (/logout) and log back in (/login). secret@example.com", /#3501[\s\S]*\/logout[\s\S]*AGY_ADC_AUTH/, "kept"],
     ["connection refused: secret@example.com https://secret.invalid", /network or proxy/, "kept"],
     ["unrecognized secret@example.com", /could not read usage/, "kept"],
   ]) {
@@ -966,4 +969,19 @@ test("only a region refusal reads the quota directly", async t => {
     assert.deepEqual(result.windows, [])
     assert.equal(asked, 0, error)
   }
+})
+
+test("agyRefusal: Google turning the account away, never a network failure or agy's own log lines", () => {
+  const license = "Error: Eligibility check failed: PERMISSION_DENIED (code 403): You do not have a valid license of this product. ... (#3501). Please log out (/logout) and log back in (/login)."
+  assert.match(agyRefusal(license), /#3501/)
+  assert.match(agyRefusal("error: something (#3501)"), /#3501/)
+  assert.match(agyRefusal("Error: Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location."), /not currently available in your location[\s\S]*VPN/)
+  for (const other of [
+    "",
+    "Error: Eligibility check failed: EOF",
+    "Error: Eligibility check failed: dial tcp: lookup cloudcode-pa.googleapis.com: no such host",
+    "Error: You are not logged into Antigravity.",
+    // a background poll agy logged failing, while the command itself failed otherwise
+    "E1116 10:34:12.084405     248 errorreport.go:307] Failed to poll ListExperiments: PERMISSION_DENIED (code 403): You do not have a valid license of this product. (#3501)\nError: something else",
+  ]) assert.equal(agyRefusal(other), "", other)
 })
