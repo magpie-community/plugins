@@ -15,10 +15,13 @@ This product includes third-party software and assets:
   (scripts/build-echarts.mjs).
 
 * Brand logos
-  Provider logos are not bundled with this package: at service startup the
-  server reads magpie's own `plugin-providers.json` (the registry magpie
-  maintains next to its usage.jsonl) and keeps only the data-URI icons it
-  already contains. No network downloads and no plugin-directory scanning
-  are involved. Product and company names and logos are trademarks or
-  registered trademarks of their respective owners, used solely to identify
-  the corresponding providers; they do not imply endorsement.
+  Provider logos are not bundled with this package: at run time the server
+  reads magpie's own `plugin-providers.json` (the registry magpie maintains
+  next to its usage.jsonl) and magpie's local `icons/` cache, keeping only
+  icons already present on this machine. Remote-provider icon names come
+  from the configured remote magpie's usage API when remote attribution is
+  enabled; the image bytes still come from the local cache. No network
+  image downloads and no plugin-directory scanning are involved. Product and
+  company names and logos are trademarks or registered trademarks of their
+  respective owners, used solely to identify the corresponding providers;
+  they do not imply endorsement.
