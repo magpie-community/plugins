@@ -1200,7 +1200,18 @@ function reasoningOf(m) {
 // thinking before the call said, and said it had none without it. A turn
 // with thinking and nothing else is still left out, as that client leaves
 // it.
-function qoderMessages(msgs) {
+// Kimi on QwenWork (kimi-k3.1-pro) answers 400 "Error in upstream response"
+// to an assistant turn with tool_calls and an empty content, which is how
+// every OpenAI client records a call-only turn (nanfei892, #1213: 9-token
+// bodies, DeepSeek, GLM and Qwen on the same account fine, " " served).
+// QwenWork's own client always writes text beside a call. A Kimi model's
+// call-only turn carries one space; other models get the turn as written.
+function kimiModel(m) {
+  const key = String(m?.key ?? "")
+  return /^kmodel/i.test(key) || /kimi/i.test(key + " " + (m?.config?.display_name ?? "") + " " + (m?.name ?? ""))
+}
+
+function qoderMessages(msgs, opts = {}) {
   const out = []
   const names = {}
   let seen = []
@@ -1259,7 +1270,7 @@ function qoderMessages(msgs) {
         return { id, type: "function", function: { name: c.function?.name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) } }
       })
       const think = reasoningOf(m)
-      out.push({ role: "assistant", content: textOf(m.content), ...(think ? { reasoning_content: think } : {}), tool_calls: calls })
+      out.push({ role: "assistant", content: textOf(m.content) || (opts.callText ?? ""), ...(think ? { reasoning_content: think } : {}), tool_calls: calls })
       const open = calls.map((c) => c.id)
       const kept = new Set()
       for (let j = i + 1; j < msgs.length && msgs[j].role === "tool"; j++) {
@@ -1522,7 +1533,7 @@ function qoderBody(chat, m, named = "", task, site) {
     session_type: site?.sessionType ?? "app",
     model_config: modelConfig(m, thinking),
     system: [sys],
-    messages: [{ role: "system", content: [sys] }, ...cacheMarked(qoderMessages(chat.messages ?? []))],
+    messages: [{ role: "system", content: [sys] }, ...cacheMarked(qoderMessages(chat.messages ?? [], { callText: kimiModel(m) ? " " : "" }))],
   }
   if (tools.length)
     body.tools = tools.map((t) => ({
@@ -4216,4 +4227,4 @@ export async function QwenWorkEnterpriseAuthPlugin({ client }) {
 export const protocol = { makePlugin, deviceSignIn, openapi, siteOf }
 
 // for tests
-export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
+export const _internal = { spentOf, OUTPUT_CAPS, LEARNED_CAPS, outputCap, fetchListing, accountIdentity, deviceRefreshBody, qwenworkClientHeaders, freeView, maskPhone, phoneLabelOf, realEmailOf, chatHeaders, machineOS, machineHostname, cosyHeaders, typedUnions, Splitter, campaignRuntime, RUNTIMES, campaignPage, campaignTarget, vpcInstance, vpcSite, dedicatedOrigin, dedicatedHost, dedicatedSite, lingmaRoots, lingmaDecode, lingmaSite, lingmaHeaders, LINGMA_MODELS, parseUsage, gfmt, when, failure, modelInfo, qoderBody, qoderMessages, kimiModel, cacheMarked, sessionOf, namedSession, taskOf, TASKS, TASK_MAX, TASK_IDLE, SESSION, SITES, decodeBody, events, QUEUE, queueState }
