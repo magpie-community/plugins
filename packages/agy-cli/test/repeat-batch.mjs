@@ -1364,3 +1364,231 @@ test("#1166: AGY_BRIDGE_GEMINI_DIR=default leaves agy on the machine's own folde
     assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
   })
 })
+
+test("forked session or subagent carrying an ancestor tool_use does not hit conflicting duplicate result or hijack parent", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("Side conversation boundary")) {
+        await agent.text("side answer")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("TWOSTEP")) {
+        await agent.tool("Read", { path: "/a" })
+        await agent.tool("Read", { path: "/b" })
+        await agent.text("parent done")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("fallback")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-1" }
+    const sideHeaders = { "x-magpie-session": "codex:side-1" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "TWOSTEP fork" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const step2Body = continueWithToolResults(opening, turn1, () => "real-step-1")
+    const turn2 = await readSse(await kit.request(step2Body, { headers: parentHeaders }))
+    assert.equal(turn2.stopReason, "tool_use")
+
+    const sideBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "Side conversation boundary. Answer this." },
+          ],
+        },
+      ],
+    }
+    const sideRes = await kit.request(sideBody, { headers: sideHeaders })
+    assert.equal(sideRes.status, 200, "forked side session must not return 409 conflicting duplicate result")
+    const sideParsed = await readSse(sideRes)
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.ok(sideParsed.content.some((block) => block.text?.includes("side answer")))
+
+    const parentFinal = await readSse(await kit.request(continueWithToolResults(step2Body, turn2, () => "real-step-2"), { headers: parentHeaders }))
+    assert.equal(parentFinal.stopReason, "end_turn")
+    assert.ok(parentFinal.content.some((block) => block.text?.includes("parent done")))
+  })
+})
+
+test("forked subagent arriving before parent answers its pending tool call leaves parent's call intact", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("NEW_TASK")) {
+        await agent.text("child done")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("WAIT_TOOL")) {
+        const result = await agent.tool("Read", { path: "/shared" })
+        await agent.text(`parent got:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-2" }
+    const childHeaders = { "x-magpie-session": "codex:child-2", "x-magpie-subagent": "sub-2" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "WAIT_TOOL start" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const childBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "NEW_TASK child prompt" },
+          ],
+        },
+      ],
+    }
+    const childRes = await kit.request(childBody, { headers: childHeaders })
+    assert.equal(childRes.status, 200)
+    const childParsed = await readSse(childRes)
+    assert.equal(childParsed.stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-real-output"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent got:parent-real-output")))
+  })
+})
+
+test("forked session without trailing tool_result does not supersede parent's active tool turn via lineage_fork", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "side question": "side reply" })
+    const parentHeaders = { "x-magpie-session": "codex:parent-3" }
+    const sideHeaders = { "x-magpie-session": "codex:side-3" }
+    const first = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const done1 = await readSse(await kit.request(first, { headers: parentHeaders }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const parentTurn2 = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "TOOL second" }],
+    }
+    const pending = await readSse(await kit.request(parentTurn2, { headers: parentHeaders }))
+    assert.equal(pending.stopReason, "tool_use")
+
+    const sideBody = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "side question" }],
+    }
+    const sideParsed = await readSse(await kit.request(sideBody, { headers: sideHeaders }))
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "side session starts its own process without killing parent")
+
+    const parentRes = await kit.request(continueWithToolResults(parentTurn2, pending, () => "ok"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    assert.equal((await readSse(parentRes)).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "parent finishes on its original process without replay")
+  })
+})
+
+test("synthetic magpie-<24hex> session id is ignored for flattened continuation while subagent scope still isolates", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, {
+      "first turn": "first reply",
+      "second turn": "second reply",
+      "child turn": "child reply",
+    })
+    const opening = "shared opening context\nfirst turn"
+    const turn1 = baseBody({ system: "shared system", messages: [{ role: "user", content: opening }] })
+    const done1 = await readSse(await kit.request(turn1, { headers: { "x-magpie-session": "magpie-0123456789abcdef01234567" } }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const flattenedTurn2 = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: `${opening}\n\nassistant: first reply\n\nsecond turn` }],
+    })
+    const done2 = await readSse(await kit.request(flattenedTurn2, { headers: { "x-magpie-session": "magpie-fedcba9876543210fedcba98" } }))
+    assert.equal(done2.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1, "synthetic magpie session hashes must not prevent continuing live proc")
+
+    const subagentTurn = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: "child turn" }],
+    })
+    const doneSub = await readSse(await kit.request(subagentTurn, {
+      headers: { "x-magpie-session": "magpie-0123456789abcdef01234567", "x-magpie-subagent": "collab_spawn" },
+    }))
+    assert.equal(doneSub.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "x-magpie-subagent still isolates even when x-magpie-session is synthetic")
+  })
+})
+
+test("unscoped parent and scoped subagent do not collide on shared ancestor tool_use_id", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("SUBAGENT_ASK")) {
+        await agent.text("subagent ok")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("UNSCOPED_WAIT")) {
+        const result = await agent.tool("Read", { path: "/unscoped" })
+        await agent.text(`parent:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "UNSCOPED_WAIT start" }] })
+    const turn1 = await readSse(await kit.request(opening))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const subRes = await kit.request({
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "SUBAGENT_ASK run" },
+          ],
+        },
+      ],
+    }, { headers: { "x-magpie-session": "codex:sub-only", "x-magpie-subagent": "collab_spawn" } })
+    assert.equal(subRes.status, 200)
+    assert.equal((await readSse(subRes)).stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-ok"))
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent:parent-ok")))
+  })
+})
+
+test("fetchInput Request headers preserve x-magpie-session isolation", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "hello": "reply" })
+    const body = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const req1 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-1" }, body: JSON.stringify(body) })
+    const req2 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-2" }, body: JSON.stringify(body) })
+    assert.equal((await readSse(await kit.fetch(req1))).stopReason, "end_turn")
+    assert.equal((await readSse(await kit.fetch(req2))).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2)
+  })
+})

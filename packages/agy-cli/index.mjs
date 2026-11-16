@@ -1858,6 +1858,7 @@ class Proc {
     this.toolsSignature = JSON.stringify(this.tools)
     this.instructions = opts.instructions || ""
     this.userId = opts.userId || ""
+    this.sessionScope = opts.sessionScope || ""
     this.openingText = openingTextOf(opts.messages?.[0])
     this.openingImages = openingImagesOf(opts.messages?.[0])
     this.resumeFrom = opts.resume || null
@@ -4044,12 +4045,14 @@ function findLiveContinuedProc(opts) {
   const first = Array.isArray(opts?.messages) ? opts.messages[0] : null
   if (!first) return null
   const userId = opts.userId || ""
+  const sessionScope = opts.sessionScope || ""
   let best = null
   let bestLen = -1
   let tied = false
   for (const proc of pool.values()) {
     if (proc.dead || proc.retiring || proc.turn) continue
     if ((proc.userId || "") !== userId) continue
+    if ((proc.sessionScope || "") !== sessionScope) continue
     if (proc.workDir !== opts.workDir) continue
     if (!sameInstructions(proc.instructions, opts.instructions)) continue
     if (!proc.hasSentFirstTurn) continue
@@ -4276,8 +4279,15 @@ function foldSplitCalls(body) {
   return changed ? { ...body, messages: out } : body
 }
 
-function matchToolResults(body, blocks) {
-  const direct = blocks.map(block => ({ block, match: toolCalls.get(block.tool_use_id) }))
+function sameSessionScope(proc, sessionScope = "") {
+  return (proc?.sessionScope || "") === sessionScope
+}
+
+function matchToolResults(body, blocks, sessionScope = "") {
+  const direct = blocks.map(block => {
+    const entry = toolCalls.get(block.tool_use_id)
+    return { block, match: entry && sameSessionScope(entry.proc, sessionScope) ? entry : undefined }
+  })
   if (direct.every(item => item.match)) return direct
   const { history } = trailingMessages(body)
   const calls = lastAssistantCalls(history)
@@ -4286,7 +4296,7 @@ function matchToolResults(body, blocks) {
     blocks.some(block => !byID.has(block.tool_use_id))) return direct
   let found = null
   for (const proc of allProcs) {
-    if (!proc.turn || proc.turn.finalized || !proc.matchesHistory(history)) continue
+    if (!sameSessionScope(proc, sessionScope) || !proc.turn || proc.turn.finalized || !proc.matchesHistory(history)) continue
     const shown = lastAssistantCalls(proc.expectedMessages)
     if (shown.length !== calls.length || shown.some((call, index) =>
       call.name !== calls[index].name || stableJSON(call.input ?? {}) !== stableJSON(calls[index].input ?? {}))) continue
@@ -4351,7 +4361,17 @@ function sameInstructions(a, b) {
 }
 
 // The model is not part of the key: agy switches models inside a live session.
-function conversationKey(rawBody) {
+function requestSessionScope(fetchInput, init) {
+  const headers = new Headers(
+    init?.headers ?? (fetchInput instanceof Request ? fetchInput.headers : undefined) ?? {},
+  )
+  const rawSession = headers.get("x-magpie-session")?.trim() || ""
+  const session = /^magpie-[0-9a-f]{24}$/.test(rawSession) ? "" : rawSession.slice(0, 128)
+  const subagent = (headers.get("x-magpie-subagent")?.trim() || "").slice(0, 64)
+  return session || subagent ? `${session}\n${subagent}` : ""
+}
+
+function conversationKey(rawBody, sessionScope = "") {
   const body = canonicalBody(rawBody)
   const system = historyKey([{ role: "system", content: compactIdentity(stripVolatileSystem(systemText(body))) }])
   const first = body.messages?.[0]
@@ -4361,7 +4381,8 @@ function conversationKey(rawBody) {
   // does not change the key. Agent billing headers and opening reminder clocks
   // are stripped; user text is not.
   const firstText = first ? historyKey([first]) : ""
-  const discriminator = body.metadata?.user_id || ""
+  const userId = body.metadata?.user_id || ""
+  const discriminator = sessionScope ? `${userId}\n${sessionScope}` : userId
   const source = discriminator + "\n" + system + "\n===\n" + firstText
   return createHash("sha256").update(source).digest("hex")
 }
@@ -6534,7 +6555,9 @@ export const AntigravityBridgePlugin = async () => {
             }
             let body
             try {
-              const raw = typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)
+              const raw = init.body != null
+                ? (typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body))
+                : (typeof fetchInput?.text === "function" ? await fetchInput.text() : "")
               body = JSON.parse(raw)
               validateBody(body)
             } catch (error) {
@@ -6550,8 +6573,9 @@ export const AntigravityBridgePlugin = async () => {
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
+            const sessionScope = requestSessionScope(fetchInput, init)
             // an account's conversations are its own: its agy has them
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body)
+            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
@@ -6566,7 +6590,7 @@ export const AntigravityBridgePlugin = async () => {
                 for (const block of message.content) {
                   if (block?.type !== "tool_use") continue
                   const entry = toolCalls.get(block.id)
-                  if (!entry || entry.call.clientSeen) continue
+                  if (!entry || entry.call.clientSeen || !sameSessionScope(entry.proc, sessionScope)) continue
                   entry.call.clientSeen = true
                   entry.turn.touchClient()
                 }
@@ -6581,12 +6605,12 @@ export const AntigravityBridgePlugin = async () => {
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "" }
+                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
               let keptSession = false
               if (resultBlocks.length) {
-                const matches = matchToolResults(body, resultBlocks)
+                const matches = matchToolResults(body, resultBlocks, sessionScope)
                 const found = matches.filter((item) => item.match)
                 if (found.length) {
                   if (found.length !== matches.length) {
