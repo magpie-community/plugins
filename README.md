@@ -299,6 +299,7 @@ it off puts the config back.
 | [rhino9-ai](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
 | [zycode](packages/zycode) | [zycode](https://github.com/zy1233/pi-python) (`zypi`, the VS Code extension, the ACP agent): Magpie's model in the `[model]` table of `~/.pi-python/agent.toml`, set by a host part that follows `local.env` and puts the file back byte for byte; restart zycode after choosing a model |
 | [meowcode](packages/meowcode) | [MeowCode](https://github.com/MuLiuSaMa/MeowCode): magpie's models in MeowCode's own model list, written to an overlay file beside its settings that MeowCode reads at start-up; restart MeowCode after choosing a model |
+| [narrafork](packages/narrafork) | [NarraFork](https://github.com/NarraFork/NarraFork): magpie's model, or one of magpie's routing groups, as `agent.defaultModel` in `~/.narrafork/settings.json`, which NarraFork reloads by itself; a host part keeps the gateway's provider entry in the providers array NarraFork keeps and magpie cannot edit |
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>

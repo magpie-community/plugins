@@ -1,0 +1,31 @@
+{
+  "name": "@magpie-community/agent-narrafork",
+  "version": "0.1.0",
+  "description": "NarraFork (NarraFork/NarraFork) as a magpie agent: pick one of magpie's models, or one of its routing groups, and every narrator NarraFork starts runs on magpie's gateway / 把 NarraFork 加到 magpie 的 Agent 页：选 magpie 的模型或路由组，NarraFork 开出的每个叙述者都经 magpie 网关",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "narrafork.agent.js",
+    "index.mjs",
+    "settings.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "narrafork",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/narrafork"
+  },
+  "magpie": {
+    "agent": "./narrafork.agent.js",
+    "options": {
+      "gateway": "http://127.0.0.1:3425/v1"
+    }
+  }
+}
