@@ -1,4 +1,4 @@
-import { agyCandidates, spawnAgy, windowsMcpShim, windowsNcBuild, windowsTreeKill } from "./platform.mjs"
+import { agyCandidates, childEnv, spawnAgy, windowsMcpShim, windowsNcBuild, windowsTreeKill } from "./platform.mjs"
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { once } from "node:events"
@@ -1739,17 +1739,9 @@ class Turn {
 class Proc {
   constructor(agyPath, convKey, opts) {
     this.agyPath = agyPath
-    this.convKey = convKey
-    this.model = opts.model
-    this.selection = opts.selection
-    this.tools = opts.tools
-    this.toolsSignature = JSON.stringify(opts.tools)
+    this.#assign(convKey, opts)
     this.workDir = opts.workDir
-    this.instructions = opts.instructions || ""
-    this.userId = opts.userId || ""
-    this.openingText = openingTextOf(opts.messages?.[0])
-    this.openingImages = openingImagesOf(opts.messages?.[0])
-    this.resumeFrom = opts.resume || null
+    this.spareKey = null
     this.token = randomUUID()
     this.sessionId = null
     this.currentModel = null
@@ -1792,7 +1784,45 @@ class Proc {
     allProcs.add(this)
   }
 
+  // What a conversation sets; a spare gets it when one takes it (adopt).
+  #assign(convKey, opts) {
+    this.convKey = convKey
+    this.model = opts.model
+    this.selection = opts.selection
+    this.tools = opts.tools ?? []
+    this.toolsSignature = JSON.stringify(this.tools)
+    this.instructions = opts.instructions || ""
+    this.userId = opts.userId || ""
+    this.openingText = openingTextOf(opts.messages?.[0])
+    this.openingImages = openingImagesOf(opts.messages?.[0])
+    this.resumeFrom = opts.resume || null
+  }
+
   async start() {
+    await this.#spawn()
+    await this.#withStartTimeout(async () => {
+      await this.#initialize()
+      await this.#openSession()
+    })
+  }
+
+  // A spare: agy started and initialised, with no session. agy sends nothing
+  // to Google until session/new (it reads its sign-in then too), so a spare
+  // costs a process and no request.
+  async warm() {
+    await this.#spawn()
+    await this.#withStartTimeout(() => this.#initialize())
+  }
+
+  // A conversation takes a warmed spare and opens its session on it.
+  async adopt(convKey, opts) {
+    this.#assign(convKey, opts)
+    this.spareKey = null
+    this.lastUsed = Date.now()
+    await this.#withStartTimeout(() => this.#openSession())
+  }
+
+  async #spawn() {
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
@@ -1856,7 +1886,11 @@ class Proc {
       onRequest: (method, params) => this.#onRequest(method, params),
       onProtocolError: (error) => this.fail(error),
     })
+  }
 
+  async #withStartTimeout(step) {
+    // a spare that died while it waited
+    if (this.dead) throw new Error(`agy failed before the ACP session started: ${this.deadError?.message || "agy exited"}`)
     const timeoutMs = configuredTimeout("AGY_BRIDGE_START_TIMEOUT_MS", DEFAULT_PROC_START_TIMEOUT_MS)
     let timer
     const timeout = new Promise((_resolve, reject) => {
@@ -1865,7 +1899,7 @@ class Proc {
       )), timeoutMs)
     })
     try {
-      await Promise.race([this.#handshake(), timeout])
+      await Promise.race([step(), timeout])
     } catch (error) {
       if (this.dead && this.deadError && error !== this.deadError && !/timed out starting/.test(error.message)) {
         throw new Error(`agy failed before the ACP session started: ${this.deadError.message}`)
@@ -1876,7 +1910,7 @@ class Proc {
     }
   }
 
-  async #handshake() {
+  async #initialize() {
     const init = await this.conn.request("initialize", {
       protocolVersion: 1,
       // The plugin's own name. agy decides which models it offers this client,
@@ -1890,9 +1924,13 @@ class Proc {
     const capabilities = init?.agentCapabilities ?? {}
     this.supportsImages = capabilities.promptCapabilities?.image === true ||
       capabilities.prompt_capabilities?.image === true
-    const appendable = capabilities._meta?.antigravity?.systemPrompt?.append === true
-    const resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
-    this.instructionsInSession = appendable && systemAppend() && !!this.instructions
+    this.appendable = capabilities._meta?.antigravity?.systemPrompt?.append === true
+    this.resumable = !!(capabilities.sessionCapabilities?.resume ?? capabilities.session_capabilities?.resume)
+  }
+
+  async #openSession() {
+    const resumable = this.resumable
+    this.instructionsInSession = this.appendable && systemAppend() && !!this.instructions
     const meta = this.instructionsInSession
       ? { _meta: { antigravity: { systemPrompt: { append: outgoing(this.instructions) } } } }
       : {}
@@ -2977,6 +3015,7 @@ async function evictIdle() {
     }
   }
   for (const [key, proc] of victims) await retire(key, proc)
+  evictIdleSpares(cutoff)
   for (const { proc, turn, reason } of stale) {
     if (proc.turn !== turn || proc.retiring) continue
     logBridgeEvent(proc, turn, "reclaim", reason, {}, { trigger: "evict_idle" })
@@ -3015,6 +3054,85 @@ async function evictLRU() {
 }
 
 setInterval(() => { evictIdle().catch(() => {}) }, 60_000).unref()
+
+// A spare agy: started and initialised, with no session, so the next new
+// conversation skips agy's start (spawn to initialize: ~0.25s warm, ~1s cold
+// on Linux). Only the process is warmed. agy reaches no host from spawn
+// through initialize and idling; session/new is where it signs in and asks
+// Google for the account, models, quota and settings, and a session nobody
+// uses still writes a trajectory at Google when it closes. A session is also
+// opened with the conversation's own instructions. So sessions are never
+// opened ahead. One spare per way of starting agy (launchKey: the account's
+// home, the binary, the folder, flags and environment); idle spares go after
+// IDLE_MS like the pool's processes, first when the pool needs room, and with
+// the host (reapOnExit; agy also exits when its stdin closes).
+// AGY_BRIDGE_SPARE=0 turns them off.
+const spares = new Map()
+const SPARE_MAX = 2
+
+function sparesOn() {
+  return !/^(?:0|false|off|no|disabled)$/i.test(process.env.AGY_BRIDGE_SPARE || "")
+}
+
+// Everything that decides how Proc starts agy for the current work.
+async function launchKey(agyPath, workDir) {
+  let mtime = 0
+  try { mtime = (await fs.promises.stat(agyPath)).mtimeMs } catch {}
+  const own = await geminiDirArgs(agyPath)
+  return digest(JSON.stringify([currentHome(), agyPath, mtime, workDir || "",
+    await noDefaultCustomizationsArgs(agyPath), own.args, childEnv(process.env)]))
+}
+
+function dropSpare(spare) {
+  if (spares.get(spare.spareKey) === spare) spares.delete(spare.spareKey)
+  return spare.stop().catch(() => {})
+}
+
+async function takeSpare(agyPath, workDir) {
+  if (!spares.size || !sparesOn()) return null
+  const key = await launchKey(agyPath, workDir)
+  const spare = spares.get(key)
+  if (!spare) return null
+  spares.delete(key)
+  try {
+    await spare.ready
+  } catch {
+    return null
+  }
+  if (spare.dead || spare.stopping) {
+    await spare.stop().catch(() => {})
+    return null
+  }
+  return spare
+}
+
+async function warmSpare(agyPath, workDir) {
+  if (!agyPath || !sparesOn()) return
+  const key = await launchKey(agyPath, workDir)
+  if (spares.has(key)) return
+  // never at the cost of a conversation's room
+  if (allProcs.size + 1 >= maxProcs()) return
+  if (spares.size >= SPARE_MAX) {
+    let oldest = null
+    for (const spare of spares.values()) if (!oldest || spare.lastUsed < oldest.lastUsed) oldest = spare
+    await dropSpare(oldest)
+  }
+  if (spares.has(key) || allProcs.size + 1 >= maxProcs()) return
+  const proc = new Proc(agyPath, null, { workDir })
+  proc.spareKey = key
+  spares.set(key, proc)
+  proc.ready = proc.warm().catch(async (error) => {
+    await dropSpare(proc)
+    throw error
+  })
+  proc.ready.catch(() => {})
+}
+
+function evictIdleSpares(cutoff) {
+  for (const spare of [...spares.values()]) {
+    if (spare.dead || spare.lastUsed < cutoff) dropSpare(spare)
+  }
+}
 
 const acquireLocks = new Map()
 
@@ -3152,24 +3270,33 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
-  while (allProcs.size >= maxProcs()) {
+  const spare = await takeSpare(agyPath, opts.workDir)
+  while (!spare && allProcs.size >= maxProcs()) {
+    const idle = spares.values().next().value
+    if (idle) {
+      await dropSpare(idle)
+      continue
+    }
     if (!(await evictLRU())) {
       throw new BusyError(`agy bridge: ${maxProcs()} agy processes are running and all have unfinished responses`)
     }
   }
   const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
-  const proc = new Proc(agyPath, key, { ...opts, resume })
+  const proc = spare ?? new Proc(agyPath, key, { ...opts, resume })
   try {
-    await proc.start()
+    if (spare) await spare.adopt(key, { ...opts, resume })
+    else await proc.start()
   } catch (error) {
     await proc.stop().catch(() => {})
     throw error
   }
   pool.set(key, proc)
+  // the next new conversation of this account and folder takes one ready
+  warmSpare(agyPath, opts.workDir).catch(() => {})
   // Why this request got a new agy session, so a cache that never hits can be
   // traced to the check that failed (#1058). Counts only, never content.
   logSessionEvent(proc, why, {
-    fresh: !!isFreshConversation, resumed: !!proc.resumed,
+    fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
   })
   return { proc, history: opts.history }

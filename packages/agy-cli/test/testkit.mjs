@@ -215,6 +215,7 @@ class FakeAgy {
     this.child = child
     this.env = opts?.env || {}
     this.token = this.env.AGY_BRIDGE_TOKEN
+    this.spawnIndex = kit.acpSpawns.length - 1
     this.sessionId = null
     this.buffer = ""
     this.cancelWaiters = []
@@ -247,13 +248,19 @@ class FakeAgy {
 
   onMessage(message) {
     const { id, method, params } = message
-    this.kit.acpLog.push({ method, params, sessionId: this.sessionId })
+    this.kit.acpLog.push({ method, params, sessionId: this.sessionId, spawn: this.spawnIndex })
     if (method === "initialize") {
-      this.respond(id, {
-        protocolVersion: 1,
-        agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
-        agentCapabilities: this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {},
-      })
+      const reply = () => {
+        this.kit.initialized++
+        this.respond(id, {
+          protocolVersion: 1,
+          agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
+          agentCapabilities: this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {},
+        })
+      }
+      // agy's own start: spawn to initialize is ~0.25s warm, ~1s cold on Linux
+      if (this.kit.initializeDelayMs) setTimeout(reply, this.kit.initializeDelayMs)
+      else reply()
     } else if (method === "session/new" && this.kit.sessionNewError) {
       // Real agy 1.5.3 not signed in: {"code":-32000,"message":"Authentication required"}.
       this.send({ id, error: this.kit.sessionNewError })
@@ -439,6 +446,8 @@ export async function createBridgeKit(options = {}) {
     sessionNewError: options.sessionNewError ?? null,
     setModelError: options.setModelError ?? null,
     sessionNewDelayMs: options.sessionNewDelayMs ?? 0,
+    initializeDelayMs: options.initializeDelayMs ?? 0,
+    initialized: 0,
     sessionResume: options.sessionResume ?? false,
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
@@ -460,6 +469,8 @@ export async function createBridgeKit(options = {}) {
     // agy's stored sign-in is read only when a test says what it is
     // (options.storedSignIn, macOS keychain output or "missing")
     ...(options.storedSignIn === undefined ? { AGY_BRIDGE_STORED_SIGNIN: "skip" } : {}),
+    // no spare agy unless a test asks: suites count spawns and ACP calls
+    AGY_BRIDGE_SPARE: "0",
     ...(options.env || {}),
   }
   for (const [key, value] of Object.entries(kit.env)) {
@@ -490,7 +501,7 @@ export async function createBridgeKit(options = {}) {
     }
     if (args[0] === "acp") {
       const child = new FakeChild(kit, file, args)
-      kit.acpSpawns.push({ file, args, env: opts.env })
+      kit.acpSpawns.push({ file, args, env: opts.env, child })
       new FakeAgy(kit, child, opts)
       return child
     }
