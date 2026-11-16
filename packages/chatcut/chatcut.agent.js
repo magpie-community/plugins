@@ -8,7 +8,7 @@ export const agent = {
   format: "json",
   model: "model",
   ua: ["chatcut"],
-  notice: "Choose Magpie in ChatCut Desktop and start a new chat after changing the model. 在 ChatCut 桌面端选择 Magpie，修改模型后开始新对话。",
+  notice: "Choose Magpie in ChatCut Desktop. Its model menu can switch models in the current conversation. 在 ChatCut 桌面端选择 Magpie，可在模型菜单中切换当前对话的模型。",
 }
 
 // The gateway supplies its real address and ChatCut-specific caller key.
