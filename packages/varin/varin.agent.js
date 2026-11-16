@@ -1,0 +1,62 @@
+// Varin (https://github.com/Astrmira/Varin) keeps its conversation default in one
+// plain JSON file:
+//
+//   ~/.config/varin/agent-settings.json
+//   { "defaultProvider": "<channel uuid>", "defaultModel": "<model id>",
+//     "defaultThinkingLevel": "high" }
+//
+// `defaultModel` is the model id exactly as Varin's own channel lists it, so magpie
+// writes that one key and nothing else. Switching off puts the file back as it was.
+//
+// This module runs in magpie on moejs: one file, no imports. That is why Varin's
+// icon is an inlined data: URL, and why the optional channel id below is a literal
+// rather than something read from models.json at connect time.
+
+// Optional, and empty as shipped. Fill both only if Varin has more than one model
+// channel and its default one is another vendor's; then magpie can also keep
+// `defaultProvider` pointing at the channel that owns the model.
+//
+// From ~/.config/varin/models.json: PROVIDER_ID is the id of the channel whose
+// baseUrl is this computer's magpie gateway, KNOWN_MODELS the ids that channel
+// carries.
+const PROVIDER_ID = ''
+const KNOWN_MODELS = new Set()
+
+// Varin's own application icon, from the official AppImage
+// (usr/share/icons/hicolor/1024x1024/apps/varin.png), downscaled to 256x256.
+const ICON = 'data:image/png;base64,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'
+
+export const agent = {
+  id: 'varin',
+  name: 'Varin',
+  bin: 'varin',
+  dir: '~/.local/opt/varin',
+  config: '~/.config/varin/agent-settings.json',
+  format: 'json',
+  model: 'defaultModel',
+  ua: ['varin'],
+  icon: ICON,
+  // Without `library` magpie leaves the agent out of the Library: it is given
+  // nothing from it, and ticking an item for it is refused. These are Varin's own
+  // paths (web/server/lib/agent-resources/), not guesses: a context file beside its
+  // `user` resource root, the agent-level mcp.json beside agent-settings.json, and a
+  // `skills` folder inside that same root. Varin reads {"mcpServers": {...}}, which
+  // is magpie's `claude` mcpFormat.
+  library: {
+    instructions: '~/.config/varin/resources/AGENTS.md',
+    mcp: '~/.config/varin/mcp.json',
+    mcpFormat: 'claude',
+    skills: '~/.config/varin/resources/skills',
+  },
+  notice: 'Varin reads its default model when a Run starts: open a new conversation (or restart Varin) to use the new model.',
+}
+
+export function connect({ model } = {}) {
+  const id = model?.id
+  // Magpie also calls connect() while previewing a pick, with a model Varin may not
+  // carry. Writing the channel id for such an id would pair a provider with a model
+  // it does not serve, and Varin then falls back to that provider's first model
+  // rather than the one you picked. So: only when both are known.
+  if (!PROVIDER_ID || id === undefined || !KNOWN_MODELS.has(id)) return {}
+  return { defaultProvider: PROVIDER_ID }
+}
