@@ -124,6 +124,7 @@ const AGENT_ERROR_MARKERS = [
   "\n⚠ There was a network issue connecting to the server, please try again.\n",
   "\n⚠ Your AI credits balance is too low to continue.\n",
   "\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).\n",
+  "\n⚠ PERMISSION_DENIED (code 403): This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n",
 ]
 const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
@@ -1034,6 +1035,7 @@ export function streamErrorOf(error) {
   // Google refused the account (refusedError): its status, so magpie
   // reads it as the account's refusal, not as a failed reply.
   if (type === "permission_error") out.status = 403
+  if (error?.noRetry) out.noRetry = true
   return out
 }
 
@@ -6195,7 +6197,7 @@ async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
     const status = streamError.status || (streamError.type === "rate_limit_error" ? 429 : 502)
     return new Response(JSON.stringify({ type: "error", error: streamError }), {
       status,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(streamError.noRetry ? NO_RETRY_HEADERS : {}) },
     })
   }
   return new Response(JSON.stringify(message), {
@@ -6209,9 +6211,7 @@ function streamResponse(proc, turn, body, signal) {
   const step = turn.registerResponse(body)
   const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24)
   const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step)
-  if (body.stream === false) {
-    return jsonResponseFromStream(stream, body.model, msgId)
-  }
+  if (body.stream === false) return jsonResponseFromStream(stream, body.model, msgId)
   return new Response(stream, {
     status: 200,
     headers: {

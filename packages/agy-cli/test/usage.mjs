@@ -973,8 +973,11 @@ test("only a region refusal reads the quota directly", async t => {
 
 test("agyRefusal: Google turning the account away, never a network failure or agy's own log lines", () => {
   const license = "Error: Eligibility check failed: PERMISSION_DENIED (code 403): You do not have a valid license of this product. ... (#3501). Please log out (/logout) and log back in (/login)."
+  const disabled = "PERMISSION_DENIED (code 403): This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product."
   assert.match(agyRefusal(license), /#3501/)
   assert.match(agyRefusal("error: something (#3501)"), /#3501/)
+  assert.match(agyRefusal(disabled), /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+  assert.match(agyRefusal(disabled.replace(" This service", "\nThis service")), /disabled this account's access/)
   assert.match(agyRefusal("Error: Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location."), /not currently available in your location[\s\S]*VPN/)
   for (const other of [
     "",
@@ -983,5 +986,7 @@ test("agyRefusal: Google turning the account away, never a network failure or ag
     "Error: You are not logged into Antigravity.",
     // a background poll agy logged failing, while the command itself failed otherwise
     "E1116 10:34:12.084405     248 errorreport.go:307] Failed to poll ListExperiments: PERMISSION_DENIED (code 403): You do not have a valid license of this product. (#3501)\nError: something else",
+    "PERMISSION_DENIED (code 403): Request had invalid credentials.",
+    "This service has been disabled in this account for violation of Terms of Service.",
   ]) assert.equal(agyRefusal(other), "", other)
 })
