@@ -38,7 +38,7 @@ export function kindOf(pj) {
   // a package that adds an agent is an agent plugin, its module (main)
   // only what keeps the agent working, not a provider (#737, #1200)
   if (said(mg.agent)) return "agent"
-  if (!r && said(mg.page?.file)) return "page"
+  if (said(mg.page?.file)) return "page"
   if (!r && said(mg.hooks)) return "hooks"
   return ""
 }
