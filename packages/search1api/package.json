@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/tools-search1api",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Search1API web search, news, agentic search, pages, sitemaps and trends for Magpie, with OAuth or API key sign-in",
   "type": "module",
   "main": "./index.mjs",
