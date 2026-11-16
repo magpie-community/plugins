@@ -752,6 +752,17 @@ test("0.10.0: the service refuses cross-origin reads, foreign hosts, and non-roo
   }
 }, 30000)
 
+test("#1228: the request magpie's page forward sends (the service's own Host, no Origin, the language query) is served", async () => {
+  const { call, url, port } = await simTools()
+  await call("provision", { project: "website" })
+  await serviceData(url, (x) => !!x.projects.find((p) => p.name === "website"))
+  // internal/gui/pageservice.go: Host is 127.0.0.1:<port>, the cookie is
+  // taken off, and a navigation from the page's frame carries no Origin
+  const r = await rawRequest(port, `127.0.0.1:${port}`, "/?lang=zh")
+  expect(r).toMatch(/^HTTP\/1\.1 200/)
+  expect(r).toContain('id="graph"')
+}, 30000)
+
 test("0.10.0: a commit message cannot break out of the embedded data script", async () => {
   const { call, url } = await simTools()
   const evil = "x</script><script>alert(1)</script>y"

@@ -33,6 +33,10 @@
     "page": {
       "file": "page/index.html",
       "icon": "page/icon.svg",
+      "service": {
+        "port": 43717,
+        "option": "pagePort"
+      },
       "title": "LayerFS trajectory",
       "titles": {
         "ja": "LayerFS の軌跡",
@@ -49,5 +53,5 @@
     "directory": "packages/layerfs"
   },
   "type": "module",
-  "version": "0.10.2"
+  "version": "0.10.3"
 }

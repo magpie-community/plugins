@@ -412,3 +412,29 @@ test("0.10.2: the empty state reloads itself, so the first project appears witho
   const empty = app.slice(app.indexOf("if (!projects.length) {"), app.indexOf("$(\"stamp\")"))
   expect(empty).toContain("location.reload()")
 })
+
+// boot.js run as the page runs it, with the bridge and location stubbed:
+// where does the frame go?
+async function bootTarget(magpie) {
+  let target = null
+  const window = { magpie }
+  const location = { replace: (u) => { target = u } }
+  await new Function("window", "location", `return (${read("boot.js").trim().replace(/;?\s*$/, "")})`)(window, location)
+  return target
+}
+
+test("#1228: with magpie's forward of the service, the frame goes there, not to 127.0.0.1", async () => {
+  expect(pkg.magpie.page.service).toEqual({ port: 43717, option: "pagePort" })
+  expect(pkg.magpie.options.pagePort).toBe(pkg.magpie.page.service.port)
+  const service = "http://nas.lan:3430/_magpie/plugin/tok/_magpie/service/"
+  expect(await bootTarget({ ready: Promise.resolve({ lang: "zh" }), service, options: { get: async () => ({ pagePort: 43800 }) } }))
+    .toBe(`${service}?lang=zh`)
+  expect(await bootTarget({ ready: Promise.resolve({}), service })).toBe(service)
+})
+
+test("#1228: an older magpie without a forward, or a value that isn't a web address, keeps the jump to 127.0.0.1", async () => {
+  expect(await bootTarget({ ready: Promise.resolve({ lang: "ja" }), options: { get: async () => ({ pagePort: 43800 }) } }))
+    .toBe("http://127.0.0.1:43800/?lang=ja")
+  expect(await bootTarget({ ready: Promise.resolve({}), service: "javascript:alert(1)" })).toBe("http://127.0.0.1:43717/")
+  expect(await bootTarget(undefined)).toBe("http://127.0.0.1:43717/")
+})
