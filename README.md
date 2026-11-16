@@ -287,6 +287,7 @@ it off puts the config back.
 | [kilo](packages/kilo) | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider |
 | [junie](packages/junie) | [Junie CLI](https://junie.jetbrains.com/): an explicit `/v1/models` seed for its full picker and Magpie's selected model as the launch default; no LiteLLM |
 | [kimi-desktop](packages/kimi-desktop) | Ordinary [Kimi desktop](https://www.kimi.com/) Work, through its authenticated local runtime; not Kimi Code CLI |
+| [pi-desktop](packages/pi-desktop) | Pi-Desktop (the desktop app, not the Pi CLI): magpie keeps a Pi-Desktop plugin folder, `~/.config/magpie-pi-desktop/plugin`, that adds it as a model provider with its current models and their thinking levels; load it once in Pi-Desktop, choose the model there |
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): Magpie's endpoint and model catalog in `~/.pig/agent/models.json`, and the model PiG starts on (`defaultProvider`/`defaultModel` in `settings.json`) picked on the Agents page |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |

@@ -1,0 +1,26 @@
+{
+  "name": "@magpie-community/agent-pi-desktop",
+  "version": "0.2.0",
+  "description": "Pi-Desktop as a connect-only Magpie agent: Magpie keeps a Pi-Desktop plugin folder that declares it as a model provider, with its current models and their thinking levels",
+  "type": "module",
+  "files": [
+    "pi-desktop.agent.js",
+    "scripts/doctor.mjs",
+    "README.md"
+  ],
+  "keywords": ["magpie", "magpie-agent", "pi-desktop", "pi", "llm-gateway"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/pi-desktop"
+  },
+  "scripts": {
+    "test": "bun test pi-desktop.test.mjs pi-plugin.test.mjs",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "magpie": {
+    "agent": "./pi-desktop.agent.js",
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMyYjNhNjciLz48cGF0aCBkPSJNMTQgMjBoMzZNMjUgMjB2MjZNMzkgMjB2MjBjMCA0IDIgNiA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI2IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI1IiBmaWxsPSIjZjVhNjIzIi8+PC9zdmc+"
+  }
+}
