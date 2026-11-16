@@ -610,7 +610,29 @@ function modelFamilyId(model) {
   return model.id.slice(0, -(model.effort.length + 1))
 }
 
+// Orchestrator pairs a planner (Carbon or Argon) with Gemini 4 Hydrogen,
+// which applies edits and runs builds with agy's own tools. The bridge's agent
+// has only the client's tools (tools: [] in agentDefinition), so the handoff
+// can't happen here and an Orchestrator turn is its planner alone, at a fixed
+// thinking level. It isn't listed, and a request naming it is told which
+// model it would really get.
+function isOrchestrator(model) {
+  const id = typeof model === "string" ? model : model?.id ?? ""
+  const name = typeof model === "string" ? "" : model?.name ?? ""
+  return /^gemini-[a-z0-9.]*-?orchestrator/i.test(id) || /^Orchestrator\b/i.test(name)
+}
+
+function orchestratorPlanner(id) {
+  return /argon|g1-pro/i.test(id) ? "gemini-4-argon" : "gemini-4-carbon"
+}
+
+function orchestratorRefusal(id) {
+  const planner = orchestratorPlanner(id)
+  return `agy bridge: ${id} (Orchestrator) is not served: its Gemini 4 Hydrogen handoff needs agy's own tools, which the bridge leaves to your client, so it would run as ${planner} alone. Choose ${planner}, or gemini-4-hydrogen, with the effort you want.`
+}
+
 function buildModelCatalog(list) {
+  list = list.filter(model => !isOrchestrator(model))
   const rawIds = new Set(list.map(model => model.id))
   const families = new Map()
   for (const model of list) {
@@ -840,6 +862,13 @@ function modelLimits(id) {
   // Gemini 4 Carbon (Ultra plans): the numbers Antigravity's own model list gives it
   if (/^gemini-4-carbon$/i.test(family)) return { context: 1048576, output: 262144 }
   if (/^claude-(?:opus|sonnet)-5-5$/i.test(family)) return { context: 1000000, output: 64000 }
+  // Antigravity's own model list (internal/provider/testdata/antigravity-models-2026-10-20.json
+  // in magpie): maxTokens/maxOutputTokens
+  if (/^claude-(?:sonnet-4-6|opus-4-6)(?:-thinking)?$/i.test(family)) return { context: 250000, output: 64000 }
+  if (/^gemini-3\.5-flash$/i.test(family)) return { context: 1048576, output: 65536 }
+  if (/^gemini-3\.1-flash-lite$/i.test(family)) return { context: 1048576, output: 65535 }
+  // Gemini 4 Hydrogen: Google's own API listing (models.dev's google provider)
+  if (/^gemini-4-hydrogen$/i.test(family)) return { context: 1048576, output: 65536 }
   if (/^gpt-oss-120b$/i.test(family)) return { context: 131072, output: 32768 }
   return undefined
 }
@@ -6333,6 +6362,7 @@ export const AntigravityBridgePlugin = async () => {
             // derives a key, instructions or history from the body.
             const layout = requestLayout(body)
             body = { ...canonicalBody(body), model: requestedModel }
+            if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
             // an account's conversations are its own: its agy has them

@@ -450,6 +450,41 @@ test("Gemini 4 Carbon（Ultra）：会话开放就列出，limit 是 Antigravity
   })
 })
 
+// @jiangnan_ (X, agy 1.5.9): Orchestrator through the bridge is its planner
+// alone, since the Hydrogen handoff needs agy's own tools (tools: []).
+const ORCH_ROWS = [
+  ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"],
+  ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
+  ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"],
+  ["gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+  ["gemini-pro-orchestrator", "Orchestrator (Carbon)"], ["gemini-pro-orchestrator-g1-pro", "Orchestrator (Argon)"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"], ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+]
+
+test("Orchestrator 不列出，点名它的请求得 400 并指向它实际会跑的型号；Hydrogen 等有 limit", async () => {
+  await withKit({ modelsBehavior: { stdout: modelsOutput(ORCH_ROWS) }, offeredModels: ORCH_ROWS }, async (kit) => {
+    await kit.models()
+    await settle(kit)
+    const models = await kit.models()
+    for (const id of ["gemini-pro-orchestrator", "gemini-pro-orchestrator-g1-pro"]) assert.equal(models[id], undefined, `列出了 ${id}`)
+    for (const model of Object.values(models)) assert.doesNotMatch(String(model.name), /Orchestrator/i)
+    const plain = (value) => JSON.parse(JSON.stringify(value))
+    assert.deepEqual(plain(models["gemini-4-hydrogen"].limit), { context: 1048576, output: 65536 })
+    assert.deepEqual(Object.keys(models["gemini-4-hydrogen"].variants ?? {}).sort(), ["high", "low", "medium", "xhigh"])
+    assert.deepEqual(plain(models["gemini-4-carbon"].limit), { context: 1048576, output: 262144 })
+    assert.deepEqual(plain(models["claude-sonnet-4-6"].limit), { context: 250000, output: 64000 })
+    assert.deepEqual(plain(models["claude-opus-4-6-thinking"].limit), { context: 250000, output: 64000 })
+    const spawned = kit.children.size
+    for (const [requested, planner] of [["agy-cli/gemini-pro-orchestrator", "gemini-4-carbon"], ["gemini-pro-orchestrator-g1-pro", "gemini-4-argon"]]) {
+      const response = await kit.request(baseBody({ model: requested, tools: [], messages: [{ role: "user", content: "hi" }] }))
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.match(body.error.message, new RegExp(`Choose ${planner}`))
+    }
+    assert.equal(kit.children.size, spawned, "被拒的 Orchestrator 请求起了 agy")
+  })
+})
+
 test("各家族 limit 正确，未知动态型号不猜成 1M", async () => {
   const expected = {
     "gemini-4-argon": { context: 1048576, output: 65536 },
