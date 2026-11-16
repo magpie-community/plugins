@@ -17,6 +17,23 @@ export const number = value => typeof value === 'number' && Number.isFinite(valu
 // Labels are typed metadata, never arbitrary upstream text.
 const plans = /^(?:ChatGPT|Coding Plan|Free|Go|Plus|Pro|Team|Business|Enterprise|Starter|Lite|Basic|Standard|Max|Ultra)$/i;
 const windows = /^(?:\d{1,3}\s*(?:h|hours?|d|days?|minutes?|weeks?|months?|小时|天|周|月)|weekly|daily|monthly|yearly|tokens?|requests?|search|mcp|total)$/i;
+// A window of a provider that is not a span of time has a name of its own:
+// the image quota of Codex is one of them. The name is written in the
+// language of the person who reads it, and a name that is not known keeps
+// the plain "Quota", so that no word of the provider reaches the phone as
+// it is. The table is a Map and not an object: a window called "constructor"
+// is a name like any other, and it must not find something on the prototype.
+const NAMED_WINDOWS = new Map([['image generation', '图片生成']]);
+// The name we wrote ourselves comes back on the way out of the cache: a
+// stored reading is fed in again with the name it was stored under, and the
+// name of ours stays the name of ours.
+const OWN_WINDOW_NAMES = new Set(NAMED_WINDOWS.values());
+const windowLabel = name => {
+  const text = typeof name === 'string' ? name.trim() : '';
+  if (!text) return 'Quota';
+  if (windows.test(text) || OWN_WINDOW_NAMES.has(text)) return text;
+  return NAMED_WINDOWS.get(text.toLowerCase()) || 'Quota';
+};
 const modelFamily = /^(?:gpt[-.]?\d|o[1-9](?:-|$)|codex(?:-|$)|claude[-.](?:opus|sonnet|haiku|\d)|minimax-m\d|glm[-.]?\d|gemini[-.]?\d|qwen\d|deepseek[-.]?(?:v\d|r\d|chat|reasoner)|kimi[-.]?(?:k\d|latest)|grok[-.]?\d|mistral[-.]|llama[-.]?\d)/i;
 // Keys are stable upstream ids. The display name is registered as an alias as well,
 // so re-normalizing a stored label returns the same label instead of "Unknown"
@@ -230,7 +247,7 @@ export function normalizeQuotas(raw, cache = {}) {
         const known = typeof window.used === 'number' && Number.isFinite(window.used) && window.used >= 0;
         const usedPercent = known ? Math.min(100, window.used) : null;
         return {
-          label: typeof window.name === 'string' && windows.test(window.name) ? window.name : 'Quota', usedPercent,
+          label: windowLabel(window.name), usedPercent,
           remainingPercent: known ? 100 - usedPercent : null,
           resetsAt: iso(window.resetsAt),
           amount: typeof window.amount === 'number' ? number(window.amount) : null,
@@ -264,6 +281,13 @@ export function resolveQuotas(raw, cache = {}, previous = []) {
     card.windows.every(window => window && typeof window === 'object') &&
     card.windows.some(window => typeof window.used === 'number' && Number.isFinite(window.used) && window.used >= 0);
   const complete = rows => rows.length > 0 && rows.every(usable);
+  // A row that carries no window is not a reading of a quota. The gateway
+  // sends one of those next to the plan of an account whose money it knows
+  // (Zhipu sends one): there is no quota in it, so it is not a broken
+  // reading, and it is not a card of its own. Taken for a reading, it makes
+  // the whole account look broken, and the card of that account falls back
+  // to the reading that was stored — a number that never moves again.
+  const readings = rows => rows.filter(row => Array.isArray(row?.windows) && row.windows.length > 0);
   const api = group(Array.isArray(raw?.data) ? raw.data : []);
   const disk = group(Object.values(cache || {}).map(item => item?.quota && ({
     ...item.quota, readAt: iso(item.quota.readAt) || iso(item.at),
@@ -292,8 +316,8 @@ export function resolveQuotas(raw, cache = {}, previous = []) {
       // source that knows more accounts wins, so a cache that lost an account
       // never hides the one the history still knows.
       const fallback = familyCached.length >= familySaved.length ? familyCached : familySaved;
-      const rows = complete(fallback) ? fallback : fallback.filter(usable);
-      if (rows.length) selected.push(...normalizeQuotas({ data: rows }).map(card => ({ ...card, stale: true })));
+      const rows = readings(fallback);
+      if (rows.length) selected.push(...normalizeQuotas({ data: complete(rows) ? rows : rows.filter(usable) }).map(card => ({ ...card, stale: true })));
       continue;
     }
     // The live answer names the accounts. Each account is recovered on its own:
@@ -303,10 +327,13 @@ export function resolveQuotas(raw, cache = {}, previous = []) {
       const named = key !== prefix;
       const cached = named ? (disk.get(key) || []) : familyCached;
       const saved = named ? (history.get(key) || []) : familySaved;
-      picks.push(complete(accountLive) ? { rows: accountLive, stale: false }
-        : complete(cached) ? { rows: cached, stale: true }
-        : complete(saved) ? { rows: saved, stale: true }
-        : { rows: accountLive.filter(usable), stale: true });
+      const fresh = readings(accountLive);
+      const stored = readings(cached);
+      const before = readings(saved);
+      picks.push(complete(fresh) ? { rows: fresh, stale: false }
+        : complete(stored) ? { rows: stored, stale: true }
+        : complete(before) ? { rows: before, stale: true }
+        : { rows: fresh.filter(usable), stale: true });
     }
     // The fallback of each account travels with its own rows: the cards are
     // ordered by the name of their account, so a flag cannot be handed to

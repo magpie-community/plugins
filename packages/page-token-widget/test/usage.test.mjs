@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { project, shanghaiDay } from '../lib/normalize.mjs';
+import { normalizeQuotas, project, resolveQuotas, sanitizeCachedLabels, shanghaiDay } from '../lib/normalize.mjs';
 
 const iso = (offset = 0) => new Date(Date.now() + offset).toISOString();
 
@@ -115,4 +115,89 @@ test('the order of the accounts is the order the user gave', () => {  const view
     {},
   );
   assert.deepEqual(view.subscriptions.map(entry => entry.id), ['codex@liuzq', 'codex@alpha', 'minimax']);
+});
+
+// A window of a provider that is not a span of time keeps a name of its own:
+// the image quota of Codex is one of them, and "Quota" says nothing about
+// it. A name that is not known does not reach the phone as it is.
+test('a window keeps the name it has', () => {
+  const cards = normalizeQuotas({ data: [{
+    provider: 'codex',
+    windows: [
+      { name: '5 hours', used: 10 },
+      { name: 'Image generation', used: 0 },
+      { name: 'a word of the provider', used: 3 },
+    ],
+  }] });
+  assert.equal(cards.length, 1);
+  assert.deepEqual(cards[0].windows.map(window => window.label), ['5 hours', '图片生成', 'Quota']);
+});
+
+// A name that is a word of the prototype is a name like any other: it gets
+// the plain "Quota", and not something the table happens to inherit.
+test('a window whose name is a word of the prototype gets the plain name', () => {
+  const cards = normalizeQuotas({ data: [{
+    provider: 'codex',
+    windows: [
+      { name: 'constructor', used: 1 },
+      { name: '__proto__', used: 2 },
+      { name: 'toString', used: 3 },
+    ],
+  }] });
+  assert.deepEqual(cards[0].windows.map(window => window.label), ['Quota', 'Quota', 'Quota']);
+});
+
+// A reading that was stored comes back in with the name it was stored under.
+// The name we wrote ourselves has to be the name of ourselves when it comes
+// back, or a reading that is old loses the name it had when it was new. The
+// road it comes back on is the one the service walks: it hands the stored
+// cards in again, with the name they were stored under.
+test('a window keeps its name when the service reads the stored cards again', () => {
+  const stored = [{
+    id: 'codex@alpha',
+    provider: 'codex',
+    account: 'alpha',
+    label: 'Codex · alpha',
+    plan: 'ChatGPT',
+    accounts: 1,
+    updatedAt: new Date().toISOString(),
+    stale: true,
+    windows: [
+      { label: '5 hours', usedPercent: 10, remainingPercent: 90, resetsAt: null },
+      { label: '图片生成', usedPercent: 0, remainingPercent: 100, resetsAt: null },
+    ],
+  }];
+  const back = resolveQuotas({ data: [] }, {}, stored);
+  assert.deepEqual(back[0].windows.map(window => window.label), ['5 hours', '图片生成']);
+  const cleaned = sanitizeCachedLabels(stored, 'quotas');
+  assert.deepEqual(cleaned[0].windows.map(window => window.label), ['5 hours', '图片生成']);
+});
+
+// The gateway sends the money of an account next to the plan of that account:
+// a row that carries a balance and no window at all. There is no quota in
+// such a row, so it is not a broken reading — but taken for a reading it
+// makes the whole account look broken, and the card of that account falls
+// back to the reading that was stored. A card that falls back never moves
+// again: the reading that was stored is the card of the round after.
+test('the plan of an account is read even when the gateway sends the money of the account too', () => {
+  const rows = used => ([
+    {
+      provider: 'zhipu', name: 'Zhipu GLM', kind: 'plan', plan: 'max',
+      windows: [{ name: '5 hours', used: 10, remaining: 90 }, { name: '7 days', used, remaining: 100 - used }],
+      readAt: iso(),
+    },
+    { provider: 'zhipu', name: 'Zhipu GLM', kind: 'balance', windows: [], balance: '¥0.00', readAt: iso() },
+  ]);
+  const first = resolveQuotas({ data: rows(45) }, {}, []);
+  assert.equal(first.length, 1, 'the money of the account is not a card of its own');
+  assert.equal(first[0].provider, 'glm');
+  assert.equal(first[0].stale, false, 'the reading of the account is the live one');
+  assert.deepEqual(first[0].windows.map(window => window.usedPercent), [10, 45]);
+  // The round after: the number follows the live reading and does not stay
+  // where it was.
+  const second = resolveQuotas({ data: rows(60) }, {}, first);
+  assert.equal(second.length, 1, 'the money of the account is not a card of its own');
+  assert.equal(second[0].stale, false, 'the reading of the account is the live one');
+  assert.deepEqual(second[0].windows.map(window => window.usedPercent), [10, 60],
+    'the card of the account did not follow the live reading');
 });

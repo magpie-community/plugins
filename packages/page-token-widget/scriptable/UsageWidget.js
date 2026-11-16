@@ -50,23 +50,33 @@ function widgetDimensions() {
   return { width: bounds[0], height: family === "large" ? bounds[2] : bounds[1] };
 }
 const dimensions = widgetDimensions();
+// The small family is square: its width is the height of it, which is the
+// height of the medium family. Measuring it with the width of the medium
+// made every line of it believe it had twice the room it has: the name of
+// the card was squeezed by the system instead of being sized by the script,
+// and the bar of it was wider than the widget on the smallest phone.
 const layout = {
   side: 16, vertical: family === "medium" && dimensions.height < 155 ? 12 : 14,
-  width: dimensions.width - 32, header: 20, footer: family === "large" ? 30 : 13,
+  width: (family === "small" ? dimensions.height : dimensions.width) - 32, header: 20, footer: family === "large" ? 30 : 13,
   columnGap: family === "large" ? 16 : 10
 };
-const dark = Device.isUsingDarkAppearance();
+// The colours of the card follow the appearance of the system, and they have
+// to be dynamic to do it: the widget is drawn by the system, not by the
+// script, and the API that says whether the system is in the dark appearance
+// is not supported in a widget. A colour that is picked here is baked in
+// here, and a card that is drawn in the night appearance with the colours of
+// the day one is a card that cannot be read.
 const colors = {
   bg: Color.dynamic(new Color("#ffffff"), new Color("#1f221e")),
   text: Color.dynamic(new Color("#232523"), new Color("#ebeee7")),
   muted: Color.dynamic(new Color("#8a8f85"), new Color("#92998d")),
-  track: dark ? new Color("#30362d") : new Color("#eef0eb"),
+  track: Color.dynamic(new Color("#eef0eb"), new Color("#30362d")),
   // Ink in both appearances. A bright bar in the night mode was read as a
   // warning, and a warning that really means "plenty left" turns the reading
   // of the whole card upside down.
-  fill: dark ? new Color("#8b9384") : new Color("#6b7268"),
-  warning: new Color(dark ? "#d2a061" : "#b77c36"),
-  critical: new Color(dark ? "#e09c88" : "#b35447")
+  fill: Color.dynamic(new Color("#6b7268"), new Color("#8b9384")),
+  warning: Color.dynamic(new Color("#b77c36"), new Color("#d2a061")),
+  critical: Color.dynamic(new Color("#b35447"), new Color("#e09c88"))
 };
 const widget = new ListWidget();
 widget.backgroundColor = colors.bg;
@@ -231,6 +241,19 @@ const LINE_HEIGHT = 1.25;
 function line(parent, size, width) {
   const row = parent.addStack();
   row.size = new Size(width, Math.round(size * LINE_HEIGHT));
+  // The content of a line stands at the top of it. The default of Scriptable
+  // is the top as well, but a line that says so itself does not change when
+  // the default does, and a name that hangs in the middle of its own line
+  // reads as if it belonged to the number below it.
+  row.topAlignContent();
+  return row;
+}
+// The content of a line stands at the left of the card. A stack that is wider
+// than what it holds puts what it holds in the middle of itself, so a line
+// that ends with a spacer of its own keeps its text at the edge: at the left,
+// under the name and above the number.
+function atLeft(row) {
+  row.addSpacer();
   return row;
 }
 function compact(value) {
@@ -248,6 +271,24 @@ function nameWidth(value) {
       /[il: .·]/.test(char) ? 0.28 : /\d/.test(char) ? 0.58 : 0.56
   ), 0);
 }
+// The width of the widest number ("100%") in the system font, as a multiple
+// of its size.
+const NUMBER_WIDTH = nameWidth("100%");
+// The room that is kept aside between the word and the number.
+const NUMBER_GAP = 2;
+// The number is written in the medium weight of the system font, and the
+// table of widths was measured in the regular one: the digits of the medium
+// weight are a little wider. These points are kept aside for that, so that
+// the number does not have to be scaled down by Scriptable to fit.
+const NUMBER_FIT = 2;
+// The size of the number that stands beside the word in a cell of a given
+// width. The word is one Chinese character, and it has to fit with the whole
+// number on one line: a card that is too narrow for the word and the whole
+// number takes a smaller number rather than a number that is cut off.
+function valueSize(width, wordSize, wanted) {
+  const room = width - wordSize - NUMBER_GAP - NUMBER_FIT;
+  return Math.max(12, Math.min(wanted, Math.floor(room / NUMBER_WIDTH)));
+}
 // The name of a card is shown in full: it takes the size that fits its cell.
 // A name that does not fit even at the smallest size is shortened, and the
 // full name stays in the dashboard.
@@ -264,8 +305,10 @@ function shortenName(label, size, width) {
   return label.slice(0, keep) + "…";
 }
 // The word in front of every number. Without it the bar and the number can
-// be read the wrong way round, and the night mode makes that worse.
-function direction() { return showUsed ? "已用" : "剩余"; }
+// be read the wrong way round, and the night mode makes that worse. It is
+// one character: the cards of the middle family are narrow, and every point
+// the word takes is a point the number gets.
+function direction() { return showUsed ? "用" : "剩"; }
 // The name of a card is the name of the vendor and, when it has one, the
 // account of it.
 function splitLabel(label) {
@@ -334,17 +377,32 @@ function clock(value) {
   if (!value) return "未更新";
   return new Date(value).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 }
+// The bar of a card: the ink on the left of it is what is left of the quota,
+// the ground behind it is what is used up. The bar is drawn with the colours
+// of the widget and not with a canvas, because a canvas bakes its colours in
+// when it is drawn, and the script does not know in which appearance the
+// widget will be drawn.
+const BAR_HEIGHT = 4;
 function bar(parent, window, width) {
-  const ctx = new DrawContext();
-  ctx.size = new Size(width, 4); ctx.opaque = false; ctx.respectScreenScale = true;
-  ctx.setFillColor(colors.track); ctx.fillRect(new Rect(0, 0, width, 4));
   const current = value(window);
+  const row = parent.addStack();
+  row.layoutHorizontally();
+  row.size = new Size(width, BAR_HEIGHT);
+  row.backgroundColor = colors.track;
   if (current != null) {
     const consumed = showUsed ? current : 100 - current;
-    ctx.setFillColor(consumed >= 90 ? colors.critical : consumed >= 75 ? colors.warning : colors.fill);
-    ctx.fillRect(new Rect(0, 0, width * Math.max(0, Math.min(100, current)) / 100, 4));
+    const filled = width * Math.max(0, Math.min(100, current)) / 100;
+    if (filled > 0) {
+      const fill = row.addStack();
+      fill.size = new Size(filled, BAR_HEIGHT);
+      fill.backgroundColor = consumed >= 90 ? colors.critical : consumed >= 75 ? colors.warning : colors.fill;
+    }
   }
-  const image = parent.addImage(ctx.getImage()); image.imageSize = new Size(width, 4);
+  // The ink of the bar stands at the left of it: the ground behind it is what
+  // is used up, and the ground has to begin where the card begins. A stack
+  // that is wider than what it holds puts what it holds in the middle of
+  // itself, and a bar whose ink floats in the middle of it says nothing.
+  row.addSpacer();
 }
 function header(status) {
   const row = widget.addStack(); row.centerAlignContent();
@@ -444,9 +502,11 @@ function subscriptionGrid(parent, cards, sharedWindow) {
       const titleSize = large && dense ? nameSize : (inline ? accountSize : nameSize);
       const titleRow = line(column, titleSize, cellWidth);
       text(titleRow, shortenName(vendor, inline ? accountSize : nameSize, cellWidth), inline ? accountSize : nameSize, colors.text, "medium");
+      atLeft(titleRow);
       if (parts.account && style.account && !inline) {
         const accountRow = line(column, accountSize, cellWidth);
         text(accountRow, shortenName(parts.account, accountSize, cellWidth), accountSize, colors.muted);
+        atLeft(accountRow);
       } else if (reserveAccountLine) {
         // The medium family gives every card the same two lines of a title:
         // a card without an account keeps the line of the account empty, so
@@ -455,17 +515,25 @@ function subscriptionGrid(parent, cards, sharedWindow) {
         // phone measures the space inside it.
         const emptyRow = line(column, accountSize, cellWidth);
         text(emptyRow, " ", accountSize, colors.muted);
+        atLeft(emptyRow);
       }
       column.addSpacer(style.titleGap);
-      const valueRow = line(column, style.value, cellWidth);
-      // A narrow cell has no room for the whole word, and the footer of the
-      // widget says which way the numbers are read.
-      const word = large || cellWidth >= 78 ? direction() : (showUsed ? "用" : "剩");
-      text(valueRow, word, large ? 12 : 9, colors.muted);
-      valueRow.addSpacer(2);
-      text(valueRow, percent(primary), style.value, accent(primary), "medium");
+      // The word and the number are one line. The word stands in the middle of
+      // the number, so that the two are read as one thing, and the pair
+      // stands at the left of the card, under the name.
+      const wordSize = large ? 12 : 9;
+      const numberSize = valueSize(cellWidth, wordSize, style.value);
+      const valueRow = line(column, numberSize, cellWidth);
+      valueRow.centerAlignContent();
+      text(valueRow, direction(), wordSize, colors.muted);
+      valueRow.addSpacer(NUMBER_GAP);
+      text(valueRow, percent(primary), numberSize, accent(primary), "medium");
       if (!large && dense && !sharedWindow) {
+        // The window of the card stands at the right end of the row, and the
+        // pair of the word and the number at the left of it.
         valueRow.addSpacer(); text(valueRow, windowLabel(primary), 8, colors.muted);
+      } else {
+        atLeft(valueRow);
       }
       column.addSpacer(style.barGap);
       bar(column, primary, cellWidth);
@@ -481,7 +549,7 @@ function subscriptionGrid(parent, cards, sharedWindow) {
         // of its own for it.
         if (secondary) {
           column.addSpacer(dense ? 2 : 3);
-          text(column, windowLabel(secondary) + (showUsed ? " 已用 " : " 剩余 ") + percent(secondary), style.secondary, accent(secondary));
+          text(column, windowLabel(secondary) + (showUsed ? " 用 " : " 剩 ") + percent(secondary), style.secondary, accent(secondary));
         }
       } else if (!dense) {
         // The medium family has one line for the reset and one line for the
@@ -525,7 +593,12 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
   cached = cached || Object.values(data.sources).some(s => s.state !== "ok") || data.subscriptions.some(c => c.stale) || observations.some(s => Date.now() - Date.parse(s) > 180000);
   const status = failure || (cached ? "缓存 " : "") + clock(observations[0]);
   if (family === "small") {
-    header(status);
+    // The small family has no row of its own for the title of the widget: the
+    // name of the card is the title here, and the time of the reading stands
+    // at the right end of the last line. The title row with the spacer under
+    // it cost 26 of the 113 points of the smallest small widget, and the line
+    // of today's tokens — the last line of the column — was cut off at the
+    // bottom on all but the largest phones.
     // A parameter may name one account of a vendor (codex@alice) or the
     // vendor itself, which then means its first account. The id is matched as
     // it is written: two accounts of one vendor may differ in their case only.
@@ -544,9 +617,10 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
     // nothing. The first card is shown instead, and the note says so.
     const card = found || cards.find(c => c && c.usage && c.usage.today) || cards[0];
     const missing = Boolean(chosen) && !found && Boolean(card);
-    widget.addSpacer(12);
     const primary = card && card.windows[0] || emptyWindow;
     const name = widget.addStack();
+    // The name of a card stands at the top of its line, in every family.
+    name.topAlignContent();
     const title = fitName(card ? card.label : "暂无该套餐", 12, layout.width - 60);
     text(name, title.label, title.size, colors.text, "medium");
     name.addSpacer(4);
@@ -556,22 +630,36 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
       text(name, shortenName(looksLikeToken ? "参数里的是令牌：令牌不填在参数里" : "没有找到 " + requested, 8, Math.max(60, layout.width * 0.42)), 8, colors.warning);
     }
     else text(name, windowLabel(primary), 9, colors.muted);
-    widget.addSpacer(3);
+    // The name of the card and the window of it stand at the left of the
+    // widget, the way they do in the cards of the two larger families.
+    atLeft(name);
+    widget.addSpacer(2);
     const value = widget.addStack();
+    // The word stands in the middle of the number, the way it does in the
+    // cards of the two larger families, and the pair stands at the left.
+    value.centerAlignContent();
     text(value, direction(), 13, colors.muted);
     value.addSpacer(4);
     text(value, percent(primary), 34, accent(primary), "medium");
-    widget.addSpacer(7); bar(widget, primary, 120); widget.addSpacer(7);
+    atLeft(value);
+    // The bar is as wide as the widget really is. It was 120 points wide, and
+    // the smallest small widget has 109.
+    widget.addSpacer(5); bar(widget, primary, layout.width); widget.addSpacer(5);
     text(widget, reset(primary), 9, colors.muted);
     if (card && card.windows[1]) {
-      widget.addSpacer(3); text(widget, windowLabel(card.windows[1]) + (showUsed ? " 已用 " : " 剩余 ") + percent(card.windows[1]), 9, colors.muted);
+      widget.addSpacer(2); text(widget, windowLabel(card.windows[1]) + (showUsed ? " 用 " : " 剩 ") + percent(card.windows[1]), 9, colors.muted);
     }
     widget.addSpacer();
     // The tokens of the subscription this widget shows, not the total of all.
     // A subscription that is not on screen has no tokens of its own to show.
+    // The time of the reading stands at the other end of the line, where the
+    // header of the larger families keeps it.
     const own = card && card.usage && card.usage.today;
     const tokens = own ? own.totalTokens : null;
-    text(widget, "今日 " + (tokens == null ? "—" : compact(tokens)) + " token", 10, colors.muted);
+    const foot = widget.addStack();
+    text(foot, "今日 " + (tokens == null ? "—" : compact(tokens)) + " token", 10, colors.muted);
+    foot.addSpacer();
+    text(foot, status, 9, cached ? colors.warning : colors.muted);
   } else {
     // Preserve service order and every independent account; page only on the phone.
     const all = data.subscriptions || [];
@@ -604,7 +692,15 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
       totals.addSpacer();
       text(totals, "近七日 " + compact(data.usage.week && data.usage.week.totalTokens), 11, colors.muted);
       foot.addSpacer(4);
-      text(foot, looksLikeToken ? "参数里的令牌已忽略 · Token 含缓存" : direction + " · Token 含缓存", 8, looksLikeToken ? colors.warning : colors.muted);
+      // The note about the tokens stands under the tokens it is about, at the
+      // left, and the word about the cards stands at the right end. Written as
+      // one line at the left ("剩余 · 5h · Token 含缓存") the two of them were
+      // read as one thing: a remaining of five hours, in tokens, cache
+      // included — which is not what any of the numbers says.
+      const notes = foot.addStack();
+      text(notes, looksLikeToken ? "参数里的令牌已忽略" : "Token 含缓存", 8, looksLikeToken ? colors.warning : colors.muted);
+      notes.addSpacer();
+      if (!looksLikeToken) text(notes, direction, 8, colors.muted);
     }
   }
 }

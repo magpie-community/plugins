@@ -99,6 +99,12 @@ computer is not the one to use).
    "Share → Open with Scriptable".
 5. Long press the home screen, add the Scriptable widget and pick `UsageWidget`.
 
+The script of the widget is downloaded once and stays on the phone; when the
+service changes it, it does not travel by itself. **After a new version of the
+widget, run the installer (`SetupUsageWidget.js`) in Scriptable once more** — it
+knows the address and the token by itself, overwrites the script on the phone,
+and the widget on the home screen follows.
+
 The pairing code works once and lives ten minutes. The script carries only that
 one-time code; on its first run it exchanges the code for a token of its own and
 keeps it in the keychain of Scriptable. To pair without the camera, copy the
