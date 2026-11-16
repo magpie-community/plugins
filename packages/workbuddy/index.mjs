@@ -2802,6 +2802,8 @@ const CN_ESTIMATED_WINDOWS = [
     aliases: ["deepseek-v4.1-flash-sg"],
     cap: 2e8,
     name: "deepseek-v4.1-flash tokens (est.)",
+    // the card WorkBuddy's refusal makes: nothing in it is estimated
+    refusedName: "deepseek-v4.1-flash tokens",
     short: "~200M",
     // no unit: the name already says tokens, and magpie's narrow account
     // cards cut a unit short ("tok…") beside the nine-digit numbers
@@ -2966,12 +2968,21 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
   if (now >= end) return null // lapsed: nothing is exhausted, a new window opens on the next request
 
   const card = (amount, resetsAt, refused) => ({
-    name: win.name,
-    used: Math.min(100, (100 * amount) / win.cap),
-    amount,
-    limit: win.cap,
-    unit: win.unit,
-    display: `${tokensShort(amount)} / ${win.short}`,
+    name: (refused && win.refusedName) || win.name,
+    // A refusal is the vendor's word that the window is spent, and says
+    // nothing of a count: the card says 100% used and when WorkBuddy said it
+    // resets, with no tokens. It used to say the cap as its count,
+    // "200,000,000 / 200,000,000" under "(est.)", a number nothing measured,
+    // which read as magpie's estimate gone wrong (wsyfree on X).
+    ...(refused
+      ? { used: 100, display: "" }
+      : {
+          used: Math.min(100, (100 * amount) / win.cap),
+          amount,
+          limit: win.cap,
+          unit: win.unit,
+          display: `${tokensShort(amount)} / ${win.short}`,
+        }),
     resetsAt: new Date(resetsAt).toISOString(),
     span: FREE_WINDOW_SPAN / 1000,
     // the window's own model and the ids that share it, so magpie's exact
@@ -2993,7 +3004,7 @@ function freeWindowOf(rows, account, now = Date.now(), win = FREE_WINDOW_AI) {
     if (!Number.isFinite(t) || t <= now || t <= start) continue
     if (live === null || t > live) live = t
   }
-  if (live !== null) return card(win.cap, live, true)
+  if (live !== null) return card(0, live, true)
 
   return card(used, end, false)
 }
