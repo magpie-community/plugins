@@ -20,17 +20,52 @@ const expires = new Date(Date.now() + 24 * 3600_000).toISOString()
 writeFileSync(join(home, "auth.json"), JSON.stringify({ a: { key: "tok-2", email: "g@x.ai", expires_at: expires } }))
 const auth = { type: "oauth", refresh: home, access: "tok-1", expires: 0, accountId: "g@x.ai" }
 
-async function run(a, reply) {
+// reply answers the billing read; who the subscription read beside it
+// (asked), which by default names no tier
+async function run(a, reply, who = () => Response.json({})) {
   const seen = []
+  const asked = []
   const saved = []
   globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/user?include=subscription")) {
+      asked.push({ url: String(url), headers: init.headers })
+      return who()
+    }
     seen.push({ url: String(url), headers: init.headers })
     return reply()
   }
   const client = { auth: { set: async (x) => saved.push(x) } }
   const hooks = await GrokAuthPlugin({ client })
-  return { u: await hooks.auth.usage(async () => a), seen, saved }
+  return { u: await hooks.auth.usage(async () => a), seen, asked, saved }
 }
+
+const week = () => Response.json({ config: { currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", end: "2026-10-12T02:17:59Z" } } })
+const weekly = [{ name: "7 days", used: 0, span: 604800, resetsAt: "2026-10-12T02:17:59Z" }]
+
+// the billing reply names no plan: the tier of Grok Build's subscription
+// check is the card's, named as Grok sells it
+test("the plan is the tier the subscription check reads", async () => {
+  const { u, asked } = await run(auth, week, () => Response.json({ email: "g@x.ai", subscriptionTier: "XPremiumPlus" }))
+  expect(u).toEqual({ signIn: "kept", plan: "X Premium+", windows: weekly })
+  expect(asked).toEqual([{ url: "https://cli-chat-proxy.grok.com/v1/user?include=subscription", headers: { Authorization: "Bearer tok-2", Accept: "application/json" } }])
+  // as the CLI spells it, and one with no name here
+  expect((await run(auth, week, () => Response.json({ subscriptionTier: "supergrok_heavy" }))).u.plan).toBe("SuperGrok Heavy")
+  expect((await run(auth, week, () => Response.json({ subscriptionTier: "Enterprise" }))).u.plan).toBe("Enterprise")
+})
+
+test("a subscription read that fails or names no tier leaves the card as it was", async () => {
+  const none = [
+    () => Response.json({ subscriptionTier: null }),
+    () => new Response("", { status: 500 }),
+    () => new Response("<html>oops</html>"),
+    () => { throw new TypeError("fetch failed") },
+  ]
+  for (const who of none) expect((await run(auth, week, who)).u).toEqual({ signIn: "kept", windows: weekly })
+  // a billing read that fails doesn't ask
+  const { u, asked } = await run(auth, () => new Response("", { status: 509 }), () => Response.json({ subscriptionTier: "SuperGrok" }))
+  expect(u).toEqual({ signIn: "kept", error: "HTTP 509", windows: [] })
+  expect(asked).toEqual([])
+})
 
 test("SuperGrok's week and its on-demand spending; the CLI's newer token is kept", async () => {
   const { u, seen, saved } = await run(auth, () =>
