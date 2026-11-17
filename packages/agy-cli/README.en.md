@@ -360,6 +360,10 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  A model outputting pseudo-tool syntax or fake results in text (such as
+  `[tool call ...]` or `[end of tool result]`, #1242) is caught immediately;
+  the bridge fails the turn as an `api_error` and evicts the tainted process
+  so simulated executions never reach the client as real replies.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
