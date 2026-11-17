@@ -312,15 +312,25 @@ const REFUSED_TOGETHER = [
     names: ["AmendWorkflow", "FillWorkflowHole"],
     as: { AmendWorkflow: "workflow_amend", FillWorkflowHole: "workflow_answer" },
   },
+  // Codex 0.167.0's PTY and subagent pairs, bisected 2026-11-17: each name
+  // alone is served, the pair together is refused, one renamed is served.
+  { names: ["exec_command", "write_stdin"], as: { write_stdin: "stdin_write" } },
+  {
+    names: ["collaboration__spawn_agent", "collaboration__wait_agent"],
+    as: { collaboration__wait_agent: "agent_hold" },
+  },
 ];
 // A name refused together with its own parameters: the same parameters
 // under another name are served, and so is the name with none. DSH's edit
 // and read, bisected by SuperWheel against Zen on 2026-11-16 (plugins#632):
 // `edit` or `read` with their own parameters and a neutral description
-// were refused, `foo` with the same parameters was served. A rule renames
-// the tool only when it has every parameter the rule lists.
+// were refused, `foo` with the same parameters was served. omp's edit,
+// bisected 2026-11-17, is refused the same way with `path` where DSH's
+// takes `file_path`: what Zen reads is the parameter names old_string and
+// new_string, whatever names the rest take. A rule renames the tool only
+// when it has every parameter the rule lists.
 const REFUSED_WITH_PARAMETERS = [
-  { name: "edit", parameters: ["file_path", "old_string", "new_string"], as: "text_replace" },
+  { name: "edit", parameters: ["old_string", "new_string"], as: "text_replace" },
   { name: "read", parameters: ["file_path", "offset", "limit"], as: "file_view" },
 ];
 // Tool descriptions Zen refuses on their own, under any name (the same
@@ -465,6 +475,9 @@ function renameRefused(body, protocol) {
 // (MrHayesLin on X, 2026-11-01). The agent's block stays; OpenCode's
 // follows it.
 const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
+// OpenCode appends its block to the end of the system prompt; one quoted
+// inside history (tool output pasting an old request) is not "already there".
+const ENDS_WITH_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>\s*$/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
 // is `...`". Only an absolute path counts.
@@ -473,6 +486,25 @@ const STATED_DIRECTORY = [
   new RegExp(String.raw`<cwd>\s*${ABSOLUTE}\s*</cwd>`),
   new RegExp(String.raw`working directory(?: is)?:?\s+\x60?${ABSOLUTE}`, "i"),
 ];
+
+// Images carry hundreds of KB of base64, and Zen's free tier refused
+// image-laden bodies with 429 FreeUsageLimitError long before the same
+// conversation as text (bisected 2026-11-17), so they become a short note.
+function stripImages(body) {
+  const messages = [...(Array.isArray(body.messages) ? body.messages : []), ...(Array.isArray(body.input) ? body.input : [])];
+  for (const message of messages) {
+    const content = message?.content;
+    if (!Array.isArray(content)) continue;
+    let images = 0;
+    const kept = [];
+    for (const part of content) {
+      if (part?.type === "image_url" || part?.type === "input_image" || part?.type === "image") images++;
+      else kept.push(part);
+    }
+    if (images) message.content = [...kept, { type: "text", text: `[${images} image${images > 1 ? "s" : ""} omitted to keep the request within Zen's free-tier size budget]` }];
+  }
+  return body;
+}
 
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -528,16 +560,15 @@ function withEnvironment(content, block) {
 export function addEnvironment(body, protocol, home = homedir()) {
   const block = () => environment(statedDirectory(body, protocol) ?? home);
   if (protocol === "anthropic") {
-    if (!HAS_ENVIRONMENT.test(textOf(body.system))) body.system = withEnvironment(body.system, block());
+    if (!ENDS_WITH_ENVIRONMENT.test(textOf(body.system).trimEnd())) body.system = withEnvironment(body.system, block());
     return;
   }
   const messages = protocol === "chat" ? body.messages : body.input;
   const system = Array.isArray(messages)
     ? messages.filter((message) => SYSTEM_ROLES.includes(message?.role))
     : [];
-  if (system.some((message) => HAS_ENVIRONMENT.test(textOf(message.content)))) return;
   if (protocol === "responses") {
-    if (!HAS_ENVIRONMENT.test(textOf(body.instructions)))
+    if (!ENDS_WITH_ENVIRONMENT.test(textOf(body.instructions ?? "").trimEnd()))
       body.instructions = withEnvironment(body.instructions, block());
     return;
   }
@@ -545,6 +576,7 @@ export function addEnvironment(body, protocol, home = homedir()) {
   // system message, the same on every turn (its cache holds); one is put
   // first when the agent sent none.
   const first = system.find((message) => message.role === "system");
+  if (first && ENDS_WITH_ENVIRONMENT.test(textOf(first.content).trimEnd())) return;
   if (first) first.content = withEnvironment(first.content, block());
   else if (Array.isArray(messages)) messages.unshift({ role: "system", content: block() });
   else body.messages = [{ role: "system", content: block() }];
@@ -599,7 +631,7 @@ export function sessionID(headers, body) {
     }
   }
   if (!signal && typeof body.metadata?.session_id === "string") signal = body.metadata.session_id;
-  if (realSessionID(signal)) return signal;
+  if (realSessionID(signal)) return ROTATED.get(signal) ?? signal;
   if (!signal) {
     const messages = body.messages ?? body.input;
     const first = Array.isArray(messages)
@@ -618,6 +650,32 @@ export function sessionID(headers, body) {
   }
   SESSIONS.set(key, session);
   return session;
+}
+
+// Zen's free allowance follows the session id the request carries: once
+// that id has spent it, every request in the conversation is refused with
+// 429 FreeUsageLimitError however small, and a fresh id is served at once
+// (2026-11-22: five conversations refused at 560KB-1.7MB kept working with
+// the same bodies after a restart minted new ids). A refused id is
+// replaced, so the retry and later turns carry the fresh one.
+const ROTATED = new Map();
+
+export function rotateSession(session) {
+  const fresh = opencodeID("ses", true);
+  let known = false;
+  for (const [key, value] of SESSIONS) {
+    if (value !== session) continue;
+    SESSIONS.set(key, fresh);
+    known = true;
+  }
+  if (!known) {
+    // OpenCode's own id passes through sessionID, so its replacement is
+    // remembered by the id it replaces.
+    ROTATED.delete(session);
+    ROTATED.set(session, fresh);
+    if (ROTATED.size >= KEEP_SESSIONS) ROTATED.delete(ROTATED.keys().next().value);
+  }
+  return fresh;
 }
 
 // OpenCode's trace headers (its Effect tracer's B3 and W3C forms): one
@@ -806,10 +864,10 @@ async function server(_input, options = {}) {
             // x-stainless-*, ...) never mark the request as not OpenCode's.
             // Accept is fetch's own */*, after Connection, as OpenCode's is.
             const given = request.headers;
-            const session = sessionID(given, body);
+            let session = sessionID(given, body);
             const project = _input?.project;
             const directory = statedDirectory(body, protocol) ?? homedir();
-            const trace = traceHeaders(session);
+            let trace = traceHeaders(session);
             const headers = new Headers();
             if (protocol !== "anthropic") headers.set("authorization", "Bearer public");
             headers.set("content-type", "application/json");
@@ -832,13 +890,37 @@ async function server(_input, options = {}) {
               if (given.get("anthropic-beta")) headers.set("anthropic-beta", given.get("anthropic-beta"));
             }
             const upstream = baseURL === DEFAULT_BASE ? OPENCODE_BASE[protocol] : baseURL;
-            const response = await fetch(`${upstream}${PATHS[protocol]}`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify(body),
-              signal: request.signal,
-              redirect: "error",
-            });
+            stripImages(body);
+            const posted = JSON.stringify(body);
+            const send = () =>
+              fetch(`${upstream}${PATHS[protocol]}`, {
+                method: "POST",
+                headers,
+                body: posted,
+                signal: request.signal,
+                redirect: "error",
+              });
+            let response = await send();
+            // Zen's free allowance follows the session id: a conversation
+            // whose id has spent it is refused however small the request,
+            // and a fresh id is served at once, so one rotation and one
+            // retry. An account-wide refusal simply answers 429 again.
+            if (response.status === 429) {
+              await response.body?.cancel();
+              const named = Number(response.headers.get("retry-after") ?? NaN);
+              const wait = Number.isFinite(named) && named > 0 && named <= 5 ? named * 1000 : 1500;
+              await new Promise((rest) => setTimeout(rest, wait + Math.random() * 500));
+              request.signal.throwIfAborted();
+              session = rotateSession(session);
+              trace = traceHeaders(session);
+              headers.set("b3", trace.b3);
+              headers.set("traceparent", trace.traceparent);
+              headers.set("x-opencode-session", session);
+              headers.set("x-opencode-session-id", session);
+              headers.set("x-session-affinity", session);
+              headers.set("x-session-id", session);
+              response = await send();
+            }
             const guarded = await guardToolResponse(response, protocol, toolPolicy, {
               endCutShort: streaming,
             });

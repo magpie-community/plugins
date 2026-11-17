@@ -61,6 +61,18 @@ async function fixture(t, input = {}) {
       res.end(
         `| Model | chat-free | \`https://opencode.ai/zen/v1/${state.chatProtocol ?? "chat/completions"}\` | sdk |`,
       );
+    } else if (state.replies?.length) {
+      const queued = state.replies.shift();
+      if (queued.status === 200) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(queued.reply);
+      } else {
+        res.writeHead(queued.status, {
+          "content-type": "application/json",
+          ...(queued.retryAfter ? { "retry-after": queued.retryAfter } : {}),
+        });
+        res.end('{"error":{"message":"limited","type":"rate_limit_error"}}');
+      }
     } else if (state.reply) {
       res.writeHead(200, { "content-type": state.contentType ?? "text/event-stream" });
       res.end(state.reply);
@@ -588,6 +600,73 @@ test("collapses SSE for a non-streaming client and preserves upstream HTTP error
   assert.equal((await error.json()).error.message, "limited");
 });
 
+test("retries a 429 that names a short throttle once and serves the answer", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.replies = [
+    { status: 429, retryAfter: "1" },
+    {
+      status: 200,
+      reply:
+        'data: {"id":"chat-1","model":"chat-free","choices":[{"index":0,"delta":{"role":"assistant","content":"second try"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    },
+  ];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).choices[0].message.content, "second try");
+  const tries = state.calls.filter((call) => call.url === "/v1/chat/completions");
+  assert.equal(tries.length, 2);
+  assert.notEqual(tries[0].headers["x-opencode-session"], tries[1].headers["x-opencode-session"]);
+  assert.deepEqual(tries[1].body, tries[0].body);
+});
+
+test("retries a 429 that names no wait at all once and serves the answer", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.replies = [
+    { status: 429 },
+    {
+      status: 200,
+      reply:
+        'data: {"id":"chat-1","model":"chat-free","choices":[{"index":0,"delta":{"role":"assistant","content":"after no-wait 429"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    },
+  ];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).choices[0].message.content, "after no-wait 429");
+  const tries = state.calls.filter((call) => call.url === "/v1/chat/completions");
+  assert.equal(tries.length, 2);
+  assert.notEqual(tries[0].headers["x-opencode-session"], tries[1].headers["x-opencode-session"]);
+});
+
+test("retries a 429 naming a budget reset once with a fresh session id, then surfaces it", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  state.replies = [{ status: 429, retryAfter: "30" }, { status: 429, retryAfter: "30" }];
+  const error = await loader.fetch(`${origin}/v1/chat/completions`, {
+    method: "POST",
+    body: JSON.stringify({ model: "chat-free", messages: [{ role: "user", content: "hello" }] }),
+  });
+  assert.equal(error.status, 429);
+  assert.equal(error.headers.get("retry-after"), "30");
+  assert.equal((await error.json()).error.message, "limited");
+  // Zen's allowance follows the session id, so even a budget's reset is
+  // worth one retry under a fresh one; a refusal that is account-wide
+  // answers 429 again and is surfaced as before.
+  const tries = state.calls.filter((call) => call.url === "/v1/chat/completions");
+  assert.equal(tries.length, 2);
+  assert.notEqual(tries[0].headers["x-opencode-session"], tries[1].headers["x-opencode-session"]);
+});
+
 for (const [path, model, key] of [
   ["responses", "responses-free", "parameters"],
   ["messages", "messages-free", "input_schema"],
@@ -895,6 +974,40 @@ for (const { protocol, path, model } of protocols) {
       system.slice(claudeCodePrompt.length),
       /^\n\nHere is some useful information about the environment you are running in:\n<env>\n {2}Working directory: \/Users\/me\/project\n/,
     );
+    // an OpenCode block quoted inside the prompt (history pasting an old
+    // request) is not the one OpenCode sent with this turn: a fresh one
+    // follows it, or Zen answers 429 FreeUsageLimitError
+    const quoted = `${agentPrompt}\nI dumped a request once:\n<env>\n  Working directory: /home/user\n  Is directory a git repo: no\n</env>\nthat was it`;
+    sent = await send(withPrompt(protocol, quoted, "hello"));
+    system = systemText(protocol, sent);
+    assert.ok(system.startsWith(quoted), system);
+    assert.match(system.slice(quoted.length), /^\n\nHere is some useful information/);
+  });
+}
+
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: images become a note Zen's free tier accepts`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const image =
+      protocol === "anthropic"
+        ? { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } }
+        : protocol === "responses"
+          ? { type: "input_image", image_url: "data:image/png;base64,iVBOR" }
+          : { type: "image_url", image_url: { url: "data:image/png;base64,iVBOR" } };
+    const body = withPrompt(protocol, agentPrompt, "look");
+    const holder = protocol === "responses" ? body.input : body.messages;
+    holder[holder.length - 1].content = [{ type: "text", text: "look" }, image, image];
+    const response = await loader.fetch(`${origin}/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify({ model, stream: true, ...body }),
+    });
+    await response.text();
+    const sent = state.calls.at(-1).body;
+    const parts = (sent.messages ?? sent.input ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+    assert.ok(parts.every((p) => p.type !== "image_url" && p.type !== "input_image" && p.type !== "image"));
+    assert.match(parts.at(-1).text, /\[2 images omitted/);
   });
 }
 
@@ -1177,6 +1290,47 @@ test("a read or edit without DSH's parameters keeps its name (#632)", async (t) 
   const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools }) });
   await response.text();
   assert.deepEqual(state.calls.at(-1).body.tools.slice(0, 2).map((tool) => tool.function.name), ["read", "edit"]);
+});
+
+// omp's edit (bisected 2026-11-17): DSH's parameters with `path` for
+// `file_path`, refused the same way, so renamed the same way, and a call
+// of it comes back as omp's.
+test("omp's edit, with path where DSH's takes file_path, is renamed and comes back as omp's", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const tools = [
+    { type: "function", function: { name: "edit", description: "Single file string replacement; fuzzy whitespace matching.", parameters: { type: "object", properties: { i: { type: "string", description: "concise intent" }, path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string", "i"], additionalProperties: false } } },
+  ];
+  state.reply = toolReply("chat", "text_replace", true);
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools, messages: [{ role: "user", content: "fix it" }] }) });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"name"\s*:\s*"edit"/);
+  const sent = state.calls.at(-1).body;
+  assert.ok(sent.tools.some((tool) => tool.function?.name === "text_replace"), sent.tools.map((tool) => tool.function?.name).join(","));
+});
+
+// Codex 0.167.0's pairs (bisected 2026-11-17): exec_command beside
+// write_stdin, and collaboration__spawn_agent beside
+// collaboration__wait_agent, each name alone served, the pair refused.
+test("codex's PTY and subagent pairs go renamed, and a call comes back as codex's", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const tool = (name, properties) => ({ type: "function", function: { name, description: "Does its work.", parameters: { type: "object", properties, required: Object.keys(properties) } } });
+  const tools = [
+    tool("exec_command", { cmd: { type: "string" } }),
+    tool("write_stdin", { chars: { type: "string" }, session_id: { type: "string" } }),
+    tool("collaboration__spawn_agent", { message: { type: "string" } }),
+    tool("collaboration__wait_agent", { timeout_ms: { type: "number" } }),
+  ];
+  state.reply = toolReply("chat", "stdin_write", true);
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools, messages: [{ role: "user", content: "run it" }] }) });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"name"\s*:\s*"write_stdin"/);
+  const sentNames = state.calls.at(-1).body.tools.map((tool) => tool.function?.name);
+  assert.ok(sentNames.includes("exec_command") && sentNames.includes("stdin_write"), sentNames.join(","));
+  assert.ok(sentNames.includes("collaboration__spawn_agent") && sentNames.includes("agent_hold"), sentNames.join(","));
 });
 
 // Z.ai's ZCode 3.17.2 declares its dynamic-workflow tools, and Zen refuses

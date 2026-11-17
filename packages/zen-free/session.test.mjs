@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { opencodeID, realSessionID, sessionID } from "./provider.mjs";
+import { opencodeID, realSessionID, rotateSession, sessionID } from "./provider.mjs";
 
 const SHAPE = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
 
@@ -52,4 +52,23 @@ test("ids made in one millisecond count up, as OpenCode's do", () => {
   assert.equal(decode(first, false).counter, 1);
   assert.equal(decode(second, false).counter, 2);
   assert.ok(second > first);
+});
+
+test("a refused conversation keeps the replacement session id", () => {
+  const headers = new Headers({ "x-session-id": "conversation-d" });
+  const first = sessionID(headers, {});
+  const fresh = rotateSession(first);
+  assert.notEqual(fresh, first);
+  assert.ok(realSessionID(fresh), fresh);
+  assert.equal(sessionID(headers, {}), fresh);
+});
+
+test("OpenCode's own id is replaced too when Zen refuses it", () => {
+  const real = "ses_ecc5d8f28ffe9Cy14V8Em7lI2u";
+  const headers = new Headers({ "x-opencode-session": real });
+  assert.equal(sessionID(headers, {}), real);
+  const fresh = rotateSession(real);
+  assert.notEqual(fresh, real);
+  assert.ok(realSessionID(fresh), fresh);
+  assert.equal(sessionID(headers, {}), fresh);
 });
