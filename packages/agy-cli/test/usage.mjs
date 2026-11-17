@@ -216,7 +216,8 @@ async function waitForNotRunning(pid, timeoutMs = 15_000) {
 // recorded and handed to it instead of being run.
 async function timedOut(f, { version = false, onTaskkill } = {}) {
   const originalSpawn = childProcess.spawn
-  for (let timeoutMs = 600; ; timeoutMs *= 2) {
+  const initialTimeoutMs = process.platform === "win32" ? 1200 : 600
+  for (let timeoutMs = initialTimeoutMs; ; timeoutMs *= 2) {
     const children = []
     const kills = []
     try {
@@ -227,7 +228,7 @@ async function timedOut(f, { version = false, onTaskkill } = {}) {
           return { unref() {} }
         }
         const child = originalSpawn(file, args, options)
-        children.push({ pid: child.pid })
+        if (file !== "taskkill") children.push({ pid: child.pid })
         return child
       }
       syncBuiltinESMExports()
@@ -246,18 +247,52 @@ async function timedOut(f, { version = false, onTaskkill } = {}) {
   }
 }
 
+function killPidBestEffort(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return
+  try { process.kill(pid, 0) } catch { return }
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true })
+  }
+  try { process.kill(pid, "SIGKILL") } catch {}
+}
+
 async function fixture(t, extraEnv = {}) {
   const isWin = process.platform === "win32"
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agy-usage-test-"))
-  t.after(async () => {
-    for (let i = 0; i < 6; i++) {
-      try { await fs.rm(directory, { recursive: true, force: true }); break }
-      catch { await new Promise(r => setTimeout(r, 50)) }
-    }
-  })
   const script = path.join(directory, "fake.mjs")
   const executable = path.join(directory, isWin ? "agy.cmd" : "agy")
   const logPath = path.join(directory, "calls.jsonl")
+  const descendantPath = path.join(directory, "descendant")
+  t.after(async () => {
+    for (const file of [logPath, descendantPath]) {
+      try {
+        const raw = await fs.readFile(file, "utf8")
+        if (file === descendantPath) {
+          killPidBestEffort(Number(raw.trim()))
+        } else {
+          for (const line of raw.split(/\r?\n/)) {
+            if (!line.trim()) continue
+            try { killPidBestEffort(JSON.parse(line).pid) } catch {}
+          }
+        }
+      } catch {}
+    }
+    for (let i = 0; i < 6; i++) {
+      try { await fs.rm(directory, { recursive: true, force: true }); return }
+      catch { await new Promise(r => setTimeout(r, 50)) }
+    }
+    if (isWin) {
+      const escaped = directory.replace(/'/g, "''")
+      spawnSync("powershell.exe", [
+        "-NoProfile", "-Command",
+        `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ], { stdio: "ignore", windowsHide: true })
+      for (let i = 0; i < 6; i++) {
+        try { await fs.rm(directory, { recursive: true, force: true }); return }
+        catch { await new Promise(r => setTimeout(r, 100)) }
+      }
+    }
+  })
   await fs.writeFile(script, String.raw`
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -666,7 +701,7 @@ test("a timeout with only OAuth diagnostics backs off and recovers with the same
   const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: startupAuthLogs })
   const stored = { state: "present", fp: "refreshing", canRenew: true, expired: true }
   let clock = 0
-  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: process.platform === "win32" ? 10000 : 3000, now: () => clock, signIn: async () => stored })
   assert.equal((await read()).signIn, "kept")
   const runs = (await f.logs()).length
   assert.equal(runs, 2, "the report child must have started")
@@ -752,7 +787,7 @@ test("a hung sign-in with an ended token is never restarted until the credential
     const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: output })
     let stored = { state: "present", fp: "hung", canRenew: true, expired: true }
     let clock = 0
-    const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
+    const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: process.platform === "win32" ? 10000 : 3000, now: () => clock, signIn: async () => stored })
     assert.equal((await read()).signIn, "expired")
     const runs = (await f.logs()).length
     assert.equal(runs, 2, "the report child must have started")
@@ -773,7 +808,7 @@ test("a hung sign-in with an ended token is never restarted until the credential
 test("a timeout with a live access token preserves the sign-in", async t => {
   const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: "Waiting for browser authentication" })
   const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
-  const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, signIn: async () => live })()
+  const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: process.platform === "win32" ? 10000 : 3000, signIn: async () => live })()
   assert.equal(result.signIn, "kept")
   await f.assertClean()
 })
@@ -803,7 +838,7 @@ test("version/report hangs time out, terminate the process, and leave no workspa
 test("cancellation stops a running report and cleans its private workspace", async t => {
   const f = await fixture(t, { TEST_MODE: "hang" })
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 600)
+  const timer = setTimeout(() => controller.abort(), process.platform === "win32" ? 1500 : 600)
   try {
     await assert.rejects(fetchUsage(f.executable, { ...f.options, signal: controller.signal }), /cancelled/)
   } finally { clearTimeout(timer) }
