@@ -1,8 +1,12 @@
 # magpie-lobsterai-auth
 
+[![npm](https://img.shields.io/npm/v/magpie-lobsterai-auth)](https://www.npmjs.com/package/magpie-lobsterai-auth)
+[![CI](https://github.com/BowlongRise/magpie-lobsterai-auth/actions/workflows/test.yml/badge.svg)](https://github.com/BowlongRise/magpie-lobsterai-auth/actions/workflows/test.yml)
+[![license](https://img.shields.io/npm/l/magpie-lobsterai-auth)](LICENSE)
+
 把 **网易有道 LobsterAI（有道龙虾）** 的套餐模型接入 Magpie / OpenCode。
 
-English: [README.en.md](README.en.md)
+[English](README.en.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md) · [问题反馈](https://github.com/BowlongRise/magpie-lobsterai-auth/issues)
 
 插件 id：`lobsterai`。登录后，Magpie 里会出现 `lobsterai/<模型>`，例如
 `lobsterai/deepseek-flash`、`lobsterai/qwen3.8-max`、`lobsterai/kimi-k3`。
@@ -22,15 +26,22 @@ English: [README.en.md](README.en.md)
 - **动态模型列表**：登录后读取账号可用的套餐模型，而不是写死一份静态列表。
 - **思考档位**：复刻 LobsterAI 的 `lobsterai_options` 请求字段；Kimi K3 按其固定契约发送。
 - **自动续期**：提供 `auth.refresh`，并在请求前检查 JWT 过期时间。
-- **积分用量**：读取 `/api/user/quota`，在 Magpie 账号卡片和 `magpie quota` 中显示套餐积分。
+- **积分用量**：合计套餐池和签到/活动赠送积分，在 Magpie 账号卡片和 `magpie quota` 中显示真实余额。
 - **每日签到**：提供 `auth.checkin`，手动或每天自动领取 LobsterAI 的每日签到积分。
 - **多账号**：Magpie 的账号作用域内工作，不会把一个账号的 token 用到另一个账号。
 - **企业账号**：识别登录响应里的企业上下文，并发送 `X-LobsterAI-Account-Mode` /
   `X-LobsterAI-Enterprise-Id`。
 
+## 环境要求
+
+- Magpie（桌面端或 `magpie web` 都可以）；每日签到依赖 `auth.checkin`，需要 Magpie 0.1.1083
+  或更新版本。
+- LobsterAI 账号，免费版即可；**不需要**安装 LobsterAI 桌面端。
+- 只有从源码开发或跑测试才需要 Node.js 20.3 以上。
+
 ## 安装
 
-先在 LobsterAI 官网或桌面端确认账号可用，然后：
+先在 [LobsterAI](https://lobsterai.youdao.com/) 官网或桌面端确认账号可用，然后：
 
 ```bash
 magpie plugin add magpie-lobsterai-auth
@@ -93,6 +104,17 @@ Kimi、MiniMax、Doubao 等真实模型。
 模型上的 `rate` 是 LobsterAI 的积分倍率，不是美元价格。`limitedFreeActive` 为 true 的模型
 会标记为免费。
 
+## 积分用量
+
+LobsterAI 把积分分成两块，插件两个接口都读：
+
+- `GET /api/user/quota` —— 套餐自己的池子（免费版就是 `freeCreditsTotal` 300）。
+- `GET /api/user/profile-summary` —— `creditItems` 列出每一笔来源（新用户赠送、每日登录奖励……）
+  和各自到期日，`totalCreditsRemaining` 是合计数。
+
+所以账号卡片会按来源分别显示，余额取 `totalCreditsRemaining`：300 的赠送 + 每天签到 100，
+签到两天就是 500。只读 `/api/user/quota` 会少算签到和活动发的部分。
+
 ## 请求端点
 
 插件直连 LobsterAI 的模型代理，不启动桌面客户端：
@@ -112,6 +134,9 @@ https://lobsterai-server.youdao.com/api/proxy/v1/chat/completions
 
 Magpie 把插件账号保存在自己的 `plugin-auth.json`（权限 600）。插件**不会读取** LobsterAI
 桌面端的数据库、Cookie 或凭据文件，也不会把 token 写进日志。
+
+插件只和 LobsterAI 自己的服务器通信（`lobsterai-server.youdao.com`、
+`api-overmind.youdao.com`、`lobsterai.youdao.com`），不含遥测，不把任何数据发往别处。
 
 ## 每日签到
 
@@ -139,12 +164,26 @@ Magpie 插件市场里的 `magpie-providers-hub` 也接了 LobsterAI 渠道（pr
 - 那个是十一个渠道的聚合包，本插件是只做 LobsterAI 的独立包，升级和排错都互不影响。
 - 本插件发送 LobsterAI 的 `lobsterai_options` 思考档位，并遵守 Kimi K3 的固定请求契约；
   聚合包没有这两个。
-- 本插件从 `/api/user/quota` 显示套餐积分用量，聚合包的 LobsterAI 条目没有用量钩子。
+- 本插件把套餐池和活动赠送积分合计后显示真实余额，聚合包的 LobsterAI 条目没有用量钩子。
 - 本插件提供每日签到（`auth.checkin`），聚合包的 LobsterAI 条目没有签到钩子。
 - 本插件识别登录响应里的企业上下文，发送 `X-LobsterAI-Account-Mode` /
   `X-LobsterAI-Enterprise-Id`。
 
 同一个账号在两个插件里登录的是同一条渠道，积分池也是同一个。
+
+## 常见问题
+
+**在 Magpie 里搜不到这个插件？** npm 的搜索索引对新包有延迟，直接按名字安装即可：
+`magpie plugin add magpie-lobsterai-auth`。
+
+**登录成功但模型是空的？** 可能是账号套餐里没有可访问的模型，或 `/api/models/available`
+暂时失败；插件会退回内置快照，稍后重新登录或刷新即可。
+
+**卡片上的积分比 LobsterAI 客户端少？** 0.2.1 之前的版本只读 `/api/user/quota`，会漏掉
+签到和活动赠送的积分。更新到最新版即可，见 [更新日志](CHANGELOG.md)。
+
+**签到没领到？** 活动未开始或已结束时返回 `inactive`，当天不再重试；登录过期会返回
+`failed` 并提示重新登录。
 
 ## 开发
 

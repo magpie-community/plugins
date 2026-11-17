@@ -4,7 +4,7 @@
 
 - 仓库：<https://github.com/jichie/magpie-workbuddy-tasks>
 - 安装：`magpie plugin add github:jichie/magpie-workbuddy-tasks`
-- 当前版本：**0.3.8**（[更新日志](./CHANGELOG.md)）
+- 当前版本：**0.3.9**（[更新日志](./CHANGELOG.md)）
 - 只服务国内版 `workbuddy` **个人版**账号；国际版 `workbuddy-ai` 与企业版（`enterpriseId`）都不会出现在插件里（企业版没有成长任务与签到，只留一行忽略计数）。
 
 > 只做「收益自动化」：不伪造无法自动化的任务、不代理对话、不采集任何遥测。看板与 API 只在你本机（或你自觉暴露的局域网）里。
@@ -57,17 +57,18 @@
 | **批量接任务** | 看板「批量接任务」/ `POST /api/task/accept` | 只接取引擎判定 `canAccept` 的任务，不点亮、不领奖。桌面端专属任务可以被接取，但不会伪造进度 |
 | **只领奖** | 看板单账号「领取」/ `POST /api/task/claim` / 工具 `workbuddy_tasks_claim` | 领取单个已完成任务；批量运行时也会按 `claim:false` 只点亮不领奖 |
 | **任务级勾选** | 看板任务明细 / `POST /api/run` 的 `codes` / 工具 `codes` | 勾选即**本轮 job 的全局任务范围**（取全账号并集、应用到每个目标账号）；**完全不勾 = 全部任务**。活动任务用 `<活动code>:<任务code>` 参与勾选，各腿按命名空间过滤、互不串味；选中但任务表里不存在的 code 会警告一次并跳过 |
-| **猫猫旅行** | 任务腿 `travel` | `arrived` 领奖 → `idle` 派出（先完成并领取 `first_buddy`）→ `traveling` 如实报告，一次推进一步 |
+| **猫猫旅行** | 任务腿 `travel` | `arrived` 领奖 → `idle` 派出（已有 Buddy 未选中会自动切换后重试）→ `traveling` 如实报告（含「约 N 分钟后回来」），一次推进一步 |
 | **桌面任务链** | 成长腿自动 | `RichMeow_Chat` 走 6 条桌面会话事件链、`Buddy_App` 走 5 条 `buddyapp_*` 事件、`Library_read` 走 web 点击；`Buddy_App_QQ` 仍按桌面端专属跳过 |
 | **Buddy 盲盒** | 任务腿 `buddy` | 用积累的**成长能量**开盲盒：`quota` 读出 `affordable`（还能开几个）与 `max_open_count`（单次上限），一次 `open` 批量开启 `min(affordable, max_open_count)` 个。**会消耗成长能量**；不领积分、不计入收益结算。能量不足时如实跳过（不发开盒请求）。腿顺序在 `travel` 之前：开出的 Buddy 可被随后的旅行使用 |
 | **微信小程序链式任务** | 任务腿 `mp` / 成长腿内自动（`mpTasks:false` 可关）+ 快照/看板 | `Sequential_Tasks_1–6` + `school_season` 走**小程序埋点链路**（专属标头 + `WorkBuddy_MP` 事件指纹），接取/点亮/领奖一次完成；`codes` 勾选同样生效。**0.3.1 起进任务快照/看板**：快照刷新会在 web 清单之后用小程序头族再拉一份 MP 清单，只补充 web 清单里没有的 code（同一 code 以 web 为准）；单账号「接取 / 领取」对 MP code 自动改走小程序头族。**0.3.2 起可直接消费上游 `locked` / `unlock_at`**：次日才解锁的任务在看板显示「次日可接取」，勾选框禁用并提示解锁日期，批量/排程也不会把锁定任务塞进接取批次。注意 `workstation_expert`、`Sequential_Tasks_7` 等仍是 web 侧规格任务，等上游下发才出现。**`Sequential_Tasks_7` 即使同时出现在 MP 清单也归 web playbook 双事件链**（`isMPCode` 排除 `TASK_SPECS` 已收录的 code，MP 链路不会吃掉它）；**0.3.3 起 web 清单自带的锁字段同样生效**（实测 ST7 `locked:true`）：锁定任务整条跳过，不接取、不上报、不领奖 |
 | **夜猫子** | 任务腿 `night` | `black_cat` 只在**北京时间 23:00–08:00** 上报，白天诚实跳过；每天计 1 次、累计 3 天。01:00 清单暂缺 `black_cat` 时会按 5/15/30s 重试约 50s；仍没有就如实跳过（不记失败） |
 | **每日活跃** | 自动（每个 job 的每个账号开跑前） | 每个账号每个**北京日**往计费域上报一条 chat 事件，点亮成长中心连登。幂等账本 `state/daily-activity.json`，重启后同一天不重发；失败只记日志，不阻断任务 |
 | **运营活动任务** | 任务腿 `campaign` / 任务明细「活动任务」组 / `POST /api/campaign/run` | 走**独立于成长清单**的 `/portal/activity/*` 契约：读取活动任务 → `viewed` → 事件上报 → `claim` 并回读 `claimed_at` 才算领到；单任务可在明细里「领取」（`POST /api/campaign/claim`）。当前两个活动（星巴克协作 3 项、记者节福利 3 项），手机端 App 对话任务**只提示不伪造**。与成长腿解耦：成长清单空/失败也照跑 |
-| **连登管家** | 任务腿 `streak` / 看板「连登管家」/ `POST /api/streak/run` | 一次把连登体系的日常收益收干净：用补签卡**补签昨日** → 领**新手礼包 / 活动补偿**（计费域）→ 兑换连登 **7d / 14d / 28d** 档位 → 按剩余次数**自动抽奖**。全部幂等：已补过 / 已领过 / 已兑换 / 无抽奖次数一律静默跳过，不硬闯不报错；企业版与 API key 账号**一个上游请求都不发**。看板账号行有「连登」条（连登天数 · 补签卡 · 抽奖次数 · 档位徽章 ＋ 近 28 天连登日历），`GET /api/streak` 只读查询（10 分钟缓存） |
-| **每日签到** | 看板「每日签到」/ `POST /api/checkin` | 手动触发，不会自动跑（社区插件已负责 `auth.checkin`）。回执细分：`claimed` 新签到 / `done` 今天已签 / `pending` 处理中，可重试（`code=0` 但「请勿重复操作 / 系统繁忙」不再算成功）/ `failed` |
+| **连登管家** | 任务腿 `streak` / 看板「连登管家」/ `POST /api/streak/run` | 一次把连登体系的日常收益收干净：用补签卡**补签昨日** → 领**新手礼包 / 活动补偿**（计费域）→ 兑换连登 **7d / 14d / 28d** 档位 → 按剩余次数**自动抽奖**。全部幂等：已补过 / 已领过 / 已兑换 / 无抽奖次数一律静默跳过，不硬闯不报错；企业版与 API key 账号**一个上游请求都不发**。看板账号行有「连登」条（连登天数 · 补签卡 · 抽奖次数 · 档位徽章**含每档奖励明细** ＋ 近 28 天连登日历），`GET /api/streak` 只读查询（10 分钟缓存） |
+| **每日签到** | 看板「每日签到」/ `POST /api/checkin` | 手动触发，不会自动跑（社区插件已负责 `auth.checkin`）。回执细分：`claimed` 新签到 / `done` 今天已签 / `pending` 处理中，可重试（`code=0` 但「请勿重复操作 / 系统繁忙」不再算成功）/ `failed`。签到接口 404/连不上会自动按备用路径与备用域名重试（只有这两类失败才换，风控/业务码绝不换）；签到成功后回执带上重查到的连登状态 |
 | **风控冻结与恢复** | 看板「恢复」/ `POST /api/account/unfreeze` / 工具 `workbuddy_tasks_unfreeze` | 命中 403 / 11140 立即冻结并写 `state/frozen.json`，从批量、排程选号、签到、连登管家的默认目标里排除；**只有手动恢复能解除**——不再自动冷却重试（同一设备的账号会连坐）。其他账号不受影响 |
-| **积分余额与明细** | 看板积分列 / `GET /api/credits?uid=<uid>` | 只读查询国内版积分余额、每个套餐包的额度/已用/剩余/发放原因/到期时间，以及最早到期提示。看板有「明细」弹窗，可按状态筛选、搜索、排序、强制刷新 |
+| **积分余额与明细** | 看板积分列 / `GET /api/credits?uid=<uid>` | 只读查询国内版积分余额、每个套餐包的额度/已用/剩余/发放原因/到期时间，以及最早到期提示。看板有「明细」弹窗，可按状态筛选、搜索、排序、强制刷新；弹窗内另有**用量明细**：按北京日与按模型看消耗（`GET /api/usage?uid=&days=7|30|90`，10 分钟缓存、按需手拉，prompt 原文绝不落盘） |
+| **积分用量明细** | `GET /api/usage?uid=<uid>&days=<1-90>` | 只读查询最近 N 天（含今天，缺省 7，10 分钟缓存）的积分消耗：按**北京日**分桶的每日用量与按模型的聚合（总消耗/次数）。只给聚合数据——对话原文（prompt）在上游返回的明细里就被插件丢弃，**任何接口都拿不到** |
 | **小时排程** | 看板排程区 / `POST /api/settings` | **默认停用，且四条腿（`mp` 小程序 / `buddy` 盲盒 / `streak` 连登管家 / `travel` 旅行）默认都不排程——时间留空 = 不排**。启用后按**北京时间**运行：为某条腿显式配置小时窗口才会自动跑，同一北京日同一窗口只触发一次。**成长任务不在排程里**，只能手动或工具发起。**Buddy 盲盒会消耗成长能量**，不给明确授权绝不自动花；**小程序链式任务按天解锁**，可单独排程（默认不排） |
 | **账号导入 / 导出** | 看板「导入 / 导出」/ `/api/accounts/export`、`/api/accounts/import` | 导出 hub 同款 `workbuddy-accounts` JSON；导入走「预览 → 确认写入」两段式，**合并写回 magpie 的 `plugin-auth.json`——不只是本插件，magpie / 社区 WorkBuddy 插件也能直接使用**，写前自动备份。只同步国内版 |
 | **看板与入口卡** | 守护进程（默认 `:4390`，可用插件选项 `port` 固定）/ magpie 插件页 | 账号、任务、积分、实时步骤/SSE、排程、历史；magpie 入口卡显示看板地址，按当前访问 magpie 的主机 + 期望端口自动推导（默认 4390；被占用顺延时以 `state/daemon.json` 为准） |
@@ -183,6 +184,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 | `POST /api/account/toggle` | `{uid, tasksEnabled}` 参与任务开关 |
 | `POST /api/account/unfreeze` | `{uid}` 或 `{uids}` 解除 403/11140 冻结 |
 | `GET /api/credits` | `?uid=<uid>&refresh=0 或 1` 积分余额与套餐明细；缓存 10 分钟 |
+| `GET /api/usage` | `?uid=<uid>&days=1–90&refresh=0 或 1` 按北京日 / 按模型的积分消耗聚合；缓存 10 分钟（`days` 是缓存键），**只有显式请求才打上游**，prompt 原文不落盘 |
 | `GET /api/jobs/:id` | 查询某个 job |
 | `GET /api/history` | `?limit=200` 每次尝试一行；`trigger` 为 `schedule` 或 `manual` |
 | `GET /api/events` | SSE：`job` / `step` / `log` / `scheduler` / `accounts` / `credits` |
@@ -263,6 +265,7 @@ magpie plugin add /path/to/magpie-workbuddy-tasks
 | `lastFired.json` | 排程去重：北京日期 + 窗口 |
 | `daily-activity.json` | 每日活跃幂等账本：`{uid:"YYYY-MM-DD"}` |
 | `credits.json` | 积分余额缓存：`{uid: credits}`，10 分钟 TTL |
+| `usage.json` | 用量明细缓存：`{uid: {days, summary, updatedAt}}`，10 分钟 TTL（`days` 是缓存键） |
 | `streak.json` | 连登状态缓存：`{uid: streak}`，10 分钟 TTL（`/api/state` 只读投影它） |
 | `frozen.json` | 403/11140 冻结台账：`{uid:{at,code,message}}`，只有 `POST /api/account/unfreeze` 能删 |
 | `hub-imports.json` | 经 JSON 导入的账号台账（`imported` 展示标记） |
@@ -319,12 +322,13 @@ npm test
 
 即 `package.json` 里的 `node --test "tests/**/*.test.mjs" "tests-shell/**/*.test.mjs" "tests-e2e/**/*.test.mjs"`。注意：glob 由 **Node 自身的测试运行器展开**（v21+ 支持），不是 shell 展开 —— `node --test` 直接喂**目录**参数在本机 Node 24 下会 `MODULE_NOT_FOUND`（假失败陷阱）；Windows 的 cmd.exe 也不会展开 glob，所以必须用上面这种带引号的 glob 形态，两者都已实测可用。
 
-当前 **606 个测试全绿**，全部零真实网络：上游由脚本化假 WorkBuddy 提供，时钟可注入；覆盖限速红线、403/11140 冻结与解冻、签到回执细分、连登管家幂等与跳过、任务勾选、北京时间排程、Buddy 盲盒、小程序链式任务、积分解析、导入导出、凭据回写等。
+当前 **682 个测试全绿**，全部零真实网络：上游由脚本化假 WorkBuddy 提供，时钟可注入；覆盖限速红线、403/11140 冻结与解冻、签到回执细分、连登管家幂等与跳过、任务勾选、北京时间排程、Buddy 盲盒、小程序链式任务、积分解析、导入导出、凭据回写等。
 
 ## 更新日志
 
 完整记录见 [CHANGELOG.md](./CHANGELOG.md)。最近的版本：
 
+- **0.3.9**（2026-11-16）：一轮「对齐真机」的修复 + 三项新能力 —— 兑换奖励字段改认 `*_granted`（此前收益恒记 0）、补签改为按月取最近断点、连登日历脏数据防线、**良性 403 不再被当成风控冻结**、开盲盒不再覆盖在途旅行；新增**用量明细**（`GET /api/usage`，按北京日/按模型，prompt 原文不落盘）、Buddy 选中态修复与诊断、签到双拼法/双域兜底与领取后重查。口径参考 `88lin/workbuddy-auto-signin`（MIT），未采用 AGPL 项目（WorkDaddy）的任何代码。
 - **0.3.8**（2026-11-15）：修 issue #5 —— 守护进程端口不再从残留 `daemon.json` 继承（重启后不再粘在历史上的顺延端口上）；新增插件选项 `port` 可固定端口，入口卡推导地址与实际端口对齐；启动日志写明期望 vs 实际端口。
 - **0.3.7**（2026-11-14）：一轮加固（上游节奏 1s 红线下限收敛到唯一读取口径、请求体 null 归一、静态路径穿越防护、job 日志封顶 2000 行、SSE 心跳、排程去重表收缩、看板重绘保留焦点与选择）+ 两处修复（活动任务码判定收敛到唯一来源；守护进程重启不再被僵尸 pid 自锁；实时进度不再显示「没勾那类任务」的跳过行）。
 - **0.3.6**（2026-11-14）：任务勾选按腿精确分发（活动码 / 小程序码 / 成长码各归各腿）—— 修掉「只勾一个成长任务时小程序腿空跑一遍却显示完成」。
@@ -344,6 +348,12 @@ npm test
 - magpie 插件 API 与沙箱页规范来自 [usemagpie.ai](https://usemagpie.ai/docs/zh/plugins)；账号登录态由 `@magpie-community/opencode-workbuddy-auth` 提供。
 
 本项目与 WorkBuddy / 腾讯、magpie 官方均无隶属关系。
+
+## 参考与致谢
+
+- 行为口径参考 [`88lin/workbuddy-auto-signin`](https://github.com/88lin/workbuddy-auto-signin)（MIT）：签到主路径的已知业务 403 语义、补签候选规则、`arrive_at` 与奖励字段名等。
+- [`babygoton/WorkDaddy`](https://github.com/babygoton/WorkDaddy)（AGPL-3.0）仅用于对照与事实取证，**未采用其任何代码**（它依赖 Electron/CDP 注入桌面客户端，与本插件形态正交）。
+- magpie 与 WorkBuddy/CodeBuddy 由各自官方提供；本项目与它们无隶属关系。
 
 ## 许可
 

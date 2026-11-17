@@ -2,13 +2,13 @@
 
 # 模型实验室 · Model Lab
 
-**在 Magpie 中比较模型表现，并按计划持续测试。**
+**在 Magpie 中评测 AI 模型能力、比较推理表现，并按计划持续测试。**
 
-模型实验室把鹈鹕动画、模型指纹、糖果推理和自动测试放在同一个页面。直接使用 Magpie 已配置的供应商和模型，结果以紧凑卡片展示，可查看思考与输出用量、回放动画、追踪每日表现。
+模型实验室把鹈鹕 HTML 动画、模型指纹、糖果推理和定时自动测试放在同一个页面。可用于 AI 模型对比、推理能力观察及智商／智力趣味测试；趣味题结果不等同于正式智商评分。直接使用 Magpie 已配置的供应商和模型，可查看思考与输出用量、回放动画、追踪每日表现。
 
-**版本 1.0.0** · MIT · Magpie 0.1.2905+
+**版本 1.0.1** · MIT · Magpie 0.1.2905+
 
-Model Lab brings HTML animation comparisons, numeric model fingerprints, candy reasoning tests and per-model scheduled monitoring to Magpie. It uses your existing providers and keeps results locally.
+Model Lab evaluates and compares AI models in Magpie through HTML animations, model fingerprints, candy reasoning and IQ-style fun tests, with per-model scheduled monitoring. It uses your existing providers and keeps results locally. Puzzle results are not formal IQ scores.
 
 ## 能做什么
 
@@ -33,7 +33,7 @@ Model Lab brings HTML animation comparisons, numeric model fingerprints, candy r
 
 ### 本地安装包
 
-将 `magpie-pelican-bench-1.0.0.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
+将 `magpie-pelican-bench-1.0.1.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
 
 也可以在解压目录运行：
 
@@ -51,7 +51,7 @@ Windows 可使用 `tools/install.ps1`；Magpie 不在 PATH 中时，传入 `-Mag
 magpie plugin add github:xiaopeng66/magpie-model-lab
 ```
 
-需要固定版本时，在仓库地址后加 `#v1.0.0`。也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases/tag/v1.0.0) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
+可在仓库地址后加 `#v1.0.1` 固定安装本版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
 
 当前通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
 
@@ -68,8 +68,8 @@ magpie plugin add github:xiaopeng66/magpie-model-lab
 | 默认设置 | 数值 |
 | --- | --- |
 | 最大输出 | **64000 Token**；设为 **0** 时省略插件提供的输出上限 |
-| 手动批次并行数 | 动画 **2**，指纹／糖果 **3** |
-| 自动测试并行数 | **3**，在自动测试页的并行设置中调整 |
+| 手动批次并行数 | 动画 **2**，指纹／糖果 **3**；**0** 表示不设并行上限 |
+| 自动测试并行数 | **3**，在管理模型页直接调整；**0** 表示不设并行上限 |
 | 自动时刻数量 | 每模型、每测试类型、每计划日最多 **24 次** |
 | 结果保留时间 | **7 天**；模型和计划持续保留 |
 
@@ -82,7 +82,7 @@ magpie plugin add github:xiaopeng66/magpie-model-lab
 - 动画预览限制网络访问；模型依赖外部脚本、图片或字体时可能显示不完整。重播读取已保存文件，不再请求模型。
 - JSON 导出用于留档和分析，当前没有导入恢复入口；分享前请检查提示词、回复、账号标识与本机路径。
 
-详见 [使用说明](docs/usage.md)、[自动测试说明](docs/favorites-guide.md) 和 [1.0.0 更新记录](CHANGELOG.md)。
+详见 [使用说明](docs/usage.md)、[自动测试说明](docs/favorites-guide.md) 和 [更新记录](CHANGELOG.md)。
 
 ## 开发与许可
 

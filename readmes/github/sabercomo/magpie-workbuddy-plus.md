@@ -240,7 +240,7 @@ Magpie 的插件页面运行在不能联网的沙箱中，所以页面读取后�
 | 插件目录下 `page/data.js` | 给 Magpie 页面的看板快照，由后台服务改写 |
 | `~/Library/LaunchAgents/io.github.sabercomo.magpie-workbuddy-plus.plist` | macOS 后台启动配置（可选安装） |
 
-默认复用 `~/.config/magpie/plugin-auth.json` 的国内登录。Magpie 使用自定义配置目录时，遵循 `XDG_CONFIG_HOME`，也可以用 `WORKBUDDY_PLUS_MAGPIE_DIR` 指向其配置目录；`WORKBUDDY_PLUS_DIR` 可指定本插件数据目录。
+由 Magpie 启动时，插件默认从 Magpie 实际使用的数据目录读取 `plugin-auth.json`（包括 Windows 便携版和移动过的数据目录）。独立启动时默认读 `~/.config/magpie`，遵循 `XDG_CONFIG_HOME`，也可用 `WORKBUDDY_PLUS_MAGPIE_DIR` 指定 Magpie 数据目录；`WORKBUDDY_PLUS_DIR` 可指定本插件的数据目录。Windows 上若「添加账号」仍找不到 Magpie 命令，可在 Magpie「供应商」直接登录，或把 Magpie 安装目录加到 PATH 后重启 Magpie。
 
 **端口**：服务默认监听 `127.0.0.1:3439`。在 Magpie 中运行时，用插件选项修改：
 
@@ -259,7 +259,7 @@ magpie plugin options <插件名> '{"port":4389}'
 
 当前通过本机账号文件适配 Magpie，登录续期使用相同的文件锁与账号锁。Magpie 存储格式变化时可能需要更新本插件。发布源码不包含个人账号文件、配置或运行记录。
 
-服务只监听 `127.0.0.1`。在面板可填写 HTTP 代理；代理请求需要 Bun。Node.js 22+ 可以执行测试或运行不使用代理的服务。
+服务只监听 `127.0.0.1`。在面板可填写 HTTP 代理；代理请求需要 Bun。Node.js 22+ 可以执行测试或运行不使用代理的服务。若代理报 `503 Service Unavailable`，检查代理能否访问报错中列出的 WorkBuddy 域名；能直连时，也可以清空 HTTP 代理、保存后刷新。Magpie 跑在 Docker 或 NAS 上时，代理地址必须从运行 Magpie 的环境可达。
 
 </details>
 

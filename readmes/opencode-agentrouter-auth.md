@@ -1,6 +1,6 @@
 # AgentRouter 插件（magpie）
 
-给 magpie 接入 AgentRouter [国际站](https://agentrouter.org/)或[国内站](https://ps.air-outer.com/)：支持 API Key、GitHub 与系统访问令牌登录，提供模型调用、余额与用量查询、每日签到，以及**可自定义请求头**。
+给 magpie 接入 AgentRouter [国际站](https://agentrouter.org/)或[国内站](https://ps.air-outer.com/)：支持 API Key、GitHub 与系统访问令牌登录，提供模型调用、余额与用量查询、每日签到、**可自定义请求头**，以及可独立开关的文字替换、历史内联和 Codex 会话资源清理。
 
 ## 文档导航
 
@@ -8,10 +8,34 @@
 - [安全政策](<SECURITY.md>)：敏感信息处理与私密漏洞报告。
 
 - [优化设计与升级指南](<docs/OPTIMIZATION.md>)：问题背景、与参考项目的取舍、兼容边界、升级/回滚与本地验证。
-- [更新日志](<CHANGELOG.md>)：0.1.9 可配置限流等待、原生插件选项与历史版本的变化。
+- [更新日志](<CHANGELOG.md>)：0.1.10 会话资源清理、中文功能选项与历史版本的变化。
 - [本地签到说明](<LOCAL-CHECKIN.md>)：独立签到工具的使用与安全边界。
 
 > 仓库源码更新不等于 npm 发布或你的网关已升级。请按升级指南自行验证；不要把真实 Cookie、访问令牌、私有词表或抓包提交到仓库。
+
+### 0.1.10：会话资源清理与中文功能选项
+
+在 **AgentRouter 提供商编辑页** 的功能开关中配置以下选项，保存后下一次请求读取新值，无需重新登录。它们属于提供商的 `auth.options`，不是「插件 → 选项」里的 `retryAfterSeconds` JSON 配置。
+
+| 功能名称 | 选项键 | 默认值 |
+| --- | --- | --- |
+| 发送前替换本地词表中的文字 | `text-filter` | 开启；无词表时不替换 |
+| 内联发送完整的 Responses 历史 | `portable-responses` | 开启 |
+| 发送 Codex 客户端请求头 | `send-codex-headers` | 开启 |
+| 清理 Codex 会话的旧资源绑定（有损） | `codex-session-repair` | **关闭** |
+
+最后一项按提供的离线修复工具适配为**网关发送前清理**。支持确认提示的宿主会在开启时要求确认；关闭后下一次请求恢复原有处理，在途请求不回滚。此功能与中文选项说明从 0.1.10 起提供；仍使用 0.1.9 的宿主需要升级插件，升级不会自动开启有损清理。
+
+**风险与边界：**
+
+- 只处理 `POST .../responses` 的发送副本：删除 `previous_response_id`，清理已识别历史项中符合原脚本格式的服务端 ID、顶层加密字段，丢弃 compaction、仅引用条目、资源绑定的 reasoning 及仅有加密内容或资源引用的消息。丢弃的压缩/推理状态可能包含不可恢复的上下文，**不是无损修复**。
+- 保留明文聊天内容、助手 `output_text` / `refusal`、`phase`、引用注释、函数/自定义工具的 `call_id`、明文参数、自由文本 `input`、`namespace` 与结果；不递归修改工具数据、业务 ID、附件或未知条目。reasoning 的输入结构要求 ID，因此资源绑定的 reasoning 整项丢弃，不生成缺少 ID 的无效推理项。
+- 清理后没有输入时本地返回 `400 agent_router_session_repair_empty_input`；待清理工具项只有加密/历史引用，或缺少必需的明文数据、工具关联时返回 `400 agent_router_session_repair_opaque_tool`。这两种情况不发送上游请求，也不自动重试。
+- 遵循既有 **4 MiB UTF-8 / Request 副本 2 秒** 检查边界。超限、读取失败、压缩或非 JSON 正文、`/responses/compact`、显式 `conversation` 和未知输入形态不清理；透传不代表修复成功。
+- **不读取或修改客户端 JSONL、SQLite 或缓存，不在网关遍历本地子代理树。** 主会话与子代理的请求只要经过该提供商，分别接受相同开关控制；原工具的离线文件修复职责不被网关替代。不恢复只存在于旧上游资源的内容，也不保证跨资源调用成功。
+- 四个开关相互独立。实际清理或无损内联后设置 `store:false` 并移除失效的长度/摘要头；没有变化时保留原始正文。停用全部请求正文变换需要关闭 `codex-session-repair`、`portable-responses` 和 `text-filter`，认证头与响应诊断仍然工作。
+
+实现见 [session-repair.mjs](<session-repair.mjs>)，专项验证运行 `npm run test:session-repair`。旧宿主或没有 magpie 选项读取接口的 OpenCode 不会自动开启有损清理。
 
 ### 0.1.9：可配置 429 等待时间
 
@@ -27,7 +51,7 @@
 - **移除 LinuxDo OAuth 登录入口。** 真实验证结论：`connect.linux.do` 授权后回落到站点注册路由 `https://agentrouter.org/oauth/linuxdo`（并非请求里的 `/oauth/linuxdo/magpie` 子路径），站点前端在该路由挂载时立即请求 `/api/oauth/linuxdo`（真实验证记录到 1 次、HTTP 403）并跳转控制台，地址栏不再保留 `code`/`state`，插件侧手动回填在任何兑换请求之前即被拒绝。公开资料没有关于 LinuxDo redirect_uri 匹配语义的说明，站点前端确认该路由为精确匹配且没有任何可抑制自动兑换的标志位。
 - 移除范围包含 LinuxDo 方法、其常量、`/api/status` 的 `linuxdo_client_id` 读取与死代码 `codeOf`；GitHub 登录链路、提问形状与密钥筛选规则不变。
 
-> **本页登录流程适用于 0.1.9。** 下方命令固定该版本，安装前先查询 npm 官方 registry；源码版本号不等于已发布或你的网关已升级。0.1.7 曾发布 LinuxDo 登录入口，0.1.8 已将其移除，这不改变 0.1.7 已安装账号保存的数据。
+> **本页登录流程适用于 0.1.10。** 下方命令固定该版本，安装前先查询 npm 官方 registry；源码版本号不等于已发布或你的网关已升级。0.1.7 曾发布 LinuxDo 登录入口，0.1.8 已将其移除，这不改变 0.1.7 已安装账号保存的数据。
 
 ### 0.1.7：站点选择与 LinuxDo 登录
 
@@ -51,11 +75,11 @@
 
 ### 0.1.4 变更
 
-- 历史版本改进了系统令牌遮蔽输入和可选签到配置；当前操作请以下文 0.1.9 登录流程为准。
+- 历史版本改进了系统令牌遮蔽输入和可选签到配置；当前操作请以下文 0.1.10 登录流程为准。
 - 修复完整历史消息含空 `logprobs: []` 时漏掉内联重放的情况，保留工具关联、非空概率数据、引用注释和不透明状态。
 - 无法恢复仅存在于其他上游资源的历史或加密状态；这是范围受限的兼容补充，并非所有跨资源错误的通用解法。
 
-## 🚀 快速上手 (Quick Start)
+## 快速上手
 
 按以下步骤完成插件安装、账号配置与客户端接入；上游账号、网络与宿主版本仍需分别验证：
 
@@ -67,19 +91,19 @@
 
 ```bash
 # 在有 Node.js / npm 的终端查询目标版本；确认可用后再安装
-npm view opencode-agentrouter-auth@0.1.9 version --registry=https://registry.npmjs.org
+npm view opencode-agentrouter-auth@0.1.10 version --registry=https://registry.npmjs.org
 
 # Docker：查询成功后安装，容器名按你的实际部署修改
-docker exec magpie magpie plugin add npm:opencode-agentrouter-auth@0.1.9
+docker exec magpie magpie plugin add npm:opencode-agentrouter-auth@0.1.10
 
 # 或者，本地 / 原生进程部署
-magpie plugin add npm:opencode-agentrouter-auth@0.1.9
+magpie plugin add npm:opencode-agentrouter-auth@0.1.10
 ```
 
 - Docker 与原生进程命令二选一。安装后用 `magpie plugin list --json`（Docker 中在命令前加 `docker exec magpie`）核对插件，再在面板检查 AgentRouter 的插件选项和登录状态。
 - 如果版本查询返回 `E404`，该版本在所查 registry 尚不可用；不要把源码版本号当成 npm 已发布证明，可改用下方源码安装。若仅宿主安装失败，可运行 `magpie plugin registry` 检查它实际使用的 registry；查询命令不会替你修改宿主设置。
 - 已用本地目录安装的用户，继续更新原目录即可；不要直接再添加一份 npm 插件。先备份并确认宿主如何关联插件路径、认证及选项，再决定是否迁移，避免重复注册或丢失原配置。
-- 固定 `@0.1.9` 便于复现；省略版本会让宿主选择版本，但并不等同于更新所有插件。`magpie plugin update` 则可能更新其他插件，不作为本插件的定点升级步骤。
+- 固定 `@0.1.10` 便于复现；省略版本会让宿主选择版本，但并不等同于更新所有插件。`magpie plugin update` 则可能更新其他插件，不作为本插件的定点升级步骤。
 - 已通过 npm 安装的用户，升级或降级前须确认当前宿主的**单包替换方式以及认证/选项保留行为**；未确认前暂停操作，不直接重复执行 `plugin add`。旧版本也须经 npm 查询确认存在，不能假设仓库旧版本都已发布。下方[升级/回滚指南](<docs/OPTIMIZATION.md#11-升级与回退>)针对本地包/目录备份，不是已验证的 npm 定点降级流程。
 
 #### Docker 源码安装
@@ -107,9 +131,9 @@ magpie plugin add /path/to/agentrouter-magpie-plugin
 
 ---
 
-### 2. 登录并绑定账号（0.1.9）
+### 2. 登录并绑定账号（0.1.10）
 
-以下流程适用于已加载 0.1.9 的宿主，沿用 0.1.8 的登录方式；0.1.7 及更早版本的菜单不同（0.1.7 的 LinuxDo 入口已在 0.1.8 移除）。新账号运行交互式登录命令（升级既有账号不要求重新登录）：
+以下流程适用于已加载 0.1.10 的宿主，沿用 0.1.8 的登录方式；0.1.7 及更早版本的菜单不同（0.1.7 的 LinuxDo 入口已在 0.1.8 移除）。新账号运行交互式登录命令（升级既有账号不要求重新登录）：
 ```bash
 docker exec -it magpie magpie plugin login agentrouter
 # 非 Docker 环境直接运行：magpie plugin login agentrouter
@@ -202,7 +226,7 @@ docker exec magpie magpie quota agentrouter
 - `endpoint` / `apiBase` / `site` / `headers`：保留既有端点、站点与请求头能力。
 - `retryAfterSeconds`：已识别的 429 限流缺少上游等待提示时使用的等待秒数，默认 `10`，配置方法见下文。
 
-**当前插件选项仅支持布尔开关，没有新增 Cookie 设置页或任意文本选项。** 不要把凭据粘贴到布尔选项；高级字段只能通过已有宿主能力或下文的手动配置路径维护。
+**当前提供商功能选项仅支持布尔开关，没有新增 Cookie 设置页或任意文本选项。** 不要把凭据粘贴到布尔选项；高级字段只能通过已有宿主能力或下文的手动配置路径维护。插件级 JSON 配置中的 `retryAfterSeconds` 是独立的数值选项。
 
 ## 签到：GitHub 重新登录
 
@@ -286,7 +310,7 @@ AgentRouter 的网关只回应它认识的客户端 —— 白名单里是它**�
 
 所以请求头在这里不是装饰，是**决定成败**的东西。插件默认发 Codex CLI 的头，可通过开关和以下配置层控制：
 
-- **开关**（provider 编辑器里的 `Send the Codex client headers`）：默认开。关掉后不再发默认的 Codex 标识，只发你自己给的头 —— 适合你已经有别的可用标识时。
+- **开关**（提供商编辑器里的「发送 Codex 客户端请求头」）：默认开启。关闭后不再添加默认的 Codex 标识，仍发送自行配置的请求头和默认 `Accept`；适合已有其他可用客户端标识的情况。
 - **模型配置层**：宿主传入的 `provider.models[*].headers` 对象（provider 编辑器可在模型配置中保存这些头）
 - **provider 级**：宿主传入的 `provider.headers` 多行文本，覆盖模型配置层
 - **账号级**：既有账号的 `metadata.headers`（手动配置），覆盖前述配置层；当前登录流程不询问请求头
@@ -330,7 +354,9 @@ AgentRouter 的模型**不支持** `/v1/chat/completions`：
 - **不删改推理及 compaction 条目**，包括它们的 ID、摘要和加密内容。`store:false` 不会让加密状态跨资源通用；不同密钥无法解密时仍须原资源。
 - 非空引用注释、未知消息字段和未知条目类型保留原样，不为修复而静默丢失内容。文件/图像/容器等资源引用也不递归删除。
 - 只处理最多 4 MiB 的 JSON 请求；读取 Request 副本最多 2 秒，支持取消。超限、非 JSON、压缩正文和其他端点不改写。不会自动重试，更不会重放用户历史。
-- 关闭提供商选项 **Replay complete Responses items inline** 只关闭 ID 重写；若启用了下文的本地词表，文本过滤仍独立生效。两个选项都关闭才恢复原始正文透传。只有服务端引用、没有完整内联正文的旧会话，不保证仅升级插件就能继续。
+- 关闭提供商选项 **内联发送完整的 Responses 历史** 只停用无损内联；本地词表和默认关闭的有损清理独立生效。三个正文选项都关闭才恢复原始正文透传。只有服务端引用、没有完整内联正文的旧会话，不保证仅升级插件就能继续。
+
+以上是 `portable-responses` 的无损兼容边界；默认关闭的 `codex-session-repair` 是另一个有损模式，其删减范围与风险见页首说明。不能把开启清理后请求成功理解为原有上下文已完整恢复。
 
 当此错误仍出现，插件返回 `agent_router_resource_mismatch`，保留上游消息与可识别的 trace ID，说明需要完整内联历史或同一上游资源，而不是报成敏感词错误。
 
@@ -394,7 +420,7 @@ AgentRouter 在模型前面挂了自己的**内容过滤器**。它拒绝一段�
 
 ### 本地词表自动替换（0.1.3）
 
-提供商选项 **Filter configured prose before sending**（`text-filter`，默认开启）控制发送前替换。**没有词表或 `terms` 为空时不改正文**；不内置猜测词，不自动学习被拒的私密请求，不发送探测请求，也不追加重试。
+提供商选项 **发送前替换本地词表中的文字**（`text-filter`，默认开启）控制发送前替换。**没有词表或 `terms` 为空时不改正文**；不内置猜测词，不自动学习被拒的私密请求，不发送探测请求，也不追加重试。
 
 1. 将插件目录中的 [content-filter.example.json](<content-filter.example.json>) 复制为 `content-filter.local.json`，与 [index.mjs](<index.mjs>) 放在同一目录。magpie 使用的是**服务端安装目录**，不是浏览器本机目录。
 2. 仅填写自己确认需要替换的词；词表按字面量匹配，不支持正则。示例中的值仅为占位，不代表厂商拦截词：
@@ -412,7 +438,7 @@ AgentRouter 在模型前面挂了自己的**内容过滤器**。它拒绝一段�
 - 默认区分大小写；`caseSensitive:false` 可忽略大小写。按最长字面量优先、非重叠替换成 `[FILTERED]`，不递归替换生成的标记，不自动添加单词边界。跨越已有过滤标记或代码块结构分隔符的词条匹配会被保守跳过，避免再次过滤时改变代码边界；普通正文中的跨段落字面量仍可整体替换。短词可能命中更长词的一部分，配置前应自行评估。
 - **不改**工具调用参数、工具结果、工具 schema、业务 ID、模型名、metadata、文件/图片、推理/compaction/加密状态和服务端历史引用。Markdown 行内代码、根级反引号/波浪线围栏和未闭合代码段保守保留。含缩进代码的段落不改，但其前后独立段落仍可过滤；遇到引用/列表容器中的围栏，为避免误判结束位置，整个文本字段不改。带引用注释或未知字段的片段也不改。它不是通用的密钥防泄漏或数据防泄漏系统，不能保证屏蔽上述范围里的词。
 - 仅匹配可见的普通正文；保留被跳过内容可能意味着上游仍会拒绝。并非找到了厂商完整词表，也不保证对某次 `content-blocked` 有效。
-- 没有命中时，不因过滤而重新序列化请求；有命中时仅替换发送副本，清理旧长度/摘要头，不回写本地历史。独立的 `portable-responses` 选项仍可执行 ID 兼容处理。
+- 没有命中时，不因过滤而重新序列化请求；有命中时仅替换发送副本，清理旧长度/摘要头，不回写本地历史。独立的 `portable-responses` 和 `codex-session-repair` 仍可执行各自的历史处理。
 - 请求沿用 4 MiB UTF-8 / Request 副本 2 秒的边界。超限、无法读取、非 JSON、压缩正文按原有逻辑透传，**不是已过滤的证明**。
 - 词表最多 32 KiB、128 条；每条最多 256 个 UTF-16 代码单元，总计最多 8192。不存在/空词表视为停用；配置存在但 JSON、结构、编码或读取失败时，启用状态下拒绝创建 loader，而不是静默忽略。错误只给固定提示，不输出词条或请求正文。
 
@@ -618,13 +644,16 @@ docker exec magpie magpie plugin options word-guard '{
 
 ```bash
 npm test                 # Node.js 插件与本地签到回归
+npm run test:session-repair # 会话资源清理、开关与中文说明专项回归
+npm run test:policy      # PR 元数据规则回归
 npm run test:headers     # 需要 Python 3；仅执行维护脚本的 Python 部分，不调用 Docker
 ```
 
 ## 文件
 
-| `index.mjs` — 插件本体（provider + 自定义头 + 余额 + 签到 + GitHub / 系统访问令牌登录）
+- `index.mjs` — 插件本体（provider + 自定义头 + 余额 + 签到 + GitHub / 系统访问令牌登录）
 - `response.mjs` — HTTP / SSE 早期失败识别与有界流透传（安装时必须一起复制）
+- `session-repair.mjs` — 默认关闭的发送前会话资源清理，不修改本地日志或数据库（安装时必须一起复制）
 - `package.json` — 包描述
 - `set-ar-headers.sh` — 改请求头的小工具
 - `usage.test.mjs` — 额度读取、登录与 HTTP 错误回归测试
