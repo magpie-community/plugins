@@ -701,20 +701,13 @@ test("choices targeting translated tools are adapted and explicit required/force
   }
   assert.deepEqual(validateResponsesRequest({ model: MODEL, tools, tool_choice: { type: "function", name: CALL.name, namespace: "ns", future: true } }).tool_choice, { type: "function", name: "ns__verify_value", future: true })
 
-  // Unsupported hosted tools, invalid custom declarations, unpaired/malformed custom history,
-  // and undeclared or toolless forced/required choices reject with local 400 before dispatch.
   const { request, sent } = await fixture()
   const validCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "patch" }
   const validOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
   const rejected = [
-    { tools: [{ type: "web_search" }] },
-    { tools: [STRICT_TOOL, { type: "web_search_preview" }] },
-    { tools: [{ type: "file_search" }] },
-    { tools: [{ type: "code_interpreter" }] },
-    { tools: [{ type: "computer_use_preview" }] },
-    { tools: [{ type: "mcp", server_label: "srv" }] },
-    { tools: [{ type: "namespace", name: "ns", tools: [{ type: "web_search" }] }] },
     { tools: [{ type: "namespace", name: "empty", tools: [] }] },
+    { tools: [{ type: "unknown_tool" }] },
+    { tools: [{ type: "namespace", name: "ns", tools: [{ type: "unknown_tool" }] }] },
     { tools: [{ type: "custom", name: "" }] },
     { tools: [{ type: "custom", name: STRICT_TOOL.name }, STRICT_TOOL] },
     { tools: [custom, { type: "custom", name: "apply_patch", format: { type: "text" } }] },
@@ -733,7 +726,6 @@ test("choices targeting translated tools are adapted and explicit required/force
     { input: [USER, validOut, validCall] },
     { input: [USER, { ...validCall, input: 123 }, validOut] },
     { input: [USER, validCall, { type: "function_call_output", call_id: "cp1", output: "ok" }] },
-    { input: [USER, { type: "web_search_call", id: "ws_1", status: "completed" }] },
   ]
   for (const extra of rejected) {
     const response = await request({ model: MODEL, input: [USER], ...extra })
@@ -759,6 +751,39 @@ test("choices targeting translated tools are adapted and explicit required/force
   const passthrough = validateResponsesRequest({ model: MODEL, input: [USER, { ...validCall, extra_meta: { t: 1 } }, validOut] })
   assert.deepEqual(passthrough.input[1].extra_meta, { t: 1 })
   assert.equal(passthrough.input[1].type, "function_call")
+})
+
+test("hosted tools and hosted-tool history are dropped before dispatch while hosted-targeting choices still reject", () => {
+  const mixed = validateResponsesRequest({ model: MODEL, input: [USER], tools: [STRICT_TOOL, { type: "web_search", external_web_access: false }] })
+  assert.deepEqual(mixed.tools, [STRICT_TOOL])
+
+  for (const type of ["web_search", "web_search_preview", "file_search", "code_interpreter", "computer_use_preview", "mcp"]) {
+    const top = validateResponsesRequest({ model: MODEL, input: [USER], tools: [STRICT_TOOL, { type }] })
+    assert.deepEqual(top.tools, [STRICT_TOOL], type)
+    const nested = validateResponsesRequest({ model: MODEL, input: [USER], tools: [{ type: "namespace", name: "ns", tools: [STRICT_TOOL, { type }] }] })
+    assert.deepEqual(nested.tools, [{ ...STRICT_TOOL, name: "ns__verify_value" }], type)
+  }
+
+  const allHosted = validateResponsesRequest({ model: MODEL, input: [USER], tools: [{ type: "web_search", external_web_access: false }] })
+  assert.equal("tools" in allHosted, false)
+  assert.equal("include" in allHosted, false)
+  for (const tool_choice of ["auto", "none"]) {
+    const relaxed = validateResponsesRequest({ model: MODEL, input: [USER], tools: [{ type: "web_search", external_web_access: false }], tool_choice })
+    assert.equal("tools" in relaxed, false, tool_choice)
+    assert.equal("tool_choice" in relaxed, false, tool_choice)
+  }
+
+  for (const tool_choice of ["required", { type: "web_search" }, { type: "allowed_tools", mode: "required", tools: [{ type: "web_search" }] }]) {
+    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [USER], tools: [{ type: "web_search", external_web_access: false }], tool_choice }), { code: "invalid-request" }, JSON.stringify(tool_choice))
+  }
+
+  const fnOut = { type: "function_call_output", call_id: CALL.call_id, output: "{}" }
+  const continued = validateResponsesRequest({ model: MODEL, input: [USER, { type: "web_search_call", id: "ws_1", status: "completed" }, CALL, fnOut], tools: [STRICT_TOOL] })
+  assert.deepEqual(continued.input, [USER, CALL, fnOut])
+
+  for (const tools of [[{ type: "unknown_tool" }], [{ type: "namespace", name: "ns", tools: [{ type: "unknown_tool" }] }]]) {
+    assert.throws(() => validateResponsesRequest({ model: MODEL, input: [USER], tools }), { code: "invalid-request" }, JSON.stringify(tools))
+  }
 })
 
 test("a streamed forced function call and result round trip to an agent-derived final reply", async () => {

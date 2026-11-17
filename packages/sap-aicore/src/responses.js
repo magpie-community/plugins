@@ -48,10 +48,11 @@ function validateCustomTool(tool) {
 /** @param {Record<string, unknown>} tool @param {string} alias */
 function translateCustomTool(tool, alias) {
   validateCustomTool(tool)
-  const grammar = isObject(tool.format) && tool.format.type === "grammar" &&
-    typeof tool.format.definition === "string" && tool.format.definition
+  const rawFormat = isObject(tool.format) ? tool.format : null
+  const grammar = rawFormat !== null && rawFormat.type === "grammar" &&
+    typeof rawFormat.definition === "string" && rawFormat.definition
   const format = grammar
-    ? { description: `Input must match the ${typeof tool.format.syntax === "string" ? tool.format.syntax + " " : ""}grammar:\n${tool.format.definition}` }
+    ? { description: `Input must match the ${typeof rawFormat.syntax === "string" ? rawFormat.syntax + " " : ""}grammar:\n${rawFormat.definition}` }
     : {}
   return {
     type: "function",
@@ -122,6 +123,7 @@ function toolTranslation(body) {
       if (!isObject(tool) || typeof tool.type !== "string") {
         throw invalid("Each tool in \"tools\" must be an object with a supported \"type\".")
       }
+      if (HOSTED_TOOL_TYPES.has(tool.type)) continue
       if (tool.type === "function") {
         if (typeof tool.name === "string" && tool.name) {
           if (identities.has(identityKey("", tool.name))) throw invalid("Conflicting tool definitions for the same name.")
@@ -149,6 +151,7 @@ function toolTranslation(body) {
           if (!isObject(nested) || typeof nested.type !== "string") {
             throw invalid("Each tool in a namespace must be an object with a supported \"type\".")
           }
+          if (HOSTED_TOOL_TYPES.has(nested.type)) continue
           if (nested.type === "function") {
             if (typeof nested.name !== "string" || !nested.name) {
               throw invalid("A namespaced function tool must have a non-empty string name.")
@@ -172,9 +175,6 @@ function toolTranslation(body) {
   const customOutputsById = new Set()
   for (const item of Array.isArray(body.input) ? body.input : []) {
     if (!isObject(item) || typeof item.type !== "string") continue
-    if (UNSUPPORTED_HISTORY.has(item.type)) {
-      throw invalid("Unsupported hosted tool history item in \"input\".")
-    }
     if (item.type === "function_call") {
       if ("namespace" in item && item.namespace !== undefined && item.namespace !== null) {
         if (!namespaced(item)) throw invalid("A namespaced function_call requires non-empty string namespace and name.")
@@ -293,6 +293,7 @@ function translateTools(tools, translation) {
     if (isObject(tool) && tool.type === "namespace" && Array.isArray(tool.tools)) {
       for (const nested of tool.tools) {
         if (!isObject(nested)) continue
+        if (typeof nested.type === "string" && HOSTED_TOOL_TYPES.has(nested.type)) continue
         const alias = translation.forward.get(identityKey(tool.name, nested.name))
         if (!alias) throw invalid("A namespaced tool must have a non-empty string name.")
         if (nested.type === "function") {
@@ -492,7 +493,13 @@ export function validateRequest(body) {
   if (translation.back.size) translations.set(out, translation)
   if (Array.isArray(b.tools)) {
     const { tools, changed } = translateTools(b.tools, translation)
-    if (changed) out.tools = tools
+    if (changed) {
+      if (tools.length > 0) out.tools = tools
+      else if (b.tools.length > 0) {
+        delete out.tools
+        if (out.tool_choice === "auto" || out.tool_choice === "none") delete out.tool_choice
+      }
+    }
   }
   const hasTools = Array.isArray(out.tools) && out.tools.length > 0
   if ("tool_choice" in out && out.tool_choice !== undefined) {
@@ -502,10 +509,13 @@ export function validateRequest(body) {
     const needsTranslation = b.input.some(item => isObject(item) && (
       item.type === "custom_tool_call" ||
       item.type === "custom_tool_call_output" ||
-      (item.type === "function_call" && namespaced(item))
+      (item.type === "function_call" && namespaced(item)) ||
+      (typeof item.type === "string" && UNSUPPORTED_HISTORY.has(item.type))
     ))
     if (needsTranslation) {
-      out.input = b.input.map(item => {
+      out.input = b.input.filter(item =>
+        !(isObject(item) && typeof item.type === "string" && UNSUPPORTED_HISTORY.has(item.type))
+      ).map(item => {
         if (!isObject(item)) return item
         if (item.type === "function_call" && namespaced(item)) {
           const { namespace, ...rest } = item
