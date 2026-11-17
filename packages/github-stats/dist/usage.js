@@ -1,3 +1,4 @@
+import { calendarRange } from "./calendar.js";
 function row(v) {
     if (!v || typeof v !== "object" || Array.isArray(v))
         throw new Error("Magpie Usage API 返回了不兼容的数据。");
@@ -104,7 +105,7 @@ async function fetchSummary(config, period, fetcher) {
     }
     return row(raw);
 }
-export async function readUsage(config, fetcher = fetch) {
+export async function readUsage(config, fetcher = fetch, now = new Date()) {
     const raw = await fetchSummary(config, config.period, fetcher);
     if (config.period === "all" && raw.bucket === "week") {
         // Older histories switch to weekly buckets. Request bounded day ranges from
@@ -128,5 +129,23 @@ export async function readUsage(config, fetcher = fetch) {
         raw.series = series;
         raw.bucket = "day";
     }
-    return normalizeUsage(raw, config.period);
+    const stats = normalizeUsage(raw, config.period);
+    if (config.showHeatmap) {
+        const asOf = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const { start } = calendarRange(config.heatmapView, asOf);
+        // This range is independent of the headline period. Never paint days outside
+        // a 7-day headline query as zero in a month calendar.
+        const days = [];
+        for (let from = new Date(start + "T00:00:00Z"), end = new Date(asOf + "T00:00:00Z"); from <= end; from.setUTCDate(from.getUTCDate() + 30)) {
+            const until = new Date(Math.min(end.getTime(), from.getTime() + 29 * 86400000));
+            const period = `${from.toISOString().slice(0, 10)}..${until.toISOString().slice(0, 10)}`;
+            const part = await fetchSummary(config, period, fetcher);
+            if (part.period !== period)
+                throw new Error("Magpie 活跃图日期范围不匹配。");
+            const normalized = normalizeUsage({ ...part, period: config.period }, config.period);
+            days.push(...normalized.days.filter((d) => d.date >= period.slice(0, 10) && d.date <= period.slice(-10)));
+        }
+        stats.heatmap = { asOf, days };
+    }
+    return stats;
 }

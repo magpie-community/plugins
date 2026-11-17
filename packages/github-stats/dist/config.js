@@ -2,12 +2,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdir, readFile, writeFile, rename, rm, open } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { processExists } from "./proc.mjs";
 export const defaults = {
     repository: "",
     branch: "",
     folder: "assets",
     period: "30d",
     theme: "aurora",
+    heatmapView: "month",
     width: 520,
     topModels: 3,
     showCost: false,
@@ -77,6 +79,8 @@ export function validateConfig(raw) {
     if (!["7d", "30d", "all"].includes(c.period) ||
         !["aurora", "minimal", "cyberpunk"].includes(c.theme))
         throw new Error("统计周期或主题无效。");
+    if (!["month", "week"].includes(c.heatmapView))
+        throw new Error("活跃图视图必须是月或周。 ");
     if (!["keychain", "github-cli"].includes(c.credentialSource))
         throw new Error("凭据来源无效。");
     if (!Number.isInteger(c.width) ||
@@ -132,14 +136,10 @@ export async function withLock(dir, work) {
             // A new owner may not have written its PID yet. Never remove that lock.
             if (!Number.isSafeInteger(pid) || pid < 1)
                 throw new Error("另一个操作正在进行，请稍后重试。");
-            try {
-                process.kill(pid, 0);
+            // Shared Magpie process probe handles Linux zombies and conservatively
+            // preserves a lock when permissions or an unknown OS error hide its owner.
+            if (processExists(pid))
                 throw new Error("另一个操作正在进行，请稍后重试。");
-            }
-            catch (err) {
-                if (err.code !== "ESRCH")
-                    throw err;
-            }
             await rm(path, { force: true });
         }
     }

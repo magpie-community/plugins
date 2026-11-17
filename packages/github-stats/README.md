@@ -1,6 +1,6 @@
-# Magpie GitHub Stats
+> 社区候选插件，等待维护者审核与发布；独立 GitHub 版本已可安装。
 
-Community package candidate: `@magpie-community/page-github-stats`. After this contribution is merged, install with `magpie plugin add @magpie-community/page-github-stats`. Until then the independent GitHub package below is available.
+# Magpie GitHub Stats
 
 在 **Magpie 侧栏**配置自己的 AI 用量卡片，每天自动同步到 GitHub Profile。无需独立服务器、数据库或统计平台。
 
@@ -35,7 +35,7 @@ magpie plugin add github:wolfvoid/magpie-github-stats
 2. 选择授权方式：
    - **推荐：Fine-grained PAT**，仅授权目标仓库，给予 **Contents: read and write**。在插件页输入并保存。macOS 使用钥匙串，Linux 使用 Secret Service，Windows 使用当前用户 DPAPI 加密。
    - 已有 `gh auth login` 的电脑可选择 **GitHub CLI 登录**。插件调用 `gh auth token --hostname github.com`，不会复制该 Token 到配置文件。此方式继承该登录的权限，不会自动缩小为单仓库权限。`gh` 必须在后台任务的 PATH 中。
-3. 选择周期、主题和宽度。可选择 3–5 个模型，开关趋势、热力图、模型排名与估算费用。
+3. 选择周期、主题和宽度，以及 **DAILY CALLS 视图（月／周）**。可选择 3–5 个模型，开关趋势、热力图、模型排名与估算费用。
 4. 开启 **每日自动同步**，保存配置；首次到期任务会立即补同步，也可点 **立即同步**。
 5. 点 **复制 HTML**，把代码放进 Profile README。公开展示需使用公开仓库。
 
@@ -45,12 +45,12 @@ magpie plugin add github:wolfvoid/magpie-github-stats
 
 - Requests、Tokens、Active Days；最近 7 天、30 天或 All Time。
 - Neon Aurora、Minimal、Cyberpunk 三种主题，各有深浅色版本；320–800 px 宽度（页面预设 320/520/640）。
-- 最多 5 个模型、Token 趋势、每日请求活跃条、可选 Estimated Cost。
+- 最多 5 个模型、Token 趋势、每日请求日历、可选 Estimated Cost。
 - **Tokens = input + output，不含 cache_read/cache_write**，与 Magpie 官方 summary 的 `Tokens()` 一致；reasoning 不重复相加。
 - Requests 包含该汇总中计入的失败/取消请求。Active Days 按 Magpie 返回的本地日期中 `calls > 0` 的天数统计。
 - 同名模型合并跨供应商统计；百分比以全部 Token 为分母，Top N 不一定加起来为 100%。仅公开模型 ID，不公开供应商、账号或自定义备注。
 - All Time 使用当前 Magpie 本机 summary 的历史范围。历史被清理后，范围会缩短；它不是无限归档。若 Magpie 对长历史返回周桶，会使用 30 天分段的同一 summary API 取得日统计，避免混用 Requests 页的不同统计范围。
-- 趋势显示所选周期最后 7/30 天；活跃条显示该周期最近最多 30 天（未覆盖部分为空）。
+- 趋势显示所选周期最后 7/30 天；DAILY CALLS 可独立选择本月日历或本周一至周日，按本地日期取数。颜色表示每日调用量，同时显示日期与次数；未来日期用横线标记，缺失日期补零，跨月周正确对齐。选择月视图不会因顶部只统计 7 天而漏掉月初数据。
 - 费用为 Magpie 给出的 USD 估算，未定价调用会标注排除；并不等于真实账单。默认关闭。
 
 ## 自动任务

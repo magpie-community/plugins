@@ -6,6 +6,7 @@ export interface Config {
   folder: string;
   period: Period;
   theme: Theme;
+  heatmapView: "month" | "week";
   width: number;
   topModels: number;
   showCost: boolean;
@@ -35,6 +36,7 @@ export interface Stats {
   estimatedCost: number;
   unpriced: number;
   days: Day[];
+  heatmap?: { asOf: string; days: Day[] };
   models: Model[];
 }
 export interface SyncState {

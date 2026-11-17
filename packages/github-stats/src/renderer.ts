@@ -1,3 +1,4 @@
+import { calendarCells } from "./calendar.js";
 import type { Config, Stats } from "./types.js";
 export const escapeXml = (s: unknown) =>
   String(s).replace(
@@ -209,21 +210,75 @@ export function renderCard(
     y += 3;
   }
   if (c.showHeatmap) {
-    const recent = s.days.slice(-30),
-      max = Math.max(1, ...recent.map((d) => d.requests));
+    const asOf = s.heatmap?.asOf || s.days.at(-1)?.date || s.since;
+    const calendar = calendarCells(
+      c.heatmapView,
+      asOf,
+      s.heatmap?.days || s.days,
+    );
+    const max = Math.max(1, ...calendar.cells.map((d) => d.requests));
     text(pad, y, "DAILY CALLS", 8, p.muted, 'letter-spacing="1"');
-    y += 9;
-    const gap = 3,
-      size = Math.min(12, (w - pad * 2 - 29 * gap) / 30);
-    for (let i = 0; i < 30; i++) {
-      const d = recent[i - (30 - recent.length)],
-        level = d?.requests ? Math.max(0.2, d.requests / max) : 0;
-      content.push(
-        `<rect x="${(pad + i * (size + gap)).toFixed(2)}" y="${y}" width="${size.toFixed(2)}" height="${size.toFixed(2)}" rx="2" fill="${level ? p.purple : p.line}" fill-opacity="${level || 1}"><title>${escapeXml(d ? `${d.date}: ${d.requests} requests` : "No activity")}</title></rect>`,
+    text(
+      w - pad,
+      y,
+      c.heatmapView === "month"
+        ? `MONTH · ${asOf.slice(0, 7)}`
+        : `WEEK · ${calendar.start.slice(5)} – ${calendar.end.slice(5)}`,
+      8,
+      p.muted,
+      'text-anchor="end"',
+    );
+    y += 18;
+    const gap = 5,
+      cellW = (w - pad * 2 - gap * 6) / 7,
+      cellH = compactLayout ? 32 : 36;
+    for (const [i, label] of [
+      "MON",
+      "TUE",
+      "WED",
+      "THU",
+      "FRI",
+      "SAT",
+      "SUN",
+    ].entries())
+      text(
+        pad + i * (cellW + gap) + cellW / 2,
+        y,
+        label,
+        7,
+        p.muted,
+        'text-anchor="middle"',
       );
+    y += 8;
+    for (const d of calendar.cells) {
+      const x = pad + (d.index % 7) * (cellW + gap),
+        cy = y + Math.floor(d.index / 7) * (cellH + gap);
+      const level = d.requests ? Math.max(0.2, d.requests / max) : 0;
+      content.push(
+        `<g data-date="${d.date}" data-future="${d.future}"><title>${d.date}: ${d.future ? "Future date" : `${d.requests} requests`}</title><rect x="${x.toFixed(2)}" y="${cy}" width="${cellW.toFixed(2)}" height="${cellH}" rx="4" fill="${level ? p.purple : p.line}" fill-opacity="${d.future ? 0.25 : level || 1}"/>`,
+      );
+      text(
+        x + 5,
+        cy + 11,
+        Number(d.date.slice(-2)),
+        8,
+        d.future ? p.muted : p.fg,
+      );
+      text(
+        x + cellW - 5,
+        cy + cellH - 5,
+        d.future ? "—" : compact(d.requests),
+        compactLayout ? 8 : 9,
+        p.fg,
+        'text-anchor="end"',
+      );
+      content.push("</g>");
     }
-    y += size + 17;
+    y +=
+      Math.ceil((calendar.offset + calendar.cells.length) / 7) * (cellH + gap) +
+      10;
   }
+
   if (c.showCost) {
     text(
       pad,

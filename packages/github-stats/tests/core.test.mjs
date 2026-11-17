@@ -146,12 +146,15 @@ test("README supports remote assets and encoded branch names", () => {
 });
 test("usage client reads only loopback summary and refuses redirects", async () => {
   let calls = 0;
-  const s = await readUsage(config, async (url, init) => {
-    calls++;
-    assert.equal(url, "http://127.0.0.1:3425/v1/magpie/usage?period=30d");
-    assert.equal(init.redirect, "error");
-    return Response.json(source());
-  });
+  const s = await readUsage(
+    { ...config, showHeatmap: false },
+    async (url, init) => {
+      calls++;
+      assert.equal(url, "http://127.0.0.1:3425/v1/magpie/usage?period=30d");
+      assert.equal(init.redirect, "error");
+      return Response.json(source());
+    },
+  );
   assert.equal(s.tokens, 1200);
   assert.equal(calls, 1);
 });
@@ -162,30 +165,33 @@ test("weekly All Time histories expand using bounded summary date ranges", async
   const date = (d) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   let calls = 0;
-  const s = await readUsage({ ...config, period: "all" }, async (url) => {
-    calls++;
-    const p = new URL(url).searchParams.get("period");
-    if (p === "all")
+  const s = await readUsage(
+    { ...config, period: "all", showHeatmap: false },
+    async (url) => {
+      calls++;
+      const p = new URL(url).searchParams.get("period");
+      if (p === "all")
+        return Response.json({
+          ...source(),
+          period: "all",
+          bucket: "week",
+          since: date(start) + "T00:00:00Z",
+        });
       return Response.json({
         ...source(),
-        period: "all",
-        bucket: "week",
-        since: date(start) + "T00:00:00Z",
+        period: p,
+        bucket: "day",
+        series: [
+          {
+            time: p.split("..")[0] + "T00:00:00Z",
+            calls: 1,
+            input: 10,
+            output: 1,
+          },
+        ],
       });
-    return Response.json({
-      ...source(),
-      period: p,
-      bucket: "day",
-      series: [
-        {
-          time: p.split("..")[0] + "T00:00:00Z",
-          calls: 1,
-          input: 10,
-          output: 1,
-        },
-      ],
-    });
-  });
+    },
+  );
   assert.equal(calls, 3);
   assert.equal(s.activeDays, 2);
   assert.equal(s.tokens, 1200);
