@@ -45,8 +45,13 @@
 //                                 above the threshold.
 //
 // The system prompt and the recent window are never touched. In the
-// default mode the first user message (the task) is kept whole too; on a
-// saccade it is the old task, and collapses with the rest. Tool calls and
+// default mode the first user message (the task) is kept whole too. On a
+// saccade the old history collapses with it — except two things, in both
+// modes: the message the session opened with (the state: the task, or a
+// compaction summary the harness wrote) and the answer to the model's
+// most recent call of a target it has called more than once (the working
+// set: cutting it makes the model read it again, and the re-reads are
+// what fill the harness's own context). Tool calls and
 // their ids are never touched — an old tool result is shortened or
 // noted, not removed, so every tool_call still has its answer.
 // Already-shortened content is short enough to pass the length guard, so
@@ -109,8 +114,21 @@ export function onRequest(body, ctx) {
     // block itself is never touched — in either mode.
     const hasState = cfg.stateMarker ? hasStateBlock(list, cfg.stateMarker) : false
     const taskEnd = hasState ? 0 : leadingUserEnd(list, start)
+    // The working set is kept whole — as a hole in the cut, not by pulling
+    // the window back. The cut is a prefix, so keeping one old message
+    // whole by widening the window would keep everything after it too
+    // (2026-11-17 review: an 800-message session then sent 100% uncut).
+    // Leaving a hole costs the working set itself and nothing else.
+    const pins = start > 0 ? workingSetPins(list) : new Set()
     let changed = false
     for (let i = 0; i < start; i++) {
+      if (pins.has(i)) continue
+      // The opening message is the session's state — the task it began
+      // with, or a compaction summary the harness wrote after compacting.
+      // Either way it is not history to thin: in both modes it stays whole.
+      // An agent that carries its own state block has said what the opening
+      // message said, so that message loses the exemption as before.
+      if (i === 0 && !hasState) continue
       if (!saccade && i < taskEnd) continue
       const item = list[i]
       if (cfg.stateMarker && carriesState(item, cfg.stateMarker)) continue
@@ -140,6 +158,152 @@ function windowStart(list, keepCount, keepTokens) {
     if (used > keepTokens) break
   }
   return Math.min(byCount, Math.max(0, i + 1))
+}
+
+// ── the working set ────────────────────────────────────────────────────
+// A tool call the model has made more than once is the working set: the
+// content it keeps coming back to. Cutting it does not save money. The
+// model reads it again — and every re-read adds raw messages to the
+// conversation the harness counts, which is what fills its context and
+// trips its compaction (2026-11-17, a Claude Code session thrashing on
+// autocompact: the same five files read every turn).
+//
+// So the window may slide over history, but never past the newest result
+// of something the model reads repeatedly. Everything else still thins.
+function workingSetPins(list) {
+  const callsById = new Map()   // call id -> the calls carrying it, in call order
+  const waitingByName = new Map() // name -> calls without an id, oldest first
+  const calls = new Map()   // key -> [call, call, ...]
+  for (let i = 0; i < list.length; i++) {
+    for (const c of callsOf(list[i])) {
+      const key = callKey(c)
+      const entry = { id: c.id, key, callIndex: i, resultIndex: undefined }
+      if (!calls.has(key)) calls.set(key, [])
+      calls.get(key).push(entry)
+      // a call with an id is paired by that id, oldest first: a client that
+      // reuses one id for several calls still gets its answers in the order
+      // the calls were made. a call without an id is paired by name and
+      // position, the same way.
+      if (c.id) {
+        if (!callsById.has(c.id)) callsById.set(c.id, [])
+        callsById.get(c.id).push(entry)
+      } else {
+        if (!waitingByName.has(c.name)) waitingByName.set(c.name, [])
+        waitingByName.get(c.name).push(entry)
+      }
+    }
+    for (const r of resultsOf(list[i])) {
+      let entry
+      if (r.id) {
+        const sameId = callsById.get(r.id)
+        if (sameId) entry = sameId.find((e) => e.resultIndex === undefined)
+      }
+      if (!entry && r.name) {
+        const waiting = waitingByName.get(r.name)
+        if (waiting && waiting.length) entry = waiting.shift()
+      }
+      if (entry && entry.resultIndex === undefined) entry.resultIndex = i
+    }
+  }
+  const pins = new Set()
+  for (const [, listForKey] of calls) {
+    if (listForKey.length < 2) continue
+    // the answer to the model's most recent call of that target: the one it
+    // asked for last is the one it is working from, whatever order the
+    // answers arrived in
+    let newest = null
+    for (const c of listForKey) {
+      if (c.resultIndex === undefined) continue
+      if (!newest || c.callIndex > newest.callIndex) newest = c
+    }
+    if (newest) pins.add(newest.resultIndex)
+  }
+  return pins
+}
+
+// A call is named the same across the four protocols by name plus its
+// arguments. Arguments arrive as a JSON string (Chat, Responses) or an
+// object (Anthropic input, Gemini args); both are compared by their text.
+// Normalising a JSON string is the expensive part of the working-set
+// scan, and this runs on every request over the whole history. The same
+// arguments come back turn after turn (that is what a working set is), so
+// the result is memoised; the cache is dropped wholesale when it grows
+// past a few hundred entries rather than aged out one by one.
+const argKeyCache = new Map()
+
+function normalizeArgs(args) {
+  if (args && typeof args === "object") return stableJSON(args)
+  if (typeof args !== "string") return ""
+  const trimmed = args.trim()
+  const cached = argKeyCache.get(trimmed)
+  if (cached !== undefined) return cached
+  let out
+  try {
+    // Chat and Responses send arguments as a JSON string; the same call
+    // written with another key order or spacing must still count as the
+    // same call, or the working set is missed.
+    out = stableJSON(JSON.parse(trimmed))
+  } catch {
+    out = trimmed.replace(/\s+/g, " ")
+  }
+  if (argKeyCache.size > 512) argKeyCache.clear()
+  argKeyCache.set(trimmed, out)
+  return out
+}
+
+function callKey(c) {
+  return c.name + " " + normalizeArgs(c.args)
+}
+
+function stableJSON(v) {
+  if (Array.isArray(v)) return "[" + v.map(stableJSON).join(",") + "]"
+  if (v && typeof v === "object") return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stableJSON(v[k])).join(",") + "}"
+  return JSON.stringify(v)
+}
+
+// The call half and the answer half, from every shape. A shape that leaves
+// the id out (older Gemini requests, the legacy functions API) is paired by
+// name and position instead — the name is never folded into the id, since
+// that would let it collide with a call whose id happens to be that name.
+function callsOf(it) {
+  const out = []
+  if (!it || typeof it !== "object") return out
+  if (it.type === "function_call") out.push({ id: it.call_id || it.id, name: it.name, args: it.arguments })
+  // the legacy functions API carries no id on either side: both are paired
+  // by name and position
+  if (it.function_call) out.push({ id: undefined, name: it.function_call.name, args: it.function_call.arguments })
+
+  if (Array.isArray(it.tool_calls)) for (const tc of it.tool_calls) {
+    if (tc && tc.function) out.push({ id: tc.id, name: tc.function.name, args: tc.function.arguments })
+  }
+  const parts = Array.isArray(it.content) ? it.content : it.parts
+  if (Array.isArray(parts)) for (const b of parts) {
+    if (!b || typeof b !== "object") continue
+    if (b.type === "tool_use") out.push({ id: b.id, name: b.name, args: b.input })
+    // Gemini puts the call id inside functionCall, not on the part. A
+    // request without ids leaves it undefined: that call is paired by
+    // name and position instead, not by a made-up id.
+    if (b.functionCall) out.push({ id: b.functionCall.id, name: b.functionCall.name, args: b.functionCall.args })
+  }
+  return out
+}
+
+function resultsOf(it) {
+  const out = []
+  if (!it || typeof it !== "object") return out
+  if (it.type === "function_call_output") out.push({ id: it.call_id })
+  if (it.role === "tool") out.push({ id: it.tool_call_id })
+  if (it.role === "function") out.push({ id: undefined, name: it.name })
+  const parts = Array.isArray(it.content) ? it.content : it.parts
+  if (Array.isArray(parts)) for (const b of parts) {
+    if (!b || typeof b !== "object") continue
+    if (b.type === "tool_result") out.push({ id: b.tool_use_id })
+    // a response without an id is paired by name and position; making its
+    // name into an id would let it collide with a call whose id happens to
+    // be that name (2026-11-17 round 3)
+    if (b.functionResponse) out.push({ id: b.functionResponse.id, name: b.functionResponse.name })
+  }
+  return out
 }
 
 // The task a history serves can be several leading items, not one: Codex
