@@ -2,7 +2,8 @@
   "//": "Fixed client phrases Factory refuses in a request body. Each phrase's first character is a JSON \\uXXXX escape: the file is safe to read (a Droid session reading it does not 403), and JSON.parse yields the real phrase. anywhere: refused in any text (system, user, assistant, tool_use). toolOnly: refused in tool output; the prompt adapters keep them.",
   "anywhere": [
     "\u0059ou are an expert coding assistant operating inside pi, a coding agent harness.",
-    "\u0054he conversation history before this point was compacted into the following summary:"
+    "\u0054he conversation history before this point was compacted into the following summary:",
+    "\u0059ou are omp's trusted coding assistant"
   ],
   "toolOnly": [
     "\u0059ou are Claude Code, Anthropic's official CLI for Claude.",

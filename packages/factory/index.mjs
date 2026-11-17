@@ -526,8 +526,18 @@ const DROID_LINE = "You are Droid, an AI software engineering agent built by Fac
 // developer prompt, changes; the rest of pi's prompt goes on as it is.
 const PI_OPENING = /(^|\n)You are an expert coding assistant operating inside pi, a coding agent harness\./
 const PI_COMPAT = "You are an expert coding assistant."
+// omp (@oh-my-pi/pi-coding-agent 18.22.0) opens its system prompt with its
+// own sentence, which Factory refuses on Messages and chat completions alike
+// (400 content_policy_rejected, replayed 2026-11-17): the sentence alone is
+// refused, with or without its period, while omp's prompt without it, the
+// words after "You are" alone, and omp's full request with the sentence
+// reworded as below pass. A custom prompt can put text before it, so it is
+// matched at the start of any line, as pi's.
+const OMP_OPENING = /(^|\n)You are omp's trusted coding assistant\./
+const OMP_COMPAT = "You are a trusted coding assistant."
 function clientOpening(text) {
-  return typeof text === "string" ? text.replace(PI_OPENING, (_, at) => at + PI_COMPAT) : text
+  if (typeof text !== "string") return text
+  return text.replace(PI_OPENING, (_, at) => at + PI_COMPAT).replace(OMP_OPENING, (_, at) => at + OMP_COMPAT)
 }
 
 // pi turns a compaction, and a branch it came back from, into a user
@@ -550,10 +560,12 @@ function piSummary(text) {
   return text
 }
 
-// Factory refuses pi's opening and its compaction opening wherever they
-// appear, not only as the system prompt or the whole summary: a tool result
-// that prints pi's system prompt, or a historical session record, carries
-// them too, and every later turn of that conversation is 403.
+// Factory refuses pi's opening, its compaction opening and omp's opening
+// wherever they appear, not only as the system prompt or the whole summary:
+// a tool result that prints the agent's system prompt, or a historical
+// session record, carries them too, and every later turn of that
+// conversation is refused. omp's is listed without its period, which
+// Factory refuses as well.
 //
 // The list lives in client-phrases.json so the guard and the sanitizer read
 // the same one. Its entries are written with a \uXXXX first character, so the
@@ -565,6 +577,7 @@ const FALLBACK_PHRASES = {
   anywhere: [
     "You are an expert coding assistant operating inside pi, a coding agent harness.",
     PI_SUMMARIES[0][0].split("\n\n")[0],
+    "You are omp's trusted coding assistant",
   ],
   toolOnly: [
     "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -1525,10 +1538,11 @@ function quotedToolText(text, prefix = QUOTED_TOOL_PREFIX) {
 function escapePhrases(text, phrases = PI_QUOTED_IN_TOOL) {
   let out = text
   // By default only the phrases proven to be refused outside tool output
-  // (pi's opening and its compaction opening): escaping generated reminders
-  // such as GLOBAL_INSTRUCTIONS or Claude Code's environment line would
-  // rewrite text the adapters deliberately keep. Gemini's route passes the
-  // full list, because its tool output has no quotedToolText of its own.
+  // (pi's opening, its compaction opening and omp's opening): escaping
+  // generated reminders such as GLOBAL_INSTRUCTIONS or Claude Code's
+  // environment line would rewrite text the adapters deliberately keep.
+  // Gemini's route passes the full list, because its tool output has no
+  // quotedToolText of its own.
   for (const phrase of phrases) {
     if (out.includes(phrase)) out = out.replaceAll(phrase, "\\u" + phrase.charCodeAt(0).toString(16).padStart(4, "0") + phrase.slice(1))
   }
