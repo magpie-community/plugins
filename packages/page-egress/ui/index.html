@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="egress-token" content="__EGRESS_TOKEN__">
+  <title>出口 IP · Magpie</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="heading">
+      <div><div class="eyebrow">MAGPIE / NETWORK</div><h1>出口 IP</h1><p class="muted">为每个供应商和订阅账号选择出口，查看代理实际 IP。</p></div>
+      <button id="refresh" class="secondary">刷新</button>
+    </header>
+    <div id="notice" role="status" hidden></div>
+    <section class="summary" aria-label="概览">
+      <div><span class="muted">已登记出口</span><strong id="proxy-count">—</strong></div>
+      <div><span class="muted">供应商 / 订阅</span><strong id="provider-count">—</strong></div>
+      <div><span class="muted">IP 变化或检测异常</span><strong id="alert-count">—</strong></div>
+      <div><span class="muted">未单独绑定时</span><strong id="default-exit">—</strong></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>代理出口</h2><p class="muted">每 5 分钟自动检测。IP 变化只提示，保留原来的账号绑定。</p></div><div class="buttons"><button id="check-all" class="secondary">检测全部</button><button id="add-proxy">添加出口</button></div></div>
+      <div id="proxy-list" class="proxy-grid"><p class="muted">正在读取代理池…</p></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>供应商与账号绑定</h2><p class="muted">账号自己的出口优先；“继承供应商”会随供应商默认出口变化。</p></div><input id="search" type="search" placeholder="搜索供应商、账号或 IP" aria-label="搜索供应商、账号或 IP"></div>
+      <div class="legend">出口 IP 是对所选代理的最近一次检测结果，不代表每次模型请求都已抓包验证。直连和自定义地址暂不显示实测 IP。</div>
+      <div id="provider-list"><p class="muted">正在读取供应商…</p></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><h2>最近事件</h2><span class="muted" id="updated-at"></span></div>
+      <div id="events" class="events"></div>
+    </section>
+    <footer>此页管理 Magpie 发出的请求。浏览器注册和 KYC 页面沿用客户端的代理规则。代理失效时不会在此插件内自动改成直连。</footer>
+  </main>
+  <dialog id="proxy-dialog">
+    <div id="proxy-form">
+      <div class="section-heading"><h2 id="dialog-title">添加出口</h2><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="proxy-id" type="hidden">
+      <label>名称<input id="proxy-name" maxlength="80" placeholder="例如：美国固定住宅" required></label>
+      <label>代理地址<input id="proxy-url" placeholder="socks5://主机:端口" required autocomplete="off"></label>
+      <p class="muted small">支持 HTTP、HTTPS、SOCKS5。代理地址和实际出口 IP 可能不同。</p>
+      <div class="form-columns"><label>用户名<input id="proxy-user" autocomplete="off" placeholder="白名单认证可留空"></label><label>密码<input id="proxy-pass" type="password" autocomplete="new-password" placeholder="白名单认证可留空"></label></div>
+      <label class="checkbox"><input id="clear-pass" type="checkbox">清除已保存的密码</label>
+      <p id="form-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="cancel-dialog" class="secondary">取消</button><button type="button" id="save-proxy">保存出口</button></div>
+    </div>
+  </dialog>
+  <dialog id="confirm-dialog">
+    <div id="confirm-form">
+      <h2 id="confirm-title">确认操作</h2>
+      <p id="confirm-text"></p>
+      <div class="dialog-actions"><button type="button" id="confirm-cancel" class="secondary">取消</button><button type="button" id="confirm-submit">确认</button></div>
+    </div>
+  </dialog>
+</body>
+</html>
