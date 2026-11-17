@@ -1,0 +1,70 @@
+{
+  "name": "@magpie-community/page-github-stats",
+  "version": "0.1.0",
+  "description": "Private-by-default Magpie usage cards for GitHub profiles, with local daily sync.",
+  "type": "module",
+  "main": "./dist/plugin.js",
+  "bin": {
+    "magpie-github-stats": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "page",
+    "ui",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "examples"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22",
+    "magpie": ">=0.1.1340"
+  },
+  "keywords": [
+    "magpie-plugin",
+    "magpie-page",
+    "github-profile",
+    "svg",
+    "usage"
+  ],
+  "scripts": {
+    "build": "tsc && node scripts/finish-build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "start": "node dist/cli.js serve",
+    "demo": "node dist/cli.js demo --out examples"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  },
+  "magpie": {
+    "name": "Magpie GitHub Stats",
+    "page": {
+      "title": "GitHub Stats",
+      "titles": {
+        "zh": "GitHub 统计卡片"
+      },
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 3498,
+        "option": "port"
+      }
+    },
+    "permissions": [],
+    "options": {
+      "port": 3498
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/github-stats"
+  },
+  "homepage": "https://github.com/wolfvoid/magpie-github-stats#readme",
+  "bugs": {
+    "url": "https://github.com/wolfvoid/magpie-github-stats/issues"
+  },
+  "author": "wolfvoid"
+}

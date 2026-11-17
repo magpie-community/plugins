@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="371" viewBox="0 0 520 371" role="img" aria-labelledby="title desc">
+<title id="title">Magpie AI Usage Statistics</title><desc id="desc">LAST 30 DAYS: 26783251 tokens, 11396 requests, 30 active days. Tokens equal input plus output.</desc>
+<defs><linearGradient id="accent"><stop stop-color="#A855F7"/><stop offset=".55" stop-color="#6388EE"/><stop offset="1" stop-color="#22D3EE"/></linearGradient><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#A855F7" stop-opacity=".25"/><stop offset="1" stop-color="#22D3EE" stop-opacity=".015"/></linearGradient><radialGradient id="glow"><stop stop-color="#A855F7" stop-opacity=".15"/><stop offset="1" stop-color="#0D1117" stop-opacity="0"/></radialGradient><clipPath id="card"><rect x=".5" y=".5" width="519" height="370" rx="16"/></clipPath></defs>
+<g clip-path="url(#card)"><rect width="520" height="371" fill="#0D1117"/><ellipse cx="416" cy="0" rx="338" ry="296.8" fill="url(#glow)"/><g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"><path d="M26 29l7-9 7 9-7 9z" fill="url(#accent)"/>
+<text x="49" y="33" font-size="14" fill="#F1F5F9" font-weight="750" letter-spacing="2">MAGPIE</text>
+<text x="494" y="32" font-size="9" fill="#9AAAC1" text-anchor="end" letter-spacing="1">LAST 30 DAYS</text>
+<text x="26" y="53" font-size="10" fill="#9AAAC1" >AI usage, at a glance.</text>
+<path d="M26 67H494" stroke="#283347"/>
+<text x="26" y="102" font-size="30" fill="url(#accent)" font-weight="700" letter-spacing="-1">26.8M</text>
+<text x="26" y="121" font-size="9" fill="#9AAAC1" letter-spacing="1">TOKENS</text>
+<text x="182" y="102" font-size="30" fill="#F1F5F9" font-weight="700" letter-spacing="-1">11.4K</text>
+<text x="182" y="121" font-size="9" fill="#9AAAC1" letter-spacing="1">REQUESTS</text>
+<text x="338" y="102" font-size="30" fill="#F1F5F9" font-weight="700" letter-spacing="-1">30</text>
+<text x="338" y="121" font-size="9" fill="#9AAAC1" letter-spacing="1">ACTIVE DAYS</text>
+<text x="26" y="144" font-size="9" fill="#9AAAC1" letter-spacing="1.5">TOKEN ACTIVITY</text>
+<path d="M26 173H494" stroke="#283347" stroke-dasharray="2 5"/>
+<path d="M26 190H494" stroke="#283347" stroke-dasharray="2 5"/>
+<path d="M26,190 L26.00,179.78 L42.14,172.77 L58.28,166.14 L74.41,172.64 L90.55,178.00 L106.69,170.29 L122.83,164.49 L138.97,171.64 L155.10,176.13 L171.24,167.82 L187.38,162.92 L203.52,170.63 L219.66,174.17 L235.79,165.37 L251.93,161.44 L268.07,169.58 L284.21,172.14 L300.34,162.96 L316.48,160.04 L332.62,168.50 L348.76,170.03 L364.90,160.59 L381.03,158.71 L397.17,167.37 L413.31,167.84 L429.45,158.26 L445.59,157.46 L461.72,166.19 L477.86,165.59 L494.00,156.00 L494,190Z" fill="url(#area)"/>
+<polyline points="26.00,179.78 42.14,172.77 58.28,166.14 74.41,172.64 90.55,178.00 106.69,170.29 122.83,164.49 138.97,171.64 155.10,176.13 171.24,167.82 187.38,162.92 203.52,170.63 219.66,174.17 235.79,165.37 251.93,161.44 268.07,169.58 284.21,172.14 300.34,162.96 316.48,160.04 332.62,168.50 348.76,170.03 364.90,160.59 381.03,158.71 397.17,167.37 413.31,167.84 429.45,158.26 445.59,157.46 461.72,166.19 477.86,165.59 494.00,156.00" fill="none" stroke="url(#accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="26" y="208" font-size="9" fill="#9AAAC1" letter-spacing="1.5">TOP MODELS</text>
+<text x="494" y="208" font-size="8" fill="#9AAAC1" text-anchor="end" letter-spacing="1">% OF TOKENS</text>
+<text x="26" y="228" font-size="10" fill="#F1F5F9" >Claude Sonnet</text>
+<rect x="227" y="221" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="221" width="108.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="228" font-size="10" fill="#9AAAC1" text-anchor="end">48%</text>
+<text x="26" y="250" font-size="10" fill="#F1F5F9" >GPT</text>
+<rect x="227" y="243" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="243" width="72.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="250" font-size="10" fill="#9AAAC1" text-anchor="end">32%</text>
+<text x="26" y="272" font-size="10" fill="#F1F5F9" >Gemini</text>
+<rect x="227" y="265" width="225" height="5" rx="2.5" fill="#283347"/><rect x="227" y="265" width="45.00" height="5" rx="2.5" fill="url(#accent)"/>
+<text x="494" y="272" font-size="10" fill="#9AAAC1" text-anchor="end">20%</text>
+<text x="26" y="297" font-size="8" fill="#9AAAC1" letter-spacing="1">DAILY CALLS</text>
+<rect x="26.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.3435804701627486"><title>2026-10-01: 190 requests</title></rect>
+<rect x="41.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.4972875226039783"><title>2026-10-02: 275 requests</title></rect>
+<rect x="56.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.64376130198915"><title>2026-10-03: 356 requests</title></rect>
+<rect x="71.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5099457504520796"><title>2026-10-04: 282 requests</title></rect>
+<rect x="86.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.40325497287522605"><title>2026-10-05: 223 requests</title></rect>
+<rect x="101.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5714285714285714"><title>2026-10-06: 316 requests</title></rect>
+<rect x="116.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.6998191681735986"><title>2026-10-07: 387 requests</title></rect>
+<rect x="131.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5533453887884268"><title>2026-10-08: 306 requests</title></rect>
+<rect x="146.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.4629294755877034"><title>2026-10-09: 256 requests</title></rect>
+<rect x="161.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.64376130198915"><title>2026-10-10: 356 requests</title></rect>
+<rect x="176.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7540687160940326"><title>2026-10-11: 417 requests</title></rect>
+<rect x="191.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5949367088607594"><title>2026-10-12: 329 requests</title></rect>
+<rect x="206.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5262206148282098"><title>2026-10-13: 291 requests</title></rect>
+<rect x="221.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7179023508137432"><title>2026-10-14: 397 requests</title></rect>
+<rect x="236.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.8065099457504521"><title>2026-10-15: 446 requests</title></rect>
+<rect x="251.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.6383363471971067"><title>2026-10-16: 353 requests</title></rect>
+<rect x="266.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.5895117540687161"><title>2026-10-17: 326 requests</title></rect>
+<rect x="281.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7902350813743219"><title>2026-10-18: 437 requests</title></rect>
+<rect x="296.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.8571428571428571"><title>2026-10-19: 474 requests</title></rect>
+<rect x="311.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.6817359855334539"><title>2026-10-20: 377 requests</title></rect>
+<rect x="326.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.6546112115732369"><title>2026-10-21: 362 requests</title></rect>
+<rect x="341.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.8607594936708861"><title>2026-10-22: 476 requests</title></rect>
+<rect x="356.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.9059674502712477"><title>2026-10-23: 501 requests</title></rect>
+<rect x="371.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7269439421338155"><title>2026-10-24: 402 requests</title></rect>
+<rect x="386.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7233273056057866"><title>2026-10-25: 400 requests</title></rect>
+<rect x="401.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.9312839059674503"><title>2026-10-26: 515 requests</title></rect>
+<rect x="416.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.9529837251356239"><title>2026-10-27: 527 requests</title></rect>
+<rect x="431.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7739602169981917"><title>2026-10-28: 428 requests</title></rect>
+<rect x="446.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="0.7920433996383364"><title>2026-10-29: 438 requests</title></rect>
+<rect x="461.00" y="306" width="12.00" height="12.00" rx="2" fill="#A855F7" fill-opacity="1"><title>2026-10-30: 553 requests</title></rect>
+<path d="M26 335H494" stroke="#283347"/>
+<text x="26" y="354" font-size="8" fill="#9AAAC1" letter-spacing="1">UPDATED DEMO DATA</text>
+<text x="494" y="354" font-size="8" fill="#9AAAC1" text-anchor="end" letter-spacing="1">LOCAL → GITHUB</text></g></g><rect x=".5" y=".5" width="519" height="370" rx="16" fill="none" stroke="#283347"/>
+</svg>
