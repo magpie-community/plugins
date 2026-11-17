@@ -179,12 +179,13 @@ test("Claude Code's billing line is left out, and the Agent SDK's line is reword
   // twice is the same as once, and other text is left alone
   expect(cloak(out)).toBe(out)
   expect(cloak("be brief")).toBe("be brief")
-  expect(cloak(DESKTOP)).toBe(DESKTOP)
+  // Claude Desktop's own line has been turned away since 11-15 (#1151)
+  expect(cloak(DESKTOP)).toBe(DESKTOP.replace("You are", "You're"))
   // the case and white space the agent wrote stay
   expect(cloak("built on\nANTHROPIC'S  claude agent sdk")).toBe("built on\nthe  claude agent sdk by Anthropic")
   // as the gateway hands it: each block a part; the billing line's part goes
   const r = shape({ systemInstruction: { parts: [{ text: BILLING }, { text: DESKTOP }, { text: SUBAGENT }] }, contents: [] }, "gemini-3-flash", "", "")
-  expect(r.systemInstruction.parts.map((p) => p.text)).toEqual([DESKTOP, "You are a Claude agent, built on the Claude Agent SDK by Anthropic."])
+  expect(r.systemInstruction.parts.map((p) => p.text)).toEqual([DESKTOP.replace("You are", "You're"), "You are a Claude agent, built on the Claude Agent SDK by Anthropic."])
   // a billing line alone in a string stays one (empty) part
   expect(shape({ systemInstruction: BILLING, contents: [] }, "gemini-3-flash", "", "").systemInstruction.parts).toEqual([{ text: "" }])
 })
@@ -341,6 +342,15 @@ test("DeepSeek Harness's first line and browser sentence go reworded, the rest a
     "The browser provides no DOM, route, or screenshot context.",
     "You are DeepSeek Harness.",
   ]) expect(cloak(s)).toBe(s)
+})
+
+test("Claude Code's identity line goes as \"You're …\", its CLI's and its SDK's (#1151)", () => {
+  const { hint } = _internal
+  expect(cloak("You are Claude Code, Anthropic's official CLI for Claude.\n\nBe brief.")).toBe("You're Claude Code, Anthropic's official CLI for Claude.\n\nBe brief.")
+  expect(cloak("You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.")).toBe("You're Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.")
+  expect(hint("You are Claude Code, Anthropic's official CLI for Claude.")).toContain("Claude Code")
+  const s = "You're Claude Code, Anthropic's official CLI for Claude."
+  expect(cloak(s)).toBe(s)
 })
 
 // since 11-14 Codex's GPT-5 line in a user's turn is turned away too (3 of

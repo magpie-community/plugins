@@ -114,7 +114,9 @@ The plugin also changes the request itself, as the built-in did:
   Codex's prompt for a model it has none for go as "You're …" for "You are
   Hermes Agent" / "You are OpenCode" / "You are a coding agent running in
   the Codex CLI", and pi's default prompt as "running within pi" for
-  "running inside pi" (the last four turned away since 11-14). A copy
+  "running inside pi" (the last four turned away since 11-14). Claude
+  Code's identity line ("You are Claude Code, Anthropic's official CLI for
+  Claude") goes as "You're …" too (#1151). A copy
   someone broke up with invisible characters is reworded the same way.
   DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
   paths…") goes reworded with the same meaning: word for word, it got most

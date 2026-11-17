@@ -948,8 +948,13 @@ function plainSchema(root) {
 // gemini-4-hydrogen-sonar on 11-17, the paragraph whole as well; without
 // its period, without the comma before "or" or without "implicit" the
 // browser sentence went through.
+// Since 11-15 Claude Code's identity line, "You are Claude Code,
+// Anthropic's official CLI for Claude." (its CLI's, and with ", running
+// within the Claude Agent SDK" its SDK's), is turned away too, as agy-cli's
+// cloak.mjs has it (#1151; 3 of 3 here on gemini-3.8-flash on 11-17, and
+// "You're …" 3 of 3 through).
 // Codex's prompt for GPT-6 ("You are Codex, an agent based on GPT-6."),
-// Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
+// the rest of Claude Code's, Gemini CLI's, Qwen Code's, Cline's, Kilo's, goose's, Amp's,
 // Droid's, Kimi CLI's, Aider's and Cursor's went through as written.
 const TURNED_AWAY = [
   "x-anthropic-billing-header:",
@@ -963,6 +968,7 @@ const TURNED_AWAY = [
   "you are a coding agent running in the codex cli",
   "a coding assistant running inside pi",
   "you are an ai agent powered by deepseek harness",
+  "you are claude code, anthropic's official cli for claude",
   "the browser provides no implicit dom, route, or screenshot context.",
 ]
 
@@ -1018,6 +1024,7 @@ const turnsAway = (system) => TURNED_AWAY_RE.some((re) => has(system, re))
 //   - pi's line goes "running within pi" (5 of 5 on both models).
 //   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
 //     on 11-14, eric_li8983 on X).
+//   - Claude Code's identity line goes as "You're …" (#1151).
 //   - DeepSeek Harness's first line goes as "You're …", and its browser
 //     sentence "gives no implicit DOM, …" for "provides" (3 of 3 each on
 //     11-17).
@@ -1034,6 +1041,7 @@ const SAID_AS = {
   "you are a coding agent running in the codex cli": youre,
   "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
   "you are an ai agent powered by deepseek harness": youre,
+  "you are claude code, anthropic's official cli for claude": youre,
   "the browser provides no implicit dom, route, or screenshot context.": (line) => line.replace(/provides/i, "gives"),
 }
 
