@@ -12,7 +12,8 @@ for investigation, not proof of model identity.
 
 - Select up to 24 models across providers, with the same three challenges per batch.
 - Reuse Magpie authentication and native endpoint metadata; optionally pin an account.
-- Set per-batch request headers, including `User-Agent`, in Advanced settings;
+- Choose editable Codex CLI, Claude Code, OpenCode, Cline or Roo Code header presets,
+  or enter per-batch headers in Advanced settings;
   other headers require the provider's `passHeaders` setting in Magpie.
 - Follow live sample counts, cancel work, and inspect the actual response route.
 - Compare ranked candidates, including partial and unscorable outcomes.

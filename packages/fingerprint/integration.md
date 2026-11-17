@@ -101,6 +101,39 @@ Authentication, routing and transport headers remain managed by Magpie:
 Use at most 24 headers and 8 KiB total, with printable ASCII values of at most
 2048 characters each; duplicate names are rejected case-insensitively.
 
+### Client identity presets
+
+The preset menu fills the same editable header field. Selecting a preset replaces
+its contents; editing the text returns the menu to **Custom**. Successful batch
+submission clears both. The page also lists the exact header names to put in
+the target Magpie provider's `passHeaders` setting, including `User-Agent` when
+you need to override a fixed provider/model UA. Presets do not change the
+selected API protocol or provider configuration, and loading them makes no
+network request.
+
+The following snapshots were checked on **2026-11-17**. Codex and OpenCode use
+the product/version prefix of their real UA, omitting machine, terminal and
+SDK-generated suffixes.
+
+| Preset                 | Snapshot | Prefilled headers                                                                                         | Evidence and scope                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------- | -------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Codex CLI              | 0.169.0  | `User-Agent: codex_cli_rs/0.169.0`; `originator: codex_cli_rs`                                            | [Released client defaults and UA](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/login/src/auth/default_client.rs#L152-L175), release `rust-v0.169.0`. There is no separate stable `version` header.                                                                                                                                                                                                           |
+| Claude Code (headless) | 2.1.326  | `User-Agent: claude-cli/2.1.326 (external, sdk-cli)`; `x-app: cli`                                        | Observed from the [official 2.1.326 binary package](https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/2.1.326), running `-p` against an isolated localhost Messages stub with a dummy key. This is the headless entry point.                                                                                                                                                                                                           |
+| OpenCode               | 1.19.6   | `User-Agent: opencode/1.19.6`; `originator: opencode`                                                     | [Released OpenAI-provider hook](https://github.com/anomalyco/opencode/blob/f4e363c8295fa90a03dddc451882fffe8fbce357/packages/opencode/src/plugin/openai/codex.ts#L559-L568). Other providers have the UA but do not universally set `originator`.                                                                                                                                                                                                      |
+| Cline                  | 4.1.26   | `User-Agent: Cline/4.1.26`; `HTTP-Referer: https://cline.bot`; `X-Title: Cline`                           | [First-party provider header builder](https://github.com/cline/cline/blob/4cdfb19a5e897b9e75827cbb4f280f322e27e44a/sdk/packages/llms/src/providers/request-headers.ts#L78-L101), with the [VS Code host version](https://github.com/cline/cline/blob/4cdfb19a5e897b9e75827cbb4f280f322e27e44a/apps/vscode/src/sdk/cline-session-factory.ts#L177-L185). This profile is for Cline's own API; its direct OpenRouter path does not add this identity set. |
+| Roo Code               | 3.53.0   | `User-Agent: RooCode/3.53.0`; `HTTP-Referer: https://github.com/RooVetGit/Roo-Cline`; `X-Title: Roo Code` | [Header constants](https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/api/providers/constants.ts#L3-L7), used by its [OpenRouter handler](https://github.com/RooCodeInc/Roo-Code/blob/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16/src/api/providers/openrouter.ts#L151-L155).                                                                                                                                       |
+
+Session/thread/request IDs, account fields, SDK runtime claims and protocol
+capability flags are excluded. In particular, Claude Code's `anthropic-beta`
+set depends on its entry point and capabilities; its API version and SDK headers
+are not client-identity presets. See Anthropic's [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol).
+
+Gemini CLI was also checked. Its [native UA](https://github.com/google-gemini/gemini-cli/blob/4fa64e71b9b4e1bb65a86cc2863574f561b82340/packages/core/src/core/contentGenerator.ts#L242-L283)
+contains version, model, platform and surface data; its SDK supplies
+`x-goog-api-client`. Its native GenAI/Vertex/Code Assist transport is outside
+this plugin's three supported protocols, so it is not offered as a protocol
+profile.
+
 ## Job files
 
 Each batch is saved as `jobs/<id>.json` under the data directory. A pinned

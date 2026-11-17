@@ -455,6 +455,12 @@ select {
   min-height: 72px;
   font: 11px/1.5 var(--code);
 }
+.header-forwarding-names {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .run-footer {
   display: flex;
   align-items: center;

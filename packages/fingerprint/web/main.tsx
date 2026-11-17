@@ -24,6 +24,7 @@ import {
 } from '@phosphor-icons/react';
 import type { Bootstrap, Job, Model, RunRequest, Target, TargetResult } from '../src/types';
 import { parseRequestHeaders } from '../src/request-headers';
+import { headerPresets, presetHeaderText } from '../src/header-presets';
 import { embedded, subscribeTheme } from './magpie';
 import { AppMenu } from './AppMenu';
 import { localeFor, type Locale } from './locale';
@@ -256,6 +257,8 @@ function App() {
   const [selected, setSelected] = useState<string[]>([]);
   const [account, setAccount] = useState('');
   const [headerText, setHeaderText] = useState('');
+  const [headerPresetId, setHeaderPresetId] = useState('');
+  const headerPreset = headerPresets.find((preset) => preset.id === headerPresetId);
   const headerConfig = useMemo(() => {
     try {
       return { headers: parseRequestHeaders(headerText), error: '' };
@@ -463,6 +466,7 @@ function App() {
     try {
       const j = await api<Job>('api/jobs', { method: 'POST', body: JSON.stringify(cfg) });
       setHeaderText('');
+      setHeaderPresetId('');
       setJob(j);
       setHistory((h) => [j, ...h.filter((x) => x.id !== j.id)]);
       setExpanded(j.results[0]?.id || null);
@@ -893,6 +897,65 @@ function App() {
                 </button>
                 {showAdvanced && (
                   <div className="advanced" id="run-advanced">
+                    <label>
+                      {localize(t, '客户端标识预设', '用戶端識別預設', 'Client identity preset')}
+                      <AppMenu
+                        label={localize(t, '请求头预设', '請求標頭預設', 'Request header preset')}
+                        value={headerPresetId}
+                        disabled={starting}
+                        options={[
+                          { value: '', label: localize(t, '自定义', '自訂', 'Custom') },
+                          ...headerPresets.map((preset) => ({
+                            value: preset.id,
+                            label: preset.name,
+                          })),
+                        ]}
+                        onChange={(id) => {
+                          setHeaderPresetId(id);
+                          const preset = headerPresets.find((candidate) => candidate.id === id);
+                          if (preset) setHeaderText(presetHeaderText(preset));
+                        }}
+                      />
+                    </label>
+                    <p className="muted-line">
+                      {headerPreset && `${headerPreset.name} ${headerPreset.version} · `}
+                      {localize(
+                        t,
+                        '选择预设会替换下方内容，填入后仍可编辑。预设只设置客户端标识，不改变 API 协议。',
+                        '選擇預設會取代下方內容，填入後仍可編輯。預設只設定用戶端識別，不變更 API 協定。',
+                        'Selecting a preset replaces the text below; you can then edit it. Presets set client identity, not the API protocol.',
+                      )}
+                    </p>
+                    {headerPreset?.scope === 'openai' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自 OpenCode 的 OpenAI 连接；User-Agent 使用产品与版本前缀。',
+                          '此預設來自 OpenCode 的 OpenAI 連線；User-Agent 使用產品與版本前綴。',
+                          'This preset is from OpenCode’s OpenAI integration; its User-Agent uses the product/version prefix.',
+                        )}
+                      </p>
+                    )}
+                    {headerPreset?.scope === 'openrouter' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自该客户端的 OpenRouter 连接。',
+                          '此預設來自該用戶端的 OpenRouter 連線。',
+                          'This preset comes from the client’s OpenRouter integration.',
+                        )}
+                      </p>
+                    )}
+                    {headerPreset?.scope === 'cline' && (
+                      <p className="muted-line">
+                        {localize(
+                          t,
+                          '此预设来自 Cline 自营 API 连接，不是其直连 OpenRouter 的默认请求头。',
+                          '此預設來自 Cline 自營 API 連線，不是其直連 OpenRouter 的預設標頭。',
+                          'This preset is from Cline’s first-party API, not its direct OpenRouter connection.',
+                        )}
+                      </p>
+                    )}
                     <label htmlFor="request-headers">
                       {localize(t, '自定义请求头', '自訂請求標頭', 'Custom request headers')}
                       <textarea
@@ -905,7 +968,10 @@ function App() {
                         value={headerText}
                         aria-invalid={!!headerConfig.error}
                         aria-describedby="request-headers-help request-headers-error"
-                        onChange={(event) => setHeaderText(event.target.value)}
+                        onChange={(event) => {
+                          setHeaderText(event.target.value);
+                          setHeaderPresetId('');
+                        }}
                       />
                     </label>
                     <p className="muted-line" id="request-headers-help">
@@ -922,6 +988,11 @@ function App() {
                         '普通 API 供应商通常会转发 User-Agent；其他头名需加入该供应商的 passHeaders 列表。订阅账号可能使用固定请求头。',
                         '一般 API 供應商通常會轉送 User-Agent；其他標頭名稱需加入該供應商的 passHeaders 清單。訂閱帳號可能使用固定標頭。',
                         'API providers normally forward User-Agent. Add other header names to the provider’s passHeaders list. Subscription accounts may use fixed headers.',
+                      )}
+                      {!headerConfig.error && Object.keys(headerConfig.headers).length > 0 && (
+                        <code className="header-forwarding-names">
+                          passHeaders: {Object.keys(headerConfig.headers).join(', ')}
+                        </code>
                       )}
                     </p>
                     {headerConfig.error && (
