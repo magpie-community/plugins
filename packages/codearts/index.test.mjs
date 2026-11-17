@@ -3642,6 +3642,29 @@ test("the fallback list holds no id OfficeAce has dropped (#1197)", () => {
   }
 })
 
+test("a refused catalog read never says the sign-in ended", async () => {
+  // The catalog is read with the account's MaaS Basic pair, which Huawei
+  // re-issues at client-permission-validate: a pair another client renewed is
+  // refused there with 401/403 (APIG.1009) while chat, renewing the pair on
+  // its own, keeps answering 200. Read as a sign-out, the listing marked
+  // working accounts to sign in again on every refresh — measured 2026-11-16
+  // on five accounts: 370 refused listings, 666 chats at 200.
+  for (const status of [401, 403]) {
+    const { record } = await officeAceAuthRecord({}, `iam::d1:user:hw02${status}`)
+    const { fetcher } = oaFetcher((url) =>
+      url.endsWith("/v2/models")
+        ? new Response(JSON.stringify({ error_code: "APIG.1009", error_msg: "AppKey or AppSecret is invalid" }), { status })
+        : undefined,
+    )
+    const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+    const cfg = { provider: {} }
+    await plugin.config(cfg)
+    // never throws: the listing falls back to the static table it was given
+    const models = await plugin.provider.models(cfg.provider.officeace, { auth: record })
+    assert.deepEqual(Object.keys(models).sort(), Object.keys(oa.OA_FALLBACK_MODELS).sort())
+  }
+})
+
 test("before a sign-in the OfficeAce provider still lists its models", async () => {
   const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, {})
   const cfg = { provider: {} }

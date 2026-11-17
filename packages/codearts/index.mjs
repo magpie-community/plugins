@@ -4879,10 +4879,19 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
           }
           return live
         } catch (e) {
-          log(`目录拉取失败，回退静态表：${e?.message ?? e}`, "warn")
-          if (/401|403|unauthorized|被拒/i.test(String(e?.message))) {
-            throw Object.assign(new Error("OfficeAce 登录已失效，请重新登录"), { signIn: "expired" })
-          }
+          // A catalog read is not a sign-in verdict. It carries the account's
+          // MaaS Basic pair, and a 401/403 there says that pair is stale —
+          // Huawei re-issues it at `client-permission-validate`, so a pair
+          // another client renewed is refused, `APIG.1009` — not that the
+          // sign-in ended. Chat heals the same pair by renewing once
+          // (officeAceChatFetch); a sign-in that really ended is told by chat,
+          // usage and check-in, which answer 401 / signIn "expired" of their
+          // own. Reading it as a sign-out here marked working accounts for
+          // sign-in again on every listing: measured 2026-11-16,
+          // `provider.models` threw 370 times in a day while the same five
+          // accounts served 666 chats at 200, and magpie's row said
+          // 「登录已失效」 for all five.
+          log(`目录拉取失败，回退静态表（不是登录失效）：${e?.message ?? e}`, "warn")
           return provider.models
         }
       },

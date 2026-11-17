@@ -368,7 +368,9 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
 - **OfficeAce 的模型**：目录 `/v2/models` 是注册表（26 条，多数对话时回 `404 ModelArts.81009 Invalid model`），
   插件只保留计费清单（`/v1/model-token-rates`，9 条）里的，并永不列出三个实测必 404 的 id；倍率表读取失败时保留上
   一份好表（空表会让不可调的 id 全部回到用户面前）；未登录时用 10 个内置模型兜底。模型名带上倍率（`GLM-5.3 · x0.18`），
-  上游 `model_name` 的尾部换行会去掉。
+  上游 `model_name` 的尾部换行会去掉。目录读取被拒（`401`/`403`，华为在 `client-permission-validate` 换发 Basic 对子，
+  另一个客户端续期就作废这一份）**只回退静态表，不当登录失效**：这条读的是 MaaS 的 Basic 对子，聊天会自己续期后照常
+  200，真失效由聊天、用量与签到各自的 401 / `signIn: "expired"` 去说。
 - **OfficeAce 的请求**：MaaS 要 `Authorization: Basic base64(appKey:appSecret)`，插件把 SDK 的 Bearer 改写掉，
   去掉 `officeace/` 前缀，发到凭据里自带的 MaaS 地址（为空时用官方直连）。`401`（或 4xx 但报文点名这对 Basic 凭据）
   会先续期一次再重发，**但只有续期真的换了这对凭据时才重发**。已登录但没开通 MaaS 的账号会得到一条说清原因的 `400`，
