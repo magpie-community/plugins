@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/tdragon6/Codex-free-api-quota",
+  "commit": "0df7e7be9afa82abd5ffdfa68e3d03d105067f28",
+  "unchanged_files": {
+    "vendor/sanitize.mjs": "b02dd4748b8ad7c4427ff9b7076192245d4d7a3c11b5d3c59f199957e077b939"
+  },
+  "model_metadata": {
+    "source": "Magpie OpenAI public model cache (models.dev compatible)",
+    "snapshot_date": "2026-11-17",
+    "models": 42
+  },
+  "adapter_version": "0.1.1",
+  "plugin_author": "YiyuZh",
+  "opencode2_adapter": {
+    "source": "https://github.com/magpie-community/plugins",
+    "commit": "8c7e8f6621b0f0bdc4ee83772255774ab3e616a7",
+    "path": "scripts/opencode2.mjs",
+    "sha256_lf": "062365696c3d64a6526f6514093a315ecb4d14be738ab779ffaf2394c4ead900"
+  }
+}

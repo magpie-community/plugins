@@ -1,0 +1,66 @@
+{
+  "name": "@magpie-community/opencode-codex-free-api-auth",
+  "version": "0.1.1",
+  "description": "通过中转请求让Codex使用Openai赠送api额度",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "lib",
+    "vendor",
+    "models.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CONTRIBUTORS.md",
+    "CHANGELOG.md",
+    "PROVENANCE.json"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "options": {
+      "timeoutMs": 600000,
+      "maxBodyMB": 32
+    },
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23181724'/%3E%3Cpath d='m24 21-11 11 11 11m16-22 11 11-11 11m-5-26-6 32' fill='none' stroke='%23a7f3d0' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E",
+    "name": "Codex-free-api"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "author": {
+    "name": "YiyuZh",
+    "url": "https://github.com/YiyuZh"
+  },
+  "contributors": [
+    {
+      "name": "tdragon6",
+      "url": "https://github.com/tdragon6"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins.git",
+    "directory": "packages/codex-free-api"
+  },
+  "homepage": "https://github.com/YiyuZh/Codex-free-api#readme",
+  "bugs": {
+    "url": "https://github.com/YiyuZh/Codex-free-api/issues"
+  },
+  "keywords": [
+    "magpie-plugin",
+    "magpie",
+    "opencode-plugin",
+    "opencode",
+    "codex",
+    "openai"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

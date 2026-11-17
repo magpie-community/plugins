@@ -1,0 +1,12 @@
+Codex-free-api
+Magpie plugin adaptation: Copyright (c) 2026 YiyuZh. See LICENSE.
+
+vendor/sanitize.mjs is copied unchanged from:
+https://github.com/tdragon6/Codex-free-api-quota
+Commit: 0df7e7be9afa82abd5ffdfa68e3d03d105067f28
+Copyright (c) 2026 tdragon6. MIT License: vendor/LICENSE.
+
+opencode2.mjs is the canonical compatibility adapter copied unchanged from:
+https://github.com/magpie-community/plugins/blob/8c7e8f6621b0f0bdc4ee83772255774ab3e616a7/scripts/opencode2.mjs
+Copyright (c) 2026 magpie-community contributors.
+MIT License: vendor/magpie-community-LICENSE.
