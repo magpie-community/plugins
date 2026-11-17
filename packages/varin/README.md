@@ -32,10 +32,15 @@ This plugin picks a model **Varin already carries**. It cannot add the channel
 that carries magpie's models, so on a Varin that has never been pointed at
 magpie's gateway, the row appears and the model list is empty.
 
-Add the gateway once, by hand, under **Agent → model services**: an
-**OpenAI compatible** service at `http://127.0.0.1:3425/v1`, then **fetch
-models**. That is the same one-time step Ollama and LM Studio users do. magpie's
-models then appear in this plugin's row.
+On **Varin 0.9.49 and earlier**, add the gateway once by hand under **Agent →
+model services**: an **OpenAI compatible** service at
+`http://127.0.0.1:3425/v1`, then **fetch models**. That is the same one-time step
+Ollama and LM Studio users do. magpie's models then appear in this plugin's row.
+
+Later Varin releases ship Magpie as a built-in service, so the row is there to
+pick directly and this section no longer applies. Varin tells you which it is:
+if **Magpie** appears in the list of services when adding a model service, the
+preset is built in.
 
 Why the plugin cannot do it: Varin keeps its channels in a top-level JSON
 **array** (`models.json` → `channels`), and magpie's agent contract sets
