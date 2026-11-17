@@ -298,8 +298,11 @@ Antigravity provider does (`cloak.mjs`). Codex's two GPT-5 lines
 ("You are Codex, a coding agent based on GPT-5", "You are Codex, an agent based on GPT-5")
 are turned away in a user's turn too (AGENTS.md, a `<system-reminder>`),
 so they go as "built on GPT-5" there as well. Zero-width spaces no longer help:
-since 11-14 Google's check reads past them. Should such a 429 still come
-back, it is reported as a 400 about the prompt, not as a quota.
+since 11-14 Google's check reads past them. Reworded in the first user turn
+(the default), Claude Code's prompt is answered; in agy's session
+instructions (`AGY_BRIDGE_SYSTEM_APPEND=1`) it is still turned away. So a
+bare 429 there is reported as a 400 about the prompt, and in the user turn
+as a rate limit the client can retry or another account can take.
 
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider

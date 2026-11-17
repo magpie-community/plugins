@@ -2625,8 +2625,14 @@ class Proc {
   #formatAgentError(detail) {
     // The system prompt turned away, not a quota (cloak.mjs): a 400 the next
     // member of a group is asked after, and the client doesn't retry. It says
-    // what Antigravity answered (a 429).
-    if (/code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail) && turnsAway(this.instructions)) {
+    // what Antigravity answered (a 429). Only where the cloak isn't enough:
+    // in agy's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1) Antigravity
+    // still turns the reworded Claude Code prompt away, while the same
+    // reworded prompt in the first user turn, where it goes by default, is
+    // answered (HadStash on X, 11-17). There a bare 429 is a rate limit the
+    // client may retry, or the next member is asked after, not a 400.
+    if (/code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail) &&
+        this.instructionsInSession && turnsAway(this.instructions)) {
       return new AgentTurnError(
         `agy bridge: Antigravity answered 429 to this system prompt: ${detail} — ${hint(this.instructions)}`,
         "invalid_request_error",

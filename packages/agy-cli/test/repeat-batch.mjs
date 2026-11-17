@@ -1305,13 +1305,23 @@ const REFUSED_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): RESOURCE_EXHAUST
 
 test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after agy's retries", async () => {
   const PI = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code."
-  for (const [system, chunks, want, kind] of [
+  // HadStash on X (11-17): Claude Code through agy-cli got "answered 429 to
+  // this system prompt", a 400 it never retries, though its prompt goes
+  // reworded in the first user turn, where Antigravity answers it
+  const CLAUDE_CODE = "You are Claude Code, Anthropic's official CLI for Claude.\n\nHelp the user."
+  const APPEND = { appendable: true, env: { AGY_BRIDGE_SYSTEM_APPEND: "1" } }
+  for (const [options, system, chunks, want, kind] of [
+    // in the session instructions the cloak isn't enough: a prompt rejection
     // the banner's line still open while agy waits to try again
-    [PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
-    [PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
-    ["You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+    [APPEND, PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
+    [APPEND, PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
+    [APPEND, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt/, "invalid_request_error"],
+    // reworded in the first user turn (the default): a rate limit
+    [{}, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+    [{}, PI, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\)/, "rate_limit_error"],
+    [{}, "You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
   ]) {
-    await withKit({}, async (kit) => {
+    await withKit(options, async (kit) => {
       let tries = 0
       kit.defaultPrompt = async (agent) => {
         tries++
@@ -1325,7 +1335,10 @@ test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after
       assert.equal(tries, 1)
       assert.match(text, want)
       assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("answered 429 to this system prompt") || kind === "invalid_request_error", text.slice(-400))
       assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      // where the instructions went
+      assert.equal(prompts(kit).join("").includes("<external_system_instructions>"), !options.appendable)
     })
   }
 })

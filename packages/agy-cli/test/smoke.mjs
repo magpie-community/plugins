@@ -1577,6 +1577,8 @@ for (const [title, tools, want, name] of [
     !prompted.includes(rfc) && !prompted.includes(sdk) && !prompted.includes(zw) && prompted.includes(want), JSON.stringify(prompted))
   delete process.env.FAKE_AGY_APPEND
 
+  // in agy's session instructions the reworded prompt is still turned away
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
   const turnedError = turned.find(event => event.event === "error")?.data?.error
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
@@ -1590,6 +1592,14 @@ for (const [title, tools, want, name] of [
   const turnedWholeBody = await turnedWhole.json()
   check("#1151 a turned-away prompt asked for a whole reply is a 400",
     turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  // HadStash on X (11-17): reworded in the first user turn, where it goes by
+  // default, Antigravity answers it, so a 429 there is a rate limit
+  const inTurn = (await readSSE(await callFetch({ model, system: system + " T429U", messages: [{ role: "user", content: "TURNED429 in turn" }] }))).events
+  const inTurnError = inTurn.find(event => event.event === "error")?.data?.error
+  check("HadStash a 429 to the reworded prompt in the user turn is a rate limit, not a prompt rejection",
+    inTurnError?.type === "rate_limit_error" && !inTurnError.message.includes("answered 429 to this system prompt") &&
+    inTurnError.status === undefined, JSON.stringify(inTurnError))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
   check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
