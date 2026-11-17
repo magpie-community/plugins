@@ -136,8 +136,9 @@ export function renderCard(s, c, mode, updated) {
             const x = pad + (d.index % 7) * (cellW + gap), cy = y + Math.floor(d.index / 7) * (cellH + gap);
             const level = d.requests ? Math.max(0.2, d.requests / max) : 0;
             content.push(`<g data-date="${d.date}" data-future="${d.future}"><title>${d.date}: ${d.future ? "Future date" : `${d.requests} requests`}</title><rect x="${x.toFixed(2)}" y="${cy}" width="${cellW.toFixed(2)}" height="${cellH}" rx="4" fill="${level ? p.purple : p.line}" fill-opacity="${d.future ? 0.25 : level || 1}"/>`);
-            text(x + 5, cy + 11, Number(d.date.slice(-2)), 8, d.future ? p.muted : p.fg);
-            text(x + cellW - 5, cy + cellH - 5, d.future ? "—" : compact(d.requests), compactLayout ? 8 : 9, p.fg, 'text-anchor="end"');
+            const cellText = !dark && level >= 0.6 ? "#FFFFFF" : p.fg;
+            text(x + 5, cy + 11, Number(d.date.slice(-2)), 8, d.future ? p.muted : cellText);
+            text(x + cellW - 5, cy + cellH - 5, d.future ? "—" : compact(d.requests), compactLayout ? 8 : 9, cellText, 'text-anchor="end"');
             content.push("</g>");
         }
         y +=

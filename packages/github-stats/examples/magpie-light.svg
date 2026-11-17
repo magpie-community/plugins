@@ -46,8 +46,8 @@
 <text x="353.85714285714283" y="354" font-size="9" fill="#0F172A" text-anchor="end">275</text>
 </g>
 <g data-date="2026-10-03" data-future="false"><title>2026-10-03: 356 requests</title><rect x="363.86" y="323" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.64376130198915"/>
-<text x="368.85714285714283" y="334" font-size="8" fill="#0F172A" >3</text>
-<text x="421.4285714285714" y="354" font-size="9" fill="#0F172A" text-anchor="end">356</text>
+<text x="368.85714285714283" y="334" font-size="8" fill="#FFFFFF" >3</text>
+<text x="421.4285714285714" y="354" font-size="9" fill="#FFFFFF" text-anchor="end">356</text>
 </g>
 <g data-date="2026-10-04" data-future="false"><title>2026-10-04: 282 requests</title><rect x="431.43" y="323" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.5099457504520796"/>
 <text x="436.42857142857144" y="334" font-size="8" fill="#0F172A" >4</text>
@@ -62,8 +62,8 @@
 <text x="151.14285714285714" y="395" font-size="9" fill="#0F172A" text-anchor="end">316</text>
 </g>
 <g data-date="2026-10-07" data-future="false"><title>2026-10-07: 387 requests</title><rect x="161.14" y="364" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.6998191681735986"/>
-<text x="166.14285714285714" y="375" font-size="8" fill="#0F172A" >7</text>
-<text x="218.71428571428572" y="395" font-size="9" fill="#0F172A" text-anchor="end">387</text>
+<text x="166.14285714285714" y="375" font-size="8" fill="#FFFFFF" >7</text>
+<text x="218.71428571428572" y="395" font-size="9" fill="#FFFFFF" text-anchor="end">387</text>
 </g>
 <g data-date="2026-10-08" data-future="false"><title>2026-10-08: 306 requests</title><rect x="228.71" y="364" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.5533453887884268"/>
 <text x="233.71428571428572" y="375" font-size="8" fill="#0F172A" >8</text>
@@ -74,12 +74,12 @@
 <text x="353.85714285714283" y="395" font-size="9" fill="#0F172A" text-anchor="end">256</text>
 </g>
 <g data-date="2026-10-10" data-future="false"><title>2026-10-10: 356 requests</title><rect x="363.86" y="364" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.64376130198915"/>
-<text x="368.85714285714283" y="375" font-size="8" fill="#0F172A" >10</text>
-<text x="421.4285714285714" y="395" font-size="9" fill="#0F172A" text-anchor="end">356</text>
+<text x="368.85714285714283" y="375" font-size="8" fill="#FFFFFF" >10</text>
+<text x="421.4285714285714" y="395" font-size="9" fill="#FFFFFF" text-anchor="end">356</text>
 </g>
 <g data-date="2026-10-11" data-future="false"><title>2026-10-11: 417 requests</title><rect x="431.43" y="364" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7540687160940326"/>
-<text x="436.42857142857144" y="375" font-size="8" fill="#0F172A" >11</text>
-<text x="489" y="395" font-size="9" fill="#0F172A" text-anchor="end">417</text>
+<text x="436.42857142857144" y="375" font-size="8" fill="#FFFFFF" >11</text>
+<text x="489" y="395" font-size="9" fill="#FFFFFF" text-anchor="end">417</text>
 </g>
 <g data-date="2026-10-12" data-future="false"><title>2026-10-12: 329 requests</title><rect x="26.00" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.5949367088607594"/>
 <text x="31" y="416" font-size="8" fill="#0F172A" >12</text>
@@ -90,72 +90,72 @@
 <text x="151.14285714285714" y="436" font-size="9" fill="#0F172A" text-anchor="end">291</text>
 </g>
 <g data-date="2026-10-14" data-future="false"><title>2026-10-14: 397 requests</title><rect x="161.14" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7179023508137432"/>
-<text x="166.14285714285714" y="416" font-size="8" fill="#0F172A" >14</text>
-<text x="218.71428571428572" y="436" font-size="9" fill="#0F172A" text-anchor="end">397</text>
+<text x="166.14285714285714" y="416" font-size="8" fill="#FFFFFF" >14</text>
+<text x="218.71428571428572" y="436" font-size="9" fill="#FFFFFF" text-anchor="end">397</text>
 </g>
 <g data-date="2026-10-15" data-future="false"><title>2026-10-15: 446 requests</title><rect x="228.71" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.8065099457504521"/>
-<text x="233.71428571428572" y="416" font-size="8" fill="#0F172A" >15</text>
-<text x="286.2857142857143" y="436" font-size="9" fill="#0F172A" text-anchor="end">446</text>
+<text x="233.71428571428572" y="416" font-size="8" fill="#FFFFFF" >15</text>
+<text x="286.2857142857143" y="436" font-size="9" fill="#FFFFFF" text-anchor="end">446</text>
 </g>
 <g data-date="2026-10-16" data-future="false"><title>2026-10-16: 353 requests</title><rect x="296.29" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.6383363471971067"/>
-<text x="301.2857142857143" y="416" font-size="8" fill="#0F172A" >16</text>
-<text x="353.85714285714283" y="436" font-size="9" fill="#0F172A" text-anchor="end">353</text>
+<text x="301.2857142857143" y="416" font-size="8" fill="#FFFFFF" >16</text>
+<text x="353.85714285714283" y="436" font-size="9" fill="#FFFFFF" text-anchor="end">353</text>
 </g>
 <g data-date="2026-10-17" data-future="false"><title>2026-10-17: 326 requests</title><rect x="363.86" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.5895117540687161"/>
 <text x="368.85714285714283" y="416" font-size="8" fill="#0F172A" >17</text>
 <text x="421.4285714285714" y="436" font-size="9" fill="#0F172A" text-anchor="end">326</text>
 </g>
 <g data-date="2026-10-18" data-future="false"><title>2026-10-18: 437 requests</title><rect x="431.43" y="405" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7902350813743219"/>
-<text x="436.42857142857144" y="416" font-size="8" fill="#0F172A" >18</text>
-<text x="489" y="436" font-size="9" fill="#0F172A" text-anchor="end">437</text>
+<text x="436.42857142857144" y="416" font-size="8" fill="#FFFFFF" >18</text>
+<text x="489" y="436" font-size="9" fill="#FFFFFF" text-anchor="end">437</text>
 </g>
 <g data-date="2026-10-19" data-future="false"><title>2026-10-19: 474 requests</title><rect x="26.00" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.8571428571428571"/>
-<text x="31" y="457" font-size="8" fill="#0F172A" >19</text>
-<text x="83.57142857142857" y="477" font-size="9" fill="#0F172A" text-anchor="end">474</text>
+<text x="31" y="457" font-size="8" fill="#FFFFFF" >19</text>
+<text x="83.57142857142857" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">474</text>
 </g>
 <g data-date="2026-10-20" data-future="false"><title>2026-10-20: 377 requests</title><rect x="93.57" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.6817359855334539"/>
-<text x="98.57142857142857" y="457" font-size="8" fill="#0F172A" >20</text>
-<text x="151.14285714285714" y="477" font-size="9" fill="#0F172A" text-anchor="end">377</text>
+<text x="98.57142857142857" y="457" font-size="8" fill="#FFFFFF" >20</text>
+<text x="151.14285714285714" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">377</text>
 </g>
 <g data-date="2026-10-21" data-future="false"><title>2026-10-21: 362 requests</title><rect x="161.14" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.6546112115732369"/>
-<text x="166.14285714285714" y="457" font-size="8" fill="#0F172A" >21</text>
-<text x="218.71428571428572" y="477" font-size="9" fill="#0F172A" text-anchor="end">362</text>
+<text x="166.14285714285714" y="457" font-size="8" fill="#FFFFFF" >21</text>
+<text x="218.71428571428572" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">362</text>
 </g>
 <g data-date="2026-10-22" data-future="false"><title>2026-10-22: 476 requests</title><rect x="228.71" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.8607594936708861"/>
-<text x="233.71428571428572" y="457" font-size="8" fill="#0F172A" >22</text>
-<text x="286.2857142857143" y="477" font-size="9" fill="#0F172A" text-anchor="end">476</text>
+<text x="233.71428571428572" y="457" font-size="8" fill="#FFFFFF" >22</text>
+<text x="286.2857142857143" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">476</text>
 </g>
 <g data-date="2026-10-23" data-future="false"><title>2026-10-23: 501 requests</title><rect x="296.29" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.9059674502712477"/>
-<text x="301.2857142857143" y="457" font-size="8" fill="#0F172A" >23</text>
-<text x="353.85714285714283" y="477" font-size="9" fill="#0F172A" text-anchor="end">501</text>
+<text x="301.2857142857143" y="457" font-size="8" fill="#FFFFFF" >23</text>
+<text x="353.85714285714283" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">501</text>
 </g>
 <g data-date="2026-10-24" data-future="false"><title>2026-10-24: 402 requests</title><rect x="363.86" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7269439421338155"/>
-<text x="368.85714285714283" y="457" font-size="8" fill="#0F172A" >24</text>
-<text x="421.4285714285714" y="477" font-size="9" fill="#0F172A" text-anchor="end">402</text>
+<text x="368.85714285714283" y="457" font-size="8" fill="#FFFFFF" >24</text>
+<text x="421.4285714285714" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">402</text>
 </g>
 <g data-date="2026-10-25" data-future="false"><title>2026-10-25: 400 requests</title><rect x="431.43" y="446" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7233273056057866"/>
-<text x="436.42857142857144" y="457" font-size="8" fill="#0F172A" >25</text>
-<text x="489" y="477" font-size="9" fill="#0F172A" text-anchor="end">400</text>
+<text x="436.42857142857144" y="457" font-size="8" fill="#FFFFFF" >25</text>
+<text x="489" y="477" font-size="9" fill="#FFFFFF" text-anchor="end">400</text>
 </g>
 <g data-date="2026-10-26" data-future="false"><title>2026-10-26: 515 requests</title><rect x="26.00" y="487" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.9312839059674503"/>
-<text x="31" y="498" font-size="8" fill="#0F172A" >26</text>
-<text x="83.57142857142857" y="518" font-size="9" fill="#0F172A" text-anchor="end">515</text>
+<text x="31" y="498" font-size="8" fill="#FFFFFF" >26</text>
+<text x="83.57142857142857" y="518" font-size="9" fill="#FFFFFF" text-anchor="end">515</text>
 </g>
 <g data-date="2026-10-27" data-future="false"><title>2026-10-27: 527 requests</title><rect x="93.57" y="487" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.9529837251356239"/>
-<text x="98.57142857142857" y="498" font-size="8" fill="#0F172A" >27</text>
-<text x="151.14285714285714" y="518" font-size="9" fill="#0F172A" text-anchor="end">527</text>
+<text x="98.57142857142857" y="498" font-size="8" fill="#FFFFFF" >27</text>
+<text x="151.14285714285714" y="518" font-size="9" fill="#FFFFFF" text-anchor="end">527</text>
 </g>
 <g data-date="2026-10-28" data-future="false"><title>2026-10-28: 428 requests</title><rect x="161.14" y="487" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7739602169981917"/>
-<text x="166.14285714285714" y="498" font-size="8" fill="#0F172A" >28</text>
-<text x="218.71428571428572" y="518" font-size="9" fill="#0F172A" text-anchor="end">428</text>
+<text x="166.14285714285714" y="498" font-size="8" fill="#FFFFFF" >28</text>
+<text x="218.71428571428572" y="518" font-size="9" fill="#FFFFFF" text-anchor="end">428</text>
 </g>
 <g data-date="2026-10-29" data-future="false"><title>2026-10-29: 438 requests</title><rect x="228.71" y="487" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="0.7920433996383364"/>
-<text x="233.71428571428572" y="498" font-size="8" fill="#0F172A" >29</text>
-<text x="286.2857142857143" y="518" font-size="9" fill="#0F172A" text-anchor="end">438</text>
+<text x="233.71428571428572" y="498" font-size="8" fill="#FFFFFF" >29</text>
+<text x="286.2857142857143" y="518" font-size="9" fill="#FFFFFF" text-anchor="end">438</text>
 </g>
 <g data-date="2026-10-30" data-future="false"><title>2026-10-30: 553 requests</title><rect x="296.29" y="487" width="62.57" height="36" rx="4" fill="#7C3AED" fill-opacity="1"/>
-<text x="301.2857142857143" y="498" font-size="8" fill="#0F172A" >30</text>
-<text x="353.85714285714283" y="518" font-size="9" fill="#0F172A" text-anchor="end">553</text>
+<text x="301.2857142857143" y="498" font-size="8" fill="#FFFFFF" >30</text>
+<text x="353.85714285714283" y="518" font-size="9" fill="#FFFFFF" text-anchor="end">553</text>
 </g>
 <g data-date="2026-10-31" data-future="true"><title>2026-10-31: Future date</title><rect x="363.86" y="487" width="62.57" height="36" rx="4" fill="#DBE3ED" fill-opacity="0.25"/>
 <text x="368.85714285714283" y="498" font-size="8" fill="#53647B" >31</text>

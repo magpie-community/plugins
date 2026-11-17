@@ -257,19 +257,20 @@ export function renderCard(
       content.push(
         `<g data-date="${d.date}" data-future="${d.future}"><title>${d.date}: ${d.future ? "Future date" : `${d.requests} requests`}</title><rect x="${x.toFixed(2)}" y="${cy}" width="${cellW.toFixed(2)}" height="${cellH}" rx="4" fill="${level ? p.purple : p.line}" fill-opacity="${d.future ? 0.25 : level || 1}"/>`,
       );
+      const cellText = !dark && level >= 0.6 ? "#FFFFFF" : p.fg;
       text(
         x + 5,
         cy + 11,
         Number(d.date.slice(-2)),
         8,
-        d.future ? p.muted : p.fg,
+        d.future ? p.muted : cellText,
       );
       text(
         x + cellW - 5,
         cy + cellH - 5,
         d.future ? "—" : compact(d.requests),
         compactLayout ? 8 : 9,
-        p.fg,
+        cellText,
         'text-anchor="end"',
       );
       content.push("</g>");
