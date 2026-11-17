@@ -35,6 +35,34 @@ const AUTH_CODES = new Set(["020002", "100002"])
 
 const REQUEST_TIMEOUT = 20_000
 
+// the session the client asks for at sign-in (expire: 1209600, as Loomy's
+// own client sends it); there is no endpoint that renews one
+const SESSION_TTL = 14 * 86400e3
+
+// when an account's session began: the time an SMS sign-in kept, else its
+// 14-day end less 14 days (accounts signed in before 0.1.12); 0 when not
+// known (a pasted session)
+function signedInAt(a) {
+  const at = Number(a?.signedInAt)
+  if (Number.isFinite(at) && at > 0) return at
+  const exp = Number(a?.expires)
+  return Number.isFinite(exp) && exp > SESSION_TTL ? exp - SESSION_TTL : 0
+}
+
+// what a lapsed account says: the vendor refused the session, with the day
+// it was signed in. No lifetime is claimed: the client asks for 14 days, but
+// agent2api found sessions still served past that, so the day is the fact
+// and the reader can set it beside the drop
+function lapsedText(a, said) {
+  const at = signedInAt(a)
+  let when = ""
+  if (at) {
+    const d = new Date(at + 8 * 3600e3) // Beijing
+    when = `；这次登录在 ${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日`
+  }
+  return `Loomy 登录态已失效（${said || "code=100002"}${when}），请重新登录`
+}
+
 
 // the chat models the live /api/v1/models returned on 2026-10-16 (the image
 // models come from the live list only; the loader draws with them through
@@ -164,7 +192,7 @@ function retryableRefusal(status, body) {
 // vendor's words. A model's own answer (an SSE stream, or a completion or
 // a draw, neither of which has a top-level code) goes through as it came.
 const REFUSAL_MAX = 64 << 10
-async function businessRefusal(res) {
+async function businessRefusal(res, a) {
   const ct = res.headers.get("content-type") ?? ""
   if (!/json/i.test(ct) || /event-stream/i.test(ct)) return res
   const text = await res.text()
@@ -184,11 +212,46 @@ async function businessRefusal(res) {
   if (!code || code === OK) return same()
   const said = messageOf(payload)
   if (AUTH_CODES.has(code)) {
-    const r = errorResponse(401, `Loomy 登录态已失效，请重新登录（${said || `code=${code}`}）`)
+    const r = errorResponse(401, lapsedText(a, said || `code=${code}`))
     r.headers.set("x-magpie-sign-in", "expired")
     return r
   }
   return errorResponse(502, `Loomy 拒绝了请求：${said || "无错误说明"}（code=${code}）`)
+}
+
+// The gateway's verdict on a session is its business code: a made-up,
+// dropped or missing token gets HTTP 200 with 100002 on every path (chat,
+// draw, models, points and first-login; measured 2026-11-16 and again
+// 2026-11-17), never a 401 or a 403. A 401 or 403 that doesn't carry a
+// sign-in code came from something on the way, a proxy or a firewall
+// turning the exit address away, and says nothing about the session.
+// Read as "signed out", it marked a good account for sign-in again
+// whenever the user's proxy was refused, a different account each time
+// (jenxingyoung on X: four accounts on a proxy, "今天这个掉，明天那个掉").
+// So such a status is a failure of this try that leaves the sign-in as it
+// is ("kept"), and only a sign-in code in its body says the session ended.
+async function deniedStatus(res, a) {
+  const text = await res.text().catch(() => "")
+  let code = ""
+  let said = ""
+  try {
+    const payload = JSON.parse(text)
+    code = codeOf(payload)
+    said = messageOf(payload)
+  } catch {}
+  if (AUTH_CODES.has(code)) {
+    const r = errorResponse(401, lapsedText(a, said || `code=${code}`))
+    r.headers.set("x-magpie-sign-in", "expired")
+    return r
+  }
+  const r = errorResponse(502, deniedText(res.status, said || text))
+  r.headers.set("x-magpie-sign-in", "kept")
+  return r
+}
+
+function deniedText(status, said) {
+  const words = String(said ?? "").replace(/\s+/g, " ").trim().slice(0, 300)
+  return `Loomy 网关返回 HTTP ${status}，不是登录失效（Loomy 的登录失效是 HTTP 200 加业务码 100002），多半是代理或网络拦截了这次请求${words ? `：${words}` : ""}`
 }
 
 async function bodyText(input, init) {
@@ -263,13 +326,28 @@ async function tokenRequest(method, path, session, body) {
     init.body = JSON.stringify(body)
   }
   const res = await fetch(integrationBase() + path, init)
-  if (res.status === 401 || res.status === 403) throw expired("Loomy 登录态已失效，请重新登录")
+  if (res.status === 401 || res.status === 403) {
+    // only a sign-in code says the session ended (deniedStatus)
+    const text = await res.text().catch(() => "")
+    let payload = null
+    try {
+      payload = JSON.parse(text)
+    } catch {}
+    if (AUTH_CODES.has(codeOf(payload))) throw expired(messageOf(payload) || `code=${codeOf(payload)}`)
+    throw new Error(deniedText(res.status, messageOf(payload) || text))
+  }
   const payload = await res.json().catch(() => null)
   if (!res.ok) throw new Error(`Loomy 接口返回 HTTP ${res.status}`)
   if (!payload) throw new Error("Loomy 接口返回了无法解析的内容")
   return payload
 }
 
+
+// a pasted session's account name: its last six characters, as the token
+// tails other subscriptions show
+function pastedName(session) {
+  return `手动粘贴 ···${String(session).slice(-6)}`
+}
 
 // the phone number as the client normalizes it (agent2api login.rs)
 function normalizePhone(raw) {
@@ -453,13 +531,19 @@ export async function LoomyAuthPlugin({ client } = {}) {
             if (codeOf(answer) !== OK) return { type: "failed", error: `登录失败：${messageOf(answer) || `code=${codeOf(answer)}`}` }
             const session = String(answer?.data?.session ?? "").trim()
             if (!session) return { type: "failed", error: "登录成功但上游没有返回 session" }
+            const userId = String(answer?.data?.userid ?? "")
+            const now = Date.now()
             return {
               type: "success",
               refresh: "",
               access: session,
-              expires: Date.now() + 14 * 86400e3, // the session the client asks for is 14 days
+              expires: now + SESSION_TTL, // the session the client asks for is 14 days
+              signedInAt: now,
               accountId: `${phone.slice(0, 3)}****${phone.slice(-4)}`,
-              userId: String(answer?.data?.userid ?? ""),
+              // two phones masked alike stay two accounts (magpie's host
+              // tells accounts of one name apart by uid)
+              ...(userId ? { uid: userId } : {}),
+              userId,
               source: "sms",
             }
           } catch (e) {
@@ -483,7 +567,10 @@ export async function LoomyAuthPlugin({ client } = {}) {
         url: "",
         instructions: "已取到粘贴的 session，确认即完成登录。",
         method: "auto",
-        callback: async () => ({ type: "success", refresh: "", access: session, expires: 0, accountId: "手动粘贴", source: "manual" }),
+        // each pasted session its own name: magpie's host keeps one account
+        // per name, so one name for every paste put a second pasted account
+        // over the first, and signing one in again dropped another
+        callback: async () => ({ type: "success", refresh: "", access: session, expires: 0, accountId: pastedName(session), source: "manual" }),
       }
     },
   })
@@ -491,8 +578,10 @@ export async function LoomyAuthPlugin({ client } = {}) {
   return {
     auth: {
       provider: ID,
-      // Loomy has no renewal: a session lives 14 days, and its end is
-      // refreshed only by signing in again (SMS or import)
+      // Loomy has no renewal: its own client (0.9.39), web app and every
+      // port of it (agent2api, magpie-providers-hub) only sign in again. A
+      // session is asked for 14 days, and its end is refreshed only by
+      // signing in again (SMS or paste)
       async loader(getAuth) {
         const a = await getAuth()
         if (a?.type !== "oauth") return {}
@@ -503,7 +592,8 @@ export async function LoomyAuthPlugin({ client } = {}) {
         // the body goes as magpie wrote it (the chat path's rewrites are
         // about messages, which a draw has none of)
         const draw = async (body, signal) => {
-          const session = (await getAuth())?.access ?? a.access
+          const now = (await getAuth()) ?? a
+          const session = now?.access ?? a.access
           if (!session) return errorResponse(401, "Loomy 登录态缺失，请重新登录")
           let res
           try {
@@ -521,12 +611,12 @@ export async function LoomyAuthPlugin({ client } = {}) {
           } catch (e) {
             return errorResponse(502, e?.message ?? String(e))
           }
-          if (res.status === 401 || res.status === 403) return errorResponse(401, "Loomy 登录态已失效，请重新登录")
+          if (res.status === 401 || res.status === 403) return deniedStatus(res, now)
           if (!res.ok) {
             const raw = await res.text().catch(() => "")
             return errorResponse(res.status, `Loomy 上游返回 ${res.status}: ${raw.slice(0, 4096) || "无错误说明"}`)
           }
-          return businessRefusal(res)
+          return businessRefusal(res, now)
         }
         return {
           baseURL: modelBase(),
@@ -546,7 +636,8 @@ export async function LoomyAuthPlugin({ client } = {}) {
             } catch {
               return errorResponse(400, "a request that isn't JSON")
             }
-            const session = (await getAuth())?.access ?? a.access
+            const now = (await getAuth()) ?? a
+            const session = now?.access ?? a.access
             if (!session) return errorResponse(401, "Loomy 登录态缺失，请重新登录")
 
             // the body as Loomy's own client writes it: reasoning folded to
@@ -573,7 +664,7 @@ export async function LoomyAuthPlugin({ client } = {}) {
             } catch (e) {
               return errorResponse(502, e?.message ?? String(e))
             }
-            if (res.status === 401 || res.status === 403) return errorResponse(401, "Loomy 登录态已失效，请重新登录")
+            if (res.status === 401 || res.status === 403) return deniedStatus(res, now)
             if (!res.ok) {
               const raw = await res.text().catch(() => "")
               const refusal = retryableRefusal(res.status, raw)
@@ -582,17 +673,18 @@ export async function LoomyAuthPlugin({ client } = {}) {
             }
             // the answer streams through as it came (OpenAI-shaped); a 200
             // that is a refusal in the vendor's envelope is said as one
-            return businessRefusal(res)
+            return businessRefusal(res, now)
           },
         }
       },
       async usage(getAuth) {
+        let a
         try {
-          const a = await getAuth()
+          a = await getAuth()
           if (a?.type !== "oauth") return { error: "not signed in", signIn: "kept" }
           const payload = await tokenRequest("GET", "/api/v2/points/records?pageNo=1&pageSize=1&direction=debit&granularity=chat", a.access)
           const code = codeOf(payload)
-          if (AUTH_CODES.has(code)) return { error: "Loomy 登录态已失效，请重新登录", signIn: "expired" }
+          if (AUTH_CODES.has(code)) return { error: lapsedText(a, messageOf(payload) || `code=${code}`), signIn: "expired" }
           if (code !== OK) return { error: `积分查询失败：${messageOf(payload) || `code=${code}`}`, signIn: "kept" }
           const data = payload?.data?.data ?? payload?.data ?? {}
           const daily = toNum(data.dailyBalance)
@@ -647,7 +739,8 @@ export async function LoomyAuthPlugin({ client } = {}) {
           // "kept" here would leave a transient 401's lapse on forever)
           return { plan: NAME, user: a.name || a.accountId, windows }
         } catch (e) {
-          return { error: String(e?.message ?? e), signIn: e?.signIn === "expired" ? "expired" : "kept" }
+          if (e?.signIn === "expired") return { error: lapsedText(a, e.message), signIn: "expired" }
+          return { error: String(e?.message ?? e), signIn: "kept" }
         }
       },
       // the daily grant: the first login of the vendor's day refreshes the

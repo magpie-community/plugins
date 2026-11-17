@@ -30,6 +30,9 @@ export function fakeLoomy() {
     chatCode: null, // set to {code, desc} to answer the chat 200 with it
     imageCalls: [],
     imageStatus: null, // set to a status to answer it instead of drawing
+    // set to {status, type, body} to answer every gateway path with it before
+    // the session is looked at, as a proxy or firewall on the way does
+    denied: null,
     firstLoginCalls: 0,
     dailyBalance: 3000, // the day's first first-login refreshes it to 5000
     recordsReads: 0,
@@ -47,6 +50,7 @@ export function fakeLoomy() {
       state.chatCode = null
       state.imageCalls = []
       state.imageStatus = null
+      state.denied = null
       state.firstLoginCalls = 0
       state.dailyBalance = 3000
       state.recordsReads = 0
@@ -106,6 +110,10 @@ export function fakeLoomy() {
     port: 0,
     async fetch(req) {
       const url = new URL(req.url)
+      if (state.denied) {
+        const d = state.denied
+        return new Response(d.body, { status: d.status, headers: { "content-type": d.type ?? "text/html" } })
+      }
       const token = req.headers.get("token") ?? ""
       const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "")
       // a refused session answers HTTP 200 with the business code, as the
