@@ -311,7 +311,7 @@ test("options it can't use are invalid, before anything is sent", async () => {
     { serverUrl: "https://mem.example.com?token=x", apiKey: "k" },
     { serverUrl: "http://127.0.0.1:14242", maxBytes: 100 },
     { serverUrl: "http://127.0.0.1:14242", maxMemories: 0 },
-    { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 10_000 },
+    { serverUrl: "http://127.0.0.1:14242", requestTimeoutMs: 30_001 },
     { serverUrl: "http://127.0.0.1:14242", recallBackoffMs: 10 },
     { serverUrl: "http://127.0.0.1:14242", capture: "yes" },
     { serverUrl: "http://127.0.0.1:14242", recallRemote: "yes" },

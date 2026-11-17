@@ -72,7 +72,10 @@ async function host(t, f) {
     ],
   });
   assert.equal(init.plugins[0].error, undefined, JSON.stringify(init));
-  assert.equal(init.plugins[0].tools.length, 6);
+  assert.equal(init.plugins[0].tools.length, 7);
+  assert.deepEqual(init.plugins[0].searches, [
+    { id: "search1api", name: "Search1API", auth: "search1api" },
+  ]);
   return rpc;
 }
 
@@ -170,5 +173,41 @@ test(
       f.calls.at(-1).headers.authorization,
       "Bearer test-native-api-key",
     );
+  },
+);
+
+test(
+  "actual Magpie Bun host: web search signs in as the saved Search1API account",
+  { timeout: 20_000 },
+  async (t) => {
+    assert.ok(hostPath, "Set MAGPIE_HOST_PATH.");
+    const f = await fixture(t);
+    const rpc = await host(t, f);
+    const saved = await rpc("apiKey", {
+      provider: "search1api",
+      method: 1,
+      key: "test-search-api-key",
+    });
+    assert.equal(saved.ok, true);
+    const result = await rpc("search", {
+      spec: "@magpie-community/tools-search1api",
+      id: "search1api",
+      query: "Bun",
+      count: 6,
+      account: "search1api",
+      ms: 5000,
+    });
+    assert.deepEqual(result.pages, [
+      { title: "Example", url: "https://example.com", text: "Result", age: "2026-10-23" },
+    ]);
+    const call = f.calls.at(-1);
+    assert.equal(call.path, "/search");
+    assert.equal(call.headers.authorization, "Bearer test-search-api-key");
+    assert.deepEqual(JSON.parse(call.raw), {
+      query: "Bun",
+      search_service: "google",
+      max_results: 6,
+      crawl_results: 0,
+    });
   },
 );

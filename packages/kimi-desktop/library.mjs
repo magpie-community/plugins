@@ -30,7 +30,7 @@ export function prepareLibrary(stateDir, kimiDir) {
   linkDirectory(path.join(stateDir, 'library-skills'), path.join(kimiDir, 'skills'));
 }
 
-export function applyInstructions(payload, file) {
+export function applyInstructions(payload, file, transformText = value => value) {
   if (!Array.isArray(payload.messages)) throw Error('invalid_messages');
   let text = '';
   try {
@@ -50,7 +50,7 @@ export function applyInstructions(payload, file) {
   if (text) {
     let at = 0;
     while (['system', 'developer'].includes(messages[at]?.role)) at++;
-    messages.splice(at, 0, {role: 'system', content: BEGIN + '\n' + text + '\n' + END});
+    messages.splice(at, 0, {role: 'system', content: BEGIN + '\n' + transformText(text) + '\n' + END});
   }
   return {...payload, messages};
 }

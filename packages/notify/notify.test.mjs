@@ -4,8 +4,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
 import { readFileSync, readdirSync } from "node:fs"
-import { onRequest, onResponse, reset, settled, options, duration, message } from "./notify.hooks.mjs"
-import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background, subagent } from "./turn.mjs"
+import { onRequest, onResponse, onSignIn, signInMessage, reset, settled, options, duration, message } from "./notify.hooks.mjs"
+import { opensTurn, ending, hasTools, firstWords, compacting, continued, notificationOnly, background, subagent, progressSummary } from "./turn.mjs"
 import { send, usable } from "./channels.mjs"
 
 const realFetch = globalThis.fetch
@@ -640,6 +640,202 @@ test("a Responses request with no user message stays in the conversation it cont
   expect(JSON.parse(calls[0].body).title).toBe("✅ Codex done · magpie-plugins")
 })
 
+// ---- re-recorded against newer clients: claude 2.1.325 and codex 0.169.0 ----
+// The same rigs (fake endpoints that log every request and answer by script),
+// `claude -p` or its TUI in a pty, `codex exec` or its TUI; trimmed the same way.
+const fxIn = (dir, name) => JSON.parse(readFileSync(new URL(`./fixtures/${dir}/${name}.json`, import.meta.url), "utf8"))
+const recordedIn = (dir, prefix) => readdirSync(new URL(`./fixtures/${dir}/`, import.meta.url)).filter((f) => f.startsWith(prefix + "-")).sort().map((f) => f.slice(0, -5))
+async function replayIn(dir, protocol, prefix, gap) {
+  const after = []
+  for (const name of recordedIn(dir, prefix)) {
+    const f = fxIn(dir, name)
+    minutes(gap)
+    await exchange(protocol, f.body, f.reply, { session: f.session, ...(protocol === "responses" ? { agent: "codex" } : {}) })
+    after.push(calls.length)
+  }
+  return after
+}
+const CC = "claude-2.1.325", CX = "codex-0.169.0"
+const cc = (name) => fxIn(CC, name), cx9 = (name) => fxIn(CX, name)
+// one request whose reply comes `took` minutes later
+async function slow(dir, protocol, name, took) {
+  const f = fxIn(dir, name), c = ctx(protocol, { session: f.session })
+  onRequest(f.body, c)
+  minutes(took)
+  onResponse(f.reply, c)
+  await settled()
+}
+const lastText = (body) => { const c = body.messages.at(-1).content; return typeof c === "string" ? c : c.map((p) => p.text ?? "").join("\n") }
+
+test("captured 2.1.325: a background agent's progress-summary requests (2.1.318+) stay inside the agent and never end the turn", async () => {
+  // 04 and 06 are the summary requests: the agent's own transcript forked,
+  // tools and all, with the "Describe your most recent action" prompt as the
+  // newest user text, answered with plain text and end_turn
+  for (const n of ["agent-progress-04", "agent-progress-06"]) {
+    expect(lastText(cc(n).body)).toContain("Describe your most recent action in 3-5 words")
+    expect(ending(cc(n).reply, "anthropic").done).toBe(true)
+  }
+  expect(opensTurn(cc("agent-progress-04").body, "anthropic")).toBe(true) // the prompt alone
+  expect(opensTurn(cc("agent-progress-06").body, "anthropic")).toBe(false) // the prompt beside the last tool_result
+  // the first one folds the prompt into the agent's first user message, so it
+  // reads as a conversation of its own; the later one is the agent's conversation
+  expect(firstWords(cc("agent-progress-04").body, "anthropic")).not.toBe(firstWords(cc("agent-progress-02").body, "anthropic"))
+  expect(firstWords(cc("agent-progress-06").body, "anthropic")).toBe(firstWords(cc("agent-progress-02").body, "anthropic"))
+  expect(background(cc("agent-progress-03").body, "anthropic").launched).toEqual(["toolu_ag_bg"])
+  expect(await replayIn(CC, "anthropic", "agent-progress", 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+// the captured requests, in an order a longer agent run sends them, with
+// `gap` minutes before each; returns how many pushes there were after each
+async function steps(list) {
+  const after = []
+  for (const [gap, f] of list) {
+    minutes(gap)
+    const x = typeof f === "string" ? cc(f) : f
+    await exchange("anthropic", x.body, x.reply, { session: x.session })
+    after.push(calls.length)
+  }
+  return after
+}
+
+test("a progress-summary request is a side call: it neither opens nor closes a turn, and leaves the agent's turn alone", async () => {
+  expect(progressSummary(cc("agent-progress-04").body, "anthropic")).toBe(true) // folded into the first message
+  expect(progressSummary(cc("agent-progress-06").body, "anthropic")).toBe(true) // beside the last tool_result
+  for (const n of ["agent-progress-01", "agent-progress-02", "agent-progress-05", "agent-progress-08", "compact-twice-02", "autocompact-03"])
+    expect(progressSummary(cc(n).body, "anthropic")).toBe(false)
+  // the words quoted by the user are no summary request
+  expect(progressSummary({ messages: [{ role: "user", content: "why does it say Describe your most recent action in 3-5 words?" }] }, "anthropic")).toBe(false)
+  expect(progressSummary(cc("agent-progress-04").body, "responses")).toBe(false)
+  const P = (i) => `agent-progress-0${i}`
+  // a foreground Agent: the main conversation waits on the call, quiet, while
+  // the agent works through three tool rounds with summaries between them
+  // (05 and 06 sent again for the third round, as a longer run would). Before
+  // the summaries were set aside, the one at 06 ended the agent's turn, the
+  // agent's next request came after the parent had been quiet 15 min and was
+  // taken for a conversation of its own, and the next summary pushed
+  // "done · took 20 min" from the middle of the agent's work.
+  const main = cc(P(1))
+  const back = { session: main.session, body: { ...main.body, messages: [...main.body.messages, { role: "assistant", content: main.reply.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_ag_bg", content: "Slept twice, done." }] }] }, reply: { type: "message", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "The agent finished." }] } }
+  expect(await steps([[0, P(1)], [0, P(2)], [0.5, P(4)], [0.5, P(5)], [0.5, P(6)], [16, P(5)], [20, P(6)], [20, P(7)], [0, back]])).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 58 min")
+  // a background Agent that outlasts the two hours its parent is held quiet
+  reset(() => clock, fakeTimers); calls = []
+  expect(await steps([[0, P(1)], [0, P(2)], [0, P(3)], [0.5, P(4)], [0.5, P(5)], [0.5, P(6)], [125, P(5)], [20, P(6)], [20, P(7)], [0, P(8)]])).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 2 h 47 min")
+})
+
+test("captured 2.1.325: an agent that stops with background work of its own is interim until it notifies again", async () => {
+  expect(background(cc("agent-interim-05").body, "anthropic").interim).toEqual(["toolu_ag_int"])
+  expect(await replayIn(CC, "anthropic", "agent-interim", 2)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured 2.1.325: SendMessage to a finished agent resumes it and holds the turn; one to a running agent makes its notification interim", async () => {
+  expect(background(cc("sendmessage-07").body, "anthropic")).toEqual({ launched: ["toolu_send"], stopped: [], interim: [], agents: { toolu_send: "a55ae11abbf84b673" } })
+  expect(await replayIn(CC, "anthropic", "sendmessage", 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+  reset(() => clock, fakeTimers); calls = []
+  expect(background(cc("late-message-05").body, "anthropic").launched).toEqual([]) // "Message queued for delivery…"
+  expect(background(cc("late-message-06").body, "anthropic").interim).toEqual(["toolu_ag_race"])
+  expect(background(cc("late-message-08").body, "anthropic").stopped).toEqual(["a0a227ba3bcb7965c"])
+  expect(await replayIn(CC, "anthropic", "late-message", 2)).toEqual([0, 0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 14 min")
+})
+
+test("captured 2.1.325 (TUI): /compact twice in a row sends one summary request; the next message is a turn of its own", async () => {
+  await slow(CC, "anthropic", "compact-twice-01", 5)
+  expect(calls).toHaveLength(1)
+  expect(compacting(cc("compact-twice-02").body, "anthropic")).toBe(true)
+  await slow(CC, "anthropic", "compact-twice-02", 1)
+  expect(calls).toHaveLength(1)
+  // the second /compact ran locally ("Not enough messages to compact.") and
+  // rides as caveats in the next message, after the summary
+  const f = cc("compact-twice-03")
+  expect(continued(f.body, "anthropic")).toBe(true)
+  expect(JSON.stringify(f.body.messages[0].content)).toContain("Not enough messages to compact.")
+  minutes(1)
+  await slow(CC, "anthropic", "compact-twice-03", 4)
+  expect(calls).toHaveLength(2)
+  expect(JSON.parse(calls[1].body).message).toContain("took 4 min")
+})
+
+test("captured 2.1.325 (TUI): /compact, a message, /compact again: each message pushes, the summaries never do", async () => {
+  await slow(CC, "anthropic", "compact-again-01", 5)
+  await slow(CC, "anthropic", "compact-again-02", 1)
+  await slow(CC, "anthropic", "compact-again-03", 4)
+  expect(calls).toHaveLength(2)
+  const again = cc("compact-again-04").body // compacting the conversation that went on from the first summary
+  expect(compacting(again, "anthropic") && continued(again, "anthropic")).toBe(true)
+  await slow(CC, "anthropic", "compact-again-04", 1)
+  expect(calls).toHaveLength(2)
+  await slow(CC, "anthropic", "compact-again-05", 6)
+  expect(calls).toHaveLength(3)
+  expect(JSON.parse(calls[2].body).message).toContain("took 6 min")
+})
+
+test("captured 2.1.325: auto-compaction mid tool loop neither ends nor restarts the turn", async () => {
+  expect(compacting(cc("autocompact-02").body, "anthropic")).toBe(true)
+  expect(continued(cc("autocompact-03").body, "anthropic")).toBe(true)
+  expect(await replayIn(CC, "anthropic", "autocompact", 2)).toEqual([0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 8 min")
+})
+
+const turnMeta = (f) => JSON.parse(f.body.client_metadata["x-codex-turn-metadata"])
+
+test("captured Codex 0.169.0: a plain turn, and a subagent told apart by thread id and nested by client_metadata and headers", async () => {
+  expect(await replayIn(CX, "responses", "turn", 3)).toEqual([0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 3 min")
+  reset(() => clock, fakeTimers); calls = []
+  const sub = cx9("subagent-wait-03")
+  expect(sub.headers["x-openai-subagent"]).toBe("collab_spawn")
+  expect(sub.headers["x-codex-parent-thread-id"]).toBe(cx9("subagent-wait-01").body.client_metadata.thread_id)
+  expect(sub.body.client_metadata["x-openai-subagent"]).toBe("collab_spawn")
+  expect(turnMeta(sub).thread_source).toBe("subagent")
+  expect(subagent(sub.body, "responses")).toBe(true)
+  expect(firstWords(sub.body, "responses")).toBe(`codex thread ${sub.body.client_metadata.thread_id}`)
+  expect(opensTurn(cx9("subagent-wait-05").body, "responses")).toBe(false) // <subagent_notification>, still a user message
+  expect(await replayIn(CX, "responses", "subagent-wait", 3)).toEqual([0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 12 min")
+})
+
+test("captured Codex 0.169.0 (TUI): the parent ends its turn before its subagent; the title request is a side call; the notification rides in with your next message", async () => {
+  expect(hasTools(cx9("subagent-nowait-02").body, "responses")).toBe(false) // "Generate a concise, single-line task title…"
+  expect(turnMeta(cx9("subagent-nowait-02")).thread_source).toBe("thread_title")
+  expect(await replayIn(CX, "responses", "subagent-nowait", 3)).toEqual([0, 0, 1, 1, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 6 min")
+  reset(() => clock, fakeTimers); calls = []
+  const next = cx9("subagent-followup-06").body
+  expect(next.input.at(-2).content[0].text.startsWith("<subagent_notification>")).toBe(true)
+  expect(opensTurn(next, "responses")).toBe(true)
+  expect(await replayIn(CX, "responses", "subagent-followup", 3)).toEqual([0, 0, 1, 1, 1, 1, 1, 2])
+  expect(JSON.parse(calls[1].body).message).toContain("took 6 min")
+})
+
+test("captured Codex 0.169.0: auto-compaction, local (custom provider) and remote (openai provider): one push, timed from the user's message", async () => {
+  expect(compacting(cx9("compact-local-03").body, "responses")).toBe(true)
+  expect(turnMeta(cx9("compact-local-03")).request_kind).toBe("compaction")
+  expect(continued(cx9("compact-local-04").body, "responses")).toBe(true)
+  expect(await replayIn(CX, "responses", "compact-local", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+  reset(() => clock, fakeTimers); calls = []
+  expect(cx9("compact-remote-03").body.input.at(-1).type).toBe("compaction_trigger")
+  expect(await replayIn(CX, "responses", "compact-remote", 3)).toEqual([0, 0, 0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 18 min")
+})
+
+test("captured Codex 0.169.0 (TUI): a queued message keeps its thread id and is a turn of its own; one steered into a running turn restarts its clock", async () => {
+  const thread = cx9("queued-01").body.client_metadata.thread_id
+  expect(cx9("queued-04").body.client_metadata.thread_id).toBe(thread)
+  expect(firstWords(cx9("queued-04").body, "responses")).toBe(firstWords(cx9("queued-01").body, "responses"))
+  expect(await replayIn(CX, "responses", "queued", 3)).toEqual([0, 0, 1, 1, 1, 2])
+  expect(calls.map((c) => JSON.parse(c.body).message.split("\n")[0])).toEqual(["took 6 min", "took 6 min"])
+  reset(() => clock, fakeTimers); calls = []
+  expect(cx9("steer-03").body.input.at(-1).content[0].text).toBe("CX_QUEUED steer") // after the tool's output, mid-turn
+  expect(await replayIn(CX, "responses", "steer", 3)).toEqual([0, 0, 0, 0, 1])
+  expect(JSON.parse(calls[0].body).message).toContain("took 6 min")
+})
+
 test("includeText adds the reply, cut to maxTextLength; lang zh", async () => {
   const o = { includeText: true, maxTextLength: 10, lang: "zh" }
   await exchange("anthropic", aUser, aToolUse, { options: o })
@@ -816,4 +1012,90 @@ test("Gotify's errorDescription is read on failure", async () => {
   const r = await send({ type: "gotify", server: "https://gotify.example.com", token: "bad" }, m)
   expect(r.ok).toBe(false)
   expect(r.error).toBe("bad token")
+})
+
+// ---- accounts signed out (magpie's onSignIn) ----
+// shannnnnks on X: in gateway mode one Codex account of several is signed
+// out now and then; a push says so, to sign it in again.
+const signedOut = { provider: "codex", providerName: "Codex", account: "me@example.com", state: "signed-out" }
+const signInCtx = (opts = {}) => ({ options: { channels: [ntfy], ...opts }, signal: new AbortController().signal })
+
+test("an account signed out is pushed, on by default", async () => {
+  onSignIn(signedOut, signInCtx())
+  await settled()
+  expect(calls.length).toBe(1)
+  const sent = JSON.parse(calls[0].body)
+  expect(sent.title).toBe("⚠️ Codex account me@example.com signed out")
+  expect(sent.message).toBe("Sign in again in magpie.")
+  expect(sent.tags).toEqual(["warning"])
+})
+
+test("a sign-in push follows lang", async () => {
+  onSignIn(signedOut, signInCtx({ lang: "zh" }))
+  onSignIn({ provider: "claude", providerName: "Claude", account: "a@b.c", state: "ending", endsAt: new Date(clock + 2.5 * 86_400_000).toISOString() }, signInCtx({ lang: "zh" }))
+  await settled()
+  expect(calls.map((c) => JSON.parse(c.body).title)).toEqual([
+    "⚠️ Codex 账号 me@example.com 已登出",
+    "⚠️ Claude 账号 a@b.c 的登录将在 3 天后失效",
+  ])
+  expect(JSON.parse(calls[0].body).message).toBe("请在 magpie 中重新登录。")
+})
+
+test("a Claude sign-in ending is pushed with its days left", () => {
+  const m = signInMessage({ provider: "claude", providerName: "Claude", account: "a@b.c", state: "ending", endsAt: new Date(clock + 86_400_000).toISOString() }, options({}))
+  expect(m.title).toBe("⚠️ Claude account a@b.c: sign-in ends in 1 day")
+  expect(m.event).toEqual({ kind: "ending", provider: "claude", account: "a@b.c", endsAt: new Date(clock + 86_400_000).toISOString() })
+})
+
+test("accounts: false sends no sign-in push", async () => {
+  onSignIn(signedOut, signInCtx({ accounts: false }))
+  await settled()
+  expect(calls.length).toBe(0)
+})
+
+test("one account's sign-in push waits out its cooldown", async () => {
+  onSignIn(signedOut, signInCtx())
+  onSignIn(signedOut, signInCtx())
+  onSignIn({ ...signedOut, account: "other@example.com" }, signInCtx())
+  await settled()
+  expect(calls.length).toBe(2)
+  await wait(61 * 60_000)
+  onSignIn(signedOut, signInCtx())
+  await settled()
+  expect(calls.length).toBe(3)
+})
+
+test("an event that isn't a sign-in sends nothing", async () => {
+  onSignIn({ ...signedOut, state: "renewed" }, signInCtx())
+  onSignIn(null, signInCtx())
+  onSignIn(signedOut, { options: { channels: [] } })
+  await settled()
+  expect(calls.length).toBe(0)
+})
+
+test("a webhook gets the sign-in event", async () => {
+  onSignIn(signedOut, signInCtx({ channels: [{ type: "webhook", url: "https://hook.example.com/x" }] }))
+  await settled()
+  expect(JSON.parse(calls[0].body)).toEqual({
+    title: "⚠️ Codex account me@example.com signed out", body: "Sign in again in magpie.",
+    event: { kind: "signed-out", provider: "codex", account: "me@example.com" },
+  })
+})
+
+// meili145 on X: the page's switch turns every push off without touching channels
+test("enabled: false sends no turn push and no sign-in push, enabled by default", async () => {
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0, enabled: false } })
+  onSignIn(signedOut, signInCtx({ enabled: false }))
+  await settled()
+  expect(calls.length).toBe(0)
+  await exchange("anthropic", aUser, aFinal, { options: { minMinutes: 0 } })
+  expect(calls.length).toBe(1)
+})
+
+// the page ships with the package and keeps what it doesn't edit
+test("the page is declared and shipped", () => {
+  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+  expect(pkg.magpie.page.file).toBe("page/index.html")
+  for (const f of ["index.html", "app.js", "i18n.js", "style.css"]) expect(readdirSync(new URL("./page/", import.meta.url))).toContain(f)
+  expect(pkg.files).toEqual(expect.arrayContaining(["page/*.html", "page/*.js", "page/*.css"]))
 })

@@ -6,8 +6,8 @@ Provider id: `devin`.
 
 ## Signing in
 
-An account is the CLI's session token (`devin-session-token$…`). There are
-two ways to get one:
+An account is the CLI's session token (`devin-session-token$…`) or a key
+made in Devin's settings. There are three ways to add one:
 
 - **Devin (browser)**: the CLI's own `devin auth login`, run by the
   plugin. It is a PKCE sign-in through `app.devin.ai/auth/cli/continue`
@@ -17,6 +17,9 @@ two ways to get one:
   its `credentials.toml` (`$XDG_DATA_HOME/devin/`, by default
   `~/.local/share/devin/`; `%APPDATA%\devin\` on Windows). The file is only
   read, never changed.
+- **Devin API key (cog_…)**: a key typed in, such as a service user's
+  `cog_…` key. It is sent as a sign-in's token is (chat and usage), and is
+  never renewed. The first usage read names the account.
 
 The plugin names the account as Devin does when asked with the token
 (`GetUserStatus`: its email, organization when named, and tier). When Devin can't tell, and the CLI
@@ -25,7 +28,11 @@ plugin's own, `~/.cache/opencode-devin-auth/<hash of the token>/`, so the
 CLI's own sign-in is never touched. A CLI that reads another
 `credentials.toml` than that folder's (on Windows it reads
 `%APPDATA%\devin\` whatever it is run with) isn't asked: it would name
-its own account. Otherwise the account is named "Devin".
+its own account. Otherwise the account is named
+`Devin · <fingerprint>`, using a one-way fingerprint of the API server
+and session token. Repeating the same sign-in keeps its slot, while two
+accounts whose identities are both unreadable no longer replace each
+other.
 
 The token is kept where OpenCode keeps sign-ins (`auth.json`; in magpie,
 `plugin-auth.json`) as `{ "type": "api", "key", "metadata": { "email", "plan", "orgId", "teamId" } }`.
@@ -79,8 +86,26 @@ The plugin's `fetch` handles this:
   #275): Devin turns a body past 10 MiB away with 413.
 - It turns the streamed reply back into a chat completion, streamed or
   not: text, reasoning, tool calls and usage.
+- A Gemini model's reply goes back with its thought signature, as the CLI
+  sends it: on the prompt with the reply's calls (or its words), with
+  `signature_type` "gemini" and the model that wrote it (since 0.1.41).
+  Neither a chat completion nor a Messages `tool_use` carries one, so the
+  plugin keeps each reply's signature by its call ids for the next
+  request, in memory: after a restart, earlier turns go back unsigned, as
+  before.
 - Failures keep their statuses: a refused token is a 401, a usage limit a
   429, a prompt too long for the model a 400.
+- Devin answers "There is an issue with this request, please try a
+  different model" to a long conversation it can't take, and every turn
+  after fails the same (since 0.1.44):
+  - A picture is sent as the type its bytes are (PNG, JPEG, GIF, WebP),
+    not the one it was said to be: Devin refuses a PNG labelled JPEG.
+  - A user message of white space alone isn't sent.
+  - Thinking signed somewhere Devin can't check is sent again once
+    without the signatures.
+  - Past half the model's window (about four bytes a token), the refusal
+    is a 400 "input is too long for the model's context", so the agent
+    compacts.
 - A reply with only metadata and usage is a 502, even when output tokens
   were counted. The plugin waits for actual content before opening a
   successful stream, so the gateway can try another channel.

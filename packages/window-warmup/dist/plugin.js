@@ -1,6 +1,6 @@
 // @bun
 // src/plugin.ts
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/accounts.ts
 var FINGERPRINT_RE = /^[0-9a-f]{10}$/;
@@ -960,10 +960,10 @@ async function send(base, task, pin, effort, signal, timeoutMs = SEND_TIMEOUT_MS
 
 // src/server.ts
 import { randomBytes, timingSafeEqual } from "crypto";
-import { readFile as readFile3 } from "fs/promises";
-import path2, { basename, extname, join as join3, resolve as resolve2 } from "path";
+import { mkdir as mkdir2, readFile as readFile3, writeFile as writeFile2 } from "fs/promises";
+import path2, { basename, extname, join as join4, resolve as resolve2 } from "path";
 // package.json
-var version = "0.1.3";
+var version = "0.1.6";
 
 // src/diagnostics.ts
 var DIAGNOSTICS_SCHEMA = "window-warmup-diagnostics/1";
@@ -1161,6 +1161,8 @@ var QUOTA_REFRESH_MS = 600000;
 var POST_SEND_SETTLE_MS = 60000;
 var CARD_FRESH_MS = 60000;
 var CARD_REFRESH_GAP_MS = 60000;
+var ROLL_GAP_MS = 60000;
+var ROLL_TOLERANCE_MS = 5000;
 var HOUR_MS2 = 3600000;
 var DAY_MS = 24 * HOUR_MS2;
 var INTERRUPTED_REASON = "Magpie \u5728\u53D1\u9001\u4E2D\u9014\u9000\u51FA\uFF0C\u7ED3\u679C\u672A\u77E5";
@@ -1222,6 +1224,7 @@ class Scheduler {
   saveError = null;
   lastErrKey = new Map;
   lastCardRefresh = new Map;
+  probedFor = new Map;
   constructor(deps) {
     this.store = deps.store;
     this.base = deps.base;
@@ -1314,6 +1317,7 @@ class Scheduler {
       this.store.data.runs = this.store.data.runs.filter((r) => r.taskId !== id);
       delete this.store.data.marks[id];
       this.lastErrKey.delete(id);
+      this.probedFor.delete(id);
       await this.store.save();
       this.rearm();
     });
@@ -1533,12 +1537,27 @@ class Scheduler {
     for (const task of this.store.data.tasks) {
       if (!task.enabled)
         continue;
-      const raw = this.quotaWindow(task)?.resetsAt;
-      if (!raw || Number.isNaN(new Date(raw).getTime()))
+      const win = this.quotaWindow(task);
+      const raw = win?.resetsAt;
+      if (!win || !raw || Number.isNaN(new Date(raw).getTime()))
         continue;
+      const readAt = this.loginCard(task)?.readAt ?? null;
       const mark = this.marksOf(task.id);
       if (mark.lastReset !== raw) {
+        const prevReset = Date.parse(mark.lastReset ?? "");
+        const read = Date.parse(readAt ?? "");
+        const dRead = read - Date.parse(mark.lastResetReadAt ?? "");
+        mark.resetRolls = prevReset > read && dRead >= ROLL_GAP_MS && Math.abs(Date.parse(raw) - prevReset - dRead) <= ROLL_TOLERANCE_MS;
+        const sent = this.lastSentMs(task);
+        mark.resetCarried = prevReset <= read && !(sent >= prevReset) ? mark.lastReset : null;
         mark.lastReset = raw;
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (!mark.lastResetReadAt && readAt) {
+        mark.lastResetReadAt = readAt;
+        dirty = true;
+      } else if (mark.resetRolls && Date.parse(readAt ?? "") - Date.parse(mark.lastResetReadAt ?? "") >= ROLL_GAP_MS) {
+        mark.resetRolls = false;
         dirty = true;
       }
     }
@@ -1552,13 +1571,21 @@ class Scheduler {
     const due = windowDue(win, this.quota.at);
     if ("error" in due)
       return null;
+    const mark = this.marksOf(task.id);
+    if (mark.resetRolls && win.resetsAt === mark.lastReset && win.used === 0) {
+      if (this.staleIdle(task))
+        return null;
+      return { at: new Date(this.quota.at.getTime()), resetKey: `idle:${hourFloorISO(this.quota.at)}` };
+    }
+    if (mark.resetCarried && due.resetKey === mark.lastReset && win.used === 0) {
+      return { at: new Date(this.quota.at.getTime()), resetKey: `after:${mark.resetCarried}` };
+    }
     if (due.resetKey.startsWith("idle:") && this.staleIdle(task))
       return null;
     const raw = win.resetsAt;
     if (raw && !Number.isNaN(new Date(raw).getTime())) {
       return { at: due.at, resetKey: raw };
     }
-    const mark = this.marksOf(task.id);
     const isFuture = (iso) => !!iso && new Date(iso).getTime() > now.getTime();
     if (isFuture(mark.lastReset) || mark.resetKeys.some(isFuture))
       return null;
@@ -1576,6 +1603,24 @@ class Scheduler {
     const sent = this.lastSentMs(task);
     return Number.isFinite(readAt) && Number.isFinite(sent) && readAt < sent + POST_SEND_SETTLE_MS;
   }
+  rollProbeAt(task, now) {
+    const mark = this.store.data.marks[task.id];
+    const card = this.loginCard(task);
+    const win = this.quotaWindow(task);
+    if (!mark || !card || !win?.resetsAt || win.used !== 0)
+      return null;
+    if (mark.resetRolls || win.resetsAt !== mark.lastReset)
+      return null;
+    if (this.probedFor.get(task.id) === win.resetsAt)
+      return null;
+    if (!(Date.parse(win.resetsAt) > now.getTime()))
+      return null;
+    const first = Date.parse(mark.lastResetReadAt ?? "");
+    const read = Date.parse(card.readAt ?? "");
+    if (!Number.isFinite(first) || !Number.isFinite(read) || read - first >= ROLL_GAP_MS)
+      return null;
+    return first + ROLL_GAP_MS;
+  }
   async readCards(now) {
     let asked = false;
     for (const task of this.store.data.tasks) {
@@ -1590,13 +1635,17 @@ class Scheduler {
       const due = this.currentWindowDue(task, now);
       const readFresh = now.getTime() - readAt <= CARD_FRESH_MS;
       const dueNow = due !== null && this.windowReady(task, due, now) && !readFresh;
-      if (!afterSend && !dueNow)
+      const probeAt = this.rollProbeAt(task, now);
+      const probe = probeAt !== null && now.getTime() >= probeAt;
+      if (!afterSend && !dueNow && !probe)
         continue;
       const key = `${card.provider}|${card.account}`;
       const last = this.lastCardRefresh.get(key);
       if (last !== undefined && now.getTime() - last < CARD_REFRESH_GAP_MS)
         continue;
       this.lastCardRefresh.set(key, now.getTime());
+      if (probe)
+        this.probedFor.set(task.id, this.quotaWindow(task).resetsAt);
       asked = true;
       await this.refreshCardFn(this.base, card.provider, card.account).catch(() => {});
     }
@@ -1766,6 +1815,9 @@ class Scheduler {
         const settled = this.lastSentMs(task) + POST_SEND_SETTLE_MS;
         if (settled > now.getTime())
           minDelay = Math.min(minDelay, settled - now.getTime());
+        const probeAt = this.rollProbeAt(task, now);
+        if (probeAt !== null && probeAt > now.getTime())
+          minDelay = Math.min(minDelay, probeAt - now.getTime());
         const due = this.currentWindowDue(task, now);
         if (due && due.at.getTime() > now.getTime()) {
           minDelay = Math.min(minDelay, due.at.getTime() - now.getTime());
@@ -1801,8 +1853,62 @@ class Scheduler {
 
 // src/store.ts
 import { link, mkdir, readdir, readFile as readFile2, rename, unlink, writeFile } from "fs/promises";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
+
+// src/proc.mjs
+import { readFileSync } from "fs";
+import { join as join2 } from "path";
+var errCode = (error) => error && typeof error === "object" ? error.code : undefined;
+function validPid(pid) {
+  return Number.isSafeInteger(pid) && pid > 0;
+}
+function processZombie(pid, {
+  procRoot = "/proc",
+  readFile = (file) => readFileSync(file, "utf8")
+} = {}) {
+  if (!validPid(pid))
+    return false;
+  let stat;
+  try {
+    stat = readFile(join2(procRoot, String(pid), "stat"));
+  } catch {
+    return false;
+  }
+  const commEnd = typeof stat === "string" ? stat.lastIndexOf(")") : -1;
+  if (commEnd < 0)
+    return false;
+  const state = stat.slice(commEnd + 1).trim()[0];
+  return state === "Z" || state === "X";
+}
+function processAlive(pid, deps = {}) {
+  const state = processStatus(pid, deps).state;
+  return state === "alive" || state === "permission";
+}
+function processStatus(pid, deps = {}) {
+  const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
+  if (!validPid(pid))
+    return { state: "invalid" };
+  let permission = false;
+  try {
+    kill(pid, 0);
+  } catch (error) {
+    const code = errCode(error);
+    if (code === "ESRCH")
+      return { state: "dead" };
+    if (code !== "EPERM")
+      return { state: "unknown", error };
+    permission = true;
+  }
+  if ((deps.platform ?? process.platform) !== "linux") {
+    return permission ? { state: "permission" } : { state: "alive" };
+  }
+  if (processZombie(pid, deps))
+    return { state: "dead" };
+  return permission ? { state: "permission" } : { state: "alive" };
+}
+
+// src/store.ts
 var RUNS_PER_TASK2 = 50;
 var RESET_KEYS_PER_TASK = 20;
 var STATE_FILE = "state.json";
@@ -1969,7 +2075,7 @@ class StoreImpl {
 }
 async function openStore(dir) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, STATE_FILE);
+  const path = join3(dir, STATE_FILE);
   let raw;
   try {
     raw = await readFile2(path, "utf8");
@@ -1997,7 +2103,7 @@ async function openStore(dir) {
   return new StoreImpl(data, path);
 }
 async function migrateLegacyState(dir, env = process.env) {
-  const statePath = join2(dir, STATE_FILE);
+  const statePath = join3(dir, STATE_FILE);
   try {
     await readFile2(statePath);
     return;
@@ -2005,7 +2111,7 @@ async function migrateLegacyState(dir, env = process.env) {
     if (e.code !== "ENOENT")
       return;
   }
-  const legacy = join2(xdgConfigHome(env), "magpie", LEGACY_DIR_NAME, STATE_FILE);
+  const legacy = join3(xdgConfigHome(env), "magpie", LEGACY_DIR_NAME, STATE_FILE);
   let raw;
   try {
     raw = await readFile2(legacy, "utf8");
@@ -2027,14 +2133,7 @@ function parsePid(raw) {
   } catch {}
   return null;
 }
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
+var pidAlive = processAlive;
 async function releaseLock(path) {
   let raw;
   try {
@@ -2047,15 +2146,15 @@ async function releaseLock(path) {
 }
 async function acquireLock(dir, opts = {}) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, LOCK_FILE);
+  const path = join3(dir, LOCK_FILE);
   const leftovers = await readdir(dir).catch(() => []);
   for (const name of leftovers) {
     if (/^service\.lock\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) {
-      await unlink(join2(dir, name)).catch(() => {});
+      await unlink(join3(dir, name)).catch(() => {});
     }
   }
   for (let round = 0;round < 3; round++) {
-    const tmp = join2(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
+    const tmp = join3(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
     await writeFile(tmp, String(process.pid), { mode: 384 });
     try {
       await link(tmp, path);
@@ -2092,9 +2191,24 @@ async function acquireLock(dir, opts = {}) {
 
 // src/server.ts
 var TOKEN_HEADER = "x-window-warmup-token";
+var TOKEN_FILE = "token";
 var MARKER_HEADER = "x-window-warmup";
 var PROBE_TIMEOUT_MS = 2000;
 var BODY_LIMIT = 64 * 1024;
+async function loadOrCreateToken(dir) {
+  const file = join4(dir, TOKEN_FILE);
+  try {
+    const text = (await readFile3(file, "utf8")).trim();
+    if (/^[0-9a-f]{64}$/.test(text))
+      return text;
+  } catch {}
+  const generated = randomBytes(32).toString("hex");
+  try {
+    await mkdir2(dir, { recursive: true });
+    await writeFile2(file, generated, { encoding: "utf8", mode: 384 });
+  } catch {}
+  return generated;
+}
 async function alreadyServing(port) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/`, {
@@ -2169,7 +2283,7 @@ async function startService(opts) {
     else
       lockedBy = lock.pid;
   }
-  const token = randomBytes(32).toString("hex");
+  const token = await loadOrCreateToken(opts.dir);
   let stopped = false;
   let server;
   try {
@@ -2326,7 +2440,7 @@ async function startService(opts) {
     const boot = JSON.stringify(bootData).replaceAll("<", "\\u003c");
     let html;
     try {
-      html = await readFile3(join3(uiDir, "index.html"), "utf8");
+      html = await readFile3(join4(uiDir, "index.html"), "utf8");
     } catch {
       html = "<!doctype html><title>\u7A97\u53E3\u9884\u70ED</title><p>\u754C\u9762\u8FD8\u6CA1\u6784\u5EFA\uFF1A\u5148\u5728\u5305\u76EE\u5F55\u8FD0\u884C bun run build\u3002</p>";
     }
@@ -2381,7 +2495,7 @@ async function startService(opts) {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     if (url.pathname.startsWith("/api/")) {
       if (!tokenOK(req.headers.get(TOKEN_HEADER))) {
-        return json({ error: "\u53E3\u4EE4\u4E0D\u5BF9\uFF1A\u8BF7\u91CD\u65B0\u6253\u5F00\u7A97\u53E3\u9884\u70ED\u9875" }, 401, corsHeaders(origin));
+        return json({ error: "\u53E3\u4EE4\u4E0D\u5BF9\uFF1A\u8BF7\u91CD\u65B0\u6253\u5F00\u7A97\u53E3\u9884\u70ED\u9875", reload: true }, 401, corsHeaders(origin));
       }
       return api(req, url, origin);
     }
@@ -2407,33 +2521,66 @@ function defaultDir(env = process.env) {
   const custom = env.WINDOW_WARMUP_DIR?.trim();
   if (custom)
     return custom;
-  return join4(xdgConfigHome(env), "magpie", "window-warmup");
+  return join5(xdgConfigHome(env), "magpie", "window-warmup");
 }
 var instances = new Map;
+var waiting = new Set;
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var inUse = (e) => e?.code === "EADDRINUSE";
+function start(listen, dir) {
+  let instance = instances.get(listen);
+  if (!instance) {
+    instance = (async () => {
+      await migrateLegacyState(dir);
+      return startService({ port: listen, dir, base: gatewayBase() });
+    })().catch((e) => {
+      instances.delete(listen);
+      throw e;
+    });
+    instances.set(listen, instance);
+  }
+  return instance;
+}
+function startWhenFree(listen, dir) {
+  if (waiting.has(listen))
+    return;
+  waiting.add(listen);
+  (async () => {
+    try {
+      for (;; ) {
+        await sleep(1000);
+        if (instances.has(listen))
+          return;
+        if (await alreadyServing(listen))
+          continue;
+        try {
+          await start(listen, dir);
+          console.log(`[window-warmup] \u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5DF2\u677E\u624B\uFF0C${listen} \u63A5\u4E0A\u4E86`);
+          return;
+        } catch (e) {
+          if (!inUse(e)) {
+            console.error(`[window-warmup] ${listen} \u8D77\u4E0D\u6765\uFF1A${e instanceof Error ? e.message : String(e)}`);
+            return;
+          }
+        }
+      }
+    } finally {
+      waiting.delete(listen);
+    }
+  })();
+}
 var plugin_default = {
   id: "magpie-window-warmup",
   server: async (_input, opts = {}) => {
     const port = Number(opts?.port);
     const listen = Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT;
-    if (await alreadyServing(listen))
+    const dir = defaultDir();
+    if (!instances.has(listen) && await alreadyServing(listen)) {
+      console.log(`[window-warmup] ${listen} \u88AB\u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5360\u7740\uFF0C\u5B83\u4E00\u677E\u624B\u5C31\u63A5\u4E0A`);
+      startWhenFree(listen, dir);
       return {};
-    let instance = instances.get(listen);
-    if (!instance) {
-      instance = (async () => {
-        const dir = defaultDir();
-        await migrateLegacyState(dir);
-        return startService({
-          port: listen,
-          dir,
-          base: gatewayBase()
-        });
-      })().catch((e) => {
-        instances.delete(listen);
-        throw e;
-      });
-      instances.set(listen, instance);
     }
-    await instance;
+    await start(listen, dir);
     return {};
   }
 };

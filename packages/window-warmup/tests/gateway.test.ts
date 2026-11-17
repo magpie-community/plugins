@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,9 +19,13 @@ import {
 import type { CachedModel, KeyDirectoryEntry } from "../src/magpie-files";
 import type { CatalogAccount, EffortPick, QuotaEntry, QuotaWindow, RawModel, Task } from "../src/types";
 import { fakeGateway, type FakeGateway, type FakeGatewayOpts } from "./fake-gateway";
+import { pinMagpieDirsForTest } from "./test-env";
+
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 const started: FakeGateway[] = [];
 const cleanupDirs: string[] = [];
+afterAll(restoreMagpieDirs);
 function start(opts: FakeGatewayOpts = {}): FakeGateway {
   const gw = fakeGateway(opts);
   started.push(gw);

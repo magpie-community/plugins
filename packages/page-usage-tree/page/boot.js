@@ -25,8 +25,30 @@
     chineseUnits: false,
     usdCny: 0,
   };
+  let officialDisplay = false;
 
-  function followDisplay(value) {
+  function hasOfficialDisplay(value) {
+    if (!value || typeof value !== "object") return false;
+    return (
+      value.currency === "cny" ||
+      value.currency === "usd" ||
+      typeof value.chineseUnits === "boolean" ||
+      (Number.isFinite(Number(value.usdCny)) && Number(value.usdCny) > 0) ||
+      (Number.isFinite(Number(value.fx?.rate)) && Number(value.fx.rate) > 0)
+    );
+  }
+
+  function followDisplay(value, official = false) {
+    // A future bridge can carry Magpie's own display settings. Until it does,
+    // this plugin's options are the only supported fallback.
+    if (official && !hasOfficialDisplay(value)) return;
+    if (official && !officialDisplay) {
+      display.currency = "usd";
+      display.chineseUnits = false;
+      display.usdCny = 0;
+    }
+    if (official) officialDisplay = true;
+    if (officialDisplay && !official) return;
     if (!value || typeof value !== "object") return;
     if (value.currency === "cny" || value.currency === "usd") {
       display.currency = value.currency;
@@ -36,6 +58,8 @@
     }
     const rate = Number(value.usdCny);
     if (Number.isFinite(rate) && rate > 0) display.usdCny = rate;
+    const nestedRate = Number(value.fx?.rate);
+    if (Number.isFinite(nestedRate) && nestedRate > 0) display.usdCny = nestedRate;
   }
 
   function followLanguage(value) {
@@ -54,7 +78,7 @@
       theme = current.dark ? "dark" : "light";
       lang = String(current.lang || lang).toLowerCase().startsWith("zh") ? "zh" : "en";
       tokens = current.tokens || null;
-      followDisplay(current);
+      followDisplay(current, true);
     }
   } catch {
     // The page still works without the bridge.
@@ -79,6 +103,7 @@
   followLanguage(lang);
   window.magpie?.onTheme?.((next) => {
     if (!next) return;
+    followDisplay(next, true);
     if (typeof next.dark === "boolean") theme = next.dark ? "dark" : "light";
     if (typeof next.lang === "string") {
       const before = lang;
@@ -97,6 +122,7 @@
   query.set("currency", display.currency);
   query.set("chineseUnits", display.chineseUnits ? "1" : "0");
   if (display.usdCny > 0) query.set("usdCny", String(display.usdCny));
+  query.set("settings", "1");
   if (tokens && typeof tokens === "object") {
     try {
       const slim = {};

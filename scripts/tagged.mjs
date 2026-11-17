@@ -1,0 +1,213 @@
+// Builds tagged.json for the `dist` branch: the repositories on GitHub
+// tagged with the magpie-plugin topic, read as magpie reads them
+// (internal/plugin/github.go, askTagged and readTagged), so magpie can show
+// the Plugins page's Discover list without reaching GitHub itself.
+//   GITHUB_TOKEN=... node scripts/tagged.mjs <folder with the dist branch checked out>
+// tagged.json holds {version: 1, generated, plugins: [Tagged...]}, most
+// starred first. A repository whose package.json can't be read this time
+// stays as the last file had it; a search that fails writes nothing.
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join, resolve, posix } from "node:path"
+import { READ, entryOf, kindOf, named } from "./tagged-kind.mjs"
+
+const TOPIC = "magpie-plugin"
+const pkgName = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/
+const out = resolve(process.argv[2] ?? "")
+if (!process.argv[2] || !existsSync(out)) {
+  console.error("usage: node scripts/tagged.mjs <folder with the dist branch checked out>")
+  process.exit(2)
+}
+const file = join(out, "tagged.json")
+let last = []
+// a file read another way (READ) is read again whole
+let lastRead = 0
+try {
+  const was = JSON.parse(readFileSync(file, "utf8"))
+  last = was.plugins ?? []
+  lastRead = was.read ?? 1
+} catch {}
+const before = new Map(last.map((t) => [t.repo.toLowerCase(), t]))
+
+const ua = { "User-Agent": "magpie-community-tagged" }
+const headers = { ...ua, Accept: "application/vnd.github+json" }
+if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
+
+class NotFound extends Error {}
+async function get(url, h = ua) {
+  let err
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(url, { headers: h, signal: AbortSignal.timeout(30000) })
+      if (r.status === 404) throw new NotFound(url)
+      if (r.ok) return r
+      err = new Error(`${url}: ${r.status}`)
+      if (r.status === 403 || r.status === 429) await new Promise((f) => setTimeout(f, 5000 * (i + 1)))
+    } catch (e) {
+      if (e instanceof NotFound) throw e
+      err = e
+    }
+  }
+  throw err
+}
+
+// every page of the search; it answers 1000 results at most
+const items = []
+const listed = new Set()
+for (let page = 1; page <= 10; page++) {
+  const q = new URLSearchParams({ q: `topic:${TOPIC} archived:false fork:false`, sort: "stars", order: "desc", per_page: "100", page: String(page) })
+  const p = await (await get(`https://api.github.com/search/repositories?${q}`, headers)).json()
+  for (const it of p.items ?? []) {
+    const k = it.full_name.toLowerCase()
+    if (!listed.has(k)) {
+      listed.add(k)
+      items.push(it)
+    }
+  }
+  if ((p.items ?? []).length < 100 || page * 100 >= p.total_count) break
+}
+
+const ownIcon = (said) => {
+  const ic = typeof said === "string" ? said.trim() : ""
+  if (ic.length > 3 << 19) return ""
+  const l = ic.toLowerCase()
+  return l.startsWith("https://") || l.startsWith("data:image/") ? ic : ""
+}
+const repoOf = (v) => {
+  let s = typeof v === "string" ? v : (v?.url ?? "")
+  s = s.replace(/^git\+/, "").replace(/\.git$/, "").replace("git://", "https://").replace("ssh://git@", "https://")
+  if (s.startsWith("github:")) s = "https://github.com/" + s.slice(7)
+  else if (!s.includes("://") && s.split("/").length === 2) s = "https://github.com/" + s
+  const m = /^https:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/#]+)/.exec(s)
+  return m ? `${m[1]}/${m[2]}` : ""
+}
+// the repository as magpie lists it, or null when it isn't a plugin magpie
+// could install; throws when GitHub or npm didn't answer
+async function read(it) {
+  const t = {
+    spec: "github:" + it.full_name, repo: it.full_name, url: it.html_url, owner: it.owner.login, ownerAvatar: it.owner.avatar_url,
+    description: it.description ?? "", stars: it.stargazers_count, pushed: it.pushed_at,
+  }
+  if (it.license && it.license.spdx_id !== "NOASSERTION") t.license = it.license.spdx_id
+  const branch = encodeURIComponent(it.default_branch || "HEAD")
+  const raw = (p) => `https://raw.githubusercontent.com/${it.full_name}/${branch}/${p}`
+  let pj
+  try {
+    pj = await (await get(raw("package.json"))).json()
+  } catch (e) {
+    if (e instanceof NotFound || e instanceof SyntaxError) return null
+    throw e
+  }
+  if (!pj || typeof pj.name !== "string" || !pkgName.test(pj.name)) return null
+  t.package = pj.name
+  t.version = pj.version ?? ""
+  const icon = ownIcon(pj.magpie?.icon)
+  if (icon) t.icon = icon
+  const kind = kindOf(pj)
+  if (kind) t.kind = kind
+  // published to npm from this repository: npm's copy is installed
+  let npmNames = false
+  try {
+    const l = await (await get(`https://registry.npmjs.org/${pj.name.replace("/", "%2f")}/latest`)).json()
+    if (l.version && repoOf(l.repository).toLowerCase() === it.full_name.toLowerCase()) {
+      t.spec = pj.name
+      t.version = l.version
+      npmNames = !!l.main || named(l.exports)
+    }
+  } catch (e) {
+    if (!(e instanceof NotFound)) throw e
+  }
+  // installed from the repository, or from an npm copy that names no file,
+  // the file it loads must be in the repository
+  if (t.spec.startsWith("github:") || !npmNames) {
+    const entry = entryOf(pj, kind, t.spec.startsWith("github:"))
+    if (posix.extname(entry ?? "") !== "") {
+      try {
+        await get(raw(posix.normalize("/" + entry).replace(/^\//, "")))
+      } catch (e) {
+        if (e instanceof NotFound) return null
+        throw e
+      }
+    }
+  }
+  return t
+}
+
+const plugins = []
+let failed = 0
+const queue = items.filter((it) => !it.archived && !it.fork && it.owner.login.toLowerCase() !== "magpie-community" && it.full_name.includes("/"))
+async function worker() {
+  for (let it; (it = queue.shift()); ) {
+    const was = before.get(it.full_name.toLowerCase())
+    // read again only when pushed to; stars and the rest are the search's
+    if (was && was.pushed === it.pushed_at && lastRead === READ) {
+      plugins.push({ ...was, stars: it.stargazers_count, description: it.description ?? "", ownerAvatar: it.owner.avatar_url })
+      continue
+    }
+    try {
+      const t = await read(it)
+      if (t) plugins.push(t)
+    } catch (e) {
+      failed++
+      console.error(`${it.full_name}: ${e.message}`)
+      if (was) plugins.push(was)
+    }
+  }
+}
+await Promise.all(Array.from({ length: 8 }, worker))
+plugins.sort((a, b) => b.stars - a.stars || a.repo.localeCompare(b.repo))
+if (!plugins.length) {
+  console.error("no plugin read; keeping the last file")
+  process.exit(1)
+}
+// Each listed plugin's README, kept as readmes/<key>.md beside tagged.json
+// (<key> is the npm name, or github/owner/repo for one installed from the
+// repository: internal/plugin/readme_cache.go's readmeKey), so the Discover
+// page's README comes from usemagpie.ai and not from npm, whose human check
+// stands in front of some networks (River_WLan on X). Read again when the
+// repository was pushed to or the file is missing; a read that fails keeps
+// the file there was.
+const keyOf = (t) => (t.spec.startsWith("github:") ? "github/" + t.repo : t.spec)
+const branches = new Map(items.map((it) => [it.full_name.toLowerCase(), it.default_branch || "HEAD"]))
+const readmes = join(out, "readmes")
+const wanted = new Set()
+const MOST = 200 << 10
+async function keep(t) {
+  const key = keyOf(t)
+  if (key.includes("..") || key.split("/").some((p) => !p)) return
+  const f = join(readmes, key + ".md")
+  wanted.add(posix.normalize(key + ".md"))
+  const was = before.get(t.repo.toLowerCase())
+  if (existsSync(f) && was && was.pushed === t.pushed) return
+  const branch = encodeURIComponent(branches.get(t.repo.toLowerCase()) ?? "HEAD")
+  for (const name of ["README.md", "readme.md", "Readme.md", "README"]) {
+    let r
+    try {
+      r = await get(`https://raw.githubusercontent.com/${t.repo}/${branch}/${name}`)
+    } catch (e) {
+      if (e instanceof NotFound) continue
+      console.error(`${t.repo} README: ${e.message}`)
+      return
+    }
+    const buf = Buffer.from(await r.arrayBuffer()).subarray(0, MOST)
+    mkdirSync(dirname(f), { recursive: true })
+    writeFileSync(f, buf)
+    return
+  }
+  rmSync(f, { force: true }) // it has none now
+}
+const todo = [...plugins]
+await Promise.all(Array.from({ length: 8 }, async () => { for (let t; (t = todo.shift()); ) await keep(t) }))
+// a plugin no longer listed leaves no README behind
+const sweep = (dir, rel) => {
+  if (!existsSync(dir)) return
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const r = rel ? rel + "/" + e.name : e.name
+    if (e.isDirectory()) sweep(join(dir, e.name), r)
+    else if (!wanted.has(r)) rmSync(join(dir, e.name), { force: true })
+  }
+}
+sweep(readmes, "")
+
+const same = JSON.stringify(last.map((t) => t.repo).sort()) === JSON.stringify(plugins.map((t) => t.repo).sort())
+writeFileSync(file, JSON.stringify({ version: 1, read: READ, generated: new Date().toISOString(), plugins }))
+console.log(`${plugins.length} plugins, ${failed} unread${same ? "" : ", list changed"}`)

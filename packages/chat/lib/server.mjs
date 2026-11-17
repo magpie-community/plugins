@@ -1,6 +1,7 @@
 // magpie-chat 的服务：给窗口里的对话页提供 /api/*，并把聊天请求转给 magpie 网关。
 // 只用内置模块，不装依赖。
 
+import { selectTools } from "./tool-selection.mjs";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -209,6 +210,33 @@ function firstLine(messages) {
 let OWN = new Set();
 let HOSTS = new Set();
 const TOKEN = randomBytes(32).toString("hex");
+// toolCallFolder puts a streamed reply's tool call fragments together. A
+// fragment with a new id at an index in use is a new call, not more of the
+// open one: two calls at one index ran together as {"a"}{"b"}
+// (plugins#930). No id, or the same one, goes on with the open call.
+export function toolCallFolder() {
+  const open = new Map(); // index -> the call being written there
+  const all = [];
+  return {
+    add(tc) {
+      const i = tc.index ?? 0;
+      let cur = open.get(i);
+      if (!cur || (tc.id && cur.id && tc.id !== cur.id)) {
+        cur = { id: "", name: "", args: "" };
+        open.set(i, cur);
+        all.push(cur);
+      }
+      if (tc.id) cur.id = tc.id;
+      if (tc.function?.name) cur.name += tc.function.name;
+      if (tc.function?.arguments) cur.args += tc.function.arguments;
+    },
+    get size() {
+      return all.length;
+    },
+    list: () => all,
+  };
+}
+
 export const TOKEN_HEADER = "x-magpie-chat-token";
 
 function originAllowed(req) {
@@ -393,21 +421,7 @@ async function runChat({ res, body, settings, store, options }, controllers) {
     }
     const last = history[history.length - 1];
     const q = String(typeof last?.userText === "string" ? last.userText : last?.content || "").toLowerCase();
-    const words = q.split(/[^a-z0-9\u4e00-\u9fff]+/).filter((w) => w.length >= 3);
-    const scored = all.map((t) => {
-      const hay = (t.name + " " + (t.description || "")).toLowerCase();
-      let score = 0;
-      for (const w of words) if (hay.includes(w)) score += w.length > 4 ? 2 : 1;
-      return { t, score };
-    }).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
-    const MAX_TOOLS = 12;
-    tools = scored.slice(0, MAX_TOOLS).map((x) => x.t);
-    if (tools.length < 3) {
-      // 问得太笼统时给一组最通用的，但仍然封顶
-      const common = /^(get|list|search|read|fetch|query)_|(_search|_list|_get)$/;
-      const extra = all.filter((t) => common.test(t.rawName) && !tools.includes(t)).slice(0, 8);
-      tools = tools.concat(extra).slice(0, MAX_TOOLS);
-    }
+    tools = selectTools(all, q);
     if (all.length > tools.length) {
       toolNote = `（这次提供了 ${tools.length}/${all.length} 个工具：按你的问题挑的）`;
     }
@@ -479,7 +493,7 @@ async function runChat({ res, body, settings, store, options }, controllers) {
 
       let content = "";
       let reasoning = "";
-      const calls = new Map(); // index -> { id, name, args }
+      const calls = toolCallFolder();
       let finish = "";
 
       for await (const chunk of sseChunks(upstream)) {
@@ -495,19 +509,12 @@ async function runChat({ res, body, settings, store, options }, controllers) {
         const d = choice.delta || {};
         if (d.reasoning_content) { reasoning += d.reasoning_content; sse(res, "reasoning", { text: d.reasoning_content }); }
         if (d.content) { content += d.content; sse(res, "delta", { text: d.content }); }
-        for (const tc of d.tool_calls || []) {
-          const i = tc.index ?? 0;
-          const cur = calls.get(i) || { id: "", name: "", args: "" };
-          if (tc.id) cur.id = tc.id;
-          if (tc.function?.name) cur.name += tc.function.name;
-          if (tc.function?.arguments) cur.args += tc.function.arguments;
-          calls.set(i, cur);
-        }
+        for (const tc of d.tool_calls || []) calls.add(tc);
         if (choice.finish_reason) finish = choice.finish_reason;
       }
 
       if (calls.size && (finish === "tool_calls" || finish === "stop")) {
-        const made = [...calls.values()].filter((c) => c.name).map((c, i) => {
+        const made = calls.list().filter((c) => c.name).map((c, i) => {
           let id = c.id;
           if (!id || callIds.has(id)) {
             id = `call_${round}_${i}`;

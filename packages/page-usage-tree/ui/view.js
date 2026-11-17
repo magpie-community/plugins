@@ -36,6 +36,20 @@
     return `${n.toFixed(2)}%`;
   }
 
+  // Match Magpie's own hitPct: a rounded 0% or 100% is never shown for a
+  // rate that is merely close to either end.
+  function hitPercent(value) {
+    const h = Math.max(0, Math.min(1, Number(value) || 0));
+    let digits = 0;
+    let shown = (100 * h).toFixed(digits);
+    while (digits < 2 && h > 0 && h < 1 && (+shown >= 100 || +shown <= 0)) {
+      shown = (100 * h).toFixed(++digits);
+    }
+    if (h < 1 && +shown >= 100) shown = "99.99";
+    if (h > 0 && +shown <= 0) shown = "0.01";
+    return `${shown}%`;
+  }
+
   // errorRate is errors of the calls that could have failed, so a row with
   // no calls reads as no rate rather than as 0%.
   function errorRate(errors, calls) {
@@ -43,6 +57,35 @@
     const total = Math.max(0, Number(calls) || 0);
     if (!bad || !total) return "";
     return percent(bad / total);
+  }
+
+  // Magpie's own cache hit rate: cache reads over the counted prompt, with
+  // vendor calls that report no cache left out of the denominator.
+  function cacheHitRate(item) {
+    const input = Math.max(0, Number(item?.input) || 0);
+    const read = Math.max(0, Number(item?.cacheRead) || 0);
+    const write = Math.max(0, Number(item?.cacheWrite) || 0);
+    const unknown = Math.max(0, Number(item?.cacheUnknown) || 0);
+    const prompt = input + read + write - unknown;
+    if (!read || prompt <= 0) return null;
+    return Math.min(1, read / prompt);
+  }
+
+  function cacheHitText(item, lang) {
+    const w = text(lang);
+    const rate = cacheHitRate(item);
+    const unknownCalls = Math.max(0, Number(item?.cacheUnknownCalls) || 0);
+    const texts = [];
+    // A row can mix providers: count the hit rate only where cache reads are
+    // known, and still say how many calls were left out of that denominator.
+    if (rate !== null) texts.push(`${w.cacheHit} ${hitPercent(rate)}`);
+    if (unknownCalls > 0) texts.push(w.cacheUnknown(Math.round(unknownCalls)));
+    return texts.join(" · ");
+  }
+
+  function cacheHitSuffix(item, lang) {
+    const value = cacheHitText(item, lang);
+    return value ? ` · ${value}` : "";
   }
 
   function has(value, query) {
@@ -161,7 +204,7 @@
         key: "tokens",
         label: tokenLabel,
         value: count(tokenTotal(summary, includeCache)),
-        sub: `${w.input} ${count(summary.input)} · ${w.output} ${count(summary.output)} · ${w.cache} ${count(summary.cache)}`,
+        sub: `${w.input} ${count(summary.input)} · ${w.output} ${count(summary.output)} · ${w.cache} ${count(summary.cache)}${cacheHitSuffix(summary, lang)}`,
       },
       {
         key: "cost",
@@ -227,7 +270,11 @@
     text,
     count,
     percent,
+    hitPercent,
     errorRate,
+    cacheHitRate,
+    cacheHitText,
+    cacheHitSuffix,
     accountSelfMatches,
     modelMatches,
     accountMatches,

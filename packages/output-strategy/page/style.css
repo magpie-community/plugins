@@ -66,6 +66,8 @@ h1 {
   font-size: 15px;
 }
 
+#conversationNote { margin-bottom: 14px; }
+
 .selection-count {
   display: flex;
   flex-direction: column;

@@ -1,8 +1,19 @@
 import { serviceURL, USER_AGENT } from "./types.ts";
 
-export class AuthenticationError extends Error {}
+// The status lets magpie's web search rest a refused account (401, 402, 429)
+// and try the next search API; the message never carries the response body.
+export class APIError extends Error {
+  status: number;
+  retryAfter?: string;
+  constructor(message: string, status: number, retryAfter?: string) {
+    super(message);
+    this.status = status;
+    if (retryAfter) this.retryAfter = retryAfter;
+  }
+}
+export class AuthenticationError extends APIError {}
 
-// Only the reviewed endpoints (six tools and feedback) are exposed. Match the original client's
+// Only the reviewed endpoints (six tools, web search and feedback) are exposed. Match the original client's
 // request bodies and deadlines without adding runtime npm dependencies.
 export async function request(
   baseUrl: string,
@@ -30,8 +41,12 @@ export async function request(
   if (!response.ok) {
     // Error bodies can echo credentials. Expose only the endpoint and status.
     await response.body?.cancel();
-    const ErrorType = response.status === 401 ? AuthenticationError : Error;
-    throw new ErrorType(`Search1API ${name} request failed (${response.status}).`);
+    const ErrorType = response.status === 401 ? AuthenticationError : APIError;
+    throw new ErrorType(
+      `Search1API ${name} request failed (${response.status}).`,
+      response.status,
+      response.headers.get("retry-after") ?? undefined,
+    );
   }
   try {
     return await response.json();

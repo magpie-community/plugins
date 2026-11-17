@@ -11,12 +11,17 @@ import net from "node:net"
 import { execFileSync } from "node:child_process"
 
 const dir = mkdtempSync(join(tmpdir(), "mail-watch-test-"))
+// bun test runs every package in one process: put the variable back when done,
+// or other packages' children inherit this temp dir as magpie's config dir
+const prevConfigDir = process.env.MAGPIE_CONFIG_DIR
 process.env.MAGPIE_CONFIG_DIR = dir
 mkdirSync(join(dir, "magpie"), { recursive: true })
 
 // the temp dir serves every describe block; it goes when the file's tests
 // are all done, not when the first block's are
 afterAll(() => {
+  if (prevConfigDir === undefined) delete process.env.MAGPIE_CONFIG_DIR
+  else process.env.MAGPIE_CONFIG_DIR = prevConfigDir
   rmSync(dir, { recursive: true, force: true })
 })
 

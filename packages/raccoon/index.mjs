@@ -6,11 +6,11 @@
 // (read-only; desktopAuthCandidates lists where). Chats are OpenAI-compatible
 // chat completions at /api/web/llm/v2/chat/completions.
 
-import { randomUUID, randomBytes } from "node:crypto"
+import { createHash, randomUUID, randomBytes } from "node:crypto"
 import { createServer } from "node:http"
-import { readFileSync, statSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 const PROVIDER_ID = "raccoon"
 const PROVIDER_NAME = "商汤小浣熊"
@@ -645,7 +645,14 @@ async function availablePoints(token) {
   try {
     const points = await apiGetJson("/api/web/points/v1/balance", token)
     const n = Number(points?.available_points)
-    if (Number.isFinite(n)) return Math.floor(n)
+    if (Number.isFinite(n)) {
+      // daily_points is the daily-grant pool the vendor keeps itself (300/day,
+      // each grant lasting 7 days). It includes remainders of grants already
+      // past expire_at but not swept yet, so it is the authoritative "free
+      // credits still left"; the bills only say when the next slice expires.
+      const d = Number(points?.daily_points)
+      return { avail: Math.floor(n), daily: Number.isFinite(d) ? Math.floor(d) : null }
+    }
     first = new Error("balance has no available_points")
   } catch (e) {
     if (e?.signIn === "expired") throw e
@@ -660,15 +667,71 @@ async function availablePoints(token) {
   }
   const n = Number(info?.available_points)
   if (!Number.isFinite(n)) throw first
-  return Math.floor(n)
+  return { avail: Math.floor(n), daily: null }
 }
 
-async function queryUsage(token) {
-  const [avail, entitlement, bills] = await Promise.all([
+// topBalance holds, per account and per set of grants, the highest balance
+// a read has seen. A balance over every listed grant (plugins #936) has no
+// grant total to measure spending against, so the window's total is that
+// highest balance and what was spent since is what it has gone down by
+// (plugins #1030: 9,965 then 9,964 read 0 / 9,965 then 0 / 9,964). A new
+// or expired grant changes the set and starts it again. It is kept on disk
+// too (plugins #1182: what was spent read 0 again after every restart), one
+// entry per account, so a restarted host goes on from the same top.
+const topBalance = new Map()
+
+const topBalanceFile = () =>
+  process.env.RACCOON_TOP_BALANCE_FILE ||
+  join(process.env.MAGPIE_CONFIG_DIR || join(homedir(), ".config", "magpie"), "raccoon-top-balance.json")
+
+function readTops() {
+  try {
+    const raw = JSON.parse(readFileSync(topBalanceFile(), "utf8"))
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+// savedTop is the top a past host saw for this account and set of grants,
+// or 0 when it saw none (or the file can't be read).
+function savedTop(account, grants) {
+  const e = readTops()[account]
+  const n = Number(e?.top)
+  return e?.grants === grants && Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// saveTop writes through a temp file and a rename, so a host reading it
+// mid-write never sees half of it. A failed write keeps the memory copy.
+function saveTop(account, grants, top) {
+  try {
+    const file = topBalanceFile()
+    const all = readTops()
+    if (all[account]?.grants === grants && all[account]?.top === top) return
+    all[account] = { grants, top }
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(all))
+    renameSync(tmp, file)
+  } catch {}
+}
+
+// The daily pool: 300 credits granted per day, each slice lasting 7 days, so
+// the ceiling the vendor's own rule implies is 2,100. This is only the window's
+// limit; the remaining side always comes from the vendor's daily_points, never
+// from this arithmetic. A vendor that grants more per day still reads right,
+// because the bills' unexpired daily grants are summed too and the limit takes
+// whichever is larger.
+const DAILY_POOL_CAP = 2100
+
+async function queryUsage(token, account = "") {
+  const [pool, entitlement, bills] = await Promise.all([
     availablePoints(token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
     allBills(token).catch(() => null),
   ])
+
+  const avail = pool.avail
 
   // entitlement_info answers 403 too (plugins #520): an unread plan is
   // left unsaid, not read as Free.
@@ -678,19 +741,40 @@ async function queryUsage(token) {
   const plan = !entitlement ? undefined : proEnable ? (planType && planType !== "none" ? planType : "Pro") : "Free"
   const expireAt = office?.pro_expired_time || office?.active_plan?.subscription_expired_at || null
 
-  // Sum only what the vendor actually reports as granted in unexpired bills.
+  // Sum only what the vendor actually reports as granted in bills.
   // If bills don't account for the current balance, report the balance with no window.
   let grantedFromBills = 0
   let soonestExpMs = 0
   let expiringPts = 0
+  // The daily pool's own slice: what will expire inside the vendor's 7-day
+  // window, and when. Kept apart from the aggregate so the card can show it
+  // on its own line (300/day, 7 days deep).
+  let dailyUnexpired = 0
+  let dailySoonestMs = 0
+  let dailySoonestPts = 0
+  const expired = []
+  const grantKeys = []
   const now = Date.now()
   for (const item of Array.isArray(bills?.items) ? bills.items : []) {
     const pts = Math.floor(Number(item?.points) || 0)
     if (pts <= 0) continue
+    grantKeys.push(billKey(item))
     const expStr = typeof item?.expire_at === "string" ? item.expire_at : ""
     const expMs = expStr ? Date.parse(expStr) : 0
-    if (expMs > 0 && expMs <= now) continue
+    if (expMs > 0 && expMs <= now) {
+      expired.push({ pts, expMs })
+      continue
+    }
     grantedFromBills += pts
+    if (String(item?.biz_type ?? "") === "daily_grant" && expMs > now) {
+      dailyUnexpired += pts
+      if (!dailySoonestMs || expMs < dailySoonestMs) {
+        dailySoonestMs = expMs
+        dailySoonestPts = pts
+      } else if (expMs === dailySoonestMs) {
+        dailySoonestPts += pts
+      }
+    }
     if (expMs > now) {
       if (!soonestExpMs || expMs < soonestExpMs) {
         soonestExpMs = expMs
@@ -700,34 +784,98 @@ async function queryUsage(token) {
       }
     }
   }
+  // A grant past its expire_at can still be in the balance: the vendor takes
+  // what is left of it some time later, not at expire_at (plugins #936: a
+  // 9,623 balance against 9,600 of unexpired grants). Until then the balance
+  // is made of it too, so the latest expired grants are counted back in, the
+  // newest first, only as far as the balance needs them.
+  expired.sort((a, b) => b.expMs - a.expMs)
+  for (const g of expired) {
+    if (grantedFromBills >= avail) break
+    grantedFromBills += g.pts
+  }
+  // A balance a little over every grant the bills list (plugins #936: 9,623
+  // against 9,600 of grants, none expired) holds credits that come back
+  // outside income bills. That remainder is counted into the window, so
+  // the card still shows one. A balance far over the bills is left
+  // balance-only: the bills don't explain it.
+  if (grantedFromBills > 0 && avail > grantedFromBills && avail - grantedFromBills <= avail / 10) {
+    const grants = createHash("sha256").update(grantKeys.sort().join("\n")).digest("hex")
+    const key = `${account}\n${grants}`
+    if (!topBalance.has(key)) topBalance.set(key, savedTop(account, grants))
+    const top = Math.max(avail, topBalance.get(key))
+    topBalance.set(key, top)
+    saveTop(account, grants, top)
+    grantedFromBills = top
+  }
   const runsOutAt = soonestExpMs ? new Date(soonestExpMs).toISOString() : null
   const runsOut = soonestExpMs ? Math.min(avail, expiringPts) : 0
 
+  // The daily pool comes first when the vendor reports it: 300 credits a day,
+  // each slice good for 7 days, so what will lapse is the vendor's
+  // daily_points - not the aggregate. Same reading direction as the aggregate
+  // (used / limit), so the card reads one way. The aggregate is display-only
+  // beside it: it also holds reward/top-up credits that never lapse, and the
+  // pool that expires is what routing should weigh. When the vendor says no
+  // daily_points (the setting_info fallback), the aggregate stays the only
+  // window and keeps its routing weight - nothing is left unweighed.
+  const windows = []
+  // A pool of 0 shows nothing: the account may have no daily grants at all,
+  // and a "2,100 / 2,100 used" line would read the whole account as spent.
+  // Credits then keeps its routing weight.
+  const dailyRemain = typeof pool.daily === "number" && pool.daily > 0 ? Math.floor(pool.daily) : null
+  if (dailyRemain !== null) {
+    // The limit is the vendor's 300/day x 7 days, but never less than what it
+    // says is left or than the unexpired daily grants in bills already add up
+    // to - so a larger grant schedule reads as "0% used" instead of a negative
+    // one, and the percentage stays honest.
+    const limit = Math.max(DAILY_POOL_CAP, dailyRemain, dailyUnexpired)
+    const usedPts = Math.max(0, limit - dailyRemain)
+    const dailySoonestAt = dailySoonestMs ? new Date(dailySoonestMs).toISOString() : null
+    windows.push({
+      name: "Daily pool",
+      used: limit > 0 ? (100 * usedPts) / limit : 0,
+      display: `${usedPts} / ${limit}`,
+      amount: usedPts,
+      limit,
+      unit: "credits",
+      ...(dailySoonestAt ? { runsOutAt: dailySoonestAt, runsOut: Math.min(dailyRemain, dailySoonestPts || dailyRemain) } : {}),
+    })
+  }
+
   if (grantedFromBills > 0 && grantedFromBills >= avail) {
     const used = grantedFromBills - avail
+    windows.push({
+      name: "Credits",
+      used: (100 * used) / grantedFromBills,
+      display: `${used} / ${grantedFromBills}`,
+      amount: used,
+      limit: grantedFromBills,
+      unit: "credits",
+      // Display-only only while the daily pool is on the card too; alone it
+      // is the window routing weighs.
+      ...(dailyRemain !== null ? { aside: true } : {}),
+      ...(runsOutAt ? { runsOutAt, runsOut } : {}),
+    })
+  }
+
+  if (windows.length === 0) {
     return {
       ...(plan ? { plan } : {}),
       ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-      windows: [
-        {
-          name: "Credits",
-          used: (100 * used) / grantedFromBills,
-          display: `${used} / ${grantedFromBills}`,
-          amount: used,
-          limit: grantedFromBills,
-          unit: "credits",
-          ...(runsOutAt ? { runsOutAt, runsOut } : {}),
-        },
-      ],
+      balance: `${avail} credits`,
+      windows,
     }
   }
-
   return {
     ...(plan ? { plan } : {}),
     ...(proEnable && expireAt ? { until: new Date(expireAt).toISOString() } : {}),
-    balance: `${avail} credits`,
-    windows: [],
+    windows,
   }
+}
+
+function usageAccount(a) {
+  return String(a?.accountId || a?.uid || a?.phone || a?.name || "")
 }
 
 function billKey(item) {
@@ -1171,13 +1319,13 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           let { a, didRenew } = await currentAuth(client, auth)
           let result
           try {
-            result = await queryUsage(a.access)
+            result = await queryUsage(a.access, usageAccount(a))
           } catch (e) {
             if (e?.status === 401 && a.refresh && a.source !== "desktop") {
               const retryAuth = await currentAuth(client, a, true)
               a = retryAuth.a
               didRenew = true
-              result = await queryUsage(a.access)
+              result = await queryUsage(a.access, usageAccount(a))
             } else {
               throw e
             }
@@ -1238,6 +1386,7 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 }
 
 export const _internal = {
+  topBalance,
   browserSignIn,
   desktopAuthPath,
   desktopAuthCandidates,

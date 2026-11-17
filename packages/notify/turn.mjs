@@ -188,6 +188,28 @@ export function continued(body, protocol) {
   return !!first && holds(first.content, [CLAUDE_CONTINUED])
 }
 
+// Claude Code 2.1.318+ keeps a one-line progress label for each running
+// subagent (anthropics/claude-code#86879; off with
+// CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES): about every 30 seconds it
+// forks the subagent's transcript, tools and all, and asks with PROGRESS as
+// the newest user text, folded into the last user message (beside its
+// tool_result, or into the first message while the first tool runs). The
+// reply is plain text and end_turn, which reads like the subagent's end
+// (captured from the real claude 2.1.325, fixtures/claude-2.1.325). A
+// server flag can pick a writer that is sent short notes instead, with no
+// tools: hasTools already leaves that one out.
+const PROGRESS = "Describe your most recent action in 3-5 words"
+
+// progressSummary: the request asks for a subagent's progress label; it
+// neither opens nor closes a turn, and leaves the subagent's own turn alone
+export function progressSummary(body, protocol) {
+  if (protocol !== "anthropic") return false
+  const last = lastUser(body)
+  if (!isObj(last) || last.role !== "user") return false
+  const t = texts(last.content)
+  return t.length > 0 && t.at(-1).trimStart().startsWith(PROGRESS)
+}
+
 // Claude Code's background agents. The Agent tool can return at once ("Async
 // agent launched successfully"), and the Workflow tool always does ("Workflow
 // launched in background"): LAUNCHED, by the tool that answers so. SendMessage

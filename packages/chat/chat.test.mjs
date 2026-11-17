@@ -15,6 +15,8 @@ const tmp = mkdtempSync(join(tmpdir(), "page-chat-"))
 const cfg = join(tmp, "magpie")
 mkdirSync(cfg, { recursive: true })
 writeFileSync(join(cfg, "caller-keys.json"), JSON.stringify([{ name: "chat", secret: "mk-test-key" }]))
+// bun test runs every file in one process: put these back when the file ends
+const outside = Object.fromEntries(["XDG_CONFIG_HOME", "MAGPIE_API_KEY", "MAGPIE_GATEWAY_KEY", "MAGPIE_ADDR"].map((k) => [k, process.env[k]]))
 process.env.XDG_CONFIG_HOME = tmp
 delete process.env.MAGPIE_API_KEY
 delete process.env.MAGPIE_GATEWAY_KEY
@@ -76,6 +78,7 @@ afterAll(async () => {
   await svc?.close()
   gateway.stop(true)
   rmSync(tmp, { recursive: true, force: true })
+  for (const [k, v] of Object.entries(outside)) v === undefined ? delete process.env[k] : (process.env[k] = v)
 })
 
 // node:http, so the test sets Host and Origin exactly as a hostile page would

@@ -104,3 +104,27 @@ test("glm-5.3-flash, which can't turn thinking off, still lists no none", async 
   expect(ai["glm-5.3-flash"].efforts).toEqual(["low", "high", "max"])
   expect(cn["deepseek-v4-pro"].efforts).toEqual(["none", "high", "xhigh"])
 })
+
+// sayagoodbyeplz on Discord: WorkBuddy's deepseek-v4.1-flash read as a
+// 384000-token reply. That is models.dev's, which magpie fills in for a
+// model its list gives no output for: the list declared before an
+// account's own is read (a key, a config that can't be read) said 0. It
+// says the config's maxOutputTokens now, for every model the configs read
+// give one.
+test("the declared list's reply limits are the configs' maxOutputTokens", async () => {
+  const efforts = JSON.parse(readFileSync(new URL("./testdata/config-efforts.json", import.meta.url), "utf8"))
+  const said = { workbuddy: [configs.workbuddy], "workbuddy-ai": [configs["workbuddy-ai"], efforts] }
+  let checked = 0
+  for (const [site, cfgs] of Object.entries(said)) {
+    const declared = _internal.configModels(_internal.SITES[site])
+    for (const cfg of cfgs) {
+      for (const d of cfg.data.models) {
+        if (!declared[d.id]) continue
+        expect([site, d.id, declared[d.id].limit.output]).toEqual([site, d.id, d.maxOutputTokens])
+        checked++
+      }
+    }
+  }
+  expect(_internal.configModels(_internal.SITES.workbuddy)["deepseek-v4.1-flash"].limit.output).toBe(128000)
+  expect(checked).toBeGreaterThan(5)
+})

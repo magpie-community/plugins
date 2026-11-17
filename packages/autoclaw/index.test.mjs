@@ -233,6 +233,91 @@ test("WorkBuddy's GLM opening line and CodeBuddy Code's identity line are rewrit
   expect(messages[1].content).toBe("This conversation is powered by GLM-5.3")
 })
 
+// #924 (connoryang331): DeepSeek Harness names itself three times in system,
+// and the gateway 406s while any one is left; the reporter's replay was 200
+// five of five once every occurrence was masked. The fixtures are dsh's own
+// strings byte for byte (@deepseek-ai/dsh 0.2.1-rc.2: dsh-system-prompt's
+// harness:identity section, dsh-harness-dev-context's HARNESS_SOURCE_PROMPT,
+// WEB_SURFACE_PROMPT's opening and its runtime-context line), plus the
+// reporter's comma form and their lowercase GLM sentence.
+const DSH_IDENTITY = "You are an AI agent powered by DeepSeek Harness."
+const DSH_SOURCE = "The runtime context names the DeepSeek Harness implementation checkout. The checkout location and current working directory are separate values and may differ; never infer the working directory from the checkout path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself."
+const DSH_WEB = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI."
+const DSH_RUNTIME = 'Current DeepSeek Harness implementation checkout: "/Users/me/dsh".'
+const DSH_SYSTEM = [DSH_IDENTITY, "# Tools\nUse the tools to complete the task.", DSH_SOURCE, DSH_WEB, DSH_RUNTIME].join("\n\n")
+
+test("DeepSeek Harness is masked everywhere in system, not only its identity line", () => {
+  const out = unflagged(DSH_SYSTEM)
+  expect(out).not.toMatch(/DeepSeek\s+Harness/i)
+  expect(out).toBe([
+    "You are an AI agent powered by a local coding harness.",
+    "# Tools\nUse the tools to complete the task.",
+    DSH_SOURCE.replace("DeepSeek Harness", "DeepSeek"),
+    DSH_WEB.replace("DeepSeek Harness", "DeepSeek"),
+    'Current DeepSeek implementation checkout: "/Users/me/dsh".',
+  ].join("\n\n"))
+  // the reporter's identity line carries a comma
+  expect(unflagged("You are an AI agent, powered by DeepSeek Harness.")).toBe("You are an AI agent powered by a local coding harness.")
+  expect(unflagged("you are an ai agent, powered by deepseek harness")).toBe("You are an AI agent powered by a local coding harness.")
+  expect(unflagged(unflagged(DSH_SYSTEM))).toBe(out)
+  // a hyphenated name, a package or a path is not the product name
+  for (const t of ["@deepseek-ai/dsh-system-prompt", "deepseek-harness", "DeepSeek is a model."]) expect(unflagged(t)).toBe(t)
+})
+
+test("a lowercase glm powered-by sentence comes out in the GLM form the gateway takes", () => {
+  expect(unflagged("You are a coding agent powered by the glm-5.3-flash model.")).toBe("You are a coding agent powered by the GLM-5.3-flash model.")
+  expect(unflagged("Powered by the glm-4.5-air[1m] model, you help.")).toBe("Powered by the GLM-4.5-air model, you help.")
+  // the reporter's other sentence was already rewritten before #924
+  expect(unflagged("You are powered by the model glm-5.3-flash.")).toBe("You are powered by the GLM-5.3-flash model.")
+  // the form written is left as it is
+  expect(unflagged("You are powered by the GLM-5.3-flash model.")).toBe("You are powered by the GLM-5.3-flash model.")
+  // only the powered-by sentence: model ids, paths and code are left
+  for (const t of [
+    "Set model: glm-5.3-flash in config.yaml.",
+    "~/models/the glm-5.3-flash model/weights.bin is large",
+    "const m = 'glm-5.3-flash' // the glm-5.3 model",
+    "built by the glm-5.3-flash model.",
+  ]) expect(unflagged(t)).toBe(t)
+})
+
+test("the loader masks DeepSeek Harness in system and developer text only, on both gateways", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(JSON.parse(String(init?.body ?? "{}")))
+    return new Response("{}")
+  }
+  try {
+    for (const Plugin of [AutoclawAuthPlugin, AutoclawCnAuthPlugin]) {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      const toolArgs = JSON.stringify({ query: "DeepSeek Harness powered by the glm-5.3-flash model." })
+      const body = JSON.stringify({
+        model: "zai_glm-5.3-flash",
+        messages: [
+          { role: "system", content: [{ type: "text", text: DSH_SYSTEM }] },
+          { role: "developer", content: DSH_WEB },
+          { role: "user", content: "Is DeepSeek Harness powered by the glm-5.3-flash model?" },
+          { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "search", arguments: toolArgs } }] },
+          { role: "tool", tool_call_id: "c1", content: "DeepSeek Harness docs" },
+        ],
+      })
+      expect((await loader.fetch("x", { method: "POST", body })).status).toBe(200)
+      const sent = calls.at(-1)
+      const sys = sent.messages.find((m) => m.role === "system")
+      const dev = sent.messages.find((m) => m.role === "developer")
+      expect(JSON.stringify(sys)).not.toMatch(/DeepSeek\s+Harness/i)
+      expect(JSON.stringify(sys)).toContain("You are an AI agent powered by a local coding harness.")
+      expect(dev.content).toBe(DSH_WEB.replace("DeepSeek Harness", "DeepSeek"))
+      expect(sent.messages.find((m) => m.role === "user").content).toBe("Is DeepSeek Harness powered by the glm-5.3-flash model?")
+      expect(sent.messages.find((m) => m.role === "assistant").tool_calls[0].function.arguments).toBe(toolArgs)
+      expect(sent.messages.find((m) => m.role === "tool").content).toBe("DeepSeek Harness docs")
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 // Hermes Agent 0.22.1 (Discord, 01huadalang, 10-30): every chat through
 // AutoClaw 国内 was a 406. The fixtures are Hermes' own strings byte for
 // byte: DEFAULT_SOUL_MD (hermes_cli/default_soul.py, the SOUL.md every
@@ -264,6 +349,26 @@ test("Hermes Agent's identity lines are rewritten", () => {
   expect(unflagged("You are a general-purpose AI agent called goose")).toBe("You are a general-purpose AI agent called goose")
 })
 
+// #875 (hj01857655): Grok CLI through AutoClaw 国内 was refused 406 four
+// times on 11-08. The first line is the reporter's, byte for byte; the
+// versioned and autonomous forms are Grok CLI 1.0.67's own system_prompt.txt.
+test("Grok CLI's identity line is rewritten", () => {
+  const reported = "You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks."
+  expect(unflagged(reported)).toBe("You are the Grok assistant released by xAI. You are an interactive CLI tool that helps users with software engineering tasks.")
+  const versioned = "You are Grok 4.7 released by xAI. You are an interactive CLI tool that helps users with software engineering tasks. Your main goal is to complete the user's request in the <user_query> tag."
+  expect(unflagged(versioned)).toBe("You are the Grok 4.7 assistant released by xAI. You are an interactive CLI tool that helps users with software engineering tasks. Your main goal is to complete the user's request in the <user_query> tag.")
+  const autonomous = "You are Grok 4.7 released by xAI. You are an autonomous agent that completes software engineering tasks. There is no human operator in this session."
+  expect(unflagged(autonomous).startsWith("You are the Grok 4.7 assistant released by xAI. You are an autonomous agent")).toBe(true)
+  for (const t of [reported, versioned, autonomous, `Intro.\n${reported}`, "you are grok released by xai."]) {
+    expect(unflagged(t)).not.toMatch(/You are Grok\b/i)
+    expect(unflagged(unflagged(t))).toBe(unflagged(t))
+  }
+  // a model's name is not an agent's identity line
+  for (const t of ["You are Grok-Mini.", "You are Grok, a helpful assistant.", "You are Grok 4.7."]) {
+    expect(unflagged(t)).toBe(t)
+  }
+})
+
 // A table over every entry, so a later edit to one rule cannot silently
 // break another (the 11-03 session's failing request carried three known
 // lines at once, and only the missing one needed rewriting). Left side =
@@ -282,7 +387,10 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["an agent for Claude Code CLI, ask it", "an agent for Claude Code CLI, ask it"],
     ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are a coding assistant."],
     ["We build on the Claude Agent SDK; see docs.", "We build on the agent framework; see docs."],
-    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by DeepSeek-Harness."],
+    ["You are an AI agent powered by DeepSeek Harness.", "You are an AI agent powered by a local coding harness."],
+    ["You are an AI agent, powered by DeepSeek Harness.", "You are an AI agent powered by a local coding harness."],
+    ["The runtime context names the DeepSeek Harness implementation checkout.", "The runtime context names the DeepSeek implementation checkout."],
+    ["You are a coding agent powered by the glm-5.3-flash model.", "You are a coding agent powered by the GLM-5.3-flash model."],
     ["You are Codex, OpenAI's coding agent.", "You are the Codex agent, OpenAI's coding agent."],
     ["Codex CLI is the tool you run.", "Codex command-line tool is the tool you run."],
     ["You are opencode, an AI coding agent.", "You are the opencode agent, an AI coding agent."],
@@ -290,6 +398,10 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["You are Cline, a coding assistant.", "You are the Cline agent, a coding assistant."],
     ["You are Qwen Code, an interactive CLI tool.", "You are the Qwen Code agent, an interactive CLI tool."],
     ["You are ZCode, an interactive coding agent", "You are the ZCode agent, an interactive coding agent"],
+    // #1094: ZCode's subagent opening line
+    ["You are an agent for ZCode CLI. Given the user's message, you should use the tools available to complete the task.", "You are an agent for the ZCode CLI. Given the user's message, you should use the tools available to complete the task."],
+    // the rewritten form is left as it is
+    ["You are an agent for the ZCode CLI.", "You are an agent for the ZCode CLI."],
     ["operating inside pi, a coding agent harness.", "operating inside the pi coding agent harness."],
     ["This conversation is powered by GLM-5.3 · AutoClaw 国内 (Zhipu)", "This conversation is powered by the GLM-5.3 model · AutoClaw 国内 (Zhipu)"],
     ["You are powered by the model glm-5.3-flash[1m].", "You are powered by the GLM-5.3-flash model."],
@@ -299,6 +411,8 @@ test("a system prompt carrying every known line at once comes out clean in one p
     ["You are Gemini CLI, an interactive CLI agent.", "You are the Gemini CLI agent, an interactive CLI agent."],
     ["You are Kimi Code CLI, an interactive AI agent.", "You are the Kimi Code CLI agent, an interactive AI agent."],
     ["You are goose, an autonomous AI agent.", "You are the goose agent, an autonomous AI agent."],
+    ["You are Grok released by xAI. You are an interactive CLI tool", "You are the Grok assistant released by xAI. You are an interactive CLI tool"],
+    ["You are Grok 4.7 released by xAI. You are an interactive CLI tool", "You are the Grok 4.7 assistant released by xAI. You are an interactive CLI tool"],
   ]
   for (const [inp, want] of lines) {
     expect(unflagged(inp)).toBe(want)
@@ -810,7 +924,7 @@ test("CN's managed gateway gets AutoClaw's official body and headers", async () 
 
 // #245's surface: ZCode through autoclaw-cn's managed gateway. The system
 // text that leaves carries no "You are ZCode"; the user's own words do.
-test("CN's managed gateway gets ZCode's and pi's lines rewritten", async () => {
+test("CN's managed gateway gets ZCode's, pi's and Grok CLI's lines rewritten", async () => {
   const realFetch = globalThis.fetch
   const calls = []
   globalThis.fetch = async (input, init) => {
@@ -823,12 +937,14 @@ test("CN's managed gateway gets ZCode's and pi's lines rewritten", async () => {
     const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
     const zcode = "You are ZCode, an interactive coding agent"
     const pi = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
-    for (const system of [zcode, pi]) {
+    // #875: Grok CLI's line, byte for byte from the report
+    const grok = "You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks."
+    for (const system of [zcode, pi, grok]) {
       await loader.fetch("x", { body: JSON.stringify({ model: "zaicoding_glm-5.3", stream: false, messages: [{ role: "system", content: system }, { role: "user", content: system }] }) })
       const sent = calls.at(-1).body
       expect(calls.at(-1).url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
       expect(sent.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\n${unflagged(system)}`)
-      expect(sent.messages[0].content).not.toMatch(/You are ZCode|inside pi, a coding agent harness/i)
+      expect(sent.messages[0].content).not.toMatch(/You are ZCode|inside pi, a coding agent harness|You are Grok\b/i)
       expect(sent.messages[1].content).toBe(system)
     }
   } finally { globalThis.fetch = realFetch }
@@ -1023,11 +1139,9 @@ test("usage: the credit balance and its wallets are the balance, never a window 
   }
 })
 
-// #367 (menhouran): the overseas gateway refuses X-Tm "linux" only beside a
-// non-official fingerprint. The official AutoClaw 2.0.3 client sends "linux"
-// (managedPlatform() in its main.cjs: darwin mac, win32 win, else
-// process.platform) with channel "official", version 2.0.3 and a signed
-// X-Auth-*; 0.2.7's "linux-x64" was a bypass, not what it sends.
+// #367 (menhouran, freebai, Casper-Sun): the official AutoClaw client says
+// "linux", but the overseas WAF still rejects that exact X-Tm for plugin-only
+// Linux accounts. Omitting it is accepted and does not pretend to be mac/win.
 test("X-Tm is the official client's platform id: mac, win, and linux as is", () => {
   const { platformTm, bizHeaders } = _internal
   expect(platformTm("darwin")).toBe("mac")
@@ -1056,7 +1170,7 @@ test("the overseas chat carries the official AutoClaw 2.0.3 fingerprint", async 
     expect(sent[0].url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/v1/chat/completions")
     expect(h.get("X-Channel")).toBe("official")
     expect(h.get("X-Version")).toBe("2.0.3")
-    expect(h.get("X-Tm")).toBe(platformTm(process.platform))
+    expect(h.get("X-Tm")).toBe(process.platform === "linux" ? null : platformTm(process.platform))
     expect(h.get("X-Product")).toBe("autoclaw")
     expect(h.get("X-Lang")).toBe("en")
     expect(h.get("X-Client-Type")).toBe("pc")
@@ -1093,11 +1207,11 @@ test("the overseas chat carries the official AutoClaw 2.0.3 fingerprint", async 
   }
 })
 
-test("on Linux the official fingerprint says linux, x64 and arm64 alike", () => {
+test("on Linux overseas chat omits the WAF-rejected X-Tm, x64 and arm64 alike", () => {
   const { setOfficialChatHeaders } = _internal
   for (const arch of ["x64", "arm64"]) {
     const h = setOfficialChatHeaders(new Headers(), { accessToken: "a1", model: "m", sessionId: "s", platform: "linux", arch })
-    expect(h.get("X-Tm")).toBe("linux")
+    expect(h.get("X-Tm")).toBeNull()
     expect(h.get("X-Stainless-OS")).toBe("Linux")
     expect(h.get("X-Stainless-Arch")).toBe(arch)
     expect(h.get("X-Channel")).toBe("official")
@@ -1159,13 +1273,131 @@ test("overseas chat: a spent quota on the first host isn't asked of the second, 
     expect(spent.headers.get("X-Magpie-Sign-In")).toBe("kept")
     expect(urls.length).toBe(1)
 
-    // both hosts refusing the token is still the sign-in
+    // a real token refusal on both hosts is still the sign-in
     urls.length = 0
-    answer = () => new Response("forbidden", { status: 403 })
+    answer = () => new Response('{"code":401,"message":"token invalid"}', { status: 403 })
     const dead = await loader.fetch("x", { method: "POST", body })
     expect(dead.status).toBe(401)
     expect(dead.headers.get("X-Magpie-Sign-In")).toBe("expired")
     expect(urls.length).toBe(2)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: only an exact uncoded forbidden enters the fingerprint path", async () => {
+  const realFetch = globalThis.fetch
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const cases = [
+      () => new Response("", { status: 403 }),
+      () => Response.json({ message: "some other refusal" }, { status: 403 }),
+      () => Response.json({ code: 401, message: "forbidden" }, { status: 403 }),
+    ]
+    for (const answer of cases) {
+      let calls = 0
+      globalThis.fetch = async () => { calls++; return answer() }
+      const expired = await loader.fetch("x", { method: "POST", body })
+      expect(expired.status).toBe(401)
+      expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls).toBe(2)
+    }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: plain-text forbidden is kept only after wallets confirms the sign-in", async () => {
+  const realFetch = globalThis.fetch
+  const urls = []
+  let chats = 0
+  globalThis.fetch = async (input, init) => {
+    urls.push(String(input))
+    if (init?.method === "GET") return Response.json({ code: 0 })
+    chats++
+    return chats === 1
+      ? new Response("forbidden", { status: 403, headers: { "content-type": "text/plain" } })
+      : Response.json({ code: 401, message: "token invalid" }, { status: 403 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const refused = await loader.fetch("x", { method: "POST", body })
+    expect(refused.status).toBe(403)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    const error = (await refused.json()).error
+    expect(error.message).toContain("forbidden")
+    expect(error.message).toContain("登录仍然有效")
+    expect(error.type).toBe("permission_error")
+    expect(urls.length).toBe(3)
+    expect(urls[2]).toContain("/wallets")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: bare forbidden expires when wallets refuses the token", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (_input, init) => {
+    calls++
+    if (init?.method === "GET") return new Response("", { status: 401 })
+    return Response.json({ message: "forbidden" }, { status: 403 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const expired = await loader.fetch("x", { method: "POST", body })
+    expect(expired.status).toBe(401)
+    expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    expect(calls).toBe(4)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: bare forbidden stays unknown when wallets cannot check the sign-in", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async (_input, init) => {
+    calls++
+    if (init?.method === "GET") return new Response("", { status: calls === 3 ? 401 : 500 })
+    return Response.json({ message: "forbidden" }, { status: 403 })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const unknown = await loader.fetch("x", { method: "POST", body })
+    expect(unknown.status).toBe(403)
+    expect(unknown.headers.get("X-Magpie-Sign-In")).toBeNull()
+    expect(await unknown.json()).toEqual({ message: "forbidden" })
+    expect(calls).toBe(4)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("overseas chat: a second host that accepts after bare forbidden still wins", async () => {
+  const realFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls++
+    return calls === 1
+      ? Response.json({ message: "forbidden" }, { status: 403 })
+      : Response.json({ choices: [] })
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "hi" }] })
+    const recovered = await loader.fetch("x", { method: "POST", body })
+    expect(recovered.status).toBe(200)
+    expect(calls).toBe(2)
   } finally {
     globalThis.fetch = realFetch
   }
@@ -2842,5 +3074,186 @@ test("0.2.18: a checkin whose task-complete answers 500 with success:true ends t
     expect(r.message).toBe("签到接口无响应")
   } finally {
     campCleanup(realFetch)
+  }
+})
+
+// plugins#891 (hj01857655): the CN managed gateway answers a ~200k-token
+// request 401 "AutoClaw 登录状态失效" while the same token is answered 200
+// seconds before and after. These are the reporter's bytes for the refusal.
+const BIG_401 = '{"error":{"code":null,"message":"AutoClaw 登录状态失效","param":null,"type":"authentication_error"}}'
+const WALLETS_OK = JSON.stringify({ code: 0, data: { total_balance: 100 } })
+const chatOf = (n) => JSON.stringify({ model: "zai_glm-5.3-flash", messages: [{ role: "user", content: "x".repeat(n) }] })
+
+for (const [name, Plugin, chatHosts] of [
+  ["CN", AutoclawCnAuthPlugin, 1],
+  ["overseas", AutoclawAuthPlugin, 2],
+]) {
+  test(`${name} chat: a 401 for a body larger than any answered, its sign-in holding, is a 413 and the sign-in is kept (plugins#891)`, async () => {
+    _internal.clearLargestServed()
+    const realFetch = globalThis.fetch
+    const calls = []
+    let wallets = () => new Response(WALLETS_OK)
+    globalThis.fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes("/wallets")) { calls.push("wallets"); return wallets() }
+      calls.push("chat")
+      return String(init?.body).length > 100_000 ? new Response(BIG_401, { status: 401 }) : new Response("ok")
+    }
+    try {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+
+      // before anything was answered, a 401 is the sign-in, and no check is made
+      calls.length = 0
+      let r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls.filter((c) => c === "wallets").length).toBe(0)
+
+      expect((await loader.fetch("x", { method: "POST", body: chatOf(50_000) })).status).toBe(200)
+
+      // larger than the largest answered, the sign-in holding: too large, not signed out
+      calls.length = 0
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(413)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("kept")
+      const e = (await r.json()).error
+      expect(e.type).toBe("request_too_large")
+      expect(e.message).toContain("too large")
+      expect(e.message).not.toContain("登录")
+      expect(calls).toEqual([...Array(chatHosts).fill("chat"), "wallets"])
+
+      // the sign-in refused on the wallets route too: it is the sign-in
+      wallets = () => new Response('{"code":401,"message":"token invalid"}', { status: 401 })
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+
+      // a check that can't be read is unknown, and the 401 stays the sign-in's
+      wallets = () => { throw new TypeError("fetch failed") }
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      wallets = () => new Response(JSON.stringify({ code: 500, message: "busy" }))
+      r = await loader.fetch("x", { method: "POST", body: chatOf(200_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+    } finally {
+      globalThis.fetch = realFetch
+      _internal.clearLargestServed()
+    }
+  })
+
+  test(`${name} chat: a 401 for a body no larger than one answered is the sign-in, with no check made (plugins#891)`, async () => {
+    _internal.clearLargestServed()
+    const realFetch = globalThis.fetch
+    const calls = []
+    let refuse = false
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      calls.push(url.includes("/wallets") ? "wallets" : "chat")
+      if (url.includes("/wallets")) return new Response(WALLETS_OK)
+      return refuse ? new Response(BIG_401, { status: 401 }) : new Response("ok")
+    }
+    try {
+      const hooks = await Plugin({ client: { auth: { set: async () => {} } } })
+      const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+      expect((await loader.fetch("x", { method: "POST", body: chatOf(50_000) })).status).toBe(200)
+      refuse = true
+      calls.length = 0
+      const r = await loader.fetch("x", { method: "POST", body: chatOf(50_000) })
+      expect(r.status).toBe(401)
+      expect(r.headers.get("X-Magpie-Sign-In")).toBe("expired")
+      expect(calls).toEqual(Array(chatHosts).fill("chat"))
+    } finally {
+      globalThis.fetch = realFetch
+      _internal.clearLargestServed()
+    }
+  })
+}
+
+test("signInHolds: taken on any host is true, refused everywhere false, otherwise unknown", async () => {
+  const realFetch = globalThis.fetch
+  let answers = []
+  globalThis.fetch = async () => answers.shift()()
+  try {
+    const hosts = ["https://a.example", "https://b.example"]
+    answers = [() => new Response("{}", { status: 401 }), () => new Response(WALLETS_OK)]
+    expect(await _internal.signInHolds("t", hosts)).toBe(true)
+    answers = [() => new Response("{}", { status: 401 }), () => new Response("{}", { status: 403 })]
+    expect(await _internal.signInHolds("t", hosts)).toBe(false)
+    answers = [() => { throw new TypeError("fetch failed") }, () => new Response("<html>", { status: 502 })]
+    expect(await _internal.signInHolds("t", hosts)).toBe(null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+// plugins#1157（gcq909893267）：活动积分到期作废。原样取自其账号的两条流水：
+// 一个还剩 5000、今晚 23:59:59 到期的实例，一个已被清零的旧实例。
+const liveCredit = (expires = 1794758399) => ({
+  id: "2139248", asset_type: "point", wallet_type: "earned", wallet_id: "wlt_6872d6eff7be7a8990bd",
+  wallet_scope: "campaign", mutation_type: "credit", amount: 5000, source: "campaign", description: "每周限时激励",
+  metadata: {
+    activity_id: "autoclaw_user_active_reward_202609", description: "每周限时激励", event_time: "1794154294",
+    event_type: "autoclaw_user_active", grant_date: "2026-11-09", period_id: "514", public_wallet_type: "reward",
+    reward_config_hash: "6504aa7a2d35e007", reward_points: "5000", reward_rule: "flat", reward_source: "flat",
+    reward_strategy: "flat", wallet_id: "wlt_6872d6eff7be7a8990bd", wallet_instance_balance_after: "5000",
+    wallet_instance_balance_before: "0", wallet_instance_balance_delta: "5000", wallet_scope: "campaign",
+  },
+  occurred_at: "2026-11-09T00:11:34.129+08:00", wallet_expires_at: expires,
+})
+const sweptExpire = {
+  id: "2138987", wallet_id: "wlt_6bfa1bb0696371cc4553", wallet_scope: "campaign", mutation_type: "expire",
+  amount: -5000, source: "manual", description: "活动积分到期失效",
+  metadata: {
+    expiration_reason: "expired_sweep", expiration_trigger: "wallet-expiry-balance-zeroing", expired_amount: "5000",
+    expired_original_at: "1794153599", wallet_id: "wlt_6bfa1bb0696371cc4553", wallet_instance_balance_after: "0",
+    wallet_instance_balance_before: "5000", wallet_instance_balance_delta: "-5000", wallet_scope: "campaign",
+    writeoff_amount: "5000",
+  },
+  occurred_at: "2026-11-09T00:00:00.077+08:00", wallet_expires_at: 1794153599,
+}
+
+test("campaign: a live instance's wallet_expires_at is when its credits lapse", () => {
+  const noon = Date.parse("2026-11-15T12:00:00+08:00")
+  const b = _internal.campaignBreakdown([liveCredit(), sweptExpire], noon)
+  expect(b.remaining).toBe(5000)
+  expect(b.lapseAt).toBe(1794758399 * 1000)
+  expect(b.lapsing).toBe(5000)
+  // 一个更早到期但已花完的实例不算；同一秒到期的两个实例相加
+  const spent = { ...liveCredit(1794700000), wallet_id: "w-spent" }
+  const spentDebit = { wallet_id: "w-spent", wallet_scope: "campaign", mutation_type: "debit", amount: -5000 }
+  const twin = { ...liveCredit(), wallet_id: "w-twin", amount: 300 }
+  const c = _internal.campaignBreakdown([liveCredit(), spent, spentDebit, twin], Date.parse("2026-11-14T00:00:00+08:00"))
+  expect(c.lapseAt).toBe(1794758399 * 1000)
+  expect(c.lapsing).toBe(5300)
+  // 过了到期时间（清扫还没到）就不再报
+  expect(_internal.campaignBreakdown([liveCredit()], Date.parse("2026-11-16T00:00:01+08:00")).lapseAt).toBe(0)
+  // 没有 wallet_expires_at 的旧流水：不知道就不报，绝不猜
+  const bare = liveCredit()
+  delete bare.wallet_expires_at
+  expect(_internal.campaignBreakdown([bare], noon)).toMatchObject({ remaining: 5000, lapseAt: 0, lapsing: 0 })
+})
+
+test("campaign: the balance window says how much lapses and when, with no second pool", async () => {
+  const realFetch = globalThis.fetch
+  const dir = mkdtempSync(join(tmpdir(), "autoclaw-lapse-"))
+  _internal.setUsageStatePath(join(dir, ".usage-state.json"))
+  const tonight = Math.floor(Date.now() / 1000) + 3600
+  globalThis.fetch = campFetch({ total: 6400, ledger: [liveCredit(tonight), sweptExpire] })
+  try {
+    const hooks = await campHooks()
+    const u = await hooks.auth.usage(async () => campAuth("lapse"))
+    const bal = u.windows.find((w) => w.name === "积分余额")
+    expect(bal).toEqual({ name: "积分余额", balance: 6400, unit: "积分", runsOutAt: new Date(tonight * 1000).toISOString(), runsOut: 5000 })
+    expect(u.windows.filter((w) => w.balance !== undefined)).toHaveLength(1)
+    // 丢的不会多于账户总余额
+    _internal.clearCampaignLedger()
+    globalThis.fetch = campFetch({ total: 1200, ledger: [liveCredit(tonight)] })
+    const low = await hooks.auth.usage(async () => campAuth("lapse-low"))
+    expect(low.windows.find((w) => w.name === "积分余额").runsOut).toBe(1200)
+  } finally {
+    campCleanup(realFetch, dir)
   }
 })

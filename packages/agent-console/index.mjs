@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGate } from "./lib/gate.mjs";
+import { processAlive } from "./lib/proc.mjs";
 import { NODE_TOO_OLD_MESSAGE, requireNode } from "./lib/pathscan.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,15 +69,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ESRCH = gone; EPERM = exists but we may not signal it (common on Windows), counts as alive
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
+const pidAlive = processAlive;
 
 // A failed log write (directory deleted, disk full) must never make the host's flow throw
 function makeLogger(p) {

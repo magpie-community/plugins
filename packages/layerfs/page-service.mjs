@@ -19,10 +19,11 @@
 // (pageHost / plugin.Warm), so the service is there by the time the
 // frame lands.
 //
-// The service starts only once a store exists (index.mjs's gates: a
-// projects folder holding entries, and a backend answering real
-// projects). A user with no store gets no service, no files, nothing
-// written under ~.
+// The service starts when the host loads, store or no store (a WebKit
+// frame whose jump is refused keeps saying "Connecting…" for good).
+// With no store, index.mjs answers an empty recording without building
+// the backend: the page shows its empty state, and nothing is written
+// under ~.
 //
 // Security — the trajectory names workspace paths and file contents,
 // and any website can point a sandboxed iframe at 127.0.0.1, so:

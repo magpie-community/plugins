@@ -52,10 +52,31 @@ function cacheFile(period) {
 
 // A read written by an older build can lack a field this page needs, so it
 // is a miss rather than served as current.
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 8;
 
 export function cacheUsable(data) {
-  return Boolean(data && Array.isArray(data.providers) && Array.isArray(data.accounts));
+  if (!data || !Array.isArray(data.providers) || !Array.isArray(data.accounts)) return false;
+  const fields = [
+    "cacheRead",
+    "cacheWrite",
+    "cacheUnknown",
+    "cacheUnknownCalls",
+  ];
+  const hasFields = (part) => part && typeof part === "object" && fields.every(
+    (field) => typeof part[field] === "number" && Number.isFinite(part[field]),
+  );
+  const parts = [data.summary, ...data.providers, ...data.accounts];
+  for (const account of data.accounts) parts.push(...(Array.isArray(account?.models) ? account.models : []));
+  for (const provider of data.providers) {
+    for (const account of Array.isArray(provider?.accounts) ? provider.accounts : []) {
+      parts.push(...(Array.isArray(account?.models) ? account.models : []));
+    }
+  }
+  for (const part of parts) {
+    if (!part || typeof part !== "object") return false;
+    if (!hasFields(part)) return false;
+  }
+  return true;
 }
 
 function readCached(period) {
@@ -99,6 +120,7 @@ function writeCached(period, data) {
 // group from borrowing another provider's models.
 async function requestsForAccounts(usage, period, options) {
   const out = {};
+  let failures = 0;
   const accounts = Array.isArray(usage?.accounts) ? usage.accounts : [];
   await Promise.all(
     accounts.map(async (item) => {
@@ -111,11 +133,12 @@ async function requestsForAccounts(usage, period, options) {
       } catch {
         // The account totals still come from the usage answer; only its
         // model rows are missing.
+        failures += 1;
         out[key] = null;
       }
     }),
   );
-  return out;
+  return { requests: out, failures };
 }
 
 async function readGateway(period, options) {
@@ -125,15 +148,18 @@ async function readGateway(period, options) {
   // that is usually none of them.
   const preview = aggregateGatewayUsage(usage, {}, { period });
   const missing = preview.accounts.filter((account) => account.calls > 0 && !account.models.length);
-  const requestsByAccount = missing.length
+  const detailRead = missing.length
     ? await requestsForAccounts(
       { ...usage, accounts: usage.accounts.filter((item) =>
         missing.some((account) => account.provider === item.provider && account.account === item.account)) },
       period,
       options,
     )
-    : {};
-  return aggregateGatewayUsage(usage, requestsByAccount, { period });
+    : { requests: {}, failures: 0 };
+  return aggregateGatewayUsage(usage, detailRead.requests, {
+    period,
+    missingModelAccounts: detailRead.failures,
+  });
 }
 
 const refreshing = new Set();

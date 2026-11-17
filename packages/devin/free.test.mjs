@@ -47,9 +47,36 @@ test("Devin's Free tier is read from its model configs", () => {
 test("a used-up day and week don't count SWE-2", async () => {
   // both used up: JSON leaves the 0% left out
   serve(status())
-  const u = await (await DevinAuthPlugin()).auth.usage(async () => ({ type: "api", key: "key-free-usage" }))
+  const plugin = await DevinAuthPlugin()
+  await plugin.provider.models({ models: {} }, { auth: { type: "api", key: "key-free-usage" } })
+  const u = await plugin.auth.usage(async () => ({ type: "api", key: "key-free-usage" }))
   expect(u.windows.map((w) => [w.name, w.used])).toEqual([["1 day", 100], ["7 days", 100]])
   for (const w of u.windows) expect([...w.notModels].sort()).toEqual(SWE2)
+})
+
+test("a slow model list doesn't hold up quota usage", async () => {
+  const key = "slow-model-config-key"
+  let finishConfigs
+  serve(status(), () => new Promise((resolve) => (finishConfigs = resolve)))
+  const plugin = await DevinAuthPlugin()
+  const usage = plugin.auth.usage(async () => ({ type: "api", key }))
+  let timeout
+  let u
+  try {
+    u = await Promise.race([
+      usage,
+      new Promise((_, reject) => (timeout = setTimeout(() => reject(new Error("usage waited for GetCliModelConfigs")), 1_000))),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+  expect(u.windows.map((w) => [w.name, w.used])).toEqual([["1 day", 100], ["7 days", 100]])
+  expect(u.windows.map((w) => w.notModels)).toEqual([undefined, undefined])
+
+  finishConfigs(new Response(realConfigs))
+  await _internal.freeIDs(key, "https://server.codeium.com")
+  const refreshed = await plugin.auth.usage(async () => ({ type: "api", key }))
+  for (const w of refreshed.windows) expect([...w.notModels].sort()).toEqual(SWE2)
 })
 
 test("with no word from Devin on its models, the day and week count every model", async () => {
@@ -94,18 +121,24 @@ test("SWE-2 the account's list leaves out goes as SNAPSHOT's variant, not the ba
 })
 
 test("a model list Devin won't give is said in usage and logged once, not swallowed", async () => {
-  serve(status(), () => new Response("no", { status: 503 }))
+  const key = "key-free-error"
+  let failConfigs
+  serve(status(), () => new Promise((resolve) => (failConfigs = () => resolve(new Response("no", { status: 503 })))))
   const logged = []
   const was = console.error
   console.error = (...a) => logged.push(a.join(" "))
   try {
     const plugin = await DevinAuthPlugin()
-    const u = await plugin.auth.usage(async () => ({ type: "api", key: "key-free-said" }))
-    expect(u.windows.slice(0, 2).map((w) => w.notModels)).toEqual([undefined, undefined])
-    const note = u.windows.find((w) => w.name === "Free models")
+    const first = await plugin.auth.usage(async () => ({ type: "api", key }))
+    expect(first.windows.slice(0, 2).map((w) => w.notModels)).toEqual([undefined, undefined])
+    expect(first.windows.find((w) => w.name === "Free models")).toBeUndefined()
+    failConfigs()
+    await _internal.freeIDs(key, "https://server.codeium.com")
+    const second = await plugin.auth.usage(async () => ({ type: "api", key }))
+    const note = second.windows.find((w) => w.name === "Free models")
     expect(note?.aside).toBe(true)
     expect(note.display).toContain("503")
-    await plugin.auth.usage(async () => ({ type: "api", key: "key-free-said" }))
+    await plugin.auth.usage(async () => ({ type: "api", key }))
   } finally {
     console.error = was
   }

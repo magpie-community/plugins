@@ -219,9 +219,9 @@ const PERSONAL_RESETS = {
   data: {
     customerId: 0, targetType: "PERSONAL", organizationId: null, projectId: null,
     lastFiveHourResetTime: "2026-10-06 21:14:03", lastWeekResetTime: null,
-    fiveHourResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2026-11-02 23:59:59", available: true }],
+    fiveHourResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2027-11-02 23:59:59", available: true }],
     weekResets: [
-      { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-30 23:59:59", available: true },
+      { recordId: 0, grantType: "DIRECT", expireTime: "2027-10-30 23:59:59", available: true },
       { recordId: 0, grantType: "DIRECT", expireTime: "2026-10-04 23:59:59", available: false },
     ],
   },
@@ -241,9 +241,9 @@ test("a Coding Plan of a person's own shows its resets, each with its end, as th
     signIn: "kept",
     plan: "GLM Coding Pro",
     windows: [NO_SESSION],
-    resets: { count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
-      { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
-      { until: "2026-11-02T15:59:59.000Z", window: "fiveHour" },
+    resets: { count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2027-10-30T15:59:59.000Z", each: [
+      { until: "2027-10-30T15:59:59.000Z", window: "weekly" },
+      { until: "2027-11-02T15:59:59.000Z", window: "fiveHour" },
     ] },
   })
   const asked = calls.find((c) => c.url.pathname === "/api/biz/customer-package-reset/list")
@@ -255,9 +255,9 @@ test("a Coding Plan of a person's own shows its resets, each with its end, as th
   list = { code: 200, data: { fiveHourResets: [], weekResets: [{ available: false, expireTime: "2026-10-04 23:59:59" }] } }
   expect((await usage(auth)).resets).toBeUndefined()
   // one with no end is listed last, with none
-  list = { code: 200, data: { fiveHourResets: [{ available: true }], weekResets: [{ available: true, expireTime: "2026-10-30 23:59:59" }] } }
-  expect((await usage(auth)).resets).toEqual({ count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2026-10-30T15:59:59.000Z", each: [
-    { until: "2026-10-30T15:59:59.000Z", window: "weekly" },
+  list = { code: 200, data: { fiveHourResets: [{ available: true }], weekResets: [{ available: true, expireTime: "2027-10-30 23:59:59" }] } }
+  expect((await usage(auth)).resets).toEqual({ count: 2, byWindow: true, fiveHour: 1, weekly: 1, until: "2027-10-30T15:59:59.000Z", each: [
+    { until: "2027-10-30T15:59:59.000Z", window: "weekly" },
     { window: "fiveHour" },
   ] })
 })
@@ -271,7 +271,7 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     if (url.origin !== "https://bigmodel.cn") return
     if (p === "/api/biz/team/subscribe/product/querySubscribeDetail" && headers.Authorization === TOKEN && org === "t1" && proj === "tp1")
       return ok({ hasSubscription: true, status: "EFFECTIVE", memberGrantStatus: "VALID", productId: "prod-1", productName: "GLM Coding Team Pro",
-        subscribeEndTime: "2026-12-31 23:59:59" })
+        subscribeEndTime: "2027-12-31 23:59:59" })
     if (p === "/api/biz/v1/organization/t1/projects/tp1/api_keys" && headers.Authorization === TOKEN && org === "t1" && proj === "tp1") {
       if (method === "POST") {
         made = JSON.parse(body)
@@ -282,8 +282,8 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
     if (p === "/api/biz/v1/organization/t1/projects/tp1/api_keys/copy/tk") return ok({ secretKey: "ts" })
     if (p === "/api/biz/customer-package-reset/list" && headers.Authorization === TOKEN && org === "t1" && proj === "tp1" && url.searchParams.get("targetType") === "TEAM")
       return ok({
-        fiveHourResets: [{ available: true, expireTime: "2026-11-30 23:59:59" }, { available: true, expireTime: 1790000000 }, { available: false, expireTime: 1 }],
-        weekResets: [{ available: true, expireTime: "2026-12-31 23:59:59" }],
+        fiveHourResets: [{ available: true, expireTime: "2027-11-30 23:59:59" }, { available: true, expireTime: 1800000000 }, { available: false, expireTime: 1 }],
+        weekResets: [{ available: true, expireTime: "2027-12-31 23:59:59" }],
       })
     if (p === "/api/monitor/usage/quota/limit") {
       if (headers.Authorization !== "tk.ts" || url.searchParams.get("type") !== "2" || headers["Set-Language"] !== "zh") return ok({ limits: [] })
@@ -297,13 +297,13 @@ test("a team seat: the team plan's windows, name, end and resets, its key found 
   const state = { site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic", token: TOKEN, org: "t1", project: "tp1", plan: "GLM Coding Team Pro" }
   expect(await usage(oauth(state), sets)).toEqual({
     signIn: "kept",
-    plan: "GLM Coding Team Pro", until: "2026-12-31T15:59:59.000Z", renew: "off",
+    plan: "GLM Coding Team Pro", until: "2027-12-31T15:59:59.000Z", renew: "off",
     // a team's resets say so, and each its own end, soonest first, as the
     // built-in's zhipuTeamResets did
-    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1790000000 * 1000).toISOString(), team: true, each: [
-      { until: new Date(1790000000 * 1000).toISOString(), window: "fiveHour" },
-      { until: "2026-11-30T15:59:59.000Z", window: "fiveHour" },
-      { until: "2026-12-31T15:59:59.000Z", window: "weekly" },
+    resets: { count: 3, byWindow: true, fiveHour: 2, weekly: 1, until: new Date(1800000000 * 1000).toISOString(), team: true, each: [
+      { until: new Date(1800000000 * 1000).toISOString(), window: "fiveHour" },
+      { until: "2027-11-30T15:59:59.000Z", window: "fiveHour" },
+      { until: "2027-12-31T15:59:59.000Z", window: "weekly" },
     ] },
     windows: [
       { name: "5 hours", used: 42, display: "420 / 1000", amount: 420, limit: 1000, resetsAt: new Date(reset).toISOString(), span: 5 * 3600 },
@@ -510,4 +510,20 @@ test("the real banner feed names its plan once on the card", async () => {
   const u = await usage(oauth({ site: "zai", jwt: token, device: "11111111-2222-4333-8444-555555555555" }))
   expect(u.windows.at(-1)).toEqual({ name: "Gift plans to claim in the ZCode app", used: 0, aside: true, display: "1 · ZCODE WEEKEND BUILD" })
   expect(calls.some((c) => c.url.pathname.endsWith("/claim"))).toBe(false)
+})
+
+test("a reset the list flags available but whose end has passed is not counted (nathan_ift_us on X: two cards shown, none owned)", async () => {
+  const list = { code: 200, data: {
+    fiveHourResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2020-11-08 23:59:59", available: true }],
+    weekResets: [{ recordId: 0, grantType: "DIRECT", expireTime: "2020-11-08 23:59:59", available: true }],
+  } }
+  serve(({ url }) => {
+    if (url.pathname === "/api/biz/subscription/list") return ok([])
+    if (url.pathname === "/api/monitor/usage/quota/limit") return ok({ level: "pro", limits: [] })
+    if (url.pathname === "/api/biz/customer-package-reset/list") return new Response(JSON.stringify(list))
+  })
+  const auth = oauth({ site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic", key: "glm-key" })
+  expect((await usage(auth)).resets).toBeUndefined()
+  list.data.weekResets.push({ available: true, expireTime: "2099-01-01 23:59:59" })
+  expect((await usage(auth)).resets).toMatchObject({ count: 1, fiveHour: 0, weekly: 1 })
 })

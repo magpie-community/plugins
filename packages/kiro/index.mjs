@@ -9,13 +9,16 @@
 // kiro-cli's or the IDE's own sign-in can be used instead: it is read where
 // they keep it each time, refreshed by kiro-cli first, and a token
 // refreshed here is written back, so they go on with it. A Kiro API key
-// (ksk_…) signs in too.
+// (ksk_…) signs in too, and in magpie sign-ins made elsewhere are imported
+// from a file by their refresh token (auth.import).
 //
 // Kiro has no API OpenCode speaks: the models are declared on Anthropic's
 // Messages, and the fetch here sends each request whole to Kiro's own API
 // (runtime.<region>.kiro.dev/generateAssistantResponse, the one kiro-cli
 // talks to) as a conversation, and turns the AWS event stream it answers
-// with back into Messages' events.
+// with back into Messages' events. An account Kiro has put on its
+// CreateResponse experiment is asked as the Kiro IDE asks it then
+// (/v1/responses, answered with server-sent events; see createResponse).
 import { createServer } from "node:http"
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
@@ -25,15 +28,47 @@ import { homedir, hostname, platform, release } from "node:os"
 import { delimiter, join } from "node:path"
 
 const ID = "kiro"
+
+// WORDS are the sign-in's words in magpie's other languages, beside the
+// English each method, question and choice has (magpie's labels, messages
+// and hints; OpenCode ignores them). Product names stay as written.
+const WORDS = {
+  browser: { zh: "Kiro 登录（Google、GitHub、AWS Builder ID、IAM Identity Center）", "zh-TW": "Kiro 登入（Google、GitHub、AWS Builder ID、IAM Identity Center）", ja: "Kiro にサインイン（Google、GitHub、AWS Builder ID、IAM Identity Center）", de: "Kiro-Anmeldung (Google, GitHub, AWS Builder ID, IAM Identity Center)" },
+  choose: { zh: "选择登录方式", "zh-TW": "選擇登入方式", ja: "サインイン方法を選択", de: "Anmeldemethode wählen" },
+  enterprise: { zh: "IAM Identity Center（组织 Start URL）", "zh-TW": "IAM Identity Center（組織 Start URL）", ja: "IAM Identity Center（組織の Start URL）", de: "IAM Identity Center (Start-URL der Organisation)" },
+  enterpriseHint: { zh: "用组织的 AWS Start URL 登录", "zh-TW": "用組織的 AWS Start URL 登入", ja: "組織の AWS Start URL でサインイン", de: "Mit der AWS-Start-URL Ihrer Organisation anmelden" },
+  builderidHint: { zh: "直接打开 AWS 登录；在远程服务器上只需粘贴一次回调地址", "zh-TW": "直接開啟 AWS 登入；在遠端伺服器上只需貼上一次回呼網址", ja: "AWS のサインインを直接開きます。リモートサーバーではコールバックを 1 回貼り付けるだけです", de: "Öffnet die AWS-Anmeldung direkt; auf einem entfernten Server wird ein Callback einmal eingefügt" },
+  portal: { zh: "Kiro 登录页", "zh-TW": "Kiro 登入頁", ja: "Kiro のサインインページ", de: "Kiro-Anmeldeseite" },
+  portalHint: { zh: "Google、GitHub、IAM Identity Center 或 Kiro 的其他登录方式", "zh-TW": "Google、GitHub、IAM Identity Center 或 Kiro 的其他登入方式", ja: "Google、GitHub、IAM Identity Center など Kiro のサインイン方法", de: "Google, GitHub, IAM Identity Center oder andere Kiro-Anmeldemethoden" },
+  startUrl: { zh: "组织 Start URL", "zh-TW": "組織 Start URL", ja: "組織の Start URL", de: "Start-URL der Organisation" },
+  region: { zh: "AWS 区域（留空为 us-east-1）", "zh-TW": "AWS 區域（留空為 us-east-1）", ja: "AWS リージョン（空欄なら us-east-1）", de: "AWS-Region (leer: us-east-1)" },
+  own: { zh: "Kiro CLI 或 Kiro IDE 已登录的账号", "zh-TW": "Kiro CLI 或 Kiro IDE 已登入的帳號", ja: "Kiro CLI または Kiro IDE のサインイン", de: "Anmeldung von Kiro CLI oder Kiro IDE" },
+  key: { zh: "Kiro API Key（ksk_…）", "zh-TW": "Kiro API Key（ksk_…）", ja: "Kiro API キー（ksk_…）", de: "Kiro-API-Schlüssel (ksk_…)" },
+}
+// IMPORT_FROM says what magpie's "Import accounts from a file…" takes
+const IMPORT_FROM = {
+  en: "Choose a JSON file of Kiro sign-ins, or paste it: one account or a list, each with its refreshToken and the way it signed in (provider: Google, Github, BuilderId or Enterprise; Builder ID and Identity Center also need clientId, clientSecret and region), such as the Kiro IDE's kiro-auth-token.json. Each is renewed with Kiro before it is added, so the tool it came from may have to sign in again.",
+  froms: {
+    zh: "选择 Kiro 登录凭证的 JSON 文件，或直接粘贴：一个账号或一组账号，每个含 refreshToken 和登录方式（provider：Google、Github、BuilderId 或 Enterprise；Builder ID 和 IAM Identity Center 还需要 clientId、clientSecret 和 region），例如 Kiro IDE 的 kiro-auth-token.json。每个账号先向 Kiro 续期再添加，来源工具可能需要重新登录。",
+    "zh-TW": "選擇 Kiro 登入憑證的 JSON 檔，或直接貼上：一個帳號或一組帳號，每個含 refreshToken 和登入方式（provider：Google、Github、BuilderId 或 Enterprise；Builder ID 和 IAM Identity Center 還需要 clientId、clientSecret 和 region），例如 Kiro IDE 的 kiro-auth-token.json。每個帳號先向 Kiro 續期再加入，來源工具可能需要重新登入。",
+    ja: "Kiro のサインイン情報の JSON ファイルを選ぶか貼り付けてください。1 アカウントまたはリストで、各アカウントに refreshToken とサインイン方法（provider：Google、Github、BuilderId、Enterprise。Builder ID と IAM Identity Center は clientId、clientSecret、region も必要）を含めます。Kiro IDE の kiro-auth-token.json もそのまま使えます。各アカウントは追加前に Kiro で更新されるため、元のツールは再サインインが必要になることがあります。",
+    de: "Wähle eine JSON-Datei mit Kiro-Anmeldungen oder füge sie ein: ein Konto oder eine Liste, jedes mit refreshToken und Anmeldeart (provider: Google, Github, BuilderId oder Enterprise; Builder ID und IAM Identity Center brauchen außerdem clientId, clientSecret und region), etwa die kiro-auth-token.json der Kiro IDE. Jedes Konto wird vor dem Hinzufügen bei Kiro erneuert, daher muss sich das Tool, aus dem es stammt, eventuell neu anmelden.",
+  },
+}
 const MESSAGES = "@ai-sdk/anthropic"
 const BASE = "https://runtime.us-east-1.kiro.dev" // what OpenCode is given; the fetch sends each request to the account's region
 
 const PORTAL = "https://app.kiro.dev"
 const AUTH_SERVICE = "https://prod.us-east-1.auth.desktop.kiro.dev"
-const oidc = (region) => `https://oidc.${region}.amazonaws.com`
-const runtime = (region) => `https://runtime.${region}.kiro.dev`
-const management = (region) => `https://management.${region}.kiro.dev`
-const refreshURL = (region) => `https://prod.${region}.auth.desktop.kiro.dev/refreshToken`
+// a region read from a file goes into these host names: one that isn't a region's shape is refused
+const inHost = (region) => {
+  if (!AWS_REGION.test(String(region))) throw new Error(`${JSON.stringify(region)} isn't an AWS region`)
+  return region
+}
+const oidc = (region) => `https://oidc.${inHost(region)}.amazonaws.com`
+const runtime = (region) => `https://runtime.${inHost(region)}.kiro.dev`
+const management = (region) => `https://management.${inHost(region)}.kiro.dev`
+const refreshURL = (region) => `https://prod.${inHost(region)}.auth.desktop.kiro.dev/refreshToken`
 // the ports Kiro's sign-in page sends the browser back to, the IDE's
 const CALLBACK_PORTS = [3128, 4649, 6588, 8008, 9091, 49153, 50153, 51153, 52153, 53153]
 // what the IDE asks AWS for
@@ -126,7 +161,14 @@ async function readCLI() {
   try {
     db = await openDB(path, true)
     const get = (key) => {
-      const row = db.prepare("SELECT value FROM auth_kv WHERE key = ?").get(key)
+      // Bun's SQLite keeps the file locked until a statement is finalized.
+      const stmt = db.prepare("SELECT value FROM auth_kv WHERE key = ?")
+      let row
+      try {
+        row = stmt.get(key)
+      } finally {
+        stmt.finalize?.()
+      }
       if (!row?.value) return null
       try {
         return JSON.parse(row.value)
@@ -139,7 +181,7 @@ async function readCLI() {
       const m = get(key)
       if (!m?.access_token) continue
       const c = { access: m.access_token, refresh: m.refresh_token ?? "", expires: time(m.expires_at), region: m.region || "us-east-1",
-        profile: m.profile_arn ?? "", dbKey: key }
+        profile: arnOf(m.profile_arn), dbKey: key }
       if (kind === "social") c.method = "social"
       else if (kind === "odic") {
         c.method = "idc"
@@ -172,7 +214,7 @@ async function readIDE() {
   }
   if (!t?.accessToken) return null
   const c = { access: t.accessToken, refresh: t.refreshToken ?? "", expires: time(t.expiresAt), region: t.region || "us-east-1",
-    profile: t.profileArn ?? "", method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
+    profile: arnOf(t.profileArn), method: "idc", idePath: path, builderID: isBuilderID(t.provider) }
   if (t.clientIdHash) {
     try {
       const reg = JSON.parse(await readFile(join(ideDir(), t.clientIdHash + ".json"), "utf8"))
@@ -193,12 +235,23 @@ async function saveBack(c) {
     try {
       db = await openDB(cliDB(), false)
       db.exec("PRAGMA busy_timeout = 3000")
-      const row = db.prepare("SELECT value FROM auth_kv WHERE key = ?").get(c.dbKey)
+      const select = db.prepare("SELECT value FROM auth_kv WHERE key = ?")
+      let row
+      try {
+        row = select.get(c.dbKey)
+      } finally {
+        select.finalize?.()
+      }
       if (!row?.value) return
       const m = JSON.parse(row.value)
       Object.assign(m, { access_token: c.access, refresh_token: c.refresh, expires_at: expires })
       if (c.profile && c.method === "social") m.profile_arn = c.profile
-      db.prepare("UPDATE auth_kv SET value = ? WHERE key = ?").run(JSON.stringify(m), c.dbKey)
+      const update = db.prepare("UPDATE auth_kv SET value = ? WHERE key = ?")
+      try {
+        update.run(JSON.stringify(m), c.dbKey)
+      } finally {
+        update.finalize?.()
+      }
     } catch {
     } finally {
       db?.close()
@@ -297,12 +350,17 @@ function authHeaders(a) {
 const tokenType = (c) => (c.method === "apikey" ? "API_KEY" : c.method === "external-idp" ? "EXTERNAL_IDP" : "")
 
 // region is where the account's API is: the region its profile is in, else
-// the nearer of Kiro's two to where it signed in.
+// the nearer of Kiro's two to where it signed in. It goes into the API's host
+// name, so only Kiro's own regions are taken from a profile.
 function regionOf(profile, signedIn) {
   const parts = String(profile ?? "").split(":")
-  if (parts.length > 4 && parts[3]) return parts[3]
+  if (parts.length > 4 && CREDIT_REGIONS.includes(parts[3])) return parts[3]
   return String(signedIn ?? "").startsWith("eu-") ? "eu-central-1" : "us-east-1"
 }
+// arnOf is a profile ARN as Kiro gives one, else "": one read from a file
+// that isn't is left for profileOf to ask Kiro for
+const PROFILE_ARN = /^arn:aws:codewhisperer:[a-z]{2}(?:-[a-z]+)+-\d{1,2}:\d{12}:profile\/[A-Za-z0-9_-]+$/
+const arnOf = (s) => (PROFILE_ARN.test(String(s ?? "").trim()) ? String(s).trim() : "")
 
 // STATUS_TEXT is Go's http.StatusText for the answers Kiro gives.
 const STATUS_TEXT = { 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 408: "Request Timeout",
@@ -404,6 +462,21 @@ async function profileOf(c) {
 // only with every enabled region used up is it used up for magpie.
 const CREDIT_REGIONS = ["us-east-1", "eu-central-1"]
 const twoRegions = (c) => c.method === "idc" && !c.builderID
+// magpie's switches for the provider (auth.options), one for each credit
+// region: with one on, an Identity Center account uses that region alone.
+// They are read at each request, so a change needs no restart. A request is
+// never sent to the other region: this one not enabled for the account, or
+// used up, is a 429 for magpie to go on to another account. Both off is the
+// default, the regions in turn; both on says nothing, and is the default too.
+const onlyOption = (region) => region + "-only"
+const onlyRegion = (magpie) => {
+  try {
+    const on = CREDIT_REGIONS.filter((r) => magpie?.option?.(ID, onlyOption(r)) === true)
+    return on.length === 1 ? on[0] : ""
+  } catch {
+    return ""
+  }
+}
 const SPENT_MS = 60 * 60 * 1000 // a region Kiro said is used up, with no reset known, rests this long
 const PROBE_MS = 10 * 60 * 1000 // a region with no profile is asked for one again at most this often
 const REMIND_SHARE = 80 // the share at which a region not enabled is pointed out
@@ -475,18 +548,28 @@ function goG(x) {
 // first, then these, so a month used up while a bonus has credits left
 // is set aside too, and the account isn't taken for spent.
 //
-// With overage on, Kiro goes on past the plan's credits up to the overage
-// cap, which is the month's whole limit (a 2000-credit plan used 4104, of
-// them 2104 overage, under a cap of 10000), so the month's window counts
-// against the cap. With overage off the cap Kiro still sends means nothing.
+// With overage on, Kiro goes on past the plan's credits, billed as post-paid
+// credits, until those reach the overage cap. The cap counts the overage
+// alone, not the plan's credits with it: it is the profile's "maximum
+// allowed overage" quota (in USD, $0.04 a credit; $400 is 10000 credits).
+// So with overage on the month is two windows, as the Kiro IDE shows it:
+// the plan's credits (12589.24 used of a 10000 plan is "10000 / 10000"),
+// shown only, as using them up doesn't stop the account, and the overage
+// (2589.24 / 37500), which does (wizcheu on X). With overage off the cap Kiro
+// still sends means nothing, and the plan's credits are the month.
 const count = (used, limit) => used.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") + " / " + goG(limit)
+const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
 const overageOn = (l) =>
   String(l?.overageConfiguration?.overageStatus ?? "").toUpperCase() === "ENABLED" || l?.overageConfiguration?.overageEnabled === true
-function usageOf(l, now = Date.now()) {
+
+// readUsage is usageOf with the month's windows named: plan, the plan's
+// credits, and stop, the window that stops the account (the overage's
+// with overage on, else plan itself).
+function readUsage(l, now = Date.now()) {
   const at = (secs) => (secs > 0 ? new Date(Math.trunc(secs) * 1000).toISOString() : undefined)
-  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0)
   const overage = overageOn(l)
   const windows = []
+  let plan, stop
   for (const u of l?.usageBreakdownList ?? []) {
     const t = u?.freeTrialInfo
     if (t && String(t.freeTrialStatus ?? "").toUpperCase() === "ACTIVE" && num(t.usageLimitWithPrecision) > 0) {
@@ -502,36 +585,53 @@ function usageOf(l, now = Date.now()) {
       bonuses.push({ name: b?.displayName || "Bonus credits", used: (100 * used) / limit, display: count(used, limit),
         amount: used, limit, unit: "credits", ...(expires > 0 && left > 0 ? { runsOutAt: at(expires), runsOut: left } : {}), aside: true })
     }
-    const used = num(u?.currentUsageWithPrecision)
-    const limit = Math.max(num(u?.usageLimitWithPrecision), overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0)
-    if (limit > 0) {
-      const reset = num(u?.nextDateReset) || num(l?.nextDateReset)
-      const carried = used >= limit && bonuses.some((b) => b.amount < b.limit)
-      windows.push({ name: u?.displayNamePlural || u?.displayName || "Credits", used: (100 * used) / limit, resetsAt: at(reset),
-        display: count(used, limit), amount: used, limit, unit: "credits", span: 30 * 24 * 3600, ...(carried ? { aside: true } : {}) })
+    const used = num(u?.currentUsageWithPrecision), limit = num(u?.usageLimitWithPrecision)
+    const cap = overage ? num(u?.overageCapWithPrecision) || num(u?.overageCap) : 0
+    const reset = at(num(u?.nextDateReset) || num(l?.nextDateReset))
+    const month = { resetsAt: reset, unit: "credits", span: 30 * 24 * 3600 }
+    const name = u?.displayNamePlural || u?.displayName || "Credits"
+    const left = bonuses.some((b) => b.amount < b.limit)
+    if (cap > 0) {
+      // what Kiro says of the overage, else what is past the plan
+      const said = typeof u?.currentOveragesWithPrecision === "number" ? u.currentOveragesWithPrecision : u?.currentOverages
+      const over = typeof said === "number" && Number.isFinite(said) ? said : Math.max(0, used - limit)
+      const inPlan = Math.min(used, limit)
+      plan = limit > 0 ? { name, used: (100 * inPlan) / limit, display: count(inPlan, limit), amount: inPlan, limit, ...month, aside: true } : undefined
+      stop = { name: "Overage", used: (100 * over) / cap, display: count(over, cap), amount: over, limit: cap, ...month,
+        ...(over >= cap && left ? { aside: true } : {}) }
+      windows.push(...(plan ? [plan] : []), stop)
+      plan ??= stop
+    } else if (limit > 0) {
+      plan = stop = { name, used: (100 * used) / limit, display: count(used, limit), amount: used, limit, ...month,
+        ...(used >= limit && left ? { aside: true } : {}) }
+      windows.push(plan)
     }
     windows.push(...bonuses)
   }
   const email = l?.userInfo?.email
-  return { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
+  const usage = { plan: planName(l?.subscriptionInfo?.subscriptionTitle), ...(typeof email === "string" && email ? { user: email } : {}), windows }
+  return { usage, plan, stop }
 }
+
+const usageOf = (l, now = Date.now()) => readUsage(l, now).usage
 
 // regionsUsage is an Identity Center account's credits from each region's
 // read (reads: { region, l } read, { region, error } not, { region,
 // missing } with no profile, not enabled): each region's month shown only,
 // and their sum the window magpie weighs the account by, used up only when
-// every region read is. A free trial or bonus credits are the first read
-// region's. regions says, of each region read, whether it is used up and
-// when it resets. Regions read come first, then those that couldn't be read,
-// then those not enabled: a card that shows only the first few windows then
-// shows the credits an account has.
-function regionsUsage(reads, now = Date.now()) {
+// every region read is. With overage on, the plans' sum comes first, shown
+// only, then the overages' sum weighs the account. A free trial or bonus
+// credits are the first read region's. regions says, of each region read,
+// whether it is used up and when it resets. Regions read come first, then
+// those that couldn't be read, then those not enabled: a card that shows
+// only the first few windows then shows the credits an account has.
+function regionsUsage(reads, now = Date.now(), only = "") {
   const shown = []
   const failed = []
   const off = []
   const regions = []
   const missing = []
-  let amount = 0, limit = 0, resets = 0, first, monthName
+  let amount = 0, limit = 0, inPlan = 0, ofPlan = 0, resets = 0, first, monthName, anyOver = false, allOver = true
   for (const r of reads) {
     const name = `Credits (${r.region})`
     if (r.error) {
@@ -543,24 +643,54 @@ function regionsUsage(reads, now = Date.now()) {
       off.push({ name, display: "not enabled", aside: true })
       continue
     }
-    const u = usageOf(r.l, now)
+    const { usage: u, plan, stop } = readUsage(r.l, now)
     first ??= u
-    const month = u.windows.find((w) => w.span)
-    if (!month) continue
-    monthName ??= month.name
-    amount += month.amount
-    limit += month.limit
-    const at = Date.parse(month.resetsAt ?? "")
+    if (!stop) continue
+    const over = stop !== plan
+    // an account set to one region counts that region alone, the other
+    // shown only: its credits are not the account's to spend
+    const counted = !only || r.region === only
+    if (counted) {
+      anyOver ||= over
+      allOver &&= over
+    }
+    monthName ??= plan.name
+    if (!counted) {
+      shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
+      if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+      regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: Date.parse(stop.resetsAt ?? "") > 0 ? Date.parse(stop.resetsAt) : 0 })
+      continue
+    }
+    amount += stop.amount
+    limit += stop.limit
+    inPlan += plan.amount
+    ofPlan += plan.limit
+    const at = Date.parse(stop.resetsAt ?? "")
     if (at > 0 && (!resets || at < resets)) resets = at
-    shown.push({ ...month, name: `${month.name} (${r.region})`, aside: true })
-    regions.push({ region: r.region, full: month.amount >= month.limit, resetsAt: at > 0 ? at : 0 })
+    shown.push({ ...plan, name: `${plan.name} (${r.region})`, aside: true })
+    if (over) shown.push({ ...stop, name: `${stop.name} (${r.region})`, aside: true })
+    regions.push({ region: r.region, full: stop.amount >= stop.limit, resetsAt: at > 0 ? at : 0 })
   }
   const windows = []
+  const resetsAt = resets ? { resetsAt: new Date(resets).toISOString() } : {}
   if (limit > 0) {
+    if (anyOver && ofPlan > 0)
+      windows.push({ name: monthName, used: (100 * inPlan) / ofPlan, ...resetsAt, display: count(inPlan, ofPlan), amount: inPlan, limit: ofPlan,
+        unit: "credits", span: 30 * 24 * 3600, aside: true })
     let display = count(amount, limit)
-    if (missing.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${missing.join(", ")} not enabled: ask your admin to enable it`
-    windows.push({ name: monthName, used: (100 * amount) / limit, ...(resets ? { resetsAt: new Date(resets).toISOString() } : {}),
+    // a region the user said not to use is not asked to be enabled
+    const ask = only ? missing.filter((r) => r === only) : missing
+    if (ask.length && (100 * amount) / limit >= REMIND_SHARE) display += ` · ${ask.join(", ")} not enabled: ask your admin to enable it`
+    windows.push({ name: allOver ? "Overage" : monthName, used: (100 * amount) / limit, ...resetsAt,
       display, amount, limit, unit: "credits", span: 30 * 24 * 3600 })
+  } else if (only) {
+    // the region the account is pinned to is not enabled or couldn't be read:
+    // no window to weigh, so magpie would go on asking an account every
+    // request of which is a 429. A window that is used up leaves it out of
+    // routing, and says why.
+    const why = reads.find((r) => r.region === only)?.error ? `${only} couldn't be read` : `${only} is not enabled`
+    windows.push({ name: monthName ?? "Credits", used: 100, display: `${why}, and the ${onlyOption(only)} switch is on: no other region is used`,
+      span: 30 * 24 * 3600 })
   }
   windows.push(...shown, ...failed, ...off, ...(first?.windows ?? []).filter((w) => !w.span))
   const { windows: _w, ...who } = first ?? {}
@@ -579,7 +709,7 @@ async function credOf(auth) {
   if (auth.source === "kiro") return (await readCLI()) ?? (await readIDE())
   if (!auth.access) return null
   return { access: auth.access, refresh: auth.refresh ?? "", expires: auth.expires ?? 0, method: auth.method || "social",
-    region: auth.region || "us-east-1", profile: auth.profileArn ?? "", clientId: auth.clientId ?? "", clientSecret: auth.clientSecret ?? "",
+    region: auth.region || "us-east-1", profile: arnOf(auth.profileArn), clientId: auth.clientId ?? "", clientSecret: auth.clientSecret ?? "",
     builderID: isBuilderID(auth.loginProvider), own: true,
     ...(auth.profiles && typeof auth.profiles === "object" && !Array.isArray(auth.profiles) ? { profiles: { ...auth.profiles } } : {}) }
 }
@@ -592,7 +722,7 @@ async function credOf(auth) {
 // sign-in read with that token (its save failed, or magpie hasn't yet
 // saved what auth.refresh gave) goes on with the newer one rather than
 // spending the replaced refresh token again.
-function account(client) {
+function account(client, magpie) {
   let held = null // { id, c }
   const after = new Map()
   const newest = (c) => {
@@ -711,9 +841,13 @@ function account(client) {
       if (!twoRegions(c) || st.builderID || !c.profiles) return a
       // the first enabled region with credits left, in CREDIT_REGIONS' order
       const now = Date.now()
-      const open = CREDIT_REGIONS.filter((r) => c.profiles[r])
+      const only = onlyRegion(magpie)
+      const open = CREDIT_REGIONS.filter((r) => c.profiles[r] && (!only || r === only))
       const pick = open.find((r) => !(st.spent[r] > now))
       if (pick) Object.assign(a, { region: pick, profile: c.profiles[pick] })
+      // pinned to a region this account lacks, or has used up: no region to
+      // send to, which ask() answers as every region used up
+      else if (only) return { ...a, region: only, profile: "", key, profiles: { ...c.profiles }, open, pinned: only }
       return { ...a, key, profiles: { ...c.profiles }, open }
     })
   // spend marks a region of an account used up till until (0: SPENT_MS from
@@ -748,20 +882,18 @@ function account(client) {
 
 const windows = new Map() // a model's context, as Kiro last listed it
 const natives = new Map() // a model's effort levels sent as fields, as Kiro last listed them (nativeOf)
+const catalogLookups = new Map()
+const CATALOG_TTL = 10 * 60 * 1000
 
-// nativeOf is what a model's additionalModelRequestFieldsSchema in Kiro's
-// list offers, read as Kiro IDE reads it: the effort levels in the enum of
-// output_config's (or reasoning's) effort, and whether thinking.type may be
-// "adaptive". A model offering both is sent the caller's effort in
-// additionalModelRequestFields, as the IDE sends it; any other keeps the
-// <max_thinking_length> budget (#538).
+// Effort must match ListAvailableModels' schema (#538): adaptive models
+// require thinking.type, while GPT and Grok advertise reasoning.effort alone.
 function nativeOf(s) {
   if (!s || typeof s !== "object" || Array.isArray(s)) return undefined
   const types = s.properties?.thinking?.properties?.type?.enum
-  if (!Array.isArray(types) || !types.includes("adaptive")) return undefined
+  const adaptive = Array.isArray(types) && types.includes("adaptive")
   for (const path of ["output_config", "reasoning"]) {
     const levels = s.properties?.[path]?.properties?.effort?.enum
-    if (Array.isArray(levels) && levels.length) return { path, levels }
+    if (Array.isArray(levels) && levels.length && (adaptive || path === "reasoning")) return { path, levels, adaptive }
   }
   return undefined
 }
@@ -771,19 +903,27 @@ const thinks = (id) => /claude/i.test(id) || id === "auto"
 // long as max: #120)
 const BUDGETS = { low: 10000, medium: 20000, high: 30000, xhigh: 50000, max: 50000 }
 
+function modelVariants(m) {
+  const native = natives.get(m.id)
+  if (native && !native.adaptive) return Object.fromEntries(native.levels.map((effort) => [effort, { effort }]))
+  return thinks(m.id) ? Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) : {}
+}
+
 function configModel(m) {
+  const variants = modelVariants(m)
   return {
     name: m.name,
     limit: { context: m.context ?? 0, output: m.output ?? 0 },
     ...(m.images ? { attachment: true, modalities: { input: ["text", "image"], output: ["text"] } } : {}),
-    ...(thinks(m.id)
-      ? { reasoning: true, variants: Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) }
-      : {}),
+    ...(Object.keys(variants).length ? { reasoning: true, variants } : {}),
     tool_call: true,
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
   }
 }
 
 function runtimeModel(m) {
+  const variants = modelVariants(m)
   const input = { text: true, image: !!m.images, audio: false, video: false, pdf: false }
   return {
     id: m.id,
@@ -797,7 +937,7 @@ function runtimeModel(m) {
     limit: { context: m.context ?? 0, output: m.output ?? 0 },
     capabilities: {
       temperature: true,
-      reasoning: thinks(m.id),
+      reasoning: Object.keys(variants).length > 0,
       attachment: !!m.images,
       toolcall: true,
       input,
@@ -805,7 +945,9 @@ function runtimeModel(m) {
       interleaved: false,
     },
     release_date: "",
-    variants: thinks(m.id) ? Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) : {},
+    // magpie's own: the credit multiplier Kiro lists for the model
+    ...(m.rate ? { rate: m.rate } : {}),
+    variants,
   }
 }
 
@@ -829,6 +971,21 @@ async function keyModels(a) {
   return out
 }
 
+// rateOf is the credits a model's request costs as a multiple, as Kiro's
+// list says it (rateMultiplier with rateUnit "Credit": on 11-09 a Free
+// account's list had auto 1, claude-sonnet-4.5 1.3, claude-haiku-4.5 0.4,
+// glm-5 0.5, deepseek-3.2 and minimax-m2.5 0.25, minimax-m2.1 0.15 and
+// qwen3-coder-next 0.05, which kiro-cli 2.x reads as its rate_multiplier).
+// Nothing is the rate when Kiro gives none, or gives it in another unit.
+// It is only shown: what a request cost is the meteringEvent's credits,
+// which Kiro has already multiplied (the same prompt metered 0.00535 on
+// claude-haiku-4.5 and 0.01739 on claude-sonnet-4.5, 0.4 to 1.3).
+function rateOf(m) {
+  const n = m?.rateMultiplier
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return undefined
+  return String(m.rateUnit ?? "").toLowerCase() === "credit" ? n : undefined
+}
+
 // listModels is List-Available-Models, the default first.
 async function listModels(a) {
   const out = a.tokenType === "API_KEY" ? await keyModels(a) : await managementCall(a.region, a, "List-Available-Models", { origin: "KIRO_CLI", profileArn: a.profile })
@@ -837,15 +994,33 @@ async function listModels(a) {
     if (!m?.modelId) continue
     let name = m.modelName
     if (!name || name === m.modelId) name = m.modelId === "auto" ? "Auto" : m.modelId
+    const rate = rateOf(m)
     const model = { id: m.modelId, name, context: m.tokenLimits?.maxInputTokens ?? 0, output: m.tokenLimits?.maxOutputTokens ?? 0,
-      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE") }
+      images: (m.supportedInputTypes ?? []).some((t) => String(t).toUpperCase() === "IMAGE"), native: nativeOf(m.additionalModelRequestFieldsSchema), ...(rate ? { rate } : {}) }
     if (m.modelId === out?.defaultModel?.modelId) list.unshift(model)
     else list.push(model)
   }
   if (!list.length) throw new Error("Kiro listed no models")
-  for (const m of list) windows.set(m.id, m.context)
-  for (const m of out?.models ?? []) if (m?.modelId) natives.set(m.modelId, nativeOf(m.additionalModelRequestFieldsSchema))
+  for (const m of list) {
+    windows.set(m.id, m.context)
+    natives.set(m.id, m.native)
+  }
   return list
+}
+
+// Request-time catalog reads are optional metadata.
+async function loadModelCatalog(a, auth) {
+  const key = JSON.stringify([regionKey(auth), auth?.key, a.profile, a.region])
+  let lookup = catalogLookups.get(key)
+  if (!lookup || lookup.until <= Date.now()) {
+    lookup = { until: Date.now() + CATALOG_TTL, models: lookup?.models ?? new Map() }
+    lookup.pending = listModels(a).then(models => {
+      lookup.models = new Map(models.map(m => [m.id, m.native]))
+    }).catch(() => {})
+    catalogLookups.set(key, lookup)
+  }
+  await lookup.pending
+  return lookup.models
 }
 
 // ---- the request: Messages → a Kiro conversation ---------------------------------------
@@ -1031,15 +1206,15 @@ function thinking(req, model) {
   return 20000
 }
 
-// nativeFields is the additionalModelRequestFields a thinking request is
-// sent with when Kiro's list says the model takes its effort as a field:
-// adaptive thinking at the caller's level, so xhigh and max reach the model
-// as two levels rather than one 50000 budget (#538). undefined otherwise.
-function nativeFields(req, model) {
-  const n = natives.get(model)
-  const effort = req.output_config?.effort
-  if (!n || typeof effort !== "string" || !n.levels.includes(effort) || !thinking(req, model)) return undefined
-  return { thinking: { type: "adaptive" }, [n.path]: { effort } }
+// Adaptive models accept effort only with thinking enabled (#538).
+// Native reasoning-only models use reasoning.effort without thinking.type.
+function nativeFields(req, model, catalog) {
+  const n = catalog ? catalog.get(model) : natives.get(model)
+  if (!n) return undefined
+  const effort = !n.adaptive && req.thinking?.type === "disabled" ? "none" : req.output_config?.effort
+  if (typeof effort !== "string" || !n.levels.includes(effort)) return undefined
+  if (n.adaptive && !thinking(req, model)) return undefined
+  return { ...(n.adaptive ? { thinking: { type: "adaptive" } } : {}), [n.path]: { effort } }
 }
 
 // formatText is the structured output a request asks for, said in words:
@@ -1068,16 +1243,39 @@ function inputSchema(s) {
   return s
 }
 
-// buildKiro is the body of a generateAssistantResponse call, as it is
-// before its images are fitted (kiroBody).
-function buildKiro(req, model, profile, budget, conversation) {
-  return JSON.stringify(kiroRequest(req, model, profile, budget, conversation))
+function sealReasoning(value, scope) {
+  return `kiro:${scope}:${Buffer.from(JSON.stringify(value)).toString("base64url")}`
+}
+
+function unsealReasoning(value, scope) {
+  const prefix = `kiro:${scope}:`
+  if (!scope || typeof value !== "string" || !value.startsWith(prefix)) return undefined
+  let content
+  try {
+    content = JSON.parse(Buffer.from(value.slice(prefix.length), "base64url").toString())
+  } catch {
+    return undefined
+  }
+  if (typeof content?.reasoningText?.text === "string" && typeof content.reasoningText.signature === "string" && content.reasoningText.signature) return content
+  if (typeof content?.redactedContent === "string" && content.redactedContent) return content
+  return undefined
+}
+
+function reasoningScope(auth, a, model) {
+  const identity = auth?.source ? a.token : auth?.key ?? auth?.accountId ?? a.token
+  return createHash("sha256").update(JSON.stringify([identity, auth?.uid ?? uidOf(auth?.loginProvider), a.profile, a.region, model])).digest("hex").slice(0, 32)
+}
+
+// GenerateAssistantResponse is also the intermediate shape for CreateResponse.
+// Images are fitted by kiroBody.
+function buildKiro(req, model, profile, budget, conversation, scope, catalog) {
+  return JSON.stringify(kiroRequest(req, model, profile, budget, conversation, scope, catalog))
 }
 
 // kiroBody is the body sent: buildKiro's, with every image it keeps under
 // Kiro's size limit.
-async function kiroBody(req, model, profile, budget, conversation) {
-  return JSON.stringify(await fitImages(kiroRequest(req, model, profile, budget, conversation)))
+async function kiroBody(req, model, profile, budget, conversation, scope, catalog) {
+  return JSON.stringify(await fitImages(kiroRequest(req, model, profile, budget, conversation, scope, catalog)))
 }
 
 // UNDERSTOOD is the reply Kiro IDE puts in its history where a turn has
@@ -1108,7 +1306,7 @@ function contextFirst(messages) {
   return [...messages.slice(0, start), ...context.map((m) => ({ ...m, role: "user" })), { role: "assistant", content: UNDERSTOOD }, ...turn]
 }
 
-function kiroRequest(req, model, profile, budget, conversation) {
+function kiroRequest(req, model, profile, budget, conversation, scope, catalog) {
   const entries = []
   // the messages the caller marked for its prompt cache (cache_control),
   // which go to Kiro as a cachePoint on the message they end up in (#110)
@@ -1129,18 +1327,22 @@ function kiroRequest(req, model, profile, budget, conversation) {
       let last = null
       const flush = () => {
         a.content = texts.splice(0).join("\n\n")
-        if (!a.content && !a.toolUses.length) return // what only thought
+        if (!a.content && !a.toolUses.length && !a.reasoningContent) return
         const prev = entries.at(-1)?.assistantResponseMessage
         if (prev) {
           prev.content = joinNonEmpty(prev.content, a.content)
           prev.toolUses.push(...a.toolUses)
+          if (a.reasoningContent) prev.reasoningContent = a.reasoningContent
         } else entries.push({ assistantResponseMessage: a })
         last = prev ?? a
         a = { content: "", toolUses: [] }
       }
       for (const p of parts) {
         if (p?.type === "text" && p.text) texts.push(p.text)
-        else if (p?.type === "tool_use") {
+        else if (p?.type === "thinking" || p?.type === "redacted_thinking") {
+          const reasoning = unsealReasoning(p.signature ?? p.data, scope)
+          if (reasoning) a.reasoningContent = reasoning
+        } else if (p?.type === "tool_use") {
           const input = p.input && typeof p.input === "object" && !Array.isArray(p.input) ? p.input : {}
           a.toolUses.push({ name: toolName(p.name), toolUseId: toolID(p.id), input })
         } else if (p?.type === "server_tool_use" && p.name === SEARCH_NAME) {
@@ -1250,7 +1452,7 @@ function kiroRequest(req, model, profile, budget, conversation) {
   const format = formatText(req)
   if (format) system = system ? system + "\n\n" + format : format
   // a level Kiro takes as a field is sent as one, not also as a budget
-  const native = budget ? nativeFields(req, model) : undefined
+  const native = nativeFields(req, model, catalog)
   if (budget && !native) system = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>` + (system ? "\n" + system : "")
   if (system) entries[0].userInputMessage.content = system + "\n\n" + entries[0].userInputMessage.content
   if (Array.isArray(req.system)) mark(entries[0].userInputMessage, req.system)
@@ -1422,8 +1624,12 @@ const timing = {
 // account. The answer of the last try is the answer.
 async function paced(a, body, signal) {
   const invocation = randomUUID()
+  // the IDE's own choice of API for the account (createResponseFor): its
+  // CreateResponse arm is asked at /v1/responses, the rest as ever
+  const cr = await createResponseFor(a, signal)
+  const sent = cr ? JSON.stringify(responsesBody(JSON.parse(body))) : body
   for (let n = 1; ; n++) {
-    const res = await sendKiro(a, body, signal, n, invocation)
+    const res = cr ? await sendResponses(a, sent, signal, n) : await sendKiro(a, sent, signal, n, invocation)
     if (res.status !== 429 || n >= TRIES) return res
     const text = (await res.text()).slice(0, 1 << 20)
     const again = () => new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
@@ -1433,6 +1639,317 @@ async function paced(a, body, signal) {
     await timing.sleep(said ?? paceOf(n), signal)
   }
 }
+
+// ---- CreateResponse: the Kiro IDE's other chat API ------------------------------------
+//
+// Kiro IDE 1.4.121 (agent 1.1.787) asks Kiro one of two ways, by an A/B
+// experiment the account is in: generateAssistantResponse (sendKiro), or,
+// in the create_response_api arm, CreateResponse: POST /v1/responses on
+// the same runtime, an OpenAI Responses-like body built from the same
+// conversation (its buildCreateResponseRequest), answered with server-sent
+// events (its parseCreateResponseSse). chensihan0709-ui (plugins#848) had a
+// Builder ID student account answered 429 USER_REQUEST_RATE_EXCEEDED on
+// generateAssistantResponse through the plugin while the IDE, 11s later
+// on the same account, was answered on CreateResponse ("api=CreateResponse
+// armSource=experiment callPath=main"), and the IDE's own session-title
+// call, which stayed on generateAssistantResponse, got the 429 too.
+
+// FEATURE_SALT is what the IDE hashes a feature's name with to find it in
+// Kiro's feature configuration (its deriveWireKey: sha256 hex of salt +
+// name); CREATE_RESPONSE is the experiment's, and "create_response" the
+// value of its arm (selectModelApi). A chat call is the IDE's "main" call
+// path, which takes CreateResponse on the experiment alone.
+const FEATURE_SALT = "kiro-feature-config-key-salt-3e9b1d7a"
+const featureKey = (name) => createHash("sha256").update(FEATURE_SALT + name).digest("hex")
+const CREATE_RESPONSE = featureKey("create_response_api")
+// the IDE's ExperimentConfigService: a configuration is kept 15 minutes
+// for one sign-in (token and profile), asked for again after a minute
+// when it couldn't be read, and read within 5s or not at all, which
+// leaves the call on generateAssistantResponse (the default)
+const FEATURES = { ttl: 15 * 60_000, retry: 60_000, timeout: 5000 }
+const features = new Map() // account → { token, profile, until, config, pending }
+
+// createResponseFor is whether the account is asked as the IDE's
+// CreateResponse arm.
+async function createResponseFor(a, signal) {
+  const config = await featuresOf(a, signal)
+  return config[CREATE_RESPONSE] === "create_response"
+}
+
+async function featuresOf(a, signal) {
+  const who = a.key || a.profile || a.token
+  let f = features.get(who)
+  if (!f || f.token !== a.token || f.profile !== a.profile) {
+    f = { token: a.token, profile: a.profile, until: 0, config: {} }
+    features.set(who, f)
+  }
+  if (Date.now() < f.until) return f.config
+  f.pending ??= readFeatures(a, signal)
+    .then((config) => {
+      f.config = config
+      f.until = Date.now() + FEATURES.ttl
+    })
+    .catch(() => {
+      // what was read before is kept, as the IDE keeps its last good one
+      f.until = Date.now() + FEATURES.retry
+    })
+    .finally(() => (f.pending = undefined))
+  await f.pending
+  return f.config
+}
+
+// readFeatures is Kiro's GetFeatureConfiguration as the IDE calls it: GET
+// /featureConfiguration on the runtime with the origin and the IDE's
+// version as the query, the profile as x-amzn-kiro-profile-arn, through
+// the same SDK client (one try), answered {configuration: {...}}.
+async function readFeatures(a, signal) {
+  const q = new URLSearchParams({ origin: "AI_EDITOR", version: IDE_VERSION })
+  const headers = { ...sdkHeaders(a, 1), "amz-sdk-request": "attempt=1; max=1", Accept: "application/json" }
+  if (a.profile) headers["x-amzn-kiro-profile-arn"] = a.profile
+  const timeout = AbortSignal.timeout(FEATURES.timeout)
+  const res = await fetch(`${runtime(a.region)}/featureConfiguration?${q}`, {
+    headers,
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  })
+  if (!res.ok) {
+    await res.body?.cancel()
+    throw new Error(`featureConfiguration ${res.status}`)
+  }
+  const c = (await res.json())?.configuration
+  return c && typeof c === "object" && !Array.isArray(c) ? c : {}
+}
+
+// responses are the Responses (Response objects) answered with
+// server-sent events: CreateResponse's, read by crMessages
+const responses = new WeakSet()
+
+// sendResponses is CreateResponse as the IDE sends it (its
+// sendCreateResponseRaw): its own few headers, the plain user agent (its
+// userAgent.forHttp(), no AWS SDK's), the profile as x-amzn-kiro-profile,
+// and the try as x-amzn-kiro-attempt. A refusal is said back in
+// generateAssistantResponse's words (crRefusal), so it is read, retried
+// and reported as one of its.
+async function sendResponses(a, body, signal, attempt = 1) {
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${a.token}`,
+    "x-amzn-kiro-origin": "AI_EDITOR",
+    "x-amzn-codewhisperer-optout": "true",
+    "User-Agent": IDE_APP,
+    "x-amzn-kiro-attempt": `${attempt};max=${TRIES}`,
+  }
+  if (a.profile) headers["x-amzn-kiro-profile"] = a.profile
+  const kind = a.tokenType || (a.idc ? "SSO_OIDC" : "")
+  if (kind) headers.TokenType = kind
+  const res = await fetch(runtime(a.region) + "/v1/responses", { method: "POST", headers, body, signal })
+  if (!res.ok) {
+    const text = (await res.text()).slice(0, 1 << 20)
+    return new Response(crRefusal(res.status, text), { status: res.status, statusText: res.statusText, headers: res.headers })
+  }
+  responses.add(res)
+  return res
+}
+
+// CR_REASONS are the IDE's CreateResponse codes it says in
+// generateAssistantResponse's reasons (its normalizeReason).
+const CR_REASONS = { context_length_exceeded: "CONTENT_LENGTH_EXCEEDS_THRESHOLD", model_not_found: "INVALID_MODEL_ID",
+  invalid_function_parameters: "TOOL_SCHEMA_INVALID", invalid_json: "REQUEST_BODY_INVALID_JSON",
+  "kiro:model_requires_user_opt_in": "MODEL_REQUIRES_USER_OPT_IN", server_is_overloaded: "MODEL_TEMPORARILY_UNAVAILABLE",
+  rate_limit_exceeded: "USER_REQUEST_RATE_EXCEEDED" }
+function crReason(status, code) {
+  if (status === 413) return "CONTENT_LENGTH_EXCEEDS_THRESHOLD"
+  if (typeof code !== "string" || !code) return undefined
+  return CR_REASONS[code] ?? (code.startsWith("kiro:") ? code.slice(5).toUpperCase() : code)
+}
+
+// crRefusal is CreateResponse's refusal ({error: {message, type, code}},
+// or Kiro's {message, reason}) as generateAssistantResponse says one:
+// {message, reason, retryAfterMilliseconds}.
+function crRefusal(status, text) {
+  let o = {}
+  try {
+    o = JSON.parse(text) ?? {}
+  } catch {}
+  if (typeof o !== "object") o = {}
+  const e = o.error && typeof o.error === "object" ? o.error : {}
+  const message = e.message ?? o.message ?? o.Message ?? (String(text).trim() || `CreateResponse HTTP ${status}`)
+  const reason = crReason(status, e.code ?? o.reason)
+  const out = { message, ...(reason ? { reason } : {}) }
+  if (Number.isFinite(o.retryAfterMilliseconds) && o.retryAfterMilliseconds >= 0) out.retryAfterMilliseconds = o.retryAfterMilliseconds
+  return JSON.stringify(out)
+}
+
+// responsesBody is a generateAssistantResponse body (kiroRequest's) as
+// the IDE's CreateResponse body: the conversation as input items, the
+// current message's tools as functions, and what went in the state as
+// metadata. The instructions stay at the head of the first message, as
+// the IDE sends them without its system_field_injection feature.
+function responsesBody(g) {
+  const s = g.conversationState
+  const current = s.currentMessage?.userInputMessage ?? {}
+  const input = []
+  for (const e of [...(s.history ?? []), s.currentMessage]) if (e) input.push(...responsesInput(e))
+  const tools = []
+  for (const t of current.userInputMessageContext?.tools ?? []) {
+    const spec = t.toolSpecification
+    if (spec?.name) tools.push({ type: "function", name: spec.name, description: spec.description, parameters: spec.inputSchema?.json })
+  }
+  const metadata = { "kiro:agent_mode": "vibe" }
+  if (s.conversationId !== undefined) metadata["kiro:conversation_id"] = s.conversationId
+  const out = { model: current.modelId, input, ...(tools.length ? { tools } : {}), stream: true, origin: current.origin ?? "AI_EDITOR" }
+  if (g.profileArn !== undefined) out.profileArn = g.profileArn
+  out.metadata = metadata
+  // its buildReasoningField: the thinking type, the effort and how it is shown
+  const f = g.additionalModelRequestFields
+  if (f && typeof f === "object") {
+    const str = (v) => (typeof v === "string" && v ? v : undefined)
+    const type = str(f.thinking?.type)
+    const effort = str(f.output_config?.effort) ?? str(f.reasoning?.effort)
+    const summary = str(f.thinking?.display)
+    if (type || effort || summary)
+      out.reasoning = { ...(type ? { type } : {}), ...(effort ? { effort } : {}), ...(summary ? { summary } : {}) }
+  }
+  return out
+}
+
+// responsesInput is one entry of the conversation as the IDE's input
+// items (its toResponsesInputMessages): tool results, then what the user
+// said (with images, a list of parts); the reply's text, then its calls.
+function responsesInput(e) {
+  const out = []
+  const u = e.userInputMessage
+  if (u) {
+    for (const r of u.userInputMessageContext?.toolResults ?? [])
+      out.push({ type: "function_call_output", call_id: r.toolUseId, output: (r.content ?? []).map((p) => p.text ?? "").join("\n") })
+    const images = (u.images ?? []).filter((i) => i.source?.bytes)
+      .map((i) => ({ type: "input_image", image_url: `data:image/${String(i.format).toLowerCase()};base64,${i.source.bytes}` }))
+    const text = typeof u.content === "string" ? u.content : ""
+    if (images.length) out.push({ role: "user", content: [...(text ? [{ type: "input_text", text }] : []), ...images] })
+    else if (text) out.push({ role: "user", content: text })
+  }
+  const m = e.assistantResponseMessage
+  if (m) {
+    if (m.reasoningContent) out.push({ type: "reasoning", encrypted_content: JSON.stringify(m.reasoningContent) })
+    if (typeof m.content === "string" && m.content) out.push({ role: "assistant", content: m.content })
+    for (const c of m.toolUses ?? [])
+      out.push({ type: "function_call", call_id: c.toolUseId, name: c.name, arguments: typeof c.input === "string" ? c.input : JSON.stringify(c.input ?? {}) })
+  }
+  return out
+}
+
+// CR_STOPS are the IDE's stop reasons for an incomplete response.
+const CR_STOPS = { max_output_tokens: "MAX_TOKENS", content_filter: "CONTENT_FILTERED",
+  compaction_required_for_model_handoff: "COMPACTION_REQUIRED_FOR_MODEL_HANDOFF" }
+// CR_TYPES are the error types the IDE takes for one when a stream's
+// error has a code alone
+const CR_TYPES = new Set(["invalid_request", "not_found", "too_many_requests", "insufficient_quota", "server_error", "model_error"])
+
+// crFailed is what a CreateResponse stream's error says, in the words of
+// generateAssistantResponse's (exception).
+function crFailed(err) {
+  let type = err?.type
+  let code = err?.code
+  if (!type && code && CR_TYPES.has(code)) [type, code] = [code, undefined]
+  const t = String(type ?? "").toLowerCase()
+  const throttled = t === "too_many_requests" || code === "rate_limit_exceeded"
+  const reason = crReason(code === "context_length_exceeded" ? 413 : 0, code)
+  let msg = err?.message || `CreateResponse stream failed (${type ?? code ?? "unknown"})`
+  if (reason) msg += ` (${reason})`
+  if (reason === USER_RATE) return userRate(msg)
+  if (throttled) return "rate limited: " + msg
+  return type ? `${type}: ${msg}` : msg
+}
+
+// crMessages reads CreateResponse's server-sent events as the events of
+// generateAssistantResponse's stream ({kind, m}, or {failed}), as the IDE
+// reads them (its parseCreateResponseSse).
+async function* crMessages(body) {
+  const open = new Set() // calls started and not stopped
+  const argued = new Set() // calls whose arguments came in pieces
+  let call
+  let refused = false // the refusal came in pieces, said already
+  const line = function* (l) {
+    if (!l.startsWith("data:")) return
+    const d = l.slice(5).trim()
+    if (!d || d === "[DONE]") return
+    let w
+    try {
+      w = JSON.parse(d)
+    } catch {
+      return
+    }
+    const type = w?.type ?? ""
+    if (type === "response.output_text.delta" && typeof w.delta === "string") yield { kind: "assistantResponseEvent", m: { content: w.delta } }
+    else if ((type === "response.reasoning_text.delta" || type === "response.reasoning.delta") && typeof w.delta === "string")
+      yield { kind: "reasoningContentEvent", m: { text: w.delta } }
+    else if (type === "response.output_item.done" && w.item?.type === "reasoning") {
+      let env
+      try {
+        env = JSON.parse(w.item.encrypted_content)
+      } catch {}
+      const sig = env?.reasoningText?.signature
+      if (typeof sig === "string" && sig) yield { kind: "reasoningContentEvent", m: { signature: sig, encrypted: env } }
+      if (typeof env?.redactedContent === "string" && env.redactedContent) yield { kind: "reasoningContentEvent", m: { redactedContent: env.redactedContent } }
+    } else if (type === "response.refusal.delta" && typeof w.delta === "string") {
+      // a refusal is said as the reply's text
+      refused = true
+      yield { kind: "assistantResponseEvent", m: { content: w.delta } }
+    } else if (type === "response.refusal.done" && typeof w.refusal === "string") {
+      if (!refused) yield { kind: "assistantResponseEvent", m: { content: w.refusal } }
+    }
+    else if (type === "response.output_item.added" && w.item?.type === "function_call") {
+      call = w.item.call_id ?? w.item.id ?? ""
+      open.add(call)
+      yield { kind: "toolUseEvent", m: { toolUseId: call, name: w.item.name, input: w.item.arguments ?? "" } }
+    } else if (type === "response.function_call_arguments.delta" && typeof w.delta === "string") {
+      if (call) argued.add(call)
+      yield { kind: "toolUseEvent", m: { toolUseId: call, input: w.delta } }
+    } else if (type === "response.function_call_arguments.done") {
+      if (call && open.has(call)) {
+        open.delete(call)
+        argued.delete(call)
+        call = undefined
+      }
+    } else if (type === "response.output_item.done" && w.item?.type === "function_call") {
+      const id = w.item.call_id ?? w.item.id ?? ""
+      if (!open.has(id)) return
+      open.delete(id)
+      if (!argued.delete(id)) yield { kind: "toolUseEvent", m: { toolUseId: id, input: w.item.arguments ?? "" } }
+    } else if (type === "response.completed" || type === "response.incomplete") {
+      const r = w.response ?? {}
+      const incomplete = type === "response.incomplete" || r.status === "incomplete"
+      const stopReason = (incomplete && CR_STOPS[r.incomplete_details?.reason]) || "END_TURN"
+      yield { kind: "metadataEvent", m: { stopReason } }
+      const pct = r.usage?.["kiro:context_usage_percentage"]
+      if (typeof pct === "number" && Number.isFinite(pct)) yield { kind: "contextUsageEvent", m: { contextUsagePercentage: pct } }
+      const credits = r.usage?.["kiro:credits"]
+      if (typeof credits?.value === "number" && Number.isFinite(credits.value))
+        yield { kind: "meteringEvent", m: { usage: credits.value, ...(credits.unit !== undefined ? { unit: credits.unit } : {}) } }
+    } else if (type === "error" || type === "response.failed") yield { failed: crFailed(type === "error" ? w.error : w.response?.error) }
+  }
+  const dec = new TextDecoder()
+  let buf = ""
+  const reader = body.getReader()
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      buf += done ? dec.decode() : dec.decode(value, { stream: true })
+      const lines = buf.split("\n")
+      buf = done ? "" : lines.pop() ?? ""
+      if (buf.length > CR_LINE) throw new Error("a server-sent event over 4 MiB")
+      for (const l of lines)
+        for (const ev of line(l.replace(/\r$/, ""))) {
+          yield ev
+          if (ev.failed) return
+        }
+      if (done) return
+    }
+  } finally {
+    reader.releaseLock?.()
+  }
+}
+// CR_LINE is the longest line the IDE reads of the stream
+const CR_LINE = 4 << 20
 
 // tooLongSaid is whether Kiro's words say the conversation is past the
 // model's window: its ValidationException "Input is too long." with reason
@@ -1677,10 +2194,37 @@ class ThinkParser {
   }
 }
 
+// garMessages reads generateAssistantResponse's event stream: each event's
+// kind and what it says ({kind, m}), or what an error in it says ({failed}).
+const STREAM_ERRORS = ["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"]
+async function* garMessages(body) {
+  const dec = new TextDecoder()
+  for await (const f of frames(body)) {
+    const type = f.headers[":message-type"]
+    if (type === "exception" || type === "error") {
+      yield { failed: exception(f.headers[":exception-type"] || f.headers[":error-code"], f.payload) }
+      return
+    }
+    let m
+    try {
+      m = JSON.parse(dec.decode(f.payload))
+    } catch {
+      continue
+    }
+    const kind = f.headers[":event-type"]
+    if (STREAM_ERRORS.includes(kind)) {
+      yield { failed: exception(kind, f.payload) }
+      return
+    }
+    yield { kind, m }
+  }
+}
+
 // events turns Kiro's reply into events: text, thinking, tool calls (the
 // arguments in pieces), then the usage and why it stopped — or an error.
-async function* events(body, model, budget) {
+async function* events(body, model, budget, sse = false, scope) {
   const think = new ThinkParser()
+  let reasoningText = ""
   let tool = ""
   let tools = 0
   let stop = ""
@@ -1695,21 +2239,13 @@ async function* events(body, model, budget) {
   let pct = 0
   let said = 0
   let failed = ""
-  const dec = new TextDecoder()
   try {
-    for await (const f of frames(body)) {
-      const type = f.headers[":message-type"]
-      if (type === "exception" || type === "error") {
-        failed = exception(f.headers[":exception-type"] || f.headers[":error-code"], f.payload)
+    for await (const ev of (sse ? crMessages : garMessages)(body)) {
+      if (ev.failed) {
+        failed = ev.failed
         break
       }
-      let m
-      try {
-        m = JSON.parse(dec.decode(f.payload))
-      } catch {
-        continue
-      }
-      const kind = f.headers[":event-type"]
+      const { kind, m } = ev
       if (kind === "assistantResponseEvent") {
         const text = typeof m.content === "string" ? m.content : ""
         said += text.length
@@ -1719,10 +2255,16 @@ async function* events(body, model, budget) {
         // one event may carry the reasoning and its signature together (auto,
         // called as the IDE): the signature goes on the block it ends
         if (m.text) {
+          reasoningText += m.text
           said += m.text.length
           yield { kind: "think", text: m.text }
         }
-        if (m.signature) yield { kind: "sig", text: m.signature }
+        if (m.signature) {
+          const content = m.encrypted ?? { reasoningText: { text: reasoningText, signature: m.signature } }
+          yield { kind: "sig", text: sealReasoning(content, scope) }
+          reasoningText = ""
+        }
+        if (m.redactedContent) yield { kind: "redacted", text: sealReasoning({ redactedContent: m.redactedContent }, scope) }
       } else if (kind === "toolUseEvent") {
         if (m.toolUseId && m.toolUseId !== tool) {
           yield* think.end() // the text before a call is all said
@@ -1755,9 +2297,6 @@ async function* events(body, model, budget) {
         if (m.contextUsagePercentage > 0) pct = m.contextUsagePercentage
       } else if (kind === "meteringEvent") {
         if (Number.isFinite(m.usage) && m.usage >= 0 && (!m.unit || /^credit/i.test(m.unit))) usage.credits = (usage.credits ?? 0) + m.usage
-      } else if (["error", "throttlingError", "validationError", "serviceUnavailableError", "internalServerException"].includes(kind)) {
-        failed = exception(kind, f.payload)
-        break
       }
     }
   } catch (e) {
@@ -1852,7 +2391,10 @@ async function reply(it, model, stream, names = new Map()) {
         if (last?.type === "thinking") last.thinking += e.text
         else add({ type: "thinking", thinking: e.text, signature: "" })
       } else if (e.kind === "sig") {
-        if (last?.type === "thinking") last.signature += e.text
+        if (last?.type !== "thinking") add({ type: "thinking", thinking: "", signature: "" })
+        last.signature += e.text
+      } else if (e.kind === "redacted") {
+        add({ type: "redacted_thinking", data: e.text })
       } else if (e.kind === "serverTool") add({ type: "server_tool_use", id: e.id, name: e.name, input: e.input })
       else if (e.kind === "searched") add({ type: "web_search_tool_result", tool_use_id: e.id, content: e.content })
       else if (e.kind === "toolStart") add({ type: "tool_use", id: e.id, name: names.get(e.name) ?? e.name, input: "" })
@@ -1916,7 +2458,12 @@ async function reply(it, model, stream, names = new Map()) {
           ctl.enqueue(sse("content_block_delta", { index, delta: { type: "thinking_delta", thinking: e.text } }))
           break
         case "sig":
-          if (open === "thinking") ctl.enqueue(sse("content_block_delta", { index, delta: { type: "signature_delta", signature: e.text } }))
+          if (open !== "thinking") begin("thinking", { type: "thinking", thinking: "", signature: "" })
+          ctl.enqueue(sse("content_block_delta", { index, delta: { type: "signature_delta", signature: e.text } }))
+          break
+        case "redacted":
+          begin("redacted", { type: "redacted_thinking", data: e.text })
+          close()
           break
         case "toolStart":
           begin("tool", { type: "tool_use", id: e.id, name: names.get(e.name) ?? e.name, input: {} })
@@ -2178,7 +2725,7 @@ async function generate(creds, auth, req, signal, conversation) {
   if (hosted?.error) return errorResponse(400, hosted.error)
   const first = await ask(creds, auth, req, model, budget, signal, conversation)
   if (!first.res) return errorResponse(first.status, first.message, first.wait)
-  const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first, conversation) : events(first.res.body, model, budget)
+  const it = hosted ? searching(creds, auth, req, model, budget, signal, hosted, first, conversation) : events(first.res.body, model, budget, responses.has(first.res), first.a.scope)
   return kept(await reply(it, model, req.stream === true, toolNames(req)))
 }
 
@@ -2191,9 +2738,15 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
   } catch (e) {
     return { status: 401, message: e.message }
   }
+  if (a.pinned) return { status: 429, message: pinnedUnavailable(a) }
+  const send = async () => {
+    const catalog = thinks(model) ? undefined : await loadModelCatalog(a, auth)
+    a.scope = reasoningScope(auth, a, model)
+    return paced(a, await kiroBody(req, model, a.profile, budget, conversation, a.scope, catalog), signal)
+  }
   let res
   try {
-    res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+    res = await send()
   } catch (e) {
     if (e?.name === "AbortError") throw e
     return { status: 502, message: e.message }
@@ -2206,7 +2759,7 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
       return { status: 502, message: e.message }
     }
     try {
-      res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+      res = await send()
     } catch (e) {
       if (e?.name === "AbortError") throw e
       return { status: 502, message: e.message }
@@ -2228,10 +2781,11 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
     } catch (e) {
       return { status: 401, message: e.message }
     }
+    if (next.pinned) return { status: 429, message: pinnedUnavailable(next) + f.message, wait: f.wait }
     if (tried.has(next.region)) return { status: 429, message: regionsUsedUp(next) + f.message, wait: f.wait }
     a = next
     try {
-      res = await paced(a, await kiroBody(req, model, a.profile, budget, conversation), signal)
+      res = await send()
     } catch (e) {
       if (e?.name === "AbortError") throw e
       return { status: 502, message: e.message }
@@ -2243,6 +2797,16 @@ async function ask(creds, auth, req, model, budget, signal, conversation) {
     return { ...failure(res.status, text, requestID(res.headers)), wait: waitOf(res.headers, text) }
   }
   return { res, a }
+}
+
+// pinnedUnavailable heads the 429 of an account set to one region (a
+// "<region>-only" switch) whose region is not enabled or used up: the other
+// region is not tried, as the switch says.
+function pinnedUnavailable(a) {
+  const enabled = a.open?.includes(a.pinned)
+  return enabled
+    ? `Kiro credits used up in ${a.pinned}, the only region this account is set to use (magpie's ${onlyOption(a.pinned)} switch is on). `
+    : `${a.pinned} is not enabled for this account, and magpie's ${onlyOption(a.pinned)} switch is on, so no other region is used: ask your admin to enable it. `
 }
 
 // regionsUsedUp heads the 429 of an account with every enabled region used
@@ -2272,7 +2836,7 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
     let client = false
     let current = null
     let stop = null
-    for await (const e of events(res.body, model, budget)) {
+    for await (const e of events(res.body, model, budget, responses.has(res), a.scope)) {
       if (e.kind === "toolStart") {
         current = e.name === SEARCH_NAME ? { args: "" } : null
         if (current) calls.push(current)
@@ -2294,7 +2858,14 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
           const b = said.at(-1)
           if (b?.type === "text") b.text += e.text
           else said.push({ type: "text", text: e.text })
-        }
+        } else if (e.kind === "think") {
+          const b = said.at(-1)
+          if (b?.type === "thinking") b.thinking += e.text
+          else said.push({ type: "thinking", thinking: e.text, signature: "" })
+        } else if (e.kind === "sig") {
+          if (said.at(-1)?.type !== "thinking") said.push({ type: "thinking", thinking: "", signature: "" })
+          said.at(-1).signature += e.text
+        } else if (e.kind === "redacted") said.push({ type: "redacted_thinking", data: e.text })
         if (e.kind === "error") {
           // in a turn after a search, a status, not a finished answer
           // (reply): one past the window says so, as failedBefore does
@@ -2426,6 +2997,17 @@ function httpsURL(s) {
   } catch {
     return false
   }
+}
+
+// signedIn is the account a sign-in keeps, whether made in the browser or
+// brought in from a file: named by the email Kiro has for it (else the one
+// given), with the way it was signed in to.
+function signedIn(c, who, email = who.email, nameless = "Kiro account") {
+  return { type: "success", provider: ID, refresh: c.refresh, access: c.access, expires: c.expires,
+    accountId: email ? nameOf(email, c.loginProvider) : nameless,
+    ...(uidOf(c.loginProvider) ? { uid: uidOf(c.loginProvider) } : {}),
+    method: c.method, loginProvider: c.loginProvider, region: c.region, profileArn: who.profile,
+    ...(c.clientId ? { clientId: c.clientId, clientSecret: c.clientSecret } : {}), ...(who.plan ? { plan: who.plan } : {}) }
 }
 
 // whoIs names a new sign-in with the email Kiro has for it, and its plan.
@@ -2602,13 +3184,10 @@ async function browserSignIn(inputs = {}) {
     // still busy while it is named: a second paste is told it is finishing
     const who = await whoIs(c)
     if (stage === "over") return over()
-    const user = who.email ? nameOf(who.email, c.loginProvider) : "Kiro account"
+    const done = signedIn(c, who)
     stage = "over"
-    finish({ type: "success", provider: ID, refresh: c.refresh, access: c.access, expires: c.expires, accountId: user,
-      ...(uidOf(c.loginProvider) ? { uid: uidOf(c.loginProvider) } : {}),
-      method: c.method, loginProvider: c.loginProvider, region: c.region, profileArn: who.profile,
-      ...(c.clientId ? { clientId: c.clientId, clientSecret: c.clientSecret } : {}), ...(who.plan ? { plan: who.plan } : {}) })
-    html(200, page(true, "You're signed in", `${user} is signed in. You can close this tab.`))
+    finish(done)
+    html(200, page(true, "You're signed in", `${done.accountId} is signed in. You can close this tab.`))
   })
 
   const timer = setTimeout(() => {
@@ -2676,6 +3255,140 @@ async function ownSignIn() {
   }
 }
 
+// ---- accounts from a file (magpie's auth.import) ------------------------------------
+//
+// A file of sign-ins made elsewhere: Kiro Account Manager's ([{ email,
+// refreshToken, provider }], or its export with the tokens under
+// credentials), kiro2api's ({ auth: "Social" | "IdC", refreshToken }), the
+// Kiro IDE's kiro-auth-token.json (with its <clientIdHash>.json client),
+// kiro-cli's tokens, or this plugin's own entry. Each is kept as the browser
+// sign-in keeps it (signedIn), renewed first the way its kind is renewed.
+
+const IMPORT_MOST = 100 // what magpie keeps of one import
+const IMPORT_AT_ONCE = 6
+// the ways a sign-in is named in those files, as loginProvider says them
+const IMPORT_WAYS = { google: "Google", github: "Github", builderid: "BuilderId", awsbuilderid: "BuilderId", enterprise: "Enterprise",
+  idc: "Enterprise", awsidc: "Enterprise", identitycenter: "Enterprise", iamidentitycenter: "Enterprise", internal: "Internal" }
+const squash = (s) => s.toLowerCase().replace(/[^a-z]/g, "")
+const word = (v) => (typeof v === "string" ? v.trim() : "")
+const pick = (o, ...keys) => keys.map((k) => word(o[k])).find(Boolean) ?? ""
+// an expiry as ISO time, local "YYYY/MM/DD HH:MM:SS", Unix seconds or ms
+const whenOf = (v) => (typeof v === "number" ? (v <= 0 ? 0 : v < 1e11 ? v * 1000 : v) : time(v))
+const emailIn = (s) => /^([^\s()]+@[^\s()]+)(?: \([^()]*\))?$/.exec(s)?.[1] ?? ""
+const EXTERNAL_IDP = "A company's own identity provider can't be signed in to here yet; sign in with `kiro-cli login`, and use Kiro CLI's sign-in"
+const NO_CLIENT = "an AWS Builder ID or IAM Identity Center sign-in is renewed with the client it was registered with: add its clientId and clientSecret, or choose the Kiro IDE's registration file (~/.aws/sso/cache/<clientIdHash>.json) with it"
+const REFUSED = "Kiro refused its refresh token: it has expired, been revoked, or been replaced by a newer one where it came from; sign in there again and export it once more"
+const REFUSED_IDC = "AWS refused its refresh token or its client: one has expired or been revoked; sign in again where it came from and export it once more"
+
+// entryOf reads one sign-in of a file: { c, email } as refresh() takes it,
+// or { error, email }.
+function entryOf(o) {
+  const said = pick(o, "provider", "loginProvider", "idp", "loginMethod", "login_option")
+  const how = squash(pick(o, "authMethod", "auth_method", "auth", "method"))
+  const email = emailIn(pick(o, "email", "accountId"))
+  if (squash(said) === "externalidp" || how === "externalidp") return { error: EXTERNAL_IDP, email }
+  let loginProvider = IMPORT_WAYS[squash(said)] ?? ""
+  if (said && !loginProvider) return { error: `Kiro has no sign-in with ${JSON.stringify(said)}; provider is Google, Github, BuilderId or Enterprise`, email }
+  const clientId = pick(o, "clientId", "client_id")
+  const clientSecret = pick(o, "clientSecret", "client_secret")
+  const start = pick(o, "startUrl", "start_url", "issuerUrl", "issuer_url")
+  // kiro-cli's AWS sign-in names no provider and keeps its client apart, but has a start URL or scopes
+  const aws = how === "idc" || how === "builderid" || !!clientId || !!start || Array.isArray(o.scopes)
+  const social = loginProvider ? loginProvider === "Google" || loginProvider === "Github" : how === "social" || !aws
+  if (!social && !loginProvider) {
+    loginProvider = how === "builderid" || start === BUILDER_ID_START ? "BuilderId" : start ? "Enterprise" : ""
+  }
+  // Kiro's auth service renews every Google and GitHub sign-in in us-east-1
+  const region = social ? "us-east-1" : pick(o, "idcRegion", "idc_region", "authRegion", "region") || "us-east-1"
+  if (!AWS_REGION.test(region)) return { error: `${JSON.stringify(region)} isn't an AWS region`, email }
+  return { email, c: { access: pick(o, "accessToken", "access_token", "access"), refresh: pick(o, "refreshToken", "refresh_token", "refresh"),
+    expires: whenOf(o.expiresAt ?? o.expires_at ?? o.expires), method: social ? "social" : "idc", loginProvider, region,
+    profile: arnOf(pick(o, "profileArn", "profile_arn")), clientId, clientSecret, builderID: isBuilderID(loginProvider) } }
+}
+
+// signInsIn are the sign-ins a file's text holds; the clients registered
+// with AWS it holds (the Kiro IDE's <clientIdHash>.json) go into regs.
+function signInsIn(text, regs) {
+  let v
+  try {
+    v = JSON.parse(text)
+  } catch {
+    return [{ error: "not JSON" }]
+  }
+  const out = []
+  const seen = new Set()
+  const walk = (o, depth) => {
+    if (!o || typeof o !== "object" || depth > 4 || seen.has(o)) return
+    seen.add(o)
+    if (Array.isArray(o)) return o.forEach((x) => walk(x, depth + 1))
+    const t = o.credentials && typeof o.credentials === "object" && !Array.isArray(o.credentials) ? { ...o, ...o.credentials } : o
+    if (pick(t, "refreshToken", "refresh_token", "refresh", "accessToken", "access_token", "access")) return out.push(entryOf(t))
+    const clientId = pick(t, "clientId", "client_id")
+    const clientSecret = pick(t, "clientSecret", "client_secret")
+    if (clientId && clientSecret) return regs.push({ clientId, clientSecret })
+    // a sign-in store (magpie's plugin-auth.json, OpenCode's auth.json) keeps other providers' too: only Kiro's are taken
+    for (const [k, x] of Object.entries(o)) if (!(x && (x.type === "oauth" || x.type === "api") && !/^kiro(#|$)/i.test(k))) walk(x, depth + 1)
+  }
+  walk(v, 0)
+  return out.length || regs.length ? out : [{ error: "no Kiro sign-in in it (no refreshToken)" }]
+}
+
+// importOne checks a sign-in with Kiro as signing in does: renewed unless
+// its access token still has time (as the Kiro IDE renews it), then named
+// by the email Kiro has for it.
+async function importOne(e) {
+  const failed = (error) => ({ type: "failed", error, ...(e.email ? { accountId: nameOf(e.email, e.c?.loginProvider) } : {}) })
+  if (e.error) return failed(e.error)
+  let c = e.c
+  if (c.method === "idc" && !(c.clientId && c.clientSecret)) return failed(NO_CLIENT)
+  try {
+    let renewed = false
+    if (!c.access || !(c.expires - Date.now() > EARLY_MS)) {
+      if (!c.refresh) return failed("its access token has ended, and it has no refreshToken to renew it with")
+      c = await refresh(c)
+      renewed = true
+    }
+    let who = await whoIs(c)
+    // an access token Kiro didn't answer to: renewed, and asked again
+    if (!who.email && !renewed && c.refresh) {
+      c = await refresh(c)
+      who = await whoIs(c)
+    }
+    // one Kiro names no one is still its own account: called by its file's token, so two such aren't kept as one
+    const tag = createHash("sha256").update(e.c.refresh || e.c.access).digest("hex").slice(0, 8)
+    return signedIn(c, who, who.email || e.email, `Kiro account ${tag}`)
+  } catch (err) {
+    return failed(err?.gone ? (c.method === "idc" ? REFUSED_IDC : REFUSED) : err?.message ?? String(err))
+  }
+}
+
+async function importSignIns(texts, signal) {
+  const regs = []
+  const found = texts.flatMap((t) => signInsIn(t, regs))
+  if (regs.length === 1) for (const e of found) if (e.c?.method === "idc" && !e.c.clientId) Object.assign(e.c, regs[0])
+  // one sign-in twice: renewing it twice would spend its refresh token
+  const tokens = new Set()
+  const list = found.filter((e) => {
+    const k = e.c?.refresh || e.c?.access
+    if (!k) return true
+    if (tokens.has(k)) return false
+    tokens.add(k)
+    return true
+  })
+  const left = list.length > IMPORT_MOST ? list.splice(IMPORT_MOST - 1).length : 0
+  const results = []
+  let next = 0
+  const work = async () => {
+    while (next < list.length && !signal?.aborted) {
+      const i = next++
+      results[i] = await importOne(list[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(IMPORT_AT_ONCE, list.length) }, work))
+  if (left) results.push({ type: "failed", error: `${left} more sign-ins weren't imported: at most ${IMPORT_MOST} are taken at a time; import the rest on their own` })
+  return results.filter(Boolean)
+}
+
 // ---- the plugin ------------------------------------------------------------------------
 
 async function bodyOf(input, init) {
@@ -2683,8 +3396,8 @@ async function bodyOf(input, init) {
   return JSON.parse(typeof b === "string" ? b : new TextDecoder().decode(b))
 }
 
-export async function KiroAuthPlugin({ client } = {}) {
-  const creds = account(client)
+export async function KiroAuthPlugin({ client, magpie } = {}) {
+  const creds = account(client, magpie)
   return {
     auth: {
       provider: ID,
@@ -2717,6 +3430,9 @@ export async function KiroAuthPlugin({ client } = {}) {
             } catch {
               return errorResponse(400, "a request that isn't JSON")
             }
+            // magpie's header carries the user's selected effort and takes precedence over the body.
+            const effort = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).get("x-magpie-effort")
+            if (effort) req.output_config = { ...req.output_config, effort }
             return generate(creds, (await getAuth()) ?? auth, req, init.signal, sessionOf(input, init))
           },
         }
@@ -2742,7 +3458,7 @@ export async function KiroAuthPlugin({ client } = {}) {
               }
             }))
             if (reads.every((r) => r.error || !r.l)) throw reads.find((r) => r.error)?.error ?? new Error("Kiro read no credits")
-            const got = regionsUsage(reads)
+            const got = regionsUsage(reads, Date.now(), onlyRegion(magpie))
             for (const r of got.regions) creds.spend(a.key, r.region, r.full ? r.resetsAt || 0 : -1)
             u = got.usage
           } else u = usageOf(await usageLimits(a, true))
@@ -2753,22 +3469,42 @@ export async function KiroAuthPlugin({ client } = {}) {
           return { error: e.message, signIn: e.gone ? "expired" : "kept" }
         }
       },
+      // magpie's "Import accounts from a file…" (OpenCode ignores it)
+      importFrom: IMPORT_FROM.en,
+      importFroms: IMPORT_FROM.froms,
+      import: (texts, { signal } = {}) => importSignIns(Array.isArray(texts) ? texts : [texts], signal),
+      // labels, messages and hints are magpie's own fields: the same words
+      // by the window's language (OpenCode shows the English)
+      // magpie's switches for the provider (#2038): shown in its editor, read
+      // with input.magpie.option at each request
+      options: [
+        ...CREDIT_REGIONS.map((region, i) => {
+          const other = CREDIT_REGIONS[1 - i]
+          return {
+            key: onlyOption(region),
+            label: `Use ${region} only`,
+            description: `Send every request to ${region}, none to ${other}; with it not enabled or used up, magpie moves to another account.`,
+            labels: { zh: `只使用 ${region}` },
+            descriptions: { zh: `所有请求发往 ${region}，不发往 ${other}；该区域未开通或额度用完时，magpie 换下一个账号。` },
+          }
+        }),
+      ],
       methods: [
-        { type: "oauth", label: "Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)",
-          prompts: [{ type: "select", key: "loginMethod", message: "Choose a sign-in method", options: [
-            { label: "IAM Identity Center (organization Start URL)", value: "enterprise", hint: "Sign in to your organization with its AWS Start URL" },
-            { label: "AWS Builder ID", value: "builderid", hint: "Open AWS sign-in directly; one callback to paste on a remote server" },
-            { label: "Kiro sign-in page", value: "portal", hint: "Google, GitHub, IAM Identity Center or other Kiro sign-in methods" },
+        { type: "oauth", label: "Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)", labels: WORDS.browser,
+          prompts: [{ type: "select", key: "loginMethod", message: "Choose a sign-in method", messages: WORDS.choose, options: [
+            { label: "IAM Identity Center (organization Start URL)", value: "enterprise", hint: "Sign in to your organization with its AWS Start URL", labels: WORDS.enterprise, hints: WORDS.enterpriseHint },
+            { label: "AWS Builder ID", value: "builderid", hint: "Open AWS sign-in directly; one callback to paste on a remote server", hints: WORDS.builderidHint },
+            { label: "Kiro sign-in page", value: "portal", hint: "Google, GitHub, IAM Identity Center or other Kiro sign-in methods", labels: WORDS.portal, hints: WORDS.portalHint },
           ] },
-          { type: "text", key: "startUrl", message: "Organization Start URL", placeholder: "https://d-xxxxxxxxxx.awsapps.com/start",
+          { type: "text", key: "startUrl", message: "Organization Start URL", messages: WORDS.startUrl, placeholder: "https://d-xxxxxxxxxx.awsapps.com/start",
             condition: (inputs) => inputs.loginMethod === "enterprise",
             validate: (value) => httpsURL(String(value || "").trim()) ? undefined : "Enter an HTTPS Start URL" },
-          { type: "text", key: "region", message: "AWS region (blank uses us-east-1)", placeholder: "us-east-1",
+          { type: "text", key: "region", message: "AWS region (blank uses us-east-1)", messages: WORDS.region, placeholder: "us-east-1",
             condition: (inputs) => inputs.loginMethod === "enterprise",
             validate: (value) => !value || AWS_REGION.test(value.trim()) ? undefined : "Enter a valid AWS region" },
           ], authorize: browserSignIn },
-        { type: "oauth", label: "Kiro CLI's or Kiro IDE's sign-in", authorize: ownSignIn },
-        { type: "api", label: "Kiro API key (ksk_…)" },
+        { type: "oauth", label: "Kiro CLI's or Kiro IDE's sign-in", labels: WORDS.own, authorize: ownSignIn },
+        { type: "api", label: "Kiro API key (ksk_…)", labels: WORDS.key, placeholder: "ksk_…" },
       ],
     },
     async config(config) {
@@ -2803,4 +3539,4 @@ export async function KiroAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { generate, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames }
+export const _internal = { generate, responsesBody, crMessages, crRefusal, features, FEATURES, featureKey, waitOf, timing, TRIES, refresh, usageOf, buildKiro, kiroBody, IMAGE_LIMIT, events, reply, failure, toolID, toolName, toolNames, thinking, nativeFields, listModels, rateOf, contextFirst, configModel, runtimeModel, readCLI, readIDE, regionOf, planName, frames, sealReasoning, unsealReasoning, reasoningScope }

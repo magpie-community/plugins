@@ -13,8 +13,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { createConnectorTools } from "./connector-tools.mjs"
+import { compactToolsOn, createConnectorTools } from "./connector-tools.mjs"
 import { createWebTools } from "./web-tools.mjs"
+import { mediaConfigModels, withMediaModels, createSearchHook, handleMediaFetch } from "./native.mjs"
 
 const CLIENT_ID = "mcode-public"
 const SCOPE = "agent.default"
@@ -159,12 +160,32 @@ function limits(id, context, output) {
 
 // MiniMax Code's own list, for when the live one can't be had.
 // thinking: "switchable" (on or off), "forced_on" (always on, at an effort)
+// inputs: what its modalities.input says the model takes (#985)
 const MODELS = [
-  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 1048576, output: 524288, images: true, thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
-  { id: "MiniMax-M3", name: "MiniMax-M3", context: 1048576, output: 524288, images: true, thinking: "switchable", efforts: [] },
-  { id: "MiniMax-M2.7", name: "MiniMax-M2.7", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
-  { id: "MiniMax-M2.7-highspeed", name: "MiniMax-M2.7-highspeed", context: 200000, output: 128000, images: false, thinking: "on", efforts: [] },
+  { id: "MiniMax-M3.1-Flash-Preview", name: "M3.1-Flash-Preview", context: 1048576, output: 524288, inputs: ["text", "image", "video"], thinking: "forced_on", efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "MiniMax-M3", name: "MiniMax-M3", context: 1048576, output: 524288, inputs: ["text", "image", "video"], thinking: "switchable", efforts: [] },
+  { id: "MiniMax-M2.7", name: "MiniMax-M2.7", context: 200000, output: 128000, inputs: ["text"], thinking: "on", efforts: [] },
+  { id: "MiniMax-M2.7-highspeed", name: "MiniMax-M2.7-highspeed", context: 200000, output: 128000, inputs: ["text"], thinking: "on", efforts: [] },
 ]
+
+// MODALITIES are the input kinds a model can be said to take, in
+// OpenCode's order.
+const MODALITIES = ["text", "image", "audio", "video", "pdf"]
+
+// inputsOf is what the model takes as this host can send it (#985). In
+// magpie the gateway writes the Anthropic body itself and the fetch below
+// sends it on as it is, so a video or audio block reaches MiniMax. In
+// OpenCode the body is @ai-sdk/anthropic's, which throws on a file part
+// that isn't an image, a PDF or text ("media type: video/mp4"), so there
+// they are left out and OpenCode tells the user the model can't read it.
+function inputsOf(m, magpie) {
+  const said = m.inputs ?? ["text"]
+  return MODALITIES.filter((k) => k === "text" || (said.includes(k) && (magpie || (k !== "video" && k !== "audio"))))
+}
+
+// attachment is whether the model takes files: as its config says when it
+// says, else whether it takes anything but text.
+const attachment = (m, inputs) => (typeof m.attachment === "boolean" ? m.attachment : inputs.length > 1)
 
 // variants are a model's reasoning levels as @ai-sdk/anthropic options,
 // sent as MiniMax Code sends them: adaptive thinking at an effort
@@ -179,20 +200,27 @@ function variants(m) {
 
 const reasons = (m) => m.thinking !== "off"
 
-function configModels() {
-  return Object.fromEntries(MODELS.map((m) => [m.id, {
-    name: m.name,
-    reasoning: reasons(m),
-    tool_call: true,
-    attachment: !!m.images,
-    modalities: { input: m.images ? ["text", "image"] : ["text"], output: ["text"] },
-    limit: limits(m.id, m.context, m.output),
-    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
-    variants: variants(m),
-  }]))
+function configModels(magpie) {
+  return {
+    ...Object.fromEntries(MODELS.map((m) => {
+      const inputs = inputsOf(m, magpie)
+      return [m.id, {
+        name: m.name,
+        reasoning: reasons(m),
+        tool_call: true,
+        attachment: attachment(m, inputs),
+        modalities: { input: inputs, output: ["text"] },
+        limit: limits(m.id, m.context, m.output),
+        cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+        variants: variants(m),
+      }]
+    })),
+    ...mediaConfigModels(),
+  }
 }
 
-function modelOf(site, provider, m) {
+function modelOf(site, provider, m, magpie) {
+  const inputs = inputsOf(m, magpie)
   return {
     id: m.id,
     providerID: provider.id,
@@ -206,9 +234,9 @@ function modelOf(site, provider, m) {
     capabilities: {
       temperature: true,
       reasoning: reasons(m),
-      attachment: !!m.images,
+      attachment: attachment(m, inputs),
       toolcall: true,
-      input: { text: true, image: !!m.images, audio: false, video: false, pdf: false },
+      input: Object.fromEntries(MODALITIES.map((k) => [k, inputs.includes(k)])),
       output: { text: true, image: false, audio: false, video: false, pdf: false },
       interleaved: false,
     },
@@ -229,7 +257,10 @@ function parseModels(body) {
   for (const id of ids) {
     const d = obj(ms[id])
     if (!d || !id.trim()) continue
-    const input = Array.isArray(d.modalities?.input) ? d.modalities.input : []
+    const input = (Array.isArray(d.modalities?.input) ? d.modalities.input : [])
+      .filter((k) => typeof k === "string").map((k) => k.toLowerCase())
+    // a model said to take attachments takes images, as before #985
+    if (d.attachment === true && !input.includes("image")) input.push("image")
     const mode = str(d.thinking_config, "mode")
     const efforts = (d.thinking?.effortOptions ?? d.thinking?.effort_options ?? d.effort_options ?? [])
       .filter((e) => typeof e === "string" && e && e !== "default" && e !== "none")
@@ -238,7 +269,8 @@ function parseModels(body) {
       name: str(d, "name") ?? id,
       context: num(d.limit?.context) ?? 0,
       output: num(d.limit?.output) ?? 0,
-      images: input.includes("image") || d.attachment === true,
+      inputs: ["text", ...input.filter((k) => k !== "text")],
+      ...(typeof d.attachment === "boolean" ? { attachment: d.attachment } : {}),
       thinking: mode === "switchable" ? "switchable"
         : mode === "forced_off" ? "off"
         : mode === "forced_on" ? "forced_on"
@@ -989,8 +1021,10 @@ function accountSession(site, client, accountID = site.id) {
 }
 
 function makePlugin(site) {
-  return async ({ client }) => {
+  return async ({ client, magpie } = {}) => {
     const fresh = accountSession(site, client)
+    // magpie's host (OpenCode has no magpie): see inputsOf
+    const host = Boolean(magpie)
 
     // one conversation id for requests that come with none of their own
     const session = randomUUID()
@@ -1003,8 +1037,10 @@ function makePlugin(site) {
         p.name ??= site.name
         p.npm ??= NPM
         p.api ??= api(site)
-        p.models = { ...configModels(), ...(p.models ?? {}) }
+        p.models = { ...configModels(host), ...(p.models ?? {}) }
       },
+      // Magpie lists this beside Tavily and the rest, signed in as this site
+      search: createSearchHook(site, (access, path, body, opts) => postTool(site, access, path, body, opts)),
       // the conversation's id, which MiniMax Code sends with each request
       "chat.headers": async (input, output) => {
         const id = input?.model?.providerID ?? input?.provider?.info?.id
@@ -1020,7 +1056,7 @@ function makePlugin(site) {
             const { a } = await fresh(async () => auth)
             const ms = await liveModels(site, a.access)
             if (!ms.length) return provider.models
-            return Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m)]))
+            return withMediaModels(Object.fromEntries(ms.map((m) => [m.id, modelOf(site, provider, m, host)])), site, provider)
           } catch (e) {
             if (e instanceof SignInExpired) throw e
             return provider.models
@@ -1034,6 +1070,7 @@ function makePlugin(site) {
         // check before each request below stays for OpenCode, which
         // doesn't call this
         refreshLead: LEAD_MS,
+        rotating: true,
         async refresh(auth) {
           if (auth?.type !== "oauth" || !auth.access || !auth.refresh) return undefined
           const a = latest(site, auth)
@@ -1056,7 +1093,8 @@ function makePlugin(site) {
             async fetch(input, init) {
               const req = input instanceof Request ? input : null
               let body = init?.body
-              if (body === undefined && req) body = await req.clone().text()
+              if (body === undefined && req) body = await req.clone().arrayBuffer()
+              const url = req ? req.url : input instanceof URL ? input.href : input
               const send = (a) => {
                 const headers = new Headers(init?.headers ?? req?.headers)
                 headers.delete("content-length")
@@ -1067,11 +1105,33 @@ function makePlugin(site) {
                 headers.set("X-Mavis-Timezone-Offset", String(new Date().getTimezoneOffset() * -60))
                 if (!headers.get("X-Mavis-Session-Id")) headers.set("X-Mavis-Session-Id", session)
                 if (!headers.has("anthropic-version")) headers.set("anthropic-version", "2023-06-01")
-                return siteFetch(site, req ? req.url : input instanceof URL ? input.href : input, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
+                // MiniMax answers a chat it is asked to compress as one gzip
+                // member, flushed when the answer is done: the events of a
+                // streamed answer all arrive at once, and the first token
+                // waits for the last. Asked uncompressed, it sends the
+                // events as they come.
+                headers.set("accept-encoding", "identity")
+                return siteFetch(site, url, { ...init, method: init?.method ?? req?.method ?? "POST", headers, body }, "chat")
               }
               let { a, renewed: did } = await fresh(getAuth)
+              // A 401 is renewed per tool call inside the transport, and
+              // only that call is asked again: retrying the whole media
+              // request would run a paid generate_image a second time when
+              // the 401 came on the get_asset_url after it.
+              const mediaRequest = makeTokenRequest(site, a.access, async (rejected) => {
+                ;({ a } = await fresh(getAuth, rejected))
+                did = true
+                return a.access
+              })
               let res
               try {
+                res = await handleMediaFetch(url, {
+                  method: init?.method ?? req?.method ?? "POST",
+                  body,
+                  headers: init?.headers ?? req?.headers,
+                  signal: init?.signal ?? req?.signal,
+                }, { request: mediaRequest, siteId: site.id })
+                if (res) return answer(res, did)
                 res = await send(a)
                 if (res.status === 401) {
                   // the token was turned away before its end: a newer one
@@ -1212,6 +1272,124 @@ function makePlugin(site) {
 
 // Tools run outside a chat account's scope. Read the explicitly selected
 // account afresh for each call; the site's first stored account is the default.
+function toolHttpError(site, status) {
+  return Object.assign(new Error(site.name + " tool API: HTTP " + status), { status })
+}
+
+function redactSecrets(message, secrets) {
+  let out = String(message)
+  for (const secret of secrets) if (secret) out = out.replaceAll(secret, "<redacted>")
+  return out
+}
+
+function toolRequestInit(site, access, path, body, abort) {
+  return {
+    url: new URL(path, site.llm).href,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + access },
+      body: JSON.stringify(body ?? {}),
+      signal: abort,
+    },
+    what: site.name + " tool API",
+  }
+}
+
+// MiniMax reports some account refusals inside the envelope (HTTP 200)
+// rather than as an HTTP status. These codes, from MiniMax's published
+// error code list, are thrown with the HTTP status they mean, so magpie
+// rests the account for search the way it does for a real 429 or 402:
+// rate, token, connection and plan-window limits are 429; no balance or
+// credit is 402. Any other code is thrown with no status.
+const REFUSAL_STATUS = new Map([
+  [1002, 429], [1039, 429], [1041, 429], [1045, 429], [2045, 429], [2056, 429], [2062, 429],
+  [1008, 402], [2053, 402],
+])
+function envelopeError(code, message) {
+  const err = new Error("MiniMax tool API: " + (message ?? "status " + code))
+  const status = REFUSAL_STATUS.get(code)
+  if (status) err.status = status
+  return err
+}
+
+// parseToolEnvelope reads one tool API response: a non-OK status is
+// thrown with that status (so a 401 can be renewed), then the JSON
+// envelope and base_resp are checked the same way for chat tools and
+// the native media/search path.
+async function parseToolEnvelope(res, site, abort) {
+  if (!res.ok) throw toolHttpError(site, res.status)
+  let env
+  try { env = obj(JSON.parse(await res.text())) } catch {
+    abort.throwIfAborted()
+    throw new Error("MiniMax tool API: invalid JSON response")
+  }
+  if (!env) throw new Error("MiniMax tool API: expected a JSON object")
+  if (env.code !== undefined) {
+    const { code: rawCode, message, ...payload } = env
+    const code = num(rawCode)
+    if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
+    if (code !== 0) throw envelopeError(code, str(env, "message"))
+    if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
+  }
+  if (env.base_resp !== undefined) {
+    const br = obj(env.base_resp)
+    const code = br && num(br.status_code)
+    if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
+    if (code !== 0) throw envelopeError(code, str(br, "status_msg"))
+  }
+  checked(env, "MiniMax tool API")
+  abort.throwIfAborted()
+  return env
+}
+
+async function postTool(site, access, path, body, { signal, timeoutMs = 30000 } = {}) {
+  const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+  abort.throwIfAborted()
+  const req = toolRequestInit(site, access, path, body, abort)
+  const res = await siteFetch(site, req.url, req.init, req.what)
+  try {
+    return await parseToolEnvelope(res, site, abort)
+  } catch (e) {
+    e.message = redactSecrets(e.message, [access])
+    throw e
+  }
+}
+
+// makeTokenRequest is the tool transport for one signed-in account. Like
+// createToolRequest, a 401 is renewed per HTTP call: renewAccess(rejected)
+// gives a newer token, and only the call that got the 401 is sent again.
+// Later calls keep the newer token. Without renewAccess a 401 is thrown
+// with its status.
+function makeTokenRequest(site, access, renewAccess) {
+  let current = access
+  const secrets = new Set([access])
+  return async (siteID, path, body, { signal, timeoutMs = 30000 } = {}) => {
+    if (siteID !== site.id) throw new Error("account must belong to the selected MiniMax Code site")
+    const abort = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
+    abort.throwIfAborted()
+    const send = (token) => {
+      abort.throwIfAborted()
+      const req = toolRequestInit(site, token, path, body, abort)
+      return siteFetch(site, req.url, req.init, req.what)
+    }
+    try {
+      const sent = current
+      let res = await send(sent)
+      if (res.status === 401 && renewAccess) {
+        await res.body?.cancel()
+        // another call may have renewed it already
+        if (current === sent) current = await renewAccess(sent)
+        secrets.add(current)
+        res = await send(current)
+      }
+      return await parseToolEnvelope(res, site, abort)
+    } catch (e) {
+      e.message = redactSecrets(e.message, secrets)
+      throw e
+    }
+  }
+}
+
 function createToolRequest({ client, directory }) {
   const sessions = new Map()
   return async (siteID, path, body, { signal, timeoutMs = 30000, account } = {}) => {
@@ -1257,18 +1435,10 @@ function createToolRequest({ client, directory }) {
     const fresh = sessions.get(id)
     let { a } = await wait(fresh(getAuth))
     const secrets = new Set([a.access, a.refresh].filter(Boolean))
-    const redact = (message) => {
-      let out = String(message)
-      for (const secret of secrets) out = out.replaceAll(secret, "<redacted>")
-      return out
-    }
     const send = (auth) => {
       abort.throwIfAborted()
-      const req = {
-        url: new URL(path, site.llm).href,
-        init: { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "MiniMaxAgent", Authorization: "Bearer " + auth.access }, body: JSON.stringify(body) },
-      }
-      return siteFetch(site, req.url, { ...req.init, signal: abort }, site.name + " tool API")
+      const req = toolRequestInit(site, auth.access, path, body, abort)
+      return siteFetch(site, req.url, req.init, req.what)
     }
     try {
       let res = await send(a)
@@ -1281,46 +1451,23 @@ function createToolRequest({ client, directory }) {
         if (a.refresh) secrets.add(a.refresh)
         res = await send(a)
       }
-      if (!res.ok) throw new Error(site.name + " tool API: HTTP " + res.status)
-      let env
-      try { env = obj(JSON.parse(await res.text())) } catch (e) {
-        abort.throwIfAborted()
-        throw new Error("MiniMax tool API: invalid JSON response")
-      }
-      if (!env) throw new Error("MiniMax tool API: expected a JSON object")
-      // The gateway may succeed while the tool payload reports a billing
-      // or execution error. Both status layers must pass independently.
-      if (env.code !== undefined) {
-        const { code: rawCode, message, ...payload } = env
-        const code = num(rawCode)
-        if (code === undefined) throw new Error("MiniMax tool API: invalid response code")
-        if (code !== 0) throw new Error("MiniMax tool API: " + (str(env, "message") ?? "status " + code))
-        if (env.base_resp === undefined) env = { ...payload, base_resp: { status_code: code, status_msg: message } }
-      }
-      if (env.base_resp !== undefined) {
-        const br = obj(env.base_resp)
-        const code = br && num(br.status_code)
-        if (code === undefined) throw new Error("MiniMax tool API: invalid base_resp")
-        if (code !== 0) throw new Error("MiniMax tool API: " + (str(br, "status_msg") ?? "status " + code))
-      }
-      checked(env, "MiniMax tool API")
-      abort.throwIfAborted()
-      return env
+      return await parseToolEnvelope(res, site, abort)
     } catch (e) {
       abort.throwIfAborted()
-      e.message = redact(e.message)
+      e.message = redactSecrets(e.message, secrets)
       throw e
     }
   }
 }
 
-export const MiniMaxCodeToolsPlugin = async (input) => {
+export const MiniMaxCodeToolsPlugin = async (input, options = {}) => {
   const request = createToolRequest(input)
-  return { tool: { ...createConnectorTools(request).tool, ...createWebTools(request) } }
+  const compact = { compactTools: compactToolsOn(options) }
+  return { tool: { ...createConnectorTools(request, compact).tool, ...createWebTools(request) } }
 }
 
 export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, createToolRequest, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }
+export const _internal = { SITES, MODELS, createToolRequest, postTool, makeTokenRequest, parseToolEnvelope, toolHttpError, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, creditsWindow, ledgerBatches, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

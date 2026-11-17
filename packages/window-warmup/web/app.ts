@@ -518,6 +518,35 @@ let confirmDeleteAt = 0;
 let runsExpanded = false;
 let catalogTimer: ReturnType<typeof setInterval> | undefined;
 
+/**
+ * 口令失效重载时在地址上留的标记：重载后仍被拒就不再重载，防跨加载的死循环；请求成功后去掉。
+ * 不用 sessionStorage：插件框架只有 allow-scripts（不透明源），访问 storage 会抛错
+ */
+const REAUTH_PARAM = "ww-reauth";
+
+/** 给地址加上（on）或去掉重载标记，其余参数（主题、语言等）原样保留 */
+export function reauthURL(href: string, on: boolean): string {
+  const url = new URL(href);
+  if (on) url.searchParams.set(REAUTH_PARAM, "1");
+  else url.searchParams.delete(REAUTH_PARAM);
+  return url.toString();
+}
+
+/** alreadyReloaded：本页地址已带重载标记，即刚为口令重载过一次 */
+export function shouldReloadOnAuthError(
+  status: number,
+  data: unknown,
+  isDirty: boolean,
+  alreadyReloaded: boolean,
+): boolean {
+  if (alreadyReloaded) return false;
+  if (status !== 401 && status !== 403) return false;
+  const isTokenErr =
+    (typeof data === "object" && data !== null && (data as { reload?: boolean }).reload === true) ||
+    (typeof data === "object" && data !== null && String((data as { error?: string }).error).includes("口令"));
+  return !!(isTokenErr && !isDirty);
+}
+
 // 页面所有请求都走相对路径：magpie web 把服务转发在自己的前缀路径下时，
 // 根绝对路径会解析到宿主根上而 404；本地直达时相对与根绝对等价。
 async function apiJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -530,7 +559,18 @@ async function apiJSON<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
   const body: unknown = await res.json().catch(() => ({}));
+  const reloaded = new URL(location.href).searchParams.has(REAUTH_PARAM);
+  if (res.ok && reloaded) {
+    try {
+      history.replaceState(history.state, "", reauthURL(location.href, false));
+    } catch {
+      // 不透明源（沙箱框架）里 Chromium 不许改地址：标记留着，之后再失效只显示错误、不再自动重载
+    }
+  }
   if (!res.ok) {
+    if (shouldReloadOnAuthError(res.status, body, dirty, reloaded)) {
+      location.replace(reauthURL(location.href, true));
+    }
     const msg = (body as { error?: unknown }).error;
     throw new Error(typeof msg === "string" && msg ? msg : `HTTP ${res.status}`);
   }
@@ -1352,13 +1392,13 @@ function renderList(): void {
       nodes.push(e);
       return nodes;
     }
-    // 编辑区紧跟在展开的那一行下面（原地展开），不是列表末尾
-    if (isNew && draft) nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
       if (open && draft) nodes.push(buildEditor());
     }
+    // 新建任务时展开的卡片放到底部，与保存后任务追加到底部的位置一致
+    if (isNew && draft) nodes.push(rowEl(draft, null, true), buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);

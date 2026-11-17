@@ -65,6 +65,45 @@ it, so a re-sign-in and a renewal give the same value back. The card's name is u
 which shows `user_phone` once a sign-in or renewal has read it. IAM is *not* one of the hosts the plugin signs forwarded requests for
 (`SIGNED_HOSTS`): the one phone read is made by the plugin itself, for that one URL.
 
+**Sign in from the CodeArts Agent on this machine** (since 0.3.10, #998): when the CodeArts Agent
+IDE is installed and signed in here, a second method takes its sign-in instead of a browser.
+The IDE keeps it in its VS Code-style state database, key `huaweicloud.codearts-snap`
+(`userInfoKey.originData`: AK/SK/security token, `domainId`, `expiresAt`, `stationType`):
+
+| System | File |
+|---|---|
+| macOS | `~/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb` |
+| Windows | `%APPDATA%\codearts-agent\User\globalStorage\state.vscdb` |
+| Linux | `$XDG_CONFIG_HOME/codearts-agent/User/globalStorage/state.vscdb` (else `~/.config/…`) |
+
+`MAGPIE_CODEARTS_IDE_STATE` points it elsewhere. The plugin never opens or writes the IDE's file
+with SQLite: it copies it (with its `-wal`/`-journal`) into a temporary folder, reads the copy and
+removes it. A missing, unreadable or half-written file, or one without a whole credential, is
+"unknown": the method isn't offered, or the sign-in fails saying why (never with a secret). The
+credential is checked once (`snap-manager/v1/current/user` on its station) and kept like a
+browser sign-in's, but it has no refresh token: it is renewed by reading the IDE's file again
+once the IDE has renewed it, never through STS. Until then a renewal only fails for now
+(`503`, the sign-in kept); signing in to another account in the IDE doesn't change this one.
+The account is the IDE's `domainId`.
+
+**The international station** (since 0.3.10, #998): a credential from the international
+CodeArts (`stationType: "international"`) is sent only to
+`snap-access.ap-southeast-1.myhuaweicloud.com`, and a mainland one only to the mainland hosts.
+Its token package shows as one window, `usage_token_num` of `package_token_amount` from
+`start_date` to `end_date`, and the plan is `package_name_en`. The international station has no
+`opengw` endpoints, credit batches or daily check-in, so the plugin asks none of them there
+(check-in answers "inactive"). Not tried yet with a real international account: chats go to
+`/api/v2/chat/completions` there as on the mainland, and the model list falls back to the
+built-in one when the station doesn't answer it.
+
+**International browser sign-in** (since 0.3.17, #1090): "Sign in with Huawei Cloud
+(International)" opens Huawei Cloud's international login (`auth.huaweicloud.com`,
+`site=intl`), which goes on to the international portal's authorize page
+(`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`). The code is exchanged at the same
+STS endpoint, and the credential is kept as an international one, through every renewal. It
+skips the mainland-only phone and OfficeAce reads. Not tried yet with a real international
+account.
+
 ## Models
 
 The account's live list: CodeArts' builtin models, plus the free models of its daily benefit
@@ -79,8 +118,9 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 ## Requests
 
 - Every request is signed with Huawei's SDK-HMAC-SHA256 using the temporary credentials, and
-  only for CodeArts' own two hosts, `snap-access.cn-north-4.myhuaweicloud.com` and
-  `opengw.developer.huaweicloud.com`: a request anywhere else (an overridden `api`) is refused
+  only for CodeArts' own hosts, `snap-access.cn-north-4.myhuaweicloud.com` and
+  `opengw.developer.huaweicloud.com` (and, for an international credential, only
+  `snap-access.ap-southeast-1.myhuaweicloud.com`): a request anywhere else (an overridden `api`) is refused
   before the credentials leave, and no signed or token request follows a redirect.
 - The gateway allows 3 concurrent sessions per account and tells them apart by
   `x-ot-session-id`; the plugin sends one stable session id per account (and a fresh trace per
@@ -124,12 +164,24 @@ rate), shown as `DeepSeek-V4.1-Flash-1017`, not folded into `DeepSeek-V4.1-Flash
 - When each credit batch expires is read from the CodeArts console's own calls
   (`snap-manager/v1/package/credit/page`, `v1/ops/credit/*`); when those can't be read, the
   plugin falls back to a small ledger of the check-ins it claimed,
-  `~/.config/magpie/codearts-checkins.json` (or `MAGPIE_CODEARTS_LEDGER`). This part is still
-  being checked against more accounts — trust the CodeArts console where they differ.
+  `~/.config/magpie/codearts-checkins.json` (or `MAGPIE_CODEARTS_LEDGER`), each check-in until
+  the date its claim named. This part is still being checked against more accounts — trust the
+  CodeArts console where they differ.
+- A window's `runsOutAt` / `runsOut` is only credit its own remainder holds: none when the bucket
+  is empty, never more than it has left, and the total's is the buckets' own. The ledger can't
+  tell what was spent of a check-in, so from it the amount is the vendor's own
+  `package_credit_expiring_amount` (each window's `expiring`), and with none said there is no
+  lapse.
 - `auth.checkin`: the client's 「限时福利 → 每日领取」 — `GET /v1/ops/delivery?channel=IDE`,
   `POST /v1/ops/claim`, then `POST /v1/ops/confirm` when the claim answers an id. A claim whose
   confirm failed is kept in that ledger for the day and confirmed at the next check-in; one the
-  client leaves unconfirmed (`id: null`) never is. Turn on
+  client leaves unconfirmed (`id: null`) never is. Every claimable campaign whose title is a
+  daily one (`签到` / `每日`) is claimed: the ordinary daily check-in and a contest's daily
+  check-in beside it (such as the 小红书 Skill 创新赛 daily 1000, 2026-11-11–12-05) are separate campaigns in that
+  same list; a contest's one-time sign-up gift is left to the user. A contest check-in the
+  account has not signed up for is not claimable, so it is skipped and the ordinary one is still
+  claimed. The dates are the vendor list's own (`extra.endTime`), not hardcoded here, so the
+  campaign stops being claimed when it ends. Turn on
   *Auto check-in* for CodeArts under **Settings → Usage → Plugins**.
 
 ## OfficeAce (the second provider)
@@ -185,10 +237,14 @@ naming the Basic pair) renews the credential once and sends it again — but onl
 changed the pair; the same pair would get the same refusal. An account that signed in without
 opening MaaS gets a `400` saying so, not an empty Basic header sent upstream.
 
-**Usage and check-in.** `GET {subscription}/v1/subscription`: plan buckets (`skus[].quotas`) and
-activity bonuses (`bonus_skus`) become magpie windows; a `.trial` bucket carries no expiry and
-gets none invented; an expired bucket is folded away (`aside`) and takes no part in routing. The
-check-in is `POST {subscription}/v1/subscription/bonus/claim` once a Beijing day: a 2xx with no
+**Usage and check-in.** `GET {subscription}/v1/subscription`: the total of all unexpired plan
+buckets (`skus[].quotas`) and activity bonuses (`bonus_skus`) is the one routing window; each
+bucket remains visible as an `aside` detail. A `.trial` bucket carries no expiry and gets none
+invented; an expired bucket is folded away and takes no part in the active total. The total's
+`runsOutAt` is the soonest still-funded bucket to expire, and `runsOut` is the remaining credit
+that expires on that Beijing day. When every bucket has expired, a used-up total remains so the
+account is paused instead of being routed without a limit. The check-in is
+`POST {subscription}/v1/subscription/bonus/claim` once a Beijing day: a 2xx with no
 `bonus_skus` is 「今日已无新增可领」 (`done`), not a failure. Turn on *Auto check-in* for OfficeAce
 under **Settings → Usage → Plugins**.
 
@@ -219,8 +275,10 @@ under **Settings → Usage → Plugins**.
 First written by [yuweihao17](https://github.com/yuweihao17/codearts); this version carries the
 fixes of [yuweihao17/codearts#8](https://github.com/yuweihao17/codearts/pull/8). It builds on the
 measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pull/6) and
-[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel of
-[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model).
+[ReachForStar](https://github.com/ReachForStar/codearts), and on the CodeArts channel that
+[iJetLi](https://gitee.com/iJetLi) wrote in
+[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts), as
+[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model) carried it.
 
 ## 中文
 
@@ -245,12 +303,28 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   `access` 字段里，保存在 magpie / OpenCode 自己的账号存储中；过期前 30 分钟自动续期，请求遇到临时凭据
   过期时就地续期并重发一次。同一账号的 refresh_token 只用一次；续期只是暂时失败（如 STS 连不上）时返回
   `503` 并保留登录，只有被 STS 明确拒绝才标记需要重新登录。账号标识取自 refresh_token，重复登录不会多出账号。
+- **用本机的 CodeArts Agent 登录**（0.3.10 起，#998）：本机装了码道 IDE 且已登录时，多一个登录方式，直接用 IDE 的登录，
+  不开浏览器。IDE 把它存在自己的 `state.vscdb`（键 `huaweicloud.codearts-snap`）里：macOS 为
+  `~/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb`，Windows 为
+  `%APPDATA%\codearts-agent\User\globalStorage\state.vscdb`，Linux 为 `$XDG_CONFIG_HOME`（否则 `~/.config`）下的同一路径；
+  `MAGPIE_CODEARTS_IDE_STATE` 可改。插件只读：先把文件（连同 `-wal`/`-journal`）拷到临时目录再读拷贝，绝不打开或写 IDE 的文件。
+  文件不存在、读不了、写了一半或凭据不全都算「未知」：不提供这个方式，或登录失败并说明原因（不含任何密钥）。
+  这种登录没有 refresh token，续期是等 IDE 自己续期后重新读它的文件，绝不走 STS；IDE 还没续期时续期只是暂时失败（`503`，保留登录）。
+  账号标识是 IDE 的 `domainId`。
+- **国际站**（0.3.10 起，#998）：国际站凭据（`stationType: "international"`）只发往
+  `snap-access.ap-southeast-1.myhuaweicloud.com`，国内凭据只发往国内主机。token 套餐显示为一个窗口：
+  `start_date`–`end_date` 内 `package_token_amount` 中已用的 `usage_token_num`，套餐名取 `package_name_en`。
+  国际站没有 `opengw` 接口、积分批次和每日签到，插件在那里一概不请求（签到回答「未开通」）。尚未用真实国际站账号试过：
+  对话仍发到 `/api/v2/chat/completions`，模型列表读不到时用内置列表。
+- **国际站浏览器登录**（0.3.17 起，#1090）：「Sign in with Huawei Cloud (International)」先打开华为云国际站登录页
+  （`auth.huaweicloud.com`，`site=intl`），再到国际站门户的授权页（`codearts.ap-southeast-1.huaweicloud.com/portal/authorize`）。
+  授权码仍在同一个 STS 端点换取，凭据记为国际站凭据，续期后不变；不读国内站才有的手机号和 OfficeAce 信息。尚未用真实国际站账号试过。
 - **模型**：账号实时的内置模型列表；领取当日免费权益成功后，再加上免费模型（每个北京自然日领一次，与
   客户端一致；当天还没领取时遇到 `benefit not found` 也会先领取再重发）。每个模型的「消耗系数」作为 magpie 的倍率上报，来自账号主智能体（`build`）的模型列表。
   0.3.2 起模型名照码道给的显示：带日期的 `deepseek-v4.1-flash-1017` 是另一个模型（错峰倍率不同），显示为
   `DeepSeek-V4.1-Flash-1017`，不再和 `DeepSeek-V4.1-Flash` 叫同一个名字（#677）。
-- **请求**：SDK-HMAC-SHA256 签名，只签给码道自己的两个主机（`snap-access.cn-north-4.myhuaweicloud.com`、
-  `opengw.developer.huaweicloud.com`），发往其他地址（如改过的 `api`）的请求在凭据发出前就被拒绝，签名请求和令牌请求都不跟随重定向；像客户端一样发送 `x-ot-session-id` 会话头（每账号一个会话），账号内
+- **请求**：SDK-HMAC-SHA256 签名，只签给码道自己的主机（`snap-access.cn-north-4.myhuaweicloud.com`、
+  `opengw.developer.huaweicloud.com`；国际站凭据只签 `snap-access.ap-southeast-1.myhuaweicloud.com`），发往其他地址（如改过的 `api`）的请求在凭据发出前就被拒绝，签名请求和令牌请求都不跟随重定向；像客户端一样发送 `x-ot-session-id` 会话头（每账号一个会话），账号内
   在途请求不超过 3 个，`TM.00001041` 退避重试，网关排队时按客户端的方式等待（0.2.3 起，magpie 在这个请求之后还有别的账号、供应商或路由组成员时（`x-magpie-fallback: 1`），排队的请求立即退出队列并以 `503` 加队列的 `Retry-After` 回答，magpie 随即改问下一个）；总是以流式请求上游（码道
   只对流式回答计量积分），调用方要非流式时折叠回 JSON；默认注入 `thinking: { type: "enabled" }`，思考与
   正文分开；200 里内嵌的错误换算为 `429` / `400` / `502` 并带厂商原话；码道只接受不超过 64 个字符的工具名，
@@ -261,6 +335,10 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   时间读自码道控制台同一批接口，读不到时退回插件的签到账本 `~/.config/magpie/codearts-checkins.json`
   （这部分仍在用更多账号验证，请以控制台为准）。`auth.checkin` 与客户端「限时福利 → 每日领取」一致
   （插件领取后确认失败的，当天记在签到账本里，下次签到时补确认；客户端本就不确认的 `id: null` 领取不会被确认），
+  活动列表里标题为签到/每日（`签到` / `每日`）的每一个可领活动都会领取：普通每日签到和赛事附带的
+  每日签到（例如小红书 Skill 创新赛的每日 1000 积分，2026-11-11–12-05）是同一列表里的不同活动，赛事的一次性报名礼
+  留给用户自己领；没报名该赛事的账号，赛事签到不可领，会被跳过，普通每日签到仍照常领取，
+  日期取自服务端活动列表的 `extra.endTime`，代码里没有写死，活动结束后自然不再领取，
   在 **设置 → 用量 → Plugins** 打开「每日自动签到」即可。
 - **OfficeAce（第二个供应商）**：officeace 卡片提供与 CodeArts 卡片相同的「华为云登录」，账号体系是同一套：
   码道的 STS 三元组能签 OfficeAce 的订阅接口（V11-HMAC）并通过它的 CLAW 权限校验，反之 OfficeAce 的三元组也能签
@@ -287,8 +365,10 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   去掉 `officeace/` 前缀，发到凭据里自带的 MaaS 地址（为空时用官方直连）。`401`（或 4xx 但报文点名这对 Basic 凭据）
   会先续期一次再重发，**但只有续期真的换了这对凭据时才重发**。已登录但没开通 MaaS 的账号会得到一条说清原因的 `400`，
   不会把空的 Basic 头发给上游。
-- **OfficeAce 的用量与签到**：`/v1/subscription` 的套餐桶（`skus[].quotas`）与活动桶（`bonus_skus`）转成 magpie 的窗口；
-  `.trial` 桶没有到期时间就不显示；已过期的桶收进折叠区（`aside`）且不参与路由。签到是每个北京自然日一次
+- **OfficeAce 的用量与签到**：`/v1/subscription` 中所有未过期套餐桶（`skus[].quotas`）和活动桶（`bonus_skus`）
+  汇总成唯一参与路由的「总积分」窗口，各桶只作为 `aside` 明细展示；`.trial` 桶没有到期时间就不显示；
+  已过期的桶收进折叠区且不参与有效余额汇总。「总积分」用仍有余额的桶里最早到期者作为 `runsOutAt`，
+  并把同一北京自然日到期的余额合为 `runsOut`；如果所有桶都已过期，仍保留一个已用尽的总积分窗口来暂停账号。签到是每个北京自然日一次
   `POST /v1/subscription/bonus/claim`：2xx 但 `bonus_skus` 为空是「今日已无新增可领」（`done`），不是失败。
 - **已知限制**：STS 的 refresh_token 只能用一次。本包的每张卡各自登录、各自持有一条记录与一个 token，所以两张卡
   互不影响；**续期只写被续的那条记录**，因此用户删掉的账号永远不会被写回来（无论它此前有没有被列出/使用过、
@@ -296,7 +376,8 @@ measurements and code of [HuHong-Tao](https://github.com/yuweihao17/codearts/pul
   输的一方重试，只有 token 一直是被消费状态才标记需重新登录。
   另外，`officeace-auth` 与本包不能同时服务 `officeace` 这个 provider id，magpie 会让你选一个，装之前先卸掉旧的。
 - **致谢**：原作者 [yuweihao17](https://github.com/yuweihao17/codearts)；HuHong-Tao、ReachForStar 的
-  实测与实现；[Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
+  实测与实现；CodeArts 渠道的原作者 [iJetLi](https://gitee.com/iJetLi)（[deepseek-harness-codearts](https://gitee.com/iJetLi/deepseek-harness-codearts)），
+  以及转载它的 [Ebony-Vinyl/dsh-our-free-model](https://github.com/Ebony-Vinyl/dsh-our-free-model)。
 
 ## License
 

@@ -1,15 +1,23 @@
 // Reading the sign-in out of the Tabbit desktop app, without opening it.
 //
-// Tabbit Browser keeps the same Chromium cookie store every Chromium does:
-//   macOS  ~/Library/Application Support/Tabbit Browser/Default/Cookies
-// and protects the value with the platform's own key. The database is copied
-// before it is read: a running browser holds a lock on a WAL, and reading the
-// live file gives a half-written row. The copy is removed again in a finally:
-// it holds every site's cookies, and a copy left behind each sign-in would
-// leave that in the temp folder.
+// Tabbit ships as two macOS builds, each a Chromium fork with its own data
+// directory and its own Keychain item (read out of 1.16.27's framework: both
+// builds carry the same code, and a flag set at start-up picks the names):
+//   Tabbit.app          com.tabbit-ai.Tabbit     (international, tabbit.ai)
+//     ~/Library/Application Support/Tabbit/Default/Cookies
+//     Keychain service "Tabbit Safe Storage", account "Tabbit"
+//   Tabbit Browser.app  com.tab-browser.Tabbit   (China, tabbit.com)
+//     ~/Library/Application Support/Tabbit Browser/Default/Cookies
+//     Keychain service "Tabbit Browser Safe Storage", account "Tabbit Browser"
+// Each store is read with its own build's item first and the other's after,
+// so a store in a place this doesn't know still finds its key.
 //
-// macOS: `Tabbit Browser Safe Storage` in the login keychain holds the
-// password, and a Chromium cookie is AES-128-CBC under
+// The database is copied before it is read: a running browser holds a lock
+// on a WAL, and reading the live file gives a half-written row. The copy is
+// removed again in a finally: it holds every site's cookies, and a copy left
+// behind each sign-in would leave that in the temp folder.
+//
+// A Chromium cookie on macOS is AES-128-CBC under
 // PBKDF2-HMAC-SHA1(password, "saltysalt", 1003, 16 bytes) with a sixteen-space
 // IV, prefixed `v10`, padded PKCS#7, and (on Chromium 24 and later) a 32-byte
 // SHA-256 of the host in front of the plaintext.
@@ -22,18 +30,19 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import crypto from "node:crypto"
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 
 // The two sites a Tabbit account can belong to (see SITES in api.mjs), the
 // Chinese one first. A browser signed in to either keeps the token under
 // that site's host, so the host it was found under names the account's site.
 export const HOSTS = ["web.tabbit.com", "web.tabbit.ai"]
 export const HOST = HOSTS[0]
-const SAFE_STORAGE = "Tabbit Browser Safe Storage"
+// The Keychain services the two builds keep their storage password under.
+export const SAFE_STORAGE = { intl: "Tabbit Safe Storage", cn: "Tabbit Browser Safe Storage" }
 
-// profileDirs are the places Tabbit Browser has kept its profile, newest
-// name first. The browser's own data directory is not the same as the
-// user-data directory the old Tabbit client used, so both are listed.
+// profileDirs are the places Tabbit keeps its profile: the China build's
+// "Tabbit Browser" and the international build's "Tabbit" (with the old
+// client's "Tabbit/User Data").
 export function profileDirs(env = process.env, home = os.homedir()) {
   const roots = [env.TABBIT_PROFILE_DIR, env.TABBIT_USER_DATA_DIR].filter(Boolean)
   if (process.platform === "darwin") {
@@ -52,15 +61,33 @@ export function profileDirs(env = process.env, home = os.homedir()) {
   return [...new Set(roots)]
 }
 
-// cookieStore finds the SQLite file, preferring a profile called Default.
-export function cookieStore(dirs = profileDirs()) {
+// cookieStores lists every SQLite file found, one per profile root, each
+// preferring a profile called Default.
+export function cookieStores(dirs = profileDirs()) {
+  const found = []
   for (const dir of dirs) {
     for (const rel of [path.join("Default", "Cookies"), path.join("Network", "Cookies"), "Cookies"]) {
       const file = path.join(dir, rel)
-      if (fs.existsSync(file)) return file
+      if (fs.existsSync(file)) {
+        found.push(file)
+        break
+      }
     }
   }
-  return null
+  return [...new Set(found)]
+}
+
+// cookieStore is the first of them.
+export function cookieStore(dirs = profileDirs()) {
+  return cookieStores(dirs)[0] ?? null
+}
+
+// safeStorageNames is the Keychain services to try for one store, its own
+// build's first: a path through a "Tabbit Browser" folder is the China
+// build's, anything else the international one's.
+export function safeStorageNames(store = "") {
+  const parts = String(store).split(/[\\/]+/)
+  return parts.includes("Tabbit Browser") ? [SAFE_STORAGE.cn, SAFE_STORAGE.intl] : [SAFE_STORAGE.intl, SAFE_STORAGE.cn]
 }
 
 // copyStore copies the database (and its WAL, when present) to a temporary
@@ -74,18 +101,59 @@ export function copyStore(file, tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tab
   return copy
 }
 
-// keychainPassword asks the login keychain for the browser's storage
-// password. A keychain that is locked, or a prompt the user dismisses,
-// makes this throw and the caller falls back to a pasted value.
-export function keychainPassword(service = SAFE_STORAGE) {
-  const out = execFileSync("security", ["find-generic-password", "-s", service, "-w"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 15_000,
+// runSecurity runs macOS's `security` with the arguments as separate argv
+// entries (no shell, so a name with spaces is one argument). It never
+// rejects: the caller reads the exit status. The timeout leaves the user time
+// to answer the Keychain prompt; magpie waits ten minutes for a sign-in.
+export function runSecurity(args, { timeout = 120_000 } = {}) {
+  return new Promise((resolve) => {
+    execFile("security", args, { encoding: "utf8", timeout, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+      resolve({
+        status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+        timedOut: Boolean(error?.killed),
+        stdout: String(stdout ?? ""),
+        stderr: String(stderr ?? "").trim(),
+        error: error && typeof error.code !== "number" && !error.killed ? String(error.message ?? error) : "",
+      })
+    })
   })
-  const password = String(out).replace(/\r?\n$/, "")
-  if (!password) throw new Error(`the keychain holds no password under "${service}"`)
-  return password
+}
+
+// What `security` exits with is the low byte of the OSStatus.
+const NOT_FOUND = 44 // errSecItemNotFound (-25300)
+const CANCELED = 128 // errSecUserCanceled (-128)
+const AUTH_FAILED = 51 // errSecAuthFailed (-25293): the prompt was denied
+const NO_UI = 36 // errSecInteractionNotAllowed (-25308): locked, no prompt possible
+
+const PASTE = "or use “Paste Tabbit token” instead"
+
+// keychainPassword asks the login keychain for the browser's storage
+// password, trying each service in turn. An item that isn't there moves on
+// to the next name; a prompt the user turned down stops at once and says so.
+export async function keychainPassword(names = [SAFE_STORAGE.intl, SAFE_STORAGE.cn], { run = runSecurity } = {}) {
+  for (const service of names) {
+    const r = await run(["find-generic-password", "-s", service, "-w"])
+    if (r.status === 0) {
+      const password = String(r.stdout).replace(/\r?\n$/, "")
+      if (password) return password
+      continue
+    }
+    if (r.status === NOT_FOUND) continue
+    if (r.timedOut) {
+      throw new Error(`macOS asked for Keychain access to “${service}” and got no answer in time; try again and click Allow (or Always Allow), ${PASTE}`)
+    }
+    if (r.status === CANCELED || r.status === AUTH_FAILED) {
+      throw new Error(`Keychain access to “${service}” was denied; try again and click Allow (or Always Allow) when macOS asks, ${PASTE}`)
+    }
+    if (r.status === NO_UI) {
+      throw new Error(`the login keychain is locked and macOS can't ask for “${service}” right now; unlock it and try again, ${PASTE}`)
+    }
+    const why = r.stderr || r.error || `security exited with ${r.status}`
+    throw new Error(`reading “${service}” from the login keychain failed (${why}), ${PASTE}`)
+  }
+  throw new Error(
+    `Tabbit's password isn't in the login keychain (looked for ${names.map((n) => `“${n}”`).join(" and ")}); open Tabbit, sign in there, and try again, ${PASTE}`,
+  )
 }
 
 // decryptValue turns one `encrypted_value` blob into text.
@@ -132,34 +200,44 @@ function require_node_sqlite() {
 }
 
 // desktopSignIn returns the cookie header and what it belongs to, or throws
-// with the reason a caller can show.
+// with the reason a caller can show, and what to do about it.
 //
-// `platform` and `tmpParent` are for the tests: the same code path runs with a
-// fixture store under a temp parent the test can look into afterwards.
-export function desktopSignIn({ dirs = profileDirs(), hosts = HOSTS, store, password, tmpParent, platform = process.platform } = {}) {
+// `platform`, `tmpParent` and `run` are for the tests: the same code path
+// runs with a fixture store under a temp parent the test can look into
+// afterwards, and a fake `security`.
+export async function desktopSignIn({ dirs = profileDirs(), hosts = HOSTS, store, password, tmpParent, platform = process.platform, run } = {}) {
   if (platform !== "darwin") {
-    throw new Error(`reading Tabbit Browser's cookies is macOS-only; on ${platform} paste the token instead`)
+    throw new Error(`reading Tabbit's cookies is macOS-only; on ${platform} paste the token instead`)
   }
-  const file = store || cookieStore(dirs)
-  if (!file) throw new Error(`no Tabbit Browser cookie store found; looked in ${dirs.join(", ")}`)
+  const files = store ? [store] : cookieStores(dirs)
+  if (!files.length) throw new Error(`Tabbit isn't installed here, or hasn't been opened yet (looked in ${dirs.join(", ")}); open Tabbit, sign in there, and try again, ${PASTE}`)
+  for (const file of files) {
+    const found = readToken(file, hosts, tmpParent)
+    if (!found) continue
+    const { rows, host } = found
+    const token = rows.find((r) => r.name === "token")
+    const uid = rows.find((r) => r.name === "user_id")
+    const plain = token.value?.startsWith("ey") && (!uid || uid.value || !uid.encrypted?.length)
+    const secret = plain ? "" : (password ?? (await keychainPassword(safeStorageNames(file), run ? { run } : undefined)))
+    const value = token.value?.startsWith("ey") ? token.value : decryptValue(token.encrypted, { password: secret, host })
+    const uidValue = uid?.value || (uid?.encrypted?.length ? safeDecrypt(uid.encrypted, secret, host) : "")
+    const header = [`token=${value}`, uidValue && `user_id=${uidValue}`, uidValue && `SAPISID=${uidValue}`, "managed=tab_browser"].filter(Boolean).join("; ")
+    return { key: header, userId: uidValue, store: file, site: `https://${host}` }
+  }
+  throw new Error(`Tabbit is not signed in to ${hosts.join(" or ")}; open Tabbit, sign in there, and try again, ${PASTE}`)
+}
+
+// readToken reads one store's token and user_id rows from a temporary copy,
+// trying each host, and removes the copy before it returns.
+function readToken(file, hosts, tmpParent) {
   const dir = fs.mkdtempSync(path.join(tmpParent ?? os.tmpdir(), "tabbit-cookies-"))
   try {
     const copy = copyStore(file, dir)
-    let host = hosts[0]
-    let rows = []
-    for (const candidate of hosts) {
-      rows = readCookies(copy, { host: candidate })
-      host = candidate
-      if (rows.some((r) => r.name === "token")) break
+    for (const host of hosts) {
+      const rows = readCookies(copy, { host })
+      if (rows.some((r) => r.name === "token")) return { rows, host }
     }
-    const token = rows.find((r) => r.name === "token")
-    if (!token) throw new Error(`Tabbit Browser is not signed in to ${hosts.join(" or ")}`)
-    const secret = password ?? keychainPassword()
-    const value = token.value?.startsWith("ey") ? token.value : decryptValue(token.encrypted, { password: secret, host })
-    const uid = rows.find((r) => r.name === "user_id")
-    const uidValue = uid?.value || (uid?.encrypted ? safeDecrypt(uid.encrypted, secret, host) : "")
-    const header = [`token=${value}`, uidValue && `user_id=${uidValue}`, uidValue && `SAPISID=${uidValue}`, "managed=tab_browser"].filter(Boolean).join("; ")
-    return { key: header, userId: uidValue, store: file, site: `https://${host}` }
+    return null
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

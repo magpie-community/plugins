@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Token 羊毛">
+  <rect width="64" height="64" rx="16" fill="#4f46e5"/>
+  <circle cx="29.5" cy="35.5" r="15" fill="none" stroke="#ffffff" stroke-width="3.4"/>
+  <path d="M23.8 29.2 L29.5 36.2 L35.2 29.2" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M29.5 36.2 V44.4" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24.6 39.2 H34.4 M24.6 42.4 H34.4" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M47 11.5 l2 5.1 5.1 2 -5.1 2 -2 5.1 -2 -5.1 -5.1 -2 5.1 -2 z" fill="#ffffff"/>
+</svg>

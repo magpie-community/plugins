@@ -197,7 +197,12 @@ async function refusalOf(res) {
   // still signed in, the model just isn't on its plan. Measured with
   // Kimi-K3.1-Pro on a free account.
   const paywalled = res.status === 403 && code === 492
-  return { res, body, parsed, detail, code, action, paywalled }
+  // A 403 whose body isn't JSON is a page from something in front of
+  // Tabbit's API (an HTML "Service Unavailable", with no server header,
+  // #1199), not Tabbit refusing the token: the same token answered on every
+  // route half an hour later. It says nothing about the sign-in.
+  const page = res.status === 403 && parsed === null && body.trim() !== ""
+  return { res, body, parsed, detail, code, action, paywalled, page }
 }
 
 const refused = (res) => res.status === 401 || res.status === 403
@@ -235,7 +240,7 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true, settl
   // way — accepted there, or refused by both (an expired token, which then
   // stays on BASE and is reported as before). A failure to reach the other
   // site settles nothing, and the first refusal stands.
-  if (!known && refusal && !refusal.paywalled) {
+  if (!known && refusal && !refusal.paywalled && !refusal.page) {
     let settled = true
     for (const other of SITES) {
       if (other === site) continue
@@ -253,6 +258,11 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true, settl
         refusal = null
         break
       }
+      // an error page there says nothing of the token either (#1199)
+      if (again.status === 403 && (await refusalOf(again)).page) {
+        settled = false
+        continue
+      }
       try {
         await again.body?.cancel()
       } catch {
@@ -265,6 +275,16 @@ async function call(creds, path, init = {}, signal, { totalTimeout = true, settl
     learn(creds.token, site)
   }
 
+  if (refusal?.page) {
+    const title = /<title[^>]*>([^<]{1,120})<\/title>/i.exec(refusal.body)?.[1]?.trim()
+    const error = new TabbitError(
+      `Tabbit's service answered HTTP ${res.status} with an error page${title ? ` (${title})` : `: ${refusal.body.slice(0, 200)}`}; the sign-in was not refused`,
+      { status: res.status },
+    )
+    const retryAfter = res.headers.get("retry-after")
+    if (retryAfter) error.retryAfter = retryAfter
+    throw error
+  }
   if (refusal) {
     const { body, parsed, detail, code, action, paywalled } = refusal
     const error = new TabbitError(

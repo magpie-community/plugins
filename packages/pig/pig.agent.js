@@ -56,8 +56,7 @@ export function connect({ gateway, models }) {
       name: "Magpie",
       baseUrl: gateway.v1,
       apiKey: gateway.key,
-      // The public hook has no native-protocol field; Magpie translates Chat.
-      api: "openai-completions",
+      api: "openai-responses",
       models: models.map(modelEntry),
     },
   }

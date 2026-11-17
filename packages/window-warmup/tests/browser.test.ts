@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startService, type ServiceHandle } from "../src/server";
 import { fakeGateway, type FakeGateway } from "./fake-gateway";
+import { pinMagpieDirsForTest } from "./test-env";
+
+const restoreMagpieDirs = pinMagpieDirsForTest();
 
 // Playwright 的最小类型面：不依赖它的类型声明，没装也能通过 tsc
 interface Locator {
@@ -97,9 +100,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await svc?.stop();
-  gw?.stop();
-  if (dir) await rm(dir, { recursive: true, force: true });
+  try {
+    await svc?.stop();
+    gw?.stop();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  } finally {
+    restoreMagpieDirs();
+  }
 });
 
 for (const [name, engine] of ENGINES) {
@@ -214,11 +221,11 @@ for (const [name, engine] of ENGINES) {
         });
         expect(sizes).toEqual({ run: "12px", foot: "11.5px" });
 
-        // 列表里已有任务时新建：编辑区紧跟顶部的新行，不跑到列表末尾
+        // 列表里已有任务时新建：编辑区紧跟底部的新行，与保存后任务追加到底部一致
         await page.getByRole("button", { name: "新建任务" }).click();
         await page.waitForFunction(() => {
           const ed = document.querySelector("#list .editor");
-          return !!ed && ed.previousElementSibling === document.querySelector("#list")?.firstElementChild;
+          return !!ed && ed === document.querySelector("#list")?.lastElementChild;
         }, undefined, { timeout: 15_000 });
         const added = await page.evaluate(() => {
           const list = document.querySelector("#list");
@@ -229,7 +236,7 @@ for (const [name, engine] of ENGINES) {
             editorIsLast: ed === list?.lastElementChild,
           };
         });
-        expect(added).toEqual({ editors: 1, prevIsOpenRow: true, editorIsLast: false });
+        expect(added).toEqual({ editors: 1, prevIsOpenRow: true, editorIsLast: true });
       } finally {
         await browser.close();
         for (const id of ids) {

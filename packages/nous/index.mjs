@@ -111,7 +111,7 @@ export async function NousPortalAuthPlugin({ client }) {
       },
     },
     auth: {
-      provider: ID, icon: "nousresearch", refreshLead: LEAD,
+      provider: ID, icon: "nousresearch", refreshLead: LEAD, rotating: true,
       refresh: auth.refresh,
       async loader(getAuth) {
         if ((await auth.read(getAuth))?.type !== "oauth") return {}

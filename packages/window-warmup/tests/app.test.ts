@@ -25,6 +25,8 @@ import {
   shortModel,
   statusOf,
   shouldCloseOnScroll,
+  reauthURL,
+  shouldReloadOnAuthError,
   sumView,
   syncDraftOnPoll,
   trigText,
@@ -527,3 +529,32 @@ test("反馈问题：诊断过大时改用紧凑 JSON，仍超 GitHub 上限就�
   expect(huge).toContain("诊断日志过长，已截断");
   expect(huge.endsWith("</details>\n")).toBe(true);
 });
+
+test("shouldReloadOnAuthError：口令失效时若无未保存草稿触发自动刷新，有草稿或非鉴权错不刷", () => {
+  // 401 + reload: true，无未保存草稿 → 刷新
+  expect(shouldReloadOnAuthError(401, { error: "口令不对：请重新打开窗口预热页", reload: true }, false, false)).toBe(true);
+  // 401 文本含「口令」即使缺 reload: true 也识别
+  expect(shouldReloadOnAuthError(401, { error: "口令不对" }, false, false)).toBe(true);
+  // 用户正在编辑未保存的草稿（isDirty = true）→ 绝不冲掉草稿
+  expect(shouldReloadOnAuthError(401, { error: "口令不对", reload: true }, true, false)).toBe(false);
+  // 非鉴权错误（400/500/200）→ 不刷
+  expect(shouldReloadOnAuthError(400, { error: "参数错误" }, false, false)).toBe(false);
+  expect(shouldReloadOnAuthError(500, { error: "服务器错误" }, false, false)).toBe(false);
+  // 异常数据兜底
+  expect(shouldReloadOnAuthError(401, null, false, false)).toBe(false);
+  expect(shouldReloadOnAuthError(401, undefined, false, false)).toBe(false);
+  expect(shouldReloadOnAuthError(401, "string-error", false, false)).toBe(false);
+  // 已为口令重载过一次（地址带标记）：不再重载，防跨加载死循环
+  expect(shouldReloadOnAuthError(401, { error: "口令不对", reload: true }, false, true)).toBe(false);
+});
+
+test("reauthURL：加上/去掉重载标记，保留主题与语言等其余参数", () => {
+  const base = "http://127.0.0.1:3492/?theme=dark&lang=zh";
+  const on = reauthURL(base, true);
+  expect(new URL(on).searchParams.get("ww-reauth")).toBe("1");
+  expect(new URL(on).searchParams.get("theme")).toBe("dark");
+  expect(new URL(on).searchParams.get("lang")).toBe("zh");
+  expect(reauthURL(on, false)).toBe(base);
+  expect(reauthURL("http://h/p/?a=1", false)).toBe("http://h/p/?a=1");
+});
+

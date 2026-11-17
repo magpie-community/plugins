@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Usage board: dark rounded plate, blue usage line, one amber bar -->
+  <rect x="4" y="4" width="92" height="92" rx="20" fill="#1e2430"/>
+  <!-- amber bar (quota today) -->
+  <rect x="24" y="56" width="10" height="24" rx="3" fill="#f5a623"/>
+  <!-- blue usage line over the last hours -->
+  <polyline points="22,66 36,52 50,58 64,38 78,30"
+    fill="none" stroke="#4c9ffe" stroke-width="7"
+    stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- endpoint dot -->
+  <circle cx="78" cy="30" r="5.5" fill="#4c9ffe"/>
+</svg>

@@ -809,3 +809,43 @@ test("a WorkBuddy AI card carries the free model's window from the ledger", asyn
     rmSync(ledger, { force: true })
   }
 })
+
+// cdredfox on X (2026-11-11): the Credits card said only the plan's end,
+// while each daily check-in reward ends on its own day. A reward the
+// summary doesn't list, beside extra credits it does, was in no window
+// and in no expiry. Shapes as the 2026-10-26 China-site free account's
+// (CN_FREE: 赠送积分, code 007, one month after the day it was given).
+test("check-in rewards the summary doesn't list still say when they lapse (cdredfox on X)", async () => {
+  const { SITES } = _internal
+  const year = Date.UTC(2036, 9, 1) - Date.UTC(2026, 9, 1)
+  const on = (p) => ({ ...p, DeductionEndTime: p.DeductionEndTime + year, CycleStartTime: "2036" + p.CycleStartTime.slice(4), CycleEndTime: "2036" + p.CycleEndTime.slice(4) })
+  const grant = (day, left) => ({ PackageCode: "TCACA_code_007_nzdH5h4Nl0", PackageName: "赠送积分", CapacityType: 1, CycleCapacitySizePrecise: "100", CycleCapacityRemainPrecise: left,
+    CycleStartTime: `2036-09-${day} 01:34:43`, CycleEndTime: `2036-10-${day} 01:34:42`, DeductionEndTime: Date.parse(`2036-10-${day}T01:34:42+08:00`), ExpiredTime: "", Status: 0 })
+  // the summary lists the plan and a bonus; the detail's rewards are in neither
+  const sum = LIVE_SUMMARY
+  const paid = on(LIVE_PAID.Accounts[0]), bonus = on(LIVE_FREE.Accounts[0])
+  const early = grant("05", "40"), later_ = grant("20", "100")
+  const now = Date.parse("2036-09-25T00:00:00Z")
+  // one soonest, whatever order the lists come in
+  expect(_internal.runsOutOf(sum, [paid, bonus, later_, early], now, (c) => !_internal.planCodes(sum, SITES.workbuddy)(c), SITES.workbuddy))
+    .toEqual({ runsOutAt: "2036-10-04T17:34:42.000Z", runsOut: 40 })
+  // without the site, as before: only what the summary lists
+  expect(_internal.runsOutOf(sum, [paid, bonus, later_, early], now)).toEqual({ runsOutAt: new Date(bonus.DeductionEndTime).toISOString(), runsOut: 1910.8000000299999 })
+  // a spent reward, or one past its end, is not what lapses
+  expect(_internal.runsOutOf(sum, [paid, bonus, grant("05", "0")], now, () => true, SITES.workbuddy)?.runsOut).toBe(1910.8000000299999)
+
+  serve({
+    "/billing/meter/get-user-resource-summary": () => ok(sum),
+    "/billing/meter/get-user-resource-paid-packages": () => ok({ TotalCount: 1, Accounts: [paid] }),
+    "/billing/meter/get-user-resource-free-packages": () => ok({ TotalCount: 3, Accounts: [bonus, later_, early] }),
+  })
+  const u = await usageOf(WorkBuddyAuthPlugin, { type: "oauth", access: "a", refresh: "r", expires: later(), uid: "u" })
+  const total = u.windows.find((w) => w.name === "Total credits")
+  const extra = u.windows.find((w) => w.name === "Extra credits")
+  const lapse = new Date(early.DeductionEndTime).toISOString()
+  expect(Date.parse(lapse)).toBeLessThan(bonus.DeductionEndTime)
+  expect(extra.runsOut).toBe(40)
+  expect(extra.runsOutAt).toBe(lapse)
+  expect(total.runsOut).toBe(40)
+  expect(total.runsOutAt).toBe(lapse)
+})

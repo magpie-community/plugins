@@ -1636,3 +1636,32 @@ test("a declared name of separators only is never handed another call (#76 follo
   const exact = await guardToolResponse(Response.json(snapshot("chat", ["_"])), "chat", rules);
   assert.deepEqual(callsIn("chat", [await exact.json()]), ["_"]);
 });
+
+// plugins#930: two calls with their own ids at one index are two calls, each
+// with an index of its own, not one with {"a"}{"b"} arguments; fragments
+// with no id, or the same id, go on with the open call.
+test("Chat streaming keeps two ids at one tool index as two calls", async () => {
+  const A = { index: 0, id: "call_fixture_A", type: "function", function: { name: "Read", arguments: '{"key":"A"}' } };
+  const B = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "Bash", arguments: '{"key":"B"}' } });
+  const guarded = async (fragments) => {
+    const response = await guardToolResponse(
+      sse(fragments.map((tc) => event(chat({ tool_calls: [tc] }))).join("") + event(chat({}, "tool_calls")) + terminal("chat")),
+      "chat",
+      policy,
+    );
+    assert.equal(response.status, 200);
+    return parse(await response.text())
+      .filter((frame) => frame.data && typeof frame.data === "object")
+      .flatMap((frame) => frame.data.choices ?? [])
+      .flatMap((choice) => choice.delta?.tool_calls ?? [])
+      .map((c) => [c.index, c.id, c.function.name, c.function.arguments]);
+  };
+  const both = [[0, "call_fixture_A", "Read", '{"key":"A"}'], [1, "call_fixture_B", "Bash", '{"key":"B"}']];
+  assert.deepEqual(await guarded([A, B(0)]), both);
+  assert.deepEqual(await guarded([A, B(1)]), both);
+  assert.deepEqual(await guarded([
+    { index: 0, id: "call_fixture_A", type: "function", function: { name: "Read", arguments: '{"ke' } },
+    { index: 0, function: { arguments: 'y":' } },
+    { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
+  ]), [[0, "call_fixture_A", "Read", '{"key":"A"}']]);
+});

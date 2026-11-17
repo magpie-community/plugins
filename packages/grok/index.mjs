@@ -956,6 +956,96 @@ function kept(res) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }
 
+// ---- speech to text -----------------------------------------------------------
+
+// Grok Build's voice dictation sends audio to xAI's own speech-to-text,
+// POST api.x.ai/v1/stt, signed as every other request of the CLI is. magpie's
+// /v1/audio/transcriptions arrives here as OpenAI's multipart form; xAI's
+// takes `file` last, an optional `language`, and no `model` of OpenAI's
+// (the one it has is the default, and any other id is a 404).
+const STT = "https://api.x.ai/v1/stt"
+const STT_FORMATS = ["json", "text", "verbose_json"]
+
+async function sttRequest(body, ctype) {
+  let form
+  try {
+    form = await new Response(body, { headers: { "content-type": ctype } }).formData()
+  } catch {
+    return { error: "send the audio as multipart/form-data, as OpenAI's /v1/audio/transcriptions takes it: a file and a model" }
+  }
+  const file = form.get("file")
+  if (!(file instanceof Blob)) return { error: "the form has no audio file" }
+  const format = String(form.get("response_format") || "json")
+  if (!STT_FORMATS.includes(format)) return { error: `Grok's speech to text answers json, text or verbose_json, not ${format}` }
+  const out = new FormData()
+  const language = form.get("language")
+  if (typeof language === "string" && language) out.set("language", language)
+  out.set("file", file, file.name || "audio")
+  return { form: out, format }
+}
+
+// sttAnswer is xAI's answer in the shape OpenAI's takes for the format
+// asked: its words are {text, start, end}, OpenAI's {word, start, end}.
+async function sttAnswer(res, format) {
+  let a
+  try {
+    a = await res.json()
+  } catch {
+    return new Response("Grok's speech to text answered something that isn't JSON", { status: 502 })
+  }
+  const text = typeof a?.text === "string" ? a.text : ""
+  const headers = new Headers({ "X-Magpie-Sign-In": "kept" })
+  if (format === "text") {
+    headers.set("content-type", "text/plain; charset=utf-8")
+    return new Response(text, { status: 200, headers })
+  }
+  headers.set("content-type", "application/json")
+  if (format === "json") return new Response(JSON.stringify({ text }), { status: 200, headers })
+  const words = Array.isArray(a.words) ? a.words.map((w) => ({ word: w.text, start: w.start, end: w.end })) : []
+  return new Response(JSON.stringify({ task: "transcribe", language: a.language, duration: a.duration, text, words }), { status: 200, headers })
+}
+
+const failure = (status, message, extra = {}) =>
+  new Response(JSON.stringify({ error: { message, type: status === 401 ? "authentication_error" : "invalid_request_error" } }), {
+    status,
+    headers: { "content-type": "application/json", ...extra },
+  })
+
+async function transcribe(auth, req, init) {
+  const home = auth?.refresh
+  if (req.url.includes("/audio/translations")) return failure(400, "Grok's speech to text transcribes; it doesn't translate")
+  const raw = init?.body
+  const body = typeof raw === "string" ? Buffer.from(raw) : raw
+  const ask = body ? await sttRequest(body, req.headers.get("content-type") ?? "") : { error: "the request has no body" }
+  if (ask.error) return failure(400, ask.error)
+  let c = await token(home)
+  const send = async (key) => {
+    const headers = new Headers()
+    await sign(headers, key)
+    return fetch(STT, { method: "POST", headers, body: ask.form, signal: init?.signal })
+  }
+  let res = await send(c.key)
+  if (res.status === 401) {
+    const said = (await res.text().catch(() => "")).slice(0, 300)
+    try {
+      c = await token(home, c.key, said)
+    } catch (e) {
+      note(home, res)
+      return failure(e?.transient ? 503 : 401, `${e.message}${said ? `. Grok said: ${said}` : ""}`, { "X-Magpie-Sign-In": "kept", ...(e?.transient ? { "retry-after": String(RETRY_SECS) } : {}) })
+    }
+    res = await send(c.key)
+  }
+  note(home, res)
+  if (res.ok) return sttAnswer(res, ask.format)
+  const said = (await res.text().catch(() => "")).slice(0, 300)
+  let msg = said
+  try {
+    const j = JSON.parse(said)
+    msg = typeof j?.error === "string" ? j.error : (j?.error?.message ?? said)
+  } catch {}
+  return failure(res.status, `Grok's speech to text: ${msg || res.status}`, { "X-Magpie-Sign-In": "kept" })
+}
+
 // ---- the plugin ---------------------------------------------------------------
 
 // A Responses stream that dies before its first byte is asked again, up
@@ -1142,6 +1232,7 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
             const home = auth?.refresh
             if (!home) throw new Error("Grok is not signed in; run `grok login`")
             const req = new Request(input, init)
+            if (new URL(req.url).pathname.match(/\/audio\/(transcriptions|translations)$/)) return transcribe(auth, req, init)
             const search = new URL(req.url).pathname.endsWith("/responses") && magpie?.option?.(PROVIDER, "x_search") === true
             let body = rewrite(bodyText(init?.body), search)
             let parsed = {}
@@ -1336,4 +1427,4 @@ export const GrokAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { rewrite, objectRoot, bodyText, limited, HOLD_MS, windowsOf, modelOf, waits }
+export const _internal = { sttRequest, sttAnswer, rewrite, objectRoot, bodyText, limited, HOLD_MS, windowsOf, modelOf, waits }

@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } f
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createScanner, sources } from "./lib/scan.mjs"
-import { readClaude, readCodex, readGemini, readGrok, readKimi, MESSAGES_MAX, MESSAGE_TEXT_MAX } from "./lib/readers.mjs"
+import { cursorStamp, cursorTyped, readClaude, readCodex, readCursor, readGemini, readGrok, readKimi, MESSAGES_MAX, MESSAGE_TEXT_MAX } from "./lib/readers.mjs"
 
 const dir = import.meta.dir
 const tmps = []
@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "OMP_HOME", "OMP_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_CONFIG_DIR",
   "GROK_HOME", "GROK_CONFIG_DIR", "COPILOT_HOME", "COPILOT_CONFIG_DIR",
   "QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
+  "CURSOR_DATA_DIR", "CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME",
 ]
 
 // run fn with exactly the environment given; every agent home is explicit so
@@ -441,4 +442,91 @@ test("Claude counts final usage once for interleaved blocks of the same response
   const row = (id, output, time) => ({ type: "assistant", timestamp: at(time), message: { id, role: "assistant", usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 400, output_tokens: output }, content: [] } })
   const s = readClaude([row("a", 0, 1), row("b", 5, 2), row("a", 10, 3), row("b", 5, 4)].map(j).join("\n"), "claude", "c", { now: NOW })
   expect(s).toMatchObject({ tokensToday: 255, context: 525 })
+})
+
+// ---- Cursor ----------------------------------------------------------------
+// The bytes cursor-agent 2026.11 wrote in a sandbox (CURSOR_DATA_DIR and
+// CURSOR_CONFIG_DIR set), one run that read a file and lost its connection
+// and one that answered.
+const CURSOR_TOOL_RUN = [
+  String.raw`{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Tuesday, Nov 10, 2026, 1:18 PM (UTC+8)</timestamp>\n<user_query>\nRead a.txt with a tool and tell me its contents in one word.\n</user_query>"}]}}`,
+  String.raw`{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"/Users/yetone/workspace/projects/magpie-wt/office-cursor-scratch/proj/a.txt"}}]}}`,
+  String.raw`{"role":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`,
+  String.raw`{"role":"user","message":{"content":[{"type":"text","text":"Your previous response was interrupted. Continue from where you left off."}]}}`,
+  String.raw`{"role":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`,
+  String.raw`{"type":"turn_ended","status":"error","error":"WritableIterable is closed"}`,
+].join("\n") + "\n"
+const CURSOR_OK_RUN = [
+  String.raw`{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Tuesday, Nov 10, 2026, 1:19 PM (UTC+8)</timestamp>\n<user_query>\nSay ok.\n</user_query>"}]}}`,
+  String.raw`{"role":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}`,
+  String.raw`{"type":"turn_ended","status":"success"}`,
+].join("\n") + "\n"
+const cursorSlug = (p) => p.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+
+test("Cursor: its timestamp and what was typed", () => {
+  expect(cursorStamp("<timestamp>Tuesday, Nov 10, 2026, 1:19 PM (UTC+8)</timestamp>")).toBe(Date.UTC(2026, 10, 10, 5, 19))
+  expect(cursorStamp("<timestamp>Monday, Dec 1, 2025, 12:05 AM (UTC-5:30)</timestamp>")).toBe(Date.UTC(2025, 11, 1, 5, 35))
+  expect(cursorStamp("no stamp")).toBe(0)
+  expect(cursorTyped("<timestamp>x</timestamp>\n<user_query>\nSay ok.\n</user_query>")).toBe("Say ok.")
+  expect(cursorTyped("Your previous response was interrupted. Continue from where you left off.")).toBe("")
+  expect(cursorTyped("<user_info>OS</user_info>\nfix the build")).toBe("fix the build")
+})
+
+test("Cursor: cursor-agent's chats show as Cursor CLI, the editor's as Cursor", () => {
+  const h = tmp()
+  const data = join(h, "cursor-data"), cfg = join(h, "cursor-cfg")
+  // a real folder, so the editor's slug reads back to it
+  const work = join(h, "work", "my app")
+  mkdirSync(work, { recursive: true })
+  const proj = cursorSlug("/Users/yetone/workspace/projects/magpie-wt/office-cursor-scratch/proj")
+  const cli1 = "a65e9061-fdc6-4140-a525-9d094cbaf4de", cli2 = "4d66b3de-e655-4cc6-bd00-dacdaf3f1cc3"
+  write(data, `projects/${proj}/agent-transcripts/${cli1}/${cli1}.jsonl`, CURSOR_TOOL_RUN)
+  write(data, `projects/${proj}/agent-transcripts/${cli2}/${cli2}.jsonl`, CURSOR_OK_RUN)
+  write(cfg, `chats/6a5609665901ab1559ed50a9701ee3ec/${cli1}/meta.json`, String.raw`{"schemaVersion":1,"createdAtMs":1794287842143,"hasConversation":true,"updatedAtMs":1794287956524,"cwd":"/Users/yetone/workspace/projects/magpie-wt/office-cursor-scratch/proj"}`)
+  write(cfg, `chats/6a5609665901ab1559ed50a9701ee3ec/${cli2}/meta.json`, String.raw`{"schemaVersion":1,"createdAtMs":1794287971240,"hasConversation":true,"updatedAtMs":1794287983979,"cwd":"/Users/yetone/workspace/projects/magpie-wt/office-cursor-scratch/proj"}`)
+  // the editor: the same lines without turn_ended, and no meta.json
+  const ed = write(data, `projects/${cursorSlug(work)}/agent-transcripts/ed-1/ed-1.jsonl`, CURSOR_OK_RUN.split("\n").slice(0, 2).join("\n") + "\n")
+  const old = write(data, `projects/${cursorSlug(work)}/agent-transcripts/ed-old.jsonl`, CURSOR_TOOL_RUN.split("\n").slice(0, 2).join("\n") + "\n")
+  // a file elsewhere in the folder is not a chat
+  write(data, `projects/${cursorSlug(work)}/agent-transcripts/ed-1/other.jsonl`, CURSOR_OK_RUN)
+
+  withEnv({ HOME: h, CURSOR_DATA_DIR: data, CURSOR_CONFIG_DIR: cfg }, () => {
+    const scan = () => createScanner({ sources: sources().filter((s) => s.kind === "cursor"), days: 2 }).scan(Date.now())
+    let got = scan()
+    const by = (id) => got.find((s) => s.id === id)
+    expect(got.map((s) => s.id).sort()).toEqual([cli2, cli1, "ed-1", "ed-old"].sort())
+
+    const failed = by(cli1)
+    expect(failed).toMatchObject({ agent: "cursor", phase: "error", error: "WritableIterable is closed", turns: 1,
+      cwd: "/Users/yetone/workspace/projects/magpie-wt/office-cursor-scratch/proj", project: "proj",
+      query: "Read a.txt with a tool and tell me its contents in one word.", pending: [] })
+    expect(failed.title.startsWith("Read a.txt with a tool")).toBe(true)
+    expect(failed.messages.map((m) => [m.role, m.text])).toEqual([["user", "Read a.txt with a tool and tell me its contents in one word."], ["tool", "Read"], ["assistant", "hello"], ["assistant", "hello"]])
+    expect(failed.started).toBe(1794287842143)
+    expect(by(cli2)).toMatchObject({ agent: "cursor", phase: "done", query: "Say ok.", reply: "ok" })
+
+    // the editor, written to just now: still at work
+    expect(by("ed-1")).toMatchObject({ agent: "cursor-app", phase: "thinking", reply: "ok", cwd: work, project: "my app" })
+    expect(by("ed-old")).toMatchObject({ agent: "cursor-app", phase: "tool", step: expect.stringContaining("a.txt") })
+
+    // quiet for a minute after its answer: done; a pending tool call is not
+    const ago = (Date.now() - 60e3) / 1000
+    utimesSync(ed, ago, ago)
+    utimesSync(old, ago, ago)
+    got = scan()
+    expect(by("ed-1").phase).toBe("done")
+    expect(by("ed-old").phase).toBe("tool")
+  })
+})
+
+test("Cursor: a chat whose folder is gone is named by its slug", () => {
+  const s = readCursor(CURSOR_OK_RUN.split("\n").slice(0, 2).join("\n"), "x", null, { mtime: 5 })
+  expect(s).toMatchObject({ agent: "cursor-app", phase: "thinking", query: "Say ok." })
+  const h = tmp()
+  const data = join(h, "d")
+  write(data, "projects/Users-nobody-gone-proj-x/agent-transcripts/c1/c1.jsonl", CURSOR_OK_RUN)
+  withEnv({ HOME: h, CURSOR_DATA_DIR: data, CURSOR_CONFIG_DIR: join(h, "c") }, () => {
+    const got = createScanner({ sources: sources().filter((s) => s.kind === "cursor"), days: 2 }).scan(Date.now())
+    expect(got[0]).toMatchObject({ agent: "cursor-app", phase: "done", cwd: "", project: "x" })
+  })
 })

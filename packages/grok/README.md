@@ -17,6 +17,16 @@ run, such as a container without curl, put the binary in a folder of your
 own and set `GROK_BIN_DIR` to it. magpie installs Grok Build itself, as
 the installer does, before a sign-in that needs it.
 
+## Images and speech
+
+Images in a request (Anthropic image blocks, OpenAI `image_url`, Responses
+`input_image`) go to Grok as sent, and its models take them. Speech to text
+is the one Grok Build's voice dictation uses: magpie's
+`/v1/audio/transcriptions` (model `grok/grok-4.7`, any of the account's
+models) is sent on to xAI's `api.x.ai/v1/stt` with the account's sign-in.
+`language` is passed on; `json`, `text` and `verbose_json` are answered, and
+translations are refused.
+
 ## Sign in
 
 - **Sign in with Grok Build (device code)** runs `grok login --device-auth`

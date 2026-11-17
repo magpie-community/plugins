@@ -37,7 +37,7 @@ test("gives the host one complete provider restore unit without touching other p
   expect(Object.keys(out)).toEqual(["providers.magpie"])
   expect(out["providers.magpie"].baseUrl).toBe(gateway.v1)
   expect(out["providers.magpie"].apiKey).toBe("magpie-pig")
-  expect(out["providers.magpie"].api).toBe("openai-completions")
+  expect(out["providers.magpie"].api).toBe("openai-responses")
 })
 
 test("preserves gateway model IDs including slashes and maps capability metadata", () => {

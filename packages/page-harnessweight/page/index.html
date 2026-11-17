@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessWeight</title>
+<script src="_magpie/bridge.js"></script>
+<script src="boot.js"></script>
+<style>
+  body { margin: 0; display: grid; place-items: center; min-height: 100vh; font: 14px/1.5 system-ui, sans-serif; color: var(--magpie-fg, #444); background: var(--magpie-bg, transparent); }
+  .wait { text-align: center; opacity: .8; }
+  .wait img { width: 48px; height: 48px; animation: p 1.4s ease-in-out infinite; }
+  @keyframes p { 50% { opacity: .45; transform: scale(.94); } }
+  @media (prefers-reduced-motion: reduce) { .wait img { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wait"><img src="icon.svg" alt=""><p id="msg">Opening HarnessWeight…</p></div>
+<script>
+  // the window's language, from magpie's bridge; only Simplified Chinese has its own line
+  (async () => {
+    try {
+      const l = String((await window.magpie?.ready)?.lang || navigator.language || "").toLowerCase()
+      const zh = /^zh(?:-|$)/.test(l) && !/^zh-(tw|hk|mo|hant)\b/.test(l)
+      document.documentElement.lang = zh ? "zh-CN" : "en"
+      if (zh) document.getElementById("msg").textContent = "正在打开 HarnessWeight…"
+    } catch {}
+  })()
+</script>
+</body>
+</html>

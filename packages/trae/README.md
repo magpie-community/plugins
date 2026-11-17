@@ -66,6 +66,20 @@ fields are kept with the sign-in; nothing sends them.
 enterprise sign-in sends back is not known yet; if yours doesn't work, open an
 issue with what the sign-in page showed.
 
+One enterprise sign-in has since been seen to name
+`console.enterprise.trae.cn` as the account's host, and its usage is read
+from that console (see Usage). The tenant and login-type fields are still
+kept and never sent.
+
+Such a seat chats on that console, where a chat bills the seat pool. Not
+every tenant's console takes chats: one that answers 4245 marks the
+account, and from then on it chats on the consumer gateway, which takes
+the same login but spends the login's own credits (#1127, #1155).
+
+The international deployment has an enterprise console too, at
+`console.enterprise.trae.ai`, and the same reading is done there — **not
+verified**, see Usage.
+
 ### The international realm's region
 
 Trae Global has two deployments. The sign-in's `AIRegion` (or a US auth host
@@ -227,7 +241,18 @@ function does (`glm-5v-turbo`, `kimi-k2.5`, `minimax-m2.7`,
 `qwen-3.6-plus`, each answering through `solo_coder`). Left out are the
 IDE's helpers (`usage` other than
 `chat_completion`: summary, fast_apply…), configs switched off and the
-custom-model slots. Context is the list's `context_window_tokens.dev`,
+custom-model slots. An enterprise's own built-in models
+(`config_source` 2, "Enterprise-builtin" in Trae CN's picker) are listed
+since 0.2.41 (#1258), unless the admin switched one off (`status` false); a
+personal custom model (`config_source` 3) is not, its key being in the
+user's IDE only. A chat with an enterprise model carries `config_source`
+2, `is_custom_model` true and the entry's `provider` at the top of the
+body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.42; 0.2.41
+put them under `user_message_context.model_info`, and an enterprise seat got
+4001 "the param is invalid" on every function) — **not verified with a real
+enterprise seat**. A refused chat's error names
+the model, the functions tried and the host, and says when the account's
+list doesn't have the model. Context is the list's `context_window_tokens.dev`,
 output the `__dev` model's `max_tokens`. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
@@ -251,8 +276,13 @@ which levels it takes — its `reasoning_effort_config`, with the options
 names as `reasoning_effort`, so a level an agent picks is sent as Trae
 spells it: the plugin offers each model's own levels as `variants`
 (`low`/`high`/`xhigh` for `light`/`high`/`extra_high`; `medium` and `max`
-keep their names, offered only where the entry names them, as for DeepSeek
-V4.1 Flash's `max` in Trae's app), and sends nothing
+keep their names where the entry names them). A model whose top level is
+`extra_high` and that names no `max` — TRAE CN's DeepSeek-V4.1-Flash,
+GLM-5.3 and Kimi-K3, 轻/高/极高 in Trae's app — is offered `max` too, sent
+as `extra_high` (as `xhigh` is): 极高 is that model's max, so in a magpie
+routing group it ranges up to max beside members that have one, and a
+group set to max sends it `extra_high`. An entry naming Trae's own `max`
+keeps it, with `extra_high` as `xhigh`. The plugin sends nothing
 for a level the model doesn't name, or for a model whose entry names none —
 Trae then serves it at its own default. An entry naming levels this map
 can't spell offers none, rather than being sent one Trae would reject. A
@@ -357,6 +387,36 @@ page the realm bills on:
   total, with the share, which magpie shows as used or left like
   WorkBuddy's.
 
+**Trae CN, an enterprise (SaaS) account** — Trae's enterprise console, which
+bills in yuan rather than in the credits the consumer page counts:
+
+- **Source:** `console.enterprise.trae.cn/trae/gtm/tob/api/v1/config/get_personal_quota`
+  for the allowance and `…/get_user_model_usage` for the spend, both POST
+  with an empty body; `…/get_personal_core_data` for the period's
+  `ResetTime`; and the consumer credits page above for the second row.
+- **What it adds up:** the seat pool in yuan (`seat_pool_currency_quota`;
+  the console's pay-as-you-go sentinel is no limit), and the models' own
+  `total_cost_currency` summed — the console gives no total of its own. The
+  console answers an empty body with the current period's spend, which is
+  what the pool resets on; a real account's sum matches its usage page. Only
+  the account's own seat is counted: an administrator's answer carries every
+  seat in the tenant.
+- **What it shows:** a Seat Usage window, `¥used / ¥total` and the share,
+  resetting when the console says the period does, then a Credits window of
+  the consumer page's allowance, marked `aside`. A spend page that fails
+  leaves the row saying `? / ¥total` rather than reading as nothing spent.
+- **Which accounts:** the sign-in named `console.enterprise.trae.cn` as the
+  account's host. A personal account, and any account whose usage pages
+  answer nothing, is read as before.
+- **Why both:** the consumer page answers an enterprise account too, with a
+  credits allowance that real calls have been measured not to touch — two
+  calls through magpie moved the console's spend by ￥0.0002 each and left
+  the credits at 4.4 of 4700. The seat pool is what a request spends, so
+  the credits row is `aside`: magpie shows it without routing on it. Whether
+  the credits are a fallback the seat pool exhausts first is not known — no
+  account has spent its pool to find out. A failure on the credits page or
+  on the period leaves the seat pool standing.
+
 **Trae Global** — the dollar billing's entitlements:
 
 - **Source:** `POST api-sg-central.trae.ai/trae/api/v1/pay/user_current_entitlement_list`
@@ -366,6 +426,39 @@ page the realm bills on:
   (`basic_usage_amount`, `bonus_usage_amount`).
 - **What it shows:** one Dollar Usage window, the dollars used of the
   allowance, resetting when the pack ends.
+
+**Trae Global, an enterprise (SaaS) account** — the international
+deployment's own enterprise console, which bills in dollars:
+
+- **Source:** `console.enterprise.trae.ai/trae/gtm/tob/api/v1/config/get_personal_quota`
+  for the allowance, `…/get_user_model_usage` for the spend and
+  `…/get_personal_core_data` for the period, all POST with an empty body —
+  the three pages Trae CN's console has.
+- **What it adds up:** the seat pool (`seat_pool_currency_quota`; the
+  console's pay-as-you-go sentinel is no limit) and the models' own
+  `total_cost_currency` summed.
+- **What it shows:** one Seat Usage window, `$used / $total` and the share,
+  resetting when the console says the period does. The international realm
+  has no consumer credits page, so there is no second row.
+- **Which accounts:** the sign-in named `console.enterprise.trae.ai` as the
+  account's host. Any other account is read as before.
+
+**Not verified.** No international enterprise account was available to try
+this against, and `console.enterprise.trae.ai` answers another realm's token
+with 请先登录 — exactly as it answers no token at all, so whether it refuses
+the token or wants a console session of its own is not known either. What
+the paths and fields are was read off the international console's own build,
+which names `seat_pool_currency_quota`, the models' `total_cost_currency`
+and `ResetTime` as Trae CN's console does; whether such an account's console
+answers at all is not known. The Trae CN path above is the one that has been
+run against a real account.
+
+Because that is not known, this console is not allowed to mark the sign-in:
+its 401 is reported as the read's error and the account stays signed in,
+where Trae CN's console — measured to take the IDE's own token — does mark
+it. A console that wants a session of its own would otherwise mark every
+international enterprise account expired, and signing in again would not
+clear it.
 
 A 200 carrying an error code is shown as Trae's own message rather than as
 an empty answer.

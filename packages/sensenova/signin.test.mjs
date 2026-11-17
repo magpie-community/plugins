@@ -106,6 +106,7 @@ test("a refresh token is renewed, and the new one replaces the old", async () =>
     return json({ access_token: "jwt-2", refresh_token: "new-r", expires_in: 10800 })
   })
   const p = await SenseNovaAuthPlugin({ client: { auth: { set: async () => {} } } })
+  expect(p.auth.rotating).toBe(true)
   const renewed = await p.auth.refresh({ type: "oauth", access: "old", refresh: "old-r", expires: Date.now() + 1000 })
   expect(await unseal(renewed.access)).toBe("jwt-2")
   expect(await unseal(renewed.refresh)).toBe("new-r")

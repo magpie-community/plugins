@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-nous-auth",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Nous Portal OAuth with device sign-in and automatic token renewal in OpenCode and magpie",
   "type": "module",
   "main": "./opencode.mjs",

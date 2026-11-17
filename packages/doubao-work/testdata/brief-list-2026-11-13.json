@@ -1,0 +1,780 @@
+{
+ "status": 200,
+ "code": 0,
+ "conf": {
+  "default_select_mode_map": {
+   "creation": {
+    "mode_id": "3",
+    "model": {
+     "item_id": "9",
+     "model_item_key": "9"
+    },
+    "reasoning_effort": 5
+   },
+   "office": {
+    "mode_id": "3",
+    "model": {
+     "item_id": "9",
+     "model_item_key": "9"
+    },
+    "reasoning_effort": 5
+   }
+  },
+  "mode_list": {
+   "expose_config": {
+    "max_exposed_num": 4,
+    "text": "更多"
+   },
+   "item_list": [
+    {
+     "agent_mode": 1,
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_conversation_mode": "office",
+     "default_model": {
+      "item_id": "9",
+      "model_item_key": "9"
+     },
+     "mode_id": "3",
+     "model_list": {
+      "expose_config": {
+       "max_exposed_num": 10,
+       "text": "更多模型"
+      },
+      "item_list": [
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 9,
+        "model_extra_params": {
+         "total_window_size": "256000"
+        },
+        "model_item_key": "9",
+        "name": "自动",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_extra_params": {
+         "memory_profile": "256k",
+         "total_window_size": "256000"
+        },
+        "model_item_key": "seed-lite-7b",
+        "name": "豆包 2.1 Lite",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 5,
+        "model_extra_params": {
+         "total_window_size": "256000"
+        },
+        "model_item_key": "5",
+        "name": "豆包 2.1 Pro",
+        "need_login": true,
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          }
+         ]
+        },
+        "show_task_tools": 1,
+        "subscribe_config": {
+         "jump_url": "https://www.doubao.com/member/subscription?default_sku_key=doubao_personal_std&enter_method=answer_peak_limit&scene_key=message&trigger_scene=peak_hour_limit",
+         "need_upgrade": false
+        }
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-deepseek-v4-1-flash-261017",
+        "name": "DeepSeek V4.1 Flash",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 6,
+           "name": "极高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-kimi-k3-1-pro-261111",
+        "name": "Kimi K3.1 Pro",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 6,
+           "name": "极高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-kimi-k3-1-pro-highspeed-261111",
+        "name": "Kimi K3.1 Pro 高速",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 6,
+           "name": "极高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-kimi-k3-261111",
+        "name": "Kimi K3",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 6,
+           "name": "极高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-glm-5-3-261111",
+        "name": "GLM 5.3",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-glm-5-3-flash-261111",
+        "name": "GLM 5.3 Flash",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       },
+       {
+        "conversation_mode_list": [
+         "office",
+         "creation"
+        ],
+        "default_mode": "3",
+        "item_id": 10001,
+        "model_item_key": "person-deepseek-v4-pro-ga-260813",
+        "name": "DeepSeek V4 Pro",
+        "reasoning_effort_config": {
+         "default_level": 5,
+         "option_list": [
+          {
+           "level": 3,
+           "name": "低"
+          },
+          {
+           "level": 4,
+           "name": "中"
+          },
+          {
+           "level": 5,
+           "name": "高"
+          },
+          {
+           "level": 6,
+           "name": "极高"
+          },
+          {
+           "level": 7,
+           "name": "最高"
+          }
+         ]
+        },
+        "show_task_tools": 1
+       }
+      ],
+      "title": "选择模型"
+     },
+     "name": "工作任务",
+     "need_login": true,
+     "selected_name": "工作任务",
+     "show_reasoning_effort": true,
+     "show_task_tools": 1,
+     "support_models": [
+      {
+       "item_id": "9",
+       "model_item_key": "9"
+      },
+      {
+       "item_id": "5",
+       "model_item_key": "5"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "seed-lite-7b"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-deepseek-v4-1-flash-261017"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-kimi-k3-1-pro-261111"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-kimi-k3-1-pro-highspeed-261111"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-kimi-k3-261111"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-glm-5-3-261111"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-glm-5-3-flash-261111"
+      },
+      {
+       "item_id": "10001",
+       "model_item_key": "person-deepseek-v4-pro-ga-260813"
+      }
+     ]
+    }
+   ]
+  },
+  "model_list": {
+   "expose_config": {
+    "max_exposed_num": 10,
+    "text": "更多模型"
+   },
+   "item_list": [
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 9,
+     "model_extra_params": {
+      "total_window_size": "256000"
+     },
+     "model_item_key": "9",
+     "name": "自动",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_extra_params": {
+      "memory_profile": "256k",
+      "total_window_size": "256000"
+     },
+     "model_item_key": "seed-lite-7b",
+     "name": "豆包 2.1 Lite",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 5,
+     "model_extra_params": {
+      "total_window_size": "256000"
+     },
+     "model_item_key": "5",
+     "name": "豆包 2.1 Pro",
+     "need_login": true,
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       }
+      ]
+     },
+     "show_task_tools": 1,
+     "subscribe_config": {
+      "jump_url": "https://www.doubao.com/member/subscription?default_sku_key=doubao_personal_std&enter_method=answer_peak_limit&scene_key=message&trigger_scene=peak_hour_limit",
+      "need_upgrade": false
+     }
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-deepseek-v4-1-flash-261017",
+     "name": "DeepSeek V4.1 Flash",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 6,
+        "name": "极高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-kimi-k3-1-pro-261111",
+     "name": "Kimi K3.1 Pro",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 6,
+        "name": "极高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-kimi-k3-1-pro-highspeed-261111",
+     "name": "Kimi K3.1 Pro 高速",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 6,
+        "name": "极高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-kimi-k3-261111",
+     "name": "Kimi K3",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 6,
+        "name": "极高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-glm-5-3-261111",
+     "name": "GLM 5.3",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-glm-5-3-flash-261111",
+     "name": "GLM 5.3 Flash",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    },
+    {
+     "conversation_mode_list": [
+      "office",
+      "creation"
+     ],
+     "default_mode": "3",
+     "item_id": 10001,
+     "model_item_key": "person-deepseek-v4-pro-ga-260813",
+     "name": "DeepSeek V4 Pro",
+     "reasoning_effort_config": {
+      "default_level": 5,
+      "option_list": [
+       {
+        "level": 3,
+        "name": "低"
+       },
+       {
+        "level": 4,
+        "name": "中"
+       },
+       {
+        "level": 5,
+        "name": "高"
+       },
+       {
+        "level": 6,
+        "name": "极高"
+       },
+       {
+        "level": 7,
+        "name": "最高"
+       }
+      ]
+     },
+     "show_task_tools": 1
+    }
+   ]
+  },
+  "use_mode_model_list": true
+ }
+}

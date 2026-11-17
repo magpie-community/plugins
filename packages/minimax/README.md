@@ -81,9 +81,63 @@ that server to your agent to use the tools with any of its chat models.
 | `get_asset_url` | Get a fresh download URL for a generated asset's `node_id` |
 | `list_tools`, `tool_schema`, `call_tool` | Discover and call the account's current Matrix tools and read their live schemas |
 
+## Native Magpie image, video, and web search
+
+This plugin also registers MiniMax Code as a backend for Magpie's built-in
+media and search, so you can use them from Settings and drop the named tools
+from an agent's catalog if you only need those three capabilities. The named
+tools above stay available.
+
+Once you are signed in to MiniMax Code (China) or MiniMax Code (Global):
+
+- **Image generation** (Settings → Models → Images → Image generation, served
+  at `/mcp/magpie/image`): choose **MiniMax Image**. Text-to-image uses the
+  same Matrix `generate_image` API as the named tool (a `requests` array, then
+  `get_asset_url` for the download URL). Magpie sends edits as multipart
+  form data; the image bytes, and any `data:` URL, are uploaded through MiniMax Code's `upload_temp_url` flow
+  before `generate_image`. HTTPS URLs are passed through. `generate_image`
+  takes no mask, so a mask edit is refused (HTTP 400). A size such as
+  `1024x1024` is mapped to MiniMax's `area` (so it does not fall through to
+  the vendor's 4K default). Right after a generation, `get_asset_url` may
+  first answer a watermarked `/visible/` URL (#974); the plugin waits a
+  few seconds and asks again for the original.
+- **Video generation** (Settings → Models → Images → Video generation, served
+  through Magpie's videos API): choose **MiniMax H3**, **MiniMax H3 Max**, or
+  **MiniMax Hailuo 2.3**. A job is submitted with `submit_video_generation` and
+  polled with `query_video_generation`, using those real model ids. Text-to-video
+  works out of the box. A first or last frame given as a `data:` URL is
+  uploaded the same way; an HTTPS URL is passed through.
+- **Web search** (Settings → Models → Web search → Search APIs, served at
+  `/mcp/magpie/web-search`): enable **MiniMax Code** or **MiniMax Code (Global)**
+  in the search API list. Searches use `/mavis/api/v1/mcp/web_search` with the
+  signed-in account, the same API as the `web_search` tool. No separate API key
+  is needed.
+
+The image and video models also appear on the MiniMax Code provider's model
+list (they give images or video, not chat). Leave chat on M3 / M2.7.
+
+Magpie's Library can already give skills to the **MiniMax Code** desktop app
+when Magpie detects that app on the machine. That target lives in Magpie
+itself, not in this plugin.
+
 On the combined MCP server these are named `minimax_generate_image`,
 `minimax_submit_video_generation`, and so on. In the Library's routed server,
 the separator is `minimax__generate_image`.
+
+The sixteen named Matrix tools are advertised by default. The plugin option
+`compactTools` (default `false`) leaves them out of the tool list when set
+to `true`, and keeps only `list_tools`, `tool_schema`, `call_tool`, and
+`web_search`, with those four descriptions and schemas unchanged. `call_tool`
+still checks arguments against the account's live catalog. Turn it on with:
+
+```sh
+magpie plugin options @magpie-community/opencode-minimax-auth '{"compactTools": true}'
+```
+
+Each named tool shows a schema bundled with the plugin, so loading it asks
+no network. A call is checked against the schema in the account's live
+catalog, read on each call, so a parameter MiniMax added since the bundled
+copy still goes through. `tool_schema` prints the live schema.
 
 Webpage reading is available through Magpie's search MCP server, whose
 `web_fetch` protects loopback and private network addresses.
@@ -144,6 +198,12 @@ Chats are Anthropic messages (`@ai-sdk/anthropic`) sent to
 - `X-Mavis-Timezone-Offset`;
 - `X-Mavis-Session-Id`. This is the conversation's id when magpie or
   OpenCode passes one, and a fixed id for the plugin's run otherwise.
+
+A chat asks for its answer uncompressed (`accept-encoding: identity`).
+MiniMax answers a chat it is asked to compress as one gzip member, flushed
+when the answer is done: the events of a streamed answer then all arrive at
+once, and the first token waits for the last. Asked uncompressed, it sends
+the events as they come.
 
 A refusal that says the credits or quota ran out goes on as a 429. The 402,
 403 or 429 statuses count, when the body says so. That way magpie can move

@@ -13,6 +13,18 @@ Version **0.1.15** adds membership renewal and a single shared monthly meter to 
 
 Request-body buffering for schema conversion also follows the caller's abort signal: cancelling while a stream is still being read cancels that read and returns the original cancellation reason before any upstream request is sent.
 
+## Use external models in Kimi Work
+
+The [Kimi desktop agent](../kimi-desktop/README.md) points the ordinary Kimi desktop app's Work page at a model selected in Magpie, so Work runs an external model instead of a Kimi one. Install that agent package for this direction:
+
+```sh
+magpie plugin add @magpie-community/agent-kimi-desktop
+```
+
+On Magpie's Agents page select **Kimi**, pick an external model and connect, then use Kimi's **Work** page. The model is selected in Magpie, so Kimi's native model menu can still show its official label. Kimi's sign-in and the desktop's own tool authorization are kept as they are; only inference goes to the selected external service. This provider and that agent are independent packages and can be installed together.
+
+The desktop agent's [primary and secondary model settings](../kimi-desktop/README.md#primary-and-secondary-models) let you configure both models on the agent plugin's **Kimi Work models** page, then request `primary` or `secondary` for new native subagents in a prompt. The primary selection stays synchronized with **Agents → Kimi**.
+
 ## Models and requests
 
 The account's models and reasoning options come from the two lists Kimi's desktop reads: Work's model menu, `kimi.gateway.config.v1.ConfigService/DescribeKimiWorkConfig` on `www.kimi.com` (asked with the desktop's web sign-in), and `https://agent-gw.kimi.com/coding/v1/models`. The menu lists the models a membership tier adds (K3.1 Pro on the 99 plan) that `/models` leaves out; since 0.1.7 both are listed, the menu's names first, and either one failing leaves the other. Since 0.1.9 the menu is asked with the headers the desktop sends it (`x-msh-platform` `mac` or `windows`, `x-msh-version`, `R-Timezone`): asked without them, Kimi answers with the web menu, which has no K3.1 Pro (`k3d1-agent`). Since 0.1.10, when the menu can't be had with the web sign-in (Kimi's file holds a web sign-in www.kimi.com no longer takes, answered 401, or another failure or an empty reply), it is asked again without one, as the desktop asks it before signing in, which gives the same desktop menu; each failure is written to Magpie's log, without the token. Chat completions, streaming, tool calls and cancellation use the same Work gateway, with the headers Kimi's own Work client sends it (0.1.8). It never uses `api.kimi.com` or a Kimi Code API key.

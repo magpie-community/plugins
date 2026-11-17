@@ -3,17 +3,22 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// 测试进程绝不读真实用户的 Magpie 配置：把目录推导用的 XDG 钉到临时位置
-// （fetchCatalog 与调度器的兜底读取会走 magpieDirs 的默认路径）
-process.env.XDG_CONFIG_HOME = join(tmpdir(), "window-warmup-test-magpie-config");
-process.env.XDG_CACHE_HOME = join(tmpdir(), "window-warmup-test-magpie-cache");
+export function pinMagpieDirs() {
+  process.env.XDG_CONFIG_HOME = join(tmpdir(), "window-warmup-test-magpie-config");
+  process.env.XDG_CACHE_HOME = join(tmpdir(), "window-warmup-test-magpie-cache");
+}
 
 export interface FakeChatReply {
   status?: number;
   body?: unknown;
   /** 延迟应答毫秒数，用于模拟超时与外部取消 */
   delayMs?: number;
-  /** 模拟 2xx 响应体不完整：truncate=半截 JSON；reset=流中途断开（客户端收到 ECONNRESET） */
+  /**
+   * 模拟 2xx 响应体不完整：truncate=半截 JSON；reset=请求已收到、应答前网关掉线
+   * （连接被强制关闭，客户端收到 ECONNRESET；此后假网关不再应答）。
+   * reset 不用 ReadableStream 的 controller.error：Bun.serve 会把它当未处理错误打印
+   * （error 回调收不到），测试全绿时日志里也出现「error: 连接中断」（#902）。
+   */
   breakBody?: "truncate" | "reset";
 }
 
@@ -105,12 +110,15 @@ export function fakeGateway(opts: FakeGatewayOpts = {}): FakeGateway {
         const conf =
           typeof opts.chat === "function" ? await opts.chat(entry.body, req) : (opts.chat ?? {});
         if (conf.delayMs) await Bun.sleep(conf.delayMs);
+        if (conf.breakBody === "reset") {
+          queueMicrotask(() => server.stop(true));
+          return new Promise<Response>(() => {});
+        }
         if (conf.breakBody) {
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(new TextEncoder().encode('{"id":"chatcmpl-fake"'));
-              if (conf.breakBody === "reset") controller.error(new Error("连接中断"));
-              else controller.close();
+              controller.close();
             },
           });
           return new Response(stream, {
@@ -132,6 +140,7 @@ export function fakeGateway(opts: FakeGatewayOpts = {}): FakeGateway {
 
 // bun tests/fake-gateway.ts --serve：以示例数据常驻并打印地址，供页面联调与截图（长驻，勿在测试里跑）
 if (import.meta.main && process.argv.includes("--serve")) {
+  pinMagpieDirs();
   const in2h = new Date(Date.now() + 2 * 3_600_000).toISOString();
   const gw = fakeGateway({
     models: [

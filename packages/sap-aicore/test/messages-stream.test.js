@@ -109,12 +109,13 @@ function consumer(response) {
   return { reader, events, next, async finish() { while (await next()) {} return events } }
 }
 
-test("a streamed request routes to /invoke-with-response-stream and relays text then tool-arg deltas before the terminal", async () => {
+test("a streamed request with session metadata routes to Bedrock and relays text then tool-arg deltas before the terminal", async () => {
   const { post, calls } = await fixture(() => streamResponse(STREAM.map(frame)))
-  const response = await post()
+  const response = await post({ metadata: { user_id: '{"session_id":"synthetic-session"}' } })
   assert.equal(response.status, 200)
   assert.equal(response.headers.get("content-type"), "text/event-stream")
   assert.equal(calls.at(-1).url, OPUS_URL + "/invoke-with-response-stream")
+  assert.equal("metadata" in JSON.parse(calls.at(-1).init.body), false)
 
   const c = consumer(response)
   const events = await c.finish()
@@ -124,6 +125,64 @@ test("a streamed request routes to /invoke-with-response-stream and relays text 
   assert.deepEqual(JSON.parse(toolJson), { city: "Zürich🙂" })
   assert.equal(events.find(e => e.type === "content_block_start" && e.index === 1).content_block.id, "toolu_1")
   assert.equal(events.at(-1).type, "message_stop")
+})
+
+test("agent thinking context management reaches streaming Bedrock with its beta and preserves native events", async () => {
+  const native = STREAM.map(event => event.type === "message_start"
+    ? { ...event, message: { ...event.message, context_management: { applied_edits: [] } } }
+    : event)
+  const { post, calls } = await fixture(() => streamResponse(native.map(frame)))
+  const body = {
+    thinking: { type: "adaptive" },
+    context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+  }
+  const response = await post(body)
+  assert.equal(response.status, 200)
+  assert.equal(calls.at(-1).url, OPUS_URL + "/invoke-with-response-stream")
+  const upstream = JSON.parse(calls.at(-1).init.body)
+  assert.deepEqual(upstream.context_management, body.context_management)
+  assert.deepEqual(upstream.anthropic_beta, ["context-management-2025-06-27"])
+  assert.deepEqual(upstream.thinking, body.thinking)
+  assert.deepEqual(await consumer(response).finish(), native)
+  assert.equal("anthropic_beta" in body, false)
+})
+
+test("streaming defaults the known beta for a bare directive, forwards an explicit beta verbatim, and leaks neither when absent", async () => {
+  const { post, calls } = await fixture(() => streamResponse(STREAM.map(frame)))
+  const context_management = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }
+
+  const defaulted = await post({ thinking: { type: "adaptive" }, context_management })
+  assert.equal(defaulted.status, 200)
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body).anthropic_beta, ["context-management-2025-06-27"])
+  assert.equal((await consumer(defaulted).finish()).at(-1).type, "message_stop")
+
+  const future = { edits: [{ type: "clear_tool_uses_20250919", keep: 3, future_field: true }] }
+  const explicit = await post({ context_management: future, anthropic_beta: ["future-beta"] })
+  assert.equal(explicit.status, 200)
+  const upstream = JSON.parse(calls.at(-1).init.body)
+  assert.deepEqual(upstream.context_management, future)
+  assert.deepEqual(upstream.anthropic_beta, ["future-beta"])
+  assert.equal((await consumer(explicit).finish()).at(-1).type, "message_stop")
+
+  const ok = await post({ thinking: { type: "adaptive" } })
+  assert.equal(ok.status, 200)
+  const bare = JSON.parse(calls.at(-1).init.body)
+  assert.equal("context_management" in bare, false)
+  assert.equal("anthropic_beta" in bare, false, "thinking alone adds no beta")
+  assert.equal((await consumer(ok).finish()).at(-1).type, "message_stop")
+})
+
+test("a novel streamed context_management or anthropic_beta reaches inference, and its native rejection surfaces once with redaction and no retry", async () => {
+  const upstream = { type: "error", error: { type: "invalid_request_error", message: "bad beta " + CREDS.clientSecret } }
+  const { post, calls } = await fixture(() => new Response(JSON.stringify(upstream), { status: 400, headers: { "content-type": "application/json" } }))
+  const mark = calls.length
+  const response = await post({ context_management: { edits: [{ type: "novel_edit" }] }, anthropic_beta: ["unrecognized"] })
+  assert.equal(response.status, 400)
+  assert.equal(calls.length, mark + 1, "the streamed request reached inference exactly once, with no retry")
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body).anthropic_beta, ["unrecognized"])
+  const text = await response.text()
+  assert.equal(text.includes(CREDS.clientSecret), false)
+  assert.ok(text.includes("[redacted]"))
 })
 
 test("each relayed frame carries the native SSE event name, including the error frame", async () => {

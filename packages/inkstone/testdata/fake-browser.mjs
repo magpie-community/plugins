@@ -33,6 +33,30 @@ if (!headless) {
       } catch {}
       process.exit(0)
     }
+    // B1/B4: after "the user signed in", write the console session into the
+    // profile's real Cookies sqlite — the plugin watches it off Windows to
+    // close the window itself. FAKE_BROWSER_HOLD_COOKIE keeps it out
+    // (an old session with no new cookie: the wait must not read that as done).
+    if (!process.env.FAKE_BROWSER_HOLD_COOKIE) {
+      setTimeout(() => {
+        try {
+          mkdirSync(join(profilePath, "Default"), { recursive: true })
+          const { Database } = require("bun:sqlite")
+          const db = new Database(join(profilePath, "Default", "Cookies"))
+          db.query(
+            "CREATE TABLE IF NOT EXISTS cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)",
+          ).run()
+          const now = Date.now()
+          const micros = (ms) => (ms + 11644473600000) * 1000
+          db.query(
+            "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.intern-ai.org.cn', 'uaa-token', 'fake-uaa-token', ?, ?, ?)",
+          ).run(micros(now), micros(now), micros(now + 86400_000))
+          db.close()
+        } catch (e) {
+          console.error("[fake-chrome] cookie write failed:", e?.message ?? e)
+        }
+      }, 300)
+    }
     if (process.platform === "win32") {
       setTimeout(() => process.exit(0), 500)
     } else {

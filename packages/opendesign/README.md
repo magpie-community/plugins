@@ -28,7 +28,7 @@ Open Design's cloud is two planes:
 | Plane | Host | Key | Used for |
 | --- | --- | --- | --- |
 | Control | `amr-api.open-design.ai` | `vela_ctrl_…` | plan, wallet balance, the Design Plan's allowance windows, the workspace |
-| Model | `amr-link.open-design.ai/v1` | `sk-amr-…` | `/models`, `/responses` (the OpenAI Responses API) |
+| Model | `amr-link.open-design.ai/v1` | `sk-amr-…` | `/models`, `/chat/completions`, `/responses`, `/messages` |
 
 A sign-in is the same device authorization the Open Design CLI
 (`vela login`) runs:
@@ -119,6 +119,13 @@ amr-link answers its thinking on (measured, plugins#141): chat completions
 for `claude-haiku-5.5` and `deepseek-v4-pro`, and Anthropic's messages
 (`@ai-sdk/anthropic`) for `glm-5.3-flash`. Every model reasons at `low`,
 `high` and `max`.
+
+That API is each model's default, not the only one: amr-link serves every
+model on all three (keyblues, plugins#888). A request for a model on another
+of them is signed as that API takes the key — `x-api-key` on `/messages`,
+`Authorization: Bearer` on `/chat/completions` and `/responses` — whatever
+the model is declared on, so a model set to another API in magpie's model
+editor works there too.
 
 ## Where the sign-in is kept
 

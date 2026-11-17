@@ -22,6 +22,12 @@ Callback URL field. The page need not load on the browser's computer. Local
 browsers that can reach the plugin's listener finish automatically. Direct
 AWS sign-in still uses authorization code + PKCE, not device authorization.
 
+In magpie, each way, question and choice shows in the window's language
+(Chinese, Traditional Chinese, Japanese, German): `labels`, `messages` and
+`hints` beside the English, which OpenCode shows. A Kiro subscription in
+magpie opens the question above first; its other ways, the API key among
+them, are under "Other ways to sign in…".
+
 
 - **Kiro (Google, GitHub, AWS Builder ID, IAM Identity Center)**: the Kiro
   IDE's own sign-in.
@@ -69,6 +75,55 @@ AWS sign-in still uses authorization code + PKCE, not device authorization.
   us-east-1, as kiro-cli uses it. Its models are listed with the control
   plane's `ListAvailableModels` and its credits with `GetUsageLimits`, and
   no profile is named in its calls, as kiro-cli names none.
+- **Import accounts from a file** (magpie only, `auth.import`): a JSON file,
+  or JSON pasted in, of sign-ins made elsewhere, one account or a list:
+
+  ```json
+  [
+    { "email": "user@gmail.com", "refreshToken": "…", "provider": "Google" },
+    { "refreshToken": "…", "provider": "Github" },
+    { "refreshToken": "…", "clientId": "…", "clientSecret": "…", "provider": "BuilderId" },
+    { "refreshToken": "…", "clientId": "…", "clientSecret": "…", "provider": "Enterprise", "region": "eu-central-1" }
+  ]
+  ```
+
+  - `provider` is the way it was signed in to: `Google` and `Github` are
+    renewed through Kiro's auth service in us-east-1; `BuilderId` and
+    `Enterprise` (IAM Identity Center) through AWS's OIDC in `region`
+    (blank: us-east-1), with the `clientId` and `clientSecret` registered
+    for it. With no `provider`, `authMethod` (`social`, `IdC`) or `auth`
+    (`Social`, `IdC`) says it, and else a sign-in with a client is AWS's.
+  - Also read: Kiro Account Manager's export (`{ accounts: [{ email,
+    provider, credentials: { refreshToken, … } }] }`), kiro2api's
+    `KIRO_AUTH_TOKEN` list, the Kiro IDE's `kiro-auth-token.json` (choose its
+    `<clientIdHash>.json` with it for a Builder ID or Identity Center
+    sign-in), kiro-cli's tokens (`access_token`, `refresh_token`, …; one with
+    a `start_url` or `scopes` is AWS's, renewed with the
+    `kirocli:odic:device-registration` client chosen with it) and this
+    plugin's own entries in `plugin-auth.json` or OpenCode's `auth.json`.
+    Other providers' entries there (keys not `kiro` or `kiro#…`) are passed
+    over, so none of their tokens is sent to Kiro.
+  - Each sign-in is renewed first unless its access token has more than 2
+    minutes left (`accessToken` with `expiresAt`), as the Kiro IDE renews
+    it. Kiro may give a new refresh token and stop taking the old one, so
+    the tool the file came from may have to sign in again.
+  - It is named by the email Kiro has for it (the file's `email` when Kiro
+    names none) and kept exactly as a browser sign-in of that way: `email
+    (Google)`, with its `uid`, region, profile ARN and plan. One with no
+    email either is `Kiro account <8 hex>`, from its file's token, so two
+    such stay two accounts. Importing an account signed in already replaces
+    it.
+  - A file's `profileArn` is kept only in the shape Kiro gives one
+    (`arn:aws:codewhisperer:<region>:<12 digits>:profile/<id>`); any other
+    is dropped and Kiro is asked for the profile. As for every sign-in
+    (the IDE's file, kiro-cli's, a saved one), the API's region is taken
+    from the profile only when it is one of Kiro's (us-east-1,
+    eu-central-1), and a region that isn't an AWS region's shape is refused
+    before anything is sent, so no file decides where a token goes.
+  - A sign-in Kiro refuses, one of an unknown `provider`, an AWS one without
+    its client, and a company's own identity provider (`ExternalIdp`) are
+    listed as not imported, with why; the others are imported. One sign-in
+    twice is renewed once. At most 100 are taken at a time.
 
 A browser sign-in is kept where OpenCode keeps sign-ins (`auth.json`; in
 magpie, `plugin-auth.json`) as an `oauth` entry. The entry holds the
@@ -126,6 +181,7 @@ request:
     that can't be read or brought under is replaced by a short note, so the
     conversation goes on (#428). Smaller images are sent as they are.
   - Tools the history used but the request doesn't offer are declared.
+  - Signed reasoning is replayed as `reasoningContent.reasoningText` with its original text and signature, or as a reasoning input item's `encrypted_content` on CreateResponse. The client's signature carries the native envelope and its account, region and model scope. Raw signatures and envelopes from another scope are omitted. Kiro's signature errors are returned to the client.
   - A tool's input schema says `type: "object"` at its root, as Kiro
     wants: one that says no type (or object-or-null) is sent saying so, and
     an empty one as an object with no properties. Kiro answers 400
@@ -136,19 +192,7 @@ request:
   events (streamed) or one message. The reply includes text, thinking,
   tool calls and usage. When Kiro reports only how full the context is,
   input tokens are estimated from that.
-- Thinking (Claude models and Auto) is asked for the way kiro-cli asks, in
-  the prompt, with a budget: low 10k, medium 20k, high 30k, xhigh and max
-  50k (as magpie's built-in Kiro: #120). The
-  `<thinking>` block of the reply comes back as thinking.
-  A model whose Kiro catalog lists effort levels with adaptive thinking
-  (`additionalModelRequestFieldsSchema`) is sent the level instead, as Kiro
-  IDE sends it: `additionalModelRequestFields` with `thinking.type:
-  "adaptive"` and `output_config.effort` (or `reasoning.effort`), and no
-  budget. So xhigh and max stay apart there (#538).
-  Thinking is asked for only when the request's `thinking` is `enabled` or
-  `adaptive`. An effort with no `thinking`, or with it `disabled` (Claude
-  Code's title requests, or a turn with thinking off), is sent with no
-  thinking at any level.
+- Claude models and Auto use prompt thinking budgets of low 10k, medium 20k, high 30k, and xhigh/max 50k when their catalog has no native adaptive settings. Models whose catalog advertises adaptive thinking receive `additionalModelRequestFields.thinking.type: "adaptive"` and the selected effort under `output_config.effort` or `reasoning.effort`. Claude thinking requires `thinking.type` to be `enabled` or `adaptive`. GPT and Grok models that advertise `reasoning.effort` receive that field directly, with the levels from their catalog. GPT thinking disabled maps to `none` when the model offers it. Cold request-time catalog lookups are optional and shared by account and region for ten minutes, including failures and missing models. A failed lookup does not block chat. Request-time native settings are cached separately for each account and region, and a failed refresh retains that account's last successful settings.
 - Anthropic's hosted web search is answered with Kiro's own web search
   (see [Web search](#web-search)).
 - Kiro's failures keep their meaning:
@@ -237,8 +281,10 @@ own search used instead.
 The `config` hook declares `auto` (Kiro picks the model). Once signed in,
 the `provider.models` hook replaces it with the account's own list from
 `List-Available-Models`, with the default first. Each model carries its
-context window, output limit and whether it takes images. Claude models
-and Auto have the thinking variants.
+context window, output limit and whether it takes images, and its credit
+multiplier as `rate` (Kiro's `rateMultiplier` when `rateUnit` is `Credit`:
+1.3 for claude-sonnet-4.5, 0.4 for claude-haiku-4.5), which magpie shows
+beside the model. Claude models and Auto have thinking budget variants. Models with native `reasoning.effort` have the effort levels from their catalog.
 
 ## Usage in magpie
 
@@ -249,12 +295,17 @@ its own with its count and when it lapses. Bonus windows are shown only.
 Kiro spends the plan's credits first, so a month used up while a bonus has
 credits left is shown only too, and the account isn't taken for spent.
 
-With overage on (`overageConfiguration.overageStatus` `ENABLED`), the
-month's window counts against the overage cap (`overageCap`), which is the
-month's whole limit; with it off, against the plan's credits.
+With overage on (`overageConfiguration.overageStatus` `ENABLED`), the month
+is two windows, as the Kiro IDE shows it: the plan's credits, shown only
+(using them up doesn't stop the account), then the overage
+(`currentOveragesWithPrecision`) against the overage cap (`overageCap`),
+which counts the overage alone, not the plan's credits with it. A Power
+account that used 12589.24 shows `10000 / 10000` and `2589.24 / 37500`.
+With overage off, the plan's credits are the month.
 
 Each request's cost is what Kiro's `meteringEvent`s say, in credits, summed
-over the request (a web search's turns included). It goes on as
+over the request (a web search's turns included). Kiro has already applied
+the model's multiplier to it, so it isn't multiplied again. It goes on as
 `usage.credit` in the last `message_delta`, or in the message's `usage`, for
 magpie's ledger (yetone/magpie#4328). Kiro gives no token counts, so the
 input is reckoned from how full the context is, and the cache is unknown
@@ -278,10 +329,33 @@ again.
 - With every enabled region used up, the answer is a 429 naming them, and a
   region not enabled, so magpie goes on to another account.
 - `auth.usage` reads both regions: a window for each, shown only, and their
-  sum, which magpie weighs the account by. From 80% of the sum, a region
-  not enabled is pointed out in its text.
+  sum, which magpie weighs the account by. With overage on, the plans' sum
+  comes first, shown only, and the overages' sum is the one magpie weighs.
+  From 80% of the sum, a region not enabled is pointed out in its text.
 
 Builder ID, Google, GitHub and API key sign-ins keep one region.
+
+Two switches in the provider's editor, "Use us-east-1 only" and "Use
+eu-central-1 only" (`us-east-1-only`, `eu-central-1-only`), pin an Identity
+Center account to one region. They are read at each request, so a change
+needs no restart:
+
+- With one on, every request goes to that region and none to the other,
+  whatever credits the other has. The region not enabled for the account, or
+  used up, is a 429 naming the switch, and magpie goes on to another
+  account. The other region is never tried.
+- `auth.usage` counts the pinned region alone in the window magpie weighs
+  the account by; the other region's windows are shown only. So the account
+  is used up for magpie when the pinned region is, not when both are.
+- Both off, or both on, is the default: the regions in turn.
+
+Credits past a region's plan are overage, billed at $0.04 each: twice what
+a plan's credits cost (a Power plan is $200 for 10000, $0.02 each), and a
+plan's credits do not roll over to the next month. So when one region is
+already in its overage and the other still has plan credits, pinning the
+account to the other spends the cheaper credits first. Left on the first,
+the account goes on into overage while the other region's plan credits
+expire unused.
 
 ## Not included
 

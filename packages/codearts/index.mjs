@@ -9,8 +9,9 @@
 // with OAuth.
 //
 // This plugin implements exactly that flow, mirroring the real CodeArts agent
-// (and the `Ebony-Vinyl/dsh-our-free-model` CodeArts channel, which this plugin
-// is modelled on):
+// (and the CodeArts channel this plugin is modelled on: iJetLi's
+// gitee.com/iJetLi/deepseek-harness-codearts, as `Ebony-Vinyl/dsh-our-free-model`
+// carried it):
 //
 //   1. `auth.methods[0]` is `{ type: "oauth" }`. `authorize()` starts a
 //      loopback callback server on 127.0.0.1 (port >= 10000), returns the
@@ -63,10 +64,41 @@ const SNAP_STATISTICS_URL = `${SNAP_HOST}/snap-manager/v1/statistics/plugin`
 // opengw gateway config: the benefit/free-quota model set.
 const OPENGW_HOST = "https://opengw.developer.huaweicloud.com"
 const OPENGW_GATEWAY_CONFIG_URL = `${OPENGW_HOST}/api/v1/gateway/config`
-// The only hosts the account's credentials are signed for and sent to: the
-// two the plugin itself calls, by name. STS takes the refresh token, never a
-// signature, and the portal only ever opens in the browser.
-const SIGNED_HOSTS = new Set([SNAP_HOST, OPENGW_HOST].map((u) => new URL(u).host))
+// The stations an account lives on, each with the API hosts its credential is
+// signed for (#998). The mainland one is where the browser sign-in lands; the
+// international one (ap-southeast-1) answers the same snap-access paths but
+// has no opengw (its gateway/config, free pool and benefit claim are 404s), so
+// nothing of opengw's is asked there. The console of each only ever opens in
+// the browser and is never signed for.
+const STATIONS = {
+  mainland: {
+    id: "mainland",
+    snap: SNAP_HOST,
+    opengw: OPENGW_HOST,
+    console: "https://codearts.huaweicloud.com",
+    portal: "https://codearts.huaweicloud.com/portal",
+    locale: "zh-cn",
+  },
+  // The international portal is the IDE's `intlPortalHost` (#1090). Its
+  // authorize page sends a signed-out browser to the mainland login unless
+  // the login page is asked for `site=intl`, so the browser starts there.
+  international: {
+    id: "international",
+    snap: "https://snap-access.ap-southeast-1.myhuaweicloud.com",
+    opengw: "",
+    console: "https://console-intl.huaweicloud.com",
+    portal: "https://codearts.ap-southeast-1.huaweicloud.com/portal",
+    locale: "en-us",
+    login: "https://auth.huaweicloud.com/authui/login?site=intl",
+  },
+}
+/** The hosts a credential of `station` is signed for: its API hosts, by name. */
+const apiHostsOf = (station) => [station.snap, station.opengw].filter(Boolean).map((u) => new URL(u).host)
+// The only hosts any account's credentials are signed for and sent to: the
+// stations' API hosts, by name, and each credential only for its own
+// station's (`stationOf`). STS takes the refresh token, never a signature,
+// and the portals and consoles only ever open in the browser.
+const SIGNED_HOSTS = new Set(Object.values(STATIONS).flatMap(apiHostsOf))
 
 // Huawei Cloud IAM: the one place an account's own phone number can be read
 // with the credentials a sign-in already carries (`GET /v3.0/OS-USER/users/
@@ -105,7 +137,8 @@ const MAIN_AGENT_FALLBACK_ID = "a8bcb36232554267a5142361cc25a393"
 // Agents tried for a model list before giving up.
 const AGENT_DETAIL_TRIES = 3
 const AGENT_CENTER_HEADERS = { "Content-Type": "application/json", "Agent-Type": "AgentCenter", "X-Language": "zh-cn" }
-// Check-in credits are good for 30 days from when they are given.
+// How long check-in credits last when the claim names no date of its own. The
+// vendor's date wins: today's check-ins answer one about a day on (#982).
 const CHECKIN_CREDIT_DAYS = 30
 // Every credit batch with its own expiry, as the console's 「获取明细」 reads
 // them (its /portal/snap-manager and /portal/promptcenter calls are these):
@@ -125,13 +158,16 @@ const OPS_CLAIM_URL = `${SNAP_HOST}/v1/ops/claim`
 const OPS_CONFIRM_URL = `${SNAP_HOST}/v1/ops/confirm`
 const OPS_CHANNEL = "IDE"
 const DAILY_CHECKIN_TYPE = "USER_LOGIN"
+// A campaign of that type is a daily check-in when its title says so; the list
+// also holds one-time USER_LOGIN campaigns (a contest's sign-up gift), which are
+// not the daily check-in and are left to the user.
+const DAILY_CHECKIN_TITLE = /签到|每日/
 // States the IDE disables the claim button in: today's benefit is in already.
 const CLAIMED_STATUSES = ["CLAIMED", "CONFIRMED", "CONSUMED"]
 // Unsigned headers snap-access routes on (signing them breaks the signature).
 const SNAP_EXTRA_HEADERS = { "Agent-Type": "PromptCenter", "X-Language": "zh-cn" }
-// OAuth portal (new IAM flow) and the STS token endpoint.
-const PORTAL_AUTHORIZE_BASE = "https://codearts.huaweicloud.com/portal/authorize"
-const PORTAL_LOGIN_BASE = "https://codearts.huaweicloud.com/portal/login"
+// OAuth portal (new IAM flow, each station's `portal`) and the STS token
+// endpoint, which answers both stations' codes and refresh tokens (#1090).
 const STS_TOKEN_ENDPOINT = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 
 // OAuth client id (equals the plugin's URI scheme) and local callback path.
@@ -142,7 +178,6 @@ const REDIRECT_PATH = "/oauth/callback"
 const LOGIN_PLUGIN_NAME = "snap_AIIDE"
 const LOGIN_PLUGIN_VERSION = "5.2.0"
 const OAUTH_THEME = "2" // activeColorTheme.kind: 2 = Dark
-const OAUTH_LOCALE = "zh-cn"
 
 const GRANT_AUTHORIZATION_CODE = "authorization_code"
 const GRANT_REFRESH_TOKEN = "refresh_token"
@@ -586,6 +621,8 @@ function profileOf(cred) {
  * the name (the `accountId` / `uid` rule in magpie-plugin-scaffold, #27).
  */
 function accountIdentityOf(cred) {
+  // A sign-in read from the CodeArts Agent is the account its domainId names.
+  if (cred?.source === IDE_SOURCE) return { id: firstOf(cred.domain_id), name: displayNameOf(cred.user_phone, cred.user_name) }
   const legacy = { id: firstOf(cred?.user_name, cred?.user_id), name: firstOf(cred?.user_name) }
   const profile = profileOf(cred)
   if (!profile) return { ...legacy, name: displayNameOf(cred?.user_phone, legacy.name) }
@@ -803,7 +840,7 @@ async function refreshCredential(cred, fetcher) {
   if (!next.refresh_token) next.refresh_token = refreshToken
   // Preserve non-rotating identity fields a legacy login may have carried, and
   // the session id: it belongs to the account, not to the token.
-  for (const k of ["domain_id", "user_id", "user_name", "session_id"]) {
+  for (const k of ["domain_id", "user_id", "user_name", "session_id", "station"]) {
     if (cred[k]) next[k] = cred[k]
   }
   return next
@@ -823,16 +860,22 @@ async function accountSessionIds(cred) {
 
 // ---- OAuth login: URL + loopback callback ----------------------------------
 
-/** Build the Huawei Cloud portal authorize URL (params mirror the real IDE). */
-function buildOAuthLoginUrl(port, pkce, ticketId) {
-  return `${PORTAL_AUTHORIZE_BASE}?theme=${OAUTH_THEME}&locale=${OAUTH_LOCALE}`
+/**
+ * The URL the browser opens to sign in on `station` (params mirror the real
+ * IDE): the station's portal authorize page, or, for a station with its own
+ * login page, that page with the authorize URL as where it goes next.
+ */
+function buildOAuthLoginUrl(port, pkce, ticketId, station = STATIONS.mainland) {
+  const authorize = `${station.portal}/authorize?theme=${OAUTH_THEME}&locale=${station.locale}`
     + `&uri_scheme=${CLIENT_ID}&client_id=${CLIENT_ID}&port=${port}`
     + `&code_challenge=${pkce.codeChallenge}&code_challenge_method=SHA-256`
     + `&ticket_id=${ticketId}&plugin-name=${LOGIN_PLUGIN_NAME}&plugin-version=${LOGIN_PLUGIN_VERSION}`
+  if (!station.login) return authorize
+  return `${station.login}&locale=${station.locale}&service=${encodeURIComponent(authorize)}`
 }
 
-const buildPortalLoginResultUrl = (ok) =>
-  `${PORTAL_LOGIN_BASE}?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${OAUTH_LOCALE}`
+const buildPortalLoginResultUrl = (ok, station = STATIONS.mainland) =>
+  `${station.portal}/login?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${station.locale}`
 
 /**
  * Start the loopback callback server, listening on 127.0.0.1:port>=10000. It
@@ -842,7 +885,7 @@ const buildPortalLoginResultUrl = (ok) =>
  * the sign-in at once, with the portal's own words when it gave any. The
  * redirect target is always that page, never a parameter of the request.
  */
-function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
+function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts", station = STATIONS.mainland) {
   let resolveResult
   let rejectResult
   const result = new Promise((resolve, reject) => {
@@ -872,7 +915,7 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const url = new URL(raw, `http://127.0.0.1:${request.socket.localPort}`)
     const code = url.searchParams.get("code")
     if (!code) {
-      response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+      response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
       const said = firstOf(url.searchParams.get("error_description"), url.searchParams.get("error"))
       rejectResult(new Error(`CodeArts sign-in failed: ${said || "the callback came back without an authorization code"}`))
       return
@@ -880,12 +923,14 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const port = request.socket.localPort ?? 0
     void exchangeAuthorizationCode(code, pkce.codeVerifier, port, keyPair, fetcher, label).then(
       (token) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(true) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(true, station) }).end()
         const cred = credentialFromTokenResponse(token, pkce.codeVerifier, keyPair)
+        // A mainland credential carries no station, as before stations existed.
+        if (station !== STATIONS.mainland) cred.station = station.id
         resolveResult({ access: JSON.stringify(cred), expires: expiresFromCredential(cred) })
       },
       (error) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
         rejectResult(error)
       },
     )
@@ -930,13 +975,13 @@ function listenOnCallbackPort(server) {
  * The result resolves once the browser is redirected back and STS answers;
  * the callback server is closed as soon as the result settles.
  */
-async function startOAuthFlow(fetcher, label = "CodeArts") {
+async function startOAuthFlow(fetcher, label = "CodeArts", station = STATIONS.mainland) {
   const pkce = await generatePkcePair()
   const keyPair = await generateDpopKeyPair()
-  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label)
+  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label, station)
   // The authorize URL carries a ticket_id as the IDE's does; the code flow
   // itself never reads it back.
-  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32))
+  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32), station)
 
   let closed = false
   const close = async () => {
@@ -1020,7 +1065,7 @@ function isRegularModel(model, state) {
  *   agent's own, to put back in the answer; null when none was cut).
  * A body that is not a chat (no `model` + `messages`) gives null.
  */
-function prepareChatBody(parsed, { thinking = true } = {}) {
+function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {}) {
   if (!parsed || typeof parsed.model !== "string" || !Array.isArray(parsed.messages)) return null
   const body = { ...parsed, model: upstreamModelId(parsed.model) }
   const names = shortenToolNames(body)
@@ -1058,9 +1103,28 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
+  normalizeStop(body, station)
   const fold = body.stream !== true
   body.stream = true
   return { body, fold, injected, names }
+}
+
+/**
+ * `stop` in the shape the credential's station takes; another shape comes
+ * back as HTTP 200 with `InferHub.001001005.400` "The request param is
+ * invalid". The mainland gateway refuses every non-empty `stop`, a string
+ * included (#1120, measured with every model; magpie#6342's string-only
+ * rule held for `"\n\n"` once and no longer does), so it is left out there:
+ * a reply that runs past a stop word beats one refused. The international
+ * gateway takes a list only (#998, GLM-5.1: `["zzz"]` answered, `"zzz"`
+ * refused), so a string goes as a list of one. An empty or blank value, or
+ * one of another kind, is left out on both.
+ */
+function normalizeStop(body, station = "mainland") {
+  if (!("stop" in body)) return
+  const all = (Array.isArray(body.stop) ? body.stop : [body.stop]).filter((x) => typeof x === "string" && x !== "")
+  if (station === "international" && all.length) body.stop = all
+  else delete body.stop
 }
 
 // ---- tool names over the gateway's limit (#432) -----------------------------
@@ -1298,6 +1362,22 @@ function errorMessageOf(text) {
   }
 }
 
+/**
+ * APIG signs a body of 12 MB at most. A larger one comes back as a 401
+ * `APIG.0301` "calc ak sk signature fail:body too large" after ~30s (#1121):
+ * the request's size, not the sign-in, so it is never renewed or marked.
+ */
+const MAX_SIGNED_BODY = 12 * 1024 * 1024
+
+function isBodyTooLarge(text) {
+  return /body too large/i.test(String(text ?? ""))
+}
+
+function bodyTooLargeResponse(bytes, code = "") {
+  const mb = (bytes / (1024 * 1024)).toFixed(1)
+  return errorResponse(413, code, `CodeArts 网关只接受 12 MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话，或去掉较大的图片后再试`)
+}
+
 /** A 401/400 that only means the temporary AK/SK/security-token went stale. */
 function isStaleCredential(text) {
   return /APIG\.0(301|307|602)|security token has expired|verify ak sk signature fail/i.test(String(text ?? ""))
@@ -1427,6 +1507,7 @@ function completionFromChunks(events) {
   const content = []
   const reasoning = []
   const toolCalls = []
+  const open = new Map() // upstream index -> the call being written there
   let finish = null
   let usage = null
   let model = first.model
@@ -1440,7 +1521,17 @@ function completionFromChunks(events) {
     if (typeof delta.content === "string") content.push(delta.content)
     if (typeof delta.reasoning_content === "string") reasoning.push(delta.reasoning_content)
     for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const slot = (toolCalls[num(call.index)] ??= { id: "", type: "function", function: { name: "", arguments: "" } })
+      // a new id at an index in use is a new call, not more of the open
+      // one: two calls at one index ran together as {"a"}{"b"}
+      // (plugins#930). No id, or the same one, goes on with it.
+      let slot = open.get(num(call.index))
+      const id = typeof call.id === "string" ? call.id : ""
+      if (!slot || (id && slot.id && id !== slot.id)) {
+        slot = { id: "", type: "function", function: { name: "", arguments: "" } }
+        if (toolCalls[num(call.index)]) toolCalls.push(slot)
+        else toolCalls[num(call.index)] = slot
+        open.set(num(call.index), slot)
+      }
       if (typeof call.id === "string" && call.id) slot.id = call.id
       if (typeof call.type === "string" && call.type) slot.type = call.type
       if (typeof call.function?.name === "string") slot.function.name += call.function.name
@@ -1608,7 +1699,7 @@ function queueInfoOf(headers) {
 
 /** One signed call on a queued trace: GET is where it stands, DELETE takes it out. */
 async function traceQueueCall(method, cred, traceId, context, signal) {
-  const url = TRACE_QUEUE_URL(traceId)
+  const url = onStation(TRACE_QUEUE_URL(traceId), cred)
   const headers = await signFor(cred, method, url, new Uint8Array())
   headers.set(SESSION_HEADER, context.sessionId)
   return context.fetcher(url, { method, headers, signal, redirect: "error" })
@@ -1671,18 +1762,48 @@ function hostOf(url) {
   }
 }
 
-/** Is this an https URL on one of SIGNED_HOSTS (its default port), the only ones the credentials go to? */
-function isSignedHostUrl(url) {
+/**
+ * The station a credential belongs to: what it was signed in on. Only the
+ * CodeArts Agent sign-in can carry another than the mainland one (the
+ * browser sign-in is the mainland portal's), and a credential from before
+ * stations existed is the mainland's.
+ */
+function stationOf(cred) {
+  return STATIONS[cred?.station] ?? STATIONS.mainland
+}
+
+/**
+ * `url` on the credential's own station: a mainland snap-access URL (the
+ * plugin's own constants, the config's `api`) goes to the same path on the
+ * station's snap-access host. Anything else stays as it is, and is signed or
+ * refused as it is.
+ */
+function onStation(url, cred) {
+  const station = stationOf(cred)
+  const s = String(url)
+  if (station === STATIONS.mainland) return s
+  return s === SNAP_HOST || s.startsWith(`${SNAP_HOST}/`) ? station.snap + s.slice(SNAP_HOST.length) : s
+}
+
+/** The chat base (loader `baseURL`) of the credential's station. */
+const chatBaseOf = (cred) => `${stationOf(cred).snap}/api/v2`
+
+/**
+ * Is this an https URL (default port) on one of the hosts the credentials go
+ * to: SIGNED_HOSTS, or with `cred`, its own station's API hosts only?
+ */
+function isSignedHostUrl(url, cred) {
   try {
     const u = new URL(url)
-    return u.protocol === "https:" && SIGNED_HOSTS.has(u.host)
+    const hosts = cred ? new Set(apiHostsOf(stationOf(cred))) : SIGNED_HOSTS
+    return u.protocol === "https:" && hosts.has(u.host)
   } catch {
     return false
   }
 }
 
-const refusalTo = (url) =>
-  `refusing to sign a request to ${hostOf(url) || "an unknown host"}: only CodeArts' own hosts (${[...SIGNED_HOSTS].join(", ")}) get the account's credentials`
+const refusalTo = (url, cred) =>
+  `refusing to sign a request to ${hostOf(url) || "an unknown host"}: only CodeArts' own hosts (${(cred ? apiHostsOf(stationOf(cred)) : [...SIGNED_HOSTS]).join(", ")}) get the account's credentials`
 
 /**
  * The SDK-HMAC-SHA256 headers for one request (all but `host`, which fetch
@@ -1692,7 +1813,7 @@ const refusalTo = (url) =>
  * to wherever it points.
  */
 async function signFor(cred, method, url, body, extraSigned) {
-  if (!isSignedHostUrl(url)) throw new Error(refusalTo(url))
+  if (!isSignedHostUrl(url, cred)) throw new Error(refusalTo(url, cred))
   const signed = await signRequestHuawei(
     cred.access_key_id, cred.secret_access_key, cred.security_token,
     method, url, body, extraSigned,
@@ -1733,8 +1854,10 @@ function withSignInMark(res) {
  */
 async function signedFetch(cred, input, init, context) {
   const req = typeof Request !== "undefined" && input instanceof Request ? input : null
-  const url = req ? req.url : String(input)
-  if (!isSignedHostUrl(url)) return errorResponse(400, "", refusalTo(url))
+  // A station's account goes to its own station: a mainland snap-access URL
+  // (the config's `api`) is taken to the same path there.
+  const url = onStation(req ? req.url : String(input), cred)
+  if (!isSignedHostUrl(url, cred)) return errorResponse(400, "", refusalTo(url, cred))
   const method = String(init?.method ?? req?.method ?? "GET").toUpperCase()
   const baseHeaders = new Headers(init?.headers ?? req?.headers)
   // magpie says another account, provider or group member follows this
@@ -1748,7 +1871,7 @@ async function signedFetch(cred, input, init, context) {
   else body = new Uint8Array()
   // The body is part of the signature, so it is reshaped before signing.
   const parsed = body.length > 0 ? safeJson(new TextDecoder().decode(body)) : null
-  const chat = prepareChatBody(parsed, context)
+  const chat = prepareChatBody(parsed, { ...context, station: stationOf(cred).id })
   if (chat) body = utf8(JSON.stringify(chat.body))
   const model = upstreamModelId(parsed?.model)
   let extra = isBenefitModel(model, context.state) ? { maas_type: "benefit" } : undefined
@@ -1785,10 +1908,13 @@ async function signedFetch(cred, input, init, context) {
 
   // A sign-in known to be beyond renewal never reaches the network again.
   if (context.signInDead?.()) return signInExpiredResponse()
+  // A body APIG can't sign is refused here, not after its ~30s wait.
+  if (body.length > MAX_SIGNED_BODY) return bodyTooLargeResponse(body.length)
   if (!chat) {
     const res = await send()
     if (res.status !== 401 || !context.renewCredential) return withSignInMark(res)
     const text = await res.text().catch(() => "")
+    if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, errorCodeOf(text))
     const next = await context.renewCredential(active)
     if (!next) return unrenewedResponse(context, text)
     active = next
@@ -1838,6 +1964,7 @@ async function signedFetch(cred, input, init, context) {
         code = errorCodeOf(text)
       }
 
+      if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, code)
       if (res.status === 401 || isStaleCredential(text)) {
         if (!renewed && context.renewCredential) {
           renewed = true
@@ -1857,6 +1984,13 @@ async function signedFetch(cred, input, init, context) {
         chat.injected = false
         delete chat.body.thinking
         body = utf8(JSON.stringify(chat.body))
+        continue
+      }
+      // The account has no free channel at all (`InferHub.APIG.0101.404`, #905):
+      // the same model without the header is its plain one.
+      if (extra && /InferHub\.APIG\.0101\.404/i.test(code || text)) {
+        context.state?.noBenefit.add(model)
+        extra = undefined
         continue
       }
       if (extra && /InferHub\.400[45]\.200|benefit not found/i.test(code || text)) {
@@ -1896,15 +2030,32 @@ async function signedFetch(cred, input, init, context) {
 
 /** A signed GET returning the response text, or undefined on any failure. */
 async function signedGet(url, cred, fetcher, extraUnsignedHeaders) {
+  const answer = await signedRead(url, cred, fetcher, extraUnsignedHeaders)
+  return answer?.ok ? answer.text : undefined
+}
+
+/** A signed GET's answer whatever its status (`{ ok, status, text }`), undefined when the vendor wasn't reached. */
+async function signedRead(url, cred, fetcher, extraUnsignedHeaders) {
+  url = onStation(url, cred)
   try {
     const headers = await signFor(cred, "GET", url, new Uint8Array())
     for (const [k, v] of Object.entries(extraUnsignedHeaders ?? {})) headers.set(k, v)
     const res = await fetcher(url, { method: "GET", headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-    if (!res.ok) return undefined
-    return await res.text()
+    return { ok: res.ok, status: res.status, text: await res.text() }
   } catch {
     return undefined
   }
+}
+
+/**
+ * gateway/config's own answer that the account has no free channel
+ * (`{"error_code":"4000","error_msg":"invalid channel, group not found"}`,
+ * #905): a list of no free models, not a failed read.
+ */
+function isNoBenefitChannel(text) {
+  const raw = safeJson(text)
+  if (!raw || typeof raw !== "object") return false
+  return String(raw.error_code ?? "") === "4000" || /group not found/i.test(String(raw.error_msg ?? ""))
 }
 
 /** A failed answer as one line: the gateway's own code and words, not just the status. */
@@ -1922,6 +2073,7 @@ function describeHttpFailure(status, text) {
  * Gives `{ ok: true, data }` or `{ ok: false, message }`, never throws.
  */
 async function snapRequest(method, url, cred, fetcher, payload) {
+  url = onStation(url, cred)
   const body = payload === undefined ? new Uint8Array() : utf8(JSON.stringify(payload))
   let res
   let text
@@ -1943,23 +2095,35 @@ async function snapRequest(method, url, cred, fetcher, payload) {
   const raw = safeJson(text)
   if (!raw || Array.isArray(raw)) return { ok: false, message: "the answer could not be read" }
   if (raw.code !== undefined && Number(raw.code) !== 0) {
-    return { ok: false, message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
+    return { ok: false, code: Number(raw.code), message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
   }
   return { ok: true, data: "data" in raw ? raw.data : raw }
 }
 
 // ---- daily check-in ----------------------------------------------------------
 
-/** The account's 「每日领取」 campaign from the activity list, or a reason it can't be read. */
-async function dailyCampaign(cred, fetcher) {
+/** The account's 「每日领取」 campaigns from the activity list, or a reason they can't be read. */
+async function dailyCampaigns(cred, fetcher) {
   const listed = await snapRequest("GET", OPS_DELIVERY_URL, cred, fetcher)
   if (!listed.ok) return { error: `活动列表读取失败：${listed.message}` }
   const items = asRecord(listed.data).items
   if (!Array.isArray(items)) return { error: "活动列表缺少 items" }
-  return { item: items.find((it) => asRecord(it).type === DAILY_CHECKIN_TYPE) }
+  return {
+    items: items.filter(
+      (it) => asRecord(it).type === DAILY_CHECKIN_TYPE && DAILY_CHECKIN_TITLE.test(String(asRecord(it).title ?? "")),
+    ),
+  }
 }
 
 const isClaimedToday = (item) => !item?.claimable && CLAIMED_STATUSES.includes(item?.status)
+
+const sameCampaign = (a, b) => String(a?.campaignId) === String(b?.campaignId)
+
+// A claim the vendor turns down because the account has not joined that
+// campaign (a contest's daily check-in before signing up for the contest): the
+// account is not eligible, not a failure to retry.
+const INELIGIBLE_CLAIM = /需要先通过触发接口激活|未参与|未报名|无资格/
+const isIneligibleClaim = (failure) => INELIGIBLE_CLAIM.test(String(failure?.message ?? ""))
 
 // ---- credit batches and when they lapse ------------------------------------
 
@@ -2025,14 +2189,34 @@ function soonestLapse(batches, now = Date.now()) {
   return { at, credit: live.filter((b) => beijingDay(b.expiresAt) === day).reduce((n, b) => n + b.left, 0) }
 }
 
-/** The plugin's own check-in ledger as batches, for when the vendor's can't be read. */
+/**
+ * The plugin's own check-in ledger as batches, for when the vendor's can't be
+ * read. What was spent of each is not known, so `left` is only the grant and
+ * the batch is `estimated`: it tells when, never how much is still in it (#982).
+ */
 const grantBatches = (grants) =>
-  (grants ?? []).map((g) => ({ metric: PACKAGE_TYPE_METRICS.bonus, amount: num(g.credit), left: num(g.credit), expiresAt: vendorDate(g.expiresAt) }))
+  (grants ?? []).map((g) => ({
+    metric: PACKAGE_TYPE_METRICS.bonus, amount: num(g.credit), left: num(g.credit), expiresAt: vendorDate(g.expiresAt), estimated: true,
+  }))
+
+/**
+ * What of one bucket lapses soonest, apart from a reset: its own batches'
+ * soonest lapse, never more than the bucket has left (a batch's own counter
+ * can lag the bucket's). Estimated batches say only when; how much is the
+ * vendor's own expiring amount, so with none said nothing lapses (#982).
+ */
+function bucketLapse(batches, remain, expiring, now) {
+  const lapse = soonestLapse(batches, now)
+  if (!lapse) return undefined
+  const cap = batches.some((b) => b.estimated) ? Math.min(remain, expiring ?? 0) : remain
+  const credit = Math.min(lapse.credit, cap)
+  return credit > 0 ? { at: lapse.at, credit } : undefined
+}
 
 // ---- the check-in ledger -----------------------------------------------------
 //
 // CodeArts tells how many credits a bucket holds, never when each given batch
-// lapses; check-in credits are good for 30 days from their day. The plugin keeps
+// lapses; a check-in's claim says when its credits do. The plugin keeps
 // the claims it made, per account, so the usage card can say when the soonest
 // of them runs out. Best effort: a ledger that can't be read or written only
 // leaves that line out.
@@ -2071,7 +2255,11 @@ function recordGrant(file, account, grant) {
     const keep = Date.now() - LEDGER_KEEP_DAYS * 86_400_000
     const day = beijingDay(vendorDate(grant.at))
     const list = (Array.isArray(all[account]) ? all[account] : [])
-      .filter((g) => (vendorDate(g.expiresAt) ?? 0) > keep && beijingDay(vendorDate(g.at) ?? 0) !== day)
+      .filter(
+        (g) =>
+          (vendorDate(g.expiresAt) ?? 0) > keep &&
+          !(beijingDay(vendorDate(g.at) ?? 0) === day && String(g.campaignId ?? "") === String(grant.campaignId ?? "")),
+      )
     all[account] = [...list, grant]
     writeLedger(file, all)
   } catch {
@@ -2085,21 +2273,23 @@ function recordGrant(file, account, grant) {
 // here, so it is never confirmed. Kept for its Beijing day only.
 const UNCONFIRMED = "_unconfirmed"
 
-/** Today's claim this plugin left unconfirmed for `account`, if any. */
+/** Today's claims this plugin left unconfirmed for `account`, if any. */
 function readUnconfirmed(file, account) {
   const left = asRecord(asRecord(readLedger(file)[UNCONFIRMED])[account])
-  return left.day === beijingDay() ? left : undefined
+  if (left.day !== beijingDay()) return []
+  if (Array.isArray(left.claims)) return left.claims
+  return left.campaignId !== undefined ? [left] : []
 }
 
-/** Keep the claim left unconfirmed for `account`, or with null drop it; other days' go. */
-function recordUnconfirmed(file, account, left) {
+/** Keep the claims left unconfirmed for `account`, or with an empty list drop them; other days' go. */
+function recordUnconfirmed(file, account, claims) {
   try {
     const all = readLedger(file)
     const today = beijingDay()
     const kept = Object.fromEntries(
       Object.entries(asRecord(all[UNCONFIRMED])).filter(([k, v]) => k !== account && asRecord(v).day === today),
     )
-    if (left) kept[account] = { ...left, day: today }
+    if (Array.isArray(claims) && claims.length > 0) kept[account] = { day: today, claims }
     all[UNCONFIRMED] = kept
     writeLedger(file, all)
   } catch {
@@ -2117,52 +2307,125 @@ function grantExpiry(benefit, at) {
 }
 
 /**
- * Press the daily check-in, exactly as the IDE's 「限时福利 → 每日领取」 does:
- * list the activities, claim the `USER_LOGIN` one with `{campaignId, channel}`,
- * and confirm it when the claim answers an id (`benefit.id !== null`), or the
- * credits stay pending. Answers magpie's check-in outcome; never throws.
- * `unconfirmed` is today's claim this plugin left unconfirmed (the ledger's);
- * an answer's own `unconfirmed` is one to keep there.
+ * Press the daily check-ins, exactly as the IDE's 「限时福利 → 每日领取」 does:
+ * list the activities, claim every claimable `USER_LOGIN` item with
+ * `{campaignId, channel}`, and confirm each when its claim answers an id
+ * (`benefit.id !== null`), or the credits stay pending. The list holds more than
+ * one such item: the ordinary daily check-in, and the campaigns a contest adds
+ * beside it. Answers magpie's check-in outcome; never throws. `unconfirmed` is
+ * today's list of claims this plugin left unconfirmed (the ledger's); an
+ * answer's own `unconfirmed` is one to keep there.
  */
 async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
-  const first = await dailyCampaign(cred, fetcher)
-  if (first.error) return { outcome: "failed", message: first.error }
-  const item = first.item
-  if (!item) return { outcome: "inactive", message: "当前没有每日领取活动" }
-  const credit = num(item.benefitAmount)
-  // Claimed here, but the confirm failed: confirm it now, or the credits stay
-  // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
-  // well, and the IDE never confirms it. When the confirm fails, only the
-  // activity tells whether it was confirmed after all; still claimed, it is a
-  // failure magpie tries again later that day.
-  const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
-  const leftHere = unconfirmed && String(unconfirmed.campaignId) === String(item.campaignId)
-  if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (confirmed.ok) return claimedOutcome(asRecord(unconfirmed.benefit), credit)
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item) && again.item.status !== "CLAIMED") return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取确认失败：${confirmed.message}` }
-  }
-  if (isClaimedToday(item)) return { outcome: "done", message: "今天已领取" }
-  if (!item.claimable) return { outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` }
-  if (!campaign) return { outcome: "failed", message: "活动缺少 campaignId" }
+  const listed = await dailyCampaigns(cred, fetcher)
+  if (listed.error) return { outcome: "failed", message: listed.error }
+  const items = listed.items
+  if (items.length === 0) return { outcome: "inactive", message: "当前没有每日领取活动" }
 
-  const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
-  if (!claimed.ok) {
-    // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item)) return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取失败：${claimed.message}` }
-  }
-  const benefit = asRecord(claimed.data)
-  if (claimed.data && benefit.id !== null) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (!confirmed.ok) {
-      return { outcome: "failed", message: `领取确认失败：${confirmed.message}`, unconfirmed: { campaignId: item.campaignId, benefit } }
+  const left = [].concat(unconfirmed ?? [])
+  const results = []
+  const grants = []
+  const kept = []
+
+  for (const item of items) {
+    const credit = num(item.benefitAmount)
+    const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
+    const leftHere = campaign ? left.find((claim) => sameCampaign(claim, item)) : undefined
+    // Claimed here, but the confirm failed: confirm it now, or the credits stay
+    // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
+    // well, and the IDE never confirms it. When the confirm fails, only the
+    // activity tells whether it was confirmed after all; still claimed, it is a
+    // failure magpie tries again later that day.
+    if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (confirmed.ok) {
+        const outcome = claimedOutcome(asRecord(leftHere.benefit), credit)
+        if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+        results.push(outcome)
+        continue
+      }
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen) && seen.status !== "CLAIMED") {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      kept.push(leftHere)
+      results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+      continue
     }
+    if (isClaimedToday(item)) {
+      results.push({ outcome: "done", message: "今天已领取" })
+      continue
+    }
+    if (!item.claimable) {
+      results.push({ outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` })
+      continue
+    }
+    if (!campaign) {
+      results.push({ outcome: "failed", message: "活动缺少 campaignId" })
+      continue
+    }
+
+    const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
+    if (!claimed.ok) {
+      // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen)) {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      if (isIneligibleClaim(claimed)) {
+        results.push({ outcome: "ineligible", message: claimed.message })
+        continue
+      }
+      results.push({ outcome: "failed", message: `领取失败：${claimed.message}` })
+      continue
+    }
+    const benefit = asRecord(claimed.data)
+    if (claimed.data && benefit.id !== null) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (!confirmed.ok) {
+        kept.push({ campaignId: item.campaignId, benefit })
+        results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+        continue
+      }
+    }
+    const outcome = claimedOutcome(benefit, credit)
+    if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+    results.push(outcome)
   }
-  return claimedOutcome(benefit, credit)
+
+  const failed = results.filter((result) => result.outcome === "failed")
+  const claimed = results.filter((result) => result.outcome === "claimed")
+  const done = results.filter((result) => result.outcome === "done")
+  const ineligible = results.filter((result) => result.outcome === "ineligible")
+
+  let outcome
+  let credit
+  let message
+  if (failed.length > 0) {
+    outcome = "failed"
+    message = failed.length === 1 ? failed[0].message : `${failed[0].message}（另有 ${failed.length - 1} 个活动失败）`
+  } else if (claimed.length > 0) {
+    outcome = "claimed"
+    credit = claimed.reduce((sum, result) => sum + (result.credit ?? 0), 0)
+    message = credit > 0 ? `+${credit} 积分` : "已领取"
+  } else if (done.length > 0) {
+    outcome = "done"
+    message = "今天已领取"
+  } else {
+    outcome = "ineligible"
+    message = ineligible[0]?.message ?? ""
+  }
+
+  const answer = { outcome, ...(credit > 0 ? { credit } : {}), message }
+  if (grants.length === 1) answer.grant = grants[0]
+  else if (grants.length > 1) answer.grants = grants
+  if (kept.length === 1) answer.unconfirmed = kept[0]
+  else if (kept.length > 1) answer.unconfirmed = kept
+  return answer
 }
 
 /** The outcome of a check-in that went through, with the grant the ledger keeps. */
@@ -2333,8 +2596,19 @@ async function fetchRemoteModels(cred, fetcher, state) {
   const seen = new Set()
   const benefitIds = []
 
-  const gatewayText = await signedGet(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher)
-  const gateway = gatewayText === undefined ? undefined : extractArray(gatewayText, ["result", "models"])
+  // A station without opengw (the international one) has no free channel:
+  // no free models, and nothing of opengw's is asked.
+  const station = stationOf(cred)
+  const gatewayAnswer = station.opengw ? await signedRead(OPENGW_GATEWAY_CONFIG_URL, cred, fetcher) : undefined
+  const gateway = !station.opengw
+    ? []
+    : !gatewayAnswer
+    ? undefined
+    : isNoBenefitChannel(gatewayAnswer.text)
+      ? []
+      : gatewayAnswer.ok
+        ? extractArray(gatewayAnswer.text, ["result", "models"])
+        : undefined
   const claimed = gateway?.length ? (state ? await ensureBenefitClaimed(cred, fetcher, state) : true) : false
   for (const item of claimed ? gateway : []) {
     if (typeof item !== "object" || item === null) continue
@@ -2400,6 +2674,15 @@ const CREDIT_METRIC_LABELS = {
 }
 const TOTAL_CREDIT_METRIC = "usageTotalPackageCredit"
 
+/** Compact token counts the way an international account reads them (5000000 → "5.0M"). */
+function formatCount(n) {
+  const v = Math.max(0, Number.isFinite(n) ? n : 0)
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`
+  if (v >= 1e4) return `${(v / 1e3).toFixed(1)}K`
+  return String(Math.round(v))
+}
+
 /** Compact credit counts for the display string (12345 → "1.2万"). */
 function formatCredit(n) {
   const v = Math.max(0, Number.isFinite(n) ? n : 0)
@@ -2459,15 +2742,52 @@ function benefitWindow(raw, ids = BENEFIT_MODEL_FALLBACK) {
   }
 }
 
+/** What a token metric is called on the card. */
+const TOKEN_METRIC_LABELS = { usageTokenChatMessages: "Tokens" }
+
+/**
+ * A token plan's windows from `statistics/plugin`'s metrics: one for each
+ * metric with an allowance (`package_token_amount` > 0), used being
+ * `usage_token_num`. The period is `start_date`–`end_date`, so the window
+ * resets (or the plan ends) at `end_date`. `gated`: a credit total already
+ * gates the account, so these only show.
+ */
+function tokenWindows(metrics, data, station, gated) {
+  const end = vendorDate(data.end_date)
+  const start = vendorDate(data.start_date)
+  const format = station === STATIONS.mainland ? formatCredit : formatCount
+  const out = []
+  for (const item of metrics) {
+    const rec = asRecord(item)
+    const limit = num(rec.package_token_amount)
+    if (limit <= 0) continue
+    const used = Math.max(0, num(rec.usage_token_num))
+    out.push({
+      name: firstOf(TOKEN_METRIC_LABELS[rec.name], "Tokens"),
+      used: clamp((used / limit) * 100),
+      display: `${format(used)} / ${format(limit)}`,
+      amount: used,
+      limit,
+      unit: "tokens",
+      ...(end ? { resetsAt: new Date(end).toISOString() } : {}),
+      ...(end && start && end > start ? { span: Math.round((end - start) / 1000) } : {}),
+      ...(gated || out.length > 0 ? { aside: true } : {}),
+    })
+  }
+  return out
+}
+
 /**
  * Map the account's `statistics/plugin` (+ free pool) answer to magpie's usage
  * shape. `batches` are its credit batches with their own expiry (see
  * fetchCreditBatches): the plan's batch gives the month's reset to the second,
  * and the soonest of the rest to lapse is each bucket's (and the total's)
  * `runsOutAt`/`runsOut`. Without them, `grants` (the check-ins the plugin
- * claimed, 30 days each) stand in, and the reset is `end_date`.
+ * claimed, each until the date its claim said) stand in, and the reset is
+ * `end_date`. A window's `runsOut` is only credit its own remainder holds:
+ * none when that is 0, or when nothing in it lapses (#982).
  */
-function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = {}) {
+function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds, now = Date.now(), station = STATIONS.mainland } = {}) {
   let data = raw
   if (raw && typeof raw.code === "number") {
     if (raw.code !== 0) return { error: firstOf(raw.message, raw.msg, `CodeArts code ${raw.code}`), windows: [] }
@@ -2475,9 +2795,10 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = 
   }
   if (!data || typeof data !== "object") return { error: "CodeArts could not be parsed", windows: [] }
   const pkg = asRecord(data.package)
-  const plan = firstOf(pkg.package_name_cn, pkg.package_name_en, pkg.spec_code)
+  const plan = station === STATIONS.mainland
+    ? firstOf(pkg.package_name_cn, pkg.package_name_en, pkg.spec_code)
+    : firstOf(pkg.package_name_en, pkg.package_name_cn, pkg.spec_code)
   const metrics = Array.isArray(data.metrics) ? data.metrics : []
-  const now = Date.now()
   const known = batches ?? grantBatches(grants)
   // The plan's own batch ends when the month's allowance comes back.
   const planEnds = known.filter((b) => b.metric === PACKAGE_TYPE_METRICS.basic && b.expiresAt > now).map((b) => b.expiresAt)
@@ -2493,21 +2814,38 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = 
     const limit = num(rec.package_credit_amount)
     const remain = num(rec.package_credit_remain)
     if (limit <= 0 && remain <= 0) continue // empty bucket, nothing to show
+    const said = rec.package_credit_expiring_amount
     const w = creditWindow(name, limit, remain, {
       resetsAt: MONTHLY_CREDIT_METRICS.includes(rec.name) ? resetsAt : undefined,
-      expiring: num(rec.package_credit_expiring_amount),
+      expiring: num(said),
     })
+    // The vendor's own count of what is about to lapse, as a field (#982).
+    if (said !== undefined && said !== null && said !== "") w.expiring = num(said)
     metricOf.set(w, rec.name)
     windows.push(w)
   }
 
-  // What lapses soonest, apart from the month's reset: a bucket's own
-  // batches; for the total, every batch but the plan's.
+  // What lapses soonest, apart from the month's reset: each bucket's own
+  // batches, held to what that bucket has left; for the total, the soonest
+  // of the buckets' lapses, what lapses that Beijing day summed.
+  const lapses = new Map()
+  for (const item of metrics) {
+    const rec = asRecord(item)
+    if (rec.name === TOTAL_CREDIT_METRIC || rec.name === PACKAGE_TYPE_METRICS.basic || lapses.has(rec.name)) continue
+    if (!Object.values(PACKAGE_TYPE_METRICS).includes(rec.name)) continue
+    const said = rec.package_credit_expiring_amount
+    const expiring = said === undefined || said === null || said === "" ? undefined : num(said)
+    const lapse = bucketLapse(known.filter((b) => b.metric === rec.name), Math.max(0, num(rec.package_credit_remain)), expiring, now)
+    if (lapse) lapses.set(rec.name, lapse)
+  }
+  const soonest = lapses.size ? Math.min(...[...lapses.values()].map((l) => l.at)) : undefined
   for (const w of windows) {
     const metric = metricOf.get(w)
-    if (metric === PACKAGE_TYPE_METRICS.basic) continue
-    const own = known.filter((b) => (metric === TOTAL_CREDIT_METRIC ? b.metric !== PACKAGE_TYPE_METRICS.basic : b.metric === metric))
-    const lapse = soonestLapse(own, now)
+    let lapse = lapses.get(metric)
+    if (metric === TOTAL_CREDIT_METRIC && soonest !== undefined) {
+      const day = beijingDay(soonest)
+      lapse = { at: soonest, credit: [...lapses.values()].filter((l) => beijingDay(l.at) === day).reduce((n, l) => n + l.credit, 0) }
+    }
     const left = Math.max(0, w.limit - w.amount)
     if (lapse && left > 0) {
       w.runsOutAt = new Date(lapse.at).toISOString()
@@ -2520,11 +2858,287 @@ function usageFromStatistics(raw, benefitRaw, { batches, grants, benefitIds } = 
   const totalLabel = CREDIT_METRIC_LABELS[TOTAL_CREDIT_METRIC]
   windows.sort((a, b) => (a.name === totalLabel ? -1 : b.name === totalLabel ? 1 : 0))
 
+  // A plan metered in tokens (`is_token_package`, the international
+  // station's Free plan, #998): each metric's `usage_token_num` of its
+  // `package_token_amount`, for the period to `end_date`. The first one
+  // gates the account unless a credit total already does.
+  const tokens = pkg.is_token_package === true ? tokenWindows(metrics, data, station, windows.some((w) => !w.aside)) : []
+  windows.push(...tokens)
+
   const benefit = benefitRaw ? benefitWindow(benefitRaw, benefitIds) : undefined
   if (benefit) windows.push(benefit)
 
   if (windows.length > 0) return { plan: plan || undefined, signIn: "kept", windows }
-  return { plan: plan || undefined, windows, error: "该账号无积分额度" }
+  return { plan: plan || undefined, windows, error: pkg.is_token_package === true ? "该账号无 token 额度" : "该账号无积分额度" }
+}
+
+// ---- the CodeArts Agent on this machine (#998) ------------------------------
+//
+// The CodeArts Agent IDE keeps its own sign-in in its VS Code-style state
+// database: `state.vscdb` (SQLite) in its globalStorage, table `ItemTable`,
+// key `huaweicloud.codearts-snap`, whose `userInfoKey.originData` holds the
+// STS triple (`accessKey`, `secretKey`, `securityToken`), `domainId`,
+// `expiresAt` and `stationType`. The Windows path is the one measured in the
+// issue (`%APPDATA%\codearts-agent\…`); the macOS and Linux ones follow where
+// Electron keeps an app's user data on those systems.
+//
+// The file is the IDE's: it is only ever read, by copying it (and its
+// journal) into a temporary folder of our own and opening the copy, so the
+// IDE's database is never locked, opened or written. A sign-in from it is
+// renewed by reading it again (the IDE renews its own, about every two hours);
+// nothing is written back. A file that is missing, unreadable, half-written
+// or holds no usable sign-in is unknown: nothing is offered from it, and an
+// account signed in from it keeps its sign-in until it reads well again.
+
+const IDE_SOURCE = "codearts-agent-ide"
+const IDE_STATE_KEY = "huaweicloud.codearts-snap"
+const IDE_APP_DIR = "codearts-agent"
+// A state database larger than this is not copied.
+const IDE_DB_MAX_BYTES = 256 * 1024 * 1024
+// What the IDE calls its stations; a value not here is a station this plugin
+// doesn't know, and nothing is signed in from it.
+const IDE_STATIONS = { international: "international", mainland: "mainland", china: "mainland", cn: "mainland", domestic: "mainland" }
+
+/** Where the CodeArts Agent keeps `state.vscdb` on `platform`; "" when there is no place to look. */
+function ideStatePath(platform = process.platform, env = process.env, home = os.homedir()) {
+  const tail = [IDE_APP_DIR, "User", "globalStorage", "state.vscdb"]
+  if (platform === "win32") {
+    const appData = firstOf(env?.APPDATA) || (firstOf(home) ? path.win32.join(home, "AppData", "Roaming") : "")
+    return appData ? path.win32.join(appData, ...tail) : ""
+  }
+  if (platform === "darwin") return firstOf(home) ? path.posix.join(home, "Library", "Application Support", ...tail) : ""
+  // XDG: a relative XDG_CONFIG_HOME is ignored
+  const xdg = firstOf(env?.XDG_CONFIG_HOME)
+  const config = xdg && path.posix.isAbsolute(xdg) ? xdg : firstOf(home) ? path.posix.join(home, ".config") : ""
+  return config ? path.posix.join(config, ...tail) : ""
+}
+
+/** Open a SQLite file with Bun's driver, or Node's. */
+async function openSqlite(file) {
+  try {
+    const { Database } = await import("bun:sqlite")
+    return new Database(file)
+  } catch (e) {
+    if (typeof Bun !== "undefined") throw e
+  }
+  const { DatabaseSync } = await import("node:sqlite")
+  return new DatabaseSync(file)
+}
+
+/** The station an IDE's `stationType` names; null for one this plugin doesn't know. */
+function ideStationOf(stationType) {
+  if (stationType === undefined || stationType === null || stationType === "") return STATIONS.mainland
+  const id = IDE_STATIONS[String(stationType).trim().toLowerCase()]
+  return id ? STATIONS[id] : null
+}
+
+/**
+ * The credential in the IDE's `huaweicloud.codearts-snap` value, as
+ * `{ cred }`, or `{ reason }` when it holds none. A reason never carries any
+ * of the credential's values.
+ */
+function ideCredentialFromValue(value) {
+  const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : ""
+  if (!text) return { reason: "CodeArts Agent is not signed in on this machine" }
+  const stored = safeJson(text)
+  if (!stored) return { reason: "CodeArts Agent's stored sign-in could not be read" }
+  let user = stored.userInfoKey
+  if (typeof user === "string") user = safeJson(user)
+  let origin = asRecord(user).originData
+  if (typeof origin === "string") origin = safeJson(origin)
+  origin = asRecord(origin)
+  const ak = firstOf(origin.accessKey)
+  const sk = firstOf(origin.secretKey)
+  const token = firstOf(origin.securityToken)
+  if (!ak || !sk || !token) return { reason: "CodeArts Agent is not signed in on this machine (its stored sign-in has no credential)" }
+  const domainId = firstOf(String(origin.domainId ?? ""))
+  if (!domainId) return { reason: "CodeArts Agent's stored sign-in names no account (domainId)" }
+  const station = ideStationOf(origin.stationType)
+  if (!station) {
+    const said = String(origin.stationType)
+    return { reason: `CodeArts Agent is signed in on a station this plugin doesn't know (${/^[\w.-]{1,40}$/.test(said) ? said : "unrecognised"})` }
+  }
+  const expires = vendorDate(origin.expiresAt)
+  return {
+    cred: {
+      access_key_id: ak,
+      secret_access_key: sk,
+      security_token: token,
+      ...(expires ? { expires_at: new Date(expires).toISOString() } : {}),
+      domain_id: domainId,
+      station: station.id,
+      source: IDE_SOURCE,
+    },
+  }
+}
+
+/**
+ * Read the IDE's sign-in from `file`: `{ cred }`, or `{ reason, missing? }`
+ * when there is none to use (`missing`: no file at all). Never throws, never
+ * writes or opens the IDE's own file.
+ */
+async function readIdeCredential(file, { tmp = os.tmpdir() } = {}) {
+  if (!file) return { reason: "there is no place to look for CodeArts Agent on this system", missing: true }
+  let st
+  try {
+    st = fs.statSync(file)
+  } catch (e) {
+    return e?.code === "ENOENT"
+      ? { reason: "CodeArts Agent is not installed or not signed in on this machine", missing: true }
+      : { reason: "CodeArts Agent's state.vscdb could not be read" }
+  }
+  if (!st.isFile() || st.size === 0 || st.size > IDE_DB_MAX_BYTES) return { reason: "CodeArts Agent's state.vscdb could not be read" }
+  let dir = ""
+  let db
+  try {
+    dir = fs.mkdtempSync(path.join(tmp, "codearts-ide-"))
+    const copy = path.join(dir, "state.vscdb")
+    fs.writeFileSync(copy, fs.readFileSync(file), { mode: 0o600 })
+    // What the IDE hasn't folded into the file yet: its write-ahead log, or a
+    // rollback journal a write left behind. The copy applies (or undoes) it.
+    for (const suffix of ["-wal", "-journal"]) {
+      let bytes
+      try {
+        bytes = fs.readFileSync(file + suffix)
+      } catch {
+        continue
+      }
+      fs.writeFileSync(copy + suffix, bytes, { mode: 0o600 })
+    }
+    db = await openSqlite(copy)
+    // Finalized before the close: Bun's close leaves the file open while a
+    // statement lives, and on Windows an open file can't be removed, which
+    // would leave this copy of the sign-in behind.
+    const stmt = db.prepare("SELECT value FROM ItemTable WHERE key = ?")
+    let row
+    try {
+      row = stmt.get(IDE_STATE_KEY)
+    } finally {
+      stmt.finalize?.()
+    }
+    return ideCredentialFromValue(row?.value)
+  } catch {
+    return { reason: "CodeArts Agent's state.vscdb could not be read" }
+  } finally {
+    try {
+      db?.close()
+    } catch {
+      /* gone with the folder */
+    }
+    if (dir) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+
+/**
+ * A digest of `file`'s bytes, read in pieces: `""` when there is no such file,
+ * `null` when it couldn't be read (so nothing is taken as unchanged).
+ */
+function fileDigest(file) {
+  let fd
+  try {
+    fd = fs.openSync(file, "r")
+  } catch (e) {
+    return e?.code === "ENOENT" ? "" : null
+  }
+  try {
+    const hash = createHash("sha1")
+    const buf = Buffer.allocUnsafe(1 << 20)
+    let total = 0
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null)
+      if (n === 0) break
+      total += n
+      // past the size a read would copy: not read, so not known to be the same
+      if (total > IDE_DB_MAX_BYTES) return null
+      hash.update(n === buf.length ? buf : buf.subarray(0, n))
+    }
+    return `${total}:${hash.digest("hex")}`
+  } catch {
+    return null
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      /* closed */
+    }
+  }
+}
+
+/**
+ * A reader of the IDE's sign-in at `file`, read again only when the file
+ * changed: a renewal that finds the IDE hasn't renewed yet asks again every
+ * half minute. "Changed" is by its bytes and those of its -wal and -journal,
+ * not only their size, time and inode: an IDE that writes twice within one
+ * tick of the file system's clock leaves those as they were.
+ */
+function ideReader(file) {
+  let last = null
+  return async () => {
+    let stamp = ""
+    try {
+      const st = fs.statSync(file)
+      if (!st.isFile()) throw new Error("not a file")
+      const main = fileDigest(file)
+      if (!main) throw new Error("unread")
+      stamp = `${st.ino}:${main}`
+      for (const suffix of ["-wal", "-journal"]) {
+        const d = fileDigest(file + suffix)
+        if (d === null) throw new Error("unread")
+        if (d) stamp += `|${suffix}:${d}`
+      }
+    } catch {
+      // unknown: read it again
+      stamp = ""
+    }
+    if (stamp && last?.stamp === stamp) return last.result
+    const result = await readIdeCredential(file)
+    last = stamp ? { stamp, result } : null
+    return result
+  }
+}
+
+/**
+ * Check an IDE credential with the station's `current/user` before signing in
+ * with it, and read the account's name there. `{ error }` only when CodeArts
+ * turns the credential away (401/403); a read that fails otherwise signs in
+ * all the same, without the name.
+ */
+async function checkIdeCredential(cred, fetcher) {
+  const answer = await signedRead(`${stationOf(cred).snap}/snap-manager/v1/current/user`, cred, fetcher, SNAP_EXTRA_HEADERS)
+  if (answer && (answer.status === 401 || answer.status === 403)) {
+    return { error: `CodeArts turned the CodeArts Agent's sign-in away (HTTP ${answer.status}): open CodeArts Agent so it signs in again, then try again` }
+  }
+  if (!answer?.ok) return { fields: {} }
+  const raw = asRecord(safeJson(answer.text))
+  const user = asRecord("data" in raw ? raw.data : raw)
+  const name = firstOf(user.user_name, user.userName)
+  const id = firstOf(String(user.user_id ?? user.userId ?? ""))
+  return { fields: { ...(name ? { user_name: name } : {}), ...(id ? { user_id: id } : {}) } }
+}
+
+/**
+ * The IDE's sign-in read again, in place of a renewal: the account's own,
+ * renewed by the IDE. Throws (for now, never for good) when the file can't be
+ * read, holds another account or station, or the IDE hasn't renewed it yet.
+ */
+async function renewFromIde(cred, read) {
+  const got = await read()
+  if (!got.cred) throw new Error(`CodeArts: ${got.reason}; open CodeArts Agent and sign in there`)
+  const next = got.cred
+  if (next.domain_id !== cred.domain_id) throw new Error("CodeArts: CodeArts Agent on this machine is signed in to another account now")
+  if (next.station !== stationOf(cred).id) throw new Error("CodeArts: CodeArts Agent on this machine is signed in on another station now")
+  if (next.access_key_id === cred.access_key_id && next.security_token === cred.security_token) {
+    throw new Error("CodeArts: CodeArts Agent hasn't renewed its sign-in yet; open CodeArts Agent on this machine")
+  }
+  // The account's own fields outlive the credential: its session and name.
+  const kept = Object.fromEntries(["session_id", "user_name", "user_id", "user_phone"].filter((k) => cred[k]).map((k) => [k, cred[k]]))
+  return { ...next, ...kept }
 }
 
 // ---- the plugin -------------------------------------------------------------
@@ -2569,7 +3183,16 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
   // loaders, magpie's auth.refresh): STS spends a refresh token once, so a
   // second use of it would turn the account away. Whoever comes later with
   // the same token gets what that renewal gave.
+  // The CodeArts Agent on this machine (its state.vscdb), read again only
+  // when it changed.
+  // (`ideStateFile`, or MAGPIE_CODEARTS_IDE_STATE: another file, for tests)
+  const ideFile = typeof options?.ideStateFile === "string"
+    ? options.ideStateFile
+    : firstOf(process.env.MAGPIE_CODEARTS_IDE_STATE) || ideStatePath()
+  const readIde = ideReader(ideFile)
   const renewOnce = async (cred) => {
+    // A sign-in from the IDE is renewed by the IDE: read it again, never STS.
+    if (cred.source === IDE_SOURCE) return renewFromIde(cred, readIde)
     const token = firstOf(cred.refresh_token)
     if (!token) return refreshCredential(cred, fetcher)
     const state = await stateOf(cred)
@@ -2653,6 +3276,110 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     }
   }
 
+  // The browser sign-in on one station. The international one (#1090) opens
+  // Huawei Cloud's international login first, and its account skips the two
+  // mainland-only reads below (IAM's phone, OfficeAce's MaaS pair).
+  const browserMethodOn = (station) => ({
+    type: "oauth",
+    label: station === STATIONS.mainland ? "Sign in with Huawei Cloud" : "Sign in with Huawei Cloud (International)",
+    async authorize() {
+      const flow = await startOAuthFlow(fetcher, "CodeArts", station)
+      const mainland = station === STATIONS.mainland
+      return {
+        url: flow.loginUrl,
+        instructions: mainland
+          ? "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done."
+          : "Sign in to Huawei Cloud International in the browser. This signs in CodeArts only. This window closes itself when done.",
+        method: "auto",
+        async callback() {
+          try {
+            const outcome = await flow.result
+            const cred = safeJson(outcome.access)
+            if (!cred?.access_key_id) return { type: "failed", error: "CodeArts did not return a credential" }
+            // The card's name is the phone (one read away, best effort:
+            // a failed read still signs in), shown through usage's
+            // `user`; the credential carries it as `user_phone`.
+            const identified = mainland ? { ...cred, ...(await accountPhoneField(cred, fetcher)) } : cred
+            // The MaaS pair OfficeAce needs is read once here (best effort:
+            // an account that never opened MaaS signs in all the same), and
+            // kept on this credential too, so a later rotation of this
+            // record hands the other one a credential that still has it.
+            const withMaas = mainland ? await withOfficeAceMaas(identified, fetcher) : identified
+            const identity = accountIdentityOf(withMaas)
+            // `accountId` is the account's identity — the URN, as main
+            // gives it — so a re-sign-in replaces the account instead of
+            // adding a `codearts#xxxxxx`; `uid` is that same URN.
+            const record = {
+              type: "success",
+              access: JSON.stringify(withMaas),
+              refresh: cred.refresh_token,
+              expires: outcome.expires,
+              accountId: identity.id,
+              ...(identity.id ? { uid: identity.id } : {}),
+            }
+            // This sign-in writes this card's record only. A Huawei Cloud
+            // refresh token is spent once, so two records holding one
+            // token would sign each other out; the other card has its own
+            // sign-in and its own token.
+            await writeProviderRecord(client, PROVIDER, withMaas, fetcher)
+            return record
+          } catch (e) {
+            return { type: "failed", error: e?.message ?? String(e) }
+          } finally {
+            await flow.close()
+          }
+        },
+      }
+    },
+  })
+  const browserMethod = browserMethodOn(STATIONS.mainland)
+  const intlBrowserMethod = browserMethodOn(STATIONS.international)
+
+  // Sign in from the CodeArts Agent on this machine: its own stored sign-in,
+  // read (never written), checked once with the station, and renewed by
+  // reading it again. No browser, no refresh token, and nothing of it reaches
+  // the OfficeAce card: that one signs in on its own.
+  const ideMethod = {
+    type: "oauth",
+    label: "Use the CodeArts Agent on this machine",
+    async authorize() {
+      return {
+        url: "",
+        instructions: "Reads the sign-in of the CodeArts Agent on this computer. Keep CodeArts Agent signed in: its sign-in lasts about two hours, and the renewed one is read from there.",
+        method: "auto",
+        async callback() {
+          try {
+            const read = await readIde()
+            if (!read.cred) return { type: "failed", error: read.reason }
+            if (Date.parse(read.cred.expires_at ?? "") <= now()) {
+              return { type: "failed", error: "CodeArts Agent's sign-in has expired: open CodeArts Agent so it renews it, then try again" }
+            }
+            const checked = await checkIdeCredential(read.cred, fetcher)
+            if (checked.error) return { type: "failed", error: checked.error }
+            const cred = { ...read.cred, ...checked.fields, session_id: randomHex(16) }
+            const identity = accountIdentityOf(cred)
+            // refresh is here, empty, because a host keeps an OAuth
+            // sign-in only when the result has one (OpenCode's CLI and
+            // magpie's host.js both test `"refresh" in result`): without
+            // it the sign-in said ok and nothing was stored (#998). This
+            // one has no refresh token; it is renewed by reading the IDE's
+            // file again.
+            return {
+              type: "success",
+              refresh: "",
+              access: JSON.stringify(cred),
+              expires: expiresFromCredential(cred),
+              accountId: identity.id,
+              uid: identity.id,
+            }
+          } catch (e) {
+            return { type: "failed", error: e?.message ?? String(e) }
+          }
+        },
+      }
+    },
+  }
+
   return {
     // The provider and the models it has before anyone is signed in.
     config: async (config) => {
@@ -2691,6 +3418,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     auth: {
       provider: PROVIDER,
       refreshLead: REFRESH_LEAD_MS,
+      rotating: true,
       // The gateway's own cap: more in flight only queues in the plugin.
       maxConcurrency: maxInflight,
 
@@ -2779,6 +3507,8 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         // One account = one upstream session and one in-flight budget.
         const ids = await accountSessionIds(cred)
         const state = accountState(ids.sessionId)
+        // A station without opengw has no free models: none is sent as one.
+        if (!stationOf(cred).opengw && state.benefit === null) state.benefit = new Set()
         const context = {
           ...ids,
           gate: state.gate,
@@ -2796,7 +3526,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
           signInDead: () => signInDead,
         }
         return {
-          baseURL: CHAT_API_BASE,
+          baseURL: chatBaseOf(cred),
           async fetch(input, init = {}) {
             const c = await current()
             return signedFetch(c, input, init, context)
@@ -2812,16 +3542,19 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         const identity = accountIdentityOf(cred).id
         if (identity) noteProviderAccount(PROVIDER, identity)
         try {
+          const station = stationOf(cred)
           const text = await signedGet(SNAP_STATISTICS_URL, cred, fetcher, SNAP_EXTRA_HEADERS)
           if (text === undefined) return { error: "CodeArts answered an error", windows: [] }
           const state = await stateOf(cred)
           // The free pool only once today's benefit is the account's; best
-          // effort either way: a credit account without one is normal.
-          const free = state.benefit === null || state.benefit.size > 0
+          // effort either way: a credit account without one is normal. A
+          // station without opengw has none.
+          const free = !!station.opengw && (state.benefit === null || state.benefit.size > 0)
           const benefitText = free ? await signedGet(BENEFIT_BALANCE_URL, cred, fetcher) : undefined
           // Each batch's own expiry, read again every ten minutes (and after a
           // check-in); a failed read keeps the last one, else the ledger stands in.
-          if (!state.batchesAt || Date.now() - state.batchesAt > CREDIT_BATCHES_TTL_MS) {
+          // The international station's plans are metered in tokens: no batches.
+          if (station === STATIONS.mainland && (!state.batchesAt || Date.now() - state.batchesAt > CREDIT_BATCHES_TTL_MS)) {
             const read = await fetchCreditBatches(cred, fetcher).catch(() => undefined)
             if (read) state.batches = read
             state.batchesAt = Date.now()
@@ -2830,6 +3563,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             batches: state.batches,
             grants: readGrants(ledgerPath, await ledgerKey(cred)),
             benefitIds: state.benefit ? [...state.benefit] : BENEFIT_MODEL_FALLBACK,
+            station,
           })
           // The card names the account by its phone, not by IAM's `hw…` id or
           // its URN — read once here for an account whose credential predates
@@ -2847,85 +3581,47 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       async checkin(getAuth) {
         const cred = credentialOf(await getAuth())
         if (!cred?.access_key_id) return { outcome: "failed", message: "not signed in" }
+        // The international station has no 「每日领取」 (its ops/delivery
+        // answers 400 HDN.1000).
+        if (stationOf(cred) !== STATIONS.mainland) return { outcome: "inactive", message: "no daily check-in on this station" }
         const key = await ledgerKey(cred)
         const state = await stateOf(cred)
         const today = beijingDay()
         // The account's own memory first: the ledger is written best effort,
         // and a write that failed mustn't lose the claim; the ledger carries it
         // to another process, or past a restart.
-        const held = state.unconfirmed?.day === today ? state.unconfirmed : undefined
+        const held = state.unconfirmed?.day === today ? state.unconfirmed.claims : undefined
         const left = held ?? readUnconfirmed(ledgerPath, key)
-        const { grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        const { grant, grants, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
         // A claim whose confirm failed is kept for the next check-in; one
         // confirmed now, or found done, is dropped.
-        if (unconfirmed) {
-          state.unconfirmed = { ...unconfirmed, day: today }
-          recordUnconfirmed(ledgerPath, key, unconfirmed)
-        } else if (left && r.outcome !== "failed") {
+        const kept = Array.isArray(unconfirmed) ? unconfirmed : unconfirmed ? [unconfirmed] : []
+        if (kept.length > 0) {
+          state.unconfirmed = { day: today, claims: kept }
+          recordUnconfirmed(ledgerPath, key, kept)
+        } else if (left?.length > 0 && r.outcome !== "failed") {
           state.unconfirmed = null
-          recordUnconfirmed(ledgerPath, key, null)
+          recordUnconfirmed(ledgerPath, key, [])
         }
-        if (r.outcome === "claimed") {
+        const newGrants = grants ?? (grant ? [grant] : [])
+        if (newGrants.length > 0) {
           // The new batch shows at the next usage read; the ledger keeps it in
           // case the vendor's batch list can't be read.
           state.batchesAt = 0
-          if (grant) recordGrant(ledgerPath, key, grant)
+          for (const item of newGrants) recordGrant(ledgerPath, key, item)
         }
         return r
       },
 
-      methods: [
-        {
-          type: "oauth",
-          label: "Sign in with Huawei Cloud",
-          async authorize() {
-            const flow = await startOAuthFlow(fetcher)
-            return {
-              url: flow.loginUrl,
-              instructions: "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done.",
-              method: "auto",
-              async callback() {
-                try {
-                  const outcome = await flow.result
-                  const cred = safeJson(outcome.access)
-                  if (!cred?.access_key_id) return { type: "failed", error: "CodeArts did not return a credential" }
-                  // The card's name is the phone (one read away, best effort:
-                  // a failed read still signs in), shown through usage's
-                  // `user`; the credential carries it as `user_phone`.
-                  const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
-                  // The MaaS pair OfficeAce needs is read once here (best effort:
-                  // an account that never opened MaaS signs in all the same), and
-                  // kept on this credential too, so a later rotation of this
-                  // record hands the other one a credential that still has it.
-                  const withMaas = await withOfficeAceMaas(identified, fetcher)
-                  const identity = accountIdentityOf(withMaas)
-                  // `accountId` is the account's identity — the URN, as main
-                  // gives it — so a re-sign-in replaces the account instead of
-                  // adding a `codearts#xxxxxx`; `uid` is that same URN.
-                  const record = {
-                    type: "success",
-                    access: JSON.stringify(withMaas),
-                    refresh: cred.refresh_token,
-                    expires: outcome.expires,
-                    accountId: identity.id,
-                    ...(identity.id ? { uid: identity.id } : {}),
-                  }
-                  // This sign-in writes this card's record only. A Huawei Cloud
-                  // refresh token is spent once, so two records holding one
-                  // token would sign each other out; the other card has its own
-                  // sign-in and its own token.
-                  await writeProviderRecord(client, PROVIDER, withMaas, fetcher)
-                  return record
-                } catch (e) {
-                  return { type: "failed", error: e?.message ?? String(e) }
-                } finally {
-                  await flow.close()
-                }
-              },
-            }
-          },
-        },
-      ],
+      // The browser sign-in first, always; the CodeArts Agent's second, only
+      // while the IDE's state file is there; the international browser
+      // sign-in last (the host picks a method by its place, so the older
+      // ones keep theirs).
+      get methods() {
+        return ideFile && fs.existsSync(ideFile)
+          ? [browserMethod, ideMethod, intlBrowserMethod]
+          : [browserMethod, intlBrowserMethod]
+      },
     },
   }
 }
@@ -2970,7 +3666,7 @@ export const _internal = {
   PROVIDER, NPM, CATALOG, CONTEXT_WINDOWS, BENEFIT_MODEL_FALLBACK, MAX_OUTPUT_TOKENS,
   CHAT_API_BASE, SNAP_MODEL_BUILTIN_URL, SNAP_STATISTICS_URL, OPENGW_GATEWAY_CONFIG_URL, BENEFIT_BALANCE_URL,
   OPS_DELIVERY_URL, OPS_CLAIM_URL, OPS_CONFIRM_URL, SESSION_LIMIT_ERROR, ACCOUNT_MAX_INFLIGHT,
-  PORTAL_AUTHORIZE_BASE, STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
+  STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
   firstOf, asRecord, safeJson, num, clamp, prettify, normalizeModelId, upstreamModelId, formatCredit,
   b64url, utf8, sha256Hex, hmacSha256Hex,
   generatePkcePair, generateDpopKeyPair, keyPairFromStoredJwk, signDpopJws,
@@ -2984,7 +3680,7 @@ export const _internal = {
   BENEFIT_CLAIM_URL, AGENT_LIST_URL, AGENT_DETAIL_URL, CODE_AGENT_ID,
   canonicalQuery, beijingDay, nextBeijingMidnight, vendorDate, creditRateOf,
   claimBenefit, ensureBenefitClaimed, parseAgentModel, fetchAgentModels,
-  readGrants, recordGrant, readUnconfirmed, recordUnconfirmed, grantExpiry, grantBatches, soonestLapse, fetchCreditBatches,
+  readGrants, recordGrant, readUnconfirmed, recordUnconfirmed, grantExpiry, grantBatches, soonestLapse, bucketLapse, fetchCreditBatches,
   PACKAGE_CREDIT_PAGE_URL, OPS_CREDIT_OVERVIEW_URL, OPS_CREDIT_CAMPAIGN_URL,
   toBytes, isBenefitModel, prepareChatBody, signedFetch, signedGet,
   TOOL_NAME_LIMIT, cutToolName, shortenToolNames, restoreToolNames, restoreToolNamesInStream,
@@ -2993,6 +3689,9 @@ export const _internal = {
   isRegularModel, queueInfoOf, waitInQueue, TRACE_QUEUE_URL, SESSION_HEADER,
   snapRequest, dailyCheckin,
   parseModelInfo, extractArray, fetchRemoteModels, creditWindow, benefitWindow, usageFromStatistics,
+  STATIONS, stationOf, onStation, chatBaseOf, apiHostsOf, tokenWindows, formatCount,
+  IDE_SOURCE, IDE_STATE_KEY, ideStatePath, ideStationOf, ideCredentialFromValue, readIdeCredential, ideReader,
+  checkIdeCredential, renewFromIde, openSqlite,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3045,21 +3744,26 @@ const OA_SERVICE = "apic"
 /** The OAuth client OfficeAce's own sign-in uses (its old package's refreshes). */
 const OA_AGENTARTS_CLIENT_ID = "pdp5_for_agentarts"
 const OA_RATES_TTL_MS = 20 * 60 * 1000
+const OA_RATES_RETRY_MS = 400
 const OA_REFRESH_LEAD_MS = 10 * 60 * 1000
 const OA_TOKEN_TIMEOUT_MS = 30_000
 
-/** The models OfficeAce shows before anyone is signed in (its own desktop list). */
+/**
+ * The models shown before a sign-in, and while an account's rates table has
+ * never been read: the ids a signed-in account could call (catalog ∩ rates),
+ * as measured on 2026-11-16 (#1197). Kept to that set, so a fallback never
+ * lists an id the catalog has dropped.
+ */
 const OA_FALLBACK_MODELS = {
   "glm-5.3": { name: "GLM-5.3", context: 1_000_000, output: 128_000 },
+  "glm-5.3-flash": { name: "GLM-5.3-Flash", context: 1_000_000, output: 128_000 },
   "glm-5.2": { name: "GLM-5.2", context: 1_000_000, output: 128_000 },
   "glm-5.1": { name: "GLM-5.1", context: 1_000_000, output: 128_000 },
-  "deepseek-v4": { name: "DeepSeek-V4", context: 1_000_000, output: 128_000 },
-  "deepseek-v4.1": { name: "DeepSeek-V4.1", context: 1_000_000, output: 128_000 },
-  "qwen3-30b": { name: "Qwen3 30B", context: 1_000_000, output: 128_000 },
-  "qwen3-32b": { name: "Qwen3 32B", context: 1_000_000, output: 128_000 },
-  "kimi-k2.6": { name: "Kimi-K2.6", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-pro": { name: "盘古 2.0 Pro", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-flash": { name: "盘古 2.0 Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4-flash-0731": { name: "DeepSeek-V4-Flash-0731", context: 1_000_000, output: 128_000 },
+  "kimi-k3": { name: "Kimi-K3", context: 1_000_000, output: 128_000 },
+  "kimi-k3.1-pro-highspeed": { name: "Kimi-K3.1-Pro-HighSpeed", context: 1_000_000, output: 128_000 },
+  "openpangu-2.1-pro": { name: "openPangu-2.1-Pro", context: 1_000_000, output: 128_000 },
 }
 
 /**
@@ -3349,16 +4053,32 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     return hit?.map ?? new Map()
   }
 
+  // A read with no table to fall back on is tried once more: a start-up blip
+  // would otherwise leave the account on the fallback list until the next
+  // listing (#1197).
+  const tries = hit ? 1 : 2
+  let map = new Map()
+  for (let i = 0; i < tries && map.size === 0; i++) {
+    if (i > 0) await new Promise((res) => setTimeout(res, OA_RATES_RETRY_MS))
+    map = await readOfficeAceTokenRates(cred, fetcher).catch(() => new Map())
+  }
+  if (map.size === 0) return keepStale()
+  oaRatesCache.set(identity, { at: Date.now(), map })
+  return map
+}
+
+/** One read of the billable list; an unreadable answer is an empty table. */
+async function readOfficeAceTokenRates(cred, fetcher) {
   const r = await officeAceSigned(cred, `${OA_SUBSCRIPTION_BASE}${OA_TOKEN_RATES_PATH}`, "GET", undefined, fetcher)
-  if (!r.ok) return keepStale()
+  const map = new Map()
+  if (!r.ok) return map
   let j
   try {
     j = JSON.parse(r.text)
   } catch {
-    return keepStale()
+    return map
   }
   const rows = Array.isArray(j) ? j : Array.isArray(j?.models) ? j.models : Array.isArray(j?.data) ? j.data : Array.isArray(j?.rates) ? j.rates : []
-  const map = new Map()
   for (const row of rows) {
     const raw = row?.model_name ?? row?.modelName ?? row?.model ?? row?.name
     // the vendor's `model_name` carries a trailing newline ("kimi-k3\n")
@@ -3366,8 +4086,6 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     const rate = Number(row?.cost_coefficient ?? row?.costCoefficient ?? row?.rate)
     if (name && Number.isFinite(rate)) map.set(name, rate)
   }
-  if (map.size === 0) return keepStale()
-  oaRatesCache.set(identity, { at: Date.now(), map })
   return map
 }
 
@@ -3455,17 +4173,18 @@ function officeAceLiveModels(rows, baseUrl, rates) {
  * One usage window.
  *
  * An expired bucket is folded away (`aside`) and carries no amount/limit: its
- * own total would become the denominator and read as "100% left". It takes no
- * part in routing either, so the fold is all it needs to say.
+ * own total would become the denominator and read as "100% left". Active
+ * package details keep their numbers but are also `aside`; only the aggregate
+ * window may pause the account.
  */
-function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = false, amount = 0, limit = 0 }) {
+function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = false, aside = false, amount = 0, limit = 0 }) {
   return {
     name,
     used,
     display,
     unit,
     ...(resetsAt ? { resetsAt } : {}),
-    ...(expired ? { aside: true } : { amount, limit, span: 0 }),
+    ...(expired ? { aside: true } : { amount, limit, span: 0, ...(aside ? { aside: true } : {}) }),
   }
 }
 
@@ -3474,8 +4193,9 @@ function officeAceWindow({ name, used, display, unit, resetsAt = "", expired = f
  *
  * Two kinds of bucket: `skus[].quotas[]` (`sku_attr_code === 'officeace_points'`)
  * and `bonus_skus[]`. A `.trial` sku carries no expiry (the trial never
- * expires — show it as it is, never guess a date); an expired bucket is marked
- * `aside` so the card folds it away instead of letting it hold the top slot.
+ * expires — show it as it is, never guess a date). Only the aggregate of
+ * unexpired buckets participates in routing; package details are `aside`, and
+ * expired buckets are folded away without routing amounts.
  */
 async function fetchOfficeAceUsage(cred, fetcher = fetch) {
   const r = await officeAceSigned(cred, `${OA_SUBSCRIPTION_BASE}${OA_SUBSCRIPTION_PATH}`, "GET", undefined, fetcher)
@@ -3491,9 +4211,18 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
   }
 
   const round = (n) => Math.round(n * 100) / 100
+  const expiryOf = (value, ignored = false) => {
+    if (ignored || typeof value !== "string" || value.length === 0) return undefined
+    const at = Date.parse(value)
+    return Number.isFinite(at) ? at : undefined
+  }
   const windows = []
   const nowMs = Date.now()
   let plan = ""
+  let aggregateAmount = 0
+  let aggregateLimit = 0
+  let expiredLimit = 0
+  const aggregateBatches = []
 
   for (const sku of Array.isArray(j?.skus) ? j.skus : []) {
     for (const q of Array.isArray(sku?.quotas) ? sku.quotas : []) {
@@ -3502,19 +4231,28 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
       const used = Number(q.current_value)
       if (!Number.isFinite(total) || total <= 0) continue
       const isTrial = String(sku.sku_code ?? "").endsWith(".trial")
-      const expiresAt = typeof q.expired_time === "string" && q.expired_time.length > 0 ? q.expired_time : null
-      const remaining = Math.max(0, total - used)
-      const expired = expiresAt !== null && !isTrial && new Date(expiresAt).getTime() <= nowMs
+      const expiresAt = expiryOf(q.expired_time, isTrial)
+      const amount = Math.min(total, Math.max(0, Number.isFinite(used) ? used : 0))
+      const remaining = total - amount
+      const expired = expiresAt !== undefined && expiresAt <= nowMs
       if (!plan && typeof sku.sku_name === "string") plan = sku.sku_name
+      if (expired) {
+        expiredLimit += total
+      } else {
+        aggregateAmount += amount
+        aggregateLimit += total
+        if (remaining > 0 && expiresAt !== undefined) aggregateBatches.push({ left: remaining, expiresAt })
+      }
       windows.push(officeAceWindow({
         name: `${sku.sku_name ?? "套餐"} · 剩 ${round(remaining)}`,
-        used: Math.min(100, Math.max(0, Math.round((used / total) * 100))),
+        used: Math.min(100, Math.max(0, Math.round((amount / total) * 100))),
         // a `.trial` sku carries no expiry: nothing to invent
-        resetsAt: isTrial || expiresAt === null ? "" : new Date(expiresAt).toISOString(),
+        resetsAt: expiresAt === undefined ? "" : new Date(expiresAt).toISOString(),
         display: `${round(remaining)} / ${round(total)}`,
         unit: "积分",
         expired,
-        amount: used,
+        aside: true,
+        amount,
         limit: total,
       }))
     }
@@ -3524,19 +4262,59 @@ async function fetchOfficeAceUsage(cred, fetcher = fetch) {
     const points = Number(bonus?.points)
     if (!Number.isFinite(points) || points <= 0) continue
     const used = Number(bonus.current_value)
-    const remaining = Math.max(0, points - (Number.isFinite(used) ? used : 0))
-    const expiresAt = typeof bonus.expired_time === "string" ? bonus.expired_time : null
-    const expired = expiresAt !== null && new Date(expiresAt).getTime() <= nowMs
+    const amount = Math.min(points, Math.max(0, Number.isFinite(used) ? used : 0))
+    const remaining = points - amount
+    const expiresAt = expiryOf(bonus.expired_time)
+    const expired = expiresAt !== undefined && expiresAt <= nowMs
+    if (expired) {
+      expiredLimit += points
+    } else {
+      aggregateAmount += amount
+      aggregateLimit += points
+      if (remaining > 0 && expiresAt !== undefined) aggregateBatches.push({ left: remaining, expiresAt })
+    }
     windows.push(officeAceWindow({
       name: `${bonus.activity_name ?? "活动奖励"} · 剩 ${round(remaining)}`,
-      used: Math.min(100, Math.round(((points - remaining) / points) * 100)),
-      resetsAt: expiresAt === null ? "" : new Date(expiresAt).toISOString(),
+      used: Math.min(100, Math.round((amount / points) * 100)),
+      resetsAt: expiresAt === undefined ? "" : new Date(expiresAt).toISOString(),
       display: `${round(remaining)} / ${round(points)}`,
       unit: "积分",
       expired,
-      amount: points - remaining,
+      aside: true,
+      amount,
       limit: points,
     }))
+  }
+
+  // An account whose every bucket expired still needs one used-up routing
+  // window. Without it every detail is aside and magpie would keep routing.
+  const active = aggregateLimit > 0
+  const rawLimit = active ? aggregateLimit : expiredLimit
+  if (rawLimit > 0) {
+    const rawAmount = active ? Math.min(rawLimit, aggregateAmount) : rawLimit
+    const rawRemaining = Math.max(0, rawLimit - rawAmount)
+    const roundedLimit = round(rawLimit)
+    // Keep sub-half-cent values instead of turning the routing denominator
+    // into zero. Normal credit values remain rounded to two decimals.
+    const keepRaw = roundedLimit === 0
+    const limit = keepRaw ? rawLimit : roundedLimit
+    const amount = keepRaw ? rawAmount : Math.min(limit, round(rawAmount))
+    const remaining = keepRaw ? rawRemaining : round(Math.max(0, limit - amount))
+    const total = officeAceWindow({
+      name: `总积分 · 剩 ${remaining}`,
+      used: Math.min(100, Math.max(0, Math.round((rawAmount / rawLimit) * 100))),
+      display: `${remaining} / ${limit}`,
+      unit: "积分",
+      amount,
+      limit,
+    })
+    const lapse = active ? soonestLapse(aggregateBatches, nowMs) : undefined
+    if (lapse && rawRemaining > 0) {
+      const runsOut = Math.min(lapse.credit, rawRemaining)
+      total.runsOutAt = new Date(lapse.at).toISOString()
+      total.runsOut = round(runsOut) || runsOut
+    }
+    windows.unshift(total)
   }
 
   return { plan, windows }
@@ -4028,11 +4806,14 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
             rates = null
           }
           // An empty rates table means "never read", not "no model is billable":
-          // fall back to the static table rather than the registry's 26 ids, 19
-          // of which the user can select and then only fail at chat.
+          // never the registry's 26 ids, 19 of which the user can select and then
+          // only fail at chat. The catalog cut to the known-callable ids instead,
+          // so an id the catalog has dropped is not listed either (#1197).
           if (!rates || rates.size === 0) {
-            log("倍率表不可用（空表）—— 目录降级为静态表，不列出注册表占位 id", "warn")
-            return provider.models
+            log("倍率表不可用（空表）—— 目录只列出已知可调用的 id", "warn")
+            const known = rows.filter((row) => Object.hasOwn(OA_FALLBACK_MODELS, row.id))
+            const live = officeAceLiveModels(known, base, null)
+            return Object.keys(live).length > 0 ? live : provider.models
           }
           const live = officeAceLiveModels(rows, base, rates)
           if (Object.keys(live).length === 0) {
@@ -4055,6 +4836,7 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
       icon: OFFICEACE_ICON,
       maxConcurrency: 3,
       refreshLead: OA_REFRESH_LEAD_MS,
+      rotating: true,
 
       methods: [
         {

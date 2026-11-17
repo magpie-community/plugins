@@ -956,6 +956,23 @@ var formError = null;
 var confirmDeleteAt = 0;
 var runsExpanded = false;
 var catalogTimer;
+var REAUTH_PARAM = "ww-reauth";
+function reauthURL(href, on) {
+  const url = new URL(href);
+  if (on)
+    url.searchParams.set(REAUTH_PARAM, "1");
+  else
+    url.searchParams.delete(REAUTH_PARAM);
+  return url.toString();
+}
+function shouldReloadOnAuthError(status, data, isDirty, alreadyReloaded) {
+  if (alreadyReloaded)
+    return false;
+  if (status !== 401 && status !== 403)
+    return false;
+  const isTokenErr = typeof data === "object" && data !== null && data.reload === true || typeof data === "object" && data !== null && String(data.error).includes("口令");
+  return !!(isTokenErr && !isDirty);
+}
 async function apiJSON(path, init = {}) {
   const res = await fetch(path, {
     ...init,
@@ -966,7 +983,16 @@ async function apiJSON(path, init = {}) {
     }
   });
   const body = await res.json().catch(() => ({}));
+  const reloaded = new URL(location.href).searchParams.has(REAUTH_PARAM);
+  if (res.ok && reloaded) {
+    try {
+      history.replaceState(history.state, "", reauthURL(location.href, false));
+    } catch {}
+  }
   if (!res.ok) {
+    if (shouldReloadOnAuthError(res.status, body, dirty, reloaded)) {
+      location.replace(reauthURL(location.href, true));
+    }
     const msg = body.error;
     throw new Error(typeof msg === "string" && msg ? msg : `HTTP ${res.status}`);
   }
@@ -1717,14 +1743,14 @@ function renderList() {
       nodes.push(e);
       return nodes;
     }
-    if (isNew && draft)
-      nodes.push(rowEl(draft, null, true), buildEditor());
     for (const t of tasks) {
       const open = openId === t.id;
       nodes.push(rowEl(open && draft ? draft : t, t, open));
       if (open && draft)
         nodes.push(buildEditor());
     }
+    if (isNew && draft)
+      nodes.push(rowEl(draft, null, true), buildEditor());
     return nodes;
   });
   restoreFocus(list, focus);
@@ -2070,6 +2096,7 @@ export {
   nextLabel,
   nextPointsAfter,
   normalizeLang,
+  reauthURL,
   rowSub,
   runOutcome,
   runReason,
@@ -2077,6 +2104,7 @@ export {
   setLang,
   shortModel,
   shouldCloseOnScroll,
+  shouldReloadOnAuthError,
   statusOf,
   sumView,
   syncDraftOnPoll,

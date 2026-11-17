@@ -172,7 +172,7 @@ const creds = (fail) => {
   let n = 0
   return async () => {
     if (n++ && fail) throw fail
-    return { token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:1:profile/x", region: "us-east-1" }
+    return { token: "t", tokenType: "", profile: "arn:aws:codewhisperer:us-east-1:123456789012:profile/x", region: "us-east-1" }
   }
 }
 

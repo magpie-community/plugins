@@ -67,8 +67,7 @@ test("the listing carries each model's limits, input kinds and effort tiers", as
   const p = await plugin()
   const models = await p.provider.models({ id: "sensenova-token-plan", models: {} }, { auth })
   expect(models["glm-5.2"].limit).toEqual({ context: 1048576, output: 131072 })
-  // the tiers are the same for every model: the platform publishes no per-model
-  // list, so nothing narrower than "these are offered" is claimed
+  // a model SenseNova's docs give no tiers for gets the common three
   expect(Object.keys(models["glm-5.2"].variants)).toEqual(["none", "low", "high"])
   expect(Object.keys(models["sensenova-6.8-flash-lite"].variants)).toEqual(["none", "low", "high"])
   // what is claimed is checkable from the reply itself: whether it takes images
@@ -84,6 +83,19 @@ test("a model the catalogue says doesn't reason gets no effort tiers", () => {
   expect(flat.variants).toBeUndefined()
   const deep = _internal.modelOf({ id: "y", name: "y", context: 1000, output: 100, reasoning: true })
   expect(Object.keys(deep.variants)).toEqual(["none", "low", "high"])
+})
+
+test("a model whose tiers SenseNova's docs list gets exactly those", () => {
+  // muran_91096 on Discord, from the docs: kimi-k3 and glm-5.3 take no "none",
+  // deepseek-flash goes to max, deepseek-v4-flash has seven
+  const tiers = (id) => Object.keys(_internal.modelOf({ id, name: id, context: 1, output: 1, reasoning: true }).variants)
+  expect(tiers("kimi-k3")).toEqual(["low", "medium", "high", "max"])
+  expect(tiers("glm-5.3")).toEqual(["low", "high", "max"])
+  expect(tiers("deepseek-flash")).toEqual(["none", "low", "high", "max"])
+  expect(tiers("deepseek-v4-flash")).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+  expect(_internal.modelOf({ id: "kimi-k3", name: "k", context: 1, output: 1, reasoning: true }).variants.max).toEqual({ reasoningEffort: "max" })
+  // a model the docs don't list keeps the common three
+  expect(tiers("glm-5.2")).toEqual(["none", "low", "high"])
 })
 
 test("two accounts on different plans list different models", async () => {
@@ -229,3 +241,35 @@ test("create_key defaults on outside magpie, where the host has no option", () =
   // pruning stays opt-in in both hosts
   expect(optionEnabled(undefined, {}, "prune_old_keys", false)).toBe(false)
 })
+test("a key-only account lists what its key serves, with no plan read (plugins#1158)", async () => {
+  // a key-only sign-in keeps no console token, so the pools can't be read;
+  // the key's own /models is the only live word on what it can call, and the
+  // static fallback (a free plan's models, no glm-5.3) must not stand in for it
+  f = fakeSenseNova()
+  const listed = {
+    data: [
+      { id: "glm-5.3", name: "glm-5.3", context_length: 1048576, max_output_length: 131072, input_modalities: ["text"], output_modalities: ["text"], supported_features: ["tools", "reasoning"] },
+      ...CATALOGUE.data,
+    ],
+  }
+  let poolReads = 0
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () => {
+    poolReads++
+    return json({ error: "no" }, 401)
+  })
+  f.route("GET /models", (r) => {
+    expect(r.headers.get("authorization")).toBe("Bearer sk-test")
+    return json(listed)
+  })
+  const p = await plugin()
+  const keyOnly = { type: "api", key: "sk-test" }
+  const models = await p.provider.models({ id: "sensenova-token-plan", models: { "glm-5.2": {} } }, { auth: keyOnly })
+  expect(Object.keys(models)).toContain("glm-5.3")
+  expect(models["glm-5.3"].limit).toEqual({ context: 1048576, output: 131072 })
+  // the image-output model still draws, key-only or not
+  expect(Object.keys(models)).not.toContain("sensenova-u1.5-lite")
+  // the model every key 403s stays out too
+  expect(Object.keys(models)).not.toContain("deepseek-v4.1-flash")
+  expect(poolReads).toBe(0)
+})
+

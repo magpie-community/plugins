@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Quota</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <div class="title">
+      <h1 id="heading">Model Quota</h1>
+      <p class="sub" id="subheading"></p>
+    </div>
+    <div class="actions">
+      <span id="stamp" class="stamp"></span>
+      <button id="refresh" type="button"></button>
+    </div>
+  </header>
+
+  <section class="cards">
+    <div class="card">
+      <div class="card-label" id="label-total"></div>
+      <div class="card-value" id="total">—</div>
+      <div class="card-note" id="total-note"></div>
+    </div>
+    <div class="card">
+      <div class="card-label" id="label-models"></div>
+      <div class="card-value" id="modelCount">—</div>
+      <div class="card-note" id="note-models"></div>
+    </div>
+    <div class="card">
+      <div class="card-label" id="label-pools"></div>
+      <div class="card-value" id="poolCount">—</div>
+      <div class="card-note" id="pool-note"></div>
+    </div>
+  </section>
+
+  <section class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th class="col-model" id="th-model"></th>
+          <th class="num" id="th-tokens"></th>
+          <th class="num" id="th-share"></th>
+          <th class="num" id="th-daily"></th>
+          <th class="num" id="th-days"></th>
+          <th class="num" id="th-pools"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden></div>
+  </section>
+
+  <h2 class="section-title" id="pool-title"></h2>
+  <section class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th class="col-model" id="th-window"></th>
+          <th class="num" id="th-remaining"></th>
+          <th class="num" id="th-tpp"></th>
+          <th class="num" id="th-pool-tokens"></th>
+          <th class="num" id="th-round-drop"></th>
+          <th class="num" id="th-round-calls"></th>
+          <th id="th-reset"></th>
+        </tr>
+      </thead>
+      <tbody id="poolRows"></tbody>
+    </table>
+    <div id="poolEmpty" class="empty" hidden></div>
+  </section>
+
+  <footer class="foot">
+    <p id="note"></p>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

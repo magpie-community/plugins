@@ -6,8 +6,10 @@ import http from "node:http";
 import https from "node:https";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
-import { aggregateGatewayUsage } from "../lib/usage.mjs";
+import { loadUsageData } from "../lib/data.mjs";
 import { gatewayCandidates } from "../lib/gateway.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 
@@ -149,7 +151,9 @@ function gatewayReachable(gateway) {
 
 // The gateway's account rows must be the rows `magpie usage 7d` prints,
 // except API-key calls: magpie's Accounts table leaves those out by design.
-test("matches magpie's own usage tables", async (t) => {
+// A live 7d ledger plus the per-account requests read can exceed Bun's
+// default 5 s test timeout; the read remains bounded by its HTTP timeouts.
+test("matches magpie's own usage tables", { timeout: 15_000 }, async (t) => {
   const binary = magpieBinary();
   const gateway = gatewayCandidates()[0];
   if (!binary) {
@@ -170,8 +174,21 @@ test("matches magpie's own usage tables", async (t) => {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
+  // Use the same read as the page. Some accounts need the per-account
+  // requests answer to complete their model table; the top-level usage
+  // snapshot alone can leave those calls out.
+  const root = mkdtempSync(join(tmpdir(), "usage-tree-parity-"));
+  const previousCache = process.env.MAGPIE_CACHE_DIR;
+  process.env.MAGPIE_CACHE_DIR = root;
+  t.after(() => {
+    if (previousCache === undefined) delete process.env.MAGPIE_CACHE_DIR;
+    else process.env.MAGPIE_CACHE_DIR = previousCache;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const mine = await loadUsageData("7d", { gateway, fresh: true });
+  // Take the closing snapshot after the page read, so a concurrent call
+  // recorded while it was reading stays inside the inclusive range.
   const after = await usageSnapshot(gateway);
-  const mine = aggregateGatewayUsage(after, {}, { period: "7d" });
   const cli = parseCLIUsage(stdout);
 
   // The gateway answer on the page must agree with Magpie's own top-level

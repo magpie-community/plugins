@@ -1,0 +1,13 @@
+body {
+  margin: 24px;
+  color: var(--magpie-fg, #242429);
+  background: var(--magpie-bg, #fff);
+  font: 14px/1.5 var(--magpie-font, system-ui);
+}
+h1 {
+  font-size: 20px;
+}
+button {
+  font: inherit;
+  padding: 8px 14px;
+}

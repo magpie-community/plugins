@@ -59,7 +59,7 @@ function chatAccumulator() {
             message: { role: "assistant", content: null },
             finish_reason: null,
           });
-          tools.set(position, new Map());
+          tools.set(position, { open: new Map(), all: [] });
         }
         const choice = choices.get(position);
         const message = choice.message;
@@ -75,9 +75,15 @@ function chatAccumulator() {
         for (const fragment of delta.tool_calls ?? []) {
           const toolIndex = index(fragment.index);
           const calls = tools.get(position);
-          if (!calls.has(toolIndex))
-            calls.set(toolIndex, { type: "function", function: { name: "", arguments: "" } });
-          const call = calls.get(toolIndex);
+          // A new id at an index in use is a new call, not more of the open
+          // one: two calls at one index ran together as {"a"}{"b"}
+          // (plugins#930). No id, or the same one, goes on with it.
+          let call = calls.open.get(toolIndex);
+          if (!call || (fragment.id && call.id && fragment.id !== call.id)) {
+            call = { type: "function", function: { name: "", arguments: "" } };
+            calls.open.set(toolIndex, call);
+            calls.all.push([toolIndex, call]);
+          }
           for (const key of ["id", "type"]) {
             if (fragment[key] !== undefined) call[key] = fragment[key];
           }
@@ -96,7 +102,9 @@ function chatAccumulator() {
     },
     finish() {
       for (const [position, choice] of choices) {
-        if (tools.get(position).size) choice.message.tool_calls = sorted(tools.get(position));
+        const calls = tools.get(position).all;
+        // by index, and in the order they began within one (sort is stable)
+        if (calls.length) choice.message.tool_calls = calls.sort(([a], [b]) => a - b).map(([, call]) => call);
       }
       body.choices = sorted(choices);
       return body;

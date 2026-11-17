@@ -28,7 +28,7 @@
 //
 // OpenCode speaks chat completions to it (@ai-sdk/openai-compatible); the
 // fetch here answers them.
-import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWireTrace, StepCalls } from "./native-session.mjs"
+import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWebSearch, setWireTrace, StepCalls, webSearchAnswer, webSearchDir, webSearchQuery } from "./native-session.mjs"
 import { isDeepStrictEqual } from "node:util"
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
@@ -36,7 +36,7 @@ import { gunzipSync } from "node:zlib"
 import { Duplex } from "node:stream"
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { execFile } from "node:child_process"
-import { readFile, stat, readdir, realpath } from "node:fs/promises"
+import { readFile, stat, readdir, realpath, writeFile, mkdir, rename } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -646,6 +646,20 @@ const INCLUDED_ONLY = "included_only"
 // saves a failed Run's frames, scrubbed, as a JSON file in cursor-traces in
 // magpie's folder (plugins#550): see WireTrace for what one holds.
 const WIRE_TRACE = "wire_trace"
+
+// WEB_SEARCH is a test switch (off by default) for plugins#635: on, a Run
+// lets Cursor's own web search through and approves it when Cursor asks,
+// and a Run in which Cursor asked to search saves its frames as Wire trace
+// does, whether it succeeded or failed. Off, Cursor's web search is refused
+// like its other tools.
+const WEB_SEARCH = "web_search_test"
+
+// allowedTools is x-cursor-agent-allowed-tools: names of ToolCall's oneof
+// fields. Only the caller's tools (MCP), and Cursor's web search
+// (web_search_tool_call, 18) under the web-search test switch.
+function allowedTools(search) {
+  return "mcp_tool_call,get_mcp_tools_tool_call" + (search ? ",web_search_tool_call" : "")
+}
 
 // enterpriseUsage is the allowance GetCurrentPeriodUsage leaves out on an
 // Enterprise account. That call answers with only the billing cycle there;
@@ -1672,6 +1686,9 @@ function statusOf(status, code, msg) {
   const low = msg.toLowerCase()
   // magpie names the provider before the message itself
   const out = (status, message) => ({ status, message })
+  // Cursor labels this prompt refusal unauthenticated too. Asking the user
+  // to sign in again would misdiagnose a request error as an account fault.
+  if (low.includes("the provider refused to serve this request based on the content")) return out(400, msg)
   if (regional(msg)) return out(403, msg + " — Cursor serves your team only in some regions and turned this request away; signing in again won't change that")
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))
@@ -2748,11 +2765,128 @@ function nativeTransport(req, close, fail, limits = NATIVE_LIMITS) {
   }
 }
 
+// ---- the account's calls, for magpie's Usage page ---------------------------
+
+// mine are the conversation_ids this plugin's own Runs used, with when each
+// was last used: their usage events are calls magpie's gateway counted
+// already, so calls leaves them out. They are kept OWN_KEEP, in a file of
+// the plugin's own, so a restart still knows them.
+const OWN_KEEP = 40 * 86_400_000
+const mine = { ids: new Map(), read: null, timer: null, file: () => join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode-cursor-auth", "conversations.json") }
+function readMine() {
+  mine.read ??= readFile(mine.file(), "utf8")
+    .then((t) => {
+      const kept = JSON.parse(t)
+      for (const [id, at] of Object.entries(kept && typeof kept === "object" ? kept : {}))
+        if (typeof at === "number" && !mine.ids.has(id)) mine.ids.set(id, at)
+    })
+    .catch(() => {})
+  return mine.read
+}
+function saveMine() {
+  if (mine.timer) return
+  mine.timer = setTimeout(async () => {
+    mine.timer = null
+    await readMine()
+    const now = Date.now()
+    for (const [id, at] of mine.ids) if (now - at > OWN_KEEP) mine.ids.delete(id)
+    const file = mine.file()
+    try {
+      await mkdir(dirname(file), { recursive: true })
+      const tmp = file + "." + process.pid + ".tmp"
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(mine.ids)))
+      await rename(tmp, file)
+    } catch {}
+  }, 1000)
+  mine.timer.unref?.()
+}
+function ownConversation(cid) {
+  mine.ids.set(cid, Date.now())
+  saveMine()
+}
+
+// mes are each token's account id (GetMe's userId), asked once an hour: a
+// team's events can be other members', which calls leaves out
+const mes = new Map()
+async function meOf(tok) {
+  const had = mes.get(tok)
+  if (had && Date.now() - had.at < 3600_000) return had.id
+  try {
+    const me = await unary(API, "aiserver.v1.DashboardService/GetMe", tok)
+    const id = me?.userId == null ? "" : String(me.userId)
+    mes.set(tok, { id, at: Date.now() })
+    return id
+  } catch {
+    return had?.id ?? ""
+  }
+}
+
+// CALLS_PAGE is how many events one GetFilteredUsageEvents page asks for,
+// and CALLS_PAGES how many pages one reading reads at most
+const CALLS_PAGE = 100
+const CALLS_PAGES = 50
+
+// callsOf are the account's own usage events from since on, as the
+// dashboard's Usage page lists them (GetFilteredUsageEvents), less the ones
+// of this plugin's own conversations: the calls the account made from
+// Cursor's editor, cursor-agent or anything else not through magpie. Each
+// has its event id (rid), time, model, tokens (in is the uncached rest, as
+// magpie counts it), its cost in USD and its conversation. A page Cursor
+// won't give fails the reading: magpie asks again from the same time.
+async function callsOf(tok, since, signal) {
+  await readMine()
+  const me = await meOf(tok)
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+  const out = []
+  const end = Date.now()
+  for (let page = 1; page <= CALLS_PAGES; page++) {
+    const res = await fetch(API + "/aiserver.v1.DashboardService/GetFilteredUsageEvents", {
+      method: "POST",
+      headers: await headersFor(tok),
+      body: JSON.stringify({ ...await teamBody(tok), startDate: String(since), endDate: String(end), page, pageSize: CALLS_PAGE }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    })
+    const text = await res.text()
+    if (!res.ok) {
+      const f = failure(res.status, text)
+      const e = new Error(f.message)
+      e.status = f.status
+      throw e
+    }
+    const body = JSON.parse(text || "{}")
+    const evs = body?.usageEventsDisplay ?? []
+    for (const ev of evs) {
+      const t = ev?.tokenUsage
+      const at = num(ev?.timestamp)
+      if (!t || !at || at < since) continue
+      if (me && ev.owningUser != null && String(ev.owningUser) !== me) continue
+      if (ev.conversationId && mine.ids.has(ev.conversationId)) continue
+      const rid = String(ev.usageEventId ?? "") || `${ev.conversationId ?? ""}:${at}:${ev.model ?? ""}`
+      const cents = t.totalCents ?? ev.chargedCents
+      out.push({
+        rid,
+        t: at,
+        model: String(ev.model ?? ""),
+        in: num(t.inputTokens),
+        out: num(t.outputTokens),
+        cache_read: num(t.cacheReadTokens),
+        cache_write: num(t.cacheWriteTokens),
+        ...(cents == null ? {} : { cost: num(cents) / 100 }),
+        ...(ev.conversationId ? { session: String(ev.conversationId) } : {}),
+      })
+    }
+    const total = num(body?.totalUsageEventsCount)
+    if (evs.length < CALLS_PAGE || (total && page * CALLS_PAGE >= total)) break
+  }
+  return out.sort((a, b) => a.t - b.t)
+}
+
 // runNative opens a session-owned Run. Its background decoder survives the end
 // of each Chat segment; only terminal completion, failure, or cancellation
 // releases the transport.
 async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, params, native }) {
   const cid = convID || randomUUID()
+  ownConversation(cid)
   const since = Date.now()
   // Transport shutdown precedes final debt collection. Keep its cancellation
   // separate, and return any undelivered collection through the ledger's carry.
@@ -2839,7 +2973,7 @@ async function runNative({ tok, base, id, tools, conv, convID, signal, maxMode, 
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(native.search),
     },
     native.ac.signal,
     // Over HTTP/1.1 the history's blobs go up H1.atOnce at a time, as
@@ -2919,12 +3053,15 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   // the Run's conversation_id, a new one when nothing names the session:
   // its usage event is found by it
   const cid = convID || randomUUID()
+  ownConversation(cid)
   const since = Date.now()
   // how its usage is counted: a debt of the conversation's is collected
   // while it goes, which only a conversation_id that names the session
   // could have run up
   const book = ledger(tok, cid, since, signal, !!convID)
   const { first, blobs } = buildRun(conv.msgs, conv.last, tools, id, cid, { maxMode, params })
+  // the web-search test switch, as it is at the Run's start (plugins#635)
+  const search = webSearchDir()
   const o = await open(
     base,
     {
@@ -2937,7 +3074,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
       "x-request-id": randomUUID(),
       ...await teamHeader(tok),
       // none of Cursor's own tools, only the caller's
-      "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
+      "x-cursor-agent-allowed-tools": allowedTools(search),
     },
     signal,
   )
@@ -2946,7 +3083,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
   let closed = false
   let heartbeat
   // a Run Cursor stops answering ends, as a retained one does (#2672)
-  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why })
+  const quiet = new Quiet(NATIVE_LIMITS, () => close(), { path: "stateless", model: id, why, search })
   const send = (msg) => {
     if (!closed && !req.destroyed && req.writable) {
       quiet.trace?.frame("out", msg)
@@ -2991,11 +3128,13 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
     stepUsage: book.own,
     owedUsage: book.owed,
     note: (name) => quiet.trace?.event(name),
+    search: search ? () => quiet.trace?.searchAsked() : null,
   })
   const wrapped = (async function* () {
     try {
       for await (const v of it) {
         if (v?.error) quiet.failed(v.error)
+        else if (v?.stop) quiet.ended()
         yield v
       }
     } finally {
@@ -3021,7 +3160,7 @@ async function runOnce({ tok, base, id, tools, conv, convID, signal, maxMode, pa
 
 // decode follows the server's messages into the answer's pieces until the
 // turn ends, or the model has made its tool calls.
-async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, countWait = NATIVE_LIMITS.countWait }) {
+async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage, owedUsage, note, search, countWait = NATIVE_LIMITS.countWait }) {
   let calls = 0
   // answered: the step's calls answered here (a refusal, the MCP tool
   // list), which Cursor's count of the step's calls takes in too (#142)
@@ -3238,8 +3377,10 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
             // conversation_checkpoint_update: Cursor's state. Once the step
             // has its count after the calls, a state waiting on just the
             // calls handed to the caller is a step Cursor has finished: what
-            // more the count says will not come (plugins#550)
-            if (listed && step.listedAfter && calls > 0 && pendingCalls(m.data, fields) === calls) {
+            // more the count says will not come (plugins#550). An announced
+            // MCP call without an exec or completion must still be awaited,
+            // even if this checkpoint omits it.
+            if (listed && step.listedAfter && !step.pendingMcp && calls > 0 && pendingCalls(m.data, fields) === calls) {
               note?.("waited on")
               yield await settled()
               return
@@ -3261,6 +3402,19 @@ async function* decode(stream, { send, blobs, tools, estimate, close, stepUsage,
                 send(pb().bytes(3, pb().varint(1, id).bytes(3, EMPTY)).done())
               }
             }
+            break
+          }
+          case 7: {
+            // interaction_query: Cursor's own web search, approved under the
+            // web-search test switch (plugins#635); anything else, or the
+            // switch off, goes unanswered as before
+            const q = search ? webSearchQuery(m.data, fields) : null
+            if (!q) {
+              count(seen.messages, m.num)
+              break
+            }
+            search()
+            send(webSearchAnswer(pb, q))
             break
           }
           default:
@@ -3600,6 +3754,14 @@ export async function CursorAuthPlugin(input) {
       return ""
     }
   })
+  // the web-search test switch (plugins#635): the same folder, "" while off
+  setWebSearch(() => {
+    try {
+      return input?.magpie?.option?.(ID, WEB_SEARCH) === true && input.directory ? join(input.directory, "cursor-traces") : ""
+    } catch {
+      return ""
+    }
+  })
   return {
     auth: {
       provider: ID,
@@ -3647,6 +3809,12 @@ export async function CursorAuthPlugin(input) {
           description:
             "For a bug report: when a Cursor request fails, saves the shape of what Cursor sent and what was sent back (each frame's kind, field numbers, size and time) to the cursor-traces folder in magpie's folder. No prompt or reply text, tool names or arguments, tokens, headers or account ids are written. The newest 20 are kept.",
         },
+        {
+          key: WEB_SEARCH,
+          label: "Cursor web search (test)",
+          description:
+            "A test for plugins#635: lets Cursor search the web itself and approves each search it asks for, and saves the trace of every request in which Cursor searched, as Wire trace does, whether it worked or not. Cursor's other tools stay refused.",
+        },
       ],
       // magpie's: how much of the plan's included usage is gone (the plan
       // is the one the sign-in read). The built-in's read, clean or not,
@@ -3669,6 +3837,13 @@ export async function CursorAuthPlugin(input) {
         const { credits: free = [], ...read } = u
         const windows = [...read.windows.filter((w) => !last(w)), ...bot, ...free, ...read.windows.filter(last)]
         return { ...read, windows, ...(plan ? { plan } : {}), signIn: "kept" }
+      },
+      // magpie's: the account's calls from since (ms) on that didn't go
+      // through magpie, for its Usage page (callsOf). A failure is thrown:
+      // magpie reads them again from the same time.
+      async calls(getAuth, provider, { since = Date.now() - 30 * 86_400_000, signal } = {}) {
+        const tok = await tokenOf(await getAuth())
+        return { calls: await callsOf(tok, Math.max(0, Number(since) || 0), signal) }
       },
     },
     // the session the request is part of, for the conversation_id
@@ -3710,4 +3885,4 @@ export async function CursorAuthPlugin(input) {
 }
 
 // for tests
-export const _internal = { slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }
+export const _internal = { mine, ownConversation, callsOf, slugFor, fromCatalog, credits, kvReply, listFor, lists, keychain, keychainToken, nativeTransport, onDemandOf,resetH1: () => (h1Until = 0), onH1: () => Date.now() < h1Until, resetTeam: () => { teamRead.at = 0; teamRead.info = null }, expireTeam: () => (teamRead.at = 0),H2, H1, h2Blocked, open, openH1, openH2, STEP_WAIT, stepUsage, usageKey, ledger, owed, flights, misses, unreadable, catalog, usable, request, modelsOf, tokensOf, maxRequired, conversationID, usageOf, sessionOf, SESSION, errorResponse, kept, poolBase, conversation, buildRun, decode, exec, fields, pb, pbValue, pbAny, frame, frames, failure, toolsOf, expiry }

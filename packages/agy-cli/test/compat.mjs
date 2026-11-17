@@ -46,6 +46,52 @@ test("a companion cannot attach to a different preceding tool", () => {
   }
 })
 
+test("ordinary user text beside live tool results steers a replay without becoming a tool response", () => {
+  const call = result("call_read", "Read", "file contents")
+  const instruction = { type: "text", text: "Continue reviewing the image pipeline" }
+  for (const blocks of [[call.block, instruction], [instruction, call.block]]) {
+    const body = bodyFor(blocks)
+    const inspected = inspectToolTurn([call], body)
+    assert.equal(inspected.userSteered, true, "mixed user text requires a fresh user prompt")
+    assert.deepEqual(inspected.results[0].result.content, call.result.content,
+      "user instructions must not be attached to an MCP function response")
+    const replay = renderInitialPromptParts(body, null, true).map(part => part.text || "").join("")
+    assert.ok(replay.includes("Continue reviewing the image pipeline"),
+      "the replay must carry the original user instruction")
+    assert.ok(replay.includes("file contents"), "the replay must retain the real tool result")
+  }
+})
+
+test("text plus an image before a live tool_result steers a replay and keeps the image off the MCP result", () => {
+  const call = result("call_read", "Read", "file contents")
+  const instruction = { type: "text", text: "look at this" }
+  const body = bodyFor([instruction, image, call.block])
+  const inspected = inspectToolTurn([call], body)
+  assert.equal(inspected.userSteered, true)
+  assert.deepEqual(inspected.results[0].result.content, call.result.content,
+    "images before a result must not be spliced into the MCP function response")
+  const parts = renderInitialPromptParts(body, null, true)
+  const replay = parts.map(part => part.text || "").join("")
+  assert.ok(replay.includes("look at this"))
+  assert.ok(replay.includes("file contents"))
+  assert.ok(parts.some(part => part.type === "image" && part.data === image.source.data),
+    "the replay must carry the original image bytes")
+})
+
+test("an image alone before a live tool_result steers a replay and keeps the image off the MCP result", () => {
+  const call = result("call_read", "Read", "file contents")
+  const body = bodyFor([image, call.block])
+  const inspected = inspectToolTurn([call], body)
+  assert.equal(inspected.userSteered, true, "an image with no preceding text must still set userSteered")
+  assert.deepEqual(inspected.results[0].result.content, call.result.content,
+    "images before a result must not be spliced into the MCP function response")
+  const parts = renderInitialPromptParts(body, null, true)
+  assert.ok(parts.some(part => part.type === "image" && part.data === image.source.data),
+    "the replay must carry the original image bytes")
+  assert.ok(parts.map(part => part.text || "").join("").includes("file contents"),
+    "the replay must retain the real tool result")
+})
+
 test("a partial ID rename maps by full history without discarding the live ID anchor", () => {
   const original = [
     { type: "tool_use", id: "original_a", name: "Read", input: { path: "a" } },
@@ -199,4 +245,30 @@ test("execOnce still collects synchronous and asynchronous spawn failures", asyn
       assert.equal(result.timedOut, false)
     }, mode)
   }
+})
+
+test("text that names a notice tag it never closes is routed by its writer, not refused", () => {
+  const call = result("call_shell", "shell", "done")
+  const wrap = text => ({ type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` })
+  // the gateway wraps a Codex developer message, which here quotes a reminder tag
+  const developer = wrap("Hook context: output is wrapped in <system-reminder> blocks.")
+  const nested = wrap("<system-reminder>earlier note</system-reminder> and more")
+  for (const block of [developer, nested]) {
+    const inspected = inspectToolTurn([call], bodyFor([call.block, block]))
+    assert.equal(inspected.userSteered, false, "a developer message is not the user steering")
+    const text = inspected.results[0].result.content.map(part => part.text || "").join("\n")
+    assert.ok(text.includes("earlier note") || text.includes("Hook context"), "the developer text reaches the model")
+  }
+  // a user typing the tag name steers, and the replay carries the words
+  const typed = { type: "text", text: "why does the <system-reminder tag show up in my chat?" }
+  for (const blocks of [[call.block, typed], [typed, call.block]]) {
+    const body = bodyFor(blocks)
+    const inspected = inspectToolTurn([call], body)
+    assert.equal(inspected.userSteered, true)
+    assert.deepEqual(inspected.results[0].result.content, call.result.content)
+    const replay = renderInitialPromptParts(body, null, true).map(part => part.text || "").join("")
+    assert.ok(replay.includes("why does the"), "the user's words are replayed")
+  }
+  // a notice that opens and is cut short is still turned away
+  assert.throws(() => inspectToolTurn([call], bodyFor([call.block, { type: "text", text: "<system-update>cut short" }])), /text beside a live tool_result/)
 })

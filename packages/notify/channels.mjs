@@ -25,7 +25,7 @@ const trimSlash = (s) => String(s).replace(/\/+$/, "")
 export const kinds = {
   // ntfy (ntfy.sh or your own server): JSON publish to the server root
   ntfy: (c, m) => post(trimSlash(c.server ?? "https://ntfy.sh"), {
-    topic: c.topic, title: m.title, message: m.body, priority: c.priority ?? 3, tags: c.tags ?? [m.ok ? "white_check_mark" : "x"],
+    topic: c.topic, title: m.title, message: m.body, priority: c.priority ?? 3, tags: c.tags ?? [m.tag ?? (m.ok ? "white_check_mark" : "x")],
   }, c.token ? { authorization: `Bearer ${c.token}` } : {}),
 
   // Bark (iOS): api.day.app or your own bark-server

@@ -4,12 +4,12 @@
 // port-file → CDP cookie read → graceful close → key creation path runs here.
 import "./nonet.mjs"
 import { execSync } from "node:child_process"
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, renameSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { InkStoneAuthPlugin } from "./index.mjs"
-import { renewSilently } from "./lib/browser.mjs"
+import { renewSilently, signInWithBrowser } from "./lib/browser.mjs"
 import { fakeInkStone, json, ok, fail, jwtOf, poolUsageFixture, packagesFixture } from "./fake.mjs"
 
 let fakeExe = ""
@@ -29,9 +29,11 @@ beforeAll(() => {
   // The dir is per-user (`os.userInfo().username`): a fixed name in the
   // shared /tmp could be pre-created by another user on a Linux CI runner.
   // A half-written build never parks at the final name — the compile goes to
-  // a temp name that is renamed over, so `existsSync(out)` below is only
-  // true of a complete exe (the reviewer's point about a crashed compile
-  // keeping junk forever).
+  // a temp name (pid-suffixed: two concurrent runs of the same source would
+  // otherwise race on it) that is renamed over, so `existsSync(out)` below
+  // is only true of a complete exe. Older builds (a different hash, left by
+  // a previous version of testdata/fake-browser.mjs) are removed here, so
+  // a change to the source does not accumulate ~60 MB directories.
   const entry = join(import.meta.dir, "testdata/fake-browser.mjs")
   const { createHash } = require("node:crypto")
   const { userInfo } = require("node:os")
@@ -43,27 +45,43 @@ beforeAll(() => {
     user = user.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16) || "u"
   }
   const key = createHash("sha256").update(readFileSync(entry)).digest("hex").slice(0, 12)
-  fakeDir = join(tmpdir(), `inkstone-fake-browser-${user}-${key}`)
+  // A tree fingerprint: both the exe path and the sweep are scoped to THIS
+  // checkout (import.meta.dir). Without it, a concurrent run of another tree
+  // with the same user and source hash lands on the same dir, and this sweep
+  // could delete the other tree's build mid-run (the review's point). Older
+  // hashes of this same tree are still removed, so a source change does not
+  // pile up ~60 MB directories.
+  const tree = createHash("sha256").update(import.meta.dir).digest("hex").slice(0, 8)
+  const name = `inkstone-fake-browser-${user}-${tree}-${key}`
+  fakeDir = join(tmpdir(), name)
   mkdirSync(fakeDir, { recursive: true })
+  // siblings: same user AND same tree, another source hash — a previous build
+  // of this checkout, never a concurrent run of a different tree
+  const owned = `inkstone-fake-browser-${user}-${tree}-`
+  for (const sibling of existsSync(tmpdir()) ? readdirSync(tmpdir()) : []) {
+    if (sibling.startsWith(owned) && sibling !== name) {
+      try {
+        rmSync(join(tmpdir(), sibling), { recursive: true, force: true })
+      } catch {}
+    }
+  }
   const exeName = process.platform === "win32" ? "fake-chrome.exe" : "fake-chrome"
   const out = join(fakeDir, exeName)
   if (!existsSync(out)) {
     // bun build --compile appends its own .exe on Windows, so the temp name
-    // is computed after the build: look for whatever `*.building*` came out
-    const tmpOut = join(fakeDir, `${exeName}.building`)
-    try {
-      rmSync(tmpOut, { force: true })
-    } catch {}
-    rmSync(join(fakeDir, `${exeName}.building.exe`), { force: true })
+    // is computed after the build: look for whatever `*.building-<pid>*`
+    // came out. The pid suffix keeps two concurrent runs of the same source
+    // from racing on one temp file.
+    const tmpOut = join(fakeDir, `${exeName}.building-${process.pid}`)
     execSync(`${JSON.stringify(process.execPath)} build --compile ${JSON.stringify(entry)} --outfile ${JSON.stringify(tmpOut)}`, { stdio: "pipe" })
-    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building.exe`)
+    const built = existsSync(tmpOut) ? tmpOut : join(fakeDir, `${exeName}.building-${process.pid}.exe`)
     renameSync(built, out)
   }
   fakeExe = out
   profile = mkdtempSync(join(tmpdir(), "inkstone-fake-profile-"))
   // save what we override: bun test runs every file in one process, so these
   // would leak into whatever test file runs next
-  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "DISPLAY"]) {
+  for (const key of ["MAGPIE_INKSTONE_PROFILE", "MAGPIE_INKSTONE_BROWSER", "MAGPIE_INKSTONE_LOGIN_EXIT", "FAKE_BROWSER_HOLD_COOKIE", "DISPLAY"]) {
     savedEnv[key] = process.env[key]
   }
   process.env.MAGPIE_INKSTONE_PROFILE = profile
@@ -216,3 +234,62 @@ test("the reuse method keeps a pasted key instead of creating one", async () => 
   // the pasted key is kept: nothing was created on the console
   expect(keys.length).toBe(0)
 }, 60_000)
+
+test("off Windows the production wiring closes the window on a new cookie", async () => {
+  // B4 (third-round review): the real signInWithBrowser path with NO injected
+  // probe — launch baseline → the real sqlite probe → "console". The stand-in
+  // writes its uaa-token row ~300 ms in, and the wait must see it through the
+  // production wiring. Replacing the wiring with `loginWait?.cookieProbe`
+  // alone (no probe at all off Windows) leaves this wait to the child's exit
+  // and it never says "console" — this goes red.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  // a clean store: whatever a previous test left is in the baseline anyway,
+  // but starting empty makes "a new row appeared" unambiguous
+  try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  const logs = []
+  const token = await signInWithBrowser({
+    browserPath: fakeExe,
+    keepSignIn: true,
+    timeoutMs: 6000,
+    loginWait: { platform: "linux", pollMs: 50 },
+    log: (...args) => logs.push(args.map(String).join(" ")),
+  })
+  expect(token).toBe("fake-uaa-token-for-tests")
+  expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(true)
+  expect(logs.some((l) => l.includes("cookie store"))).toBe(true)
+}, 30_000)
+
+test("off Windows an old cookie in the kept profile is not this sign-in", async () => {
+  // B1 end-to-end with the real sqlite probe: keep_sign_in's profile carries
+  // the previous uaa-token. The launch baseline must keep it from counting as
+  // "console" (if the baseline is dropped, this immediately sees "console"
+  // and goes red). The stand-in writes no new cookie in this run.
+  f = fakeInkStone()
+  serveKeyRoutes()
+  try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  mkdirSync(join(profile, "Default"), { recursive: true })
+  const { Database } = require("bun:sqlite")
+  const db = new Database(join(profile, "Default", "Cookies"))
+  db.query("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, creation_utc INTEGER, last_update_utc INTEGER, expires_utc INTEGER)").run()
+  const old = (Date.now() - 3600_000 + 11644473600000) * 1000
+  db.query(
+    "INSERT INTO cookies (host_key, name, value, creation_utc, last_update_utc, expires_utc) VALUES ('.intern-ai.org.cn', 'uaa-token', 'old', ?, ?, ?)",
+  ).run(old, old, old + 86400_000_000)
+  db.close()
+  process.env.FAKE_BROWSER_HOLD_COOKIE = "1"
+  const logs = []
+  try {
+    await signInWithBrowser({
+      browserPath: fakeExe,
+      keepSignIn: true,
+      timeoutMs: 2500,
+      loginWait: { platform: "linux", pollMs: 50 },
+      log: (...args) => logs.push(args.map(String).join(" ")),
+    }).catch(() => "")
+    expect(logs.some((l) => l.includes("login window finished (console)"))).toBe(false)
+  } finally {
+    delete process.env.FAKE_BROWSER_HOLD_COOKIE
+    try { rmSync(join(profile, "Default", "Cookies"), { force: true }) } catch {}
+  }
+}, 30_000)

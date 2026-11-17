@@ -104,6 +104,13 @@ go as `conversation_delegate` and `workspace_directory`. So is a name with
 `exec_program`, or `exec_program_2` when the agent has an `exec_program`
 of its own.
 
+DSH 0.2.2's `edit` and `read` are refused by name with their own
+parameters, and the descriptions of its `edit`, `read` and `skill` are
+refused under any name (#632). Those descriptions go reworded with the
+same meaning, and `edit` and `read` with DSH's parameters go as
+`text_replace` and `file_view`; the `edit` and `read` stand-ins Zen wants
+still go beside them.
+
 Zen's free tier also tells OpenCode's own requests by the environment
 block every OpenCode prompt ends with (`<env>`, a `Working directory:`
 line, `</env>`) in a system message. Another agent's request without one

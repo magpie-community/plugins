@@ -7,8 +7,11 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
-const packages = new URL("../packages/", import.meta.url).pathname
+// a path, not a URL's pathname: on Windows that is "/C:/…", and
+// join made it "\C:\…", which no import finds
+const packages = fileURLToPath(new URL("../packages/", import.meta.url))
 // no request leaves these tests; fetch is put back after them, since a
 // root `bun test` runs every package's files in this one process
 const realFetch = globalThis.fetch
@@ -270,4 +273,64 @@ test("a 1.x code sign-in is a 2.x code sign-in", async () => {
   expect((await r.callback("ok")).access).toBe("a")
   const again = await f.methods[0].authorize({})
   await expect(again.callback("bad")).rejects.toThrow()
+})
+
+// a plugin whose first list is its static one while it reads the real one
+// in the background (agy-cli, plugins#1064): 2.x reads provider.models once
+// at startup, so the adapter reads it once more when provider.warming()
+// ends, and only once
+function slow(state) {
+  return {
+    SlowPlugin: async () => ({
+      auth: { provider: "slow", methods: [{ type: "api", label: "Slow key" }] },
+      config: async (cfg) => {
+        cfg.provider.slow = { npm: "@ai-sdk/openai-compatible", name: "Slow", models: { m1: { name: "M1" } } }
+      },
+      provider: {
+        id: "slow",
+        warming: () => state.warming(),
+        models: async () => {
+          state.reads++
+          return state.ready ? { full: { name: "Full" } } : { stub: { name: "Stub" } }
+        },
+      },
+    }),
+  }
+}
+
+test("a list still warming when 2.x first reads it is read once more when it ends (plugins#1064)", async () => {
+  const { setup } = await import(join(packages, "agy-cli", "opencode2.mjs"))
+  let release
+  const state = { reads: 0, ready: false, warmings: 0 }
+  state.warming = () => {
+    state.warmings++
+    return state.ready ? null : new Promise((r) => (release = r))
+  }
+  const f = fakeContext()
+  f.conns.set("slow", { connection: { type: "credential", id: "cred_1" }, value: { type: "key", key: "sk" } })
+  const stop = await setup(f.ctx, slow(state))
+  await until(() => f.reloads.model === 1 && !!release)
+  expect(f.providers()[0].models.map((m) => m.name)).toEqual(["Stub"])
+  expect(state.reads).toBe(1)
+  state.ready = true
+  release(true)
+  await until(() => f.reloads.model === 2)
+  expect(f.providers()[0].models.map((m) => m.name)).toEqual(["Full"])
+  // once: the second read doesn't ask again, so nothing loops
+  await new Promise((r) => setTimeout(r, 20))
+  expect(state.reads).toBe(2)
+  expect(state.warmings).toBe(1)
+  stop()
+})
+
+test("a plugin with nothing warming is read once at startup", async () => {
+  const { setup } = await import(join(packages, "agy-cli", "opencode2.mjs"))
+  const state = { reads: 0, ready: true, warming: () => null }
+  const f = fakeContext()
+  f.conns.set("slow", { connection: { type: "credential", id: "cred_1" }, value: { type: "key", key: "sk" } })
+  const stop = await setup(f.ctx, slow(state))
+  await until(() => f.reloads.model === 1)
+  await new Promise((r) => setTimeout(r, 20))
+  expect(state.reads).toBe(1)
+  stop()
 })

@@ -327,6 +327,7 @@ test("one entrypoint, distinct provider id, non-destructive config and standard 
   assert.equal(config.provider[ID].name, "Custom label")
   assert.equal(config.provider[ID].models.custom.name, "Mine")
   assert.equal(hooks.auth.refreshLead, LEAD)
+  assert.equal(hooks.auth.rotating, true)
   assert.deepEqual(await hooks.auth.loader(async () => ({ type: "api", key: "unrelated" })), {})
   assert.equal((await hooks.auth.loader(s.get)).apiKey, "nous-portal-oauth")
 })

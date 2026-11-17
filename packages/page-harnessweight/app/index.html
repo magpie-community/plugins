@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessWeight · agent harness token weight</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script>
+  // theme before first paint: ?theme= from magpie, else the system's
+  (() => { const t = new URLSearchParams(location.search).get("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t })()
+</script>
+<script src="app.js" type="module"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img class="logo on-light" src="logo.svg" alt="" width="34" height="34"><img class="logo on-dark" src="logo-dark.svg" alt="" width="34" height="34">
+    <div>
+      <h1>HarnessWeight</h1>
+      <p class="status wait" id="status" role="status" data-t="status.loading">正在读取…</p>
+      <p class="sub" data-t="header.sub">同一个网关后面，每个 agent harness 读了多少 token、命中多少缓存、失败多少次、每轮重发多重的工具定义。</p>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="seg" role="tablist" aria-label="统计周期" aria-label-t="aria.periods" id="periods">
+      <button role="tab" data-period="today" data-t="period.today">今天</button>
+      <button role="tab" data-period="7d" data-t="period.7d">7 天</button>
+      <button role="tab" data-period="30d" data-t="period.30d">30 天</button>
+    </div>
+    <label class="toggle"><input type="checkbox" id="clients"><span data-t="clients.toggle">含脚本和内部请求</span></label>
+  </div>
+</header>
+
+<main>
+  <section class="insights" id="insights" aria-label="结论" aria-label-t="aria.insights"></section>
+  <section class="kpis" id="kpis" aria-label="总览" aria-label-t="aria.overview"></section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2 data-t="cards.title">谁在花你的 token</h2>
+      <p class="hint" data-t="cards.hint">每张卡是一个 Agent。条的长度是这段时间读进模型的总 token，深色部分是按原价算的（没命中缓存）。</p>
+      <div class="sortbar" id="cardSort" role="group" aria-label="卡片排序" aria-label-t="aria.cardSort"></div>
+      <p class="hint" id="activityInfo" role="status" data-t="activity.connecting">正在连接实时调用状态…</p>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2 data-t="table.title">逐项对比</h2>
+      <p class="hint" data-t="table.hint">点表头排序，点一行看详情。</p>
+    </div>
+    <div class="table-wrap"><table id="table"></table></div>
+  </section>
+
+  <section class="block" id="toolsBlock">
+    <div class="block-head">
+      <h2 data-t="tools.title">工具定义重量</h2>
+      <p class="hint" id="toolsHint" data-t="tools.hint">Agent 每次请求都会把自己的工具清单重发一遍，这部分也按 token 计费。</p>
+    </div>
+    <div id="tools"></div>
+  </section>
+
+  <p class="state" id="state" hidden></p>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1">
+  <button class="close" id="close" aria-label="关闭" aria-label-t="aria.close">×</button>
+  <div id="detail"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<footer class="foot">
+  <span data-t="footer.localOnly">数据只在本机读取，不上传。</span>
+  <span id="sources"></span>
+  <a href="https://github.com/webkubor/harnessweight" target="_blank" rel="noopener">GitHub</a>
+</footer>
+</body>
+</html>

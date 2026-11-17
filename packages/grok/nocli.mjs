@@ -9,13 +9,20 @@
 // test's own. A test that wants a CLI puts its fake
 // in GROK_BIN_DIR, as before.
 //
+// bun test runs every file of the run in one process, so the file puts the
+// environment back when it ends: every variable as it was before the file's
+// first noRealGrok, and none it added. Left as it was, the next package's
+// files ran with PATH=/usr/bin:/bin, and on a runner whose node is elsewhere
+// (actions/setup-node's /opt/hostedtoolcache) gumloop's spawn("node") found
+// none.
+//
 // Bun's os.homedir() keeps the HOME the process started with, so a HOME set
 // here would leave ~/.grok/bin and ~/.local/bin where they were. homedir is
 // made to read HOME (USERPROFILE) when called, as Node's does; this module
 // is imported before index.mjs, so the plugin gets that one. Other packages'
 // tests in the same run see Node's behaviour, the started HOME unless a test
 // changed it.
-import { mock } from "bun:test"
+import { afterAll, mock } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import * as os from "node:os"
 import { delimiter, join } from "node:path"
@@ -28,7 +35,19 @@ const system = process.platform === "win32" ? [] : ["/usr/bin", "/bin"].filter((
 const root = mkdtempSync(join(os.tmpdir(), "grok-nocli-"))
 process.on("exit", () => rmSync(root, { recursive: true, force: true }))
 
+let outside // the environment before this file's first noRealGrok
+function putBack() {
+  if (!outside) return
+  for (const key of Object.keys(process.env)) if (!(key in outside)) delete process.env[key]
+  Object.assign(process.env, outside)
+  outside = undefined
+}
+
 export function noRealGrok() {
+  if (!outside) {
+    outside = { ...process.env }
+    afterAll(putBack)
+  }
   const home = join(root, "home")
   mkdirSync(home, { recursive: true })
   mkdirSync(join(root, "grok-home"), { recursive: true })

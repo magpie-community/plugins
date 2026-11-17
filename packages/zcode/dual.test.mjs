@@ -43,6 +43,8 @@ beforeEach(async () => {
   _internal.busyHold.now = () => Date.now()
   // a reply a test leaves unread keeps its Start Plan slot (startGate)
   _internal.startGate.lanes.clear()
+  _internal.startGate.narrow.clear()
+  _internal.startGate.now = () => Date.now()
   sent.length = 0
   for (const k of Object.keys(answers)) delete answers[k]
   globalThis.fetch = async (input, init = {}) => {
@@ -402,6 +404,58 @@ test("a rested -Trial entry's local 429 ends with the words magpie reads", async
   const m = said.match(/(?:^|: )ZCode's limited quota for (\S+) is exhausted or temporarily unavailable$/)
   expect(m?.[1].toLowerCase()).toBe("glm-5.3-flash")
   expect(said).toContain("not asked again for a minute")
+})
+
+// 11-08: a busy hold armed while a -Trial request was in flight answers it
+// with the hold's own 429 (askBusy's in-flight stop), and that answer has
+// no 3008 in it. spentUp counts every 429 that busy() does not claim as a
+// spent bucket, so the hold's answer armed the blocked map — the model then
+// answered "over its quota" for a minute with half its free quota left.
+// The hold's answer must pass through the -Trial path untouched and arm
+// nothing.
+test("a busy hold's answer through a -Trial entry is passed on and arms no quota rest", async () => {
+  planAndBalance()
+  const waits = _internal.BUSY_WAITS.splice(0)
+  _internal.BUSY_WAITS.push(1)
+  try {
+    let caps = 0
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = () => {
+      caps++
+      return new Response(JSON.stringify({ code: "3008", msg: "user concurrency limit exceeded" }), { status: 429, headers: { "content-type": "application/json" } })
+    }
+    // one at a time, as an account ZCode serves one request at a time is
+    // narrowed to (plugins#438): each refused again alone is one count
+    _internal.startGate.inflight = 1
+    const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+    const ask = (model) => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body(model) })
+    // five asks, queued behind each other: the first ask of each caps once
+    // (one signal per request), the re-ask of each caps again — the fifth's
+    // arms the hold while it is in flight, and it comes home the hold's 429
+    const all = await Promise.all([1, 2, 3, 4, 5].map(() => ask("GLM-5.3-Flash-Trial")))
+    expect(all.map((r) => r.status)).toEqual([429, 429, 429, 429, 429])
+    expect(_internal.busyHold.until).toBeGreaterThan(Date.now())
+    for (const r of all) {
+      const said = JSON.parse(await r.text())
+      const text = said.error?.message ?? said.msg ?? ""
+      // every answer is the hold's own, or the vendor's cap as it came —
+      // never a quota exhaustion the gift never said
+      expect(text.includes("turned away 5 requests") || said.code === "3008").toBe(true)
+      expect(text).not.toContain("over its quota")
+      expect(text).not.toContain("exhausted or temporarily unavailable")
+    }
+    // the hold's answer is no spent answer: the gift stays usable
+    expect(_internal.blocked.get(KEY + "\0" + jwt + "\0glm-5.3-flash")).toBeUndefined()
+    // and the next -Trial ask really goes to the gift once the hold is off
+    _internal.busyHold.until = 0
+    answers["/api/v1/zcode-plan/anthropic/v1/messages"] = ok({ type: "message", content: [] })
+    sent.length = 0
+    expect((await ask("GLM-5.3-Flash-Trial")).status).toBe(200)
+    expect(sent.filter((c) => c.origin === "https://zcode.z.ai" && c.path.endsWith("/messages"))).toHaveLength(1)
+  } finally {
+    _internal.BUSY_WAITS.length = 0
+    _internal.BUSY_WAITS.push(...waits)
+    _internal.startGate.inflight = 3
+  }
 })
 
 test("magpie's free-first switch is declared on, and off keeps the plain model on the plan", async () => {
@@ -922,4 +976,49 @@ test("a card read reads the route again", async () => {
   const u = await (await hooks()).usage(async () => coding, { id: "zcode" })
   expect(u.windows[0].used).toBe(10)
   expect(_internal.routes.get(id)).toMatchObject({ start: false, gift: { models: ["glm-5.3-flash"] } })
+})
+
+// The gift answers under the plain model's name, as the coding plan does, so
+// the Usage page, the sessions and the request log named the plan's model
+// whichever route served the turn. The gift's answer says the -Trial entry
+// the picker lists; the plan's stays as it came (WJaunita45604 on X).
+const msg = (model) => ({ id: "msg_1", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 1, output_tokens: 1 } })
+const json = (v) => new Response(JSON.stringify(v), { status: 200, headers: { "content-type": "application/json" } })
+const sse = (model) =>
+  new Response(
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: msg(model) })}\n\n` +
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "a \"model\" word" } })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )
+
+test("free first's answer from the gift names the -Trial entry, in a whole reply and in a stream", async () => {
+  planAndBalance()
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const ask = () => opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const whole = await ask()
+  expect(sent.at(-1).origin).toBe("https://zcode.z.ai")
+  expect((await whole.json()).model).toBe("GLM-5.3-Flash-Trial")
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = sse("GLM-5.3-Flash")
+  const text = await (await ask()).text()
+  expect(text).toContain('"model":"GLM-5.3-Flash-Trial"')
+  // the model's own words are not touched
+  expect(text).toContain('a \\"model\\" word')
+})
+
+test("a -Trial pick's answer names the -Trial entry too", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const res = await sendTo(MSG, body("GLM-5.3-Flash-Trial"))
+  expect((await res.json()).model).toBe("GLM-5.3-Flash-Trial")
+})
+
+test("free first's answer from the coding plan keeps the plan's model name", async () => {
+  planAndBalance()
+  answers["/api/v1/zcode-plan/anthropic/v1/messages"] = new Response(JSON.stringify({ error: { message: "nope" } }), { status: 500, headers: { "content-type": "application/json" } })
+  answers["/api/anthropic/v1/messages"] = json(msg("glm-5.3-flash"))
+  const opts = await freePlugin({ freeFirst: true }).then((h) => h.loader(async () => coding, { id: "zcode" }))
+  const res = await opts.fetch(MSG, { method: "POST", headers: { "content-type": "application/json" }, body: body("GLM-5.3-Flash") })
+  expect(sent.at(-1).origin).toBe("https://api.z.ai")
+  expect((await res.json()).model).toBe("glm-5.3-flash")
 })

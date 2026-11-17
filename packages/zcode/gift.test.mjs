@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { realpathSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
 const { ZCodeAuthPlugin, _internal } = await import("./index.mjs")
@@ -19,6 +19,7 @@ let balance, paid, giftReply, planReply
 beforeEach(() => {
   _internal.routes.clear()
   _internal.blocked.clear()
+  _internal.aloneSeen.clear()
   sent.length = 0
   paid = 100
   planReply = null
@@ -56,6 +57,21 @@ test("real balance data adds a gift model absent from the coding catalog", async
   expect(models[alias]).toMatchObject({ id: alias, name: alias, api: { id: alias } })
   for (const [id, m] of Object.entries(plan)) expect(models[id]).toEqual(m)
   expect(Object.keys(models).filter((id) => id.endsWith("-Trial"))).toEqual([alias])
+})
+
+// plugins#438 (takomitkm): a GLM Coding Plan model's weekly limit (1310)
+// rested the whole account, -Trial entries too, which the gift's own
+// buckets serve. The trial entries are marked free, as they are: magpie
+// then rests a refused coding plan model alone and still asks the trial
+// entries. The plan's own models are not free, and an account with no gift
+// lists nothing free, so its quota refusal rests it as before.
+test("a dual account's trial entries are free, its coding plan models are not (plugins#438)", async () => {
+  const h = await hooks()
+  const plan = await h.provider.models({ models: {} }, { auth: { type: "api", key: state.key } })
+  const models = await h.provider.models({ models: {} }, { auth })
+  expect(models[alias].free).toBe(true)
+  for (const [id, m] of Object.entries(models)) expect(m.free === true).toBe(id.endsWith("-Trial"))
+  expect(Object.values(plan).some((m) => m.free)).toBe(false)
 })
 
 test("an exhausted but active limited grant remains discoverable", async () => {
@@ -465,4 +481,162 @@ test("a gift-only account lists only the models its balance names (young02036)",
   } finally {
     _internal.config(undefined)
   }
+})
+
+// heduian and bg5eau on X (11-14): on a weekend the GLM-5.3-Flash-Trial
+// pick answered only "no active limited quota". The weekend plan
+// (ZCODE WEEKEND BUILD, testdata/touch-1030-wk.json, the feed's real
+// reply) is a gift ZCode holds until it is claimed, and its claim needs
+// the ZCode app's captcha, which the plugin doesn't post. The refusal
+// now names the held plan and where it is claimed; it still asks no
+// model and posts no claim, and the feed is read once for a retry.
+test("a -Trial pick with no gift names the weekend plan ZCode holds unclaimed", async () => {
+  const touch = readFileSync(new URL("./testdata/touch-1030-wk.json", import.meta.url), "utf8")
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  const asked = []
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") {
+      asked.push((init.method ?? "GET").toUpperCase())
+      return new Response(touch, { headers: { "content-type": "application/json" } })
+    }
+    if (url.pathname === "/api/v1/zcode-plan/billing/claim") throw new Error("a claim was posted")
+    return base(input, init)
+  }
+  for (let i = 0; i < 2; i++) {
+    const res = await send("GLM-5.3-Flash-Trial")
+    expect(res.status).toBe(400)
+    const { error } = await res.json()
+    expect(error.message).toStartWith("ZCode has no active limited quota for GLM-5.3-Flash-Trial. ")
+    expect(error.message).toContain("ZCODE WEEKEND BUILD")
+    expect(error.message).toContain("claim it in the ZCode app")
+  }
+  expect(asked).toEqual(["GET"])
+  expect(sent).toHaveLength(0)
+})
+
+test("a -Trial pick with no gift and nothing held says only that there is none", async () => {
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") return ok({ deliveries: [] })
+    return base(input, init)
+  }
+  const res = await send("GLM-5.3-Flash-Trial")
+  expect(res.status).toBe(400)
+  expect((await res.json()).error.message).toBe("ZCode has no active limited quota for GLM-5.3-Flash-Trial")
+  expect(sent).toHaveLength(0)
+})
+
+test("a -Trial pick whose feed doesn't read says only that there is none, and asks the feed again", async () => {
+  balance = { server_time: now, plans: [], balances: [] }
+  _internal.unclaimedSeen.clear()
+  let reads = 0
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/marketing/touch") return reads++, new Response("bad gateway", { status: 502 })
+    return base(input, init)
+  }
+  for (let i = 0; i < 2; i++) expect((await (await send("GLM-5.3-Flash-Trial")).json()).error.message).toBe("ZCode has no active limited quota for GLM-5.3-Flash-Trial")
+  expect(reads).toBe(2)
+})
+
+// bg5eau on X (11-14): "the gift isn't spent, pay-as-you-go is charged".
+// A key with no coding plan sends every request to the Start Plan, which
+// serves the models its balance names; ZCode's app offers only those
+// (resolveStartPlanBalanceAvailability). Another model the agent was left
+// on spent none of the gift. It is now answered here, and a plan-list read
+// that fails no longer moves such an account onto the coding plan's host,
+// where its key is billed pay-as-you-go.
+const giftOnly = (subs) => {
+  balance.plans = [{ plan_id: "zcode-v3-start-plan", user_plan_id: "s1", name: "ZCode Start Plan", status: "active", ends_at: now + 7 * 86400 }]
+  balance.balances = [{ plan_id: "zcode-v3-start-plan", user_plan_id: "s1", show_name: "GLM-5.3-Flash", capabilities: ["model:glm-5.3-flash"], total_units: 5_000_000, used_units: 0, remaining_units: 5_000_000 }]
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/biz/subscription/list") return subs()
+    return base(input, init)
+  }
+}
+const noPlan = { type: "oauth", access: state.key, refresh: JSON.stringify({ ...state, plan: undefined }), expires: 0 }
+
+const listed = async (credentials = noPlan) => (await hooks()).provider.models({ models: {} }, { auth: credentials })
+
+test("a gift-only account's model its balance doesn't name is not sent (bg5eau)", async () => {
+  giftOnly(() => ok([]))
+  expect(Object.keys(await listed())).toContain("GLM-5.3-Flash")
+  const res = await send("GLM-5.2", noPlan)
+  expect(res.status).toBe(400)
+  const { error } = await res.json()
+  expect(error.message).toContain("serves GLM-5.3-Flash;")
+  expect(error.message).toContain("GLM-5.2 is not among them")
+  expect(sent).toHaveLength(0)
+  expect((await send("GLM-5.3-Flash", noPlan)).status).toBe(200)
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatchObject({ origin: "https://zcode.z.ai", body: { model: "GLM-5.3-Flash" } })
+})
+
+test("a gift-only account reads no balance for a request whose model the list's balance names", async () => {
+  giftOnly(() => ok([]))
+  await listed()
+  let reads = 0
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/api/v1/zcode-plan/billing/balance") reads++
+    return base(input, init)
+  }
+  for (let i = 0; i < 3; i++) expect((await send("GLM-5.3-Flash", noPlan)).status).toBe(200)
+  expect(reads).toBe(0)
+})
+
+test("a gift claimed since the list was read is sent, not refused", async () => {
+  giftOnly(() => ok([]))
+  await listed()
+  balance.balances.push({ plan_id: "zcode-v3-start-plan", user_plan_id: "s1", show_name: "GLM-5.2", capabilities: ["model:glm-5.2"], total_units: 100, used_units: 0, remaining_units: 100 })
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  expect(sent).toHaveLength(1)
+  expect(sent[0].origin).toBe("https://zcode.z.ai")
+})
+
+test("a gift-only account whose balance doesn't read again sends the request as before", async () => {
+  giftOnly(() => ok([]))
+  await listed()
+  const base = globalThis.fetch
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/v1/zcode-plan/billing/balance") return new Response("bad gateway", { status: 502 })
+    return base(input, init)
+  }
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  expect(sent).toHaveLength(1)
+  expect(sent[0].origin).toBe("https://zcode.z.ai")
+})
+
+test("a gift-only account stays on the Start Plan when its plan list stops reading (bg5eau)", async () => {
+  let down = false
+  giftOnly(() => (down ? new Response("bad gateway", { status: 502 }) : ok([])))
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  // GLM-5.2, which the gift doesn't serve: free first would take a
+  // gift model to the gift on either route
+  // the route's ten minutes pass, and the next plan-list read fails
+  for (const r of _internal.routes.values()) r.at = 0
+  down = true
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  expect(sent.map((x) => x.origin)).toEqual(["https://zcode.z.ai", "https://zcode.z.ai"])
+})
+
+test("a coding plan account whose plan list stops reading still takes the plan", async () => {
+  let down = false
+  giftOnly(() => (down ? new Response("bad gateway", { status: 502 }) : ok([{ productName: "GLM Coding Pro", status: "VALID" }])))
+  balance.balances = []
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  for (const r of _internal.routes.values()) r.at = 0
+  down = true
+  expect((await send("GLM-5.2", noPlan)).status).toBe(200)
+  expect(sent.map((x) => x.origin)).toEqual(["https://api.z.ai", "https://api.z.ai"])
 })

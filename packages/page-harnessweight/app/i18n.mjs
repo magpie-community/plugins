@@ -1,0 +1,456 @@
+// HarnessWeight's interface text, in one place.
+//
+// The Chinese is the source of truth for the copy; every other language is a
+// table beside it. The page asks for a key, never for a language-specific
+// string, so a missing translation falls back to English instead of leaking
+// Chinese into an English UI.
+//
+// This module is shared: the browser loads it as a module (app.js imports it)
+// and the service imports the same file to write the insights sentences, so
+// both sides speak the same language and there is only one copy of the copy.
+//
+// No Node and no browser APIs here on purpose — it must load in both.
+
+export const languageTags = { en: "en", zh: "zh-CN", "zh-TW": "zh-TW", ja: "ja-JP" }
+
+// magpie hands the page a language tag ("zh-CN", "en-US", "ja-JP", …).
+// Anything we have no table for reads English.
+export function languageFor(value = "") {
+  const tag = String(value).toLowerCase().replaceAll("_", "-")
+  if (/^zh-(tw|hk|mo|hant)\b/.test(tag)) return "zh-TW"
+  if (/^zh(?:-|$)/.test(tag)) return "zh"
+  if (/^ja(?:-|$)/.test(tag)) return "ja"
+  return "en"
+}
+
+const en = {
+  // ---- app shell ----
+  "app.title": "HarnessWeight · agent harness token weight",
+  "status.loading": "Loading…",
+  "header.sub": "Behind one gateway: how many tokens each agent harness reads, how many hit the cache, how many calls fail, and how heavy the tool definitions it resends every turn are.",
+  "aria.periods": "Period",
+  "period.today": "Today",
+  "period.7d": "7 days",
+  "period.30d": "30 days",
+  "clients.toggle": "Include scripts and internal requests",
+  "aria.insights": "Insights",
+  "aria.overview": "Overview",
+  "aria.cardSort": "Sort cards",
+  "aria.close": "Close",
+  "footer.localOnly": "Data is read locally and never uploaded.",
+
+  // ---- sections ----
+  "cards.title": "Where your tokens go",
+  "cards.hint": "Each card is an agent. Bar length is total input tokens; the darker segment combines fresh input and cache writes. Pricing depends on the provider.",
+  "activity.connecting": "Connecting to live request status…",
+  "table.title": "Compare metrics",
+  "table.hint": "Click a column header to sort, or a row for details.",
+  "tools.title": "Tool definition weight",
+  "tools.hint": "Agents resend their tool list with every request, and that counts towards input tokens too.",
+
+  // ---- formatting ----
+  "dur.second": "s",
+  "dur.minute": "m",
+  "dur.hour": "h",
+  "dur.day": "d",
+  "unit.times": "times",
+  "unit.items": "items",
+
+  // ---- status and sources ----
+  "time.none": "not yet",
+  "time.secondsAgo": "{n}s ago",
+  "time.minutesAgo": "{n}m ago",
+  "time.hoursAgo": "{n}h ago",
+  "time.daysAgo": "{n}d ago",
+  "status.collecting": "Collecting · last request {usage} · last tool sample {tool}",
+  "status.stale": "No new sample in 15 minutes · last one {tool} (use an agent and it resumes)",
+  "status.waiting": "Hook installed, waiting for the first request through the gateway",
+  "sources.summary": "{usageRows} usage rows · {toolRows} tool samples · updated at {time}",
+  "state.noAgents": "No agent requests were recorded in this period. Send a request from any agent through the gateway, then refresh.",
+  "state.loadError": "Could not read the data: {message}. Make sure the magpie gateway is running, then refresh.",
+
+  // ---- activity ----
+  "activity.callsInFlight": "{n} in flight",
+  "activity.liveHint": "An animated border means the gateway observed an in-flight request for this agent.",
+  "activity.unavailableHint": "Live request status is unavailable. An unlit border does not mean the agent is idle.",
+
+  // ---- overview tiles ----
+  "kpi.inputTokens": "Input tokens",
+  "kpi.cacheRate": "Cache hit rate",
+  "kpi.outputTokens": "Output tokens",
+  "kpi.failed": "Failed",
+  "kpi.agents": "Agents",
+  "kpi.credits": "credits",
+  "kpi.requests": "{count} requests",
+  "kpi.fullPriceOf": "{value} at full price",
+  "kpi.avgPerCall": "{value} average per call",
+  "kpi.hiddenClients": "{count} script/internal requests not counted",
+  "kpi.clients": "Clients behind the gateway",
+  "kpi.creditsNote": "Usage credits recorded by magpie",
+
+  // ---- cards ----
+  "card.topSpender": "Top spender",
+  "card.inputTokens": "input tokens",
+  "card.stackLegend": "Light: cache reads; dark: billed at full price",
+  "card.detailsAria": "{name} details",
+  "card.sessionMedianTitle": "Median session span",
+  "table.topSpenderTitle": "Top spender",
+
+  // ---- tools block ----
+  "tools.empty": "No samples yet. The gateway hook records which tools each agent sends and how large they are (names and sizes only, never contents). Use an agent for a while, then refresh.",
+  "tools.sampling": "Sampling since {since}, across {samples} requests. Token counts are estimated at about 3.5 bytes per token, the same for every agent.",
+  "tools.sortBytes": "By bytes",
+  "tools.sortTokens": "By tokens",
+  "tools.sortCount": "By count",
+  "tools.sortShare": "Share of input",
+  "tools.perAgent": "{count} · ≈{tokens} tokens",
+  "tools.perAgentShare": "{count} · ≈{tokens} tokens · {share} of input",
+
+  // ---- detail drawer ----
+  "detail.noRecords": "No records to show in this period.",
+  "detail.countPct": "{count} · {pct}",
+  "detail.selectedPeriod": "selected period",
+  "detail.summaryRequests": "In this period it sent {calls} requests to the model.",
+  "detail.summaryBody": "An average of {avg} tokens read per request; {cache} of the input came from cache. {failed} failed and {cancelled} were cancelled.",
+  "detail.summaryNote": "These are observed usage records. Different tasks, models, and usage frequency make this unsuitable as an agent capability ranking.",
+  "detail.inputTitle": "① Where do the input tokens go?",
+  "detail.totalInput": "Total input",
+  "detail.avgInput": "Average per request",
+  "detail.generatedOutput": "Generated output",
+  "detail.inputBreakdown": "Input breakdown",
+  "detail.freshInput": "Fresh input",
+  "detail.cacheWrite": "Cache writes",
+  "detail.credits": "Gateway credits",
+  "detail.latencyTitle": "② How long does it take, and how often does it fail?",
+  "detail.ttft": "Time to first token",
+  "detail.fullResponse": "Full response",
+  "detail.failureRate": "Failure rate",
+  "detail.latencyNote": "Times are medians (p50): half of the valid records are faster. First-token and full-response samples are counted separately and may differ, so subtracting them does not give the generation time. A failure does not necessarily cost anything.",
+  "detail.toolsTitle": "③ How heavy are the tool definitions?",
+  "detail.toolsPerRequest": "Tools per request",
+  "detail.toolsPerRequestValue": "{count}",
+  "detail.toolSize": "Definition size (estimated tokens)",
+  "detail.validSamples": "Valid samples",
+  "detail.validSamplesValue": "{count}",
+  "detail.toolsNote": "Tool definitions are the model’s instruction manuals: names, parameter schemas, and descriptions. Long manuals eat context, so fewer tools are not necessarily lighter.",
+  "detail.toolsCaveat": "Estimated from JSON bytes ÷ 3.5, not from the model’s tokenizer. {samples} tool samples and {calls} usage records are not matched request by request, so no coverage rate can be derived from them. Tool definitions may hit the cache, so they are not billed at full price on every turn.",
+  "detail.toolInventory": "Frequent tool names (up to 40)",
+  "detail.toolFilter": "Filter tool names",
+  "detail.toolSearchPlaceholder": "Search names",
+  "detail.toolInventoryNote": "Shows up to the 40 names seen most often in the samples; each sample records at most 60 names. This is not a full inventory, not the current configuration, and not a count of tool calls.",
+  "detail.toolsEmpty": "No tool definitions collected yet. As this agent sends new requests through the gateway, data will appear here.",
+  "detail.modelsTitle": "④ Which models were used?",
+  "detail.modelsNote": "Ordered by request count; percentages use this agent’s total requests as the denominator. Showing the top {count}.",
+  "detail.remaining": "{count} other records.",
+  "detail.protocolsTitle": "⑤ Which protocols were used?",
+  "detail.protocolsNote": "A protocol is the message format between the request and the model service. These are the main protocols in the selected period, inferred from the endpoints in the logs and possibly including protocols the gateway converted; this is not the current configuration.",
+  "detail.sessionTitle": "⑥ How long does a session last?",
+  "detail.medianSpan": "Median span",
+  "detail.p90Span": "90% of sessions below",
+  "detail.measuredSessions": "Measured sessions",
+  "detail.sessionNote": "Measured as the span between a session’s first and last request, including thinking and idle time, so it is not continuous work time. The current window may cut a session short; {open} sessions longer than six hours are left out of the measurement.",
+  "detail.sessionUnavailable": "Session span cannot be computed",
+  "detail.sessionEmpty": "No session records to measure in this period. Request counts and response times are still available; this does not mean the agent did no work.",
+  "detail.otherProtocol": "Other / unknown",
+  "detail.cacheReads": "Cache reads",
+  "detail.nonCacheReads": "Non-cache reads",
+  "detail.noInput": "No input tokens in this period, so the composition cannot be computed.",
+  "detail.cacheNote": "Cache reads usually get a discount. Non-cache reads include fresh input and cache writes, and providers price them differently; token counts are not money.",
+  "detail.trendTitle": "Daily input tokens",
+  "detail.trendEmpty": "Not enough data to draw a trend yet.",
+  "detail.trendNote": "The trend reflects how much it was used, not how well the work went.",
+
+  // ---- table and card columns ----
+  "col.agent": "Agent",
+  "col.calls": "Requests",
+  "col.prompt": "Input tokens",
+  "col.avgPrompt": "Input per request",
+  "col.cacheRate": "Cache hit rate",
+  "col.fullPrice": "At full price",
+  "col.out": "Output",
+  "col.errorRate": "Failure rate",
+  "col.p50ttft": "First token p50",
+  "col.p50ms": "Response p50",
+  "col.toolTokens": "Tool tokens / request",
+  "col.protocol": "Protocol",
+  "col.session": "Session span",
+  "sort.prompt": "Input tokens",
+  "sort.toolTokens": "Tool weight",
+
+  // ---- explanations ----
+  "explain.prompt.title": "Input tokens",
+  "explain.prompt.body": "Every token read by the model in this period: fresh input, cache reads, and cache writes. Whatever context the model reads each turn lands here, and this is usually the largest part of the bill.",
+  "explain.avgPrompt.title": "Input per request",
+  "explain.avgPrompt.body": "Tokens read by the model per request on average. The total is multiplied by how often you called it; spread over the requests, this shows which harness is heavier per call.",
+  "explain.cacheRate.title": "Cache hit rate",
+  "explain.cacheRate.body": "The share of input tokens read from the prompt cache. Cache reads and writes may be priced differently by each provider. A low rate does not by itself imply a weaker model.",
+  "explain.fullPrice.title": "At full price",
+  "explain.fullPrice.body": "Fresh input plus cache-write tokens, excluding cache reads. This counts tokens, not money; cache-write prices also differ per model and provider.",
+  "explain.out.title": "Output tokens",
+  "explain.out.body": "Tokens the model generated. Input and output are usually priced differently and output can cost more; check your provider’s actual bill.",
+  "explain.errorRate.title": "Failure rate",
+  "explain.errorRate.body": "Share of requests that failed; deliberate cancellations are counted separately. Whether a failure burns tokens or money depends on when it happened and what the provider returned.",
+  "explain.calls.title": "Requests",
+  "explain.calls.body": "Requests through the gateway. Note that this only covers the harnesses you use; scripts and internal requests are hidden by default.",
+  "explain.p50ttft.title": "First token p50",
+  "explain.p50ttft.body": "Half of the requests were faster than this. The time to the first token decides how long you wait before anything appears, so it matters more to the feel than the total.",
+  "explain.p50ms.title": "Response p50",
+  "explain.p50ms.body": "Half of the requests were faster than this, measured from entering the gateway to the complete response, including reasoning and generation.",
+  "explain.toolTokens.title": "Tool tokens / request",
+  "explain.toolTokens.body": "Estimated from the JSON size of the tool names, parameter schemas, and descriptions sampled at the gateway: bytes ÷ 3.5. This is not an exact tokenizer count; it may hit the cache and it is not the cost.",
+  "explain.toolShare.title": "Share of input",
+  "explain.toolShare.body": "Tool definitions as a share of the tokens this harness reads. A 25% share means roughly one in every four input tokens describes a tool, unrelated to the conversation itself.",
+  "explain.toolCount.title": "Tool count",
+  "explain.toolCount.body": "How many tool definitions ride along with each request. Count is not cost: a few long descriptions can outweigh a dozen short ones. Compare their sizes.",
+  "explain.sessionMedian.title": "Session span",
+  "explain.sessionMedian.body": "The median span between a session’s first and last request within the selected window. It includes idle time and is not continuous work time. Sessions longer than six hours are currently left out.",
+  "explain.sessionP90.title": "Session span p90",
+  "explain.sessionP90.body": "90% of sessions were shorter than this. A few very long sessions (a desktop app left open) drag the average up, so this percentile is more trustworthy than the mean.",
+  "explain.sessionCount.title": "Sessions",
+  "explain.sessionCount.body": "The number of distinct sessions seen in this period. Session IDs are maintained by each harness, so some of them do not have the concept at all.",
+  "explain.protocol.title": "Protocol",
+  "explain.protocol.body": "The protocol mix in the selected period, inferred from the endpoints in the usage log. It may include the upstream protocol after the gateway converted it, so do not read it as the current client configuration.",
+  "explain.live.title": "In flight",
+  "explain.live.body": "Requests whose start was recorded by the gateway hook without a matching finish callback, refreshed about every two seconds. A missing finish callback is kept for up to 15 minutes. This is an observed request state, not the state of an agent’s background process.",
+  "explain.fullPriceShare.title": "Full-price share",
+  "explain.fullPriceShare.body": "The share of the tokens this harness reads that are billed at full price. The higher this share, the more expensive the same usage is.",
+  "explain.credits.title": "credits",
+  "explain.credits.body": "Usage credits recorded by magpie, which depend on how your provider prices things. This is not a token count.",
+}
+
+const zh = {
+  // ---- app shell ----
+  "app.title": "HarnessWeight · agent harness 的 token 重量",
+  "status.loading": "正在读取…",
+  "header.sub": "同一个网关后面，每个 agent harness 读了多少 token、命中多少缓存、失败多少次、每轮重发多重的工具定义。",
+  "aria.periods": "统计周期",
+  "period.today": "今天",
+  "period.7d": "7 天",
+  "period.30d": "30 天",
+  "clients.toggle": "含脚本和内部请求",
+  "aria.insights": "结论",
+  "aria.overview": "总览",
+  "aria.cardSort": "卡片排序",
+  "aria.close": "关闭",
+  "footer.localOnly": "数据只在本机读取，不上传。",
+
+  // ---- sections ----
+  "cards.title": "谁在花你的 token",
+  "cards.hint": "每张卡是一个 Agent。条的长度是输入 token 总量，深色部分合计新鲜输入与缓存写入；价格由供应商决定。",
+  "activity.connecting": "正在连接实时调用状态…",
+  "table.title": "逐项对比",
+  "table.hint": "点表头排序，点一行看详情。",
+  "tools.title": "工具定义重量",
+  "tools.hint": "Agent 每次请求都会把自己的工具清单重发一遍，这部分也按 token 计费。",
+
+  // ---- formatting ----
+  "dur.second": "秒",
+  "dur.minute": "分",
+  "dur.hour": "小时",
+  "dur.day": "天",
+  "unit.times": "次",
+  "unit.items": "个",
+
+  // ---- status and sources ----
+  "time.none": "还没有",
+  "time.secondsAgo": "{n} 秒前",
+  "time.minutesAgo": "{n} 分钟前",
+  "time.hoursAgo": "{n} 小时前",
+  "time.daysAgo": "{n} 天前",
+  "status.collecting": "采集中 · 最近一次请求 {usage} · 工具采样 {tool}",
+  "status.stale": "15 分钟内没有新采样 · 上次 {tool}（用一下 Agent 就会恢复）",
+  "status.waiting": "hook 已装好，等第一条请求经过网关",
+  "sources.summary": "用量记录 {usageRows} 条 · 工具采样 {toolRows} 条 · 更新于 {time}",
+  "state.noAgents": "这段时间网关没有记录到 Agent 的请求。用任意 Agent 走一次网关，再回来刷新。",
+  "state.loadError": "读不到数据：{message}。确认 magpie 网关在运行，再刷新。",
+
+  // ---- activity ----
+  "activity.callsInFlight": "{n} 个调用中",
+  "activity.liveHint": "流光边框表示网关观察到该 Agent 有调用进行中。",
+  "activity.unavailableHint": "实时调用状态暂不可用；没有流光不代表 Agent 空闲。",
+
+  // ---- overview tiles ----
+  "kpi.inputTokens": "输入 token",
+  "kpi.cacheRate": "缓存命中",
+  "kpi.outputTokens": "输出 token",
+  "kpi.failed": "失败",
+  "kpi.agents": "Agent",
+  "kpi.credits": "credits",
+  "kpi.requests": "{count} 次请求",
+  "kpi.fullPriceOf": "按原价算的 {value}",
+  "kpi.avgPerCall": "平均 {value}/次",
+  "kpi.hiddenClients": "另有 {count} 次脚本/内部请求未计",
+  "kpi.clients": "网关后面的客户端",
+  "kpi.creditsNote": "magpie 记账的按量额度",
+
+  // ---- cards ----
+  "card.topSpender": "花得最多",
+  "card.inputTokens": "输入 token",
+  "card.stackLegend": "浅色：缓存读取；深色：按原价",
+  "card.detailsAria": "{name} 详情",
+  "card.sessionMedianTitle": "单次会话时长中位数",
+  "table.topSpenderTitle": "花得最多",
+
+  // ---- tools block ----
+  "tools.empty": "还没有采样。网关 hook 会从下一次请求开始记录每个 Agent 带了哪些工具、有多大（只记名字和大小，不记内容）。用一会儿 Agent 后刷新即可。",
+  "tools.sampling": "从 {since} 开始采样，共 {samples} 次请求。token 数按每 token 约 3.5 字节估算，各 Agent 口径一致。",
+  "tools.sortBytes": "按字节",
+  "tools.sortTokens": "按 token",
+  "tools.sortCount": "按个数",
+  "tools.sortShare": "占输入比",
+  "tools.perAgent": "{count} 个 · ≈{tokens} token",
+  "tools.perAgentShare": "{count} 个 · ≈{tokens} token · 占 {share}",
+
+  // ---- detail drawer ----
+  "detail.noRecords": "当前范围没有可展示的记录。",
+  "detail.countPct": "{count} 次 · {pct}",
+  "detail.selectedPeriod": "当前筛选范围",
+  "detail.summaryRequests": "这段时间，它向模型发起了 {calls} 次请求。",
+  "detail.summaryBody": "每次平均读入 {avg} token；输入中 {cache} 来自缓存。记录到 {failed} 次失败和 {cancelled} 次主动取消。",
+  "detail.summaryNote": "这里比较的是实际使用记录；任务、模型和使用频率不同，不能直接当作 Agent 能力排名。",
+  "detail.inputTitle": "① 输入都用在哪里？",
+  "detail.totalInput": "累计输入",
+  "detail.avgInput": "每次平均",
+  "detail.generatedOutput": "生成的输出",
+  "detail.inputBreakdown": "查看输入明细",
+  "detail.freshInput": "新鲜输入",
+  "detail.cacheWrite": "缓存写入",
+  "detail.credits": "网关记录的额度",
+  "detail.latencyTitle": "② 等待多久，出错多少？",
+  "detail.ttft": "首字等待",
+  "detail.fullResponse": "完整响应",
+  "detail.failureRate": "失败率",
+  "detail.latencyNote": "时间采用中位数（p50）：有一半的有效记录更快。首字与完整响应各自统计，样本可能不同，不能相减当作生成耗时。失败不等于一定产生费用。",
+  "detail.toolsTitle": "③ 工具说明有多重？",
+  "detail.toolsPerRequest": "每次携带工具",
+  "detail.toolsPerRequestValue": "{count} 个",
+  "detail.toolSize": "说明体积（估算 token）",
+  "detail.validSamples": "有效采样",
+  "detail.validSamplesValue": "{count} 次",
+  "detail.toolsNote": "工具定义是发给模型的“工具使用说明书”，包含名称、参数格式和描述。长说明书也会占上下文，工具数量少不一定更轻。",
+  "detail.toolsCaveat": "以 JSON 字节数 ÷ 3.5 估算，非模型 tokenizer 的实测值。工具采样 {samples} 条，用量记录 {calls} 条；两者未逐请求关联，不能据此计算覆盖率。工具说明可能命中缓存，不代表每轮都按原价收费。",
+  "detail.toolInventory": "查看高频工具名称（最多 40 项）",
+  "detail.toolFilter": "筛选工具名",
+  "detail.toolSearchPlaceholder": "输入名称关键词",
+  "detail.toolInventoryNote": "这里最多显示采样中出现频率最高的 40 个名称；每次采样也最多记录 60 个名称。这不是完整列表、当前启用列表或工具调用次数。",
+  "detail.toolsEmpty": "尚未采集到工具定义。让该 Agent 通过网关发送新请求后，这里会逐步出现数据。",
+  "detail.modelsTitle": "④ 用过哪些模型？",
+  "detail.modelsNote": "按请求次数排列，百分比以该 Agent 全部请求为分母。只显示前 {count} 项。",
+  "detail.remaining": "其余 / 未列出的记录：{count} 次。",
+  "detail.protocolsTitle": "⑤ 请求经过哪些协议？",
+  "detail.protocolsNote": "协议是请求与模型服务之间使用的消息格式。下面显示所选时间范围内的主要协议，按日志中记录的端点推断，可能包含网关转换后的协议；不是当前配置清单。",
+  "detail.sessionTitle": "⑥ 一次会话持续多久？",
+  "detail.medianSpan": "中位时长",
+  "detail.p90Span": "90% 会话短于",
+  "detail.measuredSessions": "可测会话",
+  "detail.sessionNote": "按同一会话首末请求的跨度计算，包含思考与闲置，不是连续工作时间。当前统计窗口可能截断会话；{open} 个超过 6 小时的会话未参与时长统计。",
+  "detail.sessionUnavailable": "暂时无法计算会话时长",
+  "detail.sessionEmpty": "当前范围没有可用于时长统计的会话记录。请求次数和响应耗时仍可正常查看；这不代表 Agent 没有工作。",
+  "detail.otherProtocol": "其他 / 未识别",
+  "detail.cacheReads": "缓存读取",
+  "detail.nonCacheReads": "非缓存读取",
+  "detail.noInput": "当前范围没有输入 token 记录，无法计算构成。",
+  "detail.cacheNote": "缓存读取通常享有折扣。非缓存读取含新鲜输入与缓存写入，各供应商定价不同；token 数不是金额。",
+  "detail.trendTitle": "每天的输入用量",
+  "detail.trendEmpty": "数据不足，暂不绘制趋势。",
+  "detail.trendNote": "趋势反映使用规模，不是任务完成质量。",
+
+  // ---- table and card columns ----
+  "col.agent": "Agent",
+  "col.calls": "请求",
+  "col.prompt": "输入 token",
+  "col.avgPrompt": "每次读",
+  "col.cacheRate": "缓存命中",
+  "col.fullPrice": "按原价",
+  "col.out": "输出",
+  "col.errorRate": "失败率",
+  "col.p50ttft": "首字 p50",
+  "col.p50ms": "耗时 p50",
+  "col.toolTokens": "工具 token/次",
+  "col.protocol": "协议",
+  "col.session": "会话时长",
+  "sort.prompt": "读入 token",
+  "sort.toolTokens": "工具重量",
+
+  // ---- explanations ----
+  "explain.prompt.title": "输入 token",
+  "explain.prompt.body": "这段时间读进模型的所有 token：新鲜输入 + 缓存读取 + 缓存写入。模型每轮读到的上下文都算在这里，是账单里最大的一块。",
+  "explain.avgPrompt.title": "每次读",
+  "explain.avgPrompt.body": "平均每次请求读进模型的 token。总额会被「用了多少次」放大，摊到每次请求才能看出哪个 harness 单次更重。",
+  "explain.cacheRate.title": "缓存命中",
+  "explain.cacheRate.body": "读进来的 token 里，有多少是从 prompt cache 取的。命中的部分按折扣价算，没命中的按原价。命中率低不等于模型差，通常是前缀不稳定（比如工具定义变了）。",
+  "explain.fullPrice.title": "按原价",
+  "explain.fullPrice.body": "新鲜输入与缓存写入的 token 合计，不含缓存读取。这里统计的是数量，不是金额；不同模型、供应商的缓存写入价格也可能不同。",
+  "explain.out.title": "输出 token",
+  "explain.out.body": "模型生成回来的 token。输入和输出通常采用不同单价，输出单价也可能更高；请以实际供应商账单为准。",
+  "explain.errorRate.title": "失败率",
+  "explain.errorRate.body": "出错请求占比；主动取消单独统计。失败是否消耗 token 或收费，取决于失败发生的阶段和供应商回执。",
+  "explain.calls.title": "请求",
+  "explain.calls.body": "经过网关的请求数。注意这里只算你用的 harness，脚本和内部请求默认隐藏。",
+  "explain.p50ttft.title": "首字 p50",
+  "explain.p50ttft.body": "一半的请求比这个快。首字时间决定你等多久能看到第一个字，比总耗时更影响体感。",
+  "explain.p50ms.title": "耗时 p50",
+  "explain.p50ms.body": "一半的请求比这个快，指请求从进网关到拿到完整回复的总时长（含思考和生成）。",
+  "explain.toolTokens.title": "工具 token/次",
+  "explain.toolTokens.body": "在网关采样工具名、参数 schema 和描述的 JSON 体积，以字节数 ÷ 3.5 估算 token。不是精确 tokenizer 计数；可能命中缓存，也不等于实际费用。",
+  "explain.toolShare.title": "占输入比",
+  "explain.toolShare.body": "工具定义占这个 harness 自己读进的 token 的比例。25% 意味着模型读 4 个 token 就有 1 个是工具定义，跟对话内容无关。",
+  "explain.toolCount.title": "工具个数",
+  "explain.toolCount.body": "每次请求带了多少个工具定义。注意：个数不等于成本。有的工具描述特别长，少数几个就能顶掉一打短工具。要裁就按字节裁。",
+  "explain.sessionMedian.title": "单次会话时长",
+  "explain.sessionMedian.body": "所选窗口内，同一 session 首末请求的跨度中位数，包含闲置，不是持续工作时间。超过 6 小时的会话目前不参与时长统计。",
+  "explain.sessionP90.title": "长会话 p90",
+  "explain.sessionP90.body": "九成的会话比这个短。少数超长会话（桌面端挂着不关）会拉高平均值，所以这个数比平均更可靠。",
+  "explain.sessionCount.title": "会话数",
+  "explain.sessionCount.body": "这段时间内出现过的不同会话数量。会话 id 由 harness 自己维护，所以有的 harness 没有这个概念。",
+  "explain.protocol.title": "接入协议",
+  "explain.protocol.body": "根据用量日志端点统计所选范围内的协议分布，可能包含网关转换后的上游协议。不能当作当前客户端配置。",
+  "explain.live.title": "正在使用",
+  "explain.live.body": "网关 hook 已记录请求开始、尚未收到对应结束回调的数量，每约 2 秒刷新。丢失结束回调的记录最多保留 15 分钟；这是观测状态，不是 Agent 的后台进程状态。",
+  "explain.fullPriceShare.title": "按原价占比",
+  "explain.fullPriceShare.body": "按原价计费的 token 占它读进的总 token 的比例。这个比例越高，同样的用量越贵。",
+  "explain.credits.title": "credits",
+  "explain.credits.body": "magpie 记账的按量额度，取决于你走的 provider 怎么定价，不是 token 数本身。",
+}
+
+export const TEXT = { en, zh }
+
+// The language the page actually renders in: a recognised language with no
+// table yet (zh-TW, ja) renders English, and says so in <html lang>.
+export function pageLanguage(value = "") {
+  const lang = languageFor(value)
+  return TEXT[lang] ? lang : "en"
+}
+
+// The insights sentences live here too: the service writes them, so they must
+// come out of the same table as the rest of the page.
+const insights = {
+  en: {
+    prompt: "{hi} reads an average of {avg} tokens per request, {ratio}x {lo}.",
+    cache: "{hi} has the highest cache hit rate ({hiRate}); {lo} the lowest ({loRate}). Actual pricing depends on the provider and model.",
+    volume: "{name} accounts for {share} of the input tokens in this period, the largest source of spend.",
+    errors: "{name} has a failure rate of {rate}; failed requests may still consume tokens.",
+    tools: "{hi} resends about {tokens} tokens of tool definitions per request ({count} tools), {ratio}x {lo} (about {loTokens} tokens, {loCount} tools).",
+  },
+  zh: {
+    prompt: "{hi} 每次请求平均读 {avg} token，是 {lo} 的 {ratio} 倍。",
+    cache: "缓存命中最高的是 {hi}（{hiRate}），最低的是 {lo}（{loRate}）。实际计费取决于供应商和模型。",
+    volume: "{name} 占了这段时间 {share} 的输入 token，是最大的开销来源。",
+    errors: "{name} 的失败率是 {rate}；失败请求也可能消耗 token。",
+    tools: "{hi} 每次请求重发的工具定义约 {tokens} token（{count} 个），是 {lo}（约 {loTokens} token，{loCount} 个）的 {ratio} 倍。",
+  },
+}
+
+// {name} placeholders are filled in; a missing one leaves the placeholder
+// visible rather than printing "undefined".
+export function translate(language, key, parameters = {}) {
+  const lang = languageFor(language)
+  const template = TEXT[lang]?.[key] ?? TEXT.en[key] ?? key
+  return template.replace(/\{(\w+)\}/g, (match, name) => parameters[name] ?? match)
+}
+
+export function insight(language, kind, parameters = {}) {
+  const lang = languageFor(language)
+  const template = insights[lang]?.[kind] ?? insights.en[kind] ?? kind
+  return template.replace(/\{(\w+)\}/g, (match, name) => parameters[name] ?? match)
+}

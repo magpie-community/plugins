@@ -1123,6 +1123,7 @@ function responsesWhole(events) {
 function chatWhole(events) {
   let out = null
   const choices = []
+  const open = new Map() // "choice:index" -> the call being written there
   for (const ev of events) {
     out ??= { id: ev.id, object: "chat.completion", created: ev.created, model: ev.model }
     if (ev.usage) out.usage = ev.usage
@@ -1133,7 +1134,17 @@ function chatWhole(events) {
       if (d.reasoning_content) ch.message.reasoning_content = (ch.message.reasoning_content ?? "") + d.reasoning_content
       for (const t of d.tool_calls ?? []) {
         const calls = (ch.message.tool_calls ??= [])
-        const tc = (calls[t.index ?? 0] ??= { id: "", type: "function", function: { name: "", arguments: "" } })
+        // a new id at an index in use is a new call, not more of the open
+        // one: two calls at one index ran together as {"a"}{"b"}
+        // (plugins#930). No id, or the same one, goes on with it.
+        const key = `${c.index ?? 0}:${t.index ?? 0}`
+        let tc = open.get(key)
+        if (!tc || (t.id && tc.id && t.id !== tc.id)) {
+          tc = { id: "", type: "function", function: { name: "", arguments: "" } }
+          if (calls[t.index ?? 0]) calls.push(tc)
+          else calls[t.index ?? 0] = tc
+          open.set(key, tc)
+        }
         if (t.id) tc.id = t.id
         if (t.function?.name) tc.function.name += t.function.name
         if (t.function?.arguments) tc.function.arguments += t.function.arguments

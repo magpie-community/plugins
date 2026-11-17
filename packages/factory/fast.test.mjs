@@ -8,11 +8,12 @@ import { readFileSync } from "node:fs"
 import { FactoryAuthPlugin } from "./index.mjs"
 
 const DROID = readFileSync(new URL("./testdata/droid-0.240.0-fast.txt", import.meta.url), "utf8")
+const DROID_170 = readFileSync(new URL("./testdata/droid-1.7.0-models.txt", import.meta.url), "utf8")
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
 
-function entry(id) {
-  const line = DROID.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
+function entry(id, droid = DROID) {
+  const line = droid.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
   if (!line) throw new Error(`${id} is not in the fixture`)
   return line
 }
@@ -31,6 +32,8 @@ async function plugin() {
 }
 
 const OFFERED = ["claude-opus-5-5-fast", "claude-opus-5-fast", "claude-opus-4-8-fast", "gpt-5.5-fast", "gpt-5.4-fast", "gpt-5.3-codex-fast"]
+// droid 1.7.0's, offered as it lists them (index.mjs, above MODELS)
+const OFFERED_170 = ["gpt-6-sol-fast", "gpt-6-luna-fast", "gpt-5.6-sol-fast", "glm-5.2-fast"]
 
 test("droid's Fast Mode models are offered at their base model's limits and efforts", async () => {
   const { models } = await plugin()
@@ -46,9 +49,28 @@ test("droid's Fast Mode models are offered at their base model's limits and effo
     expect(Object.keys(m.variants)).toEqual(efforts)
   }
   // left out, each for its reason (index.mjs, above MODELS)
-  for (const id of ["claude-opus-4-6-fast", "claude-opus-4-7-fast", "gpt-5.4-mini-fast", "gpt-5.6-sol-fast", "glm-5.2-fast"]) expect(models[id]).toBeUndefined()
-  expect(entry("gpt-5.6-sol-fast")).toContain("unreleased:!0")
-  expect(entry("glm-5.2-fast")).toContain("featureFlag:")
+  for (const id of ["claude-opus-4-6-fast", "claude-opus-4-7-fast", "gpt-5.4-mini-fast"]) expect(models[id]).toBeUndefined()
+})
+
+test("droid 1.7.0's GPT Fast Mode models are offered at their base model's limits and efforts, GLM-5.2 Fast at its own", async () => {
+  const { models } = await plugin()
+  for (const id of OFFERED_170) {
+    const text = entry(id, DROID_170)
+    const base = text.match(/baseVariant:"([^"]+)"/)[1]
+    const m = models[id]
+    expect(m).toBeDefined()
+    expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+    expect(m.provider).toEqual(models[base].provider)
+    expect(m.variants).toEqual(models[base].variants)
+    if (id.startsWith("gpt-")) {
+      expect(text).toContain("contextLimits:E,apiRequest:pe,")
+      expect(m.limit).toEqual(models[base].limit)
+    }
+  }
+  expect(DROID_170).toContain('pe=C({parallelToolCalls:!0,extendedCache:!0,safetyId:!0,verbosity:"low",serviceTier:"priority"})')
+  expect(DROID_170).toContain("E=g(1050000,128000)")
+  expect(entry("glm-5.2-fast", DROID_170)).toContain("contextLimits:g(524288,131072)")
+  expect(models["glm-5.2-fast"].limit).toEqual({ context: 524288, output: 131072 })
 })
 
 test("an Opus Fast Mode model goes out as droid sends it: its own id, speed fast and the fast-mode beta", async () => {
@@ -94,10 +116,19 @@ test("a GPT Fast Mode model goes out as droid sends it: its own id at the priori
   sent = JSON.parse(seen[1].body)
   expect(sent.model).toBe("gpt-5.5-fast")
   // a model with no Fast Mode model is left as it was asked
-  await l.fetch(url, { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", service_tier: "priority", input: "hi" }) })
+  await l.fetch(url, { method: "POST", body: JSON.stringify({ model: "gpt-6.1-sol", service_tier: "priority", input: "hi" }) })
   sent = JSON.parse(seen[2].body)
-  expect(sent.model).toBe("gpt-6-sol")
+  expect(sent.model).toBe("gpt-6.1-sol")
   expect(sent.service_tier).toBe("priority")
+  // GPT-6 Sol's is droid 1.7.0's
+  await l.fetch(url, { method: "POST", body: JSON.stringify({ model: "gpt-6-sol", service_tier: "priority", input: "hi" }) })
+  sent = JSON.parse(seen[3].body)
+  expect(sent.model).toBe("gpt-6-sol-fast")
+  expect(sent.service_tier).toBe("priority")
+  // GLM-5.2 Fast is a model of its own on chat completions, not a tier of GLM-5.2's
+  const chat = "https://api.factory.ai/api/llm/o/v1/chat/completions"
+  await l.fetch(chat, { method: "POST", body: JSON.stringify({ model: "glm-5.2", service_tier: "priority", messages: [{ role: "user", content: "hi" }] }) })
+  expect(JSON.parse(seen[4].body).model).toBe("glm-5.2")
 })
 
 // #119 (psylch, 0.1.27): magpie shows a provider with nothing picked only
@@ -109,6 +140,6 @@ test("the Fast Mode models come after every other model, so magpie's first 24 ar
   const ids = Object.keys(models)
   const first = ids.findIndex((id) => id.endsWith("-fast"))
   expect(ids.slice(first).every((id) => id.endsWith("-fast"))).toBe(true)
-  expect(ids.slice(first)).toEqual(OFFERED)
+  expect(ids.slice(first)).toEqual([...OFFERED, ...OFFERED_170])
   for (const id of ["gpt-5.3-codex", "grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"]) expect(ids.slice(0, 24)).toContain(id)
 })

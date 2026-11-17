@@ -45,6 +45,7 @@ test("auth.refresh renews and gives the new fields, saving nothing itself", asyn
   const sets = []
   const hooks = await WorkBuddyAIAuthPlugin({ client: { auth: { set: async (x) => sets.push(x) } } })
   expect(hooks.auth.refreshLead).toBeGreaterThanOrEqual(60 * 1000)
+  expect(hooks.auth.rotating).toBe(true)
   const got = await hooks.auth.refresh(auth(), "workbuddy-ai")
   expect(got.access).toBe("new")
   expect(got.refresh).toBe("r2")

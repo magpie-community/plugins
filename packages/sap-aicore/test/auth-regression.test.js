@@ -170,14 +170,27 @@ it("late OAuth refusal cannot expire an explicitly replaced slot", () => sandbox
 }))
 
 it("token deadline bounds fetch that ignores abort", () => sandbox(async ({ file }) => {
+  // The credential read and the token exchange each arm their own 15000ms deadline.
+  // Fire the exchange's once fetch has been entered, not after a wall-clock wait: a
+  // shortened timer also cut the read short on a busy machine, before fetch ran (#984).
   const original = setTimeout
-  globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms === 15000 ? 20 : ms, ...args)
+  const deadlines = []
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    if (ms === 15000) deadlines.push(fn)
+    return original(fn, ms, ...args)
+  }
   let upstream
-  globalThis.fetch = async (_, init) => { upstream = init.signal; return new Promise(() => {}) }
+  globalThis.fetch = async (_, init) => {
+    upstream = init.signal
+    assert.equal(deadlines.length, 2)
+    queueMicrotask(deadlines.at(-1))
+    return new Promise(() => {})
+  }
   const plugin = await SAPAICorePlugin()
   const result = await plugin.auth.methods[0].authorize({ credentialFile: file })
   assert.equal(result.type, "failed")
   assert.match(result.error, /timed out/)
+  assert.ok(upstream, "the deadline fired before fetch was called")
   assert.equal(upstream.aborted, true)
 }))
 

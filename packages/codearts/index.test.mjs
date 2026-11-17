@@ -24,6 +24,10 @@ const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ledger-"))
 process.env.MAGPIE_CODEARTS_LEDGER = path.join(ledgerDir, "default.json")
 test.after(() => fs.rmSync(ledgerDir, { recursive: true, force: true }))
 
+// Never the real CodeArts Agent's state.vscdb: a plugin made here without an
+// `ideStateFile` of its own looks at a file that isn't there.
+process.env.MAGPIE_CODEARTS_IDE_STATE = path.join(ledgerDir, "no-ide", "state.vscdb")
+
 const buf = (s) => new TextEncoder().encode(s)
 
 // ---- crypto primitives -----------------------------------------------------
@@ -238,6 +242,18 @@ test("a dated model only the agent lists keeps its date, named or not (#677)", a
   const names = Object.fromEntries(models.map((m) => [m.id, m.name]))
   assert.equal(names["deepseek-v4.1-flash-1017"], "DeepSeek-V4.1-Flash-1017")
   assert.equal(names["deepseek-v4.1-flash-0930"], "Deepseek V4.1 Flash 0930")
+})
+
+test("stop never reaches the mainland gateway, which refuses any (#1120, magpie#6342)", () => {
+  const stop = (v) => x.prepareChatBody({ model: "GLM-5.2", messages: [], stop: v }).body
+  for (const v of [["\n\n"], ["", "###", "Observation:"], "###", "x", "</block>", [], [""], [null, 3], "", null, 7])
+    assert.equal("stop" in stop(v), false, JSON.stringify(v))
+  assert.equal("stop" in x.prepareChatBody({ model: "GLM-5.2", messages: [] }).body, false)
+  // the international station takes a list only (#998)
+  const intl = (v) => x.prepareChatBody({ model: "GLM-5.1", messages: [], stop: v }, { station: "international" }).body
+  assert.deepEqual(intl("zzz").stop, ["zzz"])
+  assert.deepEqual(intl(["", "###", 3, "Observation:"]).stop, ["###", "Observation:"])
+  for (const v of [[], [""], [null, 3], "", null, 7]) assert.equal("stop" in intl(v), false, JSON.stringify(v))
 })
 
 test("prepareChatBody reshapes a chat into what the gateway accepts and meters", () => {
@@ -529,6 +545,29 @@ test("buildOAuthLoginUrl matches the real IDE parameters", () => {
   assert.equal(q.get("plugin-name"), "snap_AIIDE")
   // The real plugin never sends auth_callback_url (portal derives it from port).
   assert.equal(q.has("auth_callback_url"), false)
+  assert.equal(q.get("locale"), "zh-cn")
+})
+
+test("the international sign-in opens Huawei Cloud's international login, then its portal (#1090)", () => {
+  const login = new URL(x.buildOAuthLoginUrl(12345, { codeChallenge: "CH" }, "TICKET", x.STATIONS.international))
+  assert.equal(login.origin + login.pathname, "https://auth.huaweicloud.com/authui/login")
+  assert.equal(login.searchParams.get("site"), "intl")
+  assert.equal(login.searchParams.get("locale"), "en-us")
+  const service = new URL(login.searchParams.get("service"))
+  assert.equal(service.origin + service.pathname, "https://codearts.ap-southeast-1.huaweicloud.com/portal/authorize")
+  assert.equal(service.searchParams.get("locale"), "en-us")
+  assert.equal(service.searchParams.get("port"), "12345")
+  assert.equal(service.searchParams.get("code_challenge"), "CH")
+  assert.equal(service.searchParams.get("ticket_id"), "TICKET")
+  assert.equal(service.searchParams.get("client_id"), "codearts-agent")
+  assert.equal(
+    x.buildPortalLoginResultUrl(true, x.STATIONS.international),
+    "https://codearts.ap-southeast-1.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=en-us",
+  )
+  assert.equal(
+    x.buildPortalLoginResultUrl(true),
+    "https://codearts.huaweicloud.com/portal/login?login_succeed=true&uri_scheme=codearts-agent&locale=zh-cn",
+  )
 })
 
 test("usageFromStatistics maps credit metrics to windows with real numbers", () => {
@@ -593,7 +632,7 @@ test("usageFromStatistics: the soonest check-in credits to lapse show on the bon
   const usage = x.usageFromStatistics({
     metrics: [
       { name: "usageTotalPackageCredit", package_credit_amount: 7000, package_credit_remain: 6500 },
-      { name: "usageBonusPackageCredit", package_credit_amount: 2000, package_credit_remain: 1500 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 2000, package_credit_remain: 1500, package_credit_expiring_amount: 1000 },
     ],
   }, undefined, { grants })
   const bonus = usage.windows.find((w) => w.name === "赠送积分包")
@@ -602,6 +641,84 @@ test("usageFromStatistics: the soonest check-in credits to lapse show on the bon
   // The total loses them too.
   assert.equal(usage.windows.find((w) => w.name === "总积分").runsOutAt, grants[1].expiresAt)
   assert.equal(x.soonestLapse(x.grantBatches([grants[0]])), undefined)
+})
+
+// #982 (KiMelody), two accounts read 2026-11-11 in Beijing, the numbers as
+// filed. B's ledger grant is the last check-in to the millisecond; the vendor
+// said nothing is about to lapse on either.
+const NOW_982 = Date.parse("2026-11-11T10:00:00Z")
+const GRANT_982 = { at: "2026-11-10T16:01:04.916Z", credit: 100, expiresAt: "2026-11-11T16:01:03.812Z" }
+
+test("a spent check-in leaves no lapse on the bucket or the total (#982, account A)", () => {
+  const stats = {
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 600, package_credit_remain: 82.05, package_credit_expiring_amount: 0 },
+      { name: "usageBasicPackageCredit", package_credit_amount: 500, package_credit_remain: 82.05, package_credit_expiring_amount: 0 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 100, package_credit_remain: 0, package_credit_expiring_amount: 0 },
+    ],
+  }
+  // The ledger's grant, and a vendor batch whose counter lags the bucket.
+  const ghost = [{ metric: "usageBonusPackageCredit", amount: 100, left: 100, expiresAt: Date.parse(GRANT_982.expiresAt) }]
+  for (const opts of [{ grants: [GRANT_982] }, { batches: ghost }]) {
+    const usage = x.usageFromStatistics(stats, undefined, { ...opts, now: NOW_982 })
+    const total = usage.windows.find((w) => w.name === "总积分")
+    const bonus = usage.windows.find((w) => w.name === "赠送积分包")
+    assert.equal(bonus.amount, 100)
+    assert.equal(bonus.runsOutAt, undefined)
+    assert.equal(total.runsOutAt, undefined, "the total has none of the bonus bucket's credits left to lose")
+    assert.equal(total.runsOut, undefined)
+    assert.equal(total.expiring, 0)
+  }
+})
+
+test("a check-in in the ledger is no lapse when the vendor says nothing expires (#982, account B)", () => {
+  const stats = (expiring) => ({
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 4100, package_credit_remain: 2344.81, package_credit_expiring_amount: expiring },
+      { name: "usageBonusPackageCredit", package_credit_amount: 4100, package_credit_remain: 2344.81, package_credit_expiring_amount: expiring },
+    ],
+  })
+  const read = (expiring) => {
+    const usage = x.usageFromStatistics(stats(expiring), undefined, { grants: [GRANT_982], now: NOW_982 })
+    return [usage.windows.find((w) => w.name === "总积分"), usage.windows.find((w) => w.name === "赠送积分包")]
+  }
+  const [total, bonus] = read(0)
+  assert.equal(bonus.amount, 1755.19)
+  assert.equal(bonus.used.toFixed(2), "42.81")
+  assert.equal(bonus.expiring, 0)
+  assert.equal(bonus.runsOutAt, undefined, "the ledger can't say the grant wasn't spent")
+  assert.equal(total.runsOutAt, undefined)
+  // Said by the vendor, the ledger tells when, and only that much lapses.
+  const [total2, bonus2] = read(40)
+  assert.equal(bonus2.runsOutAt, GRANT_982.expiresAt)
+  assert.equal(bonus2.runsOut, 40)
+  assert.equal(total2.runsOutAt, GRANT_982.expiresAt)
+  assert.equal(total2.runsOut, 40)
+  // Without the vendor's field nothing is known.
+  assert.equal(read(undefined)[1].runsOutAt, undefined)
+  assert.equal(x.grantBatches([GRANT_982])[0].estimated, true)
+})
+
+test("the total's lapse is the buckets' own, each held to what it has left (#982)", () => {
+  const at = NOW_982 + 3 * 86_400_000
+  const usage = x.usageFromStatistics({
+    metrics: [
+      { name: "usageTotalPackageCredit", package_credit_amount: 3000, package_credit_remain: 2500 },
+      { name: "usageOnDemandPackageCredit", package_credit_amount: 2000, package_credit_remain: 2000 },
+      { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 30 },
+    ],
+  }, undefined, {
+    now: NOW_982,
+    batches: [
+      { metric: "usageBonusPackageCredit", amount: 1000, left: 400, expiresAt: at },
+      { metric: "usageOnDemandPackageCredit", amount: 2000, left: 2000, expiresAt: at + 60 * 86_400_000 },
+    ],
+  })
+  const bonus = usage.windows.find((w) => w.name === "赠送积分包")
+  const total = usage.windows.find((w) => w.name === "总积分")
+  assert.equal(bonus.runsOut, 30, "never more than the bucket has")
+  assert.equal(total.runsOutAt, iso(at))
+  assert.equal(total.runsOut, 30)
 })
 
 // Shaped as the console's own answers (personal-usage → 获取明细).
@@ -811,8 +928,9 @@ test("plugin exposes config, provider.models, and an oauth auth method", async (
   assert.equal(typeof plugin.config, "function")
   assert.equal(plugin.provider.id, "codearts")
   assert.equal(plugin.auth.provider, "codearts")
-  assert.equal(plugin.auth.methods.length, 1)
+  assert.ok(plugin.auth.methods.length >= 2)
   assert.equal(plugin.auth.methods[0].type, "oauth")
+  assert.equal(plugin.auth.methods.at(-1).type, "oauth")
   assert.equal(typeof plugin.auth.checkin, "function")
   assert.equal(plugin.auth.maxConcurrency, x.ACCOUNT_MAX_INFLIGHT)
 
@@ -1583,6 +1701,52 @@ test("a spent refresh token marks the sign-in and stops calling the vendor", asy
   assert.equal(chats, 1)
 })
 
+
+test("a body APIG can't sign is a 413 that keeps the sign-in, never a renewal (#1121)", async () => {
+  const cred = await makeCred()
+  const tooLarge = '{"error_msg":"Incorrect IAM authentication information: calc ak sk signature fail:body too large","error_code":"APIG.0301","request_id":"r"}'
+  let chats = 0
+  let renewals = 0
+  const fetcher = async (url) => {
+    if (String(url) === x.STS_TOKEN_ENDPOINT) {
+      renewals += 1
+      return new Response("{}", { status: 500 })
+    }
+    chats += 1
+    return new Response(tooLarge, { status: 401 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  // under the 12 MB the plugin checks, the gateway's own answer is read
+  const big = "x".repeat(2 * 1024 * 1024)
+  for (const send of [
+    () => loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: big }] })),
+    () => loaded.fetch("https://snap-access.cn-north-4.myhuaweicloud.com/api/v1/embeddings", { method: "POST", body: JSON.stringify({ input: big }) }),
+  ]) {
+    const res = await send()
+    assert.equal(res.status, 413)
+    assert.equal(res.headers.get("x-magpie-sign-in"), null)
+    assert.match(await res.text(), /12 MB/)
+  }
+  assert.equal(chats, 2)
+  assert.equal(renewals, 0, "a body too large is not a stale credential")
+  // the sign-in is still usable: the next request goes out
+  await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [] }))
+  assert.equal(chats, 3)
+})
+
+test("a body over 12 MB is refused before it is signed or sent (#1121)", async () => {
+  const cred = await makeCred()
+  let calls = 0
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => { calls += 1; return new Response("{}") } })
+  const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+  const image = "data:image/png;base64," + "A".repeat(13 * 1024 * 1024)
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: image } }] }] }))
+  assert.equal(res.status, 413)
+  assert.equal(res.headers.get("x-magpie-sign-in"), null)
+  assert.match(await res.text(), /13\.0 MB/)
+  assert.equal(calls, 0)
+})
 test("a 403 is a sign-in the account no longer has, on chats and other requests alike", async () => {
   const cred = await makeCred()
   const denied = '{"error_code":"APIG.0305","error_msg":"access denied"}'
@@ -1606,7 +1770,11 @@ test("a 403 is a sign-in the account no longer has, on chats and other requests 
 })
 
 test("isSignedHostUrl takes only https URLs on the two hosts the plugin calls, by name", () => {
-  assert.deepEqual([...x.SIGNED_HOSTS].sort(), ["opengw.developer.huaweicloud.com", "snap-access.cn-north-4.myhuaweicloud.com"])
+  assert.deepEqual([...x.SIGNED_HOSTS].sort(), [
+    "opengw.developer.huaweicloud.com",
+    "snap-access.ap-southeast-1.myhuaweicloud.com",
+    "snap-access.cn-north-4.myhuaweicloud.com",
+  ])
   assert.equal(x.isSignedHostUrl(CHAT_URL), true)
   assert.equal(x.isSignedHostUrl(x.BENEFIT_CLAIM_URL), true)
   assert.equal(x.isSignedHostUrl("https://SNAP-ACCESS.cn-north-4.myhuaweicloud.com/api/v2/chat/completions"), true, "a hostname has no case")
@@ -1917,6 +2085,19 @@ test("auth.refresh exchanges the refresh token for fresh credentials", async () 
   assert.equal(next.expires, Date.parse("2031-01-01T00:00:00Z"))
 })
 
+test("a refresh keeps an international credential on its station (#1090)", async () => {
+  const cred = { ...(await makeCred()), station: "international" }
+  const fetcher = async () => new Response(JSON.stringify({
+    credentials: { access_key_id: "AK2", secret_access_key: "SK2", security_token: "ST2", expiration: "2031-01-01T00:00:00Z" },
+    refresh_token: "R2",
+  }), { status: 200 })
+  const next = await x.refreshCredential(cred, fetcher)
+  assert.equal(next.access_key_id, "AK2")
+  assert.equal(next.station, "international")
+  const mainland = await x.refreshCredential(await makeCred(), fetcher)
+  assert.equal("station" in mainland, false)
+})
+
 /** Check a token request's DPoP proof: it verifies against the stored key, for POST to the STS endpoint. */
 async function assertDpopFor(proof, publicKeyJwk) {
   const [h, p, s] = proof.split(".")
@@ -2105,6 +2286,63 @@ test("a benefit the account can't claim: no free models, and no benefit header",
   assert.deepEqual(sent, [null])
 })
 
+for (const status of [200, 400]) {
+  test(`gateway/config's "group not found" (HTTP ${status}) is an account with no free models, not an unread list (#905)`, async () => {
+    const cred = await makeCred()
+    const list = modelsFetcher([])
+    const sent = []
+    const fetcher = async (url, init) => {
+      if (String(url) === CHAT_URL) {
+        sent.push(new Headers(init.headers).get("maas_type"))
+        return sseResponse(okStream)
+      }
+      if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) {
+        return new Response('{"error_code":"4000","error_msg":"invalid channel, group not found","result":null}', { status })
+      }
+      return list(url, init)
+    }
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher })
+    await plugin.provider.models({ models: {} }, { auth: makeAuth(cred) })
+    const loaded = await plugin.auth.loader(async () => makeAuth(cred))
+    await (await loaded.fetch(CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }))).text()
+    // The fallback list would have sent it as a free model.
+    assert.deepEqual(sent, [null])
+  })
+}
+
+test("a gateway/config that fails to answer keeps the fallback list", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set() }
+  const fetcher = async (url, init) => {
+    if (String(url) === x.OPENGW_GATEWAY_CONFIG_URL) return new Response("busy", { status: 503 })
+    return modelsFetcher([])(url, init)
+  }
+  await x.fetchRemoteModels(signedCred, fetcher, state)
+  assert.equal(state.benefit, null)
+  assert.equal(x.isBenefitModel("glm-5.3-flash", state), true)
+})
+
+test("InferHub.APIG.0101.404 to the benefit header: sent again as the plain model (#905)", async () => {
+  const state = { benefit: null, regular: null, noBenefit: new Set(), claim: { day: x.beijingDay(), ok: false, at: Date.now() }, claiming: null }
+  const sent = []
+  const fetcher = async (url, init) => {
+    const benefit = new Headers(init.headers).get("maas_type")
+    sent.push(benefit)
+    // The reporter's bytes: a 200 whose first frame is the error.
+    return benefit
+      ? sseResponse('data:{"text":"[DONE]","error_code":"InferHub.APIG.0101.404","error_msg":"The API does not exist or has not been published in the environment"}\n\n')
+      : sseResponse(okStream)
+  }
+  const context = { ...(await x.accountSessionIds(signedCred)), gate: x.createConcurrencyGate(3), state, fetcher }
+  const res = await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).choices[0].message.content, "你好")
+  assert.deepEqual(sent, ["benefit", null])
+  // And the next request goes without it from the start.
+  sent.length = 0
+  await (await x.signedFetch(signedCred, CHAT_URL, chatInit({ model: "glm-5.3-flash", messages: [] }), context)).text()
+  assert.deepEqual(sent, [null])
+})
+
 test("benefit not found on a day not yet claimed claims it, and sends the free model again", async () => {
   const state = {
     benefit: new Set(["deepseek-v4.1-flash"]), regular: new Set(["deepseek-v4.1-flash"]), noBenefit: new Set(),
@@ -2256,6 +2494,115 @@ test("checkin claims and confirms the daily benefit the way the IDE does", async
   assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 1)
 })
 
+test("checkin claims both daily check-ins, and leaves a contest's one-time sign-up gift alone", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 42, type: "USER_LOGIN", title: "Skill创新赛报名礼", claimable: true, status: "ELIGIBLE", benefitAmount: 2000 },
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+    { campaignId: 4, type: "NEW_USER_REGISTER", claimable: false, status: "CONSUMED" },
+  ]
+  const calls = []
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    calls.push({ url: u, method: init.method, body })
+    const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId + 1000, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+
+  const { grants, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 1100, message: "+1100 积分" })
+  assert.deepEqual(grants.map((g) => [g.campaignId, g.credit]), [[40, 1000], [34, 100]])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CLAIM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(calls.filter((c) => c.url === x.OPS_CONFIRM_URL).map((c) => c.body.campaignId), [40, 34])
+  assert.deepEqual(
+    [items[0].claimable, items[0].status],
+    [true, "ELIGIBLE"],
+    "the one-time sign-up gift is not claimed",
+  )
+
+  // Later the same day: both are in, and neither is claimed again.
+  assert.equal((await x.dailyCheckin(cred, fetcher)).outcome, "done")
+  assert.equal(calls.filter((c) => c.url === x.OPS_CLAIM_URL).length, 2)
+})
+
+test("a contest check-in the account has not joined is skipped, and the official one still claims", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: false, status: "ENTRY", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [34], "the contest campaign is not claimed")
+})
+
+test("a contest check-in refused for not having signed up is ineligible, not a failed day", async () => {
+  const cred = await makeCred()
+  const items = [
+    { campaignId: 40, type: "USER_LOGIN", title: "Skill创新赛每日签到礼", claimable: true, status: "ELIGIBLE", benefitAmount: 1000 },
+    { campaignId: 34, type: "USER_LOGIN", title: "每日签到领100积分", claimable: true, status: "ELIGIBLE", benefitAmount: 100 },
+  ]
+  const claims = []
+  const ok = (data) => new Response(JSON.stringify({ code: 0, message: "ok", data }), { status: 200 })
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    const body = init.body ? JSON.parse(new TextDecoder().decode(init.body)) : undefined
+    if (u === x.OPS_DELIVERY_URL) return ok({ items })
+    if (u === x.OPS_CLAIM_URL) {
+      claims.push(body.campaignId)
+      if (body.campaignId === 40) {
+        return new Response(JSON.stringify({ code: 40001, message: "该活动类型需要先通过触发接口激活" }), { status: 200 })
+      }
+      const item = items.find((it) => it.campaignId === body.campaignId)
+      item.claimable = false
+      item.status = "CLAIMED"
+      return ok({ id: body.campaignId, benefitAmount: item.benefitAmount })
+    }
+    if (u === x.OPS_CONFIRM_URL) {
+      items.find((it) => it.campaignId === body.campaignId).status = "CONFIRMED"
+      return ok(null)
+    }
+    throw new Error(`unexpected ${u}`)
+  }
+  const { grant, ...r } = await x.dailyCheckin(cred, fetcher)
+  assert.deepEqual(r, { outcome: "claimed", credit: 100, message: "+100 积分" })
+  assert.equal(grant.campaignId, 34)
+  assert.deepEqual(claims, [40, 34])
+})
+
 test("a claimed check-in is kept, and the usage card says when those credits run out", async () => {
   const cred = await makeCred()
   const ledgerPath = path.join(ledgerDir, "integrated.json")
@@ -2265,7 +2612,7 @@ test("a claimed check-in is kept, and the usage card says when those credits run
       return new Response(JSON.stringify({
         metrics: [
           { name: "usageTotalPackageCredit", package_credit_amount: 6500, package_credit_remain: 6500 },
-          { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 1000 },
+          { name: "usageBonusPackageCredit", package_credit_amount: 1000, package_credit_remain: 1000, package_credit_expiring_amount: 1000 },
         ],
       }), { status: 200 })
     }
@@ -2409,7 +2756,7 @@ test("a confirm that failed is made by the next check-in, in another magpie too,
   }
   assert.equal((await checkin()).outcome, "failed")
   const kept = JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed
-  assert.deepEqual(Object.values(kept).map((v) => [v.campaignId, v.day]), [[1, x.beijingDay()]])
+  assert.deepEqual(Object.values(kept).map((v) => [v.claims?.[0]?.campaignId, v.day]), [[1, x.beijingDay()]])
   assert.deepEqual(await checkin(), { outcome: "claimed", credit: 1000, message: "+1000 积分" })
   assert.equal(confirms, 2)
   assert.deepEqual(JSON.parse(fs.readFileSync(ledgerPath, "utf8"))._unconfirmed, {}, "confirmed, so forgotten")
@@ -2806,7 +3153,7 @@ test("an account signed in through officeace-auth is read as it is, no second si
   const usage = await plugin.auth.usage(async () => record)
   assert.equal(usage.plan, "个人体验版")
   assert.equal(usage.user, "189****8051")
-  assert.equal(usage.windows.length, 4)
+  assert.equal(usage.windows.length, 5)
   assert.match(
     seen[0].headers.get("authorization"),
     /^V11-HMAC-SHA256 Credential=HSTAOZ3JN3WWYF3L\/\d{8}\/cn-southwest-2\/apic, SignedHeaders=/,
@@ -2860,10 +3207,19 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
   const { windows } = await plugin.auth.usage(async () => record)
 
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "4940 / 8500")
+  assert.equal(total.amount, 3560)
+  assert.equal(total.limit, 8500)
+  assert.equal(total.runsOutAt, "2031-01-01T00:00:00.000Z")
+  assert.equal(total.runsOut, 4440)
+  assert.equal("aside" in total, false)
+
   const trial = windows.find((w) => w.name.startsWith("个人体验版"))
   assert.equal(trial.display, "500 / 500")
   assert.equal(trial.amount, 0)
   assert.equal(trial.limit, 500)
+  assert.equal(trial.aside, true)
   // a `.trial` sku carries no expiry: the window must not invent one
   assert.equal("resetsAt" in trial, false)
 
@@ -2873,6 +3229,7 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   assert.equal(plan.limit, 4000)
   assert.equal(plan.used, 45)
   assert.equal(plan.resetsAt, "2031-01-01T00:00:00.000Z")
+  assert.equal(plan.aside, true)
 
   const old = windows.find((w) => w.name.startsWith("旧套餐"))
   assert.equal(old.aside, true)
@@ -2884,6 +3241,179 @@ test("usage reads plan, trial and bonus buckets apart, and folds an expired one 
   const bonus = windows.find((w) => w.name.startsWith("新用户专属福利"))
   assert.equal(bonus.display, "2220 / 4000")
   assert.equal(bonus.used, 45)
+  assert.equal(bonus.aside, true)
+})
+
+test("a spent OfficeAce daily bonus does not pause credits left in other buckets", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [{
+      sku_code: "officeace_personal_trial.trial",
+      sku_name: "个人体验版",
+      quotas: [{ sku_attr_code: "officeace_points", sku_value: 500, current_value: 0, expired_time: "" }],
+    }],
+    bonus_skus: [
+      { activity_name: "新用户专属福利", points: 4000, current_value: 294.78, expired_time: "2031-02-05T23:25:23.515Z" },
+      { activity_name: "每日签到有礼", points: 100, current_value: 100, expired_time: "2030-11-11T15:59:59Z" },
+    ],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "4205.22 / 4600")
+  assert.equal(total.amount, 394.78)
+  assert.equal(total.limit, 4600)
+  assert.equal(total.runsOutAt, "2031-02-05T23:25:23.515Z")
+  assert.equal(total.runsOut, 3705.22)
+  assert.equal("aside" in total, false)
+
+  const daily = windows.find((w) => w.name.startsWith("每日签到有礼"))
+  assert.equal(daily.display, "0 / 100")
+  assert.equal(daily.amount, 100)
+  assert.equal(daily.limit, 100)
+  assert.equal(daily.aside, true)
+  assert.equal(windows.filter((w) => !w.aside).length, 1)
+})
+
+test("the aggregate expires with the soonest funded OfficeAce bonus", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [],
+    bonus_skus: [
+      { activity_name: "Bonus A", points: 4000, current_value: 100, expired_time: "2031-02-05T23:25:23.515Z" },
+      { activity_name: "Bonus B", points: 60, current_value: 10, expired_time: "2030-11-11T15:59:59Z" },
+      { activity_name: "Bonus C", points: 40, current_value: 0, expired_time: "2030-11-11T15:59:59Z" },
+    ],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "3990 / 4100")
+  assert.equal(total.amount, 110)
+  assert.equal(total.runsOutAt, "2030-11-11T15:59:59.000Z")
+  assert.equal(total.runsOut, 90)
+})
+
+test("OfficeAce aggregate excludes an expired bonus", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [],
+    bonus_skus: [
+      { activity_name: "Active", points: 100, current_value: 10, expired_time: "2031-01-01T00:00:00Z" },
+      { activity_name: "Expired", points: 1000, current_value: 0, expired_time: "2020-01-01T00:00:00Z" },
+    ],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "90 / 100")
+  assert.equal(total.amount, 10)
+  assert.equal(total.limit, 100)
+  const expired = windows.find((w) => w.name.startsWith("Expired"))
+  assert.equal(expired.aside, true)
+  assert.equal(expired.amount, undefined)
+  assert.equal(expired.limit, undefined)
+})
+
+test("OfficeAce aggregate rounds a floating-point sum to two decimals", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [],
+    bonus_skus: [
+      { activity_name: "A", points: 400, current_value: 294.67, expired_time: "" },
+      { activity_name: "B", points: 200, current_value: 100.11, expired_time: "" },
+    ],
+  }
+  assert.notEqual(body.bonus_skus[0].current_value + body.bonus_skus[1].current_value, 394.78)
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "205.22 / 600")
+  assert.equal(total.amount, 394.78)
+  const detail = windows.find((w) => w.name.startsWith("A"))
+  assert.equal("resetsAt" in detail, false)
+})
+
+test("OfficeAce caps overspent buckets and their aggregate at the available credit", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [{
+      sku_code: "officeace_personal_monthly",
+      sku_name: "Plan",
+      quotas: [{ sku_attr_code: "officeace_points", sku_value: 10, current_value: 11, expired_time: "" }],
+    }],
+    bonus_skus: [{ activity_name: "Bonus", points: 20, current_value: 21, expired_time: "" }],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "0 / 30")
+  assert.equal(total.amount, 30)
+  assert.equal(total.limit, 30)
+  assert.equal(total.used, 100)
+  assert.equal(windows.find((w) => w.name.startsWith("Plan")).amount, 10)
+  assert.equal(windows.find((w) => w.name.startsWith("Bonus")).amount, 20)
+})
+
+test("an OfficeAce account with only expired buckets keeps a used-up routing total", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [],
+    bonus_skus: [{ activity_name: "Expired", points: 100, current_value: 0, expired_time: "2020-01-01T00:00:00Z" }],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "0 / 100")
+  assert.equal(total.amount, 100)
+  assert.equal(total.limit, 100)
+  assert.equal(total.used, 100)
+  assert.equal("aside" in total, false)
+  assert.equal(windows.filter((w) => !w.aside).length, 1)
+})
+
+test("a sub-half-cent OfficeAce total stays finite and routable", async () => {
+  const { record } = await officeAceAuthRecord()
+  const body = {
+    skus: [],
+    bonus_skus: [{ activity_name: "Tiny", points: 0.004, current_value: 0.002, expired_time: "" }],
+  }
+  const { fetcher } = oaFetcher((url) =>
+    url.includes("/v1/subscription") ? new Response(JSON.stringify(body), { status: 200 }) : undefined,
+  )
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const { windows } = await plugin.auth.usage(async () => record)
+
+  const total = windows.find((w) => w.name.startsWith("总积分"))
+  assert.equal(total.display, "0.002 / 0.004")
+  assert.equal(total.amount, 0.002)
+  assert.equal(total.limit, 0.004)
+  assert.equal(total.used, 50)
+  assert.equal(Number.isFinite(total.used), true)
 })
 
 test("a failed usage read is said, never shown as an empty account", async () => {
@@ -2988,16 +3518,51 @@ test("a failed rates read keeps the last good table; one that never read it fall
   const after = await plugin.provider.models(cfg.provider.officeace, { auth: first.record })
   assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort())
 
-  // an account that never read a rates table gets the static list, never the registry
+  // an account that never read a rates table gets the catalog cut to the
+  // known-callable ids: never the registry, and never a fallback id the
+  // catalog has dropped (#1197)
   const fresh = await officeAceAuthRecord({}, "iam::d1:user:hw0201")
-  const { fetcher: downFetcher } = oaFetcher((url) =>
+  const { fetcher: downFetcher, seen: downSeen } = oaFetcher((url) =>
     url.endsWith("/v2/models") ? new Response(JSON.stringify(oaCatalogBody()), { status: 200 }) : undefined,
   )
   const other = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: downFetcher })
   const cfg2 = { provider: {} }
   await other.config(cfg2)
   const fallback = await other.provider.models(cfg2.provider.officeace, { auth: fresh.record })
-  assert.deepEqual(Object.keys(fallback).sort(), Object.keys(oa.OA_FALLBACK_MODELS).sort())
+  assert.deepEqual(Object.keys(fallback).sort(), ["glm-5.3", "kimi-k3"])
+  for (const id of Object.keys(fallback)) assert.ok(Object.hasOwn(oa.OA_FALLBACK_MODELS, id))
+  // with no table to keep, a failed read was tried a second time
+  assert.ok(downSeen.filter((c) => c.url.includes("/v1/model-token-rates")).length >= 2)
+})
+
+test("a rates read that fails once at start-up is tried again, and the account gets its own list (#1197)", async () => {
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0202")
+  let ratesCalls = 0
+  const { fetcher } = oaFetcher((url) => {
+    if (url.endsWith("/v2/models")) return new Response(JSON.stringify(oaCatalogBody()), { status: 200 })
+    if (url.includes("/v1/model-token-rates")) {
+      ratesCalls++
+      return ratesCalls === 1 ? new Response("blip", { status: 502 }) : new Response(JSON.stringify(oaRatesBody()), { status: 200 })
+    }
+    return undefined
+  })
+  // one read, as the catalog makes it: the blip is tried again inside it
+  const rates = await oa.fetchOfficeAceTokenRates(oa.officeAceCredentialOf(record), fetcher)
+  assert.equal(rates.size, 5)
+  assert.equal(ratesCalls, 2)
+  // and the listing that follows is the account's own, from the table now held
+  const plugin = await OfficeAceAuthPlugin({ client: oaClient() }, { fetch: fetcher })
+  const cfg = { provider: {} }
+  await plugin.config(cfg)
+  const models = await plugin.provider.models(cfg.provider.officeace, { auth: record })
+  assert.deepEqual(Object.keys(models).sort(), ["deepseek-v4.1-flash-0930", "glm-5.3", "kimi-k3"])
+  assert.equal(ratesCalls, 2)
+})
+
+test("the fallback list holds no id OfficeAce has dropped (#1197)", () => {
+  for (const id of ["deepseek-v4", "deepseek-v4.1", "qwen3-30b", "qwen3-32b", "kimi-k2.6", "pangu-2.0-pro", "pangu-2.0-flash"]) {
+    assert.equal(Object.hasOwn(oa.OA_FALLBACK_MODELS, id), false, id)
+  }
 })
 
 test("before a sign-in the OfficeAce provider still lists its models", async () => {
@@ -3135,6 +3700,47 @@ test("a CodeArts sign-in writes only its own record", async () => {
   // No OfficeAce record: a Huawei Cloud refresh token is spent once, so a
   // second record holding it would sign this card out at its next renewal.
   assert.equal(calls.some((c) => c.path?.id?.startsWith("officeace")), false, "no record for the other card")
+})
+
+test("the international browser sign-in gives an international credential, with no mainland reads (#1090)", async () => {
+  oa.seenProviderAccounts.clear()
+  oa.renewalGates.clear()
+  const calls = []
+  const asked = []
+  const fetcher = async (url) => {
+    asked.push(String(url))
+    if (String(url) === x.STS_TOKEN_ENDPOINT) return new Response(stsBody("AK-INTL", oaRefreshToken()), { status: 200 })
+    return new Response("{}", { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: oaClient(calls) }, { fetch: fetcher })
+  const method = plugin.auth.methods.at(-1)
+  assert.equal(method.label, "Sign in with Huawei Cloud (International)")
+  assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the mainland one keeps its place")
+  const a = await method.authorize()
+  const service = new URL(new URL(a.url).searchParams.get("service"))
+  const port = service.searchParams.get("port")
+  const done = a.callback()
+  const res = await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  assert.match(res.headers.get("location"), /^https:\/\/codearts\.ap-southeast-1\.huaweicloud\.com\/portal\/login\?login_succeed=true/)
+  const out = await done
+  assert.equal(out.type, "success")
+  const cred = JSON.parse(out.access)
+  assert.equal(cred.access_key_id, "AK-INTL")
+  assert.equal(cred.station, "international")
+  assert.equal(x.stationOf(cred).id, "international")
+  assert.equal(asked.some((u) => u.includes("iam.cn-north-4")), false, "no mainland IAM read")
+  assert.equal(asked.some((u) => u.includes("client-permission-validate")), false, "no OfficeAce MaaS read")
+})
+
+test("a mainland browser sign-in's credential carries no station, as before (#1090)", async () => {
+  const flow = await x.startOAuthFlow(async (url) => String(url) === x.STS_TOKEN_ENDPOINT
+    ? new Response(stsBody("AK-CN", oaRefreshToken()), { status: 200 })
+    : new Response("{}", { status: 200 }))
+  const port = new URL(flow.loginUrl).searchParams.get("port")
+  await fetch(`http://127.0.0.1:${port}${x.REDIRECT_PATH}?code=C1`, { redirect: "manual" })
+  const out = await flow.result
+  assert.equal("station" in JSON.parse(out.access), false)
+  await flow.close()
 })
 
 test("the OfficeAce sign-in writes only its own record", async () => {
@@ -3498,11 +4104,13 @@ test("a renewal never invalidates the other card's record", async () => {
   oa.refreshLineages.clear()
 
   const ca2 = await CodeArtsAuthPlugin({ client }, { fetch: ca.fetcher, ledgerPath })
+  assert.equal(ca2.auth.rotating, true)
   const renewed = await ca2.auth.refresh(store.get(codeartsKey))
   assert.equal(accessOf(renewed), "AK-1CA")
 
   // ... and the other card's record still renews with its own token
   const of = await OfficeAceAuthPlugin({ client }, { fetch: oaSts.fetcher, ledgerPath })
+  assert.equal(of.auth.rotating, true)
   const again = await of.auth.refresh(store.get(officeaceKey))
   assert.equal(accessOf(again), "AK-1OA")
 })
@@ -3816,4 +4424,510 @@ test("a removed OfficeAce record is not written back when no restart separates t
   const ca2 = await CodeArtsAuthPlugin({ client }, { fetch: caSts.fetcher, ledgerPath })
   await ca2.auth.refresh(store.get(keyOf("codearts")))
   assert.equal(store.has(keyOf("officeace")), false, "a single removed record must stay removed without a restart")
+})
+
+// plugins#930: a streamed reply folded into one for a client that asked for
+// it whole. Two calls with their own ids at one index are two calls, not
+// one with {"a"}{"b"} arguments; fragments with no id, or the same id, go on
+// with the open call.
+test("folding a stream keeps two ids at one index as two calls", () => {
+  const ev = (call) => ({ id: "c1", model: "GLM-5.2", choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: null }] })
+  const A = { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"key":"A"}' } }
+  const B = (index) => ({ index, id: "call_fixture_B", type: "function", function: { name: "fixture_beta", arguments: '{"key":"B"}' } })
+  const fold = (calls) => x.completionFromChunks([...calls.map(ev), { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }])
+    .choices[0].message.tool_calls.map((c) => [c.id, c.function.name, c.function.arguments])
+  const both = [["call_fixture_A", "fixture_alpha", '{"key":"A"}'], ["call_fixture_B", "fixture_beta", '{"key":"B"}']]
+  assert.deepEqual(fold([A, B(0)]), both)
+  assert.deepEqual(fold([A, B(1)]), both)
+  assert.deepEqual(fold([
+    { index: 0, id: "call_fixture_A", type: "function", function: { name: "fixture_alpha", arguments: '{"ke' } },
+    { index: 0, function: { arguments: 'y":' } },
+    { index: 0, id: "call_fixture_A", function: { arguments: '"A"}' } },
+  ]), [["call_fixture_A", "fixture_alpha", '{"key":"A"}']])
+})
+
+// ---- the international station and the CodeArts Agent sign-in (#998) -------
+
+const INTL = "https://snap-access.ap-southeast-1.myhuaweicloud.com"
+const intlCred = { access_key_id: "IAK", secret_access_key: "ISK", security_token: "IST", domain_id: "dom1", station: "international", source: x.IDE_SOURCE, session_id: "s1" }
+
+test("the international snap-access host is signed; lookalikes and other regions are not", () => {
+  assert.equal(x.isSignedHostUrl(`${INTL}/snap-manager/v1/statistics/plugin`), true)
+  assert.equal(x.isSignedHostUrl(`${INTL}/snap-manager/v1/statistics/plugin`, intlCred), true)
+  for (const other of [
+    "https://snap-access.ap-southeast-1.myhuaweicloud.com.evil.com/api",
+    "https://evil-snap-access.ap-southeast-1.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-2.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-3.myhuaweicloud.com/api",
+    "https://snap-access.af-south-1.myhuaweicloud.com/api",
+    "https://console-intl.huaweicloud.com/devcloud/",
+    "http://snap-access.ap-southeast-1.myhuaweicloud.com/api",
+    "https://snap-access.ap-southeast-1.myhuaweicloud.com:8443/api",
+  ]) {
+    assert.equal(x.isSignedHostUrl(other), false, other)
+    assert.equal(x.isSignedHostUrl(other, intlCred), false, other)
+  }
+})
+
+test("a credential is signed only for its own station's hosts", async () => {
+  // international: not the mainland's snap-access, nor opengw
+  for (const url of [CHAT_URL, x.BENEFIT_CLAIM_URL, x.OPENGW_GATEWAY_CONFIG_URL]) {
+    assert.equal(x.isSignedHostUrl(url, intlCred), false, url)
+    await assert.rejects(x.signFor(intlCred, "GET", url, new Uint8Array()), /refusing to sign/)
+  }
+  // mainland (no station said): not the international host
+  assert.equal(x.isSignedHostUrl(`${INTL}/api/v2/chat/completions`, signedCred), false)
+  await assert.rejects(x.signFor(signedCred, "GET", `${INTL}/x`, new Uint8Array()), /refusing to sign a request to snap-access\.ap-southeast-1/)
+  const ok = await x.signFor(intlCred, "GET", `${INTL}/x`, new Uint8Array())
+  assert.match(ok.get("authorization"), /^SDK-HMAC-SHA256 Access=IAK,/)
+})
+
+test("onStation takes the plugin's mainland snap URLs to the credential's station, and nothing else", () => {
+  assert.equal(x.onStation(x.SNAP_STATISTICS_URL, intlCred), `${INTL}/snap-manager/v1/statistics/plugin`)
+  assert.equal(x.onStation(CHAT_URL, intlCred), `${INTL}/api/v2/chat/completions`)
+  assert.equal(x.onStation(CHAT_URL, signedCred), CHAT_URL)
+  // a lookalike stays itself (and is then refused)
+  const look = "https://snap-access.cn-north-4.myhuaweicloud.com.evil.com/api"
+  assert.equal(x.onStation(look, intlCred), look)
+  assert.equal(x.onStation(x.BENEFIT_CLAIM_URL, intlCred), x.BENEFIT_CLAIM_URL)
+  assert.equal(x.chatBaseOf(intlCred), `${INTL}/api/v2`)
+  assert.equal(x.chatBaseOf(signedCred), x.CHAT_API_BASE)
+  assert.equal(x.stationOf({ station: "elsewhere" }), x.STATIONS.mainland)
+})
+
+// The issue's own statistics/plugin answer, as the international host gave it.
+const intlStatistics = {
+  metrics: [
+    { name: "usageDataChatMessages", value: -1, usage_token_num: 0, package_token_amount: 0, show: false },
+    { name: "usageTokenChatMessages", value: 0, usage_token_num: 131, package_token_amount: 5000000, show: true },
+  ],
+  start_date: "2026-11-11",
+  end_date: "2026-12-12",
+  package: {
+    spec_code: "codearts.agent.trial",
+    status: "normal",
+    package_name_en: "Free",
+    package_name_cn: "体验版",
+    package_url: "https://console-intl.huaweicloud.com/devcloud/?region=ap-southeast-1&locale=zh-cn#/change-new/apply?",
+    is_token_package: true,
+    is_credit_package: false,
+  },
+  is_teadmin: true,
+  is_white_list: false,
+}
+
+test("usageFromStatistics: a token package is a token window, used of package_token_amount, to end_date", () => {
+  const u = x.usageFromStatistics(intlStatistics, undefined, { station: x.STATIONS.international, batches: [] })
+  assert.equal(u.plan, "Free")
+  assert.equal(u.signIn, "kept")
+  assert.equal(u.error, undefined)
+  assert.equal(u.windows.length, 1)
+  const [w] = u.windows
+  assert.equal(w.name, "Tokens")
+  assert.equal(w.amount, 131)
+  assert.equal(w.limit, 5000000)
+  assert.equal(w.unit, "tokens")
+  assert.equal(w.display, "131 / 5.0M")
+  assert.ok(Math.abs(w.used - 0.00262) < 1e-9)
+  assert.equal(w.resetsAt, "2026-12-11T16:00:00.000Z")
+  assert.equal(w.span, 31 * 86400)
+  assert.equal(w.aside, undefined, "the token allowance gates the account")
+  // the mainland names the same plan in Chinese
+  assert.equal(x.usageFromStatistics(intlStatistics, undefined, { batches: [] }).plan, "体验版")
+  // not a token package: no token window
+  const credit = { ...intlStatistics, package: { ...intlStatistics.package, is_token_package: false } }
+  assert.equal(x.usageFromStatistics(credit, undefined, { batches: [] }).windows.length, 0)
+  // a spent allowance is 100%
+  const spent = { ...intlStatistics, metrics: [{ name: "usageTokenChatMessages", usage_token_num: 6e6, package_token_amount: 5e6 }] }
+  assert.equal(x.usageFromStatistics(spent, undefined, { station: x.STATIONS.international, batches: [] }).windows[0].used, 100)
+})
+
+// One statement, finalized: Bun keeps a file open while a statement lives.
+function sqlRun(db, sql, ...params) {
+  const stmt = db.prepare(sql)
+  try {
+    stmt.run(...params)
+  } finally {
+    stmt.finalize?.()
+  }
+}
+
+// A state.vscdb as the CodeArts Agent writes it, in a folder of the test's own.
+async function ideFixture({ value, wal = false, raw } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ide-test-"))
+  test.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, "state.vscdb")
+  if (raw !== undefined) {
+    fs.writeFileSync(file, raw)
+    return { file, dir }
+  }
+  const db = await x.openSqlite(file)
+  if (wal) db.exec("PRAGMA journal_mode=WAL")
+  db.exec("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", "workbench.other", "{}")
+  if (value !== undefined) sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
+  // with WAL the connection stays open, so the row is still only in the -wal
+  if (!wal) db.close()
+  return { file, dir, db }
+}
+
+const ideValue = (origin, { asString = false } = {}) => JSON.stringify({ userInfoKey: { originData: asString ? JSON.stringify(origin) : origin, other: 1 } })
+const ideOrigin = (over = {}) => ({
+  accessKey: "IDEAK1", secretKey: "IDESECRET1", securityToken: "IDETOKEN1", domainId: "dom1",
+  expiresAt: Date.parse("2030-01-01T00:00:00Z"), loginType: "codearts", stationType: "international", ...over,
+})
+const SECRETS = /IDEAK|IDESECRET|IDETOKEN/
+
+test("ideStatePath: each system's own place for the CodeArts Agent's state.vscdb", () => {
+  assert.equal(
+    x.ideStatePath("win32", { APPDATA: "C:\\Users\\a\\AppData\\Roaming" }, "C:\\Users\\a"),
+    "C:\\Users\\a\\AppData\\Roaming\\codearts-agent\\User\\globalStorage\\state.vscdb",
+  )
+  assert.equal(x.ideStatePath("win32", {}, "C:\\Users\\a"), "C:\\Users\\a\\AppData\\Roaming\\codearts-agent\\User\\globalStorage\\state.vscdb")
+  assert.equal(x.ideStatePath("darwin", { XDG_CONFIG_HOME: "/x" }, "/Users/a"), "/Users/a/Library/Application Support/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", {}, "/home/a"), "/home/a/.config/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", { XDG_CONFIG_HOME: "/xdg" }, "/home/a"), "/xdg/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", { XDG_CONFIG_HOME: "rel" }, "/home/a"), "/home/a/.config/codearts-agent/User/globalStorage/state.vscdb")
+  assert.equal(x.ideStatePath("linux", {}, ""), "")
+  assert.equal(x.ideStatePath("win32", {}, ""), "")
+})
+
+test("ideStatePath on this system is where this system keeps it", () => {
+  const got = x.ideStatePath()
+  if (process.platform === "win32") {
+    assert.equal(got, path.join(process.env.APPDATA, "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  } else if (process.platform === "darwin") {
+    assert.equal(got, path.join(os.homedir(), "Library", "Application Support", "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  } else {
+    const xdg = process.env.XDG_CONFIG_HOME
+    const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".config")
+    assert.equal(got, path.join(base, "codearts-agent", "User", "globalStorage", "state.vscdb"))
+  }
+})
+
+test("readIdeCredential reads the IDE's sign-in from a copy, never touching its file", async () => {
+  for (const asString of [false, true]) {
+    const { file, dir } = await ideFixture({ value: ideValue(ideOrigin(), { asString }) })
+    const before = fs.readFileSync(file)
+    const mtime = fs.statSync(file).mtimeMs
+    const r = await x.readIdeCredential(file)
+    assert.deepEqual(r.cred, {
+      access_key_id: "IDEAK1", secret_access_key: "IDESECRET1", security_token: "IDETOKEN1",
+      expires_at: "2030-01-01T00:00:00.000Z", domain_id: "dom1", station: "international", source: x.IDE_SOURCE,
+    })
+    assert.deepEqual(fs.readFileSync(file), before, "the IDE's file is unchanged")
+    assert.equal(fs.statSync(file).mtimeMs, mtime)
+    assert.deepEqual(fs.readdirSync(dir), ["state.vscdb"], "no journal, -wal or -shm made beside it")
+  }
+  // a value stored as bytes, and a mainland one (no stationType)
+  const { file } = await ideFixture({ value: Buffer.from(ideValue(ideOrigin({ stationType: undefined, expiresAt: "2030-01-01T00:00:00Z" }))) })
+  const r = await x.readIdeCredential(file)
+  assert.equal(r.cred.station, "mainland")
+  assert.equal(r.cred.expires_at, "2030-01-01T00:00:00.000Z")
+})
+
+test("readIdeCredential leaves no copy of the sign-in behind, read or not", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "codearts-ide-tmp-"))
+  test.after(() => fs.rmSync(tmp, { recursive: true, force: true }))
+  const good = await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin()) })).file, { tmp })
+  assert.equal(good.cred?.access_key_id, "IDEAK1", good.reason)
+  await x.readIdeCredential((await ideFixture({ raw: "not a database" })).file, { tmp })
+  await x.readIdeCredential((await ideFixture({})).file, { tmp })
+  assert.deepEqual(fs.readdirSync(tmp), [])
+})
+
+test("readIdeCredential reads a row still in the IDE's write-ahead log", async () => {
+  const { file, db } = await ideFixture({ value: ideValue(ideOrigin()), wal: true })
+  try {
+    assert.ok(fs.existsSync(`${file}-wal`))
+    const r = await x.readIdeCredential(file)
+    assert.equal(r.cred?.access_key_id, "IDEAK1")
+  } finally {
+    db.close()
+  }
+})
+
+test("readIdeCredential reads while the IDE holds its database locked: it reads a copy, never the IDE's file", async () => {
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const ide = await x.openSqlite(file)
+  try {
+    ide.exec("BEGIN EXCLUSIVE")
+    const r = await x.readIdeCredential(file)
+    assert.equal(r.cred?.access_key_id, "IDEAK1", r.reason)
+  } finally {
+    ide.exec("ROLLBACK")
+    ide.close()
+  }
+})
+
+test("readIdeCredential: missing, unreadable, half-written or empty is unknown, and says no secret", async () => {
+  const cases = []
+  cases.push(["missing", await x.readIdeCredential(path.join(os.tmpdir(), `no-such-${process.pid}`, "state.vscdb"))])
+  cases.push(["no path", await x.readIdeCredential("")])
+  cases.push(["not sqlite", await x.readIdeCredential((await ideFixture({ raw: "IDEAK1 IDESECRET1 garbage" })).file)])
+  cases.push(["empty file", await x.readIdeCredential((await ideFixture({ raw: "" })).file)])
+  const whole = fs.readFileSync((await ideFixture({ value: ideValue(ideOrigin()) })).file)
+  cases.push(["half-written", await x.readIdeCredential((await ideFixture({ raw: whole.subarray(0, Math.floor(whole.length / 2)) })).file)])
+  cases.push(["a folder", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin()) })).dir)])
+  cases.push(["no row", await x.readIdeCredential((await ideFixture({})).file)])
+  cases.push(["not json", await x.readIdeCredential((await ideFixture({ value: '{"userInfoKey": IDEAK1' })).file)])
+  cases.push(["no token", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ securityToken: "" })) })).file)])
+  cases.push(["no secret", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ secretKey: undefined })) })).file)])
+  cases.push(["no domain", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ domainId: "" })) })).file)])
+  cases.push(["signed out", await x.readIdeCredential((await ideFixture({ value: JSON.stringify({ userInfoKey: {} }) })).file)])
+  cases.push(["unknown station", await x.readIdeCredential((await ideFixture({ value: ideValue(ideOrigin({ stationType: "mars" })) })).file)])
+  for (const [name, r] of cases) {
+    assert.equal(r.cred, undefined, name)
+    assert.equal(typeof r.reason, "string", name)
+    assert.ok(r.reason.length > 0, name)
+    assert.doesNotMatch(r.reason, SECRETS, name)
+  }
+  assert.equal(cases[0][1].missing, true)
+  assert.match(cases.at(-1)[1].reason, /mars/)
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    fs.chmodSync(file, 0o000)
+    try {
+      const r = await x.readIdeCredential(file)
+      assert.equal(r.cred, undefined)
+      assert.match(r.reason, /could not be read/)
+    } finally {
+      fs.chmodSync(file, 0o600)
+    }
+  }
+})
+
+test("the CodeArts Agent sign-in is offered only while its state file is there", async () => {
+  const none = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: path.join(os.tmpdir(), `no-ide-${process.pid}`, "state.vscdb") })
+  assert.equal(none.auth.methods.length, 2)
+  assert.match(none.auth.methods[1].label, /International/)
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { ideStateFile: file })
+  assert.equal(plugin.auth.methods.length, 3)
+  assert.equal(plugin.auth.methods[0].label, "Sign in with Huawei Cloud", "the browser one keeps its place")
+  assert.match(plugin.auth.methods[2].label, /International/)
+  assert.equal(plugin.auth.methods[1].type, "oauth")
+  assert.match(plugin.auth.methods[1].label, /CodeArts Agent/)
+  fs.rmSync(file)
+  assert.equal(plugin.auth.methods.length, 2, "read again each time")
+})
+
+async function ideSignIn(plugin) {
+  const flow = await plugin.auth.methods[1].authorize()
+  assert.equal(flow.url, "")
+  assert.equal(flow.method, "auto")
+  return flow.callback()
+}
+
+test("signing in from the CodeArts Agent: checked with its station, the account its domainId", async () => {
+  const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+  const calls = []
+  const fetcher = async (url, init) => {
+    calls.push({ url: String(url), auth: new Headers(init?.headers).get("authorization") })
+    return new Response(JSON.stringify({ domain_id: "dom1", user_id: "u1", user_name: "alice" }), { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: { auth: { set: async () => assert.fail("nothing is written") } } }, { fetch: fetcher, ideStateFile: file })
+  const r = await ideSignIn(plugin)
+  assert.equal(r.type, "success", r.error)
+  assert.equal(r.accountId, "dom1")
+  assert.equal(r.uid, "dom1")
+  // a host keeps an OAuth sign-in only when "refresh" is in the result (#998)
+  assert.ok("refresh" in r, "kept by the host")
+  assert.equal(r.refresh, "", "no refresh token: renewed from the IDE's file")
+  assert.equal(r.expires, Date.parse("2030-01-01T00:00:00Z"))
+  const cred = JSON.parse(r.access)
+  assert.equal(cred.station, "international")
+  assert.equal(cred.source, x.IDE_SOURCE)
+  assert.equal(cred.user_name, "alice")
+  assert.match(cred.session_id, /^[0-9a-f]{32}$/)
+  assert.deepEqual(calls.map((c) => c.url), [`${INTL}/snap-manager/v1/current/user`])
+  assert.match(calls[0].auth, /^SDK-HMAC-SHA256 Access=IDEAK1,/)
+})
+
+test("signing in from the CodeArts Agent fails, without a secret, when there is nothing good to sign in with", async () => {
+  // turned away by the station
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => new Response('{"error_code":"APIG.0301"}', { status: 401 }), ideStateFile: file })
+    const r = await ideSignIn(plugin)
+    assert.equal(r.type, "failed")
+    assert.match(r.error, /401/)
+    assert.doesNotMatch(r.error, SECRETS)
+  }
+  // expired: not even asked
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin({ expiresAt: Date.parse("2020-01-01T00:00:00Z") })) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => assert.fail("no request"), ideStateFile: file })
+    const r = await ideSignIn(plugin)
+    assert.equal(r.type, "failed")
+    assert.match(r.error, /expired/)
+  }
+  // gone between the listing and the sign-in
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => assert.fail("no request"), ideStateFile: file })
+    const flow = await plugin.auth.methods[1].authorize()
+    fs.rmSync(file)
+    const r = await flow.callback()
+    assert.equal(r.type, "failed")
+    assert.doesNotMatch(r.error, SECRETS)
+  }
+  // a vendor that can't be reached still signs in (the check is for a refusal)
+  {
+    const { file } = await ideFixture({ value: ideValue(ideOrigin()) })
+    const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => { throw new Error("offline") }, ideStateFile: file })
+    assert.equal((await ideSignIn(plugin)).type, "success")
+  }
+})
+
+test("an IDE sign-in is renewed by reading the IDE's file again, never by STS", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  const fetcher = async (url) => {
+    assert.notEqual(String(url), x.STS_TOKEN_ENDPOINT, "no STS for an IDE sign-in")
+    return new Response("{}", { status: 200 })
+  }
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: fetcher, ideStateFile: fx.file })
+  const signed = await ideSignIn(plugin)
+  const cred = JSON.parse(signed.access)
+  const auth = { type: "oauth", access: signed.access, expires: signed.expires, accountId: signed.accountId }
+  // the IDE hasn't renewed yet: for now, not for good
+  const unchanged = await plugin.auth.refresh(auth).then(() => null, (e) => e)
+  assert.ok(unchanged, "an unchanged file is no renewal")
+  assert.notEqual(unchanged.signIn, "expired")
+  assert.equal(x.isPermanentRefreshFailure(unchanged), false)
+  assert.doesNotMatch(unchanged.message, SECRETS)
+  // the IDE renewed: the new triple, the same account and session
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2", expiresAt: Date.parse("2031-01-01T00:00:00Z") })))
+  const r = await plugin.auth.refresh(auth)
+  const next = JSON.parse(r.access)
+  assert.equal(next.access_key_id, "IDEAK2")
+  assert.equal(next.security_token, "IDETOKEN2")
+  assert.equal(next.session_id, cred.session_id)
+  assert.equal(next.source, x.IDE_SOURCE)
+  assert.equal(r.expires, Date.parse("2031-01-01T00:00:00Z"))
+  assert.equal(r.uid, "dom1")
+  assert.equal(r.refresh, undefined)
+  // another account in the IDE now, or the file gone: for now, never for good
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK3", domainId: "dom2" })))
+  const other = await plugin.auth.refresh({ ...auth, access: r.access }).then(() => null, (e) => e)
+  assert.match(other?.message ?? "", /another account/)
+  assert.notEqual(other.signIn, "expired")
+  fs.rmSync(fx.file)
+  const gone = await plugin.auth.refresh({ ...auth, access: r.access }).then(() => null, (e) => e)
+  assert.ok(gone)
+  assert.notEqual(gone.signIn, "expired")
+  assert.doesNotMatch(gone.message, SECRETS)
+})
+
+// The IDE writes its file again: a new state.vscdb in the same place.
+async function rewriteIde(file, value) {
+  const db = await x.openSqlite(file)
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, value)
+  db.close()
+  // each rewrite strictly later than the one before: two within one
+  // millisecond would otherwise share an mtime
+  lastIdeWrite = Math.max(Date.now() + 5000, lastIdeWrite + 1000)
+  const t = new Date(lastIdeWrite)
+  fs.utimesSync(file, t, t)
+}
+let lastIdeWrite = 0
+
+test("the IDE's file rewritten in one clock tick, at the same size, is read again", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  // a clock that gives every write the same time
+  const t = new Date(2000000000000)
+  fs.utimesSync(fx.file, t, t)
+  const before = fs.statSync(fx.file)
+  const read = x.ideReader(fx.file)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+  // the same file, the same time: no read
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+  // the IDE writes a key of the same length into the same page
+  const db = await x.openSqlite(fx.file)
+  sqlRun(db, "INSERT INTO ItemTable (key, value) VALUES (?, ?)", x.IDE_STATE_KEY, ideValue(ideOrigin({ accessKey: "IDEAK2" })))
+  db.close()
+  fs.utimesSync(fx.file, t, t)
+  const after = fs.statSync(fx.file)
+  assert.equal(after.size, before.size)
+  assert.equal(after.mtimeMs, before.mtimeMs)
+  assert.equal(after.ino, before.ino)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK2")
+  // a file that can't be read is unknown, never the last read
+  fs.rmSync(fx.file)
+  assert.equal((await read()).cred, undefined)
+})
+
+test("the IDE's write-ahead log rewritten in one clock tick is read again", async () => {
+  const first = await ideFixture({ value: ideValue(ideOrigin()), wal: true })
+  const second = await ideFixture({ value: ideValue(ideOrigin({ accessKey: "IDEAK2" })), wal: true })
+  const t = new Date(2000000000000)
+  fs.utimesSync(first.file, t, t)
+  fs.utimesSync(`${first.file}-wal`, t, t)
+  const mainBefore = fs.readFileSync(first.file)
+  const walBefore = fs.statSync(`${first.file}-wal`)
+  const read = x.ideReader(first.file)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK1")
+
+  fs.copyFileSync(`${second.file}-wal`, `${first.file}-wal`)
+  fs.utimesSync(`${first.file}-wal`, walBefore.atime, walBefore.mtime)
+  assert.deepEqual(fs.readFileSync(first.file), mainBefore, "the main database is unchanged")
+  assert.equal(fs.statSync(`${first.file}-wal`).size, walBefore.size)
+  assert.equal(fs.statSync(`${first.file}-wal`).mtimeMs, walBefore.mtimeMs)
+  assert.equal((await read()).cred?.access_key_id, "IDEAK2")
+})
+
+test("an international account chats, reads and renews on its own station only", async () => {
+  const fx = await ideFixture({ value: ideValue(ideOrigin()) })
+  const urls = []
+  let chats = 0
+  const fetcher = async (url, init) => {
+    const u = String(url)
+    urls.push(u)
+    assert.ok(u.startsWith(`${INTL}/`), `only the international host: ${u}`)
+    if (u.endsWith("/current/user")) return new Response("{}", { status: 200 })
+    if (u.endsWith("/chat/completions")) {
+      chats++
+      const auth = new Headers(init.headers).get("authorization")
+      // the first goes with a credential the vendor calls expired
+      if (chats === 1) return new Response(JSON.stringify({ error_code: "APIG.0602", error_msg: "the security token has expired" }), { status: 400 })
+      assert.match(auth, /Access=IDEAK2,/)
+      // the station's own shape of stop: a list (#998)
+      assert.deepEqual(JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body)).stop, ["zzz"])
+      return sseResponse(okStream)
+    }
+    if (u.includes("/statistics/plugin")) return new Response(JSON.stringify(intlStatistics), { status: 200 })
+    return new Response('{"error_code":"APIG.0101"}', { status: 404 })
+  }
+  const sets = []
+  const plugin = await CodeArtsAuthPlugin({ client: { auth: { set: async (o) => sets.push(o) } } }, { fetch: fetcher, ideStateFile: fx.file })
+  const signed = await ideSignIn(plugin)
+  const auth = { type: "oauth", access: signed.access, expires: signed.expires, accountId: signed.accountId }
+  const loaded = await plugin.auth.loader(async () => auth)
+  assert.equal(loaded.baseURL, `${INTL}/api/v2`)
+  await rewriteIde(fx.file, ideValue(ideOrigin({ accessKey: "IDEAK2", securityToken: "IDETOKEN2" })))
+  // the config's mainland `api` is taken to the account's station
+  const res = await loaded.fetch(CHAT_URL, chatInit({ model: "GLM-5.2", messages: [], stream: true, stop: "zzz" }))
+  assert.equal(res.status, 200)
+  assert.equal(chats, 2)
+  assert.equal(JSON.parse(sets.at(-1).body.access).access_key_id, "IDEAK2")
+  // opengw is no host of this account
+  const refused = await loaded.fetch(x.OPENGW_GATEWAY_CONFIG_URL, { method: "GET" })
+  assert.equal(refused.status, 400)
+
+  const usage = await plugin.auth.usage(async () => auth)
+  assert.equal(usage.plan, "Free")
+  assert.equal(usage.windows.length, 1)
+  assert.equal(usage.windows[0].limit, 5000000)
+  assert.equal(usage.user, undefined, "a hw/id name is no name")
+  // its models: whatever the station answers, nothing asked of opengw
+  await plugin.provider.models({ models: {} }, { auth })
+  const checkin = await plugin.auth.checkin(async () => auth)
+  assert.equal(checkin.outcome, "inactive")
+  assert.ok(!urls.some((u) => u.includes("opengw") || u.includes("cn-north-4")))
+})
+
+test("a mainland account's loader keeps the mainland chat base", async () => {
+  const plugin = await CodeArtsAuthPlugin({ client: {} }, { fetch: async () => sseResponse(okStream) })
+  const loaded = await plugin.auth.loader(async () => makeAuth(await makeCred()))
+  assert.equal(loaded.baseURL, x.CHAT_API_BASE)
 })

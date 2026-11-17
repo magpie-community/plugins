@@ -10,6 +10,7 @@ import { execFile } from "node:child_process"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { processExists } from "./proc.mjs"
 
 const TTY_RE = /^\/dev\/ttys?\d+$/
 const GUID_RE = /^[A-Za-z0-9_:-]{1,64}$/
@@ -75,10 +76,7 @@ function findBin(name, candidates = []) {
   return name
 }
 
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (e) { return e?.code !== "ESRCH" }
-}
+const pidAlive = processExists
 
 function runAsync(bin, args = [], timeout = 1200) {
   return new Promise((resolve) => {

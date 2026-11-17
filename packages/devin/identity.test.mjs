@@ -134,10 +134,17 @@ test.if(unix)("a key Devin refuses fails the sign-in, whatever the CLI says", as
   await expect(_internal.success("key-refused", "https://server.codeium.com")).rejects.toThrow("Devin didn't take the sign-in")
 }, SLOW)
 
-test.if(unix)("when Devin can't tell, the CLI names the account only if it read the key's own folder", async () => {
+test.if(unix)("unreadable identities keep separate stable slots until the CLI names the account", async () => {
   devin(() => new Response("", { status: 503 }))
   // the CLI read its own credentials.toml: not the key's account
-  expect((await _internal.success("key-c", "https://server.codeium.com")).metadata).toEqual({ email: "Devin" })
+  const c = await _internal.success("key-c", "https://server.codeium.com")
+  const cAgain = await _internal.success("key-c", "https://server.codeium.com")
+  const d = await _internal.success("key-d", "https://server.codeium.com")
+  expect(c.metadata.email).toMatch(/^Devin · [0-9a-f]{12}$/)
+  expect(cAgain.metadata.email).toBe(c.metadata.email)
+  expect(d.metadata.email).not.toBe(c.metadata.email)
+  expect(c.metadata.email).not.toContain("key-c")
+  expect(d.metadata.email).not.toContain("key-d")
   // a CLI that honours the folder answers for the key
   process.env.FAKE_HONOURS = "1"
   process.env.FAKE_EMAIL = "c@x.dev"

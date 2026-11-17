@@ -35,8 +35,9 @@ const PLATFORM = process.platform === "darwin" ? "mac" : process.platform === "w
 /** X-Tm as the official AutoClaw 2.0.3 client builds it (managedPlatform()
  * in its main.cjs): darwin is "mac", win32 is "win", anything else is
  * process.platform as is, so Linux is "linux" on x64 and arm64 alike.
- * The overseas gateway refuses "linux" only beside a non-official
- * fingerprint (#367), so the overseas chat sends the official one. */
+ * The overseas gateway still refuses "linux" for plugin-only accounts even
+ * with the official fingerprint (#367), so overseas chat omits it on Linux;
+ * other routes keep the official platform value. */
 function platformTm(platform = process.platform) {
   return platform === "darwin" ? "mac" : platform === "win32" ? "win" : platform;
 }
@@ -70,7 +71,19 @@ const FLAGGED = [
   // a sentence, not "assistant.." or "Anthropic's the agent framework".
   [/You are a Claude agent, built on Anthropic's Claude Agent SDK\.?/gi, "You are a coding assistant."],
   [/(?:Anthropic's |the )?Claude Agent SDK/gi, "the agent framework"],
-  [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
+  // DeepSeek Harness (dsh) opens "You are an AI agent powered by DeepSeek
+  // Harness." (dsh-system-prompt's harness:identity section), and its dev
+  // context names the product again further down: "The runtime context names
+  // the DeepSeek Harness implementation checkout.", "...through the DeepSeek
+  // Harness Web GUI whose URL...", "Current DeepSeek Harness implementation
+  // checkout: ...". The gateway 406s while the name is anywhere in system, not
+  // only on the first line (#924: the reporter's replay, five sends each,
+  // was 406 with the identity line alone rewritten and 200 x5 with every
+  // occurrence masked). The comma before "powered by" is optional, as the
+  // reporter saw it with one. The identity rule runs first so that line
+  // reads as a sentence; the bare name is masked everywhere after it.
+  [/You are an AI agent,?\s+powered by DeepSeek\s+Harness\.?/gi, "You are an AI agent powered by a local coding harness."],
+  [/\bDeepSeek\s+Harness\b/gi, "DeepSeek"],
   [/You are Claude Code/gi, "You are the Claude Code CLI"],
   // 11-05: subagent prompts (fork/Explore) open "You are an agent for Claude
   // Code, …" — ten 406 dumps that afternoon, all the same one line; the plain
@@ -84,6 +97,12 @@ const FLAGGED = [
   [/You are Cline/gi, "You are the Cline agent"],
   [/You are Qwen Code/gi, "You are the Qwen Code agent"],
   [/You are ZCode/gi, "You are the ZCode agent"],
+  // #1094: ZCode's built-in subagents (general-purpose) open "You are an
+  // agent for ZCode CLI." — 406 on autoclaw while the main session, same
+  // minute and account, is 200; the reporter's patched run was 200 x2. The
+  // "You are ZCode" rule above can't catch it. As for Claude Code's
+  // subagents, only an article goes in front of the name.
+  [/an agent for ZCode/gi, "an agent for the ZCode"],
   [/operating inside pi, a coding agent harness/gi, "operating inside the pi coding agent harness"],
   // ZCode's opening line is "This conversation is powered by GLM-<version>";
   // the CN gateway refuses that wording with any GLM version, in any case,
@@ -96,6 +115,13 @@ const FLAGGED = [
   // 4.6-turbo") is not one the gateway has been seen to refuse.
   [/This conversation is powered by GLM-([\w-]+(?:\.[\w-]+)*)/gi, "This conversation is powered by the GLM-$1 model"],
   [/(powered by )the model GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?/gi, "$1the GLM-$2 model"],
+  // #924: "You are a coding agent powered by the glm-5.3-flash model." (a
+  // lowercase name, the version before "model") was reported refused; the
+  // form the two rules above write, "powered by the GLM-5.3-flash model",
+  // is the one probed to pass on 11-03. So every "powered by the glm-<x>
+  // model" sentence, in any case, comes out in that one form. Only that
+  // sentence: a glm-5.3 in a path, a model id or code elsewhere is left.
+  [/(powered by )the GLM-([\w-]+(?:\.[\w-]+)*)(\s*\[[\w-]+\])?(\s+model\b)/gi, "$1the GLM-$2$4"],
   // WorkBuddy's CLI template still opens "You are CodeBuddy Code." (#466);
   // "You are CodeBuddy" alone passes.
   [/You are CodeBuddy Code/gi, "You are the CodeBuddy Code CLI"],
@@ -115,6 +141,14 @@ const FLAGGED = [
   [/You are Gemini CLI/gi, "You are the Gemini CLI agent"],
   [/You are Kimi Code CLI/gi, "You are the Kimi Code CLI agent"],
   [/You are goose\b/gi, "You are the goose agent"],
+  // Grok CLI (Grok Build) opens "You are Grok released by xAI. You are an
+  // interactive CLI tool ..." for a model it doesn't know, and "You are Grok
+  // 4.7 released by xAI. ..." for one it does (#875: four 406s through
+  // AutoClaw 国内 on 11-08; both forms read from its own system_prompt.txt,
+  // grok 1.0.67, the autonomous-agent variant too). Only the "released by
+  // xAI" sentence is touched: a model name such as "You are Grok-Mini" is
+  // not an agent's identity line.
+  [/You are Grok((?: \d[\w.-]*)?) released by xAI/gi, "You are the Grok$1 assistant released by xAI"],
 ];
 
 function unflagged(text) {
@@ -147,7 +181,7 @@ function unflag(messages) {
 }
 
 const REFUSED_HINT =
-  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
+  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Claude Agent SDK, Codex, opencode, Cursor, Cline, Qwen Code, ZCode, Grok CLI, pi, DeepSeek Harness, Hermes Agent); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
 
 // A 406's diagnosis is the system prompt and nothing else. The dump is off
 // by default — the body is the user's conversation, and a system prompt is
@@ -308,9 +342,98 @@ async function accountRefusal(res) {
   });
 }
 
+/**
+ * fingerprintRefusal reads the overseas WAF's exact bare request-fingerprint
+ * rejection, or null. It only identifies the response shape; the wallets route
+ * must still confirm whether the sign-in holds before magpie keeps it (#367).
+ */
+async function fingerprintRefusal(res) {
+  if (res.status !== 403) return null;
+  const text = await res.clone().text().catch(() => "");
+  let message = "";
+  try {
+    const fields = said(JSON.parse(text));
+    if (fields.code != null) return null;
+    message = fields.message;
+  } catch {
+    message = text.trim();
+  }
+  if (message.toLowerCase() !== "forbidden") return null;
+  return {
+    text,
+    statusText: res.statusText,
+    contentType: res.headers.get("content-type"),
+  };
+}
+
 /** refusedNotSignIn is a 401/403 that is the account's (quota or ban), not its sign-in, or null. */
 async function refusedNotSignIn(res) {
   return (await quotaRefusal(res)) ?? (await accountRefusal(res));
+}
+
+// A 401 is not always the sign-in either: the CN managed gateway answers a
+// request of ~200k tokens 401 {"message":"AutoClaw 登录状态失效"}, while the
+// same token is answered 200 seconds before and after (plugins#891,
+// hj01857655: 401 at 207k and 218k tokens, every 200 that day at most
+// 129k). Read as expired, magpie marked the account signed out and stopped
+// there. The gateway's limit isn't known, so no threshold is guessed: a
+// refusal of a body larger than the largest one this provider's gateway
+// has answered has its sign-in checked on the wallets route, and a sign-in
+// that holds there makes it a 413, the request too large, with the
+// sign-in kept. magpie then asks another route, or tells the agent to
+// compact. A body no larger than one answered, a sign-in refused there,
+// or a check that fails is the sign-in as before.
+const largestServed = new Map(); // providerId → bytes of the largest chat body the gateway answered
+
+function bodyBytes(body) {
+  if (body == null) return 0;
+  if (typeof body === "string") return Buffer.byteLength(body);
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body.byteLength;
+  return 0;
+}
+
+function noteServed(providerId, bytes) {
+  if (bytes > (largestServed.get(providerId) ?? 0)) largestServed.set(providerId, bytes);
+}
+
+/** signInHolds is true when a host's wallets route takes the token, false when every answer refused it, null when unknown. */
+async function signInHolds(accessToken, hosts) {
+  let refused = 0;
+  const uniqueHosts = dedupe(hosts);
+  for (const host of uniqueHosts) {
+    try {
+      const res = await fetch(host + WALLETS_PATH, {
+        method: "GET",
+        headers: bizHeaders(accessToken),
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 401 || res.status === 403) {
+        refused++;
+        try { res.body?.cancel?.(); } catch {}
+        continue;
+      }
+      if (!res.ok) {
+        try { res.body?.cancel?.(); } catch {}
+        continue;
+      }
+      const payload = await res.json().catch(() => null);
+      if (payload && payload.code === 0) return true;
+    } catch {}
+  }
+  return refused === uniqueHosts.length ? false : null;
+}
+
+/** sizeRefusal is a 401/403 for a body larger than any answered, its sign-in holding, as a 413; or null. */
+async function sizeRefusal(providerId, bytes, status, accessToken, hosts) {
+  const most = largestServed.get(providerId) ?? 0;
+  if (!(most > 0) || bytes <= most) return null;
+  if ((await signInHolds(accessToken, hosts)) !== true) return null;
+  const message = `AutoClaw: the gateway answered a ${bytes}-byte request ${status}, but the sign-in holds; the largest request it has answered is ${most} bytes. The request is too large for AutoClaw, not signed out.`;
+  return new Response(JSON.stringify({ error: { message, type: "request_too_large", code: null } }), {
+    status: 413,
+    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+  });
 }
 
 // tidyBody puts right, in place, what an agent's history can hold that
@@ -503,7 +626,11 @@ function setOfficialChatHeaders(headers, { accessToken, model, sessionId, now = 
   headers.set("X-Stainless-Runtime", "node");
   headers.set("X-Stainless-Runtime-Version", OFFICIAL_NODE_VERSION);
   headers.set("X-Version", OFFICIAL_CLIENT_VERSION);
-  headers.set("X-Tm", platformTm(platform));
+  // The official client says "linux", but the overseas WAF still rejects that
+  // exact value for plugin-only accounts even after user-info (#367). Omission
+  // is accepted and does not pretend to be another OS; macOS/Windows stay exact.
+  if (platform === "linux") headers.delete("X-Tm");
+  else headers.set("X-Tm", platformTm(platform));
   headers.set("X-Product", PRODUCT);
   headers.set("X-Auth-Appid", APP_ID);
   headers.set("X-Auth-TimeStamp", ts);
@@ -777,12 +904,15 @@ function campaignLabel(entry, md) {
 }
 
 /**
- * 活动流水 → { claimed, expired, remaining, labels }（窗口内事实）。
+ * 活动流水 → { claimed, expired, remaining, labels, lapseAt, lapsing }（窗口内事实）。
  * 按 wallet 实例分组：每实例 remaining = credit − debit − expire（截 0）。
  * 入账掉出窗口的旧实例（窗口内只剩消耗/失效）按 0 计，其失效额仍进「过期」。
+ * lapseAt：还有剩余、尚未到期的实例里最早的 wallet_expires_at（毫秒，0 = 不知道）；
+ * lapsing：在那一刻到期的实例剩余之和（plugins#1157：每条流水顶层都带
+ * wallet_expires_at，epoch 秒；wallets 接口没有到期字段）。
  */
-function campaignBreakdown(entries) {
-  const instances = new Map(); // wallet_id → { credit, debit, expire, label }
+function campaignBreakdown(entries, now = Date.now()) {
+  const instances = new Map(); // wallet_id → { credit, debit, expire, label, expires }
   let claimed = 0;
   let expired = 0;
   for (const e of Array.isArray(entries) ? entries : []) {
@@ -796,7 +926,9 @@ function campaignBreakdown(entries) {
     if (!Number.isFinite(amount)) continue;
     const id = String(e.wallet_id ?? "?");
     let inst = instances.get(id);
-    if (!inst) { inst = { credit: 0, debit: 0, expire: 0, label: "" }; instances.set(id, inst); }
+    if (!inst) { inst = { credit: 0, debit: 0, expire: 0, label: "", expires: 0 }; instances.set(id, inst); }
+    const exp = Number(e.wallet_expires_at);
+    if (Number.isFinite(exp) && exp > 0) inst.expires = exp * 1000;
     if (type === "credit") {
       inst.credit += amount;
       claimed += amount;
@@ -811,12 +943,17 @@ function campaignBreakdown(entries) {
   }
   if (instances.size === 0) return null; // 没有活动历史
   let remaining = 0;
+  let lapseAt = 0;
+  let lapsing = 0;
   const labels = [];
   for (const inst of instances.values()) {
     const left = inst.credit - inst.debit - inst.expire;
     if (left > 0) { remaining += left; if (inst.label) labels.push(inst.label); }
+    if (!(left > 0 && inst.expires > now)) continue;
+    if (!lapseAt || inst.expires < lapseAt) (lapseAt = inst.expires), (lapsing = left);
+    else if (inst.expires === lapseAt) lapsing += left;
   }
-  return { claimed, expired, remaining, labels: [...new Set(labels)] };
+  return { claimed, expired, remaining, labels: [...new Set(labels)], lapseAt, lapsing };
 }
 
 /** 活动积分的三位分组（确定性手写，不用 toLocaleString——CI/locale 无关）。 */
@@ -1317,29 +1454,65 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   routeModel = String(sent?.model ?? "");
                 } catch {}
               }
-              // the official 2.0.3 fingerprint: with it the gateway takes X-Tm
-              // "linux"; with the old AutoClaw4/1.18.1 one it refuses it (#367)
+              // The official 2.0.3 fingerprint, except Linux omits X-Tm because
+              // the gateway still refuses its official "linux" value (#367).
               setOfficialChatHeaders(headers, { accessToken, model: routeModel, sessionId: conversationSessionId(sent) });
 
               const tryFetch = (host) =>
                 fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
 
+              const sentBytes = bodyBytes(nextBody);
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return explained(res1, nextBody, providerId, options);
+              if (res1.status !== 401 && res1.status !== 403) {
+                if (res1.ok) noteServed(providerId, sentBytes);
+                return explained(res1, nextBody, providerId, options);
+              }
               // a spent quota or a ban is the account's on every host: not asked again
               const spent1 = await refusedNotSignIn(res1);
               if (spent1) return spent1;
+              const fingerprint1 = await fingerprintRefusal(res1);
               try { res1.body?.cancel?.(); } catch {}
               const res2 = await tryFetch(hosts[1]);
               const spent2 = await refusedNotSignIn(res2);
               if (spent2) return spent2;
-              if (res2.status === 401 || res2.status === 403) {
+              const fingerprint2 = await fingerprintRefusal(res2);
+              const fingerprint = fingerprint2 ?? fingerprint1;
+              if (fingerprint && (res2.status === 401 || res2.status === 403)) {
                 try { res2.body?.cancel?.(); } catch {}
+                const holds = await signInHolds(accessToken, hosts);
+                if (holds === true) {
+                  return new Response(JSON.stringify({ error: {
+                    message: "AutoClaw: forbidden — 上游拒绝了当前客户端指纹，登录仍然有效",
+                    type: "permission_error",
+                    code: null,
+                  } }), {
+                    status: 403,
+                    headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "kept" },
+                  });
+                }
+                if (holds === null) {
+                  const response = new Response(fingerprint.text, {
+                    status: 403,
+                    statusText: fingerprint.statusText,
+                    headers: fingerprint.contentType ? { "Content-Type": fingerprint.contentType } : undefined,
+                  });
+                  return response;
+                }
                 return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
                   status: 401,
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
+              if (res2.status === 401 || res2.status === 403) {
+                try { res2.body?.cancel?.(); } catch {}
+                const tooBig = await sizeRefusal(providerId, sentBytes, res2.status, accessToken, hosts);
+                if (tooBig) return tooBig;
+                return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                  status: 401,
+                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+                });
+              }
+              if (res2.ok) noteServed(providerId, sentBytes);
               return explained(res2, nextBody, providerId, options);
             }
 
@@ -1354,10 +1527,16 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: sentBody,
             });
-            if (res.status !== 401 && res.status !== 403) return explained(res, sentBody, providerId, options);
+            const sentBytes = bodyBytes(sentBody);
+            if (res.status !== 401 && res.status !== 403) {
+              if (res.ok) noteServed(providerId, sentBytes);
+              return explained(res, sentBody, providerId, options);
+            }
             const spent = await refusedNotSignIn(res);
             if (spent) return spent;
             try { res.body?.cancel?.(); } catch {}
+            const tooBig = await sizeRefusal(providerId, sentBytes, res.status, accessToken, hosts);
+            if (tooBig) return tooBig;
             return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
               status: 401,
               headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
@@ -1447,6 +1626,13 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
           try {
             const entries = await campaignCached(signinAccountKey(providerId, auth), () => fetchCampaignLedger(token, hosts));
             const camp = campaignBreakdown(entries);
+            // 活动积分到期作废：在余额窗口上标出何时丢多少（runsOutAt / runsOut），
+            // 路由会在那之前先花这个账号。不另开带 balance 的窗口——那会被
+            // 当成第二个资金池。丢的不会多于账户总余额。
+            if (camp?.lapseAt && camp.lapsing > 0 && total > 0) {
+              const bal = windows.find((w) => w.name === "积分余额");
+              if (bal) Object.assign(bal, { runsOutAt: new Date(camp.lapseAt).toISOString(), runsOut: Math.min(total, camp.lapsing) });
+            }
             if (camp && (camp.claimed > 0 || camp.expired > 0)) {
               const label = camp.labels.length === 1 ? `（${camp.labels[0].slice(0, 40)}）`
                 : camp.labels.length > 1 ? `（${camp.labels.length} 个活动）` : "";
@@ -2078,7 +2264,8 @@ export const AutoclawCnAuthPlugin = makeAutoclawPlugin({
 
 /** 测试辅助（magpie/OpenCode 不会把它当插件调用）。 */
 export const _internal = {
-  quotaRefusal, accountRefusal, bannedSaid,
+  quotaRefusal, accountRefusal, fingerprintRefusal, bannedSaid,
+  signInHolds, clearLargestServed: () => largestServed.clear(),
   makePluginForTest: makeAutoclawPlugin,
   platformTm, setOfficialChatHeaders, conversationSessionId, stainlessOs, stainlessArch, md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinAccountKey, signinConfig, checkinOutcome, refreshTokens,

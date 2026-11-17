@@ -5,6 +5,7 @@
 import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { processAlive } from "./proc.mjs";
 import { xdgConfigHome } from "./magpie-files";
 import { errText, type Run, type Task } from "./types";
 
@@ -32,6 +33,13 @@ export interface TaskMarks {
   /** 这个任务的窗口最近一次见到的重置时间（ISO）：额度卡瞬断丢了 resetsAt 时，
    * 用它区分「窗口其实在计时」和「真空闲」；旧数据没有这个字段照常加载 */
   lastReset?: string | null;
+  /** 首次见到 lastReset 这个值时卡片的 readAt；与下一次读数比对，分辨重置点是真在计时还是随读卡滑动 */
+  lastResetReadAt?: string | null;
+  /** lastReset 是「读卡时刻 + 窗口长度」滑出来的空闲读数（如 Antigravity 空闲窗口） */
+  resetRolls?: boolean;
+  /** lastReset 是旧重置点过后、插件没发过时读到的「下一轮」重置点：记下那个旧重置点（ISO），
+   * 用量为 0 时按空闲处理并以它作去重键；不是这种情况为 null */
+  resetCarried?: string | null;
   /** 窗口任务最近一次真正把消息发出去的收尾时刻（ISO）：此前读到的空闲是发送前的旧读数，不可信 */
   lastSent?: string | null;
 }
@@ -276,15 +284,7 @@ function parsePid(raw: string): number | null {
   return null;
 }
 
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM 说明进程存在但属于别人，同样算活着
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+const pidAlive = processAlive;
 
 /** 只在自己仍是持有者时删除锁文件；锁已被别人接管/换内容时不动它 */
 async function releaseLock(path: string): Promise<void> {

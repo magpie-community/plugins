@@ -18,14 +18,20 @@ async function given(hooks) {
   return { id: "minimax-code", models: Object.fromEntries(Object.entries(p.models).map(([id, m]) => [id, { id, ...m }])) }
 }
 
-test("the config declares MiniMax Code's four models on the Anthropic API", async () => {
+test("the config declares MiniMax Code's chat models on the Anthropic API, plus image and video models", async () => {
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
   const cfg = { provider: {} }
   await hooks.config(cfg)
   const p = cfg.provider["minimax-code"]
   expect(p.npm).toBe("@ai-sdk/anthropic")
   expect(p.api).toBe(_internal.SITES["minimax-code"].llm + "/mavis/api/v1/llm/v1")
-  expect(Object.keys(p.models).sort()).toEqual(["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M3", "MiniMax-M3.1-Flash-Preview"])
+  const chat = ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M3", "MiniMax-M3.1-Flash-Preview"]
+  const media = ["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-Hailuo-2.3", "MiniMax-Image"]
+  expect(Object.keys(p.models).sort()).toEqual([...chat, ...media].sort())
+  expect(p.models["MiniMax-Image"].modalities).toEqual({ input: ["text", "image"], output: ["image"] })
+  expect(p.models["MiniMax-Image"].provider).toEqual({ npm: "@ai-sdk/openai-compatible" })
+  expect(p.models["MiniMax-H3"].modalities.output).toEqual(["video"])
+  expect(p.models["MiniMax-M3"].modalities.output).toEqual(["text"])
   expect(p.models["MiniMax-M3"].variants).toEqual({ none: { thinking: { type: "disabled" } }, high: { thinking: { type: "adaptive" } } })
   expect(Object.keys(p.models["MiniMax-M3.1-Flash-Preview"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"])
   expect(p.models["MiniMax-M3.1-Flash-Preview"].variants.xhigh).toEqual({ thinking: { type: "adaptive" }, effort: "xhigh" })
@@ -78,7 +84,7 @@ test("the live list is MiniMax Code's model config", async () => {
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
   const p = await given(hooks)
   const ms = await hooks.provider.models(p, { auth })
-  expect(Object.keys(ms)).toEqual(["MiniMax-M4", "MiniMax-M3", "MiniMax-M2.7"])
+  expect(Object.keys(ms)).toEqual(["MiniMax-M4", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-Image", "MiniMax-H3", "MiniMax-H3-Max", "MiniMax-Hailuo-2.3"])
   expect(ms["MiniMax-M4"]).toMatchObject({ id: "MiniMax-M4", providerID: "minimax-code", name: "M4", api: { id: "MiniMax-M4", npm: "@ai-sdk/anthropic" }, limit: { context: 1000000, output: 128000 } })
   expect(ms["MiniMax-M4"].variants).toEqual({ low: { thinking: { type: "adaptive" }, effort: "low" }, high: { thinking: { type: "adaptive" }, effort: "high" } })
   expect(ms["MiniMax-M3"].capabilities.input.image).toBe(true)
@@ -97,7 +103,7 @@ test("a list refused with the account is asked again without it", async () => {
     : json({ providers: [{ providerId: "minimax", config: { models: { "MiniMax-M3": { name: "MiniMax-M3" } } } }] })))
   const hooks = await MiniMaxCodeAuthPlugin({ client: {} })
   const ms = await hooks.provider.models(await given(hooks), { auth })
-  expect(Object.keys(ms)).toEqual(["MiniMax-M3"])
+  expect(Object.keys(ms)).toEqual(["MiniMax-M3", "MiniMax-Image", "MiniMax-H3", "MiniMax-H3-Max", "MiniMax-Hailuo-2.3"])
   expect(f.seen.length).toBe(2)
 })
 

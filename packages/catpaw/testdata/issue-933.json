@@ -1,0 +1,10 @@
+{
+  "note": "plugins#933 (LIEGU0317, magpie 0.1.3479, plugin 0.2.1, plan_free with availableCredits 0.00, glm-5.3-flashx = modelType 98): the turn's SSE frames as the issue quotes them, out of credits. HTTP 200, text/event-stream, no error field, and no model / modelDisplayName in any frame. Ids are \"...\" in the issue and kept so. The issue elides the finishing frame as {\"message\":{... \"finished\":true}}; it is filled in here as the cumulative message, finished. The reporter states that normal answer frames carry model and modelDisplayName; their values are not quoted, so modelAnswer's are made up.",
+  "sse": [
+    "data:{\"conversationId\":\"...\",\"message\":{\"type\":\"assistant\",\"messageId\":\"...\",\"status\":1,\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"finished\":false}}",
+    "data:{\"conversationId\":\"...\",\"message\":{\"type\":\"assistant\",\"messageId\":\"...\",\"status\":1,\"content\":[{\"type\":\"text\",\"text\":\"当前余额不足以完成本次操作。[去购买更多](https://credit.catpaw.meituan.com/#/plan)，即可继续使用全部功能。\"}],\"finished\":false}}",
+    "data:{\"conversationId\":\"...\",\"message\":{\"type\":\"assistant\",\"messageId\":\"...\",\"status\":1,\"content\":[{\"type\":\"text\",\"text\":\"当前余额不足以完成本次操作。[去购买更多](https://credit.catpaw.meituan.com/#/plan)，即可继续使用全部功能。\"}],\"finished\":true}}",
+    "data:[DONE]"
+  ],
+  "modelAnswer": { "model": "glm-5.3-flashx", "modelDisplayName": "GLM-5.3-FlashX" }
+}

@@ -193,6 +193,36 @@ const until = async (predicate) => {
 }
 const nativeFrames = (opts) => wire(opts).map((b) => ({ data: envelope(b).subarray(5) }))
 
+// Two real Hydrogen failures: the count follows a partial second call,
+// but its exec arrives after a checkpoint waiting on only the first.
+const partialBatch = (started) => [
+  callUpdate(7, "c3", MCP),
+  callUpdate(2, "c3", MCP),
+  bin(2, execMessage("c3")),
+  callUpdate(7, "c4", MCP),
+  ...(started ? [callUpdate(2, "c4", MCP)] : []),
+  bin(1, bin(27, uint(1, 2))),
+  bin(3, state(['{"call":"c3"}'])),
+  ...(!started ? [callUpdate(2, "c4", MCP)] : []),
+  bin(2, message(uint(1, 8), text(15, "exec-c4"), bin(11, mcpArgs("c4")))),
+]
+
+for (const started of [false, true]) test(`native: a checkpoint after the count waits for a ${started ? "started" : "partial"} call's exec`, async () => {
+  const run = owner()
+  run.pump(open(partialBatch(started).map((data) => ({ data }))))
+  await until(() => run.error || run.state === "awaiting-results")
+  expect(run.error).toBeUndefined()
+  expect(run.segment.events.filter((e) => e.tool).map((e) => e.tool.name)).toEqual(["read_file", "read_file"])
+  expect(run.segment.events.at(-1).stop).toBe("tool_calls")
+})
+
+for (const started of [false, true]) test(`stateless: a checkpoint after the count waits for a ${started ? "started" : "partial"} call's exec`, async () => {
+  const { how, events } = await stateless(partialBatch(started))
+  expect(how).toBe("ended")
+  expect(events.filter((e) => e.tool).map((e) => e.tool.name)).toEqual(["read_file", "read_file"])
+  expect(events.at(-1).stop).toBe("tool_calls")
+})
+
 // pending: a checkpoint that waits on more than came, so only the calls
 // Cursor completed can seal it
 for (const [name, opts] of [["call updates", { pending: ["c3", "c9"] }], ["the checkpoint alone", { updates: false }]]) test(`native: the reporter's step seals on its one call, by ${name} (#550)`, async () => {

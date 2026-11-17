@@ -95,8 +95,11 @@
       input.checked = checked[style.id] === true
       input.setAttribute("data-style-id", style.id)
       input.addEventListener("change", function () {
-        dirty = true
-        setMessage("Unsaved changes.")
+        var savedStyles = options.styles && typeof options.styles === "object" ? options.styles : {}
+        dirty = catalog.some(function (style) {
+          return inputs[style.id].checked !== (savedStyles[style.id] === true)
+        })
+        setMessage(dirty ? "Unsaved changes." : "No unsaved changes.")
         updateSelection()
         updateControls()
       })

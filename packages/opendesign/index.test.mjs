@@ -153,6 +153,7 @@ test("the account's list is the vendor's own, live", () => {
     id: "gpt-6-luna",
     name: "GPT-6 Luna",
     api: { id: "gpt-6-luna", url: "https://amr-link.open-design.ai/v1", npm: "@ai-sdk/openai-compatible" },
+    also: ["@ai-sdk/openai", "@ai-sdk/anthropic"],
     status: "active",
     headers: {},
     options: {},
@@ -284,6 +285,34 @@ test("a kept model's rate is re-declared, so a charge an earlier version wrote c
   expect(models["brand-new-9"].rate).toBe("x1")
 })
 
+// #827 (Gitleonan): amr-link's catalog publishes more output than its API
+// takes for two models, and asking for the published number is a 400 that
+// names no field. The catalog entries are the reporter's numbers; the caps
+// are what they measured on 2026-11-09 (131072 and 65536 taken, one more
+// refused).
+test("a model's output is capped where amr-link takes less than its catalog says (#827)", async () => {
+  const models = I.modelsOf({
+    data: [
+      { id: "glm-5.3-flash", architecture: { input_modalities: ["text", "image", "video"] }, metadata: { cost: "low", capability: "advanced", context_limit: 1048000, context_budget: 232000 } },
+      { id: "gemini-3.8-flash", architecture: { input_modalities: ["text"] }, metadata: { cost: "low", capability: "standard", context_limit: 1048576, context_budget: 264000 } },
+      // a catalog that says less than the cap is taken as it says
+      { id: "deepseek-v4.1-flash", metadata: { context_limit: 1048000, context_budget: 232000 } },
+    ],
+  })
+  expect(models["glm-5.3-flash"].limit).toEqual({ context: 1048000, output: 131072 })
+  expect(models["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(models["deepseek-v4.1-flash"].limit.output).toBe(232000)
+  expect(I.modelsOf({ data: [{ id: "glm-5.3-flash", metadata: { context_budget: 100000 } }] })["glm-5.3-flash"].limit.output).toBe(100000)
+
+  // the seed, and a copy an earlier version kept with the catalog's number
+  const cfg = { provider: { opendesign: { models: { "gemini-3.8-flash": { id: "gemini-3.8-flash", name: "gemini-3.8-flash", limit: { context: 1048576, output: 264000 } } } } } }
+  await (await OpenDesignAuthPlugin({})).config(cfg)
+  const served = cfg.provider.opendesign.models
+  expect(served["glm-5.3-flash"].limit.output).toBe(131072)
+  expect(served["gemini-3.8-flash"].limit).toEqual({ context: 1048576, output: 65536 })
+  expect(served["deepseek-v4.1-flash"].limit.output).toBe(232000)
+})
+
 // #829 (exposir): the signed-in catalog's DeepSeek V4.1 Flash Eco entry
 // left image out, so it was served text-only and magpie sent another model's
 // description of the image instead, while amr-link took the image itself
@@ -337,6 +366,19 @@ test("each model is asked on the API amr-link thinks on (plugins#141)", async ()
   expect(p.models["kimi-k2.7-code"].provider.npm).toBe("@ai-sdk/openai-compatible")
 })
 
+test("each model says the two other APIs amr-link serves it on (plugins#888)", async () => {
+  // magpie relays a client's request on any of them as it was sent: an
+  // Anthropic request to a chat model went upstream as chat completions
+  // (gaubeebangeel on X)
+  const models = I.modelsOf(CATALOG)
+  expect(models["gpt-6-luna"].also).toEqual(["@ai-sdk/openai", "@ai-sdk/anthropic"])
+  expect(models["deepseek-v4-pro"].also).toEqual(["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"])
+  const cfg = {}
+  await (await OpenDesignAuthPlugin({})).config(cfg)
+  expect(cfg.provider.opendesign.models["glm-5.3-flash"].also).toEqual(["@ai-sdk/openai-compatible", "@ai-sdk/openai"])
+  expect(cfg.provider.opendesign.models["deepseek-v4.1-flash"].also).toEqual(["@ai-sdk/openai", "@ai-sdk/anthropic"])
+})
+
 // ---- what magpie is given ----------------------------------------------------
 
 test("the plugin declares the provider and answers its methods", async () => {
@@ -355,6 +397,7 @@ test("the plugin declares the provider and answers its methods", async () => {
     name: "DeepSeek V4.1 Flash",
     api: { npm: "@ai-sdk/openai-compatible" },
     provider: { npm: "@ai-sdk/openai-compatible" },
+    also: ["@ai-sdk/openai", "@ai-sdk/anthropic"],
     attachment: true,
     tool_call: true,
     reasoning: true,
@@ -377,9 +420,46 @@ test("the plugin declares the provider and answers its methods", async () => {
 
 test("the loader hands the runtime key to the model plane", async () => {
   const hooks = await OpenDesignAuthPlugin({})
-  expect(await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" })))
-    .toEqual({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  const o = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  expect(o).toMatchObject({ baseURL: "https://amr-link.open-design.ai/v1", apiKey: "sk-amr-b" })
+  expect(typeof o.fetch).toBe("function")
   expect(await hooks.auth.loader(async () => null)).toEqual({})
+})
+
+// keyblues (plugins#888): amr-link serves every model on chat completions,
+// Responses and Anthropic's messages. The host signs a request with the
+// header of the package the model is declared on, so a model asked on
+// another API than its own must be signed for the API it is asked on.
+test("a model asked on any of the three APIs is signed as that API takes the key (plugins#888)", async () => {
+  const seen = []
+  globalThis.fetch = async (url, init) => {
+    const h = new Headers(init?.headers)
+    seen.push({ url: url instanceof Request ? url.url : String(url), auth: h.get("authorization"), xkey: h.get("x-api-key"), version: h.get("anthropic-version"), body: init?.body })
+    return new Response("{}", { status: 200 })
+  }
+  const hooks = await OpenDesignAuthPlugin({})
+  const { fetch: send } = await hooks.auth.loader(async () => ({ access: "sk-amr-b", control: "vela_ctrl_a" }))
+  const base = "https://amr-link.open-design.ai/v1"
+  // kimi-k2.7-code is declared on chat completions, so the host sent the
+  // Bearer header: asked on Anthropic's messages it goes with x-api-key
+  await send(base + "/messages", { method: "POST", headers: { authorization: "Bearer sk-amr-b", "content-type": "application/json" }, body: '{"model":"kimi-k2.7-code"}' })
+  await send(base + "/messages/count_tokens", { method: "POST", headers: { authorization: "Bearer sk-amr-b" }, body: "{}" })
+  // glm-5.3-flash is declared on Anthropic's messages: asked on chat
+  // completions or Responses it goes with the Bearer
+  await send(base + "/chat/completions", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2023-06-01" }, body: '{"model":"glm-5.3-flash"}' })
+  await send(new Request(base + "/responses", { method: "POST", headers: { "x-api-key": "sk-amr-b" }, body: "{}" }))
+  expect(seen.map(({ url, auth, xkey }) => [url.replace(base, ""), auth, xkey])).toEqual([
+    ["/messages", null, "sk-amr-b"],
+    ["/messages/count_tokens", null, "sk-amr-b"],
+    ["/chat/completions", "Bearer sk-amr-b", null],
+    ["/responses", "Bearer sk-amr-b", null],
+  ])
+  // Anthropic's messages carry a version, the client's own when it sent one
+  expect(seen[0].version).toBe("2023-06-01")
+  expect(seen[0].body).toBe('{"model":"kimi-k2.7-code"}')
+  // the declared API's own requests go as they did
+  await send(base + "/messages", { method: "POST", headers: { "x-api-key": "sk-amr-b", "anthropic-version": "2024-01-01" }, body: "{}" })
+  expect([seen[4].auth, seen[4].xkey, seen[4].version]).toEqual([null, "sk-amr-b", "2024-01-01"])
 })
 
 test("the account's models are read at its own key", async () => {

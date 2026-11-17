@@ -21,13 +21,13 @@
 // （magpie 的 oauth 方式，读不到时给出官网链接并轮询，等用户装好登录）；
 // ③粘贴 modelBearerToken。目录与思考档位按账号实时拉取（目录读取不计费）。
 //
-// AStudio 有「每日登录积分」：服务端在当天账号会话首次活跃时发放，客户端弹窗
-// 只做通知、没有领取接口。auth.checkin 先读当日获得流水（points/details
-// direction=CREDIT，与网页后台「获得明细」同源）：已有「每日登录赠送」GRANT 行
-// 即 done，此时一个写请求都不发；流水为空才补一次会话活跃（POST
-// tenant-app/v2/init-app，复刻桌面端启动），再读一次流水。流水读失败退回余额差 +
-// 弹窗观测。流水通畅、余额没涨、也无当日弹窗则记 inactive——宿主把 done 渲染成
-// 「今日已签到」，没发生的不能断言。
+// AStudio 有「每日登录积分」：账号面 client-popups/pending 里的 DAILY_REWARD_DIALOG
+// 是待领取的每日奖励（不是通知）。桌面端点「知道了」时发 POST
+// client-popups/complete，服务端随后记一笔「每日登录赠送」GRANT 流水。
+// auth.checkin 先读当日获得流水（points/details direction=CREDIT，与网页后台
+// 「获得明细」同源）：已有 GRANT 行就 done、一个写请求都不发；没有才 complete
+// 那一条每日奖励弹窗，再以流水认定结果。流水没出现就不算 done——宿主把 done
+// 渲染成「今日已签到」，没发生的不能断言。
 
 import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
@@ -54,6 +54,8 @@ const WEB_SIGNIN_WAIT_MS = 10 * 60 * 1000
 // 等待「用户去装桌面端并登录」的窗口与轮询间隔。
 const DESKTOP_POLL_MS = 2000
 const DESKTOP_WAIT_MS = 5 * 60 * 1000
+// complete 每日奖励弹窗后等入账的一次复读间隔（只复读一次，不重复 complete）。
+const CHECKIN_LEDGER_RETRY_MS = 1500
 
 const REGISTRY_KEY = "HKCU\\Software\\AStudioStorage"
 const REGISTRY_PREFIXES = ["Production", "Canary", "Development"]
@@ -77,7 +79,52 @@ const BOOTSTRAP = [
   { id: "xopglm52", name: "GLM-5.2", context: 1048576, output: 32768 },
   { id: "xopdeepseekv4pro0813", name: "DeepSeek-V4-Pro", context: 1048576, output: 32768 },
   { id: "xopdsv4flash0731in", name: "DeepSeek-V4-Flash", context: 1048576, output: 32768 },
+  // 与 EXTRA_CATALOG 同步：目录接口没上这个模型时，网络故障分支也要能列出来。
+  { id: "xdeepseek-flash-in", name: "DeepSeek-V4.1-Flash", context: 1048576, output: 100000 },
 ]
+
+// 目录接口（model-manager/models）滞后于桌面端目录时，网关已接受、目录里还没露面的模型在
+// 此补位。2026-11-13 实测：xdeepseek-flash-in 直调 /model-gateway/v1/responses 返 200，
+// 同一时刻目录只给 7 个（桌面端自己的 catalog 已有 8 个）。上游补齐后删掉对应条目即可。
+const EXTRA_CATALOG = [
+  {
+    slug: "xdeepseek-flash-in",
+    display_name: "DeepSeek-V4.1-Flash",
+    context_window: 1048576,
+    max_output_tokens: 100000,
+    input_modalities: ["text"],
+    supported_in_api: true,
+    visibility: "list",
+    supported_reasoning_levels: [
+      { effort: "none", description: "关闭思考" },
+      { effort: "high", description: "高强度思考" },
+      { effort: "max", description: "最大强度思考" },
+    ],
+  },
+]
+
+// 星火系列模型：目录 id 以 spark- 打头（启动表 Spark-X2.6 / Spark-X2.6-Lite /
+// Spark-X2.5，实时目录同名）。只有它们扣星火积分，其它模型（DeepSeek、GLM、
+// Auto）扣通用积分（plugins#990）。
+const SPARK_MODEL = /^spark-/i
+
+// sparkModelIds 是星火积分窗口要圈住的模型：账号实时目录里的星火模型（有目录时
+// 以目录为准，限免标记也以目录为准），再并上启动表里目录没列的星火模型。限免
+// 模型不扣积分，不圈进去——星火积分用光不该挡住它。
+function sparkModelIds(models) {
+  const ids = new Set()
+  const listed = new Set()
+  for (const [key, m] of Object.entries(models && typeof models === "object" ? models : {})) {
+    const id = typeof m?.id === "string" && m.id ? m.id : key
+    if (!SPARK_MODEL.test(id)) continue
+    listed.add(id)
+    if (m?.free !== true) ids.add(id)
+  }
+  for (const m of BOOTSTRAP) {
+    if (SPARK_MODEL.test(m.id) && !listed.has(m.id) && !m.free) ids.add(m.id)
+  }
+  return [...ids].sort()
+}
 
 function join(...parts) {
   return parts.join("/")
@@ -414,7 +461,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
 
   // 当日「每日登录赠送」入账流水。网页后台的获得明细（points/details
   // direction=CREDIT）是权威数据源：发放一旦发生就有 GRANT 行，不管由哪个
-  // 端触发（桌面端 init-app、服务端午夜批量），都比「余额差+弹窗」可靠。
+  // 端触发（桌面端 complete 弹窗、服务端批量），都是唯一可信的到账证据。
   async function readDailyGrantLedger(session) {
     const now = nowMsImpl()
     const query = `pageNum=1&pageSize=50&direction=CREDIT&startTime=${encodeURIComponent(cstStamp(cstDayStart(now)))}&endTime=${encodeURIComponent(cstStamp(now))}`
@@ -476,20 +523,32 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
     return await studioJson("client-popups/pending", { session, fetchImpl, operation: "每日奖励弹窗" })
   }
 
-  // 桌面端启动时的两个 POST 里，签到只复刻 init-app（租户初始化）。另一个
-  // auth/bearer-token 会换发 modelBearerToken；2026-11-06 实测新旧 token 并存
-  // （换发后旧 token 仍可用），但签到没有换发需求，多换一次只是白白轮换，
-  // 故仍不调用——浏览器登录自己需要 key 时才换。失败不塌方，但原因要收集
-  // 起来交给上层，否则用户分不清「POST 失败」和「今天确实没发」。
-  async function desktopLogin(session) {
-    const warnings = []
-    try {
-      await studioJson("tenant-app/v2/init-app", { session, fetchImpl, method: "POST", operation: "租户初始化" })
-    } catch (error) {
-      if (error?.signIn === "expired") throw error
-      warnings.push(`init-app ${error?.message ?? "失败"}`)
-    }
-    return { warnings }
+  // 只认桌面端 complete 契约能接受的每日奖励弹窗：componentType 精确匹配，
+  // popupId 为正整数，instanceKey 为非空字符串。其它弹窗（下载奖励、新人礼包、
+  // 引导）一律不碰。
+  function pickDailyRewardPopup(popups) {
+    if (!Array.isArray(popups)) return null
+    return (
+      popups.find(
+        (item) =>
+          item?.componentType === "DAILY_REWARD_DIALOG" &&
+          Number.isSafeInteger(item.popupId) &&
+          item.popupId > 0 &&
+          typeof item.instanceKey === "string" &&
+          item.instanceKey.trim().length > 0,
+      ) ?? null
+    )
+  }
+
+  // 桌面端「知道了」按钮对应的写请求：完成这一条每日奖励弹窗。
+  async function completeDailyRewardPopup(session, popup) {
+    return await studioJson("client-popups/complete", {
+      session,
+      fetchImpl,
+      method: "POST",
+      operation: "每日奖励领取",
+      body: { popupId: popup.popupId, instanceKey: popup.instanceKey },
+    })
   }
 
   return {
@@ -679,7 +738,7 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
       },
       // 有 Cookie 会话时显示真实积分余额与会员档；只有模型凭据时退回目录
       // 连通性检查。读取均不计费。
-      async usage(getAuth) {
+      async usage(getAuth, provider) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
         const session = auth.metadata?.session
@@ -732,10 +791,14 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           // 星火积分的到期时间 balance 接口不给，从入账流水推（失败不塌方）；
           // 流水是发放额，到期提示按余额封顶。
           const sparkExpiry = await readSparkExpiry(session, balance.sparkTotalBalance).catch(() => null)
+          // 两个池子各管各的：星火积分只圈星火模型（models），用光只挡它们，
+          // 不把整个账号判成用光；DeepSeek 等照扣通用积分照常路由（plugins#990）。
+          // 圈不出模型时（全是限免）它挡不了谁，只显示。
+          const sparkModels = sparkModelIds(provider?.models)
           windows.push({
             name: "星火积分",
             balance: balance.sparkTotalBalance,
-            aside: false,
+            ...(sparkModels.length ? { aside: false, models: sparkModels } : { aside: true }),
             ...(sparkExpiry && balance.sparkTotalBalance > 0 ? sparkExpiry : {}),
           })
         }
@@ -746,10 +809,9 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           windows,
         }
       },
-      // 「每日登录积分」：服务端在当天账号会话首次活跃时发放，客户端没有领取
-      // 接口（DAILY_REWARD_DIALOG 弹窗只做通知）。先读当日获得流水：已有当日
-      // GRANT 行就 done、一个写请求都不发；流水为空才复刻桌面端启动的 init-app，
-      // 再读一次流水（流水读不到才退回余额差 + 弹窗观测）。
+      // 「每日登录积分」：pending 里的 DAILY_REWARD_DIALOG 是待领取的每日奖励，
+      // 桌面端「知道了」按钮发 POST client-popups/complete。先读当日获得流水：
+      // 已有 GRANT 行就 done、零写；没有才 complete 这一条弹窗，再以流水认定。
       async checkin(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return {}
@@ -767,7 +829,6 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         if (config?.dailyLoginEnabled === false) {
           return { outcome: "inactive", message: "当前没有每日登录积分活动" }
         }
-        const warnings = []
         // 星火 7 天内到期时给签到消息加一句提醒（按北京时间算日历天，不是
         // 「剩不到 24 小时」）。余额是还没花掉的量，提示金额不能超过它。
         const expiryNote = async (cap) => {
@@ -783,132 +844,76 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
           return `；注意 ${sparkExpiry.runsOut} 星火积分${daysLeft <= 0 ? "今天" : ` ${daysLeft} 天内`}到期`
         }
 
-        // 1) 流水优先：当日已有「每日登录赠送」GRANT 行 = 已发放。只读，
-        //    不写 init-app、不碰弹窗（11-06 实测服务端午夜批量先于签到）。
-        let grant = null
-        let ledgerError = null
-        try {
-          grant = await readDailyGrantLedger(session)
-        } catch (error) {
-          if (error?.signIn === "expired") throw error
-          ledgerError = error
+        // 流水是唯一判据；读失败就没法证明结果，不猜。
+        const readGrant = async () => {
+          try {
+            return { grant: await readDailyGrantLedger(session) }
+          } catch (error) {
+            if (error?.signIn === "expired") throw error
+            return { error }
+          }
         }
-        if (grant) {
+        const grantMessage = async (grant, via) => {
           const rawPoints = Number(grant.amount)
           const credit = Number.isFinite(rawPoints) && rawPoints > 0 ? rawPoints : 0
           return {
-            outcome: "done",
             ...(credit > 0 ? { credit } : {}),
-            message: `每日登录积分 +${credit || 0} 已发放（流水实证，先于签到发生）${await expiryNote()}`,
+            message: `每日登录积分 +${credit || "?"}（${via}，流水实证）${await expiryNote()}`,
           }
         }
 
-        // 2) 未发放：复刻桌面端启动的 init-app（签到唯一的写请求），再读一次
-        //    流水。余额只用于「流水滞后」归因与旧判据兜底。
-        let before = null
-        try {
-          before = await readBalance(session)
-        } catch (error) {
-          if (error?.signIn === "expired") throw error
+        // 1) 流水优先：当日已有「每日登录赠送」GRANT 行 = 已发放。只读，零写。
+        const first = await readGrant()
+        if (first.error) {
+          return { outcome: "failed", message: first.error?.message ?? "当日获得流水读取失败" }
         }
-        // 旧判据（流水不可用）才需要基线弹窗：签到前就挂着的旧弹窗不能算今天。
-        let hadDailyBefore = null
-        let baselineError = null
-        if (ledgerError) {
-          try {
-            const baseline = await readPopups(session)
-            hadDailyBefore = Array.isArray(baseline) && baseline.some((item) => item?.componentType === "DAILY_REWARD_DIALOG")
-          } catch (error) {
-            if (error?.signIn === "expired") throw error
-            baselineError = error
-          }
+        if (first.grant) {
+          return { outcome: "done", ...(await grantMessage(first.grant, "已发放")) }
         }
-        const login = await desktopLogin(session)
-        warnings.push(...login.warnings)
-        // 会话活跃 touch：与桌面端启动时同类只读请求。
-        await studioJson("membership/me", { session, fetchImpl, operation: "会员信息" }).catch(() => null)
-        await studioJson("points/summary", { session, fetchImpl, operation: "积分汇总" }).catch(() => null)
-        await sleep(2500)
-        let after = null
-        try {
-          after = await readBalance(session)
-        } catch (error) {
-          if (error?.signIn === "expired") throw error
-        }
-        let grantAfter = null
-        try {
-          grantAfter = await readDailyGrantLedger(session)
-        } catch (error) {
-          if (error?.signIn === "expired") throw error
-          if (!ledgerError) ledgerError = error
-        }
-        if (grantAfter) {
-          const rawPoints = Number(grantAfter.amount)
-          const credit = Number.isFinite(rawPoints) && rawPoints > 0 ? rawPoints : 0
-          return {
-            outcome: "claimed",
-            ...(credit > 0 ? { credit } : {}),
-            message: `每日登录积分 +${credit || "?"}（流水实证，本次签到触发）${await expiryNote(after?.sparkTotalBalance)}`,
-          }
-        }
-        const delta =
-          typeof before?.totalBalance === "number" && typeof after?.totalBalance === "number"
-            ? after.totalBalance - before.totalBalance
-            : null
-        const warnSuffix = warnings.length ? `（${warnings.join(" / ")}）` : ""
-        if (!ledgerError) {
-          // 流水通畅但无 GRANT 行：余额涨了说明发放已到账、流水只是滞后；
-          // 余额没涨才是真的没发。不谎称已签。
-          if (delta > 0) {
-            return {
-              outcome: "claimed",
-              credit: delta,
-              message: `每日登录积分 +${delta}（余额上涨，流水尚未入账）${await expiryNote(after?.sparkTotalBalance)}`,
-            }
-          }
-          return { outcome: "inactive", message: `未观测到新发放：当日获得流水无「每日登录赠送」记录${warnSuffix}` }
-        }
-        // ---- 流水读失败：退回旧判据（余额差+弹窗，只读）----
-        if (typeof before?.totalBalance !== "number" || typeof after?.totalBalance !== "number") {
-          return { outcome: "failed", message: `积分余额读数不完整${warnSuffix}` }
-        }
-        let popups = null
-        let popupError = null
+
+        // 2) 未发放：取 pending 里的每日奖励弹窗，只 complete 这一条。
+        let popups
         try {
           popups = await readPopups(session)
         } catch (error) {
           if (error?.signIn === "expired") throw error
-          popupError = error
+          return { outcome: "failed", message: error?.message ?? "每日奖励弹窗读取失败" }
         }
-        if (delta > 0) {
-          return {
-            outcome: "claimed",
-            credit: delta,
-            message: `每日登录积分 +${delta}${await expiryNote(after?.sparkTotalBalance)}`,
-          }
+        const daily = pickDailyRewardPopup(popups)
+        if (!daily) {
+          // 没有待领取的每日奖励：不猜测、不写。
+          return { outcome: "inactive", message: "当日没有待领取的每日登录积分" }
         }
-        // 基线读失败 ⇒ 不知道签到前是否已有弹窗，任何 done 结论都是猜的。
-        if (hadDailyBefore === null) {
-          return {
-            outcome: "failed",
-            message: `签到前无法读取每日奖励弹窗，不能判定今日是否发放${baselineError?.message ? `：${baselineError.message}` : ""}${warnSuffix}`,
-          }
+        try {
+          await completeDailyRewardPopup(session, daily)
+        } catch (error) {
+          if (error?.signIn === "expired") throw error
+          return { outcome: "failed", message: `每日登录积分领取失败：${error?.message ?? "请求失败"}` }
         }
-        if (popupError) {
-          return { outcome: "failed", message: `${popupError?.message ?? "每日奖励弹窗读取失败"}${warnSuffix}` }
+
+        // 3) 以流水认定；一次短延迟复读，不重复 complete。
+        let after = await readGrant()
+        if (!after.error && !after.grant) {
+          await sleep(CHECKIN_LEDGER_RETRY_MS)
+          after = await readGrant()
         }
-        const daily = Array.isArray(popups) && popups.find((item) => item?.componentType === "DAILY_REWARD_DIALOG")
-        if (daily) {
-          const rawPoints = Number(daily.payload?.points)
-          const credit = Number.isFinite(rawPoints) && rawPoints >= 0 ? rawPoints : 0
-          // payload 没有日期字段，签到前就挂着的那份无法断定是今天的。
-          if (hadDailyBefore === true) {
-            return { outcome: "inactive", message: "余额无变化，且签到前已有未确认的每日奖励弹窗，无法判定今日是否发放" }
-          }
-          return { outcome: "done", ...(credit > 0 ? { credit } : {}), message: "每日登录积分已发放（服务端待通知弹窗）" }
+        if (after.error) {
+          return { outcome: "failed", message: `已提交领取，但当日获得流水读取失败：${after.error?.message ?? "未知错误"}` }
         }
-        // 余额没涨、也没有待通知弹窗：这套请求序列没触发发放，不谎称已签。
-        return { outcome: "inactive", message: `未观测到新发放：余额无变化，也没有今日的每日奖励弹窗${warnSuffix}` }
+        if (after.grant) {
+          return { outcome: "claimed", ...(await grantMessage(after.grant, "本次领取")) }
+        }
+        // complete 成功但流水没出现：不谎称已签，弹窗是否还在只用于说明原因。
+        let stillPending = false
+        try {
+          stillPending = !!pickDailyRewardPopup(await readPopups(session))
+        } catch (error) {
+          if (error?.signIn === "expired") throw error
+        }
+        return {
+          outcome: "failed",
+          message: `已提交领取，${stillPending ? "每日奖励弹窗仍在等待" : "弹窗已关闭"}，但当日获得流水未出现`,
+        }
       },
     },
 
@@ -938,12 +943,16 @@ function createPlugin({ fetchImpl = globalThis.fetch, env = process.env, homedir
         if (!Array.isArray(list) || list.some((m) => typeof m?.slug !== "string" || !m.slug)) {
           throw new Error("AStudio 模型目录格式异常")
         }
+        const catalogSlugs = new Set(list.map((m) => m.slug))
         const rows = Object.fromEntries(
           list
             .filter((m) => m.visibility !== "hidden" && m.supported_in_api !== false)
             .map((m) => [m.slug, rowFromCatalogEntry(m)]),
         )
         if (!Object.keys(rows).length) throw new Error("AStudio 模型目录为空")
+        // 目录里出现过这个名字（哪怕被 visibility/supported_in_api 过滤掉）就不再补位：
+        // 下架或禁用是上游的明确表态，不能用补位表把它复活。
+        for (const m of EXTRA_CATALOG) if (!catalogSlugs.has(m.slug)) rows[m.slug] = rowFromCatalogEntry(m)
         return rows
       },
     },
@@ -977,5 +986,6 @@ export const _internal = {
   DESKTOP_WAIT_MS,
   WEB_SIGNIN_WAIT_MS,
   BOOTSTRAP,
+  sparkModelIds,
   ID,
 }

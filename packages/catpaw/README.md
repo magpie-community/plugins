@@ -24,6 +24,7 @@ magpie plugin login catpaw     # 选「网页登录」/「妙手桌面端登录�
 - **余额（usage）**：`GET https://catx.nocode.cn/api/gateway/credit/balance`，鉴权头是 **`X-Auth-Token: <accessToken>`**。
   - ⚠️ 这个接口与聊天网关**不是同一个鉴权头**：它只认 `X-Auth-Token`，把聊天用的 `Cookie: X-Passport-Token` 发到这里会稳定 401（body `code 4010`）。magpie 把 usage 的 401 当作「登录态失效」，所以鉴权头必须分开核对。
   - 读成功后**不带 `signIn` 字段**：magpie 以此把「已退出登录」的标记撤掉。
+  - 「可用积分」窗口：上游只给余额（`availableCredits`），不给总额与累计用量，所以 `used` 恒为 0、不伪造。`userPlan.nextRefreshTime`（毫秒时间戳）作为窗口的 `resetsAt`，magpie 的 Smart 路由据此先用积分先刷新的账号（plugins#867）；该字段缺失或无法解析时窗口保持 `aside`，不参与排序。
 - **无签到**：CatPaw 没有每日签到活动。
 
 ## 协议细节

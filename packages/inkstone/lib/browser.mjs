@@ -23,9 +23,24 @@ import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { profileHasNewCookie, cookieBaseline } from "./cookieProbe.mjs"
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const LOGIN_URL = "https://discovery.intern-ai.org.cn/token-plan/home"
+
+/**
+ * 控制台的 cookie 根域（`intern-ai.org.cn`）：取 LOGIN_URL 主机的最后两段。
+ * 不硬编码产品域名，换域名时跟着走；cookie 的 host_key 通常是 `.intern-ai.org.cn`。
+ */
+function consoleCookieDomain() {
+  try {
+    const host = new URL(LOGIN_URL).hostname.toLowerCase()
+    const parts = host.split(".")
+    return parts.length > 2 ? parts.slice(-2).join(".") : host
+  } catch {
+    return ""
+  }
+}
 
 // 同一时刻只允许一个浏览器实例使用插件专用 profile：登录窗口、静默续期、
 // headless 读 cookie 都在这个 profile 上，两个实例同时开会把命令互相委托，
@@ -533,18 +548,38 @@ export async function closeWindowGracefully(child, { timeoutMs = 15_000, log = (
  */
 export async function waitForConsoleWindow(
   child,
-  { timeoutMs = 8 * 60_000, pollMs = 1000, signal, log = () => {}, platform = process.platform, titleOf = windowTitleOf, settleMs = 5000 } = {},
+  {
+    timeoutMs = 8 * 60_000,
+    pollMs = 1000,
+    signal,
+    log = () => {},
+    platform = process.platform,
+    titleOf = windowTitleOf,
+    settleMs = 5000,
+    // #840：非 Windows 的完成信号——轮询 profile 的 Cookies sqlite 找
+    // `uaa-token` 行（name 列明文）。给了 profile 才启用；测试传假实现。
+    profile = "",
+    cookieProbe = null,
+  } = {},
 ) {
   const deadline = Date.now() + timeoutMs
   const started = Date.now()
-  // 窗口标题只能靠 Windows 的 Get-Process 读；别的平台就以“用户关掉窗口”
-  // 作为完成信号（提示语里会说明），否则只能干等满整个超时。
+  // Windows 用窗口标题；别的平台加 Cookies 轮询（有 profile 与探针才启用），
+  // 都没有时退回"用户关掉窗口"。
   const canReadTitle = platform === "win32"
+  const canProbeCookies = platform !== "win32" && Boolean(profile) && typeof cookieProbe === "function"
+  if (canProbeCookies) {
+    log("watching the profile's cookie store for the console session (the window can be left open)")
+  }
   let hits = 0
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) return "closed"
     if (signal?.aborted) return "aborted"
     if (!canReadTitle) {
+      if (canProbeCookies && cookieProbe(profile)) {
+        log("the console session is in the profile; closing the window")
+        return "console"
+      }
       await sleep(pollMs)
       continue
     }
@@ -571,7 +606,7 @@ export async function waitForConsoleWindow(
  *
  * 登录态留在专用 profile 里（keepSignIn），续期和下次登录都直接用它。
  */
-export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, waitForLogin, signal, log = () => {} } = {}) {
+export async function signInWithBrowser({ browserPath, keepSignIn = true, timeoutMs = 8 * 60_000, waitForLogin, loginWait, signal, log = () => {} } = {}) {
   // before the one-off profile is made, so a missing browser leaves no folder
   const exe = requireBrowser(browserPath)
   const dir = keepSignIn ? profileDir() : oneOffProfileDir()
@@ -580,6 +615,13 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
     log("opening the sign-in window")
     killProfileProcesses(dir, log)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
+    // #847: the profile keeps the previous sign-in's uaa-token row
+    // (keep_sign_in defaults on), so "a row exists" is not "this sign-in
+    // finished" — remember the rows there now, and accept only one newer
+    // than this launch (or an overwritten one, whose last_update_utc moved).
+    const consoleDomain = consoleCookieDomain()
+    // 所有平台都取基线：测试可在 Windows 上注入 platform:"linux" 走探针路径。
+    const baseline = cookieBaseline(dir, "uaa-token", consoleDomain)
     try {
       const child = spawn(exe, browserArgs(dir, 0, LOGIN_URL, { cdp: false, login: true }), {
         stdio: "ignore",
@@ -590,7 +632,23 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
         // wait is replaced entirely and nothing in this module reads the env.
         const how = waitForLogin
           ? await waitForLogin({ child, signal })
-          : await waitForConsoleWindow(child, { timeoutMs, signal, log })
+          : await waitForConsoleWindow(child, {
+              // injection point for tests: platform/pollMs, so the real wiring
+              // (baseline + probe + close) runs on a fast clock off Windows
+              ...(loginWait ?? {}),
+              timeoutMs,
+              signal,
+              log,
+              // #840/#847: off Windows the profile's cookie store is the
+              // completion signal — a row newer than this launch, unexpired,
+              // on the console's domain. The window closes itself, no Cmd+Q
+              // needed (Chrome writes cookies to disk on its own ~30s timer).
+              // loginWait.cookieProbe is the test injection point; production
+              // always uses the real sqlite probe with the launch baseline.
+              profile: dir,
+              cookieProbe: loginWait?.cookieProbe ?? ((probeProfile) =>
+                profileHasNewCookie(probeProfile, "uaa-token", baseline, consoleDomain)),
+            })
         log(`login window finished (${how})`)
         if (how === "aborted") throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
         // 登录完成：让页面稳定一下，然后**优雅关闭**（WM_CLOSE），让 Edge
@@ -604,11 +662,14 @@ export async function signInWithBrowser({ browserPath, keepSignIn = true, timeou
       // 用 profile 里刚写下的会话读 token；遇到残留进程造成的"立刻退出"重试一次。
       for (let attempt = 1; attempt <= 2; attempt++) {
         if (cancelled()) throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })
+        log(`reading the session from the profile (attempt ${attempt}/2)`)
         let s
         try {
           s = await openSession({ browserPath: exe, profile: dir, headless: true, log })
+          log("profile session open; waiting for the uaa-token cookie")
           const token = await waitForToken(s, { timeoutMs: 20_000, signal, log })
           if (!token) throw new Error("could not read the console session after the sign-in")
+          log("session read; validating the account and creating the key")
           return token
         } catch (e) {
           if (cancelled()) throw Object.assign(new Error("the sign-in was cancelled"), { cancelled: true })

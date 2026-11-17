@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5 · 2026-11-10
+
+### Added
+
+- Cursor shows in the office: its editor's agent chats as "Cursor" and cursor-agent's as "Cursor CLI", read from `~/.cursor/projects/*/agent-transcripts` (`CURSOR_DATA_DIR`, and cursor-agent's `chats/*/*/meta.json` under `CURSOR_CONFIG_DIR`). What was asked, the tools it calls and its answer show; Cursor's requests go to Cursor's servers, so there are no token counts. The editor writes no end-of-turn line, so its chat counts as done 30 seconds after its last answer. Asked by WaiooT on X.
+
 ## 0.3.4 · 2026-11-06
 
 ### Fixed
