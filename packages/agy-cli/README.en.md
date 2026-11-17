@@ -18,9 +18,8 @@ response.
 - The work is done by the real agy CLI over the ACP channel it ships with. The
   ACP handshake's `clientInfo` is the plugin's own package name and version
   (`opencode-agy-cli-auth`), not Zed or any other editor. The plugin calls
-  Google's endpoints itself in one case only: when agy refuses `/usage` for
-  the account's region, it reads the quota the way agy does (see "Usage
-  quota").
+  Google's endpoints itself only to read quota, using agy's stored sign-in
+  and the same quota endpoints (see "Usage quota"). Model requests stay in agy.
 - Tools that belong to the client, such as file reads, writes and shell commands,
   are exposed to the model over MCP. The client runs them and the results flow
   back into the same agy conversation, so the model sees ordinary native tool
@@ -225,18 +224,19 @@ magpie quota agy-cli --json
 magpie quota refresh agy-cli --json
 ```
 
-The numbers come from agy's own `/usage` report for whichever account is signed
+The numbers come from the endpoints agy's `/usage` uses for the account signed
 in to the CLI, broken down by model group. The plugin never writes Google tokens
 or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
-Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
-("not currently available in your location") even though the quota read it
-made had its answer. The plugin then makes that read itself, the way agy makes
-it: with agy's stored sign-in it asks Google's Code Assist server
+With a renewable Google sign-in and a known access-token expiry, the plugin reads
+quota directly instead of starting the full CLI, initializing its language server,
+and waiting for an eligibility check on every refresh. It makes the same read as agy:
+with agy's stored sign-in it asks Google's Code Assist server
 (`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
 An access token about to end is renewed in memory and never stored. If that
-read fails too, the account shows agy's refusal and no numbers.
+read fails, the account shows the failure and no invented numbers. Other sign-ins
+still use agy's `/usage`, falling back to the same quota endpoints on a region refusal.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored
