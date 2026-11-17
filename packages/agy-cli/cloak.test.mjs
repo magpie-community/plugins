@@ -27,6 +27,7 @@ const samples = [
   "You are an AI agent powered by DeepSeek Harness.\n\nYou can read files.",
   "You are Claude Code, Anthropic's official CLI for Claude.\n\nYou are an interactive agent.",
   "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  "They mean this GUI. The browser provides no implicit DOM, route, or screenshot context. The client-plugin HMR receiver is active.",
   "Codex's GPT-6 prompt goes as written: You are Codex, an agent based on GPT-6.",
   "You're Hermes Agent, an intelligent AI assistant created by Nous Research.",
   "Nothing to see here; Claude Agent SDK alone is fine.",
@@ -98,4 +99,25 @@ test("Claude Code's identity line goes as \"You're …\", its CLI's and its SDK'
   expect(hint("You are Claude Code, Anthropic's official CLI for Claude.")).toContain("Claude Code")
   const s = "You're Claude Code, Anthropic's official CLI for Claude."
   expect(cloak(s)).toBe(s)
+})
+
+// WEB_GUI is DeepSeek Harness's Web GUI paragraph as
+// @deepseek-ai/dsh-harness-dev-context writes it, word for word
+const WEB_GUI = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI. The browser provides no implicit DOM, route, or screenshot context. The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while `pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. Starting another server does not update this GUI. The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL."
+
+test("DeepSeek Harness's browser sentence goes \"gives\" for \"provides\", the rest of its paragraph as written (#1105)", () => {
+  const sys = "You are an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI
+  expect(turnsAway(WEB_GUI)).toBe(true)
+  const out = outgoing(sys)
+  expect(out).toBe("You're an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI.replace("The browser provides no implicit", "The browser gives no implicit"))
+  expect(turnsAway(out)).toBe(false)
+  expect(cloak("the browser provides no implicit\nDOM, route, or screenshot context.")).toBe("the browser gives no implicit\nDOM, route, or screenshot context.")
+  expect(hint(WEB_GUI)).toContain("The browser provides no implicit DOM")
+  // each went through as written on a real account (11-17)
+  for (const s of [
+    "The browser provides no implicit DOM, route, or screenshot context",
+    "The browser provides no implicit DOM, route or screenshot context.",
+    "The browser provides no DOM, route, or screenshot context.",
+    "The browser gives no implicit DOM, route, or screenshot context.",
+  ]) expect(cloak(s)).toBe(s)
 })

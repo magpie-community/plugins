@@ -118,7 +118,11 @@ The plugin also changes the request itself, as the built-in did:
   someone broke up with invisible characters is reworded the same way.
   DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
   paths…") goes reworded with the same meaning: word for word, it got most
-  `gemini-4-argon` answers fast, without thinking and shallow (#1028).
+  `gemini-4-argon` answers fast, without thinking and shallow (#1028). Its
+  first line, "You are an AI agent powered by DeepSeek Harness.", and "The
+  browser provides no implicit DOM, route, or screenshot context." in its
+  Web GUI paragraph get the 429 as written, so they go as "You're …" and
+  "The browser gives …" (#1105).
 - **Tool calls:**
   - Tool call ids are reduced to `[A-Za-z0-9_-]`.
   - A tool's `{output}` or `{error}` response becomes `{result}`.

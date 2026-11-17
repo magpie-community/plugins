@@ -319,6 +319,30 @@ test("DeepSeek Harness's @-path paragraph goes reworded, the rest as written (#1
   expect(both).toContain("When the user writes @ followed by a path")
 })
 
+// DeepSeek Harness's Web GUI paragraph as @deepseek-ai/dsh-harness-dev-context
+// writes it, word for word
+const WEB_GUI = "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names. When the user refers to \"this page\", \"this GUI\", or \"this app\" without naming another target, they mean this GUI. The browser provides no implicit DOM, route, or screenshot context. The client-plugin HMR receiver is active, but client-plugin changes reload without a refresh only while `pnpm run dev:web` is also running from this same checkout to rebuild their bundles; verify that watcher before promising automatic updates. Every other change — the apps/web shell and plain packages — requires rebuilding the affected Web artifacts and verifying this existing URL after a page refresh. Starting another server does not update this GUI. The apps/web Vite entry builds the shell but is not a standalone application because only dsh web injects window.__DSH_BOOT__. Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL."
+
+test("DeepSeek Harness's first line and browser sentence go reworded, the rest as written (#1171, #1105)", () => {
+  const { turnsAway, hint } = _internal
+  const sys = "You are an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI
+  expect(turnsAway(sys)).toBe(true)
+  const text = shape({ systemInstruction: { parts: [{ text: sys }] }, contents: [] }, "gemini-3.8-flash", "", "").systemInstruction.parts[0].text
+  expect(text).toBe("You're an AI agent powered by DeepSeek Harness.\n\n" + WEB_GUI.replace("The browser provides no implicit", "The browser gives no implicit"))
+  expect(turnsAway(text)).toBe(false)
+  // lower-cased or wrapped it was turned away too (11-17)
+  expect(cloak("the browser provides no implicit\nDOM, route, or screenshot context.")).toBe("the browser gives no implicit\nDOM, route, or screenshot context.")
+  expect(hint(sys)).toContain("DeepSeek Harness")
+  expect(hint(WEB_GUI)).toContain("The browser gives")
+  // each went through as written on a real account (11-17)
+  for (const s of [
+    "The browser provides no implicit DOM, route, or screenshot context",
+    "The browser provides no implicit DOM, route or screenshot context.",
+    "The browser provides no DOM, route, or screenshot context.",
+    "You are DeepSeek Harness.",
+  ]) expect(cloak(s)).toBe(s)
+})
+
 // since 11-14 Codex's GPT-5 line in a user's turn is turned away too (3 of
 // 3 on a real account): it goes reworded there, and the model's turns and
 // tool results, which went through with it, as written

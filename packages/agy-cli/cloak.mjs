@@ -35,6 +35,13 @@
 // by DeepSeek Harness.", is turned away too (#1171, huangzhenhao90, on a
 // real account through agy on gemini-4-hydrogen): "powered by DeepSeek."
 // alone, "an agent" for "an AI agent" and "You're …" each went through.
+// Since 11-17 so is a sentence in the middle of DeepSeek Harness's Web GUI
+// paragraph (@deepseek-ai/dsh-harness-dev-context), "The browser provides
+// no implicit DOM, route, or screenshot context." (#1105, LayFz, on an Ultra
+// account on gemini-4-hydrogen-medium and -xhigh; 3 of 3 on gemini-3.8-flash
+// and gemini-4-hydrogen-sonar on 11-17, lower-cased or wrapped too, and the
+// whole paragraph with it). Without its period, without the comma before
+// "or", without "implicit" or with "gives" for "provides" it went through.
 // Since 11-15 Claude Code's identity line, "You are Claude Code,
 // Anthropic's official CLI for Claude." (its CLI's, and with ", running
 // within the Claude Agent SDK" its SDK's), is turned away too (#1151,
@@ -56,6 +63,7 @@ export const TURNED_AWAY = [
   "a coding assistant running inside pi",
   "you are an ai agent powered by deepseek harness",
   "you are claude code, anthropic's official cli for claude",
+  "the browser provides no implicit dom, route, or screenshot context.",
 ]
 
 // INVISIBLE are the characters Google's check reads past: since 11-14 a
@@ -113,6 +121,8 @@ export function turnsAway(system) {
 //   - pi's line goes "running within pi" (5 of 5 on both models).
 //   - DeepSeek Harness's line goes as "You're …" (#1171), and so does
 //     Claude Code's identity line (#1151).
+//   - DeepSeek Harness's browser sentence goes "gives no implicit DOM, …"
+//     for "provides" (3 of 3 alone and in its paragraph on 11-17, #1105).
 //   - omp's RFC 2119 line goes as "key words", the RFC's own term (10 of 10
 //     on 11-14, eric_li8983 on X).
 const youre = (line) => line.replace(/^(you)\s+are/i, "$1're")
@@ -129,6 +139,7 @@ const SAID_AS = {
   "a coding assistant running inside pi": (line) => line.replace(/inside/i, "within"),
   "you are an ai agent powered by deepseek harness": youre,
   "you are claude code, anthropic's official cli for claude": youre,
+  "the browser provides no implicit dom, route, or screenshot context.": (line) => line.replace(/provides/i, "gives"),
 }
 
 // USER_TURNED_AWAY are the lines Antigravity also turns away in a user's
@@ -203,7 +214,7 @@ const CODEX_CLI_HINT =
   "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
 
 const DSH_HINT =
-  "Antigravity answers this 429 to DeepSeek Harness's system prompt (\"You are an AI agent powered by DeepSeek Harness.\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group"
+  "Antigravity answers this 429 to DeepSeek Harness's system prompt (\"You are an AI agent powered by DeepSeek Harness.\", or \"The browser provides no implicit DOM, route, or screenshot context.\" in its Web GUI's) whatever quota is left, so it is not a quota and waiting won't help; magpie sends those lines as \"You're …\" and \"The browser gives …\", which go through, so use another provider for these chats, or put one after Antigravity in a routing group"
 
 const RFC_HINT =
   "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way"
@@ -216,6 +227,6 @@ export function hint(system) {
   if (said(system, "you are hermes agent") || said(system, "an intelligent ai assistant created by nous research")) return HERMES_HINT
   if (said(system, "you are opencode")) return OPENCODE_HINT
   if (said(system, "a coding assistant running inside pi")) return PI_HINT
-  if (said(system, "you are an ai agent powered by deepseek harness")) return DSH_HINT
+  if (said(system, "you are an ai agent powered by deepseek harness") || said(system, "the browser provides no implicit dom, route, or screenshot context.")) return DSH_HINT
   return HINT
 }

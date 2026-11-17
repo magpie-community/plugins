@@ -304,7 +304,11 @@ back, it is reported as a 400 about the prompt, not as a quota.
 DeepSeek Harness's paragraph on `@` paths ("Tokens prefixed with @ are
 paths…") goes reworded with the same meaning, as the Antigravity provider
 sends it: word for word, it got most `gemini-4-argon` answers fast, without
-thinking and shallow (#1028).
+thinking and shallow (#1028). DeepSeek Harness's first line, "You are an AI
+agent powered by DeepSeek Harness." (#1171), and "The browser provides no
+implicit DOM, route, or screenshot context." in its Web GUI paragraph
+(#1105) get the 429 as written too, so they go as "You're …" and "The
+browser gives …".
 
 Set to `1`, the temporary agent carries `excludeDefaultComponents: true`. The
 request that goes upstream then has none of agy's own system prompt, only

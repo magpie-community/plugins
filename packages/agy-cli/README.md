@@ -219,6 +219,9 @@ agy 发出之前去掉计费那一行，其余几行换成同义的说法（"bui
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
 换成同义的说法再发：原文照发时 `gemini-4-argon` 大多很快答完、不思考、只走一步（#1028）。
+DeepSeek Harness 的第一句 "You are an AI agent powered by DeepSeek Harness."（#1171）和它 Web GUI 段里的
+"The browser provides no implicit DOM, route, or screenshot context."（#1105）原样发出也会被回 429，
+分别改成 "You're …" 和 "The browser gives …" 再发。
 
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
