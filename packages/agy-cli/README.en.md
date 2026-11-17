@@ -383,6 +383,10 @@ off unless you turn it on.
   same 503) ends the turn as `overloaded_error` (HTTP 503 without
   streaming), so the account is not rested and magpie tries again or
   elsewhere. Found by ifccod, and ported from their patch.
+  An ending starting "⚠ INVALID_ARGUMENT (code 400)" (Google's HTTP 400,
+  such as an unsupported thinking level) ends the turn with an
+  `invalid_request_error` (status 400, HTTP 400 without streaming) carrying
+  upstream's words instead of passing them through as normal reply text.
 - **A reply with only thinking, no text and no tool call** (billion-context's
   "the turn degenerated again after the continuation nudge"): when one of the
   model's replies comes back empty, agy writes "⚠ Model produced invalid

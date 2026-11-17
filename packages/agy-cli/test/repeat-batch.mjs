@@ -1456,6 +1456,111 @@ test("agy 1.5.10's banned-account ending fails the turn as a no-retry 403, strea
   })
 })
 
+const INVALID_ARG_LINE = "⚠ INVALID_ARGUMENT (code 400): Thinking level is unsupported: THINKING_LEVEL_XHIGH"
+const INVALID_ARG = "\n" + INVALID_ARG_LINE + "\n"
+
+test("agy's INVALID_ARGUMENT (code 400) ending fails the stream as invalid_request_error with status 400", async () => {
+  for (const chunks of [
+    [INVALID_ARG],
+    [INVALID_ARG.slice(0, 14), INVALID_ARG.slice(14, 38), INVALID_ARG.slice(38)],
+    [INVALID_ARG_LINE],
+    ["\n⚠ INVALID_ARGUMENT (code 400): Request contains an invalid argument."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "invalid-arg-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error?.type, "invalid_request_error")
+      assert.equal(error?.status, 400)
+      assert.equal(error?.message, "agy bridge: Antigravity rejected the request: " + chunks.join("").trim().replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's INVALID_ARGUMENT (code 400) ending after words the model wrote keeps them and fails the turn", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", INVALID_ARG.slice(0, 26), INVALID_ARG.slice(26)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "invalid-arg-partial" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const parsed = await readSse(new Response(text))
+    assert.equal(replyText(parsed), "Let me look")
+    const error = sseError(text)
+    assert.equal(error?.type, "invalid_request_error")
+    assert.equal(error?.status, 400)
+    assert.match(error?.message, /THINKING_LEVEL_XHIGH$/)
+  })
+})
+
+test("agy's INVALID_ARGUMENT (code 400) ending fails a non-stream request as HTTP 400", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [INVALID_ARG])
+    const response = await kit.request(baseBody({ metadata: { user_id: "invalid-arg-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 400)
+    assert.equal(body.error?.type, "invalid_request_error")
+    assert.match(body.error?.message, /Thinking level is unsupported: THINKING_LEVEL_XHIGH/)
+    assert.ok(!JSON.stringify(body).includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("agy's generic error ending with INVALID_ARGUMENT (code 400) in log fails as HTTP 400", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      fs.appendFileSync(agyLogOf(kit), "E1117 20:45:59.000000 1234 errorreport.go:224] agent executor error: generating and executing: INVALID_ARGUMENT (code 400): Thinking level is unsupported: THINKING_LEVEL_XHIGH\n")
+      await agent.text("\n⚠ Agent execution terminated due to error.\n")
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "invalid-arg-log" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 400)
+    assert.equal(body.error?.type, "invalid_request_error")
+    assert.match(body.error?.message, /Thinking level is unsupported: THINKING_LEVEL_XHIGH/)
+  })
+})
+
+test("the model quoting an INVALID_ARGUMENT (code 400) ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ INVALID_ARGUMENT", " (code 400): Thinking level is unsupported: THINKING_LEVEL_XHIGH.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ INVALID_ARGUMENT (code 400): Thinking level is unsupported: THINKING_LEVEL_XHIGH` on xhigh."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "invalid-arg-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
+test("agy's INVALID_ARGUMENT (code 400) ending after thinking fails at once without empty-reply retry", async () => {
+  await withKit({}, async (kit) => {
+    let promptCount = 0
+    kit.defaultPrompt = async (agent) => {
+      promptCount++
+      await agent.thought("planning")
+      await agent.text(INVALID_ARG)
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "invalid-arg-thought" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(promptCount, 1)
+    assert.equal(error?.type, "invalid_request_error")
+    assert.equal(error?.status, 400)
+    assert.match(error?.message, /THINKING_LEVEL_XHIGH$/)
+  })
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {
