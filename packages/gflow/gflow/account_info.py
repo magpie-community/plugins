@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -30,6 +31,35 @@ USER_AGENT = (
 _WIZ_STRING = re.compile(r'"([A-Za-z0-9_]+)"\s*:\s*"((?:\\.|[^"\\])*)"')
 _XSSI_PREFIX = ")]}'"
 _EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+# Transient transport failures worth one short retry: the TUN path to
+# flow.google.com sometimes drops a TLS handshake mid-flight and the very
+# next attempt succeeds, so a quota read fails only when the network is
+# truly down, not when one handshake was unlucky.
+_RETRYABLE = (requests.exceptions.SSLError, requests.exceptions.ConnectionError,
+              requests.exceptions.Timeout)
+
+
+def _why(exc: BaseException) -> str:
+    """Exception class plus the SSL/connection reason, bounded for display."""
+    reason = getattr(exc, "reason", None)
+    detail = str(reason).strip() if reason is not None else ""
+    if not detail:
+        detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail[:180]}" if detail else type(exc).__name__
+
+
+def _with_retry(send, attempts: int = 3, base_delay: float = 0.6):
+    """Run send(), retrying retryable transport errors with a short backoff."""
+    last: Exception | None = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(base_delay * attempt)
+        try:
+            return send()
+        except _RETRYABLE as exc:
+            last = exc
+    raise last
 
 
 class AccountInfoError(Exception):
@@ -95,10 +125,11 @@ def _shell_headers(cookies: str) -> dict[str, str]:
 def _shell(cookies: str) -> tuple[str, dict[str, str]]:
     headers = _shell_headers(cookies)
     try:
-        response = requests.get(f"{ORIGIN}/", headers=headers, timeout=SHELL_TIMEOUT,
-                                allow_redirects=False, proxies=_proxy_for())
+        response = _with_retry(lambda: requests.get(
+            f"{ORIGIN}/", headers=headers, timeout=SHELL_TIMEOUT,
+            allow_redirects=False, proxies=_proxy_for()))
     except requests.RequestException as exc:
-        raise AccountInfoError(f"could not load Flow account shell: {type(exc).__name__}") from exc
+        raise AccountInfoError(f"could not load Flow account shell: {_why(exc)}") from exc
     if response.status_code in (401, 403):
         raise AccountInfoError("Flow account cookies are no longer signed in")
     if response.status_code in (301, 302, 303, 307, 308):
@@ -277,9 +308,10 @@ def read_credits(identity: dict[str, Any], cookies: str = "") -> int:
     body = urlencode({"f.req": json.dumps([[[CREDITS_RPC, "[]", None, "generic"]]]), "at": at})
 
     def _post(cookie_header: str):
-        return requests.post(f"{BATCHEXECUTE}?{urlencode(query)}", data=body,
-                             headers=_rpc_headers(cookie_header or str(identity.get("cookies") or "")),
-                             timeout=RPC_TIMEOUT, allow_redirects=False, proxies=_proxy_for())
+        return _with_retry(lambda: requests.post(
+            f"{BATCHEXECUTE}?{urlencode(query)}", data=body,
+            headers=_rpc_headers(cookie_header or str(identity.get("cookies") or "")),
+            timeout=RPC_TIMEOUT, allow_redirects=False, proxies=_proxy_for()))
 
     try:
         response = _post(cookies)
@@ -293,7 +325,7 @@ def read_credits(identity: dict[str, Any], cookies: str = "") -> int:
                                   "at": str(fresh_values.get("at") or at)})
                 response = _post(fresh_cookies)
     except requests.RequestException as exc:
-        raise AccountInfoError(f"could not read Flow credit balance: {type(exc).__name__}") from exc
+        raise AccountInfoError(f"could not read Flow credit balance: {_why(exc)}") from exc
     if response.status_code in (401, 403):
         raise AccountInfoError("Flow rejected the credit balance read; sign in to gflow again")
     if response.status_code in (429, 503):
