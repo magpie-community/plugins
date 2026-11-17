@@ -71,29 +71,33 @@ magpie plugin add ./magpie-plugin-muse2api
    $env:MUSE2API_KEY = "m2a_…"
    ```
 
-优先级：插件选项 > `magpie.option()` > 环境变量。
+优先级：插件选项 > `input.magpie.option()` > 环境变量。
 
 ## 工具怎么用
 
 | 工具 | 入参（必需加粗） | 返回 |
 | --- | --- | --- |
-| `generate_image` | **prompt**、size、aspect_ratio、reference_images（≤8 张）、model、extra | `{task_id, status, progress, hint}` |
-| `image_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{status:"completed", task_id, url, size, kind, bytes, revised_prompt}`；未完成：`{status, progress, task_id, hint}`；出错：`{..., error}` |
-| `generate_video` | **prompt**、duration、aspect_ratio、size、reference_images（≤8 张）、model | `{task_id, status, progress, hint}` |
-| `video_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{status:"completed", task_id, url}`；未完成：`{status, progress, task_id, hint}`；出错：`{..., error}` |
+| `generate_image` | **prompt**、size、aspect_ratio、reference_images（≤8 张）、model、extra | `{ok:true, task_id, status, progress, hint}` |
+| `image_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{ok:true, status:"completed", task_id, url, size, kind, bytes, revised_prompt}`；未完成：`{ok:true, status, progress, task_id, hint}` |
+| `generate_video` | **prompt**、duration、aspect_ratio、size、reference_images（≤8 张）、model | `{ok:true, task_id, status, progress, hint}` |
+| `video_status` | **task_id** | 完成：`{ok:true, status:"completed", task_id, url}`；未完成：`{ok:true, status, progress, task_id, hint}` |
+
+**返回契约**：任何一次调用（成功、缺配置、连接失败、上游 4xx/5xx、参考图读不到）都返回**可 `JSON.parse` 的字符串**。
+失败统一为 `{ok:false, status, error, …}`，按需带上 `baseUrl` / `task_id` / `http_status` / `field` / `hint`。不存在「错误返回中文纯文本」这一路。
 
 要点：
 
 - **图片一律异步**：`generate_image` 只提交，立刻返回 `task_id`；再调 `image_status` 取结果。
   `image_status` 会在工具时限内短轮询（默认最多 40 秒），拿到就返回 URL，没完成的返回 `task_id` 让你稍后重查。
-- **视频天然异步**：`generate_video` 提交后返回 `task_id`，视频通常要几分钟；`video_status` 同样支持
-  `wait_seconds`（默认 40 秒），一次调用内能等到就等到，等不到就再调一次。
-- `reference_images` 支持 `http(s)` URL 和本地文件路径（本地文件会被读成 data URL 再提交，最多 8 张）；
-  本地文件读不到会直接返回可操作的错误，而不是把路径当 URL 发给上游。
+- **视频天然异步**：`generate_video` 提交后返回 `task_id`，视频通常要几分钟；`video_status` **只查一次**、
+  立即返回当前 `status` / `progress`，完成时给 `url`，没完成就隔一会儿用同一个 `task_id` 再查。
+- `reference_images` 支持 `http(s)` URL 和本地文件路径（本地文件会被读成 data URL 再提交）；
+  本地先按张数与体积拦：**最多 8 张，单张 ≤40 MiB，合计 ≤100 MiB**（与 muse2api 上游同量级，base64 按解码后字节算）。
+  超限时请求根本不发出，直接返回可操作的 JSON 错误。
 - 返回的 `url` 是 muse2api 的 `/v1/media/<name>`（该路由不鉴权），能直接在浏览器打开 / 下载。
   **如果 URL 打不开**，检查 muse2api 的 `PUBLIC_BASE`：它生成的是 `PUBLIC_BASE/v1/media/...`，
   远端访问时必须设成外部可达地址。
-- Magpie 每个工具最多跑 55 秒，超时会 abort；因此 `image_status` / `video_status` 的轮询预算默认
+- Magpie 每个工具最多跑 55 秒，超时会 abort；因此 `image_status` 的轮询预算默认
   40 秒（`wait_seconds` 上限也是 40），单次请求超时按剩余预算截断，不会把一次调用拖过宿主上限。
 
 ## 验证是否可用
@@ -110,8 +114,8 @@ magpie plugin add ./magpie-plugin-muse2api
 
    > 用 muse2api 生成一段 5 秒的海浪视频
 
-   先拿 `task_id`，再调 `muse2api_video_status`；它会在 40 秒内轮询，没完成就再调一次，直到 `completed`
-   并拿到 `.mp4` 链接。
+   先拿 `task_id`，再调 `muse2api_video_status`；它只查一次并立即返回状态，没完成就隔一会儿用同一个
+   `task_id` 再查，直到 `completed` 并拿到 `.mp4` 链接。
 
 ## 故障排查
 
@@ -133,7 +137,7 @@ magpie plugin add ./magpie-plugin-muse2api
 ## 开发
 
 ```bash
-bun test              # 28 条单元测试，含 mock muse2api
+bun test              # 53 条单元测试，含 mock muse2api
 bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock muse2api，四条工具链跑通
 ```
 

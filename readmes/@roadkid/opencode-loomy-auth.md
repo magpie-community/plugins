@@ -68,17 +68,19 @@ Signed in, the `loomy` provider appears on its own; before that it is
 hidden — the hiding is the design, a dead model is what it prevents. The
 model list is read live from the gateway's `/api/v1/models` and refreshes
 as the sign-in state changes; when the gateway is unreachable the plugin
-falls back to the built-in 2026-10-28 snapshot (chat models only). Bearer
+falls back to the built-in 2026-11-17 snapshot (chat models only). Bearer
 auth on the gateway calls is injected by the host itself. The rows carry
 the vendors' own display names — a model the name table doesn't know
 keeps its cleaned gateway name with the leading brand word set right —
-and the reasoning efforts each vendor's own docs vouch for, intersected
-with the gateway row's `reasoning_efforts` declaration (the gateway
-serves every thinking row the same five values, but the vendors' pages
-say otherwise: DeepSeek's medium/xhigh are aliases of high, Qwen's high
-is xhigh, Kimi K2.6 has no effort parameter at all — only none's
-turn-it-off). The picker's Default sends no field and the gateway's own
-default gear applies.
+and the reasoning gears its vendor's docs name — a curated per-model table
+(DeepSeek and GLM: low / high / max, the DeepSeek menu also read off the
+desktop picker; qwen: low / medium / xhigh; MiMo: no gears at all (its
+docs run thinking on a thinking.type switch); Spark:
+none / low / high), not the gateway's five-level `reasoning_efforts` stamp,
+which is boilerplate and wrong for all six. A row the table does not name
+keeps its declaration passed through as it stands; a row that declares
+nothing — `auto` — falls back to the fixed low/medium/high. The picker's
+Default sends no field and the gateway's own default gear applies.
 
 ### Points in the TUI, and the daily renewal
 
@@ -138,9 +140,14 @@ conversation to another account. Any other 401/403 is the sign-in's end.
 
 Signed in, the model list is read live from `GET /api/v1/models`: capabilities
 become the tool / reasoning / image bits, the context and output limits pass
-through, and every model carries the low/medium/high reasoning-effort
-variants. The gateway prints each model's point rate as a suffix on its
-display name (`MiniMax M3 （x4.0）` — ASCII and full-width brackets both
+through, and every model carries the reasoning gears its vendor's docs name
+(the curated per-model table: DeepSeek and GLM low / high / max, qwen
+low / medium / xhigh, MiMo no gears, Spark none / low / high), a row
+the table does not name falling back to its `reasoning_efforts` declaration
+as it stands — with the fixed low/medium/high only for a row that declares
+none. The
+gateway prints each model's point rate as a suffix on its display name
+(`MiniMax M3 （x4.0）` — ASCII and full-width brackets both
 occur); the plugin splits that off — the name stays clean, and the rate
 rides the model record, the field the host's picker reads the multiplier
 from. A model the
@@ -154,7 +161,9 @@ words the host's own image-model catalog reads, so a row that ships no
 The image generators come back beside the chat list from a roster the
 plugin itself keeps — the three it vouches for, each under the display
 name the roster gives it, with the live row's own facts (the limits, the
-capability bits) riding beside. An entry is in the table only while the
+capability bits) riding beside and the record's `api.url` aimed at the
+gateway's own image route — `{apiBase}/images/generations` — not the chat
+one. An entry is in the table only while the
 live catalog names its id: a generator Loomy retires leaves at the next
 answer with no release needed, and a generator it adds waits for the
 release that names it here. No entry is in the fallback tables — with no
@@ -170,7 +179,7 @@ one.
 The live list is the source of truth and wins the moment it answers. Without
 a session, on an empty answer or a failed ask, the plugin falls back to the
 built-in table in the code — a snapshot of this same catalog's text models
-as measured on 2026-10-28, aging only as the gateway's own catalog moves
+as measured on 2026-11-17, aging only as the gateway's own catalog moves
 on; the snapshot's rates and free bits go back to the host with it, and a
 failed ask is marked as one, so the editor knows the list is the plugin's
 defaults and not the account's. The table below is what the gateway itself
@@ -179,11 +188,8 @@ served on that day, kept here as a field guide:
 | Model | Display name | Rate | Notes |
 |---|---|---|---|
 | `spark-x2.6` | Spark-X2.6 正式版(限时免费) | x0.0 | thinking |
-| `spark-x` | Spark-X2.5（限时免费） | x0.0 | thinking |
 | `DeepSeek-V4.1-Flash` | DeepSeek V4.1 Flash | x2.0 | thinking, image |
-| `MiniMax-M3` | MiniMax M3 | x4.0 | thinking, image |
-| `Kimi-k2.6` | Kimi k2.6 | x6.5 | thinking, image |
-| `qwen-3.8-max` | Qwen 3.8 Max | x12.0 | thinking |
+| `deepseek-v4-flash-1017` | DeepSeek V4.1 Flash 1017 | x2.0 | thinking, image |
 | `GLM-5.3-Flash` | GLM 5.3 Flash | x0.8 | thinking, image |
 | `qwen3.8-flash` | qwen 3.8 flash | x0.8 | thinking, image |
 | `mimo-v2.5` | MiMo V2.5 | x3.3 | thinking, image, audio |
@@ -193,10 +199,14 @@ served on that day, kept here as a field guide:
 | `qwen-image-3.0-pro` | qwen image 3.0 pro | — | image generation |
 
 The three image-generation rows declare `output_modalities: ["image"]` —
-they draw pictures rather than answer in text, and how their answers ride
-the chat endpoint is unverified. What a model's editor chip says beside an
-older build's list: a generator ticked then and unticked now is the
-roster's entry back again, no longer a pick the list has forgotten.
+they draw pictures rather than answer in text, and that is why they take
+the image route: measured 2026-11-17, the chat route answers each of them
+with 404 ("this model is not open yet"), while `images/generations` with
+`{model, prompt, n}` draws. Their records hang no reasoning-effort
+variants — a generator has no gears to offer. What a model's editor chip
+says beside an older build's list: a generator ticked then and unticked
+now is the roster's entry back again, no longer a pick the list has
+forgotten.
 
 ## Usage
 
@@ -263,11 +273,15 @@ in one go.
   until it lands, image input is reliable on the GLM family alone, and the
   newer `DeepSeek-V4.1-Flash` declares image input whose shape on this
   gateway is unverified.
-- **`reasoning_effort` is ignored on non-thinking models.** Every model
-  carries the low/medium/high variants the way the client hangs them; the
-  upstream drops the field on the models that don't think — a known behavior.
-  Which models think is whatever the live catalog declares — on 2026-10-28
-  most text models did, not only the spark pair.
+- **`reasoning_effort` is ignored on non-thinking models.** The variants
+  follow the curated per-vendor level table (DeepSeek and GLM low / high /
+  max, qwen low / medium / xhigh, MiMo no gears, Spark none / low /
+  high); a row the table does not name keeps its `reasoning_efforts`
+  declaration as it stands, with the fixed low/medium/high only as the
+  fallback for a row that declares none. The upstream drops the field on
+  the models that don't think — a known behavior. Which models think is
+  whatever the live catalog declares — on 2026-11-17 most text models did,
+  not only the spark pair.
 - **Streaming tool calls are not yet verified on a real account.** The
   desktop gateway's tool_calls streaming has no recorded real-machine run
   behind it; it is the first thing to check with your agent's tool loop. If
