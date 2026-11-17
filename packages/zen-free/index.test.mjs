@@ -895,6 +895,40 @@ for (const { protocol, path, model } of protocols) {
       system.slice(claudeCodePrompt.length),
       /^\n\nHere is some useful information about the environment you are running in:\n<env>\n {2}Working directory: \/Users\/me\/project\n/,
     );
+    // an OpenCode block quoted inside the prompt (history pasting an old
+    // request) is not the one OpenCode sent with this turn: a fresh one
+    // follows it, or Zen answers 429 FreeUsageLimitError
+    const quoted = `${agentPrompt}\nI dumped a request once:\n<env>\n  Working directory: /home/user\n  Is directory a git repo: no\n</env>\nthat was it`;
+    sent = await send(withPrompt(protocol, quoted, "hello"));
+    system = systemText(protocol, sent);
+    assert.ok(system.startsWith(quoted), system);
+    assert.match(system.slice(quoted.length), /^\n\nHere is some useful information/);
+  });
+}
+
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: images become a note Zen's free tier accepts`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const image =
+      protocol === "anthropic"
+        ? { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } }
+        : protocol === "responses"
+          ? { type: "input_image", image_url: "data:image/png;base64,iVBOR" }
+          : { type: "image_url", image_url: { url: "data:image/png;base64,iVBOR" } };
+    const body = withPrompt(protocol, agentPrompt, "look");
+    const holder = protocol === "responses" ? body.input : body.messages;
+    holder[holder.length - 1].content = [{ type: "text", text: "look" }, image, image];
+    const response = await loader.fetch(`${origin}/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify({ model, stream: true, ...body }),
+    });
+    await response.text();
+    const sent = state.calls.at(-1).body;
+    const parts = (sent.messages ?? sent.input ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+    assert.ok(parts.every((p) => p.type !== "image_url" && p.type !== "input_image" && p.type !== "image"));
+    assert.match(parts.at(-1).text, /\[2 images omitted/);
   });
 }
 

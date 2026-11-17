@@ -475,6 +475,9 @@ function renameRefused(body, protocol) {
 // (MrHayesLin on X, 2026-11-01). The agent's block stays; OpenCode's
 // follows it.
 const HAS_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>/;
+// OpenCode appends its block to the end of the system prompt; one quoted
+// inside history (tool output pasting an old request) is not "already there".
+const ENDS_WITH_ENVIRONMENT = /<env>\r?\n {2}Working directory: [^\n]*\n[\s\S]*?<\/env>\s*$/;
 // How agents name their working directory: Codex's `<cwd>`, Claude Code's
 // and others' `Working directory:`, Kimi's "The current working directory
 // is `...`". Only an absolute path counts.
@@ -483,6 +486,26 @@ const STATED_DIRECTORY = [
   new RegExp(String.raw`<cwd>\s*${ABSOLUTE}\s*</cwd>`),
   new RegExp(String.raw`working directory(?: is)?:?\s+\x60?${ABSOLUTE}`, "i"),
 ];
+
+// Zen's free tier meters requests by size against a per-IP budget: a body
+// carrying images (hundreds of KB of base64) is refused with 429
+// FreeUsageLimitError long before the same conversation as text (verified by
+// bisection, 2026-11-17), so images become a short note.
+function stripImages(body) {
+  const messages = [...(Array.isArray(body.messages) ? body.messages : []), ...(Array.isArray(body.input) ? body.input : [])];
+  for (const message of messages) {
+    const content = message?.content;
+    if (!Array.isArray(content)) continue;
+    let images = 0;
+    const kept = [];
+    for (const part of content) {
+      if (part?.type === "image_url" || part?.type === "input_image" || part?.type === "image") images++;
+      else kept.push(part);
+    }
+    if (images) message.content = [...kept, { type: "text", text: `[${images} image${images > 1 ? "s" : ""} omitted to keep the request within Zen's free-tier size budget]` }];
+  }
+  return body;
+}
 
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -538,16 +561,15 @@ function withEnvironment(content, block) {
 export function addEnvironment(body, protocol, home = homedir()) {
   const block = () => environment(statedDirectory(body, protocol) ?? home);
   if (protocol === "anthropic") {
-    if (!HAS_ENVIRONMENT.test(textOf(body.system))) body.system = withEnvironment(body.system, block());
+    if (!ENDS_WITH_ENVIRONMENT.test(textOf(body.system).trimEnd())) body.system = withEnvironment(body.system, block());
     return;
   }
   const messages = protocol === "chat" ? body.messages : body.input;
   const system = Array.isArray(messages)
     ? messages.filter((message) => SYSTEM_ROLES.includes(message?.role))
     : [];
-  if (system.some((message) => HAS_ENVIRONMENT.test(textOf(message.content)))) return;
   if (protocol === "responses") {
-    if (!HAS_ENVIRONMENT.test(textOf(body.instructions)))
+    if (!ENDS_WITH_ENVIRONMENT.test(textOf(body.instructions ?? "").trimEnd()))
       body.instructions = withEnvironment(body.instructions, block());
     return;
   }
@@ -555,6 +577,7 @@ export function addEnvironment(body, protocol, home = homedir()) {
   // system message, the same on every turn (its cache holds); one is put
   // first when the agent sent none.
   const first = system.find((message) => message.role === "system");
+  if (first && ENDS_WITH_ENVIRONMENT.test(textOf(first.content).trimEnd())) return;
   if (first) first.content = withEnvironment(first.content, block());
   else if (Array.isArray(messages)) messages.unshift({ role: "system", content: block() });
   else body.messages = [{ role: "system", content: block() }];
@@ -773,7 +796,7 @@ async function server(_input, options = {}) {
             if (!protocol || request.method !== "POST")
               throw new Error("Unsupported Zen endpoint or method");
             request.signal.throwIfAborted();
-            const body = await request.json();
+            const body = await request.json()
             if (!body || typeof body !== "object" || Array.isArray(body))
               throw new Error("Expected a JSON request object");
             if (
@@ -842,6 +865,7 @@ async function server(_input, options = {}) {
               if (given.get("anthropic-beta")) headers.set("anthropic-beta", given.get("anthropic-beta"));
             }
             const upstream = baseURL === DEFAULT_BASE ? OPENCODE_BASE[protocol] : baseURL;
+            stripImages(body);
             const response = await fetch(`${upstream}${PATHS[protocol]}`, {
               method: "POST",
               headers,
