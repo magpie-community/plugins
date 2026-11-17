@@ -1,0 +1,29 @@
+{
+  "name": "@magpie-community/opencode-deeprelay-auth",
+  "version": "0.1.0",
+  "description": "DeepRelay (deeprelay.ai) on your own subscription — plan models, quota and balance — in magpie, OpenCode 1.x and 2.x",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "deeprelay"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/deeprelay"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "name": "deeprelay",
+    "icon": "https://deeprelay.ai/icon.svg",
+    "summary": {
+      "en": "Your DeepRelay subscription: plan models, quota and balance.",
+      "zh": "使用你的 DeepRelay 订阅：套餐模型、用量与余额。"
+    }
+  }
+}
