@@ -120,7 +120,11 @@ test("maps all groups/cadences to display-only Magpie windows, without invented 
     group([bucket({ id: "gemini-argon-weekly", window: "weekly", remaining_fraction: 0.53 })], "Gemini 4 Argon"),
   ]))
   assert.equal(result.windows.length, 5)
-  assert.deepEqual(result.windows.map(w => w.name), ["Gemini · 5 hours", "Gemini · 7 days", "Claude & GPT · 5 hours", "Claude & GPT · 7 days", "Gemini 4 Argon · 7 days"])
+  assert.deepEqual(result.windows.map(w => [w.pool, w.name]), [
+    ["Gemini", "5 hours"], ["Gemini", "7 days"],
+    ["Claude & GPT", "5 hours"], ["Claude & GPT", "7 days"],
+    ["Gemini 4 Argon", "7 days"],
+  ])
   assert.deepEqual(result.windows.map(w => w.used), [25, 50, 100, 0, 47])
   assert.deepEqual(result.windows.map(w => w.span), [18000, 604800, 18000, 604800, 604800])
   assert.ok(result.windows.every(w => w.aside === true))
@@ -137,6 +141,8 @@ test("accepts camel case and nested/oneof fractions plus ISO and epoch-second re
     ],
   }])))
   assert.equal(result.windows[0].used, 60)
+  assert.equal(result.windows[0].pool, "Gemini")
+  assert.equal(result.windows[0].name, "5 hours")
   assert.equal(result.windows[0].resetsAt, "2026-10-27T00:00:00.000Z")
   assert.equal(result.windows[1].used, 20)
   assert.equal(result.windows[1].resetsAt, "2026-10-27T00:00:00.000Z")
@@ -895,9 +901,9 @@ test("an account agy refuses for its region has its quota read the way agy reads
   const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
   assert.equal(result.error, undefined)
   assert.equal(result.signIn, "kept")
-  assert.deepEqual(result.windows.map(w => [w.name, w.used, w.resetsAt]), [
-    ["Gemini · 7 days", 25, "2026-11-22T11:19:33.000Z"],
-    ["Gemini · 5 hours", 50, "2026-11-16T16:19:33.000Z"],
+  assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used, w.resetsAt]), [
+    ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
+    ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
   ])
   // the two requests agy makes, as it makes them
   assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [

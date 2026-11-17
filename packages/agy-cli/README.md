@@ -161,7 +161,8 @@ magpie quota refresh agy-cli --json
 ```
 
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
-分别列出。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
+分别列出。小面板显示各组实际提供的全部窗口，并单独标明周期；Gemini 4 Argon 有独立周额度时也会列出。
+插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
 在 Antigravity 未开放的地区，agy 会在资格检查时拒绝 `/usage`（"not currently available in
