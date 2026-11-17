@@ -1,0 +1,171 @@
+{
+ "session": "01a1e2f8-b407-7752-bbbf-7ff4711ecd96",
+ "headers": {
+  "originator": "codex-tui",
+  "x-client-request-id": "01a1e2f8-c722-70d2-aab9-1ec510d9848d",
+  "x-openai-subagent": "collab_spawn",
+  "x-codex-parent-thread-id": "01a1e2f8-b407-7752-bbbf-7ff4711ecd96",
+  "x-codex-window-id": "01a1e2f8-c722-70d2-aab9-1ec510d9848d:0",
+  "x-codex-beta-features": "remote_compaction_v2",
+  "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-b407-7752-bbbf-7ff4711ecd96\",\"thread_id\":\"01a1e2f8-c722-70d2-aab9-1ec510d9848d\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-c72d-7ae1-bcfc-aadcd8d26aa4\",\"window_id\":\"01a1e2f8-c722-70d2-aab9-1ec510d9848d:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-c725-7471-b707-777fc3add04a\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"parent_thread_id\":\"01a1e2f8-b407-7752-bbbf-7ff4711ecd96\",\"parent_turn_id\":\"01a1e2f8-c6cf-7ba2-ad71-057d179b08c5\",\"root_turn_id\":\"01a1e2f8-c6cf-7ba2-ad71-057d179b08c5\",\"subagent_kind\":\"thread_spawn\",\"thread_source\":\"subagent\",\"turn_trigger\":\"user\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809317168,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}"
+ },
+ "body": {
+  "model": "gpt-5.1-codex",
+  "stream": true,
+  "tools": [
+   {
+    "type": "function",
+    "name": "exec_command"
+   },
+   {
+    "type": "function",
+    "name": "write_stdin"
+   },
+   {
+    "type": "function",
+    "name": "list_mcp_resources"
+   },
+   {
+    "type": "function",
+    "name": "list_mcp_resource_templates"
+   },
+   {
+    "type": "function",
+    "name": "read_mcp_resource"
+   },
+   {
+    "type": "function",
+    "name": "request_user_input"
+   },
+   {
+    "type": "function",
+    "name": "view_image"
+   },
+   {
+    "type": "namespace",
+    "name": "mcp__codex_tui"
+   },
+   {
+    "type": "function",
+    "name": "get_goal"
+   },
+   {
+    "type": "function",
+    "name": "create_goal"
+   },
+   {
+    "type": "function",
+    "name": "update_goal"
+   },
+   {
+    "type": "web_search"
+   }
+  ],
+  "input": [
+   {
+    "type": "message",
+    "id": "msg_e50a4118-0c69-5a9a-b0f2-7f06b2a817b0",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project \n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-c747-7f32-9720-d837cb3161ba",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Be\n…(cut)"
+     },
+     {
+      "type": "input_text",
+      "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-f\n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-c747-7f32-9720-d84bd6e97a6b",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <cwd>/tmp/sbx/cxproj</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-16</current_date>\n  <timezone>Etc/UTC</timezone>\n  <filesystem><workspace_roots><root>/tmp/sbx/cxproj</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n</environment_context>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-c76d-7251-bede-da1b733c330b",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "SUBTASK_CX: run sleep 3 then echo hi"
+     }
+    ]
+   },
+   {
+    "type": "function_call",
+    "status": "completed",
+    "id": "fc_4",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"sleep 3; echo hi\"}",
+    "call_id": "call_4"
+   },
+   {
+    "type": "function_call_output",
+    "id": "fco_01a1e2f8-d35a-72a3-b19f-7ef259963bd0",
+    "call_id": "call_4",
+    "output": "Chunk ID: c8f2f2\nWall time: 2.8549 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\nhi\n"
+   }
+  ],
+  "client_metadata": {
+   "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-b407-7752-bbbf-7ff4711ecd96\",\"thread_id\":\"01a1e2f8-c722-70d2-aab9-1ec510d9848d\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-c72d-7ae1-bcfc-aadcd8d26aa4\",\"window_id\":\"01a1e2f8-c722-70d2-aab9-1ec510d9848d:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-c725-7471-b707-777fc3add04a\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"parent_thread_id\":\"01a1e2f8-b407-7752-bbbf-7ff4711ecd96\",\"parent_turn_id\":\"01a1e2f8-c6cf-7ba2-ad71-057d179b08c5\",\"root_turn_id\":\"01a1e2f8-c6cf-7ba2-ad71-057d179b08c5\",\"subagent_kind\":\"thread_spawn\",\"thread_source\":\"subagent\",\"turn_trigger\":\"user\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809317168,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}",
+   "x-codex-parent-thread-id": "01a1e2f8-b407-7752-bbbf-7ff4711ecd96",
+   "thread_id": "01a1e2f8-c722-70d2-aab9-1ec510d9848d",
+   "session_id": "01a1e2f8-b407-7752-bbbf-7ff4711ecd96",
+   "x-codex-window-id": "01a1e2f8-c722-70d2-aab9-1ec510d9848d:0",
+   "x-openai-subagent": "collab_spawn",
+   "parent_turn_id": "01a1e2f8-c6cf-7ba2-ad71-057d179b08c5",
+   "root_turn_id": "01a1e2f8-c6cf-7ba2-ad71-057d179b08c5",
+   "turn_id": "01a1e2f8-c72d-7ae1-bcfc-aadcd8d26aa4"
+  }
+ },
+ "reply": {
+  "id": "resp_5",
+  "object": "response",
+  "status": "completed",
+  "output": [
+   {
+    "type": "message",
+    "id": "msg_5",
+    "role": "assistant",
+    "status": "completed",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "Sub done.",
+      "annotations": []
+     }
+    ]
+   }
+  ],
+  "usage": {
+   "input_tokens": 1000,
+   "output_tokens": 50,
+   "total_tokens": 1050,
+   "input_tokens_details": {
+    "cached_tokens": 0
+   },
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  }
+ }
+}

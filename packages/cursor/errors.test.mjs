@@ -26,6 +26,27 @@ test("the codes and words map as the built-in's cursorStatus", () => {
   expect(failure(200, end("unauthenticated", "Error"))).toEqual({ status: 401, message: "unauthenticated — sign in to Cursor again in magpie" })
 })
 
+// Cursor can refuse a prompt under an authentication code. The observed
+// wording identifies the request, not an expired sign-in; the surrounding
+// Connect envelopes below are synthetic variants of that failure.
+for (const [status, code] of [[200, "unauthenticated"], [401, ""], [403, "permission_denied"]]) {
+  test(`a content refusal is a request error (${status}, ${code})`, () => {
+    const message = "Unauthorized request.: The provider refused to serve this request based on the content"
+    const error = { code, message: "Error", details: [{ debug: { details: {
+      title: "Unauthorized request.", detail: "The provider refused to serve this request based on the content",
+    } } }] }
+    for (const body of [error, { error }]) {
+      expect(failure(status, JSON.stringify(body))).toEqual({ status: 400, message })
+    }
+    expect(failure(status, JSON.stringify({ code, message }))).toEqual({ status: 400, message })
+  })
+}
+
+test("an unrelated unauthorized request still asks for sign-in", () => {
+  expect(failure(200, JSON.stringify({ code: "unauthenticated", message: "Unauthorized request." })))
+    .toEqual({ status: 401, message: "Unauthorized request. — sign in to Cursor again in magpie" })
+})
+
 // The built-in answered any "expired" with a 401 and marked nothing, a
 // session's as a trial's; nor did a success clear a mark.
 test("any expired is the built-in's 401", () => {

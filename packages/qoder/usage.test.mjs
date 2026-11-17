@@ -170,7 +170,7 @@ test("the plan and the resource pack read as Qoder's own panel does, with counts
   expect(u.plan).toBe("personal_professional")
   expect(u.until).toBe("2026-11-21T16:00:00.000Z")
   expect(u.windows).toEqual([
-    { name: "Total credits", used: (100 * 4217) / 5400, display: "4217 / 5400 credits", amount: 4217, limit: 5400, unit: "credits" },
+    { name: "Total credits", used: (100 * 4217) / 5400, display: "4217 / 5400 credits", amount: 4217, limit: 5400, unit: "credits", resetsAt: "2026-11-21T16:00:00.000Z" },
     { name: "Credits", used: (100 * 1817) / 2000, display: "1817 / 2000 credits", amount: 1817, limit: 2000, unit: "credits", aside: true, resetsAt: "2026-11-21T16:00:00.000Z" },
     { name: "Add-on credits", used: (100 * 2400) / 3400, display: "2400 / 3400 credits", amount: 2400, limit: 3400, unit: "credits", aside: true },
   ])
@@ -609,4 +609,19 @@ test("usage's user is the card's name, and the accountId stays the identity (rev
   const u = await hooks.auth.usage(async () => auth)
   expect(u.user).toBe("138****8000")
   expect(auth.accountId).toBe("one@x")
+})
+
+test("the total renews with the plan's credits, so routing sees the reset (@tnt12231 on X)", () => {
+  // a Teams account: plan credits 2,336 / 3,000 renewing tomorrow, shared 0 / 1,000
+  const u = _internal.parseUsage({
+    displayMode: "qoder",
+    qoderUsage: {
+      userType: "teams",
+      expiresAt: "2026-11-13T05:04:00.000Z",
+      userQuota: { total: 3000, used: 2336, remaining: 664, unit: "credits" },
+      orgResourcePackage: { total: 1000, used: 0, remaining: 1000, unit: "credits" },
+    },
+  })
+  const counted = u.windows.filter((w) => !w.aside)
+  expect(counted.map((w) => [w.name, w.resetsAt])).toEqual([["Total credits", "2026-11-13T05:04:00.000Z"]])
 })

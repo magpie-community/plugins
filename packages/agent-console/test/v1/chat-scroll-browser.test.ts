@@ -198,11 +198,46 @@ describe.skipIf(!browserPath)("Chat virtual-list scroll to bottom in real Chromi
       expect(mStream.scrollHeight).toBeGreaterThan(prevHeight + 1000);
       expect(mStream.gap).toBeLessThanOrEqual(2);
       expect(mStream.jumpVisible).toBe(false);
+
+      // 1.3.8 (issue #2): during a slow stream, a few small wheel steps up near the bottom leave it at once and
+      // stay left while the reply keeps growing; wheeling back down sticks again
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, -5); await page.waitForTimeout(60); }
+      await page.waitForTimeout(300);
+      const mIdle = await readMetrics();
+      expect(mIdle.gap).toBeGreaterThanOrEqual(15); // 1.3.7 snapped this back to 0 (within 60px → re-stuck)
+      expect(mIdle.gap).toBeLessThan(60);
+      expect(mIdle.jumpVisible).toBe(true);
+      await page.locator(".cp-ta").fill("/bigreply slow");
+      await page.keyboard.press("Enter");
+      // the first /bigreply already has a 第 2 部分: wait for the new reply's
+      await page.waitForFunction(() => document.body.innerText.split("第 2 部分").length - 1 >= 2, null, { timeout: 15000, polling: 50 });
+      await page.waitForTimeout(150);
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, -5); await page.waitForTimeout(40); }
+      await page.waitForTimeout(150);
+      const mSmall = await readMetrics();
+      expect(mSmall.gap).toBeGreaterThanOrEqual(15);
+      expect(mSmall.jumpVisible).toBe(true);
+      await page.waitForTimeout(900); // several more parts arrive
+      const mGrown = await readMetrics();
+      expect(mGrown.scrollHeight).toBeGreaterThan(mSmall.scrollHeight);
+      expect(mGrown.scrollTop).toBeLessThanOrEqual(mSmall.scrollTop + 1);
+      expect(mGrown.gap).toBeGreaterThan(mSmall.gap);
+      expect(mGrown.jumpVisible).toBe(true);
+      await page.mouse.wheel(0, 20000);
+      await page.waitForTimeout(400);
+      // still stuck: it follows the rest of the stream down to the real bottom (wait for the new reply's last part)
+      await page.waitForFunction(() => document.body.innerText.split("第 14 部分").length - 1 >= 2, null, { timeout: 15000, polling: 50 });
+      await page.waitForTimeout(600);
+      const mBack = await readMetrics();
+      expect(mBack.gap).toBeLessThanOrEqual(2);
+      expect(mBack.jumpVisible).toBe(false);
     } finally {
       await browser.close();
       daemon.kill("SIGTERM");
       rmSync(xdg, { recursive: true, force: true });
       rmSync(projDir, { recursive: true, force: true });
     }
-  }, 45000);
+  }, 60000);
 });

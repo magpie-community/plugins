@@ -581,6 +581,52 @@ test('the dashboard asks the local service for attribution', () => {
   assert.doesNotMatch(html, /cloudflareinsights/);
 });
 
+function pageBetween(text, start, end) {
+  const first = text.indexOf(start);
+  const last = text.indexOf(end, first + start.length);
+  assert.ok(first >= 0, `missing page source: ${start}`);
+  assert.ok(last > first, `missing page source: ${end}`);
+  return text.slice(first, last);
+}
+
+function quotaPageApi() {
+  const html = readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const source = [
+    pageBetween(html, 'function isWorkBuddyProvider', 'function soonWin'),
+    pageBetween(html, 'function soonWin', '// 总积分：'),
+  ].join('\n');
+  const functions = new Function(
+    'winExp',
+    'winAlive',
+    `${source}
+    return {quotaWins,soonWin};`,
+  )(
+    (win) => win.exp,
+    (win) => win.remaining !== 0,
+  );
+  return functions;
+}
+
+test('quota expiry ignores WorkBuddy estimated-token windows', () => {
+  const { quotaWins, soonWin } = quotaPageApi();
+
+  const estimated = { name: 'DeepSeek tokens (est.)', exp: 1, remaining: 1 };
+  const credits = { name: 'Extra credits', exp: 2, remaining: 1 };
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.deepEqual(
+    quotaWins({ provider: 'workbuddy-ai', windows: [estimated, credits] }).map((win) => win.name),
+    ['Extra credits'],
+  );
+  assert.equal(quotaWins({ provider: 'trae-cn', windows: [estimated, credits] }).length, 2);
+  assert.equal(
+    soonWin(quotaWins({ provider: 'workbuddy', windows: [estimated, credits] }))[0].name,
+    'Extra credits',
+  );
+});
+
 test('registry draft summary matches package.json verbatim (three-text rule)', () => {
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   const doc = readFileSync(path.join(root, 'docs', 'community-submission.md'), 'utf8');

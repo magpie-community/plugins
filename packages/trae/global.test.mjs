@@ -148,6 +148,15 @@ test("an international enterprise account reads the console's seat pool, in doll
   expect(u.windows).toEqual([{ name: "Seat Usage", used: 20, display: "$20.00 / $100.00", amount: 20, limit: 100, unit: "usd", resetsAt: new Date(1796054400000).toISOString() }])
 })
 
+test("an international seat pool of nothing is an error, not a blank card (#1143)", async () => {
+  f = fakeTrae("trae-global")
+  f.route("POST /trae/gtm/tob/api/v1/config/get_personal_quota", () => json({ code: 0, message: "success", user_model_quota: { user_id: "u-1", seat_pool_currency_quota: 0, has_user_quota: true } }))
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  const u = await hooks.auth.usage(async () => signedIn({ host: "https://console.enterprise.trae.ai" }))
+  expect(u.error).toBe("Trae Global usage: the console gives this seat a pool of $0")
+  expect(u.windows).toBeUndefined()
+})
+
 // The international console is not known to take the IDE's own token — it
 // answers 请先登录 to another realm's token exactly as it answers no token,
 // so a refusal cannot be told from a lapsed sign-in. Marking the account

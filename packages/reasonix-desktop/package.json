@@ -1,10 +1,11 @@
 {
   "name": "@magpie-community/agent-reasonix-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reasonix 1.x Desktop and CLI as a Magpie agent, with a reversible TOML and dotenv configuration bridge",
   "type": "module",
   "main": "./index.mjs",
   "files": [
+    "proc.mjs",
     "index.mjs",
     "reasonix-desktop.agent.js",
     "bridge.mjs",

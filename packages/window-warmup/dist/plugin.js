@@ -1,6 +1,6 @@
 // @bun
 // src/plugin.ts
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/accounts.ts
 var FINGERPRINT_RE = /^[0-9a-f]{10}$/;
@@ -961,9 +961,9 @@ async function send(base, task, pin, effort, signal, timeoutMs = SEND_TIMEOUT_MS
 // src/server.ts
 import { randomBytes, timingSafeEqual } from "crypto";
 import { mkdir as mkdir2, readFile as readFile3, writeFile as writeFile2 } from "fs/promises";
-import path2, { basename, extname, join as join3, resolve as resolve2 } from "path";
+import path2, { basename, extname, join as join4, resolve as resolve2 } from "path";
 // package.json
-var version = "0.1.4";
+var version = "0.1.6";
 
 // src/diagnostics.ts
 var DIAGNOSTICS_SCHEMA = "window-warmup-diagnostics/1";
@@ -1853,8 +1853,62 @@ class Scheduler {
 
 // src/store.ts
 import { link, mkdir, readdir, readFile as readFile2, rename, unlink, writeFile } from "fs/promises";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
+
+// src/proc.mjs
+import { readFileSync } from "fs";
+import { join as join2 } from "path";
+var errCode = (error) => error && typeof error === "object" ? error.code : undefined;
+function validPid(pid) {
+  return Number.isSafeInteger(pid) && pid > 0;
+}
+function processZombie(pid, {
+  procRoot = "/proc",
+  readFile = (file) => readFileSync(file, "utf8")
+} = {}) {
+  if (!validPid(pid))
+    return false;
+  let stat;
+  try {
+    stat = readFile(join2(procRoot, String(pid), "stat"));
+  } catch {
+    return false;
+  }
+  const commEnd = typeof stat === "string" ? stat.lastIndexOf(")") : -1;
+  if (commEnd < 0)
+    return false;
+  const state = stat.slice(commEnd + 1).trim()[0];
+  return state === "Z" || state === "X";
+}
+function processAlive(pid, deps = {}) {
+  const state = processStatus(pid, deps).state;
+  return state === "alive" || state === "permission";
+}
+function processStatus(pid, deps = {}) {
+  const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
+  if (!validPid(pid))
+    return { state: "invalid" };
+  let permission = false;
+  try {
+    kill(pid, 0);
+  } catch (error) {
+    const code = errCode(error);
+    if (code === "ESRCH")
+      return { state: "dead" };
+    if (code !== "EPERM")
+      return { state: "unknown", error };
+    permission = true;
+  }
+  if ((deps.platform ?? process.platform) !== "linux") {
+    return permission ? { state: "permission" } : { state: "alive" };
+  }
+  if (processZombie(pid, deps))
+    return { state: "dead" };
+  return permission ? { state: "permission" } : { state: "alive" };
+}
+
+// src/store.ts
 var RUNS_PER_TASK2 = 50;
 var RESET_KEYS_PER_TASK = 20;
 var STATE_FILE = "state.json";
@@ -2021,7 +2075,7 @@ class StoreImpl {
 }
 async function openStore(dir) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, STATE_FILE);
+  const path = join3(dir, STATE_FILE);
   let raw;
   try {
     raw = await readFile2(path, "utf8");
@@ -2049,7 +2103,7 @@ async function openStore(dir) {
   return new StoreImpl(data, path);
 }
 async function migrateLegacyState(dir, env = process.env) {
-  const statePath = join2(dir, STATE_FILE);
+  const statePath = join3(dir, STATE_FILE);
   try {
     await readFile2(statePath);
     return;
@@ -2057,7 +2111,7 @@ async function migrateLegacyState(dir, env = process.env) {
     if (e.code !== "ENOENT")
       return;
   }
-  const legacy = join2(xdgConfigHome(env), "magpie", LEGACY_DIR_NAME, STATE_FILE);
+  const legacy = join3(xdgConfigHome(env), "magpie", LEGACY_DIR_NAME, STATE_FILE);
   let raw;
   try {
     raw = await readFile2(legacy, "utf8");
@@ -2079,14 +2133,7 @@ function parsePid(raw) {
   } catch {}
   return null;
 }
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
+var pidAlive = processAlive;
 async function releaseLock(path) {
   let raw;
   try {
@@ -2099,15 +2146,15 @@ async function releaseLock(path) {
 }
 async function acquireLock(dir, opts = {}) {
   await mkdir(dir, { recursive: true, mode: 448 });
-  const path = join2(dir, LOCK_FILE);
+  const path = join3(dir, LOCK_FILE);
   const leftovers = await readdir(dir).catch(() => []);
   for (const name of leftovers) {
     if (/^service\.lock\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) {
-      await unlink(join2(dir, name)).catch(() => {});
+      await unlink(join3(dir, name)).catch(() => {});
     }
   }
   for (let round = 0;round < 3; round++) {
-    const tmp = join2(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
+    const tmp = join3(dir, `${LOCK_FILE}.${process.pid}.${randomUUID2()}.tmp`);
     await writeFile(tmp, String(process.pid), { mode: 384 });
     try {
       await link(tmp, path);
@@ -2149,7 +2196,7 @@ var MARKER_HEADER = "x-window-warmup";
 var PROBE_TIMEOUT_MS = 2000;
 var BODY_LIMIT = 64 * 1024;
 async function loadOrCreateToken(dir) {
-  const file = join3(dir, TOKEN_FILE);
+  const file = join4(dir, TOKEN_FILE);
   try {
     const text = (await readFile3(file, "utf8")).trim();
     if (/^[0-9a-f]{64}$/.test(text))
@@ -2393,7 +2440,7 @@ async function startService(opts) {
     const boot = JSON.stringify(bootData).replaceAll("<", "\\u003c");
     let html;
     try {
-      html = await readFile3(join3(uiDir, "index.html"), "utf8");
+      html = await readFile3(join4(uiDir, "index.html"), "utf8");
     } catch {
       html = "<!doctype html><title>\u7A97\u53E3\u9884\u70ED</title><p>\u754C\u9762\u8FD8\u6CA1\u6784\u5EFA\uFF1A\u5148\u5728\u5305\u76EE\u5F55\u8FD0\u884C bun run build\u3002</p>";
     }
@@ -2474,33 +2521,66 @@ function defaultDir(env = process.env) {
   const custom = env.WINDOW_WARMUP_DIR?.trim();
   if (custom)
     return custom;
-  return join4(xdgConfigHome(env), "magpie", "window-warmup");
+  return join5(xdgConfigHome(env), "magpie", "window-warmup");
 }
 var instances = new Map;
+var waiting = new Set;
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var inUse = (e) => e?.code === "EADDRINUSE";
+function start(listen, dir) {
+  let instance = instances.get(listen);
+  if (!instance) {
+    instance = (async () => {
+      await migrateLegacyState(dir);
+      return startService({ port: listen, dir, base: gatewayBase() });
+    })().catch((e) => {
+      instances.delete(listen);
+      throw e;
+    });
+    instances.set(listen, instance);
+  }
+  return instance;
+}
+function startWhenFree(listen, dir) {
+  if (waiting.has(listen))
+    return;
+  waiting.add(listen);
+  (async () => {
+    try {
+      for (;; ) {
+        await sleep(1000);
+        if (instances.has(listen))
+          return;
+        if (await alreadyServing(listen))
+          continue;
+        try {
+          await start(listen, dir);
+          console.log(`[window-warmup] \u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5DF2\u677E\u624B\uFF0C${listen} \u63A5\u4E0A\u4E86`);
+          return;
+        } catch (e) {
+          if (!inUse(e)) {
+            console.error(`[window-warmup] ${listen} \u8D77\u4E0D\u6765\uFF1A${e instanceof Error ? e.message : String(e)}`);
+            return;
+          }
+        }
+      }
+    } finally {
+      waiting.delete(listen);
+    }
+  })();
+}
 var plugin_default = {
   id: "magpie-window-warmup",
   server: async (_input, opts = {}) => {
     const port = Number(opts?.port);
     const listen = Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT;
-    if (await alreadyServing(listen))
+    const dir = defaultDir();
+    if (!instances.has(listen) && await alreadyServing(listen)) {
+      console.log(`[window-warmup] ${listen} \u88AB\u4E0A\u4E00\u4E2A\u5BBF\u4E3B\u5360\u7740\uFF0C\u5B83\u4E00\u677E\u624B\u5C31\u63A5\u4E0A`);
+      startWhenFree(listen, dir);
       return {};
-    let instance = instances.get(listen);
-    if (!instance) {
-      instance = (async () => {
-        const dir = defaultDir();
-        await migrateLegacyState(dir);
-        return startService({
-          port: listen,
-          dir,
-          base: gatewayBase()
-        });
-      })().catch((e) => {
-        instances.delete(listen);
-        throw e;
-      });
-      instances.set(listen, instance);
     }
-    await instance;
+    await start(listen, dir);
     return {};
   }
 };

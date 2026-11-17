@@ -1,0 +1,135 @@
+{
+ "session": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21",
+ "headers": {
+  "originator": "codex_exec",
+  "x-client-request-id": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21",
+  "x-codex-window-id": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21:0",
+  "x-codex-beta-features": "remote_compaction_v2",
+  "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21\",\"thread_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-5028-71f3-b47e-f0831f65579f\",\"window_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-500c-7423-b98a-9ea5dbe2dc1e\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1e2f8-5028-71f3-b47e-f0831f65579f\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809286703,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}"
+ },
+ "body": {
+  "model": "gpt-5.1-codex",
+  "stream": true,
+  "tools": [
+   {
+    "type": "function",
+    "name": "exec_command"
+   },
+   {
+    "type": "function",
+    "name": "write_stdin"
+   },
+   {
+    "type": "function",
+    "name": "request_user_input"
+   },
+   {
+    "type": "function",
+    "name": "view_image"
+   },
+   {
+    "type": "namespace",
+    "name": "multi_agent_v1"
+   },
+   {
+    "type": "function",
+    "name": "get_goal"
+   },
+   {
+    "type": "function",
+    "name": "create_goal"
+   },
+   {
+    "type": "function",
+    "name": "update_goal"
+   },
+   {
+    "type": "web_search"
+   }
+  ],
+  "input": [
+   {
+    "type": "message",
+    "id": "msg_2c0700c5-d6d9-57b0-ab53-3b799e15b789",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project \n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-504f-7303-9dfb-ea37268bca6d",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Be\n…(cut)"
+     },
+     {
+      "type": "input_text",
+      "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-f\n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-504f-7303-9dfb-ea4de4da1713",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <cwd>/tmp/sbx/cxproj</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-16</current_date>\n  <timezone>Etc/UTC</timezone>\n  <filesystem><workspace_roots><root>/tmp/sbx/cxproj</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n</environment_context>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-5067-7931-bf65-a75726ca868f",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "CX_LOOP please"
+     }
+    ]
+   }
+  ],
+  "client_metadata": {
+   "x-codex-window-id": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21:0",
+   "turn_id": "01a1e2f8-5028-71f3-b47e-f0831f65579f",
+   "root_turn_id": "01a1e2f8-5028-71f3-b47e-f0831f65579f",
+   "thread_id": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21",
+   "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21\",\"thread_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-5028-71f3-b47e-f0831f65579f\",\"window_id\":\"01a1e2f8-5009-72d1-9227-6b4c4d0ecb21:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-500c-7423-b98a-9ea5dbe2dc1e\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"root_turn_id\":\"01a1e2f8-5028-71f3-b47e-f0831f65579f\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809286703,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}",
+   "session_id": "01a1e2f8-5009-72d1-9227-6b4c4d0ecb21"
+  }
+ },
+ "reply": {
+  "id": "resp_1",
+  "object": "response",
+  "status": "completed",
+  "output": [
+   {
+    "type": "function_call",
+    "id": "fc_1",
+    "call_id": "call_1",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"echo step0\"}",
+    "status": "completed"
+   }
+  ],
+  "usage": {
+   "input_tokens": 1000,
+   "output_tokens": 50,
+   "total_tokens": 1050,
+   "input_tokens_details": {
+    "cached_tokens": 0
+   },
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  }
+ }
+}

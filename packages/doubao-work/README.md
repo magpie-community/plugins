@@ -1,5 +1,11 @@
 # 豆包工作 (Doubao Work)
 
+**This is not a model API.** Doubao Work has no model interface for other
+clients. An agent that picks a `doubao-work/*` model gets one run of
+Doubao's cloud agent: the request is flattened into one message, Doubao
+plans and uses its own tools, and the client's tool calls are read back
+from text. One request at a time, text only.
+
 Doubao Work runs its agent loop in ByteDance's cloud and has no API, so
 there is no request to make on its behalf. This plugin uses its desktop
 app, 豆包工作 (DoubaoWork), the way a person does instead, and gives what it
@@ -18,6 +24,12 @@ same, works too:
    else 豆包 (`Doubao.app`, `%LOCALAPPDATA%\Doubao\Application\app\Doubao.exe`).
    If you signed in to 豆包 through the plugin before 0.1.5, it stays on 豆包
    while 豆包 is installed.
+
+   An app installed somewhere else (`D:\Apps\DoubaoWork`, an external disk)
+   is found without setting anything: on Windows from its uninstall entry,
+   its App Paths entry or a running copy; on macOS from Spotlight, a running
+   copy, or one folder down in `/Applications`, `~/Applications` and
+   `/Volumes/*`.
 2. Each request opens a new 工作任务, switches it from 本地电脑 to 云电脑
    (so Doubao's agent never reads or runs anything on your computer), picks
    the model, and writes the whole request (system prompt, tools, every
@@ -27,18 +39,42 @@ same, works too:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
-Models: the plugin reads Doubao's own model menu, so whatever the app offers
-is what magpie lists. The menu row text becomes the id: 自动 (`auto`), 豆包 2.1
-Lite (`doubao-2.1-lite`), 豆包 2.1 Pro (`doubao-2.1-pro`, needs a paid Doubao
-plan), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3 (`glm-5.3`) and so
-on. Rows that open a submenu (推理强度) are not models and are skipped.
+Models: the plugin reads the 工作任务 model list from Doubao itself (the
+`brief_list` request the app's own page makes, through the app's page), so
+whatever 工作任务 offers is what magpie lists. Before 0.1.10 it read the menu
+of whatever page was open, and on 豆包's 对话 page that menu is 快速 and 专家,
+which 工作任务 doesn't have. A list cached from that menu is read again. The
+name becomes the id: 自动 (`auto`), 豆包 2.1 Lite (`doubao-2.1-lite`), 豆包 2.1
+Pro (`doubao-2.1-pro`), DeepSeek V4.1 Flash (`deepseek-v4.1-flash`), GLM 5.3
+(`glm-5.3`) and so on. A request may also name a model by Doubao's own key
+(`person-deepseek-v4-1-flash-261017`) or by its name (`DeepSeek V4.1 Flash`).
+When `brief_list` can't be read, the plugin opens a 工作任务 and reads its
+model menu instead.
+
+推理强度: each model's levels are offered as variants, and the client's
+`reasoning_effort` (or `reasoning.effort`) picks one: `low` 低, `medium` 中,
+`high` 高, `xhigh` 极高, `max` 最高. A level the model lacks goes to the
+nearest one it has (a tie goes higher). With no effort asked, the model's own
+default level is picked, not the one the last request left the app on.
 
 The list is read when you sign in, and again on a request once the cached list
-is more than six hours old; it is kept in `models.json` under
+is more than six hours old, or at once when a request names a model the
+cached list doesn't have (at most once a minute); it is kept in `models.json` under
 `DOUBAO_WORK_HOME` (`~/Library/Application Support/magpie-doubao-work` on
 macOS, `%LOCALAPPDATA%\magpie-doubao-work` on Windows) and read before
 anything else. The three models the plugin was written with stay as the
-fallback for when the menu cannot be read.
+fallback for when no list can be read.
+A list never read (an account that signed in before the plugin read menus) is
+read when magpie lists the models, once a minute at most, and only from a
+window already open: listing models or reading usage never starts the app,
+only a request does. A `models.json` from an older version keeps its models
+until the list is read again. Rows whose names differ only in Chinese get
+distinct ids: Kimi K3.1 Pro 高速 is `kimi-k3.1-pro-fast`.
+
+Third-party models you added to 豆包工作 yourself (your own API key) are not
+served here: the plugin lists only what the app's model menu offers from
+Doubao's side, and a model that runs on your own key is a direct call to that
+vendor, not a Doubao task. Add that API to magpie as its own provider instead.
 
 ## What it costs
 
@@ -65,7 +101,7 @@ fallback for when the menu cannot be read.
 ## Settings
 
 - `DOUBAO_WORK_APP`: the app's binary, if it is not in one of the places
-  above. A path naming DoubaoWork is driven as 豆包工作, any other as 豆包.
+  above and the system does not know it. A path naming DoubaoWork is driven as 豆包工作, any other as 豆包.
 - `DOUBAO_WORK_HOME`: where the profile and port live.
 
 ## Adding another cloud agent

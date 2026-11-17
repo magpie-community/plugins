@@ -207,7 +207,9 @@ test("reasoning and its signature come back as a thinking block; an incomplete r
     ],
   })
   const out = await (await generate(creds, {}, req())).json()
-  expect(out.content).toEqual([{ type: "thinking", thinking: "hmm", signature: "SIG" }, { type: "text", text: "cut" }])
+  expect(out.content[0]).toMatchObject({ type: "thinking", thinking: "hmm" })
+  expect(_internal.unsealReasoning(out.content[0].signature, _internal.reasoningScope({}, await creds(), req().model))).toEqual({ reasoningText: { text: "hmm", signature: "SIG" } })
+  expect(out.content[1]).toEqual({ type: "text", text: "cut" })
   expect(out.stop_reason).toBe("max_tokens")
 })
 

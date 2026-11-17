@@ -1,11 +1,7 @@
-// Called as the Kiro IDE (AI_EDITOR), Kiro's auto ends a reply with one
-// reasoningContentEvent carrying text and its signature together. These are
-// the payloads of a real reply (2026-11-07, auto, "Reply with the single word
-// OK."); the signature was dropped and the block sent with an empty one.
 import { test, expect } from "bun:test"
 import { _internal } from "./index.mjs"
 
-const { events, reply } = _internal
+const { events, reply, sealReasoning } = _internal
 
 function frame(headers, payload) {
   const enc = new TextEncoder()
@@ -47,6 +43,8 @@ const stream = (...fs) =>
 
 const ev = (type, payload) => frame({ ":message-type": "event", ":event-type": type }, payload)
 const SIG = ".KTR~~eyJlbmNyeXB0aW9uUmVnaW9uIjpudWxsLCJtaW50ZWRBdE1zIjoxNzk0MDU1MjcyODg0LCJtb2RlbEhhc2giOiJ5RUxWOXhiY2Z3dlUiLCJzbG90cyI6W10sInYiOjF9"
+const SCOPE = "account-region-model"
+const signed = () => sealReasoning({ reasoningText: { text: "...", signature: SIG } }, SCOPE)
 const body = () => stream(
   ev("assistantResponseEvent", { content: "OK", modelId: "auto" }),
   ev("reasoningContentEvent", { signature: SIG, text: "..." }),
@@ -54,14 +52,14 @@ const body = () => stream(
 )
 
 test("reasoning sent with its signature in one event keeps the signature", async () => {
-  const res = await reply(events(body(), "auto", 0), "auto", false)
+  const res = await reply(events(body(), "auto", 0, false, SCOPE), "auto", false)
   const j = await res.json()
-  expect(j.content).toEqual([{ type: "text", text: "OK" }, { type: "thinking", thinking: "...", signature: SIG }])
+  expect(j.content).toEqual([{ type: "text", text: "OK" }, { type: "thinking", thinking: "...", signature: signed() }])
 })
 
 test("streamed, the signature follows the reasoning in its block", async () => {
-  const res = await reply(events(body(), "auto", 0), "auto", true)
+  const res = await reply(events(body(), "auto", 0, false, SCOPE), "auto", true)
   const out = await res.text()
   expect(out).toContain(JSON.stringify({ type: "thinking_delta", thinking: "..." }))
-  expect(out).toContain(JSON.stringify({ type: "signature_delta", signature: SIG }))
+  expect(out).toContain(JSON.stringify({ type: "signature_delta", signature: signed() }))
 })

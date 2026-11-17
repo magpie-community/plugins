@@ -1,0 +1,155 @@
+{
+ "session": "01a1e2f8-2603-73b3-a31c-d86713e85209",
+ "headers": {
+  "originator": "codex_exec",
+  "x-client-request-id": "01a1e2f8-2669-7b80-98da-19673ff1c9af",
+  "x-openai-subagent": "collab_spawn",
+  "x-codex-parent-thread-id": "01a1e2f8-2603-73b3-a31c-d86713e85209",
+  "x-codex-window-id": "01a1e2f8-2669-7b80-98da-19673ff1c9af:0",
+  "x-codex-beta-features": "remote_compaction_v2",
+  "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-2603-73b3-a31c-d86713e85209\",\"thread_id\":\"01a1e2f8-2669-7b80-98da-19673ff1c9af\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-2674-7642-91bc-0ea6ae32afcf\",\"window_id\":\"01a1e2f8-2669-7b80-98da-19673ff1c9af:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-266c-7fd1-a2ad-e77dccc2cb90\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"parent_thread_id\":\"01a1e2f8-2603-73b3-a31c-d86713e85209\",\"parent_turn_id\":\"01a1e2f8-261c-7ce2-b61a-23d3f2286757\",\"root_turn_id\":\"01a1e2f8-261c-7ce2-b61a-23d3f2286757\",\"subagent_kind\":\"thread_spawn\",\"thread_source\":\"subagent\",\"turn_trigger\":\"exec\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809276022,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}"
+ },
+ "body": {
+  "model": "gpt-5.1-codex",
+  "stream": true,
+  "tools": [
+   {
+    "type": "function",
+    "name": "exec_command"
+   },
+   {
+    "type": "function",
+    "name": "write_stdin"
+   },
+   {
+    "type": "function",
+    "name": "request_user_input"
+   },
+   {
+    "type": "function",
+    "name": "view_image"
+   },
+   {
+    "type": "function",
+    "name": "get_goal"
+   },
+   {
+    "type": "function",
+    "name": "create_goal"
+   },
+   {
+    "type": "function",
+    "name": "update_goal"
+   },
+   {
+    "type": "web_search"
+   }
+  ],
+  "input": [
+   {
+    "type": "message",
+    "id": "msg_f561dc0d-1544-5563-9d81-0c588b199fde",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project \n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-269f-7382-b560-02c512a7c411",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Be\n…(cut)"
+     },
+     {
+      "type": "input_text",
+      "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-f\n…(cut)"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-269f-7382-b560-02d8a3286429",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <cwd>/tmp/sbx/cxproj</cwd>\n  <shell>bash</shell>\n  <current_date>2026-11-16</current_date>\n  <timezone>Etc/UTC</timezone>\n  <filesystem><workspace_roots><root>/tmp/sbx/cxproj</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n</environment_context>"
+     }
+    ]
+   },
+   {
+    "type": "message",
+    "id": "msg_01a1e2f8-26ab-7d42-b4da-4bb20ec08ea2",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "SUBTASK_CX: run sleep 3 then echo hi"
+     }
+    ]
+   },
+   {
+    "type": "function_call",
+    "status": "completed",
+    "id": "fc_3",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"sleep 3; echo hi\"}",
+    "call_id": "call_3"
+   },
+   {
+    "type": "function_call_output",
+    "id": "fco_01a1e2f8-3298-7d92-9a2f-dd889c61a0e6",
+    "call_id": "call_3",
+    "output": "Chunk ID: de5339\nWall time: 2.8550 seconds\nProcess exited with code 0\nOriginal token count: 1\nOutput:\nhi\n"
+   }
+  ],
+  "client_metadata": {
+   "thread_id": "01a1e2f8-2669-7b80-98da-19673ff1c9af",
+   "x-openai-subagent": "collab_spawn",
+   "x-codex-window-id": "01a1e2f8-2669-7b80-98da-19673ff1c9af:0",
+   "parent_turn_id": "01a1e2f8-261c-7ce2-b61a-23d3f2286757",
+   "root_turn_id": "01a1e2f8-261c-7ce2-b61a-23d3f2286757",
+   "x-codex-turn-metadata": "{\"installation_id\":\"(blanked)\",\"session_id\":\"01a1e2f8-2603-73b3-a31c-d86713e85209\",\"thread_id\":\"01a1e2f8-2669-7b80-98da-19673ff1c9af\",\"agent_name\":\"/root\",\"turn_id\":\"01a1e2f8-2674-7642-91bc-0ea6ae32afcf\",\"window_id\":\"01a1e2f8-2669-7b80-98da-19673ff1c9af:0\",\"window_number\":0,\"context_window_id\":\"01a1e2f8-266c-7fd1-a2ad-e77dccc2cb90\",\"request_kind\":\"turn\",\"history_initialization\":\"new\",\"parent_thread_id\":\"01a1e2f8-2603-73b3-a31c-d86713e85209\",\"parent_turn_id\":\"01a1e2f8-261c-7ce2-b61a-23d3f2286757\",\"root_turn_id\":\"01a1e2f8-261c-7ce2-b61a-23d3f2286757\",\"subagent_kind\":\"thread_spawn\",\"thread_source\":\"subagent\",\"turn_trigger\":\"exec\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"workspaces\":{\"/tmp/sbx/cxproj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1794809276022,\"analytics_enabled\":true,\"model\":\"gpt-5.1-codex\"}",
+   "x-codex-parent-thread-id": "01a1e2f8-2603-73b3-a31c-d86713e85209",
+   "turn_id": "01a1e2f8-2674-7642-91bc-0ea6ae32afcf",
+   "session_id": "01a1e2f8-2603-73b3-a31c-d86713e85209"
+  }
+ },
+ "reply": {
+  "id": "resp_4",
+  "object": "response",
+  "status": "completed",
+  "output": [
+   {
+    "type": "message",
+    "id": "msg_4",
+    "role": "assistant",
+    "status": "completed",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "Sub done.",
+      "annotations": []
+     }
+    ]
+   }
+  ],
+  "usage": {
+   "input_tokens": 1000,
+   "output_tokens": 50,
+   "total_tokens": 1050,
+   "input_tokens_details": {
+    "cached_tokens": 0
+   },
+   "output_tokens_details": {
+    "reasoning_tokens": 0
+   }
+  }
+ }
+}

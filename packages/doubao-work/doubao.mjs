@@ -13,21 +13,53 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { execFileSync } from "node:child_process"
 import { App, Page, sleep } from "./cdp.mjs"
 
 // isChat says whether a page is either app's chat page. The page reports
 // itself as chrome://doubao(work)-chat/chat from inside.
 export const isChat = (url) => /^(doubao|doubaowork|chrome):\/\/(doubao|doubaowork)-chat\/chat/.test(String(url))
 
-// Doubao has no API to ask which models it offers: the app's own model menu
-// is the list, and it changes as Doubao adds models. These are the ones the
-// menu showed when the plugin was written; they are only the fallback for
-// when the menu cannot be read. The real list is read from the menu (see
-// Doubao#discover) and kept in models.json under DOUBAO_WORK_HOME.
+// The models Doubao offers come from the list its own page asks for
+// (brief_list, see LIST and listOf) and change as Doubao adds models. These
+// are the ones it listed when the plugin was written; they are only the
+// fallback for when nothing could be read. The real list is read by
+// Doubao#discover and kept in models.json under DOUBAO_WORK_HOME.
 export const MODELS = {
   auto: { label: "自动", name: "自动" },
   "doubao-2.1-lite": { label: "豆包 2.1 Lite", name: "豆包 2.1 Lite" },
   "doubao-2.1-pro": { label: "豆包 2.1 Pro", name: "豆包 2.1 Pro" },
+}
+
+// EFFORTS are the names Doubao gives its 推理强度 levels, lowest first, and
+// the OpenAI reasoning_effort each one is offered as.
+export const EFFORTS = [
+  ["低", "low"],
+  ["中", "medium"],
+  ["高", "high"],
+  ["极高", "xhigh"],
+  ["最高", "max"],
+]
+
+// effortFor turns a client's reasoning_effort into one of a model's
+// 推理强度 names: the same level when the model has it, else the nearest,
+// the higher one on a tie. none and minimal ask for the lowest. "" when the
+// client asked for nothing (or the model has no levels): the model's own
+// default stays.
+export function effortFor(asked, efforts) {
+  const list = (efforts ?? []).filter((e) => EFFORTS.some(([n]) => n === e))
+  const want = String(asked ?? "").trim().toLowerCase()
+  if (!want || !list.length) return ""
+  const rank = (name) => EFFORTS.findIndex(([n]) => n === name)
+  let i = EFFORTS.findIndex(([n, o]) => o === want || n === want)
+  if (want === "none" || want === "minimal") i = 0
+  if (i < 0) return ""
+  let best = list[0]
+  for (const e of list) {
+    const d = Math.abs(rank(e) - i), b = Math.abs(rank(best) - i)
+    if (d < b || (d === b && rank(e) > rank(best))) best = e
+  }
+  return best
 }
 
 // idFor turns the first line of a menu row into the model id a client
@@ -39,6 +71,7 @@ export function idFor(label) {
   if (!text || text === "自动") return "auto"
   let id = text
     .replace(/豆包/g, "doubao ")
+    .replace(/高速/g, " fast ")
     .toLowerCase()
     .replace(/[^a-z0-9.]+/g, "-")
     .replace(/-{2,}/g, "-")
@@ -53,20 +86,87 @@ export function idFor(label) {
   return id
 }
 
-// tableFrom builds the model table ({ id: {label, name} }) from the rows
-// read off the menu. Nothing read means the fallback stays.
+// rateOf reads the multiple a menu row says it costs from the lines under
+// the model's name ("2x 额度", "×0.5", "消耗 1.5 倍"); 0 when it says none.
+// Version numbers and context sizes ("V4.1", "256K") are not multiples.
+export function rateOf(lines) {
+  for (const line of lines ?? []) {
+    const t = String(line ?? "")
+    const m = t.match(/(?:^|[^\w.])[x×]\s*(\d+(?:\.\d+)?)(?![\w.])/i) || t.match(/(\d+(?:\.\d+)?)\s*(?:[x×]|倍)(?![a-z])/i)
+    const n = m ? Number(m[1]) : 0
+    if (n > 0) return n
+  }
+  return 0
+}
+
+// tableFrom builds the model table from the rows read off Doubao's list
+// (listOf) or its menu: { id: {label, name, key?, efforts?, effort?, rate?} }.
+// key is Doubao's own id for the model (model_item_key), efforts its
+// 推理强度 names and effort the one it picks by default. Nothing read means
+// the fallback stays.
 export function tableFrom(rows) {
   const out = {}
   for (const r of rows ?? []) {
     const label = String(r?.label ?? "").trim()
     if (!label) continue
-    const id = idFor(label)
-    if (out[id]) continue
+    let id = idFor(label)
+    if (out[id]?.label === label) continue
+    // two rows whose names differ only in what idFor can't spell (a
+    // Chinese suffix) must not become one model
+    for (let n = 2; out[id]; n++) id = idFor(label) + "-" + n
     out[id] = { label, name: label }
+    if (r.key) out[id].key = String(r.key)
+    if (Array.isArray(r.efforts) && r.efforts.length) out[id].efforts = r.efforts.map(String)
+    if (r.effort) out[id].effort = String(r.effort)
+    const rate = Number(r?.rate) || rateOf(r?.lines)
+    if (Number.isFinite(rate) && rate > 0) out[id].rate = rate
   }
   if (!Object.keys(out).length) return { ...MODELS }
-  if (out.auto) out.auto = { ...MODELS.auto }
+  if (out.auto && !out.auto.key) out.auto = { ...MODELS.auto, ...out.auto, label: MODELS.auto.label }
   return out
+}
+
+// lookup finds a model in the table by the id the plugin gives it, by
+// Doubao's own id for it (model_item_key, "person-deepseek-v4-1-flash-261017")
+// or by its name as the menu shows it ("DeepSeek V4.1 Flash").
+export function lookup(table, model) {
+  const want = String(model ?? "")
+  if (table?.[want]) return table[want]
+  for (const m of Object.values(table ?? {})) if (m?.key === want || m?.label === want) return m
+  return null
+}
+
+// listOf turns LIST's reply into rows for tableFrom: the models of
+// 工作任务 (mode 3, the agent mode, the one for "office" conversations),
+// in the order Doubao lists them, each with its 推理强度 names. A mode
+// without its own list takes the shared list's models it supports. null
+// when the reply has no such list.
+export function listOf(read) {
+  const conf = read?.conf
+  if (!conf || typeof conf !== "object") return null
+  const modes = conf.mode_list?.item_list ?? []
+  const mode =
+    modes.find((m) => String(m?.mode_id) === "3") ??
+    modes.find((m) => Number(m?.agent_mode) === 1) ??
+    modes.find((m) => (m?.conversation_mode_list ?? []).includes("office") && String(m?.default_conversation_mode ?? "office") === "office")
+  let items = mode?.model_list?.item_list
+  if (!Array.isArray(items) || !items.length) {
+    const all = conf.model_list?.item_list ?? []
+    const keys = new Set((mode?.support_models ?? []).map((m) => String(m?.model_item_key)))
+    // no modes at all: the shared list is the only one; modes without a
+    // work task (another app's list) give none
+    items = keys.size ? all.filter((i) => keys.has(String(i?.model_item_key))) : mode || modes.length ? [] : all
+  }
+  const rows = []
+  for (const i of items ?? []) {
+    const label = String(i?.name ?? "").trim()
+    if (!label) continue
+    const opts = i.reasoning_effort_config?.option_list ?? []
+    const efforts = opts.map((o) => String(o?.name ?? "").trim()).filter(Boolean)
+    const def = opts.find((o) => o?.level === i.reasoning_effort_config?.default_level)
+    rows.push({ label, key: String(i.model_item_key ?? ""), efforts, effort: def ? String(def.name).trim() : "", upgrade: !!i.subscribe_config?.need_upgrade })
+  }
+  return rows.length ? rows : null
 }
 
 // localAppData is %LOCALAPPDATA%, where Doubao's Windows installer puts
@@ -81,8 +181,8 @@ const localAppData = (home) => process.env.LOCALAPPDATA || path.win32.join(home,
 //   sub  the folder under dataDir() for this app's profile, port and model
 //        list; 豆包's stays at the top, where 0.1.0 to 0.1.4 kept it
 export const APPS = [
-  { name: "豆包工作", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
-  { name: "豆包", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
+  { name: "豆包工作", bundle: "com.work.pc.doubao", mac: "DoubaoWork.app/Contents/MacOS/DoubaoWork", win: ["DoubaoWork", "Application", "app", "DoubaoWork.exe"], sub: "doubaowork", download: "https://www.doubao.com/work" },
+  { name: "豆包", bundle: "com.bot.pc.doubao", mac: "Doubao.app/Contents/MacOS/Doubao", win: ["Doubao", "Application", "app", "Doubao.exe"], sub: "", download: "https://www.doubao.com/download/desktop" },
 ]
 
 // places lists where an app can be installed: /Applications, then
@@ -93,13 +193,115 @@ export function places(app, platform = process.platform, home = os.homedir()) {
   return []
 }
 
+// Where the app is installed when it is not in the usual place. The system
+// knows: Windows keeps an uninstall entry (InstallLocation, DisplayIcon,
+// UninstallString), an App Paths entry and the path of a running copy;
+// macOS's Spotlight knows every bundle by its identifier, and a running
+// copy has its path in ps. Each finder returns paths (files or folders) the
+// install may be under; installedAt turns them into the app's binary.
+const WIN_PROBE = String.raw`
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$o = @()
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
+  Get-ItemProperty $r -ErrorAction SilentlyContinue | Where-Object { ($_.PSChildName + $_.DisplayIcon + $_.UninstallString + $_.InstallLocation) -match 'Doubao' } | ForEach-Object { $o += $_.InstallLocation, $_.DisplayIcon, $_.UninstallString }
+}
+foreach ($r in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\') {
+  foreach ($e in 'DoubaoWork.exe', 'Doubao.exe') { $k = Get-ItemProperty ($r + $e) -ErrorAction SilentlyContinue; if ($k) { $o += $k.'(default)', $k.Path } }
+}
+Get-CimInstance Win32_Process -Filter "Name='DoubaoWork.exe' or Name='Doubao.exe'" -ErrorAction SilentlyContinue | ForEach-Object { $o += $_.ExecutablePath }
+ConvertTo-Json -Compress -InputObject @($o | Where-Object { $_ })
+`
+
+// hintsWin lists the paths Windows has for 豆包工作 and 豆包.
+export function hintsWin(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 15000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })) {
+  try {
+    const out = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WIN_PROBE])
+    const list = JSON.parse(out.trim() || "[]")
+    return (Array.isArray(list) ? list : [list]).filter((x) => typeof x === "string" && x.trim())
+  } catch {
+    return []
+  }
+}
+
+// hintsMac lists the app bundles Spotlight knows by identifier, then the
+// paths of running copies.
+export function hintsMac(run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] })) {
+  const out = []
+  for (const app of APPS) {
+    try {
+      out.push(...run("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${app.bundle}'`]).split("\n"))
+    } catch {}
+  }
+  try {
+    for (const l of run("/bin/ps", ["-axo", "comm="]).split("\n")) if (/\.app\/Contents\/MacOS\/Doubao(Work)?$/.test(l.trim())) out.push(l.trim())
+  } catch {}
+  // Spotlight may be off or not indexing that disk: look one folder down
+  // in the places apps are put as well
+  const roots = ["/Applications", path.join(os.homedir(), "Applications")]
+  try { for (const v of fs.readdirSync("/Volumes")) roots.push(path.join("/Volumes", v), path.join("/Volumes", v, "Applications")) } catch {}
+  for (const r of roots.slice()) {
+    try { for (const e of fs.readdirSync(r, { withFileTypes: true })) if (e.isDirectory() && !e.name.endsWith(".app")) roots.push(path.join(r, e.name)) } catch {}
+  }
+  for (const r of roots) for (const app of APPS) out.push(path.join(r, app.mac.split("/")[0]))
+  return out.map((l) => l.trim()).filter(Boolean)
+}
+
+let hinted
+const systemHints = (platform) => {
+  if (platform !== "win32" && platform !== "darwin") return []
+  return (hinted ??= {})[platform] ??= platform === "win32" ? hintsWin() : hintsMac()
+}
+
+// installedAt turns hint paths into the binaries app could have there.
+// A hint may be the exe, a folder, or a command ("\"D:\\x\\uninstall.exe\" /S",
+// "D:\\x\\icon.ico,0"): the quotes and the icon index are taken off, and the
+// folder it names and the three above it are tried, each as <dir>\app\<exe>
+// and <dir>\<exe>. On macOS a hint is a .app folder or a binary inside one.
+export function installedAt(app, hints, platform = process.platform) {
+  const out = []
+  const add = (p) => { if (p && !out.includes(p)) out.push(p) }
+  if (platform === "darwin") {
+    const suffix = "/" + app.mac
+    for (const h of hints) {
+      const i = h.indexOf(".app")
+      if (i < 0) continue
+      const bundle = h.slice(0, i + 4)
+      if (bundle.endsWith("/" + app.mac.split("/")[0])) add(bundle + "/" + app.mac.split("/").slice(1).join("/"))
+    }
+    return out
+  }
+  if (platform !== "win32") return out
+  const W = path.win32
+  const exe = app.win[app.win.length - 1]
+  for (const h of hints) {
+    let p = String(h).trim()
+    const q = p.match(/^"([^"]+)"/)
+    p = q ? q[1] : p.replace(/\s+\/[A-Za-z].*$/, "").replace(/,-?\d+$/, "")
+    p = p.replace(/[\\/]+$/, "")
+    if (!/^[A-Za-z]:\\|^\\\\/.test(p)) continue
+    if (W.basename(p).toLowerCase() === exe.toLowerCase()) add(p)
+    let d = /\.[A-Za-z0-9]{1,5}$/.test(W.basename(p)) ? W.dirname(p) : p
+    for (let n = 0; n < 4; n++) {
+      add(W.join(d, "app", exe))
+      add(W.join(d, "Application", "app", exe))
+      add(W.join(d, exe))
+      const up = W.dirname(d)
+      if (up === d) break
+      d = up
+    }
+  }
+  return out
+}
+
 // choose picks the app to drive: { app, binary, dataDir }. DOUBAO_WORK_APP
 // names the binary outright. A user already signed in to 豆包 through this
 // plugin (its profile exists) stays on 豆包 while it is installed, so an
 // update never signs them out. Otherwise the first app installed, 豆包工作
-// first; with neither, 豆包工作's own place, so the error names it. On
-// Linux the binary is "".
-export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
+// first; with neither, 豆包工作's own place, so the error names it. An app
+// is looked for in its usual place first, then where the system says it was
+// installed (find returns those hints; it runs once, and only when a usual
+// place has nothing). On Linux the binary is "".
+export function choose(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find = exists === fs.existsSync ? systemHints : () => []) {
   const P = platform === "win32" ? path.win32 : path.posix
   const base = dataDir(platform, home)
   const out = (app, bin) => ({ app, binary: bin, dataDir: app.sub ? P.join(base, app.sub) : base })
@@ -108,9 +310,15 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
     const bin = process.env.DOUBAO_WORK_APP
     return out(/doubaowork/i.test(bin) ? work : doubao, bin)
   }
-  const found = (app) => places(app, platform, home).find((p) => exists(p))
-  const old = found(doubao)
-  if (old && exists(P.join(base, "profile"))) return out(doubao, old)
+  let hints
+  const found = (app) => {
+    const usual = places(app, platform, home).find((p) => exists(p))
+    if (usual) return usual
+    hints ??= find(platform) ?? []
+    return installedAt(app, hints, platform).find((p) => exists(p))
+  }
+  const old = exists(P.join(base, "profile")) ? found(doubao) : ""
+  if (old) return out(doubao, old)
   for (const app of APPS) {
     const bin = found(app)
     if (bin) return out(app, bin)
@@ -119,8 +327,8 @@ export function choose(platform = process.platform, home = os.homedir(), exists 
 }
 
 // binary is the executable choose picks.
-export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync) {
-  return choose(platform, home, exists).binary
+export function binary(platform = process.platform, home = os.homedir(), exists = fs.existsSync, find) {
+  return choose(platform, home, exists, find).binary
 }
 
 export function dataDir(platform = process.platform, home = os.homedir()) {
@@ -140,6 +348,16 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const press = (el) => { for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); };
+// dismiss closes a menu left open: a pointerdown outside it, as Radix
+// takes one. A menu can stay open after its item is pressed (its closing
+// animation waits for a frame a window in the background doesn't draw),
+// and an open menu keeps the focus, so Enter would not send.
+const dismiss = async () => {
+  if (!$$("[role=menu]").some((m) => $$("[role=menuitem]", m).length)) return;
+  const at = $(".ProseMirror") || document.body;
+  for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup"]) at.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, view: window, pointerType: "mouse" }));
+  await wait(200);
+};
 const message = (el) => {
   if (!el) return null;
   const k = Object.keys(el).find((k) => k.startsWith("__reactFiber"));
@@ -186,20 +404,58 @@ export const CLOUD = js(`
   return "the mode stayed " + b.innerText.trim();
 `)
 
+// pickModel picks the model whose menu row is label. A row's first line
+// is the model's name, maybe followed by a badge ("限时优惠", "0.01x"): a
+// row is taken by its exact name first, then by the name and a badge, never
+// by a longer name ("Kimi K3.1 Pro" is not "Kimi K3.1 Pro 高速").
 export const pickModel = (label) =>
   js(`
   const label = ${JSON.stringify(label)};
   const b = $("[data-testid=chat_input_action_model]");
   if (!b) return "no model button";
   if (b.innerText.split("\\n")[0].trim() === label) return "";
+  const esc = () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const first = (e) => e.innerText.split("\\n")[0].trim();
+  const badge = (t) => t.startsWith(label + " ") && /^(限时|优惠|小额|免费|新|热|推荐|hot|new|beta|[\\d.]+\\s*[x×倍]|[x×]\\s*[\\d.]+)/i.test(t.slice(label.length + 1).trim());
   press(b);
   let it;
-  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu] [role=menuitem]").find((e) => e.innerText.split("\\n")[0].trim() === label); }
-  if (!it) { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "no " + label + " in the model menu"; }
-  if (it.innerText.includes("升级")) { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return "upgrade"; }
+  for (let i = 0; i < 20 && !it; i++) {
+    await wait(100);
+    const rows = $$("[role=menu] [role=menuitem]").filter((e) => e.getAttribute("aria-haspopup") !== "menu");
+    it = rows.find((e) => first(e) === label) || rows.find((e) => badge(first(e)));
+  }
+  if (!it) { esc(); return "no " + label + " in the model menu"; }
+  if (it.innerText.includes("升级")) { esc(); return "upgrade"; }
   press(it);
   await wait(200);
   return "";
+`)
+
+// EFFORT sets the 推理强度 of the model picked: the model button shows it
+// under the model's name ("自动\n中"); otherwise the model menu's 推理强度
+// row opens a submenu (hovered, then ArrowRight, as Radix opens one) and
+// the level is pressed there.
+export const EFFORT = (name) =>
+  js(`
+  const name = ${JSON.stringify(name)};
+  const b = $("[data-testid=chat_input_action_model]");
+  if (!b) return "no model button";
+  const now = () => b.innerText.split("\\n").map((x) => x.trim()).filter(Boolean)[1] || "";
+  if (now() === name) return "";
+  const esc = () => { for (let i = 0; i < 2; i++) document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); };
+  press(b);
+  let row;
+  for (let i = 0; i < 20 && !row; i++) { await wait(100); row = $$("[role=menu] [role=menuitem]").find((e) => e.getAttribute("aria-haspopup") === "menu" && e.innerText.includes("推理强度")); }
+  if (!row) { esc(); return "no 推理强度 in the model menu"; }
+  for (const t of ["pointerenter", "pointermove", "pointerover"]) row.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerType: "mouse" }));
+  row.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  let it;
+  for (let i = 0; i < 20 && !it; i++) { await wait(100); it = $$("[role=menu]").filter((m) => !m.contains(row)).flatMap((m) => $$("[role=menuitem]", m)).find((e) => e.innerText.split("\\n")[0].trim() === name); }
+  if (!it) { esc(); return "no " + name + " under 推理强度"; }
+  press(it);
+  for (let i = 0; i < 10 && now() !== name; i++) await wait(100);
+  await dismiss();
+  return now() === name ? "" : "推理强度 stayed " + now();
 `)
 
 // MENU reads the model list off the app's own menu: press the model button,
@@ -219,7 +475,7 @@ export const MENU = js(`
   await wait(250);
   const rows = $$("[role=menuitem]", menu)
     .filter((e) => e.getAttribute("aria-haspopup") !== "menu")
-    .map((e) => ({ label: e.innerText.split("\\n")[0].trim(), upgrade: e.innerText.includes("升级") }))
+    .map((e) => { const l = e.innerText.split("\\n").map((x) => x.trim()).filter(Boolean); return { label: l[0] || "", lines: l.slice(1), upgrade: e.innerText.includes("升级") }; })
     .filter((r) => r.label);
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return { rows };
@@ -229,11 +485,21 @@ export const MENU = js(`
 // Doubao sends newlines (a hard break is dropped).
 export const fill = (text) =>
   js(`
+  await dismiss();
   const ed = $(".ProseMirror") && $(".ProseMirror").editor;
   if (!ed) return -1;
   const lines = ${JSON.stringify(String(text).split("\n"))};
   ed.chain().clearContent(true).insertContent(lines.map((l) => ({ type: "paragraph", content: l ? [{ type: "text", text: l }] : [] }))).focus("end").run();
   return ed.getText({ blockSeparator: "\\n" }).length;
+`)
+
+// SEND presses the send button; false when there is none to press.
+export const SEND = js(`
+  await dismiss();
+  const b = $("[data-testid=chat_input_send_button]");
+  if (!b || b.disabled || b.getAttribute("aria-disabled") === "true") return false;
+  b.click();
+  return true;
 `)
 
 export const READ = js(`
@@ -256,6 +522,76 @@ export const READ = js(`
     usage: ext.context_window_usage || "", error: r.error_details ? JSON.stringify(r.error_details) : "" };
 `)
 
+// QUOTA asks the app's own page for the plan's allowance, the way the
+// page's 订阅 view does (its cookies sign the call).
+export const QUOTA = js(`
+  try {
+    const r = await fetch("https://www.doubao.com/alice/commerce/sale/subscription/quota/summary/", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: "{}" });
+    const t = await r.text();
+    let j = null;
+    try { j = JSON.parse(t); } catch {}
+    return { status: r.status, body: j };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+// BOT_ID is the bot Doubao's page names when it asks for its action bar
+// (the app's code has it as a constant); without it brief_list answers
+// 710010202.
+export const BOT_ID = "7338286299411103781"
+
+// LIST asks Doubao for the action bar its own page builds the model menu
+// from (POST /alice/slot/action_bar_v3/brief_list), the way the page does:
+// with the page's cookies and the query the page sends (version_code, aid,
+// device_id...; the bare path answers 710010702). The query is taken from
+// the page's own brief_list call, or from any other /alice/ call it made.
+// It returns the deep-thinking entry's menu_conf_v2 with the icons left out.
+export const LIST = js(`
+  const urls = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/alice/"));
+  const own = urls.filter((u) => u.includes("/brief_list?")).pop();
+  let url = own;
+  if (!url) {
+    const any = urls.filter((u) => u.includes("?")).pop();
+    const q = new URL(any || "https://www.doubao.com/alice/?").searchParams;
+    q.delete("msToken"); q.delete("a_bogus");
+    url = "https://www.doubao.com/alice/slot/action_bar_v3/brief_list?" + q;
+  }
+  try {
+    const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ bot_id: ${JSON.stringify(BOT_ID)}, language_code: "zh" }) });
+    const j = await r.json().catch(() => null);
+    if (!j || j.code !== 0) return { status: r.status, code: j && j.code, msg: j && j.msg };
+    const e = ((j.data && j.data.entry_list) || []).find((e) => e.action_bar_key === "coco_deep_thinking");
+    const v = e && e.active_switch_conf && e.active_switch_conf.menu_conf_v2;
+    const bare = (x) => JSON.parse(JSON.stringify(x == null ? null : x, (k, val) => (/icon/i.test(k) ? undefined : val)));
+    return { status: r.status, code: 0, conf: bare(v) };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
+const HOUR = 3600000
+// quotaOf turns quota/summary into magpie's usage: the plan's short name
+// and one window per limit, as a percent used. A window names its span when
+// the reply gives one; without times it is just 额度.
+export function quotaOf(read) {
+  const d = read?.body?.data
+  if (!d || typeof d !== "object") return null
+  const groups = [...(d.window_limit_section?.window_limit_groups ?? []), ...(d.enterprise_window_limit_section?.window_limit_groups ?? [])]
+  const windows = []
+  for (const g of groups)
+    for (const w of g?.window_limits ?? []) {
+      const pct = Number(w?.used_percent)
+      if (!Number.isFinite(pct)) continue
+      const span = Number(w.end_time) - Number(w.start_time)
+      let name = "额度"
+      if (w.start_time > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
+      const out = { name, used: Math.max(0, Math.min(100, pct)) }
+      if (w.less_than_one_percent && pct === 0) out.display = "不到 1%"
+      if (w.end_time > 0) out.resetsAt = Number(w.end_time)
+      windows.push(out)
+    }
+  const exhausted = d.window_limit_section?.usage_exhausted === true || d.enterprise_window_limit_section?.usage_exhausted === true
+  if (exhausted) for (const w of windows) w.used = 100
+  return { plan: String(d.current_subscription?.display?.short_name || d.current_subscription?.display?.product_name || ""), windows }
+}
+
 export const usageOf = (raw) => {
   try {
     const u = typeof raw === "string" ? JSON.parse(raw) : raw
@@ -264,6 +600,28 @@ export const usageOf = (raw) => {
   } catch {
     return 0
   }
+}
+
+// CACHE is the models.json format: 2 since the list comes from brief_list.
+const CACHE = 2
+
+// CHAT_ONLY are the 对话 menu's models, which 0.1.9 could list
+const CHAT_ONLY = ["快速", "专家"]
+
+// rateIn finds the multiple the model menu shows for the model named label:
+// its row is the one with that name, or that name and a badge ("Kimi K3
+// 0.65x") when no other model has the longer name.
+export function rateIn(menu, label, rows = []) {
+  for (const r of menu ?? []) {
+    const l = String(r?.label ?? "").trim()
+    if (l === label) return Number(r.rate) || rateOf(r.lines)
+  }
+  for (const r of menu ?? []) {
+    const l = String(r?.label ?? "").trim()
+    if (l.startsWith(label + " ") && !rows.some((o) => o.label !== label && l.startsWith(o.label) && o.label.length > label.length))
+      return Number(r.rate) || rateOf([l.slice(label.length), ...(r.lines ?? [])])
+  }
+  return 0
 }
 
 export class DoubaoError extends Error {
@@ -282,6 +640,8 @@ export class Doubao {
     }
     this.app = app
     Object.assign(this, { openPage, poll, idle, total, fresh })
+    this.missAt = 0
+    this.readAt = 0
     this.cacheFile = this.app?.dataDir ? path.join(this.app.dataDir, "models.json") : ""
     this.table = null
     this.tableAt = 0
@@ -289,16 +649,27 @@ export class Doubao {
     this.queue = Promise.resolve()
   }
 
-  // modelList is what the plugin offers: the menu read last time, or the
-  // fallback before the menu has ever been read. It never opens the app —
-  // the menu is read by discover(), on sign-in and on a stale request.
+  // modelList is what the plugin offers: the list read last time, or the
+  // fallback before it has ever been read. It never opens the app — the
+  // list is read by discover(), on sign-in and on a stale request. A
+  // models.json older than CACHE is not used: up to 0.1.9 it could hold the
+  // 对话 menu's 快速 and 专家, so it is read again.
   modelList() {
     if (this.table) return this.table
     try {
       const d = JSON.parse(fs.readFileSync(this.cacheFile, "utf8"))
-      if (d?.models && typeof d.at === "number" && Object.keys(d.models).length) {
+      if (d?.v === CACHE && d?.models && typeof d.at === "number" && Object.keys(d.models).length) {
         this.table = d.models
         this.tableAt = d.at
+        return this.table
+      }
+      // an older one keeps its models, less the 对话 menu's, until the
+      // next read (#1117: a model picked from it was dropped when an
+      // update made it unreadable); it counts as never read
+      const old = Object.fromEntries(Object.entries(d?.models ?? {}).filter(([, m]) => m?.label && !CHAT_ONLY.includes(m.label)))
+      if (Object.keys(old).length) {
+        this.table = old
+        this.tableAt = 0
         return this.table
       }
     } catch {}
@@ -319,31 +690,101 @@ export class Doubao {
     try {
       fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true })
       const tmp = this.cacheFile + ".tmp"
-      fs.writeFileSync(tmp, JSON.stringify({ at: this.tableAt, models: table }, null, 1))
+      fs.writeFileSync(tmp, JSON.stringify({ v: CACHE, at: this.tableAt, models: table }, null, 1))
       fs.renameSync(tmp, this.cacheFile)
     } catch {}
   }
 
-  // discover reads Doubao's model menu and keeps the result. It opens a
-  // new task first when the current page has no model button (the app can
-  // sit on 技能 or another page); nothing is sent, so no task runs.
-  async discover({ signal } = {}) {
-    const page = await this.connect(signal)
-    let read = await page.eval(MENU)
-    if (read?.error === "no model button") {
-      const why = await page.eval(NEW_TASK)
-      if (why) throw new DoubaoError("豆包读取模型列表失败：" + why, "doubao_ui")
-      read = await page.eval(MENU)
+  // discover reads the models Doubao's 工作任务 offers and keeps them. It
+  // asks Doubao's own list first (LIST), the one the page builds its menu
+  // from. When that can't be read it reads the model menu of a new work
+  // task: the page may sit on a 对话 page, whose menu (快速, 专家) is
+  // another list. Nothing is sent, so no task runs. inTask says the page is
+  // on a new work task already (ask), so its menu is read too, for the
+  // multiple each model costs, which only the menu shows.
+  async discover({ signal, inTask = false, launch = true } = {}) {
+    const page = await this.connect(signal, { launch })
+    const old = this.modelList()
+    let rows = null
+    try { rows = listOf(await page.eval(LIST)) } catch {}
+    let menu = null
+    if (!rows || inTask) {
+      if (!inTask) {
+        const why = await page.eval(NEW_TASK)
+        if (why) throw new DoubaoError("豆包读取模型列表失败：" + why, "doubao_ui")
+      }
+      const read = await page.eval(MENU)
+      if (read?.error && !rows) throw new DoubaoError("豆包读取模型列表失败：" + read.error, "doubao_ui")
+      menu = read?.rows ?? null
     }
-    if (read?.error) throw new DoubaoError("豆包读取模型列表失败：" + read.error, "doubao_ui")
-    const table = tableFrom(read?.rows)
+    if (!rows) rows = menu
+    else if (menu) rows = rows.map((r) => ({ ...r, rate: rateIn(menu, r.label, rows) }))
+    const table = tableFrom(rows)
+    // a model whose multiple the menu didn't show this time keeps the one
+    // it showed before
+    for (const m of Object.values(table)) {
+      const was = Object.values(old).find((o) => o?.label === m.label)
+      if (!(m.rate > 0) && was?.rate > 0) m.rate = was.rate
+    }
     this.#save(table)
     return table
   }
 
-  async connect(signal) {
+  // ensureList reads the menu once when it has never been read, for an
+  // account that signed in before the plugin read menus (or whose sign-in
+  // read failed): without it the list stays at the three built-in models
+  // until the first request. It reads it only from a window already open:
+  // a model list is no reason to bring Doubao up (#1117), so a closed one
+  // is read on the next request. A failed read is tried again after a
+  // minute. It queues behind a running ask.
+  async ensureList({ signal } = {}) {
+    this.modelList()
+    if (this.tableAt || !this.app?.running || !this.cacheFile) return
+    if (Date.now() - this.readAt < 60000) return
+    this.readAt = Date.now()
+    const run = this.queue.then(() => this.tableAt || this.discover({ signal, launch: false }))
+    this.queue = run.catch(() => {})
+    try { await run } catch {}
+  }
+
+  // known says whether Doubao offers model. A model the list read last
+  // doesn't have sends the plugin back to the menu at once (Doubao adds
+  // models between reads, #1048), at most once a minute, so a client
+  // asking for a name Doubao never had doesn't open the menu each time.
+  // The read waits its turn behind a running ask: both press the same
+  // controls.
+  async known(model, { signal } = {}) {
+    if (lookup(this.modelList(), model)) return true
+    if (!this.app?.start || Date.now() - this.missAt < 60000) return false
+    this.missAt = Date.now()
+    const run = this.queue.then(() => this.discover({ signal }))
+    this.queue = run.catch(() => {})
+    try { await run } catch { return false }
+    return !!lookup(this.modelList(), model)
+  }
+
+  // quota reads the plan's allowance through the app's page, from a
+  // window already open only: a usage read never brings Doubao up
+  // (#1117), it says the window is closed instead.
+  async quota({ signal } = {}) {
+    if (!(this.page && !this.page.closed)) {
+      if (!this.app?.start) throw new DoubaoError("没有找到豆包。", "app_missing")
+      if (this.app.dataDir && !fs.existsSync(this.app.dataDir)) throw new DoubaoError("还没有登录过豆包工作窗口。", "doubao_signin")
+    }
+    const page = await this.connect(signal, { launch: false })
+    return page.eval(QUOTA)
+  }
+
+  // connect gives the page of the app's chat window, starting the app
+  // when launch says so; without it a closed app is the app_closed error
+  async connect(signal, { launch = true } = {}) {
     if (this.page && !this.page.closed) return this.page
-    const port = await this.app.start({ signal })
+    let port
+    if (launch) port = await this.app.start({ signal })
+    else {
+      port = this.app?.running ? await this.app.running() : 0
+      if (!port) throw new DoubaoError("豆包工作窗口没有打开：额度和模型列表在它打开时读取，下一次请求会打开它。", "app_closed")
+    }
     this.page = await this.openPage(port, (t) => isChat(t.url))
     if (!this.page) throw new DoubaoError("豆包的对话窗口没有打开。请在豆包里打开一个对话窗口后再试。", "doubao_no_window")
     return this.page
@@ -377,7 +818,22 @@ export class Doubao {
     return run
   }
 
-  async #ask(prompt, { model = "auto", signal, onUpdate = () => {} }) {
+  // reload loads the chat page again: a running app keeps the model menu
+  // it loaded when it started, and Doubao adds models in between.
+  async #reload(page, signal) {
+    await page.call("Page.reload", { ignoreCache: true })
+    for (const until = Date.now() + 30000; Date.now() < until; ) {
+      await sleep(500, signal)
+      let s
+      try { s = await page.eval(STATE) } catch { continue }
+      if (s?.input) return
+    }
+    throw new DoubaoError("豆包的页面重新加载后没有打开。", "doubao_ui")
+  }
+
+  // effort is the client's reasoning_effort ("low" ... "max"); "" is the
+  // model's own default.
+  async #ask(prompt, { model = "auto", effort = "", signal, onUpdate = () => {} }) {
     signal?.throwIfAborted()
     const page = await this.connect(signal)
     const s = await page.eval(STATE)
@@ -388,18 +844,32 @@ export class Doubao {
     }
     await step(NEW_TASK, "新建任务")
     await step(CLOUD, "切换到云电脑")
-    // the menu is open anyway to pick a model: refresh the list while here
-    // when it has not been read for a while
-    if (this.cacheFile && this.stale()) { try { await this.discover({ signal }) } catch {} }
+    // refresh the list while here when it has not been read for a while
+    if (this.cacheFile && this.stale()) { try { await this.discover({ signal, inTask: true }) } catch {} }
     const table = this.modelList()
-    const label = (table[model] ?? table.auto ?? MODELS.auto).label
-    const picked = await page.eval(pickModel(label))
+    const m = lookup(table, model) ?? table.auto ?? MODELS.auto
+    const label = m.label
+    let picked = await page.eval(pickModel(label))
+    if (/^no .* in the model menu$/.test(picked)) {
+      // the list has it and the menu doesn't: the menu is the one the page
+      // loaded with, older than the list. Load the page again, once.
+      await this.#reload(page, signal)
+      await step(NEW_TASK, "新建任务")
+      await step(CLOUD, "切换到云电脑")
+      picked = await page.eval(pickModel(label))
+    }
     if (picked === "upgrade") throw new DoubaoError(`${label} 需要升级豆包会员。`, "doubao_upgrade", { status: 403 })
     if (picked) throw new DoubaoError(`豆包选择模型失败：${picked}`, "doubao_ui")
+    // no effort asked: the model's own default, not the level the last
+    // request left the app on (the app keeps that)
+    const level = effortFor(effort, m.efforts) || (m.efforts?.includes(m.effort) ? m.effort : "")
+    if (level) await step(EFFORT(level), "设置推理强度")
     const n = await page.eval(fill(prompt))
     if (n < 0) throw new DoubaoError("豆包的输入框没有找到。", "doubao_ui")
     signal?.throwIfAborted()
-    await page.key("Enter", { keyCode: 13, text: "\r" })
+    // the send button, as a person sends; Enter when there is none. Enter
+    // alone was seen not to send while a menu of the page stayed open.
+    if (!(await page.eval(SEND))) await page.key("Enter", { keyCode: 13, text: "\r" })
     let last = null
     let changed = Date.now()
     const start = Date.now()

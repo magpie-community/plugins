@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-notify",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A push to your phone or team chat when an agent's turn is done or an account is signed out: ntfy, Bark, Gotify, Server酱, Feishu, DingTalk, WeCom, Telegram or a webhook",
   "type": "module",
   "files": ["notify.hooks.mjs", "turn.mjs", "channels.mjs", "page/*.html", "page/*.js", "page/*.css", "README.md"],

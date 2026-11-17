@@ -99,9 +99,20 @@ const SITES = {
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
-    // so only a host that is one is taken, else the one gateway
+    // so only a host that is one is taken, else the one gateway.
+    //
+    // The enterprise console an enterprise (SaaS) sign-in names is the
+    // seat's own model host, and a chat there bills the seat pool. Not every
+    // tenant's seat takes chats there: #1127's (shadow1606) answered every
+    // llm_utils_chat with 4245, for every function and model, while
+    // #1155's (kenanor) chats there. A seat the console turns away is
+    // marked (consoleChat: false, kept with the sign-in) and chats on the
+    // consumer gateway, which takes the same login but bills the login's
+    // own credits — so the gateway is the fallback, never the first ask.
+    // The plugin's hostOf applies the mark; this is the host before it.
     apiOf: (a) => {
       const h = traeHost(a?.api)
+      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return a?.consoleChat === false ? SITES["trae-cn"].hosts.api : SITES["trae-cn"].hosts.console
       return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
     // whether a host named by a sign-in is one of the model hosts: an https
@@ -178,9 +189,14 @@ const SITES = {
               aside: true,
             }
             if (c.until) w.resetsAt = new Date(c.until).toISOString()
+            if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
             windows.push(w)
           }
           if (windows.length) out.windows = windows
+          // a pool of nothing and no credits row leave the card nothing to
+          // show: it says what the console and the page answered rather
+          // than standing empty (#1143)
+          else if (!out.balance) return { error: `Trae CN usage: the console gives this seat a pool of ¥${q.limit}, and the credits page ${!page ? "could not be read" : c?.unlimited ? "says unlimited" : "shows no allowance"}`, signIn, user: a.name || a.uid }
           return out
         },
       },
@@ -195,6 +211,7 @@ const SITES = {
           // English balance line beside it (yetone/magpie#694)
           const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
           if (c.until) w.resetsAt = new Date(c.until).toISOString()
+          if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
           out.windows = [w]
         }
         return out
@@ -315,6 +332,8 @@ const SITES = {
           const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
           if (q.unlimited) out.balance = "unlimited"
           else if (q.limit > 0) out.windows = [seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), DOLLARS, "usd")]
+          // a pool of nothing leaves the card nothing to show (#1143)
+          else return { error: `Trae Global usage: the console gives this seat a pool of $${q.limit}`, signIn, user: a.name || a.uid }
           return out
         },
       },
@@ -514,6 +533,8 @@ function toAuth(s, site) {
     ...(traeHost(s.host) ? { host: traeHost(s.host) } : {}),
     ...(authHostOf(s.authHost, site) ? { authHost: authHostOf(s.authHost, site) } : {}),
     ...(s.account && Object.keys(s.account).length ? { account: s.account } : {}),
+    // an enterprise seat its console turned a chat away from (4245)
+    ...(s.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -535,6 +556,7 @@ function fromAuth(auth, site) {
     host: auth.host || "",
     authHost: authHostOf(auth.authHost, site),
     account: auth.account && typeof auth.account === "object" ? auth.account : {},
+    ...(auth.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -1596,7 +1618,7 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1615,6 +1637,22 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   if (max?.window) {
     if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
+  }
+  // an enterprise's built-in model goes with the model info Trae CN's own
+  // client gives it (ai-modules-chat's model info: config_source, is_preset
+  // false, its custom_model_id, served remotely). Not confirmed against an
+  // enterprise seat's real request: a Trae preset is sent as before.
+  if (enterpriseModel(entry)) {
+    const info = body.user_message_context?.model_info ?? {}
+    info.config_name = config
+    info.config_source = ENTERPRISE
+    info.is_preset = false
+    info.use_remote_service = true
+    const shown = entry.display_config?.display_name || entry.display_name
+    if (shown) info.display_model_name = String(shown)
+    if (entry.custom_model_id) info.custom_model_id = String(entry.custom_model_id)
+    if (entry.provider) info.provider = String(entry.provider)
+    body.user_message_context = { ...body.user_message_context, model_info: info }
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -1787,6 +1825,38 @@ class TextTools {
       const sm = this.buf.match(STRAY_AT)
       const s = sm ? sm.index : -1
       const x = this.buf.search(XML_AT)
+      const j = jsonCallAt(this.buf, this.sent + text)
+      if (j >= 0 && [i, d, r, x, s].every((y) => y < 0 || j < y)) {
+        // OpenAI's own wire shape written as text, {"tool_calls":[{…}]} on
+        // a line of its own (plugins#1114): whole and readable, its calls;
+        // cut short, a failure; in code or not readable, text
+        const head = this.buf.slice(0, j)
+        const brace = this.buf.indexOf("{", j)
+        const o = quoted(this.sent + text + head) ? -2 : objectEnd(this.buf, brace)
+        if (o === -1 && !end) {
+          text += head
+          this.buf = this.buf.slice(j)
+          break
+        }
+        if (o === -1) {
+          this.buf = ""
+          text += head
+          this.sent += text
+          return { text, calls, reasoning, error: CUT_SHORT }
+        }
+        const got = o > 0 ? jsonCalls(this.buf.slice(brace, o)) : null
+        if (!got) {
+          text += this.buf.slice(0, brace + 1)
+          this.buf = this.buf.slice(brace + 1)
+          continue
+        }
+        text += head
+        calls.push(...got)
+        this.mark = this.sent.length + text.length
+        this.buf = this.buf.slice(o)
+        this.after = true
+        continue
+      }
       if (s >= 0 && [i, d, r, x].every((y) => y < 0 || s < y)) {
         // a close with no call open, with what GLM left before it
         // (}}</tool_call>, magpie#1945): not the answer, dropped; in code,
@@ -1949,7 +2019,7 @@ class TextTools {
       this.buf = ""
     } else {
       // keep back an opened block, or what may be the start of one
-      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD)].filter((x) => x >= 0)
+      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD), jsonCallAt(this.buf, this.sent + text), jsonHoldAt(this.buf, this.sent + text)].filter((x) => x >= 0)
       let keep = at.length ? this.buf.length - Math.min(...at) : 0
       if (!keep) for (let k = Math.min(MARK_MAX - 1, this.buf.length); k > 0; k--) if (MARKS.some((m) => m.startsWith(this.buf.slice(-k)))) { keep = k; break }
       // and braces, brackets, quotes or a > a close may still come after
@@ -2103,6 +2173,46 @@ class TextTools {
     if (/^\s*[\w.:-]{1,128}\s*<arg_key>/.test(body)) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
     return { text: true }
   }
+}
+
+// A {"tool_calls":[{ at a line's start (plugins#1114); before refers to
+// what came before buf, the start of a line only after a line break or
+// blanks.
+const JSON_CALL_AT = /(^|\n)[ \t]*\{\s*"tool_calls"\s*:\s*\[\s*\{/g
+const JSON_CALL_KEY = '{"tool_calls":[{'
+const atLineStart = (before) => !/\S/.test(before.slice(before.lastIndexOf("\n") + 1))
+
+// jsonCallAt is where in buf the line holding such an object starts, or -1
+function jsonCallAt(buf, before) {
+  for (const m of buf.matchAll(JSON_CALL_AT)) {
+    const at = m.index + m[1].length
+    if (at > 0 || atLineStart(before)) return at
+  }
+  return -1
+}
+
+// jsonHoldAt is where buf's last line starts when it may still grow into
+// one (its indent alone too), or -1
+function jsonHoldAt(buf, before) {
+  const k = buf.lastIndexOf("\n") + 1
+  if (k === 0 && !atLineStart(before)) return -1
+  const line = buf.slice(k)
+  return line && JSON_CALL_KEY.startsWith(line.replace(/\s+/g, "")) ? k : -1
+}
+
+// jsonCalls reads such an object's calls: {"name","arguments"} entries or
+// OpenAI's {"type":"function","function":{…}}; null when there are none or
+// one has no name
+function jsonCalls(s) {
+  const list = looseJSON(s)?.tool_calls
+  if (!Array.isArray(list) || !list.length) return null
+  const out = []
+  for (const e of list) {
+    const f = e?.function ?? e
+    if (!f || typeof f.name !== "string" || !f.name) return null
+    out.push({ name: f.name, arguments: callArgs(f) })
+  }
+  return out
 }
 
 const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
@@ -2857,13 +2967,15 @@ async function* chain(held, it) {
 }
 
 // failure is the response for an error Trae answered with
-function failure(site, status, code, message) {
+// ctx, when given, says what was asked: an error that isn't a lapse or a
+// quota names it, so a 502 says which model, where and through what
+function failure(site, status, code, message, ctx = "") {
   message = message || statusLine(status)
   if (status === 401 || lapsedCode(code, site) || (status === 403 && lapsedWords.test(message))) {
     return errorResponse(401, `${site.realm}'s sign-in has expired (${message}); sign in again`, "expired")
   }
   if (status === 429 || quotaCode(code, site) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `${site.realm}: ${message}`)
-  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}`)
+  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}${ctx ? `; ${ctx}` : ""}`)
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
@@ -2961,11 +3073,25 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
+//
+// An enterprise's own built-in models are the exception: Trae CN's client
+// (3.4.20, ai-modules-chat ModelConfigSource) marks each entry's
+// config_source Trae 1, Enterprise 2 or Personal 3, and shows the
+// Enterprise ones as "Enterprise-builtin" for every seat of the tenant —
+// served by Trae with the tenant's provider, so a seat picks them like its
+// own. Not being Trae's presets (is_preset false), they come out as custom
+// models (is_custom_model) and were dropped with the personal ones, whose
+// provider key lives in the user's IDE only (plugins#1258, 0.2.41).
+// One the admin switched off (status false) stays out, as in the IDE.
+const ENTERPRISE = 2
+const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
-  if (!id || /^custom_model/i.test(id)) return false
+  if (!id) return false
   if (m.usage && m.usage !== "chat_completion") return false
   if (m.config_switch === false) return false
+  if (enterpriseModel(m)) return m.status !== false && !(site?.hidesInvisible && m.is_invisible_to_user === true)
+  if (/^custom_model/i.test(id)) return false
   if (m.is_custom_model === true || m.display_config?.is_custom_model === true) return false
   // the IDE's own picker hides these: Auto-mode routing channels and
   // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
@@ -3153,12 +3279,16 @@ const effortOf = (levels, effort) => {
 // ---- usage ------------------------------------------------------------------------
 
 // credits adds up the account's entitlement packs as the IDE shows them:
-// each pack with a credit limit (-1 unlimited) and what it used
-function credits(v) {
+// each pack with a credit limit (-1 unlimited) and what it used. until is
+// the soonest end of a pack that still has credits left and has not ended:
+// a spent daily pack or one already past its end changes nothing on the
+// account, so it does not name the date the credits turn over (#718, #1157).
+function credits(v, now = Date.now()) {
   let limit = 0
   let used = 0
   let unlimited = false
   let soonest = 0
+  let lapsing = 0
   for (const p of v?.user_entitlement_pack_list ?? []) {
     const bi = p?.entitlement_base_info ?? {}
     const l = Number(bi?.quota?.credits_limit)
@@ -3168,9 +3298,17 @@ function credits(v) {
     else if (l >= 0) limit += l
     if (u > 0) used += u
     const end = whenOf(bi.end_time ?? bi.expire_time ?? p.end_time)
-    if (end && (!soonest || end < soonest)) soonest = end
+    const left = l === -1 || (l > 0 && u < l)
+    if (!(end && end > now && left)) continue
+    // what a finite pack has left is lost at its end, whether or not a
+    // new pack follows: lapsing is the credits that go at the soonest end
+    // (#718: a TraeCode CN account's sign-in rewards are 31-day packs of
+    // 100, one a day)
+    const rest = l === -1 ? 0 : Math.max(0, l - Math.max(0, u))
+    if (!soonest || end < soonest) (soonest = end), (lapsing = rest)
+    else if (end === soonest) lapsing += rest
   }
-  return { limit, used, unlimited, until: soonest }
+  return { limit, used, unlimited, until: soonest, lapsing }
 }
 
 const round = (n) => Math.round(n * 100) / 100
@@ -3414,6 +3552,39 @@ const makePlugin = (site) => async ({ client }) => {
     else if (strict && was.expired) rec = await runRead(a, who)
     else rec = was
     return { models: rec.done, expired: rec.expired }
+  }
+
+  // the enterprise seats whose console turned a chat away (4245) in this
+  // run, by account: the mark is kept with the sign-in too, and this holds
+  // it when that save fails
+  const consoleRefused = new Set()
+  // hostOf is the account's model host, with that mark applied
+  const hostOf = (a) => {
+    const h = apiOf(a, site)
+    if (site.hosts.console && h === site.hosts.console && consoleRefused.has(a.uid || a.name)) return site.hosts.api
+    return h
+  }
+  // onConsole: the host is the enterprise console, where a 4245 is the
+  // seat's console refusing chats rather than this model or function
+  const onConsole = (host) => !!site.hosts.console && host === site.hosts.console && host !== site.hosts.api
+  const consoleRefuses = (code) => String(code) === "4245"
+
+  // askedOf says what a refused chat asked for: the model, the functions
+  // tried and the host, and whether the account's list has the model at all.
+  // A model typed in by hand that the list doesn't name is the likeliest
+  // cause of a refusal, and the list is read for it (once per REREAD_MS)
+  // only on this failing path.
+  const askedOf = async (a, id, entry, fns, host) => {
+    let listed = !!entry && liveEntry.has(id)
+    if (!listed) {
+      await readList(a).catch(() => {})
+      entry = liveEntry.get(id) ?? null
+      listed = !!entry
+    }
+    const kind = enterpriseModel(entry) ? "enterprise built-in model" : "model"
+    let out = `${kind} ${id} asked through ${fns.join(", ")} on ${host.replace(/^https?:\/\//, "")}`
+    if (!listed && liveEntry.size) out += `; this account's model list doesn't have ${id}, so Trae may not serve it under that id`
+    return out
   }
 
   const save = async (auth) => {
@@ -3737,7 +3908,7 @@ const makePlugin = (site) => async ({ client }) => {
   // SOLO CN's ai-agent asks (batch_get_detail_param): {function: entries}.
   // null when Trae answers it with no lists.
   const batchLists = async (a) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/batch_get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/batch_get_detail_param", {
       functions: site.functions, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
       mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
     })
@@ -3756,7 +3927,7 @@ const makePlugin = (site) => async ({ client }) => {
 
   // listOf is one function's model list, as the IDE asks for it
   const listOf = async (a, fn) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/get_detail_param", {
       function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true, mode_type: null, agent_type: null,
     })
     if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
@@ -3998,7 +4169,7 @@ const makePlugin = (site) => async ({ client }) => {
         const a0 = fromAuth(await getAuth(), site)
         if (!a0) return {}
         return {
-          baseURL: apiOf(a0, site) + "/v1",
+          baseURL: hostOf(a0) + "/v1",
           apiKey: "trae", // the engine's placeholder; the request carries the JWT
           async fetch(input, init = {}) {
             const r0 = input instanceof Request ? input : null
@@ -4071,47 +4242,79 @@ const makePlugin = (site) => async ({ client }) => {
             // the account answering it, so a failover inside one conversation
             // is not one Trae reads as another's
             const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})), who)
-            for (const fn of [...new Set(fns)]) {
-              const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
-                method: "POST",
-                headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
-                signal: ac.signal,
-              })
-              if (!res.ok) {
-                const text = await res.text()
-                const e = errorOf(text)
-                last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
-                if (res.status === 400 && wrongFunction(e.code)) continue
-                break
-              }
-              const ct = res.headers.get("content-type") ?? ""
-              if (!ct.includes("event-stream") && ct.includes("json")) {
-                // an answer that isn't a stream is an error in a 200
-                const e = errorOf(await res.text())
-                last = failure(site, 502, e.code, e.message)
-                if (wrongFunction(e.code)) continue
-                break
-              }
-              const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
-              const { held, done } = await first(it)
-              const err = held.find((p) => p.error)
-              if (err) {
-                last = failure(site, 502, err.code, err.error)
-                if (wrongFunction(err.code)) {
-                  // another function may take it: this answer's read goes
-                  // with the function it came from, not left hanging
-                  it.return?.()
-                  res.body.cancel?.().catch(() => {})
-                  continue
+            // an enterprise seat chats on its console, which bills the seat
+            // pool. One whose console turns chats away (4245, #1127) is
+            // marked, kept with its sign-in, and the same request is asked
+            // once more on the consumer gateway; its list is read from there
+            // next.
+            // what the last refusal was, and where it was asked: the error
+            // the agent gets names the model, the functions and the host
+            let why = null
+            const tried = []
+            const entry = liveEntryOf(base)
+            for (let round = 0; round < 2; round++) {
+              const host = hostOf(a)
+              let refused = false
+              for (const fn of [...new Set(fns)]) {
+                tried.push(fn)
+                const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                  method: "POST",
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)),
+                  signal: ac.signal,
+                })
+                if (!res.ok) {
+                  const text = await res.text()
+                  const e = errorOf(text)
+                  why = { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host }
+                  last = failure(site, why.status, why.code, why.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (res.status === 400 && wrongFunction(e.code)) continue
+                  break
                 }
-                break
+                const ct = res.headers.get("content-type") ?? ""
+                if (!ct.includes("event-stream") && ct.includes("json")) {
+                  // an answer that isn't a stream is an error in a 200
+                  const e = errorOf(await res.text())
+                  why = { status: 502, code: e.code, message: e.message, host }
+                  last = failure(site, 502, e.code, e.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (wrongFunction(e.code)) continue
+                  break
+                }
+                const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
+                const { held, done } = await first(it)
+                const err = held.find((p) => p.error)
+                if (err) {
+                  why = { status: 502, code: err.code, message: err.error, host }
+                  last = failure(site, 502, err.code, err.error)
+                  if (onConsole(host) && consoleRefuses(err.code)) {
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    refused = true
+                    break
+                  }
+                  if (wrongFunction(err.code)) {
+                    // another function may take it: this answer's read goes
+                    // with the function it came from, not left hanging
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    continue
+                  }
+                  break
+                }
+                fnOf.set(who, fn)
+                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
               }
-              fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
-              out.headers.set("X-Magpie-Sign-In", signIn)
-              return out
+              if (!refused) break
+              consoleRefused.add(who)
+              a = { ...a, consoleChat: false }
+              await save(toAuth(a, site))
+              readAt.delete(who)
             }
+            if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
           },
@@ -4126,4 +4329,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

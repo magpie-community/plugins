@@ -35,6 +35,7 @@ import { appendFile, mkdir, open, readFile, rename, stat, unlink } from "node:fs
 import { randomUUID } from "node:crypto"
 import { basename, dirname } from "node:path"
 import { measureTools } from "./lib/measure.mjs"
+import { processStatus } from "./lib/proc.mjs"
 import { toolsLog } from "./lib/paths.mjs"
 import { activity } from "./lib/activity.mjs"
 
@@ -139,16 +140,8 @@ async function removeLock(path) {
 }
 
 function alive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return null
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // ESRCH: no such process, the owner is gone.
-    if (error.code === "ESRCH") return false
-    // EPERM: the process exists but belongs to another user.
-    return null
-  }
+  const state = processStatus(pid).state
+  return state === "dead" ? false : state === "alive" ? true : null
 }
 
 // The lock's owner: undefined when there is no lock, null when it cannot be

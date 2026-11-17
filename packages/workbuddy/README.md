@@ -36,6 +36,17 @@ The package exports `WorkBuddyAuthPlugin` (`workbuddy`) and
   none with a key), and its models are `/v3/config`'s only for `ck_`/`pt_`
   keys, as the CLI asks; any other key keeps the list below.
 
+- **Import from a file** (since 0.2.32; magpie with plugin imports).
+  magpie's "Import accounts from a file…" takes WorkBuddy desktop's
+  sign-in file (`workbuddy-desktop[-ai].info`, above) or a copy of a
+  sign-in: JSON with its access and refresh tokens, as this plugin's
+  `auth.json` entry, `accessToken`/`refreshToken` or
+  `access_token`/`refresh_token`, alone, in a map or in a list. Each is
+  renewed with WorkBuddy before it is added, as a browser sign-in is, so
+  the app or tool the file came from is signed out of that account. An
+  encrypted file (WorkBuddy 5.6 and later) and the other build's sign-in
+  are refused with why.
+
 A browser sign-in is kept as an OpenCode `oauth` auth: the access and
 refresh tokens, their expiry, the user id and the domain; desktop's as a
 marker, `{"type": "oauth", "source": "desktop", "accountId", "uid"}`. OpenCode keeps it in
@@ -60,6 +71,17 @@ app's file. Every request then carries `X-Enterprise-Id` and `X-Tenant-Id`,
 as WorkBuddy's own client sends them; without them WorkBuddy answers as the
 personal account, with the personal plan's models. A browser sign-in made
 before 0.1.13 has no enterprise id kept: sign in again.
+
+A cloud-hosted enterprise's account (its sign-in's domain is
+`<enterprise>.sso.copilot.tencent.com`, `<enterprise>.copilot.qq.com` or
+`<enterprise>.sso.codebuddy.cn`, the cloud-hosted hosts WorkBuddy's own
+`product.json` lists) is served at that host, as WorkBuddy's client sets
+the enterprise's endpoint for it: its refresh, account list, models, usage
+and chats go there. Tencent's own iOA host
+(`tencent.sso.copilot.tencent.com`) stays on `copilot.tencent.com`, as in
+WorkBuddy's `product.ioa.json`. Before 0.2.32 every account was sent to
+the build's own endpoint. A self-hosted enterprise's host isn't known to
+the plugin and isn't routed.
 
 An enterprise's own models (`custom:<name>|<name>`) are listed after the
 plan's, as WorkBuddy's own client lists them, with their context, output,
@@ -174,6 +196,30 @@ Not sent: `X-Device-Token`, which the desktop app gets from Tencent's
 native device SDK before each prompt, and a `traceparent`, which the CLI
 adds only while its server-side tracing is on.
 
+A WorkBuddy AI chat also carries, in its body, the `extra_vars` its own
+client sends (#691): `initiator: "user"` and `growthEvent`, a JSON string
+holding a `chat_request_send` event for the chat's `X-Conversation-ID`, with
+the user's last message's length, the model's id and name, `mode: "craft"`
+and no command. WorkBuddy AI's CLI sends this event in the chat itself
+instead of on `/v2/report`; whether WorkBuddy reads it for the daily credit
+is not known. Anything the caller put in `extra_vars` is kept. The China
+build's chats go without it.
+
+Since 0.2.35 a WorkBuddy AI chat is also reported on `POST /v2/report`, as
+WorkBuddy AI 5.9.4's client reports one (#691): once the reply has been
+read to its end, `chat_message_send`, then `chat_message_response` and
+`chat_message_status` (with `chat_request_send` first when the user's own
+message opened the step, and `chat_request_response` last when the step
+ends the turn), then `agent_task_completed` and `chat_response_complete`
+for a step that ends it. They carry the chat's ids, model, token counts and
+finish reason, and the client's common fields: the account's id and name,
+WorkBuddy's version, this computer's OS, CPU and memory, and a machine id
+that is a hash of the host's and user's names. Only the user's own chats
+are reported, never a message of the plugin's own; a reply cut off, a
+refusal, a key account and the China build send none, and a report that
+fails is dropped. Whether the daily credit reads these reports is not
+known yet.
+
 A chat that doesn't open with a system message is given WorkBuddy's
 default one, as the app does.
 
@@ -222,6 +268,9 @@ models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:
 - a tool's parameters with no `type`, empty, or a union (`anyOf`, `oneOf`,
   `allOf`) at the root are an object, the union's fields merged;
 - a `pattern`'s `\0` is `\u0000`, which matches the same;
+- REA's exact `^[^\uD800-\uDFFF]*$` surrogate guard is omitted from the
+  outbound schema: WorkBuddy AI's DeepSeek rejects it with "invalid function
+  call parameters". Other path constraints and REA's own validation stay;
 - a tuple's `items` (a list) is one schema any of them fits;
 - an `enum` with no `type` takes its values' type (or that and `"null"`),
   and an `enum` of several types is an `anyOf` of one typed `enum` for
@@ -443,11 +492,13 @@ What is measured, and what is easy to read wrongly:
 - **A refusal hidden by routing still counts.** A group that moves to
   another provider after the 429 writes only the 200 that answered, so the
   failed WorkBuddy attempt is read from `routing/YYYY-MM-DD.jsonl` (or its
-  `.gz`) as well: its vendor words — or the gateway rest's `until` and
-  `key`, which names the account and model — pin the window the same way.
-  Three days of traces are read, the current plain file and the compressed
-  days before it, and what they held is kept until a trace itself changes;
-  an append to `usage.jsonl` does not decompress them again.
+  `.gz`, and a busy day's numbered `YYYY-MM-DD.N.jsonl` files) as well: its
+  vendor words — or the gateway rest's `until` and `key`, which names the
+  account and model — pin the window the same way. Three days of traces are
+  read a line at a time, never held whole, and what they held is kept until
+  a trace itself changes; an append to `usage.jsonl` does not decompress
+  them again, and an append to today's plain file is read from where the
+  last read stopped.
 - **The sum is shown, not routed on.** Until the vendor refuses, the card is
   set aside (`aside: true`): magpie draws it beside the account and never
   counts it as the account's allowance, so an estimate near its cap does not

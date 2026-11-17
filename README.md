@@ -14,7 +14,7 @@ vendor service and makes its requests. The packages work in OpenCode and in
 | [agnes](packages/agnes) | Agnes AI international (agnes-ai.com), with Chrome browser sign-in, live text models, plan usage and USD balance | `agnes` |
 | [agnes-code](packages/agnes-code) | Agnes AI's Agnes Code desktop, with the desktop's saved session (Windows) or a pasted access token: live models, daily credit check-in and points balance (unofficial) | `agnes-code` |
 | [agy-cli](packages/agy-cli) | Antigravity on your installed agy CLI through ACP (`agy acp`), with agy's own Google sign-in: only the models agy offers this client, a process pool, MCP tool bridge and session resume (unofficial) | `agy-cli` |
-| [antigravity](packages/antigravity) | Antigravity with a Google account (AI Pro, Ultra, free): Gemini, and the Claude and GPT-OSS models Google hosts for it, with Google sign-in or an imported refresh token | `antigravity` |
+| [antigravity](packages/antigravity) | Withdrawn for new users: Google suspends accounts it sees used this way. Kept working for whoever has it; use agy-cli instead | `antigravity` |
 | [astudio](packages/astudio) | iFlytek's AStudio (科大讯飞 Astron Studio desktop), with the desktop's saved credentials or a pasted model token: live model catalog, daily login-points check-in and points balance (unofficial) | `astudio` |
 | [atomcode](packages/atomcode) | AtomGit CodingPlan, with browser OAuth or the local AtomCode CLI's sign-in, signed requests, live models, quota windows and a read-only diagnostics page (unofficial) | `atomcode` |
 | [catpaw](packages/catpaw) | Meituan's 妙手 CatPaw (ai.catpaw.meituan.com), with a browser web sign-in or the desktop client's saved credentials | `catpaw` |
@@ -68,12 +68,13 @@ These packages aren't OpenCode plugins. magpie runs them in its gateway, on the 
 | [system-prompt](packages/system-prompt) | Your own system prompt on every request, or on some agents' or models', in each API's own place |
 | [output-strategy](packages/output-strategy) | Seven composable output styles with a selection panel; off by default, cache-stable, and Codex `instructions` stay untouched |
 | [word-guard](packages/word-guard) | New API's 敏感词过滤: turn away or mask words and patterns in what users send, and in replies |
+| [company-guard](packages/company-guard) | Recognize company names, mask them with stable session aliases and restore replies, with local receipts and explicit Codex session approvals; complements Word Guard's configured-word filter |
 | [think-tags](packages/think-tags) | Take a leading `<think>`, `<thinking>` or `<thought>` block out of a reply's text, or put a Chat reply's `reasoning_content` into it (`thinking_to_content`) |
 | [empty-reply](packages/empty-reply) | Drop the end of a reply that has reasoning but no text, so Claude Code and Codex retry instead of stopping |
 | [antigravity-cloak](packages/antigravity-cloak) | Claude Code and Claude Desktop on Antigravity: break the words Antigravity turns their system prompt away for, in what Antigravity alone is sent |
 | [codex-history](packages/codex-history) | Opt-in Responses history compatibility after switching providers: remove historical ciphertext and optional item IDs while preserving readable content and tool-call pairing |
 | [history-trim](packages/history-trim) | Send a request's history smaller: fold a run of blank lines, drop a system prompt written twice and a message repeated right after itself, and cut a past tool result longer than `maxToolLength` at a word boundary |
-| [agentcompass](packages/agentcompass) | [AgentCompass](https://github.com/akiiwa-games/AgentCompass) multi-dimensional task profiling, capability floor, Model DNA (`divergence`, `global_rigor`, `module_precision`), subscription quota opportunity-cost, and session-affinity routing (`magpie.middleware` + opt-in `/v1/systemone`) |
+| [agentcompass](packages/agentcompass) | [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.6.0 routing: four capability categories (`divergence`, `coding`, `aesthetics`, `tool_operation`) with per-effort time and price, subscription quota economy, and session-affinity routing (`magpie.middleware` + opt-in `/v1/systemone`) |
 
 ```sh
 magpie plugin add @magpie-community/middleware-<name>
@@ -134,6 +135,7 @@ A tools package can also give magpie a web search API. It is listed in Settings 
 
 | Package | Search APIs |
 |---|---|
+| [search1api](packages/search1api) | Search1API, signed in with the plugin's Search1API OAuth or API key (no key of its own); also gives the tools above |
 | [magpie-websearch](https://github.com/guotree/magpie-websearch) | AnySearch, Bocha, Jina, Kagi, Keenable, Linkup, Metaso, Moonshot, Moonshot CN, Ollama, Parallel, Perplexity, Querit, SerpApi, Serper, StepFun, TinyFish, Z.ai and Zhipu; published as `@guotree/magpie-websearch` and maintained in its own repository |
 | [magpie-search-mix](https://github.com/mdwsk88/magpie-search-mix) | magpie-search-mix, which asks two (or more) of Tavily, Brave, Exa, Firecrawl, You.com, DeepSeek, Doubao Search, Yuanbao Search and SearXNG at once, the ones you name in its key field, and gives their pages in turn, deduplicated; published as `magpie-search-mix` and maintained in its own repository |
 
@@ -184,6 +186,7 @@ These add a page to magpie's window, in the app and in `magpie web`, under Plugi
 
 | Package | Page | Reads |
 |---|---|---|
+| [feishu-sidebar](packages/feishu-sidebar) | Generate an AppLink to open Magpie Web in Feishu desktop’s left sidebar | none |
 | [usage](packages/usage) | Usage glance: calls, errors, tokens and cost for today, 7 or 30 days, and the models behind them | `usage:summary` |
 | [free-tokens](packages/free-tokens) | AIHOT's Token freebies in three tiers (already configured and usable / needs one more plugin / no plugin yet), with the plugin to install or the exact login step for each | none; its host part reads magpie's folder (providers/checkin) and fetches aihot.news/free-tokens.data once each time the plugin host starts |
 | [amp-usage](packages/amp-usage) | Amp usage: requests, input/output tokens, cache reads and writes and cache hit rate from Amp's cloud exports and legacy local threads, synced in the background into Magpie's usage ledger for its usage pages and Day card | none; its host part runs the Amp CLI, reads Amp's local thread files and reports usage to the local Magpie |
@@ -281,10 +284,12 @@ it off puts the config back.
 | [aider](packages/aider) | [Aider](https://aider.chat): `~/.aider.conf.yml`, through litellm's `openai/` prefix |
 | [nanobot](packages/nanobot) | [nanobot](https://github.com/HKUDS/nanobot): Magpie's model becomes nanobot's default preset, and Library gives it MCP servers and default-workspace skills; restart nanobot after MCP changes |
 | [reasonix-desktop](packages/reasonix-desktop) | [Reasonix 1.x](https://github.com/esengine/DeepSeek-Reasonix/tree/main-v2) Desktop and CLI: reversible global TOML/dotenv bridge; restart Reasonix after choosing a model. Separate from the built-in Studio 2.x adapter |
+| [deepzora](packages/deepzora) | [Deepzora](https://github.com/SivanCola/deepzora) Desktop, CLI and ACP: reversible global TOML/dotenv bridge; restart Deepzora after choosing a model |
 | [bub](packages/bub) | [Bub](https://bub.build): `~/.bub/config.yml`, as the `magpie:` provider (needs Bub 0.5.1 or later) |
 | [kilo](packages/kilo) | [Kilo Code](https://kilo.ai): `~/.config/kilo/kilo.jsonc`, through an OpenAI-compatible provider |
 | [junie](packages/junie) | [Junie CLI](https://junie.jetbrains.com/): an explicit `/v1/models` seed for its full picker and Magpie's selected model as the launch default; no LiteLLM |
 | [kimi-desktop](packages/kimi-desktop) | Ordinary [Kimi desktop](https://www.kimi.com/) Work, through its authenticated local runtime; not Kimi Code CLI |
+| [pi-desktop](packages/pi-desktop) | Pi-Desktop (the desktop app, not the Pi CLI): magpie keeps a Pi-Desktop plugin folder, `~/.config/magpie-pi-desktop/plugin`, that adds it as a model provider with its current models and their thinking levels; load it once in Pi-Desktop, choose the model there |
 | [pig](packages/pig) | [PiG](https://github.com/MichaelKinsy/PiG): Magpie's endpoint and model catalog in `~/.pig/agent/models.json`, and the model PiG starts on (`defaultProvider`/`defaultModel` in `settings.json`) picked on the Agents page |
 | [type4me](packages/type4me) | [Type4Me](https://github.com/joewongjc/type4me), macOS voice input: `~/Library/Application Support/Type4Me/magpie-agent.json`, for its LLM post-processing |
 | [opencodereview](packages/opencodereview) | [Open Code Review](https://github.com/alibaba/open-code-review) (`ocr`): `~/.opencodereview/config.json` as a custom Anthropic provider, so `ocr review` / `ocr scan` run on magpie's models |
@@ -292,7 +297,11 @@ it off puts the config back.
 | [minimax-design](packages/minimax-design) | [MiniMax Design](https://design.minimax.io), the local multimodal creation studio: one custom-model entry in `%APPDATA%\@hilo\desktop\hub-config.json` whose model menu follows magpie's list; Windows only |
 | [eta](packages/eta) | [Eta](https://github.com/Lingwcy/eta): connect-only local gateway integration; choose models and routing groups in Eta’s own picker after restarting. Requires Eta 0.1.164 or later |
 | [rhino9-ai](packages/rhino9-ai) | [Magpie-Rhino](https://github.com/mikidaren/Magpie-Rhino) for Rhino 9 on Windows, with Magpie models, custom groups and routing strategies through Rhino MCP. Install the companion `.yak`, restart Rhino once, then open its AI panel and choose **Magpie**; no command required |
+| [zycode](packages/zycode) | [zycode](https://github.com/zy1233/pi-python) (`zypi`, the VS Code extension, the ACP agent): Magpie's model in the `[model]` table of `~/.pi-python/agent.toml`, set by a host part that follows `local.env` and puts the file back byte for byte; restart zycode after choosing a model |
+| [meowcode](packages/meowcode) | [MeowCode](https://github.com/MuLiuSaMa/MeowCode): magpie's models in MeowCode's own model list, written to an overlay file beside its settings that MeowCode reads at start-up; restart MeowCode after choosing a model |
+| [lorca](packages/lorca) | [Lorca](https://lorca.app): `~/.lorca/credentials.json` as a custom provider, mirroring Magpie's models with thinking levels and MCP support via `~/.lorca/mcp.json` |
 | [finch](packages/finch) | [Finch](https://finchwork.app/): Magpie's chosen model written into Finch's supported external-model integration file (`~/.finch/config/integrations/magpie.json`), which Finch imports and syncs on the file change with no restart; installed from a local path, so it stays out of Magpie's automatic updates |
+
 
 ```sh
 magpie plugin add @magpie-community/agent-<name>
