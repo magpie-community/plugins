@@ -1,0 +1,14 @@
+{
+  "name": "@magpie-community/opencode-qianwen-auth",
+  "version": "0.1.0",
+  "description": "Qianwen (千问 App, com.alibaba.tongyi) subscription in OpenCode and magpie: desktop sign-in, pure-HTTP Baxia request signing, no browser",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "provider.mjs", "session.mjs", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "qianwen", "千问", "tongyi"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/magpie-community/plugins", "directory": "packages/qianwen" },
+  "scripts": { "test": "bun test" },
+  "magpie": { "maxConcurrency": 1 }
+}
