@@ -47,10 +47,13 @@ has neither shape.
 
 Two other routes exist, both outside this plugin:
 
-- **Varin can ship the entry itself.** [Astrmira/Varin#382](https://github.com/Astrmira/Varin/pull/382)
-  adds Magpie to Varin's channel directory, so it appears in *add a model
-  service* with the endpoint filled in — the same way Ollama and LM Studio do.
-  Once that lands in a Varin release, this section stops applying.
+- **Varin can ship the preset itself.** [Astrmira/Varin#382](https://github.com/Astrmira/Varin/pull/382)
+  is merged: it registers Magpie as a built-in model service on the existing
+  OpenAI-compatible configuration, so it appears in *add a model service* with
+  the endpoint filled in and no authentication — the same way Ollama and LM
+  Studio do. Because it is a built-in type rather than a directory entry, it
+  carries the full OpenAI-compatible capabilities. Once that reaches a Varin
+  release, this section stops applying. Varin 0.9.49 does not have it yet.
 - **A script can add the channel through Varin's own API** (`read`, `save`,
   `discover`, `test`), so Varin validates and discovers everything itself. That is
   what `varin-link-magpie` does; it is not part of this package.
