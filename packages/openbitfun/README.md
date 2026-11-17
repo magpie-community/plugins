@@ -103,6 +103,11 @@ list; an empty catalog from magpie changes nothing. Edits you make in
 OpenBitFun while connected are kept, but a wholesale restore is only byte for
 byte when nothing was edited in between.
 
+A `bridge.json` or `library/mcp.json` that is not valid JSON — hand-edited or
+half-written — is read as "not connected": the bridge keeps OpenBitFun's file
+as it is instead of stopping. The bridge reads and writes regular files only; a
+symbolic link in place of any of them is refused, not followed.
+
 Tested against OpenBitFun 1.0.9 on Windows and magpie 0.1.4332.
 
 ## Package layout

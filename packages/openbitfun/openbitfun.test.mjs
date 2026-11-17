@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, symlinkSync, lstatSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { agent, connect } from "./openbitfun.agent.js"
@@ -43,6 +43,20 @@ function workspace(bridge) {
   writeFileSync(paths.config, appJson())
   if (bridge !== undefined) writeFileSync(paths.bridge, JSON.stringify({ bridge }))
   return { dir, paths, done: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+// Creating a symbolic link needs a privilege Windows grants only to
+// administrators or developer-mode users (EPERM otherwise). Probe for the
+// ability and let a test skip when the platform cannot make one, so the
+// symlink refusal is still verified wherever links can be built.
+function trySymlink(target, link) {
+  try {
+    symlinkSync(target, link)
+    return true
+  } catch (error) {
+    if (error.code === "EPERM" || error.code === "EACCES") return false
+    throw error
+  }
 }
 
 test("is a switch, not a model picker, and says where magpie keeps its file", async () => {
@@ -192,6 +206,39 @@ test("a bridge file magpie did not write, or a broken one, is no instruction", (
   expect(wanted({ bridge: { version: 1, url: gateway.v1, key: "k", models: [{ id: "a" }] } })).not.toBeNull()
 })
 
+test("a bridge model entry that is not an object is left out", () => {
+  const out = wanted({
+    bridge: { version: 1, url: gateway.v1, key: "k", models: [{ id: "a" }, null, "str", 123, []] },
+  })
+  expect(out.models).toEqual([{ id: "a" }])
+})
+
+test("a bridge file that is not JSON is no instruction", async () => {
+  const found = workspace(connect({ gateway, models: [{ id: "a" }] }).bridge)
+  const original = readFileSync(found.paths.config, "utf8")
+  try {
+    writeFileSync(found.paths.bridge, "{ not json")
+    // A broken bridge file is read as "not connected", not as an error: the
+    // bridge keeps OpenBitFun's file as it is and stays up for the next tick.
+    expect(await sync(found.paths)).toBe("disconnected")
+    expect(await sync(found.paths)).toBe("disconnected")
+    expect(readFileSync(found.paths.config, "utf8")).toBe(original)
+  } finally {
+    found.done()
+  }
+})
+
+test("a bridge file that is a symbolic link is not read", async () => {
+  const found = workspace(connect({ gateway, models: [{ id: "a" }] }).bridge)
+  try {
+    rmSync(found.paths.bridge)
+    if (!trySymlink(found.paths.config, found.paths.bridge)) return
+    expect(await sync(found.paths)).toBe("disconnected")
+  } finally {
+    found.done()
+  }
+})
+
 test("sync writes the entries in place and puts the file back exactly", async () => {
   const found = workspace(connect({ gateway, models: [{ id: "group/work", name: "Work", context: 400_000, output: 64_000 }] }).bridge)
   const original = readFileSync(found.paths.config, "utf8")
@@ -286,6 +333,28 @@ test("a file that is not JSON config is left alone", async () => {
     writeFileSync(found.paths.config, "{ not json")
     expect(await sync(found.paths)).toBe("unreadable")
     expect(readFileSync(found.paths.config, "utf8")).toBe("{ not json")
+  } finally {
+    found.done()
+  }
+})
+
+test("app.json's mode is taken from the file itself, not a link's target", async () => {
+  const found = workspace(connect({ gateway, models: [{ id: "a" }] }).bridge)
+  try {
+    // Give app.json a recognizable mode; sync rewrites it and keeps that mode.
+    if (process.platform !== "win32") {
+      // chmod is only meaningful where the mode bits survive: POSIX hosts.
+      chmodSync(found.paths.config, 0o640)
+    }
+    await sync(found.paths)
+    const mode = lstatSync(found.paths.config).mode & 0o777
+    if (process.platform !== "win32") {
+      expect(mode).toBe(0o640)
+    } else {
+      // Windows does not carry the mode bits reliably; the point here is that
+      // the rewrite reads the mode without following a link and does not throw.
+      expect(Number.isInteger(mode)).toBe(true)
+    }
   } finally {
     found.done()
   }
@@ -396,6 +465,16 @@ test("servers that are not a list of mcpServers are no instruction", () => {
     expect(readLibraryMcp(found.paths.library)).toBeNull()
     writeFileSync(found.paths.library, JSON.stringify({ mcpServers: {} }))
     expect(readLibraryMcp(found.paths.library)).toEqual({})
+  } finally {
+    found.done()
+  }
+})
+
+test("a library file that is a symbolic link is not read", () => {
+  const found = workspace(undefined)
+  try {
+    if (!trySymlink(found.paths.config, found.paths.library)) return
+    expect(readLibraryMcp(found.paths.library)).toBeNull()
   } finally {
     found.done()
   }

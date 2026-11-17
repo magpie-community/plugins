@@ -179,7 +179,14 @@ const modelsFor = (current, bridgeWanted, found) => {
 // them in, remembering what each name held so switching off puts back exactly
 // that, including the user's own servers whose names magpie never saw.
 export function readLibraryMcp(file) {
-  const text = read(file)
+  let text
+  try {
+    text = read(file)
+  } catch {
+    // A library file the bridge cannot safely read (a symbolic link, a
+    // directory) is no instruction: leave OpenBitFun alone rather than stop.
+    return null
+  }
   if (text === null) return null
   let parsed
   try {
@@ -218,6 +225,9 @@ export function wanted(read) {
   if (bridge.version !== 1) return null
   if (typeof bridge.key !== "string" || !bridge.key.trim()) return null
   if (!Array.isArray(bridge.models)) return null
+  // A hand-broken file can hold non-objects; mergeModels reads .context/.output
+  // off every entry, so keep only the ones that are objects.
+  const models = bridge.models.filter((model) => model != null && typeof model === "object" && !Array.isArray(model))
   let url
   try {
     url = new URL(String(bridge.url ?? ""))
@@ -225,13 +235,19 @@ export function wanted(read) {
     return null
   }
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null
-  return { url: bridge.url, key: bridge.key, models: bridge.models }
+  return { url: bridge.url, key: bridge.key, models }
+}
+
+// A file that is not JSON is a file magpie did not write, not an error: the
+// bridge reads it as "not connected". Same guard as readLibraryMcp below.
+function parseJson(text) {
+  try { return JSON.parse(text) } catch { return null }
 }
 
 function read(file) {
   try {
     const stat = fs.lstatSync(file)
-    if (!stat.isFile()) throw new Error(`${file} is not a regular file`)
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${file} is not a regular file`)
     return fs.readFileSync(file, "utf8")
   } catch (error) {
     if (error.code === "ENOENT") return null
@@ -242,7 +258,7 @@ function read(file) {
 function write(file, text, mode = 0o600) {
   let keep = mode
   try {
-    keep = fs.statSync(file).mode & 0o777
+    keep = fs.lstatSync(file).mode & 0o777
   } catch {}
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = path.join(path.dirname(file), `.magpie-${randomUUID()}.tmp`)
@@ -278,13 +294,28 @@ function stateOf(paths) {
 export async function sync(paths) {
   const config = paths.config ?? configPath()
   if (!config) return "no-openbitfun"
-  const bridgeWanted = wanted(JSON.parse(read(paths.bridge) ?? "null"))
+  let bridgeText
+  try {
+    bridgeText = read(paths.bridge)
+  } catch {
+    // A bridge file the bridge cannot safely read (a symbolic link, a
+    // directory) is no instruction: treat it as "not connected", not an error.
+    bridgeText = null
+  }
+  const bridgeWanted = wanted(parseJson(bridgeText ?? "null"))
   const libraryFile = paths.library ? readLibraryMcp(paths.library) : null
   // magpie keeps the file and empties it when the agent is given no server any
   // more, so an empty list means take ours away, not keep the last set.
   const library = libraryFile && Object.keys(libraryFile).length ? libraryFile : null
   const connected = Boolean(bridgeWanted || libraryFile)
-  const text = read(config)
+  let text
+  try {
+    text = read(config)
+  } catch {
+    // A config the bridge cannot safely read (a symbolic link, a directory)
+    // is left alone: report it, rather than stop the bridge on every tick.
+    return "unreadable"
+  }
   if (text === null) return connected ? "no-openbitfun" : "disconnected"
   let file
   try {

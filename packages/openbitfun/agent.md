@@ -53,6 +53,9 @@ magpie 的资源库能给 agent 三样东西，`agent.library` 声明收件路�
 ## 已知边界
 
 - `app.json` 由两个进程写：桥和 OpenBitFun 自己。写入用临时文件加原子重命名，窗口极短，最坏是同一瞬间用户的一次设置保存被覆盖。首次连接建议先退出 OpenBitFun。
+- **解析降级**：`bridge.json` 与 `library/mcp.json` 若不是合法 JSON（手改或半写），按「未连接」处理——`sync()` 返回 `disconnected`，OpenBitFun 的文件原样保留。桥是每秒轮询的读侧，降级让桥继续工作；若抛 `SyntaxError`，会被 `startBridge` 的 `.catch` 吞掉并打一行 pause，桥整体停摆。`wanted()` 顶部注释的既定语义就是「半写或手坏的文件让 OpenBitFun 独自留着」。
+- **符号链接纪律**：`read()` 显式拒绝符号链接（`!isFile() || isSymbolicLink()`），与 `packages/deepzora`、`packages/reasonix-desktop` 逐字对齐；`write()` 用 `lstatSync` 取 mode，不跟随链接，与读侧纪律一致。写路径本身（临时文件 + `flag:"wx"` + `renameSync`）不跟随链接，rename 替换的是路径本身、不写穿目标，是安全的。这是本地写入守卫，不是 OS 沙箱，也不做 nanobot 式的父目录 `realpathSync` 解析与写入前后 TOCTOU 复查——这些目录由系统/应用管理，父目录被替换成链接的概率极低，引入会增加一次 FS 调用和 TOCTOU 窗口。
+- **条目校验**：`wanted()` 过滤掉非对象的模型条目（`null`、字符串、数字、数组）。`mergeModels` 的契约是「接收已校验的 want」，它对每个条目直接读 `.context`/`.output`，`null` 会抛 `TypeError`。类型过滤集中在 `wanted()` 这个「检查是否为有效指令」的入口，与 `capabilities()` 对网关条目逐项校验的纪律一致。
 - `dir` 写的是 `$LOCALAPPDATA/OpenBitFun`，只是个「已安装」提示。非 Windows 上 `$LOCALAPPDATA` 为空，不影响功能。
 - 桥每秒轮询一次，与 `zycode` 同节奏。
 - 空 `mcpServers` 视为“收回”，而空模型目录视为“还不知道”，两者不同：magpie 清空资源库时会保留 `mcp.json` 并写空对象。
@@ -60,7 +63,7 @@ magpie 的资源库能给 agent 三样东西，`agent.library` 声明收件路�
 ## 本地验证
 
 ```sh
-# 单测（19 项，无网络、不碰真实配置）
+# 单测（32 项，无网络、不碰真实配置）
 ~/.bun/bin/bun test packages/openbitfun/openbitfun.test.mjs
 
 # 仓库检查
