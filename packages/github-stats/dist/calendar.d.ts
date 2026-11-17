@@ -8,6 +8,8 @@ export declare function calendarCells(view: Config["heatmapView"], asOf: string,
     cells: {
         date: string;
         requests: number;
+        tokens: number;
+        cost: number;
         future: boolean;
         index: number;
     }[];

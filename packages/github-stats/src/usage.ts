@@ -39,6 +39,11 @@ export function normalizeUsage(raw: unknown, period: Config["period"]): Stats {
       old = dayMap.get(key) || { date: key, requests: 0, tokens: 0 };
     old.requests += count(d.calls);
     old.tokens += tokens(d);
+    if (d.cost !== undefined) {
+      if (typeof d.cost !== "number" || !Number.isFinite(d.cost) || d.cost < 0)
+        throw new Error("Magpie 每日费用无效。");
+      old.cost = (old.cost ?? 0) + d.cost;
+    }
     dayMap.set(key, old);
   }
   const models = new Map<string, Model>();
@@ -177,6 +182,11 @@ export async function readUsage(
         { ...part, period: config.period },
         config.period,
       );
+      if (
+        config.heatmapMetric === "cost" &&
+        normalized.days.some((d) => d.cost === undefined)
+      )
+        throw new Error("Magpie 缺少每日费用数据，请升级后再使用费用热力图。");
       days.push(
         ...normalized.days.filter(
           (d) => d.date >= period.slice(0, 10) && d.date <= period.slice(-10),

@@ -41,11 +41,11 @@ test("missing dates keep their real calendar positions; future dates remain dist
   assert.equal(cells[4].future, true);
 });
 test("view preference migrates old configs, validates and persists both choices", async (t) => {
-  assert.equal(validateConfig({}).heatmapView, "month");
-  assert.throws(() => validateConfig({ heatmapView: "year" }));
+  assert.equal(validateConfig({}).heatmapView, "year");
+  assert.throws(() => validateConfig({ heatmapView: "invalid" }));
   const dir = await mkdtemp(join(tmpdir(), "magpie-calendar-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  for (const heatmapView of ["month", "week"]) {
+  for (const heatmapView of ["year", "month", "week"]) {
     await saveConfig({ ...defaults, heatmapView }, dir);
     assert.equal((await readConfig(dir)).heatmapView, heatmapView);
   }
@@ -64,7 +64,7 @@ const summary = (period) => ({
 test("month heatmap fetches its own bounded daily range without changing 7-day headline totals", async () => {
   const ranges = [];
   const stats = await readUsage(
-    { ...defaults, period: "7d" },
+    { ...defaults, period: "7d", heatmapView: "month" },
     async (url) => {
       const period = new URL(url).searchParams.get("period");
       ranges.push(period);
@@ -97,7 +97,11 @@ test("31-day months split daily API reads and disabled heatmaps make no extra re
     ranges.push(p);
     return Response.json(summary(p));
   };
-  await readUsage(defaults, fetcher, new Date(2026, 9, 31, 23));
+  await readUsage(
+    { ...defaults, heatmapView: "month" },
+    fetcher,
+    new Date(2026, 9, 31, 23),
+  );
   assert.deepEqual(ranges, [
     "30d",
     "2026-10-01..2026-10-30",
@@ -136,7 +140,7 @@ test("both calendar views stay within SVG bounds at every supported width and th
     models: [],
     heatmap: { asOf: "2026-11-17", days: [] },
   };
-  for (const heatmapView of ["month", "week"])
+  for (const heatmapView of ["year", "month", "week"])
     for (const width of [320, 520, 640, 800])
       for (const theme of ["aurora", "minimal", "cyberpunk"])
         for (const mode of ["light", "dark"]) {
@@ -148,13 +152,15 @@ test("both calendar views stay within SVG bounds at every supported width and th
           );
           assert.equal(
             [...svg.matchAll(/data-date=/g)].length,
-            heatmapView === "month" ? 30 : 7,
+            heatmapView === "year" ? 366 : heatmapView === "month" ? 17 : 2,
           );
           assert.match(
             svg,
-            heatmapView === "month"
-              ? /MONTH · 2026-11/
-              : /WEEK · 11-16 – 11-22/,
+            heatmapView === "year"
+              ? /LAST 53 WEEKS/
+              : heatmapView === "month"
+                ? /MONTH · 2026-11/
+                : /WEEK · 11-16 – 11-22/,
           );
           assert.doesNotMatch(svg, /NaN|Infinity/);
           const height = Number(svg.match(/height="([\d.]+)"/)[1]);
@@ -191,4 +197,102 @@ test("shared process probe reclaims Linux zombie locks but preserves uncertain o
     }),
     false,
   );
+});
+
+test("53-week heatmap runs top-to-bottom Monday–Sunday across exactly 53 columns", () => {
+  const calendar = calendarCells("year", "2026-11-18", []);
+  assert.equal(calendar.start, "2025-11-17");
+  assert.equal(calendar.end, "2026-11-22");
+  assert.equal(calendar.offset, 0);
+  assert.equal(calendar.cells.length, 371);
+  assert.equal(calendar.cells.filter((d) => !d.future).length, 367);
+  const first = calendar.cells[0],
+    last = calendar.cells.at(-1);
+  assert.equal(first.index, 0);
+  assert.equal(Math.floor(last.index / 7), 52);
+  assert.equal(last.index % 7, 6);
+});
+
+test("annual history queries bounded daily summaries without gaps or overlaps", async () => {
+  const ranges = [];
+  const stats = await readUsage(
+    { ...defaults, period: "7d" },
+    async (url) => {
+      const p = new URL(url).searchParams.get("period");
+      if (p !== "7d") ranges.push(p);
+      return Response.json(summary(p));
+    },
+    new Date(2026, 10, 18),
+  );
+  assert.equal(ranges.length, 13);
+  assert.equal(ranges[0], "2025-11-17..2025-12-16");
+  assert.equal(ranges.at(-1), "2026-11-12..2026-11-18");
+  for (let i = 1; i < ranges.length; i++)
+    assert.equal(
+      Date.parse(ranges[i].slice(0, 10)) - Date.parse(ranges[i - 1].slice(-10)),
+      86400000,
+    );
+  assert.equal(stats.requests, 3);
+});
+
+test("metric selection controls color and tooltips; cost requires daily pricing", async () => {
+  const stats = {
+    period: "30d",
+    since: "2026-11-16",
+    requests: 6,
+    tokens: 60,
+    activeDays: 2,
+    estimatedCost: 6,
+    unpriced: 0,
+    days: [],
+    models: [],
+    heatmap: {
+      asOf: "2026-11-18",
+      days: [
+        { date: "2026-11-16", requests: 5, tokens: 10, cost: 1 },
+        { date: "2026-11-17", requests: 1, tokens: 50, cost: 5 },
+      ],
+    },
+  };
+  for (const [heatmapMetric, level, tip] of [
+    ["requests", 4, "5 requests"],
+    ["tokens", 1, "10 tokens"],
+    ["cost", 1, "$1.00 estimated USD"],
+  ]) {
+    const svg = renderCard(
+      stats,
+      { ...defaults, heatmapMetric },
+      "light",
+      "2026-11-18",
+    );
+    assert.match(
+      svg,
+      new RegExp(
+        `data-date="2026-11-16" data-col="52" data-row="0" data-level="${level}"`,
+      ),
+    );
+    assert.ok(svg.includes(tip));
+    assert.doesNotMatch(svg, /data-date="2026-11-19"/);
+    assert.match(svg, /Less/);
+    assert.match(svg, /More/);
+  }
+  const svg = renderCard(stats, defaults, "dark", "2026-11-18");
+  assert.doesNotMatch(svg, /estimated USD|DAILY EST/);
+  await assert.rejects(
+    readUsage(
+      { ...defaults, heatmapMetric: "cost" },
+      async (url) => {
+        const p = new URL(url).searchParams.get("period");
+        return Response.json({
+          ...summary(p),
+          series: [
+            { time: "2026-11-17T00:00:00Z", calls: 1, input: 1, output: 1 },
+          ],
+        });
+      },
+      new Date(2026, 10, 18),
+    ),
+    /每日费用/,
+  );
+  assert.throws(() => validateConfig({ heatmapMetric: "secret" }));
 });

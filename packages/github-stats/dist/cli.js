@@ -123,21 +123,26 @@ async function main() {
         const c = cmd === "demo" ? { ...defaults } : await readConfig(dir);
         let s;
         if (cmd === "demo") {
-            const days = Array.from({ length: 30 }, (_, i) => ({
-                date: `2026-10-${String(i + 1).padStart(2, "0")}`,
-                requests: Math.round(190 + 150 * Math.sin(i * 0.8) ** 2 + i * 8),
-                tokens: Math.round(400000 + 500000 * Math.sin(i * 0.8) ** 2 + i * 17000),
+            const history = Array.from({ length: 365 }, (_, i) => ({
+                date: new Date(Date.UTC(2026, 10, 18) - (364 - i) * 86400000)
+                    .toISOString()
+                    .slice(0, 10),
+                requests: i < 240 ? 0 : Math.round((i - 230) * 3 * Math.sin(i * 0.8) ** 2),
+                tokens: i < 240 ? 0 : Math.round(400000 * Math.sin(i * 0.8) ** 2),
+                cost: i < 240 ? 0 : +(15 * Math.sin(i * 0.8) ** 2).toFixed(2),
             }));
+            const days = history.slice(-30);
             const total = days.reduce((n, d) => n + d.tokens, 0);
             s = {
                 period: "30d",
                 since: days[0].date,
                 requests: days.reduce((n, d) => n + d.requests, 0),
                 tokens: total,
-                activeDays: 30,
-                estimatedCost: 120,
+                activeDays: days.filter((d) => d.requests > 0).length,
+                estimatedCost: days.reduce((n, d) => n + d.cost, 0),
                 unpriced: 0,
                 days,
+                heatmap: { asOf: "2026-11-18", days: history },
                 models: [
                     { name: "Claude Sonnet", requests: 100, tokens: total * 0.48 },
                     { name: "GPT", requests: 100, tokens: total * 0.32 },

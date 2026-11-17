@@ -114,36 +114,88 @@ export function renderCard(s, c, mode, updated) {
     if (c.showHeatmap) {
         const asOf = s.heatmap?.asOf || s.days.at(-1)?.date || s.since;
         const calendar = calendarCells(c.heatmapView, asOf, s.heatmap?.days || s.days);
-        const max = Math.max(1, ...calendar.cells.map((d) => d.requests));
-        text(pad, y, "DAILY CALLS", 8, p.muted, 'letter-spacing="1"');
-        text(w - pad, y, c.heatmapView === "month"
-            ? `MONTH · ${asOf.slice(0, 7)}`
-            : `WEEK · ${calendar.start.slice(5)} – ${calendar.end.slice(5)}`, 8, p.muted, 'text-anchor="end"');
-        y += 18;
-        const gap = 5, cellW = (w - pad * 2 - gap * 6) / 7, cellH = compactLayout ? 32 : 36;
-        for (const [i, label] of [
-            "MON",
-            "TUE",
-            "WED",
-            "THU",
-            "FRI",
-            "SAT",
-            "SUN",
-        ].entries())
-            text(pad + i * (cellW + gap) + cellW / 2, y, label, 7, p.muted, 'text-anchor="middle"');
-        y += 8;
+        const metric = c.heatmapMetric;
+        const max = Math.max(0, ...calendar.cells.map((d) => d[metric]));
+        const label = {
+            requests: "DAILY CALLS",
+            tokens: "DAILY TOKENS",
+            cost: "DAILY EST. COST",
+        }[metric];
+        text(pad, y, label, 8, p.muted, 'letter-spacing="1"');
+        text(w - pad, y, c.heatmapView === "year"
+            ? "LAST 53 WEEKS"
+            : c.heatmapView === "month"
+                ? `MONTH · ${asOf.slice(0, 7)}`
+                : `WEEK · ${calendar.start.slice(5)} – ${calendar.end.slice(5)}`, 8, p.muted, 'text-anchor="end"');
+        y += 19;
+        const columns = Math.ceil((calendar.offset + calendar.cells.length) / 7);
+        const gridX = pad + 26, pitch = Math.min(15, (w - pad - gridX) / columns);
+        const gap = Math.min(3, Math.max(1, pitch * 0.2)), size = pitch - gap;
+        const months = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+        ];
+        let previousMonth = "", labelEnd = -Infinity;
         for (const d of calendar.cells) {
-            const x = pad + (d.index % 7) * (cellW + gap), cy = y + Math.floor(d.index / 7) * (cellH + gap);
-            const level = d.requests ? Math.max(0.2, d.requests / max) : 0;
-            content.push(`<g data-date="${d.date}" data-future="${d.future}"><title>${d.date}: ${d.future ? "Future date" : `${d.requests} requests`}</title><rect x="${x.toFixed(2)}" y="${cy}" width="${cellW.toFixed(2)}" height="${cellH}" rx="4" fill="${level ? p.purple : p.line}" fill-opacity="${d.future ? 0.25 : level || 1}"/>`);
-            const cellText = !dark && level >= 0.6 ? "#FFFFFF" : p.fg;
-            text(x + 5, cy + 11, Number(d.date.slice(-2)), 8, d.future ? p.muted : cellText);
-            text(x + cellW - 5, cy + cellH - 5, d.future ? "—" : compact(d.requests), compactLayout ? 8 : 9, cellText, 'text-anchor="end"');
-            content.push("</g>");
+            if (d.future)
+                continue;
+            const month = d.date.slice(0, 7), x = gridX + Math.floor(d.index / 7) * pitch;
+            if (month !== previousMonth) {
+                if ((c.heatmapView !== "year" || d.date.endsWith("-01")) &&
+                    x >= labelEnd && x + 19 <= w - pad) {
+                    text(x, y, months[Number(d.date.slice(5, 7)) - 1], 8);
+                    labelEnd = x + 25;
+                }
+                previousMonth = month;
+            }
         }
-        y +=
-            Math.ceil((calendar.offset + calendar.cells.length) / 7) * (cellH + gap) +
-                10;
+        y += 9;
+        for (const [row, name] of [
+            [0, "Mon"],
+            [2, "Wed"],
+            [4, "Fri"],
+            [6, "Sun"],
+        ])
+            text(pad, y + row * pitch + size / 2 + 2.5, name, Math.min(8, pitch + 1));
+        const empty = dark ? "#202734" : "#EFF0F4";
+        const color = (level) => {
+            const rgb = (hex, i) => parseInt(hex.slice(i, i + 2), 16);
+            return ("#" +
+                [1, 3, 5]
+                    .map((i) => Math.round(rgb(empty, i) + ((rgb(p.purple, i) - rgb(empty, i)) * level) / 4)
+                    .toString(16)
+                    .padStart(2, "0"))
+                    .join(""));
+        };
+        for (const d of calendar.cells) {
+            // Future dates are empty space, not recorded zero-usage days.
+            if (d.future)
+                continue;
+            const col = Math.floor(d.index / 7), row = d.index % 7, value = d[metric];
+            const level = value > 0 && max > 0 ? Math.max(1, Math.ceil((value / max) * 4)) : 0;
+            const detail = metric === "cost"
+                ? `$${value.toFixed(2)} estimated USD`
+                : `${value} ${metric}`;
+            content.push(`<rect data-date="${d.date}" data-col="${col}" data-row="${row}" data-level="${level}" x="${(gridX + col * pitch).toFixed(2)}" y="${(y + row * pitch).toFixed(2)}" width="${size.toFixed(2)}" height="${size.toFixed(2)}" rx="${Math.min(3, size * 0.28).toFixed(2)}" fill="${color(level)}"><title>${escapeXml(`${d.date}: ${detail}`)}</title></rect>`);
+        }
+        y += 7 * pitch + 9;
+        text(pad, y + 7, `${calendar.start} → ${asOf}`, compactLayout ? 7 : 8);
+        const legendX = w - pad - 77;
+        text(legendX - 7, y + 7, "Less", 8, p.muted, 'text-anchor="end"');
+        for (let level = 0; level < 5; level++)
+            content.push(`<rect x="${legendX + level * 11}" y="${y}" width="8" height="8" rx="2" fill="${color(level)}"/>`);
+        text(w - pad, y + 7, "More", 8, p.muted, 'text-anchor="end"');
+        y += 24;
     }
     if (c.showCost) {
         text(pad, y, `EST. COST  $${s.estimatedCost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${s.unpriced ? "  · excludes unpriced usage" : ""}`, compactLayout ? 8 : 9);

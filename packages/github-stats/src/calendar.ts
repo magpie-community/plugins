@@ -17,7 +17,8 @@ export function calendarRange(view: Config["heatmapView"], asOf: string) {
     end.setUTCMonth(end.getUTCMonth() + 1, 0);
   } else {
     start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
-    end.setTime(start.getTime());
+    if (view === "year") start.setUTCDate(start.getUTCDate() - 52 * 7);
+    end.setUTCDate(end.getUTCDate() - ((end.getUTCDay() + 6) % 7));
     end.setUTCDate(end.getUTCDate() + 6);
   }
   const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -45,6 +46,8 @@ export function calendarCells(
     cells.push({
       date: key,
       requests: key > asOf ? 0 : (byDate.get(key)?.requests ?? 0),
+      tokens: key > asOf ? 0 : (byDate.get(key)?.tokens ?? 0),
+      cost: key > asOf ? 0 : (byDate.get(key)?.cost ?? 0),
       future: key > asOf,
       index: cells.length + range.offset,
     });

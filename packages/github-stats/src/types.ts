@@ -6,7 +6,8 @@ export interface Config {
   folder: string;
   period: Period;
   theme: Theme;
-  heatmapView: "month" | "week";
+  heatmapView: "year" | "month" | "week";
+  heatmapMetric: "requests" | "tokens" | "cost";
   width: number;
   topModels: number;
   showCost: boolean;
@@ -18,6 +19,7 @@ export interface Config {
   credentialSource: "keychain" | "github-cli";
 }
 export interface Day {
+  cost?: number;
   date: string;
   requests: number;
   tokens: number;

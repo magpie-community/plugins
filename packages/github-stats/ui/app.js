@@ -25,6 +25,7 @@
       "period",
       "theme",
       "heatmapView",
+      "heatmapMetric",
       "credentialSource",
     ])
       c[key] = fields[key].value.trim();
@@ -160,6 +161,7 @@
         "period",
         "theme",
         "heatmapView",
+        "heatmapMetric",
         "width",
         "topModels",
         "showCost",

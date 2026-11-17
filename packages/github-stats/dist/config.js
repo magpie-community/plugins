@@ -9,7 +9,8 @@ export const defaults = {
     folder: "assets",
     period: "30d",
     theme: "aurora",
-    heatmapView: "month",
+    heatmapView: "year",
+    heatmapMetric: "requests",
     width: 520,
     topModels: 3,
     showCost: false,
@@ -79,8 +80,10 @@ export function validateConfig(raw) {
     if (!["7d", "30d", "all"].includes(c.period) ||
         !["aurora", "minimal", "cyberpunk"].includes(c.theme))
         throw new Error("统计周期或主题无效。");
-    if (!["month", "week"].includes(c.heatmapView))
-        throw new Error("活跃图视图必须是月或周。 ");
+    if (!["year", "month", "week"].includes(c.heatmapView))
+        throw new Error("活跃图范围必须是最近 53 周、本月或本周。");
+    if (!["requests", "tokens", "cost"].includes(c.heatmapMetric))
+        throw new Error("热力图指标无效。");
     if (!["keychain", "github-cli"].includes(c.credentialSource))
         throw new Error("凭据来源无效。");
     if (!Number.isInteger(c.width) ||
