@@ -1101,7 +1101,10 @@ async function claimDaily(s) {
 const GIFT_SIGN_IN = "ZCode gift plans (-Trial models) need ZCode's sign-in"
 function giftSignIn(s, key) {
   if (!s.jwt) {
-    if (key) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+    if (key) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "not read with an API key: add the account with a Z.ai or BigModel sign-in" }
+    // stale, this run or when it was saved, is the key that doesn't open the
+    // file: the gift line says the key, never "no session"
+    if (s.source === "zcode" && (staleVault || s.stale)) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: MISMATCH_SAID }
     if (s.source === "zcode" && ownStoreUnreadable()) return { name: GIFT_SIGN_IN, used: 0, aside: true, display: UNREADABLE_SIGN_IN }
     return { name: GIFT_SIGN_IN, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
   }
@@ -1607,7 +1610,7 @@ function secret() {
 // The keychain is the one place a sign-in reaches the OS, and it is one
 // object so a test can stand in for it: attrs says whether ZCode's item is
 // there without reading its secret, so asking it cannot raise an access
-// prompt; read fetches the secret and says which of four things happened.
+// prompt; read fetches the secret and says which of five things happened.
 const SECURITY = process.platform === "darwin" ? "/usr/bin/security" : "security"
 const VAULT_SERVICE = "ZCode Credential Encryption"
 // VAULT_ACCOUNT is the item's account: ZCode's own, sha256 of the
@@ -1627,6 +1630,11 @@ const VAULT_ATTRS_MS = 2_000
 const DENIED = "keychain access was denied"
 const DENIED_SAID =
   "ZCode's keychain access was denied. Allow security to read ZCode Credential Encryption when macOS asks, then try again, or sign in to Z.ai or BigModel here."
+// MISMATCH_SAID is the other honest no: the item is there and read fine,
+// but its key doesn't open the file's values (ZCode wrote them under a
+// newer key), which no allowance on this computer fixes
+const MISMATCH_SAID =
+  "ZCode's saved sign-in can't be read with the key this computer keeps for it: sign in to ZCode again, or sign in to Z.ai or BigModel here"
 
 function runSecurity(args, timeout) {
   return new Promise((resolve) => {
@@ -1645,7 +1653,10 @@ const keychain = {
   },
   // read is one keychain read: {key} read the secret, {miss} the item is not
   // there (44, or no security tool at all), {denied} the user said no
-  // (128 UserCanceled, 51 AuthFailed), {killed} it ran past its timeout.
+  // (128 UserCanceled, 51 AuthFailed), {killed} it ran past its timeout,
+  // {mismatch} the item is there and read fine, but its key is another
+  // vault's: the file names a key this item no longer holds (zcode.cjs
+  // answers the same case "unavailable").
   async read(fp) {
     if (process.platform !== "darwin") return { miss: true }
     const { err, stdout } = await runSecurity(["find-generic-password", "-s", VAULT_SERVICE, "-a", vaultAccount(), "-w"], VAULT_READ_MS)
@@ -1655,8 +1666,11 @@ const keychain = {
       return code === "128" || code === "51" ? { denied: true } : { miss: true }
     }
     const key = Buffer.from(stdout.trim(), "base64url")
-    // a key the fingerprint doesn't name is no key: the vault rotated
-    if (key.length !== 32 || createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) return { miss: true }
+    if (key.length !== 32) return { miss: true }
+    // a key the fingerprint doesn't name is another vault's: no read of
+    // this item opens the file's values, and saying which is what lets the
+    // sign-in say the key rather than "isn't signed in"
+    if (createHash("sha256").update(key).digest("hex").slice(0, 24) !== fp) return { mismatch: true }
     return { key }
   },
 }
@@ -1692,6 +1706,7 @@ const VAULT_STALL = 30_000
 const vault = new Map()
 const vaultInFlight = new Map()
 let denyKeychain = false
+let staleVault = false
 function v2Key(fp, { fresh = false, background = false } = {}) {
   const standIn = process.env.ZCODE_CREDENTIAL_V2_SECRET
   if (standIn !== undefined) {
@@ -1707,6 +1722,7 @@ function v2Key(fp, { fresh = false, background = false } = {}) {
   const flying = vaultInFlight.get(fp)
   if (flying) return flying
   denyKeychain = false
+  staleVault = false
   const read = keychain.read(fp).then((got) => {
     vaultInFlight.delete(fp)
     if (got?.key) {
@@ -1714,6 +1730,7 @@ function v2Key(fp, { fresh = false, background = false } = {}) {
       return got.key
     }
     if (got?.denied) denyKeychain = true
+    if (got?.mismatch) staleVault = true
     vault.set(fp, { key: null, until: Date.now() + (got?.killed ? VAULT_STALL : VAULT_MISS) })
     return null
   })
@@ -1784,6 +1801,15 @@ function v2Parts(v) {
 // read: credentials.json holds an enc: form this plugin can't open, and
 // signing in again writes the same form (#1196).
 const UNREADABLE_SIGN_IN = "ZCode keeps its sign-in in a form this plugin can't read: add the account with a Z.ai or BigModel sign-in"
+
+// unreadableSaid is the failed sign-in's sentence: a vault this computer's
+// key doesn't open says itself (ZCode signed in under a newer key), as does
+// a form this plugin can't read (#1196); only a store with nothing
+// unreadable in it is "isn't signed in".
+function unreadableSaid() {
+  if (staleVault) return MISMATCH_SAID
+  return ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here"
+}
 
 // ownStoreUnreadable says whether ZCode's credentials.json holds values
 // in a form decrypt can't read.
@@ -2090,9 +2116,9 @@ async function asZCode() {
         if (!String(e?.message ?? "").includes(DENIED)) throw e
         return { type: "failed", error: DENIED_SAID }
       }
-      if (!own) return { type: "failed", error: ownStoreUnreadable() ? UNREADABLE_SIGN_IN : "ZCode isn't signed in on this computer; sign in to ZCode, or sign in to Z.ai or BigModel here" }
+      if (!own) return { type: "failed", error: unreadableSaid() }
       const { user, uid, ...s } = own
-      const state = { source: "zcode", device: anyDevice, ...s }
+      const state = { source: "zcode", device: anyDevice, ...(staleVault && !s.jwt ? { stale: true } : {}), ...s }
       return { type: "success", refresh: JSON.stringify(state), access: s.key || s.jwt || "", expires: 0, accountId: user, ...(uid ? { uid } : {}) }
     },
   }

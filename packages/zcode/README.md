@@ -122,6 +122,13 @@ same dialog, so the read waits for a person: it is given two minutes, not
 the five seconds an unattended call would get. A request never reads the
 keychain, so a request never brings that dialog up.
 
+The item's key doesn't always open the file: ZCode can rewrite
+`~/.zcode/v2/credentials.json` under a newer key while the keychain still
+holds the older one. That state says itself, in the sign-in's words and on
+the card's gift line both: "ZCode's saved sign-in can't be read with the
+key this computer keeps for it: sign in to ZCode again". Signing in to
+ZCode once more writes a matching pair back.
+
 `ZCODE_CREDENTIAL_SECRET` (the key the older form is read with) and
 `ZCODE_CREDENTIAL_V2_SECRET` (the vault's key, 32 base64url bytes) are
 stand-ins for tests and for machines without a keychain: set, a sign-in

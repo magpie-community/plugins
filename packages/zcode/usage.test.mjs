@@ -44,7 +44,7 @@ const jwt = (exp) => ["{}", JSON.stringify({ exp })].map((s) => Buffer.from(s).t
 // a card read with no ZCode session says the gift plans need one: a key
 // (or a sign-in with no ZCode token) reads no gift and lists no -Trial
 const GIFT = "ZCode gift plans (-Trial models) need ZCode's sign-in"
-const KEY_LINE = { name: GIFT, used: 0, aside: true, display: "not read with an API key: add the account with a ZCode sign-in" }
+const KEY_LINE = { name: GIFT, used: 0, aside: true, display: "not read with an API key: add the account with a Z.ai or BigModel sign-in" }
 const NO_SESSION = { name: GIFT, used: 0, aside: true, display: "this sign-in has no ZCode session: sign in again" }
 
 test("a Coding Plan's five hours and week", async () => {

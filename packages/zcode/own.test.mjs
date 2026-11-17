@@ -511,6 +511,35 @@ test("a keychain denial says itself, a miss and a stall do not", async () => {
   await answer({ denied: true })
 })
 
+// the item is there and reads fine, but its key is another vault's: ZCode
+// wrote the file under a newer key (a real 3.18.2 case: file rewritten, item
+// not). No allowance on this computer fixes that, so the sign-in says the
+// key, the card's gift line says it across runs, and neither says
+// "isn't signed in" or "sign in again".
+test("a key that doesn't open the file says itself, not \"signed out\"", async () => {
+  zcodeHas2({ zcodejwttoken: encV2("Bearer j1") })
+  _internal.keychain.read = async () => ({ mismatch: true })
+
+  // the sign-in the user picks: the words name the key, and ZCode's fix
+  const hooks = await ZCodeAuthPlugin({ client: {} })
+  const m = hooks.auth.methods.find((x) => x.label === "ZCode app's sign-in")
+  const got = await (await m.authorize()).callback()
+  expect(got.type).toBe("failed")
+  expect(got.error).toContain("can't be read with the key this computer keeps")
+  expect(got.error).toContain("sign in to ZCode again")
+
+  // a run before the sign-in: ownSignIn is a null like any other miss
+  _internal.vault.clear()
+  expect(await _internal.ownSignIn()).toBe(null)
+
+  // an account signed in before the vault went stale: its card's gift line
+  // says the key too, from the flag this run read and from the one it saved
+  expect(_internal.giftSignIn({ source: "zcode", key: "id1.secret1" }, false).display).toContain("can't be read with the key this computer keeps")
+  expect(_internal.giftSignIn({ source: "zcode", key: "id1.secret1", stale: true }, false).display).toContain("can't be read with the key this computer keeps")
+  // a browser sign-in is still asked to sign in again
+  expect(_internal.giftSignIn({ key: "id1.secret1" }, false).display).toBe("this sign-in has no ZCode session: sign in again")
+})
+
 // a no is remembered for minutes, so a request in that window neither waits
 // on macOS nor shows the dialog again; a request reads the remembered no
 test("a denial is remembered for minutes, and says itself on the request path too", async () => {
