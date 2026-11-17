@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/agent-openbitfun",
+  "version": "0.1.0",
+  "description": "OpenBitFun as a magpie agent: magpie's models in OpenBitFun's model settings, written into app.json and taken out again when switched off",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["openbitfun.agent.js", "index.mjs", "bridge.mjs", "README.md", "agent.md"],
+  "keywords": ["magpie", "magpie-agent", "openbitfun", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/openbitfun" },
+  "magpie": { "agent": "./openbitfun.agent.js" }
+}
