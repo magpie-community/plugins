@@ -45,6 +45,16 @@ there. PiG can write its whole model list because its `models` array sits inside
 one object (`providers.magpie`); MeowCode can because the file is its own. Varin
 has neither shape.
 
+Two other routes exist, both outside this plugin:
+
+- **Varin can ship the entry itself.** [Astrmira/Varin#382](https://github.com/Astrmira/Varin/pull/382)
+  adds Magpie to Varin's channel directory, so it appears in *add a model
+  service* with the endpoint filled in — the same way Ollama and LM Studio do.
+  Once that lands in a Varin release, this section stops applying.
+- **A script can add the channel through Varin's own API** (`read`, `save`,
+  `discover`, `test`), so Varin validates and discovers everything itself. That is
+  what `varin-link-magpie` does; it is not part of this package.
+
 ## Usage attribution
 
 `ua: ['varin']` is declared, which is magpie's field for naming an agent's
