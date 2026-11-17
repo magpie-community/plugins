@@ -528,6 +528,9 @@ export function validateRequest(body) {
           const ns = typeof namespace === "string" ? namespace : ""
           const alias = translation.forward.get(identityKey(ns, item.name))
           if (rest.id === null) delete rest.id
+          else if (typeof rest.id === "string" && rest.id && !rest.id.startsWith("fc_")) {
+            rest.id = "fc_" + (rest.id.startsWith("ctc_") && rest.id.length > 4 ? rest.id.slice(4) : rest.id)
+          }
           if (rest.status === null) delete rest.status
           if (Array.isArray(rest.encrypted_function_args) && !rest.encrypted_function_args.length) delete rest.encrypted_function_args
           return {
@@ -540,6 +543,9 @@ export function validateRequest(body) {
         if (item.type === "custom_tool_call_output") {
           const { name: _name, ...rest } = item
           if (rest.id === null) delete rest.id
+          else if (typeof rest.id === "string" && rest.id && !rest.id.startsWith("fc")) {
+            rest.id = "fco_" + (rest.id.startsWith("ctco_") && rest.id.length > 5 ? rest.id.slice(5) : rest.id)
+          }
           if (rest.status === null) delete rest.status
           return { ...rest, type: "function_call_output" }
         }

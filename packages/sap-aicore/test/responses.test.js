@@ -258,7 +258,7 @@ test("Codex namespace and custom tools translate to native function tools reachi
       assert.equal(body.tool_choice, "none")
       assert.deepEqual(body.input.filter(item => item.type === "function_call"), [
         { ...CALL, name: "arithmetic__verify_value" },
-        { id: customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
+        { id: "fc_" + customCall.id, type: "function_call", call_id: customCall.call_id, name: "apply_patch", arguments: JSON.stringify({ input: customCall.input }), status: "completed" },
       ])
       const results = body.input.filter(item => item.type === "function_call_output")
       assert.equal(results.length, 2)
@@ -296,9 +296,9 @@ for (const stream of [false, true]) {
       const body = JSON.parse(init.body)
       assert.deepEqual(body.tools.map(t => t.name), ["apply_patch", "coding__apply_patch"])
       if (body.tool_choice === "none") {
-        assert.deepEqual(body.input.filter(i => i.type === "function_call").map(i => [i.name, i.arguments]), [
-          ["apply_patch", JSON.stringify({ input: inputs[0] })],
-          ["coding__apply_patch", JSON.stringify({ input: inputs[1] })],
+        assert.deepEqual(body.input.filter(i => i.type === "function_call").map(i => [i.id, i.name, i.arguments]), [
+          ["fc_0", "apply_patch", JSON.stringify({ input: inputs[0] })],
+          ["fc_1", "coding__apply_patch", JSON.stringify({ input: inputs[1] })],
         ])
         const outputs = body.input.filter(i => i.type === "function_call_output").map(i => i.output)
         const response = finalWhole("CUSTOM_OK_" + outputs.join("|"))
@@ -417,11 +417,12 @@ test("tool translation preserves custom and namespaced tool_choice, paired custo
   assert.deepEqual(customRequired.include, ["reasoning.encrypted_content"])
 
   // 3. Paired custom-tool history and replayed function_call namespace tags translate faithfully
-  //    even when no custom/namespace tool is declared on the turn.
-  const customCall = { id: "c1", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "x" }
-  const customOut = { type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
-  const translatedCustomCall = { id: "c1", type: "function_call", call_id: "cp1", name: "apply_patch", arguments: '{"input":"x"}' }
-  const translatedCustomOut = { type: "function_call_output", call_id: "cp1", output: "ok" }
+  //    even when no custom/namespace tool is declared on the turn, normalizing custom_tool_call
+  //    and custom_tool_call_output item IDs to fc_ / fco_.
+  const customCall = { id: "ctc_0f10bcf320071c76016afc9d68282481949caca036bf9df3fc", type: "custom_tool_call", call_id: "cp1", name: "apply_patch", input: "x" }
+  const customOut = { id: "ctco_01a1eac7-2df3-7d40-828f-58b14b4a5c5a", type: "custom_tool_call_output", call_id: "cp1", output: "ok" }
+  const translatedCustomCall = { id: "fc_0f10bcf320071c76016afc9d68282481949caca036bf9df3fc", type: "function_call", call_id: "cp1", name: "apply_patch", arguments: '{"input":"x"}' }
+  const translatedCustomOut = { id: "fco_01a1eac7-2df3-7d40-828f-58b14b4a5c5a", type: "function_call_output", call_id: "cp1", output: "ok" }
   const namespacedCall = { ...CALL, namespace: "ns_a" }
   const fnOut = { type: "function_call_output", call_id: CALL.call_id, output: "{}" }
   const translatedHistoryWithFnTools = validateResponsesRequest({
