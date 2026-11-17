@@ -189,7 +189,9 @@ export function parseUsageReport(value) {
       const resetsAt = resetTime(field(bucket, "resetTime", "reset_time"))
       const ids = modelsInGroup(group)
       windows.push({
-        name: `${pool} · ${period.name}`,
+        // Keep the shared pool separate so Magpie shows every pool's windows.
+        name: period.name,
+        pool,
         // This feature displays quota only; it must not change model routing.
         aside: true,
         ...(ids.length ? { models: ids } : {}),

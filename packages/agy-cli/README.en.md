@@ -228,7 +228,9 @@ magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed
-in to the CLI, broken down by model group. The plugin never writes Google tokens
+in to the CLI, broken down by model group. The tray panel shows every group's
+reported windows with separate period labels, including Gemini 4 Argon's
+separate weekly allowance when present. The plugin never writes Google tokens
 or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 
