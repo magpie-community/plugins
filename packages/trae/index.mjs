@@ -1618,7 +1618,7 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1637,6 +1637,22 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   if (max?.window) {
     if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
+  }
+  // an enterprise's built-in model goes with the model info Trae CN's own
+  // client gives it (ai-modules-chat's model info: config_source, is_preset
+  // false, its custom_model_id, served remotely). Not confirmed against an
+  // enterprise seat's real request: a Trae preset is sent as before.
+  if (enterpriseModel(entry)) {
+    const info = body.user_message_context?.model_info ?? {}
+    info.config_name = config
+    info.config_source = ENTERPRISE
+    info.is_preset = false
+    info.use_remote_service = true
+    const shown = entry.display_config?.display_name || entry.display_name
+    if (shown) info.display_model_name = String(shown)
+    if (entry.custom_model_id) info.custom_model_id = String(entry.custom_model_id)
+    if (entry.provider) info.provider = String(entry.provider)
+    body.user_message_context = { ...body.user_message_context, model_info: info }
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -2951,13 +2967,15 @@ async function* chain(held, it) {
 }
 
 // failure is the response for an error Trae answered with
-function failure(site, status, code, message) {
+// ctx, when given, says what was asked: an error that isn't a lapse or a
+// quota names it, so a 502 says which model, where and through what
+function failure(site, status, code, message, ctx = "") {
   message = message || statusLine(status)
   if (status === 401 || lapsedCode(code, site) || (status === 403 && lapsedWords.test(message))) {
     return errorResponse(401, `${site.realm}'s sign-in has expired (${message}); sign in again`, "expired")
   }
   if (status === 429 || quotaCode(code, site) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `${site.realm}: ${message}`)
-  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}`)
+  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}${ctx ? `; ${ctx}` : ""}`)
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
@@ -3055,11 +3073,25 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
+//
+// An enterprise's own built-in models are the exception: Trae CN's client
+// (3.4.20, ai-modules-chat ModelConfigSource) marks each entry's
+// config_source Trae 1, Enterprise 2 or Personal 3, and shows the
+// Enterprise ones as "Enterprise-builtin" for every seat of the tenant —
+// served by Trae with the tenant's provider, so a seat picks them like its
+// own. Not being Trae's presets (is_preset false), they come out as custom
+// models (is_custom_model) and were dropped with the personal ones, whose
+// provider key lives in the user's IDE only (plugins#1258, 0.2.41).
+// One the admin switched off (status false) stays out, as in the IDE.
+const ENTERPRISE = 2
+const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
-  if (!id || /^custom_model/i.test(id)) return false
+  if (!id) return false
   if (m.usage && m.usage !== "chat_completion") return false
   if (m.config_switch === false) return false
+  if (enterpriseModel(m)) return m.status !== false && !(site?.hidesInvisible && m.is_invisible_to_user === true)
+  if (/^custom_model/i.test(id)) return false
   if (m.is_custom_model === true || m.display_config?.is_custom_model === true) return false
   // the IDE's own picker hides these: Auto-mode routing channels and
   // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
@@ -3536,6 +3568,24 @@ const makePlugin = (site) => async ({ client }) => {
   // seat's console refusing chats rather than this model or function
   const onConsole = (host) => !!site.hosts.console && host === site.hosts.console && host !== site.hosts.api
   const consoleRefuses = (code) => String(code) === "4245"
+
+  // askedOf says what a refused chat asked for: the model, the functions
+  // tried and the host, and whether the account's list has the model at all.
+  // A model typed in by hand that the list doesn't name is the likeliest
+  // cause of a refusal, and the list is read for it (once per REREAD_MS)
+  // only on this failing path.
+  const askedOf = async (a, id, entry, fns, host) => {
+    let listed = !!entry && liveEntry.has(id)
+    if (!listed) {
+      await readList(a).catch(() => {})
+      entry = liveEntry.get(id) ?? null
+      listed = !!entry
+    }
+    const kind = enterpriseModel(entry) ? "enterprise built-in model" : "model"
+    let out = `${kind} ${id} asked through ${fns.join(", ")} on ${host.replace(/^https?:\/\//, "")}`
+    if (!listed && liveEntry.size) out += `; this account's model list doesn't have ${id}, so Trae may not serve it under that id`
+    return out
+  }
 
   const save = async (auth) => {
     try {
@@ -4197,20 +4247,27 @@ const makePlugin = (site) => async ({ client }) => {
             // marked, kept with its sign-in, and the same request is asked
             // once more on the consumer gateway; its list is read from there
             // next.
+            // what the last refusal was, and where it was asked: the error
+            // the agent gets names the model, the functions and the host
+            let why = null
+            const tried = []
+            const entry = liveEntryOf(base)
             for (let round = 0; round < 2; round++) {
               const host = hostOf(a)
               let refused = false
               for (const fn of [...new Set(fns)]) {
+                tried.push(fn)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
                   headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
+                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)),
                   signal: ac.signal,
                 })
                 if (!res.ok) {
                   const text = await res.text()
                   const e = errorOf(text)
-                  last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
+                  why = { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host }
+                  last = failure(site, why.status, why.code, why.message)
                   if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
                   if (res.status === 400 && wrongFunction(e.code)) continue
                   break
@@ -4219,6 +4276,7 @@ const makePlugin = (site) => async ({ client }) => {
                 if (!ct.includes("event-stream") && ct.includes("json")) {
                   // an answer that isn't a stream is an error in a 200
                   const e = errorOf(await res.text())
+                  why = { status: 502, code: e.code, message: e.message, host }
                   last = failure(site, 502, e.code, e.message)
                   if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
                   if (wrongFunction(e.code)) continue
@@ -4228,6 +4286,7 @@ const makePlugin = (site) => async ({ client }) => {
                 const { held, done } = await first(it)
                 const err = held.find((p) => p.error)
                 if (err) {
+                  why = { status: 502, code: err.code, message: err.error, host }
                   last = failure(site, 502, err.code, err.error)
                   if (onConsole(host) && consoleRefuses(err.code)) {
                     it.return?.()
@@ -4255,6 +4314,7 @@ const makePlugin = (site) => async ({ client }) => {
               await save(toAuth(a, site))
               readAt.delete(who)
             }
+            if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
           },
@@ -4269,4 +4329,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
