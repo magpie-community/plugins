@@ -6,16 +6,6 @@
 
 在 magpie 窗口里看本机 [TokenTracker](https://github.com/xiufengsun/TokenTracker) 追踪的 AI 用量：今天 / 7 天 / 30 天的总 token、花费、缓存读取、会话数，按编程工具和模型拆分，带小时级与每日趋势；另有订阅配额、近一年活动热力图、成就徽章，以及官方账号 / 云同步入口。全部数据来自本机回环接口，零依赖、不上传。
 
-![本机看板（浅色，默认主题）](docs/screenshots/dashboard-today.png)
-
-深色主题（跟随 magpie 的深浅色设置）：
-
-![本机看板（深色）](docs/screenshots/dashboard-dark-today.png)
-
-「云同步」面板（官方账号登录、云同步与排行榜入口）：
-
-![云同步面板](docs/screenshots/cloud-panel.png)
-
 ## 安装
 
 已发布到 npm：
@@ -57,9 +47,9 @@ page/board.html      看板模板（服务端把 style/app 内联进来）
 page/app.js          看板逻辑（渲染、周期、自动刷新、各面板降级）
 page/style.css       看板样式（浅色/深色两套变量）
 page/icon.svg        插件页图标
-test/*.test.mjs      29 个测试（node --test）
+test/*.test.mjs      31 个测试（node --test）
 test/fixtures/       从真实 TokenTracker 接口抓的样例
-docs/                设计规范、发布手册、截图（不进 npm 包）
+docs/                设计规范、发布手册（不进 npm 包）
 ```
 
 ## 依赖
@@ -170,7 +160,7 @@ open http://127.0.0.1:3491/   # 直接看板（浏览器里 localStorage 可用�
 
 - TokenTracker CLI 第一次 `serve` 会做初始化：给 Claude Code 写 hooks、改 Codex CLI 配置、装 Opencode 插件。都是可逆的，但要知情。
 - 端口 3491 是挑过的：magpie 里 loop-guard 插件占了 3477/3478，避开。
-- 端口被占时不再硬失败（magpie 自升级交接的真实事故修出来的）：同款服务连续两次探活成功 → 复用；否则每秒重试绑定，最多 20 秒，等旧实例退出；外来占用者等满 20 秒才报错。`/api/healthz` 带指纹 `{service, build}`（复用按服务名判，不按 build —— 多实例共存的稳定优先；升级代码后想让老 build 退位，`magpie plugin rm magpie-tokentracker && magpie plugin add magpie-tokentracker` 走一遍，宿主整个换进程）。
+- 端口被占时不再硬失败（magpie 自升级交接的真实事故修出来的）：同款服务连续两次探活成功 → 复用；否则每 0.5 秒重试绑定，首次预算 8 秒（必须低于 magpie 插件加载的 20 秒上限，超了它判加载失败且不再重试）。**复用之后会一直守望这个端口**：对方一停应答（它的宿主退出了）就自己绑，日志打 `took over from a service that quit`——不复用就接手，是「带路页卡住不动」那个 bug 的根。`/api/healthz` 带指纹 `{service, build}`（复用按服务名判，不按 build —— 多实例共存的稳定优先；升级代码后想让老 build 退位，`magpie plugin rm magpie-tokentracker && magpie plugin add magpie-tokentracker` 走一遍，宿主整个换进程）。
 - 已知边界：同一台机器同时跑桌面 app 和 `magpie web` 时，第二个实例会复用桌面侧的服务（同款指纹），页面照常跳本机服务。
 - 看板是全内联单页（服务端把 style.css/app.js 内联进 board.html，并把 `__SERVICE_BASE__` 注入成 `http://127.0.0.1:<port>`）：magpie 的页面 frame 是 `sandbox="allow-scripts"` 的 opaque origin，CSP 里 `'self'` 匹配不到任何来源，外链 css/js 和相对 fetch 全会被拦；所以 CSP 用 `'unsafe-inline'` + 显式回环 connect-src，fetch 一律走绝对地址。
 - 同一个沙盒原因，页面里的 `localStorage` 不可用（读周期选择会降级为不记忆，不影响其它功能）；直接浏览器打开时正常记忆。

@@ -24,7 +24,7 @@ Replayed history contains more than the readable messages shown in the chat. It 
 
 **The goal is to keep working in the original chat with the context you have already built.** Before a native request is sent, this hook removes incompatible old reasoning items and normalizes related search history and server item IDs. Readable messages, images, tool arguments/results, and tool-call pairing are retained.
 
-Requests must still pass through Magpie and carry readable history. Context available only as encrypted compaction or server-side references cannot be recovered by this hook; see “Boundaries and diagnostics” below.
+Requests must still pass through Magpie. Native checkpoints are preserved for an upstream that can read them, while incompatible surrounding history is normalized. The hook does not decrypt checkpoints or recover unreadable server-side context; see “Boundaries and diagnostics” below.
 
 ## Why a request hook
 
@@ -36,7 +36,7 @@ See Magpie's [request-hook contract](https://github.com/yetone/magpie/blob/main/
 
 ## Install
 
-Use a Magpie version that supports `magpie.hooks`. The original implementation was verified against **0.1.4226**; package loading is also checked against **0.1.4280**. These are tested versions, not a claim about the earliest compatible version.
+Use a Magpie version that supports `magpie.hooks`. The original implementation was verified against **0.1.4226**, package loading against **0.1.4280**, and **1.0.1**'s mixed-compaction fix against **0.1.4363**. **1.0.2** was checked on **0.1.4379**. These are tested versions, not a claim about the earliest compatible version.
 
 ```sh
 magpie plugin add github:Singrun/magpie-codex-native-history
@@ -61,9 +61,9 @@ The package has no build step, dependencies, provider credentials, extra proxy p
 The hook applies to:
 
 - `/backend-api/codex/responses` with an unprefixed model or a `codex/` model.
-- `/v1/responses` with those models when Magpie identifies the client as `codex`.
+- `/v1/responses` and `/responses` with those models when Magpie identifies the client as `codex`.
 
-Requests for other provider-prefixed models pass through. The shared `/v1/responses` endpoint also passes through requests from other or unidentified clients.
+Requests for other provider-prefixed models pass through. Shared Responses endpoints also pass through requests from other or unidentified clients. Scope is determined from the model name at hook time; the hook cannot see the provider subsequently chosen by a group or fallback.
 
 On an applicable request, the hook:
 
@@ -71,24 +71,46 @@ On an applicable request, the hook:
 2. Converts historical `web_search_call` items into clearly labeled assistant text containing only the data present in the original item.
 3. Removes optional server `id` fields from portable history items.
 
+Portable tool items include function/custom/tool-search calls and results, computer results, shell/apply-patch calls and results, and MCP approval responses. Their `call_id`, `approval_request_id`, and identifiers inside tool data remain intact. Server tools requiring an ID and unknown item types pass through; they are not all converted into text.
+
+With a native checkpoint present, these steps still apply to other history items. The checkpoint's ID, encrypted content, and internal metadata are preserved unchanged.
+
 Visible messages, assistant `phase` values, images, tool arguments/results, `call_id` pairing, nested application identifiers, and tool declarations remain available. Model, tool choice, streaming configuration, and the request for new encrypted reasoning are preserved. The hook does not rewrite conversation files or responses.
 
 Previous internal reasoning is removed even when it is otherwise readable, so filtered turns do not replay that persisted reasoning. This trades hidden reasoning continuity for readable conversation portability.
 
 ## Boundaries and diagnostics
 
-The hook cannot recover context available only through encrypted compaction, sealed message content, `item_reference`, `previous_response_id`, or a server-side `conversation` reference. It leaves such a request intact and reports `native-history-opaque-context`; the upstream can still reject it. It never silently discards these contexts.
+Native checkpoints (`compaction`, `context_compaction`, `compaction_summary`) remain intact while other history items are filtered. This supports a conversation that was compacted natively, continued on a third-party model, and then returned to native, provided the native upstream can read the retained checkpoint. The hook does not decrypt a checkpoint or make it readable by an incompatible upstream; an unreadable checkpoint can still be rejected.
+
+Requests containing sealed message content, `item_reference`, `previous_response_id`, or a server-side `conversation` reference are left intact and report `unavailable`; the upstream decides whether they can be accepted. **This remains a filtering gap: third-party reasoning in that same request is also passed through.** References may target original item IDs, and sealed tasks may be readable only by their original upstream. Deleting references or ciphertext is not a context-preserving repair.
 
 For normal Magpie WebSocket continuations, the gateway reconstructs full input and removes `previous_response_id` before invoking the request hook. A raw HTTP request containing a server-only reference is a different case.
 
 Dedicated `/responses/compact` calls and Magpie's internal requests are outside this hook's scope. Magpie's request-hook contract also rolls back a hook on failure or timeout, which can allow the original request to reach the upstream.
 
-Diagnostics are fixed codes and a byte count:
+Diagnostics use the fixed codes accepted by Magpie's host:
 
-- `native-history-filtered`
-- `native-history-opaque-context`
+- `ready`: the hook modified the request. This confirms filtering ran; upstream acceptance must be checked separately.
+- `unavailable`: opaque context required preserving the entire request without filtering.
+
+The byte count is `0`: this hook adds no external recall content. It avoids serializing an image-heavy request again just for diagnostics. The custom `native-history-*` codes used in 1.0.0/1.0.1 are outside the host's allowlist and were ignored; 1.0.2 fixes that reporting issue. Host-generated `timeout` and `error` outcomes indicate hook failure.
 
 The plugin does not log, read from disk, store, or export request content, account identifiers, or credentials. It processes only the body and context Magpie supplies.
+
+## Other failure cases
+
+| Situation | What can happen and how to handle it |
+| --- | --- |
+| Mixed-provider groups, smart routing, or fallback into Codex | A `group/…` name does not trigger native filtering. An unprefixed name on a shared endpoint also does not prove which provider will answer. Select a native model or `codex/…` explicitly when coverage is needed. Complete mixed-group support needs an entry after provider selection. |
+| Account/API-key changes or a relay distributing requests across upstreams | A checkpoint, sealed task, or encrypted function argument may require its original service. Magpie tracks writers of checkpoints it has observed, but an unknown or unavailable writer can still cause failure. Keep readable context and use a route able to read the seal; this hook does not decrypt it. |
+| Server references or sealed messages mixed into history | `unavailable` means the whole request was retained. Normal WebSocket continuations usually have expanded history; raw HTTP server references and sealed multi-agent tasks need separate investigation. |
+| New tool types or server tools depending on earlier reasoning/approval records | Required IDs are preserved, which does not establish portability. Investigate the actual type and dependency on item-not-found, missing-pair, or encrypted-function-args errors. Do not discard tool results in bulk. |
+| Hook timeout, host startup failure, or another plugin rewriting the request | Hooks run in order and failure retains the last accepted body. Check `timeout`/`error` and the final request result; enable one copy of this hook. Later hooks or synchronous middleware may rewrite history again. |
+| Compaction, title, summary, or other internal request failures | Dedicated `/responses/compact` and Magpie's own requests do not run this hook. Identify the failed operation before deciding whether to fix the client, gateway, or plugin. |
+| Source updated but an older installation still runs | Verify the enabled entry's path and version and reload with an on/off cycle. GitHub source, release assets, and the active installation are updated separately. |
+
+Start diagnosis with the actual model/provider, failed endpoint, error code, and hook outcome. Treat `invalid_encrypted_content`, `previous_response_not_found`, context overflow, and 401/429/5xx failures separately; successful history filtering does not resolve account, quota, or service availability issues.
 
 ## Test and develop
 
@@ -110,6 +132,10 @@ magpie plugin add .
 Source-only changes need a plugin configuration reload; an on/off cycle reloads the host. Disable another copy of the hook before testing the checkout.
 
 The original live regression used a complete history of 149 items and approximately 17.98 MB of input, including images and tool records. Disabling the hook reproduced the same encrypted-content error; enabling it passed HTTP and WebSocket checks. A single WebSocket completed third-party → native → third-party → native switching while retaining a synthetic context marker.
+
+**1.0.1 fixes filtering skipped for mixed compacted history.** Version 1.0.0 bypassed the entire request when it found a checkpoint, also passing through later third-party reasoning. A new live replay used 200 input items containing a native checkpoint and subsequent third-party history: the previous version reproduced the encrypted-content error and the fix passed the native request. A single WebSocket carrying that same mixed history also completed four alternating turns while retaining the verification marker. Synthetic tests verify exact checkpoint preservation and continued filtering of the surrounding history.
+
+**1.0.2 fixes the reporting contract and covers known path/history variants.** It adds `/responses`, preserves `compaction_summary`, normalizes six further tool types with optional server IDs, and reports host-supported `ready`/`unavailable` outcomes. Synthetic regressions cover these formats and preservation checks; the real mixed conversation is also rechecked through native HTTP and WebSocket switching.
 
 Those live results describe the tested environment, rather than every gateway, account, model, or history format. Real conversation logs, account data, authentication readers, local backups, and the original live replay scripts are excluded from this repository.
 

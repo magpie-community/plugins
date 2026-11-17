@@ -56,6 +56,10 @@
 
 ### 🏗️ 架构与运行原理
 
+> **参考致谢 / Acknowledgment**：本项目基于社区优秀开源项目 [cursor-byok](https://github.com/leookun/cursor-byok) 进行深度重构与功能扩展。特别感谢原作者为逆向 Cursor 通信协议与实现本地代理所做出的贡献。我们在此基础上优化了性能、增强了桥接协议的稳定性，并增加了针对 Magpie 生态的适配与可视化控制台。
+> 
+> *This project is based on the excellent open-source project [cursor-byok](https://github.com/leookun/cursor-byok). We deeply appreciate the original author's pioneering work on reverse-engineering Cursor's protocol and implementing the local proxy. We have since optimized performance, enhanced stability, and added Magpie-specific integrations and a visual management console.*
+
 ```text
 ┌──────────────┐          Protobuf / Connect-RPC           ┌────────────────────────────────────────┐
 │              │ ────────────────────────────────────────> │                                        │
@@ -127,6 +131,16 @@ node install.js setup
 
 ---
 
+## 📢 贡献与反馈 (Contribution & Feedback)
+
+我们非常欢迎社区开发者提交改进、报告问题或完善文档！您的每一个 Issue 和 PR 都是让这个项目更稳定、更强大的关键。
+
+- **GitHub 仓库地址**：[https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge](https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge)
+- **提交 Issue**：若遇到任何报错、模型兼容问题或功能建议，请前往 [Issues 页面](https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge/issues) 新建一个 Issue，我们会尽快响应。
+- **提交 Pull Request (PR)**：我们鼓励直接提交代码改进，请在提交前确保运行了 `node scripts/update-integrity.js` 以同步校验文件。
+
+---
+
 <a name="english"></a>
 ## 🇬🇧 English
 
@@ -167,6 +181,16 @@ node install.js setup
 ```
 
 The installer verifies SHA-256 binary integrity, provisions the local MITM CA certificate, and configures the background service.
+
+---
+
+### 📢 Contribution & Feedback
+
+We welcome community contributions, bug reports, and documentation improvements. Your issues and PRs are vital to the project's stability and growth.
+
+- **GitHub Repository**: [https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge](https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge)
+- **Submit an Issue**: If you encounter errors, compatibility issues, or have feature requests, please open an issue in the [Issues section](https://github.com/QiaoSuaaa/magpie-agent-cursor-bridge/issues).
+- **Submit a Pull Request (PR)**：We encourage direct code contributions. Please run `node scripts/update-integrity.js` before submitting to ensure binary checksums are synced.
 
 ---
 

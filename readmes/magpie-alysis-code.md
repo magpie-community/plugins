@@ -12,11 +12,11 @@
 ## 功能
 
 - **一键登录**：读取本机 Alysis Code 的 `slk_` 凭证，不用在 magpie 里粘贴任何东西。
-- **模型自动发现**：目录来自本机 alysis2api 的 `/v1/models`，上游新增模型不用等插件发版。
+- **模型自动发现**：目录来自上游 `/models`（用该账号自己的 `slk_` key 查），上游新增模型不用等插件发版。
 - **按协议分流**：DeepSeek / GLM 走 Chat Completions，GPT-6 Luna 走 Responses，Claude 走 Anthropic Messages —— 每种模型都用它原生的 API 形状。
 - **额度卡片**：5 小时 / 7 天公平使用窗口 + 免费余额，读的是上游真实的 account-status。
-- **429 不砸给 agent**：上游容量忙时由 alysis2api 排队重试并保持 SSE 连接，agent 侧看到的是正常的慢响应，不是报错。
-- **没装反代时明确报错**：503 + 一句「先启动 alysis2api」，不静默空转。
+- **429 原样交给 magpie**：上游容量忙时按 magpie 的账号路由换号或降级，插件不排队、不改写流式响应。
+- **不需要任何本地中间层**：插件直接连 Alysis 上游网关，装上、登录就能用，没有要另外启动的进程。
 
 ## 模型
 
@@ -30,15 +30,9 @@
 
 ## 安装
 
-前置两件事：
+前置只有一件事：**在 Alysis Code 桌面端登录**（免费账号即可）。
 
-1. 在 **Alysis Code** 桌面端登录（免费账号即可）。
-2. 启动本机的 **alysis2api** 反代（`http://127.0.0.1:8788/v1`），它是本插件的数据通道：
-
-```bat
-cd <你的 alysis2api 目录>
-node src/index.mjs
-```
+插件自己直连 Alysis 上游网关（每个账号用自己的 `slk_` key），**不需要 alysis2api、也不需要任何本地反代或中间进程**。装好就能用；机器上碰巧还开着一个本地反代也没有影响，它不会被用到。
 
 然后安装插件：
 
@@ -77,7 +71,7 @@ magpie plugin list
 ## 常见问题
 
 **装上了但模型列表是空的？**
-先看 alysis2api 是否在跑：`curl http://127.0.0.1:8788/healthz`。反代没起来时插件会退回内置的 6 个静态模型，不会整张卡消失。
+先确认这个账号登录成功（供应商那一行显示 signed in；没登录时插件退回内置的静态模型）。登录靠读本机 Alysis Code 的登录态，桌面端没登录就会是空的。
 
 **登录点了没反应？**
 默认方式不弹浏览器，它读的是本机 Alysis Code 的登录态。确认 Alysis Code 已经登录（`alysis whoami` 能显示账号），再点一次。本机客户端没登录时，改用「在隔离浏览器里登录」。
@@ -86,10 +80,10 @@ magpie plugin list
 这个模型不在你账号的可用目录里（免费层没有 DeepSeek V4 Pro）。换 `deepseek-flash` 或 `glm-5.3-flash`。
 
 **一直 429 / 排队很久？**
-免费层的 DeepSeek 与 GLM 容量池在高峰会满员。反代会在预算内自动排队；错峰（凌晨/清晨）成功率更高。额度不会因为 429 被扣（上游明确 `No generation was started or credits charged`）。
+免费层的 DeepSeek 与 GLM 容量池在高峰会满员。429 由 magpie 的账号路由处理（换号或降级），插件自己不排队重试；错峰（凌晨/清晨）成功率更高。额度不会因为 429 被扣（上游明确 `No generation was started or credits charged`）。
 
 **卡片显示「额度未知」？**
-alysis2api 连不上上游 account-status 时会这样显示，不代表账号被封；先确认 Alysis Code 仍登录、反代日志里没有 401。
+上游 account-status 暂时不可用时会这样显示，不代表账号被封；先确认 Alysis Code 仍登录、网络（或代理）能连到 `vzigujbcjjmpntxhmyvr.supabase.co`。
 
 ## 参考源
 

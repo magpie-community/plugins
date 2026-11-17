@@ -118,14 +118,9 @@ The API server must register public OAuth client `lmm-opencode` and enable its
 issuer, CLI feature flags and group allowlists. The Pi client cannot substitute
 for the OpenCode registration.
 
-135 exact model capability profiles from models.dev are bundled, with source
-URLs and explicit limits. Only matching entries from your authorized LMM catalog
-are advertised; the catalog supplies billing groups and current prices. Unknown
-models or unsupported pricing are omitted. Additional verified profiles can be
-merged under `provider.lmm.models` with context/output limits, capability booleans
-and `options.lmmApi` (`openai-completions`, `openai-responses` or
-`anthropic-messages`). The supported Magpie/V2 transports choose the matching SDK
-per catalog model; these catalog settings do not enable legacy inference.
+The authorized LMM catalog supplies every available model and billing group. Public metadata is fetched from `https://models.dev/api.json?type=all` and cached automatically for 24 hours. Case, separators, provider prefixes, dated aliases and minor spelling differences are matched without changing the exact model ID sent to LMM. Ambiguous matches retain unknown metadata; they do not remove the model. Server metadata and account prices take priority.
+
+Unknown models use conservative generic token budgets and are visibly marked. Only protocols or explicitly non-chat modalities/types unsupported by this host remain read-only. `provider.lmm.models` can provide explicit local overrides without maintaining a model allowlist. The cache uses ETag revalidation and atomic writes, reuses the last valid copy offline, and never receives account credentials. `LMM_MODELS_DEV_CACHE` selects the cache file and `LMM_MODELS_DEV_TTL_MS` selects its lifetime. Magpie and V2 choose the SDK from the account catalog's advertised protocols; these settings do not enable legacy inference.
 
 A trusted alternative issuer can be supplied with the plugin tuple
 `["file:///…/dist/index.js", {"issuer":"https://YOUR-ISSUER"}]`; it must register
@@ -154,14 +149,7 @@ A lost response, crash or failed host save requires a fresh login: V2 uses
 `opencode auth login lmm --method oauth`; legacy v1 uses
 `opencode auth login --provider lmm`.
 
-Static USD per-million-token rows with a complete `native_cost` use the exact
-account-adjusted LMM rates. Dynamic and expression-based rows
-are also exposed when the bundled exact models.dev profile has a non-zero vendor
-reference cost (a host-provided exact cost may override it); their name and
-`lmmPricingBasis` option say **LMM variable billing**, and the reference cost is
-never presented as an LMM quote. Rows with unknown pricing or without a safe
-reference cost remain unavailable instead of being shown as free. Prices already
-include group/trust multipliers and are not locked quotes.
+Complete `native_cost` rows retain the account-adjusted LMM rates. For incomplete or expression pricing, known account rates are preserved and public or explicitly configured reference rates fill only missing estimates. Hosts require numeric fields, so absent estimates use placeholders with the visible **cost estimate incomplete (server billed)** label and `lmmUnknownCostFields`. They never determine charges or imply that the model is free. Reference estimates are labeled and are not LMM quotes. Missing prices do not hide authorized models. Group/trust multipliers already applied by the server are not applied again.
 Configure no API keys for this provider;
 the plugin strips alternate credential headers and refuses redirects, URL
 credentials, unsupported endpoints, unknown models and group substitutions.
@@ -240,3 +228,7 @@ this project's AGPL Pi provider. This package retains AGPL-3.0-only; see LICENSE
 Windows refresh uses an exclusive, fsynced marker file. Concurrency and process-crash replay are fenced; sudden-power-loss directory durability is weaker than the directory-fsync path on Linux/macOS. Never remove marker files to retry.
 
 OpenCode 1.18.34 does not list an unconnected model-less provider in its TUI `/connect` dialog. Use the native CLI login command above. Revoked or unavailable credentials remove LMM models; fresh credentials can restore catalog listing. All legacy LMM inference and automatic refresh remain disabled, while OAuth login/reconnect and other providers remain available.
+
+## Independent native Magpie entry
+
+For independent `lmm-magpie` browser consent, finite family budgets and durable refresh recovery, use the explicit entry described in [MAGPIE.md](MAGPIE.md). Its authorization is separate from the default OpenCode entry.

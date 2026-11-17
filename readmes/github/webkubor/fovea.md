@@ -7,8 +7,8 @@
 **magpie 网关中间件：最近窗口看得清，之前的旧历史只带轮廓。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f63a2.svg?style=for-the-badge)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.2.6-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
-[![Tests](https://img.shields.io/badge/tests-74%2F74-brightgreen?style=for-the-badge)](#证据三层各管什么)
+[![Release](https://img.shields.io/badge/release-v0.2.7-2f63a2.svg?style=for-the-badge)](https://github.com/webkubor/fovea/releases)
+[![Tests](https://img.shields.io/badge/tests-91%2F91-brightgreen?style=for-the-badge)](#证据三层各管什么)
 [![Platform](https://img.shields.io/badge/magpie-middleware-8a6bbf?style=for-the-badge)](https://usemagpie.ai)
 [![magpie community](https://img.shields.io/badge/magpie%20community-listed-8a6bbf?style=for-the-badge)](https://github.com/magpie-community/plugins/tree/main/packages/fovea)
 [![Runtime](https://img.shields.io/badge/runtime-moejs%20%C2%B7%20zero%20deps-4a5568?style=for-the-badge)](fovea.middleware.js)
@@ -58,7 +58,7 @@ bun test && bun scripts/metrics.mjs                     # offline, no key: repro
 ## 🔥 四件事
 
 - 👁️ **中央凹视觉模型** —— 最近 `keep_recent` 条消息逐字不动；更早的内容像周边视野，只剩轮廓（头+尾+省略标记）。消息条数、顺序、id、工具配对一个不少。
-- 📦 **saccade：换话题就不带旧的** —— 最新问题与首条任务几乎无共同词时，旧上下文折叠成一行注记。「继续」这类短跟进不会误触发。
+- 📦 **saccade：换话题就不带旧的** —— 最新问题与首条任务几乎无共同词时，旧上下文折叠成一行注记。「继续」这类短跟进不会误触发。**两处例外**（两种模式都生效）：会话开头那条消息（任务原文，或压缩后 harness 写的摘要）不折叠——它是会话的状态，不是历史；模型读过两次以上的目标（工作集）保留它最近一次调用的答案——裁了它模型就会再读，而重读把上下文撑到触发压缩。
 - 🧊 **cut_step：为 prompt cache 而生** —— 裁剪边界只按块移动，块内已裁前缀逐字节稳定，缓存能连续命中；跨块才失效一次（这是对上游评审 §1 的正面回答，有两轮回归测试锁死）。
 - 🧾 **state_marker：你的结构化状态取代原始任务消息** —— agent 自己维护的任务/约束/决策 JSON 块永不被裁，同时原始任务原文不再享受豁免，按普通旧内容裁掉。
 
@@ -80,7 +80,7 @@ magpie plugin options fovea '{"state_marker":"<!-- fovea:state -->"}'
 装完在 magpie 窗口 **Plugins › Fovea evidence** 打开证据页：粘贴你自己的请求 JSON，浏览器里现算前后差异（不联网、不保存正文）。想先看代码再装：
 
 ```sh
-git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 74/74，无需任何依赖
+git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 91/91，无需任何依赖
 ```
 
 ---
@@ -111,7 +111,7 @@ git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 74/74，
 
 ## 证据三层，各管什么
 
-1. **规则正确性** —— `bun test`：74 个确定性用例（离线、零依赖）。覆盖三种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同；另有 Claude Code / Codex / Chat 三种形状的整段会话探针，逐轮断言 id、签名、加密推理和缓存断点不变，缓存前缀按块断开，算上缓存比不装更便宜。`bun scripts/mutate.mjs` 把 26 处契约保护逐一改坏，每一处都必须让测试变红（CI 里跑）。
+1. **规则正确性** —— `bun test`：91 个确定性用例（离线、零依赖）。覆盖四种形状的工具配对、protect 在两种模式下生效、代理对不劈开、document 块不动、标记幂等、连续两轮已裁前缀逐字节相同；另有 Claude Code / Codex / Chat 三种形状的整段会话探针，逐轮断言 id、签名、加密推理和缓存断点不变，缓存前缀按块断开，算上缓存比不装更便宜。`bun scripts/mutate.mjs` 把 38 处契约保护逐一改坏，每一处都必须让测试变红（CI 里跑）。
 2. **同一请求确实变小** —— `bun benchmark.mjs [request.json] [options]`，或直接在证据页粘贴你的请求。合成样例：47,777 → 14,148 字符，已裁的 27 条消息逐字稳定。整段会话的量化指标（三种协议的请求体、计入缓存的成本、`cut_step` 扫描）：`bun scripts/metrics.mjs` 写出 [`promo/metrics.json`](promo/metrics.json)，推广图 [`promo/`](promo/) 的每个数字都读自这里。
 
    <details open>
@@ -142,7 +142,7 @@ git clone https://github.com/webkubor/fovea && cd fovea && bun test   # 74/74，
 
 ## 什么时候不该用
 
-窗口按条数+预算共同划定，最近窗口里的巨型消息仍然原样保留。裁剪是机械的：它不知道哪条旧细节重要，只知道头尾在哪——如果 agent 的工作依赖逐字重读旧输出，调大 `tool_head`/`tool_tail` 或暂时关掉。`saccade: auto` 是词面判定不是语义理解：改述会被误判、同词异题会漏判，长缓存循环建议 `off`。放在 system/developer 或最近窗口里的压缩摘要不归 fovea 管——那要在生成请求之前决定。缩短历史是否影响答案质量，请在你自己的负载上以开/关对照验证。
+窗口按条数+预算共同划定，最近窗口里的巨型消息仍然原样保留。**工作集例外**：模型读过两次以上的目标（同名同参的工具调用），它最近一次调用的答案不裁——裁了它就会再读一次，而每次重读都会把原样消息塞回对话，把上下文撑到触发压缩。它在裁剪范围里留一个洞（不是把窗口往回拉：裁的是前缀，往回拉会把洞后面的一切也留下），别的照裁。答案与调用的配对：有 id 的按 id 精确配到它自己的调用，没有 id 的旧 Gemini 请求按「工具名 + 位置」配（乱序返回时那种形状配不准）。目标多时保留的内容也多：20 个目标各读两次，请求会留下约三分之二。某条目标被重读时，洞会跟着移动一次，块内缓存前缀会断一次。裁剪是机械的：它不知道哪条旧细节重要，只知道头尾在哪——如果 agent 的工作依赖逐字重读旧输出，调大 `tool_head`/`tool_tail` 或暂时关掉。`saccade: auto` 是词面判定不是语义理解：改述会被误判、同词异题会漏判，长缓存循环建议 `off`。压缩摘要若在最近窗口里，同样原样保留。缩短历史是否影响答案质量，请在你自己的负载上以开/关对照验证。
 
 ## 发布物
 
