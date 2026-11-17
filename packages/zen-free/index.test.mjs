@@ -1179,6 +1179,24 @@ test("a read or edit without DSH's parameters keeps its name (#632)", async (t) 
   assert.deepEqual(state.calls.at(-1).body.tools.slice(0, 2).map((tool) => tool.function.name), ["read", "edit"]);
 });
 
+// omp's edit (bisected 2026-11-17): DSH's parameters with `path` for
+// `file_path`, refused the same way, so renamed the same way, and a call
+// of it comes back as omp's.
+test("omp's edit, with path where DSH's takes file_path, is renamed and comes back as omp's", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  const tools = [
+    { type: "function", function: { name: "edit", description: "Single file string replacement; fuzzy whitespace matching.", parameters: { type: "object", properties: { i: { type: "string", description: "concise intent" }, path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string", "i"], additionalProperties: false } } },
+  ];
+  state.reply = toolReply("chat", "text_replace", true);
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools, messages: [{ role: "user", content: "fix it" }] }) });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /"name"\s*:\s*"edit"/);
+  const sent = state.calls.at(-1).body;
+  assert.ok(sent.tools.some((tool) => tool.function?.name === "text_replace"), sent.tools.map((tool) => tool.function?.name).join(","));
+});
+
 // Z.ai's ZCode 3.17.2 declares its dynamic-workflow tools, and Zen refuses
 // the whole request when two of them travel together: CreateWorkflow beside
 // GetWorkflowRun, and AmendWorkflow beside FillWorkflowHole. Either name

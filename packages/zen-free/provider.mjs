@@ -317,10 +317,13 @@ const REFUSED_TOGETHER = [
 // under another name are served, and so is the name with none. DSH's edit
 // and read, bisected by SuperWheel against Zen on 2026-11-16 (plugins#632):
 // `edit` or `read` with their own parameters and a neutral description
-// were refused, `foo` with the same parameters was served. A rule renames
-// the tool only when it has every parameter the rule lists.
+// were refused, `foo` with the same parameters was served. omp's edit,
+// bisected 2026-11-17, is refused the same way with `path` where DSH's
+// takes `file_path`: what Zen reads is the parameter names old_string and
+// new_string, whatever names the rest take. A rule renames the tool only
+// when it has every parameter the rule lists.
 const REFUSED_WITH_PARAMETERS = [
-  { name: "edit", parameters: ["file_path", "old_string", "new_string"], as: "text_replace" },
+  { name: "edit", parameters: ["old_string", "new_string"], as: "text_replace" },
   { name: "read", parameters: ["file_path", "offset", "limit"], as: "file_view" },
 ];
 // Tool descriptions Zen refuses on their own, under any name (the same
