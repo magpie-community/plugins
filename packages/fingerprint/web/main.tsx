@@ -22,7 +22,8 @@ import {
   Trash,
   WarningCircle,
 } from '@phosphor-icons/react';
-import type { Bootstrap, Job, Model, RunConfig, Target, TargetResult } from '../src/types';
+import type { Bootstrap, Job, Model, RunRequest, Target, TargetResult } from '../src/types';
+import { parseRequestHeaders } from '../src/request-headers';
 import { embedded, subscribeTheme } from './magpie';
 import { AppMenu } from './AppMenu';
 import { localeFor, type Locale } from './locale';
@@ -254,6 +255,14 @@ function App() {
   const [provider, setProvider] = useState('all');
   const [selected, setSelected] = useState<string[]>([]);
   const [account, setAccount] = useState('');
+  const [headerText, setHeaderText] = useState('');
+  const headerConfig = useMemo(() => {
+    try {
+      return { headers: parseRequestHeaders(headerText), error: '' };
+    } catch (error) {
+      return { headers: {}, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, [headerText]);
   const [config, setConfig] = useState({
     api: 'auto',
     effort: '',
@@ -426,7 +435,7 @@ function App() {
     );
   const setField = (k: string, v: any) => setConfig((c: any) => ({ ...c, [k]: v }));
   const start = async () => {
-    if (!selected.length || starting) return;
+    if (!selected.length || starting || headerConfig.error) return;
     if (account && new Set(selectedModels.map((m) => m.provider)).size > 1) {
       setError(
         localize(
@@ -440,7 +449,7 @@ function App() {
     }
     setStarting(true);
     setError('');
-    const cfg: RunConfig = {
+    const cfg: RunRequest = {
       targets: selected.map((model) => ({ model, ...(account ? { account } : {}) })),
       api: config.api,
       effort,
@@ -449,9 +458,11 @@ function App() {
       targetParallel: Number(config.targetParallel),
       sampleParallel: Number(config.sampleParallel),
       deadlineSeconds: Number(config.deadlineSeconds),
+      ...(Object.keys(headerConfig.headers).length ? { headers: headerConfig.headers } : {}),
     };
     try {
       const j = await api<Job>('api/jobs', { method: 'POST', body: JSON.stringify(cfg) });
+      setHeaderText('');
       setJob(j);
       setHistory((h) => [j, ...h.filter((x) => x.id !== j.id)]);
       setExpanded(j.results[0]?.id || null);
@@ -878,10 +889,46 @@ function App() {
                   onClick={() => setShowAdvanced(!showAdvanced)}
                 >
                   {showAdvanced ? '−' : '+'}{' '}
-                  {localize(t, '高级并行与超时', '進階並行與逾時', 'Concurrency & deadline')}
+                  {localize(t, '高级设置', '進階設定', 'Advanced settings')}
                 </button>
                 {showAdvanced && (
                   <div className="advanced" id="run-advanced">
+                    <label htmlFor="request-headers">
+                      {localize(t, '自定义请求头', '自訂請求標頭', 'Custom request headers')}
+                      <textarea
+                        id="request-headers"
+                        rows={3}
+                        disabled={starting}
+                        spellCheck={false}
+                        autoComplete="off"
+                        placeholder={'User-Agent: my-client/1.0\nX-Client-Name: fingerprint'}
+                        value={headerText}
+                        aria-invalid={!!headerConfig.error}
+                        aria-describedby="request-headers-help request-headers-error"
+                        onChange={(event) => setHeaderText(event.target.value)}
+                      />
+                    </label>
+                    <p className="muted-line" id="request-headers-help">
+                      {localize(
+                        t,
+                        '每行一个 Name: value，仅用于本批采样。请求头的值不写入历史或导出；认证与路由沿用 Magpie 配置。',
+                        '每行一個 Name: value，僅用於本批取樣。標頭值不寫入歷史或匯出；驗證與路由沿用 Magpie 設定。',
+                        'One Name: value per line, for this batch only. Values are not saved in history or exports; Magpie manages authentication and routing.',
+                      )}
+                    </p>
+                    <p className="muted-line">
+                      {localize(
+                        t,
+                        '普通 API 供应商通常会转发 User-Agent；其他头名需加入该供应商的 passHeaders 列表。订阅账号可能使用固定请求头。',
+                        '一般 API 供應商通常會轉送 User-Agent；其他標頭名稱需加入該供應商的 passHeaders 清單。訂閱帳號可能使用固定標頭。',
+                        'API providers normally forward User-Agent. Add other header names to the provider’s passHeaders list. Subscription accounts may use fixed headers.',
+                      )}
+                    </p>
+                    {headerConfig.error && (
+                      <p className="muted-line" id="request-headers-error" role="alert">
+                        {headerConfig.error}
+                      </p>
+                    )}
                     <label>
                       {t.tier}
                       <AppMenu
@@ -954,6 +1001,7 @@ function App() {
                     disabled={
                       !selected.length ||
                       !configValid ||
+                      !!headerConfig.error ||
                       starting ||
                       history.some((j) => !terminal(j.state))
                     }

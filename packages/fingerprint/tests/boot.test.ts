@@ -3,12 +3,21 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
 const source = await readFile(new URL('../page/boot.js', import.meta.url), 'utf8');
-async function boot(
+const pageHtml = await readFile(new URL('../page/index.html', import.meta.url), 'utf8');
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+
+function startBoot(
   lang?: string,
   remote = false,
   port = 4388,
   desktopHost = '',
   clipboard?: { writeText: (value: string) => Promise<void> },
+  overrides: {
+    ready?: Promise<{ dark?: boolean; lang?: string } | undefined>;
+    options?: Promise<{ port?: number }>;
+    service?: string;
+    staticMetaPresent?: boolean;
+  } = {},
 ) {
   const elements = {
     status: { textContent: 'Connecting to Fingerprint…' },
@@ -16,29 +25,39 @@ async function boot(
     fallback: { hidden: true },
     'service-url': { value: '', focus: () => {}, select: () => {} },
     'copy-service-url': { textContent: '', onclick: async () => {} },
+    'static-help': { textContent: '' },
+    'static-port-note': { textContent: '' },
   };
+  const startupCalls: string[] = [];
+  const staticRefresh = { remove: () => startupCalls.push('remove') };
   const document = {
     title: 'Fingerprint',
     documentElement: { lang: 'en' },
-    getElementById: (id: keyof typeof elements) => elements[id],
+    getElementById: (id: keyof typeof elements | 'magpie-static-service-refresh') =>
+      id === 'magpie-static-service-refresh'
+        ? overrides.staticMetaPresent === false
+          ? undefined
+          : staticRefresh
+        : elements[id],
   };
   let destination: URL | undefined;
   let fallback: (() => void) | undefined;
   // magpie hands no service to its desktop window, only to magpie web
-  const service = remote || desktopHost ? '' : `http://127.0.0.1:${port}/`;
-  await runInNewContext(source, {
+  const service = overrides.service ?? (remote || desktopHost ? '' : `http://127.0.0.1:${port}/`);
+  const run = runInNewContext(source, {
     URL,
     setTimeout: (callback: () => void) => {
       fallback = callback;
     },
     document,
     window: {
+      stop: () => startupCalls.push('stop'),
       navigator: clipboard ? { clipboard } : undefined,
       magpie: {
-        ready: Promise.resolve({ dark: true, ...(lang ? { lang } : {}) }),
+        ready: overrides.ready ?? Promise.resolve({ dark: true, ...(lang ? { lang } : {}) }),
         service,
         context: { provider: { id: 'vendor' } },
-        options: { get: async () => ({ port }) },
+        options: { get: async () => overrides.options ?? { port } },
         onAction() {},
         onTheme() {},
       },
@@ -51,7 +70,32 @@ async function boot(
       },
     },
   });
-  return { document, elements, destination, fallback };
+  return {
+    document,
+    elements,
+    get destination() {
+      return destination;
+    },
+    get fallback() {
+      return fallback;
+    },
+    get startupCalls() {
+      return startupCalls;
+    },
+    run,
+  };
+}
+
+async function boot(
+  lang?: string,
+  remote = false,
+  port = 4388,
+  desktopHost = '',
+  clipboard?: { writeText: (value: string) => Promise<void> },
+) {
+  const result = startBoot(lang, remote, port, desktopHost, clipboard);
+  await result.run;
+  return result;
 }
 
 test('boot defaults to English and follows host languages before navigation', async () => {
@@ -72,6 +116,62 @@ test('boot defaults to English and follows host languages before navigation', as
     expect(result.destination?.searchParams.get('uiOrigin')).toBe('http://127.0.0.1:4388');
     expect(result.destination?.searchParams.get('lang')).toBe(lang || null);
   }
+});
+
+test('static launch address matches the manifest default and explains custom ports', () => {
+  const port = manifest.magpie.page.service.port;
+  const expected = `http://127.0.0.1:${port}/?uiOrigin=http://127.0.0.1:${port}`;
+  const compactHtml = pageHtml.replace(/\s+/g, ' ');
+  expect(compactHtml).toContain(`content="6;url=${expected}"`);
+  expect(compactHtml).toContain(`href="${expected}"`);
+  expect(compactHtml).toContain(`default port, ${port}`);
+  expect(compactHtml).toContain(`replace ${port} with it`);
+});
+
+test('boot stops then removes the static refresh before waiting for the bridge handshake', async () => {
+  let resolveReady!: (value: { dark: boolean }) => void;
+  const ready = new Promise<{ dark: boolean }>((resolve) => (resolveReady = resolve));
+  const result = startBoot(undefined, false, 4388, 'wails.localhost', undefined, { ready });
+  expect(result.startupCalls).toEqual(['stop', 'remove']);
+  resolveReady({ dark: true });
+  await result.run;
+  expect(result.destination?.origin).toBe('http://127.0.0.1:4388');
+});
+
+test('boot stops then removes the static refresh before options and keeps custom ports', async () => {
+  let resolveOptions!: (value: { port: number }) => void;
+  const options = new Promise<{ port: number }>((resolve) => (resolveOptions = resolve));
+  const result = startBoot(undefined, false, 4388, 'wails.localhost', undefined, { options });
+  await Promise.resolve();
+  expect(result.startupCalls).toEqual(['stop', 'remove']);
+  resolveOptions({ port: 4391 });
+  await result.run;
+  expect(result.destination?.origin).toBe('http://127.0.0.1:4391');
+});
+
+test('boot keeps the configured remote service after a delayed options response', async () => {
+  let resolveOptions!: (value: { port: number }) => void;
+  const options = new Promise<{ port: number }>((resolve) => (resolveOptions = resolve));
+  const service = 'https://fingerprint.example/';
+  const result = startBoot(undefined, false, 4388, '', undefined, { options, service });
+  await Promise.resolve();
+  expect(result.startupCalls).toEqual(['stop', 'remove']);
+  resolveOptions({ port: 4391 });
+  await result.run;
+  expect(result.destination?.origin).toBe('https://fingerprint.example');
+});
+
+test('boot does not stop ordinary pages without the static refresh', async () => {
+  let resolveReady!: (value: { dark: boolean }) => void;
+  const ready = new Promise<{ dark: boolean }>((resolve) => (resolveReady = resolve));
+  const result = startBoot(undefined, false, 4388, 'wails.localhost', undefined, {
+    ready,
+    staticMetaPresent: false,
+  });
+  expect(result.startupCalls).toEqual([]);
+  resolveReady({ dark: true });
+  await result.run;
+  expect(result.destination?.origin).toBe('http://127.0.0.1:4388');
 });
 
 test('a stalled desktop navigation offers the local service address', async () => {

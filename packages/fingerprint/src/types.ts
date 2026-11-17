@@ -31,7 +31,10 @@ export interface RunConfig {
   targetParallel: number;
   sampleParallel: number;
   deadlineSeconds: number;
+  /** History records names only; header values stay in the active run. */
+  headerNames?: string[];
 }
+export type RunRequest = RunConfig & { headers?: Record<string, string> };
 export interface Provenance {
   session: string;
   requestedModel: string;

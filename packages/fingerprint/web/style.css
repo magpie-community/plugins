@@ -450,6 +450,11 @@ select {
   display: grid;
   gap: 10px;
 }
+.advanced textarea {
+  resize: vertical;
+  min-height: 72px;
+  font: 11px/1.5 var(--code);
+}
 .run-footer {
   display: flex;
   align-items: center;

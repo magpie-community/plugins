@@ -1,4 +1,11 @@
 (() => {
+  const staticRefresh = document.getElementById('magpie-static-service-refresh');
+  if (staticRefresh) {
+    // Removing a parsed meta refresh alone does not cancel its scheduled navigation.
+    window.stop();
+    staticRefresh.remove();
+  }
+
   const messages = {
     en: {
       title: 'Fingerprint',
@@ -11,6 +18,10 @@
       copyAddress: 'Copy address',
       copied: 'Address copied.',
       copyFallback: 'Address selected. Copy it and open it in a browser on this computer.',
+      staticHelp:
+        'If this page stays open, open the service directly in a browser on this computer:',
+      staticPortNote:
+        'This link uses the default port, 4388. If you configured another port, replace 4388 with it.',
     },
     'zh-Hans': {
       title: '模型指纹',
@@ -22,6 +33,8 @@
       copyAddress: '复制地址',
       copied: '地址已复制。',
       copyFallback: '已选中地址，请复制后在本机浏览器中打开。',
+      staticHelp: '如果此页面仍停留在这里，请在本机浏览器中直接打开服务：',
+      staticPortNote: '此链接使用默认端口 4388。如果配置了其他端口，请将 4388 替换为该端口。',
     },
     'zh-Hant': {
       title: '模型指紋',
@@ -33,6 +46,8 @@
       copyAddress: '複製網址',
       copied: '網址已複製。',
       copyFallback: '已選取網址，請複製後在本機瀏覽器中開啟。',
+      staticHelp: '如果此頁面仍停留在這裡，請在本機瀏覽器中直接開啟服務：',
+      staticPortNote: '此連結使用預設連接埠 4388。如果設定了其他連接埠，請將 4388 替換為該連接埠。',
     },
     ja: {
       title: 'モデル指紋',
@@ -46,6 +61,10 @@
       copyAddress: 'アドレスをコピー',
       copied: 'アドレスをコピーしました。',
       copyFallback: 'アドレスを選択しました。このコンピューターのブラウザーに貼り付けてください。',
+      staticHelp:
+        'このページにとどまる場合は、このコンピューターのブラウザーでサービスを直接開いてください：',
+      staticPortNote:
+        'このリンクは既定のポート 4388 を使用します。別のポートを設定した場合は、4388 をその番号に置き換えてください。',
     },
     de: {
       title: 'Modell-Fingerabdruck',
@@ -59,6 +78,10 @@
       copyAddress: 'Adresse kopieren',
       copied: 'Adresse kopiert.',
       copyFallback: 'Adresse ausgewählt. Kopieren und im Browser auf diesem Computer öffnen.',
+      staticHelp:
+        'Falls diese Seite geöffnet bleibt, öffnen Sie den Dienst direkt in einem Browser auf diesem Computer:',
+      staticPortNote:
+        'Dieser Link verwendet den Standardport 4388. Falls Sie einen anderen Port festgelegt haben, ersetzen Sie 4388 durch diesen Port.',
     },
   };
   let text = messages.en;
@@ -80,6 +103,8 @@
     document.title = text.title;
     document.getElementById('title').textContent = text.title;
     status.textContent = text.connecting;
+    document.getElementById('static-help').textContent = text.staticHelp;
+    document.getElementById('static-port-note').textContent = text.staticPortNote;
   }
   return (async () => {
     const theme = await window.magpie?.ready;

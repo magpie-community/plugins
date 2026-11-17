@@ -7,10 +7,11 @@ import { Gateway, accountHeader } from './gateway';
 import { Store } from './store';
 import { boundedText, BodyTooLargeError } from './http';
 import { normalizeChatStream } from './sse';
+import { requestHeaders } from './request-headers';
 import { serviceIdentity, VERSION } from './service-identity';
 import { createJob, runJob } from './detector';
 import { demoModels, demoHistory, demoAnalysis } from './demo';
-import type { Account, Job, Model, Provenance, TargetResult, RunConfig } from './types';
+import type { Account, Job, Model, Provenance, TargetResult, RunRequest } from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -28,6 +29,7 @@ type SampleTicket = {
   used: boolean;
   done: Promise<void>;
   finish: () => void;
+  headers: Record<string, string>;
 };
 
 export async function startServer(input: Options = {}) {
@@ -187,16 +189,19 @@ export async function startServer(input: Options = {}) {
         }[result.api];
         if (match![2] !== expected) throw new Error('Sample protocol does not match its job.');
         const startedAt = Date.now();
-        const headers = gateway.headers({
-          'X-Magpie-Session': provenance.session,
-          ...(result.target.account
-            ? { 'X-Magpie-Account': accountHeader(result.target.account) }
-            : {}),
-        });
+        const headers = new Headers(
+          gateway.headers({
+            'X-Magpie-Session': provenance.session,
+            ...(result.target.account
+              ? { 'X-Magpie-Account': accountHeader(result.target.account) }
+              : {}),
+          }),
+        );
         for (const name of ['anthropic-version', 'anthropic-beta', 'accept']) {
           const value = req.headers.get(name);
-          if (value) (headers as Record<string, string>)[name] = value;
+          if (value) headers.set(name, value);
         }
+        for (const [name, value] of Object.entries(ticket.headers)) headers.set(name, value);
         const upstream = await fetch(`${gateway.url}/v1/${expected}`, {
           method: 'POST',
           headers,
@@ -322,7 +327,7 @@ export async function startServer(input: Options = {}) {
     },
   });
 
-  async function launch(job: Job, engine?: Detector) {
+  async function launch(job: Job, engine?: Detector, headers: Record<string, string> = {}) {
     const controller = new AbortController();
     active.set(job.id, controller);
     const timer = setTimeout(
@@ -393,6 +398,7 @@ export async function startServer(input: Options = {}) {
               used: false,
               done,
               finish,
+              headers,
             };
             tickets.set(id, ticket);
             return {
@@ -508,10 +514,12 @@ export async function startServer(input: Options = {}) {
                 if (Number(req.headers.get('content-length') || 0) > 16384)
                   return json({ error: 'Request too large' }, 413, cors);
                 const text = await boundedText(req, 16384);
-                const config = JSON.parse(text) as RunConfig;
+                const config = JSON.parse(text) as RunRequest;
+                const headers = requestHeaders(config.headers);
                 await catalog();
                 // Reject malformed targets before allowing any reference download.
                 const job = createJob(config, models, '', accounts);
+                if (Object.keys(headers).length) job.config.headerNames = Object.keys(headers);
                 const engine = await ensureDetector();
                 if (!opt.demo && !engine)
                   return json({ error: bankError || 'Reference data unavailable' }, 503, cors);
@@ -519,7 +527,7 @@ export async function startServer(input: Options = {}) {
                 if (opt.demo) job.demo = true;
                 store.jobs.set(job.id, job);
                 await store.save(job);
-                void launch(job, engine).catch((e) => {
+                void launch(job, engine, headers).catch((e) => {
                   job.state = 'failed';
                   job.error = `Could not save task history: ${gateway.redact(e)}`;
                   emit(job);

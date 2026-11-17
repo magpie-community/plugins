@@ -34,6 +34,13 @@ didn't answer" message instead means the page did not complete the initial
 host handshake; inspect the host log and
 page loading errors to identify its cause.
 
+If the launcher scripts cannot load at all, static HTML attempts to open the
+default loopback service after six seconds and also shows a manual recovery
+link. This path cannot read plugin options: change `4388` in the link if you
+configured another port. When `boot.js` does load, it cancels this static
+navigation before waiting for the bridge, so a slow handshake cannot override
+a custom port or Magpie's remote service URL.
+
 ## UI integration
 
 The service page reconnects to Magpie using the upstream page bridge, vendored
@@ -63,6 +70,36 @@ gateway request to one account id or signed-in user, but is only meaningful to
 Magpie and is never forwarded upstream. A header value is ASCII, so a user that
 isn't (`北冥`) is sent percent-encoded (`encodeURIComponent`), which Magpie
 v0.1.2658 and later read back; an ASCII user is sent as it is.
+
+## Custom request headers
+
+Under **Run settings → Advanced settings**, enter one `Name: value` per line.
+For example:
+
+```text
+User-Agent: my-client/1.0
+X-Client-Name: fingerprint
+```
+
+These headers apply to every sample in that batch, across Chat Completions,
+Responses and Messages. They are not sent to the model catalog, account reads,
+route metadata or reference downloads. Only header names are recorded in job
+history and exports; values remain in memory for the run and are not saved by
+the page. A later batch without custom headers uses the normal defaults.
+
+For API-key providers, Magpie normally forwards the client's `User-Agent`.
+Provider/model fixed headers or the provider's Magpie User-Agent setting can
+override it. To explicitly forward a header, add its name to that provider's
+`passHeaders` setting in Magpie; other custom headers such as `X-Client-Name`
+require this list. Passed-through headers take precedence over fixed
+provider/model headers. Subscription-account integrations may supply their own
+headers instead. The plugin does not change provider settings.
+
+Authentication, routing and transport headers remain managed by Magpie:
+`Authorization`, `X-API-Key`, cookies, `Host`, `Content-*`, `Proxy-*`, `Sec-*`,
+`X-Magpie-*` and connection-framing headers cannot be overridden here.
+Use at most 24 headers and 8 KiB total, with printable ASCII values of at most
+2048 characters each; duplicate names are rejected case-insensitively.
 
 ## Job files
 
