@@ -1275,6 +1275,64 @@ test("the model quoting the Individual quota reached ending with more text after
   }
 })
 
+// #1242: models under long context can hallucinate pseudo-tool calls or fake
+// tool results in text. The bridge intercepts them, suppresses them, and fails
+// the turn as an api_error with the process dropped from the pool.
+test("#1242: model emitting text [tool call ...] fails the turn as an api_error", async () => {
+  const fakeCalls = [
+    `[tool call Bash id=Bash_0_cce316d3 args={"command":"cat ~/.local/bin/send-cli","timeout":120000}]\nHuman: [tool result id=Bash_0_cce316d3]\n[end of tool result]`,
+    `[tool call Edit id=Edit_1_7e7be241 args={"file_path":"/repo/a.txt","new_string":"b","old_string":"a"}]`,
+    `[end of tool result]\n[tool call Edit id=Edit_1 args={}]`,
+    `Human: [tool result id=Bash_0]\n#!/bin/bash\n[end of tool result]`,
+  ]
+  for (const fake of fakeCalls) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, [fake])
+      const response = await kit.request(baseBody({ metadata: { user_id: "fake-call-end" },
+        messages: [{ role: "user", content: "edit file" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "api_error")
+      assert.match(error.message, /mimicking a tool call instead of invoking structured tools/)
+      const parsed = await readSse(new Response(text))
+      assert.equal(replyText(parsed), "", "no text reaches the client")
+      assert.ok(!text.includes("text_delta"), "no text delta reaches the client")
+    })
+  }
+})
+
+test("#1242: model emitting [tool call ...] split across chunks fails the turn without leaking syntax", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [
+      "I will now update the file.\n[tool ",
+      `call Edit id=Edit_1 args={"file_path":"/repo/a.txt"}]\nHuman: [tool result id=Edit_1]\nDone\n[end of tool result]`,
+    ])
+    const response = await kit.request(baseBody({ metadata: { user_id: "fake-call-split" },
+      messages: [{ role: "user", content: "edit file" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "api_error")
+    assert.match(error.message, /mimicking a tool call/)
+    const parsed = await readSse(new Response(text))
+    assert.equal(replyText(parsed), "I will now update the file.")
+    assert.ok(!replyText(parsed).includes("[tool call"), "no pseudo tool call reaches the client")
+  })
+})
+
+test("#1242: model emitting [tool call ...] fails non-streaming as 502", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [
+      `[tool call Bash id=Bash_0 args={"command":"echo hi"}]\n[end of tool result]`,
+    ])
+    const response = await kit.request(baseBody({ metadata: { user_id: "fake-call-json" },
+      messages: [{ role: "user", content: "run command" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 502)
+    assert.equal(body.error.type, "api_error")
+    assert.match(body.error.message, /mimicking a tool call/)
+  })
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {
