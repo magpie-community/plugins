@@ -72,7 +72,9 @@ MCP server. The control port listens on loopback only, with a token per process.
   left out. To list models, the plugin opens one session with `agy acp` (no
   prompt is sent) and reads what it offers; until it has, only Gemini is listed.
   The last list agy gave and offered is kept in `models.json` beside the session
-  state file, so after a restart that list is served while agy is asked again.
+  state file, so after a restart that list is served while agy is asked again:
+  both what it lists and what a session offers, and again whenever the list
+  changes (another account or plan).
   Models and thinking levels can be switched mid-conversation without losing
   history.
   `agy models` runs with `--settings '{"modelProvider":""}'`, so a

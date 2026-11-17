@@ -539,6 +539,11 @@ const MODEL_CATALOG_RETRY_MS = 5_000
 //   session's model option (and its models.availableModels) says which;
 //   the catalog keeps to that. Before any session has said, only Gemini
 //   models are served.
+// - offeredStale: acpOfferedModels is what agy acp offered before (saved in
+//   models.json by an earlier run, or before `agy models` listed something
+//   else): served until agy acp is asked again, never believed for good.
+//   shenggxhz (X, 11-17) moved from Pro to Ultra and kept the Pro account's
+//   offer, which filtered Gemini 4 out of Ultra's listing.
 // - offeredProbePromise, offeredProbeAt, offeredGen: the probe below.
 const modelStates = new Map()
 
@@ -552,6 +557,7 @@ function ms() {
       wantOfferedProbe: false,
       acpOfferedModels: null,
       acpOfferedKey: "",
+      offeredStale: false,
       offeredProbePromise: null,
       offeredProbeAt: null,
       offeredGen: 0,
@@ -575,6 +581,7 @@ function offeredModelsOf(configOptions, models) {
 function noteOfferedModels(configOptions, models) {
   const offered = offeredModelsOf(configOptions, models)
   if (!offered.length) return
+  ms().offeredStale = false
   const names = new Map(offered.map(model => [model.id, typeof model.name === "string" && model.name ? model.name : model.id]))
   const key = [...names.keys()].sort().join("\n")
   if (key === ms().acpOfferedKey) return
@@ -609,6 +616,7 @@ const OFFERED_PROBE_RETRY_MS = 60_000
 function forgetOffered() {
   ms().acpOfferedModels = null
   ms().acpOfferedKey = ""
+  ms().offeredStale = false
   ms().offeredProbePromise = null
   ms().offeredProbeAt = null
   ms().offeredGen++
@@ -684,7 +692,7 @@ async function probeOfferedModels(agyPath) {
 }
 
 function probeOfferedOnce(agyPath) {
-  if (ms().acpOfferedModels || ms().offeredProbePromise) return ms().offeredProbePromise
+  if ((ms().acpOfferedModels && !ms().offeredStale) || ms().offeredProbePromise) return ms().offeredProbePromise
   const now = Date.now()
   if (ms().offeredProbeAt !== null && now - ms().offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
   ms().offeredProbeAt = now
@@ -871,6 +879,7 @@ function startingModelCatalog(agyPath) {
   if (saved.offered && !ms().acpOfferedModels) {
     ms().acpOfferedModels = new Map(saved.offered.map(({ id, name }) => [id, name]))
     ms().acpOfferedKey = [...ms().acpOfferedModels.keys()].sort().join("\n")
+    ms().offeredStale = true
   }
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(saved.list)
@@ -887,7 +896,15 @@ function useAgyPath(agyPath) {
   ms().modelCatalogRefreshPromise = null
 }
 
+function listKey(list) {
+  return list.map(model => model.id).sort().join("\n")
+}
+
 function storeListedCatalog(agyPath, list, lastAttemptAt) {
+  // Another listing (the account changed outside magpie, or its plan did):
+  // what agy acp offered before is asked again.
+  const before = ms().cachedModelCatalog
+  if (before?.agyPath === agyPath && !before.isFallback && listKey(before.list) !== listKey(list)) ms().offeredStale = true
   saveCatalog(agyPath, { list })
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(list)
