@@ -1,0 +1,33 @@
+{
+  "name": "@magpie-community/page-credit-balance",
+  "version": "1.1.0",
+  "description": "Track provider credit spend, compare peak and off-peak token estimates, and convert balances to a reference provider's credits in Magpie.",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "lib", "page", "ui", "test", "README.md", "README.zh-CN.md", "LICENSE"],
+  "engines": { "magpie": ">=0.1.4402" },
+  "keywords": ["magpie", "magpie-page", "magpie-plugin", "credits", "quota", "tokens"],
+  "license": "MIT",
+  "scripts": { "test": "node --test" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/page-credit-balance"
+  },
+  "magpie": {
+    "name": "Credit Balance & Tokens",
+    "summary": {
+      "en": "Compare peak and off-peak usage estimates with explicit model mappings, convert provider credits to a reference unit, and audit spend locally.",
+      "zh": "按自选型号映射对比峰谷 Token 余量，折算为基准供应商积分，并在本地查看积分消耗。"
+    },
+    "page": {
+      "title": "积分与 Token 余量",
+      "titles": { "en": "Credit Balance & Tokens", "zh": "积分与 Token 余量" },
+      "file": "page/index.html",
+      "icon": "page/icon.png",
+      "service": { "port": 3498, "option": "port" }
+    },
+    "options": { "port": 3498 },
+    "permissions": []
+  }
+}
