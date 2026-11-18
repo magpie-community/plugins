@@ -1693,9 +1693,19 @@ function statusOf(status, code, msg) {
   if (code === "permission_denied") return out(403, msg)
   if (code === "unauthenticated" || status === 401 || low.includes("expired"))
     return out(401, msg + " — sign in to Cursor again in magpie")
-  if (code === "resource_exhausted" || low.includes("quota") || low.includes("rate limit") || low.includes("usage limit"))
+  // "context limit" is a prompt-size refusal, not a quota; keep it out of
+  // the bare "limit" test so it still reaches the context-length 400 below.
+  const contextTooLong = low.includes("too long") || low.includes("context length") || low.includes("too many tokens")
+  const limit = low.includes("quota") || low.includes("rate limit") || low.includes("usage limit") || (/\blimit\b/.test(low) && !contextTooLong)
+  // resource_exhausted is also Cursor's code when the model behind it does
+  // not answer ("Network Error ... temporary"). OpenCode treats the
+  // "usage limit reached" wording as provider.quota and does not retry, so a
+  // temporary failure is a 503; text that names a real limit stays a 429 (#1290).
+  if (code === "resource_exhausted" && !limit && /network error|trouble connecting|temporar|try again/.test(low))
+    return out(503, msg)
+  if (code === "resource_exhausted" || limit)
     return out(429, "usage limit reached: " + msg)
-  if (low.includes("too long") || low.includes("context length") || low.includes("too many tokens"))
+  if (contextTooLong)
     return out(400, "input is too long for the model's context: " + msg)
   if (code === "invalid_argument") return out(400, msg)
   if (code === "unavailable") return out(503, msg)

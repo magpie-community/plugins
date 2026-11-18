@@ -18,12 +18,23 @@ test("the codes and words map as the built-in's cursorStatus", () => {
   expect(failure(200, end("resource_exhausted", "slow down"))).toEqual({ status: 429, message: "usage limit reached: slow down" })
   expect(failure(200, end("unknown", "You've hit your usage limit"))).toEqual({ status: 429, message: "usage limit reached: You've hit your usage limit" })
   expect(failure(200, end("invalid_argument", "prompt is too long"))).toEqual({ status: 400, message: "input is too long for the model's context: prompt is too long" })
+  expect(failure(200, end("invalid_argument", "prompt is too long for the model's context limit"))).toEqual({ status: 400, message: "input is too long for the model's context: prompt is too long for the model's context limit" })
   expect(failure(200, end("invalid_argument", "bad"))).toEqual({ status: 400, message: "bad" })
   expect(failure(200, end("unavailable", "busy"))).toEqual({ status: 503, message: "busy" })
   expect(failure(200, end("permission_denied", "no"))).toEqual({ status: 403, message: "no" })
   expect(failure(200, end("internal", "boom"))).toEqual({ status: 502, message: "boom" })
   expect(failure(401, "")).toEqual({ status: 401, message: "Unauthorized — sign in to Cursor again in magpie" })
   expect(failure(200, end("unauthenticated", "Error"))).toEqual({ status: 401, message: "unauthenticated — sign in to Cursor again in magpie" })
+})
+
+test("a temporary resource_exhausted is an upstream failure, not a quota", () => {
+  const message = "Network Error: We're having trouble connecting to the model provider. This might be temporary - please try again in a moment."
+  expect(failure(200, JSON.stringify({ error: { code: "resource_exhausted", message } })))
+    .toEqual({ status: 503, message })
+  expect(failure(200, JSON.stringify({ error: { code: "resource_exhausted", message: "quota exhausted, try again later" } })))
+    .toEqual({ status: 429, message: "usage limit reached: quota exhausted, try again later" })
+  expect(failure(200, JSON.stringify({ error: { code: "resource_exhausted", message: "You have reached your limit. Please try again later." } })))
+    .toEqual({ status: 429, message: "usage limit reached: You have reached your limit. Please try again later." })
 })
 
 // Cursor can refuse a prompt under an authentication code. The observed
