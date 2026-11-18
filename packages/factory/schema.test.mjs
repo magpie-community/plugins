@@ -44,10 +44,10 @@ for (const keyword of ["anyOf", "oneOf", "allOf"]) {
 
 test("wraps previous tool inputs and examples, preserving ordinary tools and count_tokens replies", async () => {
   const schema = { anyOf: [object] }
-  const ordinary = { name: "read", input_schema: { type: "object", properties: { path: { anyOf: [{ type: "string" }, { type: "null" }] } } } }
+  const ordinary = { name: "Read", input_schema: { type: "object", properties: { path: { anyOf: [{ type: "string" }, { type: "null" }] } } } }
   const body = request(schema, {
     tools: [{ name: "task", input_schema: schema, input_examples: [input], cache_control: { type: "ephemeral" } }, ordinary],
-    messages: [{ role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "task", input }, { type: "tool_use", id: "call_2", name: "read", input: { path: null } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] }],
+    messages: [{ role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "task", input }, { type: "tool_use", id: "call_2", name: "Read", input: { path: null } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "done" }] }],
   })
   const { l, seen } = await loaded(() => Response.json({ input_tokens: 42 }))
   const res = await l.fetch(url + "/count_tokens", { method: "POST", body: JSON.stringify(body) })

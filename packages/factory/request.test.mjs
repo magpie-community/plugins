@@ -438,8 +438,9 @@ test("losslessly quotes fixed client metadata in tool output on inference and co
     expect(encoded).not.toContain("system-reminder")
     expect(sent.messages[1].content[0]).toEqual({ ...outputs[0], content: encoded })
     expect(sent.messages[1].content[1]).toEqual({ ...outputs[1], content: [{ ...outputs[1].content[0], text: encoded }, outputs[1].content[1]] })
-    expect(sent.messages[0]).toEqual(request.messages[0])
-    expect(sent.tools).toEqual(request.tools)
+    // Factory refuses Bash as a declared tool name: it goes out as BashTool (tool-names.mjs)
+    expect(sent.messages[0]).toEqual({ ...request.messages[0], content: [{ ...request.messages[0].content[0], name: "BashTool" }] })
+    expect(sent.tools).toEqual([{ ...request.tools[0], name: "BashTool" }])
     expect(seen.at(-1).headers.get("content-length")).toBeNull()
     const once = seen.at(-1).body
     await l.fetch(endpoint, { method: "POST", body: once })
@@ -463,7 +464,7 @@ test("losslessly quotes compaction openings inside historical JSONL tool output 
     expect(encoded).toStartWith("Tool output encoded as a JSON string.")
     expect(encoded).not.toContain(opening)
     expect(JSON.parse(encoded.slice(encoded.indexOf("\n") + 1))).toBe(source)
-    expect(sent).toEqual({ ...request, messages: [{ role: "user", content: [
+    expect(sent).toEqual({ ...request, tools: [{ ...request.tools[0], name: "BashTool" }], messages: [{ role: "user", content: [
       { ...outputs[0], content: encoded },
       { ...outputs[1], content: [{ ...outputs[1].content[0], text: encoded }, outputs[1].content[1]] },
     ] }] })

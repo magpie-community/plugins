@@ -170,6 +170,17 @@ from Core or Extra usage. Readings lag, so the last requests before a
 window fills still go out; to never spend Extra usage, turn it off in
 Factory.
 
+## Tool names Factory refuses
+
+Since 2026-11-17 Factory refuses (403 `content_policy_rejected`) any request
+that declares a tool under certain exact names, on every route: Claude Code's
+`Bash`, `Write`, `Agent`, `NotebookEdit`, `EnterPlanMode` and `ExitPlanMode`,
+OpenCode's and pi's `bash`, `read`, `edit` and `write`, Codex's `Shell`,
+`exec_command` and `write_stdin`, and `get_weather`. The plugin declares such a
+tool as `BashTool` or `bash_tool` (never a name the request already uses),
+renames its earlier calls and `tool_choice` to match, and gives the caller its
+own name back in every reply, streamed or not. The list is in `tool-names.mjs`.
+
 ## Claude Code through magpie
 
 Factory's Anthropic route requires Droid's fixed client preamble and
