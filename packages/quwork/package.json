@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-quwork-auth",
-  "version": "0.1.0",
-  "description": "Unofficial QuWork (Clawork) provider for OpenCode and magpie: browser phone+SMS sign-in with Aliyun captcha, or the desktop client's saved session, with live models, points balance and a setup page",
+  "version": "0.1.1",
+  "description": "Experimental QuWork (Clawork) provider for OpenCode and Magpie with interactive browser sign-in and account points in Magpie Quota",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": {
@@ -13,7 +13,9 @@
     "opencode2.mjs",
     "README.md",
     "LICENSE",
-    "page"
+    "page/index.html",
+    "page/app.js",
+    "page/style.css"
   ],
   "keywords": [
     "opencode",
@@ -30,8 +32,8 @@
   "magpie": {
     "name": "QuWork",
     "summary": {
-      "en": "Unofficial QuWork (Clawork) access: browser sign-in with phone and SMS (Aliyun captcha), or the desktop client's saved session; live models, points balance and a setup page.",
-      "zh": "非官方 QuWork（Clawork）接入：浏览器手机验证码登录（阿里云验证码），或复用桌面端登录态；动态模型、积分余额与接入页。"
+      "en": "Experimental community integration for QuWork, with interactive browser sign-in and points in Magpie Quota.",
+      "zh": "实验性 QuWork 社区接入。浏览器手动验证，积分在 Magpie 额度页显示。"
     },
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMyZjZmZWQiLz48dGV4dCB4PSIzMiIgeT0iNDUiIGZvbnQtZmFtaWx5PSJBcmlhbCxIZWx2ZXRpY2Esc2Fucy1zZXJpZiIgZm9udC1zaXplPSIzOCIgZm9udC13ZWlnaHQ9IjcwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iI2ZmZmZmZiI+UTwvdGV4dD48L3N2Zz4=",
     "page": {

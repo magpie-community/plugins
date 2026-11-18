@@ -51,12 +51,5 @@ code {
   background: var(--magpie-code-bg, rgba(127, 127, 127, 0.15));
 }
 
-.balance {
-  margin: 0;
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
 #status.ok { color: #16a34a; }
 #status.missing { color: #dc2626; }

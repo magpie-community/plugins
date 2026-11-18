@@ -1,25 +1,25 @@
 import { createServer } from "node:http"
-import { randomUUID } from "node:crypto"
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { createHash, randomUUID } from "node:crypto"
+import { readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const PROVIDER = "quwork"
 const LLM_BASE = "https://llm.quwork.cn/v1"
 const ACCOUNT_BASE = "https://llm.rrzu.com"
-const TOKEN_ENV = "QUWORK_LLM_TOKEN"
 const FALLBACK_VERSION = "1.7.5"
 const CAPTCHA_SDK = "https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"
 const CAPTCHA_REGION = "cn"
 const CAPTCHA_PREFIX = "1hms8d"
 const CAPTCHA_SCENE_ID = "10vzkucv"
-const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
-const BALANCE_FILE = join(PLUGIN_DIR, "page", "balance.js")
 const DEVICE_FILE = join(tmpdir(), "magpie-quwork-device.json")
 const BALANCE_TTL_MS = 60_000
+const LOGIN_TTL_MS = 10 * 60_000
+const UPSTREAM_TIMEOUT_MS = 15_000
+const RESEND_COOLDOWN_MS = 60_000
+const MAX_LOGIN_ATTEMPTS = 5
 
-const balanceCache = new Map()
+const CLIENT_HEADERS = { "x-qurwork-env": "prod", "x-qurwork-version": FALLBACK_VERSION }
 
 const MODELS = [
   {
@@ -79,18 +79,22 @@ const LOGIN_PAGE = `<!doctype html>
 <body>
 <main class="card">
   <h1>QuWork 登录</h1>
-  <p class="sub">用手机号 + 短信验证码登录 QuWork。登录成功后这个页面会提示完成，magpie 会自动接管，不需要安装 QuWork 客户端。</p>
+  <p class="sub">在此本机页面用手机号和短信验证码接入 Magpie。请只登录本人获授权使用的账号。</p>
+  <p class="tip">实验性社区接入，使用非公开接口。QuWork 可能限制或暂停账号服务。重要账号建议使用官方入口。<a href="https://llm.rrzu.com/claw-agreement" target="_blank" rel="noopener noreferrer">查看服务协议</a></p>
   <label for="phone">手机号</label>
-  <input id="phone" inputmode="numeric" autocomplete="tel" placeholder="11 位手机号，例如 13800000000" />
+  <input id="phone" inputmode="numeric" autocomplete="tel-national" maxlength="11" placeholder="11 位手机号，例如 13800000000" />
   <div id="captcha-box"></div>
   <button id="captcha-button" style="display:none" tabindex="-1" aria-hidden="true"></button>
   <button id="send" class="ghost">发送验证码</button>
   <label for="code">短信验证码</label>
   <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="输入收到的验证码" maxlength="6" />
   <button id="login">登录并接入 magpie</button>
-  <div id="msg"></div>
-  <div class="tip">验证码由 QuWork 发送，登录态只保存在本机 magpie。若验证码加载失败，可改用 magpie 里的「读取 QuWork 本机登录态」或「粘贴令牌」。</div>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <div class="tip">请在浏览器中手动完成阿里云人机验证。有 QuWork 明确授权用于第三方接入的模型密钥时，可在 Magpie 中单独填写。</div>
 </main>
+<script>
+  window.AliyunCaptchaConfig = { region: "${CAPTCHA_REGION}", prefix: "${CAPTCHA_PREFIX}" }
+</script>
 <script src="${CAPTCHA_SDK}"></script>
 <script>
   const $ = (id) => document.getElementById(id)
@@ -98,17 +102,24 @@ const LOGIN_PAGE = `<!doctype html>
   let captcha = ""
   let cooldown = 0
   let timer = null
+  let busy = false
+  let accepted = false
 
-  function setBusy(busy) {
-    $("send").disabled = busy || cooldown > 0
-    $("login").disabled = busy
+  function setBusy(next) {
+    busy = next
+    $("send").disabled = accepted || busy || cooldown > 0
+    $("login").disabled = accepted || busy
   }
 
   function tick() {
-    if (cooldown <= 0) { clearInterval(timer); timer = null; $("send").textContent = "发送验证码"; $("send").disabled = false; return }
-    $("send").textContent = cooldown + " 秒后可重发"
-    $("send").disabled = true
-    cooldown -= 1
+    const seconds = Math.max(0, Math.ceil((cooldown - Date.now()) / 1000))
+    $("send").textContent = seconds ? seconds + " 秒后可重发" : "发送验证码"
+    if (!seconds) {
+      clearInterval(timer)
+      timer = null
+      cooldown = 0
+    }
+    setBusy(busy)
   }
 
   async function sendCode() {
@@ -121,12 +132,14 @@ const LOGIN_PAGE = `<!doctype html>
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.success) { msg(data.message || "发送失败，请重试", "err"); return }
       msg("验证码已发送，请查收短信", "ok")
-      cooldown = 60
+      cooldown = Date.now() + 60000
       timer = setInterval(tick, 1000)
       tick()
-    } catch (error) {
-      msg("发送失败：" + error.message, "err")
+    } catch {
+      msg("本机登录页面连接中断。请回到 Magpie 检查登录状态。", "err")
     } finally {
+      captcha = ""
+      try { window.__captchaInstance?.refresh?.() } catch {}
       setBusy(false)
     }
   }
@@ -141,23 +154,29 @@ const LOGIN_PAGE = `<!doctype html>
       const res = await fetch("api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ phone, code }) })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.success) { msg(data.message || "登录失败，请重试", "err"); return }
-      msg("登录成功，正在接入 magpie，可以关闭本页了。", "ok")
-    } catch (error) {
-      msg("登录失败：" + error.message, "err")
+      msg("短信验证已通过。请回到 Magpie 确认供应商登录状态。", "ok")
+      accepted = true
+      $("phone").disabled = true
+      $("code").disabled = true
+      $("phone").value = ""
+      $("code").value = ""
+    } catch {
+      msg("本机登录页面连接中断。请回到 Magpie 检查登录状态。", "err")
     } finally {
       setBusy(false)
     }
   }
 
   $("send").addEventListener("click", () => {
+    const phone = $("phone").value.trim()
+    if (!/^1[3-9]\\d{9}$/.test(phone)) { msg("请输入正确的 11 位手机号", "err"); return }
     if (captcha) { sendCode(); return }
-    if (typeof window.initAliyunCaptcha !== "function") { msg("验证码组件加载失败，请改用「读取本机登录态」或「粘贴令牌」", "err"); return }
-    if (window.__captchaInstance) { window.__captchaInstance.verify(); return }
+    if (typeof window.initAliyunCaptcha !== "function") { msg("验证码组件加载失败，请关闭本页并使用 QuWork 官方入口", "err"); return }
+    if (typeof window.__captchaInstance?.show === "function") { window.__captchaInstance.show(); return }
     msg("验证码组件还在加载，请稍候再点一次", "err")
   })
   $("login").addEventListener("click", login)
 
-  window.AliyunCaptchaConfig = { region: "${CAPTCHA_REGION}", prefix: "${CAPTCHA_PREFIX}" }
   if (typeof window.initAliyunCaptcha === "function") {
     window.initAliyunCaptcha({
       SceneId: "${CAPTCHA_SCENE_ID}",
@@ -174,497 +193,326 @@ const LOGIN_PAGE = `<!doctype html>
 </body>
 </html>`
 
-function appDataDirs() {
-  const dirs = []
-  if (process.env.APPDATA) dirs.push(process.env.APPDATA)
-  if (process.platform === "darwin") dirs.push(join(homedir(), "Library", "Application Support"))
-  else dirs.push(join(homedir(), ".config"))
-  return dirs
-}
-
-function harnessRoots() {
-  const roots = []
-  if (process.env.QURWORK_DSH_HOME) roots.push(process.env.QURWORK_DSH_HOME)
-  roots.push(join(homedir(), ".qurwork-desktop-dsh", ".dsh"))
-  roots.push(join(homedir(), ".quwork-desktop-dsh", ".dsh"))
-  return roots
-}
-
-function tokenFromCredentials(file) {
-  try {
-    if (!existsSync(file)) return ""
-    const raw = readFileSync(file, "utf8")
-    const match = raw.match(/QURIVS_LLM_API_KEY\s*:\s*([^\s,}]+)/)
-    return match ? match[1].replace(/^["']|["']$/g, "").trim() : ""
-  } catch {
-    return ""
-  }
-}
-
-function tokensFromWal(walFile) {
-  try {
-    if (!existsSync(walFile)) return {}
-    const text = readFileSync(walFile).toString("latin1")
-    const start = text.indexOf('"accessToken"')
-    if (start < 0) return {}
-    const chunk = text.slice(start, start + 1600)
-    return {
-      llmToken: chunk.match(/"llmToken":"([^"]+)"/)?.[1] ?? "",
-      accessToken: chunk.match(/"accessToken":"([^"]+)"/)?.[1] ?? "",
-    }
-  } catch {
-    return {}
-  }
-}
-
-async function readDesktopSession(file) {
-  const walFile = `${file}-wal`
-  const shmFile = `${file}-shm`
-  try {
-    const { Database } = await import("bun:sqlite")
-    const db = new Database(file, { readonly: true })
-    try {
-      const row = db.query("select session_json from auth_session where id = 1").get()
-      if (row?.session_json) return JSON.parse(row.session_json)
-    } finally {
-      db.close()
-    }
-  } catch {
-    // The desktop app may hold the database open; use a copy below.
-  }
-
-  try {
-    const dir = mkdtempSync(join(tmpdir(), "quwork-session-"))
-    try {
-      const copy = join(dir, "db.sqlite")
-      copyFileSync(file, copy)
-      if (existsSync(walFile)) copyFileSync(walFile, `${copy}-wal`)
-      if (existsSync(shmFile)) copyFileSync(shmFile, `${copy}-shm`)
-      const { Database } = await import("bun:sqlite")
-      const db = new Database(copy, { readonly: true })
-      try {
-        const row = db.query("select session_json from auth_session where id = 1").get()
-        if (row?.session_json) return JSON.parse(row.session_json)
-      } finally {
-        db.close()
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  } catch {
-    // Fall through to the WAL scan.
-  }
-  return null
-}
-
-async function tokenFromDesktopDb() {
-  for (const base of appDataDirs()) {
-    const file = join(base, "qurwork-desktop", "qurwork-desktop.sqlite")
-    const walFile = `${file}-wal`
-    if (!existsSync(file) && !existsSync(walFile)) continue
-    const session = existsSync(file) ? await readDesktopSession(file) : null
-    if (session?.llmToken) return String(session.llmToken).trim()
-    const tokens = tokensFromWal(walFile)
-    if (tokens.llmToken) return tokens.llmToken
-  }
-  return ""
-}
-
-async function findLocalToken() {
-  const fromEnv = (process.env[TOKEN_ENV] ?? "").trim()
-  if (fromEnv) return { key: fromEnv, source: "env" }
-  for (const root of harnessRoots()) {
-    const key = tokenFromCredentials(join(root, ".credentials.yaml"))
-    if (key) return { key, source: "credentials" }
-  }
-  const key = await tokenFromDesktopDb()
-  if (key) return { key, source: "desktop-db" }
-  return { key: "", source: "" }
-}
-
-async function findAccessToken() {
-  for (const base of appDataDirs()) {
-    const file = join(base, "qurwork-desktop", "qurwork-desktop.sqlite")
-    const walFile = `${file}-wal`
-    if (!existsSync(file) && !existsSync(walFile)) continue
-    const session = existsSync(file) ? await readDesktopSession(file) : null
-    if (session?.accessToken) return String(session.accessToken).trim()
-    const tokens = tokensFromWal(walFile)
-    if (tokens.accessToken) return tokens.accessToken
-  }
-  return ""
-}
-
-function quworkVersion() {
-  for (const root of harnessRoots()) {
-    try {
-      const file = join(root, "profiles", "web", "cordis.patch.yml")
-      if (!existsSync(file)) continue
-      const match = readFileSync(file, "utf8").match(/X-QurWork-Version\s*:\s*([0-9][^\s,}]*)/)
-      if (match) return match[1].trim()
-    } catch {
-      continue
-    }
-  }
-  return FALLBACK_VERSION
+function authKey(auth) {
+  const key = auth?.type === "api" ? auth.key : auth?.access
+  return typeof key === "string" && /^sk-[A-Za-z0-9_-]{1,512}$/.test(key.trim()) ? key.trim() : ""
 }
 
 function deviceIdentifier() {
   try {
-    if (existsSync(DEVICE_FILE)) {
-      const data = JSON.parse(readFileSync(DEVICE_FILE, "utf8"))
-      if (typeof data?.deviceId === "string" && data.deviceId) return data.deviceId
-    }
-  } catch {
-    // Generate a new id below.
-  }
+    const data = JSON.parse(readFileSync(DEVICE_FILE, "utf8"))
+    if (typeof data?.deviceId === "string" && data.deviceId) return data.deviceId
+  } catch {}
   const deviceId = randomUUID()
   try {
-    writeFileSync(DEVICE_FILE, JSON.stringify({ deviceId }), "utf8")
+    writeFileSync(DEVICE_FILE, JSON.stringify({ deviceId }), { encoding: "utf8", mode: 0o600 })
   } catch {
     // A read-only temp folder is fine; the id is then only stable for this process.
   }
   return deviceId
 }
 
-function numberOrZero(value) {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : 0
+function pointsNumber(value) {
+  if (typeof value !== "number" && !(typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim()))) return null
+  const amount = Number(value)
+  return Number.isFinite(amount) && amount >= 0 ? amount : null
 }
 
-async function readPoints(accessToken, { force = false } = {}) {
-  if (!accessToken) return null
-  const cached = balanceCache.get(accessToken)
-  if (!force && cached && Date.now() - cached.at < BALANCE_TTL_MS) return cached.points
-  const res = await fetch(`${ACCOUNT_BASE}/api/user/self`, {
-    headers: { authorization: `Bearer ${accessToken}`, "x-qurwork-env": "prod", "x-qurwork-version": quworkVersion() },
-  })
-  if (res.status === 401 || res.status === 403) {
-    throw Object.assign(new Error(`QuWork 拒绝了这份凭据（HTTP ${res.status}），请重新登录 QuWork`), { status: res.status, signIn: "expired" })
-  }
-  if (!res.ok) throw new Error(`QuWork 返回 ${res.status}`)
-  const payload = await res.json()
-  const entitlement = payload?.data?.points_entitlement
-  if (!payload?.success || !entitlement) {
-    throw new Error(payload?.message || "QuWork 积分接口没有返回可用数据")
-  }
-  const points = {
-    total: numberOrZero(entitlement.total_points),
-    limited: numberOrZero(entitlement.limited_points),
-    permanent: numberOrZero(entitlement.permanent_points),
-    plan: entitlement.active_subscription?.plan_name ?? "积分",
-  }
-  balanceCache.set(accessToken, { points, at: Date.now() })
-  return points
+function usageError(error, signIn = "kept") {
+  return { error, signIn, windows: [] }
 }
 
-function pointsText(points) {
-  if (!points) return ""
-  return `${points.total} 积分`
-}
-
-function writeBalanceCache(points) {
+async function fetchUsage(accessToken, fetchImpl) {
   try {
-    const value = points ? pointsText(points) : ""
-    const detail = points
-      ? {
-          total: points.total,
-          limited: points.limited,
-          permanent: points.permanent,
-          plan: points.plan,
-          updatedAt: new Date().toISOString(),
-        }
-      : null
-    writeFileSync(
-      BALANCE_FILE,
-      `window.__QUWORK_BALANCE__ = ${JSON.stringify(value)};\nwindow.__QUWORK_BALANCE_DETAIL__ = ${JSON.stringify(detail)};\n`,
-      "utf8",
-    )
+    const response = await fetchImpl(`${ACCOUNT_BASE}/api/user/self`, {
+      headers: { ...CLIENT_HEADERS, authorization: `Bearer ${accessToken}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {})
+      if (response.status === 401) return usageError("QuWork 余额凭据已失效，请重新登录后查看积分。", "expired")
+      if (response.status === 403) return usageError("QuWork 拒绝查询积分，请在官方入口核对账号状态。")
+      if (response.status === 429) return usageError("QuWork 限制了积分查询，请稍后查看。")
+      return usageError(`暂时无法查询 QuWork 积分（HTTP ${response.status}）。`)
+    }
+    const payload = await response.json()
+    const entitlement = payload?.data?.points_entitlement
+    const total = pointsNumber(entitlement?.total_points)
+    if (payload?.success !== true || total === null) return usageError("QuWork 未返回有效的积分余额。")
+    const limited = pointsNumber(entitlement.limited_points)
+    const permanent = pointsNumber(entitlement.permanent_points)
+    const plan = entitlement.active_subscription?.plan_name
+    const parts = []
+    if (limited !== null) parts.push(`限时 ${limited}`)
+    if (permanent !== null) parts.push(`永久 ${permanent}`)
+    const detail = parts.length ? `（${parts.join(" · ")}）` : ""
+    return { plan: typeof plan === "string" && plan.trim() ? plan.trim() : "积分", balance: `${total} 积分${detail}`, windows: [] }
   } catch {
-    // The page is a convenience; a read-only folder must not break the provider.
+    return usageError("暂时无法读取 QuWork 积分，请稍后查看。")
   }
 }
 
-async function checkKey(key) {
+async function checkKey(key, fetchImpl, signal) {
   try {
-    const res = await fetch(`${LLM_BASE}/models`, {
-      headers: { authorization: `Bearer ${key}`, "x-qurwork-env": "prod", "x-qurwork-version": quworkVersion() },
+    const timeout = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
+    const response = await fetchImpl(`${LLM_BASE}/models`, {
+      headers: { ...CLIENT_HEADERS, authorization: `Bearer ${key}` },
+      redirect: "error",
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     })
-    if (res.ok) return { ok: true }
-    const detail = (await res.text()).slice(0, 200)
-    return { ok: false, error: `QuWork 返回 ${res.status}${detail ? `：${detail}` : ""}` }
-  } catch (error) {
-    return { ok: false, error: `连不上 QuWork：${error instanceof Error ? error.message : String(error)}` }
+    await response.body?.cancel().catch(() => {})
+    return response.ok ? null : `QuWork 未接受模型密钥（HTTP ${response.status}）。`
+  } catch {
+    return signal?.aborted ? "QuWork 登录已取消。" : "连接 QuWork 模型服务失败，请稍后查看。"
   }
 }
 
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let size = 0
-    const chunks = []
-    req.on("data", (chunk) => {
-      size += chunk.length
-      if (size > 1_000_000) {
-        reject(new Error("请求体过大"))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on("end", () => {
-      try {
-        resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {})
-      } catch {
-        reject(new Error("请求格式无效"))
-      }
-    })
-    req.on("error", reject)
-  })
+async function readJsonBody(request) {
+  let size = 0
+  const chunks = []
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > 16 * 1024) throw new Error("请求体过大")
+    chunks.push(chunk)
+  }
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("请求格式无效")
+  return body
 }
 
 function sendJson(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  })
   res.end(JSON.stringify(body))
 }
 
-async function startBrowserLogin() {
-  const state = { result: null, closed: false }
-  const secret = randomUUID()
-  const server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1")
-    const prefix = `/${secret}`
-    const host = req.headers.host ?? ""
-    const origin = req.headers.origin
-    if (req.method === "POST" && origin && origin !== `http://${host}`) {
-      return sendJson(res, 403, { success: false, message: "forbidden" })
-    }
-    if (req.method === "GET" && url.pathname === `${prefix}/`) {
+async function startBrowserLogin(fetchImpl, getDeviceIdentifier, signal) {
+  signal?.throwIfAborted()
+  const controller = new AbortController()
+  const prefix = `/${randomUUID()}/`
+  const sendPath = `${prefix}api/send-code`
+  const loginPath = `${prefix}api/login`
+  let port = 0
+  let busy = false
+  let accepted = false
+  let sentTo = ""
+  let nextSendAt = 0
+  let loginAttempts = 0
+  let finish
+  const result = new Promise((resolve) => { finish = resolve })
+  const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, async (req, res) => {
+    const host = `127.0.0.1:${port}`
+    const fail = (status, message) => sendJson(res, status, { success: false, message })
+    if (req.headers.host !== host) return fail(403, "请求来源无效")
+    if (req.method === "GET" && req.url === prefix) {
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
         "x-frame-options": "DENY",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
+        "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'",
       })
       res.end(LOGIN_PAGE)
       return
     }
-    if (req.method === "POST" && url.pathname === `${prefix}/api/send-code`) {
-      try {
-        const body = await readJsonBody(req)
-        const phone = String(body.phone ?? "").trim()
-        const captcha = String(body.captcha ?? "").trim()
-        if (!/^1[3-9]\d{9}$/.test(phone)) return sendJson(res, 400, { success: false, message: "手机号格式不正确" })
-        if (!captcha) return sendJson(res, 400, { success: false, message: "缺少验证码参数" })
-        const query = `?${new URLSearchParams({ aliyun_captcha: captcha }).toString()}`
-        const upstream = await fetch(`${ACCOUNT_BASE}/api/sendVerifyCode${query}`, {
+    if (req.method !== "POST" || (req.url !== sendPath && req.url !== loginPath)) return fail(404, "登录页面不存在")
+    const contentType = req.headers["content-type"]?.split(";")[0].trim().toLowerCase()
+    if (req.headers.origin !== `http://${host}` || contentType !== "application/json") return fail(403, "请求来源无效")
+    if (accepted || controller.signal.aborted) return fail(410, "登录页面已关闭")
+    if (busy) return fail(409, "上一请求仍在处理")
+
+    busy = true
+    try {
+      const body = await readJsonBody(req).catch(() => null)
+      if (!body) return fail(400, "请求格式无效")
+      const phone = typeof body.phone === "string" ? body.phone.trim() : ""
+      if (!/^1[3-9]\d{9}$/.test(phone)) return fail(400, "手机号格式不正确")
+      const upstreamSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)])
+      if (req.url === sendPath) {
+        if (Date.now() < nextSendAt) return fail(429, `请 ${Math.ceil((nextSendAt - Date.now()) / 1000)} 秒后再发送`)
+        const captcha = typeof body.captcha === "string" ? body.captcha.trim() : ""
+        if (!captcha) return fail(400, "请先完成人机验证")
+        const query = new URLSearchParams({ aliyun_captcha: captcha })
+        nextSendAt = Date.now() + RESEND_COOLDOWN_MS
+        const response = await fetchImpl(`${ACCOUNT_BASE}/api/sendVerifyCode?${query}`, {
           method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded", "x-qurwork-env": "prod", "x-qurwork-version": quworkVersion() },
-          body: new URLSearchParams({ phone, type: "login" }).toString(),
+          headers: { ...CLIENT_HEADERS, "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ phone, type: "login" }),
+          redirect: "error",
+          signal: upstreamSignal,
         })
-        const payload = await upstream.json().catch(() => ({ success: false, message: `QuWork 返回 ${upstream.status}` }))
-        return sendJson(res, upstream.ok ? 200 : upstream.status, payload)
-      } catch (error) {
-        return sendJson(res, 500, { success: false, message: error instanceof Error ? error.message : String(error) })
-      }
-    }
-    if (req.method === "POST" && url.pathname === `${prefix}/api/login`) {
-      try {
-        const body = await readJsonBody(req)
-        const phone = String(body.phone ?? "").trim()
-        const code = String(body.code ?? "").trim()
-        if (!/^1[3-9]\d{9}$/.test(phone)) return sendJson(res, 400, { success: false, message: "手机号格式不正确" })
-        if (!/^\d{4,6}$/.test(code)) return sendJson(res, 400, { success: false, message: "验证码格式不正确" })
-        const upstream = await fetch(`${ACCOUNT_BASE}/api/user/client/login`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-qurwork-env": "prod", "x-qurwork-version": quworkVersion() },
-          body: JSON.stringify({
-            phone,
-            verification_code: code,
-            platform: "qurvis",
-            device_identifier: deviceIdentifier(),
-            device_uuid: "",
-          }),
-        })
-        const payload = await upstream.json().catch(() => ({ success: false, message: `QuWork 返回 ${upstream.status}` }))
-        if (upstream.ok && payload?.success && payload?.data?.token) {
-          state.result = {
-            key: String(payload.data.llm_token ?? "").trim() || String(payload.data.token ?? "").trim(),
-            accessToken: String(payload.data.token ?? "").trim(),
-            user: payload.data.user ?? null,
-          }
+        const payload = await response.json().catch(() => null)
+        if (response.ok && payload?.success === true) {
+          sentTo = phone
           return sendJson(res, 200, { success: true })
         }
-        return sendJson(res, upstream.ok ? 200 : upstream.status, payload)
-      } catch (error) {
-        return sendJson(res, 500, { success: false, message: error instanceof Error ? error.message : String(error) })
+        return fail(response.status === 429 ? 429 : 400, "QuWork 未发送验证码。请稍后再试或到官方入口核对账号状态。")
       }
+      const code = typeof body.code === "string" ? body.code.trim() : ""
+      if (phone !== sentTo || !/^\d{4,6}$/.test(code)) return fail(400, "请先为该手机号获取并填写短信验证码")
+      if (loginAttempts >= MAX_LOGIN_ATTEMPTS) return fail(429, "本次登录尝试次数已用完。请到 QuWork 官方入口核对账号状态。")
+      loginAttempts += 1
+      const response = await fetchImpl(`${ACCOUNT_BASE}/api/user/client/login`, {
+        method: "POST",
+        headers: { ...CLIENT_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          phone,
+          verification_code: code,
+          platform: "qurvis",
+          device_identifier: getDeviceIdentifier(),
+          device_uuid: "",
+        }),
+        redirect: "error",
+        signal: upstreamSignal,
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || payload?.success !== true) {
+        if (response.status === 403 || response.status === 429) loginAttempts = MAX_LOGIN_ATTEMPTS
+        return fail(response.status === 429 ? 429 : 400, "QuWork 未接受登录。请检查验证码或到官方入口核对账号状态。")
+      }
+      const key = authKey({ type: "api", key: payload.data?.llm_token })
+      const accessToken = payload.data?.token
+      if (!key || typeof accessToken !== "string" || !accessToken.trim()) return fail(502, "QuWork 未返回完整的登录凭据")
+      if (controller.signal.aborted) return fail(410, "登录页面已关闭")
+      accepted = true
+      sendJson(res, 200, { success: true })
+      finish({ key, accessToken: accessToken.trim() })
+    } catch {
+      if (!res.destroyed) fail(502, "连接 QuWork 失败，请稍后查看。")
+    } finally {
+      busy = false
     }
-    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" })
-    res.end("not found")
   })
 
   await new Promise((resolve, reject) => {
     server.once("error", reject)
     server.listen(0, "127.0.0.1", resolve)
   })
+  port = server.address().port
+  const timer = setTimeout(close, LOGIN_TTL_MS)
+  function close() {
+    if (controller.signal.aborted) return
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", close)
+    controller.abort()
+    server.close()
+    finish(null)
+  }
+  if (signal?.aborted) close()
+  else signal?.addEventListener("abort", close, { once: true })
+  return { url: `http://127.0.0.1:${port}${prefix}`, result, close }
+}
 
-  const address = server.address()
-  const port = typeof address === "object" && address ? address.port : 0
+function createPlugin({ fetchImpl = globalThis.fetch, getDeviceIdentifier = deviceIdentifier } = {}) {
+  const balanceCache = new Map()
   return {
-    url: `http://127.0.0.1:${port}/${secret}/`,
-    state,
-    close() {
-      state.closed = true
-      try {
-        server.close()
-      } catch {
-        // already closed
+    async config(config) {
+      config.provider ??= {}
+      config.provider[PROVIDER] ??= {
+        name: "QuWork",
+        npm: "@ai-sdk/openai-compatible",
+        api: LLM_BASE,
+        models: Object.fromEntries(MODELS.map((model) => [model.id, model])),
       }
     },
-  }
-}
-
-async function waitForBrowserLogin(session, timeoutMs = 10 * 60_000) {
-  const startedAt = Date.now()
-  try {
-    while (!session.state.closed && Date.now() - startedAt < timeoutMs) {
-      if (session.state.result) return session.state.result
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-    }
-    return null
-  } finally {
-    session.close()
-  }
-}
-
-export const QuWorkProvider = async () => ({
-  config: async (cfg) => {
-    cfg.provider ??= {}
-    cfg.provider[PROVIDER] ??= {
-      name: "QuWork",
-      npm: "@ai-sdk/openai-compatible",
-      api: LLM_BASE,
-      models: Object.fromEntries(MODELS.map((model) => [model.id, model])),
-    }
-  },
-
-  auth: {
-    provider: PROVIDER,
-    methods: [
-      {
-        type: "oauth",
-        label: "浏览器登录 QuWork（手机验证码，无需客户端）",
-        async authorize(_inputs, options = {}) {
-          const session = await startBrowserLogin()
-          if (options.signal) options.signal.addEventListener("abort", () => session.close(), { once: true })
-          return {
-            url: session.url,
-            instructions: "在打开的页面里输入手机号，完成阿里云验证码后获取短信验证码，再点「登录并接入 magpie」。",
-            method: "auto",
-            close: () => session.close(),
-            async callback() {
-              const result = await waitForBrowserLogin(session)
-              if (!result?.key) return { type: "failed", error: "登录超时或未完成，请重试。" }
-              const checked = await checkKey(result.key)
-              if (!checked.ok) return { type: "failed", error: checked.error }
-              return {
-                type: "success",
-                key: result.key,
-                metadata: { source: "browser", accessToken: result.accessToken, user: result.user },
-              }
-            },
-          }
+    auth: {
+      provider: PROVIDER,
+      methods: [
+        {
+          type: "oauth",
+          label: "浏览器登录 QuWork（实验性）",
+          async authorize(_inputs, { signal } = {}) {
+            const session = await startBrowserLogin(fetchImpl, getDeviceIdentifier, signal)
+            return {
+              url: session.url,
+              instructions: "在本机浏览器阅读风险提示，手动完成人机验证和短信验证。",
+              method: "auto",
+              close: session.close,
+              async callback(_code, { signal: callbackSignal } = {}) {
+                const callbackAbort = callbackSignal ?? signal
+                if (callbackAbort?.aborted) session.close()
+                else callbackAbort?.addEventListener("abort", session.close, { once: true })
+                try {
+                  const credentials = await session.result
+                  if (!credentials || callbackAbort?.aborted) return { type: "failed", error: "QuWork 登录已取消或超时。" }
+                  const error = await checkKey(credentials.key, fetchImpl, callbackAbort)
+                  if (error) return { type: "failed", error }
+                  return {
+                    type: "success",
+                    key: credentials.key,
+                    metadata: { source: "browser", accessToken: credentials.accessToken },
+                  }
+                } finally {
+                  callbackAbort?.removeEventListener("abort", session.close)
+                  session.close()
+                }
+              },
+            }
+          },
         },
-      },
-      {
-        type: "api",
-        label: "读取 QuWork 本机登录态",
-        async authorize() {
-          const found = await findLocalToken()
-          if (!found.key) {
-            return { type: "failed", error: "没有找到 QuWork 登录态：先用上面的「浏览器登录」，或在下一个方法里粘贴 sk- 令牌。" }
-          }
-          const checked = await checkKey(found.key)
-          if (!checked.ok) return { type: "failed", error: checked.error }
-          return { type: "success", key: found.key, metadata: { source: found.source } }
+        {
+          type: "api",
+          label: "填写已获授权的 QuWork 模型密钥",
+          placeholder: "sk-…",
+          async authorize(inputs, { signal } = {}) {
+            const key = authKey({ type: "api", key: inputs?.key ?? inputs?.apiKey ?? inputs?.api_key ?? inputs?.value })
+            if (!key) return { type: "failed", error: "请填写 QuWork 授权用于第三方接入的模型密钥。" }
+            const error = await checkKey(key, fetchImpl, signal)
+            if (error) return { type: "failed", error }
+            return { type: "success", key, metadata: { source: "pasted" } }
+          },
         },
-      },
-      {
-        type: "api",
-        label: "粘贴 QuWork 令牌",
-        placeholder: "sk-…",
-        async authorize(inputs) {
-          const key = String(inputs?.key ?? inputs?.apiKey ?? inputs?.api_key ?? inputs?.value ?? "").trim()
-          if (!key) return { type: "failed", error: "没有收到令牌。请在输入框里粘贴 sk-…；或使用「浏览器登录 QuWork」。" }
-          const checked = await checkKey(key)
-          if (!checked.ok) return { type: "failed", error: checked.error }
-          return { type: "success", key, metadata: { source: "pasted" } }
-        },
-      },
-    ],
-    async loader(getAuth) {
-      const auth = await getAuth()
-      if (!auth) return {}
-      const key = auth.type === "api" ? auth.key : auth.access
-      if (!key) return {}
-      return {
-        baseURL: LLM_BASE,
-        async fetch(input, init) {
-          const headers = new Headers(init?.headers)
-          headers.set("authorization", `Bearer ${key}`)
-          headers.set("x-qurwork-env", "prod")
-          headers.set("x-qurwork-version", quworkVersion())
-          return fetch(input, { ...init, headers })
-        },
-      }
-    },
-    async usage(getAuth) {
-      const auth = await getAuth()
-      if (!auth) return { error: "QuWork 未登录", windows: [] }
-      try {
-        const accessToken = auth?.metadata?.accessToken || (await findAccessToken())
-        if (!accessToken) return { error: "没有 QuWork 账号令牌；用「浏览器登录 QuWork」重新登录后就能显示积分。", windows: [] }
-        const points = await readPoints(accessToken)
-        if (!points) return { error: "QuWork 积分接口没有返回可用数据。", windows: [] }
-        writeBalanceCache(points)
-        const suffix = points.limited > 0 ? `（限时 ${points.limited} + 永久 ${points.permanent}）` : ""
+      ],
+      async loader(getAuth) {
+        if (!authKey(await getAuth())) return {}
         return {
-          plan: points.plan,
-          balance: `${pointsText(points)}${suffix}`,
-          windows: [],
+          baseURL: LLM_BASE,
+          apiKey: PROVIDER,
+          async fetch(input, init) {
+            const isRequest = input instanceof Request
+            const target = new URL(isRequest ? input.url : String(input))
+            if (!target.href.startsWith(`${LLM_BASE}/`)) {
+              throw new Error("QuWork 模型密钥仅用于 QuWork 模型网关。")
+            }
+            const key = authKey(await getAuth())
+            if (!key) throw new Error("请在 Magpie 中登录 QuWork。")
+            const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined))
+            headers.set("authorization", `Bearer ${key}`)
+            for (const [name, value] of Object.entries(CLIENT_HEADERS)) headers.set(name, value)
+            return fetchImpl(isRequest ? input : target.href, { ...init, headers, redirect: "error" })
+          },
         }
-      } catch (error) {
-        if (error?.signIn === "expired") {
-          return { error: error.message, signIn: "expired", windows: [] }
+      },
+      async usage(getAuth) {
+        const auth = await getAuth()
+        if (!authKey(auth)) return usageError("请先在 Magpie 中登录 QuWork。")
+        const accessToken = auth.metadata?.source === "browser" ? auth.metadata.accessToken : null
+        if (typeof accessToken !== "string" || !accessToken.trim()) {
+          return usageError("当前仅有模型密钥。积分查询需要浏览器登录获得的账号凭据。")
         }
-        return { error: `读 QuWork 余额失败：${error instanceof Error ? error.message : String(error)}`, windows: [] }
-      }
+        const now = Date.now()
+        for (const [cacheKey, entry] of balanceCache) {
+          if (entry.until <= now) balanceCache.delete(cacheKey)
+        }
+        const cacheKey = createHash("sha256").update(accessToken).digest("hex")
+        const cached = balanceCache.get(cacheKey)
+        if (cached) return cached.result
+        const entry = { until: Infinity, result: null }
+        entry.result = fetchUsage(accessToken, fetchImpl).finally(() => {
+          entry.until = Date.now() + BALANCE_TTL_MS
+        })
+        balanceCache.set(cacheKey, entry)
+        return entry.result
+      },
     },
-  },
-
-  provider: {
-    id: PROVIDER,
-    async models(provider, { auth } = {}) {
-      try {
-        const accessToken = auth?.metadata?.accessToken || (await findAccessToken())
-        const points = await readPoints(accessToken)
-        if (points) writeBalanceCache(points)
-      } catch (error) {
-        if (error?.signIn === "expired") throw error
-        // Balance display is best-effort.
-      }
-      return provider.models
-    },
-  },
-})
-
-export const _internal = {
-  MODELS,
-  PLUGIN_DIR,
-  startBrowserLogin,
-  readPoints,
-  writeBalanceCache,
-  deviceIdentifier,
-  quworkVersion,
+  }
 }
+
+export const QuWorkProvider = async () => createPlugin()
+export const _internal = { createPlugin }

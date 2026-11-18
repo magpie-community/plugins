@@ -306,6 +306,6 @@
       "icon": "https://raw.githubusercontent.com/pmndre/pine/next/docs/images/logo-light.svg",
       "summary": { "en": "Pine (pmndre/pine, the event-driven agent harness on pi's SDK) on magpie's Agents page: pick one of magpie's models and magpie writes its gateway and catalog into ~/.pine/models.json and the model into pine.json, so new conversations start on it. Restart Pine after a change; unofficial.", "zh": "把 Pine（pmndre/pine，跑在 pi SDK 上的事件驱动 Agent 框架）加到 magpie 的 Agent 页：选一个 magpie 的模型，magpie 把网关和模型目录写进 ~/.pine/models.json、把起始模型写进 pine.json，新对话就用它。换完模型要重启 Pine；非官方适配。" } },
     { "package": "@magpie-community/opencode-quwork-auth", "name": "QuWork", "providers": ["quwork"], "community": true,
-      "summary": { "en": "Unofficial QuWork (Clawork) access: browser sign-in with phone and SMS (Aliyun captcha), or the desktop client's saved session; live models, points balance and a setup page.", "zh": "非官方 QuWork（Clawork）接入：浏览器手机验证码登录（阿里云验证码），或复用桌面端登录态；动态模型、积分余额与接入页。" } }
+      "summary": { "en": "Experimental community integration for QuWork, with interactive browser sign-in and points in Magpie Quota.", "zh": "实验性 QuWork 社区接入。浏览器手动验证，积分在 Magpie 额度页显示。" } }
   ]
 }
