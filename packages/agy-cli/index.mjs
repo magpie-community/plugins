@@ -20,7 +20,7 @@ import { ensureGeminiArrayItems } from "./array-items.mjs"
 import { expandToolSchema } from "./tool-schema.mjs"
 import { processExists } from "./proc.mjs"
 import { fitTools } from "./tool-budget.mjs"
-import { cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
+import { cloakUser, DEFAULT_SLASH_COMMANDS, defuseSlashCommands, hint, outgoing, turnsAway } from "./cloak.mjs"
 import { modelUsageCursor, modelUsageAfter, sessionDbPath } from "./step-usage.mjs"
 
 const PROVIDER_ID = "agy-cli"
@@ -2382,7 +2382,17 @@ class Proc {
   }
 
   #onNotification(method, params) {
-    if (method !== "session/update" || params?.sessionId !== this.sessionId) return
+    if (method !== "session/update") return
+    if (params?.update?.sessionUpdate === "available_commands_update" &&
+      (!this.sessionId || params?.sessionId === this.sessionId) &&
+      Array.isArray(params.update.availableCommands)) {
+      this.slashCommands ??= new Set(DEFAULT_SLASH_COMMANDS)
+      for (const cmd of params.update.availableCommands) {
+        if (typeof cmd?.name === "string" && cmd.name) this.slashCommands.add(cmd.name)
+      }
+      return
+    }
+    if (params?.sessionId !== this.sessionId) return
     if (params.update?.sessionUpdate === "config_option_update" && Array.isArray(params.update.configOptions)) {
       this.configOptions = params.update.configOptions
       this.currentSelectionKey = null
@@ -2554,8 +2564,9 @@ class Proc {
         unpark(this.convKey)
         this.hasSentFirstTurn = true
         // agy hands Antigravity the prompt as a user's turn, where Codex's
-        // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY)
-        promptParts = userTurnParts(promptParts)
+        // GPT-5 lines are turned away too (cloak.mjs, USER_TURNED_AWAY), and
+        // agy's hydrate_slash_commands scans the whole prompt for /learn etc.
+        promptParts = userTurnParts(promptParts, this.slashCommands)
         const promptNumber = turn.beginPrompt(promptParts, lateCalls)
         turn.promptInFlight = true
         let result
@@ -3056,10 +3067,10 @@ function toPromptParts(content) {
   return out
 }
 
-// userTurnParts is parts with each text part as cloakUser says
-function userTurnParts(parts) {
+// userTurnParts is parts with each text part as cloakUser and defuseSlashCommands say
+function userTurnParts(parts, slashCommands) {
   return parts.map((part) => part?.type === "text" && typeof part.text === "string"
-    ? { ...part, text: cloakUser(part.text) }
+    ? { ...part, text: defuseSlashCommands(cloakUser(part.text), slashCommands) }
     : part)
 }
 

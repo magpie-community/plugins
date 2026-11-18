@@ -3,7 +3,7 @@
 // more, so cloak.mjs is the one copy now.
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { REWORDED, TURNED_AWAY, cloak, cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
+import { DEFAULT_SLASH_COMMANDS, REWORDED, TURNED_AWAY, cloak, cloakUser, defuseSlashCommands, hint, outgoing, turnsAway } from "./cloak.mjs"
 
 const ZW = "​"
 
@@ -143,4 +143,32 @@ test("DeepSeek Harness 0.2.2-rc.3's whole Web GUI prompt goes with only its turn
     expect(b === "You're an AI agent powered by DeepSeek Harness." || b.includes("The browser gives no implicit") || reworded.has(b)).toBe(true)
   }
   expect(out.split("\n").length).toBe(raw.split("\n").length)
+})
+
+test("defuseSlashCommands neutralizes agy slash commands without touching paths, URLs, or /skill:name", () => {
+  expect(DEFAULT_SLASH_COMMANDS).toEqual(["learn", "plan", "grill-me"])
+
+  const raw = [
+    "when the user directly invokes /learn or /skill:learn in Pi",
+    "/plan",
+    "/grill-me",
+    "Check /learn /plan /grill-me together",
+    "Path /path/to/learn and URL https://example.com/learn and /learning and /learn-more",
+    "Punctuation /learn. /learn, `/learn` <tag>/learn</tag>",
+  ].join("\n")
+
+  const out = defuseSlashCommands(raw)
+  expect(out).toContain("invokes /\u2060learn or /skill:learn")
+  expect(out).toContain("\n/\u2060plan\n")
+  expect(out).toContain("\n/\u2060grill-me\n")
+  expect(out).toContain("Check /\u2060learn /\u2060plan /\u2060grill-me together")
+  expect(out).toContain("/path/to/learn")
+  expect(out).toContain("https://example.com/learn")
+  expect(out).toContain("/learning and /learn-more")
+  expect(out).toContain("Punctuation /learn. /learn, `/learn` <tag>/learn</tag>")
+  // Idempotent on already-defused text
+  expect(defuseSlashCommands(out)).toBe(out)
+  // Custom / dynamically advertised commands (including regex metacharacters)
+  expect(defuseSlashCommands("run /foo.bar now", ["foo.bar"])).toBe("run /\u2060foo.bar now")
+  expect(defuseSlashCommands("run /learn now", [])).toBe("run /learn now")
 })

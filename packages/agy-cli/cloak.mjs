@@ -194,6 +194,36 @@ export function reword(system) {
 // with USER_TURNED_AWAY's lines reworded and everything else as written
 export const cloakUser = (text) => cloak(text, USER_TURNED_AWAY)
 
+// agy acp runs hydrate_slash_commands over every session/prompt user message,
+// matching /<name> bounded by start/end or whitespace and injecting
+// <ADDITIONAL_METADATA> (e.g. <LEARN>, <PLAN>). Inserting U+2060 (WORD JOINER)
+// after `/` prevents agy from hijacking client prompts, system instructions,
+// history, or tool results while leaving paths, URLs, and /skill:name intact.
+export const DEFAULT_SLASH_COMMANDS = ["learn", "plan", "grill-me"]
+
+const slashCommandReCache = new Map()
+
+function slashCommandRe(commands) {
+  const names = [...new Set(Array.from(commands || [], (c) => (typeof c === "string" ? c.trim() : "")).filter(Boolean))]
+    .sort((a, b) => b.length - a.length)
+  if (!names.length) return null
+  const key = names.join("\0")
+  let re = slashCommandReCache.get(key)
+  if (!re) {
+    re = new RegExp(`(^|\\s)\\/(${names.map(escape).join("|")})(?=$|\\s)`, "g")
+    slashCommandReCache.set(key, re)
+  }
+  return re
+}
+
+export function defuseSlashCommands(text, commands = DEFAULT_SLASH_COMMANDS) {
+  if (typeof text !== "string" || !text.includes("/")) return text
+  const re = slashCommandRe(commands)
+  if (!re) return text
+  re.lastIndex = 0
+  return text.replace(re, "$1/\u2060$2")
+}
+
 // outgoing is system text as agy is handed it: each turned-away line and
 // each paragraph of REWORDED reworded
 export const outgoing = (system) => reword(cloak(system))
