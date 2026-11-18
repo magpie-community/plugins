@@ -105,7 +105,10 @@ const SELF_POLL_LIMIT = positiveTimeout(process.env.AGY_BRIDGE_SELF_POLL_LIMIT, 
 // SDK) stop their automatic retries instead of resending it.
 const NO_RETRY_HEADERS = { "x-should-retry": "false" }
 const SELF_POLL_NOTE = "agy bridge: gave up waiting for this tool: the client never returned a result for it; stop this turn"
-const TOOL_LIST_WAIT_MS = 5_000
+// How long a session that declares tools waits for agy to list them from the
+// ide-tools MCP server. One whose agy never does fails rather than running a
+// turn the model sees none of the client's tools in (plugins#1239).
+const TOOL_LIST_WAIT_MS = positiveTimeout(process.env.AGY_BRIDGE_TOOL_LIST_WAIT_MS, 20_000)
 const STDERR_TAIL = 32 * 1024
 const CONTROL_LINE_LIMIT = 16 * 1024 * 1024
 const ACP_LINE_LIMIT = 64 * 1024 * 1024
@@ -536,6 +539,11 @@ const MODEL_CATALOG_RETRY_MS = 5_000
 //   session's model option (and its models.availableModels) says which;
 //   the catalog keeps to that. Before any session has said, only Gemini
 //   models are served.
+// - offeredStale: acpOfferedModels is what agy acp offered before (saved in
+//   models.json by an earlier run, or before `agy models` listed something
+//   else): served until agy acp is asked again, never believed for good.
+//   shenggxhz (X, 11-17) moved from Pro to Ultra and kept the Pro account's
+//   offer, which filtered Gemini 4 out of Ultra's listing.
 // - offeredProbePromise, offeredProbeAt, offeredGen: the probe below.
 const modelStates = new Map()
 
@@ -549,6 +557,7 @@ function ms() {
       wantOfferedProbe: false,
       acpOfferedModels: null,
       acpOfferedKey: "",
+      offeredStale: false,
       offeredProbePromise: null,
       offeredProbeAt: null,
       offeredGen: 0,
@@ -572,6 +581,7 @@ function offeredModelsOf(configOptions, models) {
 function noteOfferedModels(configOptions, models) {
   const offered = offeredModelsOf(configOptions, models)
   if (!offered.length) return
+  ms().offeredStale = false
   const names = new Map(offered.map(model => [model.id, typeof model.name === "string" && model.name ? model.name : model.id]))
   const key = [...names.keys()].sort().join("\n")
   if (key === ms().acpOfferedKey) return
@@ -606,6 +616,7 @@ const OFFERED_PROBE_RETRY_MS = 60_000
 function forgetOffered() {
   ms().acpOfferedModels = null
   ms().acpOfferedKey = ""
+  ms().offeredStale = false
   ms().offeredProbePromise = null
   ms().offeredProbeAt = null
   ms().offeredGen++
@@ -681,7 +692,7 @@ async function probeOfferedModels(agyPath) {
 }
 
 function probeOfferedOnce(agyPath) {
-  if (ms().acpOfferedModels || ms().offeredProbePromise) return ms().offeredProbePromise
+  if ((ms().acpOfferedModels && !ms().offeredStale) || ms().offeredProbePromise) return ms().offeredProbePromise
   const now = Date.now()
   if (ms().offeredProbeAt !== null && now - ms().offeredProbeAt < OFFERED_PROBE_RETRY_MS) return null
   ms().offeredProbeAt = now
@@ -868,6 +879,7 @@ function startingModelCatalog(agyPath) {
   if (saved.offered && !ms().acpOfferedModels) {
     ms().acpOfferedModels = new Map(saved.offered.map(({ id, name }) => [id, name]))
     ms().acpOfferedKey = [...ms().acpOfferedModels.keys()].sort().join("\n")
+    ms().offeredStale = true
   }
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(saved.list)
@@ -884,7 +896,15 @@ function useAgyPath(agyPath) {
   ms().modelCatalogRefreshPromise = null
 }
 
+function listKey(list) {
+  return list.map(model => model.id).sort().join("\n")
+}
+
 function storeListedCatalog(agyPath, list, lastAttemptAt) {
+  // Another listing (the account changed outside magpie, or its plan did):
+  // what agy acp offered before is asked again.
+  const before = ms().cachedModelCatalog
+  if (before?.agyPath === agyPath && !before.isFallback && listKey(before.list) !== listKey(list)) ms().offeredStale = true
   saveCatalog(agyPath, { list })
   // The usage reader names ids on its windows from the catalog being served.
   storeCatalogRows(list)
@@ -1110,6 +1130,20 @@ class BusyError extends Error {
   }
 }
 
+// agy never listed the client's tools from the bridge's ide-tools MCP
+// server, so a turn would have the model see none of them, only agy's own
+// manage_task (plugins#1239). It names the cause where one is known.
+function toolsUnlistedError(count) {
+  const windows = process.platform === "win32" && shimDirOwned
+  const why = windows
+    ? `nc.exe, the program agy runs to reach them, could not be built (${ncBuildFailure || "unknown reason"}), and agy doesn't run the nc.cmd used instead`
+    : `the MCP server agy starts through \`nc\` to reach them didn't answer within ${Math.round(TOOL_LIST_WAIT_MS / 1000)}s`
+  const error = new Error(`agy bridge: agy never loaded the request's ${count} tool${count === 1 ? "" : "s"}: ${why}. The model would have seen none of them`)
+  error.statusCode = 502
+  error.code = "tools_not_loaded"
+  return error
+}
+
 class ConflictError extends Error {
   constructor(message, code) {
     super(message)
@@ -1176,14 +1210,28 @@ async function ensureShimDir() {
     shimDir = undefined
     shimDirPromise = null
   }
+  // agy 1.5 never runs nc.cmd, so a Windows host left on it after a failed
+  // nc.exe build had no client tool in any session until it restarted. The
+  // build is tried again once NC_BUILD_RETRY_MS has passed (plugins#1239).
+  if (shimDirPromise && process.platform === "win32" && ncBuildFailure && shimDirOwned &&
+    Date.now() - ncBuildFailedAt >= NC_BUILD_RETRY_MS) {
+    shimDirPromise = null
+  }
   if (shimDirPromise) return shimDirPromise
   shimDirPromise = (async () => {
     if (process.platform === "win32") {
-      const shared = await windowsNcDir().catch(() => null)
+      const shared = await windowsNcDir().catch((error) => {
+        ncBuildFailure = String(error?.message ?? error)
+        return null
+      })
       if (shared) {
+        ncBuildFailure = ""
         shimDir = shared
+        shimDirOwned = false
         return shared
       }
+      ncBuildFailedAt = Date.now()
+      if (shimDirOwned && shimDir) return shimDir
     }
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-bridge-bin-"))
     if (process.platform === "win32") {
@@ -1208,6 +1256,11 @@ async function ensureShimDir() {
 const WINDOWS_NC_PREFIX = "magpie-agy-bridge-nc-"
 const WINDOWS_NC_BUILD_PREFIX = "magpie-agy-bridge-ncbuild-"
 const WINDOWS_NC_BUILD_TIMEOUT_MS = 120_000
+const NC_BUILD_RETRY_MS = 5 * 60 * 1000
+// Why the last nc.exe build didn't give one, "" when it did; it is named in
+// the error of a session whose agy then never listed the client's tools.
+let ncBuildFailure = ""
+let ncBuildFailedAt = 0
 // Each nc dir names the runtime that built it, so a build for a newer
 // mcp-server.mjs drops the same runtime's older ones at once: each holds a
 // whole Bun runtime (~115MB), and a week of plugin updates piles them up
@@ -1228,7 +1281,10 @@ async function isFileWithBytes(file) {
 }
 
 async function windowsNcDir() {
-  if (!windowsNcBuild(process.execPath, MCP_SERVER_PATH, "nc.exe")) return null
+  if (!windowsNcBuild(process.execPath, MCP_SERVER_PATH, "nc.exe")) {
+    ncBuildFailure = `${path.win32.basename(String(process.execPath || ""))} is not Bun, which builds it`
+    return null
+  }
   const tmp = os.tmpdir()
   const source = await fs.promises.readFile(MCP_SERVER_PATH)
   const runtimeKey = createHash("sha256").update(String(process.execPath)).update("\0")
@@ -1254,15 +1310,22 @@ async function windowsNcDir() {
       // A copy of it in an ASCII-only folder builds the same nc.exe.
       const base = [tmp, process.env.PUBLIC, process.env.ProgramData]
         .find(dir => dir && asciiPath(dir))
-      if (!base) return null
+      if (!base) {
+        ncBuildFailure = "Bun is under a non-ASCII folder and there is no ASCII-only folder to copy it to"
+        return null
+      }
       copyBase = base
       copy = base === tmp ? build : await fs.promises.mkdtemp(path.join(base, WINDOWS_NC_BUILD_PREFIX))
       runtime = path.join(copy, path.win32.basename(process.execPath))
       await fs.promises.copyFile(process.execPath, runtime)
     }
     const spec = windowsNcBuild(runtime, MCP_SERVER_PATH, path.join(build, "nc.exe"))
-    const { err, code, timedOut } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
-    if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) return null
+    const { err, code, timedOut, stdout, stderr } = await execOnce(spec.file, spec.args, { cwd: build, timeoutMs: WINDOWS_NC_BUILD_TIMEOUT_MS })
+    if (err || timedOut || code !== 0 || !await isFileWithBytes(path.join(build, "nc.exe"))) {
+      const said = String(stderr || stdout || err?.message || "").trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" ")
+      ncBuildFailure = `bun build ${timedOut ? `timed out after ${WINDOWS_NC_BUILD_TIMEOUT_MS / 1000}s` : !err && code === 0 ? "wrote no nc.exe" : `exited with ${code ?? "an error"}`}${said ? `: ${said.slice(0, 300)}` : ""}`
+      return null
+    }
     await fs.promises.mkdir(dir, { recursive: true })
     await fs.promises.writeFile(path.join(dir, WINDOWS_NC_RUNTIME_FILE), runtimeKey).catch(() => {})
     try {
@@ -2163,6 +2226,7 @@ class Proc {
     inAccount(this.home, () => noteOfferedModels(this.configOptions, session?.models))
     if (this.model) await this.#setModel(this.model, this.selection, this.resumed)
     if (this.tools.length) await this.#waitForToolList(this.toolsVersion)
+    if (!this.toolsListed()) throw toolsUnlistedError(this.tools.length)
   }
 
   async #setConfig(config, value) {
@@ -2255,6 +2319,14 @@ class Proc {
   addWatcher(socket) {
     this.watchers.add(socket)
     socket.once("close", () => this.watchers.delete(socket))
+  }
+
+  // Whether agy has listed the catalog the client declares now. agy reads
+  // the tools from the ide-tools MCP server it starts through `nc`; when that
+  // never runs or never answers, the model sees only agy's own manage_task
+  // (plugins#1239).
+  toolsListed() {
+    return !this.tools.length || this.listedVersion >= this.toolsVersion
   }
 
   // Whether the client now declares a tool agy has not listed. agy checks a
@@ -2570,8 +2642,14 @@ class Proc {
   #formatAgentError(detail) {
     // The system prompt turned away, not a quota (cloak.mjs): a 400 the next
     // member of a group is asked after, and the client doesn't retry. It says
-    // what Antigravity answered (a 429).
-    if (/code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail) && turnsAway(this.instructions)) {
+    // what Antigravity answered (a 429). Only where the cloak isn't enough:
+    // in agy's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1) Antigravity
+    // still turns the reworded Claude Code prompt away, while the same
+    // reworded prompt in the first user turn, where it goes by default, is
+    // answered (HadStash on X, 11-17). There a bare 429 is a rate limit the
+    // client may retry, or the next member is asked after, not a 400.
+    if (/code 429\b/i.test(detail) && /resource has been exhausted/i.test(detail) &&
+        this.instructionsInSession && turnsAway(this.instructions)) {
       return new AgentTurnError(
         `agy bridge: Antigravity answered 429 to this system prompt: ${detail} — ${hint(this.instructions)}`,
         "invalid_request_error",
@@ -3506,12 +3584,16 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         existing.openingImages = openingImagesOf(first)
       }
       await existing.updateTools(opts.tools)
-      return { proc: existing, history: matchedHistory }
+      // agy never listed the tools this request declares (an agy started
+      // with none whose MCP server never connected): a new one may.
+      if (existing.toolsListed()) return { proc: existing, history: matchedHistory }
+      why = "tools_unlisted"
+    } else {
+      why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
+        existing.workDir !== opts.workDir ? "work_dir" :
+        !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
+        !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
     }
-    why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
-      existing.workDir !== opts.workDir ? "work_dir" :
-      !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
-      !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
     existing.retiring = true
     dropFromPool(existing)
     await existing.stop().catch(() => {})

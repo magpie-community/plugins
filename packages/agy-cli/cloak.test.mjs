@@ -2,6 +2,7 @@
 // hint (#980) and its REWORDED (#1028). antigravity 0.2.0 sends nothing any
 // more, so cloak.mjs is the one copy now.
 import { expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { REWORDED, TURNED_AWAY, cloak, cloakUser, hint, outgoing, turnsAway } from "./cloak.mjs"
 
 const ZW = "​"
@@ -120,4 +121,26 @@ test("DeepSeek Harness's browser sentence goes \"gives\" for \"provides\", the r
     "The browser provides no DOM, route, or screenshot context.",
     "The browser gives no implicit DOM, route, or screenshot context.",
   ]) expect(cloak(s)).toBe(s)
+})
+
+// test/dsh-0.2.2-rc.3-web-system.txt is the system prompt @deepseek-ai/dsh
+// 0.2.2-rc.3's Web GUI sent, captured word for word (model "m1"). Raw, it got
+// Antigravity's 429 on a real account; as outgoing() sends it, it went
+// through on gemini-3.8-flash, claude-sonnet-4-6 and claude-opus-4-6-thinking
+// (fnckerpoi on X, 11-17).
+test("DeepSeek Harness 0.2.2-rc.3's whole Web GUI prompt goes with only its turned-away lines reworded", () => {
+  const raw = readFileSync(new URL("./test/dsh-0.2.2-rc.3-web-system.txt", import.meta.url), "utf8")
+  expect(turnsAway(raw)).toBe(true)
+  const out = outgoing(raw)
+  expect(turnsAway(out)).toBe(false)
+  expect(out).not.toContain(ZW)
+  expect(out.startsWith("You're an AI agent powered by DeepSeek Harness.\n")).toBe(true)
+  expect(out).toContain("The browser gives no implicit DOM, route, or screenshot context.")
+  expect(out).toContain(REWORDED[0][1])
+  const reworded = new Set(REWORDED.flatMap(([, to]) => to.split("\n")))
+  const changed = raw.split("\n").map((line, i) => [line, out.split("\n")[i]]).filter(([a, b]) => a !== b)
+  for (const [, b] of changed) {
+    expect(b === "You're an AI agent powered by DeepSeek Harness." || b.includes("The browser gives no implicit") || reworded.has(b)).toBe(true)
+  }
+  expect(out.split("\n").length).toBe(raw.split("\n").length)
 })

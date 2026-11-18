@@ -226,7 +226,12 @@ class FakeAgy {
     // offeredModels may be a function of the agy's HOME: accounts on
     // different plans are offered different models (#1229).
     this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "") : kit.offeredModels
+    // Whether this agy reaches the bridge's MCP server and lists the tools;
+    // listTools(env) false stands in for an `nc` agy never runs (nc.cmd
+    // under agy 1.5 on Windows, plugins#1239).
+    this.listsTools = () => typeof kit.listTools === "function" ? kit.listTools(this.env) : kit.listTools !== false
     child.onKill = () => {
+      this.watchSocket?.close()
       for (const waiter of this.cancelWaiters.splice(0)) waiter()
     }
   }
@@ -260,7 +265,11 @@ class FakeAgy {
         this.respond(id, {
           protocolVersion: 1,
           agentInfo: { name: "fake-agy", version: this.kit.agentVersion },
-          agentCapabilities: this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {},
+          agentCapabilities: {
+            ...(this.kit.sessionResume ? { sessionCapabilities: { resume: {} } } : {}),
+            // agy 1.5's session instructions (AGY_BRIDGE_SYSTEM_APPEND=1)
+            ...(this.kit.appendable ? { _meta: { antigravity: { systemPrompt: { append: true } } } } : {}),
+          },
         })
       }
       // agy's own start: spawn to initialize is ~0.25s warm, ~1s cold on Linux
@@ -271,7 +280,7 @@ class FakeAgy {
       this.send({ id, error: this.kit.sessionNewError })
     } else if (method === "session/resume" && this.kit.sessionResume && params?.sessionId) {
       this.sessionId = params.sessionId
-      if (this.token) this.control({ kind: "list" })
+      if (this.token && this.listsTools()) this.listAndWatch()
       const models = { currentModelId: this.kit.initialAgyModel }
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       this.respond(id, { sessionId: this.sessionId, models })
@@ -279,7 +288,7 @@ class FakeAgy {
       this.sessionId = `fake-session-${++this.kit.sessionSerial}`
       // Only the bridge's own processes carry a control token; the catalog's
       // model probe runs agy without one, as real agy does without --ide-mcp-port.
-      if (this.token) this.control({ kind: "list" })
+      if (this.token && this.listsTools()) this.listAndWatch()
       const models = { currentModelId: this.kit.initialAgyModel }
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
@@ -322,6 +331,30 @@ class FakeAgy {
 
   update(update) {
     this.send({ method: "session/update", params: { sessionId: this.sessionId, update } })
+  }
+
+  // As mcp-server.mjs does: list the tools, and keep a watch open that
+  // lists them again on each tools_changed the bridge pushes.
+  listAndWatch() {
+    this.list()
+    if (this.watchSocket || this.kit.watchTools === false) return
+    const socket = new FakeSocket()
+    socket.write = (data) => {
+      socket.written += data
+      if (String(data).includes("tools_changed") && !this.child.closed) setImmediate(() => this.list())
+      return true
+    }
+    this.watchSocket = socket
+    this.kit.controlHandler(socket)
+    socket.emit("data", JSON.stringify({ token: this.token, kind: "watch" }) + "\n")
+  }
+
+  // kit.listings records, per agy, the tool names each tools/list returned.
+  list() {
+    return this.control({ kind: "list" }).then((reply) => {
+      this.kit.listings.push({ spawn: this.spawnIndex, tools: (reply?.result?.tools || []).map((tool) => tool.name) })
+      return reply
+    })
   }
 
   control(message) {
@@ -455,6 +488,10 @@ export async function createBridgeKit(options = {}) {
     initializeDelayMs: options.initializeDelayMs ?? 0,
     initialized: 0,
     sessionResume: options.sessionResume ?? false,
+    appendable: options.appendable ?? false,
+    listTools: options.listTools ?? true,
+    watchTools: options.watchTools ?? true,
+    listings: [],
     agentVersion: options.agentVersion ?? "1.5.0",
     setModels: [],
     acpLog: [],

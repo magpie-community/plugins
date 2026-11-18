@@ -42,20 +42,38 @@ test("chatModel keeps config_source 2 only", () => {
   expect(_internal.chatModel(preset)).toBe(true)
 })
 
-test("a chat with an enterprise model carries its model info; a preset's doesn't", async () => {
-  const hooks = await plugin([preset, ent])
+// the reporter's own model and error (#1258, 0.2.41, console.enterprise.trae.cn):
+// the enterprise config asked without its config_source got 4001 on every function
+const REPORTED = "We're sorry, the param is invalid. Please try with a valid param."
+const theirs = { ...ent, config_name: "AI/deekseek-v4.1-flash", display_config: { display_name: "deekseek-v4.1-flash", is_custom_model: true } }
+
+test("a chat with an enterprise model says its config_source at the top, as Trae's own llm_utils_chat does; a preset's doesn't", async () => {
+  const hooks = await plugin([preset, theirs])
   await hooks.provider.models({ models: {} }, { auth: signedIn() })
-  f.route("POST /api/agent/v3/llm_utils_chat", () => sse([["output", { response: "ok" }], ["done", {}]]))
+  // Trae as the reporter met it: an enterprise config asked as if it were
+  // one of Trae's presets is "the param is invalid"
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => (r.json.config_name === theirs.config_name && r.json.config_source !== 2
+    ? sse([["error", { code: 4001, message: REPORTED }]])
+    : sse([["output", { response: "ok" }], ["done", {}]])))
   const opts = await hooks.auth.loader(async () => signedIn())
-  for (const model of ["custom_model_acme_qwen", "glm-5"]) {
+  for (const model of ["AI/deekseek-v4.1-flash", "glm-5"]) {
     const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) })
     expect(res.status).toBe(200)
+    expect((await res.json()).choices[0].message.content).toBe("ok")
   }
   const chats = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat")
-  expect(chats[0].json.model).toBe("custom_model_acme_qwen")
-  expect(chats[0].json.user_message_context.model_info).toEqual({ config_name: "custom_model_acme_qwen", config_source: 2, is_preset: false,
-    use_remote_service: true, display_model_name: "Acme Qwen", custom_model_id: "cm-42", provider: "volcengine" })
-  expect(chats[1].json.user_message_context).toBeUndefined()
+  expect(chats.length).toBe(2)
+  expect(chats[0].json).toMatchObject({ config_name: "AI/deekseek-v4.1-flash", model: "AI/deekseek-v4.1-flash", config_source: 2, is_custom_model: true, provider: "volcengine" })
+  expect(chats[0].json.user_message_context).toBeUndefined()
+  for (const k of ["config_source", "is_custom_model", "provider", "user_message_context"]) expect(chats[1].json[k]).toBeUndefined()
+})
+
+test("an enterprise entry with no provider sends none", async () => {
+  const { provider, ...bare } = theirs
+  const body = _internal.chatBody({ model: bare.config_name, messages: [{ role: "user", content: "hi" }] }, "chat_v3", "", 0, null, "s", false, null, bare)
+  expect(body.config_source).toBe(2)
+  expect(body.is_custom_model).toBe(true)
+  expect("provider" in body).toBe(false)
 })
 
 test("a refused chat names the model, the functions tried and the host", async () => {

@@ -1638,21 +1638,21 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
   }
-  // an enterprise's built-in model goes with the model info Trae CN's own
-  // client gives it (ai-modules-chat's model info: config_source, is_preset
-  // false, its custom_model_id, served remotely). Not confirmed against an
-  // enterprise seat's real request: a Trae preset is sent as before.
+  // an enterprise's built-in model says where its config comes from beside
+  // config_name, at the top of the body: Trae CN 3.4.20's own llm_utils_chat
+  // request (libharness, worktree/branch_name.rs, asked with the user's
+  // selected model) is usage, function, messages, conversation_id,
+  // access_type, config_name, model_name, config_source, is_custom_model,
+  // provider. Without them Trae looks the config up among its own presets
+  // and answers 4001 "the param is invalid" on every function (#1258, an
+  // enterprise seat on console.enterprise.trae.cn, 0.2.41, which sent them
+  // under user_message_context.model_info, the agent task's shape). Not yet
+  // seen answering from a real enterprise seat: a Trae preset is sent as
+  // before.
   if (enterpriseModel(entry)) {
-    const info = body.user_message_context?.model_info ?? {}
-    info.config_name = config
-    info.config_source = ENTERPRISE
-    info.is_preset = false
-    info.use_remote_service = true
-    const shown = entry.display_config?.display_name || entry.display_name
-    if (shown) info.display_model_name = String(shown)
-    if (entry.custom_model_id) info.custom_model_id = String(entry.custom_model_id)
-    if (entry.provider) info.provider = String(entry.provider)
-    body.user_message_context = { ...body.user_message_context, model_info: info }
+    body.config_source = ENTERPRISE
+    body.is_custom_model = true
+    if (entry.provider) body.provider = String(entry.provider)
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {

@@ -73,7 +73,11 @@ const LIVE_MODEL_ROWS = [
 test("a live report names on each window the ids the listed catalog serves", () => {
   storeCatalogRows(LIVE_MODEL_ROWS)
   const result = parseUsageReport(structuredClone(LIVE_REPORT))
-  assert.deepEqual(result.windows.map(w => w.models), [
+  const pools = result.windows.filter(w => !w.model)
+  assert.deepEqual(pools.map(w => [w.pool, w.name]), [
+    ["Gemini", "7 days"], ["Gemini", "5 hours"], ["Claude & GPT", "7 days"], ["Claude & GPT", "5 hours"], ["Gemini 4 Argon", "7 days"],
+  ])
+  assert.deepEqual(pools.map(w => w.models), [
     ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
     ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
     ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b", "gpt-oss-120b-medium"],
@@ -81,10 +85,51 @@ test("a live report names on each window the ids the listed catalog serves", () 
     // Argon's description names no model; its group name is a catalog name.
     ["gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-4-argon-medium"],
   ])
-  assert.deepEqual(result.windows.map(w => w.used), [0, 0, 66.394961, 0, 0])
+  assert.deepEqual(pools.map(w => w.used), [0, 0, 66.394961, 0, 0])
   // agy names a family in the description even though it lists no bare id.
-  assert.ok(result.windows[2].models.includes("gpt-oss-120b"))
+  assert.ok(pools[2].models.includes("gpt-oss-120b"))
+  assert.ok(result.windows.every(w => w.aside === true))
   storeCatalogRows(null)
+})
+
+test("each model family a group names has its own window in the pool, at the pool's most used bucket", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  const own = result.windows.filter(w => w.model)
+  assert.deepEqual(own.map(w => [w.name, w.model, w.family, w.pool, w.used, w.span, w.resetsAt]), [
+    ["Claude Opus 5.5", "claude-opus-5-5", "Claude", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+    ["Claude Sonnet 5.5", "claude-sonnet-5-5", "Claude", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+    ["Gemini 3.8 Flash", "gemini-3.8-flash", "Gemini", "Gemini", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["Gemini 4 Argon", "gemini-4-argon", "Gemini", "Gemini 4 Argon", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["Gemini 4 Hydrogen", "gemini-4-hydrogen", "Gemini", "Gemini", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["GPT-OSS 120B", "gpt-oss-120b", "GPT-OSS", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+  ])
+  // a model's window names every id of its family, effort levels too
+  assert.deepEqual(own[0].models, ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium"])
+  // the models' windows come first, then the pools', as the antigravity plugin sent them
+  assert.ok(result.windows.slice(0, own.length).every(w => w.model))
+
+  // the 5 hours used more than the week: a model reads the 5 hours
+  const busy = structuredClone(LIVE_REPORT)
+  busy.command.data.groups[0].buckets[1].remaining_fraction = 0.25
+  const flash = parseUsageReport(busy).windows.find(w => w.model === "gemini-3.8-flash")
+  assert.deepEqual([flash.used, flash.span, flash.resetsAt], [75, 18000, "2026-11-15T16:19:33.000Z"])
+
+  // a model two groups name reads the one that stops it first
+  const twice = structuredClone(LIVE_REPORT)
+  twice.command.data.groups[2].description = "Models within this group: Gemini 4 Argon, Gemini 3.8 Flash"
+  twice.command.data.groups[2].buckets[0].remaining_fraction = 0.4
+  const again = parseUsageReport(twice).windows.find(w => w.model === "gemini-3.8-flash")
+  assert.deepEqual([again.pool, again.used], ["Gemini 4 Argon", 60])
+
+  // a pool whose buckets say no share: its models get no window, not a guess
+  const blind = structuredClone(LIVE_REPORT)
+  for (const b of blind.command.data.groups[1].buckets) delete b.remaining_fraction
+  assert.ok(!parseUsageReport(blind).windows.some(w => w.model && w.pool === "Claude & GPT"))
+  storeCatalogRows(null)
+
+  // no catalog: the pools' windows alone
+  assert.ok(!parseUsageReport(structuredClone(LIVE_REPORT)).windows.some(w => w.model))
 })
 
 test("ids on windows follow the catalog, and names agy adds match nothing until it lists them", () => {
@@ -120,7 +165,7 @@ test("maps all groups/cadences to display-only Magpie windows, without invented 
     group([bucket({ id: "gemini-argon-weekly", window: "weekly", remaining_fraction: 0.53 })], "Gemini 4 Argon"),
   ]))
   assert.equal(result.windows.length, 5)
-  assert.deepEqual(result.windows.map(w => w.name), ["Gemini · 5 hours", "Gemini · 7 days", "Claude & GPT · 5 hours", "Claude & GPT · 7 days", "Gemini 4 Argon · 7 days"])
+  assert.deepEqual(result.windows.map(w => w.pool + " · " + w.name), ["Gemini · 5 hours", "Gemini · 7 days", "Claude & GPT · 5 hours", "Claude & GPT · 7 days", "Gemini 4 Argon · 7 days"])
   assert.deepEqual(result.windows.map(w => w.used), [25, 50, 100, 0, 47])
   assert.deepEqual(result.windows.map(w => w.span), [18000, 604800, 18000, 604800, 604800])
   assert.ok(result.windows.every(w => w.aside === true))
@@ -903,9 +948,9 @@ test("an account agy refuses for its region has its quota read the way agy reads
   const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
   assert.equal(result.error, undefined)
   assert.equal(result.signIn, "kept")
-  assert.deepEqual(result.windows.map(w => [w.name, w.used, w.resetsAt]), [
-    ["Gemini · 7 days", 25, "2026-11-22T11:19:33.000Z"],
-    ["Gemini · 5 hours", 50, "2026-11-16T16:19:33.000Z"],
+  assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used, w.resetsAt]), [
+    ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
+    ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
   ])
   // the two requests agy makes, as it makes them
   assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
