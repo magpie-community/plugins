@@ -105,7 +105,7 @@ GitHub 也可选择这种完整网页登录后的交接方式。LinuxDO 的未�
 保护四类对话 API 的流式与非流式请求：
 
 1. 首次保留请求体原始字节；普通重试也保留，不预先删历史、不替换 `model`。这里指 `fetch` 收到的上游协议请求；Magpie 可能已转换客户端协议。
-2. 仅 Responses 的明确资源不匹配、会话绑定失效（`session binding invalidated` / code 30013）或 `invalid_encrypted_content` 才执行已验证的历史清理。资源不匹配同时识别原始 `Azure OpenAI resource` 和 AgentRouter 脱敏后的 `*** OpenAI resource`，仍要求完整的两句资源错误说明；兼容上游增加的 `OpenAI Responses bad request:` 前缀。会话绑定失效兼容 HTTP 400/409、JSON/纯文本/SSE 错误体；两者也会识别 SDK 包装成 `stream disconnected before completion: ...` 的异常消息。会话绑定清理后同时轮换请求中的会话标识并只重试一次。非流式 HTTP 200 中明确的错误对象也在交付前检查。
+2. 仅 Responses 的明确资源不匹配、缺失推理项（`Item with id '...' not found.`）、会话绑定失效（`session binding invalidated` / code 30013）或 `invalid_encrypted_content` 才执行已验证的历史清理。资源不匹配同时识别原始 `Azure OpenAI resource` 和 AgentRouter 脱敏后的 `*** OpenAI resource`，仍要求完整的两句资源错误说明；兼容上游增加的 `OpenAI Responses bad request:` 前缀。缺失推理项只在请求历史中能找到同名 `reasoning` 项时删除该项及不可移植的引用，找不到则明确失败，不静默丢上下文。会话绑定失效兼容 HTTP 400/409、JSON/纯文本/SSE 错误体；历史清理也会识别 SDK 包装成 `stream disconnected before completion: ...` 的异常消息。会话绑定清理后同时轮换请求中的会话标识并只重试一次。非流式 HTTP 200 中明确的错误对象也在交付前检查。
 3. 清理保留消息正文、图片、phase、工具参数/结果及 `call_id` 配对；需要无法恢复的服务端引用、压缩或 item reference 时明确失败，不静默丢上下文。
 4. Chat、Anthropic、Gemini 不套用 Responses 字段删除。thinking、signature、thoughtSignature 不会因为泛化错误而被删掉；未经验证的签名修复不猜着做。
 5. 限流、传输与已识别的可用性错误有限重试；502/504 等状态中的明确 `upstream_idle_timeout`、`stream_disconnected` 错误也进入传输重试，不再只识别 HTTP 200 内的同类错误。认证失败、余额不足和普通参数错误不触发清理。

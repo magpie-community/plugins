@@ -81,8 +81,11 @@ magpie owns token renewal and writes. It binds only to `127.0.0.1`, checks Host 
 a random page token for its read-only APIs. It serves the JS and CSS built by the ZGAP console and forwards only the three personal dashboard
 reads (live events, usage statistics and weekly report). The asset requests carry no credentials.
 No OAuth token is sent to the page or placed in a URL; the stream closes on sign-out or renewal.
-The service’s default port is declared by `scripts/build-ui.mjs`; the plugin’s `port` option can move it
-if occupied. A port conflict is an error. The settings panel stays static. Authentication stays in
+The service’s default port is declared by `scripts/build-ui.mjs`. When the port is taken, ZGAP still
+signs in and serves requests, and the page waits for the port: magpie keeps a plugin host it replaced
+(after a Bun update or a plugin update) until that host’s replies end, and the old host holds the port
+until then. A port another program keeps needs the plugin’s `port` option. The settings panel stays
+static. Authentication stays in
 magpie’s native sign-in dialog. Translations live in
 `locales/` and use i18next; magpie also reads the translated card summaries and sign-in labels.
 `ui/icon.svg` is the icon source. `npm run build:ui` embeds it in the manifest, generates the native

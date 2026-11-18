@@ -108,6 +108,12 @@ all five in `optionalDependencies`:
 | `magpie-plugin-codar-linux-x64` | `linux` | `x64` |
 | `magpie-plugin-codar-win32-x64` | `win32` | `x64` |
 
+The proxy lives in a private (0700) directory under the temp root, made for it
+by the plugin and holding its socket and ready file. The plugin removes that
+directory when the proxy exits, and so does the proxy itself on its way out —
+so a plugin process killed outright, whose own cleanup never runs, still
+leaves nothing behind once the proxy it started sees its stdin close.
+
 A package manager installs the one whose `os`/`cpu` match the machine and skips
 the other four, so an install is one 5.8–6.6 MB build (2.4–2.8 MB of tarball,
 plus the main package's 0.33 MB) instead of all five: 32.0 MB unpacked became

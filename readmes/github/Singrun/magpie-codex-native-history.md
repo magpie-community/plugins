@@ -92,6 +92,10 @@ For normal Magpie WebSocket continuations, the gateway reconstructs full input a
 
 Dedicated `/responses/compact` calls and Magpie's internal requests are outside this hook's scope. Magpie's request-hook contract also rolls back a hook on failure or timeout, which can allow the original request to reach the upstream.
 
+**Large image histories also encounter a Magpie host transport limit.** In Magpie 0.1.4402, the Go/Bun host normally accepts at most 32 MiB per result line, while a request hook returns the entire request. If the filtered history remains above that limit, the host rejects its result and the original unfiltered request may reach native. Correct filtering and successful host transport are separate requirements; this plugin cannot enlarge the host limit.
+
+This repository provides a [host patch](https://github.com/Singrun/magpie-codex-native-history/blob/main/patches/magpie-large-history.patch) based on Magpie **v0.1.4402**. It reserves reply space from the size of a request the gateway has already accepted, plus the normal RPC allowance. Limits and normal oversized-line protection remain in place. A real Go/Bun regression with a 36 MiB synthetic image fails on the original code and passes with the patch. An approximately 38 MB real history also passes native replay through an isolated patched gateway, retaining images, readable messages, and tool results. Applying the patch requires rebuilding and restarting Magpie; installing this plugin does not modify the official app automatically. Keep a recoverable backup before enabling it in the installed app.
+
 Diagnostics use the fixed codes accepted by Magpie's host:
 
 - `ready`: the hook modified the request. This confirms filtering ran; upstream acceptance must be checked separately.

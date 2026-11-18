@@ -51,8 +51,13 @@ magpie plugin add ./magpie-plugin-muse2api
 `hatch_sess` 后自动 `POST <地址>/admin/accounts` 导入 muse2api 的账号池，然后关掉窗口。
 
 - 需要先在**插件 → 已安装 → muse2api → 选项**里填 `baseUrl` 与 `apiKey`（网页登录要先能校验 `/v1/models`）。
-- 浏览器用的是插件专用的独立 profile（`~/.config/magpie/plugins/muse2api-login-profile`），不会碰你日常的 Chrome 配置。
-- 15 分钟内没登录成功会超时失败，可重试。
+- **每次登录都开一个全新的独立 profile**（`~/.config/magpie/plugins/muse2api-login-profiles/p-<时间戳>-<随机>`），
+  登录结束（成功、失败、超时）就整目录删除，所以多个 muse.ai 账号之间不会串 cookie，也不会碰你日常的 Chrome 配置。
+  崩溃或强杀留下的旧 profile 会在下次登录时按 12 小时清理。
+- 同一个 muse.ai 账号重复登录不会重复建账号：插件按会话 cookie 算指纹，命中本地账本
+  （`~/.config/magpie/plugins/muse2api-login-ledger.json`）时改为 `POST /admin/accounts/<id>/cookies`
+  刷新已有账号；上游账号被删则回退成新建。上游 `/admin/accounts` 不返回 cookie 值，所以账本只能记在插件本机。
+- 15 分钟内没登录成功会超时失败，可重试；超时会连同浏览器进程一起收掉。
 - 登录成功后账号出现在 muse2api 管理页 `/admin` 的账号列表里，之后所有对话/图片/视频都用这个 cookie 池。
 
 ### 方式二：直接填 API key
@@ -143,8 +148,9 @@ magpie plugin add ./magpie-plugin-muse2api
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |
 | 网页登录报「需要先有 muse2api 的 API key」 | 先到 **插件 → 已安装 → muse2api → 选项** 填 `apiKey`；网页登录要用它校验 `/v1/models` |
 | 网页登录报「没有找到 Chrome / Edge / Chromium / Brave」 | 装一个 Chromium 内核浏览器，或改用「手填 API key」方式 |
-| 网页登录一直失败「没有在 15 分钟内完成」 | 确认弹出窗口里登录的是 muse.ai（不是其它站点），并确认该账号在 muse.ai 上确实可用；重试会复用同一个 profile |
+| 网页登录一直失败「没有在 15 分钟内完成」 | 确认弹出窗口里登录的是 muse.ai（不是其它站点），并确认该账号在 muse.ai 上确实可用；每次重试都会新开一个干净的 profile |
 | 网页登录成功但对话仍报没有账号 | 去 muse2api 管理页 `/admin` 看账号列表与 cookie 数量；核心 cookie 是 `hatch_sess` |
+| **管理页 `/admin` 账号池显示 0，但 `/admin/accounts` 明明有账号** | 页面顶部没填 API Key：页面只在填了 key 后才带 `Authorization` 调 `/admin/accounts`，否则一律 401、所有数字显示 0（不是后端问题）。点右上「保存」存 key 即可；也可以直接打开 `http://127.0.0.1:18610/?key=<m2a_…>` 免填 |
 | 图片 / 视频链接打不开 | muse2api 的 `PUBLIC_BASE` 不是外部可达地址；图片本身生成成功时任务里也有 `bytes` / `size` 可核对 |
 
 ## 更新
@@ -156,7 +162,7 @@ magpie plugin add ./magpie-plugin-muse2api
 ## 开发
 
 ```bash
-bun test              # 64 条单元测试，含 mock muse2api
+bun test              # 67 条单元测试，含 mock muse2api
 bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock muse2api，四条工具链跑通
 ```
 

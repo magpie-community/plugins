@@ -306,6 +306,8 @@ Purge in Magpie/
 │   ├── bundled.mjs        读包内 skills/ 与 personas/，标 builtin
 │   └── state.mjs          快照落盘（state/catalog.json + page/catalog.js）
 ├── page/                  插件页：index.html / app.js / style.css / icon.*
+│   ├── glass.js           液态玻璃：把宿主四区域数字收敛成 --purge-glass-*（含文字面保底与 deep 判定）
+│   ├── plan.js            页面侧注入判定（与 lib/plan.mjs 同规则，parity 测试逐条比对）
 │   ├── hostread.js        取正文的两条通道：直连 fetch → 宿主窗口代取（CSP connect-src 'none' 下走后者）
 │   ├── icon-lock.svg      侧栏与页面标签的图标（实心锁）
 │   └── card.png           插件卡片的图（由 tools/card-icon.mjs 内联进 package.json）
@@ -345,8 +347,12 @@ node tools/build-preview.mjs      # → preview/purge-preview.html
 | 参数 | 作用 |
 | --- | --- |
 | `#theme=dark` / `#theme=light` | 深色 / 浅色 |
+| `#glass=off` / `lite` / `balanced` / `clear` | 液态玻璃档位：关 / 轻透 82%+12px / 均衡 62%+26px / 全透 20%+30px（数字与真机四区域同口径） |
 | `#snap=ready` / `#snap=blocked` | 就绪那一屏 / 什么都没就绪那一屏 |
 | `#row=0` | 直接打开第几条的详情（0 起） |
+
+单文件预览在 `html` 背景里垫了「画布 + 遮罩 + 壁纸」三层，壁纸是模拟的柔光色块——
+真机上它由 magpie 画在 `body` 上（带 `--wall-veil` 遮罩）。玻璃关掉时画布不透明，垫层看不见。
 
 例：`preview/purge-preview.html#theme=light&snap=blocked`
 
@@ -365,8 +371,12 @@ npm run preview:serve            # → http://127.0.0.1:55172
 | 参数 | 作用 |
 | --- | --- |
 | `?theme=dark` / `?theme=light` | 深色 / 浅色 |
+| `?glass=off` / `lite` / `balanced` / `clear` | 液态玻璃档位，见上表 |
 | `?row=0` | 预选第几条，直接看检查器（0 起） |
 | `?watch=0` | 关掉热重载 |
+
+`preview/host.html` 的帧背后同样垫了壁纸 + 遮罩（`iframe` 是透明的），
+顶上那颗「玻璃」下拉换档只重载帧、不刷新整个预览壳——改 UI 时用来逐档对照。
 
 `--csp=magpie` 让预览用真机同款 CSP（`connect-src 'none'`）发页面文件：这时页面自己的 `fetch`
 会被拦，正文只能走宿主代取（`preview/host.html` 模拟了 magpie 的 asset 应答）——用来复现和回归
@@ -394,10 +404,27 @@ npm run preview:serve            # → http://127.0.0.1:55172
 样式只吃 magpie 的主题变量（`--magpie-*`），跟随宿主明暗；语义色只留三类
 （人设 / 技能 / 素材），其余交给墨色与分隔线。
 
+### 液态玻璃（magpie 2.4.0 起）
+
+宿主的「设置 › 外观」把液态玻璃拆成 `sidebar / content / overlay / control` 四个区域，
+每个区域一对数字（`fill` 0–100% 不透明度、`blur` 0–40px 模糊半径）。页面不自己实现模糊、
+不自己挑颜色，只照这套数字上色：
+
+- `page/glass.js` 把宿主下发的 `--magpie-glass-<region>-*` 与 `magpie.glass()/onGlass()` 收敛成
+  页面自己的 `--purge-glass-*`：**画布照抄** `content.fill`；**成块文字面保底 55%**、
+  **浮层 70%**、**控件 45%**——数字能拖到 0，但文字不能落到壁纸上（钩子文档第 3 条硬约束）。
+  越界、缺字段、字符串数字都在这里夹回安全值，绝不让 `NaN` 进 CSS。
+- `html[data-magpie-glass]` 打开时才加 1px 渐变高光边（`::after` mask 挖空）与双层柔光（`::before`），
+  材质 token 照宿主 `fish-glass.css` 的做法；关闭（`100% / 0px`）时整节不生效，与旧版逐像素一致。
+- 壁纸画在宿主文档的 `body` 上，而插件页在沙箱帧里：**画布只能透、不能模糊**（跨文档模糊浏览器不给）。
+  真吃到模糊的是详情浮层、模式下拉、吸顶分组标题——它们背后是本页内容。
+- 降级：`@supports not (backdrop-filter)`、`prefers-reduced-transparency: reduce`、
+  `forced-colors: active` 一律回实底并撤掉柔光/高光边。
+
 ## 开发
 
 ```bash
-# 测试（68 个用例：判型/校验/改写/选人/快照/钩子端到端/options 回读/agent-purge 语义/注入判定/控制面过滤/内置专家包）
+# 测试（102 个用例：判型/校验/改写/选人/快照/钩子端到端/options 回读/agent-purge 语义/注入判定/控制面过滤/内置专家包/液态玻璃策略）
 node --test --test-isolation=none "tests/*.test.mjs"
 
 # 离线清点，看看本机 purge 目录里都认得什么
@@ -427,6 +454,7 @@ node tools/scan.mjs --json
 
 | 版本 | 要点 |
 | --- | --- |
+| `0.7.0` | 适配 magpie 液态玻璃：页面画布与成块文字面跟随「主界面」、详情浮层与模式下拉跟随「浮层」、控件跟随「控件」（`page/glass.js`）；玻璃关闭时与旧版逐像素一致，减弱透明/高对比度回实底；预览新增 `?glass=` 与垫底壁纸 |
 | `0.6.5` | 修「查看原文」对所有条目都点不动：正文取回先试 `fetch`，被 CSP 拦下就让宿主窗口代取（`page/hostread.js`）；两条都断时按钮仍可点，点开写明原因与文件位置 |
 | `0.6.4` | 侧栏图标改用独立 `icon-lock.svg`，避开已打开窗口沿用旧图标缓存；侧栏名称与锁形不变 |
 | `0.6.3` | 侧栏名字改为「破甲&注入」，图标换成黑白单色实心锁 |

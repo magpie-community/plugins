@@ -2,21 +2,28 @@
 <h1 align="center">Tinycast for Magpie</h1>
 <p align="center">Your Magpie models, inside Tinycast. No API key. No Keychain password.</p>
 
-A community agent plugin for [Magpie](https://usemagpie.ai/) and [Tinycast](https://github.com/abue-ammar/tinycast). It adds a Tinycast switch on Magpie’s Agents page, synchronizes the available models, and keeps a connection-status panel below the agents list. Pending changes appear in yellow until Tinycast fully exits.
+A community integration for [Magpie](https://usemagpie.ai/) and [Tinycast](https://github.com/abue-ammar/tinycast). Enable the Tinycast provider from Magpie’s Agents page and pick a model in Tinycast.
 
 ## Install
 
-Requires macOS 13 or newer, Tinycast, and Magpie with agent-plugin and page-service support. Validated with Magpie 0.1.4097 and Tinycast 0.12.15 on Apple silicon. The included helper is a universal arm64/x86_64 binary; Intel execution has not been tested.
+Requires macOS 13 or newer, Tinycast, Magpie with agent-plugin support, and Node.js 20+ to apply settings. The included helper is a universal arm64/x86_64 binary. Intel execution has not been tested.
 
 ```sh
 magpie plugin add github:BaksiLi/magpie-agent-tinycast
 ```
 
 1. Open **Agents → Tinycast** in Magpie and turn it on.
-2. **Quit Tinycast from its menu-bar icon**, wait a few seconds, then reopen it. Tinycast’s ⌘Q closes the window without quitting the app.
-3. In Tinycast’s AI Chat model picker, choose a model under **Magpie**. Existing default-model choices are preserved.
+2. **Quit Tinycast from its menu-bar icon**. Tinycast’s ⌘Q closes the window without quitting the app.
+3. Apply the settings and reopen Tinycast:
 
-The status panel updates every three seconds. Yellow means Tinycast still needs to exit; green means settings are saved or the app is connected. This uses Magpie’s supported Agents panel slot, below the list. Agent plugins currently cannot set the built-in GPT row’s restart marker.
+   ```sh
+   cd "${XDG_CONFIG_HOME:-$HOME/.config}/magpie/plugins/node_modules/magpie-agent-tinycast"
+   npm run sync
+   ```
+
+4. In Tinycast’s AI Chat model picker, choose a model under **Magpie**. Existing default-model choices are preserved.
+
+Magpie shows its standard yellow agent notice after you change the Tinycast switch. The switch records the requested configuration. The sync command applies it to Tinycast, following the one-shot setup pattern used by [agent-cowork](https://github.com/cuddlesgiggles/agent-cowork). Repeat the quit, sync, and reopen steps when you want to apply an updated model list. An existing v0.2.0 connection carries over.
 
 ## Connection and privacy
 
@@ -24,9 +31,7 @@ Tinycast uses Magpie’s local OpenAI-compatible endpoint, such as `http://127.0
 
 A small native helper writes Tinycast’s `aiConnections` preference through CFPreferences only while Tinycast is closed. It adds one managed **Magpie** connection and preserves other providers and settings. Model IDs, vision support, output limits, and reasoning levels are synchronized. Selecting a default model remains your choice.
 
-The plugin keeps control, recovery, and status files in `~/.config/magpie-tinycast/`, with directory mode 0700 and file mode 0600. Recovery records contain connection metadata and the previous default selection, never API keys. No chat history is read. If the managed connection is edited manually, the bridge stops and preserves recovery information instead of overwriting it.
-
-The read-only status server binds to `127.0.0.1:3497`, displays only a known status and model count, and has no write routes or external resources. If another program uses that port, change the plugin’s `port` option. The embedded Agents panel is intended for the local Magpie desktop app.
+The integration keeps its requested configuration and recovery record in `~/.config/magpie-tinycast/`, with directory mode 0700 and file mode 0600. The recovery record contains connection metadata and the previous default selection. It contains no API keys. If the managed connection is edited manually, sync reports the conflict and preserves the recovery record.
 
 ## Tinycast settings
 
@@ -41,13 +46,13 @@ The read-only status server binds to `127.0.0.1:3497`, displays only a known sta
 
 ## Disconnect or uninstall
 
-Turn **Agents → Tinycast** off first, then fully quit Tinycast. The bridge removes its managed connection and restores the previous default only if that default still points at the managed connection. Other providers and later default choices are retained. Wait for **Not connected** before removing the plugin:
+Turn **Agents → Tinycast** off, fully quit Tinycast, and run `npm run sync` as above. Sync removes the managed connection and restores the previous default only if the current default still points at the managed connection. Once sync reports `disconnected`, you can remove the plugin:
 
 ```sh
 magpie plugin rm magpie-agent-tinycast
 ```
 
-Keep the plugin enabled while disconnecting so it can finish restoration. Removing it first stops the bridge; reinstall it to complete restoration. Do not delete `state.json` while recovery is pending.
+Keep `state.json` until recovery finishes.
 
 ## Develop and diagnose
 
@@ -57,7 +62,6 @@ No npm dependencies are required. Node.js 20+ and Xcode Command Line Tools are n
 npm run build
 npm test
 npm run check
-node scripts/doctor.mjs --sync
 ```
 
 The helper source is `native.swift`; the build produces both macOS architectures with a macOS 13 deployment target. Native tests use isolated temporary preference domains and do not touch Tinycast’s real preferences or Keychain.

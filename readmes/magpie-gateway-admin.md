@@ -32,11 +32,14 @@ magpie 自带的 Gateway 页面是给单用户准备的：一把共享 key，改
 1. 安装插件：
 
    ```bash
+   # npm
+   magpie plugin add npm:magpie-gateway-admin
+
+   # 或者 GitHub（不用 npm，直接读仓库里提交的构建产物）
+   magpie plugin add github:guangzan/magpie-gateway-admin
+
    # 本地目录
    magpie plugin add /path/to/magpie-gateway-admin
-
-   # 或者 GitHub
-   magpie plugin add github:guangzan/magpie-gateway-admin
    ```
 
 2. 打开侧边栏里的「网关用户管理」。
@@ -94,7 +97,7 @@ magpie 自带的 Gateway 页面是给单用户准备的：一把共享 key，改
 
 ```bash
 # npm
-magpie plugin add magpie-gateway-admin
+magpie plugin add npm:magpie-gateway-admin
 
 # GitHub（不用 npm，直接读仓库里提交的构建产物）
 magpie plugin add github:guangzan/magpie-gateway-admin
