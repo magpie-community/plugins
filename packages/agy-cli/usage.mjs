@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { agySpawnSpec, childEnv as agyChildEnv } from "./platform.mjs"
-import { modelsInGroup } from "./model-ids.mjs"
+import { familiesInGroup } from "./model-ids.mjs"
 import { cannotSignIn, isDead, noteDead, storedSignIn, storedToken } from "./signin.mjs"
 
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -161,8 +161,28 @@ function cadence(bucket, id, name) {
   return { name: name || id }
 }
 
+// vendorOf is a model's family as magpie's cards group them (Gemini,
+// Claude, GPT-OSS), as the retired antigravity plugin named them.
+function vendorOf(id, name) {
+  const l = id.toLowerCase()
+  if (l.startsWith("gemini")) return "Gemini"
+  if (l.startsWith("claude")) return "Claude"
+  if (l.startsWith("gpt-oss")) return "GPT-OSS"
+  return String(name ?? "").trim().split(" ")[0] || id.split("-")[0]
+}
+
 // agy's command report is not its token-usage object or a model-availability list.
 // Unknown quota is not evidence of exhaustion or a full allowance.
+//
+// Each group is a pool its models share: its windows go as the pool's
+// ({ pool: "Gemini", name: "5 hours" }), and each model family the group
+// names gets a window of its own in that pool, reading the pool's most
+// used bucket, the one that stops it. That is what Google's own per-model
+// reading said: the retired antigravity plugin's fetchAvailableModels
+// read of 2026-11-11 gave every model of a pool the pool's figure, to the
+// digit (each Gemini model 1.58104% with Gemini's 7 days). So magpie's
+// card shows the pools, and "Every model" lists the models, as it did for
+// the antigravity plugin.
 export function parseUsageReport(value) {
   let report
   try { report = typeof value === "string" ? JSON.parse(value) : value } catch {
@@ -173,9 +193,13 @@ export function parseUsageReport(value) {
   }
   const groups = report.command.data?.groups
   const windows = []
+  const models = new Map() // family id -> its window
   for (const group of Array.isArray(groups) ? groups : []) {
     const pool = (text(field(group, "displayName", "display_name")) || text(group?.name) || "Quota")
       .replace(/\s+models$/i, "").replace(/\s+and\s+/gi, " & ")
+    const families = familiesInGroup(group)
+    const ids = [...new Set(families.flatMap(f => f.ids))].sort()
+    let tightest
     for (const bucket of Array.isArray(group?.buckets) ? group.buckets : []) {
       const id = text(field(bucket, "bucketId", "bucket_id")) || text(bucket?.id)
       if (!id || bucket?.disabled === true) continue
@@ -187,15 +211,34 @@ export function parseUsageReport(value) {
         ?? (remaining?.case === "remainingFraction" ? remaining.value : undefined)
       const known = typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
       const resetsAt = resetTime(field(bucket, "resetTime", "reset_time"))
-      const ids = modelsInGroup(group)
-      windows.push({
-        name: `${pool} · ${period.name}`,
+      const w = {
+        name: period.name,
+        pool,
         // This feature displays quota only; it must not change model routing.
         aside: true,
         ...(ids.length ? { models: ids } : {}),
         ...(known ? { used: Math.round((1 - fraction) * 1e8) / 1e6 } : { display: "Limits not available" }),
         ...(period.span ? { span: period.span } : {}),
         ...(resetsAt ? { resetsAt } : {}),
+      }
+      windows.push(w)
+      if (known && (!tightest || w.used > tightest.used)) tightest = w
+    }
+    if (!tightest) continue
+    for (const f of families) {
+      const had = models.get(f.id)
+      // a model two groups name reads the one that stops it first
+      if (had && had.used >= tightest.used) continue
+      models.set(f.id, {
+        name: f.name,
+        model: f.id,
+        family: vendorOf(f.id, f.name),
+        pool,
+        aside: true,
+        models: f.ids,
+        used: tightest.used,
+        ...(tightest.span ? { span: tightest.span } : {}),
+        ...(tightest.resetsAt ? { resetsAt: tightest.resetsAt } : {}),
       })
     }
   }
@@ -203,7 +246,7 @@ export function parseUsageReport(value) {
     throw new UsageError("Limits not available: agy returned no enabled, measured quota buckets.")
   }
   // /usage has no verified account or plan identity. Do not borrow one elsewhere.
-  return { windows }
+  return { windows: [...[...models.values()].sort((a, b) => a.name.localeCompare(b.name)), ...windows] }
 }
 
 function timeout(value) {

@@ -228,7 +228,10 @@ magpie quota refresh agy-cli --json
 ```
 
 The numbers come from agy's own `/usage` report for whichever account is signed
-in to the CLI, broken down by model group. The plugin never writes Google tokens
+in to the CLI, broken down by model group. Each group's models share its
+5-hour and weekly limits, so magpie shows the groups, and under "Every model"
+each model the group names, reading the group's most used limit (the one that
+stops it; Google's own per-model figure was the group's). The plugin never writes Google tokens
 or sends them anywhere but Google; it always reports the account agy is signed in to. A window with no
 measurable data shows "Limits not available" rather than a fake 0% or 100%.
 

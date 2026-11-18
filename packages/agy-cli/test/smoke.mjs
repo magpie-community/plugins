@@ -724,9 +724,11 @@ const legacyModel = "agy-cli/gemini-test-low"
 
 {
   const usage = await plugin.auth.usage(async () => ({ key: "agy" }), {})
-  check("auth.usage exposes measured CLI quota", usage.windows?.[0]?.used === 40 && usage.windows[0].name === "Gemini · 7 days")
-  check("auth.usage preserves explicit cadence and reset", usage.windows?.[0]?.span === 604800 && usage.windows[0].resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.[0]?.aside === true && usage.signIn === "kept")
+  // the pool's own window, beside any model's in it
+  const pw = usage.windows?.find(w => !w.model)
+  check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
+  check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
+  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))

@@ -44,6 +44,7 @@ export function nameIndex() {
   index = new Map()
   if (rows) {
     const families = new Map()
+    const shown = new Map() // family -> its display name
     const claims = new Map() // display name -> the families that use it
     for (const model of rows) {
       const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(model.id)?.[1]?.toLowerCase() || ""
@@ -52,6 +53,8 @@ export function nameIndex() {
       families.get(family).add(model.id)
       const name = normalizeName(model.name)
       if (!name) continue
+      // the family's name as agy shows it, its effort word left off
+      if (!shown.has(family)) shown.set(family, stripEffortSuffix(String(model.name).trim().replace(/\s+/g, " ")))
       for (const alias of [name, stripEffortSuffix(name)]) {
         if (!claims.has(alias)) claims.set(alias, new Set())
         claims.get(alias).add(family)
@@ -65,29 +68,34 @@ export function nameIndex() {
       // one name, two families: no match, rather than whichever came first
       if (owners.size !== 1) continue
       const [family] = owners
-      index.set(name, { family, ids: families.get(family) })
+      index.set(name, { family, ids: families.get(family), name: shown.get(family) || family })
     }
   }
   return index
 }
 
-// modelsInGroup answers the ids to put on a usage window. Group names are
-// matched against the catalog's display names; a name that matches nothing
-// is left out, as is a group whose description names no model and whose own
-// name isn't a catalog name either.
-export function modelsInGroup(group) {
+// familiesInGroup answers the model families a usage group covers, each
+// { id, name, ids }: the family id, its display name without the effort
+// word ("Claude Opus 5.5"), and every id of it the catalog serves. Group
+// names are matched against the catalog's display names; a name that
+// matches nothing is left out, as is a group whose description names no
+// model and whose own name isn't a catalog name either.
+export function familiesInGroup(group) {
   const index = nameIndex()
   if (!index.size) return []
+  const found = new Map()
+  const add = entry => { if (entry && !found.has(entry.family)) found.set(entry.family, entry) }
+  for (const name of listedNames(group?.description) || []) add(index.get(name))
+  if (!found.size) {
+    add(index.get(normalizeName((group?.displayName || group?.display_name || group?.name || "").replace(/\s+models$/i, ""))))
+  }
+  return [...found.values()].map(e => ({ id: e.family, name: e.name, ids: [...e.ids].sort() }))
+}
+
+// modelsInGroup answers the ids to put on a usage window: every id of
+// every family the group covers (familiesInGroup).
+export function modelsInGroup(group) {
   const ids = new Set()
-  const names = listedNames(group?.description) || []
-  for (const name of names) {
-    const entry = index.get(name)
-    if (entry) for (const id of entry.ids) ids.add(id)
-  }
-  if (!ids.size) {
-    const own = normalizeName((group?.displayName || group?.display_name || group?.name || "").replace(/\s+models$/i, ""))
-    const entry = index.get(own)
-    if (entry) for (const id of entry.ids) ids.add(id)
-  }
+  for (const family of familiesInGroup(group)) for (const id of family.ids) ids.add(id)
   return [...ids].sort()
 }
