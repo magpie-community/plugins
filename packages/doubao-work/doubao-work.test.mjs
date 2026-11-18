@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { App, Page, copies, portIn } from "./cdp.mjs"
-import { Doubao, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, quotaOf, rateOf } from "./doubao.mjs"
+import { Doubao, DoubaoError, NEW_TASK, CLOUD, MENU, LIST, SEND, READ, STATE, MODELS, EFFORT, idFor, tableFrom, listOf, lookup, effortFor, rateIn, APPS, binary, choose, dataDir, installedAt, hintsWin, hintsMac, owns, isChat, usageOf, QUOTA, CHECKIN, quotaOf, rateOf } from "./doubao.mjs"
 import { Streamer, sse, completion } from "./openai.mjs"
 import { flatten, parse, heldFrom } from "./prompt.mjs"
 import { _internal as I } from "./index.mjs"
@@ -343,6 +343,7 @@ function fakePage(reads, { signedIn = true, steps = {} } = {}) {
       if (expr === MENU) return steps.menu ?? { rows: [] }
       if (expr === LIST) return typeof steps.list === "function" ? steps.list() : steps.list ?? { error: "no list step" }
       if (expr === QUOTA) return steps.quota ?? { error: "no quota step" }
+      if (expr === CHECKIN) return typeof steps.checkin === "function" ? steps.checkin() : steps.checkin ?? { error: "no checkin step" }
       if (expr === SEND) return steps.send ?? false
       if (expr === READ) return reads.length > 1 ? reads.shift() : reads[0]
       if (expr.includes("推理强度")) return steps.effort ?? ""
@@ -776,6 +777,66 @@ test("a quota that can't be read says why and keeps the sign-in", async () => {
   const u = await mk(SUMMARY, path.join(dir, "none")).auth.usage(async () => ({}))
   expect(u.error).toContain("还没有登录")
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// a free account keeps everything it holds in incentive_quota_section: its
+// window_limit_section is an empty object
+test("a free account's allowance is read from incentive_quota_section", () => {
+  const FREE = { status: 200, code: 0, body: { code: 0, data: {
+    current_subscription: { display: { short_name: "免费体验" } },
+    window_limit_section: {},
+    incentive_quota_section: { window_limit_groups: [{ feature_group_name: "活动赠送额度", window_limits: [
+      { used_percent: 1, start_time: 0, end_time: 1795185937309, less_than_one_percent: false }] }] },
+  } } }
+  expect(quotaOf(FREE)).toEqual({ plan: "免费体验", windows: [{ name: "活动赠送额度", used: 1, resetsAt: 1795185937309 }] })
+  // usage_exhausted fills only the windows of its own section
+  const w = quotaOf({ body: { data: {
+    window_limit_section: { window_limit_groups: [{ window_limits: [{ used_percent: 4 }] }] },
+    incentive_quota_section: { usage_exhausted: true, window_limit_groups: [{ feature_group_name: "活动赠送额度", window_limits: [{ used_percent: 0 }] }] },
+  } } })
+  expect(w.windows).toEqual([{ name: "额度", used: 4 }, { name: "活动赠送额度", used: 100 }])
+  // no times and no group name stays 额度; less_than_one_percent says 不到 1%
+  expect(quotaOf({ body: { data: { incentive_quota_section: { window_limit_groups: [{ window_limits: [{ used_percent: 0, less_than_one_percent: true }] }] } } } }).windows)
+    .toEqual([{ name: "额度", used: 0, display: "不到 1%" }])
+})
+
+// ---- 签到 ----
+
+const CHECKED_IN = (data) => ({ status: 200, code: 0, msg: "", data })
+
+test("checkin maps Doubao's answer to magpie's outcomes", async () => {
+  const mk = (checkin, app = fakeApp) => new Doubao({ app, openPage: async () => fakePage([], { steps: { checkin } }), poll: 1 })
+  // a claim this call made
+  expect(await mk(CHECKED_IN({ checked_in: true, idempotent: false, continuous_days: 4, reward_amount: 200 })).checkin())
+    .toEqual({ outcome: "claimed", streak: 4, credit: 200 })
+  // the day was already claimed: Doubao's idempotent answer, not a claim this call made
+  expect(await mk(CHECKED_IN({ checked_in: true, idempotent: true, continuous_days: 3, reward_amount: 200 })).checkin())
+    .toEqual({ outcome: "done", streak: 3, credit: 200 })
+  // a covered answer without a reward leaves the zeros out
+  expect(await mk(CHECKED_IN({ checked_in: true, idempotent: false })).checkin()).toEqual({ outcome: "claimed" })
+  // nothing was claimed
+  expect(await mk({ status: 200, code: 0, data: { checked_in: false } }).checkin())
+    .toEqual({ outcome: "failed", message: "签到没有完成" })
+  // Doubao's own error
+  expect(await mk({ status: 200, code: 710010702, msg: "系统错误" }).checkin())
+    .toEqual({ outcome: "failed", message: "系统错误" })
+  // an expired sign-in
+  expect(await mk({ status: 401 }).checkin())
+    .toEqual({ outcome: "failed", message: "豆包登录已过期，请重新登录豆包工作窗口。", signIn: "expired" })
+})
+
+test("checkin says why Doubao could not be opened", async () => {
+  const missing = new Doubao({ app: { start: async () => { throw new DoubaoError("没有找到豆包。", "app_missing") } }, poll: 1 })
+  expect(await missing.checkin()).toEqual({ outcome: "failed", message: "没有找到豆包，请先安装。" })
+  const busy = new Doubao({ app: { start: async () => { throw new DoubaoError("豆包正在运行。", "app_busy") } }, poll: 1 })
+  expect(await busy.checkin()).toEqual({ outcome: "failed", message: "豆包正在运行：请先退出豆包（⌘Q）再试。" })
+})
+
+test("auth.checkin is offered, so magpie shows the switch and the 立即签到 button", async () => {
+  const d = new Doubao({ app: fakeApp, openPage: async () => fakePage([], { steps: { checkin: CHECKED_IN({ checked_in: true, idempotent: false, continuous_days: 2, reward_amount: 100 }) } }), poll: 1 })
+  const p = I.createPlugin({ doubao: d })
+  expect(typeof p.auth.checkin).toBe("function")
+  expect(await p.auth.checkin()).toEqual({ outcome: "claimed", streak: 2, credit: 100 })
 })
 
 test("a model's multiple is read from its menu row and given as rate", () => {

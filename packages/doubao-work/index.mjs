@@ -106,6 +106,10 @@ export function createPlugin({ doubao = new Doubao(), newId, pick = choose } = {
         if (!u.windows.length) return fail("当前套餐没有额度限制数据")
         return u
       },
+      // the day's 签到, through the app's own page: magpie's switch turns
+      // this on, and its 立即签到 button calls it. The result is magpie's
+      // outcome shape (claimed, done, failed).
+      checkin: async () => doubao.checkin({ signal: AbortSignal.timeout(60000) }),
       methods: [
         {
           type: "oauth",

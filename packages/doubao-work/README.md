@@ -76,6 +76,23 @@ served here: the plugin lists only what the app's model menu offers from
 Doubao's side, and a model that runs on your own key is a direct call to that
 vendor, not a Doubao task. Add that API to magpie as its own provider instead.
 
+## Allowance and 签到
+
+The plan's allowance is read from the app's own `quota/summary` call, the
+one the 订阅 view makes. Every limit section is read, not just the plan's
+own: a free account keeps its 活动赠送额度 under
+`incentive_quota_section`, and a section that says `usage_exhausted` fills
+only its own windows. A window with no times takes its group's name
+(`活动赠送额度`), else 额度.
+
+magpie's 自动签到 switch and 立即签到 button call the plugin's
+`auth.checkin`, the same call the sidebar card's 签到 makes
+(`POST /alice/ug/campaign/landing/checkin`, with the query the page's own
+calls carried; the bare path answers 710010702). Doubao answers
+idempotently: a day already claimed comes back `done`, so pressing the
+button twice does not claim twice. Unlike usage, 签到 starts the app when
+it is closed; on macOS quit your own copy (⌘Q) first.
+
 ## What it costs
 
 - **Unofficial.** It uses Doubao the way its own window does, but ByteDance
