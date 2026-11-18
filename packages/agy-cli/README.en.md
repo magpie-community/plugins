@@ -239,9 +239,14 @@ quota directly instead of starting the full CLI, initializing its language serve
 and waiting for an eligibility check on every refresh. It makes the same read as agy:
 with agy's stored sign-in it asks Google's Code Assist server
 (`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
-An access token about to end is renewed in memory and never stored. If that
-read fails, the account shows the failure and no invented numbers. Other sign-ins
-still use agy's `/usage`, falling back to the same quota endpoints on a region refusal.
+An access token about to end is renewed in memory and never stored. When
+`loadCodeAssist` names no project for a personal Google account, the quota is
+asked under `aicode-consumers`, the project Google serves every personal account
+under (agy itself asks with none, and Google refuses that).
+
+Other sign-ins still use agy's `/usage`, falling back to the same quota endpoints
+on a region refusal. If both reads fail, the account shows agy's refusal and
+why the direct read failed.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored

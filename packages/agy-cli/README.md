@@ -169,8 +169,12 @@ magpie quota refresh agy-cli --json
 保存了可续期且带到期时间的 Google 登录时，插件优先直接读取额度，避免每次启动完整 CLI、
 初始化语言服务并等待地区资格检查。查询沿用 agy 的方式：用 agy 存的登录，
 以 agy 的 User-Agent 依次请求 Google Code Assist 的 `loadCodeAssist` 和
-`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。其他登录仍使用 agy 的
-`/usage`；遇到地区资格拒绝时再尝试同一额度接口。查询失败时显示原因，不显示虚构数字。
+`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。个人 Google 账号的
+`loadCodeAssist` 没给项目时，按 Google 给所有个人账号用的 `aicode-consumers` 项目查（agy
+自己不带项目查，Google 会拒绝）。
+
+其他登录仍使用 agy 的 `/usage`。遇到地区资格拒绝时再尝试同一额度接口。两次查询都失败时，
+账号显示 agy 的拒绝原因和直接查询失败的原因。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
 先看系统钥匙串（macOS）或凭据管理器（Windows）里 agy 存的登录，只读有没有、何时到期。没有登录、
