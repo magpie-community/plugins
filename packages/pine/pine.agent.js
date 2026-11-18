@@ -1,4 +1,4 @@
-// Pine (github.com/pmndrs/pine) runs on pi's SDK, so it keeps its model servers
+// Pine (github.com/pmndre/pine) runs on pi's SDK, so it keeps its model servers
 // in pi's own file, ~/.pine/models.json, and the model a new session starts on
 // in ~/.pine/pine.json as defaults.model, written "provider/model-id".
 //
@@ -14,7 +14,7 @@ export const agent = {
   id: "pine",
   name: "Pine",
   // Pine's own logo from its repository (MIT), as the project shows it
-  icon: "https://raw.githubusercontent.com/pmndrs/pine/main/docs/images/logo-light.svg",
+  icon: "https://raw.githubusercontent.com/pmndre/pine/next/docs/images/logo-light.svg",
   bin: "pine",
   dir: "~/.pine",
   config: "~/.pine/models.json",

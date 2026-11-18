@@ -1,6 +1,6 @@
 # @magpie-community/agent-pine
 
-[Pine](https://github.com/pmndrs/pine) as a magpie agent. Pine runs on pi's SDK, so it keeps its
+[Pine](https://github.com/pmndre/pine) as a magpie agent. Pine runs on pi's SDK, so it keeps its
 model servers in pi's file, `~/.pine/models.json`, and the model a new conversation starts on in
 `~/.pine/pine.json` as `defaults.model`. The plugin puts magpie's gateway there as the provider
 `magpie`, with magpie's whole catalog, and writes the model picked on magpie's Agents page into
@@ -21,8 +21,8 @@ where there was none) and takes the `magpie` provider out of `models.json`.
 This needs a magpie with the Agent contract's `startup` field (v0.1.3008 or later); an older one
 reads this package as connect-only, and the model is picked with `/model` in Pine.
 
-Pine is a project by pmndrs. This is an unofficial integration, not affiliated with or endorsed by
-pmndrs; PiG and Pi users are served by their own packages.
+Pine is a project by pmndre. This is an unofficial integration, not affiliated with or endorsed by
+pmndre; PiG and Pi users are served by their own packages.
 
 ## What it owns
 
@@ -93,4 +93,4 @@ Pine 只在第一个 `/` 处切分，provider 是 `magpie`，模型 id 就是 ma
 注意：`agents/<id>/agent.json` 里自己写的 `model` 优先，那个 agent 不跟着 magpie 走；换完模型要
 重启 Pine；只认默认的 `~/.pine`（用 `$PINE_HOME` 请复制描述文件改路径）；思考等级由 Pine 自己管；
 `~/.pine/skills` 已接进 Library，指令与 MCP 未接；先断开再卸载。需要 magpie v0.1.3008 及以后，
-更早的版本当作 connect-only。非官方适配，与 pmndrs 无关。
+更早的版本当作 connect-only。非官方适配，与 pmndre 无关。
