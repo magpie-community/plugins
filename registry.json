@@ -125,6 +125,8 @@
       "summary": { "en": "Deepzora Desktop, CLI and ACP on Magpie's models, with a reversible TOML/dotenv bridge that preserves existing providers. Restart Deepzora after choosing a model; disconnect before uninstalling. Disable the standalone Deepzora plugin before switching to this package.", "zh": "为 Deepzora 桌面版、CLI 和 ACP 选择 Magpie 模型，通过可恢复的 TOML/dotenv 桥接保留原有供应商。选模型后重启 Deepzora，卸载前先断开；从独立 Deepzora 插件迁移时先停用旧包。" } },
     { "package": "@magpie-community/agent-pig", "name": "PiG", "kind": "agent", "community": true,
       "summary": { "en": "PiG (Pi in Go): add Magpie's endpoint and model catalog, choose models in PiG, and keep startup settings unchanged.", "zh": "为 PiG（Pi in Go）注入 Magpie 端点与模型列表，在 PiG 内选择模型，保持启动设置不变。" } },
+    { "package": "@magpie-community/agent-thinkrail", "name": "ThinkRail", "kind": "agent", "community": true, "icon": "https://thinkrail.ai/favicon.svg",
+      "summary": { "en": "Choose ThinkRail’s new-chat model in Magpie and assign MCP servers from Library. The crafthei connect-only plugin leaves model selection to ThinkRail. Enable only one at a time.", "zh": "在 Magpie 中选择 ThinkRail 新聊天的默认模型，并从资源库分配 MCP 服务。crafthei 的仅连接插件需在 ThinkRail 中选模型。两者请只启用一个。" } },
     { "package": "@magpie-community/agent-bub", "name": "Bub", "kind": "agent", "community": true,
       "summary": { "en": "Bub (bub.build) on magpie's Agents page: pick one of magpie's models and Bub uses it, through ~/.bub/config.yml. Needs Bub 0.5.1 or later.", "zh": "把 Bub（bub.build）加到 magpie 的 Agent 页：给它选一个 magpie 的模型，通过 ~/.bub/config.yml 生效。需要 Bub 0.5.1 或更新版本。" } },
     { "package": "@magpie-community/agent-type4me", "name": "Type4Me", "kind": "agent", "community": true,
