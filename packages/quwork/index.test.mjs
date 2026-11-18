@@ -19,7 +19,7 @@ test("the setup page links to QuWork and only the model key method is registered
   const page = readFileSync(new URL("./page/index.html", import.meta.url), "utf8")
   assert.equal(hooks.auth.provider, "quwork")
   assert.deepEqual(hooks.auth.methods.map((method) => method.type), ["api"])
-  assert.match(page, /href="https:\/\/quwork\.cn\/" target="_blank" rel="noopener noreferrer"/)
+  assert.match(page, /href="https:\/\/quwork\.cn\/" target="_self"/)
   assert.doesNotMatch(page, /<input\b|<form\b/i)
   assert.equal(hooks.auth.methods[0].prompts[0].type, "password")
   assert.equal(typeof hooks.auth.loader, "function")
