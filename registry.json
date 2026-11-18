@@ -57,6 +57,8 @@
       "summary": { "en": "Warp (the terminal) AI request credits through the Warp app's sign-in: the auto routers and every model family the account lists.", "zh": "用 Warp 终端应用的登录使用 Warp AI 请求额度：auto 路由与账户可用的全部模型家族。" } },
     { "package": "@magpie-community/opencode-workbuddy-auth", "name": "WorkBuddy", "icon": "workbuddy-color", "providers": ["workbuddy", "workbuddy-ai"], "community": true, "replaces": "workbuddy",
       "summary": { "en": "WorkBuddy's China build (CodeBuddy plan) and its international build.", "zh": "WorkBuddy 国内版（CodeBuddy 套餐）与国际版。" } },
+    { "package": "@magpie-community/opencode-codebuddy-auth", "name": "CodeBuddy", "icon": "https://download.codebuddy.cn/web/website/46f66813590b297a89220cdb11f02726dfcc3e26/assets/logo.svg", "providers": ["codebuddy"], "community": true,
+      "summary": { "en": "Tencent CodeBuddy (copilot.tencent.com) with the local CodeBuddy desktop login: no browser, the desktop's own login files read and renewed with CodeBuddy.", "zh": "接入腾讯 CodeBuddy（copilot.tencent.com）：直接复用本机 CodeBuddy 桌面版登录，无需浏览器授权，自动读取并续期桌面端凭据。" } },
     { "package": "@magpie-community/opencode-cline-auth", "name": "Cline", "icon": "cline", "providers": ["cline"], "community": true,
       "summary": { "en": "Cline's models on your own Cline account — usage billing, ClinePass and Cline's free models — with Cline's device sign-in or an API key.", "zh": "用自己的 Cline 账号使用 Cline 的模型——用量计费、ClinePass 与免费模型——支持 Cline 设备登录或 API key。" } },
     { "package": "@magpie-community/opencode-trae-auth", "name": "Trae", "icon": "trae", "providers": ["trae-cn", "trae-global"], "community": true,
