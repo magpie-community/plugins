@@ -39,6 +39,8 @@ magpie plugin add github:wolfvoid/magpie-github-stats
 
 插件只管理 `assets/magpie-light.svg` 与 `assets/magpie-dark.svg`（目录可改）。它不会自动修改 README；用户只需嵌入一次。
 
+在 **卡片布局** 拖动 Token 趋势、模型排行和用量热力图，或用上下箭头排序。勾选要公开的区块。卡片宽度达到 520 px 时可以让前两个可见区块并排，其余区块占一整行。预览会随调整更新，保存后选择立即同步即可更新 GitHub。
+
 ## 功能与统计口径
 
 - Requests、Tokens、Active Days；最近 7 天、30 天或 All Time。

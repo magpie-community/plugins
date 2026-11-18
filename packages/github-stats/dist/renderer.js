@@ -23,7 +23,8 @@ const shorten = (s, max) => Array.from(s).length > max
         .join("") + "…"
     : s;
 export function renderCard(s, c, mode, updated) {
-    const dark = mode === "dark", w = c.width, compactLayout = w < 420, pad = compactLayout ? 20 : 26;
+    const dark = mode === "dark";
+    let w = c.width, compactLayout = w < 420, pad = compactLayout ? 20 : 26;
     const p = dark
         ? {
             bg: "#0D1117",
@@ -62,19 +63,18 @@ export function renderCard(s, c, mode, updated) {
             ? "LAST 7 DAYS"
             : "LAST 30 DAYS";
     text(w - pad, 32, periodLabel, 9, p.muted, 'text-anchor="end" letter-spacing="1"');
-    text(pad, 53, "AI usage, at a glance.", 10);
-    rule(67);
+    rule(46);
     const col = (w - pad * 2) / 3;
     for (const [i, v, label] of [
         [0, compact(s.tokens), "TOKENS"],
         [1, compact(s.requests), "REQUESTS"],
         [2, String(s.activeDays), "ACTIVE DAYS"],
     ]) {
-        text(pad + i * col, 102, v, compactLayout ? 24 : 30, i === 0 ? "url(#accent)" : p.fg, 'font-weight="700" letter-spacing="-1"');
-        text(pad + i * col, 121, label, compactLayout ? 8 : 9, p.muted, 'letter-spacing="1"');
+        text(pad + i * col, 79, v, compactLayout ? 24 : 30, i === 0 ? "url(#accent)" : p.fg, 'font-weight="700" letter-spacing="-1"');
+        text(pad + i * col, 96, label, compactLayout ? 8 : 9, p.muted, 'letter-spacing="1"');
     }
-    let y = 144;
-    if (c.showTrend) {
+    let y = 119;
+    const drawTrend = () => {
         text(pad, y, "TOKEN ACTIVITY", 9, p.muted, 'letter-spacing="1.5"');
         const days = s.days.slice(c.period === "7d" ? -7 : -30), maximum = Math.max(1, ...days.map((d) => d.tokens));
         const chartY = y + 12, chartH = 34, chartW = w - pad * 2;
@@ -92,8 +92,8 @@ export function renderCard(s, c, mode, updated) {
         if (!s.requests)
             text(w / 2, chartY + 22, "No activity in this period", 10, p.muted, 'text-anchor="middle"');
         y += 64;
-    }
-    if (c.showModels) {
+    };
+    const drawModels = () => {
         text(pad, y, "TOP MODELS", 9, p.muted, 'letter-spacing="1.5"');
         text(w - pad, y, "% OF TOKENS", 8, p.muted, 'text-anchor="end" letter-spacing="1"');
         y += 20;
@@ -110,8 +110,8 @@ export function renderCard(s, c, mode, updated) {
             y += 22;
         }
         y += 3;
-    }
-    if (c.showHeatmap) {
+    };
+    const drawHeatmap = () => {
         const asOf = s.heatmap?.asOf || s.days.at(-1)?.date || s.since;
         const calendar = calendarCells(c.heatmapView, asOf, s.heatmap?.days || s.days);
         const metric = c.heatmapMetric;
@@ -152,7 +152,8 @@ export function renderCard(s, c, mode, updated) {
             const month = d.date.slice(0, 7), x = gridX + Math.floor(d.index / 7) * pitch;
             if (month !== previousMonth) {
                 if ((c.heatmapView !== "year" || d.date.endsWith("-01")) &&
-                    x >= labelEnd && x + 19 <= w - pad) {
+                    x >= labelEnd &&
+                    x + 19 <= w - pad) {
                     text(x, y, months[Number(d.date.slice(5, 7)) - 1], 8);
                     labelEnd = x + 25;
                 }
@@ -196,6 +197,38 @@ export function renderCard(s, c, mode, updated) {
             content.push(`<rect x="${legendX + level * 11}" y="${y}" width="8" height="8" rx="2" fill="${color(level)}"/>`);
         text(w - pad, y + 7, "More", 8, p.muted, 'text-anchor="end"');
         y += 24;
+    };
+    const blocks = {
+        trend: c.showTrend && drawTrend,
+        models: c.showModels && drawModels,
+        heatmap: c.showHeatmap && drawHeatmap,
+    };
+    const visible = c.blockOrder.filter((key) => blocks[key]);
+    if (c.pairBlocks && w >= 520 && visible.length >= 2) {
+        const firstRow = visible.splice(0, 2);
+        const top = y;
+        let bottom = y;
+        w = c.width / 2;
+        compactLayout = true;
+        pad = 14;
+        firstRow.forEach((key, column) => {
+            content.push(`<g transform="translate(${column * w} 0)">`);
+            y = top;
+            const draw = blocks[key];
+            if (draw)
+                draw();
+            bottom = Math.max(bottom, y);
+            content.push("</g>");
+        });
+        w = c.width;
+        compactLayout = false;
+        pad = 26;
+        y = bottom;
+    }
+    for (const key of visible) {
+        const draw = blocks[key];
+        if (draw)
+            draw();
     }
     if (c.showCost) {
         text(pad, y, `EST. COST  $${s.estimatedCost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${s.unpriced ? "  · excludes unpriced usage" : ""}`, compactLayout ? 8 : 9);

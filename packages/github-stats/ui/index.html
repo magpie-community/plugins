@@ -9,34 +9,10 @@
   </head>
   <body>
     <main>
-      <header>
-        <div class="brand">
-          <span class="mark">◈</span>
-          <div>
-            <b>MAGPIE <span>GITHUB STATS</span></b>
-            <p>把你的 AI 使用足迹，放上个人主页。</p>
-          </div>
-        </div>
-        <span class="badge">LOCAL FIRST</span>
-      </header>
-      <section class="intro">
-        <div>
-          <div class="eyebrow">YOUR DAILY SIGNAL</div>
-          <h1>每一天，都有迹可循。</h1>
-          <p>本地汇总，自动同步。让一张卡片记录你的创造力。</p>
-        </div>
-        <div class="privacy">
-          <span>↗</span>
-          <div>
-            <b>只分享你选择的数字</b>
-            <p>不上传聊天、账号或密钥</p>
-          </div>
-        </div>
-      </section>
       <div class="workspace">
         <section class="preview-panel">
           <div class="panel-heading">
-            <h2><span>01</span> 卡片预览</h2>
+            <h2>卡片预览</h2>
             <span id="preview-label">读取本机用量</span>
           </div>
           <div class="preview-stage">
@@ -53,20 +29,9 @@
               ><span id="summary">你的统计仅在本机生成</span>
             </div>
           </div>
-          <div class="preview-note">
-            <b>一个链接，两种配色。</b>
-            <p>
-              README 使用 picture 元素，随浏览器的深浅色偏好选择图片。GitHub
-              图片缓存可能延迟更新。
-            </p>
-          </div>
-          <section class="embed">
-            <div class="panel-heading">
-              <h2><span>03</span> 放进个人主页</h2>
-              <button id="copy" type="button" class="text-button">
-                复制 HTML ↗
-              </button>
-            </div>
+          <details class="embed">
+            <summary>嵌入 GitHub README</summary>
+            <button id="copy" type="button">复制 HTML</button>
             <textarea
               id="readme"
               readonly
@@ -78,118 +43,115 @@
               将代码粘贴到 GitHub Profile
               README。目标仓库需公开，访客才能看到图片。
             </p>
-          </section>
+          </details>
         </section>
         <section class="settings-panel">
           <div class="panel-heading">
-            <h2><span>02</span> 连接与样式</h2>
-            <span class="quiet">一次配置，每日更新</span>
+            <h2>卡片布局</h2>
+            <span class="quiet">拖动排序，勾选显示</span>
           </div>
           <form id="settings">
-            <div class="form-grid">
-              <label class="wide"
-                >GitHub 仓库<input
-                  name="repository"
-                  placeholder="owner/repo"
-                  autocomplete="off"
-                  maxlength="140" /></label
-              ><label
-                >分支<input
-                  name="branch"
-                  placeholder="仓库默认分支"
-                  autocomplete="off" /></label
-              ><label
-                >输出文件夹<input
-                  name="folder"
-                  value="assets"
-                  autocomplete="off"
-              /></label>
-            </div>
-            <label
-              >GitHub 授权<select name="credentialSource">
-                <option value="keychain">Fine-grained PAT · 系统凭据库</option>
-                <option value="github-cli">使用本机 GitHub CLI 登录</option>
-              </select></label
-            ><label id="token-row"
-              >GitHub Token<input
-                name="token"
-                type="password"
-                placeholder="留空保留已保存的 Token"
-                autocomplete="new-password"
-              /><small
-                >仅需目标仓库 Contents 读写权限；Token 存入系统凭据库。</small
-              ></label
+            <div id="blocks"></div>
+            <label class="inline"
+              ><input
+                type="checkbox"
+                name="pairBlocks"
+              />前两个可见区块并排（宽度 ≥ 520 px）</label
             >
-            <p id="cli-note" hidden class="hint">
-              使用 gh auth login 已保存的登录身份。权限范围由该登录决定。
-            </p>
-            <div class="divider"></div>
-            <div class="form-grid">
+            <details id="connection">
+              <summary>仓库与授权</summary>
+              <div class="form-grid">
+                <label class="wide"
+                  >GitHub 仓库<input
+                    name="repository"
+                    placeholder="owner/repo"
+                    autocomplete="off"
+                    maxlength="140" /></label
+                ><label
+                  >分支<input
+                    name="branch"
+                    placeholder="仓库默认分支"
+                    autocomplete="off" /></label
+                ><label
+                  >输出文件夹<input
+                    name="folder"
+                    value="assets"
+                    autocomplete="off"
+                /></label>
+              </div>
               <label
-                >统计周期<select name="period">
-                  <option value="7d">最近 7 天</option>
-                  <option value="30d" selected>最近 30 天</option>
-                  <option value="all">All Time</option>
+                >GitHub 授权<select name="credentialSource">
+                  <option value="keychain">
+                    Fine-grained PAT · 系统凭据库
+                  </option>
+                  <option value="github-cli">使用本机 GitHub CLI 登录</option>
                 </select></label
-              ><label
-                >视觉主题<select name="theme">
-                  <option value="aurora">Neon Aurora</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="cyberpunk">Cyberpunk</option>
-                </select></label
-              ><label
-                >卡片宽度<select name="width">
-                  <option value="520">520 px · Standard</option>
-                  <option value="320">320 px · Compact</option>
-                  <option value="640">640 px · Wide</option>
-                </select></label
-              ><label
-                >模型数量<select name="topModels">
-                  <option value="3">Top 3</option>
-                  <option value="4">Top 4</option>
-                  <option value="5">Top 5</option>
-                </select></label
+              ><label id="token-row"
+                >GitHub Token<input
+                  name="token"
+                  type="password"
+                  placeholder="留空保留已保存的 Token"
+                  autocomplete="new-password"
+                /><small
+                  >仅需目标仓库 Contents 读写权限；Token 存入系统凭据库。</small
+                ></label
               >
-            </div>
-            <label
-              >热力图范围<select name="heatmapView">
-                <option value="year">全年视图 · 最近 53 周</option>
-                <option value="month">月视图 · 本月</option>
-                <option value="week">周视图 · 本周一至周日</option></select
-              ><small
-                >按本地日期展示，独立于上方统计周期；保存后同步到
-                GitHub。</small
-              ></label
-            >
-            <label
-              >热力图指标<select name="heatmapMetric">
-                <option value="requests">请求</option>
-                <option value="tokens">Token</option>
-                <option value="cost">费用 · USD 估算</option></select
-              ><small
-                >选择费用将公开每日估算费用；Token 不包含缓存流量。</small
-              ></label
-            >
-            <div class="check-grid">
+              <p id="cli-note" hidden class="hint">
+                使用 gh auth login 已保存的登录身份。权限范围由该登录决定。
+              </p>
+            </details>
+            <details>
+              <summary>样式与统计</summary>
+              <div class="form-grid">
+                <label
+                  >统计周期<select name="period">
+                    <option value="7d">最近 7 天</option>
+                    <option value="30d" selected>最近 30 天</option>
+                    <option value="all">All Time</option>
+                  </select></label
+                ><label
+                  >视觉主题<select name="theme">
+                    <option value="aurora">Neon Aurora</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="cyberpunk">Cyberpunk</option>
+                  </select></label
+                ><label
+                  >卡片宽度<select name="width">
+                    <option value="520">520 px · Standard</option>
+                    <option value="320">320 px · Compact</option>
+                    <option value="640">640 px · Wide</option>
+                  </select></label
+                ><label
+                  >模型数量<select name="topModels">
+                    <option value="3">Top 3</option>
+                    <option value="4">Top 4</option>
+                    <option value="5">Top 5</option>
+                  </select></label
+                >
+              </div>
               <label
-                ><input type="checkbox" name="showTrend" checked />Token
-                趋势</label
-              ><label
-                ><input
-                  type="checkbox"
-                  name="showHeatmap"
-                  checked
-                />活跃热力图</label
-              ><label
-                ><input
-                  type="checkbox"
-                  name="showModels"
-                  checked
-                />模型排行</label
-              ><label
-                ><input type="checkbox" name="showCost" />Estimated Cost</label
+                >热力图范围<select name="heatmapView">
+                  <option value="year">全年视图 · 最近 53 周</option>
+                  <option value="month">月视图 · 本月</option>
+                  <option value="week">周视图 · 本周一至周日</option></select
+                ><small
+                  >按本地日期展示，独立于上方统计周期；保存后同步到
+                  GitHub。</small
+                ></label
               >
-            </div>
+              <label
+                >热力图指标<select name="heatmapMetric">
+                  <option value="requests">请求</option>
+                  <option value="tokens">Token</option>
+                  <option value="cost">费用 · USD 估算</option></select
+                ><small
+                  >选择费用将公开每日估算费用；Token 不包含缓存流量。</small
+                ></label
+              >
+              <label
+                ><input type="checkbox" name="showCost" />显示估算总费用</label
+              >
+            </details>
             <details>
               <summary>数据来源</summary>
               <label
@@ -235,10 +197,6 @@
           </div>
         </section>
       </div>
-      <footer>
-        <span>MAGPIE GITHUB STATS <span class="version">v0.1.2</span></span
-        ><span>Built locally. Shared intentionally.</span>
-      </footer>
       <div id="notice" role="status" aria-live="polite" hidden></div>
     </main>
     <script src="app.js"></script>

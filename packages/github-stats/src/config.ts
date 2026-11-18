@@ -7,6 +7,8 @@ import type { Config } from "./types.js";
 
 export const defaults: Config = {
   repository: "",
+  blockOrder: ["trend", "models", "heatmap"],
+  pairBlocks: false,
   branch: "",
   folder: "assets",
   period: "30d",
@@ -59,6 +61,14 @@ export function validateConfig(raw: unknown): Config {
     if (!Object.hasOwn(defaults, k))
       throw new Error("配置包含不支持的字段；Token 必须单独保存。");
   const c = { ...defaults, ...r } as Config;
+  if (
+    !Array.isArray(c.blockOrder) ||
+    c.blockOrder.length !== 3 ||
+    new Set(c.blockOrder).size !== 3 ||
+    !c.blockOrder.every((key) => defaults.blockOrder.includes(key)) ||
+    typeof c.pairBlocks !== "boolean"
+  )
+    throw new Error("卡片区块布局无效。");
   if (
     typeof c.repository !== "string" ||
     (c.repository &&

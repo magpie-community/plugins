@@ -1,6 +1,9 @@
 export type Period = "7d" | "30d" | "all";
 export type Theme = "aurora" | "minimal" | "cyberpunk";
+export type CardBlock = "trend" | "models" | "heatmap";
 export interface Config {
+  blockOrder: CardBlock[];
+  pairBlocks: boolean;
   repository: string;
   branch: string;
   folder: string;

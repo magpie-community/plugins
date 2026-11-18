@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 import { processExists } from "./proc.mjs";
 export const defaults = {
     repository: "",
+    blockOrder: ["trend", "models", "heatmap"],
+    pairBlocks: false,
     branch: "",
     folder: "assets",
     period: "30d",
@@ -55,6 +57,12 @@ export function validateConfig(raw) {
         if (!Object.hasOwn(defaults, k))
             throw new Error("配置包含不支持的字段；Token 必须单独保存。");
     const c = { ...defaults, ...r };
+    if (!Array.isArray(c.blockOrder) ||
+        c.blockOrder.length !== 3 ||
+        new Set(c.blockOrder).size !== 3 ||
+        !c.blockOrder.every((key) => defaults.blockOrder.includes(key)) ||
+        typeof c.pairBlocks !== "boolean")
+        throw new Error("卡片区块布局无效。");
     if (typeof c.repository !== "string" ||
         (c.repository &&
             !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(c.repository)))

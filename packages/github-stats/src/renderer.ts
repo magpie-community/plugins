@@ -35,8 +35,8 @@ export function renderCard(
   mode: "light" | "dark",
   updated: string,
 ) {
-  const dark = mode === "dark",
-    w = c.width,
+  const dark = mode === "dark";
+  let w = c.width,
     compactLayout = w < 420,
     pad = compactLayout ? 20 : 26;
   const p = dark
@@ -103,8 +103,7 @@ export function renderCard(
     p.muted,
     'text-anchor="end" letter-spacing="1"',
   );
-  text(pad, 53, "AI usage, at a glance.", 10);
-  rule(67);
+  rule(46);
   const col = (w - pad * 2) / 3;
   for (const [i, v, label] of [
     [0, compact(s.tokens), "TOKENS"],
@@ -113,7 +112,7 @@ export function renderCard(
   ] as const) {
     text(
       pad + i * col,
-      102,
+      79,
       v,
       compactLayout ? 24 : 30,
       i === 0 ? "url(#accent)" : p.fg,
@@ -121,15 +120,15 @@ export function renderCard(
     );
     text(
       pad + i * col,
-      121,
+      96,
       label,
       compactLayout ? 8 : 9,
       p.muted,
       'letter-spacing="1"',
     );
   }
-  let y = 144;
-  if (c.showTrend) {
+  let y = 119;
+  const drawTrend = () => {
     text(pad, y, "TOKEN ACTIVITY", 9, p.muted, 'letter-spacing="1.5"');
     const days = s.days.slice(c.period === "7d" ? -7 : -30),
       maximum = Math.max(1, ...days.map((d) => d.tokens));
@@ -165,8 +164,8 @@ export function renderCard(
         'text-anchor="middle"',
       );
     y += 64;
-  }
-  if (c.showModels) {
+  };
+  const drawModels = () => {
     text(pad, y, "TOP MODELS", 9, p.muted, 'letter-spacing="1.5"');
     text(
       w - pad,
@@ -208,8 +207,8 @@ export function renderCard(
       y += 22;
     }
     y += 3;
-  }
-  if (c.showHeatmap) {
+  };
+  const drawHeatmap = () => {
     const asOf = s.heatmap?.asOf || s.days.at(-1)?.date || s.since;
     const calendar = calendarCells(
       c.heatmapView,
@@ -265,7 +264,8 @@ export function renderCard(
       if (month !== previousMonth) {
         if (
           (c.heatmapView !== "year" || d.date.endsWith("-01")) &&
-          x >= labelEnd && x + 19 <= w - pad
+          x >= labelEnd &&
+          x + 19 <= w - pad
         ) {
           text(x, y, months[Number(d.date.slice(5, 7)) - 1], 8);
           labelEnd = x + 25;
@@ -323,8 +323,38 @@ export function renderCard(
       );
     text(w - pad, y + 7, "More", 8, p.muted, 'text-anchor="end"');
     y += 24;
-  }
+  };
 
+  const blocks = {
+    trend: c.showTrend && drawTrend,
+    models: c.showModels && drawModels,
+    heatmap: c.showHeatmap && drawHeatmap,
+  };
+  const visible = c.blockOrder.filter((key) => blocks[key]);
+  if (c.pairBlocks && w >= 520 && visible.length >= 2) {
+    const firstRow = visible.splice(0, 2);
+    const top = y;
+    let bottom = y;
+    w = c.width / 2;
+    compactLayout = true;
+    pad = 14;
+    firstRow.forEach((key, column) => {
+      content.push(`<g transform="translate(${column * w} 0)">`);
+      y = top;
+      const draw = blocks[key];
+      if (draw) draw();
+      bottom = Math.max(bottom, y);
+      content.push("</g>");
+    });
+    w = c.width;
+    compactLayout = false;
+    pad = 26;
+    y = bottom;
+  }
+  for (const key of visible) {
+    const draw = blocks[key];
+    if (draw) draw();
+  }
   if (c.showCost) {
     text(
       pad,
