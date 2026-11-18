@@ -2183,3 +2183,29 @@ test("evicted sibling tool results replay without retiring the other branch", as
     assert.doesNotMatch(promptText(lastPrompt.params), /conversation_history|evicted sibling result/)
   })
 })
+
+
+test("compaction summaries survive an oversized current tool result", async () => {
+  for (const blocks of [false, true]) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const summary = "This session is being continued from a previous conversation that ran out of context. " +
+        "Summary:\n" + "earlier detail ".repeat(600) +
+        "\nPrimary request: complete TASK-COMPACT-7381 and validate its deployment.\n" +
+        "remaining detail ".repeat(600) + "\nPending tasks: finish the original request."
+      const content = blocks ? [{ type: "text", text: "project memory ".repeat(300) }, { type: "text", text: summary }] : summary
+      const messages = [
+        { role: "user", content },
+        { role: "assistant", content: [{ type: "tool_use", id: "read-large", name: "Read", input: { path: "/repo/large.txt" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "read-large", content: "CURRENT-RESULT-START\n" + "tool output ".repeat(20000) + "\nCURRENT-RESULT-END" }] },
+      ]
+      const parsed = await readSse(await kit.request(baseBody({ system: "system rule ".repeat(4000), messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit)[0]
+      assert.ok(prompt.includes(summary), "the existing compaction summary must remain complete")
+      assert.ok(prompt.includes("CURRENT-RESULT-START"))
+      assert.ok(prompt.includes("CURRENT-RESULT-END"))
+      assert.ok(Buffer.byteLength(prompt) <= 112 * 1024)
+    })
+  }
+})

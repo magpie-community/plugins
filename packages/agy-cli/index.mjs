@@ -5464,15 +5464,24 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   const turnOpen = "<current_turn>\n"
   const turnClose = "\n</current_turn>"
   const frame = utf8Bytes(historyOpen + historyClose + turnOpen + turnClose)
+  // A compaction checkpoint carries the active task. Reserve its opening
+  // message before a large current tool result consumes the replay budget.
+  const opening = history[0]
+  const summaryParts = opening?.role === "user" && messageText(opening).includes(
+    "This session is being continued from a previous conversation that ran out of context.",
+  ) ? renderHistoryEntry(opening) : null
+  const summaryReserve = summaryParts
+    ? Math.min(promptTextBytes(summaryParts), Math.max(0, Math.floor((budget - frame) / 3))) : 0
+  const mandatoryBudget = budget - summaryReserve
   // Mandatory segments first: instructions, the frame and the current turn.
   // An oversized current turn keeps its head and tail; instructions shrink
   // only when they alone would not leave the current turn any room.
   let headParts = head
   let turn = currentParts
-  if (promptTextBytes(headParts) + frame + promptTextBytes(turn) > budget) {
-    const forTurn = Math.max(0, budget - frame - promptTextBytes(headParts))
-    turn = clipPartsToBytes(turn, Math.max(forTurn, Math.min(promptTextBytes(turn), Math.floor((budget - frame) / 2))))
-    headParts = clipPartsToBytes(headParts, Math.max(0, budget - frame - promptTextBytes(turn)))
+  if (promptTextBytes(headParts) + frame + promptTextBytes(turn) > mandatoryBudget) {
+    const forTurn = Math.max(0, mandatoryBudget - frame - promptTextBytes(headParts))
+    turn = clipPartsToBytes(turn, Math.max(forTurn, Math.min(promptTextBytes(turn), Math.floor((mandatoryBudget - frame) / 2))))
+    headParts = clipPartsToBytes(headParts, Math.max(0, mandatoryBudget - frame - promptTextBytes(turn)))
   }
   let room = budget - frame - promptTextBytes(headParts) - promptTextBytes(turn)
   const render = (message) => {
@@ -5483,7 +5492,12 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   // A replay that fits is sent whole; only one that does not has its big
   // blocks clipped first (#1055).
   let entries = history.map(render)
-  if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
+  if (overRoom(entries)) entries = history.map((message, index) => {
+    if (index === 0 && summaryParts) {
+      return clipHistoryEntry({ parts: summaryParts, bytes: promptTextBytes(summaryParts) }, summaryReserve)
+    }
+    return render(clipHistoryMessage(message))
+  })
   let kept = entries
   let showOpeningDone = false
   if (overRoom(entries)) {
