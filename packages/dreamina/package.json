@@ -1,0 +1,51 @@
+{
+  "name": "@magpie-community/opencode-dreamina-auth",
+  "version": "0.1.0",
+  "description": "Connect local dreamina-canvas CLI to Magpie for Dreamina (Jimeng) Seedream image and Seedance video generation.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/dreamina"
+  },
+  "main": "./opencode.mjs",
+  "exports": {
+    "./server": "./magpie.mjs",
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "magpie.mjs",
+    "opencode2.mjs",
+    "cli.mjs",
+    "models.mjs",
+    "canvas-state.mjs",
+    "media.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "dreamina",
+    "jimeng",
+    "seedream",
+    "seedance"
+  ],
+  "magpie": {
+    "name": "Dreamina (即梦)",
+    "icon": "data:image/png;base64,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",
+    "summary": {
+      "zh": "通过本机 dreamina-canvas CLI 接入即梦（Dreamina）：为 Magpie 提供 Seedream 生图与 Seedance / Vidu / Wan 生视频模型。",
+      "en": "Connect local dreamina-canvas CLI to Magpie for Dreamina (Jimeng) Seedream image and Seedance video generation."
+    },
+    "maxConcurrency": 4
+  }
+}
