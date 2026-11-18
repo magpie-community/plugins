@@ -230,6 +230,11 @@ put the un-callable ids back in front of the user. Before a sign-in a built-in t
 in. Names carry the account's multiplier (`GLM-5.3 · x0.18`), and the vendor's trailing newline in
 `model_name` is trimmed.
 
+A refused read says what the gateway said, in one line: `OfficeAce catalog read failed: HTTP 401
+(APIG.1009): {"error_msg":"AppKey or AppSecret is invalid",…}`. A pair can be refused because
+another copy of the account rotated it (#1247), or because the account has no credit left — the
+log then carries the gateway's own code instead of a sign-in that never expired.
+
 **Requests.** MaaS wants `Authorization: Basic base64(appKey:appSecret)`; the plugin rewrites the
 SDK's Bearer header, strips the `officeace/` model prefix, and sends the request to the MaaS base
 the account's own credential names (official direct when it names none). A `401` (or a `4xx`

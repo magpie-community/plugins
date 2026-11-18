@@ -3496,6 +3496,27 @@ test("models are the billable list: the multiplier is trimmed, and an id that al
   )
 })
 
+test("a refused catalog read carries the gateway's own code in the error", async () => {
+  const { record } = await officeAceAuthRecord({}, "iam::d1:user:hw0206")
+  const { fetcher } = oaFetcher((url) =>
+    url.endsWith("/v2/models")
+      ? new Response(
+        JSON.stringify({ error_code: "APIG.1009", error_msg: "AppKey or AppSecret is invalid" }),
+        { status: 401 },
+      )
+      : undefined,
+  )
+  const err = await oa
+    .fetchOfficeAceCatalog(oa.officeAceCredentialOf(record), fetcher)
+    .then(() => null, (e) => e)
+
+  assert.ok(err, "the refusal is an error")
+  assert.equal(err.status, 401)
+  assert.match(err.message, /HTTP 401/)
+  assert.match(err.message, /APIG\.1009/)
+  assert.match(err.message, /AppKey or AppSecret is invalid/)
+})
+
 test("a failed rates read keeps the last good table; one that never read it falls back to the static list", async () => {
   const first = await officeAceAuthRecord({}, "iam::d1:user:hw0200")
   let ratesDown = false
