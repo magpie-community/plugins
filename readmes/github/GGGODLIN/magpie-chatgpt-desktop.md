@@ -2,7 +2,7 @@
 
 `magpie-chatgpt-desktop` connects [Magpie](https://github.com/yetone/magpie) to a signed-in official macOS ChatGPT desktop app (`/Applications/ChatGPT.app`) over the local Chromium DevTools Protocol (CDP).
 
-Instead of launching an isolated browser profile against `chatgpt.com` or relying on brittle DOM selectors, this plugin resolves the authenticated internal client inside the desktop renderer by method shape (`safeGet`, `streamPost`, `cancelStream`, excluding `RpcPromise` stubs) and verifies it with a read-only device attestation challenge before sending text requests.
+The default desktop transport resolves the authenticated internal client inside the desktop renderer by method shape (`safeGet`, `streamPost`, `cancelStream`, excluding `RpcPromise` stubs) and verifies it with a read-only device attestation challenge before sending text requests. It uses neither DOM selectors nor a separate browser. The `company_fallback` option can launch a dedicated Chrome Beta profile when needed.
 
 ## Requirements
 

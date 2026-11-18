@@ -265,14 +265,19 @@ in one go.
 - **The point rate exists only as the display name's suffix.** Loomy ships no
   structured rate field; the plugin splits the suffix off but cannot verify
   any amount against the catalog.
-- **Image input differs per model family.** Verified on the earlier catalog's
-  `deepseek-v4-flash-0731` (since retired): it read only the gateway's
-  private `<image_base64>…</image_base64>` marker (a standard `image_url` is
-  cut off as text), while the GLM models are the opposite — only `image_url`,
-  and the marker breaks them. The rewrite is a planned second iteration;
-  until it lands, image input is reliable on the GLM family alone, and the
-  newer `DeepSeek-V4.1-Flash` declares image input whose shape on this
-  gateway is unverified.
+- **Image input differs per model family.** The gateway's live rows
+  declare image input for the vision families (read 2026-11-17: the
+  DeepSeek pair, GLM, qwen, MiMo), and the plugin's records carry the
+  bit in every spelling a host reads — flat, nested, and the
+  `capabilities.input` mapping magpie's image badge marks off — so the
+  badge shows. The wire shape is another matter, verified on the earlier
+  catalog's `deepseek-v4-flash-0731` (since retired): it read only the
+  gateway's private `<image_base64>…</image_base64>` marker (a standard
+  `image_url` is cut off as text), while the GLM models are the
+  opposite — only `image_url`, and the marker breaks them. Translating
+  to each family's shape is a planned second iteration; until it lands,
+  a host's own attachment flow is reliable on the GLM family alone, and
+  the current DeepSeek rows' shape on this gateway is unverified.
 - **`reasoning_effort` is ignored on non-thinking models.** The variants
   follow the curated per-vendor level table (DeepSeek and GLM low / high /
   max, qwen low / medium / xhigh, MiMo no gears, Spark none / low /

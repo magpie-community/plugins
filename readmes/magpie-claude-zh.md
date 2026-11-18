@@ -42,9 +42,9 @@
 
 ## 说明
 
-已在 Windows 商店版 Claude 4.23118.1.0 实测运行时加载简体中文。Claude 4.x 的前端使用 `ion-dist.asar`，插件只读加载，不写入 `WindowsApps`。macOS 支持资源检查和手动运行时导出，尚未实现自动启动注入，也不修改签名。
+已在 Windows 商店版 Claude 4.23118.1.0 和 5.11492.5.0 实测运行时加载简体中文。这两个版本的前端使用 `ion-dist.asar`，插件只读加载，不写入 `WindowsApps`。macOS 支持资源检查和手动运行时导出，尚未实现自动启动注入，也不修改签名。
 
-Claude 更新后，请在 magpie 中关闭再启用插件，让它重新生成对应版本的语言资源。
+Claude 更新后，插件会自动检查并重建语言包。准备进度和失败原因可在「资源维护」查看。
 
 - [安装步骤](https://github.com/polang233/claude-desktop-zh/blob/main/docs/first-install.md)
 - [插件设置与常见问题](https://github.com/polang233/claude-desktop-zh/blob/main/docs/magpie.md)

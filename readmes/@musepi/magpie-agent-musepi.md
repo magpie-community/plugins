@@ -22,13 +22,30 @@ magpie edits two files under MusePi's default agent folder:
 
 - `~/.musepi/agent/models.yml` — its provider `magpie` (the gateway's
   address, the key magpie keeps for MusePi, and magpie's catalog as that
-  provider's models);
+  provider's models). Each model carries its window, output budget,
+  magpie's per-million price, image input when magpie knows it takes one,
+  and the thinking ladder magpie reports (`thinking.efforts` on Chat and
+  Responses; Anthropic keeps `reasoning` alone so MusePi picks its own
+  adaptive/budget shape);
 - `~/.musepi/agent/config.yml` — `modelRoles.default`, the model a new
   session starts on, as `magpie/<provider>/<model>`.
 
 Disconnect puts back what those files had. An empty table magpie made
 (`providers: {}`, `modelRoles: {}`) stays, as magpie leaves it for every
 agent.
+
+## On magpie's row
+
+The model list offers MusePi's own models too: every model `models.yml`
+declares under a provider other than `magpie` appears as a direct pick, so
+switching back from magpie is one click there. Picking one writes
+`modelRoles.default` without magpie's prefix, and MusePi asks that provider
+with its own key (magpie shows it as not through magpie). A provider's
+`label` names it in that list; without one its id does.
+
+Only what `models.yml` declares is visible: MusePi's bundled providers (a
+signed-in Anthropic, Copilot, …) live in its own catalog, not that file, so
+only the model MusePi is currently on is carried as the current value.
 
 ## Limits
 
@@ -43,7 +60,9 @@ agent.
   have. The other roles are untouched. Verified 2026-11-17; see
   `VERIFICATION.md`.
 - **The model list is magpie's.** MusePi shows what magpie's catalog had
-  when the agent last connected; re-pick a model after adding a provider.
+  when the agent last connected. Current MusePi re-reads `models.yml` when its
+  model menu opens, so a re-connect shows up there; a build from before that
+  reads it at session start, so start a new session.
 - **A failing model may fall back silently.** MusePi resolves an unavailable
   model to another one it can reach, so a reply can arrive from a model you
   did not pick. Check magpie's Usage page when a model's answer looks wrong.
@@ -56,6 +75,15 @@ agent.
   A model relayed only on Chat cannot carry Claude's thinking between tool
   turns; magpie reports `native_endpoints` per model and this plugin follows
   them.
+- **Video input is left to MusePi.** MusePi takes `text`, `image` and `video`,
+  but magpie's plugin facts only say whether a model takes images. The plugin
+  writes `image` when magpie knows it; it cannot write `video` without taking
+  the guess away from MusePi, so a video-capable model keeps MusePi's own
+  id-based inference.
+- **Image generation is not wired.** magpie's `connect` lists chat models
+  only; image models (`/v1/images/generations`) are a separate set the plugin
+  contract does not carry, and MusePi's `models.yml` has no image API. Drawing
+  goes through MusePi's own image providers.
 
 ## Design
 

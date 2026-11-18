@@ -105,6 +105,10 @@ magpie plugin add ./magpie-plugin-muse2api
 **返回契约**：任何一次调用（成功、缺配置、连接失败、上游 4xx/5xx、参考图读不到）都返回**可 `JSON.parse` 的字符串**。
 失败统一为 `{ok:false, status, error, …}`，按需带上 `baseUrl` / `task_id` / `http_status` / `field` / `hint`。不存在「错误返回中文纯文本」这一路。
 
+例外（宿主行为，插件无法覆盖）：**参数类型 / 必填项由 Magpie 在调用工具前用 schema 校验**，
+写错类型时返回的是宿主文案，例如 `generate_image's arguments are wrong: prompt: Invalid input:
+expected string, received undefined`，这时代码根本没执行到插件里。
+
 要点：
 
 - **图片一律异步**：`generate_image` 只提交，立刻返回 `task_id`；再调 `image_status` 取结果。
@@ -176,6 +180,13 @@ bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock m
 - 因此图片 / 视频只能通过**工具插件**暴露；单个工具 55 秒上限决定了必须用「提交 + 查询」两段式。
 - `muse-spark` 的 `tool_call: false`：muse2api 默认不向上游注入 tools（Muse 网页无原生 function calling），
   声明支持只会让 agent 发出会被拒绝的 tools。
+
+## 文档
+
+- [`docs/spec.md`](docs/spec.md)：设计与实现决策（问题、方案、用户故事、测试策略、不在范围内的事）
+- [`docs/qa-report.md`](docs/qa-report.md)：全功能 QA 报告（登录 / 多账号 / 三能力 / 错误契约，含证据）
+- [`docs/troubleshooting-admin-pool.md`](docs/troubleshooting-admin-pool.md)：后台页账号池显示 0 的根因排查
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)：本地开发、改动约定、发布方式
 
 ## License
 

@@ -172,11 +172,9 @@ Readings older than five minutes, or with an unknown update time, appear in a li
 鼠标停在更新时间或额度上可查看详情。  
 Hover over an update time or quota to view details.
 
-点击刷新只重读 Magpie 的额度记录，不触发账号登录、切换或向 OpenAI 发送模型请求。  
-Refreshing only rereads Magpie's quota records; it does not sign in, switch accounts or send model requests to OpenAI.
+点击刷新会通过 `GET /v1/magpie/quotas` 主动查询订阅额度、密钥套餐和 API 余额。Magpie 可能复用刚获取的读数。
 
-若供应商读数已旧，请先在 Magpie 中更新对应账号的额度。  
-If a provider reading is stale, update the corresponding account's quota in Magpie first.
+Click Refresh to query subscription quotas, key plans and API balances through `GET /v1/magpie/quotas`. Magpie may reuse recent provider readings.
 
 自动读取间隔为 60 秒；页面不可见时暂停。  
 Automatic reads run every 60 seconds and pause while the page is hidden.
