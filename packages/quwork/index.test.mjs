@@ -14,16 +14,42 @@ test("config declares the QuWork provider and models", async () => {
   assert.ok(Object.keys(cfg.provider.quwork.models).length >= 10)
 })
 
-test("the setup page links to QuWork and only the model key method is registered", async () => {
+test("the setup page links to QuWork and both official sign-in and model key methods are registered", async () => {
   const hooks = await QuWorkProvider({})
   const page = readFileSync(new URL("./page/index.html", import.meta.url), "utf8")
   assert.equal(hooks.auth.provider, "quwork")
-  assert.deepEqual(hooks.auth.methods.map((method) => method.type), ["api"])
+  assert.deepEqual(hooks.auth.methods.map((method) => method.type), ["oauth", "api"])
   assert.match(page, /href="https:\/\/quwork\.cn\/" target="_self"/)
   assert.doesNotMatch(page, /<input\b|<form\b/i)
-  assert.equal(hooks.auth.methods[0].prompts[0].type, "password")
+  assert.equal(hooks.auth.methods[1].prompts[0].type, "password")
   assert.equal(typeof hooks.auth.loader, "function")
   assert.equal(typeof hooks.auth.usage, "function")
+})
+
+test("official browser sign-in reads the website session and uses a returned model key", async () => {
+  const calls = []
+  const hooks = createPlugin({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, authorization: init.headers.authorization })
+      return Response.json({ data: [] })
+    },
+    browser: {
+      find: () => true,
+      open: async () => ({
+        credentials: async () => ({ webToken: "web-token", llmToken: "sk-browser" }),
+        close: async () => {},
+      }),
+    },
+  })
+  const desc = await hooks.auth.methods[0].authorize()
+  assert.equal(desc.opened, true)
+  assert.equal(desc.method, "auto")
+  assert.deepEqual(await desc.callback(), {
+    type: "success",
+    key: "sk-browser",
+    metadata: { source: "browser", accessToken: "web-token", modelKey: true },
+  })
+  assert.deepEqual(calls, [{ url: "https://llm.quwork.cn/v1/models", authorization: "Bearer sk-browser" }])
 })
 
 test("the loader sends the active key only to the model gateway and rejects redirects", async () => {
@@ -55,7 +81,7 @@ test("key setup validates only the model key with a read-only request", async ()
       return Response.json({ data: [] })
     },
   })
-  const method = hooks.auth.methods[0]
+  const method = hooks.auth.methods[1]
   assert.equal((await method.authorize({ key: "000000" })).type, "failed")
   assert.equal(calls.length, 0)
   assert.deepEqual(await method.authorize({ key: " sk-test " }), {

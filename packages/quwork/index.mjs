@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { findBrowser, openChromeSession } from "./browser.mjs"
 
 const PROVIDER = "quwork"
 const LLM_BASE = "https://llm.quwork.cn/v1"
@@ -6,6 +7,7 @@ const ACCOUNT_BASE = "https://llm.rrzu.com"
 const FALLBACK_VERSION = "1.7.5"
 const BALANCE_TTL_MS = 60_000
 const UPSTREAM_TIMEOUT_MS = 15_000
+const OFFICIAL_LOGIN = "https://quwork.cn/"
 
 const CLIENT_HEADERS = { "x-qurwork-env": "prod", "x-qurwork-version": FALLBACK_VERSION }
 
@@ -39,7 +41,7 @@ const MODELS = [
 
 function authKey(auth) {
   const key = auth?.type === "api" ? auth.key : auth?.access
-  return typeof key === "string" && /^sk-[A-Za-z0-9_-]{1,512}$/.test(key.trim()) ? key.trim() : ""
+  return typeof key === "string" && key.trim().length >= 4 && key.trim().length <= 4096 ? key.trim() : ""
 }
 
 function pointsNumber(value) {
@@ -98,8 +100,84 @@ async function checkKey(key, fetchImpl, signal) {
   }
 }
 
-function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
+function createPlugin({ fetchImpl = globalThis.fetch, browser = { find: findBrowser, open: openChromeSession } } = {}) {
   const balanceCache = new Map()
+
+  async function browserAuthorize(_inputs, { signal } = {}) {
+    if (!browser.find()) {
+      return { type: "failed", error: "没有找到 Chrome 或 Edge；请安装浏览器，或改用模型密钥登录。" }
+    }
+    let session
+    try {
+      session = await browser.open(OFFICIAL_LOGIN)
+    } catch (error) {
+      return { type: "failed", error: error?.message ?? String(error) }
+    }
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      return session.close()
+    }
+    if (signal?.aborted) {
+      await close()
+      return { type: "failed", error: "QuWork 登录已取消。" }
+    }
+    return {
+      url: "",
+      opened: true,
+      instructions: "已打开专用浏览器窗口：请在 QuWork 官网完成登录。登录成功后，Magpie 会自动继续。",
+      method: "auto",
+      close,
+      async callback(_code, { signal } = {}) {
+        const abort = () => close()
+        if (signal?.aborted) abort()
+        else signal?.addEventListener("abort", abort, { once: true })
+        try {
+          const found = await session.credentials(5 * 60 * 1000)
+          if (!found?.webToken && !found?.llmToken) {
+            return { type: "failed", error: "QuWork 官网登录超时，请重试。" }
+          }
+          const accessToken = found.webToken || ""
+          const candidates = [found.llmToken, accessToken].filter(Boolean)
+          let key = ""
+          for (const candidate of candidates) {
+            if (!(await checkKey(candidate, fetchImpl, signal))) {
+              key = candidate
+              break
+            }
+          }
+          if (!key && accessToken) {
+            const points = await fetchUsage(accessToken, fetchImpl)
+            if (points.balance) {
+              return {
+                type: "success",
+                key: accessToken,
+                metadata: { source: "browser", accessToken, modelKey: false },
+              }
+            }
+          }
+          if (!key) {
+            return {
+              type: "failed",
+              error: "官网登录成功，但 QuWork 没有返回可用于第三方模型的凭据。请在官网控制台创建模型密钥后重试。",
+            }
+          }
+          return {
+            type: "success",
+            key,
+            metadata: { source: "browser", accessToken, modelKey: true },
+          }
+        } catch (error) {
+          return { type: "failed", error: error?.message ?? String(error) }
+        } finally {
+          signal?.removeEventListener("abort", abort)
+          await close()
+        }
+      },
+    }
+  }
+
   return {
     async config(config) {
       config.provider ??= {}
@@ -114,12 +192,20 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
       provider: PROVIDER,
       methods: [
         {
+          type: "oauth",
+          label: "官网浏览器登录（自动读取登录态）",
+          authorize: browserAuthorize,
+        },
+        {
           type: "api",
           label: "填写已获授权的 QuWork 模型密钥",
           prompts: [{ type: "password", key: "key", message: "QuWork 授权用于第三方接入的模型密钥", placeholder: "sk-…" }],
           async authorize(inputs, { signal } = {}) {
-            const key = authKey({ type: "api", key: inputs?.key ?? inputs?.apiKey ?? inputs?.api_key ?? inputs?.value })
-            if (!key) return { type: "failed", error: "请填写 QuWork 授权用于第三方接入的模型密钥。" }
+            const raw = inputs?.key ?? inputs?.apiKey ?? inputs?.api_key ?? inputs?.value
+            const key = typeof raw === "string" ? raw.trim() : ""
+            if (!/^sk-[A-Za-z0-9_-]{1,512}$/.test(key)) {
+              return { type: "failed", error: "请填写 sk- 开头的 QuWork 授权模型密钥。" }
+            }
             const error = await checkKey(key, fetchImpl, signal)
             if (error) return { type: "failed", error }
             return { type: "success", key, metadata: { source: "pasted" } }
@@ -127,7 +213,16 @@ function createPlugin({ fetchImpl = globalThis.fetch } = {}) {
         },
       ],
       async loader(getAuth) {
-        if (!authKey(await getAuth())) return {}
+        const auth = await getAuth()
+        if (!authKey(auth)) return {}
+        if (auth.metadata?.modelKey === false) {
+          return {
+            baseURL: LLM_BASE,
+            async fetch() {
+              throw new Error("官网登录成功，但 QuWork 没有返回模型密钥。请在 QuWork 官网创建模型密钥后重新登录。")
+            },
+          }
+        }
         return {
           baseURL: LLM_BASE,
           apiKey: PROVIDER,
