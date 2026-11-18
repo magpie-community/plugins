@@ -155,6 +155,14 @@ function modelExtJson(model) {
   return ext
 }
 
+function modelReasoningLevels(model) {
+  const efforts = modelExtJson(model)?.reasoning?.efforts
+  if (!Array.isArray(efforts)) return []
+  return [...new Set(efforts
+    .map(effort => effort?.value)
+    .filter(value => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value)))]
+}
+
 /** JoyCode's model catalogue names the wire protocol in extJson.adapterType. */
 function adapterProtocol(model) {
   const ext = modelExtJson(model)
@@ -899,6 +907,7 @@ async function accountModels(provider, { auth } = {}) {
     const image = features.includes('vision')
     const rate = multiplier(model.billingRate) ?? rates.get(id)
     const protocol = adapterProtocol(model)
+    const reasoningLevels = modelReasoningLevels(model)
     const baseContext = Number.isFinite(model.maxTotalTokens) ? model.maxTotalTokens : base.limit?.context ?? 200000
     // Remove old rate fields so unavailable pricing never becomes fake free usage.
     const { rate: oldRate, rateWas, free, ...rest } = base
@@ -914,10 +923,15 @@ async function accountModels(provider, { auth } = {}) {
       },
       capabilities: {
         ...base.capabilities,
+        ...(reasoningLevels.length ? { reasoning: true } : {}),
         toolcall: features.includes('function_call'),
         input: { ...base.capabilities?.input, text: true, image },
       },
       modalities: { input: image ? ['text', 'image'] : ['text'] },
+      ...(reasoningLevels.length ? {
+        reasoning: true,
+        variants: Object.fromEntries(reasoningLevels.map(effort => [effort, { reasoningEffort: effort }])),
+      } : {}),
       ...(rate !== undefined ? { rate, free: rate === 0 } : {}),
     }
   }

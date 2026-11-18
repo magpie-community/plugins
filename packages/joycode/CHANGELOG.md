@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.2.8
+
+- 修复模型目录遗漏思考强度的问题：读取 `extJson.reasoning.efforts[].value`，生成 `reasoning`、`capabilities.reasoning` 和 `variants`。覆盖 GPT、JoyAI、Kimi、DeepSeek 等提供档位的模型，不再依赖宿主按名称推断。
+- 支持对象和字符串形式的 `extJson`，过滤无效档位并去重；缺失或损坏的目录字段保留原有回退行为。请求转发和默认强度不变。
+- 增加目录解析及 Chat Completions 强度透传回归测试；保留 Responses 的 `xhigh`、`max` 透传测试。
+
 ## 0.2.7
 
 - Responses SSE 不再把空完成当成功：空 `response.completed` 转成 `empty_response`，缺少终止事件的 EOF 转成 `incomplete_response`，流内 JoyCode `FAILED_RESPONSE` 错误保留原始字段并转成标准错误事件。按事件增量处理，不缓存整段回复。
