@@ -37,18 +37,33 @@ magpie plugin add ./magpie-plugin-muse2api
 ```
 
 > 建议先卸载其它 Muse 供应商插件（例如 `magpie-muse-web`），否则模型列表里会出现两个可对话的
-> Muse provider。本插件走你自建的 muse2api，不需要浏览器登录 Magpie 侧的 Muse 账号。
+> Muse provider。本插件走你自建的 muse2api：账号登录既可以直接填 API key，也可以由插件拉起
+> 浏览器完成 muse.ai 网页登录（cookie 自动导入 muse2api 的账号池）。
 
 ## 登录（对话用）
 
-**供应商 → muse2api → 登录**，按提示填两项：
+**供应商 → muse2api → 登录**，弹窗里有两种方式：
+
+### 方式一：muse.ai 网页登录（Cookie）← 推荐
+
+对齐 `magpie-muse-web` 的登录体验：插件自己拉起一个浏览器窗口打开 `https://muse.ai/`，你在里面正常登录
+（或本来就在这个 profile 里登录过），插件从浏览器的调试协议里读取 muse.ai 域下的 cookie，取到核心项
+`hatch_sess` 后自动 `POST <地址>/admin/accounts` 导入 muse2api 的账号池，然后关掉窗口。
+
+- 需要先在**插件 → 已安装 → muse2api → 选项**里填 `baseUrl` 与 `apiKey`（网页登录要先能校验 `/v1/models`）。
+- 浏览器用的是插件专用的独立 profile（`~/.config/magpie/plugins/muse2api-login-profile`），不会碰你日常的 Chrome 配置。
+- 15 分钟内没登录成功会超时失败，可重试。
+- 登录成功后账号出现在 muse2api 管理页 `/admin` 的账号列表里，之后所有对话/图片/视频都用这个 cookie 池。
+
+### 方式二：直接填 API key
 
 | 字段 | 例 | 说明 |
 | --- | --- | --- |
 | muse2api 地址（不含 `/v1`） | `http://127.0.0.1:18610` | 插件会请求 `<地址>/v1/models` 校验 |
 | MUSE2API_KEY | `m2a_…` | muse2api 的 Bearer key |
 
-校验通过后，地址会存进账号 metadata，`loader` 用 `<地址>/v1` 作 baseURL，模型固定为 `muse-spark`。
+两种方式最终都拿到同一个 `MUSE2API_KEY`：地址存进账号 metadata，`loader` 用 `<地址>/v1` 作 baseURL，
+模型固定为 `muse-spark`。
 
 ## 配置图片 / 视频工具（工具用）
 
@@ -126,6 +141,10 @@ magpie plugin add ./magpie-plugin-muse2api
 | 对话 404 或 400 | `baseURL` 拼错了；本插件固定用 `<地址>/v1`，登录时地址**不要带** `/v1`（带了会被 validate 拦下） |
 | 工具说「没有配置 muse2api 连接信息」 | 去 **插件 → 已安装 → muse2api → 选项** 填 `baseUrl` / `apiKey`，或设环境变量后重启 Magpie |
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |
+| 网页登录报「需要先有 muse2api 的 API key」 | 先到 **插件 → 已安装 → muse2api → 选项** 填 `apiKey`；网页登录要用它校验 `/v1/models` |
+| 网页登录报「没有找到 Chrome / Edge / Chromium / Brave」 | 装一个 Chromium 内核浏览器，或改用「手填 API key」方式 |
+| 网页登录一直失败「没有在 15 分钟内完成」 | 确认弹出窗口里登录的是 muse.ai（不是其它站点），并确认该账号在 muse.ai 上确实可用；重试会复用同一个 profile |
+| 网页登录成功但对话仍报没有账号 | 去 muse2api 管理页 `/admin` 看账号列表与 cookie 数量；核心 cookie 是 `hatch_sess` |
 | 图片 / 视频链接打不开 | muse2api 的 `PUBLIC_BASE` 不是外部可达地址；图片本身生成成功时任务里也有 `bytes` / `size` 可核对 |
 
 ## 更新
@@ -137,7 +156,7 @@ magpie plugin add ./magpie-plugin-muse2api
 ## 开发
 
 ```bash
-bun test              # 53 条单元测试，含 mock muse2api
+bun test              # 64 条单元测试，含 mock muse2api
 bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock muse2api，四条工具链跑通
 ```
 

@@ -2,9 +2,9 @@
 
 面向 **aihub.top 普通消费者** 的 Magpie Provider 插件。用自己的账户或分组 Key，在 Magpie 中提供一个 `aihub-auto` 上游入口，按倍率和延迟选组、保留会话线路、在首次响应前有限重试。
 
-**版本：v0.3.3（预发布）。** 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。
+**版本：v0.7.9（预发布）。** 当前实现覆盖 `openai`、`deepseek`、`zhipu`、`kimi`、`grok`、`gemini` 六个平台；非 OpenAI 模型使用 `platform::model` 命名空间，仅在**同平台、同模型**的分组间 failover。Gemini 可显式选择 Responses 或原生 Gemini 协议，其他平台支持 Responses / Chat Completions。外部平台接口依据公开文档与公开代码核对，**不代表六平台真实调用均已实测**。v0.3.0 新增账户余额卡、每账户 Key 上限与余额阈值暂停建 Key；v0.3.1 在页面令牌过期时自动重载一次，并把服务端拒绝快照的 `error.code` 显示在监控页，便于区分令牌过期与入口代理改写。v0.7.1 起用 Magpie 的 `auth.usage` 钩子在宿主「用量 → 概览」给出本账户的卡片：钱包余额，以及按平台配额汇总的今日/本周/本月预算使用。
 
-已通过 192 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
+已通过 280 项本地测试，并在隔离的官方 Magpie 0.1.3250 `magpie web` 实例中经真实浏览器打开：页面经插件服务代理加载、`magpie.ready` 连通、监控标签跳转到服务页并在沙箱 iframe 内读到 `/snapshot`。余额/消耗接口来自已登录 AIHub 页面的实际响应样本，但页面余额卡与 Key 上限保护只在合成快照和本地 Edge 渲染中验证。官方 Magpie 0.1.3250 隔离检查涵盖插件加载、合成凭据登录、六平台 8 个模型与三种 SDK 注册。真实生产实例联调、真实 AIHub 账户与计费推理仍未验证。独立 MIT 实现，不复制许可不明项目代码。图标取自 [AIHub 官方站点](https://aihub.top/) 公开页面的 PNG favicon，内嵌到元数据与页面；品牌图像权利归原站点。
 
 ## 安装
 
@@ -52,7 +52,7 @@ github:abworks-dev/magpie-aihub
 
 1. 读取账号可用分组、专属倍率以及供应商大厅；优先使用 v2 大厅接口。
 2. 按六平台目录识别分组，排除未启用平台、下架/不可见/明确检测失败、超倍率及人工排除的分组。
-3. 在用户允许自动创建后，为选中的分组创建 `magpie-aihub-<instance>-g<id>` 专用 Key，上限由 `poolSize` 与 `maxKeysPerAccount` 共同控制；`minBalance` 大于 0 且读到的账户余额低于阈值时暂停新建。
+3. 在用户允许自动创建后，为选中的分组创建 `magpie-aihub-<instance>-g<id>` 专用 Key，总数只由 `maxKeysPerAccount` 控制（`poolSize` 只决定一次路由最多试几个候选分组）；`minBalance` 大于 0 且读到的账户余额低于阈值时暂停新建。
 4. 保存平台归属与未完成创建记录；未知创建结果只重新查询，不盲目重建。
 
 **不会自动删除 Key，不会改绑现有 Key，也不会自动清理其他实例的 Key。** 没有验证 AIHub 建 Key 的额度参数，因此不会声称新 Key 自带消费限额。可在 AIHub 控制台为专用 Key 设置额度，关闭它的自动改组，并避免其他选组工具管理同一把 Key。
@@ -70,7 +70,7 @@ github:abworks-dev/magpie-aihub
 | `grok` | `grok::MODEL_ID` | `responses` / `chat` |
 | `gemini` | `gemini::MODEL_ID` | `responses` / `gemini`（原生） |
 
-设置页模型行可写 `deepseek::MODEL_ID|chat`、`gemini::MODEL_ID|gemini`；JSON 配置可写 `{ "id": "gemini::MODEL_ID", "api": "gemini" }`。非 OpenAI ID 必须标明平台，显式 `platform` 与 ID 命名空间须一致。上游把 `platform:model`（单冒号）或裸模型 ID 交给插件时同样可以路由：单冒号按平台命名空间解析，裸 ID 在已启用平台里按分组公布的模型查找；都找不到时 503 文案会带上各分组被排除的原因与计数（如 `over the multiplier cap ×8`），便于直接调整倍率。协议决定宿主 SDK 与请求形态，不做任意协议转换；远端是否支持该模型/协议需另行验证。插件发往上游前剥离内部命名空间，始终保持相同平台和原始模型 ID，不能以跨平台或换模型方式降级。
+设置页模型行可写 `deepseek::MODEL_ID|chat`、`gemini::MODEL_ID|gemini`；JSON 配置可写 `{ "id": "gemini::MODEL_ID", "api": "gemini" }`。非 OpenAI ID 必须标明平台，显式 `platform` 与 ID 命名空间须一致。上游把 `platform:model`（单冒号）或裸模型 ID 交给插件时同样可以路由：单冒号按平台命名空间解析，裸 ID 在已启用平台里按分组公布的模型查找；都找不到时 503 文案会带上各分组被排除的原因与计数（如 `over the multiplier cap ×8`），便于直接调整倍率。协议决定宿主 SDK 与请求形态；除 Gemini 之外不做协议转换。Magpie 的路由组按模型名同名聚合，带前缀的 ID 不会进入以裸名命名的组；打开 `bareModelIds` 后对外以裸名提供（内部仍带命名空间），此时同名跨平台模型按请求头提示与分组公布清单推断平台。Gemini 分组是唯一的例外：宿主用 Responses 或 Chat Completions 调 `gemini::MODEL_ID` 时，插件把请求翻译成原生 `generateContent`（流式用 `streamGenerateContent?alt=sse`），再把候选文本译回调用方协议——非流式整段翻译，流式按 SSE 逐事件翻译（`response.output_text.delta` 或 `chat.completion.chunk`）。原生 Gemini 调用（`/v1beta/models/…`）原样透传，不做改动。远端是否支持该模型/协议需另行验证。插件发往上游前剥离内部命名空间，始终保持相同平台和原始模型 ID，不能以跨平台或换模型方式降级。
 
 ## 常用设置
 
@@ -83,11 +83,17 @@ github:abworks-dev/magpie-aihub
 | `maxMultiplier` | `0.16` | 名义倍率硬上限，**0 表示只允许免费组** |
 | `platformCaps` | `{}` | 按平台覆盖上面的上限，例如 `{"deepseek":1,"zhipu":1.2}`；没写到的平台沿用 `maxMultiplier` |
 | `maxAttempts` | `3` | 每次请求最多推理尝试数，包含首次；范围 1–5 |
-| `poolSize` | `4` | 托管专用 Key 数量上限，范围 1–8；手工导入可多于此值 |
+| `poolSize` | `4` | 一次路由最多依次尝试的候选分组数，范围 1–32；它不再限制专用 Key 总数 |
 | `allowedGroups` / `excludedGroups` | `[]` | 分组 ID 白名单/排除名单，排除优先 |
 | `requirePassed` | `false` | 仅使用大厅 `passed` 分组；手工模式不支持 |
 | `autoCreateKeys` | `false` | 允许账户模式按需创建 Key；关闭不撤销已有 Key |
-| `maxKeysPerAccount` | `8` | 插件专用 Key 总数上限（1–32）；达到后不再新建，已有 Key 继续可用 |
+| `bareModelIds` | `false` | 对外模型名去掉 `platform::` 前缀；不改变内部路由与上游请求，只影响 `/v1/models` 与返回体里的名字 |
+| `evictIdleKeys` | `false` | 名额满且新模型必须换分组时，淘汰一次闲置的插件自建 Key；默认关闭 |
+| `evictIdleDays` | `7` | 淘汰门槛：超过这么多天没用过的 Key 才算闲置（1–90） |
+| `maxKeysPerAccount` | `8` | 插件专用 Key 总数上限（1–32），是唯一的 Key 数量闸门；达到后不再新建，已有 Key 继续可用 |
+| `keysPerPlatform` | `0` | 每个平台最多占几把专用 Key（0–32，`0` = 不限制）。分组多的平台不会吃满整个候选池；已有 Key 的分组始终可用 |
+| `reuseBias` | `0.25` | 复用溢价：已有 Key 的分组贵不超过这个比例时优先复用，避免为省一点钱多建 Key；`0` = 只按价格排序 |
+| `allowedGroups` | 空 | 只在这些 AIHub 分组里选路（设置页的可视化清单点选即可）；留空表示不限制。锁定后不会再为新分组创建 Key |
 | `minBalance` | `0` | 0 关闭；账户余额低于该值时暂停新建 Key，不删除已有 Key |
 | `dailyBudget` | `0` | 每日花费上限（与「真实价格」同单位），按响应 `usage` 与分组真实价格累计；0 关闭；超限的请求直接返回 429 `daily_budget_exceeded` |
 | `priceAlertRatio` | `0.2` | 分组真实价格相对上次观测变化超过该比例（0.2 = 20%）时在监控页提示；只提示，不参与路由 |
@@ -105,11 +111,13 @@ github:abworks-dev/magpie-aihub
 
 设置和监控是**同一个页面**：Magpie 里打开的是静态设置页，它经 `bridge.service` 或监控标签跳到插件自己的回环服务（`127.0.0.1:<monitorPort>`），那里同时提供设置和只读监控。`magpie web` 会把该服务代理到插件页面路径下，所以从别的电脑经 Magpie 访问时不需要另开端口；桌面版 Magpie 不代理服务，页面会提示在本机打开 `http://127.0.0.1:19871/`。`monitorPort: 19871` 只是默认候选，须先核对目标主机端口和宿主服务桥接。
 
-服务只监听回环，仅接受 GET/HEAD，并要求精确 `Host`、`Origin` 缺省或为 `null`、无请求体；快照还需要服务注入到页面里的进程级令牌（`x-aihub-service-token`），因此别的站点或被沙箱化的第三方页面无法读取。Cloud 当前仅批准四个静态资源，未批准 service 新路由，不能据此声称生产监控已接通。如果 `magpie web` 前面还有反向代理或入口（Caddy/Nginx/Cloudflare 等），它必须原样转发 `/_magpie/plugin/<32 位 token>/_magpie/service/` 及其下的 `snapshot`、`identity`、`metrics`，并且**不能剥离路径前缀**；只放行 `index.html`、`app.js`、`style.css`、`_magpie/bridge.js` 时，点「监控」会落到代理自己的 404 页（如 Caddy 的 `Not exposed by this Magpie entry.`），这不是插件渲染错误。
+服务只监听回环，仅接受 GET/HEAD，并要求精确 `Host`、`Origin` 缺省或为 `null`、无请求体；快照还需要服务注入到页面里的进程级令牌（`x-aihub-service-token`），因此别的站点或被沙箱化的第三方页面无法读取。Cloud 入口自 2026-11-18 起按扩展名放行插件页面的静态文件（`index.html`、`app.js`、`style.css`、`icon.svg`、`panels.js`、`servicebar.js`、`data.js` 这类单层文件与 `_magpie/bridge.js`），仍未批准 `_magpie/service/` 下的 service 路由，所以页面图标与面板正常、点「监控」仍会落到代理自己的 404 页；不能据此声称生产监控已接通。如果 `magpie web` 前面还有反向代理或入口（Caddy/Nginx/Cloudflare 等），它必须原样转发 `/_magpie/plugin/<32 位 token>/_magpie/service/` 及其下的 `snapshot`、`identity`、`metrics`，并且**不能剥离路径前缀**；只放行 `index.html`、`app.js`、`style.css`、`_magpie/bridge.js` 时，点「监控」会落到代理自己的 404 页（如 Caddy 的 `Not exposed by this Magpie entry.`），这不是插件渲染错误。
 
-快照顶部为账户卡：余额、冻结金额、今日/本月消耗（按平台配额汇总）、累计请求、专用 Key 数量与上限、各平台日/月用量与限额，以及最近建 Key/阻止事件。余额数据以 60 秒间隔读取 `/api/v1/auth/me`、`/api/v1/usage/stats`、`/api/v1/user/platform-quotas`；读取失败时沿用上次快照（最多 10 分钟），并显示 `billing_unavailable`、`billing_access_denied` 或 `billing_sign_in_required` / `billing_session_expired`，不推断数值。接口正常但响应里没有余额字段时（组织或配额账号常见），余额仍显示 `—`，但卡片会标注“该账户未返回余额字段”，与读取失败区分开。分组表的“真实价格”由 AIHub 区间窗口的 `range_cache` 折算：窗口内 `input/cache_read/cache_creation` 的成本之和除以 Token 之和，再乘 1e6，得到每百万 Token 的美元价；窗口未就绪、已过期或 Token 为 0 时不显示，也不推断。`/api/v1/keys` 会返回明文 Key；插件只在恢复本实例创建的专用 Key 时读取该列表（按实例命名精确匹配），不做批量导出、不记录明文。账户卡标题显示脱敏标识（如 `ab***@example.test`），点标题旁的眼睛按钮时才向 `GET /identity` 取一次完整账号（同一页面令牌、只读、不写回快照），再点收起；快照本身始终不含完整标识。账户卡还带 Key 池清单（每把 Key 的来源与最近使用时间，从未使用的会标出），顶部有「今日花费 / 预算」与价格波动提示，分组表增加「平均」「使用」两列。`GET /metrics` 以 Prometheus 文本输出账户数、请求数、失败数、今日花费，与快照同样只在本机回环可达。
+快照顶部为账户卡：余额、冻结金额、今日/本月消耗（按平台配额汇总）、累计请求、专用 Key 数量与上限、各平台日/月用量与限额，以及最近建 Key/阻止事件。余额数据以 60 秒间隔读取 `/api/v1/auth/me`、`/api/v1/usage/stats`、`/api/v1/user/platform-quotas`；读取失败时沿用上次快照（最多 10 分钟），并显示 `billing_unavailable`、`billing_access_denied` 或 `billing_sign_in_required` / `billing_session_expired`，不推断数值。接口正常但响应里没有余额字段时（组织或配额账号常见），余额仍显示 `—`，但卡片会标注“该账户未返回余额字段”，与读取失败区分开。分组表的“真实价格”由 AIHub 区间窗口的 `range_cache` 折算：窗口内 `input/cache_read/cache_creation` 的成本之和除以 Token 之和，再乘 1e6，得到每百万 Token 的美元价；窗口未就绪、已过期或 Token 为 0 时不显示，也不推断。`/api/v1/keys` 会返回明文 Key；插件只在恢复本实例创建的专用 Key 时读取该列表（按实例命名精确匹配），不做批量导出、不记录明文。账户卡标题显示脱敏标识（如 `ab***@example.test`），点标题旁的眼睛按钮时才向 `GET /identity` 取一次完整账号（同一页面令牌、只读、不写回快照），再点收起；快照本身始终不含完整标识。账户卡还带 Key 池清单（每把 Key 的来源与最近使用时间，从未使用的会标出），顶部有「今日花费 / 预算」与价格波动提示，分组表增加「首字」（大厅 `avg_ttft_ms`，即首 Token 耗时）、「样本」（`range_cache.usage_records`，悬停显示窗口时长）、「检测」（`model_detection` 的通过/失败/未测）、「使用」等列；「真实价格 $/M」按每百万 Token 美元显示，悬停给出按 7.2 估算的人民币价。另加「评分」（大厅 `reputation`）；「成功率」悬停显示 `success_rates['1h']` 档，「检测」悬停显示 `model_detection.detected_at`，「模型」悬停逐条列出 `model_cards` 的单价、样本数与检测失败标记——这些字段本就随大厅响应返回，不需要额外接口。官方大厅的「预测倍率」不在公开接口里，插件不伪造。`GET /metrics` 以 Prometheus 文本输出账户数、请求数、失败数、今日花费，与快照同样只在本机回环可达。
 
-快照展示分组可用性/筛选原因、倍率、可得的成功率/TPS/缓存命中率/价格、目录新鲜度、Key 数量及最近 100 条内存路由结果。缺失、未就绪或不可信的指标为 `null`。快照不返回原始认证包、Key、Cookie、请求/响应 body 或会话 ID。监控读取可按需发起远端目录 GET，并可能触发管理令牌刷新与保存；**不会推理探测或创建 Key**（但若自动发现与 `autoCreateKeys` 同时开启，业务请求仍可能触发建 Key）。
+**Magpie「用量 → 概览」卡片**（v0.7.5，Magpie 的 `auth.usage` 钩子；OpenCode 忽略该钩子）。账户模式下卡片标题为 `AIHub 账户`，显示 `user`（导入时留存的标识）、`balance`（`/api/v1/auth/me` 的可用余额，按美元两位小数；组织/配额账户没有余额字段时不显示，不伪造 `$0.00`），以及三行预算：`今日` / `本周` / `本月` = 平台配额里**公布限额**的平台之和（`daily_limit_usd` 与 `daily_usage_usd` 等），`unit: "USD"`，百分比由宿主按 amount/limit 折算；只在该周期没有平台公布限额时，才退回两行文字：插件自己的「本次运行」请求数与花费（配置了 `dailyBudget` 时改为「今日预算」），以及 AIHub 钱包的「累计消耗」（`/api/v1/usage/stats` 的累计请求数与花费，没有上限可画进度，故只报文字）；此时若「本次运行」还是 0 次请求 · $0.00（插件刚重启），这一行让位给钱包行，卡片上不出现两行零。读数走与页面相同的 60 秒缓存（`balanceRefreshMs`），失败时按 `billing_sign_in_required` / `billing_session_expired` / `billing_access_denied` / `billing_unavailable` 在卡片上说明原因；`导入分组 Key` 模式没有 AIHub 会话，只显示插件自己的路由计数。卡片只读，不发推理请求、不建 Key、不读 `/api/v1/keys`。
+
+监控表按「分组 → 倍率 → 首字 → 样本 → 成功率 → 缓存 → TPS → 价格 → 模型 → 使用 → 状态 → 最后使用」排列，点表头即按该列升序、再点切换降序；窄屏按优先级依次收起样本、缓存、模型、最后使用（≤1100px）、首字、TPS、使用（≤900px）、倍率（≤720px），保留分组、成功率、价格与状态。设置页的分组选择器带平台快筛、关键词过滤、「全选可用」与「清空已选」；未加载分组时工具行与空态一起隐藏。快照展示分组可用性/筛选原因、倍率、可得的成功率/TPS/缓存命中率/价格、目录新鲜度、Key 数量及最近 100 条内存路由结果。缺失、未就绪或不可信的指标为 `null`。快照不返回原始认证包、Key、Cookie、请求/响应 body 或会话 ID。监控读取可按需发起远端目录 GET，并可能触发管理令牌刷新与保存；**不会推理探测或创建 Key**（但若自动发现与 `autoCreateKeys` 同时开启，业务请求仍可能触发建 Key）。
 
 Key 准备失败返回稳定的 `error.code` 和脱敏信息，停止本次请求，不盲目创建或重放：
 
@@ -136,6 +144,12 @@ Key 准备失败返回稳定的 `error.code` 和脱敏信息，停止本次请�
 ## 出网代理
 
 Magpie 把宿主代理以 `MAGPIE_HTTPS_PROXY` / `MAGPIE_HTTP_PROXY` / `MAGPIE_ALL_PROXY`（及对应小写形式和 `MAGPIE_NO_PROXY`）传给插件进程，普通 `HTTPS_PROXY` 并不保证存在。Bun 的 `fetch` 不会自己读取环境变量，所以插件的每个出站请求都显式带上 `proxy`：取值顺序 `MAGPIE_HTTPS_PROXY → HTTPS_PROXY → MAGPIE_ALL_PROXY → ALL_PROXY`，命中 `NO_PROXY` 时直连；未配置代理时行为不变（直连）。这解决的是容器直连 `aihub.top` 被投毒解析、连接被重置这类环境问题，不改变任何接口语义。
+
+## 清理闲置 Key
+
+监控页的「清理闲置 Key」只处理本插件创建的专用 Key：名字以 `magpie-aihub-` 开头，且当前没有任何路由分组还在用它。账户上你自己建的 Key、以及仍有分组在用的 Key 都不会被删。
+
+它调用页面服务的 `POST /prune`，需要页面令牌；请求体 `{"apply":true}` 才真正删除，不带该字段时是试运行（只返回候选清单）。AIHub 若不具备删除接口，失败项会列在返回的 `failed` 里，不会静默跳过。
 
 ## 开发与验证
 

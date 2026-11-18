@@ -36,7 +36,7 @@ See Magpie's [request-hook contract](https://github.com/yetone/magpie/blob/main/
 
 ## Install
 
-Use a Magpie version that supports `magpie.hooks`. The original implementation was verified against **0.1.4226**, package loading against **0.1.4280**, and **1.0.1**'s mixed-compaction fix against **0.1.4363**. **1.0.2** was checked on **0.1.4379**. These are tested versions, not a claim about the earliest compatible version.
+Use a Magpie version that supports `magpie.hooks`. The original implementation was verified against **0.1.4226**, package loading against **0.1.4280**, and **1.0.1**'s mixed-compaction fix against **0.1.4363**. **1.0.2** was checked on **0.1.4379**, and **1.0.3** on **0.1.4402**. These are tested versions, not a claim about the earliest compatible version.
 
 ```sh
 magpie plugin add github:Singrun/magpie-codex-native-history
@@ -68,8 +68,11 @@ Requests for other provider-prefixed models pass through. Shared Responses endpo
 On an applicable request, the hook:
 
 1. Removes old `reasoning` items.
-2. Converts historical `web_search_call` items into clearly labeled assistant text containing only the data present in the original item.
-3. Removes optional server `id` fields from portable history items.
+2. Removes top-level `encrypted_content` replay copies from supported output items with complete plaintext, retaining the plaintext and other fields.
+3. Converts historical `web_search_call` items into clearly labeled assistant text containing only the data present in the original item.
+4. Removes optional server `id` fields from portable history items.
+
+Step 2 covers assistant `message` items with complete text, function/custom calls with plaintext arguments, and their nonempty text results. Codex's `output.encrypted_content` can make these outputs carry both plaintext and an encrypted replay copy; that copy must not disable the whole filter. This handling does not remove `encrypted_function_args`. Ciphertext-only or partially sealed records and top-level replay seals that do not meet the conditions above still require opaque-context handling. Dedicated checkpoints remain unchanged.
 
 Portable tool items include function/custom/tool-search calls and results, computer results, shell/apply-patch calls and results, and MCP approval responses. Their `call_id`, `approval_request_id`, and identifiers inside tool data remain intact. Server tools requiring an ID and unknown item types pass through; they are not all converted into text.
 
@@ -83,7 +86,7 @@ Previous internal reasoning is removed even when it is otherwise readable, so fi
 
 Native checkpoints (`compaction`, `context_compaction`, `compaction_summary`) remain intact while other history items are filtered. This supports a conversation that was compacted natively, continued on a third-party model, and then returned to native, provided the native upstream can read the retained checkpoint. The hook does not decrypt a checkpoint or make it readable by an incompatible upstream; an unreadable checkpoint can still be rejected.
 
-Requests containing sealed message content, `item_reference`, `previous_response_id`, or a server-side `conversation` reference are left intact and report `unavailable`; the upstream decides whether they can be accepted. **This remains a filtering gap: third-party reasoning in that same request is also passed through.** References may target original item IDs, and sealed tasks may be readable only by their original upstream. Deleting references or ciphertext is not a context-preserving repair.
+Requests containing genuinely opaque content (ciphertext-only or partially sealed records, or unsupported sealed types), `item_reference`, `previous_response_id`, or a server-side `conversation` reference are left intact and report `unavailable`; the upstream decides whether they can be accepted. **This remains a filtering gap: third-party reasoning in that same request is also passed through.** Supported replay copies with complete plaintext no longer trigger this bypass as of 1.0.3. References may target original item IDs, and sealed tasks may be readable only by their original upstream. Deleting references or ciphertext is not a context-preserving repair.
 
 For normal Magpie WebSocket continuations, the gateway reconstructs full input and removes `previous_response_id` before invoking the request hook. A raw HTTP request containing a server-only reference is a different case.
 
@@ -104,7 +107,7 @@ The plugin does not log, read from disk, store, or export request content, accou
 | --- | --- |
 | Mixed-provider groups, smart routing, or fallback into Codex | A `group/…` name does not trigger native filtering. An unprefixed name on a shared endpoint also does not prove which provider will answer. Select a native model or `codex/…` explicitly when coverage is needed. Complete mixed-group support needs an entry after provider selection. |
 | Account/API-key changes or a relay distributing requests across upstreams | A checkpoint, sealed task, or encrypted function argument may require its original service. Magpie tracks writers of checkpoints it has observed, but an unknown or unavailable writer can still cause failure. Keep readable context and use a route able to read the seal; this hook does not decrypt it. |
-| Server references or sealed messages mixed into history | `unavailable` means the whole request was retained. Normal WebSocket continuations usually have expanded history; raw HTTP server references and sealed multi-agent tasks need separate investigation. |
+| Server references or genuinely sealed messages mixed into history | `unavailable` means the whole request was retained. Supported replay copies beside complete plaintext are normalized; raw HTTP server references and sealed multi-agent tasks need separate investigation. |
 | New tool types or server tools depending on earlier reasoning/approval records | Required IDs are preserved, which does not establish portability. Investigate the actual type and dependency on item-not-found, missing-pair, or encrypted-function-args errors. Do not discard tool results in bulk. |
 | Hook timeout, host startup failure, or another plugin rewriting the request | Hooks run in order and failure retains the last accepted body. Check `timeout`/`error` and the final request result; enable one copy of this hook. Later hooks or synchronous middleware may rewrite history again. |
 | Compaction, title, summary, or other internal request failures | Dedicated `/responses/compact` and Magpie's own requests do not run this hook. Identify the failed operation before deciding whether to fix the client, gateway, or plugin. |
@@ -136,6 +139,8 @@ The original live regression used a complete history of 149 items and approximat
 **1.0.1 fixes filtering skipped for mixed compacted history.** Version 1.0.0 bypassed the entire request when it found a checkpoint, also passing through later third-party reasoning. A new live replay used 200 input items containing a native checkpoint and subsequent third-party history: the previous version reproduced the encrypted-content error and the fix passed the native request. A single WebSocket carrying that same mixed history also completed four alternating turns while retaining the verification marker. Synthetic tests verify exact checkpoint preservation and continued filtering of the surrounding history.
 
 **1.0.2 fixes the reporting contract and covers known path/history variants.** It adds `/responses`, preserves `compaction_summary`, normalizes six further tool types with optional server IDs, and reports host-supported `ready`/`unavailable` outcomes. Synthetic regressions cover these formats and preservation checks; the real mixed conversation is also rechecked through native HTTP and WebSocket switching.
+
+**1.0.3 fixes a whole-request bypass caused by output replay copies.** A real history contained a complete plaintext assistant answer with its top-level encrypted copy, followed by third-party reasoning. Version 1.0.2 treated that answer as opaque and reproduced the same `invalid_encrypted_content` error on native replay. Version 1.0.3 retains the plaintext, removes the supported replay copy, and filters old reasoning; the same approximately 4.56 MB request succeeds. That history also passes six alternating third-party/native turns on one WebSocket, with native turns requesting new `output.encrypted_content` and preserving the continuity marker. The upstream returned no new encrypted message copies in this run; all continuations retained history carrying the original copy. Regressions verify continued protection of genuinely sealed records and that encrypted parts inside discarded reasoning do not disable filtering.
 
 Those live results describe the tested environment, rather than every gateway, account, model, or history format. Real conversation logs, account data, authentication readers, local backups, and the original live replay scripts are excluded from this repository.
 

@@ -21,15 +21,14 @@ No terminal commands or API-key copying are needed. The **ZGAP** sidebar page an
 panel keep the steps in the app. Right-click a provider or agent and choose **ZGAP setup guide** to
 open the relevant step. The plugin follows magpie’s light/dark theme and language.
 
-After sign-in, the same page becomes a compact activity dashboard. It shows the selected ZGAP account’s
-24-hour, 7-day or 30-day request totals, token counts, current-catalog cost estimate, daily trend,
-model breakdown and live requests. The connection guide remains available under **Show connection guide**.
-The dashboard asks ZGAP for only the signed-in account’s data, across that account’s devices and API
-keys. OAuth credentials stay in the local service and never reach the page. If the account is signed
-out, the page returns to the connection guide.
+Open **ZGAP** in the sidebar. Before sign-in you’ll see the connection guide. After sign-in,
+**Live activity** opens the same request timeline as the ZGAP web console. Choose **Usage stats**
+for the weekly report, time ranges, chart metrics and breakdowns by model, API key, project or device.
+If you use more than one ZGAP account, choose one at the top. These views cover that account’s
+usage across devices. **Connection guide** stays available, and signing out clears the account’s data.
 
 If you already installed the plugin, use **Plugins → Installed → ZGAP → Update** to get the current
-icon and guide.
+version.
 
 ## Connect from a terminal
 
@@ -47,6 +46,9 @@ on the same computer, and signing in here again updates the same session.
 - **Models**: read from ZGAP's `/v1/models` once you are signed in. Display names are separate from
   request IDs. Context and output limits, input/output modalities, reasoning, tools and temperature
   support come from the catalog; unknown values remain unspecified.
+- **Speed**: GPT models also carry the speed tiers ZGAP's accounts serve them at (Fast, and Ultrafast where
+  available). magpie then offers them in an agent's model picker, a group and the model's own speed setting.
+  An agent on Claude's Messages API, such as Claude Code, can only ask for Fast, so Ultrafast runs as Fast there.
 - **Requests**: ZGAP serves every model on Chat Completions, Messages and Responses, so magpie relays each
   agent's request in the protocol the agent sent it in. The plugin adds the current access token.
 - **Tokens**: the access token lasts 24 hours. magpie renews it before it runs out with the refresh token,
@@ -76,7 +78,9 @@ npm run test:ui
 The sidebar entry opens the plugin’s loopback service through magpie’s page-service support. The
 service reads ZGAP entries from `plugin-auth.json` inside the config directory supplied by magpie;
 magpie owns token renewal and writes. It binds only to `127.0.0.1`, checks Host and Origin, and requires
-a random page token for its read-only APIs. It can request only the two ZGAP dashboard endpoints.
+a random page token for its read-only APIs. It serves the JS and CSS built by the ZGAP console and forwards only the three personal dashboard
+reads (live events, usage statistics and weekly report). The asset requests carry no credentials.
+No OAuth token is sent to the page or placed in a URL; the stream closes on sign-out or renewal.
 The service’s default port is declared by `scripts/build-ui.mjs`; the plugin’s `port` option can move it
 if occupied. A port conflict is an error. The settings panel stays static. Authentication stays in
 magpie’s native sign-in dialog. Translations live in
@@ -85,7 +89,9 @@ magpie’s native sign-in dialog. Translations live in
 labels and browser translation bundle, and copies i18next with its license into `ui/vendor/`.
 Commit those generated assets so installation directly from GitHub works without a build.
 `npm test` rejects stale generated files or incomplete translations. `npm run test:ui` checks the
-page and panel with Chromium and WebKit; install those test browsers with
+page with the deployed console assets, fixture accounts and both Chromium and WebKit. To run against
+a local console build, set Playwright config metadata.consoleBuild to the absolute directory holding
+console.js and console.css. For the panel test and dashboard tests, install those test browsers with
 `npx playwright install chromium webkit` if needed.
 
 ## License
