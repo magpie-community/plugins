@@ -555,7 +555,7 @@ export async function createBridgeKit(options = {}) {
     }
     if (args[0] === "acp") {
       const child = new FakeChild(kit, file, args)
-      kit.acpSpawns.push({ file, args, env: opts.env, child })
+      kit.acpSpawns.push({ file, args, env: opts.env, cwd: opts.cwd, child })
       new FakeAgy(kit, child, opts)
       return child
     }

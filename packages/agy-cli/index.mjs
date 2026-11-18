@@ -2071,7 +2071,7 @@ class Proc {
     this.resumed = false
     this.child = null
     this.conn = null
-    this.workspace = null
+    this.workspace = this.resumeFrom?.workspace || null
     this.logPath = null
     this.lastUsed = Date.now()
     this.dead = false
@@ -2136,7 +2136,15 @@ class Proc {
     await ensureControlServer()
     const bin = await ensureShimDir()
     sessions.set(this.token, this)
-    this.workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-bridge-"))
+    if (this.workspace) {
+      // agy's prompt cache follows the folder it runs in: a session resumed
+      // anywhere else replays its whole history uncached. It
+      // starts again in its own folder, made again if it was removed.
+      await workspaceRemovals.get(this.workspace)?.catch(() => {})
+      await fs.promises.mkdir(this.workspace, { recursive: true, mode: 0o700 })
+    } else {
+      this.workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-bridge-"))
+    }
     const agentDir = path.join(this.workspace, ".agents", "agents", AGENT_NAME)
     await fs.promises.mkdir(agentDir, { recursive: true })
     await fs.promises.writeFile(path.join(agentDir, "agent.md"), agentDefinition(), { mode: 0o600 })
@@ -3045,18 +3053,27 @@ class Proc {
       }
     }
     this.child = null
-    if (this.workspace) {
-      for (let attempt = 0; attempt < 4; attempt++) {
-        try {
-          await fs.promises.rm(this.workspace, { recursive: true, force: true })
-          break
-        } catch (error) {
-          if (attempt === 3 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)) break
-          await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
-        }
-      }
+    // A resumed session's agy starts again in this folder; never remove it
+    // from under one that already has.
+    if (this.workspace && ![...allProcs].some((proc) => proc !== this && proc.workspace === this.workspace)) {
+      const removal = this.#removeWorkspace()
+      workspaceRemovals.set(this.workspace, removal)
+      await removal
+      if (workspaceRemovals.get(this.workspace) === removal) workspaceRemovals.delete(this.workspace)
     }
     allProcs.delete(this)
+  }
+
+  async #removeWorkspace() {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        await fs.promises.rm(this.workspace, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 3 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)) break
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
+      }
+    }
   }
 }
 
@@ -3351,10 +3368,20 @@ function park(proc) {
     userCloak: USER_CLOAK,
     instructionsInSession: !!proc.instructionsInSession,
     workDir: proc.workDir,
+    workspace: proc.workspace,
     at: Date.now(),
   })
   while (parked.size > MAX_PARKED) parked.delete(parked.keys().next().value)
   saveParked()
+}
+
+// Only a folder this bridge makes: the state file is never a way to run agy
+// somewhere else.
+function resumeWorkspace(workspace) {
+  if (typeof workspace !== "string" || !path.isAbsolute(workspace)) return null
+  const resolved = path.resolve(workspace)
+  if (path.dirname(resolved) !== path.resolve(os.tmpdir())) return null
+  return /^magpie-agy-bridge-[A-Za-z0-9]{6}$/.test(path.basename(resolved)) ? resolved : null
 }
 
 function takeParked(convKey, opts) {
@@ -3368,7 +3395,8 @@ function takeParked(convKey, opts) {
     entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
     entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
   const incoming = digest(historyKey(opts.history))
-  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history }
+  const workspace = resumeWorkspace(entry.workspace)
+  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
   // Sans-inputs resume needs the hashes written by current park(). Old
   // entries without them still resume on an exact historyHash match only.
   const incomingSans = digest(historyKey(stripToolUseInputs(opts.history)))
@@ -3376,7 +3404,7 @@ function takeParked(convKey, opts) {
   const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
   const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
   if (!idsOk || !sansOk) return null
-  return { sessionId: entry.sessionId, expectedMessages: opts.history }
+  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
 }
 
 async function retire(key, proc) {
@@ -3455,6 +3483,8 @@ setInterval(() => { evictIdle().catch(() => {}) }, 60_000).unref()
 // AGY_BRIDGE_SPARE=0 turns them off.
 const spares = new Map()
 const SPARE_MAX = 2
+// A stopped agy's folder being removed, by path, so one resumed into it waits.
+const workspaceRemovals = new Map()
 
 function sparesOn() {
   return !/^(?:0|false|off|no|disabled)$/i.test(process.env.AGY_BRIDGE_SPARE || "")
@@ -3667,7 +3697,9 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
-  const spare = await takeSpare(agyPath, opts.workDir)
+  const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
+  // a spare runs in a folder of its own, and a resumed session needs its own
+  const spare = resume?.workspace ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
     const idle = spares.values().next().value
     if (idle) {
@@ -3678,7 +3710,6 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       throw new BusyError(`agy bridge: ${maxProcs()} agy processes are running and all have unfinished responses`)
     }
   }
-  const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
   const proc = spare ?? new Proc(agyPath, key, { ...opts, resume })
   try {
     if (spare) await spare.adopt(key, { ...opts, resume })
