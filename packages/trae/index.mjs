@@ -1649,10 +1649,22 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   // under user_message_context.model_info, the agent task's shape). Not yet
   // seen answering from a real enterprise seat: a Trae preset is sent as
   // before.
+  //
+  // model_name and provider are the entry's model detail's: Trae's list
+  // types (libharness CloudModelConfigInfo / CloudModelDetailInfo) carry
+  // provider on each model_detail_list item, beside its model_name, and
+  // not on the config, and an enterprise model's detail has no __dev name
+  // for modelName to come from. 0.2.42 read provider off the config and
+  // sent no model_name, so both were missing, and the reporter's seat got
+  // 4023 "We're sorry, something went wrong" on every function (#1258,
+  // AI/deekseek-v4.1-flash and volc/deepseek-v4-1-flash).
   if (enterpriseModel(entry)) {
     body.config_source = ENTERPRISE
     body.is_custom_model = true
-    if (entry.provider) body.provider = String(entry.provider)
+    const detail = enterpriseDetail(entry)
+    if (!body.model_name && detail?.model_name) body.model_name = String(detail.model_name)
+    const provider = entry.provider || detail?.provider
+    if (provider) body.provider = String(provider)
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -3085,6 +3097,9 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // One the admin switched off (status false) stays out, as in the IDE.
 const ENTERPRISE = 2
 const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
+// enterpriseDetail is the model detail an enterprise model is asked by: its
+// __dev one when it names one, else the first that names a model
+const enterpriseDetail = (m) => devModel(m) ?? (Array.isArray(m?.model_detail_list) ? m.model_detail_list : []).find((d) => d?.model_name)
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
   if (!id) return false

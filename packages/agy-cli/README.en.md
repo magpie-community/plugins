@@ -240,8 +240,11 @@ Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
 made had its answer. The plugin then makes that read itself, the way agy makes
 it: with agy's stored sign-in it asks Google's Code Assist server
 (`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
-An access token about to end is renewed in memory and never stored. If that
-read fails too, the account shows agy's refusal and no numbers.
+An access token about to end is renewed in memory and never stored. When
+`loadCodeAssist` names no project for a personal Google account, the quota is
+asked under `aicode-consumers`, the project Google serves every personal account
+under (agy itself asks with none, and Google refuses that). If that read fails
+too, the account shows agy's refusal and why the read failed, and no numbers.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored
@@ -364,7 +367,8 @@ off unless you turn it on.
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.
   An ending that says "This service has been disabled in this account
-  for violation of Terms of Service" is returned as a no-retry
+  for violation of Terms of Service" (agy 1.5.9 puts "PERMISSION_DENIED
+  (code 403):" before it, 1.5.10 doesn't) is returned as a no-retry
   `permission_error` with 403 semantics, not as normal reply text. So is the
   "Verification Required" ending (Google wants the account verified), with
   the link to verify it at when agy logged one, else where to verify it.
@@ -372,6 +376,20 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Our servers are experiencing high traffic right now …" ending
+  (Google has no capacity for the model now, and agy's own retries met the
+  same 503) ends the turn as `overloaded_error` (HTTP 503 without
+  streaming), so the account is not rested and magpie tries again or
+  elsewhere. Found by ifccod, and ported from their patch.
+- **A reply with only thinking, no text and no tool call** (billion-context's
+  "the turn degenerated again after the continuation nudge"): when one of the
+  model's replies comes back empty, agy writes "⚠ Model produced invalid
+  output." and tries again; when that try is empty too, agy ends the turn as
+  finished. The plugin doesn't hand such an ending over as the reply: it asks
+  once more in the same session, where the model still has the whole context.
+  Still empty, the turn ends with an error, so magpie asks the next account,
+  and the client sending the request again continues in that session. An
+  empty ending with no thinking either is returned as it is.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather

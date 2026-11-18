@@ -7,7 +7,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
+import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
 import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
@@ -133,6 +133,9 @@ const AGENT_ERROR_MARKERS = [
   // (CustomUserErrorMessageFromHTTPError): the account must be verified
   // first. Answered as text, it was the whole reply (kidgpt on X, 11-16).
   "\n⚠ Verification Required\n",
+  // agy 1.5.10's words for the same banned account: Google's sentence with
+  // no status before it. Answered as text, it was the whole reply, a 200.
+  "\n⚠ This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n",
 ]
 const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 // agy's ending for an account whose own quota is used up, with Google's
@@ -146,6 +149,17 @@ const QUOTA_MARKER = "\n" + QUOTA_CORE
 const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
+const DISABLED_CORE = AGENT_ERROR_CORES[6]
+// agy's ending when every retry met Google's "no capacity" 503 (ifccod):
+// "⚠ Our servers are experiencing high traffic right now, please try again
+// in a minute. (UNAVAILABLE (code 503): No capacity available for model
+// gemini-3.8-flash-high on the server)". Its tail names the model, so it is
+// matched by its start, as the quota ending is. Answered as text, it was a
+// 200 whose whole reply was the notice, and nothing behind magpie tried
+// again. It is a 503 overloaded_error: the model's, not the account's, so
+// the account is not rested as a 429 would rest it.
+const BUSY_CORE = "⚠ Our servers are experiencing high traffic right now"
+const BUSY_MARKER = "\n" + BUSY_CORE
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
 const ATTEMPT_CORE = "⚠ API error (attempt "
@@ -162,6 +176,14 @@ const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been 
 // It is agy's, not the model's, and the turn goes on (#1124).
 const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
 const RETRY_CORE = RETRY_MARKER.trim()
+// When agy's retry comes back empty too, agy ends the turn on end_turn with
+// nothing but thinking, and a client takes that as a finished reply that
+// said nothing: billion-context's "the turn degenerated again after the
+// continuation nudge" (fnckerpoi on X, DSH through billion-context, 11-18).
+// The bridge asks once more in the same session, where the model still has
+// the whole context, and a reply still empty after that is an error the
+// next account answers. The words go upstream, so they name nobody.
+const EMPTY_REPLY_PROMPT = "Your last reply was empty. Continue: make the tool call you were about to make, or give your answer."
 // agy's own output-cap retry reaches the reply as three lines of its own:
 // what happened, its instruction to continue, and the retries left. The
 // model's answer goes on after them in the same turn, so the notice is agy's
@@ -173,7 +195,7 @@ const CAP_TAIL_CORE = "Please continue from where you left off, keeping your res
 const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length, BUSY_MARKER.length,
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1176,6 +1198,8 @@ export function streamErrorOf(error) {
   // Google refused the account (refusedError): its status, so magpie
   // reads it as the account's refusal, not as a failed reply.
   if (type === "permission_error") out.status = 403
+  // Google had no capacity for the model (BUSY_CORE): try again, or elsewhere
+  if (type === "overloaded_error") out.status = 503
   if (error?.noRetry) out.noRetry = true
   return out
 }
@@ -1535,6 +1559,14 @@ class Turn {
     this.openBanner = -1
     this.capPending = false
     this.attemptDetail = ""
+    // What the model gave since the turn began or since its last tool
+    // call: answer text, thinking, and agy's "invalid output" retry. An
+    // ending with thinking or that retry and no text is empty (emptyEnding).
+    this.saidSinceCall = false
+    this.thoughtSinceCall = false
+    this.invalidOutput = false
+    this.invalidOutputSeen = false
+    this.emptyAsked = false
     this.refusedDetail = ""
     this.agentErrorCore = ""
     this.timer = null
@@ -1737,7 +1769,7 @@ class Turn {
         return
       }
     }
-    const quota = this.quotaEnding(text)
+    const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE))
     if (quota >= 0) {
       this.heldText = text.slice(quota)
       this.emitText(text.slice(0, quota))
@@ -1746,7 +1778,7 @@ class Turn {
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
       if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
-        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
+        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           CAP_MARKER.startsWith(tail)))) {
         this.heldText = tail
         text = text.slice(0, -keep)
@@ -1756,11 +1788,12 @@ class Turn {
     this.emitText(text)
   }
 
-  // Where agy's quota ending (QUOTA_CORE) starts in text, with the newline
-  // before it: a line of its own that only whitespace follows, so far. -1
-  // when there is none; one more text follows was the model quoting it.
-  quotaEnding(text) {
-    const at = text.lastIndexOf(QUOTA_CORE)
+  // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
+  // start (BUSY_CORE), starts in text, with the newline before it: a line of
+  // its own that only whitespace follows, so far. -1 when there is none; one
+  // more text follows was the model quoting it.
+  quotaEnding(text, core = QUOTA_CORE) {
+    const at = text.lastIndexOf(core)
     if (at < 0) return -1
     const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
     if (!lineStart || text.slice(at).trimEnd().includes("\n")) return -1
@@ -1823,6 +1856,7 @@ class Turn {
         this.openBanner = start
         return text
       }
+      if (!attempt) this.invalidOutput = this.invalidOutputSeen = true
       if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
       if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
@@ -1833,6 +1867,7 @@ class Turn {
 
   emitText(text) {
     if (!text) return
+    if (text.trim()) this.saidSinceCall = true
     this.textTail = text.slice(-1)
     this.push({ type: "text", text })
   }
@@ -1849,7 +1884,21 @@ class Turn {
       this.agentErrorCore = QUOTA_CORE
       this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
+    } else if (this.quotaEnding(this.heldText, BUSY_CORE) >= 0) {
+      this.agentError = true
+      this.agentErrorCore = BUSY_CORE
+      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
+      this.heldText = ""
     }
+  }
+
+  // The model ended its reply having thought, or after agy's empty-output
+  // retry, with no text and no tool call since the last one. A bare empty
+  // ending (no thinking either) is left as it is: that is a reply.
+  emptyEnding(stopReason) {
+    if (this.steering || this.saidSinceCall) return false
+    if (stopReason != null && stopReason !== "end_turn") return false
+    return this.thoughtSinceCall || this.invalidOutput
   }
 
   flushText() {
@@ -2414,6 +2463,7 @@ class Proc {
           turn.notifyAcpTools()
           return
         }
+        if (text.trim()) turn.thoughtSinceCall = true
         turn.push({ type: "thinking", text })
       }
     }
@@ -2586,6 +2636,19 @@ class Proc {
         // agy ended the turn without waiting for a long-running client tool:
         // deliver its real result in a follow-up prompt of the same response.
         const late = turn.calls.filter((call) => call.deferred && !call.lateDelivered)
+        if (!late.length && turn.emptyEnding(result?.stopReason)) {
+          if (!turn.emptyAsked) {
+            turn.emptyAsked = true
+            turn.thoughtSinceCall = turn.invalidOutput = false
+            turn.arm()
+            promptParts = [{ type: "text", text: EMPTY_REPLY_PROMPT }]
+            lateCalls = null
+            continue
+          }
+          throw new AgentTurnError("agy bridge: the model ended its reply twice with no text and no tool call" +
+            (turn.invalidOutputSeen ? " (agy: Model produced invalid output)" : "") +
+            "; send the request again, or try another model")
+        }
         if (!late.length) {
           turn.complete({ ...(result ?? {}), usage })
           return
@@ -2625,6 +2688,11 @@ class Proc {
       // until then and asks the next one
       return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.quotaNotice}`, "rate_limit_error")
     }
+    if (core === BUSY_CORE) {
+      return new AgentTurnError(`agy bridge: Antigravity has no capacity for this model now: ${turn.quotaNotice}`, "overloaded_error")
+    }
+    // agy 1.5.10 leaves out the status agyRefusal reads the ban by
+    if (core === DISABLED_CORE) return refusedError(ACCOUNT_DISABLED_REFUSED)
     if (core === VERIFY_CORE) {
       // the link, when agy logged Google's error whole; the reply has none
       const logged = await logTail(this.logPath, turn.logOffset)
@@ -2750,6 +2818,7 @@ class Proc {
       clientSeen: false,
     }
     turn.flushText()
+    turn.saidSinceCall = turn.thoughtSinceCall = turn.invalidOutput = turn.emptyAsked = false
     turn.calls.push(call)
     toolCalls.set(call.id, { proc: this, turn, call })
     socket.once("close", () => {
