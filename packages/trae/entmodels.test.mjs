@@ -98,3 +98,51 @@ test("a refused chat names the model, the functions tried and the host", async (
   expect(msg).toContain("model Acme-Qwen-72B asked through chat_v3")
   expect(msg).toContain("this account's model list doesn't have Acme-Qwen-72B")
 })
+
+// the reporter's next error (#1258, 0.2.42, console.enterprise.trae.cn): with
+// config_source sent, both of their enterprise models got 4023 on every
+// function. Trae's list types carry provider and model_name on each
+// model_detail_list item, not on the config, and 0.2.42 sent neither. The
+// entries' detail values are inferred from the config names they gave
+// (provider/model); their real list entry hasn't been seen.
+const WENT_WRONG = "We're sorry, something went wrong. Please try again later or contact our support team for assistance."
+const listed = [
+  { config_name: "AI/deekseek-v4.1-flash", usage: "chat_completion", config_source: 2, is_preset: false, is_custom_model: true, status: true,
+    display_config: { display_name: "deekseek-v4.1-flash", is_custom_model: true },
+    model_detail_list: [{ model_name: "deekseek-v4.1-flash", provider: "AI", max_tokens: 8192 }] },
+  { config_name: "volc/deepseek-v4-1-flash", usage: "chat_completion", config_source: 2, is_preset: false, is_custom_model: true, status: true,
+    display_config: { display_name: "deepseek-v4-1-flash", is_custom_model: true },
+    model_detail_list: [{ model_name: "deepseek-v4-1-flash", provider: "volc", max_tokens: 8192 }] },
+]
+
+test("a chat with an enterprise model sends its detail's model_name and provider", async () => {
+  const hooks = await plugin([preset, ...listed])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  // Trae as the reporter met it on 0.2.42: an enterprise config without the
+  // model and provider it is served by went wrong
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    const e = listed.find((m) => m.config_name === r.json.config_name)
+    const d = e?.model_detail_list[0]
+    if (e && (r.json.model_name !== d.model_name || r.json.provider !== d.provider)) return sse([["error", { code: 4023, message: WENT_WRONG }]])
+    return sse([["output", { response: "ok" }], ["done", {}]])
+  })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  for (const m of listed) {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: m.config_name, messages: [{ role: "user", content: "hi" }] }) })
+    expect(res.status).toBe(200)
+    expect((await res.json()).choices[0].message.content).toBe("ok")
+  }
+  const chats = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat")
+  expect(chats.length).toBe(2)
+  expect(chats[0].json).toMatchObject({ config_name: "AI/deekseek-v4.1-flash", config_source: 2, is_custom_model: true, model_name: "deekseek-v4.1-flash", provider: "AI" })
+  expect(chats[1].json).toMatchObject({ config_name: "volc/deepseek-v4-1-flash", config_source: 2, is_custom_model: true, model_name: "deepseek-v4-1-flash", provider: "volc" })
+})
+
+test("an enterprise model's __dev detail is the one asked by; a preset's body gains nothing", () => {
+  const two = { ...listed[1], model_detail_list: [{ model_name: "deepseek-v4-1-flash__max", provider: "volc" }, { model_name: "deepseek-v4-1-flash__dev", provider: "volc" }] }
+  const body = _internal.chatBody({ model: two.config_name, messages: [{ role: "user", content: "hi" }] }, "chat_v3", "", 0, null, "s", false, null, two)
+  expect(body.model_name).toBe("deepseek-v4-1-flash__dev")
+  expect(body.provider).toBe("volc")
+  const p = _internal.chatBody({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, "chat_v3", "", 0, null, "s", false, null, preset)
+  for (const k of ["model_name", "provider", "config_source", "is_custom_model"]) expect(k in p).toBe(false)
+})

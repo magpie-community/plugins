@@ -246,11 +246,13 @@ custom-model slots. An enterprise's own built-in models
 since 0.2.41 (#1258), unless the admin switched one off (`status` false); a
 personal custom model (`config_source` 3) is not, its key being in the
 user's IDE only. A chat with an enterprise model carries `config_source`
-2, `is_custom_model` true and the entry's `provider` at the top of the
-body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.42; 0.2.41
+2, `is_custom_model` true, and the `model_name` and `provider` of its
+`model_detail_list` entry (its `__dev` one, else the first) at the top of the
+body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
 put them under `user_message_context.model_info`, and an enterprise seat got
-4001 "the param is invalid" on every function) — **not verified with a real
-enterprise seat**. A refused chat's error names
+4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
+config, where Trae's list doesn't carry it, sent no `model_name`, and got
+4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
 the model, the functions tried and the host, and says when the account's
 list doesn't have the model. Context is the list's `context_window_tokens.dev`,
 output the `__dev` model's `max_tokens`. A model with a `__max` model and
