@@ -3,17 +3,45 @@ import { parseToolJSON } from "./anthropic-tools.mjs"
 // Factory refuses a request whose tool list declares certain names, with a
 // 403 content_policy_rejected, on every route (Anthropic Messages, OpenAI
 // Responses and chat completions) and on both api.factory.ai and
-// prem.factory.ai. Seen from 2026-11-17 22:30 PST; before that the same
-// Claude Code requests were answered. Probed one tool at a time with an
-// empty description: only the declared name decides, matched exactly and
-// case-sensitively (Read, Edit, shell, BashTool and bash_tool pass). A name
+// prem.factory.ai. Probed one tool at a time with an empty description: only
+// the declared name decides, matched exactly and case-sensitively. A name
 // that appears only in history (tool_use, function_call), in tool_choice or
-// in text is not refused. These are Claude Code's, OpenCode's and Codex's
-// names, plus the API documentation's get_weather.
+// in text is not refused. The list moves: from 2026-11-17 22:30 PST it held
+// Claude Code's, OpenCode's and Codex's names; from 2026-11-18 06:00 UTC it
+// also holds the names first used in their place (BashTool, bash_tool, ...)
+// and Claude Code's task tools, and no longer Codex's exec_command,
+// write_stdin and Shell or NotebookEdit, EnterPlanMode, ExitPlanMode and
+// get_weather.
 export const REFUSED_TOOL_NAMES = new Set([
-  "Agent", "Bash", "EnterPlanMode", "ExitPlanMode", "NotebookEdit", "Shell", "Write",
-  "bash", "edit", "exec_command", "get_weather", "read", "write", "write_stdin",
+  "Agent", "Bash", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "Write",
+  "bash", "edit", "glob", "grep", "read", "run_shell", "task", "write",
+  "AgentTool", "BashTool", "WriteTool", "bash_tool", "edit_tool", "read_tool", "write_tool",
 ])
+
+// DROID_NAMES is the tool of Factory's own client, droid, that does the
+// same job, which Factory takes as declared: a refused tool goes out under
+// it, unless the request already declares that name or another refused
+// tool took it first.
+export const DROID_NAMES = new Map([
+  ["Bash", "Execute"], ["bash", "Execute"], ["run_shell", "Execute"], ["BashTool", "Execute"], ["bash_tool", "Execute"],
+  ["Write", "Create"], ["write", "Create"], ["WriteTool", "Create"], ["write_tool", "Create"],
+  ["Agent", "Task"], ["AgentTool", "Task"], ["task", "Task"],
+  ["read", "Read"], ["read_tool", "Read"],
+  ["edit", "Edit"], ["edit_tool", "Edit"],
+  ["glob", "Glob"], ["grep", "Grep"],
+])
+
+// A refused tool droid has no name for (Claude Code's TaskCreate, ...), or
+// one whose droid name is taken, goes out as its own name with a suffix
+// drawn from this process (TaskCreate_3f9a): the same throughout the
+// process, so a conversation reads one name and its prompt cache holds, but
+// no fixed name a list could hold.
+const SALT = crypto.randomUUID()
+export function suffixed(name) {
+  let h = 0x811c9dc5
+  for (const c of SALT + "\0" + name) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0
+  return name + "_" + (h & 0xffff).toString(16).padStart(4, "0")
+}
 
 const isObject = (v) => v != null && typeof v === "object" && !Array.isArray(v)
 
@@ -75,10 +103,11 @@ function uses(request) {
 }
 
 // aliasToolNames renames each declared tool Factory refuses, and every
-// later mention of it in the request, to a name it takes: BashTool for
-// Bash, bash_tool for bash, never one the request already declares. It
-// returns the body and the names to restore in the reply (alias →
-// original). A body with nothing to rename goes on byte for byte.
+// later mention of it in the request, to a name it takes: droid's own for
+// the job (Execute for Bash, Create for Write, ...), else a suffixed one,
+// never one the request already declares. It returns the body and the names
+// to restore in the reply (alias → original). A body with nothing to rename
+// goes on byte for byte.
 export function aliasToolNames(body) {
   const aliases = new Map()
   const raw = text(body)
@@ -94,7 +123,8 @@ export function aliasToolNames(body) {
     const name = holder[key]
     if (!REFUSED_TOOL_NAMES.has(name)) continue
     if (!renamed.has(name)) {
-      let alias = /^[A-Z]/.test(name) ? name + "Tool" : name + "_tool"
+      let alias = DROID_NAMES.get(name)
+      if (alias == null || taken.has(alias)) alias = suffixed(name)
       while (taken.has(alias) || REFUSED_TOOL_NAMES.has(alias)) alias += "_"
       taken.add(alias)
       renamed.set(name, alias)

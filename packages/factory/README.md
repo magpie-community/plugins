@@ -173,13 +173,17 @@ Factory.
 ## Tool names Factory refuses
 
 Since 2026-11-17 Factory refuses (403 `content_policy_rejected`) any request
-that declares a tool under certain exact names, on every route: Claude Code's
-`Bash`, `Write`, `Agent`, `NotebookEdit`, `EnterPlanMode` and `ExitPlanMode`,
-OpenCode's and pi's `bash`, `read`, `edit` and `write`, Codex's `Shell`,
-`exec_command` and `write_stdin`, and `get_weather`. The plugin declares such a
-tool as `BashTool` or `bash_tool` (never a name the request already uses),
-renames its earlier calls and `tool_choice` to match, and gives the caller its
-own name back in every reply, streamed or not. The list is in `tool-names.mjs`.
+that declares a tool under certain exact names, on every route, and the list
+moves. As of 2026-11-18 it holds Claude Code's `Bash`, `Write`, `Agent` and
+`TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate`, OpenCode's and pi's `bash`,
+`read`, `edit`, `write`, `glob`, `grep` and `task`, `run_shell`, and the names
+first used in their place (`BashTool`, `bash_tool`, ...). The plugin declares
+such a tool under droid's own name for the job (`Execute` for `Bash`, `Create`
+for `Write`, `Task` for `Agent`, `Read` for `read`, ...), or, when droid has
+none or the request already declares it, under its own name with a suffix
+drawn from the process (`TaskCreate_3f9a`). It renames the tool's earlier calls
+and `tool_choice` to match and gives the caller its own name back in every
+reply, streamed or not. The lists are in `tool-names.mjs`.
 
 ## Claude Code through magpie
 
