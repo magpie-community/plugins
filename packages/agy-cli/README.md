@@ -266,6 +266,12 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
   按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
   magpie 据此让这个账号歇到重置，并改问下一个账号。
+- **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
+  again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
+  "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样
+  的空结尾当作回复交出去，而是在同一个会话里再问一次（模型手上还是完整的上下文）；
+  还是空的话以错误结束本轮，magpie 会改问下一个账号，客户端重发同一请求也会接着这个会话。
+  一个连思考都没有的空结尾照常返回。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
   Hermes Agent 会把一次批量的 `tool_call({"calls": [...]})` 在自己的历史里拆成每项一次调用，

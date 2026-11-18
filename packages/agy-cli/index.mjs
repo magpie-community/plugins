@@ -162,6 +162,14 @@ const refused429 = (detail) => /code 429\b/i.test(detail) && /resource has been 
 // It is agy's, not the model's, and the turn goes on (#1124).
 const RETRY_MARKER = "\n⚠ Model produced invalid output.\n"
 const RETRY_CORE = RETRY_MARKER.trim()
+// When agy's retry comes back empty too, agy ends the turn on end_turn with
+// nothing but thinking, and a client takes that as a finished reply that
+// said nothing: billion-context's "the turn degenerated again after the
+// continuation nudge" (fnckerpoi on X, DSH through billion-context, 11-18).
+// The bridge asks once more in the same session, where the model still has
+// the whole context, and a reply still empty after that is an error the
+// next account answers. The words go upstream, so they name nobody.
+const EMPTY_REPLY_PROMPT = "Your last reply was empty. Continue: make the tool call you were about to make, or give your answer."
 // agy's own output-cap retry reaches the reply as three lines of its own:
 // what happened, its instruction to continue, and the retries left. The
 // model's answer goes on after them in the same turn, so the notice is agy's
@@ -1535,6 +1543,14 @@ class Turn {
     this.openBanner = -1
     this.capPending = false
     this.attemptDetail = ""
+    // What the model gave since the turn began or since its last tool
+    // call: answer text, thinking, and agy's "invalid output" retry. An
+    // ending with thinking or that retry and no text is empty (emptyEnding).
+    this.saidSinceCall = false
+    this.thoughtSinceCall = false
+    this.invalidOutput = false
+    this.invalidOutputSeen = false
+    this.emptyAsked = false
     this.refusedDetail = ""
     this.agentErrorCore = ""
     this.timer = null
@@ -1823,6 +1839,7 @@ class Turn {
         this.openBanner = start
         return text
       }
+      if (!attempt) this.invalidOutput = this.invalidOutputSeen = true
       if (attempt) this.attemptDetail = ATTEMPT_LINE.exec(text.slice(at, end))?.[1]?.trim() || this.attemptDetail
       if (attempt && refused429(this.attemptDetail)) this.refusedDetail ||= this.attemptDetail
       if (text[end] === "\n") end++
@@ -1833,6 +1850,7 @@ class Turn {
 
   emitText(text) {
     if (!text) return
+    if (text.trim()) this.saidSinceCall = true
     this.textTail = text.slice(-1)
     this.push({ type: "text", text })
   }
@@ -1850,6 +1868,15 @@ class Turn {
       this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
     }
+  }
+
+  // The model ended its reply having thought, or after agy's empty-output
+  // retry, with no text and no tool call since the last one. A bare empty
+  // ending (no thinking either) is left as it is: that is a reply.
+  emptyEnding(stopReason) {
+    if (this.steering || this.saidSinceCall) return false
+    if (stopReason != null && stopReason !== "end_turn") return false
+    return this.thoughtSinceCall || this.invalidOutput
   }
 
   flushText() {
@@ -2413,6 +2440,7 @@ class Proc {
           turn.notifyAcpTools()
           return
         }
+        if (text.trim()) turn.thoughtSinceCall = true
         turn.push({ type: "thinking", text })
       }
     }
@@ -2585,6 +2613,19 @@ class Proc {
         // agy ended the turn without waiting for a long-running client tool:
         // deliver its real result in a follow-up prompt of the same response.
         const late = turn.calls.filter((call) => call.deferred && !call.lateDelivered)
+        if (!late.length && turn.emptyEnding(result?.stopReason)) {
+          if (!turn.emptyAsked) {
+            turn.emptyAsked = true
+            turn.thoughtSinceCall = turn.invalidOutput = false
+            turn.arm()
+            promptParts = [{ type: "text", text: EMPTY_REPLY_PROMPT }]
+            lateCalls = null
+            continue
+          }
+          throw new AgentTurnError("agy bridge: the model ended its reply twice with no text and no tool call" +
+            (turn.invalidOutputSeen ? " (agy: Model produced invalid output)" : "") +
+            "; send the request again, or try another model")
+        }
         if (!late.length) {
           turn.complete({ ...(result ?? {}), usage })
           return
@@ -2749,6 +2790,7 @@ class Proc {
       clientSeen: false,
     }
     turn.flushText()
+    turn.saidSinceCall = turn.thoughtSinceCall = turn.invalidOutput = turn.emptyAsked = false
     turn.calls.push(call)
     toolCalls.set(call.id, { proc: this, turn, call })
     socket.once("close", () => {

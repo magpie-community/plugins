@@ -990,7 +990,6 @@ test("#1124: agy's retry banner after an empty first call never reaches the clie
     [[["thought", "stay quiet"], ["text", banner], ["thought", "suggest one"], ["text", "梳理一下事件完整时间线"]], "梳理一下事件完整时间线"],
     [[["text", banner + "\n"], ["text", "the retry's answer"]], "the retry's answer"],
     [[["text", "\n⚠ Model produced "], ["text", "invalid output."], ["text", "\nretry"]], "retry"],
-    [[["text", banner]], ""],
   ]) {
     await withKit({}, async (kit) => {
       kit.defaultPrompt = async (agent) => {
@@ -1004,6 +1003,103 @@ test("#1124: agy's retry banner after an empty first call never reaches the clie
       assert.equal(replyText(parsed), want)
     })
   }
+})
+
+// fnckerpoi on X (DSH 0.2.2-rc.3 through billion-context, agy-cli 0.1.91):
+// agy's empty-output retry came back empty too, agy ended the turn on
+// end_turn with only thinking, and billion-context's continuation nudge got
+// the same, "the turn degenerated again after the continuation nudge".
+const EMPTY_BANNER = "\n⚠ Model produced invalid output."
+
+function sessionsOpened(kit) {
+  return kit.acpLog.filter((entry) => entry.method === "session/new" || entry.method === "session/load").length
+}
+
+test("an empty ending is asked again in the same session, and its answer is the reply", async () => {
+  for (const empty of [
+    [["thought", "the next step is to read the file"]],
+    [["thought", "stay quiet"], ["text", EMPTY_BANNER], ["thought", "still nothing"]],
+    [["text", EMPTY_BANNER]],
+    [["thought", "thinking"], ["text", "  \n"]],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        if (promptText({ prompt: agent.prompt }).includes("Your last reply was empty")) {
+          await agent.text("the answer after asking again")
+          return { stopReason: "end_turn" }
+        }
+        for (const [kind, text] of empty) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "empty-ending" },
+        messages: [{ role: "user", content: "fix the bug" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed).trim(), "the answer after asking again")
+      const sent = prompts(kit)
+      assert.equal(sent.length, 2, "asked once more")
+      assert.ok(!/magpie|agy|antigravity|gemini/i.test(sent[1]), "the words sent upstream name nobody")
+      assert.equal(sessionsOpened(kit), 1, "in the same session, not a replay")
+    })
+  }
+})
+
+test("an ending still empty after asking again is an error, and the session is kept", async () => {
+  await withKit({}, async (kit) => {
+    let empty = true
+    kit.defaultPrompt = async (agent) => {
+      if (!empty) {
+        await agent.text("answered on the client's retry")
+        return { stopReason: "end_turn" }
+      }
+      await agent.thought("hmm")
+      await agent.text(EMPTY_BANNER)
+      await agent.thought("hmm again")
+      return { stopReason: "end_turn" }
+    }
+    // a conversation under way: a first message sent again opens a new session anyway
+    const body = baseBody({ metadata: { user_id: "empty-twice" }, messages: [
+      { role: "user", content: "look at the bug" },
+      { role: "assistant", content: [{ type: "text", text: "it is in parse()" }] },
+      { role: "user", content: "fix the bug" },
+    ] })
+    const parsed = await readSse(await kit.request(body))
+    assert.ok(parsed.error, "an error, not a finished reply that said nothing")
+    assert.match(parsed.error.message, /no text and no tool call/)
+    assert.match(parsed.error.message, /Model produced invalid output/)
+    assert.notEqual(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 2, "asked once more, not again and again")
+    empty = false
+    const again = await readSse(await kit.request(body))
+    assert.equal(again.error, null)
+    assert.equal(replyText(again), "answered on the client's retry")
+    assert.equal(sessionsOpened(kit), 1, "the client's retry continues in the kept session")
+  })
+})
+
+test("a bare empty ending, with no thinking, is a reply and is not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async () => ({ stopReason: "end_turn" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "bare-empty" },
+      messages: [{ role: "user", content: "say nothing" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 1)
+  })
+})
+
+test("a max_tokens ending with only thinking is passed through, not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.thought("a long thought")
+      return { stopReason: "max_tokens" }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "max-tokens-thought" },
+      messages: [{ role: "user", content: "think hard" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "max_tokens")
+    assert.equal(prompts(kit).length, 1)
+  })
 })
 
 test("#1124: the model quoting the retry banner mid-line keeps it", async () => {

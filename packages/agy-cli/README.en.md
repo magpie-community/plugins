@@ -375,6 +375,15 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+- **A reply with only thinking, no text and no tool call** (billion-context's
+  "the turn degenerated again after the continuation nudge"): when one of the
+  model's replies comes back empty, agy writes "⚠ Model produced invalid
+  output." and tries again; when that try is empty too, agy ends the turn as
+  finished. The plugin doesn't hand such an ending over as the reply: it asks
+  once more in the same session, where the model still has the whole context.
+  Still empty, the turn ends with an error, so magpie asks the next account,
+  and the client sending the request again continues in that session. An
+  empty ending with no thinking either is returned as it is.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
