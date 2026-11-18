@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/agent-thinkflow",
+  "version": "0.1.0",
+  "description": "Connect ThinkFlow CLI to a model selected on Magpie's Agents page",
+  "type": "module",
+  "files": ["thinkflow.agent.js", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "thinkflow"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/thinkflow" },
+  "magpie": { "agent": "./thinkflow.agent.js" }
+}
