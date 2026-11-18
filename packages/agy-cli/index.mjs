@@ -2767,8 +2767,10 @@ class Proc {
     const tool = this.tools.find((item) => item.name === name)
     if (!tool) throw new Error(`agy bridge: undeclared tool ${name}`)
     // agy consumes its internal toolSummary instead of forwarding it to MCP.
-    if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
-      args = { ...args, toolSummary: "Run command" }
+    // Any client tool may declare it (a client-side agy adds it to every MCP
+    // tool it exposes), so restore it for all of them, not only run_command.
+    if (tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
+      args = { ...args, toolSummary: name === "run_command" ? "Run command" : "Tool call" }
     }
     const signature = stableJSON(args)
     const running = turn.calls.find((call) => call.deferred && !call.lateDelivered &&
@@ -4884,10 +4886,12 @@ function normalizeTools(body) {
       throw new UnsupportedContent(`an invalid schema for tool ${tool.name}`)
     }
     const inputSchema = ensureGeminiArrayItems(sanitizeInputSchema(expandToolSchema(rawSchema)))
-    // agy adds its own required toolSummary to MCP tools. A duplicate makes
-    // the resulting JSON Schema invalid before the agent can start.
-    if (tool.name === "run_command" && Array.isArray(inputSchema.required)) {
+    // agy adds its own required toolSummary to every MCP tool. A duplicate
+    // makes the resulting JSON Schema invalid before the agent can start, and
+    // a client-side agy has already put one into each MCP tool it exposes.
+    if (Array.isArray(inputSchema.required) && inputSchema.required.includes("toolSummary")) {
       inputSchema.required = inputSchema.required.filter((key) => key !== "toolSummary")
+      if (!inputSchema.required.length) delete inputSchema.required
     }
     tools.push({
       name: tool.name,
