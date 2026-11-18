@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page-key" content="__PAGE_KEY__">
+  <title>账号额度</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 16V11m6 5V7m6 9v-4"/><path d="M4 20h16"/>
+          </svg>
+        </div>
+        <div class="heading">
+          <div class="heading-title">
+            <h1>账号额度</h1>
+            <span class="heading-help">
+              <button class="help-button" type="button" aria-label="查看额度同步说明" aria-describedby="quota-help">?</button>
+              <span id="quota-help" class="help-tooltip" role="tooltip">
+                <strong>接入后自动同步</strong>
+                <span>在 Magpie 中接入订阅并取得额度读数后，这里每 60 秒自动读取。按账号类型分类，按各服务实际返回的周期、积分或请求数展示。</span>
+              </span>
+            </span>
+          </div>
+          <p class="subtitle">所有已接入的订阅、套餐与 API 余额，一处查看</p>
+        </div>
+      </div>
+      <div class="actions">
+        <span id="status" class="status" role="status" aria-live="polite">读取中</span>
+        <button id="refresh" type="button" aria-label="刷新额度" title="重新读取 Magpie 额度记录">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 7v5h-5M4 17v-5h5"/>
+            <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/>
+          </svg>
+          <span>刷新</span>
+        </button>
+      </div>
+    </header>
+    <nav id="provider-filters" class="provider-filters" aria-label="按渠道筛选"></nav>
+    <section class="section" aria-labelledby="accounts-title">
+      <h2 id="accounts-title" class="section-title">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        订阅与套餐<span id="accounts-count" class="count"></span>
+      </h2>
+      <div id="accounts" class="cards" aria-label="订阅与套餐额度"></div>
+      <div id="empty" class="empty" hidden>
+        <strong>暂无订阅或套餐读数</strong>
+        <span>在 Magpie「订阅」中接入账号并更新额度，再刷新此页</span>
+      </div>
+    </section>
+    <section id="api-section" class="section" aria-labelledby="api-title" hidden>
+      <h2 id="api-title" class="section-title">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18M16 15h2"/></svg>
+        API 余额<span id="api-count" class="count"></span>
+      </h2>
+      <div id="api-accounts" class="cards" aria-label="API 账户余额"></div>
+    </section>
+    <section id="other-section" class="section" aria-labelledby="other-title" hidden>
+      <h2 id="other-title" class="section-title">其他额度<span id="other-count" class="count"></span></h2>
+      <div id="other-accounts" class="cards" aria-label="类型待确认的额度"></div>
+    </section>
+    <footer class="page-note">刷新只重读 Magpie 记录，不会主动更新供应商额度。读数超过 5 分钟会淡显；缺失数据以「—」表示。</footer>
+  </main>
+</body>
+</html>
