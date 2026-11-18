@@ -266,6 +266,10 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
   按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
   magpie 据此让这个账号歇到重置，并改问下一个账号。
+  结尾是 "⚠ UNAUTHENTICATED (code 401): …" 或 "⚠ Authentication expired. Please log back in." 时
+  （常见于长驻 `agy acp` 进程在整小时 OAuth 刷新窗口仍持有旧内存 token），若尚未向客户端发出正文或工具调用，
+  插件会销毁旧进程并在新进程上自动重放一次以加载最新凭证；若仍失败或已产生部分输出，
+  则以 `authentication_error`（状态码 401）结束本轮并丢弃该进程，不再当作正常回复返回。
 - **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
   again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
   "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样
