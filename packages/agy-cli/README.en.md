@@ -367,7 +367,8 @@ off unless you turn it on.
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.
   An ending that says "This service has been disabled in this account
-  for violation of Terms of Service" is returned as a no-retry
+  for violation of Terms of Service" (agy 1.5.9 puts "PERMISSION_DENIED
+  (code 403):" before it, 1.5.10 doesn't) is returned as a no-retry
   `permission_error` with 403 semantics, not as normal reply text. So is the
   "Verification Required" ending (Google wants the account verified), with
   the link to verify it at when agy logged one, else where to verify it.
@@ -375,6 +376,11 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Our servers are experiencing high traffic right now …" ending
+  (Google has no capacity for the model now, and agy's own retries met the
+  same 503) ends the turn as `overloaded_error` (HTTP 503 without
+  streaming), so the account is not rested and magpie tries again or
+  elsewhere. Found by ifccod, and ported from their patch.
 - **A reply with only thinking, no text and no tool call** (billion-context's
   "the turn degenerated again after the continuation nudge"): when one of the
   model's replies comes back empty, agy writes "⚠ Model produced invalid

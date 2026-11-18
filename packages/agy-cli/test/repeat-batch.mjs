@@ -1371,6 +1371,91 @@ test("the model quoting the Individual quota reached ending with more text after
   }
 })
 
+// ifccod (opencode-agy-cli-auth FORK.md, 11-18): when every retry met
+// Google's "no capacity" 503, agy ended the reply with this notice, and the
+// client got it as the whole answer, a 200 nothing behind magpie retried.
+const BUSY_LINE = "⚠ Our servers are experiencing high traffic right now, please try again in a minute. (UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server)"
+const BUSY = "\n" + BUSY_LINE + "\n"
+
+test("agy's high-traffic ending fails the turn as an overloaded 503, not a rate limit", async () => {
+  for (const chunks of [
+    [BUSY],
+    [BUSY.slice(0, 9), BUSY.slice(9, 47), BUSY.slice(47)],
+    [BUSY_LINE],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "busy-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "overloaded_error")
+      assert.equal(error.status, 503)
+      assert.notEqual(error.noRetry, true)
+      assert.equal(error.message, "agy bridge: Antigravity has no capacity for this model now: " + BUSY_LINE.replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's high-traffic ending fails a non-stream request as an HTTP 503", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", BUSY.slice(0, 30), BUSY.slice(30)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "busy-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 503)
+    assert.equal(response.headers.get("x-should-retry"), null)
+    assert.equal(body.error.type, "overloaded_error")
+    assert.match(body.error.message, /No capacity available for model gemini-3\.8-flash-high/)
+  })
+})
+
+test("the model quoting the high-traffic ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Our servers are experiencing", " high traffic right now, please try again.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Our servers are experiencing high traffic right now` when Google is full."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "busy-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
+// agy 1.5.10, a banned account (seen on a real one, 11-18): Google's
+// sentence without the "PERMISSION_DENIED (code 403):" 1.5.9 put before it,
+// and the whole reply was that line, a 200.
+const BANNED_1510 = "\n⚠ This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.\n"
+
+test("agy 1.5.10's banned-account ending fails the turn as a no-retry 403, streamed or not", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED_1510.slice(0, 20), BANNED_1510.slice(20)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-1510" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /disabled this account's access[\s\S]*Terms of Service[\s\S]*appeal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [BANNED_1510.trim()])
+    const response = await kit.request(baseBody({ metadata: { user_id: "banned-1510-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+  })
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {

@@ -260,12 +260,15 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   （"Your previous response was cut off because it exceeded the output token limit"、
   它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
   输出。若结尾是 "This service has been disabled in this account for
-  violation of Terms of Service"，会按禁止重试的 403 语义 `permission_error` 返回，而不是
+  violation of Terms of Service"（agy 1.5.9 前面带 "PERMISSION_DENIED (code 403):"，1.5.10 不带），会按禁止重试的 403 语义 `permission_error` 返回，而不是
   当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
   并带上 agy 记下的验证链接；没有链接时说明去哪里验证。
   结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
   按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
   magpie 据此让这个账号歇到重置，并改问下一个账号。
+  结尾是 "⚠ Our servers are experiencing high traffic right now …"（Google 这个模型暂时没有
+  余量，agy 的重试也都碰上了 503）时，按 `overloaded_error`（非流式为 HTTP 503）结束本轮，
+  不让账号歇着，magpie 会再试或改问别处。（由 ifccod 发现并移植自他的补丁。）
 - **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
   again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
   "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样
