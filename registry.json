@@ -211,6 +211,20 @@
         "zh": "用腾讯云遨驰终端（OrcaTerm）AI 助手的模型——DeepSeek、混元、GLM、Kimi——走账号每月问答额度。非官方，条款风险见 README。"
       }
     },
+    {
+      "package": "magpie-traecode",
+      "name": "TraeCode",
+      "icon": "trae",
+      "providers": [
+        "trae-cn",
+        "trae-global"
+      ],
+      "community": true,
+      "summary": {
+        "en": "Trae CN (trae.cn) and Trae Global (trae.ai), rebuilt on the trae channel of llm-api: the SOLO llm_utils_chat endpoint with its AES-GCM encrypted request body, live model capabilities (context, output limit, images, credits rate, reasoning levels), Trae's own browser sign-in, daily check-in and credits. Shares the accounts with Trae; differs in how it talks to the service.",
+        "zh": "用 Trae CN（trae.cn）与 Trae 国际版（trae.ai）账号，以 llm-api 的 trae 渠道重建：走 SOLO 的 llm_utils_chat 并加密请求体（AES-256-GCM），模型能力取自真实条目（上下文、输出上限、收图、credits 倍数、思考档位），使用 Trae 自己的浏览器登录，支持每日签到与积分。与 Trae 共用同一批账号，区别在于与服务通信的方式。"
+      }
+    },
     { "package": "magpie-aws-bedrock-sso", "name": "AWS Bedrock SSO", "providers": ["bedrock-sso"],
       "summary": { "en": "Use Amazon Bedrock Claude and GPT models with your AWS CLI profile, including SSO / IAM Identity Center. SigV4 authentication; no Bedrock API key needed.", "zh": "使用 AWS CLI 配置（支持 SSO / IAM Identity Center）接入 Amazon Bedrock 的 Claude 和 GPT 模型，通过 SigV4 签名，无需 Bedrock API 密钥。" } },
     {
