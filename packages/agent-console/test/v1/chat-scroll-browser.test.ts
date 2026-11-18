@@ -233,6 +233,29 @@ describe.skipIf(!browserPath)("Chat virtual-list scroll to bottom in real Chromi
       const mBack = await readMetrics();
       expect(mBack.gap).toBeLessThanOrEqual(2);
       expect(mBack.jumpVisible).toBe(false);
+
+      // Reproduce layout growth between the browser reaching the bottom and React seeing its scroll event.
+      // Virtual-row measurement / a streaming token can grow scrollHeight in this same event turn.
+      await page.mouse.wheel(0, -300);
+      await page.waitForTimeout(200);
+      expect((await readMetrics()).jumpVisible).toBe(true);
+      await page.evaluate(() => {
+        const el = document.querySelector(".scroll") as HTMLElement;
+        const grow = (event: Event) => {
+          if (event.target !== el || el.scrollHeight - el.scrollTop - el.clientHeight > 1) return;
+          document.removeEventListener("scroll", grow, true);
+          const wrap = el.querySelector(".tl-wrap") as HTMLElement;
+          wrap.style.paddingBottom = "240px";
+          el.dataset.growthRace = "seen";
+        };
+        document.addEventListener("scroll", grow, true);
+      });
+      await page.mouse.wheel(0, 20000);
+      await page.waitForTimeout(300);
+      expect(await page.locator(".scroll").getAttribute("data-growth-race")).toBe("seen");
+      const mRace = await readMetrics();
+      expect(mRace.gap).toBeLessThanOrEqual(2);
+      expect(mRace.jumpVisible).toBe(false);
     } finally {
       await browser.close();
       daemon.kill("SIGTERM");
