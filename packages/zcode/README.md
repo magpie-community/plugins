@@ -295,18 +295,23 @@ which it is answered here with the queue's 429. A request refused alone,
 or free first's gift (which goes to the coding plan), is answered as
 before.
 
-## Two accounts at once
+## Every account, one address
 
-Three ZCode accounts used at once from one address can get the address
-refused with a 405, where two are served (01huadalang on Discord). So the
-plugin declares `maxAccounts` two, on the auth hook and as
-`magpie.maxAccounts` in its `package.json`: magpie sends requests to the
-first two accounts of the user's list only, and holds the others in
-reserve. One that runs out or fails rests, and the first in reserve takes
-its place until it is back. A user changes the number on the provider in
-magpie (Advanced → Accounts at once, or `magpie provider at-once zcode
-<n>`), 0 for every account at once. A magpie older than the one that
-reads it uses every account, as before.
+The plugin declares no `maxAccounts`, so magpie sends requests to every
+ZCode account of the user's: the routing chosen spreads them, and one
+that runs out or fails rests while the others go on. A user who wants
+fewer sets the number on the provider in magpie (Advanced → Accounts at
+once, or `magpie provider at-once zcode <n>`).
+
+What zcode.z.ai's firewall refuses an address for (405, for an hour or
+two) is too many Start Plan requests in flight from it at once, whichever
+accounts they are for. So besides each account's three, the Start Plan
+is sent at most six requests at a time from this computer over all its
+accounts; the rest wait their turn in the plugin, as an account's own do.
+Six is what two accounts sent when 0.1.40 to 0.1.67 declared
+`maxAccounts` two after a 405 with three (01huadalang on Discord), which
+held a user's other accounts in reserve. The coding plan, on another
+host, is held to none of it.
 
 ## The usage card
 

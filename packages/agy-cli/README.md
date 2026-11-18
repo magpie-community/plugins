@@ -52,8 +52,10 @@ agy 连接 `--ide-mcp-port` 时会运行 `nc 127.0.0.1 <端口>`。插件在 agy
   模型如果没有在会话里向本客户端开放（agy 可能只向它认可的客户端开放 Claude、GPT-OSS），
   就不会出现在列表里。列模型时插件会先用 `agy acp` 开一个会话（不发 prompt）问 agy 开放了哪些，
   问到之前只列 Gemini。上次 agy 列出并开放的模型存在会话状态文件旁边的 `models.json`，
-  重启后先列它，同时再问一次 agy。模型和思考等级可以在会话中切换，
-  历史保留。
+  重启后先列它，同时再问一次 agy：列出的和会话开放的都再问，列表变了（换了账号或套餐）也再问。模型和思考等级可以在会话中切换，
+  历史保留。`agy models` 带 `--settings '{"modelProvider":""}'` 运行，所以
+  settings.json 里的 `"modelProvider": "gemini"`（AI Studio 密钥）不影响这里的列表，
+  列出的是 Google 账号的模型；AI Studio 密钥请在 Magpie 的 Providers 页加成 Google Gemini。
 - **流式输出与思考摘要**：思考摘要以 `thinking` 块返回，设置 `AGY_BRIDGE_THINKING=0` 可关闭。
 - **图片输入**：支持内联 base64 的 PNG、JPEG、GIF、WebP。需要 agy 1.5.0 或更新版本，
   因为图片能力要由 ACP 服务端声明。工具返回的图片（如 `read` 读到的截图）也作为提示里的
@@ -159,14 +161,18 @@ magpie quota refresh agy-cli --json
 ```
 
 额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
-分别列出。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
+分别列出。同一组的模型共用这一组的 5 小时和每周额度，所以 Magpie 显示各组，并在「全部模型」
+里列出组里的每个模型，读数是这一组用得最多的那个额度（先用完的那个；Google 自己给每个模型的
+读数就是组的读数）。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
 在 Antigravity 未开放的地区，agy 会在资格检查时拒绝 `/usage`（"not currently available in
 your location"），尽管它自己查的额度已经拿到了。这时插件按 agy 的方式自己查：用 agy 存的登录，
 以 agy 的 User-Agent 依次请求 Google Code Assist 的 `loadCodeAssist` 和
-`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。这次查询也失败时，账号显示
-agy 的拒绝原因，不显示数字。
+`retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。个人 Google 账号的
+`loadCodeAssist` 没给项目时，按 Google 给所有个人账号用的 `aicode-consumers` 项目查（agy
+自己不带项目查，Google 会拒绝）。这次查询也失败时，账号显示 agy 的拒绝原因和查询失败的原因，
+不显示数字。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
 先看系统钥匙串（macOS）或凭据管理器（Windows）里 agy 存的登录，只读有没有、何时到期。没有登录、
@@ -182,6 +188,7 @@ agy 的拒绝原因，不显示数字。
 | `AGY_BRIDGE_THINKING` | 开启 | 设为 `0` 关闭思考摘要 |
 | `AGY_BRIDGE_EFFORT` | 未设置 | 强制思考等级：`minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `AGY_BRIDGE_MINIMAL_AGENT` | 关闭 | 设为 `1` 去掉 agy 自带的提示组件，见下文「精简 agent」 |
+| `AGY_BRIDGE_TELEMETRY` | 关闭（agy 不上报） | 插件启动 agy 时带上 `--disable-telemetry`（agy 的 `acp --help` 没这个开关就带不上）；设成 `1` 保留 agy 自己的上报 |
 | `AGY_BRIDGE_SYSTEM_APPEND` | 关闭 | 设为 `1` 把客户端的系统提示词附加到 agy 自己的系统提示词后面，而不是放进第一条提示词，见下文 |
 | `AGY_BRIDGE_IDLE_MS` | 600000 | 进程空闲多久后回收（会话仍可续接） |
 | `AGY_BRIDGE_SPARE` | 开启 | 每个账号预先启动一个备用 agy（只启动、不建会话，不发任何请求），新对话直接用它，省掉 agy 的启动时间；设为 `0` 关闭 |
@@ -211,11 +218,15 @@ agent that helps users with software engineering tasks."，改成 "You're …" �
 
 Antigravity 对几行系统提示词（Claude Code 的计费行、Claude Agent SDK、Codex、Hermes Agent、OpenCode
 和 pi 的身份句、oh-my-pi 的 RFC 2119 行）不论余量多少都回 429 "Resource has been exhausted"。插件在
-agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"RFC 2119 key words: …"、"You're Hermes Agent / OpenCode / a coding agent running in the Codex CLI"、"running within pi"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。Codex 的两句 GPT-5 行（"You are Codex, a coding agent based on GPT-5"、"You are Codex, an agent based on GPT-5"）出现在用户的轮次里（AGENTS.md、`<system-reminder>`）也会被拒，所以用户轮次里也换成 "built on GPT-5"。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。如果仍然
-回了这样的 429，会报成针对提示词的 400，而不是额度用完。
+agy 发出之前去掉计费那一行，其余几行换成同义的说法（"built on the Claude Agent SDK by Anthropic"、"built on GPT-5"、"RFC 2119 key words: …"、"You're Hermes Agent / OpenCode / a coding agent running in the Codex CLI"、"running within pi"），和 Antigravity 提供商的做法一样（`cloak.mjs`）。Codex 的两句 GPT-5 行（"You are Codex, a coding agent based on GPT-5"、"You are Codex, an agent based on GPT-5"）出现在用户的轮次里（AGENTS.md、`<system-reminder>`）也会被拒，所以用户轮次里也换成 "built on GPT-5"。零宽空格已经没用：11-14 起 Google 的检查会忽略它们。改写后放在第一条用户消息里（默认做法），Claude Code
+的提示词能正常回答；放在 agy 的会话指令里（`AGY_BRIDGE_SYSTEM_APPEND=1`）仍然被拒。所以后者回的 429 报成针对
+提示词的 400，前者报成限流，客户端可以重试，或交给别的账号。
 
 DeepSeek Harness 的 `@` 路径说明段（"Tokens prefixed with @ are paths…"）也和 Antigravity 提供商一样
 换成同义的说法再发：原文照发时 `gemini-4-argon` 大多很快答完、不思考、只走一步（#1028）。
+DeepSeek Harness 的第一句 "You are an AI agent powered by DeepSeek Harness."（#1171）和它 Web GUI 段里的
+"The browser provides no implicit DOM, route, or screenshot context."（#1105）原样发出也会被回 429，
+分别改成 "You're …" 和 "The browser gives …" 再发。
 
 设为 `1` 后，临时 agent 带上 `excludeDefaultComponents: true`：发往上游的请求里不再有
 agy 自己的系统提示词，只剩插件的一行工具说明和客户端的系统提示词（同样以上面两种方式之一
@@ -245,9 +256,22 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   从 agy 的日志中取出真实原因，并以错误结束本轮，不会当作正常回复输出。agy 1.5.8 的
   "There was a network issue connecting to the server" 和 "Your AI credits balance is
   too low to continue." 也一样（后者按额度不足报错）；`⚠ API error (attempt N)` 这类
-  重试中的提示行会被去掉。若结尾是 "This service has been disabled in this account for
+  重试中的提示行会被去掉。agy 自己撞上输出上限后重试时，也会把三行提示写进正文
+  （"Your previous response was cut off because it exceeded the output token limit"、
+  它的续写指令和 "Retries remaining: N"），这三行同样会被去掉，后面模型的续写照常
+  输出。若结尾是 "This service has been disabled in this account for
   violation of Terms of Service"，会按禁止重试的 403 语义 `permission_error` 返回，而不是
-  当成正常正文。
+  当成正常正文。结尾是 "Verification Required"（Google 要求先验证这个账号）时也一样，
+  并带上 agy 记下的验证链接；没有链接时说明去哪里验证。
+  结尾是 "⚠ Individual quota reached. … Resets in 1h18m40s."（这个账号自己的额度用完）时，
+  按额度不足（`rate_limit_error`，非流式为 HTTP 429）结束本轮，原文和重置时间一并带上，
+  magpie 据此让这个账号歇到重置，并改问下一个账号。
+- **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
+  again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
+  "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样
+  的空结尾当作回复交出去，而是在同一个会话里再问一次（模型手上还是完整的上下文）；
+  还是空的话以错误结束本轮，magpie 会改问下一个账号，客户端重发同一请求也会接着这个会话。
+  一个连思考都没有的空结尾照常返回。
 - **HTTP 409，提示工具结果与历史对不上**：通常是客户端在对话中途改写了历史或工具 ID。
   能确定对应关系时插件会重建会话；无法确定时直接拒绝，不做猜测。
   Hermes Agent 会把一次批量的 `tool_call({"calls": [...]})` 在自己的历史里拆成每项一次调用，

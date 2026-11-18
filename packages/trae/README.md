@@ -241,7 +241,20 @@ function does (`glm-5v-turbo`, `kimi-k2.5`, `minimax-m2.7`,
 `qwen-3.6-plus`, each answering through `solo_coder`). Left out are the
 IDE's helpers (`usage` other than
 `chat_completion`: summary, fast_apply…), configs switched off and the
-custom-model slots. Context is the list's `context_window_tokens.dev`,
+custom-model slots. An enterprise's own built-in models
+(`config_source` 2, "Enterprise-builtin" in Trae CN's picker) are listed
+since 0.2.41 (#1258), unless the admin switched one off (`status` false); a
+personal custom model (`config_source` 3) is not, its key being in the
+user's IDE only. A chat with an enterprise model carries `config_source`
+2, `is_custom_model` true, and the `model_name` and `provider` of its
+`model_detail_list` entry (its `__dev` one, else the first) at the top of the
+body, as Trae CN 3.4.20's own `llm_utils_chat` request does (0.2.43; 0.2.41
+put them under `user_message_context.model_info`, and an enterprise seat got
+4001 "the param is invalid" on every function; 0.2.42 read `provider` off the
+config, where Trae's list doesn't carry it, sent no `model_name`, and got
+4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
+the model, the functions tried and the host, and says when the account's
+list doesn't have the model. Context is the list's `context_window_tokens.dev`,
 output the `__dev` model's `max_tokens`. A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's

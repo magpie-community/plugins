@@ -10,7 +10,7 @@ import { homedir, tmpdir } from "node:os"
 import { readFileSync, realpathSync } from "node:fs"
 import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 
-const { busy, spentUp, BUSY_WAITS, DEFAULT_CONCURRENCY, DEFAULT_ACCOUNTS } = _internal
+const { busy, spentUp, BUSY_WAITS, DEFAULT_CONCURRENCY } = _internal
 const WAITS = [...BUSY_WAITS]
 
 let server
@@ -186,13 +186,12 @@ test("the account's cap is declared, and declared as the same number twice", asy
   expect(pkg.magpie.maxConcurrency).toBe(DEFAULT_CONCURRENCY)
 })
 
-test("two accounts at once are declared, the same number twice", async () => {
-  // 01huadalang on Discord: three ZCode accounts used at once from one
-  // address got it refused with a 405, two didn't. magpie keeps the first
-  // two of the user's list taking requests and the others in reserve
+test("no accounts at once are declared, so magpie uses every account", async () => {
+  // mathfournity on X: with maxAccounts two, a user's other gift accounts
+  // sat in reserve. The address's Start Plan requests in flight are held
+  // instead (inflight.test.mjs), over every account
   const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
   const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-  expect(DEFAULT_ACCOUNTS).toBe(2)
-  expect(hooks.auth.maxAccounts).toBe(DEFAULT_ACCOUNTS)
-  expect(pkg.magpie.maxAccounts).toBe(DEFAULT_ACCOUNTS)
+  expect(hooks.auth.maxAccounts).toBeUndefined()
+  expect(pkg.magpie.maxAccounts).toBeUndefined()
 })

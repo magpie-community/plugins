@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect } from "../usage.mjs"
+import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -73,7 +73,11 @@ const LIVE_MODEL_ROWS = [
 test("a live report names on each window the ids the listed catalog serves", () => {
   storeCatalogRows(LIVE_MODEL_ROWS)
   const result = parseUsageReport(structuredClone(LIVE_REPORT))
-  assert.deepEqual(result.windows.map(w => w.models), [
+  const pools = result.windows.filter(w => !w.model)
+  assert.deepEqual(pools.map(w => [w.pool, w.name]), [
+    ["Gemini", "7 days"], ["Gemini", "5 hours"], ["Claude & GPT", "7 days"], ["Claude & GPT", "5 hours"], ["Gemini 4 Argon", "7 days"],
+  ])
+  assert.deepEqual(pools.map(w => w.models), [
     ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
     ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-xhigh"],
     ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "gpt-oss-120b", "gpt-oss-120b-medium"],
@@ -81,10 +85,51 @@ test("a live report names on each window the ids the listed catalog serves", () 
     // Argon's description names no model; its group name is a catalog name.
     ["gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-4-argon-medium"],
   ])
-  assert.deepEqual(result.windows.map(w => w.used), [0, 0, 66.394961, 0, 0])
+  assert.deepEqual(pools.map(w => w.used), [0, 0, 66.394961, 0, 0])
   // agy names a family in the description even though it lists no bare id.
-  assert.ok(result.windows[2].models.includes("gpt-oss-120b"))
+  assert.ok(pools[2].models.includes("gpt-oss-120b"))
+  assert.ok(result.windows.every(w => w.aside === true))
   storeCatalogRows(null)
+})
+
+test("each model family a group names has its own window in the pool, at the pool's most used bucket", () => {
+  storeCatalogRows(LIVE_MODEL_ROWS)
+  const result = parseUsageReport(structuredClone(LIVE_REPORT))
+  const own = result.windows.filter(w => w.model)
+  assert.deepEqual(own.map(w => [w.name, w.model, w.family, w.pool, w.used, w.span, w.resetsAt]), [
+    ["Claude Opus 5.5", "claude-opus-5-5", "Claude", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+    ["Claude Sonnet 5.5", "claude-sonnet-5-5", "Claude", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+    ["Gemini 3.8 Flash", "gemini-3.8-flash", "Gemini", "Gemini", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["Gemini 4 Argon", "gemini-4-argon", "Gemini", "Gemini 4 Argon", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["Gemini 4 Hydrogen", "gemini-4-hydrogen", "Gemini", "Gemini", 0, 604800, "2026-11-22T11:19:33.000Z"],
+    ["GPT-OSS 120B", "gpt-oss-120b", "GPT-OSS", "Claude & GPT", 66.394961, 604800, "2026-11-20T09:01:10.000Z"],
+  ])
+  // a model's window names every id of its family, effort levels too
+  assert.deepEqual(own[0].models, ["claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-5-5-low", "claude-opus-5-5-medium"])
+  // the models' windows come first, then the pools', as the antigravity plugin sent them
+  assert.ok(result.windows.slice(0, own.length).every(w => w.model))
+
+  // the 5 hours used more than the week: a model reads the 5 hours
+  const busy = structuredClone(LIVE_REPORT)
+  busy.command.data.groups[0].buckets[1].remaining_fraction = 0.25
+  const flash = parseUsageReport(busy).windows.find(w => w.model === "gemini-3.8-flash")
+  assert.deepEqual([flash.used, flash.span, flash.resetsAt], [75, 18000, "2026-11-15T16:19:33.000Z"])
+
+  // a model two groups name reads the one that stops it first
+  const twice = structuredClone(LIVE_REPORT)
+  twice.command.data.groups[2].description = "Models within this group: Gemini 4 Argon, Gemini 3.8 Flash"
+  twice.command.data.groups[2].buckets[0].remaining_fraction = 0.4
+  const again = parseUsageReport(twice).windows.find(w => w.model === "gemini-3.8-flash")
+  assert.deepEqual([again.pool, again.used], ["Gemini 4 Argon", 60])
+
+  // a pool whose buckets say no share: its models get no window, not a guess
+  const blind = structuredClone(LIVE_REPORT)
+  for (const b of blind.command.data.groups[1].buckets) delete b.remaining_fraction
+  assert.ok(!parseUsageReport(blind).windows.some(w => w.model && w.pool === "Claude & GPT"))
+  storeCatalogRows(null)
+
+  // no catalog: the pools' windows alone
+  assert.ok(!parseUsageReport(structuredClone(LIVE_REPORT)).windows.some(w => w.model))
 })
 
 test("ids on windows follow the catalog, and names agy adds match nothing until it lists them", () => {
@@ -120,7 +165,7 @@ test("maps all groups/cadences to display-only Magpie windows, without invented 
     group([bucket({ id: "gemini-argon-weekly", window: "weekly", remaining_fraction: 0.53 })], "Gemini 4 Argon"),
   ]))
   assert.equal(result.windows.length, 5)
-  assert.deepEqual(result.windows.map(w => w.name), ["Gemini · 5 hours", "Gemini · 7 days", "Claude & GPT · 5 hours", "Claude & GPT · 7 days", "Gemini 4 Argon · 7 days"])
+  assert.deepEqual(result.windows.map(w => w.pool + " · " + w.name), ["Gemini · 5 hours", "Gemini · 7 days", "Claude & GPT · 5 hours", "Claude & GPT · 7 days", "Gemini 4 Argon · 7 days"])
   assert.deepEqual(result.windows.map(w => w.used), [25, 50, 100, 0, 47])
   assert.deepEqual(result.windows.map(w => w.span), [18000, 604800, 18000, 604800, 604800])
   assert.ok(result.windows.every(w => w.aside === true))
@@ -716,7 +761,7 @@ test("never runs agy while it has no stored sign-in, or one that ended with noth
   let stored = { state: "missing" }
   const read = createUsageReader(() => f.executable, { ...f.options, signIn: async () => stored })
   assert.equal((await read()).signIn, "expired")
-  stored = { state: "present", fp: "b", canRenew: true, expiresAt: 1, expired: true }
+  stored = { state: "present", fp: "b", canRenew: true, expiresAt: 0, expired: false }
   const back = await read()
   assert.equal(back.windows.length, 1)
   assert.equal(back.signIn, "renewed")
@@ -729,7 +774,7 @@ test("a sign-in agy failed on isn't run again in the background until another is
   t.after(() => forgetStoredSignIn({ dead: true }))
   const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "You are not logged in. Please sign in." })
   let clock = 0
-  let stored = { state: "present", fp: "old", canRenew: true, expiresAt: 1, expired: true }
+  let stored = { state: "present", fp: "old", canRenew: true, expiresAt: 0, expired: false }
   const read = createUsageReader(() => f.executable, { ...f.options, now: () => clock, signIn: async () => stored })
   assert.equal((await read()).signIn, "expired")
   const runs = (await f.logs()).length
@@ -750,7 +795,7 @@ test("a hung sign-in with an ended token is never restarted until the credential
     forgetStoredSignIn({ dead: true })
     t.after(() => forgetStoredSignIn({ dead: true }))
     const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: output })
-    let stored = { state: "present", fp: "hung", canRenew: true, expiresAt: 1, expired: true }
+    let stored = { state: "present", fp: "hung", canRenew: true, expired: true }
     let clock = 0
     const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, now: () => clock, signIn: async () => stored })
     assert.equal((await read()).signIn, "expired")
@@ -895,9 +940,9 @@ test("an account agy refuses for its region has its quota read the way agy reads
   const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
   assert.equal(result.error, undefined)
   assert.equal(result.signIn, "kept")
-  assert.deepEqual(result.windows.map(w => [w.name, w.used, w.resetsAt]), [
-    ["Gemini · 7 days", 25, "2026-11-22T11:19:33.000Z"],
-    ["Gemini · 5 hours", 50, "2026-11-16T16:19:33.000Z"],
+  assert.deepEqual(result.windows.map(w => [w.pool, w.name, w.used, w.resetsAt]), [
+    ["Gemini", "7 days", 25, "2026-11-22T11:19:33.000Z"],
+    ["Gemini", "5 hours", 50, "2026-11-16T16:19:33.000Z"],
   ])
   // the two requests agy makes, as it makes them
   assert.deepEqual(api.calls.map(c => [c.method, c.url, c.body]), [
@@ -942,7 +987,8 @@ test("an access token about to end is renewed in memory for the direct read, nev
 test("a direct read that fails leaves the region refusal standing: unknown, never zero or full", async t => {
   for (const [answer, stored] of [
     [{ retrieveUserQuotaSummary: [403, { error: { code: 403, message: "secret@example.com" } }] }, STORED],
-    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined }] }, STORED],
+    // a Workspace or Cloud account with no project of its own
+    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined, gcpManaged: true }] }, STORED],
     [{ retrieveUserQuotaSummary: [200, { groups: [] }] }, STORED],
     [{}, null],
   ]) {
@@ -953,7 +999,117 @@ test("a direct read that fails leaves the region refusal standing: unknown, neve
     assert.deepEqual(result.windows, [])
     assert.equal(result.signIn, "kept")
     assert.match(result.error, /not eligible/)
+    // and why the direct read failed
+    assert.match(result.error, /Reading the quota directly failed too: \S/)
     assert.doesNotMatch(result.error, /secret/)
+  }
+})
+
+// IcyLiqu1d on X (11-18): agy refused /usage as "not eligible" while the
+// account's requests went on working: agy's ACP sessions run no
+// eligibility check. When Google's loadCodeAssist names no project, agy
+// asks retrieveUserQuotaSummary with {} and gets 403 #3501 (agy 1.5.10,
+// recorded through CLOUD_CODE_URL with loadCodeAssist answered like this;
+// the 403 and the 200 below were Google's own for a consumer account).
+test("a consumer account Google names no project for has its quota read under the consumer project", async t => {
+  const api = await codeAssist(t, { loadCodeAssist: [200, { allowedTiers: [], gcpManaged: false, upgradeSubscriptionUri: "https://codeassist.google.com/upgrade", ineligibleTiers: [] }] })
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.10", CLOUD_CODE_URL: api.url })
+  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
+  const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
+  assert.equal(result.error, undefined)
+  assert.ok(result.windows.some(w => w.used === 25) && result.windows.some(w => w.used === 50), JSON.stringify(result.windows))
+  assert.deepEqual(api.calls.map(c => c.body), [{ metadata: { ideType: "ANTIGRAVITY" } }, { project: CONSUMER_PROJECT }])
+  await f.assertClean()
+})
+
+test("an account with no project and Google's reason for it says that reason", async t => {
+  const why = "Your current account is not eligible for Antigravity, because it is not currently available in your location."
+  const api = await codeAssist(t, { loadCodeAssist: [200, { gcpManaged: true, ineligibleTiers: [{ reasonCode: "UNSUPPORTED_LOCATION", reasonMessage: why }] }] })
+  await assert.rejects(readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.10", deadline: Date.now() + 5000, stored: async () => STORED }),
+    e => e.message.includes(why) && /no project/.test(e.message))
+  assert.equal(api.calls.length, 1)
+})
+
+// plugins#1234 (qiankun229): agy run for usage with an ended access token
+// renews it first, and when that failed for a moment (a DNS miss at
+// Windows startup, a 10s keyring timeout) it opened Google's sign-in in the
+// browser. With such a token agy -p isn't run: the quota is read directly.
+test("an ended or ending access token with a refresh token is read without running agy -p", async t => {
+  for (const ends of [1, 1_000_000 + 60_000]) {
+    const f = await fixture(t, { TEST_VERSION: "1.5.9" })
+    const asked = []
+    const quota = async o => { asked.push(o.version); return SUMMARY }
+    const stored = { state: "present", fp: "ended", canRenew: true, expiresAt: ends, expired: ends === 1 }
+    const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => 1_000_000, signIn: async () => stored })
+    const result = await read()
+    assert.equal(result.error, undefined)
+    assert.equal(result.signIn, "kept")
+    assert.equal(result.windows.length, 2)
+    assert.deepEqual(asked, ["1.5.9"])
+    assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+    await f.assertClean()
+  }
+  // a token with time left still goes through agy
+  const f = await fixture(t)
+  let asked = 0
+  const stored = { state: "present", fp: "live", canRenew: true, expiresAt: 1_000_000 + 10 * 60_000, expired: false }
+  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY }, now: () => 1_000_000, signIn: async () => stored })
+  assert.equal((await read()).windows.length, 1)
+  assert.equal(asked, 0)
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+})
+
+test("a renewal that fails for a moment backs off and keeps the sign-in; one Google refuses asks for a new sign-in", async t => {
+  forgetStoredSignIn({ dead: true })
+  t.after(() => forgetStoredSignIn({ dead: true }))
+  const f = await fixture(t)
+  let clock = 1_000_000
+  let fail = () => { throw new TypeError("fetch failed: getaddrinfo ENOTFOUND oauth2.googleapis.com") }
+  let asked = 0
+  const quota = async () => { asked++; return fail() }
+  const stored = { state: "present", fp: "blip", canRenew: true, expiresAt: 1, expired: true }
+  const read = createUsageReader(() => f.executable, { ...f.options, quota, now: () => clock, signIn: async () => stored })
+  const first = await read()
+  assert.equal(first.signIn, "kept")
+  assert.match(first.error, /network or proxy/)
+  assert.equal((await read()).signIn, "kept")
+  assert.equal(asked, 1, "held until the backoff ends")
+  clock += 10 * 60 * 1000
+  fail = () => SUMMARY
+  const back = await read()
+  assert.equal(back.windows.length, 2)
+  assert.equal(back.signIn, "kept")
+  assert.ok((await f.logs()).every(l => l.args[0] === "--version"), "agy -p never ran")
+  // Google refusing the refresh token: the sign-in is over, and nothing runs for it again
+  const refused = { ...stored, fp: "revoked" }
+  const api = async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }), { status: 400 })
+  const ended = structuredClone(STORED)
+  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
+  const read2 = createUsageReader(() => f.executable, {
+    ...f.options, now: () => clock, signIn: async () => refused,
+    quota: o => readQuotaDirect({ ...o, stored: async () => ended, fetch: api }),
+  })
+  const over = await read2()
+  assert.equal(over.signIn, "expired")
+  assert.match(over.error, /Sign in again/)
+  clock += 7 * 60 * 60 * 1000
+  assert.equal((await read2()).signIn, "expired")
+  await f.assertClean()
+})
+
+test("the direct read's renewal: invalid_grant is a sign-in that no longer works, anything else a failed read", async t => {
+  const ended = structuredClone(STORED)
+  ended.token.expiry = new Date(Date.now() - 60_000).toISOString()
+  for (const [status, body, kind] of [
+    [400, { error: "invalid_grant" }, "auth"],
+    [401, { error: "invalid_grant" }, "auth"],
+    [400, { error: "invalid_request" }, ""],
+    [503, { error: "backendError" }, ""],
+    [500, "not json", ""],
+  ]) {
+    const fetchFn = async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status })
+    await assert.rejects(readQuotaDirect({ env: {}, version: "1.5.9", deadline: Date.now() + 5000, stored: async () => ended, fetch: fetchFn }),
+      e => e.kind === kind && /sign-in/.test(e.message), `${status} ${JSON.stringify(body)}`)
   }
 })
 
@@ -989,4 +1145,33 @@ test("agyRefusal: Google turning the account away, never a network failure or ag
     "PERMISSION_DENIED (code 403): Request had invalid credentials.",
     "This service has been disabled in this account for violation of Terms of Service.",
   ]) assert.equal(agyRefusal(other), "", other)
+})
+
+// Google's VALIDATION_REQUIRED at agy's eligibility check, in agy 1.5.9's
+// words (AuthStatus.EligibilityError, IneligibilityFromResult): the link
+// agy prints goes to the user whole, in the words magpie's gateway reads as
+// a verification (provider.verifyAdvice, verifyLink), never the VPN advice.
+test("agyRefusal: an account Google wants verified gets the link agy printed, or where to verify", () => {
+  const link = "https://accounts.google.com/signin/continue?sarp=1&scc=1&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&plt=AKgnsbv"
+  const linked = `Error: Eligibility check failed: Verify your account to continue.\n\nPlease verify your account in your browser to continue:\n${link}\n`
+  const said = agyRefusal(linked)
+  assert.ok(said.includes(`this Google account needs to be verified: open ${link} in a browser`), said)
+  assert.doesNotMatch(said, /VPN/)
+  assert.equal(verifyLinkIn(linked.replace(/\n/g, "\r\n")), link)
+  for (const bare of [
+    "Error: Eligibility check failed: Verification required. Please complete verification in your browser to continue.",
+    "Error: Eligibility check failed: Verify your account to continue.",
+  ]) {
+    const why = agyRefusal(bare)
+    assert.match(why, /this Google account needs to be verified: open the Antigravity app, or run `agy` in a terminal/, bare)
+    assert.doesNotMatch(why, /https:/)
+  }
+})
+
+test("verifyLinkIn: Google's validation link from a logged error, validation_link first, https only", () => {
+  const body = '{"error":{"code":403,"message":"Verify your account to continue.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"VALIDATION_REQUIRED","metadata":{"validation_url":"https://accounts.google.com/signin/continue?sarp=1\\u0026x=2","validation_link":"https://accounts.google.com/v?a=1\\u0026b=2"}}]}}'
+  assert.equal(verifyLinkIn(body), "https://accounts.google.com/v?a=1&b=2")
+  assert.equal(verifyLinkIn(body.replace(/,"validation_link":"[^"]+"/, "")), "https://accounts.google.com/signin/continue?sarp=1&x=2")
+  assert.equal(verifyLinkIn('validation_url: "http://example.com/x"'), "")
+  assert.equal(verifyLinkIn("Verification Required"), "")
 })

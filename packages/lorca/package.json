@@ -1,0 +1,31 @@
+{
+  "name": "@magpie-community/agent-lorca",
+  "version": "0.1.0",
+  "description": "Lorca (lorca.app) as a magpie agent: writes Magpie's gateway, models and MCP servers into Lorca's credentials",
+  "type": "module",
+  "files": [
+    "lorca.agent.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-agent",
+    "lorca",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/lorca"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "agent": "./lorca.agent.js",
+    "name": "Lorca",
+    "icon": "https://lorca.app/icon.png"
+  }
+}

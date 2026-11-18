@@ -71,12 +71,16 @@ export class Credentials {
     throw new Error("Invalid Search1API sign-in. Sign in again in Magpie.");
   }
 
+  // The plugin option or environment key, which wins over any sign-in.
+  override(): string | undefined {
+    return this.options.apiKey?.trim() || process.env.SEARCH1API_API_KEY?.trim() || undefined;
+  }
+
   async token(
     signal?: AbortSignal,
   ): Promise<{ token: string; oauth?: StoredOAuth }> {
     signal?.throwIfAborted();
-    const override =
-      this.options.apiKey?.trim() || process.env.SEARCH1API_API_KEY?.trim();
+    const override = this.override();
     if (override) return { token: override };
     const auth = await this.stored();
     if (auth?.type === "api") return { token: auth.key };

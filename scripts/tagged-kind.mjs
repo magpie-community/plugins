@@ -6,7 +6,9 @@
 // another way is read again whole, not only the repositories pushed to.
 // 2: an agent plugin with a module of its own is an agent, and hooks are
 // read (#1200).
-export const READ = 2
+// 3: a page with its own module is a page only when its keywords include
+// magpie-page; a page without its own module remains a page as before.
+export const READ = 3
 
 export const named = (e) => !!e && (typeof e !== "object" || Object.keys(e).length > 0)
 
@@ -38,7 +40,7 @@ export function kindOf(pj) {
   // a package that adds an agent is an agent plugin, its module (main)
   // only what keeps the agent working, not a provider (#737, #1200)
   if (said(mg.agent)) return "agent"
-  if (!r && said(mg.page?.file)) return "page"
+  if (said(mg.page?.file) && (!r || (Array.isArray(pj.keywords) && pj.keywords.some((k) => typeof k === "string" && k.trim().toLowerCase() === "magpie-page")))) return "page"
   if (!r && said(mg.hooks)) return "hooks"
   return ""
 }

@@ -1735,6 +1735,15 @@ const QUEUE = {
   // fail over from. A queued call answers its 10605 at once, and a
   // thinking model streams its reasoning, so a real answer starts sooner.
   silent: 120_000,
+  // the longest a wait goes on with nothing ahead of the request
+  // (queueCount 1 or none) and the queue's state the same at every ask.
+  // Qoder CN once held such a RESOURCE_LIMIT queue unchanged, 1 in p4,
+  // for every request from one hour on (plugins#1220): the hour's hold
+  // then left the agent with keepalives only. After this it is the
+  // queue's 503 with Retry-After, which magpie can rest the account on
+  // or fail over from. A queue with others ahead is waited out as
+  // Qoder's client waits it (#807).
+  stuck: 5 * 60 * 1000,
   now: () => Date.now(),
   // every calls fn each ms until the returned stop is called
   every: (fn, ms) => {
@@ -1788,7 +1797,7 @@ function queueState(text) {
     if (isQueued !== undefined || serviceAvailable !== undefined) {
       const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v))
       const str = (v) => (typeof v === "string" && v ? v : undefined)
-      return { isQueued, serviceAvailable, modelKey: str(o.modelKey), queueType: str(o.queueType), retryAfterSeconds: num(o.retryAfterSeconds) }
+      return { isQueued, serviceAvailable, modelKey: str(o.modelKey), queueType: str(o.queueType), retryAfterSeconds: num(o.retryAfterSeconds), queueCount: num(o.queueCount), subCode: str(o.subCode) }
     }
     for (const k of ["data", "result", "message", "body"]) {
       const v = o[k]
@@ -1820,13 +1829,25 @@ async function queueStatus(api, cred, { requestSetId, modelKey, queueType, reque
   return st
 }
 
+// stuckKey is what a queue's state says of the request's place in it, or
+// "" when others are ahead of it (a queue that moves while they are
+// served is waited out, QUEUE.stuck never ends it).
+function stuckKey(st) {
+  const n = Number(st?.queueCount)
+  if (Number.isFinite(n) && n > 1) return ""
+  return JSON.stringify([st?.isQueued, st?.serviceAvailable, Number.isFinite(n) ? n : null, st?.queueType ?? null, st?.subCode ?? null, st?.retryAfterSeconds ?? null])
+}
+
 // queueWait waits in Qoder's queue for the request, from the state its
 // refusal gave, until the queue lets it through (true) or the wait ends
-// (false). A cancelled request throws.
+// (false). A wait ended by QUEUE.stuck sets ask.stuck. A cancelled request
+// throws.
 async function queueWait(api, cred, ask, first, signal, deadline, site) {
   let q = first ?? {}
   let asked = false
   let failed = 0
+  let same = stuckKey(q)
+  let since = QUEUE.now()
   for (;;) {
     if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError")
     if (QUEUE.now() >= deadline) return false
@@ -1845,6 +1866,14 @@ async function queueWait(api, cred, ask, first, signal, deadline, site) {
     }
     failed = 0
     q = { ...st, modelKey: st.modelKey ?? q.modelKey, queueType: st.queueType ?? q.queueType }
+    const key = stuckKey(q)
+    if (!key || key !== same) {
+      same = key
+      since = QUEUE.now()
+    } else if (QUEUE.now() - since >= QUEUE.stuck && st.isQueued !== false) {
+      ask.stuck = true
+      return false
+    }
     if (st.isQueued === false) {
       if (st.retryAfterSeconds > 0) await QUEUE.pause(Math.min(queuePause(st.retryAfterSeconds), Math.max(0, deadline - QUEUE.now())), signal)
       return QUEUE.now() < deadline
@@ -3858,7 +3887,8 @@ const makePlugin = (site) => async ({ client }) => {
           onHeld(held.response)
         }
         try {
-          if (!(await queueWait(api, cred, ask, f.queue, signal, deadline, siteOf(site, cred)))) return errorResponse(f)
+          if (!(await queueWait(api, cred, ask, f.queue, signal, deadline, siteOf(site, cred))))
+            return errorResponse(ask.stuck ? { ...f, message: `${f.message} (the queue hasn't moved in ${Math.round(QUEUE.stuck / 60_000)} minutes with nothing ahead)` } : f)
         } catch (e) {
           return errorResponse({ status: 502, message: e?.message ?? String(e) })
         }

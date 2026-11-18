@@ -231,7 +231,8 @@ test("#1064 慢 agy：第一次 models() 给静态目录，后台热身后的第
 })
 
 // #1086（yinbing-666）：重启后在 agy 再次回答前，也该列出上次的完整目录，而不是只有 Gemini。
-test("#1086 重启后第一次 models() 就给上次 agy 列出并开放的目录，坏文件和别的 agy 仍给静态目录", async () => {
+// 重启后 agy 回答了也要再探测一次保存的开放型号（shenggxhz），多一次 1.5s 的慢会话，所以给 15s。
+test("#1086 重启后第一次 models() 就给上次 agy 列出并开放的目录，坏文件和别的 agy 仍给静态目录", { timeout: 15_000 }, async () => {
   const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-catalog-saved-"))
   try {
     const agy = path.join(shared, process.platform === "win32" ? "agy.exe" : "agy")
@@ -254,6 +255,7 @@ test("#1086 重启后第一次 models() 就给上次 agy 列出并开放的目�
       assert.equal(kit.acpSpawns.length, 0, "agy models 回答前不该起探测会话")
       assert.equal(kit.modelsSpawns.length, 1, "保存的目录也要再问一次 agy")
       await warmed(kit)
+      assert.equal(kit.acpSpawns.length, 1, "agy 回答后，保存的开放型号也要再探测一次")
     })
 
     // 另一个 agy 可执行文件不用这份目录。
@@ -684,5 +686,140 @@ test("#3501 请求：会话一个型号都不开放时答 403 和 Google 的原�
     assert.equal(response.status, 400)
     assert.match((await response.json()).error.message, /unavailable to this agy account/)
     await settle(kit)
+  })
+})
+
+// plugins#1218 (shenggxhz on X): settings.json's "modelProvider": "gemini"
+// (an AI Studio key) made a bare `agy models` fail without GEMINI_API_KEY in
+// magpie's environment, and the old catalog stayed. agy 1.5.9's own help
+// lines; the fake answers like that agy: bare, the API-key error; with
+// --settings '{"modelProvider":""}', the Google sign-in's list.
+const AGY_159_TOP_HELP = [
+  "Usage of agy:",
+  "  --add-dir                       Add a directory to the workspace (repeatable) (default [])",
+  "  --sandbox                       Run in a sandbox with terminal restrictions enabled",
+  "  --settings                      Settings for this session only, never saved: a JSON object of settings.json keys, inline or as a file path",
+  "",
+  "Available subcommands:",
+  "  models          List available models",
+  "",
+].join("\n")
+const GEMINI_PROVIDER_ERROR = 'modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set'
+function geminiSettingsAgy() {
+  return ({ args }) => {
+    const i = args.indexOf("--settings")
+    const provider = i >= 0 ? JSON.parse(args[i + 1]).modelProvider : "gemini"
+    return provider === "gemini" ? { stderr: GEMINI_PROVIDER_ERROR + "\n", code: 1 } : DYNAMIC_OK
+  }
+}
+
+test("#1218 agy models runs with modelProvider cleared when agy takes --settings, so a gemini settings.json doesn't keep a stale list", async () => {
+  await withKit({ topHelp: AGY_159_TOP_HELP, modelsBehavior: geminiSettingsAgy() }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    const listed = await kit.models()
+    assert.ok(listed["gemini-9-test"], `agy's own list should be read, got ${ids(listed).join(", ")}`)
+    assert.ok(kit.modelsSpawns.length >= 1)
+    for (const spawn of kit.modelsSpawns) assert.deepEqual(spawn.args, ["--settings", '{"modelProvider":""}', "models"])
+    assert.equal(kit.topHelpSpawns.length, 1, "agy --help is asked once per binary")
+  })
+})
+
+test("#1218 an agy whose help doesn't list --settings still runs a bare agy models", async () => {
+  await withKit({ modelsBehavior: DYNAMIC_OK }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    assert.ok((await kit.models())["gemini-9-test"])
+    for (const spawn of kit.modelsSpawns) assert.deepEqual(spawn.args, ["models"])
+  })
+})
+
+// #1229: two accounts on different plans. agy offers one Claude and the
+// other Gemini only; each account's models() lists its own, and neither
+// account's session changes what the other lists.
+test("#1229 每个账号列自己开放的型号，互不覆盖", async () => {
+  const otherAuth = { type: "oauth", metadata: { agyHome: "otheracct1" } }
+  await withKit({
+    modelsBehavior: DYNAMIC_OK,
+    offeredModels: (home) => /otheracct1$/.test(home) ? OFFERED_ALL.filter(([id]) => id.startsWith("gemini-")) : OFFERED_CLAUDE,
+  }, async (kit) => {
+    // the other account is signed in in its own home, as agy writes it
+    const token = path.join(kit.env.XDG_STATE_HOME, "magpie-agy-bridge", "accounts", "otheracct1", ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    fs.mkdirSync(path.dirname(token), { recursive: true })
+    fs.writeFileSync(token, JSON.stringify({ token: { access_token: "test-access", refresh_token: "test-refresh", expiry: "0001-01-01T00:00:00Z" } }))
+    const own = () => kit.plugin.provider.models()
+    const other = () => kit.plugin.provider.models(undefined, { auth: otherAuth })
+    await own()
+    await warmed(kit)
+    assertClaudeListed(await own(), "默认账号")
+    await other()
+    await warmed(kit)
+    const otherList = await other()
+    assert.ok(otherList["gemini-4-argon"])
+    assert.deepEqual(ids(otherList).filter(id => /^(?:claude|gpt)-/.test(id)), [], "另一个账号列出了它没开放的型号")
+    // the other account's probe didn't change the first account's list
+    assertClaudeListed(await own(), "另一个账号探测之后的默认账号")
+    assert.ok(kit.acpSpawns.some(spawn => /otheracct1$/.test(spawn.env?.HOME ?? "")), "另一个账号该在自己的 HOME 里探测")
+  })
+})
+
+// shenggxhz (X, 11-17): moved from a Pro account to Ultra, and the agy
+// provider still listed no Gemini 4. What agy acp offered the Pro account
+// was saved in models.json and believed until a request opened a session,
+// so Ultra's fresh `agy models` (Carbon in it) was filtered down to the Pro
+// account's offer. A saved offer is asked again once agy answers, and a
+// listing that changes asks again too.
+const PRO_ROWS = [
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6"], ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+]
+const PRO_OFFERED = [["gemini-3.8-flash", "Gemini 3.8 Flash"], ["claude-sonnet-4-6", "Claude Sonnet 4.6"], ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"]]
+const ULTRA_ROWS = [["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"], ...PRO_ROWS]
+const ULTRA_OFFERED = [["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"], ...PRO_OFFERED]
+
+test("shenggxhz 换到 Ultra 账号后重启：保存的旧开放型号不挡住 Gemini 4，agy 回答后重新探测", async () => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "agy-catalog-ultra-"))
+  try {
+    const agy = path.join(shared, process.platform === "win32" ? "agy.exe" : "agy")
+    fs.writeFileSync(agy, "#!/bin/sh\nexit 99\n", { mode: 0o755 })
+    const env = { XDG_STATE_HOME: path.join(shared, "state") }
+    await withKit({ agyPath: agy, env, modelsBehavior: { stdout: modelsOutput(PRO_ROWS) }, offeredModels: PRO_OFFERED }, async (kit) => {
+      await kit.models()
+      await warmed(kit)
+      const pro = await kit.models()
+      assert.ok(pro["claude-sonnet-4-6"])
+      assert.equal(pro["gemini-4-carbon"], undefined)
+    })
+    await withKit({ agyPath: agy, env, modelsBehavior: { stdout: modelsOutput(ULTRA_ROWS) }, offeredModels: ULTRA_OFFERED }, async (kit) => {
+      await kit.models()
+      await warmed(kit)
+      const ultra = await kit.models()
+      assert.ok(ultra["gemini-4-carbon"], `Ultra 的 Gemini 4 Carbon 没列出：${ids(ultra).join(", ")}`)
+      assert.equal(kit.acpSpawns.length, 1, "保存的开放型号要在这次运行里再问一次 agy acp")
+    })
+  } finally {
+    fs.rmSync(shared, { recursive: true, force: true })
+  }
+})
+
+test("shenggxhz 运行中换了账号：agy models 列表变了就重新探测开放型号", async () => {
+  await withKit({ modelsBehavior: { stdout: modelsOutput(PRO_ROWS) }, offeredModels: PRO_OFFERED }, async (kit) => {
+    await kit.models()
+    await warmed(kit)
+    assert.equal((await kit.models())["gemini-4-carbon"], undefined)
+    assert.equal(kit.acpSpawns.length, 1)
+    kit.modelsBehavior = { stdout: modelsOutput(ULTRA_ROWS) }
+    kit.offeredModels = ULTRA_OFFERED
+    kit.clock.advance(CATALOG_TTL_MS)
+    await kit.models()
+    await warmed(kit)
+    const after = await kit.models()
+    assert.ok(after["gemini-4-carbon"], `换账号后 Gemini 4 Carbon 没列出：${ids(after).join(", ")}`)
+    assert.equal(kit.acpSpawns.length, 2, "列表变了该再探测一次")
+    // 列表没变时不再探测
+    kit.clock.advance(CATALOG_TTL_MS)
+    await kit.models()
+    await warmed(kit)
+    assert.equal(kit.acpSpawns.length, 2, "列表没变不该再起探测会话")
   })
 })

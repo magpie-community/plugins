@@ -110,7 +110,7 @@ if (argv.includes("models")) {
 }
 if (argv[0] === "acp" && argv.includes("--help")) {
   log({ type: "acpHelp" })
-  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n")
+  process.stderr.write("Usage of acp:\n  --agent string\n  --include-default-customizations\n    \tload the default customizations (default true)\n  --disable-telemetry\n    \tdisable telemetry (default false)\n")
   process.exit(0)
 }
 if (argv[0] !== "acp") {
@@ -724,9 +724,11 @@ const legacyModel = "agy-cli/gemini-test-low"
 
 {
   const usage = await plugin.auth.usage(async () => ({ key: "agy" }), {})
-  check("auth.usage exposes measured CLI quota", usage.windows?.[0]?.used === 40 && usage.windows[0].name === "Gemini · 7 days")
-  check("auth.usage preserves explicit cadence and reset", usage.windows?.[0]?.span === 604800 && usage.windows[0].resetsAt === "2026-10-27T00:00:00.000Z")
-  check("auth.usage is display-only and keeps bridge auth", usage.windows?.[0]?.aside === true && usage.signIn === "kept")
+  // the pool's own window, beside any model's in it
+  const pw = usage.windows?.find(w => !w.model)
+  check("auth.usage exposes measured CLI quota", pw?.used === 40 && pw.pool === "Gemini" && pw.name === "7 days")
+  check("auth.usage preserves explicit cadence and reset", pw?.span === 604800 && pw.resetsAt === "2026-10-27T00:00:00.000Z")
+  check("auth.usage is display-only and keeps bridge auth", usage.windows?.every(w => w.aside === true) && usage.signIn === "kept")
   check("auth.usage does not invent Google account identity", !usage.user && !usage.plan)
   const calls = logs().filter(event => event.type === "usage")
   check("auth.usage uses a separate cleaned workspace", calls.length === 1 && !fs.existsSync(calls[0].cwd))
@@ -1577,6 +1579,8 @@ for (const [title, tools, want, name] of [
     !prompted.includes(rfc) && !prompted.includes(sdk) && !prompted.includes(zw) && prompted.includes(want), JSON.stringify(prompted))
   delete process.env.FAKE_AGY_APPEND
 
+  // in agy's session instructions the reworded prompt is still turned away
+  process.env.AGY_BRIDGE_SYSTEM_APPEND = "1"
   const turned = (await readSSE(await callFetch({ model, system: system + " T429", messages: [{ role: "user", content: "TURNED429 please" }] }))).events
   const turnedError = turned.find(event => event.event === "error")?.data?.error
   check("#980 a 429 to a turned-away prompt is a prompt rejection, not a quota",
@@ -1590,6 +1594,14 @@ for (const [title, tools, want, name] of [
   const turnedWholeBody = await turnedWhole.json()
   check("#1151 a turned-away prompt asked for a whole reply is a 400",
     turnedWhole.status === 400 && turnedWholeBody?.error?.type === "invalid_request_error", JSON.stringify({ status: turnedWhole.status, body: turnedWholeBody }))
+  delete process.env.AGY_BRIDGE_SYSTEM_APPEND
+  // HadStash on X (11-17): reworded in the first user turn, where it goes by
+  // default, Antigravity answers it, so a 429 there is a rate limit
+  const inTurn = (await readSSE(await callFetch({ model, system: system + " T429U", messages: [{ role: "user", content: "TURNED429 in turn" }] }))).events
+  const inTurnError = inTurn.find(event => event.event === "error")?.data?.error
+  check("HadStash a 429 to the reworded prompt in the user turn is a rate limit, not a prompt rejection",
+    inTurnError?.type === "rate_limit_error" && !inTurnError.message.includes("answered 429 to this system prompt") &&
+    inTurnError.status === undefined, JSON.stringify(inTurnError))
   const quota = (await readSSE(await callFetch({ model, system: "CLOAK-QUOTA", messages: [{ role: "user", content: "TURNED429 plain" }] }))).events
   const quotaError = quota.find(event => event.event === "error")?.data?.error
   check("#980 the same 429 to any other prompt is still a rate limit", quotaError?.type === "rate_limit_error" && quotaError.status === undefined, JSON.stringify(quotaError))
@@ -3084,6 +3096,8 @@ for (const location of ["inline", "system", "developer", "user"]) {
   const sessions = inits().filter(event => event.args.includes("--agent"))
   const without = sessions.filter(event => !event.args.includes("--include-default-customizations=false"))
   check("an agy whose acp --help lists it starts without the machine's own customizations (#1166)", sessions.length > 0 && without.length === 0, JSON.stringify(without.map(event => event.args)))
+  const talkative = sessions.filter(event => !event.args.includes("--disable-telemetry"))
+  check("an agy whose acp --help lists it starts with telemetry off (#896)", sessions.length > 0 && talkative.length === 0, JSON.stringify(talkative.map(event => event.args)))
 }
 check("all ACP children disable auto update when the user set nothing", inits().length > 0 && inits().every(event => event.update === "true"))
 check("child launches never mutate the parent's update setting", process.env.AGY_CLI_DISABLE_AUTO_UPDATE === undefined)

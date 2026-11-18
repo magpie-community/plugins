@@ -42,6 +42,10 @@ describe("sign-in methods", () => {
     expect(result.access).toBe("sess-1")
     expect(result.expires).toBeGreaterThan(Date.now() + 13 * 86400e3)
     expect(result.accountId).toBe("138****8000")
+    // the vendor's user id beside the masked phone, so two phones masked
+    // alike stay two accounts in magpie's host; and when it was signed in
+    expect(result.uid).toBe("261014155255771375")
+    expect(Math.abs(result.signedInAt - Date.now())).toBeLessThan(60e3)
   })
 
   test("SMS: an invalid phone is refused before anything is sent", async () => {
@@ -60,6 +64,108 @@ describe("sign-in methods", () => {
     expect(result.type).toBe("success")
     expect(result.access).toBe("pasted")
     expect(await method.authorize({ session: "" })).toMatchObject({ type: "failed" })
+  })
+
+  // magpie's host keeps one account per accountId: one name for every paste
+  // put a second pasted account over the first
+  test("two pasted sessions are two accounts", async () => {
+    const method = plugin.auth.methods.find((m) => m.label.includes("Paste"))
+    const one = await (await method.authorize({ session: "session-aaaaaa111111" })).callback()
+    const two = await (await method.authorize({ session: "session-bbbbbb222222" })).callback()
+    expect(one.accountId).not.toBe(two.accountId)
+    expect(one.accountId).toContain("111111")
+    expect(one.accountId).not.toContain("session-aaaaaa")
+  })
+})
+
+// The real gateway refuses a session with HTTP 200 and code 100002 on every
+// path, never with a 401 or 403 (measured 2026-11-16 and 2026-11-17). A 401
+// or 403 without that code came from a proxy or firewall on the way, and
+// read as "signed out" it marked a good account for sign-in again
+// (jenxingyoung on X: four accounts on a proxy, a different one dropped
+// each day).
+describe("a 401 or 403 from something on the way", () => {
+  const waf = (status) => ({ status, type: "text/html", body: "<html><body>403 Forbidden - Access denied</body></html>" })
+
+  test("a chat or a draw fails this try and leaves the sign-in as it is", async () => {
+    for (const status of [401, 403]) {
+      fake.state.denied = waf(status)
+      const loader = await plugin.auth.loader(getAuth)
+      for (const [path, body] of [
+        ["/api/v1/chat/completions", JSON.stringify({ model: "spark-x", stream: true, messages: [{ role: "user", content: "hi" }] })],
+        ["/api/v1/images/generations", JSON.stringify({ model: "doubao-seedream-5-lite", prompt: "a cat" })],
+      ]) {
+        const res = await loader.fetch(`${fake.gatewayUrl}${path}`, { method: "POST", body })
+        expect(res.status).toBe(502)
+        expect(res.headers.get("x-magpie-sign-in")).toBe("kept")
+        const msg = (await res.json()).error.message
+        expect(msg).toContain(`HTTP ${status}`)
+        expect(msg).toContain("不是登录失效")
+        expect(msg).toContain("Access denied")
+      }
+    }
+  })
+
+  test("one that carries the sign-in code still says the sign-in expired", async () => {
+    fake.state.denied = { status: 401, type: "application/json", body: JSON.stringify({ code: "100002", desc: "登录已失效，请重新登录" }) }
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "spark-x", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(401)
+    expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+    const usage = await plugin.auth.usage(getAuth)
+    expect(usage.signIn).toBe("expired")
+    expect(usage.error).toContain("登录已失效")
+  })
+
+  test("a usage read is an error that keeps the sign-in", async () => {
+    for (const status of [401, 403]) {
+      fake.state.denied = waf(status)
+      const usage = await plugin.auth.usage(getAuth)
+      expect(usage.signIn).toBe("kept")
+      expect(usage.error).toContain(`HTTP ${status}`)
+      expect(usage.error).toContain("不是登录失效")
+    }
+  })
+
+  test("a check-in fails, it doesn't say the sign-in expired", async () => {
+    fake.state.denied = waf(403)
+    const result = await plugin.auth.checkin(getAuth)
+    expect(result.outcome).toBe("failed")
+    expect(result.message).toContain("HTTP 403")
+  })
+})
+
+describe("a lapsed account says when it was signed in", () => {
+  // 2026-11-03 10:00 Beijing
+  const at = Date.UTC(2026, 10, 3, 2, 0, 0)
+
+  test("from the time an SMS sign-in kept", async () => {
+    saved = { type: "oauth", access: "dropped", expires: at + 14 * 86400e3, signedInAt: at, accountId: "138****8000" }
+    const usage = await plugin.auth.usage(getAuth)
+    expect(usage.signIn).toBe("expired")
+    expect(usage.error).toContain("11 月 3 日")
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "spark-x", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(401)
+    expect((await res.json()).error.message).toContain("11 月 3 日")
+  })
+
+  test("from the 14-day end of an account signed in before 0.1.12", async () => {
+    saved = { type: "oauth", access: "dropped", expires: at + 14 * 86400e3, accountId: "138****8000" }
+    expect((await plugin.auth.usage(getAuth)).error).toContain("11 月 3 日")
+  })
+
+  test("a pasted session, whose day isn't known, names none", async () => {
+    saved = { type: "oauth", access: "dropped", expires: 0, accountId: "手动粘贴 ···ropped" }
+    const usage = await plugin.auth.usage(getAuth)
+    expect(usage.signIn).toBe("expired")
+    expect(usage.error).not.toContain("月")
   })
 })
 
@@ -255,13 +361,14 @@ describe("images (#609)", () => {
     expect(fake.state.imageCalls[0].body.model).toBe("doubao-seedream-5-lite")
   })
 
-  test("a refused session says 401, as chat does", async () => {
+  test("a bare 401 or 403 is no sign-in verdict: the vendor's is code 100002", async () => {
     for (const status of [401, 403]) {
       fake.state.imageStatus = status
       const loader = await plugin.auth.loader(getAuth)
       const res = await loader.fetch(`${fake.gatewayUrl}/api/v1/images/generations`, { method: "POST", body: drawBody })
-      expect(res.status).toBe(401)
-      expect((await res.json()).error.message).toContain("登录态已失效")
+      expect(res.status).toBe(502)
+      expect(res.headers.get("x-magpie-sign-in")).toBe("kept")
+      expect((await res.json()).error.message).toContain(`refused ${status}`)
     }
   })
 

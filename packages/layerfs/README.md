@@ -177,7 +177,9 @@ serves its chat page:
 - **The installed page only jumps.** `page/index.html` does one
   thing: it reads the port from the plugin's options
   (`pagePort`, default 43717) and `location.replace`s its frame to
-  `http://127.0.0.1:<port>/`. The install's folder is never
+  `http://127.0.0.1:<port>/`, or, when magpie forwards the service
+  on its own address (`magpie.page.service`; a browser on another
+  computer, magpie in Docker), to that forward. The install's folder is never
   renamed, linked, or written into. The service starts when the
   host loads, store or no store; a user with no store gets the
   page's empty state and nothing written anywhere.
@@ -236,6 +238,18 @@ node tools/gen-trajectory.mjs   # regenerate the page's bundled sample trajector
 
 Zero runtime dependencies; the arguments are JSON Schema, like the other
 tools packages. MIT.
+
+## Changes in 0.10.3
+
+The page now opens in a browser on another computer (`magpie web`,
+magpie in Docker). It used to send its frame to `127.0.0.1:43717`,
+which there is the viewing computer, so the frame said "refused to
+connect" (#1228). The package now declares `magpie.page.service`
+(port 43717, moved by `pagePort`), and the page goes to the forward
+magpie gives it on its own address. The service still listens on
+127.0.0.1 only, and its Host and Origin checks are unchanged: the
+forward sends the service's own Host and no Origin. With an older
+magpie that gives no forward, the page jumps to 127.0.0.1 as before.
 
 ## Changes in 0.10.2
 

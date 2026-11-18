@@ -904,6 +904,33 @@ test("A16: under a tight budget, a mid-loop user steer beats an opening meta com
   })
 })
 
+// #896: agy reports the run to its vendor unless it is told not to; the flag
+// is passed only to an agy whose own acp --help lists it.
+const TELEMETRY_HELP = "Usage of acp:\n  --disable-telemetry\n    \tdisable telemetry (default false)\n"
+
+test("#896: an agy whose acp --help lists --disable-telemetry starts with telemetry off", async () => {
+  await withKit({ acpHelp: TELEMETRY_HELP }, async (kit) => {
+    scriptedAgent(kit)
+    const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-listed" },
+      messages: [{ role: "user", content: "hello" }] })))
+    assert.equal(reply.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    assert.ok(kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
+  })
+})
+
+test("#896: an agy without the flag is never given it, and AGY_BRIDGE_TELEMETRY=1 keeps agy's own default", async () => {
+  for (const options of [{}, { acpHelp: TELEMETRY_HELP, env: { AGY_BRIDGE_TELEMETRY: "1" } }]) {
+    await withKit(options, async (kit) => {
+      scriptedAgent(kit)
+      const reply = await readSse(await kit.request(baseBody({ metadata: { user_id: "telemetry-unlisted" },
+        messages: [{ role: "user", content: "hello" }] })))
+      assert.equal(reply.stopReason, "end_turn")
+      assert.ok(!kit.acpSpawns[0].args.includes("--disable-telemetry"), kit.acpSpawns[0].args.join(" "))
+    })
+  }
+})
+
 // ----------------------------------------------- agy's error marker (#1052)
 
 function markerAgent(kit, chunks) {
@@ -963,7 +990,6 @@ test("#1124: agy's retry banner after an empty first call never reaches the clie
     [[["thought", "stay quiet"], ["text", banner], ["thought", "suggest one"], ["text", "梳理一下事件完整时间线"]], "梳理一下事件完整时间线"],
     [[["text", banner + "\n"], ["text", "the retry's answer"]], "the retry's answer"],
     [[["text", "\n⚠ Model produced "], ["text", "invalid output."], ["text", "\nretry"]], "retry"],
-    [[["text", banner]], ""],
   ]) {
     await withKit({}, async (kit) => {
       kit.defaultPrompt = async (agent) => {
@@ -979,11 +1005,148 @@ test("#1124: agy's retry banner after an empty first call never reaches the clie
   }
 })
 
+// fnckerpoi on X (DSH 0.2.2-rc.3 through billion-context, agy-cli 0.1.91):
+// agy's empty-output retry came back empty too, agy ended the turn on
+// end_turn with only thinking, and billion-context's continuation nudge got
+// the same, "the turn degenerated again after the continuation nudge".
+const EMPTY_BANNER = "\n⚠ Model produced invalid output."
+
+function sessionsOpened(kit) {
+  return kit.acpLog.filter((entry) => entry.method === "session/new" || entry.method === "session/load").length
+}
+
+test("an empty ending is asked again in the same session, and its answer is the reply", async () => {
+  for (const empty of [
+    [["thought", "the next step is to read the file"]],
+    [["thought", "stay quiet"], ["text", EMPTY_BANNER], ["thought", "still nothing"]],
+    [["text", EMPTY_BANNER]],
+    [["thought", "thinking"], ["text", "  \n"]],
+  ]) {
+    await withKit({}, async (kit) => {
+      kit.defaultPrompt = async (agent) => {
+        if (promptText({ prompt: agent.prompt }).includes("Your last reply was empty")) {
+          await agent.text("the answer after asking again")
+          return { stopReason: "end_turn" }
+        }
+        for (const [kind, text] of empty) await agent[kind](text)
+        return { stopReason: "end_turn" }
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "empty-ending" },
+        messages: [{ role: "user", content: "fix the bug" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed).trim(), "the answer after asking again")
+      const sent = prompts(kit)
+      assert.equal(sent.length, 2, "asked once more")
+      assert.ok(!/magpie|agy|antigravity|gemini/i.test(sent[1]), "the words sent upstream name nobody")
+      assert.equal(sessionsOpened(kit), 1, "in the same session, not a replay")
+    })
+  }
+})
+
+test("an ending still empty after asking again is an error, and the session is kept", async () => {
+  await withKit({}, async (kit) => {
+    let empty = true
+    kit.defaultPrompt = async (agent) => {
+      if (!empty) {
+        await agent.text("answered on the client's retry")
+        return { stopReason: "end_turn" }
+      }
+      await agent.thought("hmm")
+      await agent.text(EMPTY_BANNER)
+      await agent.thought("hmm again")
+      return { stopReason: "end_turn" }
+    }
+    // a conversation under way: a first message sent again opens a new session anyway
+    const body = baseBody({ metadata: { user_id: "empty-twice" }, messages: [
+      { role: "user", content: "look at the bug" },
+      { role: "assistant", content: [{ type: "text", text: "it is in parse()" }] },
+      { role: "user", content: "fix the bug" },
+    ] })
+    const parsed = await readSse(await kit.request(body))
+    assert.ok(parsed.error, "an error, not a finished reply that said nothing")
+    assert.match(parsed.error.message, /no text and no tool call/)
+    assert.match(parsed.error.message, /Model produced invalid output/)
+    assert.notEqual(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 2, "asked once more, not again and again")
+    empty = false
+    const again = await readSse(await kit.request(body))
+    assert.equal(again.error, null)
+    assert.equal(replyText(again), "answered on the client's retry")
+    assert.equal(sessionsOpened(kit), 1, "the client's retry continues in the kept session")
+  })
+})
+
+test("a bare empty ending, with no thinking, is a reply and is not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async () => ({ stopReason: "end_turn" })
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "bare-empty" },
+      messages: [{ role: "user", content: "say nothing" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "end_turn")
+    assert.equal(prompts(kit).length, 1)
+  })
+})
+
+test("a max_tokens ending with only thinking is passed through, not asked again", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      await agent.thought("a long thought")
+      return { stopReason: "max_tokens" }
+    }
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "max-tokens-thought" },
+      messages: [{ role: "user", content: "think hard" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(parsed.stopReason, "max_tokens")
+    assert.equal(prompts(kit).length, 1)
+  })
+})
+
 test("#1124: the model quoting the retry banner mid-line keeps it", async () => {
   const chunks = ["agy printed `⚠ Model produced invalid output.` and", " then retried."]
   await withKit({}, async (kit) => {
     markerAgent(kit, chunks)
     const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "retry-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// #892: agy's output cap, as it reaches the reply: agy's three-line notice and
+// then the model's answer, still in the same turn.
+const CAP_HEAD = "\n⚠ Your previous response was cut off because it exceeded the output token limit\n"
+const CAP_TAIL = "Please continue from where you left off, keeping your response shorter\n"
+const CAP_RETRIES = "Retries remaining: 3\n"
+const CAP_NOTICE = CAP_HEAD + CAP_TAIL + CAP_RETRIES
+
+test("#892: agy's output-cap notice never reaches the client", async () => {
+  const answer = "the rest of the answer"
+  for (const [chunks, want] of [
+    [[CAP_NOTICE + answer], answer],
+    [[CAP_NOTICE, answer], answer],
+    [[CAP_HEAD.slice(0, 20), CAP_HEAD.slice(20) + CAP_TAIL, CAP_RETRIES, answer], answer],
+    [[CAP_NOTICE.slice(0, 150), CAP_NOTICE.slice(150) + answer], answer],
+    [[CAP_HEAD, answer], answer],
+    [[CAP_NOTICE], ""],
+    [[CAP_HEAD + answer], answer],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-notice" },
+        messages: [{ role: "user", content: "write the long answer" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.equal(replyText(parsed), want)
+    })
+  }
+})
+
+test("#892: the model quoting the output-cap notice mid-line keeps it", async () => {
+  const chunks = ["agy prints `⚠ Your previous response was cut off because it exceeded the output token limit`", " when it retries."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "cap-quoted" },
       messages: [{ role: "user", content: "what did agy print?" }] })))
     assert.equal(parsed.error, null)
     assert.equal(replyText(parsed), chunks.join(""))
@@ -1086,6 +1249,128 @@ test("#1201: the model quoting the banned-account ending with more text after ke
   })
 })
 
+// kidgpt on X (11-16, Windows 11, Claude Code in VS Code, gemini-3.8-flash):
+// Google's 403 VALIDATION_REQUIRED on a model call reaches agy 1.5.9 as
+// "Verification Required" (CustomUserErrorMessageFromHTTPError), which it
+// ends the reply with, and the client got that bare line as the answer.
+const VERIFY = "\n⚠ Verification Required\n"
+
+function agyLogOf(kit) {
+  const args = kit.acpSpawns.at(-1).args
+  return args[args.indexOf("--log-file") + 1]
+}
+
+test("agy's Verification Required ending fails the stream as a no-retry 403 that says how to verify", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [VERIFY.slice(0, 9), VERIFY.slice(9)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-end" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const error = sseError(text)
+    assert.equal(error.type, "permission_error")
+    assert.equal(error.status, 403)
+    assert.equal(error.noRetry, true)
+    assert.match(error.message, /this Google account needs to be verified: open the Antigravity app, or run `agy` in a terminal/)
+    assert.ok(!text.includes("⚠"), "no banner reaches the client")
+  })
+})
+
+test("agy's Verification Required ending carries the link agy logged, as a non-stream HTTP 403", async () => {
+  const link = "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=AKgnsbv"
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      fs.appendFileSync(agyLogOf(kit), `E1116 21:03:11.120000 6120 errorreport.go:224] agent executor error: generating and executing: PERMISSION_DENIED (code 403): Verify your account to continue. validation_url: ${link.replace(/&/g, "\\u0026")}\n`)
+      await agent.text(VERIFY)
+      return { stopReason: "end_turn" }
+    }
+    const response = await kit.request(baseBody({ metadata: { user_id: "verify-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 403)
+    assert.equal(response.headers.get("x-should-retry"), "false")
+    assert.equal(body.error.type, "permission_error")
+    assert.ok(body.error.message.includes(`this Google account needs to be verified: open ${link} in a browser`), body.error.message)
+  })
+})
+
+test("the model quoting the Verification Required ending with more text after keeps it", async () => {
+  const chunks = ["agy said\n⚠ Verification", " Required\nThat line is agy's, not mine."]
+  await withKit({}, async (kit) => {
+    markerAgent(kit, chunks)
+    const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "verify-quoted" },
+      messages: [{ role: "user", content: "what did agy print?" }] })))
+    assert.equal(parsed.error, null)
+    assert.equal(replyText(parsed), chunks.join(""))
+  })
+})
+
+// @Airan_FS on X (11-17): an account out of its own quota got agy's
+// ending as the whole reply, and magpie never asked the next account. The
+// line is Google's words with the time until the quota is back.
+const QUOTA_LINE = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h18m40s."
+const QUOTA = "\n" + QUOTA_LINE + "\n"
+
+test("agy's Individual quota reached ending fails the turn as a rate limit with its reset", async () => {
+  for (const chunks of [
+    [QUOTA],
+    [QUOTA.slice(0, 12), QUOTA.slice(12, 40), QUOTA.slice(40)],
+    [QUOTA_LINE],
+    ["\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6d2h."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const response = await kit.request(baseBody({ metadata: { user_id: "quota-end" },
+        messages: [{ role: "user", content: "hello" }] }))
+      const text = await response.text()
+      const error = sseError(text)
+      assert.equal(error.type, "rate_limit_error")
+      assert.equal(error.message, "agy bridge: Antigravity quota reached: " + chunks.join("").trim().replace(/^⚠ /, ""))
+      assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      assert.ok(!text.includes("text_delta"), "nothing of it went as the reply")
+    })
+  }
+})
+
+test("agy's Individual quota reached ending after words the model wrote keeps them and fails the turn", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, ["Let me look", QUOTA.slice(0, 30), QUOTA.slice(30)])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-partial" },
+      messages: [{ role: "user", content: "hello" }] }))
+    const text = await response.text()
+    const parsed = await readSse(new Response(text))
+    assert.equal(replyText(parsed), "Let me look")
+    assert.equal(sseError(text).type, "rate_limit_error")
+    assert.match(sseError(text).message, /Resets in 1h18m40s\.$/)
+  })
+})
+
+test("agy's Individual quota reached ending fails a non-stream request as an HTTP 429", async () => {
+  await withKit({}, async (kit) => {
+    markerAgent(kit, [QUOTA])
+    const response = await kit.request(baseBody({ metadata: { user_id: "quota-json" },
+      messages: [{ role: "user", content: "hello" }], stream: false }))
+    const body = await response.json()
+    assert.equal(response.status, 429)
+    assert.equal(body.error.type, "rate_limit_error")
+    assert.match(body.error.message, /Individual quota reached\. .*Resets in 1h18m40s\./)
+  })
+})
+
+test("the model quoting the Individual quota reached ending with more text after keeps it", async () => {
+  for (const chunks of [
+    ["agy said\n⚠ Individual quota", " reached. Please upgrade. Resets in 1h.\nThat line is agy's, not mine."],
+    ["agy prints `⚠ Individual quota reached. Resets in 1h.` when it is out."],
+  ]) {
+    await withKit({}, async (kit) => {
+      markerAgent(kit, chunks)
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "quota-quoted" },
+        messages: [{ role: "user", content: "what did agy print?" }] })))
+      assert.equal(parsed.error, null)
+      assert.equal(replyText(parsed), chunks.join(""))
+    })
+  }
+})
+
 test("#1151: the model quoting the 429 ending with more text after keeps it", async () => {
   const chunks = ["agy ended with\n⚠ RESOURCE_EXHAUSTED (code 429): Resource has", " been exhausted (e.g. check quota).\nThat line is agy's, not mine."]
   await withKit({}, async (kit) => {
@@ -1116,13 +1401,23 @@ const REFUSED_ATTEMPT = (n) => `\n⚠ API error (attempt ${n}): RESOURCE_EXHAUST
 
 test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after agy's retries", async () => {
   const PI = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code."
-  for (const [system, chunks, want, kind] of [
+  // HadStash on X (11-17): Claude Code through agy-cli got "answered 429 to
+  // this system prompt", a 400 it never retries, though its prompt goes
+  // reworded in the first user turn, where Antigravity answers it
+  const CLAUDE_CODE = "You are Claude Code, Anthropic's official CLI for Claude.\n\nHelp the user."
+  const APPEND = { appendable: true, env: { AGY_BRIDGE_SYSTEM_APPEND: "1" } }
+  for (const [options, system, chunks, want, kind] of [
+    // in the session instructions the cloak isn't enough: a prompt rejection
     // the banner's line still open while agy waits to try again
-    [PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
-    [PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
-    ["You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+    [APPEND, PI, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt: RESOURCE_EXHAUSTED \(code 429\).*pi's default system prompt/, "invalid_request_error"],
+    [APPEND, PI, [REFUSED_ATTEMPT(1).slice(0, 40), REFUSED_ATTEMPT(1).slice(40) + "\n"], /answered 429 to this system prompt/, "invalid_request_error"],
+    [APPEND, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /answered 429 to this system prompt/, "invalid_request_error"],
+    // reworded in the first user turn (the default): a rate limit
+    [{}, CLAUDE_CODE, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
+    [{}, PI, [REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\)/, "rate_limit_error"],
+    [{}, "You are a test agent.", ["partial", REFUSED_ATTEMPT(1)], /quota or rate limit reached: RESOURCE_EXHAUSTED \(code 429\).*not a quota/, "rate_limit_error"],
   ]) {
-    await withKit({}, async (kit) => {
+    await withKit(options, async (kit) => {
       let tries = 0
       kit.defaultPrompt = async (agent) => {
         tries++
@@ -1136,7 +1431,10 @@ test("Lmohn39: a try answered with the bare 429 ends the turn at once, not after
       assert.equal(tries, 1)
       assert.match(text, want)
       assert.ok(text.includes(kind), `${kind} in ${text.slice(-400)}`)
+      assert.ok(!text.includes("answered 429 to this system prompt") || kind === "invalid_request_error", text.slice(-400))
       assert.ok(!text.includes("⚠"), "no banner reaches the client")
+      // where the instructions went
+      assert.equal(prompts(kit).join("").includes("<external_system_instructions>"), !options.appendable)
     })
   }
 })
@@ -1362,5 +1660,233 @@ test("#1166: AGY_BRIDGE_GEMINI_DIR=default leaves agy on the machine's own folde
     assert.equal(reply.stopReason, "end_turn")
     assert.ok(!kit.acpSpawns[0].args.includes("--gemini-dir"), kit.acpSpawns[0].args.join(" "))
     assert.ok(kit.acpSpawns[0].args.includes("--include-default-customizations=false"))
+  })
+})
+
+test("forked session or subagent carrying an ancestor tool_use does not hit conflicting duplicate result or hijack parent", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("Side conversation boundary")) {
+        await agent.text("side answer")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("TWOSTEP")) {
+        await agent.tool("Read", { path: "/a" })
+        await agent.tool("Read", { path: "/b" })
+        await agent.text("parent done")
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("fallback")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-1" }
+    const sideHeaders = { "x-magpie-session": "codex:side-1" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "TWOSTEP fork" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const step2Body = continueWithToolResults(opening, turn1, () => "real-step-1")
+    const turn2 = await readSse(await kit.request(step2Body, { headers: parentHeaders }))
+    assert.equal(turn2.stopReason, "tool_use")
+
+    const sideBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "Side conversation boundary. Answer this." },
+          ],
+        },
+      ],
+    }
+    const sideRes = await kit.request(sideBody, { headers: sideHeaders })
+    assert.equal(sideRes.status, 200, "forked side session must not return 409 conflicting duplicate result")
+    const sideParsed = await readSse(sideRes)
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.ok(sideParsed.content.some((block) => block.text?.includes("side answer")))
+
+    const parentFinal = await readSse(await kit.request(continueWithToolResults(step2Body, turn2, () => "real-step-2"), { headers: parentHeaders }))
+    assert.equal(parentFinal.stopReason, "end_turn")
+    assert.ok(parentFinal.content.some((block) => block.text?.includes("parent done")))
+  })
+})
+
+test("forked subagent arriving before parent answers its pending tool call leaves parent's call intact", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("NEW_TASK")) {
+        await agent.text("child done")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("WAIT_TOOL")) {
+        const result = await agent.tool("Read", { path: "/shared" })
+        await agent.text(`parent got:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const parentHeaders = { "x-magpie-session": "codex:parent-2" }
+    const childHeaders = { "x-magpie-session": "codex:child-2", "x-magpie-subagent": "sub-2" }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "WAIT_TOOL start" }] })
+    const turn1 = await readSse(await kit.request(opening, { headers: parentHeaders }))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const childBody = {
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "NEW_TASK child prompt" },
+          ],
+        },
+      ],
+    }
+    const childRes = await kit.request(childBody, { headers: childHeaders })
+    assert.equal(childRes.status, 200)
+    const childParsed = await readSse(childRes)
+    assert.equal(childParsed.stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-real-output"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent got:parent-real-output")))
+  })
+})
+
+test("forked session without trailing tool_result does not supersede parent's active tool turn via lineage_fork", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "side question": "side reply" })
+    const parentHeaders = { "x-magpie-session": "codex:parent-3" }
+    const sideHeaders = { "x-magpie-session": "codex:side-3" }
+    const first = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const done1 = await readSse(await kit.request(first, { headers: parentHeaders }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const parentTurn2 = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "TOOL second" }],
+    }
+    const pending = await readSse(await kit.request(parentTurn2, { headers: parentHeaders }))
+    assert.equal(pending.stopReason, "tool_use")
+
+    const sideBody = {
+      ...first,
+      messages: [...first.messages, { role: "assistant", content: done1.content }, { role: "user", content: "side question" }],
+    }
+    const sideParsed = await readSse(await kit.request(sideBody, { headers: sideHeaders }))
+    assert.equal(sideParsed.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "side session starts its own process without killing parent")
+
+    const parentRes = await kit.request(continueWithToolResults(parentTurn2, pending, () => "ok"), { headers: parentHeaders })
+    assert.equal(parentRes.status, 200)
+    assert.equal((await readSse(parentRes)).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "parent finishes on its original process without replay")
+  })
+})
+
+test("synthetic magpie-<24hex> session id is ignored for flattened continuation while subagent scope still isolates", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, {
+      "first turn": "first reply",
+      "second turn": "second reply",
+      "child turn": "child reply",
+    })
+    const opening = "shared opening context\nfirst turn"
+    const turn1 = baseBody({ system: "shared system", messages: [{ role: "user", content: opening }] })
+    const done1 = await readSse(await kit.request(turn1, { headers: { "x-magpie-session": "magpie-0123456789abcdef01234567" } }))
+    assert.equal(done1.stopReason, "end_turn")
+
+    const flattenedTurn2 = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: `${opening}\n\nassistant: first reply\n\nsecond turn` }],
+    })
+    const done2 = await readSse(await kit.request(flattenedTurn2, { headers: { "x-magpie-session": "magpie-fedcba9876543210fedcba98" } }))
+    assert.equal(done2.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1, "synthetic magpie session hashes must not prevent continuing live proc")
+
+    const subagentTurn = baseBody({
+      system: "shared system",
+      messages: [{ role: "user", content: "child turn" }],
+    })
+    const doneSub = await readSse(await kit.request(subagentTurn, {
+      headers: { "x-magpie-session": "magpie-0123456789abcdef01234567", "x-magpie-subagent": "collab_spawn" },
+    }))
+    assert.equal(doneSub.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2, "x-magpie-subagent still isolates even when x-magpie-session is synthetic")
+  })
+})
+
+test("unscoped parent and scoped subagent do not collide on shared ancestor tool_use_id", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async (agent) => {
+      const text = promptText({ prompt: agent.prompt })
+      const current = text.includes("<current_turn>") ? text.slice(text.lastIndexOf("<current_turn>")) : text
+      if (current.includes("SUBAGENT_ASK")) {
+        await agent.text("subagent ok")
+        return { stopReason: "end_turn" }
+      }
+      if (current.includes("UNSCOPED_WAIT")) {
+        const result = await agent.tool("Read", { path: "/unscoped" })
+        await agent.text(`parent:${result?.result?.content?.[0]?.text || ""}`)
+        return { stopReason: "end_turn" }
+      }
+      await agent.text("other")
+      return { stopReason: "end_turn" }
+    }
+    const opening = baseBody({ system: "shared system", messages: [{ role: "user", content: "UNSCOPED_WAIT start" }] })
+    const turn1 = await readSse(await kit.request(opening))
+    assert.equal(turn1.stopReason, "tool_use")
+    const call1 = turn1.content.find((block) => block.type === "tool_use")
+
+    const subRes = await kit.request({
+      ...opening,
+      messages: [
+        ...opening.messages,
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: call1.id, content: "aborted" },
+            { type: "text", text: "SUBAGENT_ASK run" },
+          ],
+        },
+      ],
+    }, { headers: { "x-magpie-session": "codex:sub-only", "x-magpie-subagent": "collab_spawn" } })
+    assert.equal(subRes.status, 200)
+    assert.equal((await readSse(subRes)).stopReason, "end_turn")
+
+    const parentRes = await kit.request(continueWithToolResults(opening, turn1, () => "parent-ok"))
+    assert.equal(parentRes.status, 200)
+    const parentParsed = await readSse(parentRes)
+    assert.equal(parentParsed.stopReason, "end_turn")
+    assert.ok(parentParsed.content.some((block) => block.text?.includes("parent:parent-ok")))
+  })
+})
+
+test("fetchInput Request headers preserve x-magpie-session isolation", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit, { "hello": "reply" })
+    const body = baseBody({ system: "shared system", messages: [{ role: "user", content: "hello" }] })
+    const req1 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-1" }, body: JSON.stringify(body) })
+    const req2 = new Request("agy://local/v1/messages", { method: "POST", headers: { "x-magpie-session": "req-2" }, body: JSON.stringify(body) })
+    assert.equal((await readSse(await kit.fetch(req1))).stopReason, "end_turn")
+    assert.equal((await readSse(await kit.fetch(req2))).stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 2)
   })
 })
