@@ -6,7 +6,7 @@
       const providers = await magpie.read("providers:list")
       const list = Array.isArray(providers) ? providers : providers?.providers
       if (Array.isArray(list) && list.some((provider) => provider?.id === "quwork")) {
-        status.textContent = "已找到 QuWork，可以在供应商页管理登录。"
+        status.textContent = "已找到 QuWork，可以在供应商页管理模型密钥。"
         status.className = "ok"
       } else {
         status.textContent = "请在供应商页查看 QuWork。首次安装后可重启 Magpie 再查看。"

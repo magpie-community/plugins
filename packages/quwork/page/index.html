@@ -11,13 +11,18 @@
 <body>
 <main>
   <h1>QuWork 接入</h1>
-  <p class="lead">在本机浏览器完成手机号验证后，可在 Magpie 使用 QuWork 模型。</p>
-  <p>实验性社区接入。该方式使用 QuWork 非公开接口，账号可能被限流或暂停服务。<a href="https://llm.rrzu.com/claw-agreement" target="_blank" rel="noopener noreferrer">查看 QuWork 服务协议</a></p>
+  <p class="lead">请在 QuWork 官网登录账号。Magpie 的模型调用需要 QuWork 授权用于第三方接入的模型密钥。</p>
 
   <section class="card">
-    <h2>查看积分余额</h2>
-    <p>浏览器登录后，在 Magpie 的 <strong>额度（Quota）</strong> 页找到 QuWork 账号，即可查看总余额，以及 QuWork 返回的限时与永久积分。</p>
-    <p class="hint">命令行可运行 <code>magpie quota quwork</code>。</p>
+    <h2>官网登录</h2>
+    <p>在官网右上角点「注册 / 登录」，选择短信验证码或微信登录。</p>
+    <a class="official-link" href="https://quwork.cn/" target="_blank" rel="noopener noreferrer">打开 QuWork 官网</a>
+    <p class="hint">官网地址 <code>https://quwork.cn/</code></p>
+  </section>
+
+  <section class="card">
+    <h2>积分余额</h2>
+    <p>持有有效旧版积分凭据的账号可在 Magpie <strong>额度（Quota）→ QuWork</strong> 查看余额。通过模型密钥接入的账号请在 QuWork 官方入口查看积分。</p>
   </section>
 
   <section class="card">
@@ -26,20 +31,9 @@
   </section>
 
   <section class="card">
-    <h2>登录步骤</h2>
-    <ol>
-      <li>打开 magpie 的 <strong>Providers（供应商）</strong> 页面。</li>
-      <li>找到 <strong>QuWork</strong>，点登录按钮。</li>
-      <li>选 <strong>「浏览器登录 QuWork（实验性）」</strong>。</li>
-      <li>在打开的页面里输入手机号，完成阿里云验证码，填入短信验证码。</li>
-      <li>短信验证后回到 Magpie 确认供应商登录状态。</li>
-    </ol>
+    <h2>接入 Magpie</h2>
+    <p>获得 QuWork 授权的模型密钥后，前往 <strong>供应商 → QuWork → 登录</strong> 填写密钥。自动关联官网账号需要 QuWork 提供面向 Magpie 的授权接口。</p>
     <p class="hint">如果供应商列表里还没有 QuWork，在 <strong>插件 → 已安装</strong> 启用此插件。必要时重启 Magpie。</p>
-  </section>
-
-  <section class="card">
-    <h2>已获授权的模型密钥</h2>
-    <p>如果 QuWork 已向你提供第三方接入密钥，可以在登录菜单填写该密钥。该方式可调用模型，积分请在官方入口查看。</p>
   </section>
 </main>
 </body>

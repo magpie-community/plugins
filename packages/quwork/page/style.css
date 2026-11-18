@@ -30,10 +30,12 @@ h2 {
   font-size: 15px;
 }
 
-ol, ul {
-  margin: 0;
-  padding-left: 22px;
-  line-height: 1.9;
+.official-link {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid var(--magpie-border, rgba(127, 127, 127, 0.3));
+  border-radius: 8px;
+  font-weight: 600;
 }
 
 .hint {
