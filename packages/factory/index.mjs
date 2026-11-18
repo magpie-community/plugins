@@ -5,7 +5,7 @@
 
 import { STATUS_CODES } from "node:http"
 import { readFileSync } from "node:fs"
-import { parseToolJSON, wrapAnthropicTools, unwrapAnthropicTools } from "./anthropic-tools.mjs"
+import { parseToolJSON, wrapAnthropicTools, unwrapAnthropicTools, aliasToolNames, restoreToolNames } from "./anthropic-tools.mjs"
 
 const PROVIDER = "factory"
 
@@ -572,7 +572,9 @@ function piSummary(text) {
 // file is safe to read from a Droid session; JSON.parse here yields the real
 // phrase. "anywhere" is refused in any text (pi turns a compaction into one
 // user text), "toolOnly" is refused in tool output while the prompt adapters
-// keep them.
+// keep them. "toolNames" are not phrases: Factory refuses a request that
+// declares a tool under one of these names (since 2026-11-18, whatever else
+// the request says), so aliasToolNames declares it under another.
 const FALLBACK_PHRASES = {
   anywhere: [
     "You are an expert coding assistant operating inside pi, a coding agent harness.",
@@ -588,22 +590,25 @@ const FALLBACK_PHRASES = {
     "This session is being continued from a previous conversation that ran out of context.",
     "(user's private global instructions for all projects)",
   ],
+  toolNames: ["read", "bash", "edit", "write", "Bash", "Write", "get_weather"],
 }
 function loadClientPhrases() {
   try {
     const parsed = JSON.parse(readFileSync(new URL("./client-phrases.json", import.meta.url), "utf8"))
     const anywhere = Array.isArray(parsed?.anywhere) ? parsed.anywhere.filter((p) => typeof p === "string" && p) : []
     const toolOnly = Array.isArray(parsed?.toolOnly) ? parsed.toolOnly.filter((p) => typeof p === "string" && p) : []
-    // either group missing would silently drop protection, so use the
+    const toolNames = Array.isArray(parsed?.toolNames) ? parsed.toolNames.filter((p) => typeof p === "string" && p) : []
+    // any group missing would silently drop protection, so use the
     // built-in list instead
-    if (anywhere.length === 0 || toolOnly.length === 0) throw new Error("client-phrases.json needs both groups")
-    return { anywhere, toolOnly }
+    if (anywhere.length === 0 || toolOnly.length === 0 || toolNames.length === 0) throw new Error("client-phrases.json needs all three groups")
+    return { anywhere, toolOnly, toolNames }
   } catch {
     return FALLBACK_PHRASES
   }
 }
 const CLIENT_PHRASES = loadClientPhrases()
 const PI_QUOTED_IN_TOOL = CLIENT_PHRASES.anywhere
+const REFUSED_TOOL_NAMES = new Set(CLIENT_PHRASES.toolNames)
 
 // promptOpenings adapts the messages of msgs (chat completions' messages,
 // Responses' input) as anthropicBody adapts a Messages request's: pi's
@@ -2171,12 +2176,17 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           if (path.includes("/llm/a/")) h.set("X-Api-Key", "placeholder")
           // another agent's request opens as droid's does (droidBody)
           const anthropic = path.includes("/llm/a/") && (path.endsWith("/messages") || path.endsWith("/messages/count_tokens"))
-          const adapted = anthropic ? wrapAnthropicTools(anthropicBody(body)) : { body: droidBody(path, body), names: new Set() }
+          // Factory refuses some tool names (client-phrases.json): they go
+          // out aliased and come back as they were
+          const dialect = anthropic ? "anthropic" : dialectOf(path)
+          const named = aliasToolNames(dialect, anthropic ? anthropicBody(body) : droidBody(path, body), REFUSED_TOOL_NAMES)
+          const adapted = anthropic ? wrapAnthropicTools(named.body) : { body: named.body, names: new Set() }
           const out = sanitizeBody(adapted.body)
           // the caller's length is of the body it sent, not of this one
           if (out !== init?.body) h.delete("content-length")
           const res = await fetch(url, { ...init, method: init?.method ?? (input instanceof Request ? input.method : "POST"), headers: h, body: out })
-          return path.endsWith("/messages") ? unwrapAnthropicTools(res, adapted.names) : res
+          if (path.endsWith("/messages")) return unwrapAnthropicTools(res, adapted.names, named.aliases)
+          return dialect && !anthropic ? restoreToolNames(res, dialect, named.aliases) : res
         }
 
         return {

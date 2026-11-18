@@ -427,7 +427,7 @@ test("losslessly quotes fixed client metadata in tool output on inference and co
     { type: "tool_result", tool_use_id: "read_1", content: [{ type: "text", text: source, cache_control: { type: "ephemeral" } }, { type: "image", source: { type: "base64", media_type: "image/png", data: "image-data" } }], is_error: true },
   ]
   for (const endpoint of [url, url + "/count_tokens"]) {
-    const request = { system: droid, messages: [{ role: "assistant", content: [{ type: "tool_use", id: "bash_1", name: "Bash", input: { command: "cat index.mjs" } }] }, { role: "user", content: outputs }], tools: [{ name: "Bash", input_schema: { type: "object" } }], stream: true }
+    const request = { system: droid, messages: [{ role: "assistant", content: [{ type: "tool_use", id: "bash_1", name: "Execute", input: { command: "cat index.mjs" } }] }, { role: "user", content: outputs }], tools: [{ name: "Execute", input_schema: { type: "object" } }], stream: true }
     await l.fetch(endpoint, { method: "POST", headers: { "content-length": "1" }, body: JSON.stringify(request) })
     const sent = JSON.parse(seen.at(-1).body)
     const encoded = sent.messages[1].content[0].content
@@ -456,7 +456,7 @@ test("losslessly quotes compaction openings inside historical JSONL tool output 
     { type: "tool_result", tool_use_id: "read_1", content: [{ type: "text", text: source, cache_control: { type: "ephemeral" } }, { type: "image", source: { type: "base64", media_type: "image/png", data: "image-data" } }], is_error: true },
   ]
   for (const endpoint of [url, url + "/count_tokens"]) {
-    const request = { system: droid, messages: [{ role: "user", content: outputs }], tools: [{ name: "Bash", input_schema: { type: "object" } }] }
+    const request = { system: droid, messages: [{ role: "user", content: outputs }], tools: [{ name: "Execute", input_schema: { type: "object" } }] }
     await l.fetch(endpoint, { method: "POST", headers: { "content-length": "1" }, body: JSON.stringify(request) })
     const sent = JSON.parse(seen.at(-1).body)
     const encoded = sent.messages[0].content[0].content
