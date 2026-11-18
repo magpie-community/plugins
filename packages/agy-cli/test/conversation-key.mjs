@@ -864,3 +864,16 @@ test("a user's turn goes to agy with Codex's GPT-5 lines reworded", async () => 
     assert.ok(all.includes("You are Hermes Agent, built by Nous Research."), "other lines go as written in a user's turn")
   })
 })
+
+test("parked sibling histories survive root history mismatches", () => {
+  const root = "parked-sibling-root"
+  const historyA = [{ role: "user", content: "opening" }, { role: "assistant", content: "A" }]
+  const historyB = [{ role: "user", content: "opening" }, { role: "assistant", content: "B" }]
+  for (const [key, history, sessionId] of [[root, historyB, "session-B"], [root + "#history:A", historyA, "session-A"]]) {
+    park({ convKey: key, rootConvKey: root, expectedMessages: history, sessionId,
+      instructions: "Rules", workDir: "/tmp/parked-siblings", canPark() { return true } })
+  }
+  const opts = { workDir: "/tmp/parked-siblings", instructions: "Rules" }
+  assert.equal(takeParked(root, { ...opts, history: historyA })?.sessionId, "session-A")
+  assert.equal(takeParked(root, { ...opts, history: historyB })?.sessionId, "session-B")
+})

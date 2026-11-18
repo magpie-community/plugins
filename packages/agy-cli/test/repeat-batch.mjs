@@ -1794,3 +1794,211 @@ test("fetchInput Request headers preserve x-magpie-session isolation", async () 
     assert.equal(kit.acpSpawns.length, 2)
   })
 })
+
+test("prediction requests preserve the live long-context conversation", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const first = baseBody({ metadata: { user_id: "long-prediction" },
+      messages: [{ role: "user", content: "opening " + "a".repeat(70_000) }] })
+    const one = await readSse(await kit.request(first))
+    const second = { ...first, messages: [...first.messages,
+      { role: "assistant", content: one.content }, { role: "user", content: "next " + "b".repeat(70_000) }] }
+    const two = await readSse(await kit.request(second))
+    const history = [...second.messages, { role: "assistant", content: two.content }]
+    const prediction = { ...first, messages: [...history,
+      { role: "user", content: [{ type: "text", text: "[SUGGESTION MODE: Predict the next input.]" }] }] }
+    assert.equal((await readSse(await kit.request(prediction))).stopReason, "end_turn")
+    const next = { ...first, messages: [...history, { role: "user", content: "actual next question" }] }
+    assert.equal((await readSse(await kit.request(next))).stopReason, "end_turn")
+    const entries = kit.acpLog.filter(entry => entry.method === "session/prompt")
+    assert.equal(entries.length, 4)
+    assert.equal(entries[0].params.sessionId, entries[1].params.sessionId)
+    assert.notEqual(entries[1].params.sessionId, entries[2].params.sessionId)
+    assert.equal(entries[1].params.sessionId, entries[3].params.sessionId)
+    assert.match(promptText(entries[3].params), /actual next question/)
+    assert.doesNotMatch(promptText(entries[3].params), /conversation_history|bytes.*omitted|SUGGESTION MODE/)
+  })
+})
+
+test("completed alternative histories each retain their own continuation", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const first = baseBody({ metadata: { user_id: "sibling-branches" } })
+    const one = await readSse(await kit.request(first))
+    const shared = [...first.messages, { role: "assistant", content: one.content }]
+    const a = { ...first, messages: [...shared, { role: "user", content: "branch A" }] }
+    const answerA = await readSse(await kit.request(a))
+    const b = { ...first, messages: [...shared, { role: "user", content: "branch B" }] }
+    const answerB = await readSse(await kit.request(b))
+    const nextA = { ...first, messages: [...a.messages, { role: "assistant", content: answerA.content },
+      { role: "user", content: "continue A" }] }
+    const nextB = { ...first, messages: [...b.messages, { role: "assistant", content: answerB.content },
+      { role: "user", content: "continue B" }] }
+    assert.equal((await readSse(await kit.request(nextA))).stopReason, "end_turn")
+    assert.equal((await readSse(await kit.request(nextB))).stopReason, "end_turn")
+    const entries = kit.acpLog.filter(entry => entry.method === "session/prompt")
+    const ids = entries.map(entry => entry.params.sessionId)
+    assert.equal(ids[0], ids[1])
+    assert.notEqual(ids[1], ids[2])
+    assert.equal(ids[1], ids[3])
+    assert.equal(ids[2], ids[4])
+    assert.doesNotMatch(promptText(entries[3].params), /branch B|conversation_history/)
+    assert.doesNotMatch(promptText(entries[4].params), /branch A|conversation_history/)
+  })
+})
+
+test("prediction requests leave the main pending tool response intact", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      const result = await agent.tool("Read", { path: "/repo/preserved.txt" })
+      await agent.text(JSON.stringify(result))
+      return { stopReason: "end_turn" }
+    })
+    scriptedAgent(kit)
+    const first = baseBody({ metadata: { user_id: "prediction-tools" } })
+    const one = await readSse(await kit.request(first))
+    assert.equal(one.stopReason, "tool_use")
+    const main = [...kit.module.__agyTestPool.values()].find(proc => proc.turn)
+    const held = main.turn
+    const seen = held.calls.map(call => call.clientSeen)
+    const prediction = { ...first, messages: [...first.messages, { role: "assistant", content: one.content },
+      { role: "user", content: "[SUGGESTION MODE: Predict the next input.]" }] }
+    assert.equal((await readSse(await kit.request(prediction))).stopReason, "end_turn")
+    assert.equal(main.turn, held)
+    assert.equal(main.dead, false)
+    assert.deepEqual(held.calls.map(call => call.clientSeen), seen)
+    const final = await readSse(await kit.request(continueWithToolResults(first, one, () => "preserved result")))
+    assert.equal(final.stopReason, "end_turn")
+    assert.ok(final.content.some(block => block.text?.includes("preserved result")))
+  })
+})
+
+test("an in-flight sibling retry remains busy without replacing another branch", async () => {
+  await withKit({}, async (kit) => {
+    let release
+    const gate = new Promise(resolve => { release = resolve })
+    kit.defaultPrompt = async agent => {
+      if (promptText({ prompt: agent.prompt }).includes("hold branch A")) await gate
+      await agent.text("reply")
+      return { stopReason: "end_turn" }
+    }
+    const first = baseBody({ metadata: { user_id: "branch-retry" } })
+    const one = await readSse(await kit.request(first))
+    const shared = [...first.messages, { role: "assistant", content: one.content }]
+    const a = { ...first, messages: [...shared, { role: "user", content: "branch A" }] }
+    const answerA = await readSse(await kit.request(a))
+    const b = { ...first, messages: [...shared, { role: "user", content: "branch B" }] }
+    await readSse(await kit.request(b))
+    const nextA = { ...first, messages: [...a.messages, { role: "assistant", content: answerA.content },
+      { role: "user", content: "hold branch A" }] }
+    const response = await kit.request(nextA)
+    try {
+      const duplicate = await kit.request(nextA)
+      assert.equal(duplicate.status, 503)
+      assert.equal(kit.acpSpawns.length, 2)
+    } finally {
+      release()
+    }
+    assert.equal((await readSse(response)).stopReason, "end_turn")
+  })
+})
+
+test("a flattened continuation can retain and revisit an alternative history", async () => {
+  await withKit({}, async (kit) => {
+    kit.defaultPrompt = async agent => {
+      await agent.text("reply")
+      return { stopReason: "end_turn" }
+    }
+    const first = baseBody({ metadata: { user_id: "flattened-branches" },
+      messages: [{ role: "user", content: "opening task" }] })
+    await readSse(await kit.request(first))
+    const grown = { ...first, messages: [{ role: "user", content:
+      "opening task\n\nassistant: reply\n\nstep two is longer than four chars" }] }
+    const two = await readSse(await kit.request(grown))
+    const history = [...grown.messages, { role: "assistant", content: two.content }]
+    const a = { ...grown, messages: [...history, { role: "user", content: "branch A" }] }
+    const answerA = await readSse(await kit.request(a))
+    await readSse(await kit.request({ ...grown, messages: [...history, { role: "user", content: "branch B" }] }))
+    await readSse(await kit.request({ ...a, messages: [...a.messages,
+      { role: "assistant", content: answerA.content }, { role: "user", content: "continue A" }] }))
+    const entries = kit.acpLog.filter(entry => entry.method === "session/prompt")
+    assert.equal(entries[0].params.sessionId, entries[1].params.sessionId)
+    assert.equal(entries[2].params.sessionId, entries[4].params.sessionId)
+    assert.doesNotMatch(promptText(entries[4].params), /conversation_history/)
+  })
+})
+
+test("sibling tool recovery preserves the other completed branch", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const first = baseBody({ metadata: { user_id: "sibling-tool-recovery" } })
+    const one = await readSse(await kit.request(first))
+    const shared = [...first.messages, { role: "assistant", content: one.content }]
+    const a = { ...first, messages: [...shared, { role: "user", content: "branch A" }] }
+    const answerA = await readSse(await kit.request(a))
+    const b = { ...first, messages: [...shared, { role: "user", content: "branch B" }] }
+    const answerB = await readSse(await kit.request(b))
+    const rootB = [...kit.module.__agyTestPool.values()].find(proc =>
+      proc.expectedMessages.at(-2)?.content === "branch B")
+    assert.ok(rootB)
+    const sessionB = rootB.sessionId
+    const toolA = { ...a, messages: [...a.messages, { role: "assistant", content: answerA.content },
+      { role: "user", content: "TOOL sibling recovery" }] }
+    const pending = await readSse(await kit.request(toolA))
+    assert.equal(pending.stopReason, "tool_use")
+    const recovery = continueWithToolResults(toolA, pending, () => "result for sibling A")
+    recovery.tools = [...recovery.tools, {
+      name: "Search", description: "Search files", input_schema: { type: "object", properties: {} },
+    }]
+    const recovered = await kit.request(recovery)
+    assert.equal(recovered.status, 200, await (recovered.status === 200 ? "" : recovered.text()))
+    assert.equal((await readSse(recovered)).stopReason, "end_turn")
+    assert.equal(rootB.dead, false, "recovering A must not retire completed branch B")
+    assert.equal(kit.module.__agyTestPool.get(rootB.convKey), rootB)
+    const nextB = { ...b, messages: [...b.messages, { role: "assistant", content: answerB.content },
+      { role: "user", content: "continue branch B after sibling recovery" }] }
+    assert.equal((await readSse(await kit.request(nextB))).stopReason, "end_turn")
+    const lastPrompt = kit.acpLog.filter(entry => entry.method === "session/prompt").at(-1)
+    assert.equal(lastPrompt.params.sessionId, sessionB)
+    assert.doesNotMatch(promptText(lastPrompt.params), /conversation_history|result for sibling A/)
+  })
+})
+
+test("evicted sibling tool results replay without retiring the other branch", async () => {
+  await withKit({}, async (kit) => {
+    scriptedAgent(kit)
+    const first = baseBody({ metadata: { user_id: "evicted-sibling-results" } })
+    const one = await readSse(await kit.request(first))
+    const shared = [...first.messages, { role: "assistant", content: one.content }]
+    const a = { ...first, messages: [...shared, { role: "user", content: "branch A" }] }
+    const answerA = await readSse(await kit.request(a))
+    const b = { ...first, messages: [...shared, { role: "user", content: "branch B" }] }
+    const answerB = await readSse(await kit.request(b))
+    const rootB = [...kit.module.__agyTestPool.values()].find(proc =>
+      proc.expectedMessages.at(-2)?.content === "branch B")
+    assert.ok(rootB)
+    const sessionB = rootB.sessionId
+    const toolA = { ...a, messages: [...a.messages, { role: "assistant", content: answerA.content },
+      { role: "user", content: "TOOL evicted sibling" }] }
+    const pending = await readSse(await kit.request(toolA))
+    assert.equal(pending.stopReason, "tool_use")
+    const ownerA = [...kit.module.__agyTestPool.values()].find(proc => proc.turn)
+    assert.ok(ownerA)
+    assert.notEqual(ownerA, rootB)
+    await ownerA.stop()
+    if (ownerA.turn) ownerA.abandonTurn(ownerA.turn)
+    if (kit.module.__agyTestPool.get(ownerA.convKey) === ownerA) kit.module.__agyTestPool.delete(ownerA.convKey)
+    const replay = await kit.request(continueWithToolResults(toolA, pending, () => "evicted sibling result"))
+    assert.equal(replay.status, 200, await (replay.status === 200 ? "" : replay.text()))
+    const replayed = await readSse(replay)
+    assert.equal(replayed.stopReason, "end_turn", JSON.stringify(replayed))
+    assert.equal(rootB.dead, false, "replaying stale results must not retire unrelated branch B")
+    assert.equal(kit.module.__agyTestPool.get(rootB.convKey), rootB)
+    const nextB = { ...b, messages: [...b.messages, { role: "assistant", content: answerB.content },
+      { role: "user", content: "continue B after stale sibling results" }] }
+    assert.equal((await readSse(await kit.request(nextB))).stopReason, "end_turn")
+    const lastPrompt = kit.acpLog.filter(entry => entry.method === "session/prompt").at(-1)
+    assert.equal(lastPrompt.params.sessionId, sessionB)
+    assert.doesNotMatch(promptText(lastPrompt.params), /conversation_history|evicted sibling result/)
+  })
+})
