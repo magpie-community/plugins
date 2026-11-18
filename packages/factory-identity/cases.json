@@ -1,0 +1,636 @@
+[
+  {
+    "name": "Anthropic: preserve the full prompt after the identity sentence",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are omp's trusted coding assistant.\n# Engineering\nKeep tool guidance.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "system": "You are droid's trusted coding assistant.\n# Engineering\nKeep tool guidance.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  {
+    "name": "Anthropic: blocks retain cache metadata and tool definitions",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": [
+        {
+          "type": "text",
+          "text": "You are omp's trusted coding assistant.",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Other instructions"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "You are omp's trusted coding assistant.",
+          "input_schema": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "system": [
+        {
+          "type": "text",
+          "text": "You are droid's trusted coding assistant.",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Other instructions"
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "You are omp's trusted coding assistant.",
+          "input_schema": {
+            "type": "object"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "Anthropic: user, assistant, thinking and paired tool history stay unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are omp's trusted coding assistant.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "You are omp's trusted coding assistant.",
+              "signature": "signed"
+            },
+            {
+              "type": "text",
+              "text": "You are omp's trusted coding assistant."
+            },
+            {
+              "type": "tool_use",
+              "id": "call-1",
+              "name": "read",
+              "input": {
+                "path": "You are omp's trusted coding assistant."
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call-1",
+              "content": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "system": "You are droid's trusted coding assistant.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "You are omp's trusted coding assistant.",
+              "signature": "signed"
+            },
+            {
+              "type": "text",
+              "text": "You are omp's trusted coding assistant."
+            },
+            {
+              "type": "tool_use",
+              "id": "call-1",
+              "name": "read",
+              "input": {
+                "path": "You are omp's trusted coding assistant."
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call-1",
+              "content": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "Chat: only system and developer messages, including historical ones",
+    "ctx": {
+      "protocol": "chat"
+    },
+    "request": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "assistant",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "developer",
+          "content": [
+            {
+              "type": "text",
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "c",
+          "content": "You are omp's trusted coding assistant."
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are droid's trusted coding assistant."
+        },
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "assistant",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "role": "developer",
+          "content": [
+            {
+              "type": "text",
+              "text": "You are droid's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "c",
+          "content": "You are omp's trusted coding assistant."
+        }
+      ]
+    }
+  },
+  {
+    "name": "Responses: instructions and developer input, without touching tool items or ciphertext",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "request": {
+      "instructions": "You are omp's trusted coding assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "type": "function_call",
+          "call_id": "c",
+          "name": "read",
+          "arguments": "{\"path\":\"You are omp's trusted coding assistant.\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c",
+          "output": "You are omp's trusted coding assistant."
+        },
+        {
+          "type": "reasoning",
+          "encrypted_content": "You are omp's trusted coding assistant."
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "instructions": "You are droid's trusted coding assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "You are droid's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        },
+        {
+          "type": "function_call",
+          "call_id": "c",
+          "name": "read",
+          "arguments": "{\"path\":\"You are omp's trusted coding assistant.\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c",
+          "output": "You are omp's trusted coding assistant."
+        },
+        {
+          "type": "reasoning",
+          "encrypted_content": "You are omp's trusted coding assistant."
+        }
+      ]
+    }
+  },
+  {
+    "name": "Responses: string input remains user content",
+    "ctx": {
+      "protocol": "responses"
+    },
+    "request": {
+      "instructions": "You are omp's trusted coding assistant.",
+      "input": "You are omp's trusted coding assistant."
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "instructions": "You are droid's trusted coding assistant.",
+      "input": "You are omp's trusted coding assistant."
+    }
+  },
+  {
+    "name": "Gemini: systemInstruction changes only system text parts",
+    "ctx": {
+      "protocol": "gemini"
+    },
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are omp's trusted coding assistant."
+          },
+          {
+            "inlineData": {
+              "mimeType": "text/plain",
+              "data": "You are omp's trusted coding assistant."
+            }
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are droid's trusted coding assistant."
+          },
+          {
+            "inlineData": {
+              "mimeType": "text/plain",
+              "data": "You are omp's trusted coding assistant."
+            }
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "Gemini: system_instruction changes only system text parts",
+    "ctx": {
+      "protocol": "gemini"
+    },
+    "request": {
+      "system_instruction": {
+        "parts": [
+          {
+            "text": "You are omp's trusted coding assistant."
+          },
+          {
+            "inlineData": {
+              "mimeType": "text/plain",
+              "data": "You are omp's trusted coding assistant."
+            }
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "system_instruction": {
+        "parts": [
+          {
+            "text": "You are droid's trusted coding assistant."
+          },
+          {
+            "inlineData": {
+              "mimeType": "text/plain",
+              "data": "You are omp's trusted coding assistant."
+            }
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "You are omp's trusted coding assistant."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "A routing group uses the resolved Factory provider",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "model": "group/work",
+      "system": "You are omp's trusted coding assistant."
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "model": "group/work",
+      "system": "You are droid's trusted coding assistant."
+    }
+  },
+  {
+    "name": "A factory-looking model name on another provider is unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "model": "factory/claude-opus-5-5",
+      "system": "You are omp's trusted coding assistant."
+    },
+    "provider": {
+      "id": "openai"
+    }
+  },
+  {
+    "name": "Before provider selection the request is unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are omp's trusted coding assistant."
+    }
+  },
+  {
+    "name": "Repeated exact occurrences preserve CRLF and spacing",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are omp's trusted coding assistant.\r\nYou are omp's trusted coding assistant.  "
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    },
+    "expect_request": {
+      "system": "You are droid's trusted coding assistant.\r\nYou are droid's trusted coding assistant.  "
+    }
+  },
+  {
+    "name": "An already rewritten identity is unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are droid's trusted coding assistant."
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    }
+  },
+  {
+    "name": "Other identities and near matches are unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": "You are OMP's trusted coding assistant.\nYou are omp's helpful coding companion.\nYou are Claude Code, Anthropic's official CLI for Claude."
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    }
+  },
+  {
+    "name": "Missing system instructions do not rewrite user history",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "You are omp's trusted coding assistant."
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    }
+  },
+  {
+    "name": "Non-text system blocks are unchanged",
+    "ctx": {
+      "protocol": "anthropic"
+    },
+    "request": {
+      "system": [
+        {
+          "type": "image",
+          "source": {
+            "data": "You are omp's trusted coding assistant."
+          }
+        },
+        {
+          "type": "thinking",
+          "text": "You are omp's trusted coding assistant.",
+          "signature": "signed"
+        }
+      ]
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    }
+  },
+  {
+    "name": "Unknown client protocols are untouched",
+    "ctx": {
+      "protocol": "unknown"
+    },
+    "request": {
+      "system": "You are omp's trusted coding assistant."
+    },
+    "provider": {
+      "id": "factory",
+      "model": "claude-opus-5-5"
+    }
+  }
+]

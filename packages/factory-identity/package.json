@@ -1,0 +1,11 @@
+{
+  "name": "@magpie-community/middleware-factory-identity",
+  "version": "0.1.0",
+  "description": "Rewrite OMP's default identity sentence only in system instructions sent to Factory.",
+  "type": "module",
+  "files": ["factory-identity.middleware.js", "README.md", "LICENSE"],
+  "keywords": ["magpie", "magpie-middleware", "factory", "oh-my-pi"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/factory-identity" },
+  "magpie": { "middleware": "./factory-identity.middleware.js" }
+}
