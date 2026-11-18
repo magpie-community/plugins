@@ -22,7 +22,21 @@ magpie plugin login aiproxy
 - **浏览器 Cookie**：先在浏览器完成登录及 2FA/SSO，再从已认证的 `/api/v1`
   请求中复制 Cookie 请求头。插件不代填验证码，也不自动执行 SSO。
 
-API key 用于模型请求，控制台会话用于额度读取。登录信息由宿主凭据存储保存，
+API key 用于模型请求，控制台会话用于额度读取。插件将密码和 Cookie 放在账号的
+认证元数据中交由宿主保存，不另建凭据文件。在 Magpie 中，保存位置为其配置数据
+目录下的 `plugin-auth.json`（通常为 `~/.config/magpie/plugin-auth.json`）；
+POSIX 系统按仅文件所有者可读写的 `0600` 权限写入。这是本地凭据文件，不是加密
+保险库。远程 Magpie 的凭据保存在运行 Magpie 的服务器上，不在查看 Web UI 的电脑上。
+请保护该文件及其备份。
+
+OpenCode 使用自己的认证存储：1.x 入口直接返回认证元数据，社区的 2.x 适配器把它
+保留在凭据的 `metadata.v1` 中；上述 Magpie 路径及权限不代表 OpenCode 的存储实现。
+
+Cookie 只附加到用户所填站点的 `/api/v1` 控制台请求；密码只发送至该站点的
+`/api/v1/auth/login`。二者不会附加到模型请求、图标请求或发往插件作者的请求。
+控制台请求、模型目录读取和协议探测均禁止跟随 HTTP 重定向，包括同源重定向，
+避免凭据随跳转发送到其他主机、端口或协议。若站点有跳转，请直接填写最终规范
+Base URL。Cookie 登录只复用浏览器已完成的会话，不代替浏览器执行 SSO 跳转。
 不要把 Cookie、密码或 API key 放进公开问题、截图或配置示例。
 可填写自定义账号显示名；供应商显示名为 **AI Proxy**，ID 为 `aiproxy`。
 
@@ -55,9 +69,11 @@ v0.5.0 适配，保留原 MIT 版权及 `aiproxy` provider ID。
 在社区仓库根目录执行：
 
 ```sh
-node --test packages/aiproxy/aiproxy.test.mjs
+node --test packages/aiproxy/*.test.mjs
 bun scripts/check.mjs aiproxy
 ```
 
-自动化检查使用模拟数据，不读取真实登录态。原独立插件有自定义站点的 Magpie
+重定向回归测试使用两个本地 HTTP 服务和虚构凭据，验证 301/302/303/307/308
+不会将登录信息、Cookie 或 API key 转发至另一来源，也不会跟随同源跳转。
+不访问真实 AiProxy 站点。自动化检查不读取真实登录态。原独立插件有自定义站点的 Magpie
 使用记录，不代表所有 AiProxy 版本或 OpenCode 2.x 的真实推理流程都已验收。

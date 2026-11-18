@@ -21,8 +21,28 @@ The plugin uses two independent credentials:
 - the **console email and password** are used to obtain the browser-style
   session cookie needed by AiProxy's user quota endpoints.
 
-The password and the session cookie are stored in Magpie's protected plugin
-credential store. The plugin never prints either credential and strips upstream
+The plugin returns the password and session Cookie in the account's auth
+metadata; it does not create a separate credential file. Magpie stores this
+metadata in `plugin-auth.json` in its configured data directory (normally
+`~/.config/magpie/plugin-auth.json`, written with owner-only `0600` permissions
+on POSIX). This is a local credential file, not an encrypted vault. For a remote
+Magpie, it is on the machine running Magpie, not on the computer displaying
+the Web UI. Protect that file and any backups of it.
+
+OpenCode manages the credentials in its own auth storage: the 1.x entry returns
+the auth metadata directly; the shared 2.x adapter places it in the saved
+credential's `metadata.v1`. Magpie's file path/permission description does not
+describe OpenCode's storage.
+
+The Cookie is attached only to `/api/v1` console requests at the user-entered
+site. The password is sent only to that site's `/api/v1/auth/login`; neither is
+attached to model requests, icon fetches or requests to the plugin author.
+Console requests, model-catalog reads and protocol probes all use
+`redirect: "error"`: no HTTP redirect is followed, even within the same origin,
+so these credentials are not forwarded to a different host, port or scheme.
+If a deployment redirects, enter its final canonical Base URL instead.
+Cookie login reuses the session you obtained in a browser; it does not automate
+SSO redirects. The plugin never prints either credential and strips upstream
 error bodies from user-facing errors.
 
 ## Install
@@ -114,13 +134,19 @@ static provider icon.
 
 ## Validation
 
-Tests use synthetic responses and do not read a real account or make network
-requests. Run the package tests and the community hook/registry checks:
+Tests use synthetic credentials and do not read a real account. Unit tests
+use mocked responses; redirect tests make requests only to local HTTP servers.
+Run the package tests and the community hook/registry checks:
 
 ```sh
-node --test packages/aiproxy/aiproxy.test.mjs
+node --test packages/aiproxy/*.test.mjs
 bun scripts/check.mjs aiproxy
 ```
+
+The redirect regression tests use two local HTTP servers and synthetic
+credentials to verify that 301/302/303/307/308 responses cannot forward login
+credentials, Cookies or API keys, to another origin or within the same origin.
+They do not contact a live AiProxy deployment.
 
 The source plugin has been used with a custom AiProxy deployment in Magpie.
 That does not establish compatibility with every deployment/version, or live
