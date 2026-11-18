@@ -5,8 +5,8 @@ then choose **Magpie** in ChatCut Desktop and start a new chat. New chats follow
 that default. ChatCut's model menu can also switch the current conversation to a specific model
 or routing group from Magpie while keeping its history and native thread.
 
-Requires the ChatCut Desktop release containing the Magpie agent entry. Earlier versions do
-not read this configuration. This plugin does not install or upgrade ChatCut.
+Use [ChatCut Desktop 0.9.17 or later](https://chatcut.io/desktop). Install or update
+ChatCut Desktop separately before connecting it in Magpie.
 ChatCut creates `~/.config/chatcut` when it starts, which makes the agent visible.
 The Agents row and plugin listing use the official ChatCut logomark, supplied by
 ChatCut and included as `icon.svg`. The same SVG is embedded as a data URI so the
@@ -40,8 +40,8 @@ connection; there is no automatic fallback to another model service.
 ## 中文
 
 在 Magpie 的 Agent 页增加独立的 **ChatCut** 条目。选择模型或路由组后，在
-ChatCut 桌面端选择 **Magpie** 并开始新对话。需要支持此入口的 ChatCut 版本；
-插件本身不安装或升级 ChatCut。
+ChatCut 桌面端选择 **Magpie** 并开始新对话。请先单独安装或升级到
+[ChatCut 桌面端 0.9.17 或更高版本](https://chatcut.io/desktop)。
 
 Agents 条目和插件列表使用 ChatCut 提供的官方品牌图标，与 Desktop 的图形一致。
 原始 SVG 随包发布为 `icon.svg`，同时内嵌为 data URI，离线可显示并跟随系统配色，
