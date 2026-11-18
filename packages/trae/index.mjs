@@ -49,6 +49,16 @@ const SITES = {
     // can point the requests at a fake and still sign in as an enterprise
     // account.
     consoleHost: "console.enterprise.trae.cn",
+    // an enterprise (SaaS) account signs in on the console's own
+    // authorization page (hosts.console + /authorization): since Trae CN's
+    // 2026-11-18 personal-account upgrade to Doubao/Feishu accounts,
+    // www.trae.cn/authorization offers the personal sign-in only (#1328).
+    // The console's page (its index-Jt0RvTT_.js, read 2026-11-18) takes the
+    // same query, sends a signed-out browser through its own login (TRAE
+    // account, Doubao/Feishu, 企业 SSO) with the query kept (/login?to=…),
+    // takes only an auth_callback_url on 127.0.0.1 with a port, and sends
+    // back userJwt, userInfo, host and refreshToken as www.trae.cn's did.
+    enterpriseSignIn: true,
     // Trae CN's console was measured to take the IDE's own token: the plugin's
     // own headers against get_personal_quota answer 200, and a 401 from it
     // really is a lapsed sign-in. The international console could not be
@@ -755,7 +765,7 @@ const page = (ok, title, text) => `<!doctype html><meta charset="utf-8"><meta na
 // signedIn reads trae.cn's callback: userJwt (the token pair) and userInfo
 // (the account), or, from its older page, a refresh token alone, which is
 // exchanged for the pair
-async function signedIn(q, device, site) {
+async function signedIn(q, device, site, from = site.webHost) {
   const jwt = parseJSON(q.get("userJwt"))
   const info = parseJSON(q.get("userInfo"))
   const host = q.get("host") || info.Host || ""
@@ -778,8 +788,8 @@ async function signedIn(q, device, site) {
     const x = await exchange(s.refresh, s.clientId, site, authHost)
     s = { ...s, ...x, uid: x.uid || s.uid, name: x.name || s.name, api: x.api || s.api, region: x.region || s.region, host: s.host || x.api, account: { ...x.account, ...s.account } }
   }
-  if (!s.token) throw new Error(`${site.webHost} sent back no token`)
-  if (!s.refresh) throw new Error(`${site.webHost} sent back no refresh token`)
+  if (!s.token) throw new Error(`${from} sent back no token`)
+  if (!s.refresh) throw new Error(`${from} sent back no refresh token`)
   s = { ...s, ...device }
   // the token the page gives is bound to no device: it is renewed for this
   // one at once, so a check-in takes it; when Trae won't, it does as is
@@ -793,8 +803,11 @@ async function signedIn(q, device, site) {
 }
 
 // browserSignIn is the IDE's sign-in: trae.cn's authorization page, back
-// to a callback on 127.0.0.1 (the page takes no other kind)
-async function browserSignIn(site) {
+// to a callback on 127.0.0.1 (the page takes no other kind). enterprise
+// opens the enterprise console's authorization page instead, with the same
+// query and the same callback (site.enterpriseSignIn).
+async function browserSignIn(site, { enterprise = false } = {}) {
+  const from = enterprise ? site.consoleHost : site.webHost
   const device = newDevice(site)
   const trace = randomUUID()
   let over = false
@@ -822,9 +835,9 @@ async function browserSignIn(site) {
       finish({ type: "failed", error: msg })
       return html(page(false, "Sign-in didn't finish", msg))
     }
-    if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", `${site.webHost} sent no token; start the sign-in again.`))
+    if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", `${from} sent no token; start the sign-in again.`))
     try {
-      const s = await signedIn(q, device, site)
+      const s = await signedIn(q, device, site, from)
       finish({ ...toAuth(s, site), type: "success" })
       html(page(true, "You're signed in", `${s.name || s.uid || `Your ${site.name} account`} is signed in. You can close this tab.`))
     } catch (e) {
@@ -866,6 +879,14 @@ async function browserSignIn(site) {
     // enterprise subscription signs in there (@shad70w0 on X)
     hide_saas_login: "false",
   })
+  if (enterprise) {
+    return {
+      url: `${site.hosts.console}/authorization?${q}`,
+      instructions: `Sign in to your ${site.name} enterprise account (${from}: TRAE account, Doubao/Feishu or enterprise SSO) in the browser and allow the sign-in. It finishes here by itself.`,
+      method: "auto",
+      callback: () => done,
+    }
+  }
   return {
     url: `${site.hosts.web}/authorization?${q}`,
     instructions: `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
@@ -4335,7 +4356,11 @@ const makePlugin = (site) => async ({ client }) => {
           },
         }
       },
-      methods: [{ type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) }],
+      methods: [
+        { type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) },
+        // the enterprise console's own authorization page (#1328)
+        ...(site.enterpriseSignIn ? [{ type: "oauth", label: `${site.name} enterprise account (browser, SSO)`, authorize: () => browserSignIn(site, { enterprise: true }) }] : []),
+      ],
     },
   }
 }

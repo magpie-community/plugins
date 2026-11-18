@@ -51,6 +51,23 @@ Trae Global's stays 19. The daily check-in goes on a 15-digit id made from it
 
 ### Enterprise (SaaS) accounts
 
+**Since 0.2.44, sign in to a Trae CN enterprise account with "Trae CN
+enterprise account (browser, SSO)".** Trae CN's 2026-11-18 upgrade of
+personal accounts to Doubao/Feishu accounts left `www.trae.cn/authorization`
+with the personal sign-in only (#1328). This second method opens the enterprise
+console's own authorization page,
+`console.enterprise.trae.cn/authorization`, with the same query and the same
+`127.0.0.1` callback. If you aren't signed in to the console, it sends you
+through its own login first (TRAE account, Doubao/Feishu, or 企业 SSO
+登录) and then back to the authorization page. Confirm there, and the
+sign-in finishes in magpie. What that page checks and sends back was read
+from its public bundle. **Not yet tried with a real enterprise account.**
+The console refuses an account its admin limited to TRAE Work (「当前账号为
+TRAE Work 专属账号」), and, because the plugin signs in as TRAE SOLO
+(`auth_from=solo`, as on trae.cn), a tenant without TRAE Work enabled may be
+refused too. Open an issue with the page's message if yours is. Trae Global
+keeps its one sign-in method.
+
 Since 0.2.10 the authorization page also offers Trae's enterprise (SaaS / SSO)
 sign-in; before, the plugin asked the page to hide it (`hide_saas_login`), so
 an enterprise subscription could only sign in as a personal account. A host

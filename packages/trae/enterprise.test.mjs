@@ -5,7 +5,7 @@
 // Not tried with a real enterprise account: the hosts below are made up.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { TraeCNAuthPlugin, _internal } from "./index.mjs"
+import { TraeCNAuthPlugin, TraeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn, sse } from "./fake.mjs"
 
 // the console's own answer, as a real enterprise account's is: the seat
@@ -65,6 +65,75 @@ test("the sign-in page doesn't hide the enterprise (SaaS) sign-in", async () => 
   expect(q.get("hide_saas_login")).not.toBe("true")
   await fetch(new URL(q.get("auth_callback_url")) + "?error=x")
   await a.callback()
+})
+
+// Since Trae CN's 2026-11-18 Doubao/Feishu account upgrade, www.trae.cn's
+// authorization page offers the personal sign-in only (#1328). The
+// enterprise console has its own authorization page, which signs a
+// signed-out browser in (TRAE account, Doubao/Feishu, 企业 SSO) and then calls
+// back. What it checks and sends is from its bundle (index-Jt0RvTT_.js, read
+// 2026-11-18): auth_from one of trae/solo/vscode/jetbrains/traecli,
+// login_trace_id, device_id, and an auth_callback_url on 127.0.0.1 with a
+// port; redirect=1 would show 「授权成功」 without calling back.
+async function startEnterprise() {
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const a = await hooks.auth.methods[1].authorize()
+  return { hooks, a, url: new URL(a.url), q: new URL(a.url).searchParams, cb: new URL(new URL(a.url).searchParams.get("auth_callback_url")) }
+}
+
+test("Trae CN offers the enterprise console's authorization page, with the callback it takes", async () => {
+  f = fakeTrae()
+  const { hooks, a, url, q, cb } = await startEnterprise()
+  expect(hooks.auth.methods.map((m) => m.label)).toEqual(["Trae CN account (browser)", "Trae CN enterprise account (browser, SSO)"])
+  expect(url.origin + url.pathname).toBe(CN.hosts.console + "/authorization")
+  expect(["trae", "solo", "vscode", "jetbrains", "traecli"]).toContain(q.get("auth_from"))
+  expect(q.get("login_trace_id")).toBeTruthy()
+  expect(q.get("device_id")).toBeTruthy()
+  expect(q.get("redirect")).not.toBe("1")
+  expect(cb.hostname).toBe("127.0.0.1")
+  expect(cb.port).toBeTruthy()
+  expect(cb.pathname).toBe("/authorize")
+  // the same query as the personal sign-in's, but for this sign-in's own ids
+  const personal = new URL((await hooks.auth.methods[0].authorize()).url).searchParams
+  const fixed = (p) => Object.fromEntries([...p].filter(([k]) => !/callback|trace|device|machine/.test(k)))
+  expect(fixed(q)).toEqual(fixed(personal))
+  await fetch(new URL(personal.get("auth_callback_url")) + "?error=x")
+  await fetch(cb + "?error=x")
+  expect((await a.callback()).type).toBe("failed")
+})
+
+test("the console's callback signs an enterprise account in on the console", async () => {
+  f = fakeTrae()
+  const { a, q, cb } = await startEnterprise()
+  const jwt = { Token: "jwt-1", RefreshToken: "r-1", TokenExpireAt: Math.floor(Date.now() / 1000) + 7200, ClientID: "ono9krqynydwx5" }
+  // every field the console's page sends for auth_from trae or solo
+  const back = new URLSearchParams({
+    scope: "saas",
+    host: ENT,
+    consoleHost: ENT,
+    coreHost: ENT,
+    isRedirect: "true",
+    loginTraceID: q.get("login_trace_id"),
+    userJwt: JSON.stringify(jwt),
+    userInfo: JSON.stringify({ UserID: "u-e", ScreenName: "Acme", TenantID: "t-1" }),
+    datafinderConfig: "{}",
+    apmPlusConfig: "{}",
+    refreshToken: "r-1",
+    refreshExpireAt: String(Math.floor(Date.now() / 1000) + 86400 * 14),
+    data: "r-1",
+  })
+  const res = await fetch(`${cb}?${back}`)
+  expect(await res.text()).toContain("You're signed in")
+  const got = await a.callback()
+  expect(got.type).toBe("success")
+  expect(got.uid).toBe("u-e")
+  expect(got.host).toBe(ENT)
+  expect(_internal.isEnterprise(got, CN)).toBe(true)
+})
+
+test("Trae Global offers its one sign-in only", async () => {
+  const hooks = await TraeGlobalAuthPlugin({ client: {} })
+  expect(hooks.auth.methods.map((m) => m.label)).toEqual(["Trae Global account (browser)"])
 })
 
 test("only an https host on Trae's own domains is taken", () => {
