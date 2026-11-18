@@ -6,10 +6,10 @@
  */
 
 import { DIFFICULTY_ORDER, DIRECT_SOURCES, ROUTES, SCORING_POLICY, resolveModel, splitEffortSuffix } from "./catalog.js";
-import { PROFILE_KINDS, validateProfile } from "./profiler-core.js";
+import { WORK_KINDS, validateProfile } from "./profiler-core.js";
 
 export const COUPLINGS = ["low", "medium", "high"]; // chain.coupling; high is a related task that continues its worker
-export const GENERIC_CALLER_KINDS = [null, undefined, "general_implementation", "tool_execution", "debug_review", "other_or_mixed"];
+export const GENERIC_CALLER_KINDS = [null, undefined, "code_implementation", "other_or_mixed"];
 
 export class InvalidCallerProfile extends Error {
   constructor(message) {
@@ -28,40 +28,43 @@ export function validateCallerProfile(raw) {
   }
 }
 
-/** The display label of a profile's reasoning depth (`profile.difficulty_by_depth`): nothing scores on it. */
+/**
+ * The display label of a profile's `primary_level` (`profile.difficulty_by_level`): nothing scores or gates on it. Depth 3 of
+ * architecture reasoning or creative ideation, or a secondary part at depth 3, reads `frontier`.
+ */
 export function profileDifficulty(profile, policy = SCORING_POLICY) {
-  return policy.profile.difficulty_by_depth[String(profile.reasoning_depth)];
+  const lvl = profile.primary_level;
+  if (lvl === 3 && (["architecture_reasoning", "creative_ideation"].includes(profile.work_kind) || profile.secondary_level === 3)) return "frontier";
+  return policy.profile.difficulty_by_level[String(lvl)];
 }
 
 /** A classifier route other than the unmatched bucket; null when the profile did not name one. */
 export function namedRoute(profile) {
   if (!profile || typeof profile !== "object") return null;
   const named = profile.work_kind;
-  return PROFILE_KINDS.includes(named) && named !== "other_or_mixed" ? named : null;
+  return WORK_KINDS.includes(named) ? named : null;
 }
 
-/** The route a profile implies when the caller named none. */
-export function profileKind(profile, policy = SCORING_POLICY) {
+/** The route a profile names (`work_kind`); a profile that names none is `gui_control` when it needs a GUI, else the unmatched bucket. */
+export function profileKind(profile) {
   const named = namedRoute(profile);
   if (named) return named;
-  if (profile.needs_gui) return "computer_use";
-  if (profile.needs_visual && profile.code_complexity === 0 && profile.interaction_style !== "text_only") return "visual_analysis";
-  if (profile.interaction_style === "engineering" && profile.code_complexity === 0) return "tool_execution";
-  return ((policy.profile || {}).kind_by_style || {})[profile.interaction_style] || "other_or_mixed";
+  if (profile && typeof profile === "object" && profile.needs_gui) return "gui_control";
+  return "other_or_mixed";
 }
 
-/** The route the allocator uses: the caller's work_kind, else the profile's. */
-export function taskKind(task, routes = ROUTES, policy = SCORING_POLICY) {
+/** The route the allocator uses: the profile's work_kind when the caller left work_kind unset or repeated it, else the caller's valid route. */
+export function taskKind(task, routes = ROUTES) {
   if (!task || typeof task !== "object") return "other_or_mixed";
   const prof = task.profile && typeof task.profile === "object" ? task.profile : null;
   const caller = task.work_kind;
   const named = namedRoute(prof);
   if (named && named in routes && (caller === null || caller === undefined || caller === named)) return named;
-  if (prof && prof.needs_gui && GENERIC_CALLER_KINDS.includes(caller) && named === null) return "computer_use";
+  if (prof && prof.needs_gui && GENERIC_CALLER_KINDS.includes(caller) && named === null) return "gui_control";
   if (caller in routes) return task.work_kind;
   if (!task.work_kind && prof !== null) {
     try {
-      const kind = profileKind(validateProfile(prof), policy);
+      const kind = profileKind(validateProfile(prof));
       return kind in routes ? kind : "other_or_mixed";
     } catch {
       return "other_or_mixed";
@@ -129,7 +132,7 @@ export function normalizeTask(raw, { policy = SCORING_POLICY, routes = ROUTES, m
   else readOnlyReview = false;
   if (profile === null) throw new InvalidCallerProfile("task.profile is required: the classifier always produces it, with its axis_demand");
   profile = { ...profile, wants_fast: wantsFast, read_only_review: readOnlyReview };
-  const kind = taskKind({ ...task, profile }, routes, policy);
+  const kind = taskKind({ ...task, profile }, routes);
   const derived = profileDifficulty(profile, policy);
   const difficulty = task.difficulty || derived;
   const difficultySource = task.difficulty ? "caller" : "profile";
@@ -150,7 +153,7 @@ export function normalizeTask(raw, { policy = SCORING_POLICY, routes = ROUTES, m
   if (flagPresent(needs, "gui")) needsGui = Boolean(needs.gui);
   else if (flagPresent(task, "needs_gui")) needsGui = Boolean(task.needs_gui);
   else if (flagPresent(profile, "needs_gui")) needsGui = Boolean(profile.needs_gui);
-  else needsGui = kind === "computer_use";
+  else needsGui = kind === "gui_control";
   return {
     kind,
     difficulty,

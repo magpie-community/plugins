@@ -54,7 +54,7 @@ const NOW = 1790000000000;
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const PROFILE = profile();
-const ROUTINE = profile({ reasoning_depth: 1, code_complexity: 0, access: "read-only", axis_demand: { coding: 1 } });
+const ROUTINE = profile({ primary_level: 1, access: "read-only", axis_demand: { coding: 1 } });
 
 const TASK = "Implement the parser module and its unit tests";
 const request = (extra = {}) => ({ model: "agentcompass/auto", messages: [{ role: "user", content: TASK }], ...extra });
@@ -66,7 +66,7 @@ const context = (options, extra = {}) => ({
 });
 const candidate = (ranked, id) => ranked.allCandidates.find((c) => c.id === id);
 const SYSTEM_ONE_QUESTIONS = {
-  intent: { type: "choice", criteria: { general_implementation: "implementation", bounded_bulk_work: "routine" } },
+  intent: { type: "choice", criteria: { code_implementation: "implementation", text_processing: "routine" } },
   effort: { type: "score", criteria: ["low", "medium", "high", "xhigh"] },
 };
 const systemOne = (state, options) =>
@@ -335,6 +335,51 @@ test("a provider whose table lists the model offers those efforts; a gateway off
   assert.ok(new Set(gateway.allCandidates.map((c) => c.effort)).size > 1);
 });
 
+// A row's own `efforts` list (Cindy's catalog, or the operator's plugin options in Magpie) is what it is launched at: the launch
+// table shipped with a version removes none of it, and speaks only for a row that lists none.
+test("a listed effort outside the launch table is a candidate at that effort; no table entry removes the row", () => {
+  // codex lists gpt-6-luna at high only; the row offers medium
+  assert.deepEqual(catalog.DISPATCH_EFFORTS.codex["gpt-6-luna"].includes("medium"), false);
+  const row = { id: "luna", provider: "codex", account: "codex", model: "gpt-6-luna", efforts: ["medium"] };
+  const ranked = rankCandidates(PROFILE, { candidateModels: [row] });
+  assert.deepEqual(ranked.allCandidates.map((c) => c.effort), ["medium"]);
+  for (const c of ranked.allCandidates) assert.doesNotMatch(c.excluded.join("; "), /dispatch_efforts/);
+  const decision = selectBestRoute(PROFILE, { candidateModels: [row] });
+  assert.equal(decision.ok, true);
+  assert.equal(decision.targetEffort, "medium");
+  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", "medium"), true);
+  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", "high"), false);
+  // The operator's list in Magpie's options is served as written
+  const body = request();
+  middleware.onRequest(body, context({ candidateModels: [row] }));
+  assert.equal(body.model, "gpt-6-luna:medium");
+});
+
+test("a row keeps every effort it lists, and a row that lists none follows the launch table", () => {
+  const listed = ["low", "medium", "high", "xhigh", "max"];
+  const own = rankCandidates(PROFILE, { candidateModels: [{ id: "l", provider: "codex", account: "codex", model: "gpt-6-luna", efforts: listed }] });
+  assert.deepEqual(own.allCandidates.map((c) => c.effort).sort(), [...listed].sort());
+  for (const effort of listed) assert.equal(allocator.candidateOffers([{ provider: "codex", model: "gpt-6-luna", efforts: listed }], "gpt-6-luna", effort), true, effort);
+  // Without a list the table speaks (codex: high only), as does an empty list
+  for (const entry of [{ id: "b", provider: "codex", account: "codex", model: "gpt-6-luna" }, { id: "e", provider: "codex", account: "codex", model: "gpt-6-luna", efforts: [] }]) {
+    const bare = rankCandidates(PROFILE, { candidateModels: [entry] });
+    assert.deepEqual(bare.allCandidates.map((c) => c.effort), catalog.DISPATCH_EFFORTS.codex["gpt-6-luna"]);
+  }
+});
+
+test("a listed effort the data has no score for leaves automatic routing with the missing data named; naming the model dispatches it", () => {
+  // gpt-6.1-sol has no Time/Task at ultra in the shipped data
+  const row = { id: "sol", provider: "codex", account: "codex", model: "gpt-6.1-sol", efforts: ["ultra"] };
+  const auto = selectBestRoute(PROFILE, { candidateModels: [row] });
+  assert.equal(auto.ok, false);
+  assert.match(auto.excluded.join("; "), /data error: no Time\/Task for gpt-6\.1-sol at ultra .*out of automatic routing/);
+  assert.doesNotMatch(auto.excluded.join("; "), /dispatch_efforts/);
+  const named = selectBestRoute(PROFILE, { candidateModels: [row], constraintModel: "gpt-6.1-sol" });
+  assert.equal(named.ok, true);
+  assert.equal(named.targetEffort, "ultra");
+  assert.match(named.warnings.join("; "), /no Time\/Task for gpt-6\.1-sol at ultra/);
+});
+
 test("an effort the pool has no row for can be pinned: a row `<carrier>@<effort>` with pin_carrier, on what the provider dispatches", () => {
   const row = { id: "opus", provider: "claude", account: "claude", model: "claude-opus-5-5", effort: "high", modeId: "bypass" };
   const decision = selectBestRoute(PROFILE, { candidateModels: [row], constraintModel: "claude-opus-5-5", constraintEffort: "medium" });
@@ -507,15 +552,15 @@ test("a pool name with no row of its own says so, in the route and in the log (r
 
 test("a failure of a family name stays on that name; the flagship keeps serving (review M5)", () => {
   const store = new SessionContinuityStore();
-  const pool = ["gpt-6.2-sol-preview", "gpt-6.1-sol"];
+  const pool = ["gpt-6.3-sol-preview", "gpt-6.1-sol"];
   const first = turnOne();
-  const ctx = { sessionId: "f", options: { candidateModels: ["gpt-6.2-sol-preview"], constraintModel: "gpt-6.2-sol-preview", continuityStore: store, now: NOW }, state: {} };
+  const ctx = { sessionId: "f", options: { candidateModels: ["gpt-6.3-sol-preview"], constraintModel: "gpt-6.3-sol-preview", continuityStore: store, now: NOW }, state: {} };
   quietly(() => middleware.onRequest(first, ctx));
-  assert.equal(ctx.state.route.targetModel, "gpt-6.2-sol-preview");
+  assert.equal(ctx.state.route.targetModel, "gpt-6.3-sol-preview");
   middleware.onResponse({ error: { message: "bad gateway" } }, { ...ctx, status: 502 });
-  assert.deepEqual(store.getUnhealthyModels(NOW), ["gpt-6.2-sol-preview"]);
+  assert.deepEqual(store.getUnhealthyModels(NOW), ["gpt-6.3-sol-preview"]);
   assert.equal(store.isModelHealthy("gpt-6.1-sol", NOW), true);
-  assert.equal(store.isModelHealthy("gpt-6.2-sol-preview", NOW), false);
+  assert.equal(store.isModelHealthy("gpt-6.3-sol-preview", NOW), false);
 
   // The next turn leaves the failed name and lands on the flagship, in this session and in a new one
   const next = followUp(first);
@@ -525,7 +570,7 @@ test("a failure of a family name stays on that name; the flagship keeps serving 
   assert.equal(ctxNext.state.route.continuation.why, "provider_unhealthy");
   const fresh = selectBestRoute(PROFILE, { candidateModels: ["gpt-6.1-sol"], unhealthyModels: store.getUnhealthyModels(NOW) });
   assert.equal(fresh.targetModel, "gpt-6.1-sol");
-  const allocated = rankCandidates(PROFILE, { candidateModels: ["gpt-6.1-sol:high"], unhealthyModels: ["gpt-6.2-sol-preview"] });
+  const allocated = rankCandidates(PROFILE, { candidateModels: ["gpt-6.1-sol:high"], unhealthyModels: ["gpt-6.3-sol-preview"] });
   assert.equal(allocated.allCandidates[0].eligible, true);
 
   // An exact or alias name is its row: any spelling takes the row down
@@ -594,9 +639,9 @@ test("a held turn carries the pool's bundle, with its modeId and draws (review m
 });
 
 test("a route its `when` rules block says why (review m8)", () => {
-  const decision = selectBestRoute(PROFILE, { candidateModels: [{ id: "w", provider: "codex", model: "gpt-6.1-sol", effort: "high", when: { max_reasoning_depth: 1 } }] });
+  const decision = selectBestRoute(PROFILE, { candidateModels: [{ id: "w", provider: "codex", model: "gpt-6.1-sol", effort: "high", when: { max_primary_level: 1 } }] });
   assert.equal(decision.blocked, true);
-  assert.match(decision.warnings[0], /gpt-6\.1-sol@high: its when rule allows reasoning depth up to 1, the task has 2/);
+  assert.match(decision.warnings[0], /gpt-6\.1-sol@high: its when rule allows primary level up to 1, the task has 2/);
   assert.match(decision.excluded[0], /when rule/);
 });
 
@@ -803,9 +848,9 @@ const SCORED = (over = {}) => profile(over);
 
 test("an effort the user disabled is never dispatched, by any row of that model (review 3 M1)", () => {
   const profiles = [
-    SCORED({ work_kind: "tool_execution", reasoning_depth: 1, code_complexity: 0, access: "read-only", axis_demand: { coding: 0 } }),
+    SCORED({ work_kind: "live_loop", primary_level: 1, access: "read-only", axis_demand: { coding: 0 } }),
     SCORED(),
-    SCORED({ reasoning_depth: 3, code_complexity: 3, axis_demand: { coding: 3, divergence: 2 } }),
+    SCORED({ primary_level: 3, axis_demand: { coding: 3, creativity: 2 } }),
     SCORED({ needs_visual: true, axis_demand: { tool_operation: 3 } }),
   ];
   const all = ["low", "medium", "high", "xhigh", "max"];
@@ -945,7 +990,7 @@ test("/v1/systemone gives any caller the conclusion; the details take the operat
   }
   // A short follow-up is a conclusion too
   const nudge = await index.handleSystemOneRequest(
-    { model: "jev-6b-int8", state: { message: "继续", previous_message_kind: "general_implementation", previous_message_reasoning: "high" }, questions: SYSTEM_ONE_QUESTIONS },
+    { model: "jev-6b-int8", state: { message: "继续", previous_message_kind: "code_implementation", previous_message_reasoning: "high" }, questions: SYSTEM_ONE_QUESTIONS },
     ok,
   );
   assert.deepEqual(Object.keys(nudge.agentcompass).sort(), ["targetEffort", "targetModel"]);
@@ -1124,17 +1169,19 @@ test("a short follow-up on /v1/systemone checks the effort locally, and only a d
   const scored = { allowExternalScorer: true, scorerType: "openai_compatible", scorerBaseUrl: "http://127.0.0.1:9/v1", scorerApiKey: "fake", scorerModel: "fake", useCache: false, fetch };
   const follow = (pool) =>
     index.handleSystemOneRequest(
-      { model: "m", state: { message: "继续", previous_message_kind: "general_implementation", previous_message_reasoning: "high" }, questions },
+      { model: "m", state: { message: "继续", previous_message_kind: "code_implementation", previous_message_reasoning: "high" }, questions },
       { candidateModels: pool, ...scored },
     );
   // Without the removed text heuristic, follow-ups on /v1/systemone ask the classifier and check the pool
-  assert.equal((await follow([sol])).agentcompass.targetEffort, "high");
-  assert.equal((await follow([sol, { model: sol, effort: "low", disabled: true }])).agentcompass.targetEffort, "high");
+  const held = (await follow([sol])).agentcompass.targetEffort;
+  assert.ok(["low", "medium", "high", "xhigh"].includes(held));
+  const other = held === "low" ? "xhigh" : "low";
+  assert.equal((await follow([sol, { model: sol, effort: other, disabled: true }])).agentcompass.targetEffort, held, "disabling another effort keeps it");
   assert.equal(calls, 2);
   // That effort disabled: a route, the classifier allowed, and it is not sent
-  const answer = await follow([sol, { model: sol, effort: "high", disabled: true }]);
-  assert.notEqual(answer.agentcompass.targetEffort, "high");
-  assert.notEqual(answer.answers.effort.score, 2);
+  const answer = await follow([sol, { model: sol, effort: held, disabled: true }]);
+  assert.notEqual(answer.agentcompass.targetEffort, held);
+  assert.notEqual(answer.answers.effort.score, questions.effort.criteria.indexOf(held));
   assert.equal(allocator.effortUnchecked([sol, { model: sol, effort: "high", disabled: true }], "high"), true);
   assert.equal(allocator.effortUnchecked([sol], "high"), false);
   assert.equal(allocator.effortUnchecked(null, "high"), false);
@@ -1235,7 +1282,7 @@ test("M-4.1 task_count takes a bucket from a positive integer, contradictions an
   assert.deepEqual(validateProfile(once), once);
 
   // An illegal classifier answer is not repaired: one retry, then blocked
-  const { options, calls } = classifier({ reasoning_depth: 2, code_complexity: 2, context_scale: 2, divergence: 1, hallucination_risk: 2, error_cost: 2, interaction_style: "engineering", multi_task: true, task_count: "1" });
+  const { options, calls } = classifier({ primary_level: 2, context_scale: 2, creativity: 1, hallucination_risk: 2, error_cost: 2, multi_task: true, task_count: "1" });
   const scored = await scorer.scoreTaskLive({ objective: TASK }, { ...options, useCache: false });
   assert.equal(scored.profile, null);
   assert.equal(scored.meta.error, "classifier_invalid_output");
@@ -1248,32 +1295,30 @@ test("M-4.1 task_count takes a bucket from a positive integer, contradictions an
 });
 
 test("M-4.2 the profile cache keys on every structured field, copies both ways, and a bad entry is a miss", async () => {
-  const answer = { ...PROFILE };
-  delete answer.work_kind;
-  const { options, calls } = classifier(answer);
+  const { options, calls } = classifier({ ...PROFILE });
   scorer.clearProfileCache();
 
-  await scorer.scoreTaskLive({ objective: TASK, work_kind: "general_implementation" }, options);
-  await scorer.scoreTaskLive({ objective: TASK, work_kind: "code_review" }, options);
+  await scorer.scoreTaskLive({ objective: TASK, work_kind: "code_implementation" }, options);
+  await scorer.scoreTaskLive({ objective: TASK, work_kind: "code_audit" }, options);
   await scorer.scoreTaskLive({ objective: TASK, needs: { gui: true } }, options);
   assert.equal(calls.count, 3, "different structured fields, different entries");
 
   const task = { objective: `${TASK} (isolation)` };
   const first = await scorer.scoreTaskLive(task, options);
   const before = calls.count;
-  const depth = first.profile.reasoning_depth;
-  first.profile.reasoning_depth = 99;
+  const depth = first.profile.primary_level;
+  first.profile.primary_level = 99;
   const second = await scorer.scoreTaskLive(task, options);
   assert.equal(calls.count, before, "served from the cache");
-  assert.equal(second.profile.reasoning_depth, depth, "a caller's change to the result does not reach the cache");
-  second.profile.reasoning_depth = 98;
-  assert.equal((await scorer.scoreTaskLive(task, options)).profile.reasoning_depth, depth);
+  assert.equal(second.profile.primary_level, depth, "a caller's change to the result does not reach the cache");
+  second.profile.primary_level = 98;
+  assert.equal((await scorer.scoreTaskLive(task, options)).profile.primary_level, depth);
 
   // Written by an older version: revalidated on read, a failure is a miss
   const stale = { objective: `${TASK} (stale)` };
-  scorer.putCachedProfile(scorer.cacheKeyOf(stale, options), { reasoning_depth: 99 }, {});
+  scorer.putCachedProfile(scorer.cacheKeyOf(stale, options), { primary_level: 99 }, {});
   const reread = await scorer.scoreTaskLive(stale, options);
-  assert.ok(reread.profile.reasoning_depth <= 4);
+  assert.ok(reread.profile.primary_level <= 3);
   assert.equal(calls.count, before + 1);
   scorer.clearProfileCache();
 });
@@ -1281,7 +1326,7 @@ test("M-4.2 the profile cache keys on every structured field, copies both ways, 
 // ---------------------------------------------------------------------------- R5 / R6: pinned data, scoring as AgentCompass
 
 test("7.3 a bundle's `when` is checked in every mode", () => {
-  const bundle = { id: "easy_only", provider: "codex", account: "codex", model: "gpt-6.1-sol", effort: "high", when: { max_reasoning_depth: 1 } };
+  const bundle = { id: "easy_only", provider: "codex", account: "codex", model: "gpt-6.1-sol", effort: "high", when: { max_primary_level: 1 } };
   const fallback = { id: "any", provider: "codex", account: "codex", model: "gpt-6.1-terra", effort: "high" };
   assert.deepEqual(rankCandidates(PROFILE, { candidateModels: [bundle, fallback] }).ranking.map((c) => c.id), ["any"]);
   assert.equal(rankCandidates(ROUTINE, { candidateModels: [bundle, fallback] }).ranking.length, 2);

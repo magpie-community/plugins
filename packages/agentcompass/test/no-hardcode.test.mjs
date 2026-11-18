@@ -25,17 +25,14 @@ const NOW = 1790000000000;
 const POOL = ["claude-opus-5-5", "gpt-6-astra", "gpt-6.1-sol", "claude-sonnet-5-5", "gemini-3.8-flash-high", "gemini-4-argon-high", "grok-4.7"];
 
 const PROFILES = {
-  routine: profile({ work_kind: "bounded_bulk_work", reasoning_depth: 1, code_complexity: 1, expected_hours: 0.4, axis_demand: { divergence: 0, coding: 1 } }),
+  routine: profile({ work_kind: "code_implementation", primary_level: 1, expected_hours: 0.4, axis_demand: { creativity: 0, coding: 1 } }),
   coupled: profile({
-    work_kind: "debug_review",
-    reasoning_depth: 3,
-    code_complexity: 0,
+    work_kind: "code_audit",
+    primary_level: 3,
     access: "read-only",
-    read_only_review: true,
     local_only: true,
     expected_hours: 2,
-    hours_confidence: "high",
-    axis_demand: { divergence: 2, coding: 3 },
+    axis_demand: { creativity: 2, coding: 3 },
   }),
 };
 
@@ -104,10 +101,10 @@ for (const [name, profile] of Object.entries(PROFILES)) {
 
   test(`same answer, any wording: the decision provider answers alike (${name})`, async () => {
     const questions = {
-      intent: { type: "choice", criteria: { debug_review: "Debugging", bounded_bulk_work: "Bulk", "none of these": "None" } },
+      intent: { type: "choice", criteria: { code_audit: "Auditing", code_implementation: "Implementing", "none of these": "None" } },
       effort: { type: "score", criteria: ["low", "medium", "high", "xhigh"] },
       work_kind: { type: "choice" },
-      reasoning_depth: { type: "score" },
+      primary_level: { type: "score" },
     };
     const run = async (text) => {
       const res = await handleSystemOneRequest({ state: { message: text }, questions }, { ...classifierThatSays(profile), candidateModels: POOL });
@@ -255,7 +252,7 @@ test("the router's fields never reach the upstream when a request is not routed"
 
 test("a caller's invalid profile is not routed, not an error", (t) => {
   quiet(t);
-  const body = requestOf(BASE_TASK, { profile: { work_kind: "nope", reasoning_depth: 2 } });
+  const body = requestOf(BASE_TASK, { profile: { work_kind: "nope", primary_level: 2 } });
   const ctx = { state: {}, options: { candidateModels: POOL, now: NOW, continuityStore: new SessionContinuityStore() } };
   mwOnRequest(body, ctx);
   assert.equal(body.model, "agentcompass/auto");
@@ -292,7 +289,7 @@ test("hooks: no classifier or a broken one leaves the request unrouted, and says
 test("the decision provider: no classifier or a broken one answers none of these, with no effort, and says why", async (t) => {
   quiet(t);
   const questions = {
-    intent: { type: "choice", criteria: { debug_review: "Debugging", "none of these": "None" } },
+    intent: { type: "choice", criteria: { code_audit: "Auditing", "none of these": "None" } },
     level: { type: "choice", criteria: { routine: "Routine", none: "None" } },
     effort: { type: "score", criteria: ["low", "medium", "high", "xhigh"] },
     work_kind: { type: "choice" },
@@ -317,20 +314,19 @@ test("the decision provider: the operator's own labels are the classifier's to r
   const seen = [];
   const classifier = classifierThatSays(PROFILES.coupled, seen);
   const exact = await handleSystemOneRequest(
-    { state: { message: "x" }, questions: { intent: { type: "choice", criteria: { "debug-review": "a", other: "b", "none of these": "c" } } } },
+    { state: { message: "x" }, questions: { intent: { type: "choice", criteria: { "code-audit": "a", other: "b", "none of these": "c" } } } },
     { ...classifier, candidateModels: POOL },
   );
-  assert.equal(exact.answers.intent.choice, "debug-review");
+  assert.equal(exact.answers.intent.choice, "code-audit");
   assert.equal(seen.length, 1, "the profile call alone");
 
   // Words in a label or its description mean nothing here: the model is asked.
   seen.length = 0;
-  const criteria = { "排查修复 debug bug fix review": "debug_review, code review", 代码: "implement", "none of these": "c" };
+  const criteria = { "排查修复 debug bug fix review": "code_audit, code review", 代码: "implement", "none of these": "c" };
   const fetchAnswers = (choice) => async (_url, init) => {
     const request = JSON.parse(init.body);
     seen.push(request);
-    const asked = JSON.parse(request.messages[1].content);
-    const content = asked.questions ? { answers: { intent: { choice } } } : PROFILES.coupled;
+    const content = request.messages[0].content.startsWith("You answer structured routing questions") ? { answers: { intent: { choice } } } : PROFILES.coupled;
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
   };
   const ask = (choice) =>
@@ -350,7 +346,7 @@ test("the levels probe: no table of words decides whether labels are a scale", a
 });
 
 test("allocator: nothing without a profile is ranked, whatever the task says", () => {
-  for (const task of [{}, { objective: "Fix the bug in foo.js" }, { objective: "x", work_kind: "debug_review" }, { objective: "x", needs: { gui: true } }]) {
+  for (const task of [{}, { objective: "Fix the bug in foo.js" }, { objective: "x", work_kind: "code_audit" }, { objective: "x", needs: { gui: true } }]) {
     const decision = selectBestRoute(task, { candidateModels: POOL, now: NOW });
     assert.equal(decision.ok, false);
     assert.equal(decision.routed, false);
@@ -371,8 +367,10 @@ test("the classifier hears the previous turn, so a turn that only continues it c
     await hookOnRequest(turn(previous), { state: {}, options: { ...classifier, candidateModels: POOL, now: NOW, continuityStore: new SessionContinuityStore() } });
   }
   assert.equal(seen.length, 2, "same previous turn: cached; another previous turn: asked again");
-  assert.equal(JSON.parse(seen[0].messages[1].content).previous_user, "Audit the lock manager");
-  assert.equal(JSON.parse(seen[1].messages[1].content).previous_user, "Rename foo");
+  // The evidence ends with the task's fields as one JSON line (scorer_client.scorer_evidence).
+  const taskOf = (request) => JSON.parse(request.messages[1].content.split("\n").at(-1));
+  assert.equal(taskOf(seen[0]).previous_user, "Audit the lock manager");
+  assert.equal(taskOf(seen[1]).previous_user, "Rename foo");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -555,11 +553,16 @@ const EXCEPTIONS = [
     sites: [
       "index.js: choices.includes(choice)",
       "profiler-core.js: TASK_COUNTS.includes(value)",
-      "profiler-core.js: PROFILE_KINDS.includes(raw.work_kind)",
-      "profiler-core.js: ACCESS_LEVELS.includes(raw.access)",
-      "profiler-core.js: levels.includes(raw[name])",
-      "profiler-core.js: INTERACTION_STYLES.includes(raw.interaction_style)",
-      "task-intake.js: return PROFILE_KINDS.includes(named)",
+      "profiler-core.js: WORK_KINDS.includes(workKind)",
+      "profiler-core.js: SECONDARY_KINDS.includes(secondaryKind)",
+      'profiler-core.js: kindsUsed.includes("gui_control")',
+      'profiler-core.js: kindsUsed.includes("visual_analysis")',
+      "profiler-core.js: ACCESS_LEVELS.includes(access)",
+      'profiler-core.js: "frontend_ui"].includes(workKind)',
+      'task-intake.js: "creative_ideation"].includes(profile.work_kind)',
+      "task-intake.js: return WORK_KINDS.includes(named)",
+      "scorer-live.js: WORK_KINDS.includes(k)",
+      "scorer-live.js: fields.includes(k)",
       "task-intake.js: GENERIC_CALLER_KINDS.includes(caller)",
       "task-intake.js: DIFFICULTY_ORDER.includes(difficulty)",
       "task-intake.js: COUPLINGS.includes(coupling)",
@@ -636,8 +639,8 @@ test("static scan: the removed classifiers stay removed, and the model-name file
   for (const file of Object.keys(NO_TASK_TEXT_FILES)) {
     const src = fs.readFileSync(path.join(SRC, file), "utf8");
     assert.doesNotMatch(src, /from "\.\/(?:continuity|scorer-live|hooks|middleware|index)\.js"/, file);
-    // Validating a profile and the unrouted notice are all these take from the profiler: no task's text gets that far.
-    assert.doesNotMatch(src.replace(/import \{ (?:PROFILE_KINDS, validateProfile|unroutedDecision) \} from "\.\/profiler-core\.js";/, ""), /from "\.\/profiler-core\.js"/, file);
+    // Validating a profile, the work-kind enum and the unrouted notice are all these take from the profiler: no task's text gets that far.
+    assert.doesNotMatch(src.replace(/import \{ WORK_KINDS, (?:validateProfile|unroutedDecision) \} from "\.\/profiler-core\.js";/, ""), /from "\.\/profiler-core\.js"/, file);
     assert.doesNotMatch(codeOf(src), /\b(?:objective|turnText|lastUserText|userSaid|previousUser)\b/, file);
   }
   for (const file of ["hooks.js", "middleware.js", "index.js"]) {

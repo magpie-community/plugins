@@ -1,6 +1,6 @@
 # Reference
 
-What this plugin does that AgentCompass itself does not: its two modes, its options, the names it registers, its limits inside Magpie and its profile contract. How the engine scores (the four categories, the data gates, the quota economy, the order of rows) is AgentCompass's, written once in [`docs/technical-reference.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/docs/technical-reference.md#1-how-scoring--allocation-work) and [`router-internals.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/skills/agent-compass/references/router-internals.md) at the tag this plugin is pinned to (v0.6.0; the commit is named in the header of `src/reference-data.js`); this file does not repeat them. Model names are the public catalogue's: [`model-capabilities.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/skills/agent-compass/references/model-capabilities.md).
+What this plugin does that AgentCompass itself does not: its two modes, its options, the names it registers, its limits inside Magpie and its profile contract. How the engine scores (the four categories, the data gates, the quota economy, the order of rows) is AgentCompass's, written once in [`docs/technical-reference.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/docs/technical-reference.md#1-how-scoring--allocation-work) and [`router-internals.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/skills/agent-compass/references/router-internals.md) at the tag this plugin is pinned to (v0.7.0; the commit is named in the header of `src/reference-data.js`); this file does not repeat them. Model names are the public catalogue's: [`model-capabilities.md`](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/skills/agent-compass/references/model-capabilities.md).
 
 ## Contents
 
@@ -28,7 +28,7 @@ magpie group set <group> effort=auto classifier=agentcompass/agentcompass-system
 
 - Without a classifier model Mode B answers `none of these` on every turn.
 - A group's label is answered directly when it equals the route's `work_kind`, `difficulty` or model; any other label is the operator's own words, and the classifier is asked which one fits (one more call on that turn).
-- The scorer is `scorer.kind` `openai_compatible` (default; `model` defaults to `gemini-3.8-flash-high`) or `jev`; the flat options `scorerType`, `scorerBaseUrl`, `scorerApiKey`, `scorerModel`, `jevBaseUrl`, `jevApiKey` and `scorerTimeoutMs` (clamped to 100..55000 ms) are the same settings. An answer that is not a valid profile is retried once, then the request is not routed (`classifier_invalid_output`); an answer is never repaired.
+- The scorer is `scorer.kind` `openai_compatible` (default; `model` defaults to `gemini-3.8-flash-high`) or `jev`; the flat options `scorerType`, `scorerBaseUrl`, `scorerApiKey`, `scorerModel`, `jevBaseUrl`, `jevApiKey` and `scorerTimeoutMs` (clamped to 100..55000 ms) are the same settings. An answer that is not a valid profile is retried once, then the request is not routed (`classifier_invalid_output`); an answer is never repaired. The `openai_compatible` scorer gets AgentCompass's prompt (`scorer_client.SCORER_PROMPT`, verbatim, plus one line on `previous_user`) and the classifier cases of `references/classifier-cases.json` at the pinned commit, compacted the same way (about 18 KB of rubric before the task); `jev` gets the same ten questions as AgentCompass's question APIs, over the task and the dimension rubric.
 - Answers are cached by task and structured fields (`useCache: false` turns it off).
 - By default an answer holds only the model and effort, or `{ targetModel: null, blocked: true, error, message }`. Any gateway key that may use the decision model can call `/v1/systemone`, so accounts, quotas, the profile and `warnings` stay in the local log unless `decisionProviderDetails: true`. A refusal of a pin is then always `pin_unavailable`, with no name in it.
 
@@ -40,31 +40,26 @@ A caller sends it as `body.profile`, `ctx.state.profile` or `ctx.profile` (on `/
 
 ```json
 {
-  "work_kind": "general_implementation",
-  "reasoning_depth": 2,
-  "code_complexity": 2,
-  "needs_visual": false,
-  "needs_gui": false,
-  "local_only": false,
-  "wants_fast": false,
-  "read_only_review": false,
+  "work_kind": "code_implementation",
+  "primary_level": 2,
+  "secondary_kind": "none",
+  "secondary_level": 0,
   "access": "write",
-  "interaction_style": "engineering",
+  "local_only": false,
+  "needs_visual": false,
+  "wants_fast": false,
   "expected_hours": 0.5,
-  "hours_confidence": "medium",
-  "urgency": "unknown",
-  "multi_task": false,
   "task_count": "1",
-  "axis_demand": { "divergence": 0, "coding": 2, "aesthetics": 0, "tool_operation": 0 }
+  "axis_demand": { "creativity": 0, "coding": 2, "aesthetics": 0, "tool_operation": 0 }
 }
 ```
 
-- `reasoning_depth` is 1..4 and `code_complexity` 0..3 (integers); `needs_visual`, `needs_gui`, `local_only`, `wants_fast`, `read_only_review` and `multi_task` are booleans; `interaction_style` is `engineering`, `exploration`, `text_only` or `advisory`; `axis_demand` is the demand per category, 0..3 each, and is required.
-- Optional: `work_kind` (one of `ROUTES` in `src/catalog.js`, 16 routes), `access` (`read-only` or `write`), `expected_hours` (clamped to 0.05..24), `hours_confidence` (`low`, `medium`, `high`), `urgency` (`unknown`, `low`, `normal`, `high`), `reason`.
-- `task_count` is `"1"`, `"2"`, `"3"` or `">3"` (a positive integer is bucketed), and `multi_task` must agree with it.
-- A read-only review (`read_only_review: true` or `access: "read-only"`) must have `code_complexity` 0.
+- Required (AgentCompass v0.7.0 `task_intake.TASK_PROFILE_SCHEMA`): `work_kind`, one of the 11 work kinds (`creative_ideation`, `architecture_reasoning`, `code_implementation`, `frontend_ui`, `code_audit`, `exploration_forensics`, `web_research`, `visual_analysis`, `text_processing`, `live_loop`, `gui_control`); `primary_level` 1..3; `secondary_kind` (`none` or a second work kind, different from `work_kind`) with `secondary_level` (0 exactly when `secondary_kind` is `none`, else 1..3); `access` (`read-only` or `write`); `local_only`, `needs_visual`, `wants_fast` (booleans); `expected_hours` (clamped to 0.05..24); `task_count` (`"1"`, `"2"`, `"3"` or `">3"`; a positive integer is bucketed). `reason` is optional.
+- Derived, and checked when given: `needs_gui` (either kind is `gui_control`), `needs_visual` (forced true by `gui_control` or `visual_analysis`), `read_only_review` (`code_audit`), `multi_task` (`task_count` is not `"1"`).
+- `axis_demand`, the demand per category (0..3 each), is projected from the kinds and levels through AgentCompass's declared signature table (`WORK_KIND_SIGNATURES`, `projectAxisDemand` in `src/profiler-core.js`); a caller may state it explicitly, and then it stands as given. The classifier never answers it.
+- Contradictions are refused: `code_audit` with `access: "write"`, and a `local_only` `code_implementation` or `frontend_ui` with `access: "read-only"`.
 - An image part in the request is read as structure: it sets `needs_visual` and takes `axis_demand.tool_operation` to 3, whatever the profile says.
-- A profile that does not validate counts as none, with the code `invalid_caller_profile`. A profile in the 0.1.x shape (`context_scale`, `hallucination_risk`, `error_cost`, `realtime_loop`, a top-level `divergence`) is refused, not repaired.
+- A profile that does not validate counts as none, with the code `invalid_caller_profile`. A profile of an older shape (0.2.x: `reasoning_depth`, `code_complexity`, `interaction_style`, `divergence`; 0.1.x: `context_scale`, `hallucination_risk`, ...) is refused, not repaired: it has no `primary_level` and none of the 11 work kinds.
 
 ## Without a profile
 
@@ -82,6 +77,7 @@ An unrouted request records nothing in the session store. A virtual model with n
 
 `candidateModels` (aliases `availableModels`, `allowedModels`, `models`) lists the names the plugin may route to: a bare model name, `model:effort`, a row with `efforts[]`, or a full bundle (`{ id, provider, account, model, effort, when }`). A virtual model without `candidateModels` or `defaultModel` is refused (HTTP 400, `agentcompass: a virtual model needs candidateModels or defaultModel in the plugin's options`). With `routeAllModels: true` and no `candidateModels`, a concrete model name is kept and only the effort is injected.
 
+- **The efforts of a row**: a row with `efforts[]` (in `candidateModels` and its aliases or in `modelsByProvider`) is routed at exactly the efforts it lists. The list is the operator's declaration: it is not checked against the launch table this version ships (`dispatch_efforts`, from AgentCompass `references/accounts.json`) and is not read from Magpie's gateway model list. An effort the upstream cannot run fails there, with the upstream's own error. The table applies only to a row that lists no efforts (a bare name): such a row is offered at the table's efforts for its provider. If Magpie hands the middleware `ctx.models` or `ctx.availableModels` (the plugin reads them after its own options; this was not verified against Magpie), the same rule applies to their rows. A listed effort that the shipped data does not score (no Time/Task, or no category score the task demands, at that effort) takes the data-error path below. AgentCompass itself has no such input: it launches with CLI flags and reads no list of efforts, so its table is its only source; for a row with `efforts[]` the port departs from `allocator.plan` for that reason only.
 - **Automatic routing never picks a name that has no scores**: a family or unknown name (`claude-opus-9`) is out of automatic routing with a data-error warning, and is dispatched only when named. `candidate name <name> is not in the catalog: ...` is logged once per runtime and put in `warnings`.
 - **Turning off an effort**: add a row with `disabled: true` next to the bare name or `efforts[]` row, e.g. `["gpt-6.1-sol", { "model": "gpt-6.1-sol", "effort": "medium", "disabled": true }]`. No row of that account and model is dispatched at that effort, pinning it is refused (`pin_unavailable`), and a session held on it leaves it. A disabled row with an `account` applies to that account only; a family row is another model, so disabling `claude-opus-5-5` does not touch `claude-opus-9`.
 - **Pins**: `constraintModel` / `pinnedModel` (optionally `:effort` or `-effort`), `constraintEffort` / `pinnedEffort`, `constraintBundle` / `pinnedBundle`. A pin that cannot be served is refused with a code; no other model is substituted. A pin on a model with its own entry matches only that model's rows, never a family row. Pin fields are removed from requests the plugin does not route. A `:auto`, `:off` or `:default` on a candidate name does not constrain the effort; on a pin `:default` names a concrete effort that no row offers.
@@ -147,7 +143,7 @@ Set under `plugins.agentcompass`, or with `magpie plugin options <spec> '<json>'
 | `accountsByWorkKind` | none | Per-`work_kind` allowlist of account `ref`, `name` or `provider`, applied in `onAccount`. |
 | `affinityMode` | `cache` | See [Session continuity](#session-continuity). |
 | `quotas` / `quotasPath` | none | An inline snapshot, or a file path (no directory scanning). |
-| `userScores` | none | Your own category scores: `{ "<model>": { "<target>": level } }`, target `divergence`, `coding`, `aesthetics`, `tool_operation` or `<category>.<facet>`, level 1..3 (or `{ level, as_of, note }`). Fills a gap or overrides the maintainers' and measured scores (`local user > maintainer > measured > estimated`). |
+| `userScores` | none | Your own category scores: `{ "schema_version": 3, "scores": { "<model>": { "<target>": level } } }`, target `creativity`, `coding`, `aesthetics`, `tool_operation` or `<category>.<facet>`, level 1 = the panel's weakest, 2 = its median, 3 = its best, above 3 extrapolated (or `{ level, as_of, note }`). A table without `schema_version` is the 0.2.x shape (schema 1: `divergence`, level 3 = the anchor) and is upgraded by AgentCompass's declared steps (`divergence` renamed `creativity`, then the level-3 conversion of `level-3-conversion.json`); schema 2 is upgraded by the second step. Fills a gap or overrides the maintainers' and measured scores (`local user > maintainer > measured > estimated`). A hand-written `tool_operation.responsiveness` level bounds the other efforts in the facet's direction, as in AgentCompass. |
 | `meteredOk` | unset | `true` lets metered accounts compete with subscriptions. |
 | `enableDecisionProvider` | `false` | Register the Mode B provider. |
 | `decisionProviderDetails` | `false` | Return accounts, quotas, warnings and the profile in `/v1/systemone` answers. |
@@ -184,12 +180,12 @@ Magpie prefixes pool strategies with the package name (without its scope and a `
 | `src/hooks.js`, `src/scorer-live.js` | The async hook, and the classifier client (LRU cache). |
 | `src/continuity.js`, `src/profiler-core.js` | Session holds and replay; request facts and the profile schema. |
 | `src/allocator.js` | `rankCandidates` / `selectBestRoute`: AgentCompass's `allocator.plan` on a gateway's inputs. |
-| `src/axis-scores.js`, `candidate-eval.js`, `candidate-ranking.js`, `quota-economy.js`, `quota-pools.js`, `task-intake.js`, `fleet.js`, `plans.js`, `user-scores.js` | The engine, each the port of the module of the same name in AgentCompass v0.6.0. |
+| `src/axis-scores.js`, `candidate-eval.js`, `candidate-ranking.js`, `quota-economy.js`, `quota-pools.js`, `task-intake.js`, `fleet.js`, `plans.js`, `user-scores.js` | The engine, each the port of the module of the same name in AgentCompass v0.7.0. |
 | `src/quota.js`, `src/quota-loader.js` | Account states, the quotas file, seat ordering. |
-| `src/catalog.js`, `src/reference-data.js` | The model table, routes, scores, plan capacity. Generated from AgentCompass v0.6.0 by the source repository's `catalog:sync`; this package ships the generated files. |
+| `src/catalog.js`, `src/reference-data.js` | The model table, routes, scores, plan capacity. Generated from AgentCompass v0.7.0 by the source repository's `catalog:sync`; this package ships the generated files. |
 
 ```sh
 bun test    # or: npm test
 ```
 
-The tests run on their own: no AgentCompass checkout and no network. They are the rules (`router`, `routing-contract`, `no-hardcode`) and the quota and plan tests (`plan-state`, `plan-align`, `quotas-load`). The comparison with AgentCompass's `allocator.plan` (same winner, effort and score on a grid of profiles and pools) and the sandbox run against real Magpie builds stay in the source repository, [akiiwa-games/magpie-agentcompass-router](https://github.com/akiiwa-games/magpie-agentcompass-router). The record of the sandbox run for the v0.6.0 engine, on Magpie 0.1.4026 and Bun 1.4.4, is [`docs/linux-sandbox-e2e-report-0.1.4026.json`](https://github.com/akiiwa-games/magpie-agentcompass-router/blob/main/docs/linux-sandbox-e2e-report-0.1.4026.json): scenarios 1–10 and 12–15 passed, scenario 13 with real Codex and Claude sign-ins included.
+The tests run on their own: no AgentCompass checkout and no network. They are the rules (`router`, `routing-contract`, `engine-070`, `no-hardcode`) and the quota and plan tests (`plan-state`, `plan-align`, `quotas-load`). The comparison with AgentCompass's `allocator.plan` (same winner, effort and score on a grid of profiles and pools) and the sandbox run against real Magpie builds stay in the source repository, [akiiwa-games/magpie-agentcompass-router](https://github.com/akiiwa-games/magpie-agentcompass-router). The latest record of the sandbox run, [`docs/linux-sandbox-e2e-report-0.1.4026.json`](https://github.com/akiiwa-games/magpie-agentcompass-router/blob/main/docs/linux-sandbox-e2e-report-0.1.4026.json), is of the v0.6.0 engine on Magpie 0.1.4026 and Bun 1.4.4 (scenarios 1–10 and 12–15 passed, scenario 13 with real Codex and Claude sign-ins included); the v0.7.0 engine has not been run there yet.

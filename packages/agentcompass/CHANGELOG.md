@@ -2,6 +2,22 @@
 
 One entry per version, newest first. This lists what a user has to know to upgrade.
 
+## 0.3.0 - 2026-11-18
+
+The engine is AgentCompass v0.7.0 (pinned at `7827cdb`, the `v0.7.0` tag), with the reference data of that release; `src/` is the source repository's at `c27dd73`. The source repository compares the port with AgentCompass's `allocator.plan` on a committed sample of 1,085 rows drawn from a grid of 43,372 (the whole grid was also compared once); every row is alike. This version also carries what 0.2.2 was to bring (prepared on 2026-11-18, never published), the first item below.
+
+**Upgrading**
+
+- **A row's own `efforts[]` is what it runs at** (from 0.2.2). Before, the efforts a row listed were intersected with the launch table shipped with the version (`dispatch_efforts`): a listed effort the table lacked was dropped, and a row whose efforts the table did not list at all was kept but out of automatic routing. Now the list is used as written and the table applies only to rows that list no efforts. An effort the shipped data does not score leaves automatic routing with a data error naming the missing data; naming the model still dispatches it. The `not_dispatchable` flag is gone. If your `candidateModels` list efforts your upstream cannot run, remove them. An empty `efforts: []` counts as no list.
+- **The profile changed.** A profile names one of 11 work kinds (`creative_ideation`, `architecture_reasoning`, `code_implementation`, `frontend_ui`, `code_audit`, `exploration_forensics`, `web_research`, `visual_analysis`, `text_processing`, `live_loop`, `gui_control`) with its depth `primary_level` 1..3, an optional `secondary_kind` with `secondary_level`, `access`, `local_only`, `needs_visual`, `wants_fast`, `expected_hours` and `task_count`. `axis_demand` is projected from the kinds and depths through AgentCompass's declared signature table; it may still be given explicitly. `needs_gui`, `read_only_review` and `multi_task` are derived. `reasoning_depth`, `code_complexity`, `interaction_style`, `hours_confidence` and `urgency` are gone, and the first category is `creativity` (was `divergence`). A profile of the 0.2.x shape is refused with `invalid_caller_profile`; nothing reads it for compatibility. A valid one: [reference](docs/reference.md#task-profile).
+- **The classifier** is asked AgentCompass's v0.7.0 prompt with its classifier cases (OpenAI-compatible) or its ten questions (`jev`). An answer of the old shape is invalid; the in-memory cache revalidates every entry on read, so nothing old is served.
+- **`userScores`**: level 3 is now the panel's best and levels above 3 extrapolate. Write `{ "schema_version": 3, "scores": { ... } }`. A table without `schema_version` is read as the 0.2.x shape and upgraded by AgentCompass's declared steps (`divergence` renamed `creativity`, then the level-3 conversion): your table is converted, never dropped or refused. A hand-written `tool_operation.responsiveness` level bounds the other efforts in the facet's direction.
+- **An `aesthetics` demand of 2 or 3** also needs `tool_operation.image_recognition` data; a model without it leaves automatic routing with the missing facet named.
+- **An advisor-only model** (`gpt-6-pro`) is also kept out of a task with `access: "write"`.
+- **A pool row's `when.max_reasoning_depth` is now `when.max_primary_level`.** An old key is ignored.
+- **Removed exports**: `INTERACTION_STYLES` (`catalog.js`); `FIVE_AXIS_DEMAND_LEVELS`, `FIVE_AXIS_DEMAND_SCHEMA` (`axis-scores.js`); `SCORER_SYSTEM_PROMPT`, `JEV_SCORE_QUESTIONS`, `JEV_STYLE_CRITERIA`, `JEV_EFFORT_BANDS`, `JEV_URGENCY_CRITERIA`, `JEV_NOUL_QUESTIONS` (`scorer-live.js`); `PROFILE_FLAGS`, `MULTI_TASK_QUESTION`, `READ_ONLY_REVIEW_QUESTION` (`profiler-core.js`). New: `WORK_KINDS`, `WORK_KIND_SIGNATURES`, `ROLE_FN`, `projectAxisDemand` and the question texts (`profiler-core.js`); `SCORER_PROMPT`, `scorerSchema`, `scorerEvidence`, `profileQuestions`, `PROFILE_*` (`scorer-live.js`); `LEVEL_FACETS`, `FACET_CATEGORY` (`axis-scores.js`); `upgradeScores`, `LOCAL_UPGRADES`, `convertLevel` (`user-scores.js`); `CLASSIFIER_CASES`, `LEVEL3_CONVERSIONS` (`reference-data.js`). `taskKind` and `profileKind` take no policy.
+- The reference data is AgentCompass v0.7.0's, including the GPT-6.2 rows. Nothing is fetched at run time.
+
 ## 0.2.1 - 2026-11-13
 
 The engine follows AgentCompass `2844342` (v0.6.0 plus one routing rule).

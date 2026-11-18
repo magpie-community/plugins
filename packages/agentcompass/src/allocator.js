@@ -33,7 +33,8 @@ import {
   safeName,
   splitEffortSuffix,
 } from "./catalog.js";
-import { unroutedDecision } from "./profiler-core.js";
+import { WORK_KINDS, unroutedDecision } from "./profiler-core.js";
+import { FIVE_AXES } from "./axis-scores.js";
 import { listQuotaAccounts, normalizeQuotaSnapshot } from "./quota.js";
 import { InvalidCallerProfile, normalizeTask } from "./task-intake.js";
 import { candidateForBundle, rank } from "./candidate-ranking.js";
@@ -112,7 +113,7 @@ function pinsOf(options, taskOpts) {
 /** What a gateway request is, as the allocator's raw task: the profile, the pins, the hours and the chain it continues. */
 function rawTaskOf(profileInput, options, nowMs) {
   const wrapped = profileInput && typeof profileInput === "object" && profileInput.profile && typeof profileInput.profile === "object" ? profileInput : null;
-  const profile = wrapped ? wrapped.profile : profileInput && typeof profileInput === "object" && "reasoning_depth" in profileInput ? profileInput : null;
+  const profile = wrapped ? wrapped.profile : profileInput && typeof profileInput === "object" && "primary_level" in profileInput ? profileInput : null;
   if (!profile) return null;
   const pins = pinsOf(options, wrapped);
   const needs = { ...(wrapped && wrapped.needs && typeof wrapped.needs === "object" ? wrapped.needs : {}) };
@@ -128,7 +129,6 @@ function rawTaskOf(profileInput, options, nowMs) {
   if (pins.bundle) raw.pinned_bundle = pins.bundle;
   if (options.hours !== undefined && options.hours !== null) raw.expected_hours = Number(options.hours);
   if (options.meteredOk !== undefined) raw.metered_ok = Boolean(options.meteredOk);
-  if (options.urgency) raw.urgency = options.urgency;
   const continuity =
     options.continuity ||
     (options.previousModel ? { previousModel: options.previousModel, previousEffort: options.previousEffort, coupling: options.coupling } : null);
@@ -414,13 +414,13 @@ function rowsNaming(list, model, catalog, pins) {
   return { rows: rows.filter((row) => rowKeyOf(row.model, fleet) === key), fleet };
 }
 
-/** R2 for one row: dispatch table, within the row's own list, without what the user disabled. A row's own effort is what it runs. */
+/** R2 for one row: its own list when it has one, else the dispatch table, without what the user disabled. A row's own effort is what it runs. */
 function rowOffers(row, effort, fleet) {
   if (row.disabled && !row.disabled_by_default) return false;
   if (row.disabled_efforts?.includes(effort)) return false;
   if (row.effort_fixed) return row.effort === effort;
-  if (row.offered_efforts && !row.offered_efforts.includes(effort)) return false;
-  if (effort === row.effort && !row.not_dispatchable) return true;
+  if (row.offered_efforts) return row.offered_efforts.includes(effort);
+  if (effort === row.effort) return true;
   // A row with no effort of its own (a family or unknown name, a fixed-effort model) runs as it is: nothing to step
   if (row.effort === null || row.effort === undefined) return true;
   const allowed = dispatchAllowedEfforts(row, fleet, row.model);
@@ -437,7 +437,7 @@ export function candidateOffers(list, model, effort, catalog, pins) {
   return rows.some((row) => rowOffers(row, effort, fleet));
 }
 
-const DEPTH_FOR_DIFFICULTY = { routine: 1, hard: 2, coupled: 3, frontier: 4 };
+const LEVEL_FOR_DIFFICULTY = { routine: 1, hard: 2, coupled: 3, frontier: 3 };
 
 /**
  * The effort a held session can stay on: its own while the pool offers it, else the highest one below that the pool does and
@@ -449,7 +449,7 @@ export function heldEffortOn(list, model, effort, catalog, { pins, profile } = {
   if (rows.length === 0) return effort;
   const offers = (candidate) => rows.some((row) => rowOffers(row, candidate, fleet));
   if (offers(effort)) return effort;
-  const fullProfile = profile ? (profile.reasoning_depth ? profile : sessionProfile({ profile })) : null;
+  const fullProfile = profile ? (profile.primary_level ? profile : sessionProfile({ profile })) : null;
   const ranked = fullProfile ? rankCandidates(fullProfile, { candidateModels: list, catalog }).ranking : null;
   const key = rowKeyOf(model, fleet);
   const passes = (candidate) => !ranked || ranked.some((row) => rowKeyOf(row.model, fleet) === key && row.effort === candidate);
@@ -465,29 +465,25 @@ export function heldEffortOn(list, model, effort, catalog, { pins, profile } = {
  * kept no profile gets the one its difficulty and demand imply; no field of it comes from a task's text.
  */
 export function sessionProfile(sessionState) {
-  if (sessionState?.profile?.reasoning_depth) return sessionState.profile;
+  if (sessionState?.profile?.primary_level) return sessionState.profile;
   const kept = sessionState?.profile || {};
   const difficulty = kept.difficulty || sessionState?.difficulty || "routine";
   const demand = kept.axis_demand || sessionState?.axisDemand || {};
   const level = (axis) => (Number.isInteger(demand[axis]) && demand[axis] >= 0 && demand[axis] <= 3 ? demand[axis] : 0);
   const gui = Boolean(kept.needs_gui);
+  const named = kept.work_kind || sessionState?.workKind;
   return {
-    work_kind: kept.work_kind || sessionState?.workKind || "other_or_mixed",
-    reasoning_depth: DEPTH_FOR_DIFFICULTY[difficulty] || 1,
-    code_complexity: level("coding"),
-    needs_visual: Boolean(kept.needs_visual || level("tool_operation") >= 3),
-    needs_gui: gui,
-    local_only: Boolean(kept.local_only),
-    wants_fast: false,
-    read_only_review: false,
+    work_kind: WORK_KINDS.includes(named) ? named : gui ? "gui_control" : "text_processing",
+    primary_level: LEVEL_FOR_DIFFICULTY[difficulty] || 1,
+    secondary_kind: "none",
+    secondary_level: 0,
     access: "read-only",
-    interaction_style: kept.interaction_style || "engineering",
+    local_only: Boolean(kept.local_only),
+    needs_visual: Boolean(kept.needs_visual || gui || level("tool_operation") >= 3),
+    wants_fast: false,
     expected_hours: 0.5,
-    hours_confidence: "medium",
-    urgency: "unknown",
-    multi_task: false,
     task_count: "1",
-    axis_demand: { divergence: level("divergence"), coding: level("coding"), aesthetics: level("aesthetics"), tool_operation: level("tool_operation") },
+    axis_demand: Object.fromEntries(FIVE_AXES.map((a) => [a, level(a)])),
   };
 }
 

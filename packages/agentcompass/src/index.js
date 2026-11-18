@@ -12,7 +12,7 @@
  *    - Shape A (`jevLevelled` probe in `decide.go:310`): `state.kinds` + `questions.levels` + `questions.work0..N`
  *    - Shape B (`jevBody` turn classification in `decide.go:167`): `state.turn` / `state.message` +
  *      `state.previous_message_kind` / `state.previous_message_reasoning` + `questions.intent` / `questions.level` + `questions.effort`
- *    - Shape C (Direct AgentCompass task-profile `/v1/systemone` query): `state.task` + `questions.work_kind` / `reasoning_depth` / etc.
+ *    - Shape C (Direct AgentCompass task-profile `/v1/systemone` query): `state.task` + `questions.work_kind` / `primary_level` / etc.
  */
 
 import {
@@ -43,7 +43,6 @@ import {
   stripAgentNoise,
   userSaidFromText,
 } from "./continuity.js";
-import { FIVE_AXES } from "./axis-scores.js";
 import { extractRequestFacts } from "./profiler-core.js";
 import {
   isModelQuotaExhausted,
@@ -275,7 +274,7 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
         model: heldModel,
         effort: heldEffort,
         provider: chatCont.provider || chatSessionState?.provider || "",
-        workKind: chatSessionState?.workKind || "general_implementation",
+        workKind: chatSessionState?.workKind || "other_or_mixed",
         difficulty: chatSessionState?.difficulty || "routine",
         why: chatCont.why,
         held: true,
@@ -287,7 +286,7 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
     const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, pluginOptions.catalog?.policy) : [];
     const answers = {};
     const syntheticDecision = {
-      workKind: chatSessionState?.workKind || "general_implementation",
+      workKind: chatSessionState?.workKind || "other_or_mixed",
       difficulty: chatSessionState?.difficulty || "routine",
       targetModel: heldModel,
       targetEffort: heldEffort,
@@ -444,20 +443,10 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
   if (questions.work_kind && !answers.work_kind) {
     answers.work_kind = { choice: decision.workKind, confidence: 0.9 };
   }
-  if (questions.interaction_style && !answers.interaction_style) {
-    answers.interaction_style = { choice: profile.interaction_style, confidence: 0.9 };
-  }
-  for (const dim of ["reasoning_depth", "code_complexity"]) {
-    if (questions[dim] && !answers[dim]) {
-      const low = dim === "code_complexity" ? 0 : 1;
-      answers[dim] = { score: Math.max(0, (profile[dim] ?? low) - low) };
-    }
-  }
-  for (const axis of FIVE_AXES) {
-    const name = `demand_${axis}`;
-    if (questions[name] && !answers[name]) answers[name] = { score: (profile.axis_demand || {})[axis] ?? 0 };
-  }
-  for (const flag of ["needs_visual", "needs_gui", "local_only", "wants_fast", "read_only_review", "multi_task"]) {
+  if (questions.secondary_kind && !answers.secondary_kind) answers.secondary_kind = { choice: profile.secondary_kind, confidence: 0.9 };
+  if (questions.primary_level && !answers.primary_level) answers.primary_level = { score: profile.primary_level - 1 };
+  if (questions.secondary_level && !answers.secondary_level) answers.secondary_level = { score: profile.secondary_level };
+  for (const flag of ["local_only", "needs_visual", "wants_fast"]) {
     if (questions[flag] && !answers[flag]) {
       answers[flag] = { noul: profile[flag] ? 0.95 : 0.05 };
     }

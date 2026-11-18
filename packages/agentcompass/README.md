@@ -14,9 +14,9 @@
 
 ### What it is
 
-A [Magpie](https://github.com/yetone/magpie) gateway plugin that runs the routing engine of [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.6.0. For a request it chooses `<model>:<effort>` from the models you list, scoring each model at each effort on four capability categories (`divergence`, `coding`, `aesthetics`, `tool_operation`), its time and price, and what the account's quota windows have left. It also orders the seats of a Magpie account pool by quota headroom.
+A [Magpie](https://github.com/yetone/magpie) gateway plugin that runs the routing engine of [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.0. For a request it chooses `<model>:<effort>` from the models you list, scoring each model at each effort on four capability categories (`creativity`, `coding`, `aesthetics`, `tool_operation`), its time and price, and what the account's quota windows have left. It also orders the seats of a Magpie account pool by quota headroom.
 
-Magpie's own rules see a model name and pool state, not the task. This plugin reads a structured **task profile**, so a routine edit does not spend a flagship's weekly quota and a hard design task is not handed to a light model. How the engine scores is AgentCompass's, written once in its [technical reference](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/docs/technical-reference.md#1-how-scoring--allocation-work); this plugin does not repeat it.
+Magpie's own rules see a model name and pool state, not the task. This plugin reads a structured **task profile**, so a routine edit does not spend a flagship's weekly quota and a hard design task is not handed to a light model. How the engine scores is AgentCompass's, written once in its [technical reference](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/docs/technical-reference.md#1-how-scoring--allocation-work); this plugin does not repeat it.
 
 ### Rules and controls
 
@@ -78,9 +78,9 @@ Options, names by install source, limits, the repository layout and the tests: [
 
 ### 它是什么
 
-运行 [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.6.0 路由引擎的 [Magpie](https://github.com/yetone/magpie) 网关插件。对每个请求，它从你列出的模型里选出 `<model>:<effort>`：对每个模型的每个档位，按四类能力（`divergence`、`coding`、`aesthetics`、`tool_operation`）、耗时与价格、以及账号配额窗口的剩余量打分。它也按配额余量给 Magpie 账号池的席位排序。
+运行 [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.0 路由引擎的 [Magpie](https://github.com/yetone/magpie) 网关插件。对每个请求，它从你列出的模型里选出 `<model>:<effort>`：对每个模型的每个档位，按四类能力（`creativity`、`coding`、`aesthetics`、`tool_operation`）、耗时与价格、以及账号配额窗口的剩余量打分。它也按配额余量给 Magpie 账号池的席位排序。
 
-Magpie 自带的规则只看到模型名和号池状态，看不到任务。本插件读取结构化的**任务画像**：日常小改动不会消耗旗舰的周额度，高难度设计任务也不会交给轻量模型。引擎如何打分由 AgentCompass 负责，只在它的[技术参考](https://github.com/akiiwa-games/AgentCompass/blob/v0.6.0/docs/technical-reference.md#1-how-scoring--allocation-work)里写一次，本插件不重复。
+Magpie 自带的规则只看到模型名和号池状态，看不到任务。本插件读取结构化的**任务画像**：日常小改动不会消耗旗舰的周额度，高难度设计任务也不会交给轻量模型。引擎如何打分由 AgentCompass 负责，只在它的[技术参考](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/docs/technical-reference.md#1-how-scoring--allocation-work)里写一次，本插件不重复。
 
 ### 规则与控制
 
