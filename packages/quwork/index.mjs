@@ -186,6 +186,7 @@ function streakOf(data) {
 
 function outcomeFromMessage(message) {
   if (/已签到|已经签到|今日已签|重复签到|already\s*(?:checked|signed)/i.test(message)) return "done"
+  if (/too\s*many|rate.?limit|请求过于频繁|操作频繁|频繁/i.test(message)) return "inactive"
   if (/未启用|未开启|未开放|disabled|not\s*enabled/i.test(message)) return "inactive"
   if (/captcha|验证码|人机|turnstile|challenge/i.test(message)) return "captcha"
   return ""
@@ -219,24 +220,27 @@ async function checkinHttp(method, accessToken, fetchImpl) {
           return { ...result, kind: "http" }
         }
       }
-      if (response.status === 404 || response.status === 405 || response.status === 501 || response.status >= 500) {
+      if (response.status === 404 || response.status === 405 || response.status === 501) {
         last = result
         continue
       }
       return { ...result, kind: "http" }
     } catch (error) {
-      last = { status: 0, ok: false, payload: null, text: "", error }
+      return { status: 0, ok: false, payload: null, text: "", error, kind: "network" }
     }
   }
-  return last ? { ...last, kind: last.status ? "http" : "network" } : { status: 0, ok: false, payload: null, text: "", kind: "network" }
+  return last ? { ...last, kind: "http" } : { status: 0, ok: false, payload: null, text: "", kind: "network" }
 }
 
 function interpretCheckinStatus(result, now = Date.now()) {
   if (result.kind === "auth") {
-    return { outcome: "failed", message: "QuWork 登录已过期，请重新在官网登录。" }
+    return { outcome: "ineligible", message: "QuWork 登录已过期，请重新在官网登录后再签到。" }
   }
   if (result.kind === "network") {
-    return { outcome: "failed", message: "暂时无法连接 QuWork 签到服务，请稍后再试。" }
+    return { outcome: "inactive", message: "暂时无法连接 QuWork 签到服务；本次不自动重试，请稍后手动签到。" }
+  }
+  if (result.status === 429) {
+    return { outcome: "inactive", message: "QuWork 限制了签到请求；本次不自动重试，请稍后手动签到。" }
   }
   const payload = result.payload
   const data = checkinData(payload)
@@ -258,19 +262,21 @@ function interpretCheckinStatus(result, now = Date.now()) {
   }
   if (checked === false) return { claim: true }
   if (result.kind === "http") {
-    if (result.status === 429) return { outcome: "failed", message: "QuWork 限制了签到请求，请稍后再试。" }
-    return { outcome: "failed", message: message || `暂时无法读取 QuWork 签到状态（HTTP ${result.status}）。` }
+    return { outcome: "inactive", message: message || `暂时无法读取 QuWork 签到状态（HTTP ${result.status}）；请稍后手动签到。` }
   }
   if (result.kind === "ok") return { claim: true }
-  return { outcome: "failed", message: "QuWork 未返回可识别的签到状态。" }
+  return { outcome: "inactive", message: "QuWork 未返回可识别的签到状态；请到官网核对。" }
 }
 
 async function interpretCheckinClaim(result, accessToken, fetchImpl, now = Date.now()) {
   if (result.kind === "auth") {
-    return { outcome: "failed", message: "QuWork 登录已过期，请重新在官网登录。" }
+    return { outcome: "ineligible", message: "QuWork 登录已过期，请重新在官网登录后再签到。" }
   }
   if (result.kind === "network") {
-    return { outcome: "failed", message: "暂时无法连接 QuWork 签到服务，请稍后再试。" }
+    return { outcome: "inactive", message: "暂时无法连接 QuWork 签到服务；本次不自动重试，请稍后手动签到。" }
+  }
+  if (result.status === 429) {
+    return { outcome: "inactive", message: "QuWork 限制了签到请求；本次不自动重试，请稍后手动签到。" }
   }
   const payload = result.payload
   const data = checkinData(payload)
@@ -294,7 +300,6 @@ async function interpretCheckinClaim(result, accessToken, fetchImpl, now = Date.
     if (streak !== null) answer.streak = streak
     return answer
   }
-  if (result.status === 429) return { outcome: "failed", message: "QuWork 限制了签到请求，请稍后再试。" }
   const after = interpretCheckinStatus(await checkinHttp("GET", accessToken, fetchImpl), now)
   if (after.outcome === "done") {
     const answer = { outcome: "claimed", message: after.message || message || "签到成功。" }
@@ -303,7 +308,7 @@ async function interpretCheckinClaim(result, accessToken, fetchImpl, now = Date.
     return answer
   }
   if (after.outcome === "inactive" || after.outcome === "captcha") return after
-  return { outcome: "failed", message: message || "QuWork 未明确确认签到结果，请在官网核对。" }
+  return { outcome: "inactive", message: message || "QuWork 未明确确认签到结果；本次不自动重试，请到官网核对。" }
 }
 
 async function runCheckin(accessToken, fetchImpl) {

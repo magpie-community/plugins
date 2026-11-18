@@ -235,8 +235,8 @@ test("checkin reports an expired website session without trying to claim", async
     },
   })
   assert.deepEqual(await hooks.auth.checkin(browserAccount()), {
-    outcome: "failed",
-    message: "QuWork 登录已过期，请重新在官网登录。",
+    outcome: "ineligible",
+    message: "QuWork 登录已过期，请重新在官网登录后再签到。",
   })
   assert.deepEqual(calls, ["GET"])
 })
@@ -306,5 +306,27 @@ test("checkin verifies an ambiguous claim by re-reading the status", async () =>
     credit: 100,
     message: "今日已签到。",
   })
-  assert.deepEqual(calls.map((call) => call.method), ["GET", "POST", "POST", "GET"])
+  assert.deepEqual(calls.map((call) => call.method), ["GET", "POST", "GET"])
+})
+
+test("checkin stops automatic retries on a rate limit", async () => {
+  const hooks = createPlugin({
+    fetchImpl: async () => Response.json({ success: false, message: "too many requests" }, { status: 429 }),
+  })
+  assert.deepEqual(await hooks.auth.checkin(browserAccount()), {
+    outcome: "inactive",
+    message: "QuWork 限制了签到请求；本次不自动重试，请稍后手动签到。",
+  })
+})
+
+test("checkin stops automatic retries when the network is unavailable", async () => {
+  const hooks = createPlugin({
+    fetchImpl: async () => {
+      throw new Error("offline")
+    },
+  })
+  assert.deepEqual(await hooks.auth.checkin(browserAccount()), {
+    outcome: "inactive",
+    message: "暂时无法连接 QuWork 签到服务；本次不自动重试，请稍后手动签到。",
+  })
 })
