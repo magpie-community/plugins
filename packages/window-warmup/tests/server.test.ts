@@ -538,23 +538,72 @@ function withDir(dir: string): () => void {
   };
 }
 
-test("端口探测：已有本插件的服务（带标记头）→ 直接返回，不重开数据目录", async () => {
+/** 等到 cond 成立（最多 ms 毫秒），等的是状态不是时长 */
+async function until(cond: () => Promise<boolean>, ms = 10_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await cond()) return true;
+    await Bun.sleep(100);
+  }
+  return cond();
+}
+
+/** 一个空闲端口：先占后放 */
+function freePort(): number {
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("x") });
+  const port = probe.port!;
+  probe.stop(true);
+  return port;
+}
+
+test("端口探测：已有本插件的服务（带标记头）→ 先返回，不重开数据目录；它松手后接上", async () => {
   const marker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: () => new Response("{}", { headers: { "x-window-warmup": "1" } }),
   });
+  const port = marker.port!;
   // 故意用不存在的目录：startService 一旦被调就会 mkdir 出来
   const dir = join(tmpdir(), `ww-plugin-absent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  dirs.push(dir);
   const restore = withDir(dir);
   try {
-    expect(await plugin.server(null, { port: marker.port })).toEqual({});
+    expect(await plugin.server(null, { port })).toEqual({});
   } finally {
     restore();
-    marker.stop(true);
   }
+  // 它还在应答：一直不起，数据目录也不碰
+  await Bun.sleep(1500);
   expect(await stat(dir).then(() => true, () => false)).toBe(false);
-});
+  marker.stop(true);
+  // 它不应答了：本插件的服务在同一端口、同一目录接上（#1227）
+  expect(await until(async () => (await alreadyServing(port)) && (await stat(dir).then(() => true, () => false)))).toBe(true);
+}, 20_000);
+
+test("换宿主：上一个宿主还占着端口和锁，它停下后新宿主接上并持锁调度（#1227）", async () => {
+  const gw = fakeGateway({ models: MODELS });
+  gateways.push(gw);
+  const dir = await mkdtemp(join(tmpdir(), "ww-plugin-handover-"));
+  dirs.push(dir);
+  const port = freePort();
+  // 上一个宿主：同一端口、同一目录，手上有 service.lock
+  const old = await startService({ port, dir, base: gw.base });
+  const restore = withDir(dir);
+  try {
+    expect(await plugin.server(null, { port })).toEqual({});
+  } finally {
+    restore();
+  }
+  await old.stop();
+  expect(await until(() => alreadyServing(port))).toBe(true);
+  const token = await loadOrCreateToken(dir);
+  const state = (await (
+    await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { "x-window-warmup-token": token } })
+  ).json()) as { lockedBy?: number; fatal?: string };
+  // 接上的不是只读：锁是它的，调度在跑
+  expect(state.lockedBy ?? null).toBeNull();
+  expect(state.fatal ?? null).toBeNull();
+}, 20_000);
 
 test("端口探测：端口空闲 → 照常启动，响应带标记头", async () => {
   const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("x") });

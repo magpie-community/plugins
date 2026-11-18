@@ -11,6 +11,7 @@ import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { createHash, randomBytes } from "node:crypto"
 import { homedir, tmpdir } from "node:os"
 import { join, dirname, resolve } from "node:path"
+import { processAlive } from "./proc.mjs"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -53,8 +54,7 @@ async function claimProfileLock(profilePath) {
       // 持锁进程已经死了（上次没来得及清理）就偷走这把锁。
       const holder = await readFile(join(lockDir, "pid"), "utf8").then((t) => Number(t.trim())).catch(() => NaN)
       if (Number.isFinite(holder) && holder !== process.pid) {
-        let alive = true
-        try { process.kill(holder, 0) } catch (e) { alive = e.code === "EPERM" }
+        const alive = processAlive(holder)
         if (!alive) {
           await rm(lockDir, { recursive: true, force: true }).catch(() => {})
           continue

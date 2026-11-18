@@ -2,6 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { pathsFor, reconcile, inspect } from "./bridge.mjs"
+import { processExists } from "./proc.mjs"
 
 function configFile(file) {
   try {
@@ -54,8 +55,7 @@ function claimRuntime(p) {
   catch (error) {
     if (error.code !== "EEXIST") throw error
     const previous = readOwner()
-    try { process.kill(previous.pid, 0); return null }
-    catch (probe) { if (probe.code !== "ESRCH") return null }
+    if (processExists(previous.pid)) return null
     // Serialize stale reclamation separately. Re-reading a nonce alone is not
     // a compare-and-delete: another reclaimer could create a live lock between
     // the read and unlink. A leftover guard fails closed for manual inspection.
@@ -66,8 +66,7 @@ function claimRuntime(p) {
       let current
       try { current = readOwner() } catch (probe) { if (probe.code !== "ENOENT") throw probe }
       if (current) {
-        try { process.kill(current.pid, 0); return null }
-        catch (probe) { if (probe.code !== "ESRCH") return null }
+        if (processExists(current.pid)) return null
         fs.unlinkSync(file)
       }
       try { fs.writeFileSync(file, JSON.stringify(owner), { mode: 0o600, flag: "wx" }) }

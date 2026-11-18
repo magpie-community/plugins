@@ -1,861 +1,713 @@
 /**
- * AgentCompass Core Pure Intent & Multi-Dimensional Capability Allocator
+ * AgentCompass allocator for the Magpie gateway: the port of `allocator.py` (`plan`) onto a gateway's inputs.
  *
- * Exact port of the intent, capability vector, Model DNA (`divergence`, `global_rigor`,
- * `module_precision`), continuous `taskDemand`, `effortAbility`, ability floor, and
- * overqualification pricing algorithms from `skills/agent-compass/scripts/allocator.py`.
+ * The scoring is AgentCompass's and lives in its own modules, each the port of the file of the same name upstream:
  *
- * Pure ES2022 module with zero external dependencies so it runs in both Bun (`magpie.hooks`
- * and `/v1/systemone` Decision Provider) and Magpie's in-process `moejs` (`magpie.middleware`).
+ *   axis-scores.js        category scores, panel targets, fit (`fit = sum_a w_a (min(z_a, c_a) - t1_a) / sum_a w_a`)
+ *   task-intake.js        the task: route kind, modality needs, pins, hours, chain
+ *   candidate-eval.js     one bundle against one task: gates, rule B data errors, window feasibility
+ *   quota-economy.js      the price of the quota a candidate spends (quota economy v3.1)
+ *   candidate-ranking.js  net score N = fit + continuity - cost, and the order
+ *   fleet.js              what the gateway has (pool entries, quota accounts) in the shapes above
+ *
+ * This file is the glue: it turns a profile and a host's options into a task, a pool and a fleet, ranks them, and says why a
+ * route is blocked. Nothing here reads a task's text and nothing here scores.
+ *
+ * Pure ES2022 module with zero external dependencies so it runs in both Bun (`magpie.hooks` and `/v1/systemone` Decision
+ * Provider) and Magpie's in-process `moejs` (`magpie.middleware`).
  */
 
 import {
-  CANONICAL_ROUTES,
-  CAPABILITY_DIMENSIONS,
-  DEFAULT_MODELS,
-  DEFAULT_SCORING_POLICY,
-  DIFFICULTY_ORDER,
-  EFFORT_CURVES,
+  CATALOG_NAME_WARNING,
   EFFORT_ORDER,
-  KIND_TRAITS,
+  MODELS,
   MODEL_ALIASES,
-  ROUTE_FIT_PEERS,
-  SUBJECTIVE_DIMENSIONS,
+  ROUTES,
+  SCORING_POLICY,
   canonicalModel,
-  resolveModelSpec,
+  catalogNameWarning,
+  escapeControls,
+  healthKey,
+  nameFixesEffort,
+  resolveModel,
+  safeName,
+  splitEffortSuffix,
 } from "./catalog.js";
-import { inferTaskProfile, validateProfile } from "./profiler-core.js";
-// effortValue and burnScale live in quota.js so its opportunity cost reads the same burn scale as the allocator.
-import { burnScale, effortValue, evaluateModelQuota, normalizeQuotaSnapshot } from "./quota.js";
+import { unroutedDecision } from "./profiler-core.js";
+import { listQuotaAccounts, normalizeQuotaSnapshot } from "./quota.js";
+import { InvalidCallerProfile, normalizeTask } from "./task-intake.js";
+import { candidateForBundle, rank } from "./candidate-ranking.js";
+import {
+  EXPLICIT_EFFORT_CONSTRAINT,
+  EXPLICIT_MODEL_CONSTRAINT,
+  MARKED_UNHEALTHY,
+  METERED_LAST_RESORT,
+  canonicalOf,
+  dispatchAllowedEfforts,
+  rowKeyOf,
+  whenFailure,
+} from "./candidate-eval.js";
+import { GATEWAY_ACCOUNT, attachDisabledEfforts, buildFleet, effortRows, entryModel, expandBundles } from "./fleet.js";
 
-export { burnScale, effortValue };
+const EFFORT_NOT_PINNED = EXPLICIT_EFFORT_CONSTRAINT;
+export { MARKED_UNHEALTHY, EXPLICIT_MODEL_CONSTRAINT };
 
-export const EFFORT_SCALED_CAPABILITIES = [
-  "reasoning",
-  "coding",
-  "exploration",
-  "anti_hallucination",
-];
-
-export const SUBJECTIVE_DIVERGENCE_SHARE = 0.4;
-
-export function clamp(val, low, high) {
-  return Math.max(low, Math.min(high, val));
-}
-
-export function round4(val) {
-  return Math.round(val * 10000) / 10000;
-}
-
-export function round3(val) {
-  return Math.round(val * 1000) / 1000;
-}
-
-export function profileDifficulty(profile, policy = DEFAULT_SCORING_POLICY) {
-  const table = policy?.profile?.difficulty_by_depth || {};
-  const depth = profile?.reasoning_depth || 2;
-  return table[depth] || table[String(depth)] || { 1: "routine", 2: "hard", 3: "coupled", 4: "frontier" }[depth] || "hard";
-}
-
-export function namedRoute(profile) {
-  if (!profile || typeof profile !== "object") return null;
-  const named = profile.work_kind;
-  if (named && named in KIND_TRAITS && named !== "other_or_mixed") return named;
-  return null;
-}
-
-export function profileKind(profile, policy = DEFAULT_SCORING_POLICY) {
-  const named = namedRoute(profile);
-  if (named) return named;
-  if (profile.needs_gui) return "computer_use";
-  if (profile.needs_visual && profile.code_complexity === 0 && profile.interaction_style !== "text_only") {
-    return "visual_analysis";
-  }
-  if (profile.interaction_style === "engineering" && profile.code_complexity === 0) {
-    return "tool_execution";
-  }
-  return policy?.profile?.kind_by_style?.[profile.interaction_style] || "other_or_mixed";
-}
+const lc = (v) => String(v).trim().toLowerCase();
 
 /**
- * The model's effective tier at one effort level (`allocator.py:effort_ability`).
+ * The fleet a call ranks over: the catalogue's scored models (or the host's own `catalog.models`), with the operator's manual
+ * scores laid over them, and the host's quota accounts.
  */
-export function effortAbility(policy, curves, info, effort = "high") {
-  const tier = Number(info?.tier || 0);
-  const mult = curves?.ability_mult || {};
-  if (effort in mult) {
-    return tier * Number(mult[effort]);
-  }
-  return tier + effortValue(policy, curves, "ability", effort, 0);
-}
-
-export function capabilityVector(info) {
-  const raw = info?.capabilities || {};
-  const legacyVisual = typeof info?.visual === "number" ? info.visual : 0.0;
-  const out = {};
-  for (const dim of CAPABILITY_DIMENSIONS) {
-    let val = raw[dim];
-    if (dim === "visual" && val === undefined) {
-      val = legacyVisual;
-    }
-    out[dim] = clamp(Number(val || 0.0), 0.0, 1.0);
-  }
-  return out;
-}
-
-export function capabilityScore(weights, model, catalog = {}) {
-  const { spec } = resolveModelSpec(model, catalog.models, catalog.aliases);
-  const caps = capabilityVector(spec);
-  let total = 0;
-  let sum = 0;
-  for (const [dim, w] of Object.entries(weights || {})) {
-    if (dim in caps) {
-      total += w;
-      sum += w * caps[dim];
-    }
-  }
-  return total > 0 ? sum / total : 0.0;
-}
-
-/**
- * Collapse models that share a route-fit slot (`allocator.py:route_preference`).
- */
-export function routePreference(preferred = [], peers = ROUTE_FIT_PEERS, aliases = MODEL_ALIASES) {
-  const collapsed = [];
-  for (const rawItem of preferred) {
-    const item = canonicalModel(rawItem, aliases);
-    const target = peers?.[item] ? canonicalModel(peers[item], aliases) : item;
-    if (!collapsed.includes(target)) {
-      collapsed.push(target);
-    }
-  }
-  return collapsed;
-}
-
-/**
- * Route preference score (`allocator.py:fit_score`).
- */
-export function fitScore(kind, model, catalog = {}, options = {}) {
-  const routes = catalog.routes || CANONICAL_ROUTES;
-  const policy = catalog.policy || DEFAULT_SCORING_POLICY;
-  const peers = catalog.routeFitPeers || ROUTE_FIT_PEERS;
-  const route = routes[kind] || {};
-  const rawCanonical = canonicalModel(model, catalog.aliases);
-  const canonical = peers?.[rawCanonical]
-    ? canonicalModel(peers[rawCanonical], catalog.aliases)
-    : rawCanonical;
-  let preferred = routePreference(route.preferred || [], peers, catalog.aliases);
-  if (
-    preferred[0] === "dot" &&
-    (options.local_only || (options.dotAvailable === false && canonical !== "dot"))
-  ) {
-    preferred = preferred.slice(1);
-  }
-
-  if (preferred.length === 0 && !route.capability_fit) {
-    return 0.6;
-  }
-  const place = preferred.indexOf(canonical);
-  if (place === -1 && route.capability_fit) {
-    return round4(0.2 + 0.5 * capabilityScore(route.capability_fit, rawCanonical, catalog));
-  }
-  if (route.strict_order) {
-    if (place === -1) return 0.3;
-    const step = preferred.length <= 5 ? 0.2 : 0.8 / (preferred.length - 1);
-    return Math.max(0.2, round4(1 - step * place));
-  }
-  if (place === 0) return 1.0;
-  const band = policy.fallback_fit || { start: 0.6, step: 0.015, floor: 0.4 };
-  if (place === -1) return band.floor;
-  return Math.max(band.floor, round4(band.start - band.step * (place - 1)));
-}
-
-/**
- * The minimum ability a route's work needs at a difficulty (`allocator.py:ability_floor`).
- */
-export function abilityFloor(policy = DEFAULT_SCORING_POLICY, route = null, difficulty = "hard") {
-  const own = route?.ability_floor || {};
-  return difficulty in own ? Number(own[difficulty]) : Number(policy.ability_floor?.[difficulty] ?? 3.0);
-}
-
-/**
- * Extra ability critical work needs above the difficulty's floor (`allocator.py:critical_headroom`).
- */
-export function criticalHeadroom(policy = DEFAULT_SCORING_POLICY, difficulty = "hard") {
-  const own = policy?.critical_headroom_by_difficulty || {};
-  return difficulty in own ? Number(own[difficulty]) : Number(policy?.critical_headroom ?? 0.3);
-}
-
-/**
- * Continuous task ability demand (`allocator.py:task_demand`).
- */
-export function taskDemand(
-  profile,
-  difficulty,
-  critical,
-  divergence,
-  policy = DEFAULT_SCORING_POLICY,
-  highPrecision = false,
-  floorOverride = null,
-) {
-  const cfg = policy.demand || DEFAULT_SCORING_POLICY.demand;
-  const floor =
-    floorOverride === null || floorOverride === undefined
-      ? Number(policy.ability_floor?.[difficulty] ?? 3.3)
-      : Number(floorOverride);
-  const headroom = critical ? criticalHeadroom(policy, difficulty) : 0.0;
-  const precision = highPrecision && !critical ? Number(cfg.precision_headroom ?? 0.15) : 0.0;
-  const span = Number(policy.profile?.saturation_span ?? 0.3);
-
-  let depth = 2;
-  let load = Number(cfg.default_load ?? 0.5);
-  let levels = {};
-  let source = "difficulty";
-
-  if (profile) {
-    depth = profile.reasoning_depth;
-    levels = {
-      code_complexity: profile.code_complexity / 3.0,
-      context_scale: (profile.context_scale - 1) / 2.0,
-      divergence: (divergence - 1) / 2.0,
-      hallucination_risk: (profile.hallucination_risk - 1) / 2.0,
-      error_cost: Math.min(profile.error_cost, 2) - 1,
-    };
-    const weights = cfg.property_weights || DEFAULT_SCORING_POLICY.demand.property_weights;
-    let totalW = 0;
-    let weightedSum = 0;
-    for (const [k, v] of Object.entries(levels)) {
-      const w = Number(weights[k] || 0);
-      totalW += w;
-      weightedSum += w * v;
-    }
-    load = totalW > 0 ? weightedSum / totalW : 0.0;
-    source = "profile";
-  } else {
-    const idx = DIFFICULTY_ORDER.indexOf(difficulty);
-    depth = idx >= 0 ? idx + 1 : 2;
-  }
-
-  const extra = Number(cfg.property_span ?? 0.5) * (depth / 4.0) * load;
-  const required = floor + headroom + precision + extra;
-  return {
-    required_ability: round4(required),
-    floor,
-    critical_headroom: headroom,
-    precision_headroom: precision,
-    property_extra: round4(extra),
-    reasoning_depth: depth,
-    property_load: round4(load),
-    saturation_span: span,
-    saturates_at: round4(required + span),
-    source,
-  };
-}
-
-export function effortScaledCapabilities(info, policy, curves, effort) {
-  const caps = capabilityVector(info);
-  const base = effortAbility(policy, curves, info, "high");
-  const ratio = base > 0 ? effortAbility(policy, curves, info, effort) / base : 1.0;
-  const out = {};
-  for (const [dim, val] of Object.entries(caps)) {
-    out[dim] = EFFORT_SCALED_CAPABILITIES.includes(dim) ? clamp(val * ratio, 0.0, 1.0) : val;
-  }
-  return out;
-}
-
-export function profileRequirements(profile, policy = DEFAULT_SCORING_POLICY) {
-  const cfg = policy.profile || DEFAULT_SCORING_POLICY.profile;
-  const table = cfg.requirements;
-  const weights = cfg.requirement_weights || {};
-  const depthCoupling = Number(policy.demand?.depth_coupling ?? 0.06);
-  const amp = 1.0 + depthCoupling * (profile.reasoning_depth - 2);
-  const need = (level) => round4(Math.min(0.98, Number(level) * amp));
-
-  const out = {
-    reasoning: [table.reasoning[profile.reasoning_depth], weights.reasoning ?? 1.0],
-  };
-  if (profile.code_complexity > 0) {
-    out.coding = [need(table.coding[profile.code_complexity]), weights.coding ?? 1.0];
-  }
-  const exploreKey = profile.interaction_style === "exploration" ? "exploration_style" : "exploration";
-  out.exploration = [need(table.exploration[profile.context_scale]), weights[exploreKey] ?? 0.5];
-  const riskKey = profile.hallucination_risk >= 3 ? "anti_hallucination_high" : "anti_hallucination";
-  out.anti_hallucination = [need(table.anti_hallucination[profile.hallucination_risk]), weights[riskKey] ?? 0.5];
-  if (profile.needs_visual || profile.needs_gui) {
-    out.visual = [table.visual, weights.visual ?? 1.0];
-  }
-  if (profile.needs_gui) {
-    out.gui = [table.gui[profile.reasoning_depth], weights.gui ?? 1.5];
-  }
-  return out;
-}
-
-export function vectorFit(requirements, caps) {
-  let totalW = 0;
-  let sum = 0;
-  for (const [dim, [need, weight]] of Object.entries(requirements)) {
-    totalW += weight;
-    sum += weight * (need <= 0 ? 1.0 : Math.min(1.0, (caps[dim] ?? 0.0) / need));
-  }
-  return totalW > 0 ? sum / totalW : 1.0;
-}
-
-export function subjectiveVector(info) {
-  const raw = info?.subjective || {};
-  const out = {};
-  for (const dim of SUBJECTIVE_DIMENSIONS) {
-    out[dim] = clamp(Number(raw[dim] ?? 0.5), 0.0, 1.0);
-  }
-  return out;
-}
-
-export function convergentWeights(depth, code, scale, style) {
-  let g;
-  if (code === 3 || scale === 3 || (depth >= 3 && scale >= 2)) {
-    g = 0.85;
-  } else if (depth >= 3 || code === 0) {
-    g = scale >= 2 ? 0.75 : 0.65;
-  } else if (code >= 1 && style !== "exploration") {
-    g = scale >= 2 ? 0.25 : 0.0;
-  } else {
-    g = scale >= 2 ? 0.65 : 0.5;
-  }
-  const out = {};
-  const mp = Math.round((1 - g) * 100) / 100;
-  if (mp > 0) out.module_precision = mp;
-  if (g > 0) out.global_rigor = g;
-  return out;
-}
-
-export function subjectiveWeights(profile, kind = null) {
-  if (!profile || typeof profile !== "object") return {};
-  const depth = profile.reasoning_depth;
-  const code = profile.code_complexity;
-  const scale = profile.context_scale;
-  const style = profile.interaction_style;
-  const isGui = kind === "computer_use" || Boolean(profile.needs_gui);
-  const div = isGui ? Math.min(profile.divergence || 1, 2) : profile.divergence || 1;
-
-  if (depth === 1 && div === 1 && scale <= 2 && code <= 2) {
-    return {};
-  }
-  if (div >= 3 || kind === "direction_reasoning") {
-    const g = scale >= 2 ? 0.15 : 0.05;
-    return { divergence: Math.round((1 - g) * 100) / 100, global_rigor: g };
-  }
-  if (kind === "frontend_implementation") {
-    return { global_rigor: 0.65, divergence: 0.35 };
-  }
-  let base = convergentWeights(depth, isGui ? 0 : code, scale, style);
-  if (div === 2 || kind === "complex_build_plan") {
-    const g = Math.max(0.75, base.global_rigor || 0.0);
-    base = {};
-    const mp = Math.round((1 - g) * 100) / 100;
-    if (mp > 0) base.module_precision = mp;
-    if (g > 0) base.global_rigor = g;
-    const share = SUBJECTIVE_DIVERGENCE_SHARE;
-    const out = { divergence: share };
-    for (const [k, v] of Object.entries(base)) {
-      out[k] = round3(v * (1 - share));
-    }
-    return out;
-  }
-  return base;
-}
-
-export function subjectiveFit(weights, subj) {
-  let totalW = 0;
-  let sum = 0;
-  for (const [dim, w] of Object.entries(weights || {})) {
-    totalW += w;
-    sum += w * (subj[dim] ?? 0.5);
-  }
-  return totalW > 0 ? sum / totalW : 1.0;
-}
-
-/**
- * Evaluate one `(model, effort)` candidate against a profiled task (`allocator.py:evaluate_bundle`).
- */
-export function evaluateCandidate(candidate, taskCtx, catalog = {}) {
-  const models = catalog.models || DEFAULT_MODELS;
-  const aliases = catalog.aliases || MODEL_ALIASES;
-  const policy = catalog.policy || DEFAULT_SCORING_POLICY;
-  const curvesTable = catalog.effortCurves || EFFORT_CURVES;
-
-  const rawModel = candidate.model;
-  const { canonical, spec: info } = resolveModelSpec(rawModel, models, aliases);
-  const effort = candidate.effort || "high";
-  const curves = curvesTable[canonical] || {};
-  const excluded = [];
-
-  const cannotSeeInput = Boolean(taskCtx.needs_visual && !info.visual);
-  if (cannotSeeInput) {
-    excluded.push("task needs visual input");
-  }
-  if (taskCtx.unhealthy_models && taskCtx.unhealthy_models.has(canonical)) {
-    excluded.push("model is currently marked unhealthy");
-  }
-  if (
-    taskCtx.min_context_tokens &&
-    Number(info.context_window || 128000) * 0.95 < taskCtx.min_context_tokens
-  ) {
-    excluded.push(
-      `context window ${info.context_window || 128000} outgrown by ${taskCtx.min_context_tokens} tokens`
-    );
-  }
-  const routes = catalog.routes || CANONICAL_ROUTES;
-  const route = routes[taskCtx.kind] || {};
-  const ability = effortAbility(policy, curves, info, effort);
-  const highAbility = effortAbility(policy, curves, info, "high");
-  const demand = taskCtx.demand;
-  const target = demand.required_ability;
-  const floor = demand.floor ?? abilityFloor(policy, route, taskCtx.difficulty);
-  const headroom = taskCtx.critical ? criticalHeadroom(policy, taskCtx.difficulty) : 0.0;
-  const gate = floor + headroom;
-  if (
-    route.restrict_models &&
-    taskCtx.specialist_available &&
-    !(route.preferred || []).map((m) => canonicalModel(m, aliases)).includes(canonical)
-  ) {
-    excluded.push(`not in the allowed model list for ${taskCtx.kind}`);
-  }
-
-  if (ability < gate) {
-    excluded.push(`ability ${ability.toFixed(2)} below the ${taskCtx.difficulty} floor ${gate.toFixed(2)}`);
-  }
-
-  // Subscription quota, safety margin, opportunity cost & pre-reset sprint evaluation
-  const quotaEval = taskCtx.quotas
-    ? evaluateModelQuota(
-        rawModel,
-        effort,
-        taskCtx,
-        taskCtx.quotas,
-        catalog,
-        taskCtx.now
-      )
-    : null;
-  if (quotaEval && !quotaEval.eligible) {
-    excluded.push(...(quotaEval.excluded || [`${rawModel}: subscription quota exhausted`]));
-  }
-
-  let fit = fitScore(taskCtx.kind, canonical, catalog, {
-    local_only: taskCtx.local_only,
-    dotAvailable: taskCtx.dot_available,
-  });
-  const visual = info.visual;
-  if (
-    taskCtx.needs_visual &&
-    taskCtx.kind !== "visual_analysis" &&
-    !route.capability_fit &&
-    typeof visual === "number"
-  ) {
-    fit = (fit + visual) / 2.0;
-  }
-
-  let vfit = 1.0;
-  let sfit = 1.0;
-  const routeFitRaw = fit;
-
-  if (taskCtx.profile && (!route.strict_order || route.capability_fit)) {
-    vfit = vectorFit(taskCtx.requirements, effortScaledCapabilities(info, policy, curves, effort));
-    const sWeights = taskCtx.subjective_weights || {};
-    const sCfg = policy.profile?.subjective;
-    if (Object.keys(sWeights).length > 0 && sCfg && info.subjective) {
-      const subjScale = highAbility > 0 ? Math.min(1.0, ability / highAbility) : 1.0;
-      const scaledSubj = {};
-      for (const [k, v] of Object.entries(subjectiveVector(info))) {
-        scaledSubj[k] = v * subjScale;
-      }
-      sfit = subjectiveFit(sWeights, scaledSubj);
-      const wS = Number(sCfg.weight ?? 0.45);
-      const wV = Number(sCfg.vector_weight ?? 0.35);
-      const wR = Number(sCfg.route_weight ?? Math.max(0.0, 1.0 - wS - wV));
-      fit = wR * fit + wV * vfit + wS * sfit;
-    } else {
-      const wV = Number(policy.profile?.vector_weight ?? 0.5);
-      fit = (1 - wV) * fit + wV * vfit;
-    }
-  }
-
-  const sunkWeight = Number(quotaEval?.reset_sunk_weight ?? 0.0);
-  const sprintSunk = taskCtx.difficulty === "routine" ? 0.0 : sunkWeight;
-  const effortScale = burnScale(policy, curves, effort);
-  const routineEffortOverhead =
-    taskCtx.difficulty === "routine" &&
-    taskCtx.minimum_sufficient &&
-    ability >= target &&
-    vfit >= 0.999 &&
-    Array.isArray(info?.efforts) &&
-    info.efforts.includes("low")
-      ? effort === "high"
-        ? 0.004
-        : effort === "medium"
-          ? 0.002
-          : 0.0
-      : 0.0;
-  const effortPenalty = round4(
-    (policy.extra_effort_penalty ?? 0.025) *
-      Math.max(0.0, effortScale - 1.0) *
-      (1.0 - sprintSunk) +
-      routineEffortOverhead
-  );
-  const effortGain = Math.max(0.0, ability - highAbility);
-  const saturationSpan = Number(policy.profile?.saturation_span ?? 0.3);
-  const sprintQuality =
-    sprintSunk > 0 && effortGain > 0
-      ? round4(
-          Number(policy.demand?.sprint_effort_weight ?? 0.06) *
-            sprintSunk *
-            clamp(effortGain / saturationSpan, 0, 1)
-        )
-      : 0.0;
-  const credited = Math.min(ability, Math.max(highAbility, target));
-  const shortfall = Math.max(0.0, target - ability);
-  const shortfallPenalty = round4((policy.demand?.shortfall_weight ?? 0.35) * shortfall);
-
-  let span = Number(policy.ability_span ?? 0.6);
-  if (
-    ["frontend_implementation", "complex_build_plan", "direction_reasoning"].includes(taskCtx.kind) &&
-    !taskCtx.high_precision
-  ) {
-    span = Number(policy.profile?.saturation_span ?? 0.3);
-  }
-
-  const origin = Math.max(floor, Number(policy.ability_score_origin?.[taskCtx.difficulty] ?? floor));
-  let abilityScore = clamp((credited - origin - (taskCtx.high_precision ? gate - floor : 0.0)) / span, 0, 1);
-  const qualityBonus = taskCtx.high_precision
-    ? round4(Number(policy.high_precision_effort_weight ?? 0.14) * effortGain)
-    : 0.0;
-
-  let overqualification = 0.0;
-  if (taskCtx.minimum_sufficient) {
-    const pCfg = policy.profile || DEFAULT_SCORING_POLICY.profile;
-    const satSpan = Number(pCfg.saturation_span ?? 0.3);
-    abilityScore = ability >= gate ? 1.0 : 0.0;
-    const excess = clamp((ability - target - satSpan) / Number(pCfg.overqualification_span ?? 0.6), 0, 1);
-    const usd = Number(info.usd_per_hour ?? 3.0) * Math.max(effortScale, 0.0);
-    let price = usd / Number(pCfg.overqualification_ref_usd_per_hour ?? 10.0);
-    const gui = taskCtx.kind === "computer_use" || Boolean(taskCtx.profile?.needs_gui);
-    const guiCapable = (capabilityVector(info).gui ?? 0) >= 0.7;
-    price = gui && guiCapable ? Math.min(1.0, price) : Math.min(Number(pCfg.overqualification_price_cap ?? 3.0), price);
-    if (((gui && guiCapable) || taskCtx.kind === "frontend_implementation") && (taskCtx.profile?.reasoning_depth ?? 1) >= 2) {
-      price = 0.0;
-    }
-    overqualification = round4(
-      Number(pCfg.overqualification_weight ?? 0.08) * excess * price * (1.0 - sprintSunk)
-    );
-  }
-
-  if (taskCtx.difficulty !== "routine" && ability < highAbility) {
-    abilityScore = clamp(
-      abilityScore - (0.2 * (highAbility - ability)) / Number(policy.ability_span ?? 0.6),
-      0,
-      1,
-    );
-  }
-
-  const weights = policy.weights || { fit: 0.3, ability: 0.1, continuity: 0.25 };
-  let continuityBonus = 0.0;
-  const cont = taskCtx.continuity;
-  if (cont && cont.previousModel) {
-    const prevCanonical = canonicalModel(cont.previousModel, aliases);
-    if (canonical === prevCanonical && cont.active !== false) {
-      let coupling = 0.0;
-      if (Number.isFinite(cont.coupling)) {
-        coupling = clamp(Number(cont.coupling), 0.0, 1.0);
-      } else if (cont.cacheWarm === true) {
-        coupling = 1.0;
-      } else if (cont.why === "cold" || cont.why === "compacted") {
-        coupling = taskCtx.difficulty === "coupled" || taskCtx.difficulty === "frontier" ? 0.35 : 0.0;
-      } else if (
-        taskCtx.difficulty === "coupled" ||
-        taskCtx.difficulty === "frontier" ||
-        (taskCtx.profile?.context_scale ?? 1) >= 2
-      ) {
-        coupling = 0.65;
-      }
-      if (cont.cacheWarm && cont.previousEffort) {
-        const prevIdx = EFFORT_ORDER.indexOf(cont.previousEffort);
-        const curIdx = EFFORT_ORDER.indexOf(effort);
-        if (prevIdx >= 0 && curIdx >= 0 && curIdx < prevIdx) {
-          coupling *= 0.25;
-        }
-      }
-      continuityBonus = round4(Number(weights.continuity ?? 0.25) * coupling);
-    }
-  }
-
-  const resetBonus = Number(quotaEval?.reset_bonus ?? 0.0);
-  const opportunityCost = Number(quotaEval?.opportunity_cost ?? 0.0);
-  const freeUsage = Number(quotaEval?.free_usage ?? 0.0);
-  const fastBonus = Number(quotaEval?.fast_bonus ?? 0.0);
-
-  const totalScore = round4(
-    weights.fit * fit +
-      weights.ability * abilityScore +
-      continuityBonus +
-      qualityBonus +
-      freeUsage +
-      resetBonus +
-      sprintQuality +
-      fastBonus -
-      opportunityCost -
-      effortPenalty -
-      overqualification -
-      shortfallPenalty,
-  );
-
-  return {
-    id: `${rawModel}:${effort}`,
-    model: rawModel,
-    canonicalModel: canonical,
-    effort,
-    fast: Boolean(quotaEval?.fast),
-    excluded,
-    eligible: excluded.length === 0,
-    cannotSeeInput,
-    onlyBelowFloor: excluded.length === 1 && ability < gate,
-    score: excluded.length === 0 ? totalScore : null,
-    quota: quotaEval
-      ? {
-          account: quotaEval.account,
-          provider: quotaEval.provider,
-          kind: quotaEval.kind,
-          opportunity_cost: opportunityCost,
-          reset_bonus: resetBonus,
-          reset_sunk_weight: sunkWeight,
-          free_usage: freeUsage,
-          fast_bonus: fastBonus,
-          fast: Boolean(quotaEval.fast),
-          shortage_probability: quotaEval.shortage_probability ?? 0.0,
-          binding_window: quotaEval.binding_window || null,
-        }
-      : null,
-    components: {
-      fit: round3(fit),
-      route_fit: round3(routeFitRaw),
-      vector_fit: round3(vfit),
-      subjective_fit: round3(sfit),
-      ability: round3(abilityScore),
-      ability_value: round3(ability),
-      required_ability: round3(target),
-      continuity: continuityBonus,
-      quality_bonus: qualityBonus,
-      free_usage: freeUsage,
-      reset_bonus: resetBonus,
-      sprint_quality: sprintQuality,
-      fast_bonus: fastBonus,
-      opportunity_cost: opportunityCost,
-      effort_penalty: effortPenalty,
-      overqualification,
-      shortfall: shortfallPenalty,
-    },
-  };
-}
-
-/**
- * Expand candidate models into `(model, effort)` bundles and rank them for the given task profile.
- */
-export function rankCandidates(profileInput, options = {}) {
+export function fleetFor(options = {}, nowMs = Date.now()) {
   const catalog = options.catalog || {};
-  const policy = catalog.policy || DEFAULT_SCORING_POLICY;
-  const routes = catalog.routes || CANONICAL_ROUTES;
-  const models = catalog.models || DEFAULT_MODELS;
-  const aliases = catalog.aliases || MODEL_ALIASES;
-  const nowMs = Number.isFinite(options.now) ? Number(options.now) : Date.now();
-
-  const profile = profileInput?.reasoning_depth
-    ? validateProfile(profileInput)
-    : inferTaskProfile(profileInput || {}, routes);
-
-  const kind = profileKind(profile, policy);
-  const difficulty = profileDifficulty(profile, policy);
-  const critical = Boolean(options.critical ?? profile.error_cost >= 3);
-  const div = profile.divergence || 1;
-  const depth = profile.reasoning_depth;
-  const mechanicalRunbook = Boolean(depth === 1 && profile.code_complexity === 0 && div === 1);
-  const unlockDiffs = policy.effort_unlock_difficulties || ["coupled", "frontier"];
-  const unlocked = Boolean(
-    unlockDiffs.includes(difficulty) ||
-      (critical && !mechanicalRunbook) ||
-      depth >= 3 ||
-      (depth >= 2 && profile.hallucination_risk >= 3 && (div >= 2 || profile.code_complexity >= 2))
-  );
-  const highPrecision = Boolean(
-    unlocked &&
-      (difficulty === "frontier" ||
-        (critical && !mechanicalRunbook) ||
-        (profile.hallucination_risk >= 3 &&
-          (((div >= 2 || profile.code_complexity >= 2) &&
-            !["complex_build_plan", "direction_reasoning"].includes(kind) &&
-            profile.interaction_style !== "advisory") ||
-            (depth >= 3 && profile.code_complexity >= 3))))
-  );
-  const minimumSufficient = Boolean(
-    depth <= 2 &&
-      profile.code_complexity < 3 &&
-      div === 1 &&
-      (profile.error_cost <= 2 || mechanicalRunbook) &&
-      (!critical || mechanicalRunbook)
-  );
-
-  const routeObj = routes[kind] || {};
-  const floor = abilityFloor(policy, routeObj, difficulty);
-  const demand = taskDemand(profile, difficulty, critical, div, policy, highPrecision, floor);
-  const requirements = profileRequirements(profile, policy);
-  const sWeights = subjectiveWeights(profile, kind);
-
-  const unhealthySet = new Set(
-    (options.unhealthyModels || []).map((m) => canonicalModel(m, aliases)).filter(Boolean)
-  );
-  const continuity =
-    options.continuity ||
-    (options.previousModel
-      ? {
-          previousModel: options.previousModel,
-          previousEffort: options.previousEffort,
-          cacheWarm: Boolean(options.cacheWarm),
-          why: options.why || "",
-          coupling: options.coupling,
-        }
-      : null);
-
-  const normalizedQuotas = options.quotas
+  const policy = catalog.policy || SCORING_POLICY;
+  const normalized = options.quotas
     ? Array.isArray(options.quotas._normalized)
       ? options.quotas
       : { _normalized: normalizeQuotaSnapshot(options.quotas, nowMs, policy) }
     : null;
+  const built = buildFleet({
+    entries: normalized ? normalized._normalized : null,
+    nowMs,
+    policy,
+    models: catalog.models || null,
+    aliases: catalog.aliases || MODEL_ALIASES,
+    userScores: options.userScores || null,
+  });
+  return { ...built, policy, normalized };
+}
 
-  // Build candidate list from user-configured pool or default catalog
-  const candidateModels =
-    Array.isArray(options.candidateModels) && options.candidateModels.length > 0
-      ? options.candidateModels
-      : Object.keys(models).filter((m) => m !== "deepseek-v4.1-flash-free" && !models[m]?.disabled_by_default);
+/** The default pool: every model of the catalogue that is not off by default (naming one still reaches it). */
+export function defaultPool(fleet, pinnedKey) {
+  return Object.keys(fleet.models).filter((m) => !(fleet.models[m] || {}).disabled_by_default || m === pinnedKey);
+}
 
-  const candidateCanonicals = new Set();
-  for (const entry of candidateModels) {
-    const rawM = typeof entry === "string" ? entry.split(":")[0] : entry?.model;
-    if (rawM) candidateCanonicals.add(canonicalModel(rawM, aliases));
-  }
-  const dotAvailable = candidateCanonicals.has("dot");
-  const specialistAvailable = Boolean(
-    routeObj.restrict_models &&
-      (routeObj.preferred || []).some((m) => candidateCanonicals.has(canonicalModel(m, aliases)))
-  );
+const KNOWN_EFFORT_SUFFIXES = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "default"];
 
-  const taskCtx = {
-    profile,
-    kind,
-    difficulty,
-    critical,
-    unlocked,
-    high_precision: highPrecision,
-    minimum_sufficient: minimumSufficient,
-    needs_visual: profile.needs_visual,
-    local_only: Boolean(options.local_only ?? profile.local_only),
-    dot_available: dotAvailable,
-    specialist_available: specialistAvailable,
-    demand,
-    requirements,
-    subjective_weights: sWeights,
-    unhealthy_models: unhealthySet,
-    min_context_tokens: Number(options.minContextTokens || 0),
-    continuity,
-    quotas: normalizedQuotas,
-    hours: options.hours,
-    metered_ok: options.meteredOk,
-    fast_requested: Boolean(options.fast),
-    urgency: options.urgency || profile.urgency || "unknown",
-    now: nowMs,
-  };
-
-  const expanded = [];
-  for (const entry of candidateModels) {
-    if (typeof entry === "string") {
-      const colonIdx = entry.lastIndexOf(":");
-      if (colonIdx > 0) {
-        const suffix = entry.slice(colonIdx + 1).toLowerCase();
-        if (EFFORT_ORDER.includes(suffix)) {
-          expanded.push({ model: entry.slice(0, colonIdx), effort: suffix });
-          continue;
-        }
-      }
-      const { spec } = resolveModelSpec(entry, models, aliases);
-      const efforts = Array.isArray(spec.efforts) && spec.efforts.length > 0 ? spec.efforts : ["medium", "high"];
-      for (const eff of efforts) {
-        expanded.push({ model: entry, effort: eff });
-      }
-    } else if (entry && typeof entry === "object" && entry.model) {
-      const efforts = Array.isArray(entry.efforts)
-        ? entry.efforts
-        : entry.effort
-          ? [entry.effort]
-          : ["medium", "high"];
-      for (const eff of efforts) {
-        expanded.push({ model: entry.model, effort: eff });
-      }
+function splitPinModelAndEffort(normConstraint) {
+  const colonIdx = normConstraint.lastIndexOf(":");
+  if (colonIdx > 0) {
+    const suffix = normConstraint.slice(colonIdx + 1).trim().toLowerCase();
+    if (KNOWN_EFFORT_SUFFIXES.includes(suffix)) {
+      return { modelPart: normConstraint.slice(0, colonIdx).trim(), effortPart: suffix };
     }
   }
+  const { effort } = resolveModel(normConstraint);
+  return { modelPart: normConstraint, effortPart: KNOWN_EFFORT_SUFFIXES.includes(effort) ? effort : null };
+}
 
-  const evaluated = expanded.map((c) => evaluateCandidate(c, taskCtx, catalog));
-  const eligible = evaluated.filter((c) => c.eligible);
-  eligible.sort((a, b) => b.score - a.score);
-
+/** The pins of a host's options and a task wrapper, as the allocator's raw task fields. */
+function pinsOf(options, taskOpts) {
+  const pick = (...vals) => vals.find((v) => v !== undefined && v !== null && v !== "") || null;
+  const c = (taskOpts && taskOpts.constraints) || {};
+  const oc = options.constraints || {};
   return {
-    task: {
-      kind,
-      difficulty,
-      critical,
-      high_precision: highPrecision,
-      minimum_sufficient: minimumSufficient,
-      required_ability: demand.required_ability,
-      subjective_weights: sWeights,
-      profile,
-    },
-    selected: eligible[0] || null,
-    ranking: eligible,
-    allCandidates: evaluated,
+    bundle: pick(options.pinnedBundle, options.pinned_bundle, taskOpts?.pinned_bundle),
+    constraintBundle: pick(options.constraintBundle, options.constraint_bundle, taskOpts?.constraint_bundle, c.bundle, oc.bundle),
+    model: pick(options.constraintModel, options.constraint_model, options.pinnedModel, options.pinned_model, taskOpts?.constraint_model, c.model, oc.model),
+    effort: pick(options.constraintEffort, options.constraint_effort, options.pinnedEffort, options.pinned_effort, taskOpts?.constraint_effort, c.effort, oc.effort),
   };
 }
 
-function fallbackTier(candidate) {
-  if (candidate.onlyBelowFloor) return 0;
-  return candidate.cannotSeeInput ? 2 : 1;
+/** What a gateway request is, as the allocator's raw task: the profile, the pins, the hours and the chain it continues. */
+function rawTaskOf(profileInput, options, nowMs) {
+  const wrapped = profileInput && typeof profileInput === "object" && profileInput.profile && typeof profileInput.profile === "object" ? profileInput : null;
+  const profile = wrapped ? wrapped.profile : profileInput && typeof profileInput === "object" && "reasoning_depth" in profileInput ? profileInput : null;
+  if (!profile) return null;
+  const pins = pinsOf(options, wrapped);
+  const needs = { ...(wrapped && wrapped.needs && typeof wrapped.needs === "object" ? wrapped.needs : {}) };
+  if (typeof options.local_only === "boolean") needs.local_only = options.local_only;
+  const raw = { ...(wrapped || {}), profile };
+  raw.needs = needs;
+  raw.constraints = {
+    ...((wrapped && wrapped.constraints) || {}),
+    ...(pins.constraintBundle ? { bundle: pins.constraintBundle } : {}),
+    ...(pins.model ? { model: pins.model } : {}),
+    ...(pins.effort ? { effort: pins.effort } : {}),
+  };
+  if (pins.bundle) raw.pinned_bundle = pins.bundle;
+  if (options.hours !== undefined && options.hours !== null) raw.expected_hours = Number(options.hours);
+  if (options.meteredOk !== undefined) raw.metered_ok = Boolean(options.meteredOk);
+  if (options.urgency) raw.urgency = options.urgency;
+  const continuity =
+    options.continuity ||
+    (options.previousModel ? { previousModel: options.previousModel, previousEffort: options.previousEffort, coupling: options.coupling } : null);
+  return { raw, continuity, nowMs };
 }
 
 /**
- * Convenience entry point: takes a raw request or task object + options and returns the winning route decision.
- *
- * `fallbackToBestExcluded` is for gateways. AgentCompass may leave a task unrouted when no candidate clears its
- * floor, but a gateway that does so forwards the virtual model name upstream and the request fails. With the
- * option, an excluded candidate is chosen instead and the decision carries `fallback`: one that only misses the
- * floor, else one that can see the request's images, with ability breaking ties. Falling short of a floor still
- * answers the request; a model that can't see its images can't.
+ * The bundle a held session runs on: the one of the pool at its model and effort. A related task continues its worker (one demand
+ * level of continuity, `coupling` medium or high); with no coupling given the held worker counts as a medium-coupled chain.
+ */
+function workerOf(continuity, bundles, fleet) {
+  if (!continuity || !continuity.previousModel) return null;
+  const key = rowKeyOf(continuity.previousModel, fleet);
+  const effort = continuity.previousEffort ? lc(continuity.previousEffort) : null;
+  const rows = Object.values(bundles).filter((b) => rowKeyOf(b.model, fleet) === key);
+  const row = rows.find((b) => effort && lc(b.effort || "") === effort) || (effort ? null : rows[0]);
+  return row ? { bundle: row.id } : null;
+}
+
+/**
+ * Expand the pool into bundles and rank them for the given task profile (`allocator.plan`): `{ task, pin, selected, ranking,
+ * allCandidates, accounts, system }`. `ranking` holds the eligible candidates in order; `selected` is the named bundle when the
+ * request pinned one, else the first that can start now.
+ */
+export function rankCandidates(profileInput, options = {}) {
+  const nowMs = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  const given = rawTaskOf(profileInput, options, nowMs);
+  if (!given) return { task: null, selected: null, ranking: [], allCandidates: [] };
+  const { fleet, usage, entries, policy, normalized } = fleetFor(options, nowMs);
+  const pins = pinsOf(options, profileInput && profileInput.profile ? profileInput : null);
+  const pinnedKey = pins.model ? canonicalModel(splitPinModelAndEffort(String(pins.model).trim()).modelPart, fleet.aliases, fleet.models, fleet.families) : null;
+  const list = Array.isArray(options.candidateModels) && options.candidateModels.length > 0 ? options.candidateModels : defaultPool(fleet, pinnedKey);
+  let task;
+  try {
+    task = normalizeTask(given.raw, { policy, routes: ROUTES, models: fleet.models, aliases: fleet.aliases });
+  } catch (err) {
+    if (!err.code) err.code = "invalid_caller_profile";
+    throw err;
+  }
+  task.min_context_tokens = Number(options.minContextTokens || 0);
+  const taskOpts = profileInput && profileInput.profile ? profileInput : null;
+  const unhealthy = new Set();
+  for (const m of options.unhealthyModels || []) {
+    const key = healthKey(m, fleet.models, fleet.aliases, fleet.families);
+    if (key) unhealthy.add(key);
+    if (m) unhealthy.add(m);
+  }
+  const ctx = {
+    policy,
+    fleet,
+    usage,
+    now: nowMs,
+    unavailable: new Set(options.unavailable || taskOpts?.unavailable || []),
+    unhealthy,
+    launch_failures: options.launchFailures || options.launch_failures || taskOpts?.launch_failures || null,
+    bundles: {},
+  };
+  const all = expandBundles(list, fleet, entries);
+  // Rows their `when` keeps out never compete, but a blocked route still says why.
+  const outOfScope = [];
+  for (const [id, b] of Object.entries(all)) {
+    const failure = whenFailure(b, task);
+    if (failure === null) ctx.bundles[id] = b;
+    else outOfScope.push({ bundle: b, failure });
+  }
+  const worker = workerOf(given.continuity, ctx.bundles, fleet);
+  if (worker) {
+    task.worker = worker;
+    if (task.coupling === "low") task.coupling = (given.continuity && given.continuity.coupling) || "medium";
+  }
+  let result = rank(task, ctx);
+  // Metered last resort: only when no subscription bundle is eligible, re-rank with checked metered bundles admitted.
+  if (result.eligible.length === 0 && result.candidates.some((c) => c.excluded.length === 1 && c.excluded[0] === METERED_LAST_RESORT)) {
+    task.metered_fallback = true;
+    ctx.bundles = Object.fromEntries(Object.entries(ctx.bundles).filter(([id]) => id in all));
+    result = rank(task, ctx);
+  }
+  const { candidates, eligible, system } = result;
+  // A row answers to the model and effort it runs, as the callers of a ranking read them.
+  const decorate = (c) => {
+    c.model = c.bundle.model;
+    c.effort = c.bundle.effort;
+    c.provider = c.bundle.provider;
+    c.account = c.bundle.account;
+    c.canonicalModel = canonicalOf(c.bundle.model, fleet);
+  };
+  candidates.forEach(decorate);
+  // A gateway cannot wait for a window to renew: a candidate that can start only after its reset leaves the ranking unless the
+  // caller allows the wait, and says so.
+  const canWait = task.can_wait_hours;
+  const ranking = eligible.filter((c) => (c.available_in_hours || 0) <= canWait);
+  for (const c of eligible) {
+    if ((c.available_in_hours || 0) > canWait) c.excluded.push(`can start only after its window resets in ${c.available_in_hours.toFixed(1)}h`);
+  }
+  for (const c of candidates) c.eligible = c.excluded.length === 0;
+  const pinnedCand = task.pinned_bundle ? candidateForBundle(ranking, task.pinned_bundle) : null;
+  const outRows = outOfScope.map(({ bundle, failure }) => ({
+    id: bundle.id,
+    model: bundle.model,
+    effort: bundle.effort,
+    provider: bundle.provider,
+    account: bundle.account,
+    canonicalModel: canonicalOf(bundle.model, fleet),
+    bundle: { account: bundle.account, model: bundle.model, effort: bundle.effort },
+    excluded: [failure],
+    notes: [],
+    components: {},
+    score: null,
+    non_quota_excluded: true,
+    account_unavailable: false,
+    eligible: false,
+  }));
+  return {
+    task: {
+      kind: task.kind,
+      difficulty: task.difficulty,
+      axis_demand: task.profile.axis_demand,
+      wants_fast: task.wants_fast,
+      read_only_review: task.read_only_review,
+      profile: task.profile,
+    },
+    pin: { model: pins.model || null, effort: pins.effort || null, bundle: task.pinned_bundle || task.constraint_bundle || null },
+    selected: pinnedCand || ranking[0] || null,
+    ranking,
+    allCandidates: [...candidates, ...outRows],
+    system,
+    ...(normalized ? { accounts: listQuotaAccounts(normalized) } : {}),
+  };
+}
+
+
+// ---------------------------------------------------------------------------- pins of a host's options
+
+const PIN_OPTIONS = [
+  "pinnedBundle",
+  "pinned_bundle",
+  "constraintBundle",
+  "constraint_bundle",
+  "pinnedModel",
+  "pinned_model",
+  "constraintModel",
+  "constraint_model",
+  "pinnedEffort",
+  "pinned_effort",
+  "constraintEffort",
+  "constraint_effort",
+  "constraints",
+];
+
+/**
+ * The user's pins among a host's own options, for `selectBestRoute`.
+ */
+export function pinOptionsOf(options = {}) {
+  const pins = {};
+  for (const key of PIN_OPTIONS) {
+    if (options?.[key] !== undefined && options?.[key] !== null) pins[key] = options[key];
+  }
+  return pins;
+}
+
+/**
+ * The pins of several sources, later ones winning field by field: plugin options, then a request's own. Without this a
+ * request's `pinned_model` would lose to a plugin's `constraintModel`, whichever spelling `rankCandidates` reads first.
+ */
+export function mergePinOptions(...sources) {
+  const merged = {};
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const c = source.constraints && typeof source.constraints === "object" ? source.constraints : {};
+    const model = source.constraintModel || source.constraint_model || source.pinnedModel || source.pinned_model || c.model;
+    const effort = source.constraintEffort || source.constraint_effort || source.pinnedEffort || source.pinned_effort || c.effort;
+    const bundle = source.pinnedBundle || source.pinned_bundle || source.constraintBundle || source.constraint_bundle || c.bundle;
+    if (model) {
+      merged.constraintModel = model;
+      // A later `model:effort` replaces an earlier effort rather than contradicting it.
+      if (splitPinModelAndEffort(String(model).trim()).effortPart) delete merged.constraintEffort;
+    }
+    if (effort) merged.constraintEffort = effort;
+    if (bundle) merged.pinnedBundle = bundle;
+  }
+  return merged;
+}
+
+/**
+ * Remove a request's pin fields, which name nothing an upstream knows.
+ */
+export function dropPinFields(body) {
+  if (!body || typeof body !== "object") return false;
+  let dropped = false;
+  for (const target of [body, body.task]) {
+    if (!target || typeof target !== "object") continue;
+    for (const key of PIN_OPTIONS) {
+      if (key in target) {
+        delete target[key];
+        dropped = true;
+      }
+    }
+  }
+  return dropped;
+}
+
+/**
+ * Whether these pins fix the effort, so nothing may ratchet it afterwards.
+ */
+export function pinsFixEffort(pins = {}) {
+  if (pins.pinnedBundle || pins.constraintEffort) return true;
+  return Boolean(pins.constraintModel && splitPinModelAndEffort(String(pins.constraintModel).trim()).effortPart);
+}
+
+/**
+ * A configured candidate list: an object entry that names a `model` stays whole, with its provider, effort, efforts and
+ * `when`; an object with no `model` is a model listing (`{ id }`), and a dictionary lists its keys.
+ */
+export function extractModelList(source) {
+  if (!source) return null;
+  if (Array.isArray(source)) {
+    const list = source
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        if (item && typeof item === "object") {
+          if (typeof item.model === "string" && item.model.trim()) return { ...item };
+          return String(item.id || item.name || "").trim();
+        }
+        return "";
+      })
+      .filter(Boolean);
+    return list.length > 0 ? list : null;
+  }
+  if (typeof source === "object") {
+    const keys = Object.keys(source)
+      .map((k) => k.trim())
+      .filter(Boolean);
+    return keys.length > 0 ? keys : null;
+  }
+  return null;
+}
+
+/**
+ * The candidate list a plugin's options or a request's context configure, or `null`.
+ */
+export function explicitCandidateModels(options = {}, ctx = {}) {
+  return (
+    extractModelList(options.candidateModels) ||
+    extractModelList(options.allowedModels) ||
+    extractModelList(options.availableModels) ||
+    extractModelList(options.models) ||
+    extractModelList(ctx?.models) ||
+    extractModelList(ctx?.availableModels) ||
+    extractModelList(options.modelMap)
+  );
+}
+
+/**
+ * The model a candidate entry names, without a `:effort` suffix.
+ */
+export function candidateModelName(entry) {
+  return splitEffortSuffix(typeof entry === "string" ? entry : entry?.model || "").name;
+}
+
+// ---------------------------------------------------------------------------- a session held from an earlier turn
+
+const fleetOfCatalog = (catalog) => fleetFor({ catalog: catalog || {} }, Date.now()).fleet;
+
+/**
+ * The rows a candidate list holds for this model name, with what each may run at (contract R2). Used on a route decided
+ * elsewhere: a session held from an earlier turn, or a route another provider's list has to take.
+ */
+function rowsNaming(list, model, catalog, pins) {
+  const fleet = fleetOfCatalog(catalog);
+  const key = rowKeyOf(model, fleet);
+  const pinnedName = pins?.constraintModel ? splitPinModelAndEffort(String(pins.constraintModel).trim()).modelPart : null;
+  const pinnedKey = pinnedName ? rowKeyOf(pinnedName, fleet) : null;
+  const pinnedEffort = pins?.constraintEffort ? lc(pins.constraintEffort) : pins?.constraintModel ? splitPinModelAndEffort(String(pins.constraintModel).trim()).effortPart : null;
+  const rows = [];
+  for (const entry of list || []) {
+    // A bare entry of the pinned model runs at the effort the pin names, table or not: as a new route expands it.
+    const same = pinnedKey !== null && rowKeyOf(entryModel(entry), fleet) === pinnedKey;
+    const obj = typeof entry === "string" ? { model: entry } : entry;
+    const given = same && pinnedEffort && !obj.effort && !Array.isArray(obj.efforts) && !nameFixesEffort(obj.model, fleet.models, fleet.aliases) ? { ...obj, effort: pinnedEffort } : entry;
+    rows.push(...effortRows(given, fleet));
+  }
+  attachDisabledEfforts(rows, fleet);
+  return { rows: rows.filter((row) => rowKeyOf(row.model, fleet) === key), fleet };
+}
+
+/** R2 for one row: dispatch table, within the row's own list, without what the user disabled. A row's own effort is what it runs. */
+function rowOffers(row, effort, fleet) {
+  if (row.disabled && !row.disabled_by_default) return false;
+  if (row.disabled_efforts?.includes(effort)) return false;
+  if (row.effort_fixed) return row.effort === effort;
+  if (row.offered_efforts && !row.offered_efforts.includes(effort)) return false;
+  if (effort === row.effort && !row.not_dispatchable) return true;
+  // A row with no effort of its own (a family or unknown name, a fixed-effort model) runs as it is: nothing to step
+  if (row.effort === null || row.effort === undefined) return true;
+  const allowed = dispatchAllowedEfforts(row, fleet, row.model);
+  return !allowed || allowed.includes(effort);
+}
+
+/**
+ * Whether a candidate list offers this model at this effort (contract R2). A pool entry that fixes its effort (`m:high`,
+ * `m-high`) or lists them (`{ model, efforts }`) offers those only. `{ model, effort }` is one bundle at its scoring effort and
+ * may step within the dispatch table, as `allocator.py` has `own_efforts` None for it.
+ */
+export function candidateOffers(list, model, effort, catalog, pins) {
+  const { rows, fleet } = rowsNaming(list, model, catalog, pins);
+  return rows.some((row) => rowOffers(row, effort, fleet));
+}
+
+const DEPTH_FOR_DIFFICULTY = { routine: 1, hard: 2, coupled: 3, frontier: 4 };
+
+/**
+ * The effort a held session can stay on: its own while the pool offers it, else the highest one below that the pool does and
+ * a new route for this `profile` would take (contract R2). `null` when there is none. A name the pool does not hold verbatim is
+ * not this check's to judge: membership was settled by `gone`.
+ */
+export function heldEffortOn(list, model, effort, catalog, { pins, profile } = {}) {
+  const { rows, fleet } = rowsNaming(list, model, catalog, pins);
+  if (rows.length === 0) return effort;
+  const offers = (candidate) => rows.some((row) => rowOffers(row, candidate, fleet));
+  if (offers(effort)) return effort;
+  const fullProfile = profile ? (profile.reasoning_depth ? profile : sessionProfile({ profile })) : null;
+  const ranked = fullProfile ? rankCandidates(fullProfile, { candidateModels: list, catalog }).ranking : null;
+  const key = rowKeyOf(model, fleet);
+  const passes = (candidate) => !ranked || ranked.some((row) => rowKeyOf(row.model, fleet) === key && row.effort === candidate);
+  const rank = EFFORT_ORDER.indexOf(effort);
+  for (let i = rank - 1; i >= 0; i--) {
+    if (offers(EFFORT_ORDER[i]) && passes(EFFORT_ORDER[i])) return EFFORT_ORDER[i];
+  }
+  return null;
+}
+
+/**
+ * What a session was routed on: a hold and a route after it judge by this, not by what a short follow-up looks like. A session that
+ * kept no profile gets the one its difficulty and demand imply; no field of it comes from a task's text.
+ */
+export function sessionProfile(sessionState) {
+  if (sessionState?.profile?.reasoning_depth) return sessionState.profile;
+  const kept = sessionState?.profile || {};
+  const difficulty = kept.difficulty || sessionState?.difficulty || "routine";
+  const demand = kept.axis_demand || sessionState?.axisDemand || {};
+  const level = (axis) => (Number.isInteger(demand[axis]) && demand[axis] >= 0 && demand[axis] <= 3 ? demand[axis] : 0);
+  const gui = Boolean(kept.needs_gui);
+  return {
+    work_kind: kept.work_kind || sessionState?.workKind || "other_or_mixed",
+    reasoning_depth: DEPTH_FOR_DIFFICULTY[difficulty] || 1,
+    code_complexity: level("coding"),
+    needs_visual: Boolean(kept.needs_visual || level("tool_operation") >= 3),
+    needs_gui: gui,
+    local_only: Boolean(kept.local_only),
+    wants_fast: false,
+    read_only_review: false,
+    access: "read-only",
+    interaction_style: kept.interaction_style || "engineering",
+    expected_hours: 0.5,
+    hours_confidence: "medium",
+    urgency: "unknown",
+    multi_task: false,
+    task_count: "1",
+    axis_demand: { divergence: level("divergence"), coding: level("coding"), aesthetics: level("aesthetics"), tool_operation: level("tool_operation") },
+  };
+}
+
+/** Says why a session that lost its effort was routed again. */
+export function effortGoneWarning(cont) {
+  return `${cont.previousModel}: effort ${cont.previousEffort} is no longer offered; routed again`;
+}
+
+/** The pool's row a held session runs on (`modeId`, `draws`, ...), at its held effort: one that offers it, on an account that does. */
+export function heldBundle(list, model, effort, catalog, pins) {
+  const { rows, fleet } = rowsNaming(list, model, catalog, pins);
+  const offering = rows.filter((r) => rowOffers(r, effort, fleet));
+  const row = offering.find((r) => r.effort === effort) || offering[0] || rows.find((r) => r.effort === effort) || rows[0];
+  return row ? { ...row, effort } : null;
+}
+
+/** Whether a candidate list unchecks this effort on any of its models: a turn that knows no model yet cannot rely on it. */
+export function effortUnchecked(list, effort, catalog) {
+  const fleet = fleetOfCatalog(catalog);
+  const rows = (list || []).flatMap((entry) => effortRows(entry, fleet));
+  attachDisabledEfforts(rows, fleet);
+  return rows.some((row) => row.disabled_efforts?.includes(effort));
+}
+
+/**
+ * The model a hold sends the request to, as the candidate list names it: the store keeps models canonical (`claude-opus-5-5`), and
+ * the bare name may resolve to another provider in Magpie than the `upstream/claude-opus-5-5` the session was routed to. The name
+ * routed last (`target`) when it is still a candidate, else the one candidate of that row, else the model itself. A family
+ * name never stands in for its flagship, or the other way round.
+ */
+export function heldTarget(model, sessionState, candidateModels, catalog) {
+  if (!Array.isArray(candidateModels) || candidateModels.length === 0) return model;
+  const names = candidateModels.map(candidateModelName);
+  if (sessionState?.target && names.includes(sessionState.target)) return sessionState.target;
+  const fleet = fleetOfCatalog(catalog);
+  const key = healthKey(sessionState?.target || model, fleet.models, fleet.aliases, fleet.families);
+  return names.find((m) => healthKey(m, fleet.models, fleet.aliases, fleet.families) === key) || model;
+}
+
+
+// ---------------------------------------------------------------------------- warnings and refusals
+
+/** One line of why a row is out, naming the row. */
+function excludedLine(candidate, why) {
+  return why.startsWith(`${candidate.model}`) ? why : `${candidate.model}@${candidate.effort}: ${why}`;
+}
+
+/** Pool names routed on no row of their own: without this, a retired name just stops being picked. */
+function poolNameWarnings(options, models, aliases) {
+  if (!Array.isArray(options.candidateModels)) return [];
+  const names = options.candidateModels.map((entry) => (typeof entry === "string" ? entry : entry?.model)).filter(Boolean);
+  return [...new Set(names.map((name) => catalogNameWarning(name, models, aliases)).filter(Boolean))];
+}
+
+const MAX_LOGGED_NAME_WARNINGS = 1024;
+const MAX_LOG_LINE = 16384;
+const loggedNameWarnings = new Set();
+
+/** Whether this name warning is new here. The least recently seen goes first: under `routeAllModels` a client can write names. */
+function firstNameWarning(warning) {
+  const seen = loggedNameWarnings.delete(warning);
+  loggedNameWarnings.add(warning);
+  if (loggedNameWarnings.size > MAX_LOGGED_NAME_WARNINGS) loggedNameWarnings.delete(loggedNameWarnings.values().next().value);
+  return !seen;
+}
+
+/** One line whatever the model names in it hold: a reason can quote a row's name as the request wrote it. */
+function logLine(warning) {
+  return escapeControls(warning)
+    .replace(/\S{129,}/g, (long) => `${long.slice(0, 128)}...`)
+    .slice(0, MAX_LOG_LINE);
+}
+
+/** Log a route's warnings. A name warning is about the configuration, not this request: once per runtime. */
+export function logRouteWarnings(warnings) {
+  for (const warning of warnings || []) {
+    if (warning.startsWith(CATALOG_NAME_WARNING) && !firstNameWarning(warning)) continue;
+    console.warn(`agentcompass: ${logLine(warning)}`);
+  }
+}
+
+/**
+ * Why a pinned choice came back blocked (`warnings` of the decision).
+ */
+function blockedWarnings(result) {
+  const label = pinLabel(result.pin);
+  if (!label) {
+    const reasons = [...new Set(result.allCandidates.flatMap((c) => c.excluded.map((reason) => excludedLine(c, reason))))];
+    return [`no candidate is available${reasons.length > 0 ? `: ${reasons.join("; ")}` : ""}`];
+  }
+  const matching = rowsThePinNames(result);
+  if (matching.length === 0) return [`${label} is not among the candidates`];
+  const reasons = [...new Set(matching.flatMap((c) => c.excluded))];
+  return [`${label} is unavailable: ${reasons.join("; ")}`];
+}
+
+/** How a blocked route refers to what was pinned, or `null` with no pin. */
+function pinLabel(pin) {
+  if (pin?.bundle) return `pinned bundle ${safeName(pin.bundle)}`;
+  if (pin?.model) return `pinned model ${safeName(pin.model)}`;
+  return pin?.effort ? `pinned effort ${safeName(pin.effort)}` : null;
+}
+
+function rowsThePinNames(result) {
+  const notTheOne = (why) => why === "explicit model constraint" || why === "explicit bundle constraint";
+  return result.allCandidates.filter((c) => !c.excluded.some(notTheOne));
+}
+
+const ACCOUNTS_UNAVAILABLE_REFUSAL = "accounts_unavailable: every candidate account is unavailable";
+
+function allCandidatesAccountUnavailable(result) {
+  const all = result.allCandidates;
+  if (!Array.isArray(all) || all.length === 0) return false;
+  const capable = all.filter((c) => !c.non_quota_excluded);
+  return capable.length > 0 && capable.every((c) => c.account_unavailable === true);
+}
+
+/** What a client hears when a route is refused: what it pinned, a code, one sentence. The pool and its quotas stay in the local log. */
+function refusalOf(result) {
+  const { pin } = result;
+  const label = pinLabel(pin);
+  if (!label) {
+    return allCandidatesAccountUnavailable(result)
+      ? ACCOUNTS_UNAVAILABLE_REFUSAL
+      : "no_route: no candidate can serve this request";
+  }
+  const matching = rowsThePinNames(result);
+  if (matching.length === 0) return `pin_not_in_pool: ${label} is not among the candidates`;
+  // Health belongs to a model: a row left out by its effort says nothing here, and an effort pin has no model to blame.
+  const down = matching.some((c) => c.excluded.includes(MARKED_UNHEALTHY) && !c.excluded.includes(EFFORT_NOT_PINNED));
+  if (pin.bundle && down) return `model_unhealthy: the model of ${label} is marked unhealthy`;
+  if (!pin.bundle && pin.model && down) return `model_unhealthy: ${label} is marked unhealthy`;
+  return `pin_unavailable: ${label} cannot serve this request`;
+}
+
+/** The refusal of a block with no decision behind it: its code and one sentence. */
+export function blockedRefusal(blocked) {
+  return blocked.refusal || `${blocked.error || "no_route"}: this request could not be routed`;
+}
+
+const PIN_REFUSALS = ["pin_not_in_pool", "model_unhealthy", "pin_unavailable"];
+
+/** A refusal for any holder of a gateway key: whether a pinned name is in the pool or healthy is the operator's to know. */
+export function refusalSummary(blocked) {
+  const refusal = blockedRefusal(blocked);
+  const colon = refusal.indexOf(": ");
+  const code = refusal.slice(0, colon);
+  return PIN_REFUSALS.includes(code)
+    ? { code: "pin_unavailable", message: "the pinned model cannot serve this request" }
+    : { code, message: refusal.slice(colon + 2) };
+}
+
+/** The quota the selected candidate draws on: its account and the window that prices it, or `null` when nothing is priced. */
+function quotaOf(candidate) {
+  const cap = candidate.capacity;
+  if (!cap) return null;
+  const account = candidate.bundle?.account;
+  return {
+    account: account && account !== GATEWAY_ACCOUNT ? account : null,
+    window: cap.window ?? null,
+    quota_source: cap.quota_source ?? null,
+    expected_pct: candidate.expected_pct ?? null,
+    chain_pct: candidate.chain_pct ?? null,
+    cost: candidate.economy ? candidate.economy.cost : null,
+    priced: Boolean(cap.priced),
+  };
+}
+
+/**
+ * Convenience entry point: takes a task profile (or a `{ profile }` wrapper) + options and returns the winning route decision.
  */
 export function selectBestRoute(taskOrProfile, options = {}) {
-  const result = rankCandidates(taskOrProfile, options);
-  let top = result.selected;
-  let fallback = null;
-  if (!top && options.fallbackToBestExcluded && result.allCandidates.length > 0) {
-    top = result.allCandidates.reduce((best, c) => {
-      const tier = fallbackTier(c) - fallbackTier(best);
-      return tier < 0 || (tier === 0 && c.components.ability_value > best.components.ability_value) ? c : best;
-    });
-    fallback = { excluded: top.excluded };
+  let result;
+  try {
+    result = rankCandidates(taskOrProfile, options);
+  } catch (err) {
+    if (err?.code !== "invalid_caller_profile" && !(err instanceof InvalidCallerProfile)) throw err;
+    return {
+      ok: false,
+      blocked: true,
+      error: "invalid_caller_profile",
+      refusal: "invalid_caller_profile: the task profile is invalid",
+      targetModel: null,
+      canonicalModel: null,
+      targetEffort: "high",
+      modelWithEffort: null,
+      warnings: [String(err.message)],
+      excluded: [],
+      topCandidates: [],
+    };
   }
+  if (!result.task) return unroutedDecision("no_task_profile");
+  const top = result.selected;
+  const catalog = options.catalog || {};
+  const warnings = [
+    ...(top ? [] : blockedWarnings(result)),
+    ...(top ? (top.notes || []).filter((n) => n.startsWith("data error:")) : []),
+    ...poolNameWarnings(options, catalog.models || MODELS, catalog.aliases || MODEL_ALIASES),
+    ...new Set((result.accounts || []).flatMap((a) => a.warnings)),
+  ];
+  const refusal = top ? null : refusalOf(result);
   return {
     ok: Boolean(top),
-    fallback,
+    blocked: !top,
+    ...(refusal === ACCOUNTS_UNAVAILABLE_REFUSAL ? { error: "accounts_unavailable" } : {}),
+    refusal,
     targetModel: top ? top.model : null,
     canonicalModel: top ? top.canonicalModel : null,
-    targetEffort: top ? top.effort : "high",
-    modelWithEffort: top ? `${top.model}:${top.effort}` : null,
-    selectedAccount: top?.quota?.account || null,
-    quota: top?.quota || null,
+    // A row with no effort of its own (a family or unknown name, a model with one configuration) is sent at the nominal "high".
+    targetEffort: top ? top.effort || "high" : "high",
+    modelWithEffort: top ? `${top.model}:${top.effort || "high"}` : null,
+    bundle: top ? top.bundle : null,
+    selectedAccount: top ? quotaOf(top)?.account || null : null,
+    quota: top ? quotaOf(top) : null,
     workKind: result.task.kind,
     difficulty: result.task.difficulty,
-    requiredAbility: result.task.required_ability,
+    axisDemand: result.task.axis_demand,
+    warnings,
+    excluded: result.allCandidates.flatMap((c) => c.excluded.map((reason) => excludedLine(c, reason))),
+    ...(result.accounts ? { accounts: result.accounts } : {}),
     score: top ? top.score : null,
     components: top ? top.components : null,
     profile: result.task.profile,
@@ -864,7 +716,7 @@ export function selectBestRoute(taskOrProfile, options = {}) {
       model: r.model,
       effort: r.effort,
       score: r.score,
-      quota: r.quota || null,
+      quota: quotaOf(r),
       components: r.components,
     })),
   };

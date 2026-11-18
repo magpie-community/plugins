@@ -2,11 +2,13 @@ import { mkdir, readdir, writeFile, readFile, unlink, rmdir, lstat } from 'node:
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { processStatus } from './proc.mjs';
 
-export function alive(pid) {
+export function alive(pid, deps = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return true;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
+  const status = processStatus(pid, deps);
+  if (status.state === 'unknown') throw status.error;
+  return status.state !== 'dead';
 }
 
 async function removeEmpty(path) {

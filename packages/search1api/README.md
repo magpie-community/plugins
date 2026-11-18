@@ -2,7 +2,7 @@
 
 Search1API web search, news, agentic search, page retrieval, sitemap discovery,
 and trending tools in [Magpie](https://usemagpie.ai/), with browser OAuth and
-API key sign-in. The source lives in this community repository and is published as
+API key sign-in, plus Search1API as a web search API in Magpie's settings. The source lives in this community repository and is published as
 `@magpie-community/tools-search1api`. It uses native fetch with no runtime
 dependencies; request bodies and defaults match the original integration.
 
@@ -146,6 +146,22 @@ Automatic request retries are disabled to keep calls within that deadline; OAuth
 authentication is retried once after refreshing. Other upstream errors return
 to the calling agent.
 
+## Web search for every model
+
+The plugin also adds **Search1API** to Magpie's own web search APIs, in
+**Settings → Models → Web search**, after the built-in ones. Magpie uses it
+when a model can't search the web itself, and orders, switches off or mixes it
+like any other search API there.
+
+It takes no separate key: it searches as the Search1API account you signed in
+to above (OAuth or API key), which Magpie renews before each search. An
+`apiKey` option or `SEARCH1API_API_KEY` is not used here: a search always
+goes out as the account Magpie picked, so a refusal rests that account. Each search
+is a Search1API `search` call on Google with up to the number of results
+Magpie asks for, without page content. A refused request (401, 402, 429)
+keeps its status, so Magpie rests the account for search and asks the next
+search API.
+
 ## Development
 
 From this folder, on Node 24 or later (or Bun for the tests):
@@ -186,7 +202,7 @@ MAGPIE_BUN_PATH=/path/to/bun npm run test:magpie
 ```
 
 The migrated integration was verified against Magpie host revision
-`8ef9fc578ced531b7ca835a3133c37f608a70e6a`. Live-account OAuth consent still
+`261f482260da435ecfa35004649955a5a2f749e9`. Live-account OAuth consent still
 requires manual verification on the machine running Magpie.
 
 ## Maintenance and license

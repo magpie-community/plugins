@@ -119,6 +119,9 @@ const MODELS = [
   ["claude-fable-5.2", "Fable 5.2", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 3.2],
   // Droid 1.7.1 adds Carbon behind Factory's Gemini4Carbon feature flag.
   ["gemini-4-carbon", "Gemini 4 Carbon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
+  // Droid 1.10.0 adds Hydrogen, the head of the Flash line, behind Factory's
+  // Gemini4Hydrogen feature flag (#1073).
+  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3

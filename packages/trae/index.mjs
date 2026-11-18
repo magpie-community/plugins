@@ -41,7 +41,19 @@ const SITES = {
       web: "https://www.trae.cn", // the authorization page
       auth: "https://api.trae.cn", // tokens, the account, credits
       api: "https://trae-api-cn.mchost.guru", // the models
+      console: "https://console.enterprise.trae.cn", // an enterprise (SaaS) account's usage, in yuan
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // which is what tells an enterprise account apart: it bills there, not
+    // on the consumer credits page. Kept apart from hosts.console so a test
+    // can point the requests at a fake and still sign in as an enterprise
+    // account.
+    consoleHost: "console.enterprise.trae.cn",
+    // Trae CN's console was measured to take the IDE's own token: the plugin's
+    // own headers against get_personal_quota answer 200, and a 401 from it
+    // really is a lapsed sign-in. The international console could not be
+    // measured (see its realm below), so it is not allowed to say so.
+    consoleTakesIdeToken: true,
     clientId: "ono9krqynydwx5", // Trae CN's IDE
     // the clients' own renewal, which binds the JWT to a device: ExchangeToken
     // under /trae/api/v3/oauth, signed with the device's P-256 key
@@ -87,9 +99,20 @@ const SITES = {
       "DeepSeek-V4-Flash": { name: "DeepSeek V4 Flash" },
     },
     // the model host for an account: Trae CN's own hosts serve no models,
-    // so only a host that is one is taken, else the one gateway
+    // so only a host that is one is taken, else the one gateway.
+    //
+    // The enterprise console an enterprise (SaaS) sign-in names is the
+    // seat's own model host, and a chat there bills the seat pool. Not every
+    // tenant's seat takes chats there: #1127's (shadow1606) answered every
+    // llm_utils_chat with 4245, for every function and model, while
+    // #1155's (kenanor) chats there. A seat the console turns away is
+    // marked (consoleChat: false, kept with the sign-in) and chats on the
+    // consumer gateway, which takes the same login but bills the login's
+    // own credits — so the gateway is the fallback, never the first ask.
+    // The plugin's hostOf applies the mark; this is the host before it.
     apiOf: (a) => {
       const h = traeHost(a?.api)
+      if (h && new URL(h).hostname.toLowerCase() === SITES["trae-cn"].consoleHost) return a?.consoleChat === false ? SITES["trae-cn"].hosts.api : SITES["trae-cn"].hosts.console
       return h && SITES["trae-cn"].modelHost(h) ? h : SITES["trae-cn"].hosts.api
     },
     // whether a host named by a sign-in is one of the model hosts: an https
@@ -127,6 +150,56 @@ const SITES = {
       label: "credits",
       host: (site) => site.hosts.auth,
       body: { require_usage: true, req_source: 0 },
+      // an enterprise (SaaS) account bills in yuan on Trae's console, not on
+      // the consumer credits page: its allowance is the seat pool the
+      // console names, and what it spent is the models' own cost — two of
+      // the console's pages, not one. A personal account is read as before.
+      //
+      // The consumer page answers such an account too, with a credits
+      // allowance that real calls have been measured not to touch (two calls
+      // through magpie moved the console's spend by ￥0.0002 each and left
+      // the credits at 4.4 of 4700). It is shown beside the seat pool so the
+      // card holds both numbers, but marked aside: the seat pool is what a
+      // request spends, so the credits must not read as allowance magpie can
+      // route on. Whether they are a fallback the seat pool exhausts first
+      // is not known — no account has spent its pool to find out.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        // the console's own period, which is the seat pool's: the usage page
+        // says "席位额度将于 <ResetTime> 重置" from exactly this call, while
+        // get_personal_quota names the allowance and no date at all
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core, credits: page }, a, signIn, { credits, round }) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae CN usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          const windows = []
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) windows.push(seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), yuan, "CNY"))
+          const c = page ? credits(page) : null
+          if (c && !c.unlimited && c.limit > 0) {
+            const w = {
+              name: "Credits",
+              used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)),
+              display: `${round(c.used)} / ${round(c.limit)}`,
+              amount: round(c.used),
+              limit: round(c.limit),
+              unit: "credits",
+              aside: true,
+            }
+            if (c.until) w.resetsAt = new Date(c.until).toISOString()
+            if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
+            windows.push(w)
+          }
+          if (windows.length) out.windows = windows
+          // a pool of nothing and no credits row leave the card nothing to
+          // show: it says what the console and the page answered rather
+          // than standing empty (#1143)
+          else if (!out.balance) return { error: `Trae CN usage: the console gives this seat a pool of ¥${q.limit}, and the credits page ${!page ? "could not be read" : c?.unlimited ? "says unlimited" : "shows no allowance"}`, signIn, user: a.name || a.uid }
+          return out
+        },
+      },
       read: (v, a, signIn, { credits, round }) => {
         const c = credits(v)
         const out = { plan: v.is_credits_billing ? "Credits" : "Free", user: a.name || a.uid, signIn }
@@ -138,6 +211,7 @@ const SITES = {
           // English balance line beside it (yetone/magpie#694)
           const w = { name: "Credits", used: Math.max(0, Math.min(100, (c.used / c.limit) * 100)), amount: round(c.used), limit: round(c.limit), unit: "credits" }
           if (c.until) w.resetsAt = new Date(c.until).toISOString()
+          if (c.until && c.lapsing > 0) Object.assign(w, { runsOutAt: new Date(c.until).toISOString(), runsOut: round(c.lapsing) })
           out.windows = [w]
         }
         return out
@@ -166,7 +240,18 @@ const SITES = {
       us: "https://coreva-normal.trae.ai", // the models, US
       pay: "https://api-sg-central.trae.ai", // usage
       usPay: "https://api-us-east.trae.ai", // usage, the US deployment
+      console: "https://console.enterprise.trae.ai", // an enterprise (SaaS) account's usage, in dollars
     },
+    // the console an enterprise (SaaS) sign-in names as its account's host,
+    // as on Trae CN: it bills there, not on the dollar billing's page. Kept
+    // apart from hosts.console for the same reason as Trae CN's.
+    consoleHost: "console.enterprise.trae.ai",
+    // Not measured: no international enterprise account could be found, and
+    // console.enterprise.trae.ai answers a foreign realm's token with 请先登录
+    // exactly as it answers no token at all, so whether it refuses the token
+    // or wants a console session is unknown. Until an account says otherwise,
+    // its 401 is a failed read, never a lapsed sign-in.
+    consoleTakesIdeToken: false,
     clientId: "ono9krqynydwx5",
     appId: "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
     ideVersion: "3.5.51", // named to the international IDE's current build
@@ -222,6 +307,36 @@ const SITES = {
       // Forbidden here
       host: (site, a) => (/^US(?:[-_ ]|$)/i.test(String(a?.region ?? "")) || /api-us/i.test(String(a?.api ?? "")) ? site.hosts.usPay : site.hosts.pay),
       body: {},
+      // An enterprise (SaaS) account bills on Trae's enterprise console
+      // here too, on the same three pages Trae CN's console has and in
+      // dollars. The international deployment has no consumer credits page
+      // (its own page is the dollar billing's), so the card is the seat
+      // pool alone.
+      //
+      // NOT VERIFIED against a real account: no international enterprise
+      // account was available, and console.enterprise.trae.ai answers
+      // another realm's token with 请先登录 — as it answers no token at all,
+      // so whether it refuses the token or wants a console session is not
+      // known either. The paths and fields below are the CN console's shape
+      // read off the international console's own build, which names
+      // seat_pool_currency_quota, the models' total_cost_currency and
+      // ResetTime exactly as Trae CN's does. Whether such an account's
+      // console answers at all is not known.
+      ent: {
+        quota: { path: "/trae/gtm/tob/api/v1/config/get_personal_quota" },
+        spent: { path: "/trae/gtm/tob/api/v1/config/get_user_model_usage" },
+        core: { path: "/trae/gtm/tob/api/v1/config/get_personal_core_data" },
+        read: ({ quota, spent, core }, a, signIn) => {
+          const q = seatPoolOf(quota)
+          if (!q) return { error: "Trae Global usage: the console named no seat pool", signIn, user: a.name }
+          const out = { plan: "Enterprise", user: a.name || a.uid, signIn }
+          if (q.unlimited) out.balance = "unlimited"
+          else if (q.limit > 0) out.windows = [seatUsageWindow(q, seatSpentOf(spent, quota?.user_model_quota?.user_id), entResetOf(core), DOLLARS, "usd")]
+          // a pool of nothing leaves the card nothing to show (#1143)
+          else return { error: `Trae Global usage: the console gives this seat a pool of $${q.limit}`, signIn, user: a.name || a.uid }
+          return out
+        },
+      },
       read: (v, a, signIn, { round }) => {
         const d = dollarUsageOf(v)
         if (!d) return { error: "Trae Global usage: no entitlement pack in the answer", signIn, user: a.name }
@@ -418,6 +533,8 @@ function toAuth(s, site) {
     ...(traeHost(s.host) ? { host: traeHost(s.host) } : {}),
     ...(authHostOf(s.authHost, site) ? { authHost: authHostOf(s.authHost, site) } : {}),
     ...(s.account && Object.keys(s.account).length ? { account: s.account } : {}),
+    // an enterprise seat its console turned a chat away from (4245)
+    ...(s.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -439,6 +556,7 @@ function fromAuth(auth, site) {
     host: auth.host || "",
     authHost: authHostOf(auth.authHost, site),
     account: auth.account && typeof auth.account === "object" ? auth.account : {},
+    ...(auth.consoleChat === false ? { consoleChat: false } : {}),
   }
 }
 
@@ -1500,7 +1618,7 @@ function sessionOf(headers) {
 // request asks for is sent as the Trae name that model takes, and left out
 // when it takes none of that name — Trae rejects a level a model has no entry
 // for, and serves its default when none is asked.
-function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null) {
+function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees = false, levels = null, entry = null) {
   const config = max?.base ?? req.model
   const body = {
     messages: traeMessages(req, sees),
@@ -1519,6 +1637,22 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   if (max?.window) {
     if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
+  }
+  // an enterprise's built-in model says where its config comes from beside
+  // config_name, at the top of the body: Trae CN 3.4.20's own llm_utils_chat
+  // request (libharness, worktree/branch_name.rs, asked with the user's
+  // selected model) is usage, function, messages, conversation_id,
+  // access_type, config_name, model_name, config_source, is_custom_model,
+  // provider. Without them Trae looks the config up among its own presets
+  // and answers 4001 "the param is invalid" on every function (#1258, an
+  // enterprise seat on console.enterprise.trae.cn, 0.2.41, which sent them
+  // under user_message_context.model_info, the agent task's shape). Not yet
+  // seen answering from a real enterprise seat: a Trae preset is sent as
+  // before.
+  if (enterpriseModel(entry)) {
+    body.config_source = ENTERPRISE
+    body.is_custom_model = true
+    if (entry.provider) body.provider = String(entry.provider)
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -1691,6 +1825,38 @@ class TextTools {
       const sm = this.buf.match(STRAY_AT)
       const s = sm ? sm.index : -1
       const x = this.buf.search(XML_AT)
+      const j = jsonCallAt(this.buf, this.sent + text)
+      if (j >= 0 && [i, d, r, x, s].every((y) => y < 0 || j < y)) {
+        // OpenAI's own wire shape written as text, {"tool_calls":[{…}]} on
+        // a line of its own (plugins#1114): whole and readable, its calls;
+        // cut short, a failure; in code or not readable, text
+        const head = this.buf.slice(0, j)
+        const brace = this.buf.indexOf("{", j)
+        const o = quoted(this.sent + text + head) ? -2 : objectEnd(this.buf, brace)
+        if (o === -1 && !end) {
+          text += head
+          this.buf = this.buf.slice(j)
+          break
+        }
+        if (o === -1) {
+          this.buf = ""
+          text += head
+          this.sent += text
+          return { text, calls, reasoning, error: CUT_SHORT }
+        }
+        const got = o > 0 ? jsonCalls(this.buf.slice(brace, o)) : null
+        if (!got) {
+          text += this.buf.slice(0, brace + 1)
+          this.buf = this.buf.slice(brace + 1)
+          continue
+        }
+        text += head
+        calls.push(...got)
+        this.mark = this.sent.length + text.length
+        this.buf = this.buf.slice(o)
+        this.after = true
+        continue
+      }
       if (s >= 0 && [i, d, r, x].every((y) => y < 0 || s < y)) {
         // a close with no call open, with what GLM left before it
         // (}}</tool_call>, magpie#1945): not the answer, dropped; in code,
@@ -1853,7 +2019,7 @@ class TextTools {
       this.buf = ""
     } else {
       // keep back an opened block, or what may be the start of one
-      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD)].filter((x) => x >= 0)
+      const at = [this.buf.search(OPEN_AT), this.buf.search(OPEN_HOLD), this.buf.search(DSML_AT), this.buf.search(REASON_AT), this.buf.search(XML_AT), this.buf.search(XML_HOLD), jsonCallAt(this.buf, this.sent + text), jsonHoldAt(this.buf, this.sent + text)].filter((x) => x >= 0)
       let keep = at.length ? this.buf.length - Math.min(...at) : 0
       if (!keep) for (let k = Math.min(MARK_MAX - 1, this.buf.length); k > 0; k--) if (MARKS.some((m) => m.startsWith(this.buf.slice(-k)))) { keep = k; break }
       // and braces, brackets, quotes or a > a close may still come after
@@ -2007,6 +2173,46 @@ class TextTools {
     if (/^\s*[\w.:-]{1,128}\s*<arg_key>/.test(body)) return { error: close >= 0 ? UNREADABLE : CUT_SHORT }
     return { text: true }
   }
+}
+
+// A {"tool_calls":[{ at a line's start (plugins#1114); before refers to
+// what came before buf, the start of a line only after a line break or
+// blanks.
+const JSON_CALL_AT = /(^|\n)[ \t]*\{\s*"tool_calls"\s*:\s*\[\s*\{/g
+const JSON_CALL_KEY = '{"tool_calls":[{'
+const atLineStart = (before) => !/\S/.test(before.slice(before.lastIndexOf("\n") + 1))
+
+// jsonCallAt is where in buf the line holding such an object starts, or -1
+function jsonCallAt(buf, before) {
+  for (const m of buf.matchAll(JSON_CALL_AT)) {
+    const at = m.index + m[1].length
+    if (at > 0 || atLineStart(before)) return at
+  }
+  return -1
+}
+
+// jsonHoldAt is where buf's last line starts when it may still grow into
+// one (its indent alone too), or -1
+function jsonHoldAt(buf, before) {
+  const k = buf.lastIndexOf("\n") + 1
+  if (k === 0 && !atLineStart(before)) return -1
+  const line = buf.slice(k)
+  return line && JSON_CALL_KEY.startsWith(line.replace(/\s+/g, "")) ? k : -1
+}
+
+// jsonCalls reads such an object's calls: {"name","arguments"} entries or
+// OpenAI's {"type":"function","function":{…}}; null when there are none or
+// one has no name
+function jsonCalls(s) {
+  const list = looseJSON(s)?.tool_calls
+  if (!Array.isArray(list) || !list.length) return null
+  const out = []
+  for (const e of list) {
+    const f = e?.function ?? e
+    if (!f || typeof f.name !== "string" || !f.name) return null
+    out.push({ name: f.name, arguments: callArgs(f) })
+  }
+  return out
 }
 
 const CUT_SHORT = "the model's tool call, written as text, was cut short; it is not sent on as the answer"
@@ -2761,13 +2967,15 @@ async function* chain(held, it) {
 }
 
 // failure is the response for an error Trae answered with
-function failure(site, status, code, message) {
+// ctx, when given, says what was asked: an error that isn't a lapse or a
+// quota names it, so a 502 says which model, where and through what
+function failure(site, status, code, message, ctx = "") {
   message = message || statusLine(status)
   if (status === 401 || lapsedCode(code, site) || (status === 403 && lapsedWords.test(message))) {
     return errorResponse(401, `${site.realm}'s sign-in has expired (${message}); sign in again`, "expired")
   }
   if (status === 429 || quotaCode(code, site) || (status === 403 && quotaWords.test(message))) return errorResponse(429, `${site.realm}: ${message}`)
-  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}`)
+  return errorResponse(status >= 400 ? status : 502, `${site.realm}: ${message}${code ? ` (code ${code})` : ""}${ctx ? `; ${ctx}` : ""}`)
 }
 
 // openai is the answer as an OpenAI chat completion: a stream, or one body
@@ -2865,11 +3073,25 @@ const wrongFunction = (code) => ["4001", "4023", "1005"].includes(String(code))
 // The lists also hold the IDE's own helpers (summary, fast_apply, title
 // generation: usage other than chat_completion), configs switched off, and
 // the slots of custom models, which need a provider bound in the IDE.
+//
+// An enterprise's own built-in models are the exception: Trae CN's client
+// (3.4.20, ai-modules-chat ModelConfigSource) marks each entry's
+// config_source Trae 1, Enterprise 2 or Personal 3, and shows the
+// Enterprise ones as "Enterprise-builtin" for every seat of the tenant —
+// served by Trae with the tenant's provider, so a seat picks them like its
+// own. Not being Trae's presets (is_preset false), they come out as custom
+// models (is_custom_model) and were dropped with the personal ones, whose
+// provider key lives in the user's IDE only (plugins#1258, 0.2.41).
+// One the admin switched off (status false) stays out, as in the IDE.
+const ENTERPRISE = 2
+const enterpriseModel = (m) => Number(m?.config_source) === ENTERPRISE
 function chatModel(m, site) {
   const id = String(m?.config_name ?? "")
-  if (!id || /^custom_model/i.test(id)) return false
+  if (!id) return false
   if (m.usage && m.usage !== "chat_completion") return false
   if (m.config_switch === false) return false
+  if (enterpriseModel(m)) return m.status !== false && !(site?.hidesInvisible && m.is_invisible_to_user === true)
+  if (/^custom_model/i.test(id)) return false
   if (m.is_custom_model === true || m.display_config?.is_custom_model === true) return false
   // the IDE's own picker hides these: Auto-mode routing channels and
   // pay-as-you-go twins of another entry (gemini-3.1-pro vs -paygo/-auto,
@@ -3057,12 +3279,16 @@ const effortOf = (levels, effort) => {
 // ---- usage ------------------------------------------------------------------------
 
 // credits adds up the account's entitlement packs as the IDE shows them:
-// each pack with a credit limit (-1 unlimited) and what it used
-function credits(v) {
+// each pack with a credit limit (-1 unlimited) and what it used. until is
+// the soonest end of a pack that still has credits left and has not ended:
+// a spent daily pack or one already past its end changes nothing on the
+// account, so it does not name the date the credits turn over (#718, #1157).
+function credits(v, now = Date.now()) {
   let limit = 0
   let used = 0
   let unlimited = false
   let soonest = 0
+  let lapsing = 0
   for (const p of v?.user_entitlement_pack_list ?? []) {
     const bi = p?.entitlement_base_info ?? {}
     const l = Number(bi?.quota?.credits_limit)
@@ -3072,12 +3298,143 @@ function credits(v) {
     else if (l >= 0) limit += l
     if (u > 0) used += u
     const end = whenOf(bi.end_time ?? bi.expire_time ?? p.end_time)
-    if (end && (!soonest || end < soonest)) soonest = end
+    const left = l === -1 || (l > 0 && u < l)
+    if (!(end && end > now && left)) continue
+    // what a finite pack has left is lost at its end, whether or not a
+    // new pack follows: lapsing is the credits that go at the soonest end
+    // (#718: a TraeCode CN account's sign-in rewards are 31-day packs of
+    // 100, one a day)
+    const rest = l === -1 ? 0 : Math.max(0, l - Math.max(0, u))
+    if (!soonest || end < soonest) (soonest = end), (lapsing = rest)
+    else if (end === soonest) lapsing += rest
   }
-  return { limit, used, unlimited, until: soonest }
+  return { limit, used, unlimited, until: soonest, lapsing }
 }
 
 const round = (n) => Math.round(n * 100) / 100
+
+// yuan is money as Trae CN's console counts it, in yuan. The consumer
+// window's unit is a bare word ("credits"); a currency the card can't name
+// in a unit goes in display, as Cursor's and JoyCode's do.
+const yuan = (n) => "¥" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// dollars is the same money as the international console counts it. The
+// console's own build picks the symbol by deployment (volcengine ¥,
+// byteplus $), so each realm's console is asked with its own.
+const DOLLARS = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// seatUsageWindow is the seat pool's window, which both realms' consoles
+// name the same way: the pool as the limit and the models' own cost as what
+// was spent, in the realm's money, resetting when the console's period does.
+// The count rides on the window (amount of limit), as the consumer window's
+// does, so magpie says it in the window's row; display carries the currency
+// the card's own row can't name (yetone/magpie#694).
+//
+// A spend the console did not answer (used === null) is not a spend of
+// nothing: the window says no percent and no amount, and its display names
+// the pool with a question mark, so magpie reads the account as unknown
+// rather than as one that has spent none of its allowance.
+function seatUsageWindow(pool, used, until, money, unit) {
+  const w = {
+    name: "Seat Usage",
+    display: used === null ? `? / ${money(pool.limit)}` : `${money(used)} / ${money(pool.limit)}`,
+    limit: round(pool.limit),
+    unit,
+  }
+  if (used === null) w.used = null
+  else {
+    w.used = Math.round(Math.max(0, Math.min(100, (used / pool.limit) * 100)) * 100) / 100
+    w.amount = round(used)
+  }
+  if (until) w.resetsAt = until
+  return w
+}
+
+// PAYGO_UNLIMITED is the console's "no limit": a pay-as-you-go pool is
+// handed this instead of a real one (9999999999), which is not a limit a
+// card should show. The seat pool is the limit that matters.
+const PAYGO_UNLIMITED = 1e9
+
+// seatPoolOf reads an enterprise account's allowance as its console has it:
+// the seat pool, in the realm's money (seat_pool_currency_quota). A pool the
+// console hands PAYGO_UNLIMITED is no limit at all, as the consumer page's
+// -1 is. A pool the console names as null or "" is no pool either: Number()
+// would read both as 0, which would draw an allowance of nothing rather than
+// say the console named none.
+function seatPoolOf(v) {
+  const q = v?.user_model_quota
+  if (!q) return null
+  const raw = q.seat_pool_currency_quota
+  if (raw === null || raw === undefined || raw === "") return null
+  const limit = Number(raw)
+  if (!Number.isFinite(limit)) return null
+  if (limit < 0 || limit >= PAYGO_UNLIMITED) return { limit: 0, unlimited: true }
+  return { limit, unlimited: false }
+}
+
+// seatSpentOf adds up what an enterprise account's models cost, in the
+// realm's money: each model's total_cost_currency in the seat's usage
+// detail. The console gives no total of its own
+// (seat_total_cost_currency is null), so this is the sum, and a model the
+// answer leaves out costs nothing.
+//
+// Only the account's own seat is counted. The console answers an
+// administrator with every seat in the tenant, and adding those up would
+// show one person's card the whole tenant's spend; the account's own seat is
+// the one the quota names (user_model_quota.user_id), which a real console
+// sends. A seat the account's cannot be told apart — several seats and no id
+// to pick by — is not guessed at.
+//
+// null when there is nothing to add up honestly: no usage list at all (the
+// read failed, and a failed read is not a spend of zero), or several seats
+// with no way to say which is the account's.
+function seatSpentOf(v, uid) {
+  const list = v?.user_usage_list
+  if (!Array.isArray(list)) return null
+  const me = uid === undefined || uid === null || uid === "" ? null : String(uid)
+  const ids = new Set(list.map((u) => (u?.user_id === undefined || u?.user_id === null ? "" : String(u.user_id))).filter((s) => s !== ""))
+  let seats = list
+  if (ids.size > 0) {
+    // the seats carry ids: take the account's own. With no id from the quota,
+    // a single seat's answer is that seat; several seats' is not knowable.
+    const want = me ?? (ids.size === 1 ? [...ids][0] : null)
+    if (want === null) return null
+    seats = list.filter((u) => String(u?.user_id ?? "") === want)
+    if (seats.length === 0) return null
+  }
+  let used = 0
+  for (const u of seats) {
+    for (const m of u?.in_seat_detail?.chat_usage_details ?? []) {
+      const c = Number(m?.total_cost_currency)
+      if (Number.isFinite(c) && c > 0) used += c
+    }
+  }
+  return used
+}
+
+// entResetOf is when an enterprise account's seat pool refills, as an ISO
+// string: the console's ResetTime. The usage page reads the same field for
+// its "席位额度将于 <date> 重置" line, so the card and the page name one
+// date. whenOf reads it, which takes the milliseconds the console sends and
+// the seconds a stand-in may. Absent when the console gives none.
+function entResetOf(v) {
+  const t = whenOf(v?.Data?.ResetTime)
+  return t > 0 ? new Date(t).toISOString() : null
+}
+
+// isEnterprise: the sign-in named the realm's enterprise console as the
+// account's host, which is what an enterprise (SaaS) sign-in does — the
+// console serves that account's models and holds its usage. A personal
+// account names the consumer hosts, or none.
+function isEnterprise(a, site) {
+  const named = String(site?.consoleHost ?? "").toLowerCase()
+  if (!named || !a?.host) return false
+  try {
+    return new URL(String(a.host)).hostname.toLowerCase() === named
+  } catch {
+    return false
+  }
+}
 
 // dollarUsageOf reads an account's entitlement pack as the dollar billing
 // has it (the international deployment): the period's allowance in dollars
@@ -3195,6 +3552,39 @@ const makePlugin = (site) => async ({ client }) => {
     else if (strict && was.expired) rec = await runRead(a, who)
     else rec = was
     return { models: rec.done, expired: rec.expired }
+  }
+
+  // the enterprise seats whose console turned a chat away (4245) in this
+  // run, by account: the mark is kept with the sign-in too, and this holds
+  // it when that save fails
+  const consoleRefused = new Set()
+  // hostOf is the account's model host, with that mark applied
+  const hostOf = (a) => {
+    const h = apiOf(a, site)
+    if (site.hosts.console && h === site.hosts.console && consoleRefused.has(a.uid || a.name)) return site.hosts.api
+    return h
+  }
+  // onConsole: the host is the enterprise console, where a 4245 is the
+  // seat's console refusing chats rather than this model or function
+  const onConsole = (host) => !!site.hosts.console && host === site.hosts.console && host !== site.hosts.api
+  const consoleRefuses = (code) => String(code) === "4245"
+
+  // askedOf says what a refused chat asked for: the model, the functions
+  // tried and the host, and whether the account's list has the model at all.
+  // A model typed in by hand that the list doesn't name is the likeliest
+  // cause of a refusal, and the list is read for it (once per REREAD_MS)
+  // only on this failing path.
+  const askedOf = async (a, id, entry, fns, host) => {
+    let listed = !!entry && liveEntry.has(id)
+    if (!listed) {
+      await readList(a).catch(() => {})
+      entry = liveEntry.get(id) ?? null
+      listed = !!entry
+    }
+    const kind = enterpriseModel(entry) ? "enterprise built-in model" : "model"
+    let out = `${kind} ${id} asked through ${fns.join(", ")} on ${host.replace(/^https?:\/\//, "")}`
+    if (!listed && liveEntry.size) out += `; this account's model list doesn't have ${id}, so Trae may not serve it under that id`
+    return out
   }
 
   const save = async (auth) => {
@@ -3427,6 +3817,70 @@ const makePlugin = (site) => async ({ client }) => {
     return { outcome: "claimed", ...(credit > 0 ? { credit } : {}) }
   }
 
+  // enterpriseUsage reads an enterprise (SaaS) account's usage: the seat
+  // pool and what the account's models cost (get_personal_quota and
+  // get_user_model_usage on the realm's console, in the realm's money). On
+  // Trae CN the consumer credits page is read beside them for the card's
+  // second row — that realm's console is what such an account bills on, and
+  // the credits page answers it too with an allowance real calls have been
+  // measured not to touch. The international realm has no such page.
+  const enterpriseUsage = async (a, signIn) => {
+    const ent = site.usage.ent
+    const ask = async (path) => {
+      const r = await post(a, site.hosts.console + path, {})
+      const e = errorOf(r.v)
+      // A console known to take the IDE's own token answers a lapsed sign-in
+      // with 401 or the realm's lapsed code, and that is the sign-in's
+      // trouble. A console that is not known to (the international one, which
+      // no such account could be found to ask) is not allowed to say so: its
+      // refusal is reported as the read's error and the sign-in stands,
+      // because a console that wants its own session would otherwise mark
+      // every one of that realm's enterprise accounts expired, and signing in
+      // again would not clear it.
+      if (r.status === 401 || lapsedCode(e.code, site)) {
+        return site.consoleTakesIdeToken ? { gone: true } : { error: e.message || statusLine(r.status) }
+      }
+      if (r.status !== 200 || (e.code && String(e.code) !== "0")) return { error: e.message || statusLine(r.status) }
+      return { v: r.v }
+    }
+    let quota
+    try {
+      quota = await ask(ent.quota.path)
+    } catch (e) {
+      return { error: `${site.realm} usage: ` + (e?.message ?? e), signIn }
+    }
+    if (quota.gone) return { error: `${a.name || a.uid}: ${site.realm}'s sign-in has expired — sign in again`, signIn: "expired" }
+    if (quota.error) return { error: `${site.realm} usage: ${quota.error}`, signIn, user: a.name }
+    // the spend page is the second half of the count: when it fails, the
+    // allowance is still worth showing but the spend is unknown, and the
+    // window says so (used: null) rather than reading as nothing spent — a
+    // failed read is not a spend of zero
+    let spent = { v: {} }
+    try {
+      const got = await ask(ent.spent.path)
+      if (!got.gone && !got.error) spent = got
+    } catch {}
+    // the console's own period, for the date the pool refills: a failure
+    // there costs the card its reset date and nothing else
+    let core = { v: {} }
+    try {
+      const got = await ask(ent.core.path)
+      if (!got.gone && !got.error) core = got
+    } catch {}
+    // the credits page is the card's second row, never the count: a failure
+    // there leaves the seat pool standing. Trae Global has no such page —
+    // its own usage page is the dollar billing's, read above as the pool.
+    let page = null
+    if (site.usage.kind === "credits") {
+      try {
+        const r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
+        const e = errorOf(r.v)
+        if (r.status === 200 && (!e.code || String(e.code) === "0")) page = r.v
+      } catch {}
+    }
+    return ent.read({ quota: quota.v, spent: spent.v, core: core.v, credits: page }, a, signIn, { credits, round })
+  }
+
   const usage = async (getAuth) => {
     let a
     try {
@@ -3435,6 +3889,9 @@ const makePlugin = (site) => async ({ client }) => {
       return { error: e.message, signIn: e instanceof Expired ? "expired" : "kept" }
     }
     const signIn = a.renewed ? "renewed" : "kept"
+    // an enterprise (SaaS) account bills on the realm's own console, not on
+    // the page its realm otherwise bills on
+    if (site.usage.ent && isEnterprise(a, site)) return enterpriseUsage(a, signIn)
     let r
     try {
       r = await post(a, site.usage.host(site, a) + site.usage.path, site.usage.body)
@@ -3451,7 +3908,7 @@ const makePlugin = (site) => async ({ client }) => {
   // SOLO CN's ai-agent asks (batch_get_detail_param): {function: entries}.
   // null when Trae answers it with no lists.
   const batchLists = async (a) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/batch_get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/batch_get_detail_param", {
       functions: site.functions, agent_type: "", current_config_info: { config_name: "", is_custom_model: false },
       mode_type: 0, access_type: 0, ab_force_vids: "", ab_autotest_advanced_mode: 0, show_custom_model: true,
     })
@@ -3470,7 +3927,7 @@ const makePlugin = (site) => async ({ client }) => {
 
   // listOf is one function's model list, as the IDE asks for it
   const listOf = async (a, fn) => {
-    const r = await post(a, apiOf(a, site) + "/api/ide/v1/get_detail_param", {
+    const r = await post(a, hostOf(a) + "/api/ide/v1/get_detail_param", {
       function: fn, config_names: null, need_prompt: false, current_config_info: null, poly_prompt: true, mode_type: null, agent_type: null,
     })
     if (r.status === 401 || lapsedCode(errorOf(r.v).code, site)) throw new Expired(`${site.realm}'s sign-in has expired; sign in again`)
@@ -3712,7 +4169,7 @@ const makePlugin = (site) => async ({ client }) => {
         const a0 = fromAuth(await getAuth(), site)
         if (!a0) return {}
         return {
-          baseURL: apiOf(a0, site) + "/v1",
+          baseURL: hostOf(a0) + "/v1",
           apiKey: "trae", // the engine's placeholder; the request carries the JWT
           async fetch(input, init = {}) {
             const r0 = input instanceof Request ? input : null
@@ -3785,47 +4242,79 @@ const makePlugin = (site) => async ({ client }) => {
             // the account answering it, so a failover inside one conversation
             // is not one Trae reads as another's
             const session = conversationID(req, sessionOf(new Headers(init.headers ?? r0?.headers ?? {})), who)
-            for (const fn of [...new Set(fns)]) {
-              const res = await fetch(apiOf(a, site) + "/api/agent/v3/llm_utils_chat", {
-                method: "POST",
-                headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels)),
-                signal: ac.signal,
-              })
-              if (!res.ok) {
-                const text = await res.text()
-                const e = errorOf(text)
-                last = failure(site, res.status, e.code, e.message || text.trim().slice(0, 300))
-                if (res.status === 400 && wrongFunction(e.code)) continue
-                break
-              }
-              const ct = res.headers.get("content-type") ?? ""
-              if (!ct.includes("event-stream") && ct.includes("json")) {
-                // an answer that isn't a stream is an error in a 200
-                const e = errorOf(await res.text())
-                last = failure(site, 502, e.code, e.message)
-                if (wrongFunction(e.code)) continue
-                break
-              }
-              const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
-              const { held, done } = await first(it)
-              const err = held.find((p) => p.error)
-              if (err) {
-                last = failure(site, 502, err.code, err.error)
-                if (wrongFunction(err.code)) {
-                  // another function may take it: this answer's read goes
-                  // with the function it came from, not left hanging
-                  it.return?.()
-                  res.body.cancel?.().catch(() => {})
-                  continue
+            // an enterprise seat chats on its console, which bills the seat
+            // pool. One whose console turns chats away (4245, #1127) is
+            // marked, kept with its sign-in, and the same request is asked
+            // once more on the consumer gateway; its list is read from there
+            // next.
+            // what the last refusal was, and where it was asked: the error
+            // the agent gets names the model, the functions and the host
+            let why = null
+            const tried = []
+            const entry = liveEntryOf(base)
+            for (let round = 0; round < 2; round++) {
+              const host = hostOf(a)
+              let refused = false
+              for (const fn of [...new Set(fns)]) {
+                tried.push(fn)
+                const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
+                  method: "POST",
+                  headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
+                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)),
+                  signal: ac.signal,
+                })
+                if (!res.ok) {
+                  const text = await res.text()
+                  const e = errorOf(text)
+                  why = { status: res.status, code: e.code, message: e.message || text.trim().slice(0, 300), host }
+                  last = failure(site, why.status, why.code, why.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (res.status === 400 && wrongFunction(e.code)) continue
+                  break
                 }
-                break
+                const ct = res.headers.get("content-type") ?? ""
+                if (!ct.includes("event-stream") && ct.includes("json")) {
+                  // an answer that isn't a stream is an error in a 200
+                  const e = errorOf(await res.text())
+                  why = { status: 502, code: e.code, message: e.message, host }
+                  last = failure(site, 502, e.code, e.message)
+                  if (onConsole(host) && consoleRefuses(e.code)) { refused = true; break }
+                  if (wrongFunction(e.code)) continue
+                  break
+                }
+                const it = parts(sse(res.body), Array.isArray(req.tools) ? req.tools : [])[Symbol.asyncIterator]()
+                const { held, done } = await first(it)
+                const err = held.find((p) => p.error)
+                if (err) {
+                  why = { status: 502, code: err.code, message: err.error, host }
+                  last = failure(site, 502, err.code, err.error)
+                  if (onConsole(host) && consoleRefuses(err.code)) {
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    refused = true
+                    break
+                  }
+                  if (wrongFunction(err.code)) {
+                    // another function may take it: this answer's read goes
+                    // with the function it came from, not left hanging
+                    it.return?.()
+                    res.body.cancel?.().catch(() => {})
+                    continue
+                  }
+                  break
+                }
+                fnOf.set(who, fn)
+                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
+                out.headers.set("X-Magpie-Sign-In", signIn)
+                return out
               }
-              fnOf.set(who, fn)
-              const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
-              out.headers.set("X-Magpie-Sign-In", signIn)
-              return out
+              if (!refused) break
+              consoleRefused.add(who)
+              a = { ...a, consoleChat: false }
+              await save(toAuth(a, site))
+              readAt.delete(who)
             }
+            if (why && last.status !== 401 && last.status !== 429) last = failure(site, why.status, why.code, why.message, await askedOf(a, base, entry, [...new Set(tried)], why.host))
             if (!last.headers.has("X-Magpie-Sign-In")) last.headers.set("X-Magpie-Sign-In", signIn)
             return last
           },
@@ -3840,4 +4329,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

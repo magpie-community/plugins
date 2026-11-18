@@ -1,10 +1,10 @@
 {
   "name": "@magpie-community/agent-nanobot",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "nanobot (HKUDS/nanobot) as a magpie agent: pick one of magpie's models for it on the Agents page, with Library MCP servers and skills",
   "type": "module",
   "main": "./index.mjs",
-  "files": ["nanobot.agent.js", "index.mjs", "runtime.mjs", "bridge.mjs", "cli.mjs", "README.md"],
+  "files": ["proc.mjs", "nanobot.agent.js", "index.mjs", "runtime.mjs", "bridge.mjs", "cli.mjs", "README.md"],
   "bin": { "magpie-nanobot": "./cli.mjs" },
   "scripts": { "test": "bun test nanobot.test.mjs" },
   "engines": { "node": ">=20" },

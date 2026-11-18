@@ -53,8 +53,10 @@ async function holdLock(directory, runtime = process.execPath, phase = "held") {
   // A file, not a data: URL on the command line: Windows caps that at 32K.
   let module = new URL("./gumloop.mjs", import.meta.url).href
   if (phase !== "held") {
-    const copy = join(tempDir(), "gumloop.mjs")
+    const dir = tempDir()
+    const copy = join(dir, "gumloop.mjs")
     writeFileSync(copy, source)
+    writeFileSync(join(dir, "proc.mjs"), readFileSync(new URL("./proc.mjs", import.meta.url)))
     module = pathToFileURL(copy).href
   }
   const script = `

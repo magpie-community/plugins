@@ -147,7 +147,7 @@ test("concurrent reused provisions wait for the trajectory check", async () => {
   }
 }, 15_000)
 
-test("an absent project store writes nothing and starts no polling server", async () => {
+test("an absent project store writes nothing", async () => {
   const f = await fixture()
   try {
     await delay(1400)

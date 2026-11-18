@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import net from 'node:net';
+import { processExists } from './proc.mjs';
 
 const VERSION = 1;
 // The one provider ID this adapter creates. The paths it lives under, the
@@ -207,7 +208,7 @@ function acquire(paths) {
     const held = read(paths.lock)?.data;
     if (held) {
       if (!Number.isSafeInteger(held.pid) || held.pid <= 0 || typeof held.token !== 'string') fail('invalid_lock');
-      try { process.kill(held.pid, 0); fail('writer_locked'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      if (processExists(held.pid)) fail('writer_locked');
       paths.__fault?.('dead-lock-guarded');
       if (!equal(read(paths.lock)?.data, held)) fail('writer_locked');
       remove(paths.lock);

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>脱敏规则</title><script src="bridge.js"></script><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="rules.css"><script src="rules.js" defer></script></head>
+<body class="rules-page"><main>
+<header class="page-topbar"><h1 class="sr-only">脱敏规则</h1><nav class="tabs" aria-label="公司名称保护"><a href="session-authorization.html">会话授权</a><a href="rules.html" aria-current="page">脱敏规则</a><a href="./">脱敏回执</a></nav><p class="page-description">管理本机使用的公司名称、简称和别名。</p></header>
+<div class="rule-subnav" role="tablist" aria-label="规则类型"><button id="builtin-tab" type="button" role="tab" aria-selected="false" aria-controls="builtin-view" tabindex="-1">内置识别</button><button id="custom-tab" type="button" role="tab" aria-selected="true" aria-controls="custom-view">自定义规则</button></div>
+
+<section id="remove-panel" class="rule-confirm" aria-labelledby="remove-title" hidden><h2 id="remove-title">移除这条自定义规则？</h2><p id="remove-name"></p><p class="rule-help">移除后，这条规则的名称和别名不再作为自定义词匹配；内置识别仍继续生效。</p><div class="rule-actions"><button id="cancel-remove" type="button">取消</button><button id="confirm-remove" type="button">确认移除</button></div></section>
+<section id="leave-panel" class="rule-confirm" aria-label="未保存的修改" hidden><p>当前修改尚未保存。离开会丢弃这些修改。</p><div class="rule-actions"><button id="stay-edit" type="button">继续编辑</button><button id="discard-edit" type="button">放弃修改</button></div></section>
+<section id="custom-view" role="tabpanel" aria-labelledby="custom-tab" class="custom-rules">
+  <div class="custom-heading"><svg class="custom-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h8M8 12h5M8 16h3"/></svg><div><h2 id="custom-title">自定义规则</h2><p>补充自动识别之外的名称，并集中管理它的简称与别名。</p></div><button id="add-rule" class="primary" type="button" disabled><span aria-hidden="true">＋</span> 新增规则</button></div>
+  <div class="rules-summary"><p id="rule-count">正在读取规则…</p><p id="rule-notice" role="status" aria-live="polite"></p></div>
+  <div class="rules-toolbar"><label class="rule-search" for="rule-search"><span class="sr-only">搜索名称或别名</span><input id="rule-search" type="search" placeholder="搜索名称或别名" autocomplete="off"></label><button id="refresh-rules" type="button">刷新</button></div>
+<section class="rule-editor" id="rule-editor" aria-labelledby="editor-title" hidden>
+  <div class="editor-heading"><div><h2 id="editor-title">编辑规则</h2><p>一条规则管理一个主体，简称与别名可以添加多个。</p></div><span id="draft-state">尚未保存</span></div>
+  <form id="rule-form">
+    <div class="name-editor"><label for="rule-name"><span class="field-title">公司名称或脱敏词 <small>必填</small></span><input id="rule-name" type="text" maxlength="120" autocomplete="off" spellcheck="false" required aria-describedby="name-help"></label>
+    <p id="name-help" class="rule-help">填写需要完整匹配的名称。收入、成本等业务字段及金额不在这里设置。</p></div>
+    <fieldset class="alias-editor"><legend>同一主体的简称、别名<span>选填，可添加多个</span></legend><div id="rule-aliases"></div><div class="alias-toolbar"><button id="add-alias" type="button"><span aria-hidden="true">＋</span> 添加简称或别名</button><span id="alias-count" aria-live="polite"></span></div></fieldset>
+    <p id="alias-help" class="rule-help">每个输入框填写一个；也可粘贴每行一个的多行名单。空白行不会保存。各别名独立匹配并按原写法还原，不要把不同主体合并到一条规则。所有规则的名称和别名合计最多512个。</p>
+    <div class="rule-actions"><p id="editor-message" role="status" aria-live="polite"></p><button id="cancel-edit" type="button">取消</button><button id="save-rule" class="primary" type="button">保存规则</button></div>
+  </form>
+</section>
+
+  <div class="table-wrap" tabindex="0" aria-label="自定义脱敏规则表"><table class="rules-table"><thead><tr><th scope="col">公司名称 / 脱敏词</th><th scope="col">简称与别名</th><th scope="col" class="rule-operations">操作</th></tr></thead><tbody id="rule-rows"></tbody></table><p id="rule-empty" hidden></p></div>
+  <p class="rules-footnote">保存后对后续经过 Magpie 的请求生效。已批准的会话原名授权仍适用，已发送的内容不会撤回。</p>
+  <details class="audit-history"><summary><svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg><span class="history-heading"><span class="history-title">规则版本记录</span><span class="history-description">追溯自定义规则的版本与名称数量</span></span><span class="history-action"><span class="history-open">查看记录</span><span class="history-close">收起记录</span><span aria-hidden="true">↗</span></span></summary><p>这里展示最近最多100条规则版本摘要，不含原名、密钥或会话正文。脱敏回执另按最近25个请求保留。旧摘要缺失不代表从未变更。</p><div id="rule-history" role="status">展开后读取</div></details>
+</section>
+<section id="builtin-view" role="tabpanel" class="builtin-rules" aria-labelledby="builtin-tab" hidden>
+  <div class="builtin-heading"><svg class="builtin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></svg><div><h2 id="builtin-title">内置识别规则</h2><p>三种识别方式共同保护经过 Magpie 的文字</p></div><span class="builtin-status">自动生效</span></div>
+  <p class="builtin-intro">检查经过 Magpie 的文字输入、历史消息、工具返回文字、工具参数和工具说明。以下识别方式共同生效，自定义规则用于补充名称和别名。</p>
+  <dl class="recognition-rules">
+    <div><dt><span class="recognition-icon"><svg class="" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21V7l8-4v18M12 10h8v11M2 21h20M7 9h2M7 13h2M7 17h2M15 14h2M15 18h2"/></svg></span><span>公司全称<small>按名称结构识别</small></span></dt><dd><p><strong>中文：</strong>识别以“股份有限公司、有限责任公司、有限公司、股份公司、集团公司”结尾的名称；仅以“公司”或“集团”结尾，不会单凭后缀自动认定。</p><p><strong>英文：</strong>首词以大写英文字母开头，并带 Inc.、Ltd.、LLC 等常见后缀。支持的后缀还包括 Corporation、Corp.、Incorporated、Limited、L.L.C.、PLC、GmbH；常见的 Co. 与 Ltd. 组合形式也可识别。普通文字中的小写 limited 不按公司后缀识别。</p></dd></div>
+    <div><dt><span class="recognition-icon"><svg class="" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10M13 14h4M13 17h3"/></svg></span><span>明确名称字段<small>按字段含义识别</small></span></dt><dd><p>“公司名称、客户名称、供应商名称、交易对手名称”等字段中的值，可识别不带上述后缀的名称。会跳过明显泛称、说明句和空值占位文字。</p><p>通用 company、customer、supplier、counterparty 字段里的小写下划线标识，不会单凭该字段认定为公司名；明确名称字段和自定义规则仍可声明这类写法。</p></dd></div>
+    <div><dt><span class="recognition-icon"><svg class="" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m10 13 4-2M9 16H7a4 4 0 0 1 0-8h3M14 8h3a4 4 0 0 1 0 8h-3"/></svg></span><span>材料中的简称关系<small>按明确关系识别</small></span></dt><dd><p>从用户文字和工具返回文字中识别紧接公司全称、带引号的“以下简称”“简称为”等定义；代码块、示例或虚构定义不采用。同一简称对应多个全称时，跳过该自动简称。</p><p>一处定义最多读取4个简称；本次请求的自动简称关系超过128个时，不采用这批自动简称。自定义规则不受这两项自动识别限制，但受全局512名称上限约束。</p></dd></div>
+  </dl>
+  <div class="recognition-boundaries"><h3>补充方式与识别边界</h3><ul><li>未被自动识别的名称或简称，可以切换到“自定义规则”补充。自定义词按文字匹配，不按正则表达式执行；重叠时优先较长名称，英文字母匹配不区分大小写。</li><li>识别依赖文字形式和明确关系，不会自动查询工商资料、推断品牌归属或保证所有名称都能识别。没有明确简称关系时，应自行补充。</li><li>图片、音频及文件中的二进制内容不做文字识别；工具自行联网、上传文件或绕过 Magpie 的请求不在本插件范围内。</li><li>本页不提供金额脱敏。收入、成本、期间、币种、单位和含税口径应保留；移除自定义规则不等于关闭内置识别。</li></ul></div>
+</section>
+</main></body></html>

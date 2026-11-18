@@ -174,6 +174,12 @@ the room (a new session, an edited history, a room Tabbit reset) gets a fresh
 room with the whole transcript flattened into one prompt; measured, the model
 answers the last question with the earlier turns as context.
 
+One turn's prompt is at most **18,000 characters**. Tabbit counts characters,
+not bytes, and answers a longer one with code 492 after about 40 seconds
+(measured at 20,500 characters, #833). A flattened transcript keeps the final
+message, then the system prompt, then the newest earlier turns. A message
+that is still too long keeps its head and tail.
+
 `maxConcurrency` is **1**: Tabbit answers one turn at a time.
 
 ## Working on this package

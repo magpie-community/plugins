@@ -1110,6 +1110,75 @@ for (const { protocol, path, model } of protocols) {
   });
 }
 
+// DSH 0.2.2's edit, read and skill (SuperWheel, plugins#632, 2026-11-16):
+// each description is refused under any name, and edit and read are refused
+// by name with their own parameters (the same parameters under another name
+// are served). They go reworded and renamed; the core stand-ins Zen wants
+// still go as edit and read; a call of a renamed tool comes back as DSH's.
+const DSH_EDIT = {
+  name: "edit",
+  description: "Edit an existing UTF-8 text file by replacing literal text.",
+  parameters: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" }, sandbox_permissions: { type: "string" }, justification: { type: "string" } } },
+};
+const DSH_READ = {
+  name: "read",
+  description: "Read a UTF-8 text file and return line-numbered content.",
+  parameters: { type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } } },
+};
+const DSH_SKILL = {
+  name: "skill",
+  description: " Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog. ",
+  parameters: { type: "object", properties: { name: { type: "string" } } },
+};
+for (const { protocol, path, model } of protocols) {
+  test(`${protocol}: DSH's edit, read and skill go reworded, edit and read renamed, and come back as DSH's (#632)`, async (t) => {
+    const { plugin, state, origin } = await fixture(t);
+    await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+    const loader = await plugin.auth.loader(publicAuth);
+    const tools = [DSH_EDIT, DSH_READ, DSH_SKILL].map(({ name, description, parameters }) => {
+      const tool = { name, description };
+      if (protocol === "chat") return { type: "function", function: { ...tool, parameters } };
+      if (protocol === "anthropic") return { ...tool, input_schema: parameters };
+      return { type: "function", ...tool, parameters };
+    });
+    const body = { model, stream: false, tools };
+    if (protocol === "responses") body.input = [{ role: "user", content: "hi" }];
+    else body.messages = [{ role: "user", content: "hi" }];
+    const send = () => loader.fetch(`${origin}/v1/${path}`, { method: "POST", body: JSON.stringify(body) });
+    for (const [upstream, expected] of [["text_replace", "edit"], ["file_view", "read"], ["skill", "skill"]]) {
+      state.reply = toolReply(protocol, upstream, true);
+      const response = await send();
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), new RegExp(`"name"\\s*:\\s*"${expected}"`), upstream);
+    }
+    const sent = state.calls.at(-1).body;
+    const nameOf = (tool) => tool.function?.name ?? tool.name;
+    const descriptionOf = (tool) => tool.function?.description ?? tool.description;
+    const sentNames = sent.tools.map(nameOf);
+    assert.deepEqual(sentNames.slice(0, 3), ["text_replace", "file_view", "skill"]);
+    // the stand-ins Zen wants for its core tools, beside the renamed ones
+    assert.ok(sentNames.includes("edit") && sentNames.includes("read"), sentNames.join(","));
+    assert.equal(descriptionOf(sent.tools[0]), "Replace an exact piece of text in a UTF-8 file that already exists.");
+    assert.equal(descriptionOf(sent.tools[1]), "Read a UTF-8 text file. Each line comes back with its number.");
+    assert.equal(descriptionOf(sent.tools[2]), "Open a skill's whole instructions. Use it first when a task names a skill from the session's skill catalog, or plainly fits one.");
+    for (const text of sent.tools.map(descriptionOf)) assert.ok(![DSH_EDIT, DSH_READ, DSH_SKILL].some((tool) => text?.trim() === tool.description.trim()), text);
+  });
+}
+
+test("a read or edit without DSH's parameters keeps its name (#632)", async (t) => {
+  const { plugin, state, origin } = await fixture(t);
+  await plugin.provider.models({ models: {} }, { auth: await publicAuth() });
+  const loader = await plugin.auth.loader(publicAuth);
+  // OpenCode's own read: filePath, offset, limit
+  const tools = [
+    { type: "function", function: { name: "read", description: "Reads a file", parameters: { type: "object", properties: { filePath: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } } } },
+    { type: "function", function: { name: "edit", description: "Edits a file", parameters: { type: "object", properties: { file_path: { type: "string" } } } } },
+  ];
+  const response = await loader.fetch(`${origin}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "chat-free", stream: false, tools }) });
+  await response.text();
+  assert.deepEqual(state.calls.at(-1).body.tools.slice(0, 2).map((tool) => tool.function.name), ["read", "edit"]);
+});
+
 // Z.ai's ZCode 3.17.2 declares its dynamic-workflow tools, and Zen refuses
 // the whole request when two of them travel together: CreateWorkflow beside
 // GetWorkflowRun, and AmendWorkflow beside FillWorkflowHole. Either name

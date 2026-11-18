@@ -102,6 +102,7 @@ test("an account's list without the CLI takes what Devin says of images now", as
   // Devin's word now over the snapshot's
   expect(got["deepseek-v4-flash"].capabilities.input.image).toBe(true)
   expect(got["glm-5.2"].capabilities.input.image).toBe(false)
+  expect(got[Symbol.for("magpie.fellBack")]).toBeUndefined()
 })
 
 test("when Devin can't be asked, the list takes the snapshot's word", async () => {
@@ -111,4 +112,7 @@ test("when Devin can't be asked, the list takes the snapshot's word", async () =
   const got = await (await DevinAuthPlugin()).provider.models({ models: given }, { auth: { type: "api", key: "devin-key" } })
   expect(got["swe-2"].capabilities).toEqual({ attachment: true, input: { text: true, image: true } })
   expect(withImages(given, [{ id: "swe-2" }])).toEqual(given)
+  // the snapshot isn't the account's list: magpie keeps the one it had,
+  // and the models picked from it (Archivemylife on X, agy-cli's sibling)
+  expect(got[Symbol.for("magpie.fellBack")]).toBe(true)
 })

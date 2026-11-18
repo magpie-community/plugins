@@ -412,3 +412,52 @@ test("the same request not streamed still waits 4 minutes at most, then the 503"
   expect(res.status).toBe(503)
   expect(pauses.reduce((a, b) => a + b, 0)).toBe(4 * 60_000)
 })
+
+// plugins#1220 (nsyan): Qoder CN answered 10605 at once with this state and
+// gave it back unchanged at every status ask, 1 in p4 for RESOURCE_LIMIT,
+// so an hour's hold left the agent with keepalives only. The reporter's
+// own bytes, the inner message of the refusal and of each status.
+const FROZEN = { errorCode: 0, isQueued: true, modelKey: "dfmodel", queueCount: 1, queueType: "p4", retryAfterSeconds: 60, serviceAvailable: true, subCode: "RESOURCE_LIMIT", waitTime: 60 }
+
+test("#1220 a streamed wait with nothing ahead and the queue's state unchanged for 5 minutes ends with the queue's 503, saying it hasn't moved", async () => {
+  const { fetch, sent } = await loader({ chats: () => refused(FROZEN), statuses: () => status(FROZEN) })
+  const res = await fetch(API_CHAT, streamed())
+  expect(res.status).toBe(200)
+  const { lines } = await read(res)
+  const data = lines.filter((l) => l.line.startsWith("data:"))
+  expect(data.length).toBe(1)
+  expect(JSON.parse(data[0].line.slice(5)).error).toEqual({
+    message: "Qoder queued the request for dfmodel (this plan's queue: p4, 1 ahead); try again in 60s (the queue hasn't moved in 5 minutes with nothing ahead)",
+    code: 503,
+  })
+  expect(pauses.reduce((a, b) => a + b, 0)).toBe(QUEUE.stuck)
+  expect(QUEUE.stuck).toBe(5 * 60_000)
+  expect(sent.chats.length).toBe(1)
+  expect(timers.every((t) => t.stopped)).toBe(true)
+})
+
+test("#1220 a wait with nothing ahead whose state changes isn't cut at 5 minutes, and is let through when the queue says so", async () => {
+  // retryAfterSeconds moving: the queue is still counting down
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused(FROZEN) : answered()),
+    statuses: (n) => status(n <= 16 ? { ...FROZEN, retryAfterSeconds: 60 - n } : { ...FROZEN, isQueued: false, retryAfterSeconds: 1 }),
+  })
+  const res = await fetch(API_CHAT, streamed())
+  expect(res.status).toBe(200)
+  const { lines } = await read(res)
+  expect(lines.some((l) => l.line.includes("hello"))).toBe(true)
+  expect(pauses.reduce((a, b) => a + b, 0)).toBeGreaterThan(5 * 60_000)
+  expect(sent.chats.length).toBe(2)
+})
+
+test("#1220 a queue with others ahead, unchanged, is still waited out past 5 minutes (#807)", async () => {
+  const { fetch, sent } = await loader({
+    chats: (n) => (n === 1 ? refused() : answered()),
+    statuses: (n) => status(n <= 20 ? QUEUED : { isQueued: false, serviceAvailable: true }),
+  })
+  const res = await fetch(API_CHAT, streamed())
+  const { lines } = await read(res)
+  expect(lines.some((l) => l.line.includes("hello"))).toBe(true)
+  expect(pauses.reduce((a, b) => a + b, 0)).toBe(10 * 60_000)
+  expect(sent.chats.length).toBe(2)
+})

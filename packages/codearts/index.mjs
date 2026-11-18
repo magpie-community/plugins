@@ -9,8 +9,9 @@
 // with OAuth.
 //
 // This plugin implements exactly that flow, mirroring the real CodeArts agent
-// (and the `Ebony-Vinyl/dsh-our-free-model` CodeArts channel, which this plugin
-// is modelled on):
+// (and the CodeArts channel this plugin is modelled on: iJetLi's
+// gitee.com/iJetLi/deepseek-harness-codearts, as `Ebony-Vinyl/dsh-our-free-model`
+// carried it):
 //
 //   1. `auth.methods[0]` is `{ type: "oauth" }`. `authorize()` starts a
 //      loopback callback server on 127.0.0.1 (port >= 10000), returns the
@@ -70,12 +71,25 @@ const OPENGW_GATEWAY_CONFIG_URL = `${OPENGW_HOST}/api/v1/gateway/config`
 // nothing of opengw's is asked there. The console of each only ever opens in
 // the browser and is never signed for.
 const STATIONS = {
-  mainland: { id: "mainland", snap: SNAP_HOST, opengw: OPENGW_HOST, console: "https://codearts.huaweicloud.com" },
+  mainland: {
+    id: "mainland",
+    snap: SNAP_HOST,
+    opengw: OPENGW_HOST,
+    console: "https://codearts.huaweicloud.com",
+    portal: "https://codearts.huaweicloud.com/portal",
+    locale: "zh-cn",
+  },
+  // The international portal is the IDE's `intlPortalHost` (#1090). Its
+  // authorize page sends a signed-out browser to the mainland login unless
+  // the login page is asked for `site=intl`, so the browser starts there.
   international: {
     id: "international",
     snap: "https://snap-access.ap-southeast-1.myhuaweicloud.com",
     opengw: "",
     console: "https://console-intl.huaweicloud.com",
+    portal: "https://codearts.ap-southeast-1.huaweicloud.com/portal",
+    locale: "en-us",
+    login: "https://auth.huaweicloud.com/authui/login?site=intl",
   },
 }
 /** The hosts a credential of `station` is signed for: its API hosts, by name. */
@@ -144,13 +158,16 @@ const OPS_CLAIM_URL = `${SNAP_HOST}/v1/ops/claim`
 const OPS_CONFIRM_URL = `${SNAP_HOST}/v1/ops/confirm`
 const OPS_CHANNEL = "IDE"
 const DAILY_CHECKIN_TYPE = "USER_LOGIN"
+// A campaign of that type is a daily check-in when its title says so; the list
+// also holds one-time USER_LOGIN campaigns (a contest's sign-up gift), which are
+// not the daily check-in and are left to the user.
+const DAILY_CHECKIN_TITLE = /签到|每日/
 // States the IDE disables the claim button in: today's benefit is in already.
 const CLAIMED_STATUSES = ["CLAIMED", "CONFIRMED", "CONSUMED"]
 // Unsigned headers snap-access routes on (signing them breaks the signature).
 const SNAP_EXTRA_HEADERS = { "Agent-Type": "PromptCenter", "X-Language": "zh-cn" }
-// OAuth portal (new IAM flow) and the STS token endpoint.
-const PORTAL_AUTHORIZE_BASE = "https://codearts.huaweicloud.com/portal/authorize"
-const PORTAL_LOGIN_BASE = "https://codearts.huaweicloud.com/portal/login"
+// OAuth portal (new IAM flow, each station's `portal`) and the STS token
+// endpoint, which answers both stations' codes and refresh tokens (#1090).
 const STS_TOKEN_ENDPOINT = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 
 // OAuth client id (equals the plugin's URI scheme) and local callback path.
@@ -161,7 +178,6 @@ const REDIRECT_PATH = "/oauth/callback"
 const LOGIN_PLUGIN_NAME = "snap_AIIDE"
 const LOGIN_PLUGIN_VERSION = "5.2.0"
 const OAUTH_THEME = "2" // activeColorTheme.kind: 2 = Dark
-const OAUTH_LOCALE = "zh-cn"
 
 const GRANT_AUTHORIZATION_CODE = "authorization_code"
 const GRANT_REFRESH_TOKEN = "refresh_token"
@@ -824,7 +840,7 @@ async function refreshCredential(cred, fetcher) {
   if (!next.refresh_token) next.refresh_token = refreshToken
   // Preserve non-rotating identity fields a legacy login may have carried, and
   // the session id: it belongs to the account, not to the token.
-  for (const k of ["domain_id", "user_id", "user_name", "session_id"]) {
+  for (const k of ["domain_id", "user_id", "user_name", "session_id", "station"]) {
     if (cred[k]) next[k] = cred[k]
   }
   return next
@@ -844,16 +860,22 @@ async function accountSessionIds(cred) {
 
 // ---- OAuth login: URL + loopback callback ----------------------------------
 
-/** Build the Huawei Cloud portal authorize URL (params mirror the real IDE). */
-function buildOAuthLoginUrl(port, pkce, ticketId) {
-  return `${PORTAL_AUTHORIZE_BASE}?theme=${OAUTH_THEME}&locale=${OAUTH_LOCALE}`
+/**
+ * The URL the browser opens to sign in on `station` (params mirror the real
+ * IDE): the station's portal authorize page, or, for a station with its own
+ * login page, that page with the authorize URL as where it goes next.
+ */
+function buildOAuthLoginUrl(port, pkce, ticketId, station = STATIONS.mainland) {
+  const authorize = `${station.portal}/authorize?theme=${OAUTH_THEME}&locale=${station.locale}`
     + `&uri_scheme=${CLIENT_ID}&client_id=${CLIENT_ID}&port=${port}`
     + `&code_challenge=${pkce.codeChallenge}&code_challenge_method=SHA-256`
     + `&ticket_id=${ticketId}&plugin-name=${LOGIN_PLUGIN_NAME}&plugin-version=${LOGIN_PLUGIN_VERSION}`
+  if (!station.login) return authorize
+  return `${station.login}&locale=${station.locale}&service=${encodeURIComponent(authorize)}`
 }
 
-const buildPortalLoginResultUrl = (ok) =>
-  `${PORTAL_LOGIN_BASE}?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${OAUTH_LOCALE}`
+const buildPortalLoginResultUrl = (ok, station = STATIONS.mainland) =>
+  `${station.portal}/login?login_succeed=${ok}&uri_scheme=${CLIENT_ID}&locale=${station.locale}`
 
 /**
  * Start the loopback callback server, listening on 127.0.0.1:port>=10000. It
@@ -863,7 +885,7 @@ const buildPortalLoginResultUrl = (ok) =>
  * the sign-in at once, with the portal's own words when it gave any. The
  * redirect target is always that page, never a parameter of the request.
  */
-function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
+function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts", station = STATIONS.mainland) {
   let resolveResult
   let rejectResult
   const result = new Promise((resolve, reject) => {
@@ -893,7 +915,7 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const url = new URL(raw, `http://127.0.0.1:${request.socket.localPort}`)
     const code = url.searchParams.get("code")
     if (!code) {
-      response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+      response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
       const said = firstOf(url.searchParams.get("error_description"), url.searchParams.get("error"))
       rejectResult(new Error(`CodeArts sign-in failed: ${said || "the callback came back without an authorization code"}`))
       return
@@ -901,12 +923,14 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher, label = "CodeArts") {
     const port = request.socket.localPort ?? 0
     void exchangeAuthorizationCode(code, pkce.codeVerifier, port, keyPair, fetcher, label).then(
       (token) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(true) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(true, station) }).end()
         const cred = credentialFromTokenResponse(token, pkce.codeVerifier, keyPair)
+        // A mainland credential carries no station, as before stations existed.
+        if (station !== STATIONS.mainland) cred.station = station.id
         resolveResult({ access: JSON.stringify(cred), expires: expiresFromCredential(cred) })
       },
       (error) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
+        response.writeHead(307, { Location: buildPortalLoginResultUrl(false, station) }).end()
         rejectResult(error)
       },
     )
@@ -951,13 +975,13 @@ function listenOnCallbackPort(server) {
  * The result resolves once the browser is redirected back and STS answers;
  * the callback server is closed as soon as the result settles.
  */
-async function startOAuthFlow(fetcher, label = "CodeArts") {
+async function startOAuthFlow(fetcher, label = "CodeArts", station = STATIONS.mainland) {
   const pkce = await generatePkcePair()
   const keyPair = await generateDpopKeyPair()
-  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label)
+  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher, label, station)
   // The authorize URL carries a ticket_id as the IDE's does; the code flow
   // itself never reads it back.
-  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32))
+  const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32), station)
 
   let closed = false
   const close = async () => {
@@ -1041,7 +1065,7 @@ function isRegularModel(model, state) {
  *   agent's own, to put back in the answer; null when none was cut).
  * A body that is not a chat (no `model` + `messages`) gives null.
  */
-function prepareChatBody(parsed, { thinking = true } = {}) {
+function prepareChatBody(parsed, { thinking = true, station = "mainland" } = {}) {
   if (!parsed || typeof parsed.model !== "string" || !Array.isArray(parsed.messages)) return null
   const body = { ...parsed, model: upstreamModelId(parsed.model) }
   const names = shortenToolNames(body)
@@ -1079,9 +1103,28 @@ function prepareChatBody(parsed, { thinking = true } = {}) {
   for (const k of ["max_tokens", "max_completion_tokens"]) {
     if (typeof body[k] === "number" && body[k] > MAX_OUTPUT_TOKENS) body[k] = MAX_OUTPUT_TOKENS
   }
+  normalizeStop(body, station)
   const fold = body.stream !== true
   body.stream = true
   return { body, fold, injected, names }
+}
+
+/**
+ * `stop` in the shape the credential's station takes; another shape comes
+ * back as HTTP 200 with `InferHub.001001005.400` "The request param is
+ * invalid". The mainland gateway refuses every non-empty `stop`, a string
+ * included (#1120, measured with every model; magpie#6342's string-only
+ * rule held for `"\n\n"` once and no longer does), so it is left out there:
+ * a reply that runs past a stop word beats one refused. The international
+ * gateway takes a list only (#998, GLM-5.1: `["zzz"]` answered, `"zzz"`
+ * refused), so a string goes as a list of one. An empty or blank value, or
+ * one of another kind, is left out on both.
+ */
+function normalizeStop(body, station = "mainland") {
+  if (!("stop" in body)) return
+  const all = (Array.isArray(body.stop) ? body.stop : [body.stop]).filter((x) => typeof x === "string" && x !== "")
+  if (station === "international" && all.length) body.stop = all
+  else delete body.stop
 }
 
 // ---- tool names over the gateway's limit (#432) -----------------------------
@@ -1317,6 +1360,22 @@ function errorMessageOf(text) {
   } catch {
     return m[1]
   }
+}
+
+/**
+ * APIG signs a body of 12 MB at most. A larger one comes back as a 401
+ * `APIG.0301` "calc ak sk signature fail:body too large" after ~30s (#1121):
+ * the request's size, not the sign-in, so it is never renewed or marked.
+ */
+const MAX_SIGNED_BODY = 12 * 1024 * 1024
+
+function isBodyTooLarge(text) {
+  return /body too large/i.test(String(text ?? ""))
+}
+
+function bodyTooLargeResponse(bytes, code = "") {
+  const mb = (bytes / (1024 * 1024)).toFixed(1)
+  return errorResponse(413, code, `CodeArts 网关只接受 12 MB 以内的请求，这次请求有 ${mb} MB（通常是对话里的图片）。请新开会话，或去掉较大的图片后再试`)
 }
 
 /** A 401/400 that only means the temporary AK/SK/security-token went stale. */
@@ -1812,7 +1871,7 @@ async function signedFetch(cred, input, init, context) {
   else body = new Uint8Array()
   // The body is part of the signature, so it is reshaped before signing.
   const parsed = body.length > 0 ? safeJson(new TextDecoder().decode(body)) : null
-  const chat = prepareChatBody(parsed, context)
+  const chat = prepareChatBody(parsed, { ...context, station: stationOf(cred).id })
   if (chat) body = utf8(JSON.stringify(chat.body))
   const model = upstreamModelId(parsed?.model)
   let extra = isBenefitModel(model, context.state) ? { maas_type: "benefit" } : undefined
@@ -1849,10 +1908,13 @@ async function signedFetch(cred, input, init, context) {
 
   // A sign-in known to be beyond renewal never reaches the network again.
   if (context.signInDead?.()) return signInExpiredResponse()
+  // A body APIG can't sign is refused here, not after its ~30s wait.
+  if (body.length > MAX_SIGNED_BODY) return bodyTooLargeResponse(body.length)
   if (!chat) {
     const res = await send()
     if (res.status !== 401 || !context.renewCredential) return withSignInMark(res)
     const text = await res.text().catch(() => "")
+    if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, errorCodeOf(text))
     const next = await context.renewCredential(active)
     if (!next) return unrenewedResponse(context, text)
     active = next
@@ -1902,6 +1964,7 @@ async function signedFetch(cred, input, init, context) {
         code = errorCodeOf(text)
       }
 
+      if (isBodyTooLarge(text)) return bodyTooLargeResponse(body.length, code)
       if (res.status === 401 || isStaleCredential(text)) {
         if (!renewed && context.renewCredential) {
           renewed = true
@@ -2032,23 +2095,35 @@ async function snapRequest(method, url, cred, fetcher, payload) {
   const raw = safeJson(text)
   if (!raw || Array.isArray(raw)) return { ok: false, message: "the answer could not be read" }
   if (raw.code !== undefined && Number(raw.code) !== 0) {
-    return { ok: false, message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
+    return { ok: false, code: Number(raw.code), message: firstOf(raw.message, raw.msg, `code ${raw.code}`) }
   }
   return { ok: true, data: "data" in raw ? raw.data : raw }
 }
 
 // ---- daily check-in ----------------------------------------------------------
 
-/** The account's 「每日领取」 campaign from the activity list, or a reason it can't be read. */
-async function dailyCampaign(cred, fetcher) {
+/** The account's 「每日领取」 campaigns from the activity list, or a reason they can't be read. */
+async function dailyCampaigns(cred, fetcher) {
   const listed = await snapRequest("GET", OPS_DELIVERY_URL, cred, fetcher)
   if (!listed.ok) return { error: `活动列表读取失败：${listed.message}` }
   const items = asRecord(listed.data).items
   if (!Array.isArray(items)) return { error: "活动列表缺少 items" }
-  return { item: items.find((it) => asRecord(it).type === DAILY_CHECKIN_TYPE) }
+  return {
+    items: items.filter(
+      (it) => asRecord(it).type === DAILY_CHECKIN_TYPE && DAILY_CHECKIN_TITLE.test(String(asRecord(it).title ?? "")),
+    ),
+  }
 }
 
 const isClaimedToday = (item) => !item?.claimable && CLAIMED_STATUSES.includes(item?.status)
+
+const sameCampaign = (a, b) => String(a?.campaignId) === String(b?.campaignId)
+
+// A claim the vendor turns down because the account has not joined that
+// campaign (a contest's daily check-in before signing up for the contest): the
+// account is not eligible, not a failure to retry.
+const INELIGIBLE_CLAIM = /需要先通过触发接口激活|未参与|未报名|无资格/
+const isIneligibleClaim = (failure) => INELIGIBLE_CLAIM.test(String(failure?.message ?? ""))
 
 // ---- credit batches and when they lapse ------------------------------------
 
@@ -2180,7 +2255,11 @@ function recordGrant(file, account, grant) {
     const keep = Date.now() - LEDGER_KEEP_DAYS * 86_400_000
     const day = beijingDay(vendorDate(grant.at))
     const list = (Array.isArray(all[account]) ? all[account] : [])
-      .filter((g) => (vendorDate(g.expiresAt) ?? 0) > keep && beijingDay(vendorDate(g.at) ?? 0) !== day)
+      .filter(
+        (g) =>
+          (vendorDate(g.expiresAt) ?? 0) > keep &&
+          !(beijingDay(vendorDate(g.at) ?? 0) === day && String(g.campaignId ?? "") === String(grant.campaignId ?? "")),
+      )
     all[account] = [...list, grant]
     writeLedger(file, all)
   } catch {
@@ -2194,21 +2273,23 @@ function recordGrant(file, account, grant) {
 // here, so it is never confirmed. Kept for its Beijing day only.
 const UNCONFIRMED = "_unconfirmed"
 
-/** Today's claim this plugin left unconfirmed for `account`, if any. */
+/** Today's claims this plugin left unconfirmed for `account`, if any. */
 function readUnconfirmed(file, account) {
   const left = asRecord(asRecord(readLedger(file)[UNCONFIRMED])[account])
-  return left.day === beijingDay() ? left : undefined
+  if (left.day !== beijingDay()) return []
+  if (Array.isArray(left.claims)) return left.claims
+  return left.campaignId !== undefined ? [left] : []
 }
 
-/** Keep the claim left unconfirmed for `account`, or with null drop it; other days' go. */
-function recordUnconfirmed(file, account, left) {
+/** Keep the claims left unconfirmed for `account`, or with an empty list drop them; other days' go. */
+function recordUnconfirmed(file, account, claims) {
   try {
     const all = readLedger(file)
     const today = beijingDay()
     const kept = Object.fromEntries(
       Object.entries(asRecord(all[UNCONFIRMED])).filter(([k, v]) => k !== account && asRecord(v).day === today),
     )
-    if (left) kept[account] = { ...left, day: today }
+    if (Array.isArray(claims) && claims.length > 0) kept[account] = { day: today, claims }
     all[UNCONFIRMED] = kept
     writeLedger(file, all)
   } catch {
@@ -2226,52 +2307,125 @@ function grantExpiry(benefit, at) {
 }
 
 /**
- * Press the daily check-in, exactly as the IDE's 「限时福利 → 每日领取」 does:
- * list the activities, claim the `USER_LOGIN` one with `{campaignId, channel}`,
- * and confirm it when the claim answers an id (`benefit.id !== null`), or the
- * credits stay pending. Answers magpie's check-in outcome; never throws.
- * `unconfirmed` is today's claim this plugin left unconfirmed (the ledger's);
- * an answer's own `unconfirmed` is one to keep there.
+ * Press the daily check-ins, exactly as the IDE's 「限时福利 → 每日领取」 does:
+ * list the activities, claim every claimable `USER_LOGIN` item with
+ * `{campaignId, channel}`, and confirm each when its claim answers an id
+ * (`benefit.id !== null`), or the credits stay pending. The list holds more than
+ * one such item: the ordinary daily check-in, and the campaigns a contest adds
+ * beside it. Answers magpie's check-in outcome; never throws. `unconfirmed` is
+ * today's list of claims this plugin left unconfirmed (the ledger's); an
+ * answer's own `unconfirmed` is one to keep there.
  */
 async function dailyCheckin(cred, fetcher, { unconfirmed } = {}) {
-  const first = await dailyCampaign(cred, fetcher)
-  if (first.error) return { outcome: "failed", message: first.error }
-  const item = first.item
-  if (!item) return { outcome: "inactive", message: "当前没有每日领取活动" }
-  const credit = num(item.benefitAmount)
-  // Claimed here, but the confirm failed: confirm it now, or the credits stay
-  // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
-  // well, and the IDE never confirms it. When the confirm fails, only the
-  // activity tells whether it was confirmed after all; still claimed, it is a
-  // failure magpie tries again later that day.
-  const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
-  const leftHere = unconfirmed && String(unconfirmed.campaignId) === String(item.campaignId)
-  if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (confirmed.ok) return claimedOutcome(asRecord(unconfirmed.benefit), credit)
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item) && again.item.status !== "CLAIMED") return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取确认失败：${confirmed.message}` }
-  }
-  if (isClaimedToday(item)) return { outcome: "done", message: "今天已领取" }
-  if (!item.claimable) return { outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` }
-  if (!campaign) return { outcome: "failed", message: "活动缺少 campaignId" }
+  const listed = await dailyCampaigns(cred, fetcher)
+  if (listed.error) return { outcome: "failed", message: listed.error }
+  const items = listed.items
+  if (items.length === 0) return { outcome: "inactive", message: "当前没有每日领取活动" }
 
-  const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
-  if (!claimed.ok) {
-    // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
-    const again = await dailyCampaign(cred, fetcher)
-    if (isClaimedToday(again.item)) return { outcome: "done", message: "今天已领取" }
-    return { outcome: "failed", message: `领取失败：${claimed.message}` }
-  }
-  const benefit = asRecord(claimed.data)
-  if (claimed.data && benefit.id !== null) {
-    const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
-    if (!confirmed.ok) {
-      return { outcome: "failed", message: `领取确认失败：${confirmed.message}`, unconfirmed: { campaignId: item.campaignId, benefit } }
+  const left = [].concat(unconfirmed ?? [])
+  const results = []
+  const grants = []
+  const kept = []
+
+  for (const item of items) {
+    const credit = num(item.benefitAmount)
+    const campaign = item.campaignId !== undefined && item.campaignId !== null && item.campaignId !== ""
+    const leftHere = campaign ? left.find((claim) => sameCampaign(claim, item)) : undefined
+    // Claimed here, but the confirm failed: confirm it now, or the credits stay
+    // pending. Only that claim: one the IDE leaves unconfirmed is `CLAIMED` as
+    // well, and the IDE never confirms it. When the confirm fails, only the
+    // activity tells whether it was confirmed after all; still claimed, it is a
+    // failure magpie tries again later that day.
+    if (!item.claimable && item.status === "CLAIMED" && campaign && leftHere) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (confirmed.ok) {
+        const outcome = claimedOutcome(asRecord(leftHere.benefit), credit)
+        if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+        results.push(outcome)
+        continue
+      }
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen) && seen.status !== "CLAIMED") {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      kept.push(leftHere)
+      results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+      continue
     }
+    if (isClaimedToday(item)) {
+      results.push({ outcome: "done", message: "今天已领取" })
+      continue
+    }
+    if (!item.claimable) {
+      results.push({ outcome: "ineligible", message: `当前不可领取（status=${item.status ?? "null"}）` })
+      continue
+    }
+    if (!campaign) {
+      results.push({ outcome: "failed", message: "活动缺少 campaignId" })
+      continue
+    }
+
+    const claimed = await snapRequest("POST", OPS_CLAIM_URL, cred, fetcher, { campaignId: item.campaignId, channel: OPS_CHANNEL })
+    if (!claimed.ok) {
+      // Claimed elsewhere a moment ago (the IDE, another magpie): look again.
+      const again = await dailyCampaigns(cred, fetcher)
+      const seen = again.items?.find((it) => sameCampaign(it, item))
+      if (isClaimedToday(seen)) {
+        results.push({ outcome: "done", message: "今天已领取" })
+        continue
+      }
+      if (isIneligibleClaim(claimed)) {
+        results.push({ outcome: "ineligible", message: claimed.message })
+        continue
+      }
+      results.push({ outcome: "failed", message: `领取失败：${claimed.message}` })
+      continue
+    }
+    const benefit = asRecord(claimed.data)
+    if (claimed.data && benefit.id !== null) {
+      const confirmed = await snapRequest("POST", OPS_CONFIRM_URL, cred, fetcher, { campaignId: item.campaignId })
+      if (!confirmed.ok) {
+        kept.push({ campaignId: item.campaignId, benefit })
+        results.push({ outcome: "failed", message: `领取确认失败：${confirmed.message}` })
+        continue
+      }
+    }
+    const outcome = claimedOutcome(benefit, credit)
+    if (outcome.grant) grants.push({ ...outcome.grant, campaignId: item.campaignId })
+    results.push(outcome)
   }
-  return claimedOutcome(benefit, credit)
+
+  const failed = results.filter((result) => result.outcome === "failed")
+  const claimed = results.filter((result) => result.outcome === "claimed")
+  const done = results.filter((result) => result.outcome === "done")
+  const ineligible = results.filter((result) => result.outcome === "ineligible")
+
+  let outcome
+  let credit
+  let message
+  if (failed.length > 0) {
+    outcome = "failed"
+    message = failed.length === 1 ? failed[0].message : `${failed[0].message}（另有 ${failed.length - 1} 个活动失败）`
+  } else if (claimed.length > 0) {
+    outcome = "claimed"
+    credit = claimed.reduce((sum, result) => sum + (result.credit ?? 0), 0)
+    message = credit > 0 ? `+${credit} 积分` : "已领取"
+  } else if (done.length > 0) {
+    outcome = "done"
+    message = "今天已领取"
+  } else {
+    outcome = "ineligible"
+    message = ineligible[0]?.message ?? ""
+  }
+
+  const answer = { outcome, ...(credit > 0 ? { credit } : {}), message }
+  if (grants.length === 1) answer.grant = grants[0]
+  else if (grants.length > 1) answer.grants = grants
+  if (kept.length === 1) answer.unconfirmed = kept[0]
+  else if (kept.length > 1) answer.unconfirmed = kept
+  return answer
 }
 
 /** The outcome of a check-in that went through, with the grant the ledger keeps. */
@@ -3122,14 +3276,20 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
     }
   }
 
-  const browserMethod = {
+  // The browser sign-in on one station. The international one (#1090) opens
+  // Huawei Cloud's international login first, and its account skips the two
+  // mainland-only reads below (IAM's phone, OfficeAce's MaaS pair).
+  const browserMethodOn = (station) => ({
     type: "oauth",
-    label: "Sign in with Huawei Cloud",
+    label: station === STATIONS.mainland ? "Sign in with Huawei Cloud" : "Sign in with Huawei Cloud (International)",
     async authorize() {
-      const flow = await startOAuthFlow(fetcher)
+      const flow = await startOAuthFlow(fetcher, "CodeArts", station)
+      const mainland = station === STATIONS.mainland
       return {
         url: flow.loginUrl,
-        instructions: "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done.",
+        instructions: mainland
+          ? "Sign in to Huawei Cloud in the browser. This signs in CodeArts only — the OfficeAce card has its own sign-in. This window closes itself when done."
+          : "Sign in to Huawei Cloud International in the browser. This signs in CodeArts only. This window closes itself when done.",
         method: "auto",
         async callback() {
           try {
@@ -3139,12 +3299,12 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             // The card's name is the phone (one read away, best effort:
             // a failed read still signs in), shown through usage's
             // `user`; the credential carries it as `user_phone`.
-            const identified = { ...cred, ...(await accountPhoneField(cred, fetcher)) }
+            const identified = mainland ? { ...cred, ...(await accountPhoneField(cred, fetcher)) } : cred
             // The MaaS pair OfficeAce needs is read once here (best effort:
             // an account that never opened MaaS signs in all the same), and
             // kept on this credential too, so a later rotation of this
             // record hands the other one a credential that still has it.
-            const withMaas = await withOfficeAceMaas(identified, fetcher)
+            const withMaas = mainland ? await withOfficeAceMaas(identified, fetcher) : identified
             const identity = accountIdentityOf(withMaas)
             // `accountId` is the account's identity — the URN, as main
             // gives it — so a re-sign-in replaces the account instead of
@@ -3171,7 +3331,9 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         },
       }
     },
-  }
+  })
+  const browserMethod = browserMethodOn(STATIONS.mainland)
+  const intlBrowserMethod = browserMethodOn(STATIONS.international)
 
   // Sign in from the CodeArts Agent on this machine: its own stored sign-in,
   // read (never written), checked once with the station, and renewed by
@@ -3428,32 +3590,37 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         // The account's own memory first: the ledger is written best effort,
         // and a write that failed mustn't lose the claim; the ledger carries it
         // to another process, or past a restart.
-        const held = state.unconfirmed?.day === today ? state.unconfirmed : undefined
+        const held = state.unconfirmed?.day === today ? state.unconfirmed.claims : undefined
         const left = held ?? readUnconfirmed(ledgerPath, key)
-        const { grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        const { grant, grants, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
         // A claim whose confirm failed is kept for the next check-in; one
         // confirmed now, or found done, is dropped.
-        if (unconfirmed) {
-          state.unconfirmed = { ...unconfirmed, day: today }
-          recordUnconfirmed(ledgerPath, key, unconfirmed)
-        } else if (left && r.outcome !== "failed") {
+        const kept = Array.isArray(unconfirmed) ? unconfirmed : unconfirmed ? [unconfirmed] : []
+        if (kept.length > 0) {
+          state.unconfirmed = { day: today, claims: kept }
+          recordUnconfirmed(ledgerPath, key, kept)
+        } else if (left?.length > 0 && r.outcome !== "failed") {
           state.unconfirmed = null
-          recordUnconfirmed(ledgerPath, key, null)
+          recordUnconfirmed(ledgerPath, key, [])
         }
-        if (r.outcome === "claimed") {
+        const newGrants = grants ?? (grant ? [grant] : [])
+        if (newGrants.length > 0) {
           // The new batch shows at the next usage read; the ledger keeps it in
           // case the vendor's batch list can't be read.
           state.batchesAt = 0
-          if (grant) recordGrant(ledgerPath, key, grant)
+          for (const item of newGrants) recordGrant(ledgerPath, key, item)
         }
         return r
       },
 
       // The browser sign-in first, always; the CodeArts Agent's second, only
-      // while the IDE's state file is there (the host picks a method by its
-      // place, so the browser one keeps its).
+      // while the IDE's state file is there; the international browser
+      // sign-in last (the host picks a method by its place, so the older
+      // ones keep theirs).
       get methods() {
-        return ideFile && fs.existsSync(ideFile) ? [browserMethod, ideMethod] : [browserMethod]
+        return ideFile && fs.existsSync(ideFile)
+          ? [browserMethod, ideMethod, intlBrowserMethod]
+          : [browserMethod, intlBrowserMethod]
       },
     },
   }
@@ -3499,7 +3666,7 @@ export const _internal = {
   PROVIDER, NPM, CATALOG, CONTEXT_WINDOWS, BENEFIT_MODEL_FALLBACK, MAX_OUTPUT_TOKENS,
   CHAT_API_BASE, SNAP_MODEL_BUILTIN_URL, SNAP_STATISTICS_URL, OPENGW_GATEWAY_CONFIG_URL, BENEFIT_BALANCE_URL,
   OPS_DELIVERY_URL, OPS_CLAIM_URL, OPS_CONFIRM_URL, SESSION_LIMIT_ERROR, ACCOUNT_MAX_INFLIGHT,
-  PORTAL_AUTHORIZE_BASE, STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
+  STS_TOKEN_ENDPOINT, CLIENT_ID, REDIRECT_PATH,
   firstOf, asRecord, safeJson, num, clamp, prettify, normalizeModelId, upstreamModelId, formatCredit,
   b64url, utf8, sha256Hex, hmacSha256Hex,
   generatePkcePair, generateDpopKeyPair, keyPairFromStoredJwk, signDpopJws,
@@ -3577,21 +3744,26 @@ const OA_SERVICE = "apic"
 /** The OAuth client OfficeAce's own sign-in uses (its old package's refreshes). */
 const OA_AGENTARTS_CLIENT_ID = "pdp5_for_agentarts"
 const OA_RATES_TTL_MS = 20 * 60 * 1000
+const OA_RATES_RETRY_MS = 400
 const OA_REFRESH_LEAD_MS = 10 * 60 * 1000
 const OA_TOKEN_TIMEOUT_MS = 30_000
 
-/** The models OfficeAce shows before anyone is signed in (its own desktop list). */
+/**
+ * The models shown before a sign-in, and while an account's rates table has
+ * never been read: the ids a signed-in account could call (catalog ∩ rates),
+ * as measured on 2026-11-16 (#1197). Kept to that set, so a fallback never
+ * lists an id the catalog has dropped.
+ */
 const OA_FALLBACK_MODELS = {
   "glm-5.3": { name: "GLM-5.3", context: 1_000_000, output: 128_000 },
+  "glm-5.3-flash": { name: "GLM-5.3-Flash", context: 1_000_000, output: 128_000 },
   "glm-5.2": { name: "GLM-5.2", context: 1_000_000, output: 128_000 },
   "glm-5.1": { name: "GLM-5.1", context: 1_000_000, output: 128_000 },
-  "deepseek-v4": { name: "DeepSeek-V4", context: 1_000_000, output: 128_000 },
-  "deepseek-v4.1": { name: "DeepSeek-V4.1", context: 1_000_000, output: 128_000 },
-  "qwen3-30b": { name: "Qwen3 30B", context: 1_000_000, output: 128_000 },
-  "qwen3-32b": { name: "Qwen3 32B", context: 1_000_000, output: 128_000 },
-  "kimi-k2.6": { name: "Kimi-K2.6", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-pro": { name: "盘古 2.0 Pro", context: 1_000_000, output: 128_000 },
-  "pangu-2.0-flash": { name: "盘古 2.0 Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", context: 1_000_000, output: 128_000 },
+  "deepseek-v4-flash-0731": { name: "DeepSeek-V4-Flash-0731", context: 1_000_000, output: 128_000 },
+  "kimi-k3": { name: "Kimi-K3", context: 1_000_000, output: 128_000 },
+  "kimi-k3.1-pro-highspeed": { name: "Kimi-K3.1-Pro-HighSpeed", context: 1_000_000, output: 128_000 },
+  "openpangu-2.1-pro": { name: "openPangu-2.1-Pro", context: 1_000_000, output: 128_000 },
 }
 
 /**
@@ -3881,16 +4053,32 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     return hit?.map ?? new Map()
   }
 
+  // A read with no table to fall back on is tried once more: a start-up blip
+  // would otherwise leave the account on the fallback list until the next
+  // listing (#1197).
+  const tries = hit ? 1 : 2
+  let map = new Map()
+  for (let i = 0; i < tries && map.size === 0; i++) {
+    if (i > 0) await new Promise((res) => setTimeout(res, OA_RATES_RETRY_MS))
+    map = await readOfficeAceTokenRates(cred, fetcher).catch(() => new Map())
+  }
+  if (map.size === 0) return keepStale()
+  oaRatesCache.set(identity, { at: Date.now(), map })
+  return map
+}
+
+/** One read of the billable list; an unreadable answer is an empty table. */
+async function readOfficeAceTokenRates(cred, fetcher) {
   const r = await officeAceSigned(cred, `${OA_SUBSCRIPTION_BASE}${OA_TOKEN_RATES_PATH}`, "GET", undefined, fetcher)
-  if (!r.ok) return keepStale()
+  const map = new Map()
+  if (!r.ok) return map
   let j
   try {
     j = JSON.parse(r.text)
   } catch {
-    return keepStale()
+    return map
   }
   const rows = Array.isArray(j) ? j : Array.isArray(j?.models) ? j.models : Array.isArray(j?.data) ? j.data : Array.isArray(j?.rates) ? j.rates : []
-  const map = new Map()
   for (const row of rows) {
     const raw = row?.model_name ?? row?.modelName ?? row?.model ?? row?.name
     // the vendor's `model_name` carries a trailing newline ("kimi-k3\n")
@@ -3898,8 +4086,6 @@ async function fetchOfficeAceTokenRates(cred, fetcher = fetch) {
     const rate = Number(row?.cost_coefficient ?? row?.costCoefficient ?? row?.rate)
     if (name && Number.isFinite(rate)) map.set(name, rate)
   }
-  if (map.size === 0) return keepStale()
-  oaRatesCache.set(identity, { at: Date.now(), map })
   return map
 }
 
@@ -4620,11 +4806,14 @@ export const OfficeAceAuthPlugin = async ({ client } = {}, options = {}) => {
             rates = null
           }
           // An empty rates table means "never read", not "no model is billable":
-          // fall back to the static table rather than the registry's 26 ids, 19
-          // of which the user can select and then only fail at chat.
+          // never the registry's 26 ids, 19 of which the user can select and then
+          // only fail at chat. The catalog cut to the known-callable ids instead,
+          // so an id the catalog has dropped is not listed either (#1197).
           if (!rates || rates.size === 0) {
-            log("倍率表不可用（空表）—— 目录降级为静态表，不列出注册表占位 id", "warn")
-            return provider.models
+            log("倍率表不可用（空表）—— 目录只列出已知可调用的 id", "warn")
+            const known = rows.filter((row) => Object.hasOwn(OA_FALLBACK_MODELS, row.id))
+            const live = officeAceLiveModels(known, base, null)
+            return Object.keys(live).length > 0 ? live : provider.models
           }
           const live = officeAceLiveModels(rows, base, rates)
           if (Object.keys(live).length === 0) {

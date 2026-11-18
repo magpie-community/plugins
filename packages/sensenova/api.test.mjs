@@ -241,3 +241,35 @@ test("create_key defaults on outside magpie, where the host has no option", () =
   // pruning stays opt-in in both hosts
   expect(optionEnabled(undefined, {}, "prune_old_keys", false)).toBe(false)
 })
+test("a key-only account lists what its key serves, with no plan read (plugins#1158)", async () => {
+  // a key-only sign-in keeps no console token, so the pools can't be read;
+  // the key's own /models is the only live word on what it can call, and the
+  // static fallback (a free plan's models, no glm-5.3) must not stand in for it
+  f = fakeSenseNova()
+  const listed = {
+    data: [
+      { id: "glm-5.3", name: "glm-5.3", context_length: 1048576, max_output_length: 131072, input_modalities: ["text"], output_modalities: ["text"], supported_features: ["tools", "reasoning"] },
+      ...CATALOGUE.data,
+    ],
+  }
+  let poolReads = 0
+  f.route("GET /lite/console/v1/tokenplan/pool-usage", () => {
+    poolReads++
+    return json({ error: "no" }, 401)
+  })
+  f.route("GET /models", (r) => {
+    expect(r.headers.get("authorization")).toBe("Bearer sk-test")
+    return json(listed)
+  })
+  const p = await plugin()
+  const keyOnly = { type: "api", key: "sk-test" }
+  const models = await p.provider.models({ id: "sensenova-token-plan", models: { "glm-5.2": {} } }, { auth: keyOnly })
+  expect(Object.keys(models)).toContain("glm-5.3")
+  expect(models["glm-5.3"].limit).toEqual({ context: 1048576, output: 131072 })
+  // the image-output model still draws, key-only or not
+  expect(Object.keys(models)).not.toContain("sensenova-u1.5-lite")
+  // the model every key 403s stays out too
+  expect(Object.keys(models)).not.toContain("deepseek-v4.1-flash")
+  expect(poolReads).toBe(0)
+})
+

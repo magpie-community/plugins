@@ -59,6 +59,7 @@ afterEach(() => {
   globalThis.fetch = real
   BUSY_WAITS.splice(0, BUSY_WAITS.length, ...WAITS)
   startGate.inflight = GATE.inflight
+  startGate.address = GATE.address
   startGate.wait = GATE.wait
   startGate.lanes.clear()
   startGate.narrow.clear()
@@ -146,6 +147,61 @@ test("each account has slots of its own", async () => {
   const rs = await Promise.all([...Array.from({ length: 5 }, () => one(a)), ...Array.from({ length: 5 }, () => one(b))])
   expect(rs.every((r) => r.status === 200)).toBe(true)
   expect([...now.peak.values()]).toEqual([3, 3])
+})
+
+test("every account's Start Plan requests share the address's six slots", async () => {
+  // mathfournity on X: every gift account takes requests now (no
+  // maxAccounts), so what reaches zcode.z.ai from this address is held to
+  // what two accounts sent before, three each, over all of them
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const accounts = await Promise.all([1, 2, 3, 4].map((n) => loader(startAuth(n))))
+  const rs = await Promise.all(accounts.flatMap((a) => Array.from({ length: 5 }, () => one(a))))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(messages().length).toBe(20)
+  expect(peak).toBe(startGate.address)
+  expect(Math.max(...now.peak.values())).toBeLessThanOrEqual(3)
+  expect(now.peak.size).toBe(4)
+})
+
+test("a wait for the address's slots that runs out says so, nothing sent, and lets the account's slot go", async () => {
+  startGate.address = 1
+  startGate.wait = 200
+  let release
+  answer = () => new Promise((r) => (release = () => r(OK())))
+  const [a, b] = await Promise.all([loader(startAuth(1)), loader(startAuth(2))])
+  const first = one(a)
+  while (!release) await sleep(5)
+  const res = await one(b)
+  expect(res.status).toBe(429)
+  expect(JSON.parse(res.text).error.message).toContain("over all its accounts")
+  expect(messages().length).toBe(1)
+  release()
+  expect((await first).status).toBe(200)
+  // neither lane is left holding a slot
+  expect(startGate.lanes.size).toBe(0)
+})
+
+test("the coding plan is held to none of the address's slots", async () => {
+  startGate.address = 1
+  let flight = 0
+  let peak = 0
+  answer = async () => {
+    peak = Math.max(peak, ++flight)
+    await sleep(60)
+    flight--
+    return OK()
+  }
+  const opts = await loader(planAuth())
+  const rs = await Promise.all(Array.from({ length: 4 }, () => one(opts)))
+  expect(rs.every((r) => r.status === 200)).toBe(true)
+  expect(peak).toBe(4)
 })
 
 test("a slot is held across the re-asks, and let go when the answer has been read", async () => {
@@ -384,11 +440,75 @@ test("an account ZCode serves one at a time is narrowed to one, and no hold arms
   expect(busyHold.hits.length).toBe(0)
   const [key] = startGate.narrow.keys()
   expect(_internal.limitOf(key)).toBe(1)
-  // the first pair's second request was refused through its re-asks; every
-  // pair after it went one at a time and was served
-  expect(pairs.slice(1).flat().every((r) => r.status === 200)).toBe(true)
-  const after = got.filter((r) => r.path.endsWith("/messages")).slice(4)
+  // the first pair's second request was refused once and at its re-ask,
+  // then waited for the first and was served; every pair went to the end
+  // (before 0.1.64 that second request failed 429)
+  expect(pairs.flat().every((r) => r.status === 200)).toBe(true)
+  const after = got.filter((r) => r.path.endsWith("/messages")).slice(3)
   expect(Math.max(...after.map((r) => r.flight))).toBe(1)
+})
+
+// JJLIN070414 on X (0.1.63): "two or more sessions on ZCode's Start Plan
+// through magpie always show 429". Two agents' sessions keep a request each
+// in flight on one account, which ZCode serves one at a time. The request
+// refused beside the other's is not failed: the account's gate narrows to
+// one, and it waits for the other to end and is sent again — what ZCode's
+// own client does with a capped subagent request. Nothing reaches the agent
+// as an error, nothing is sent while the other is in flight after the
+// refusal, and no hold arms.
+test("two sessions on an account served one at a time: every request is served, none fails (JJLIN070414)", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  let clock = 1_000_000_000_000
+  busyHold.now = () => clock
+  startGate.now = () => clock
+  answer = async ({ flight }) => {
+    if (flight >= 2) return CAP()
+    await sleep(80)
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  // each session sends its next request when its last is answered
+  const session = async () => {
+    const out = []
+    for (let i = 0; i < 4; i++) {
+      clock += 1_000
+      out.push(await one(opts))
+    }
+    return out
+  }
+  const rs = (await Promise.all([session(), sleep(10).then(session)])).flat()
+  expect(rs.map((r) => r.status)).toEqual(Array(8).fill(200))
+  expect(busyHold.until).toBe(0)
+  // one refused pair (the first ask and its 1s re-ask), then one at a time
+  const asks = messages()
+  expect(asks.filter((r) => r.flight >= 2).length).toBeLessThanOrEqual(2)
+  expect(asks.length).toBe(10)
+})
+
+// The requeued request waits no longer than the gate's own wait, counted
+// from the refusal: an account whose other request runs past it answers the
+// queue's 429, nothing more sent.
+test("a requeued request whose turn doesn't come within the wait is answered here", async () => {
+  BUSY_WAITS.splice(0, BUSY_WAITS.length, 1, 1)
+  startGate.wait = 150
+  let release
+  const long = new Promise((r) => (release = r))
+  answer = async ({ flight }) => {
+    if (flight >= 2) return CAP()
+    await long
+    return OK()
+  }
+  const opts = await loader(startAuth())
+  const first = one(opts)
+  await sleep(20)
+  const second = await one(opts)
+  expect(second.status).toBe(429)
+  expect(second.retryAfter).toBe("5")
+  expect(JSON.parse(second.text).error.message).toContain("1 request at a time")
+  // the first ask and its re-ask; nothing after the wait ran out
+  expect(messages().length).toBe(3)
+  release()
+  expect((await first).status).toBe(200)
 })
 
 // The narrowing ends by its own clock: NARROW_FOR on, the account's gate is
