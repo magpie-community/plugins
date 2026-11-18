@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>路由洞察 Route insight</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid; place-items: center; align-content: center; gap: 14px;
+      padding: 24px; box-sizing: border-box;
+      font: 13px/1.6 "Aptos", "Segoe UI Variable", "Noto Sans SC", "PingFang SC", sans-serif;
+      color: var(--magpie-fg, CanvasText); background: var(--magpie-bg, Canvas);
+    }
+    .waiting { display: grid; justify-items: center; gap: 10px; max-width: 460px; color: var(--magpie-muted, GrayText); text-align: center; }
+    .waiting svg { width: 44px; height: 44px; }
+    .waiting b { color: var(--magpie-fg, CanvasText); font-size: 14px; font-weight: 600; }
+    .waiting b .en { margin-left: 6px; font-size: 12px; font-weight: 500; color: var(--magpie-muted, GrayText); }
+    .panel {
+      width: min(760px, 100%); box-sizing: border-box;
+      border: 1px solid var(--magpie-line, rgba(128,128,128,.28));
+      border-radius: 10px; padding: 14px 16px; text-align: left;
+      background: var(--magpie-card, rgba(128,128,128,.06));
+    }
+    .panel .head { font-weight: 600; margin-bottom: 10px; }
+    .panel .rows { display: grid; gap: 4px; }
+    .panel .row { display: grid; grid-template-columns: 132px 1fr; gap: 10px; align-items: baseline; }
+    .panel .key { color: var(--magpie-muted, GrayText); }
+    .panel code { font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; word-break: break-all; }
+    .panel .actions { display: flex; gap: 8px; margin-top: 12px; }
+    .panel button { padding: 5px 12px; font: inherit; cursor: pointer; }
+    button { padding: 5px 14px; font: inherit; }
+  </style>
+</head>
+<body>
+  <div class="waiting">
+    <svg viewBox="0 0 128 128" aria-hidden="true">
+      <defs><linearGradient id="wg" x1="14" y1="12" x2="114" y2="116" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#4c9aff"/><stop offset="1" stop-color="#7d5cff"/></linearGradient></defs>
+      <rect x="14" y="14" width="100" height="100" rx="22" fill="none" stroke="url(#wg)" stroke-width="7"/>
+      <path d="M34 84V58M52 84V44M70 84V64M88 84V52" stroke="#4c9aff" stroke-width="8" stroke-linecap="round"/>
+    </svg>
+    <b id="title">路由洞察 <span class="en">Route insight</span></b>
+    <div id="said">正在连接本地服务…</div>
+  </div>
+  <script src="_magpie/bridge.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>
