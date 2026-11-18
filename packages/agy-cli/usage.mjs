@@ -409,6 +409,16 @@ export function quotaUserAgent(version, authMethod, platform = process.platform,
 
 const companion = p => typeof p === "string" ? p : typeof p?.id === "string" ? p.id : ""
 
+// The project Code Assist serves every consumer (personal Google) account
+// under: loadCodeAssist names it for Free, Pro and Ultra alike. Where
+// Google refuses the account at agy's eligibility check, loadCodeAssist
+// can name no project at all, and agy then asks retrieveUserQuotaSummary
+// with none, which Google answers 403 #3501 (agy 1.5.10, recorded
+// 2026-11-18), while its ACP sessions, which run no eligibility check,
+// go on serving the account's requests (IcyLiqu1d on X). Asked with this
+// project, the same account's quota answers 200.
+export const CONSUMER_PROJECT = "aicode-consumers"
+
 // readQuotaDirect is retrieveUserQuotaSummary's reply for agy's stored
 // sign-in, as agy asks it. An access token with under two minutes left is
 // renewed in memory only; agy's stored sign-in is never written.
@@ -458,8 +468,15 @@ export async function readQuotaDirect({
     if (res.status !== 200) throw new UsageError(`Antigravity's ${method} answered ${res.status}.`)
     try { return JSON.parse(reply) } catch { throw new UsageError(`Antigravity's ${method} answered with no JSON.`) }
   }
-  const project = companion((await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }))?.cloudaicompanionProject)
-  if (!project) throw new UsageError("Antigravity names no project for this account.")
+  const load = await call("loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } })
+  let project = companion(load?.cloudaicompanionProject)
+  // a consumer account Google names no project for: the one every consumer
+  // account is served under (a Workspace or Cloud one has its own)
+  if (!project && load?.gcpManaged !== true && (text(sign.auth_method) || "consumer") === "consumer") project = CONSUMER_PROJECT
+  if (!project) {
+    const why = text((load?.ineligibleTiers ?? []).find(x => text(x?.reasonMessage))?.reasonMessage)
+    throw new UsageError(why ? `Antigravity names no project for this account (${why.slice(0, 300)})` : "Antigravity names no project for this account.")
+  }
   return call("retrieveUserQuotaSummary", { project })
 }
 
@@ -539,17 +556,19 @@ export async function fetchUsage(agy, {
     // failure of that read leaves agy's own answer standing: unknown,
     // never zero or full.
     if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
+      // when that read fails too, the error says why, after agy's refusal
+      const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
       let data
       try {
         data = await quota({ env, version: version.stdout.trim(), deadline, signal })
       } catch (error) {
         if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
-        throw failure
+        throw alsoFailed(error instanceof UsageError ? error.message : "a network request failed")
       }
       try {
         return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
       } catch {
-        throw failure
+        throw alsoFailed("Google's reply had no quota in it")
       }
     }
     throw failure

@@ -6,7 +6,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { agyRefusal, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
+import { agyRefusal, CONSUMER_PROJECT, createUsageReader, fetchUsage, parseUsageReport, quotaUserAgent, readQuotaDirect, verifyLinkIn } from "../usage.mjs"
 import http from "node:http"
 import { modelsInGroup, storeCatalogRows } from "../model-ids.mjs"
 import { forgetStoredSignIn } from "../signin.mjs"
@@ -987,7 +987,8 @@ test("an access token about to end is renewed in memory for the direct read, nev
 test("a direct read that fails leaves the region refusal standing: unknown, never zero or full", async t => {
   for (const [answer, stored] of [
     [{ retrieveUserQuotaSummary: [403, { error: { code: 403, message: "secret@example.com" } }] }, STORED],
-    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined }] }, STORED],
+    // a Workspace or Cloud account with no project of its own
+    [{ loadCodeAssist: [200, { ...LOAD, cloudaicompanionProject: undefined, gcpManaged: true }] }, STORED],
     [{ retrieveUserQuotaSummary: [200, { groups: [] }] }, STORED],
     [{}, null],
   ]) {
@@ -998,8 +999,35 @@ test("a direct read that fails leaves the region refusal standing: unknown, neve
     assert.deepEqual(result.windows, [])
     assert.equal(result.signIn, "kept")
     assert.match(result.error, /not eligible/)
+    // and why the direct read failed
+    assert.match(result.error, /Reading the quota directly failed too: \S/)
     assert.doesNotMatch(result.error, /secret/)
   }
+})
+
+// IcyLiqu1d on X (11-18): agy refused /usage as "not eligible" while the
+// account's requests went on working: agy's ACP sessions run no
+// eligibility check. When Google's loadCodeAssist names no project, agy
+// asks retrieveUserQuotaSummary with {} and gets 403 #3501 (agy 1.5.10,
+// recorded through CLOUD_CODE_URL with loadCodeAssist answered like this;
+// the 403 and the 200 below were Google's own for a consumer account).
+test("a consumer account Google names no project for has its quota read under the consumer project", async t => {
+  const api = await codeAssist(t, { loadCodeAssist: [200, { allowedTiers: [], gcpManaged: false, upgradeSubscriptionUri: "https://codeassist.google.com/upgrade", ineligibleTiers: [] }] })
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "", TEST_FAILURE_REPORT: REFUSED, TEST_VERSION: "1.5.10", CLOUD_CODE_URL: api.url })
+  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
+  const result = await createUsageReader(() => f.executable, { ...f.options, quota })()
+  assert.equal(result.error, undefined)
+  assert.ok(result.windows.some(w => w.used === 25) && result.windows.some(w => w.used === 50), JSON.stringify(result.windows))
+  assert.deepEqual(api.calls.map(c => c.body), [{ metadata: { ideType: "ANTIGRAVITY" } }, { project: CONSUMER_PROJECT }])
+  await f.assertClean()
+})
+
+test("an account with no project and Google's reason for it says that reason", async t => {
+  const why = "Your current account is not eligible for Antigravity, because it is not currently available in your location."
+  const api = await codeAssist(t, { loadCodeAssist: [200, { gcpManaged: true, ineligibleTiers: [{ reasonCode: "UNSUPPORTED_LOCATION", reasonMessage: why }] }] })
+  await assert.rejects(readQuotaDirect({ env: { CLOUD_CODE_URL: api.url }, version: "1.5.10", deadline: Date.now() + 5000, stored: async () => STORED }),
+    e => e.message.includes(why) && /no project/.test(e.message))
+  assert.equal(api.calls.length, 1)
 })
 
 // plugins#1234 (qiankun229): agy run for usage with an ended access token

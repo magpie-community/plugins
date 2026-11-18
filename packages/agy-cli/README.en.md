@@ -240,8 +240,11 @@ Where Antigravity isn't offered, agy refuses `/usage` on its eligibility check
 made had its answer. The plugin then makes that read itself, the way agy makes
 it: with agy's stored sign-in it asks Google's Code Assist server
 (`loadCodeAssist`, then `retrieveUserQuotaSummary`) with agy's own User-Agent.
-An access token about to end is renewed in memory and never stored. If that
-read fails too, the account shows agy's refusal and no numbers.
+An access token about to end is renewed in memory and never stored. When
+`loadCodeAssist` names no project for a personal Google account, the quota is
+asked under `aicode-consumers`, the project Google serves every personal account
+under (agy itself asks with none, and Google refuses that). If that read fails
+too, the account shows agy's refusal and why the read failed, and no numbers.
 
 A signed-out agy opens Google's sign-in page in the browser when it runs, so
 before running agy for usage or the model list, the plugin looks at agy's stored
