@@ -375,6 +375,14 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  An ending starting "⚠ UNAUTHENTICATED (code 401)" or
+  "⚠ Authentication expired. Please log back in." (often seen when a
+  long-lived `agy acp` process still holds a stale in-memory token across
+  an hourly OAuth refresh) automatically drops the process and retries once on
+  a fresh process to load current credentials when nothing has been emitted
+  yet; if that retry still fails or output already started, it drops the
+  process and ends the turn as `authentication_error` (status 401, HTTP 401
+  without streaming) instead of passing the banner through as reply text.
 - **A reply with only thinking, no text and no tool call** (billion-context's
   "the turn degenerated again after the continuation nudge"): when one of the
   model's replies comes back empty, agy writes "⚠ Model produced invalid

@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignIn, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -142,7 +142,18 @@ const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 // its own that nothing follows. Answered as text, it was the whole reply
 // and the next account was never asked (@Airan_FS on X, 11-17).
 const QUOTA_CORE = "⚠ Individual quota reached"
-const QUOTA_MARKER = "\n" + QUOTA_CORE
+// agy's ending when an OAuth token is rejected mid-session (e.g. a
+// long-lived agy acp process holding a stale in-memory token across an
+// hourly refresh, or revoked/expired credentials):
+// "⚠ UNAUTHENTICATED (code 401): Request is missing required authentication credential. …"
+// or "⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials. …"
+// Its tail varies, so like QUOTA_CORE it is matched as a line of its own
+// that nothing follows.
+const UNAUTH_CORE = "⚠ UNAUTHENTICATED (code 401)"
+// agy 1.5.10+ fixed wording when IsUnauthenticatedError triggers mid-session.
+const AUTH_EXPIRED_CORE = "⚠ Authentication expired. Please log back in."
+const ENDING_ERROR_CORES = [QUOTA_CORE, UNAUTH_CORE, AUTH_EXPIRED_CORE]
+const ENDING_ERROR_MARKERS = ENDING_ERROR_CORES.map((core) => "\n" + core)
 const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
@@ -181,7 +192,8 @@ const CAP_TAIL_CORE = "Please continue from where you left off, keeping your res
 const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length,
+  ...ENDING_ERROR_MARKERS.map((marker) => marker.length),
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1184,6 +1196,7 @@ export function streamErrorOf(error) {
   // Google refused the account (refusedError): its status, so magpie
   // reads it as the account's refusal, not as a failed reply.
   if (type === "permission_error") out.status = 403
+  if (type === "authentication_error") out.status = 401
   if (error?.noRetry) out.noRetry = true
   return out
 }
@@ -1194,6 +1207,16 @@ class AgentTurnError extends Error {
     this.kind = kind
     this.keepProcess = true
   }
+}
+
+function authError(detail) {
+  const error = new AgentTurnError(
+    `agy bridge: Antigravity authentication failed${detail ? ": " + detail : ""}`,
+    "authentication_error",
+  )
+  error.statusCode = 401
+  error.keepProcess = false
+  return error
 }
 
 // Google refused the account (agyRefusal): a 403 no retry of this request
@@ -1553,6 +1576,7 @@ class Turn {
     this.emptyAsked = false
     this.refusedDetail = ""
     this.agentErrorCore = ""
+    this.agentErrorNotice = ""
     this.timer = null
     this.cleanupTimer = null
     this.logOffset = 0
@@ -1753,15 +1777,20 @@ class Turn {
         return
       }
     }
-    const quota = this.quotaEnding(text)
-    if (quota >= 0) {
-      this.heldText = text.slice(quota)
-      this.emitText(text.slice(0, quota))
-      return
+    for (const core of ENDING_ERROR_CORES) {
+      const ending = this.endingAt(text, core)
+      if (ending >= 0) {
+        this.heldText = text.slice(ending)
+        this.emitText(text.slice(0, ending))
+        return
+      }
     }
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+        ENDING_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+        (this.textTail === "" && keep === text.length &&
+          ENDING_ERROR_CORES.some((core) => core.startsWith(tail))) ||
         (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           CAP_MARKER.startsWith(tail)))) {
         this.heldText = tail
@@ -1772,11 +1801,12 @@ class Turn {
     this.emitText(text)
   }
 
-  // Where agy's quota ending (QUOTA_CORE) starts in text, with the newline
-  // before it: a line of its own that only whitespace follows, so far. -1
-  // when there is none; one more text follows was the model quoting it.
-  quotaEnding(text) {
-    const at = text.lastIndexOf(QUOTA_CORE)
+  // Where an agy ending marker (`core`, e.g. QUOTA_CORE or UNAUTH_CORE) starts
+  // in text, with the newline before it: a line of its own that only
+  // whitespace follows, so far. -1 when there is none; one more text follows
+  // was the model quoting it.
+  endingAt(text, core) {
+    const at = text.lastIndexOf(core)
     if (at < 0) return -1
     const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
     if (!lineStart || text.slice(at).trimEnd().includes("\n")) return -1
@@ -1862,11 +1892,16 @@ class Turn {
       this.agentError = true
       this.agentErrorCore = core
       this.heldText = ""
-    } else if (this.quotaEnding(this.heldText) >= 0) {
-      this.agentError = true
-      this.agentErrorCore = QUOTA_CORE
-      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
-      this.heldText = ""
+      return
+    }
+    for (const endingCore of ENDING_ERROR_CORES) {
+      if (this.endingAt(this.heldText, endingCore) >= 0) {
+        this.agentError = true
+        this.agentErrorCore = endingCore
+        this.agentErrorNotice = this.heldText.trim().replace(/^⚠ /, "")
+        this.heldText = ""
+        return
+      }
     }
   }
 
@@ -2641,7 +2676,7 @@ class Proc {
         turn.complete({ stopReason: "cancelled" })
         return
       }
-      if (error instanceof AgentTurnError && !this.dead && !turn.calls.length) {
+      if (error instanceof AgentTurnError && error.keepProcess !== false && !this.dead && !turn.calls.length) {
         // agy kept the session; a retry of the same request continues in it.
         this.expectedMessages = turn.baseHistory
         turn.fail(error)
@@ -2663,7 +2698,10 @@ class Proc {
     if (core === QUOTA_CORE) {
       // Google's own words, the reset with them: magpie rests the account
       // until then and asks the next one
-      return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.quotaNotice}`, "rate_limit_error")
+      return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.agentErrorNotice}`, "rate_limit_error")
+    }
+    if (core === UNAUTH_CORE || core === AUTH_EXPIRED_CORE) {
+      return authError(turn.agentErrorNotice)
     }
     if (core === VERIFY_CORE) {
       // the link, when agy logged Google's error whole; the reply has none
@@ -2704,6 +2742,9 @@ class Proc {
     }
     const refused = agyRefusal(detail)
     if (refused) return refusedError(refused)
+    if (/\bUNAUTHENTICATED\b.*\b401\b|\b401\b.*\bUNAUTHENTICATED\b|Authentication expired\. Please log back in\./i.test(detail)) {
+      return authError(detail)
+    }
     return new AgentTurnError(`agy bridge: agy stopped the turn because of an error${detail ? ": " + detail : ""}`)
   }
 
@@ -3640,7 +3681,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     dropFromPool(existing)
     await existing.stop().catch(() => {})
   }
-  const spare = await takeSpare(agyPath, opts.workDir)
+  const spare = opts.noSpare ? null : await takeSpare(agyPath, opts.workDir)
   while (!spare && allProcs.size >= maxProcs()) {
     const idle = spares.values().next().value
     if (idle) {
@@ -6242,22 +6283,30 @@ function thinkingSignature(sessionId, thinking) {
     createHmac("sha256", THINKING_KEY).update(String(sessionId) + "\n" + thinking).digest("base64url")
 }
 
-function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body)) {
+function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.registerResponse(body), retryFresh = null) {
   const encoder = new TextEncoder()
   const responseContent = []
   const forwardThinking = FORWARD_THINKING && body.thinking?.type !== "disabled"
+  let currentProc = proc
+  let currentTurn = turn
+  let currentStep = step
+  let authRetried = false
   let blockIndex = 0
   let open = null
   let pingTimer = null
   let finished = false
   let abortHandler = null
   // What this response has produced so far, for sizing a late prompt's input.
-  step.contentSnapshot = () => [
-    ...responseContent,
-    ...(open ? [open.type === "text"
-      ? { type: "text", text: open.text }
-      : { type: "thinking", thinking: open.text }] : []),
-  ]
+  const bindStep = (bound) => {
+    currentStep = bound
+    currentStep.contentSnapshot = () => [
+      ...responseContent,
+      ...(open ? [open.type === "text"
+        ? { type: "text", text: open.text }
+        : { type: "thinking", thinking: open.text }] : []),
+    ]
+  }
+  bindStep(step)
 
   return new ReadableStream({
     async start(controller) {
@@ -6267,7 +6316,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         if (open.type === "text") {
           responseContent.push({ type: "text", text: open.text })
         } else {
-          const signature = thinkingSignature(proc.sessionId, open.text)
+          const signature = thinkingSignature(currentProc.sessionId, open.text)
           send("content_block_delta", {
             type: "content_block_delta",
             index: blockIndex,
@@ -6317,7 +6366,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
       }
       const detach = () => {
         finished = true
-        turn.detach()
+        currentTurn.detach()
         if (pingTimer) clearInterval(pingTimer)
         pingTimer = null
         if (signal && abortHandler) signal.removeEventListener("abort", abortHandler)
@@ -6329,7 +6378,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
           delta: { stop_reason: stopReason, stop_sequence: null },
           usage,
         })
-        turn.recordResponseUsage(step, usage, final, calibrate)
+        currentTurn.recordResponseUsage(currentStep, usage, final, calibrate)
         send("message_stop", { type: "message_stop" })
       }
       const partial = () => {
@@ -6340,10 +6389,10 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
       const abort = () => {
         if (finished) return
         detach()
-        if (!proc.cancelTurn(turn, partial())) {
-          dropFromPool(proc)
-          proc.abandonTurn(turn)
-          proc.stop().catch(() => {})
+        if (!currentProc.cancelTurn(currentTurn, partial())) {
+          dropFromPool(currentProc)
+          currentProc.abandonTurn(currentTurn)
+          currentProc.stop().catch(() => {})
         }
         try { controller.error(signal?.reason || new Error("request aborted")) } catch {}
       }
@@ -6373,7 +6422,7 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         }, PING_INTERVAL_MS)
 
         for (;;) {
-          const event = await turn.next()
+          const event = await currentTurn.next()
           if (finished) return
           if (event.type === "text") {
             emitDelta("text", event.text)
@@ -6392,14 +6441,14 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
             const batchDeadline = performance.now() + TOOL_BATCH_WINDOW_MS
             for (;;) {
               const remaining = batchDeadline - performance.now()
-              if (!turn.events.length && (remaining <= 0 || turn.done || turn.cancelRequested || turn.finalized)) break
-              const next = turn.events.length ? turn.events.shift() : await turn.next(remaining, signal)
+              if (!currentTurn.events.length && (remaining <= 0 || currentTurn.done || currentTurn.cancelRequested || currentTurn.finalized)) break
+              const next = currentTurn.events.length ? currentTurn.events.shift() : await currentTurn.next(remaining, signal)
               if (finished) return
               if (!next) break
               if (next.type !== "tool") {
                 // Preserve the boundary for the next HTTP response. Text,
                 // completion and errors must never be pulled across a batch.
-                turn.events.unshift(next)
+                currentTurn.events.unshift(next)
                 break
               }
               if (!emittedIds.has(next.call.id)) {
@@ -6408,35 +6457,68 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
               }
               if (performance.now() >= batchDeadline) break
             }
-            const usage = await settleUsage(proc, turn, step, responseContent)
+            const usage = await settleUsage(currentProc, currentTurn, currentStep, responseContent)
             if (finished) return
-            stopMessage("tool_use", usage, false, step.usageKind === "agy_model_call")
-            proc.recordAssistantResponse(turn, responseContent)
+            stopMessage("tool_use", usage, false, currentStep.usageKind === "agy_model_call")
+            currentProc.recordAssistantResponse(currentTurn, responseContent)
             detach()
             controller.close()
             return
           }
           if (event.type === "result") {
             closeBlock()
-            turn.rawUsage = event.result.usage ?? turn.rawUsage
-            const usage = await settleUsage(proc, turn, step, responseContent, event.result)
+            currentTurn.rawUsage = event.result.usage ?? currentTurn.rawUsage
+            const usage = await settleUsage(currentProc, currentTurn, currentStep, responseContent, event.result)
             if (finished) return
             stopMessage(STOP_REASONS[event.result.stopReason] || "end_turn", usage, true, event.result.stopReason !== "cancelled")
-            proc.recordAssistantResponse(turn, responseContent)
-            proc.finalizeTurn(turn)
+            currentProc.recordAssistantResponse(currentTurn, responseContent)
+            currentProc.finalizeTurn(currentTurn)
             detach()
             controller.close()
             return
           }
           if (event.type === "error") {
+            // An existing agy acp process can fail with UNAUTHENTICATED around
+            // its hourly OAuth refresh while disk/keyring credentials are
+            // valid. When nothing has been emitted yet, restart a fresh
+            // process once so it reloads the current token transparently.
+            if (event.error?.kind === "authentication_error" && !authRetried &&
+                typeof retryFresh === "function" &&
+                blockIndex === 0 && !open && responseContent.length === 0 &&
+                !finished && !signal?.aborted) {
+              authRetried = true
+              currentTurn.detach()
+              currentProc.retiring = true
+              dropFromPool(currentProc)
+              await currentProc.stop().catch(() => {})
+              currentProc.finalizeTurn(currentTurn)
+              const retried = await retryFresh()
+              if (finished || signal?.aborted) {
+                if (retried) {
+                  retried.turn.detach()
+                  retried.proc.retiring = true
+                  dropFromPool(retried.proc)
+                  retried.proc.abandonTurn(retried.turn)
+                  await retried.proc.stop().catch(() => {})
+                }
+                return
+              }
+              if (retried) {
+                currentProc = retried.proc
+                currentTurn = retried.turn
+                currentTurn.attach()
+                bindStep(currentTurn.registerResponse(body))
+                continue
+              }
+            }
             closeBlock()
             send("error", { type: "error", error: streamErrorOf(event.error) })
             if (!event.error?.keepProcess) {
-              dropFromPool(proc)
-              await proc.stop().catch(() => {})
+              dropFromPool(currentProc)
+              await currentProc.stop().catch(() => {})
             }
             if (finished) return
-            proc.finalizeTurn(turn)
+            currentProc.finalizeTurn(currentTurn)
             detach()
             controller.close()
             return
@@ -6444,21 +6526,21 @@ function makeAnthropicStream(proc, turn, body, msgId, signal, step = turn.regist
         }
       } catch (error) {
         if (finished) return
-        turn.fail(error)
-        dropFromPool(proc)
-        await proc.stop().catch(() => {})
+        currentTurn.fail(error)
+        dropFromPool(currentProc)
+        await currentProc.stop().catch(() => {})
         if (finished) return
         try {
           closeBlock()
           send("error", {
             type: "error",
-            error: { type: "api_error", message: String(error?.message ?? error) },
+            error: streamErrorOf(error),
           })
-          proc.finalizeTurn(turn)
+          currentProc.finalizeTurn(currentTurn)
           detach()
           controller.close()
         } catch {
-          proc.finalizeTurn(turn)
+          currentProc.finalizeTurn(currentTurn)
           detach()
           try { controller.error(error) } catch {}
         }
@@ -6608,11 +6690,11 @@ async function jsonResponseFromStream(stream, fallbackModel, fallbackId) {
   })
 }
 
-function streamResponse(proc, turn, body, signal) {
+function streamResponse(proc, turn, body, signal, retryFresh = null) {
   turn.attach()
   const step = turn.registerResponse(body)
   const msgId = "msg_" + randomUUID().replace(/-/g, "").slice(0, 24)
-  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step)
+  const stream = makeAnthropicStream(proc, turn, body, msgId, signal, step, retryFresh)
   if (body.stream === false) return jsonResponseFromStream(stream, body.model, msgId)
   return new Response(stream, {
     status: 200,
@@ -6957,6 +7039,21 @@ export const AntigravityBridgePlugin = async () => {
                 hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
+              const retryFresh = () => inAccount(home, async () => {
+                forgetStoredSignIn()
+                if (cannotSignIn(await storedSignIn({ fresh: true }))) return null
+                if (resultBlocks.length && replayHistoryProblem(body, resultBlocks)) return null
+                const spare = await takeSpare(agy, workDir)
+                if (spare) await spare.stop().catch(() => {})
+                return acquireProc(
+                  agy,
+                  convKey,
+                  { ...acquireOpts, dropReason: "auth_retry", noSpare: true },
+                  isFresh,
+                  true,
+                  (p, h) => beginTurn(p, h, body, callerWorkDir, model, selection, null),
+                )
+              })
               let keptSession = false
               if (resultBlocks.length) {
                 const matches = matchToolResults(body, resultBlocks, sessionScope)
@@ -7046,7 +7143,7 @@ export const AntigravityBridgePlugin = async () => {
                       proc.continueWith(results)
                       proc.recordToolResults(turn, body.messages)
                     }
-                    return streamResponse(proc, turn, body, init.signal)
+                    return streamResponse(proc, turn, body, init.signal, retryFresh)
                   }
                 }
                 const held = pool.get(convKey)
@@ -7068,7 +7165,7 @@ export const AntigravityBridgePlugin = async () => {
                   // replay this request's own tool round once, under one lock.
                   const recovery = await recoverStaleTurn({ agy, convKey, proc: held, turn: held.turn,
                     body, resultBlocks, acquireOpts, isFresh, begin, attempts })
-                  if (recovery.kind === "replayed") return streamResponse(recovery.proc, recovery.turn, body, init.signal)
+                  if (recovery.kind === "replayed") return streamResponse(recovery.proc, recovery.turn, body, init.signal, retryFresh)
                   if (recovery.kind === "active") {
                     return jsonError(409, "agy bridge: no active MCP call matches these tool results")
                   }
@@ -7099,7 +7196,7 @@ export const AntigravityBridgePlugin = async () => {
                 resultBlocks.length > 0 && !keptSession,
                 begin,
               )
-              return streamResponse(proc, turn, body, init.signal)
+              return streamResponse(proc, turn, body, init.signal, retryFresh)
             } catch (error) {
               return jsonError(error.statusCode ?? 502, error.message, error.code, { noRetry: error.noRetry })
             }
