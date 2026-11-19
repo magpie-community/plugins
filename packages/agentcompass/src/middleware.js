@@ -37,7 +37,7 @@ import {
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { canonicalModel } from "./catalog.js";
+import { canonicalModel, servedModel, splitEffortSuffix } from "./catalog.js";
 import {
   STICK_KEEP_MS,
   bodyUpTo,
@@ -743,9 +743,23 @@ export function onProvider(body, ctx = {}) {
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   const liveQuotas = loadLiveQuotas(options, now);
   const prov = ctx?.provider && typeof ctx.provider === "object" ? ctx.provider : null;
-  const providerModels =
+  const listedModels =
     extractModelList(options.modelsByProvider?.[prov?.id]) ||
     extractModelList(options.modelsByProvider?.[prov?.name]);
+  // The names of a preset's list are in that preset's namespace (`model_resolution.serving_providers`): one the preset's own
+  // `provider_names` declaration makes another model than the bare name is (no row there, or another row) is routed by the
+  // spelling that keeps reading that declaration (`servedModel`), and sent to the preset as listed.
+  const listedAs = new Map();
+  const providerModels = listedModels && prov?.id
+    ? listedModels.map((entry) => {
+        const name = typeof entry === "string" ? entry : entry?.model;
+        if (!name) return entry;
+        const served = servedModel(name, [prov.id]);
+        if (served === name) return entry;
+        listedAs.set(splitEffortSuffix(served).name, splitEffortSuffix(name).name);
+        return typeof entry === "string" ? served : { ...entry, model: served };
+      })
+    : listedModels;
 
   if (ctx?.state?.routeBlocked) return undefined;
 
@@ -813,7 +827,8 @@ export function onProvider(body, ctx = {}) {
           ctx.state.agentcompass = updated;
           ctx.state.route = updated;
         }
-        applyRoutedModelAndEffort(body, updated, ctx);
+        const listed = listedAs.get(updated.targetModel);
+        applyRoutedModelAndEffort(body, listed ? { ...updated, targetModel: listed } : updated, ctx);
         return body;
       }
       return undefined;

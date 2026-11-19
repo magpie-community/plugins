@@ -15,18 +15,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { rankCandidates } from "../src/allocator.js";
 import { readingEffort, scoredModels } from "../src/axis-scores.js";
-import { catalogNameWarning, resolveModel } from "../src/catalog.js";
+import { FAMILIES, MODELS, MODEL_ALIASES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, healthKey, modelLeaf, resolveModel, rowKey, servedModel } from "../src/catalog.js";
 import { durationAt } from "../src/quota-economy.js";
 import { FIVE_AXIS_EFFORT_READINGS, FIVE_AXIS_EFFORT_STEPS, FIVE_AXIS_MODELS } from "../src/reference-data.js";
 import { V0_7_0, v070Row } from "../src/released-names.js";
-import { EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, risesWithEffort, upgradeScores } from "../src/user-scores.js";
+import { EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, resolveModelKey, risesWithEffort, scoreLayer, upgradeScores } from "../src/user-scores.js";
 import { ONE_CONFIGURATION, candidatesFromModels, levelsOf } from "../scripts/candidates-from-models.mjs";
-import { onRequest as middlewareOnRequest } from "../src/middleware.js";
+import { onProvider as middlewareOnProvider, onRequest as middlewareOnRequest } from "../src/middleware.js";
 import { EFFORT_TO_JEV_SCORE, JEV_EFFORT_LEVELS, buildEffortAnswer } from "../src/index.js";
 import { profile } from "./profile.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROFILE = profile();
+const FIVE_AXIS_MODELS_TABLE = scoredModels();
 const facetsOf = (info) => Object.entries(info.five_axis.categories).flatMap(([c, cell]) => Object.entries(cell.facets || {}).map(([f, fc]) => [c, f, fc]));
 const ordered = (by, rises) => {
   const values = EFFORTS.filter((e) => e in by).map((e) => (rises ? 1 : -1) * by[e]);
@@ -264,4 +265,100 @@ test("Mode B answers every effort on Magpie's effort scale: outside it the neare
   assert.equal(buildEffortAnswer("default").score, buildEffortAnswer(reads).score, `default answers as ${reads}`);
   assert.deepEqual(Object.keys(EFFORT_TO_JEV_SCORE).sort(), [...EFFORTS, "default"].sort());
   for (const unknown of ["turbo", "auto", "", null, undefined]) assert.equal(buildEffortAnswer(unknown), null, `${unknown}: no answer`);
+});
+
+// ---------------------------------------------------------------------------- provider_names (AgentCompass v0.7.2)
+
+const DECLARED = [
+  ...Object.keys(PROVIDER_NAMES.defaults).map((name) => [null, name]),
+  ...Object.entries(PROVIDER_NAMES.rows).flatMap(([provider, names]) => Object.keys(names).map((name) => [provider, name])),
+];
+
+test("a served name reads its provider's declaration, then its maker's default, for every spelling, whatever order the providers come in", () => {
+  for (const [provider, name] of DECLARED) {
+    const declared = provider ? PROVIDER_NAMES.rows[provider][name] : PROVIDER_NAMES.defaults[name];
+    const spellings = provider
+      ? [`${provider}/${name}`, `${provider.toUpperCase()}/${name.toUpperCase()}`, `${provider}/${name}:high`]
+      : [name, name.toUpperCase(), `${name}:high`, `${name}-high`];
+    for (const spelling of spellings) {
+      const r = resolveModel(spelling);
+      if (declared.model == null) {
+        assert.equal(r.key, null, spelling);
+        assert.equal(r.source, declared.status, spelling);
+        assert.equal(r.provider, provider, spelling);
+      } else {
+        assert.equal(r.key, declared.model, spelling);
+        assert.equal(r.source, provider ? "provider" : "default", spelling);
+      }
+    }
+    // the same declaration on the endpoint that lists the name bare (a Magpie preset's own namespace)
+    if (provider) assert.equal(resolveModel(name, MODELS, MODEL_ALIASES, FAMILIES, PROVIDER_NAMES, [provider]).key, declared.model ?? null, `${name} on ${provider}`);
+  }
+  // providers that declare different rows: no row, in either order
+  const table = { defaults: {}, rows: { a: { m: { model: "claude-opus-5-5" } }, b: { m: { model: "claude-sonnet-5-5" } } } };
+  for (const order of [["a", "b"], ["b", "a"]]) {
+    const r = resolveModel("m", MODELS, MODEL_ALIASES, FAMILIES, table, order);
+    assert.deepEqual([r.source, r.key], ["conflict", null], order.join(","));
+  }
+  // a table without its parts is refused, never read as declaring none
+  assert.throws(() => resolveModel("claude-opus-5-5", MODELS, MODEL_ALIASES, FAMILIES, { defaults: {} }), /provider_names/);
+});
+
+test("a pair with no row on its provider is its own model: out of automatic routing with the reason, and launched when named", () => {
+  const noRow = DECLARED.filter(([provider, name]) => provider && PROVIDER_NAMES.rows[provider][name].model == null).map(([provider, name]) => `${provider}/${name}`);
+  assert.ok(noRow.length > 0);
+  for (const pair of noRow) {
+    const r = resolveModel(pair);
+    // never the same model as the same name elsewhere, and a stored value reads the same declaration again
+    assert.notEqual(rowKey(pair), rowKey(modelLeaf(pair)), pair);
+    assert.equal(rowKey(pair), `${r.provider}/${modelLeaf(pair)}`.toLowerCase());
+    assert.equal(healthKey(pair), rowKey(pair));
+    assert.equal(canonicalModel(canonicalModel(pair)), canonicalModel(pair));
+    assert.equal(resolveModel(canonicalModel(pair)).source, r.source);
+    const free = rankCandidates(PROFILE, { candidateModels: [{ model: pair, efforts: ["high"] }, { model: "gpt-6.1-sol", efforts: ["high"] }] });
+    const mine = free.allCandidates.filter((c) => c.model === pair);
+    assert.ok(mine.length > 0 && mine.every((c) => !c.eligible), `${pair}: out of automatic routing`);
+    assert.match(catalogNameWarning(pair), new RegExp(`${r.provider}.*\\(${r.source}\\)`), `${pair}: the reason`);
+    const named = rankCandidates(PROFILE, { candidateModels: [{ model: pair, efforts: ["high"] }], constraintModel: pair });
+    assert.equal(named.selected?.model, pair, `${pair}: launched when named`);
+  }
+});
+
+test("a modelsByProvider name is read on its preset: a name the preset declares with no row is routed as that pair and sent as listed", () => {
+  const [provider, name] = DECLARED.find(([p, n]) => p && PROVIDER_NAMES.rows[p][n].model == null);
+  const pair = `${provider}/${name}`;
+  assert.equal(servedModel(name, [provider]), pair);
+  assert.equal(servedModel(`${name}:low`, [provider]), `${pair}:low`);
+  // a name the preset does not declare, or declares as the row the name is anyway, stays as listed
+  for (const [p, n] of DECLARED.filter(([p]) => p)) {
+    if (PROVIDER_NAMES.rows[p][n].model === resolveModel(n).key) assert.equal(servedModel(n, [p]), n, `${n} on ${p}`);
+  }
+  assert.equal(servedModel("gpt-6.1-sol", [provider]), "gpt-6.1-sol");
+  const options = {
+    candidateModels: [{ model: pair, efforts: ["high"] }],
+    modelsByProvider: { [provider]: [{ model: name, efforts: ["high"] }] },
+    routePerProvider: true,
+    constraintModel: pair,
+  };
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+  const ctx = { protocol: "chat", state: {}, options };
+  middlewareOnRequest(body, ctx);
+  middlewareOnProvider(body, { ...ctx, provider: { id: provider, model: name } });
+  assert.equal(ctx.state.route.targetModel, pair, "routed as the pair");
+  assert.equal(body.model, `${name}:high`, "sent to the preset as listed");
+});
+
+test("a user score lands where its key's maker default says, the row's own id wins for its row, and the order of keys never matters", () => {
+  const entry = (level) => ({ level, as_of: "2026-11-19" });
+  for (const [, name] of DECLARED.filter(([p]) => !p)) {
+    const row = PROVIDER_NAMES.defaults[name].model;
+    assert.equal(resolveModelKey(name, FIVE_AXIS_MODELS_TABLE), row, name);
+    // a provider's declaration is never read for a score: a provider-qualified key reads the default of its name
+    for (const provider of Object.keys(PROVIDER_NAMES.rows)) assert.equal(resolveModelKey(`${provider}/${name}`, FIVE_AXIS_MODELS_TABLE), row, `${provider}/${name}`);
+    // the row's own id wins where it lands on the row; the undated row of a moved name is reached by its repository id alone
+    if (name === row || resolveModelKey(row, FIVE_AXIS_MODELS_TABLE) !== row) continue;
+    const layer = { [name]: { coding: entry(1.1), creativity: entry(2.2) }, [row]: { coding: entry(2.9) } };
+    const reversed = Object.fromEntries(Object.entries(layer).reverse());
+    for (const doc of [layer, reversed]) assert.deepEqual(scoreLayer(doc, FIVE_AXIS_MODELS_TABLE).get(row), { coding: entry(2.9), creativity: entry(2.2) }, name);
+  }
 });
