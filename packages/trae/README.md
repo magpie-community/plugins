@@ -30,8 +30,9 @@ A fix to that machinery reaches both.
 
 ## Sign-in
 
-One way per provider, **Trae CN account (browser)** or **Trae Global account
-(browser)**. The plugin opens that realm's authorization page
+A personal account signs in with **Trae CN account (browser)** or **Trae
+Global account (browser)**; an enterprise seat has its own way (see
+Enterprise below). The plugin opens that realm's authorization page
 (`www.trae.cn/authorization` or `www.trae.ai/authorization`, the IDE's client
 `ono9krqynydwx5`). Sign in there and allow the sign-in; the page then sends the
 browser back to a callback on `http://127.0.0.1:<port>/authorize` — it accepts
@@ -50,6 +51,21 @@ Trae Global's stays 19. The daily check-in goes on a 15-digit id made from it
 (see Daily check-in).
 
 ### Enterprise (SaaS) accounts
+
+Each provider has a second way, **Trae CN enterprise account (browser)** or
+**Trae Global enterprise account (browser)**, since 0.2.46. It opens the
+realm's enterprise console's own authorization page
+(`console.enterprise.trae.cn/authorization` or
+`console.enterprise.trae.ai/authorization`) with the same parameters and
+callback. There the seat signs in with its TRAE enterprise email and
+password, the Doubao/Feishu tab, or the company's SSO. Since November 2026
+trae.cn's own page sends a signed-out browser to a Doubao/Feishu account
+sign-in (accounts.doubao.com) that has no way to an enterprise seat, so an
+enterprise account signing in again there was not recognised (@yalifesign
+on X). The console's page calls back with `userJwt`, `userInfo`,
+`refreshToken` and `host` (its Api host), read as below; a callback naming
+no host is taken as the console's seat. Read from the consoles' page code;
+**not tried with a real enterprise seat**.
 
 Since 0.2.10 the authorization page also offers Trae's enterprise (SaaS / SSO)
 sign-in; before, the plugin asked the page to hide it (`hide_saas_login`), so

@@ -755,10 +755,12 @@ const page = (ok, title, text) => `<!doctype html><meta charset="utf-8"><meta na
 // signedIn reads trae.cn's callback: userJwt (the token pair) and userInfo
 // (the account), or, from its older page, a refresh token alone, which is
 // exchanged for the pair
-async function signedIn(q, device, site) {
+async function signedIn(q, device, site, { enterprise = false } = {}) {
   const jwt = parseJSON(q.get("userJwt"))
   const info = parseJSON(q.get("userInfo"))
-  const host = q.get("host") || info.Host || ""
+  // the enterprise console's page names its Api host; one that names none
+  // still names its console, which is the seat's host
+  const host = q.get("host") || info.Host || (enterprise ? q.get("consoleHost") || "" : "")
   let s = {
     token: jwt.Token ?? jwt.token ?? "",
     refresh: jwt.RefreshToken ?? jwt.refreshToken ?? q.get("refreshToken") ?? "",
@@ -793,8 +795,18 @@ async function signedIn(q, device, site) {
 }
 
 // browserSignIn is the IDE's sign-in: trae.cn's authorization page, back
-// to a callback on 127.0.0.1 (the page takes no other kind)
-async function browserSignIn(site) {
+// to a callback on 127.0.0.1 (the page takes no other kind).
+//
+// enterprise opens the realm's enterprise console's own authorization page
+// (console.enterprise.trae.cn/authorization, the same parameters and the
+// same callback) instead of the consumer site's. Since November 2026 trae.cn's
+// page sends a signed-out browser to a Doubao/Feishu account sign-in
+// (accounts.doubao.com) with no way to an enterprise one, so a seat that
+// signs in with its TRAE enterprise email, the console's Doubao/Feishu tab
+// or the tenant's SSO has to start on the console (@yalifesign on X). The
+// console's page calls back with userJwt, userInfo, refreshToken and host
+// (its own Api host), which signedIn reads as before.
+async function browserSignIn(site, { enterprise = false } = {}) {
   const device = newDevice(site)
   const trace = randomUUID()
   let over = false
@@ -824,7 +836,7 @@ async function browserSignIn(site) {
     }
     if (!q.get("userJwt") && !q.get("refreshToken")) return html(page(false, "Nothing to sign in with", `${site.webHost} sent no token; start the sign-in again.`))
     try {
-      const s = await signedIn(q, device, site)
+      const s = await signedIn(q, device, site, { enterprise })
       finish({ ...toAuth(s, site), type: "success" })
       html(page(true, "You're signed in", `${s.name || s.uid || `Your ${site.name} account`} is signed in. You can close this tab.`))
     } catch (e) {
@@ -867,8 +879,10 @@ async function browserSignIn(site) {
     hide_saas_login: "false",
   })
   return {
-    url: `${site.hosts.web}/authorization?${q}`,
-    instructions: `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
+    url: `${enterprise ? site.hosts.console : site.hosts.web}/authorization?${q}`,
+    instructions: enterprise
+      ? `Sign in to your ${site.name} enterprise seat in the browser (enterprise email, Doubao/Feishu or your company's SSO) and allow the sign-in. It finishes here by itself.`
+      : `Sign in to ${site.name} (${site.webHost}) in the browser and allow the sign-in. It finishes here by itself.`,
     method: "auto",
     callback: () => done,
   }
@@ -4383,7 +4397,10 @@ const makePlugin = (site) => async ({ client }) => {
           },
         }
       },
-      methods: [{ type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) }],
+      methods: [
+        { type: "oauth", label: `${site.name} account (browser)`, authorize: () => browserSignIn(site) },
+        { type: "oauth", label: `${site.name} enterprise account (browser)`, authorize: () => browserSignIn(site, { enterprise: true }) },
+      ],
     },
   }
 }
