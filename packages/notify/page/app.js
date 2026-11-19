@@ -17,7 +17,7 @@
     feishu: { name: "Feishu", fields: [["webhook", "Webhook URL", "secret", 1], ["secret", "Secret", "secret"]] },
     dingtalk: { name: "DingTalk", fields: [["webhook", "Webhook URL", "secret", 1], ["secret", "Secret", "secret"]] },
     wecom: { name: "WeCom", fields: [["webhook", "Webhook URL", "secret", 1]] },
-    telegram: { name: "Telegram", fields: [["token", "Token", "secret", 1], ["chatId", "Chat ID", "text", 1]] },
+    telegram: { name: "Telegram", fields: [["token", "Token", "secret", 1], ["chatId", "Chat ID", "text", 1], ["threadId", "Topic ID", "number"]] },
     webhook: { name: "Custom webhook", fields: [["url", "Webhook URL", "text", 1]] }
   }
   var LANGS = [["en", "English"], ["zh", "中文"]]
