@@ -298,7 +298,10 @@ credits (`credits: true`): magpie asks that account after the provider's
 accounts that still have plan credits, since the plan's credits are lost at
 the month's reset and a trial's last a year. The window is also set aside
 (`aside: true`), so a magpie that doesn't read `credits` doesn't take the
-account for spent.
+account for spent. Only an `ACTIVE` bonus counts as credits left (an
+`EXHAUSTED` one is shown only), and when a bonus left lapses before the
+month's reset the month is only set aside, so that bonus isn't asked last
+and lost.
 
 With overage on (`overageConfiguration.overageStatus` `ENABLED`), the month
 is two windows, as the Kiro IDE shows it: the plan's credits, shown only

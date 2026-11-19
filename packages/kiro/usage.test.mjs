@@ -166,6 +166,26 @@ test("an exhausted trial is shown spent, and a month used up with it stops the a
   expect(windows[0].credits).toBeUndefined()
 })
 
+// A bonus Kiro marks EXHAUSTED is nothing to go on with, even if its count
+// says some is left: the month used up stops the account. A bonus left
+// that lapses before the month's reset is not asked last: the month is
+// only set aside, as before credits.
+test("an exhausted bonus is no credits left, and one lapsing before the reset is not asked last", () => {
+  const now = 1790000000_000
+  const odd = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ status: "EXHAUSTED", currentUsage: 499.5 })] }), now).windows
+  expect(odd[0]).toMatchObject({ name: "Credits", used: 100 })
+  expect(odd[0].aside).toBeUndefined()
+  expect(odd[0].credits).toBeUndefined()
+  const soon = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ currentUsage: 10, expiresAt: 1796083200 - 86400 })] }), now).windows
+  expect(soon[0]).toMatchObject({ name: "Credits", used: 100, aside: true })
+  expect(soon[0].credits).toBeUndefined()
+  const later = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ currentUsage: 10, expiresAt: 1796083200 + 86400 })] }), now).windows
+  expect(later[0]).toMatchObject({ name: "Credits", used: 100, aside: true, credits: true })
+})
+
 // With overage on, the overage used up while a trial has credits left
 // goes on on them; the plan's own window, shown only, never says credits.
 test("the overage used up with a trial left goes on on credits", () => {
