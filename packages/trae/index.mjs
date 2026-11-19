@@ -1632,10 +1632,21 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
   if (effort) body.reasoning_effort = effort
+  // the reply limit is always sent when the list gives the model one, as
+  // Trae's own client does: its agent's ModelConfig carries the detail's
+  // max_tokens with every model (ai-agent, "[ModelConfig] Received
+  // config_name=, model_name=, …, max_tokens="). Asked with none, an
+  // enterprise seat's every reply stopped at exactly 2000 output tokens,
+  // where the same model in Trae wrote more (@liuyuexue2020 on X,
+  // AI/deekseek-v4.1-flash, 0.2.43), most likely the limit Trae gives a
+  // request naming none (no seat to measure it on). An enterprise
+  // model has no __dev detail for most to come from, so its own detail's
+  // max_tokens is the one.
+  if (!(most > 0) && enterpriseModel(entry)) most = Number(enterpriseDetail(entry)?.max_tokens) || 0
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
+  else if (most > 0) body.max_tokens = most
   if (max?.window) {
-    if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
   }
   // an enterprise's built-in model says where its config comes from beside
@@ -1665,6 +1676,22 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
     if (!body.model_name && detail?.model_name) body.model_name = String(detail.model_name)
     const provider = entry.provider || detail?.provider
     if (provider) body.provider = String(provider)
+    // the reply limit again, where Trae's own client puts it for an
+    // enterprise model: its agent task (libharness 3.4.22, AgentSpec and
+    // CreateTaskRequest) carries enterprise_custom_hyper_params
+    // {max_tokens, prompt_max_tokens, multimodal} beside config_source and
+    // is_custom_model, and no top-level max_tokens. 0.2.44 sent the top-level
+    // one only, and the reporter's seat still stopped at exactly 2000 with
+    // max_tokens 4096 asked, on four models (@liuyuexue2020 on X). Inferred
+    // from the binary, not measured: no enterprise seat to try it on.
+    if (body.max_tokens > 0) {
+      const hyper = { max_tokens: body.max_tokens }
+      const prompt = Number(detail?.prompt_max_tokens) || 0
+      if (prompt > 0) hyper.prompt_max_tokens = prompt
+      const sees = seesOf(entry)
+      if (sees !== null) hyper.multimodal = sees
+      body.enterprise_custom_hyper_params = hyper
+    }
   }
   if (typeof req.temperature === "number") body.temperature = req.temperature
   if (Array.isArray(req.tools) && req.tools.length && req.tool_choice !== "none") {
@@ -2852,6 +2879,24 @@ function done(a) {
 // any other is queueing, metadata or timing
 const ANSWER = new Set(["", "output", "message", "delta", "content", "text", "answer", "chunk", "output_delta", "message_delta"])
 
+// TRAE_CUT is the reply length Trae stops an enterprise model's chat at
+// whatever limit it is asked for: four models of one seat each answered
+// exactly 2000 completion tokens, finish_reason "stop", mid-sentence, with
+// max_tokens 4096 asked (@liuyuexue2020 on X, 0.2.44)
+const TRAE_CUT = 2000
+
+// cutFinish is the finish an answer that came to its limit ends with: Trae
+// says "stop" (or nothing) of a reply it cut, so an agent took a half
+// answer for a whole one. A reply that used every token it was let have
+// (limit, the max_tokens sent; or cut, Trae's own TRAE_CUT for an
+// enterprise model, 0 for a preset, which wasn't seen cut) ended for length.
+function cutFinish(finish, usage, limit, cut = 0) {
+  if (finish && finish !== "stop") return finish
+  const c = Number(usage?.completion_tokens) || 0
+  if (c > 0 && ((limit > 0 && c >= limit) || (cut > 0 && c === cut))) return "length"
+  return finish
+}
+
 // finishOf is OpenAI's finish_reason for the one Trae's last event gives,
 // "" for none it says or one it has no word for
 function finishOf(d) {
@@ -2995,7 +3040,7 @@ function failure(site, status, code, message, ctx = "") {
 // moment the agent goes away (a tool call made, a request cancelled): a
 // generator's return can't break a read that is already waiting, so the
 // fetch itself is what has to be stopped
-async function openai(req, it, abort, site) {
+async function openai(req, it, abort, site, limit = 0, cut = 0) {
   const id = "chatcmpl-" + randomBytes(12).toString("hex")
   const created = Math.floor(Date.now() / 1000)
   const model = req.model
@@ -3016,7 +3061,7 @@ async function openai(req, it, abort, site) {
     const message = { role: "assistant", content: text || (calls.length ? null : "") }
     if (reasoning) message.reasoning_content = reasoning
     if (calls.length) message.tool_calls = calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } }))
-    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : finish || "stop" }] }
+    const body = { id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: calls.length ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop" }] }
     if (usage) body.usage = usage
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
   }
@@ -3054,7 +3099,7 @@ async function openai(req, it, abort, site) {
           if (p.finish) finish = p.finish
         }
         if (!failed) {
-          put(chunk({}, calls ? "tool_calls" : finish || "stop"))
+          put(chunk({}, calls ? "tool_calls" : cutFinish(finish, usage, limit, cut) || "stop"))
           if (usage) put(enc.encode(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [], usage })}\n\n`))
         }
       } catch (e) {
@@ -4085,7 +4130,9 @@ const makePlugin = (site) => async ({ client }) => {
     const was = provider.models?.[id] ?? {}
     // context_window_tokens: dev is what a request gets, max only in Max mode
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
-    const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
+    // output: the detail requests are served by (an enterprise model's own
+    // when it has no __dev one)
+    const out = Number((enterpriseModel(m) ? enterpriseDetail(m) : devModel(m))?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
     const input = (k) => (MODEL.modalities?.input ?? []).includes(k)
     // the list's multimodal says whether the model takes images, over the
@@ -4272,10 +4319,11 @@ const makePlugin = (site) => async ({ client }) => {
               let refused = false
               for (const fn of [...new Set(fns)]) {
                 tried.push(fn)
+                const sent = chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)
                 const res = await fetch(host + "/api/agent/v3/llm_utils_chat", {
                   method: "POST",
                   headers: ideHeaders(a, site, { Accept: "text/event-stream", "X-Request-ID": randomUUID() }),
-                  body: JSON.stringify(chatBody(req, fn, named?.fn === fn || max ? named.name : "", named?.fn === fn || max ? named.most : 0, max, session, sees, levels, entry)),
+                  body: JSON.stringify(sent),
                   signal: ac.signal,
                 })
                 if (!res.ok) {
@@ -4319,7 +4367,7 @@ const makePlugin = (site) => async ({ client }) => {
                   break
                 }
                 fnOf.set(who, fn)
-                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site)
+                const out = await openai(req, done ? held : chain(held, it), () => ac.abort(), site, sent.max_tokens || 0, enterpriseModel(entry) ? TRAE_CUT : 0)
                 out.headers.set("X-Magpie-Sign-In", signIn)
                 return out
               }
@@ -4344,4 +4392,4 @@ const makePlugin = (site) => async ({ client }) => {
 export const TraeCNAuthPlugin = makePlugin(SITES["trae-cn"])
 export const TraeGlobalAuthPlugin = makePlugin(SITES["trae-global"])
 
-export const _internal = { chatModel, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }
+export const _internal = { chatModel, cutFinish, TRAE_CUT, ownClient, clientStoragePaths, clientDevice, clientProfiles, deviceNote, clientDecode, thisMachine, traeHost, accountOf, HOSTS: SITES["trae-cn"].hosts, MODELS: SITES["trae-cn"].models, TextTools, NativeCalls, looseJSON, glmCall, nameCall, toolNamed, unwrapped, traeMessages, chatBody, nativeTools, moonshotSchema, credits, dollarUsageOf, seatPoolOf, seatSpentOf, entResetOf, isEnterprise, yuan, whenOf, newDevice, ugDevice, proofOf, SITES, SESSION, conversationID, LEVELS, levelsOf, variantsOf, effortOf, offered, traeRateOf }

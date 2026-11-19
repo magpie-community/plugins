@@ -4,6 +4,7 @@
 // built-in Factory account (internal/provider/factory*.go).
 
 import { STATUS_CODES } from "node:http"
+import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { parseToolJSON, wrapAnthropicTools, unwrapAnthropicTools } from "./anthropic-tools.mjs"
 
@@ -715,6 +716,17 @@ const GEMINI_CALL = /\/models\/([^/:]+):(?:stream)?generateContent$/i
 // instruction without a role and opening with droid's line, as one text part
 // of droid's line and the instruction's text parts joined with "\n", then
 // its other parts. A body that can't be read goes on as it is.
+//
+// Its fields go in droid's order (GEMINI_ORDER), the model first. magpie's
+// gateway sends them sorted (contents, generationConfig, model, ...) and
+// the AI SDK has no model at all, so the model came after the contents,
+// most of a long session's bytes. Factory answered such a request of
+// 0.6 to 1.6 MB with 400 "Invalid model ID in request body", every retry
+// alike, while the same conversation's smaller requests went through and
+// no other route failed (marovole on X, gemini-4-hydrogen, 0.1.48). The
+// model's place is the one difference from droid that grows with the body:
+// droid always sends it first (testdata/droid-1.14.0-gemini-body.txt).
+const GEMINI_ORDER = ["model", "contents", "systemInstruction", "tools", "generationConfig"]
 function geminiBody(model, body) {
   const text = bodyText(body)
   if (text == null) return body
@@ -748,7 +760,10 @@ function geminiBody(model, body) {
   // Gemini's route has no tool-output adaptation: escape every refused
   // phrase in its parts (functionResponse, systemInstruction) here.
   escapeDeep(m, REFUSED_PHRASES)
-  return JSON.stringify(m)
+  const ordered = {}
+  for (const k of GEMINI_ORDER) if (m[k] !== undefined) ordered[k] = m[k]
+  for (const [k, v] of Object.entries(m)) if (!(k in ordered)) ordered[k] = v
+  return JSON.stringify(ordered)
 }
 
 // ---- request size -------------------------------------------------------------
@@ -1797,6 +1812,32 @@ function anthropicBody(body) {
   return changed ? JSON.stringify(request) : body
 }
 
+// CONVERSATION is the header the chat.headers hook below names the
+// conversation in, for the loader's fetch to read and take off: it never
+// reaches Factory.
+const CONVERSATION = "x-magpie-factory-conversation"
+
+// sessionId is the x-session-id droid sends for a conversation: droid opens
+// one session per conversation, and a subagent's Task its own, so every
+// request of one conversation says the same id and no two conversations
+// share one. A UUID, as droid's are, made of a hash of the conversation
+// magpie names (its session, else its first message's hash) and the
+// subagent; fallback, this process's own, when magpie names none.
+// One id for every request of the process put every conversation, model
+// and subagent in one Factory session, which droid never does, and
+// Factory's Gemini route answered a Gemini 4 model in such a session now
+// and then with 400 "Invalid model ID in request body" (marovole on X).
+function sessionId(conversation, subagent, fallback) {
+  conversation = String(conversation ?? "").trim().slice(0, 128)
+  if (!conversation) return fallback
+  subagent = String(subagent ?? "").trim().slice(0, 128)
+  const b = createHash("sha256").update("factory-session\0" + conversation + "\0" + subagent).digest().subarray(0, 16)
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const x = b.toString("hex")
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`
+}
+
 export const FactoryAuthPlugin = async ({ client, magpie }) => {
   // standardOnly is the user's STANDARD_ONLY as magpie has it now, read at
   // each usage reading so a change needs no restart; false outside magpie
@@ -1815,7 +1856,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
     }
     return models
   }
-  // the session id this process's requests carry
+  // the session id a request that names no conversation carries
   const session = crypto.randomUUID()
   // serializes checking, rotating and saving tokens: WorkOS rotates the
   // refresh token, so two refreshes would spend it twice
@@ -2031,6 +2072,15 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
   }
 
   return {
+    // the conversation a request is of, as magpie tells the hook (its
+    // session, else its first message's hash), for the loader's fetch to
+    // name its x-session-id by (sessionId). Every plugin's hook sees every
+    // provider's requests, so it goes on Factory's alone.
+    "chat.headers": async (input, output) => {
+      const id = input?.model?.providerID ?? input?.provider?.info?.id
+      if (id !== PROVIDER || !input?.sessionID || !output?.headers) return
+      output.headers[CONVERSATION] = String(input.sessionID).slice(0, 128)
+    },
     // magpie's list for this provider: the same models configModels gives
     // OpenCode, each with the token multiplier droid shows it by, which
     // magpie shows beside the model as its rate
@@ -2134,6 +2184,10 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           const to = llmBase(c)
           if (to !== API && url.startsWith(API)) url = to + url.slice(API.length)
           const h = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+          // the conversation the hook named, else the session magpie or
+          // OpenCode 2 (which has no chat.headers) names on the request
+          const conversation = h.get(CONVERSATION) || h.get("x-magpie-session") || h.get("x-opencode-session")
+          h.delete(CONVERSATION)
           h.delete("x-api-key")
           // the AI SDK's Google package's, with OpenCode's placeholder key
           h.delete("x-goog-api-key")
@@ -2148,7 +2202,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           const model = byId.get(bodyModel(body))
           const upstream = model ? model.upstream : path.includes("/llm/o/") ? "openai" : "anthropic"
           h.set("x-api-provider", upstream)
-          h.set("x-session-id", session)
+          h.set("x-session-id", sessionId(conversation, h.get("x-magpie-subagent"), session))
           h.set("x-assistant-message-id", crypto.randomUUID())
           h.set("x-provider-routing-source", "registry_default")
           if (upstream === "openai") h.set("OpenAI-Platform", "org-bHuLtG1fGmYk5YaOihAAXFBw")
@@ -2231,4 +2285,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }

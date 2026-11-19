@@ -1,0 +1,4 @@
+// The Gemini request droid builds for Factory's /api/llm/g/v1/generate, from
+// https://downloads.factory.ai/factory-cli/releases/1.14.0/darwin/arm64/droid
+// SHA-256 e3e173bb091f139c30df6df7664b67aa7fb16bca95b9d737c71b3fdcf98bf33b
+kr=s4(Kt,Fn.generationConfig),hr=!ia(Kt),ar={model:Kt,contents:Hn,systemInstruction:Sn?{parts:[{text:Sn}]}:void 0,tools:hr&&un.length>0?[{functionDeclarations:un}]:void 0,generationConfig:kr}

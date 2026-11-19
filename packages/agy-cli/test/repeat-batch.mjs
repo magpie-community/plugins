@@ -2254,3 +2254,42 @@ test("terminal subdirectories retain the declared project session", async () => 
     })
   }
 })
+
+
+test("Windows sibling repo cwd changes retain an appended session on a Linux bridge", async () => {
+  await withKit({ platform: "linux", appendable: true, env: { AGY_BRIDGE_SYSTEM_APPEND: "1" } }, async kit => {
+    const root = "E:\\declared-project"
+    const repoA = root + "\\repo-a"
+    const repoB = root + "\\repo-b"
+    kit.prompts.push(async agent => {
+      const first = await agent.tool("Read", { path: repoA + "\\file.txt" })
+      const second = await agent.tool("Read", { path: repoB + "\\file.txt" })
+      await agent.text(JSON.stringify([first, second]))
+      return { stopReason: "end_turn" }
+    })
+    scriptedAgent(kit)
+    const body = baseBody({ messages: [
+      { role: "user", content: "Inspect both sibling repositories" },
+      { role: "system", content: "# Environment\n - Primary working directory: " + root },
+    ] })
+    const headers = cwd => ({ "x-magpie-work-dir": encodeURIComponent(cwd) })
+    const first = await readSse(await kit.request(body, { headers: headers(root) }))
+    assert.equal(first.stopReason, "tool_use")
+    const a = continueWithToolResults(body, first, () => "first repo output")
+    a.messages.push({ role: "system", content: "# Environment update\n - Primary working directory: " + repoA + " (was " + root + ")" })
+    const second = await readSse(await kit.request(a, { headers: headers(repoA) }))
+    assert.equal(second.stopReason, "tool_use")
+    const b = continueWithToolResults(a, second, () => "second repo output")
+    b.messages.push({ role: "system", content: "# Environment update\n - Primary working directory: " + repoB + " (was " + repoA + ")" })
+    const final = await readSse(await kit.request(b, { headers: headers(repoB) }))
+    assert.equal(final.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+    const session = kit.acpLog.find(entry => entry.method === "session/new")
+    const appended = JSON.stringify(session.params._meta)
+    assert.ok(appended.includes("declared-project"))
+    assert.ok(!appended.includes("repo-a") && !appended.includes("repo-b"))
+    const reply = replyText(final)
+    assert.ok(reply.includes("first repo output") && reply.includes("second repo output"))
+    assert.ok(reply.includes("repo-a") && reply.includes("repo-b"))
+  })
+})
