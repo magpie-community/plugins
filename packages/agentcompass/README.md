@@ -43,7 +43,7 @@ magpie plugin list
 magpie plugin options <spec> '{"candidateModels":["claude-opus-5-5","claude-sonnet-5-5","gpt-6.1-sol","gemini-3.8-flash-high"]}'
 ```
 
-To route each model at exactly the efforts your Magpie offers for it, write the list from the gateway's own `/v1/models` ([candidates from the gateway](docs/reference.md#candidates-from-the-gateway)). The middleware rewrites `body.model` to `<model>:<effort>` and sets the protocol's effort field. Without `candidateModels` or `defaultModel`, a request to a virtual model is refused with HTTP 400. A valid profile and the quota snapshot (`quotas`, with each account's `plan`) are in the [reference](docs/reference.md#task-profile).
+To route each model at exactly the efforts your Magpie offers for it, write the list from the gateway's own `/v1/models` ([candidates from the gateway](docs/reference.md#candidates-from-the-gateway)). The middleware rewrites `body.model` to `<model>:<effort>` and sets the protocol's effort field; a model Magpie lists with no reasoning levels is written as a row at `default`, its one configuration, and goes to Magpie as the bare model with no effort. Without `candidateModels` or `defaultModel`, a request to a virtual model is refused with HTTP 400. A valid profile and the quota snapshot (`quotas`, with each account's `plan`) are in the [reference](docs/reference.md#task-profile).
 
 **Mode B.** Let Magpie's Routing Groups use the plugin as their classifier, with a classifier model of your own (without one it answers `none of these` every turn):
 
@@ -107,7 +107,7 @@ magpie plugin list
 magpie plugin options <spec> '{"candidateModels":["claude-opus-5-5","claude-sonnet-5-5","gpt-6.1-sol","gemini-3.8-flash-high"]}'
 ```
 
-要让每个模型只按你的 Magpie 为它提供的档位路由，用网关自己的 `/v1/models` 生成这份列表（[从网关生成候选](docs/reference.md#candidates-from-the-gateway)）。中间件把 `body.model` 改写为 `<model>:<effort>`，并写入协议对应的档位字段。没有 `candidateModels` 也没有 `defaultModel` 时，请求虚拟模型会返回 HTTP 400。合法的画像和配额快照（`quotas`，每个账号写明 `plan`）见[参考](docs/reference.md#task-profile)。
+要让每个模型只按你的 Magpie 为它提供的档位路由，用网关自己的 `/v1/models` 生成这份列表（[从网关生成候选](docs/reference.md#candidates-from-the-gateway)）。中间件把 `body.model` 改写为 `<model>:<effort>`，并写入协议对应的档位字段；Magpie 列出时没有推理档位的模型写成档位为 `default` 的一行（该模型唯一的配置），发给 Magpie 时只带模型名，不带档位。没有 `candidateModels` 也没有 `defaultModel` 时，请求虚拟模型会返回 HTTP 400。合法的画像和配额快照（`quotas`，每个账号写明 `plan`）见[参考](docs/reference.md#task-profile)。
 
 **模式 B。** 让 Magpie 路由组把本插件用作分类器，并配置你自己的分类模型（没有则每一轮都回答 `none of these`）：
 

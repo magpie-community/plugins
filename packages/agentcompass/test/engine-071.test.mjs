@@ -3,9 +3,11 @@
  * copied from output): the effort order with `none`, `minimal` and `ultra`; an effort name off the scale read where the data
  * declares; no inversion along effort; a manual score filled to every effort the panel steps to; the operating-point floor under a
  * maintainer score; a derived facet following a score on its larger row; the operator's schema-3 `userScores` carried to the rows
- * v0.7.0 meant; a family name with no scores of its own; and the `/v1/models` converter.
+ * v0.7.0 meant; a family name with no scores of its own; the `/v1/models` converter; and a `default` row, the one configuration
+ * of a model listed with no levels.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -18,7 +20,8 @@ import { durationAt } from "../src/quota-economy.js";
 import { FIVE_AXIS_EFFORT_READINGS, FIVE_AXIS_EFFORT_STEPS, FIVE_AXIS_MODELS } from "../src/reference-data.js";
 import { V0_7_0, v070Row } from "../src/released-names.js";
 import { EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, risesWithEffort, upgradeScores } from "../src/user-scores.js";
-import { candidatesFromModels } from "../scripts/candidates-from-models.mjs";
+import { ONE_CONFIGURATION, candidatesFromModels, levelsOf } from "../scripts/candidates-from-models.mjs";
+import { onRequest as middlewareOnRequest } from "../src/middleware.js";
 import { profile } from "./profile.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -162,26 +165,84 @@ test("a family name has no scores of its own: it is out of automatic routing wit
   assert.match(ranked.allCandidates[0].excluded.join("; "), /data error/);
 });
 
-test("the /v1/models converter gives each listed model Magpie's own efforts, and the plugin routes at exactly those", () => {
+test("the /v1/models converter gives every listed model its own efforts: its levels, or the one configuration `default`", () => {
   // test/fixtures/magpie-v1-models.json: a /v1/models response in the shape Magpie v0.1.4470 writes it (gateway.go modelObject:
   // reasoning_levels and supported_reasoning_levels), for the openai and account:antigravity rows of the saved Magpie 0.1.4470
   // catalog (AgentCompass audit/gateway-catalogs). No gateway is asked.
   const listing = JSON.parse(fs.readFileSync(path.join(REPO, "test", "fixtures", "magpie-v1-models.json"), "utf8"));
-  const rows = candidatesFromModels(listing);
-  assert.equal(rows.length, new Set(listing.data.map((m) => m.id)).size);
+  const warnings = [];
+  const rows = candidatesFromModels(listing, (message) => warnings.push(message));
+  assert.deepEqual(warnings, [], "every fixture row is read");
+  assert.equal(rows.length, listing.data.length);
+  assert.ok(listing.data.some((m) => levelsOf(m).length === 0), "the fixture has rows with no levels");
   listing.data.forEach((m, i) => {
-    if (m.reasoning_levels.length > 0) assert.deepEqual(rows[i], { model: m.id, efforts: m.reasoning_levels });
-    else assert.equal(rows[i], m.id, "a model with no levels is its bare id");
+    // audit/gateway_coverage.py: a row that lists no efforts is the model's one configuration, offered at `default`
+    const efforts = m.reasoning_levels.length > 0 ? m.reasoning_levels : [ONE_CONFIGURATION];
+    assert.deepEqual(rows[i], { model: m.id, efforts }, m.id);
   });
-  // supported_reasoning_levels alone is read the same way; an id listed twice keeps its first row
-  const objectsOnly = { data: [{ id: "m-1", supported_reasoning_levels: [{ effort: "Low" }, { effort: "high" }] }, { id: "m-1", reasoning_levels: ["max"] }] };
-  assert.deepEqual(candidatesFromModels(objectsOnly), [{ model: "m-1", efforts: ["low", "high"] }]);
   assert.throws(() => candidatesFromModels({ models: [] }), /data array/);
-  const listed = rows.filter((r) => typeof r === "object");
-  const ranked = rankCandidates(PROFILE, { candidateModels: listed });
+
+  // A row's own efforts are what it runs at: each row is offered at exactly its efforts, a no-level row once, at `default`.
+  const ranked = rankCandidates(PROFILE, { candidateModels: rows });
   for (const c of ranked.allCandidates) {
-    const row = listed.find((r) => r.model === c.model);
+    const row = rows.find((r) => r.model === c.model);
     assert.ok(row.efforts.includes(c.effort), `${c.model} at ${c.effort}`);
   }
-  assert.equal(ranked.allCandidates.length, listed.reduce((n, r) => n + r.efforts.length, 0));
+  assert.equal(ranked.allCandidates.length, rows.reduce((n, r) => n + r.efforts.length, 0));
+});
+
+test("a `default` row is one candidate read where the data reads `default`, and goes to Magpie as the bare model with no effort", () => {
+  const reads = readingEffort({ effort_readings: FIVE_AXIS_EFFORT_READINGS }, ONE_CONFIGURATION);
+  assert.ok(EFFORTS.includes(reads), `default reads an effort on the scale (${reads})`);
+  for (const model of ["gemini-pro-agent", "gpt-6.1-sol"]) {
+    const atDefault = rankCandidates(PROFILE, { candidateModels: [{ model, efforts: [ONE_CONFIGURATION] }] }).allCandidates;
+    const atReading = rankCandidates(PROFILE, { candidateModels: [{ model, efforts: [reads] }] }).allCandidates;
+    assert.equal(atDefault.length, 1);
+    assert.equal(atDefault[0].effort, ONE_CONFIGURATION);
+    assert.equal(atDefault[0].score, atReading[0].score, `${model}: scored as its ${reads} reading`);
+    assert.equal(atDefault[0].duration_hours, atReading[0].duration_hours, `${model}: timed as its ${reads} reading`);
+  }
+  // Magpie's askedAt reads only none..max after a colon (provider.MemberEfforts); `m:default` would name another model.
+  for (const protocol of ["chat", "responses", "anthropic"]) {
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+    const ctx = { protocol, state: {}, reject: (status, message) => ({ rejected: status, message }), options: { injectProtocolEffort: true, candidateModels: [{ model: "gpt-6.1-sol", efforts: [ONE_CONFIGURATION] }] } };
+    middlewareOnRequest(body, ctx);
+    assert.equal(ctx.state.route.targetEffort, ONE_CONFIGURATION, protocol);
+    assert.equal(body.model, "gpt-6.1-sol", protocol);
+    assert.equal(body.reasoning_effort, undefined, protocol);
+    assert.equal(body.reasoning?.effort, undefined, protocol);
+    assert.equal(body.output_config?.effort, undefined, protocol);
+  }
+  // any other effort still goes as <model>:<effort> with the protocol's field
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+  middlewareOnRequest(body, { protocol: "chat", state: {}, options: { injectProtocolEffort: true, candidateModels: [{ model: "gpt-6.1-sol", efforts: ["high"] }] } });
+  assert.equal(body.model, "gpt-6.1-sol:high");
+  assert.equal(body.reasoning_effort, "high");
+});
+
+test("the converter reads reasoning_levels first, else supported_reasoning_levels, and names what it skips on stderr", () => {
+  // the documented order: reasoning_levels when it lists any, supported_reasoning_levels otherwise
+  const differing = { id: "m-order", reasoning_levels: ["low", "High"], supported_reasoning_levels: [{ effort: "medium" }, { effort: "xhigh" }] };
+  const objectsOnly = { id: "m-objects", reasoning_levels: [], supported_reasoning_levels: [{ effort: "Low" }, { effort: "high" }] };
+  assert.deepEqual(candidatesFromModels({ data: [differing, objectsOnly] }), [
+    { model: "m-order", efforts: ["low", "high"] },
+    { model: "m-objects", efforts: ["low", "high"] },
+  ]);
+
+  const warnings = [];
+  const listing = { data: [{ id: "m-1", reasoning_levels: ["low"] }, null, { name: "no id" }, { id: "m-1", reasoning_levels: ["low"] }, { id: "m-1", reasoning_levels: ["max"] }, ["m-2"]] };
+  assert.deepEqual(candidatesFromModels(listing, (message) => warnings.push(message)), [{ model: "m-1", efforts: ["low"] }]);
+  assert.equal(warnings.length, 5);
+  assert.match(warnings[0], /^row 1: skipped, not an object/);
+  assert.match(warnings[1], /^row 2: skipped, no model id/);
+  assert.match(warnings[2], /^row 3: m-1 skipped, listed again \(row 0 kept\)$/);
+  assert.match(warnings[3], /^row 4: m-1 skipped, listed again \(row 0 kept\); its efforts \[max\] differ from the kept row's \[low\]/);
+  assert.match(warnings[4], /^row 5: skipped, not an object/);
+
+  // the command line: warnings on stderr, stdout only the JSON
+  const run = spawnSync(process.execPath, [path.join(REPO, "scripts", "candidates-from-models.mjs")], { input: JSON.stringify(listing), encoding: "utf8" });
+  assert.equal(run.status, 0);
+  assert.deepEqual(JSON.parse(run.stdout), { candidateModels: [{ model: "m-1", efforts: ["low"] }] });
+  assert.equal(run.stderr.trim().split(/\r?\n/).length, 5);
+  assert.match(run.stderr, /candidates-from-models: row 4: m-1 skipped/);
 });

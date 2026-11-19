@@ -163,10 +163,15 @@ function shouldRoute(model, options = {}) {
   return isVirtualModelName(model, options);
 }
 
+// The effort of a row that lists no reasoning levels (`audit/gateway_coverage.py`: "the model's one configuration, offered at
+// `default`"). It is no level Magpie knows (`provider.MemberEfforts`, none..max), so the request asks for none: the bare model
+// id, no `:<effort>` (Magpie would read `m:default` as a model of that whole name) and no effort field.
+const ONE_CONFIGURATION = "default";
+
 function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
   const options = ctx?.options || {};
   const protocol = String(ctx?.protocol || "").toLowerCase();
-  if (options.injectProtocolEffort !== true || !targetEffort) return body;
+  if (options.injectProtocolEffort !== true || !targetEffort || targetEffort === ONE_CONFIGURATION) return body;
 
   if (protocol === "chat") {
     body.reasoning_effort = targetEffort === "max" ? "xhigh" : targetEffort;
@@ -189,7 +194,8 @@ function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
 /**
  * Apply the selected effort to the request body according to the client protocol,
  * or encode `<model>:<effort>` which Magpie's `askedAt` (`internal/gateway/gateway.go:1560`)
- * natively parses and applies to every upstream candidate!
+ * natively parses and applies to every upstream candidate. A route at `default` sends the bare
+ * model and no effort (`ONE_CONFIGURATION`).
  */
 export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
   const options = ctx?.options || {};
@@ -209,7 +215,7 @@ export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
       : mappedModel;
 
   // Magpie natively supports `<model>:<effort>` in `gateway.go:askedAt` (unless disabled by option)
-  if (options.useColonEffort !== false && targetEffort && !targetModel.includes(":")) {
+  if (options.useColonEffort !== false && targetEffort && targetEffort !== ONE_CONFIGURATION && !targetModel.includes(":")) {
     body.model = `${targetModel}:${targetEffort}`;
   } else {
     body.model = targetModel;
