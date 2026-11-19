@@ -14,6 +14,8 @@
 
 > **这是非官方插件。** 由 [Gruu6y](https://github.com/Gruu6y/magpie-clean-login) 开发维护，**不是** magpie 官方或 `magpie-community` 发布的。代码全部公开，欢迎读、欢迎提 issue、欢迎提 PR。
 
+> **新 · 多平台：** 登录浏览器现在支持 **Windows x64、macOS（Apple Silicon + Intel）和 Linux（x64 / arm64）**——随插件自动下载约 150 MB、经 sha256 校验的精简 Camoufox，一次装好，不用手动装浏览器。
+
 <a id="contents"></a>
 
 ## 目录
@@ -77,12 +79,14 @@
 | | |
 | --- | --- |
 | 宿主 | [magpie](https://usemagpie.ai)，带 Plugins 面板 |
-| 系统 | **Windows x64 · Linux x64 / arm64** —— 随插件下载的登录浏览器是这些平台的精简 Camoufox 构建（macOS 版本即将加入）|
+| 系统 | **Windows x64 · Linux x64 / arm64 · macOS（Apple Silicon 和 Intel）** —— 随插件下载的登录浏览器是这些平台的精简 Camoufox 构建 |
 | 运行时 | Bun **≥ 1.4.2** |
 | 磁盘 | 下载约 153–176 MB（随平台而定），安装时需要约 1 GB 可用空间 —— 只需一次 |
 | 网络 | 只用于你自己发起的动作：代理测速、信任分与身份检测页面、运行时下载，以及供应商自己的登录 |
 
-其他平台暂时不支持；需要的话请提到 [issue tracker](https://github.com/Gruu6y/magpie-clean-login/issues)。
+macOS 说明：**Apple Silicon（M 系列）已完整验证**——在真实 arm64 环境做过端到端测试（下载、启动、窗口可见、字体与渲染），用的就是 `darwin/arm64` 包，日常使用推荐它。**Intel Mac** 走 `darwin/x64` 包（按进程架构选择，Rosetta 2 下的 Node 自然命中 x86_64），但 Intel 侧只做了 Rosetta 冒烟，未在真机 Intel 上验证，属于尽力支持。其他平台暂时不支持；需要的话请提到 [issue tracker](https://github.com/Gruu6y/magpie-clean-login/issues)。
+
+macOS 的精简包是在官方 zip 里删掉 `Camoufox.app/Contents/Resources/fonts/` 的字体系（约 2.1 GB）只留原生字体，这是一次对“不改官方包”原则的明确破例：上游 macOS 包本身没有代码签名，插件侧也不再做 notarize，Gatekeeper 对未隔离文件不拦启动。构建脚本在 `scripts/build-slim-artifact.mjs`，产物清单见 release 的 `inventory.json`。
 
 <a id="install"></a>
 
@@ -268,7 +272,7 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 | 现象 | 怎么办 |
 | --- | --- |
 | 某张供应商卡没有 **添加账号** | 卡片上写了原因。市场条目需要先在 magpie 里装上它的插件；只有插件的供应商需要一个暴露了浏览器登录方式的插件。 |
-| 登录浏览器显示*未安装* / 下载失败 | 首次运行会取一个 153–176 MB 的平台压缩包（Windows x64 约 176 MB，Linux x64 约 159 MB，Linux arm64 约 153 MB）。检查磁盘空间和网络，然后从供应商页重试。压缩包在解包前会做 sha256 校验。 |
+| 登录浏览器显示*未安装* / 下载失败 | 首次运行会取一个 153–176 MB 的平台压缩包（Windows x64 约 176 MB，macOS x64 约 155 MB，macOS arm64 约 147 MB，Linux x64 约 159 MB，Linux arm64 约 153 MB）。检查磁盘空间和网络，然后从供应商页重试。压缩包在解包前会做 sha256 校验。 |
 | 登录失败，报 `no_url` 或 `method_input_required` | 插件要一个值（手机号、站点、密钥），而对话框没收集到。把那个字段填好再试；一直失败就用卡片上的 **报告问题**。 |
 | 代理测试失败 | 测试是通过那条出口建立真实连接，绝不退回直连。检查主机、端口、凭据，以及这条出口是否允许访问目标。 |
 | 延迟数字前面有个 `~` | 那是握手耗时，不是请求延迟：目标完成了 TLS 握手但没返回 HTTP 响应（常见于 WAF 拦截）。换一条出口再测。 |
@@ -283,7 +287,7 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 
 - 没有遥测，也没有账号。唯一的网络调用就是你自己发起的那些：代理测试、信任分页面、身份检测页面、运行时下载，以及供应商自己的登录。
 - 代理、账号、指纹和浏览器配置都在 `~/.config/magpie/magpie-clean-login/`（用 `MAGPIE_CLEAN_LOGIN_DATA` 覆盖；配置根本身用 `MAGPIE_CONFIG_DIR`）。市场目录从 `~/.cache/magpie/` 读取（`MAGPIE_CACHE_DIR`）。续期托管的开通状态与最近记录在同一个目录下的 `renew-hosting.json`，里面只有开关、时间和结果，没有任何凭据。
-- 登录浏览器在 Windows 上解包到 `%LOCALAPPDATA%/magpie-clean-login/camoufox`（`MAGPIE_CLEAN_LOGIN_BROWSER_DIR`）。
+- 登录浏览器在 Windows 上解包到 `%LOCALAPPDATA%/magpie-clean-login/camoufox`，在 macOS 上解包到 `~/Library/Caches/magpie-clean-login/camoufox`，在 Linux 上解包到 `$XDG_CACHE_HOME/magpie-clean-login/camoufox`（均可用 `MAGPIE_CLEAN_LOGIN_BROWSER_DIR` 覆盖）。
 - 存下来的代理密码不会到达页面，也不会写进日志。页面 token 每进程一份，只存在于服务送出的页面里。
 
 <a id="contributing"></a>
