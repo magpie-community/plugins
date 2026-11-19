@@ -1,7 +1,5 @@
 # Magpie Paseo Bridge
 
-[English](README.md)
-
 这个 Magpie 网关 hook 记录 Codex 最终回复实际走过的路由。Paseo 的 Magpie 插件读取本机索引，在回复旁显示实际供应商、模型和回退尝试。
 
 ## 安装
@@ -9,7 +7,7 @@
 Magpie 和 Paseo 守护进程需要在同一台机器上以同一系统用户运行，并使用相同的绝对 `XDG_CONFIG_HOME` 或同一用户主目录。Codex 的 Responses 请求需已接入该 Magpie 网关。
 
 ```sh
-magpie plugin add @magpie-community/gateway-paseo-bridge
+magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.1'
 magpie plugin list
 ```
 

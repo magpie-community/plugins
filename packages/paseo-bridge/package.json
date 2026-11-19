@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/gateway-paseo-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local Magpie route attribution for final Codex replies in Paseo",
   "type": "module",
   "license": "MIT",
