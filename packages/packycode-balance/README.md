@@ -15,27 +15,29 @@ magpie plugin add @magpie-community/opencode-packycode-balance-auth
 magpie plugin login packycode-balance
 ```
 
-Choose the PackyAPI console host, then enter:
+Choose the domain used by your PackyAPI account, then enter:
 
 1. **System access token** from Personal Settings → Security Settings. Magpie
    masks this password prompt.
-2. **User ID** shown in PackyAPI personal settings. It must belong to that
-   system access token.
+2. **Numeric User ID** shown at the top of Personal Settings. It must belong to
+   that system access token; an email or model API key will not work.
 
-The plugin checks the credentials with `GET /api/user/self` before saving them.
-The current PackyAPI guide recommends `https://www.packyapi.ai`; the
-`https://www.packyapi.com` console host is also offered for accounts that use
-the URL supplied in older setup instructions. Requests are limited to those
-two HTTPS hosts and do not follow redirects.
+The current PackyAPI guide recommends `www.packyapi.ai`; `www.packyapi.com` is
+also offered for accounts on that domain. Select the domain only—the plugin
+calls `https://<domain>/api/user/self`, not a `/console` URL. Requests are
+limited to those two HTTPS hosts and do not follow redirects. The plugin checks
+the credentials and validates the account quota before saving them.
 
 ## What it displays
 
 The plugin reads `data.quota` from the account response and divides it by
 500,000 to display the account wallet in USD, following PackyAPI's New API
 template. It does not use `data.used_quota` as a current-window limit because
-that field is cumulative. A missing, malformed, or negative `quota` is shown as
-an error; the plugin never takes its absolute value or substitutes a token
-quota.
+that field is cumulative. A missing, malformed, or negative `quota` is rejected
+during sign-in or shown as an error during refresh; the plugin never takes its
+absolute value or substitutes a token quota. A 401 suggests checking the host,
+token and matching User ID. A 403 also prompts checking whether the system token
+permits account queries.
 
 This is a separate, usage-only provider account in Magpie. Magpie does not let
 one plugin attach its usage card to an existing custom PackyCode provider, so

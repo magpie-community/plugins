@@ -45,22 +45,31 @@ async function accountSelf({ accessToken, userId, host }) {
   } catch {
     return { ok: false, kind: "invalid-response" }
   }
-  if (body?.success !== true || !body.data || typeof body.data !== "object") {
+  if (
+    body?.success !== true ||
+    !body.data ||
+    typeof body.data !== "object" ||
+    Array.isArray(body.data)
+  ) {
     return { ok: false, kind: "invalid-response" }
   }
-  return { ok: true, data: body.data }
+
+  const quota = body.data.quota
+  if (!Number.isSafeInteger(quota)) return { ok: false, kind: "invalid-quota" }
+  if (quota < 0) return { ok: false, kind: "negative-quota" }
+  return { ok: true, quota }
 }
 
 function failureMessage(result) {
   if (result.kind === "http" && result.status === 401) {
-    return "PackyAPI rejected the system access token or user ID (HTTP 401). Check them and sign in again."
+    return "PackyAPI rejected the credentials (HTTP 401). Check the selected host, system access token, and matching numeric user ID, then sign in again."
   }
   if (result.kind === "http" && result.status === 403) {
-    return "PackyAPI denied account-balance access (HTTP 403). Check the system token's permissions."
+    return "PackyAPI denied account-balance access (HTTP 403). Check that the selected host and user ID match the account, and that the system token permits account queries."
   }
   if (result.kind === "http") return `PackyAPI account endpoint returned HTTP ${result.status}.`
   if (result.kind === "timeout") return "PackyAPI account-balance request timed out."
-  if (result.kind === "network") return "PackyAPI account-balance request failed. Check the network and selected console host."
+  if (result.kind === "network") return "PackyAPI account-balance request failed. Check the network and selected PackyAPI host."
   if (result.kind === "negative-quota") return "PackyAPI returned a negative account quota; the balance is not shown."
   if (result.kind === "invalid-quota") return "PackyAPI returned an invalid account quota; the balance is not shown."
   if (result.kind === "invalid-response") return "PackyAPI returned an unexpected account response."
@@ -88,10 +97,10 @@ function createPlugin() {
             {
               type: "select",
               key: "consoleHost",
-              message: "PackyAPI console host",
+              message: "PackyAPI account host (select the domain, not a /console path)",
               options: [
                 { label: "www.packyapi.ai (recommended by the current docs)", value: "www.packyapi.ai" },
-                { label: "www.packyapi.com", value: "www.packyapi.com" },
+                { label: "www.packyapi.com (for accounts on this domain)", value: "www.packyapi.com" },
               ],
             },
             {
@@ -103,7 +112,7 @@ function createPlugin() {
             {
               type: "text",
               key: "userId",
-              message: "PackyAPI user ID",
+              message: "Numeric User ID at the top of Personal Settings (not email)",
               validate: (value) => (/^\d+$/.test(String(value ?? "").trim()) ? undefined : "Enter the numeric user ID shown in PackyAPI personal settings."),
             },
           ],
@@ -146,15 +155,11 @@ function createPlugin() {
           }
         }
 
-        const quota = result.data.quota
-        if (!Number.isSafeInteger(quota)) return { error: failureMessage({ kind: "invalid-quota" }) }
-        if (quota < 0) return { error: failureMessage({ kind: "negative-quota" }) }
-
         return {
           windows: [
             {
               name: "Account balance",
-              balance: quota / QUOTA_PER_USD,
+              balance: result.quota / QUOTA_PER_USD,
               unit: "USD",
             },
           ],

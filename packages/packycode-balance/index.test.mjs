@@ -71,6 +71,41 @@ describe("PackyAPI account-balance provider", () => {
     expect(headers.get("new-api-user")).toBe(USER_ID)
   })
 
+  test("does not save credentials until the account quota is valid", async () => {
+    const hooks = await PackyCodeBalancePlugin()
+    const method = hooks.auth.methods[0]
+    const inputs = { consoleHost: "www.packyapi.ai", systemAccessToken: TOKEN, userId: USER_ID }
+
+    captureFetch(() => response(200, { success: true, data: {} }))
+    const missing = await method.authorize(inputs)
+    expect(missing.type).toBe("failed")
+    expect(missing.error).toContain("invalid account quota")
+    expect(missing.error).not.toContain(TOKEN)
+
+    captureFetch(() => response(200, { success: true, data: { quota: -1 } }))
+    const negative = await method.authorize(inputs)
+    expect(negative.type).toBe("failed")
+    expect(negative.error).toContain("negative account quota")
+    expect(negative.error).not.toContain(TOKEN)
+  })
+
+  test("gives actionable 403 guidance without exposing the response body", async () => {
+    captureFetch(() => response(403, { message: `private response ${TOKEN}` }))
+    const hooks = await PackyCodeBalancePlugin()
+    const denied = await hooks.auth.methods[0].authorize({
+      consoleHost: "www.packyapi.ai",
+      systemAccessToken: TOKEN,
+      userId: USER_ID,
+    })
+
+    expect(denied.type).toBe("failed")
+    expect(denied.error).toContain("HTTP 403")
+    expect(denied.error).toContain("selected host")
+    expect(denied.error).toContain("user ID")
+    expect(denied.error).toContain("system token")
+    expect(denied.error).not.toContain(TOKEN)
+  })
+
   test("reads /api/user/self and converts non-negative account quota to USD", async () => {
     const calls = captureFetch((url) => {
       expect(url).toBe("https://www.packyapi.ai/api/user/self")
