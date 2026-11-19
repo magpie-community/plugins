@@ -470,6 +470,53 @@ describe("chat", () => {
     const body = await res.json()
     expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
   })
+  test("a reply whose JSON carries a literal newline inside a string still becomes a call (control-char repair)", async () => {
+    // kimi-k3.1-pro has been seen to emit the instructed JSON with a real
+    // newline inside a string value: strict JSON.parse fails and the raw
+    // text leaks to the user as content. The repair escapes control chars
+    // inside string literals only, so the call comes back as a call.
+    const raw = '{"tool_calls":[{"name":"Bash","arguments":{"command":"echo a\nls"}}]}'
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: raw.slice(0, 25) }] } },
+        { message: { content: [{ type: "text", text: raw }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "run ls" }],
+        tools: [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("tool_calls")
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments)).toEqual({ command: "echo a\nls" })
+  })
+
+  test("a drifted name is matched by prefix (read_file → read)", async () => {
+    const callText = JSON.stringify({ tool_calls: [{ name: "read_file", arguments: { path: "a.txt" } }] })
+    fake.state.turnFramesQueue = [
+      [
+        { message: { content: [{ type: "text", text: callText }] } },
+        { message: { content: [{ type: "text", text: callText }] }, finished: true },
+      ],
+    ]
+    const loader = await plugin.auth.loader(getAuth)
+    const res = await loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: "read a.txt" }],
+        tools: [{ type: "function", function: { name: "read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }],
+      }),
+    })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("read")
+  })
 
   test("a named tool_choice whose reply calls another tool gets the retry", async () => {
     const wrongText = JSON.stringify({ tool_calls: [{ name: "Unknown", arguments: {} }] })
@@ -1027,11 +1074,90 @@ describe("models the vendor added (the desktop client asks the gateway for its l
   })
 })
 
+describe("native tool_use frames (kimi-k3.1-pro)", () => {
+  const tool = { type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }
+  // cumulative frames exactly as the gateway sends them: the params string
+  // grows across frames and the finished flag rides the last one. The model
+  // answers with its native tool_use blocks instead of the instructed JSON.
+  const nativeFrames = (name = "Bash", params = '{"command": "ls"}') => [
+    { message: { content: [{ type: "tool_use", toolCallId: "call_1", toolName: name, toolParams: params.slice(0, 6) }] } },
+    { message: { content: [{ type: "tool_use", toolCallId: "call_1", toolName: name, toolParams: params }] }, finished: true },
+  ]
+  const ask = async (body) => {
+    const loader = await plugin.auth.loader(getAuth)
+    return loader.fetch(`${fake.url}/api/agent/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "list the files" }], ...body }),
+    })
+  }
+
+  test("native tool_use frames become tool_calls (non-stream)", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool] })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("tool_calls")
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(JSON.parse(body.choices[0].message.tool_calls[0].function.arguments)).toEqual({ command: "ls" })
+    expect(fake.state.rounds).toBe(1)
+  })
+
+  test("native tool_use frames become tool_calls deltas (stream)", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool], stream: true })
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('"tool_calls"')
+    expect(text).toContain('"finish_reason":"tool_calls"')
+    expect(text.endsWith("data: [DONE]\n\n")).toBe(true)
+  })
+
+  test("a native call with a drifted name is matched by prefix", async () => {
+    fake.state.turnFramesQueue = [nativeFrames("bash_command")]
+    const res = await ask({ tools: [tool] })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+  })
+
+  test("a native call with an unknown name is dropped: empty answer, no leak", async () => {
+    fake.state.turnFramesQueue = [nativeFrames("TotallyUnknown")]
+    const res = await ask({ tools: [tool] })
+    const body = await res.json()
+    expect(body.choices[0].finish_reason).toBe("stop")
+    expect(body.choices[0].message.tool_calls).toBeUndefined()
+    expect(body.choices[0].message.content ?? "").not.toContain("TotallyUnknown")
+  })
+
+  test("with tool_choice=required a native-only reply still counts and does not retry", async () => {
+    fake.state.turnFramesQueue = [nativeFrames()]
+    const res = await ask({ tools: [tool], tool_choice: "required" })
+    const body = await res.json()
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("Bash")
+    expect(fake.state.rounds).toBe(1)
+  })
+})
+
 describe("helpers", () => {
   test("model type mapping", () => {
     expect(_internal.modelTypeOf("longcat-2.0")).toBe(77)
     expect(_internal.modelTypeOf("kimi-k3")).toBe(83)
     expect(_internal.modelTypeOf("unknown")).toBe(77)
+  })
+  test("tool-name drift resolution", () => {
+    const tools = [
+      { type: "function", function: { name: "read", parameters: { type: "object" } } },
+      { type: "function", function: { name: "read_file", parameters: { type: "object" } } },
+    ]
+    expect(_internal.resolveToolName("Read", tools)).toBe("read")
+    expect(_internal.resolveToolName("read_file", tools)).toBe("read_file")
+    expect(_internal.resolveToolName("read_something", tools)).toBe("read")
+    expect(_internal.resolveToolName("grep", tools)).toBe(null)
+    // two declared names match equally well: ambiguous beats wrong
+    const ambiguous = [
+      { type: "function", function: { name: "readx", parameters: { type: "object" } } },
+      { type: "function", function: { name: "ready", parameters: { type: "object" } } },
+    ]
+    expect(_internal.resolveToolName("read", ambiguous)).toBe(null)
   })
 })
 
