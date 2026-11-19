@@ -716,6 +716,17 @@ const GEMINI_CALL = /\/models\/([^/:]+):(?:stream)?generateContent$/i
 // instruction without a role and opening with droid's line, as one text part
 // of droid's line and the instruction's text parts joined with "\n", then
 // its other parts. A body that can't be read goes on as it is.
+//
+// Its fields go in droid's order (GEMINI_ORDER), the model first. magpie's
+// gateway sends them sorted (contents, generationConfig, model, ...) and
+// the AI SDK has no model at all, so the model came after the contents,
+// most of a long session's bytes. Factory answered such a request of
+// 0.6 to 1.6 MB with 400 "Invalid model ID in request body", every retry
+// alike, while the same conversation's smaller requests went through and
+// no other route failed (marovole on X, gemini-4-hydrogen, 0.1.48). The
+// model's place is the one difference from droid that grows with the body:
+// droid always sends it first (testdata/droid-1.14.0-gemini-body.txt).
+const GEMINI_ORDER = ["model", "contents", "systemInstruction", "tools", "generationConfig"]
 function geminiBody(model, body) {
   const text = bodyText(body)
   if (text == null) return body
@@ -749,7 +760,10 @@ function geminiBody(model, body) {
   // Gemini's route has no tool-output adaptation: escape every refused
   // phrase in its parts (functionResponse, systemInstruction) here.
   escapeDeep(m, REFUSED_PHRASES)
-  return JSON.stringify(m)
+  const ordered = {}
+  for (const k of GEMINI_ORDER) if (m[k] !== undefined) ordered[k] = m[k]
+  for (const [k, v] of Object.entries(m)) if (!(k in ordered)) ordered[k] = v
+  return JSON.stringify(ordered)
 }
 
 // ---- request size -------------------------------------------------------------
@@ -2271,4 +2285,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
