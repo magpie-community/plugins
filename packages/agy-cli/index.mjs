@@ -443,10 +443,68 @@ function execOnce(file, args, opts = {}) {
   })
 }
 
+// Antigravity's desktop app keeps its gateway in ~/.gemini/config/config.json
+// ({"gateway":{"enabled":true,"url":…}}), and agy reads the same file: an agy
+// on ~/.gemini lists and serves the gateway's models, not the Google
+// account's. When magpie has wired the app to itself, that gateway is
+// magpie, so this provider listed magpie's own models and a turn would go
+// back into magpie (canlee886 on X, agy 1.5.10). agy acp on the bridge's own
+// folder (geminiDirArgs) reads no such file; `agy models` takes no
+// --gemini-dir, so with the app's gateway on, the catalog and the sign-in
+// check come from an agy acp session on that folder instead. A file that
+// can't be read as JSON counts as on: the session route is right either way.
+export function appGatewayOn(home = currentHome() ?? os.homedir()) {
+  let text
+  try {
+    text = fs.readFileSync(path.join(home, ".gemini", "config", "config.json"), "utf8")
+  } catch {
+    return false
+  }
+  try {
+    const gateway = JSON.parse(text)?.gateway
+    return gateway?.enabled === true
+  } catch {
+    return true
+  }
+}
+
+// gatewayListed: `agy models` would answer from the app's gateway, and a
+// turn's agy (the bridge's folder) would not.
+async function gatewayListed(agyPath) {
+  if (!appGatewayOn()) return false
+  return Boolean((await geminiDirArgs(agyPath)).dir)
+}
+
+// offeredList is what the last agy acp session offered, as parseAgyModels
+// rows: a session's model option names a family ("gemini-3.8-flash") beside
+// its levels ("gemini-3.8-flash-high"), and only the levels are kept.
+function offeredList() {
+  const offered = ms().acpOfferedModels
+  if (!offered?.size) return null
+  const ids = [...offered.keys()]
+  const families = new Set(ids.filter(id => ids.some(other => other.startsWith(id + "-") &&
+    EFFORT_ORDER.includes(other.slice(id.length + 1).toLowerCase()))))
+  const out = []
+  for (const [id, name] of offered) {
+    if (families.has(id)) continue
+    const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(id)?.[1]?.toLowerCase()
+    out.push({ id, name, effort })
+  }
+  return out.length ? out : null
+}
+
+// listOffered asks agy acp, on the bridge's folder, what it offers now.
+async function listOffered(agyPath) {
+  ms().offeredStale = true
+  await probeOfferedOnce(agyPath)
+  return ms().offeredStale ? null : offeredList()
+}
+
 async function listAgyModels(agyPath) {
   // a listing nobody asked for doesn't run an agy that would start its own
   // Google sign-in (signin.mjs); the catalog it has stays
   if (await backgroundBlocked()) return null
+  if (await gatewayListed(agyPath)) return listOffered(agyPath)
   const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000, unrefTimer: true })
   // null, not FALLBACK_MODELS: a failed listing must not overwrite a dynamic catalog.
   if (err || timedOut || code !== 0) {
@@ -478,6 +536,8 @@ function refusalOf() {
 async function refusalNow(agyPath) {
   if (refusals.has(currentHome() ?? "")) return refusalOf()
   if (!agyPath || await backgroundBlocked()) return ""
+  // the gateway's listing says nothing of the Google account
+  if (await gatewayListed(agyPath)) return ""
   const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000 })
   if (err || timedOut || code === 0) return ""
   const why = agyRefusal(`${stderr}\n${stdout}`)
@@ -514,6 +574,13 @@ async function probeSignedIn(agy) {
   // caller goes on to magpie's own sign-in link instead
   const blocked = await backgroundBlocked({ fresh: true })
   if (blocked) return { ok: false, why: blocked }
+  if (await gatewayListed(agy)) {
+    const list = await listOffered(agy)
+    if (!list) return { ok: false, why: "agy acp offered no model: agy is not signed in to Google" }
+    useAgyPath(agy)
+    storeListedCatalog(agy, list, Date.now())
+    return { ok: true }
+  }
   const probe = await execOnce(agy, await modelsArgs(agy), { timeoutMs: 15_000 })
   const listed = !probe.err && !probe.timedOut && probe.code === 0 &&
     probe.stdout.split("\n").some(line => /^\S+\s+\S/.test(line.trim()))
@@ -674,8 +741,11 @@ async function probeOfferedModels(agyPath) {
   let conn = null
   let timer
   try {
+    // on the folder a turn runs on, so it offers what a turn is served
+    // (appGatewayOn: on ~/.gemini it would offer the app's gateway's)
+    const own = await geminiDirArgs(agyPath)
     workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-models-"))
-    child = spawnAgy(agyPath, ["acp"], { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+    child = spawnAgy(agyPath, ["acp", ...own.args], { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
     child.on("error", () => conn?.close(new Error("agy acp failed to start")))
     child.on("close", () => conn?.close(new Error("agy acp exited")))
     child.stdin?.on("error", () => {})

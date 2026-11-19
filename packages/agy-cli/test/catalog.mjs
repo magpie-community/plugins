@@ -823,3 +823,81 @@ test("shenggxhz 运行中换了账号：agy models 列表变了就重新探测�
     assert.equal(kit.acpSpawns.length, 2, "列表没变不该再起探测会话")
   })
 })
+
+// canlee886 on X: magpie wired Antigravity's app to itself
+// (~/.gemini/config/config.json's gateway), and agy reads that file too: an
+// agy on ~/.gemini lists and offers magpie's own models, and a turn on one
+// would go back into magpie. The provider lists the Google account's.
+const APP_GATEWAY_ACP_HELP = "Usage of acp:\n  --gemini-dir\n    \tPath where Gemini files are stored (default .gemini)\n"
+const MAGPIE_ROWS = [["rg/gpt-6-astra", "GPT-6 Astra · routing group"], ["rg/gpt-6-astra:low", "GPT-6 Astra · routing group (Low)"], ["gemini-4-argon-high", "Gemini 4 Argon (High)"]]
+const ACCOUNT_OFFERED = [
+  ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"],
+]
+function appGatewayKit(extra = {}) {
+  const onOwnFolder = (args) => args.includes("--gemini-dir")
+  return {
+    acpHelp: APP_GATEWAY_ACP_HELP,
+    topHelp: AGY_159_TOP_HELP,
+    // `agy models` has no --gemini-dir: it always reads the app's gateway
+    modelsBehavior: { stdout: modelsOutput(MAGPIE_ROWS) },
+    offeredModels: (_home, args) => onOwnFolder(args) ? ACCOUNT_OFFERED : MAGPIE_ROWS,
+    ...extra,
+  }
+}
+function wireAppGateway(home, body = { gateway: { enabled: true, url: "http://127.0.0.1:3425", apiKey: "mk", wireProtocol: "openai" } }) {
+  fs.mkdirSync(path.join(home, ".gemini", "config"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".gemini", "config", "config.json"), typeof body === "string" ? body : JSON.stringify(body))
+}
+function assertAccountListed(listed) {
+  const all = ids(listed)
+  assert.ok(!all.some(id => id.startsWith("rg/")), `magpie's own models were listed: ${all.join(", ")}`)
+  assert.ok(listed["gemini-3.8-flash"], `the account's models should be listed, got ${all.join(", ")}`)
+  assert.deepEqual(Object.keys(listed["gemini-3.8-flash"].variants ?? {}).sort(), ["high", "low"])
+  assert.ok(listed["claude-opus-4-6-thinking"], `got ${all.join(", ")}`)
+}
+
+test("canlee886 Antigravity 的 app 接到 magpie 时，目录列 Google 账号的型号，不列 magpie 自己的", async () => {
+  await withKit(appGatewayKit(), async (kit) => {
+    wireAppGateway(kit.home)
+    await kit.models()
+    await warmed(kit)
+    assertAccountListed(await kit.models())
+    assert.ok(kit.acpSpawns.length >= 1)
+    for (const spawn of kit.acpSpawns) assert.ok(spawn.args.includes("--gemini-dir"), `agy acp ran on ~/.gemini: ${spawn.args.join(" ")}`)
+  })
+})
+
+test("canlee886 app 接到 magpie 时，登录检查和它读到的目录都来自账号的会话", async () => {
+  await withKit(appGatewayKit(), async (kit) => {
+    wireAppGateway(kit.home)
+    const started = await kit.plugin.auth.methods[0].authorize()
+    assert.equal((await started.callback()).type, "success")
+    assertAccountListed(await kit.models())
+    assert.equal(kit.modelsSpawns.length, 0, "agy models lists the app's gateway, not the account")
+  })
+})
+
+test("canlee886 app 接到 magpie、agy 没登录 Google 时，登录检查不因 gateway 的列表说已登录", async () => {
+  await withKit(appGatewayKit({ sessionNewError: { code: -32000, message: "Authentication required" } }), async (kit) => {
+    wireAppGateway(kit.home)
+    const started = await kit.plugin.auth.methods[0].authorize()
+    // signed in, authorize ends at once ("auto"); here it starts Google's sign-in
+    assert.notEqual(started.method, "auto", "the gateway's listing was taken for a Google sign-in")
+  })
+})
+
+test("canlee886 app 的 gateway 关着、读不成 JSON 时各按关、开处理", async () => {
+  await withKit(appGatewayKit({ offeredModels: ACCOUNT_OFFERED, modelsBehavior: { stdout: modelsOutput(ACCOUNT_OFFERED.slice(1)) } }), async (kit) => {
+    wireAppGateway(kit.home, { gateway: { enabled: false, url: "http://127.0.0.1:3425" } })
+    assert.equal(kit.module.appGatewayOn(kit.home), false)
+    await kit.models()
+    await warmed(kit)
+    assert.ok(kit.modelsSpawns.length >= 1, "a gateway turned off leaves agy models as it was")
+    wireAppGateway(kit.home, "{not json")
+    assert.equal(kit.module.appGatewayOn(kit.home), true)
+    fs.rmSync(path.join(kit.home, ".gemini", "config", "config.json"))
+    assert.equal(kit.module.appGatewayOn(kit.home), false)
+  })
+})
