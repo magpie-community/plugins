@@ -1,0 +1,48 @@
+{
+  "name": "@magpie-community/tools-zhihu",
+  "version": "0.2.0",
+  "description": "Zhihu search tools for Magpie: site search, global search, hot list, question answers and question recommendations",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./server": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "src",
+    "README.md",
+    "LICENSE",
+    "icon.svg"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-tools",
+    "mcp",
+    "opencode",
+    "opencode-plugin",
+    "zhihu",
+    "search"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/zhihu"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check index.mjs && node --check src/tools.mjs && node --check src/request.mjs && node --check src/cache.mjs && node --check src/normalize.mjs"
+  },
+  "magpie": {
+    "name": "知乎搜索",
+    "summary": {
+      "zh": "知乎站内搜索、全网搜索、热榜与问题发现，作为智能体工具",
+      "en": "Zhihu site search, global search, hot list and question discovery as agent tools"
+    },
+    "icon": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231772f6'/%3E%3Ctext x='32' y='45' font-size='36' font-family='PingFang SC,Noto Sans CJK SC,sans-serif' font-weight='700' text-anchor='middle' fill='%23ffffff'%3E%E7%9F%A5%3C/text%3E%3C/svg%3E"
+  }
+}
