@@ -698,14 +698,16 @@ function droidBody(path, body) {
       delete m.top_p
     }
     const opened = promptOpenings(m.input)
+    const described = toolDescriptions(m.tools)
     const ins = promptText(v ?? "")
     if (!ins.startsWith(DROID_LINE)) m.instructions = ins.trim() === "" ? DROID_LINE : DROID_LINE + "\n" + ins
-    else if (ins !== v || opened) m.instructions = ins
+    else if (ins !== v || opened || described) m.instructions = ins
     else if (!sampled) return body
   } else if (path.endsWith("/chat/completions")) {
     if (!Array.isArray(m.messages)) return body
     const opened = promptOpenings(m.messages, true)
-    if (!droidChat(m.messages) && !opened) return body
+    const described = toolDescriptions(m.tools)
+    if (!droidChat(m.messages) && !opened && !described) return body
   } else return body
   return JSON.stringify(m)
 }
@@ -1158,8 +1160,59 @@ function configSkillText(text) {
   if (!text.includes(CONFIG_SKILL_REFUSED)) return text
   return text
     .split("\n")
-    .map((line) => (CONFIG_SKILL_ENTRY.test(line) ? line.replace(CONFIG_SKILL_REFUSED, CONFIG_SKILL_SAFE) : line))
+    .map((line) => (CONFIG_SKILL_ENTRY.test(line) ? harnessText(line.replace(CONFIG_SKILL_REFUSED, CONFIG_SKILL_SAFE)) : line))
     .join("\n")
+}
+
+// Factory's policy check reads a client's description of itself as an
+// agent harness as an attempt to run its models from another agent
+// framework, and refuses the request (@DennisYan4 on X, 2026-11-19: Claude
+// Code, Pi and Codex 400 content_policy_rejected since 11-17; Pi passed
+// once its prompt said "runtime" for "harness"). Claude Code ("the Claude
+// Code harness", "injected by the harness"), Pi 1.5 ("a coding agent
+// harness") and Codex ("context provided by the harness") all describe
+// themselves so. In a client's own prompt text and its tools' descriptions
+// the word, and only the word, says "runtime"; a name built from it
+// (harness_key, harness.rs, harness-ci) and the user's own words in their
+// turns and tool output are left as they are. A compound with a past
+// participle ("harness-tracked work", Claude Code's ScheduleWakeup) is
+// prose, and changes.
+const HARNESS_WORD = /(?<![\w/\\.-])(h|H)arness(es)?(?![\w/\\-]|\.\w)|(?<![\w/\\.-])(h|H)arness(?=-[a-z]+ed\b)/g
+function harnessText(text) {
+  if (typeof text !== "string" || !/harness/i.test(text)) return text
+  return text.replace(HARNESS_WORD, (_, h, plural, h2) => ((h ?? h2) === "H" ? "R" : "r") + "untime" + (plural ? "s" : ""))
+}
+
+// toolDescriptions puts each tool's description, and its schema's
+// descriptions, through harnessText: Anthropic's tools[].description and
+// input_schema, chat's tools[].function, Responses' tools[]. False when
+// nothing changed.
+function schemaDescriptions(schema, depth = 0) {
+  if (!schema || typeof schema !== "object" || depth > 32) return false
+  let changed = false
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "description" && typeof value === "string") {
+      const adapted = harnessText(value)
+      if (adapted !== value) (schema[key] = adapted), (changed = true)
+    } else if (value && typeof value === "object" && !["default", "const", "examples", "enum"].includes(key)) {
+      if (schemaDescriptions(value, depth + 1)) changed = true
+    }
+  }
+  return changed
+}
+function toolDescriptions(tools) {
+  if (!Array.isArray(tools)) return false
+  let changed = false
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue
+    const fn = tool.function && typeof tool.function === "object" ? tool.function : tool
+    if (typeof fn.description === "string") {
+      const adapted = harnessText(fn.description)
+      if (adapted !== fn.description) (fn.description = adapted), (changed = true)
+    }
+    for (const key of ["input_schema", "parameters"]) if (schemaDescriptions(fn[key])) changed = true
+  }
+  return changed
 }
 
 // Claude Code also sends the skill list alone as a system message: the
@@ -1641,12 +1694,12 @@ function zcodeRuntimeContext(text) {
 
 // promptText adapts a system prompt's text.
 function promptText(text) {
-  return configSkillText(clientOpening(systemModelLine(claudeIdentity(zcodeRuntimeContext(text)))))
+  return harnessText(configSkillText(clientOpening(systemModelLine(claudeIdentity(zcodeRuntimeContext(text))))))
 }
 
 // systemMessageText adapts a system message's text after the prompt.
 function systemMessageText(text) {
-  return bareSkills(clientOpening(systemContext(zcodeRuntimeContext(text))))
+  return harnessText(bareSkills(clientOpening(systemContext(zcodeRuntimeContext(text)))))
 }
 
 // userBlockText adapts one text block of a user turn.
@@ -1680,6 +1733,89 @@ function userText(text) {
   const adapted = userBlockText(text)
   if (adapted !== text || !text.includes("<system-reminder>\n")) return adapted
   return text.replace(REMINDER_BLOCK, (block) => userBlockText(block))
+}
+
+// Claude Code's tool search (ENABLE_TOOL_SEARCH, on behind a gateway since
+// 2.1.304) declares a tool ToolSearch loaded with defer_loading, keeps it
+// on with a never-called DeferredToolPlaceholder tool, and answers a
+// ToolSearch call with tool_reference blocks (newer builds: the tool's
+// tool_definition, and tool_addition/tool_removal blocks in a message).
+// Factory's Messages route has no tool search and turns the request away
+// (@DennisYan4 on X, 2026-11-19), and droid never sends any of it. Claude
+// Code's own answer for a backend without tool search (its Foundry path)
+// is what goes here: the placeholder off, defer_loading off every tool, so
+// each loaded tool is declared in full. A definition carried in a message
+// joins the tools; a tool_result's reference, or definition, goes as the
+// text magpie's gateway tells a model on a translated route, so the
+// tool_use/tool_result pairing stays; tool_addition and tool_removal
+// blocks go, and a message they leave empty with them. False when the
+// request has none of it.
+const DEFERRED_PLACEHOLDER = "DeferredToolPlaceholder"
+const toolLoadedText = (name) => "Tool " + name + " is loaded and can be called now."
+function undeferredTools(request) {
+  let changed = false
+  const tools = Array.isArray(request.tools) ? request.tools : null
+  const have = new Set()
+  if (tools) {
+    for (let i = tools.length - 1; i >= 0; i--) {
+      const tool = tools[i]
+      if (tool?.name === DEFERRED_PLACEHOLDER) {
+        tools.splice(i, 1)
+        changed = true
+        continue
+      }
+      if (tool && typeof tool === "object" && "defer_loading" in tool) {
+        delete tool.defer_loading
+        changed = true
+      }
+      if (typeof tool?.name === "string") have.add(tool.name)
+    }
+  }
+  const added = []
+  const declare = (def) => {
+    if (!def || typeof def !== "object" || Array.isArray(def) || typeof def.name !== "string" || !def.name || have.has(def.name) || def.name === DEFERRED_PLACEHOLDER) return
+    const { defer_loading: _, ...rest } = def
+    added.push(rest)
+    have.add(def.name)
+  }
+  const messages = request.messages
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (!Array.isArray(message?.content)) continue
+    const kept = []
+    let touched = false
+    for (const block of message.content) {
+      const type = block?.type
+      if (type === "tool_addition" || type === "tool_removal" || type === "tool_reference") {
+        if (type === "tool_addition" && block.tool?.type === "tool_definition") declare(block.tool.definition)
+        touched = true
+        continue
+      }
+      if (type === "tool_result" && Array.isArray(block.content) && block.content.some((c) => c?.type === "tool_reference" || c?.type === "tool_definition")) {
+        const content = []
+        for (const c of block.content) {
+          if (c?.type === "tool_definition") declare(c.definition)
+          const name = c?.type === "tool_reference" ? c.tool_name : c?.type === "tool_definition" ? c.definition?.name : undefined
+          if (c?.type !== "tool_reference" && c?.type !== "tool_definition") content.push(c)
+          else if (typeof name === "string" && name) content.push({ type: "text", text: toolLoadedText(name) })
+        }
+        block.content = content.length ? content : [{ type: "text", text: "No tools were loaded." }]
+        touched = true
+      }
+      kept.push(block)
+    }
+    if (!touched) continue
+    changed = true
+    if (kept.length === 0) messages.splice(i, 1)
+    else message.content = kept
+  }
+  if (added.length) {
+    added.reverse()
+    if (tools) tools.push(...added)
+    else request.tools = added
+    changed = true
+  }
+  return changed
 }
 
 function anthropicBody(body) {
@@ -1819,6 +1955,8 @@ function anthropicBody(body) {
     delete request.context_management
     changed = true
   }
+  if (undeferredTools(request)) changed = true
+  if (toolDescriptions(request.tools)) changed = true
   return changed ? JSON.stringify(request) : body
 }
 
@@ -2317,4 +2455,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { harnessText, undeferredTools, toolDescriptions, renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }

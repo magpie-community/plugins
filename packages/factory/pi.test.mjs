@@ -88,7 +88,9 @@ test("pi's opening quoted in user, assistant or system text is escaped, a fragme
   ] })
   // Factory refuses the sentence in user and assistant text too, so the last
   // pass escapes it everywhere; only the complete sentence changes.
-  expect(b.system[1].text).toBe("Quote: " + ESCAPED_OPENING)
+  // a system prompt's "harness" reads runtime first, so its quote no longer
+  // holds the refused sentence
+  expect(b.system[1].text).toBe("Quote: " + OPENING.replace("harness", "runtime"))
   expect(b.messages[0].content[0].text).toBe("Why does pi say: " + ESCAPED_OPENING)
   expect(b.messages[1].content[0].text).toBe("Why does pi say: " + ESCAPED_OPENING)
   expect(b.messages[2].content[0].text).toBe(partial)

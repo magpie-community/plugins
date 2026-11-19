@@ -244,9 +244,9 @@ test("dsh's request on chat completions goes out with no refused name, its promp
   const names = sent.tools.map((t) => t.function.name)
   expect(names.some((n) => seenRefused(n))).toBe(false)
   expect(names.filter((n, i) => n !== dshNames[i])).toEqual(["Execute", "Edit", "Glob", "Grep", "Read", "WebSearch", "Create"])
-  // only the names change: descriptions, schemas and dsh's own text stay
+  // only the names change: descriptions (their "harness" read runtime), schemas and dsh's own text stay
   expect(sent.tools.map((t) => t.function.parameters)).toEqual(dsh.tools.map((t) => t.function.parameters))
-  expect(sent.tools.map((t) => t.function.description)).toEqual(dsh.tools.map((t) => t.function.description))
+  expect(sent.tools.map((t) => t.function.description)).toEqual(dsh.tools.map((t) => _internal.harnessText(t.function.description)))
   expect(sent.messages.slice(-2)).toEqual(dsh.messages.slice(-2))
   const text = await res.text()
   const calls = text.split("\n").filter((x) => x.startsWith("data: {")).map((x) => JSON.parse(x.slice(6)))
@@ -311,7 +311,7 @@ test("a request refused for a name not listed yet goes once more with every tool
   expect(second).toContain("Execute")
   expect(second.filter((n) => dshNames.includes(n))).toEqual([])
   // only names change
-  expect(JSON.parse(seen[1].body).tools.map((t) => t.function.description)).toEqual(dsh.tools.map((t) => t.function.description))
+  expect(JSON.parse(seen[1].body).tools.map((t) => t.function.description)).toEqual(dsh.tools.map((t) => _internal.harnessText(t.function.description)))
   expect((await res.json()).choices[0].message.tool_calls[0].function.name).toBe("create_goal")
   // the next turn of the same tool set is renamed in full at once
   const again = await l.fetch(C, { method: "POST", body })
