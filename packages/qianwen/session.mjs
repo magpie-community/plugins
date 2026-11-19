@@ -15,6 +15,8 @@ export const SITE = "https://www.qianwen.com/";
 const REGISTER = "https://sec.qianwen.com/security/external/access/register";
 const CHAT = "https://chat2.qianwen.com/api/v2/chat";
 const MODEL_LIST = "https://chat2-api.qianwen.com/api/v1/model/list";
+// App/会员实际使用的模型面板接口：返回带会员模型（Qwen4-Max 等）的完整清单
+const MODEL_PANEL = "https://qwen-agent-api.qianwen.com/api/v1/agent/model/panel";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 // 签名参数顺序（逆向自网页 pre.js；服务端按此拼装验签）
@@ -188,7 +190,8 @@ export class QianwenSession {
     return { timestamp, sacsft, sign };
   }
 
-  // 直接调用模型列表接口（页面同源参数 + XSRF），无需浏览器
+  // 模型列表：优先用 App/会员实际使用的 panel 接口（含 Qwen4-Max 等会员模型），
+  // 失败时回退到旧的 H5 model/list 接口。纯 HTTP，无需浏览器。
   async models(signal) {
     signal?.throwIfAborted();
     await this.ready(signal);
@@ -196,23 +199,43 @@ export class QianwenSession {
       biz_id: "ai_qwen", chat_client: "h5", device: "pc", fr: "pc", pr: "qwen",
       ut: this.deviceId, la: "zh-CN", tz: "Asia/Shanghai", wv: "4.14.8", tq: "SD", ve: "4.14.8",
     });
-    const resp = await fetch(`${MODEL_LIST}?${p.toString()}`, {
-      headers: {
-        "X-XSRF-TOKEN": this.xsrf, "Accept": "application/json",
-        "Cookie": this.cookies, "User-Agent": UA,
-        "Origin": "https://www.qianwen.com", "Referer": "https://www.qianwen.com/",
-      },
-      signal: signal || AbortSignal.timeout(20000),
-    });
-    const data = await resp.json();
-    if (!data?.success || !Array.isArray(data.data)) {
-      throw new Error(`模型列表失败：${data?.msg || data?.errorMsg || resp.status}`);
+    const headers = {
+      "X-XSRF-TOKEN": this.xsrf, "Accept": "application/json",
+      "Cookie": this.cookies, "User-Agent": UA,
+      "Origin": "https://www.qianwen.com", "Referer": "https://www.qianwen.com/",
+    };
+    const fetchJson = async (url) => {
+      const resp = await fetch(`${url}?${p.toString()}`, {
+        headers, signal: signal || AbortSignal.timeout(20000),
+      });
+      if (!resp.ok) return null;
+      try { return await resp.json(); } catch { return null; }
+    };
+
+    // 主接口：agent model panel。返回 data.models[]，字段 model/name/show/defaultModel。
+    try {
+      const data = await fetchJson(MODEL_PANEL);
+      const list = data?.data?.models;
+      if (data?.success && Array.isArray(list) && list.length) {
+        const out = list.filter((m) => m.show !== false).map((m) => ({
+          id: m.model,
+          name: (m.name || m.model || "").trim(),
+          default: !!m.defaultModel,
+        })).filter((m) => m.id);
+        if (out.length) return out;
+      }
+    } catch { /* 落到旧接口 */ }
+
+    // 回退：旧 H5 model/list。字段 modelCode/legacyModelCode、displayModelName。
+    const data = await fetchJson(MODEL_LIST);
+    if (data?.success && Array.isArray(data.data)) {
+      return data.data.filter((m) => m.show !== false).map((m) => ({
+        id: m.modelCode || m.legacyModelCode,
+        name: (m.displayModelName || m.modelCode || "").trim(),
+        default: !!m.defaultModel,
+      })).filter((m) => m.id);
     }
-    return data.data.filter((m) => m.show !== false).map((m) => ({
-      id: m.modelCode || m.legacyModelCode,
-      name: (m.displayModelName || m.modelCode || "").trim(),
-      default: !!m.defaultModel,
-    })).filter((m) => m.id);
+    throw new Error(`模型列表失败：${data?.msg || data?.errorMsg || "未知错误"}`);
   }
 
   // 发送对话，返回 AI 回复文本
