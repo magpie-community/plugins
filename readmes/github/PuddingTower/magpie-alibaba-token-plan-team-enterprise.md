@@ -1,6 +1,6 @@
-# magpie-bailian-team-token-plan
+﻿# magpie-alibaba-token-plan-team-enterprise
 
-**阿里云百炼 Token Plan 团队版（Team / Enterprise Edition）专用 [Magpie](https://usemagpie.ai) 插件**：  
+**Alibaba Token Plan Team / Enterprise Edition plugin for [Magpie](https://usemagpie.ai)** (阿里云百炼 Token Plan 团队版/企业版专用插件)：  
 免控制台登录、免手机短信验证码，在 Magpie 中同时完成 **动态全量模型清单拉取**、**Token Plan 团队版模型推理** 与 **实时 Credits 额度监控**。
 
 > **为什么需要这个插件？**
@@ -27,13 +27,13 @@
 ### 1. 安装插件
 
 ```bash
-magpie plugin add github:PuddingTower/magpie-bailian-team-token-plan
+magpie plugin add github:PuddingTower/magpie-alibaba-token-plan-team-enterprise
 ```
 
 ### 2. 配置 RAM AccessKey（用于免验证码查团队额度）
 
 ```bash
-magpie plugin options github:PuddingTower/magpie-bailian-team-token-plan '{"accessKeyId":"LTAI...","accessKeySecret":"..."}'
+magpie plugin options github:PuddingTower/magpie-alibaba-token-plan-team-enterprise '{"accessKeyId":"LTAI...","accessKeySecret":"..."}'
 ```
 
 > 也可在 Magpie 桌面端插件设置（Plugin options）界面直接填入 `accessKeyId` / `accessKeySecret`，或通过环境变量 `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` 提供。

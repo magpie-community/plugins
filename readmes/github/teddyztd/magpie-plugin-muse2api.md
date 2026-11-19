@@ -19,6 +19,16 @@
 
    muse2api 默认端口是 `18610`，`MUSE2API_KEY` 以 `m2a_` 开头（未设置时由 muse2api 启动日志给出）。
 
+   启动实例（在 muse2api 仓库目录里，先 `pip install -r requirements.txt`）：
+
+   ```bash
+   python -m uvicorn app:app --host 127.0.0.1 --port 18610
+   ```
+
+   **不要直接 `python app.py`**：`app.py` 只定义 FastAPI 应用和 startup/shutdown 钩子，
+   没有 `if __name__ == "__main__"` 的 uvicorn 入口，直接跑会只打印两条 DeprecationWarning 然后退出，
+   端口始终不监听——看起来像「启动了但连不上」。
+
 ## 安装
 
 Magpie 桌面：**插件 → 发现 → 非官方插件 · GitHub**，搜 `magpie-plugin-muse2api`，点安装。
@@ -146,7 +156,8 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 | 现象 | 处理 |
 | --- | --- |
 | 登录报「API key 无效（401）」 | 核对 `MUSE2API_KEY` 是否与 muse2api 实例一致（注意 muse2api 的 `MUSE2API_KEY` 为空时是不校验的，这时填任何 key 都能过） |
-| 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍 |
+| 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍。注意 muse2api 进程退出后端口就不监听了（`Get-NetTCPConnection -LocalPort 18610` 为空），要用 `python -m uvicorn app:app --host 127.0.0.1 --port 18610` 重新拉起，而不是 `python app.py` |
+| 重启机器后 Magpie 报连不上 | muse2api 不会自启；用上面的 uvicorn 命令常驻（可用计划任务 / `nssm` / 前台终端），或改用远端实例 |
 | 对话 404 或 400 | `baseURL` 拼错了；本插件固定用 `<地址>/v1`，登录时地址**不要带** `/v1`（带了会被 validate 拦下） |
 | 工具说「没有配置 muse2api 连接信息」 | 去 **插件 → 已安装 → muse2api → 选项** 填 `baseUrl` / `apiKey`，或设环境变量后重启 Magpie |
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |
@@ -187,6 +198,7 @@ bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock m
 - [`docs/qa-report.md`](docs/qa-report.md)：全功能 QA 报告（登录 / 多账号 / 三能力 / 错误契约，含证据）
 - [`docs/troubleshooting-admin-pool.md`](docs/troubleshooting-admin-pool.md)：后台页账号池显示 0 的根因排查
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：本地开发、改动约定、发布方式
+- [`CHANGELOG.md`](CHANGELOG.md)：版本变更记录
 
 ## License
 

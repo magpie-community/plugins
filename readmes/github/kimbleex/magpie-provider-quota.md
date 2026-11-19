@@ -110,6 +110,28 @@ No percentage is generated when the total quota is unknown.
 不提供余额接口的供应商需要先在 Magpie 中配置相应的余额探测。  
 For providers without a balance endpoint, configure a suitable balance probe in Magpie first.
 
+## 重置卡 / Reset cards
+
+持有重置卡的账号会在卡片底部显示剩余张数和最早过期时间，概览中汇总全部重置卡。  
+Accounts holding reset cards show the remaining count and the earliest expiry at the bottom of their card, and the overview totals all reset cards.
+
+Codex 账号（本机或远端 Magpie 的 `<电脑>/codex`）可以直接点击「使用」，确认后由 Magpie 网关 `POST /v1/magpie/quotas/codex-reset` 执行，与 Magpie 用量页的行为一致。  
+Codex accounts, local or `<computer>/codex` from a remote Magpie, can be reset with the “使用” (Use) button; after confirmation the Magpie gateway performs it through `POST /v1/magpie/quotas/codex-reset`, as on Magpie's Usage page.
+
+默认使用最早过期的一张，也可以在确认框中选择其他重置卡。重置无法撤销。  
+The card that expires first is used by default, and another can be chosen in the confirmation dialog. A reset cannot be undone.
+
+Magpie 要求使用重置卡的请求携带完全访问权限的网关密钥（Magpie「网关 › 网关密钥」）。可在插件选项中设置 `gatewayKey`，或在确认框中输入；输入的密钥只保存在本插件服务的内存中，不会写入磁盘，也不会返回给页面。  
+Magpie requires a full-access gateway key (Magpie “Gateway › Gateway keys”) to use a reset card. Set it as the plugin option `gatewayKey`, or enter it in the confirmation dialog; an entered key stays only in the plugin service's memory, is never written to disk and is never sent back to the page.
+
+GLM 等按窗口区分、需在供应商网站使用的重置次数只展示，不提供使用按钮。  
+Per-window reset counts that must be used on the vendor's website, such as GLM's, are shown without a Use button.
+
+## 主题 / Theme
+
+页面使用 Magpie 窗口传来的主题令牌（背景、卡片、文字、强调色、状态色与字体），随 Magpie 的浅色、深色和自定义强调色实时切换；单独运行时跟随系统明暗。  
+The page uses the theme tokens passed from the Magpie window (background, cards, text, accent, status colors and fonts) and follows Magpie's light, dark and custom accent settings live; when run standalone it follows the system appearance.
+
 ## 单独运行 / Standalone usage
 
 需要 Node.js 20 或更新版本，无第三方依赖。  

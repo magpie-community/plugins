@@ -1,6 +1,6 @@
 # Magpie Paseo Bridge
 
-This Magpie request hook publishes the route that produced a Codex final reply. The Paseo Magpie plugin reads the local index to display the winning provider, served model, and fallback attempts next to that reply.
+This Magpie request hook records the actual provider, model, and fallback attempts for Codex requests. Paseo Magpie `v0.6.0` and later can display the recorded requests for a completed turn under its final reply.
 
 ## Installation
 
@@ -9,7 +9,7 @@ Use Magpie and the Paseo daemon under the same OS user, with the same absolute `
 Run these commands on the Magpie host:
 
 ```sh
-magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.1'
+magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.2'
 magpie plugin list
 ```
 
@@ -26,7 +26,7 @@ The integration suite verified Magpie `0.1.4504`, Bun `1.4.4`, and Codex CLI `0.
 
 ## Matching and data
 
-The hook accepts successful local Codex Responses completions for the main conversation. It finds one final assistant output item, then performs a bounded, credential-free `GET /v1/magpie/trace` at the loopback `MAGPIE_ADDR` supplied by Magpie. It joins the exact session and response IDs to one successful trace row. The output item's ID is the key Paseo can observe on its timeline. Tool use can cause several Responses requests within a single turn, so tool continuations and commentary produce no index entries.
+The hook accepts successful local Codex Responses completions for the main conversation, including requests that produce tool calls. It performs a bounded, credential-free `GET /v1/magpie/trace` at the loopback `MAGPIE_ADDR` supplied by Magpie and joins the exact session and response IDs to one successful trace row. Auxiliary requests are excluded. The final assistant output item's ID is the key Paseo can observe on its timeline.
 
 The index lives in `magpie/paseo-bridge/v1/` under an absolute `XDG_CONFIG_HOME` or under `~/.config`. Each file name is the lowercase SHA-256 of the UTF-8 session ID, a NUL byte, and the UTF-8 assistant output item ID, followed by `.json`. A record looks like this:
 
@@ -41,6 +41,8 @@ The index lives in `magpie/paseo-bridge/v1/` under an absolute `XDG_CONFIG_HOME`
   ]
 }
 ```
+
+When Codex supplies matching native thread and turn IDs, the final record also includes a `history` pointer with a hashed turn key, a hashed response ID, and the request's trace order. Each request has its own `<turn hash>-<response hash>.json` entry with the same route fields, its phase, and the gateway's timestamp and trace ID for ordering. Paseo reads matching entries up to the anchored final request. A final reply can still be matched on its own when turn metadata is missing.
 
 The provider is the Magpie provider ID of the winning attempt. The model uses the trace's served model when available and the winning attempt's model otherwise. Each attempt identifies the Magpie provider and model that were tried. It includes an HTTP status when available. The projection excludes raw IDs, bodies, credentials, account labels, and error strings.
 
@@ -61,4 +63,4 @@ node --test test/bridge.test.mjs
 node --test test/gateway.integration.mjs
 ```
 
-The integration test installs the single-file hook into a temporary Magpie configuration, runs real Codex HTTP and WebSocket turns, checks a failed route and its fallback, executes a harmless tool call, and verifies the client-visible IDs on a translated reply.
+The integration test installs the single-file hook into a temporary Magpie configuration, runs real Codex HTTP and WebSocket turns, switches providers after a tool call, and verifies the client-visible IDs on a translated reply. Set `PASEO_PLUGIN_PATH` to a local Paseo Magpie checkout to also verify the two request records in an isolated Paseo timeline.

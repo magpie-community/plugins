@@ -46,6 +46,9 @@ on the same computer, and signing in here again updates the same session.
 - **Models**: read from ZGAP's `/v1/models` once you are signed in. Display names are separate from
   request IDs. Context and output limits, input/output modalities, reasoning, tools and temperature
   support come from the catalog; unknown values remain unspecified.
+- **Effort**: models whose upstream lists their reasoning effort levels carry the levels ZGAP passes on to that
+  upstream unchanged, and magpie offers exactly them in an agent's model picker. Other reasoning models get the
+  levels magpie's own catalogs list for their ID, if any. Models not marked as reasoning get none.
 - **Speed**: GPT models also carry the speed tiers ZGAP's accounts serve them at (Fast, and Ultrafast where
   available). magpie then offers them in an agent's model picker, a group and the model's own speed setting.
   An agent on Claude's Messages API, such as Claude Code, can only ask for Fast, so Ultrafast runs as Fast there.

@@ -33,7 +33,13 @@ provider 的模型时，只用 `accountsOf(readAuth(), id)[0]` —— **第一�
 
 ## 安装
 
-从 GitHub 装（推荐）：
+从 npm 装（推荐，更新检查走 npm，不占 GitHub 限额）：
+
+```powershell
+magpie plugin add magpie-modelscope-hub@latest
+```
+
+从 GitHub 装（想看源码提交时用）：
 
 ```powershell
 magpie plugin add github:BangShou1st/magpie-modelscope-hub
@@ -116,6 +122,17 @@ supported" 的条目）标成 `deprecated`，magpie 会把它们从选择器和�
 2026-11-18 对国内站 38 个模型逐个核过 pipeline 标签。表里没有的新 id 只报文本、
 不声明图片能力，将来上的视觉模型仍能收到图，不会被本地网关先挡掉。
 
+### 上下文窗口
+
+`/v1/models` 不报窗口大小。之前所有线上模型吃默认 128K，对 1M 窗口的
+DeepSeek-V4.1 / GLM-5.2 是错的：dsh 按「窗口 − 72K」当压缩阈值，128K 只剩
+54272 令牌，一条 66K 的对话就会「压缩失败、切不过去」。现在 `src/limits.mjs`
+按模型仓库 `config.json` 的 `max_position_embeddings`（含 `text_config` /
+`llm_config` 里的）逐个补：DeepSeek 四兄弟 1M、GLM-5.2 1M、Qwen3.5/3.8 全系
+256K、GLM-4.7-Flash 202752、Intern-S1 64K。查不到的仍按 128K，不乱报。
+
+输出上限没有按模型的可靠来源，统一 8192。
+
 ### 推理强度
 
 `/v1/models` 只给 id，给不了「是不是思考模型」「支持哪几档推理强度」。不补这张
@@ -138,17 +155,50 @@ supported" 的条目）标成 `deprecated`，magpie 会把它们从选择器和�
 档位但上游不认的变体，会让用户选「high」而实际仍是默认档——比没有更糟。国内站
 38 个模型里，15 个标了思考，其中 4 个有档位。
 
+### 每个模型消耗多少魔粒（倍率）
+
+官方只给三档价：轻量 0.5、主流 1、旗舰 2 魔粒/次，但**没有「哪个模型属于哪档」
+的接口**。`/v1/models` 只回 id；模型详情 API 里没有价格、`magicube` 或 `tier`
+字段；模型页上那句「预计消耗魔粒」是前端算的。所以这张表是实测出来的：
+
+1. 对每个模型打一次 `max_tokens: 1` 的最小请求
+2. 读当天账单，看 `SPEND_CONFIRM` 里哪个 `model_tier` 的 `count` 加了 1
+3. 加的 `total_amount / count` 就是单价
+
+2026-11-19 对国内站逐个测过（`_probe/rate-sweep.mjs`），实测结果写进
+`src/rates.mjs`，作为模型的 `rate` 字段交给 magpie：
+
+| 单价 | 模型 |
+| --- | --- |
+| 0.5 魔粒/次 | `nex-agi/Nex-N2.5-mini` |
+| 1 魔粒/次 | `MiniMax/MiniMax-M1-80k`、`mistralai/Mistral-Large-Instruct-2407`、`nex-agi/Nex-N2.5-Pro`、`opencompass/CompassJudger-1-32B-Instruct`、`Qwen/Qwen3.5-122B-A10B`、`Qwen/Qwen3.5-27B`、`Qwen/Qwen3.5-35B-A3B`、`Qwen/Qwen3.8-27B`、`Qwen/Qwen3.8-Flash-Next`、`Shanghai_AI_Laboratory/Intern-S2-Preview`、`XGenerationLab/XiYanSQL-QwenCoder-32B-2412 / 2504` |
+| 2 魔粒/次 | `deepseek-ai/DeepSeek-V4-Pro-0813`、`deepseek-ai/DeepSeek-V4.1-Flash-1017`、`Qwen/Qwen3.5-397B-A17B`、`ZhipuAI/GLM-5.2` |
+
+返回「has no provider supported」或 401 的模型测不到，就不给 `rate`——没数不猜。
+国际站还没登录、也没实测，同样不显示倍率。
+
+magpie 的模型选择器会把它画成 `2×` 这样的小标签，和 WorkBuddy 的 `credits`
+倍率是同一个字段（`internal/plugin/providers.go` 的 `Rate`）。上面这 17 个模型
+之外，选择器里不显示倍率，不是「免费」。
+
 ### 一次请求花了多少魔粒？
 
-做不到按请求归因，三个来源都不给这个粒度：
+逐笔归因厂商仍然不给：响应里只有 token 用量，账单只有按 (天, 档位) 聚合的
+`SPEND_CONFIRM` 行。但按次计费、单价已知，所以插件自己把这一笔的魔粒补进响应的
+`usage.credit`——magpie 的用量账本本来就收这个字段（WorkBuddy 的 `credit` 同一个
+位置，`internal/usage/ledger.go`）：
 
-- 推理响应里只有 token 用量，没有魔粒字段，响应头也没有（2026-11-18 实测）
-- 账单只有按 (天, 档位) 聚合的 `SPEND_CONFIRM` 行（`model_tier` + `total_amount` + `count`）
-- magpie 的账本本身没有按请求的积分记账，并发时余额差也分不清是谁花的
-  （`docs/subsystems/providers-accounts.md` 明说不做按次归因）
+- 非流式：直接改写响应 JSON 的 `usage`
+- 流式：给请求补 `stream_options.include_usage`，再改最后那块 usage
+- 只写 2xx：4xx/5xx 不扣魔粒；没实测过单价的模型留空，不猜
 
-所以卡片说的是「今天花了 5 魔粒 · 3 次（旗舰 2×2、标准 1×1）」，不是「这一笔 2 魔粒」。
-每笔按 2 的估算只在本地用来判断什么时候该提前去读余额。
+这样 `magpie usage --csv` 的 `credits` 列、GUI 的用量页都能逐条看到
+「这一笔 2 魔粒」，并按模型汇总。2026-11-19 实测：网关走 `Qwen/Qwen3.8-27B`
+一条记 `credits=1`，走 `DeepSeek-V4.1-Flash-1017` 记 `credits=2`。
+
+这张卡上的「今天花了 5 魔粒 · 3 次（旗舰 2×2、标准 1×1）」仍来自厂商账单，
+是实际扣款；逐条 credits 是按单价算的，两者对得上，但并发取消的请求可能只出现在
+账单里、没有逐条记录。
 
 ### 用量卡
 
