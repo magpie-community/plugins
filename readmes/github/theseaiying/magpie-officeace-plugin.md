@@ -135,11 +135,14 @@
 | :--- | :--- | :--- | :--- |
 | **网关 Basic 密钥** | 对话接口 (`/chat/completions`) 认证 | **永久有效** | **永不需要续期**！只要账号套餐有效即可永久发送对话。 |
 | **控制台 AK/SK** | 读取订阅积分 (`/v1/subscription`) 与领取每日奖励 (`/v1/subscription/bonus/claim`) | 1 天 | 凭证快到期前 10 分钟内自动触发 DPoP 签名向华为云 STS 续期；Magpie 后台提前 60 分钟自动预热续期。 |
-| **Refresh Token** | 轮换刷新临时 AK/SK | 约 30 天 | 每次使用即刻轮换。支持并发请求合并保护，并为刚失效的旧 Token 保留 1 分钟宽限缓冲。 |
+| **Refresh Token** | 轮换刷新临时 AK/SK | 由 STS 签发，自带 `exp`（实测约 1~2 天） | 每次使用即刻轮换。支持并发请求合并保护，并为刚失效的旧 Token 保留 1 分钟宽限缓冲。**到期后无法续期，只能重新登录**。 |
 
 > **持久化存储位置**：  
 > - Magpie 中保存在 `plugin-auth.json`  
 > - OpenCode 中保存在 `~/.config/opencode/auth.json`
+
+> **⚠️ 关于长时间未使用**：  
+> Refresh Token 的到期时刻由 STS 签发、写在 Token 自身里，插件无法延长它。若 Magpie 在到期前没有运行过，续期将返回 `STS5.1806`（refresh code has expired），此时只能重新登录一次。插件会正确地把账号标记为「登录已过期」，而不会反复重试。
 
 ---
 

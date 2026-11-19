@@ -1,5 +1,9 @@
 # Magpie Factory Identity
 
+> **已失效（2026-11-19）**：当前版本已失效，请勿再依赖本插件解决 Factory 请求拦截。以下安装与验证说明仅保留作历史参考。
+>
+> **No longer effective (2026-11-19):** Do not rely on this plugin to resolve Factory request rejections. The installation and verification notes below are retained for historical reference.
+
 A Magpie gateway middleware that rewrites OMP's default identity sentence only in system/developer instructions for the `factory` provider. It preserves other prompt content and does not change user messages or tool results.
 
 这个中间件在 Magpie 选定 Factory 上游后，将 OMP 默认的开头身份声明替换为：
@@ -40,7 +44,7 @@ magpie plugin add github:HarryWang29/magpie-factory-identity
 
 ## 验证与限制
 
-已有 12 组本地 JSON 转换检查通过，覆盖协议格式、Factory 范围、历史内容保留、原请求不变和重复调用。Factory 的接受结果取决于上游当时的规则，不能保证解决所有 `content_policy_rejected`。
+历史验证记录：曾有 12 组本地 JSON 转换检查通过，覆盖协议格式、Factory 范围、历史内容保留、原请求不变和重复调用。这些检查仅验证本地文本转换，不代表 Factory 当前会接受请求；插件当前状态见顶部说明。
 
 验证时使用 OMP 默认提示词和全新会话，先发送普通消息，再完成一次只读工具调用。若检查请求正文，应查看 Magpie 发往 Factory 的请求；OMP 发往 Magpie 的入站正文仍会保留原句。
 

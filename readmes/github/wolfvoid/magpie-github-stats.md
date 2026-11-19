@@ -47,7 +47,7 @@ magpie plugin add github:wolfvoid/magpie-github-stats
 - Neon Aurora、Minimal、Cyberpunk 三种主题，各有深浅色版本；320–800 px 宽度（页面预设 320/520/640）。
 - 最多 5 个模型、Token 趋势、每日用量热力图、可选 Estimated Cost。
 - **Tokens = input + output，不含 cache_read/cache_write**，与 Magpie 官方 summary 的 `Tokens()` 一致；reasoning 不重复相加。
-- Requests 包含该汇总中计入的失败/取消请求。Active Days 按 Magpie 返回的本地日期中 `calls > 0` 的天数统计。
+- Requests 包含该汇总中计入的失败/取消请求。Active Days 跨全部保留历史统计，不随卡片周期切换，按 Magpie 返回的本地日期中 `calls > 0` 的天数统计。
 - 同名模型合并跨供应商统计；百分比以全部 Token 为分母，Top N 不一定加起来为 100%。仅公开模型 ID，不公开供应商、账号或自定义备注。
 - All Time 使用当前 Magpie 本机 summary 的历史范围。历史被清理后，范围会缩短；它不是无限归档。若 Magpie 对长历史返回周桶，会使用 30 天分段的同一 summary API 取得日统计，避免混用 Requests 页的不同统计范围。
 - 趋势显示所选周期最后 7/30 天；热力图采用贡献图排列：每列一周、每行对应周一至周日、每天一个小方块，上方标月份、下方标少／多图例。默认最近 53 周，也可选本月／本周；选择请求、Token 或估算费用作为颜色指标。具体日期和数值放在 SVG title 提示中，未来日期不绘制。全年数据按最多 30 天分段从同一汇总 API 读取，不依赖顶部统计周期。GitHub 静态图片使用在 Magpie 中保存并同步的选项。选择费用指标即主动公开每日估算费用，不受单独的费用总额开关控制。

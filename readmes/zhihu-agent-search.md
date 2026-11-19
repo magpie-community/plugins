@@ -1,4 +1,4 @@
-# tools-zhihu · 知乎搜索 magpie 插件
+# zhihu-agent-search · 知乎搜索 magpie 插件
 
 把[知乎数据开放平台](https://developer.zhihu.com/docs)的**搜索相关接口**包装成 magpie 插件。
 装上之后，所有接入 magpie 的智能体（Claude Code、Codex、Cursor 等）都会多出 6 个 `zhihu_*` 工具，
@@ -15,7 +15,7 @@ magpie 自带的「联网搜索」也可以选择用知乎站内搜索。
 | `zhihu_question_recommendations` | `GET /api/v1/user/question_recommendations` | 问题推荐（按账号画像或关键词） |
 | `zhihu_quota` | `GET /api/v1/quota` | 查询各接口剩余额度（不消耗额度） |
 
-工具名由 magpie 统一加前缀：包名叫 `tools-zhihu`，所以是 `zhihu_search` 而不是 `tools-zhihu_search`。
+工具名由 magpie 统一加前缀（如 `zhihu_search`、`zhihu_global_search`）。
 
 正文默认**最多保留 500 字符**（超出部分以 `…` 结尾），避免一次搜索把上万字符塞进上下文；
 需要全文时传 `maxTextLength: 0`。单条结果最多带 2 条评论摘要。
@@ -69,11 +69,14 @@ magpie 自带的「联网搜索」也可以选择用知乎站内搜索。
 ## 安装与登录
 
 ```bash
-# 从 GitHub 安装（推荐）
+# 从 npm 安装（推荐）
+magpie plugin add zhihu-agent-search
+
+# 或从 GitHub 安装
 magpie plugin add https://github.com/ilioner/magpie-zhihu-search.git
 
 # 本地开发时直接装目录
-magpie plugin add ./tools-zhihu
+magpie plugin add ./zhihu-agent-search
 
 # 保存 Access Secret（在 https://developer.zhihu.com/profile 生成）
 magpie plugin login zhihu
@@ -85,7 +88,7 @@ magpie plugin list
 `magpie plugin list` 应该显示：
 
 ```
-tools-zhihu  on
+zhihu-agent-search  on
   tools  zhihu_global_search, zhihu_hot_list, zhihu_question_answers, zhihu_question_recommendations, zhihu_quota, zhihu_search
   zhihu (知乎, 0 models)  signed in
 ```
@@ -100,8 +103,8 @@ tools-zhihu  on
 
 ### 插件选项
 
-写在 `~/.config/magpie/plugins.json` 里 `tools-zhihu` 条目的 `options`，或改选项后
-`magpie plugin options tools-zhihu '{…}'`（会自动重载）：
+写在 `~/.config/magpie/plugins.json` 里 `zhihu-agent-search` 条目的 `options`，或改选项后
+`magpie plugin options zhihu-agent-search '{…}'`（会自动重载）：
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
@@ -187,7 +190,7 @@ node --test test/*.test.mjs
 目录结构：
 
 ```
-tools-zhihu/
+zhihu-agent-search/
 ├── index.mjs            # 插件入口（只导出插件函数和 _internal）
 ├── src/
 │   ├── config.mjs       # 常量、超时/重试/缓存默认值、baseUrl 校验
@@ -232,7 +235,7 @@ magpie log -f         # 跟随输出
 `plugin [level]: [service] message`。请求失败的原因、加载错误都在这里。
 
 想看到每次请求的耗时、重试和错误码，设 `ZHIHU_DEBUG=1`（或插件选项 `debug: true`），
-插件会以 `tools-zhihu` 服务名写日志；只记录路径、耗时和错误码，**不记录密钥和搜索词**。
+插件会以 `zhihu-agent-search` 服务名写日志；只记录路径、耗时和错误码，**不记录密钥和搜索词**。
 
 ### 3. 确认加载状态
 
@@ -246,8 +249,8 @@ magpie plugin list --json    # 含每个工具的描述和 JSON Schema
 只改源码**不会**自动生效——重载由「开关插件」或「改插件选项」触发：
 
 ```bash
-magpie plugin off tools-zhihu && magpie plugin on tools-zhihu
-magpie plugin options tools-zhihu '{"accessSecret":"…"}'   # 也会触发重载
+magpie plugin off zhihu-agent-search && magpie plugin on zhihu-agent-search
+magpie plugin options zhihu-agent-search '{"accessSecret":"…"}'   # 也会触发重载
 ```
 
 ### 5. 设置 → 插件
@@ -261,7 +264,7 @@ magpie plugin options tools-zhihu '{"accessSecret":"…"}'   # 也会触发重�
 sb=$(mktemp -d)
 m() { env HOME=$sb XDG_CONFIG_HOME=$sb/.config XDG_CACHE_HOME=$sb/.cache \
           MAGPIE_ADDR=127.0.0.1:3499 magpie "$@"; }
-m plugin add ./tools-zhihu
+m plugin add ./zhihu-agent-search
 m plugin list
 ```
 

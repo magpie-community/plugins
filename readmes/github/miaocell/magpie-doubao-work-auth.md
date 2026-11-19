@@ -13,32 +13,40 @@
 
 > 完整记录见 [CHANGELOG.md](CHANGELOG.md)，最新的在最上面。
 
+- **设备上下文用真实值**（`0.4.0`）。`fp` 不再拿 `deviceId` 拼假指纹，直接用 Cookie 里的 `s_v_web_id`；`ttwid` 也真正随请求发送了。SSE 同时认 CRLF / CR 行尾，完整消息放在 `content` 里也能取到。
+- **支持 Linux**（`0.4.0`）。Linux 上可用「粘贴 Cookie」登录，对话 / 流式 / 工具调用 / 额度 / 签到都正常；浏览器登录和客户端读取在 Linux 上不显示。保管库也改成本地 key + AES-GCM，非 Windows 平台不再明文落盘。
+- **模型菜单按账号类型走**（`0.4.0`）。有订阅的账号能出到 12 个模型（多出 Qwen 4 Max、Qwen 3.8 Max、Qwen 3.8 Flash），飞书登录的账号仍是 9 个——菜单来自网页 SSR，和基线取并集，只增不减。
 - **工具回复容错**（`0.3.3`/`0.3.4`）。模型中途停下、工具 JSON 没闭合时，先救回写完的调用，救不回来就把正文当普通回复返回，不再整轮报 502；JSON 包在 Markdown 围栏里或前后带解释也能解析。
-- **风控不再反复重试**（`0.3.2`）。被拦后带 `X-Magpie-Refused` 让 magpie 只失败一次，并进入 5 分钟冷却，不再连打 5 次把风控堆高。
-- **支持 Codex 的 Responses 协议**（`029a866`）。之前 Codex 调用会失败，报 `server_error` 或 `delegated input protocol violation`——插件只认 chat completions 的 `messages`，而 Codex 发的是 `input`。同时补上了 `usage` 字段，客户端不再显示 0 token。
-- **倍率改用原生 `rate` 字段**（`4f3c3f1`）。显示成标准徽章，不再拼进模型名。
 
 ## 拿到的模型
 
-模型**不是写死的**，每次登录后从账号的模型菜单现取：读 `action_bar` 里 office 模式的 `model_list`，跳过 `need_upgrade` 的条目。账号订了什么就有什么，界面会带上豆包自己的扣费倍率：
+模型**不是写死的**，每次登录后从账号的模型菜单现取：读 `action_bar` 里 office 模式的 `model_list`，界面会带上豆包自己的扣费倍率。账号订了什么就有什么，带 `need_upgrade` 的条目会列在清单里但不暴露给客户端，订阅生效后自动出现。
 
-| 模型 | 倍率 | 上下文 |
-| --- | --- | --- |
-| 自动 | 小额免费 | 256K |
-| 豆包 2.1 Lite | 限时优惠 0.01x | 256K |
-| DeepSeek V4.1 Flash | 限时优惠 0.01x | 300K |
-| Kimi K3.1 Pro | 0.95x | 300K |
-| Kimi K3.1 Pro 高速 | 1.44x | 300K |
-| Kimi K3 | 1.48x | 300K |
-| GLM 5.3 | 0.80x | 300K |
-| GLM 5.3 Flash | 0.08x | 300K |
-| DeepSeek V4 Pro | 0.46x | 300K |
+| 模型 | 倍率 | 上下文 | 前置条件 |
+| --- | --- | --- | --- |
+| 自动 | 小额免费 | 256K | 免费 |
+| 豆包 2.1 Lite | 限时优惠 0.01x | 256K | 免费 |
+| DeepSeek V4.1 Flash | 限时优惠 0.01x | 300K | 免费 |
+| Kimi K3.1 Pro | 0.95x | 300K | 免费 |
+| Kimi K3.1 Pro 高速 | 1.44x | 300K | 免费 |
+| Kimi K3 | 1.48x | 300K | 免费 |
+| GLM 5.3 | 0.80x | 300K | 免费 |
+| GLM 5.3 Flash | 0.08x | 300K | 免费 |
+| DeepSeek V4 Pro | 0.46x | 300K | 免费 |
+| Qwen 3.8 Flash | 0.05x | 300K | 订阅 |
+| Qwen 4 Max | 新上线 0.47x | 300K | 订阅 |
+| Qwen 3.8 Max | 0.74x | 300K | 订阅 |
+| 豆包 2.1 Pro | 0.65x | 256K | 订阅（`need_upgrade`，插件当前不暴露） |
 
-`豆包 2.1 Pro` 是 0.65x，但需要订阅，免费体验账号看不到（`need_upgrade=true`），订阅后自动出现。
+前 9 个是内置基线，任何账号都能用。后面 4 个要靠服务端下发——菜单是按账号给的，订阅账号能拿到，免费和飞书账号拿不到，就退回基线那 9 个。
+
+**飞书登录本身不影响能不能用**，影响的是服务端给不给那批 office 模型。飞书号原本是订阅、后来过期的，模型就掉回基线那 9 个。
+
+**菜单会随账号变。** 以后订阅生效、到期，或者豆包上新模型、调倍率，都不用改插件：菜单每次登录后从上游现取，倍率从 `tag_list` 的文案里解析。
 
 **倍率越低越省额度。** `DeepSeek V4.1 Flash` 和 `豆包 2.1 Lite` 是 0.01x，跑同样的量只扣百分之一的额度，日常优先用这两个；`Kimi K3` 是 1.48x，一倍半的价。
 
-倍率来自豆包返回的 `tag_list`（`type:2` 是纯倍率，`type:6` 是「限时优惠 0.01x」这种带前缀的）。magpie 的 `cost` 字段语义是「每百万 token 的单价」，豆包给的是相对订阅的扣费系数，量纲不同，所以 `cost` 一律填 0 不编造价格，倍率放在模型名里。
+倍率来自豆包返回的 `tag_list`（`type:2` 是纯倍率，`type:6` 是「限时优惠 0.01x」这种带前缀的）。magpie 的 `cost` 字段语义是「每百万 token 的单价」，豆包给的是相对订阅的扣费系数，量纲不同，所以 `cost` 一律填 0 不编造价格，倍率放在 `rate` 字段里由界面渲染成徽章。
 
 每个模型带各自的推理档位（豆包系三档、第三方五档），上下文取菜单里的真实值。豆包上新模型不用改插件。
 
@@ -54,6 +62,20 @@ magpie quota
 
 在 magpie 窗口里是「插件 → 添加插件」填目录，然后在「豆包工作」那一行点登录。改完代码在插件页关掉再打开即可生效（宿主常驻，只改文件不重载）。
 
+### 平台支持
+
+| 平台 | 状态 | 登录方式 |
+| --- | --- | --- |
+| Windows | 完整支持 | 粘贴 Cookie / 浏览器登录 / 从本机浏览器读取 / 从客户端读取 |
+| macOS | 完整支持 | 同上 |
+| Linux | 支持，仅「粘贴 Cookie」 | 从浏览器开发者工具复制 Cookie |
+
+Linux 上能用的是对话、流式回复、工具调用、额度、签到，和 Windows 没区别——这些只依赖 `https://www.doubao.com`，不需要本机装豆包客户端。
+
+Linux 上**没有**的是「浏览器登录」和「从客户端读取」这两项：它们要按 Chrome / 豆包工作的安装路径去找数据，那些路径只覆盖 Windows 和 macOS，硬做只能靠猜，所以登录菜单里直接不显示，免得点进去才失败。
+
+Linux 的安装步骤就是上面那几行，`magpie plugin add` 会自动识别 `os` 字段。保管库落在 `~/.config/magpie-doubao-work-auth/vault/`，每个账号一个 `.bin`（AES-256-GCM 密文），旁边一个 `vault.key`（权限 600）。想换位置可以设 `DOUBAO_WORK_VAULT` 或 `XDG_CONFIG_HOME`。
+
 ## 登录
 
 四条路，都不强制装客户端：
@@ -65,7 +87,11 @@ magpie quota
 | 从本机浏览器读取 | 不需要 | 读 Chrome / Edge 里已登录的豆包 |
 | 从客户端读 | 需要 | 装了豆包工作才有的选项 |
 
-**导入后与客户端解耦。** 登录那一刻就把 Cookie 存进插件自己的保管库（Windows 用 DPAPI 加密，磁盘上不是明文）。此后客户端退出登录、切号、甚至卸载，已导入的账号照常工作。只有 Cookie 在服务端过期（通常几个月）才需要重新登录。
+**Linux 上只有「粘贴 Cookie」**，浏览器登录和客户端读取不显示，原因见上面的[平台支持](#平台支持)。
+
+**导入后与客户端解耦。** 登录那一刻就把 Cookie 存进插件自己的保管库（Windows 用 DPAPI，其他平台用本地 key + AES-256-GCM，磁盘上都不是明文）。此后客户端退出登录、切号、甚至卸载，已导入的账号照常工作。只有 Cookie 在服务端过期（通常几个月）才需要重新登录。
+
+非 Windows 的 key 单独存在同一目录下的 `vault.key`（权限 600）。它能挡住同机其他用户和误拷贝，但挡不住同一用户下运行的恶意程序——Windows 的 DPAPI 也一样，别指望它更强。
 
 **多账号。** 每次登录就是一个独立账号，凭据各自加密、互不干扰。magpie 里可以设故障切换或轮询，`magpie quota` 分别显示每个账号的积分。
 
@@ -123,7 +149,9 @@ magpie quota
 
 ## 一些实现细节
 
-**模型菜单没有前端接口。** 那份数据由网页 SSR 的 loader 在服务端取好内联进页面。前端调 `/alice/slot/action_bar_v3/brief_list` 只返回 `entry_list`（底部工具条：PPT 生成、录音这些 `coco_instruction`），`/alice/bot/action_bar_v3/brief_list` 直接 404。所以插件内置一份实测基线，登录后仍会尝试在线刷新，刷不到就用基线。
+**模型菜单没有前端接口。** 那份数据由网页 SSR 的 loader 在服务端取好内联进页面。前端调 `/alice/slot/action_bar_v3/brief_list` 只返回 `entry_list`（底部工具条：PPT 生成、录音这些 `coco_instruction`），`/alice/bot/action_bar_v3/brief_list` 直接 404。`get_item_conf`、`input/list`、`launch.model_list` 都试过，都不是模型菜单。
+
+所以现在的做法是拿 `/chat` 页面的 HTML 解析 `modeSelectData`。**难点在于这份数据按账号类型给**：有订阅的账号菜单里有 Qwen 4 Max / Qwen 3.8 Max / Qwen 3.8 Flash，飞书账号只有自动和 2.1 Lite 两档（飞书没有 office 的 `model_list`）。直接用它替换会让飞书账号的模型从 9 个掉到 2 个，所以插件把它和内置基线取并集，只增不减——订阅账号出 12 个，飞书账号仍是 9 个。
 
 **`aid` 必须是 497858。** 用错成 1044603 会让所有请求落到另一条产品线：拿不到工作版模型菜单，`launch` 里的 `ug_campaign_info.campaign_group_code` 也是空字符串。
 
@@ -135,6 +163,8 @@ magpie quota
 
 风控验证码（`710022004`）返回 403 但保留账号；登录失效（`710012001`）返回 401，magpie 会把账号标成需要重新登录。
 
+Linux 支持是后加的，目前只在「粘贴 Cookie」这条路上验过，其余功能按不依赖平台的假设实现。
+
 ## 路径
 
 | 文件 | 位置 |
@@ -143,7 +173,7 @@ magpie quota
 | 登录用浏览器配置 | `%LOCALAPPDATA%\magpie-doubao-work-auth\browser-profile\` |
 | 临时会话清理记录 | `%LOCALAPPDATA%\magpie-doubao-work-auth\conversations\` |
 
-可用 `DOUBAO_WORK_VAULT` 覆盖保管库位置。每个账号一个 `.bin`，内容经 DPAPI 加密。
+可用 `DOUBAO_WORK_VAULT` 覆盖保管库位置。每个账号一个 `.bin`，Windows 上是 DPAPI 密文，其他平台是 AES-256-GCM 密文（key 在 `vault.key`）。
 
 ## 文件
 
@@ -162,7 +192,7 @@ magpie quota
 | `lib/cookie-import.mjs` | Cookie 解析、浏览器库扫描 |
 | `lib/cdp.mjs` | 调试端口读 Cookie、启动登录窗口 |
 | `lib/sqlite.mjs` | 自写的 SQLite 页面读取器 |
-| `lib/vault.mjs` | 账号保管库（DPAPI 加密） |
+| `lib/vault.mjs` | 账号保管库（DPAPI / AES-GCM） |
 | `lib/errors.mjs` | 错误码映射 |
 
 ## 测试

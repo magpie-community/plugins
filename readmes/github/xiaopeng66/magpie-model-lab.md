@@ -6,7 +6,7 @@
 
 模型实验室把鹈鹕 HTML 动画、模型指纹、糖果推理和定时自动测试放在同一个页面。可用于 AI 模型对比、推理能力观察及智商／智力趣味测试；趣味题结果不等同于正式智商评分。直接使用 Magpie 已配置的供应商和模型，可查看思考与输出用量、回放动画、追踪每日表现。
 
-**版本 1.0.2** · MIT · Magpie 0.1.2905+
+**版本 1.0.3** · MIT · Magpie 0.1.2905+
 
 Model Lab evaluates and compares AI models in Magpie through HTML animations, model fingerprints, candy reasoning and IQ-style fun tests, with per-model scheduled monitoring. It uses your existing providers and keeps results locally. Puzzle results are not formal IQ scores.
 
@@ -33,7 +33,7 @@ Model Lab evaluates and compares AI models in Magpie through HTML animations, mo
 
 ### 本地安装包
 
-将 `magpie-pelican-bench-1.0.2.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
+将 `magpie-pelican-bench-1.0.3.zip` 解压到固定目录，在 Magpie 的插件页添加该目录。请选择**直接包含 `package.json` 的文件夹**，然后从侧栏打开“模型实验室”。
 
 也可以在解压目录运行：
 
@@ -51,7 +51,7 @@ Windows 可使用 `tools/install.ps1`；Magpie 不在 PATH 中时，传入 `-Mag
 magpie plugin add github:xiaopeng66/magpie-model-lab
 ```
 
-可在仓库地址后加 `#v1.0.2` 固定安装本版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
+可在仓库地址后加 `#v1.0.3` 固定安装本版，也可从 [Releases](https://github.com/xiaopeng66/magpie-model-lab/releases) 下载 ZIP 安装包及 SHA-256 校验文件。GitHub 发现存在索引和缓存延迟，暂时搜不到时可直接按上面的命令安装。
 
 当前通过 GitHub 发布，npm 渠道暂未上线。完整规则见 [发布与发现指南](docs/publishing.md)。
 

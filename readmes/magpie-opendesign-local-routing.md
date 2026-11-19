@@ -2,7 +2,7 @@
 
 magpie 插件，用于管理多个 OpenDesign 账户，接入更好的路由调度。仅支持 **Magpie（Windows）**。
 
-> **正式版 `1.0.3`。** Windows 自动化检查与隔离宿主测试通过，维护者已确认三种协议的真实请求和正常新增账号可用。故障转移、全部账号不可用及拒绝/中断场景尚未完成真实故障验收；完整覆盖范围与已知限制见 [验收状态](docs/VERIFICATION.md)。
+> **正式版 `1.0.4`。** 在 Magpie 用量页增加钱包余额，并提供共享套餐的概览设置说明。完整覆盖范围与已知限制见 [验收状态](docs/VERIFICATION.md)。
 >
 > 本项目是非官方社区改造版，不代表 Magpie、OpenDesign 或 magpie-community 背书。
 
@@ -10,6 +10,7 @@ magpie 插件，用于管理多个 OpenDesign 账户，接入更好的路由调�
 
 - **多账号**：每个账号填写备注名称、Control Key、Workspace ID 和可选的 Runtime Key。没有 Runtime Key 的账号只监控额度，不提供模型，也不参与路由。
 - **原生额度窗口**：按 `codingPlan.windows` 的时长识别 5 小时和 7 天窗口，在 Magpie 用量页显示进度与重置时间（返回 `aside: false`，由 Magpie 参与账号排序和故障转移）。
+- **钱包余额**以美元显示在用量卡上，有效的零余额也会显示。
 - **请求前额度门禁**：每次推理前实时查询额度。额度耗尽、数据不完整或查询失败时，插件在本地返回 `429`，不向模型端转发，由 Magpie 决定切换到其他账号或后备。
 - **凭据本地加密**：Control Key 与 Runtime Key 通过 Windows CurrentUser DPAPI 加密保存；Magpie 的账号记录只含随机引用和非机密信息。
 - **三种模型协议**：转发 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（含 `count_tokens`），并按协议把请求头替换为账号自己的 Runtime Key。
@@ -29,12 +30,14 @@ magpie 插件，用于管理多个 OpenDesign 账户，接入更好的路由调�
 
 ## 安装
 
-1. 从 [v1.0.3 Release](https://github.com/Yuuuuuukit/magpie-opendesign-local-routing/releases/tag/v1.0.3) 下载 `magpie-opendesign-local-routing-1.0.3-desktop.zip` 并解压（也可克隆仓库），放到**由你本人控制的稳定目录**，不要放在多人可写或网盘同步的位置。目录顶层应有 `package.json`、`index.mjs`、`vault.mjs`。
+1. 从 [v1.0.4 Release](https://github.com/Yuuuuuukit/magpie-opendesign-local-routing/releases/tag/v1.0.4) 下载 `magpie-opendesign-local-routing-1.0.4-desktop.zip` 并解压（也可克隆仓库），放到**由你本人控制的稳定目录**，不要放在多人可写或网盘同步的位置。目录顶层应有 `package.json`、`index.mjs`、`vault.mjs`。
 2. Magpie → 插件 → 添加插件 → 本地文件夹，选择该目录。
 3. 供应商 → **OpenDesign Local (DPAPI)** → 添加账号，依次填写备注、Control Key、Workspace ID 和可选的 Runtime Key。
 4. 在用量页核对 5h / 7d 窗口和重置时间，按 [路由配置](docs/ROUTING.md) 在测试环境验证后，再迁移日常使用。
 
 升级、与旧版共存和排错见 [Windows 安装与升级](docs/INSTALL-WINDOWS.md)。**同一个 Magpie 实例里不要同时启用两个版本的本插件**（provider ID 相同）。
+
+多个推理 Key 共用同一套餐时，可以在用量概览保留一张卡片，并为它设置可编辑的共用别名。见 [共享套餐的展示](docs/ROUTING.md#共享套餐的展示)。
 
 ## 安全要点
 

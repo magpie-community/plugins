@@ -106,23 +106,33 @@ magpie plugin options magpie-plugin-xingchi '{"userAgent":"claude-cli/2.1.327 (e
 
 `chat/completions` 形态的请求体（含 `messages`）原样放行。
 
-### 3. 按模型的上游通道
+### 3. 按模型的上游通道（能力实测，不写死）
 
-网关按模型分上游通道，各通道的能力和健康度不同：
+网关按模型分上游账号池，**池子会变**：
 
-- **部分模型不支持工具调用**：`gpt-6.1-sol`、`gpt-6.1-terra` 在 `/v1/responses` 和
-  `/v1/chat/completions` 上带 `tools` 都会被拒（与推理无关）：
+- `/v1/models` 只列出这个账号池现在真能用的模型。清单之外的模型会报
+  `Model "x" is not supported by any configured account in this group`。
+  插件的 `provider.models` 钩子以这个实时清单为准，静态清单只用来补名字和
+  上下文/输出上限。
+- **能不能带工具调用，取决于该模型当前被路由到哪个上游账号**，也会变。
+  同一个 `gpt-6.1-sol`：某天带工具被拒（`requires Responses for tool calls;
+  this account only supports Chat Completions`），另一天又正常。
 
-  ```
-  gpt-6.1-sol requires Responses for tool calls; this account only supports Chat Completions
-  ```
+所以插件登录后**逐个实测**每个模型的工具能力：发一个带 `tools` 且
+`tool_choice` 强制调用的小请求，按网关的回答分类：
 
-  插件给这两个模型标 `tool_call: false`，让 agent 别选它们跑工具活。
-  `gpt-5.6`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-sol`、`gpt-6-astra` 实测工具调用正常。
-  （`gpt-6-luna` 的拒绝信息带 "with reasoning" 限定，疑似只是推理+工具的组合受限，
-  未能单独确认，故不标 `tool_call: false`。）
-- **限流很重**：`Upstream rate limit exceeded`、`Service temporarily unavailable`
-  是上游账号的配额与抖动，与协议无关；换个模型或过一会儿就好。
+| 网关回答 | 判定 |
+| --- | --- |
+| 2xx | 支持工具 |
+| 明确说不支持工具（`only supports Chat Completions` 等） | 不支持，`tool_call: false` |
+| 限流 / 5xx / 模型不在池子里 / 网络问题 | **没测出来**，保留原值，不当成不支持 |
+
+探测用 `tool_choice` 强制调用：只带 `tools` 而不强制时，模型可以走纯文本回答，
+网关的通道检查就不会触发（实测 `tool_choice: none` 在不支持工具的通道上也通过，
+会误判成支持）。
+
+探测结果按（网关, key, 模型）缓存 6 小时，最多 4 个并发——账号池不会几分钟一变，
+不必每次登录都重打一轮。
 
 ### 4. 其他已验证事实
 
@@ -131,23 +141,22 @@ magpie plugin options magpie-plugin-xingchi '{"userAgent":"claude-cli/2.1.327 (e
 - 推理：`reasoning.effort`（Responses）与 `reasoning_effort`（chat）接受
   `minimal / low / medium / high / xhigh / max`。
 - 流式：Responses 返回标准 `response.*` SSE 事件；chat 返回标准 `chat.completion.chunk`。
+- 限流：`Upstream rate limit exceeded`、`Service temporarily unavailable`
+  是上游账号的配额与抖动，与协议无关；换个模型或过一会儿就好。
 - 上下文：实测 gpt-5.6 接受 600k+ token 的输入（网关不截断）。
 - 图片模型（`gpt-image-*`）在本账号未开通（`Image generation is not enabled for this
   group`），插件不暴露它们。
 
 ## 模型
 
-`xingchi` 供应商默认暴露 16 个文本模型：`gpt-5.6[-sol|-terra|-luna]`、`gpt-6[-sol|-luna|-astra]`、
-`gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-5.5`、`gpt-5.4[-mini]`、`gpt-5.3-codex-spark`、
-`gpt-5.2`、`codex-auto-review`。
+登录后插件拉网关的**实时清单**（`/v1/models`），只列出这个账号池现在真能用的文本模型；
+图片模型（`gpt-image-*`）过滤掉。
 
-其中 `gpt-6.1-sol`、`gpt-6.1-terra` 标为不支持工具调用（见上）。
+静态兜底清单里有 16 个 id 及其上下文/输出上限（取 omp 内置目录里同名 id 的值：
+`gpt-5.6-*`、`gpt-6-*` 为 272000/128000，`gpt-6.1-*` 为 500000/128000，目录里没有的
+用通用默认 128000/32768），只用来给实时清单补名字和上限。
 
-上下文/输出上限取 omp 内置目录里同名 id 的值（`gpt-5.6-*`、`gpt-6-*` 为 272000/128000，
-`gpt-6.1-*` 为 500000/128000），目录里没有的用通用默认 128000/32768。
-
-登录后插件会再打一次 `/v1/models`，把网关上新出现的文本模型补进列表（用保守的
-上下文/输出上限），图片模型过滤掉。
+工具能力由实测决定（见「按模型的上游通道」），不写死在清单里。
 
 ## 用量
 
@@ -157,6 +166,6 @@ magpie plugin options magpie-plugin-xingchi '{"userAgent":"claude-cli/2.1.327 (e
 ## 自行测试
 
 ```sh
-bun test                              # 单元：UA 选择 + 请求体改写
+bun test                                        # 单元：UA 选择、请求体改写、能力探测分类
 XINGCHI_API_KEY=sk-… bun run scripts/smoke.mjs   # 打真实网关
 ```
