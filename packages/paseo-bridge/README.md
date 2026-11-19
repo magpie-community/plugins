@@ -9,9 +9,11 @@ Use Magpie and the Paseo daemon under the same OS user, with the same absolute `
 Run these commands on the Magpie host:
 
 ```sh
-magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.1'
+magpie plugin add @magpie-community/gateway-paseo-bridge
 magpie plugin list
 ```
+
+The [standalone repository](https://github.com/kogekiplay/magpie-paseo-bridge#installation) gives a pinned GitHub installation command.
 
 For development from a local checkout:
 
@@ -54,11 +56,10 @@ The POSIX writer creates user-owned `0700` index directories and publishes `0600
 
 ## Verification
 
-Run with Node.js 24 or newer. The integration test also needs `magpie`, `bun`, and `codex` on `PATH` and starts a disposable loopback gateway with fake upstream providers. To select specific binaries, set `MAGPIE_BIN`, `MAGPIE_BUN`, or `CODEX_BIN`.
+Run with Node.js 24 or newer from this package's directory:
 
 ```sh
 node --test test/bridge.test.mjs
-node --test test/gateway.integration.mjs
 ```
 
-The integration test installs the single-file hook into a temporary Magpie configuration, runs real Codex HTTP and WebSocket turns, checks a failed route and its fallback, executes a harmless tool call, and verifies the client-visible IDs on a translated reply.
+The [standalone integration suite](https://github.com/kogekiplay/magpie-paseo-bridge/tree/v0.1.1#verification) installs the hook into a temporary Magpie configuration and exercises real Codex turns through a loopback fixture.
