@@ -270,6 +270,8 @@ agy 自己的系统提示词，只剩插件的一行工具说明和客户端的�
   结尾是 "⚠ Our servers are experiencing high traffic right now …"（Google 这个模型暂时没有
   余量，agy 的重试也都碰上了 503）时，按 `overloaded_error`（非流式为 HTTP 503）结束本轮，
   不让账号歇着，magpie 会再试或改问别处。（由 ifccod 发现并移植自他的补丁。）
+  结尾是 "⚠ INVALID_ARGUMENT (code 400): …"（Google 返回的 400 参数错误，如某个思考等级不被接受）时，
+  按 `invalid_request_error`（状态码 400）结束本轮并带上上游原文，不再当成正常回复返回。
 - **回复只有思考、没有正文也没有工具调用**（billion-context 报 "the turn degenerated
   again after the continuation nudge"）：模型的一次回复空了时，agy 会写一行
   "⚠ Model produced invalid output." 并重试；重试也空时，agy 以正常结束收尾。插件不把这样

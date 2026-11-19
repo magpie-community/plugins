@@ -145,7 +145,11 @@ const AGENT_ERROR_CORES = AGENT_ERROR_MARKERS.map((marker) => marker.trim())
 // its own that nothing follows. Answered as text, it was the whole reply
 // and the next account was never asked (@Airan_FS on X, 11-17).
 const QUOTA_CORE = "⚠ Individual quota reached"
-const QUOTA_MARKER = "\n" + QUOTA_CORE
+// agy writes Google's HTTP 400 (INVALID_ARGUMENT, e.g. an unsupported thinking
+// level like THINKING_LEVEL_XHIGH) into the reply as "⚠ INVALID_ARGUMENT (code 400): …"
+// followed by end_turn. Its tail varies, so like QUOTA_CORE and BUSY_CORE it is
+// matched as a line of its own that nothing follows.
+const INVALID_ARG_CORE = "⚠ INVALID_ARGUMENT (code 400)"
 const quotaReached = (detail) => /\bindividual quota reached\b/i.test(detail || "")
 const CREDITS_CORE = AGENT_ERROR_CORES[2]
 const VERIFY_CORE = AGENT_ERROR_CORES[5]
@@ -159,7 +163,8 @@ const DISABLED_CORE = AGENT_ERROR_CORES[6]
 // again. It is a 503 overloaded_error: the model's, not the account's, so
 // the account is not rested as a 429 would rest it.
 const BUSY_CORE = "⚠ Our servers are experiencing high traffic right now"
-const BUSY_MARKER = "\n" + BUSY_CORE
+const ENDING_ERROR_CORES = [QUOTA_CORE, BUSY_CORE, INVALID_ARG_CORE]
+const ENDING_ERROR_MARKERS = ENDING_ERROR_CORES.map((core) => "\n" + core)
 // agy 1.5.8 writes each failed attempt of a model call into the reply as one
 // line, then tries again in the same turn (#1136). The line is agy's.
 const ATTEMPT_CORE = "⚠ API error (attempt "
@@ -195,7 +200,8 @@ const CAP_TAIL_CORE = "Please continue from where you left off, keeping your res
 const CAP_RETRIES_CORE = "Retries remaining: "
 const CAP_RETRIES_LINE = /^Retries remaining: ?\d+\.?$/
 const HOLD_MAX = Math.max(
-  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length, QUOTA_MARKER.length, BUSY_MARKER.length,
+  ...AGENT_ERROR_MARKERS.map((marker) => marker.length), CAP_MARKER.length, CAP_TAIL_CORE.length,
+  ...ENDING_ERROR_MARKERS.map((marker) => marker.length),
 ) - 1
 // Opt-in. The minimal agent drops agy's own prompt components (~8,400 input
 // tokens a model call, against ~500 without them), so the request goes upstream
@@ -1569,6 +1575,7 @@ class Turn {
     this.emptyAsked = false
     this.refusedDetail = ""
     this.agentErrorCore = ""
+    this.agentErrorNotice = ""
     this.timer = null
     this.cleanupTimer = null
     this.logOffset = 0
@@ -1769,16 +1776,19 @@ class Turn {
         return
       }
     }
-    const quota = Math.max(this.quotaEnding(text), this.quotaEnding(text, BUSY_CORE))
-    if (quota >= 0) {
-      this.heldText = text.slice(quota)
-      this.emitText(text.slice(0, quota))
-      return
+    for (const core of ENDING_ERROR_CORES) {
+      const ending = this.endingAt(text, core)
+      if (ending >= 0) {
+        this.heldText = text.slice(ending)
+        this.emitText(text.slice(0, ending))
+        return
+      }
     }
     for (let keep = Math.min(text.length, HOLD_MAX); keep > 0; keep--) {
       const tail = text.slice(-keep)
-      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) || QUOTA_MARKER.startsWith(tail) ||
-        BUSY_MARKER.startsWith(tail) || (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
+      if (AGENT_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+        ENDING_ERROR_MARKERS.some((marker) => marker.startsWith(tail)) ||
+        (keep > 1 && (RETRY_MARKER.startsWith(tail) || ATTEMPT_MARKER.startsWith(tail) ||
           CAP_MARKER.startsWith(tail)))) {
         this.heldText = tail
         text = text.slice(0, -keep)
@@ -1788,11 +1798,10 @@ class Turn {
     this.emitText(text)
   }
 
-  // Where agy's quota ending (QUOTA_CORE), or another ending matched by its
-  // start (BUSY_CORE), starts in text, with the newline before it: a line of
-  // its own that only whitespace follows, so far. -1 when there is none; one
-  // more text follows was the model quoting it.
-  quotaEnding(text, core = QUOTA_CORE) {
+  // Where a variable-tail agy error ending starts in text, with the newline
+  // before it: a line of its own that only whitespace follows, so far. -1
+  // when there is none; once more text follows was the model quoting it.
+  endingAt(text, core) {
     const at = text.lastIndexOf(core)
     if (at < 0) return -1
     const lineStart = at > 0 ? text[at - 1] === "\n" : this.textTail === "" || this.textTail === "\n"
@@ -1879,15 +1888,13 @@ class Turn {
       this.agentError = true
       this.agentErrorCore = core
       this.heldText = ""
-    } else if (this.quotaEnding(this.heldText) >= 0) {
+      return
+    }
+    const ending = ENDING_ERROR_CORES.find((core) => this.endingAt(this.heldText, core) >= 0)
+    if (ending) {
       this.agentError = true
-      this.agentErrorCore = QUOTA_CORE
-      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
-      this.heldText = ""
-    } else if (this.quotaEnding(this.heldText, BUSY_CORE) >= 0) {
-      this.agentError = true
-      this.agentErrorCore = BUSY_CORE
-      this.quotaNotice = this.heldText.trim().replace(/^⚠ /, "")
+      this.agentErrorCore = ending
+      this.agentErrorNotice = this.heldText.trim().replace(/^⚠ /, "")
       this.heldText = ""
     }
   }
@@ -2693,10 +2700,15 @@ class Proc {
     if (core === QUOTA_CORE) {
       // Google's own words, the reset with them: magpie rests the account
       // until then and asks the next one
-      return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.quotaNotice}`, "rate_limit_error")
+      return new AgentTurnError(`agy bridge: Antigravity quota reached: ${turn.agentErrorNotice}`, "rate_limit_error")
+    }
+    if (core === INVALID_ARG_CORE) {
+      // Google's 400 INVALID_ARGUMENT (e.g. an unsupported thinking level):
+      // surface it as invalid_request_error (HTTP 400) instead of a 200 reply.
+      return this.#formatAgentError(turn.agentErrorNotice)
     }
     if (core === BUSY_CORE) {
-      return new AgentTurnError(`agy bridge: Antigravity has no capacity for this model now: ${turn.quotaNotice}`, "overloaded_error")
+      return new AgentTurnError(`agy bridge: Antigravity has no capacity for this model now: ${turn.agentErrorNotice}`, "overloaded_error")
     }
     // agy 1.5.10 leaves out the status agyRefusal reads the ban by
     if (core === DISABLED_CORE) return refusedError(ACCOUNT_DISABLED_REFUSED)
@@ -2739,6 +2751,9 @@ class Proc {
     }
     const refused = agyRefusal(detail)
     if (refused) return refusedError(refused)
+    if (/\bINVALID_ARGUMENT\s*\(code 400\)/i.test(detail)) {
+      return new AgentTurnError(`agy bridge: Antigravity rejected the request: ${detail}`, "invalid_request_error")
+    }
     return new AgentTurnError(`agy bridge: agy stopped the turn because of an error${detail ? ": " + detail : ""}`)
   }
 
