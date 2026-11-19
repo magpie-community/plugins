@@ -1,0 +1,42 @@
+{
+  "name": "magpie-agent-genericagent",
+  "version": "0.1.0",
+  "description": "GenericAgent model integration for Magpie",
+  "type": "module",
+  "main": "./index.mjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HamsteRider-m/GenericAgent.git",
+    "directory": "magpie-plugin-genericagent"
+  },
+  "files": [
+    "genericagent.agent.js",
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check index.mjs && node --check genericagent.agent.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "magpie-agent",
+    "genericagent",
+    "agent",
+    "model-integration"
+  ],
+  "author": "hamsterider",
+  "license": "MIT",
+  "magpie": {
+    "agent": "./genericagent.agent.js",
+    "name": "GenericAgent",
+    "summary": {
+      "zh": "从 Magpie 管理 GenericAgent 的模型配置",
+      "en": "Manage GenericAgent model configuration from Magpie"
+    }
+  }
+}
