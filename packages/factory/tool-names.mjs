@@ -19,7 +19,23 @@ export const REFUSED_TOOL_NAMES = new Set([
   "Shell", "StrReplace",
   "agent", "bash", "edit", "glob", "grep", "read", "run_shell", "task", "write",
   "AgentTool", "BashTool", "WriteTool", "bash_tool", "edit_tool", "read_tool", "write_tool",
+  // measured on two real accounts on 2026-11-19 (can1357/oh-my-pi#19553):
+  // web_search, read_file and execute_command too, and every name above
+  // with leading underscores (_read, _web_search), while omp_read passes
+  "web_search", "read_file", "execute_command",
 ])
+
+// refusedName says whether Factory refuses a tool declared as name: one of
+// the names above, or one of them behind leading underscores.
+export function refusedName(name) {
+  if (typeof name !== "string") return false
+  return REFUSED_TOOL_NAMES.has(name) || REFUSED_TOOL_NAMES.has(name.replace(/^_+/, ""))
+}
+
+// TAKEN_NAMES are names Factory took as declared in the same probes (droid's
+// own among them). A request renamed in full (aliasToolNames' every) keeps
+// these, and mcp__ tools, as they are.
+export const TAKEN_NAMES = new Set(["Read", "Edit", "Glob", "Grep", "Task", "WebSearch", "TodoWrite", "Execute", "Create"])
 
 // DROID_NAMES is the tool of Factory's own client, droid, that does the
 // same job, which Factory takes as declared: a refused tool goes out under
@@ -33,6 +49,7 @@ export const DROID_NAMES = new Map([
   ["read", "Read"], ["read_tool", "Read"],
   ["edit", "Edit"], ["edit_tool", "Edit"],
   ["glob", "Glob"], ["grep", "Grep"],
+  ["web_search", "WebSearch"], ["read_file", "Read"], ["execute_command", "Execute"],
 ])
 
 // A refused tool droid has no name for (Claude Code's TaskCreate, ...), or
@@ -109,10 +126,12 @@ function uses(request) {
 // aliasToolNames renames each declared tool Factory refuses, and every
 // later mention of it in the request, to a name it takes: droid's own for
 // the job (Execute for Bash, Create for Write, ...), else a suffixed one,
-// never one the request already declares. It returns the body and the names
-// to restore in the reply (alias → original). A body with nothing to rename
-// goes on byte for byte.
-export function aliasToolNames(body) {
+// never one the request already declares. With every, it renames each
+// declared tool but TAKEN_NAMES and mcp__ ones the same way: Factory's list
+// keeps growing, and a request refused for a name not on ours yet goes once
+// more so. It returns the body and the names to restore in the reply
+// (alias → original). A body with nothing to rename goes on byte for byte.
+export function aliasToolNames(body, every = false) {
   const aliases = new Map()
   const raw = text(body)
   if (raw == null) return { body, aliases }
@@ -120,16 +139,17 @@ export function aliasToolNames(body) {
   try { request = parseToolJSON(raw) } catch { return { body, aliases } }
   if (!isObject(request)) return { body, aliases }
   const decl = declared(request)
-  if (!decl.some(([h, k]) => REFUSED_TOOL_NAMES.has(h[k]))) return { body, aliases }
+  const renames = (name) => refusedName(name) || (every && typeof name === "string" && !TAKEN_NAMES.has(name) && !name.startsWith("mcp__"))
+  if (!decl.some(([h, k]) => renames(h[k]))) return { body, aliases }
   const taken = new Set(decl.map(([h, k]) => h[k]))
   const renamed = new Map()
   for (const [holder, key] of decl) {
     const name = holder[key]
-    if (!REFUSED_TOOL_NAMES.has(name)) continue
+    if (!renames(name)) continue
     if (!renamed.has(name)) {
-      let alias = DROID_NAMES.get(name)
+      let alias = DROID_NAMES.get(name) ?? DROID_NAMES.get(name.replace(/^_+/, ""))
       if (alias == null || taken.has(alias)) alias = suffixed(name)
-      while (taken.has(alias) || REFUSED_TOOL_NAMES.has(alias)) alias += "_"
+      while (taken.has(alias) || refusedName(alias)) alias += "_"
       taken.add(alias)
       renamed.set(name, alias)
       aliases.set(alias, name)
@@ -138,6 +158,18 @@ export function aliasToolNames(body) {
   }
   for (const [holder, key] of uses(request)) if (renamed.has(holder[key])) holder[key] = renamed.get(holder[key])
   return { body: JSON.stringify(request), aliases }
+}
+
+// toolSet names the tools a request declares, in order, or "" when it
+// declares none: a set refused until renamed in full is renamed in full
+// from then on.
+export function toolSet(body) {
+  const raw = text(body)
+  if (raw == null) return ""
+  let request
+  try { request = parseToolJSON(raw) } catch { return "" }
+  if (!isObject(request)) return ""
+  return declared(request).map(([h, k]) => String(h[k])).join("\n")
 }
 
 // restore puts the original names back wherever a reply names a tool: a

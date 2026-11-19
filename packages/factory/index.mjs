@@ -7,7 +7,7 @@ import { STATUS_CODES } from "node:http"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { parseToolJSON, wrapAnthropicTools, unwrapAnthropicTools } from "./anthropic-tools.mjs"
-import { aliasToolNames, restoreToolNames } from "./tool-names.mjs"
+import { aliasToolNames, restoreToolNames, toolSet } from "./tool-names.mjs"
 
 const PROVIDER = "factory"
 
@@ -454,6 +454,15 @@ async function reconcile(c) {
 // orgRefused is Factory's 403 for an X-Factory-Org-Id the user can't reach:
 // "Requested active organization is not accessible by this user".
 const orgRefused = (status, text) => status === 403 && text.toLowerCase().includes("active organization is not accessible")
+
+// renamedInFull holds the tool sets (toolSet) Factory refused until every
+// tool was renamed, in this process; the oldest goes past 256.
+const renamedInFull = new Set()
+function remember(set, key) {
+  set.delete(key)
+  set.add(key)
+  if (set.size > 256) set.delete(set.values().next().value)
+}
 
 // contentRefused is Factory's usage policy check refusing what the request
 // says, not who sent it: a 403 with code "content_policy_rejected" (droid
@@ -2168,7 +2177,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 
         const { fresh, mendOrg } = account(getAuth)
 
-        const send = async (input, init, body, renewed) => {
+        const send = async (input, init, body, renewed, every = false) => {
           const c = await fresh(renewed)
           let url = input instanceof Request ? input.url : String(input)
           // Gemini's: Factory's generate route, the model in the body
@@ -2213,8 +2222,9 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           // another agent's request opens as droid's does (droidBody)
           const anthropic = path.includes("/llm/a/") && (path.endsWith("/messages") || path.endsWith("/messages/count_tokens"))
           // Factory refuses some tool names outright (tool-names.mjs): those
-          // go out under another name and come back as the caller's
-          const named = aliasToolNames(anthropic ? anthropicBody(body) : droidBody(path, body))
+          // go out under another name and come back as the caller's; with
+          // every, all of its tools do (renamedInFull)
+          const named = aliasToolNames(anthropic ? anthropicBody(body) : droidBody(path, body), every)
           const adapted = anthropic ? wrapAnthropicTools(named.body) : { body: named.body, names: new Set() }
           const out = sanitizeBody(adapted.body)
           // the caller's length is of the body it sent, not of this one
@@ -2244,21 +2254,39 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
               const less = leaveOutAttachments(path, body)
               if (less) {
                 await res.body?.cancel()
-                res = await send(input, init, less.body, onRenew)
+                res = await send(input, init, less.body, onRenew, every)
                 if (res.status !== 413) return res
               }
               const anthropic = path.includes("/llm/a/")
               return errorReply(url, 413, anthropic ? "request_too_large" : "invalid_request_error", tooLarge(await res.text(), less?.left ?? 0), new Headers(res.headers))
             }
+            // a tool set Factory refused by a name tool-names.mjs doesn't
+            // list yet, and took with every tool renamed, goes renamed in
+            // full from then on
+            const tools = toolSet(body)
+            let every = renamedInFull.has(tools)
             let res
             try {
-              res = await send(input, init, body, onRenew)
+              res = await send(input, init, body, onRenew, every)
               if (res.status === 413) return answer(await smaller(res))
               if (res.status !== 403) return answer(res)
               let text = await res.text()
               if (!contentRefused(res.status, text, res.headers) && (await mendOrg(res.status, text, onRenew).catch(() => false))) {
-                res = await send(input, init, body, onRenew)
+                res = await send(input, init, body, onRenew, every)
                 if (res.status !== 403) return answer(res)
+                text = await res.text()
+              }
+              // Factory's list of tool names it refuses grows without notice
+              // (tool-names.mjs): refused with tools declared, the request
+              // goes once more with each tool renamed. Refused again, it is
+              // what the request says, and that refusal is the answer.
+              if (contentRefused(res.status, text, res.headers) && tools && !every) {
+                every = true
+                res = await send(input, init, body, onRenew, true)
+                if (res.status !== 403) {
+                  if (res.ok) remember(renamedInFull, tools)
+                  return answer(res)
+                }
                 text = await res.text()
               }
               const why = explain(res.status, text, res.headers)
@@ -2289,4 +2317,4 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
 }
 
 // for tests
-export const _internal = { CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
+export const _internal = { renamedInFull, CONVERSATION, sessionId, STANDARD_ONLY, contentRefused, explain, fastBody, FAST_BETA, limitWindows, windowEnd, dollars, vendorError, CORE, droidBody, DROID_LINE, geminiBody, GEMINI_ORDER, leaveOutAttachments, LEFT_OUT, TOO_LARGE_HINT, MODELS, PROMOTIONS, rateOf, configModels, providerModel, providerModels }
