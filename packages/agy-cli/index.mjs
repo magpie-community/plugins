@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, signedInEmail, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -6742,7 +6742,7 @@ function noAgy() {
 // (account.mjs) keeps the home's name with it, and a key of its own, so
 // two accounts whose email can't be read aren't taken for one.
 async function signedInAs(homeId = "") {
-  const email = await storedEmail()
+  const email = await signedInEmail()
   const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
   return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }

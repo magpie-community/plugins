@@ -489,7 +489,7 @@ export async function fetchUsage(agy, {
   quota = readQuotaDirect,
   direct = false,
 } = {}) {
-  if (!agy) throw new UsageError("agy CLI not found. Install it and run `agy` once to sign in.")
+  if (!agy) throw new UsageError(NO_AGY)
   const deadline = Date.now() + timeout(timeoutMs)
   const directory = await fs.mkdtemp(path.join(tempRoot, "magpie-agy-usage-"))
   let pendingTreeKill = null
@@ -600,6 +600,10 @@ function backoff(n) {
   return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, Math.min(n, 20) - 1), BACKOFF_MOST_MS)
 }
 
+// what usage says while no agy is found: never held (createUsageReader),
+// and in noAgy's words, so it says how magpie gets one
+export const NO_AGY = "agy CLI not found. Sign in to this account again in magpie to have it installed, or install Antigravity CLI yourself."
+
 const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or run `agy` in a terminal; magpie doesn't run agy for usage until then."
 
 // No completed-result cache: sequential refreshes must see account/allowance changes.
@@ -614,7 +618,10 @@ const NEEDS_SIGN_IN = "Sign in again from this account's Sign in in magpie, or r
 // - an explicit authentication rejection, or an ended token hanging silently
 //   or with sign-in talk, blocks further background runs for that credential.
 //   Diagnostic-only output isn't evidence of a browser sign-in.
-// - any other failure isn't run again for backoff(n).
+// - any other failure isn't run again for backoff(n). No agy found is not
+//   held: finding it costs a few stat calls, and an agy installed since (a
+//   sign-in installs it; tmr11235 on X saw it) is used on the next read,
+//   not after hours of "not found" while its chats already run.
 export function createUsageReader(resolveAgy, options = {}) {
   const { signIn = () => storedSignIn(), now = () => Date.now(), ...fetchOptions } = options
   const pending = new Map()
@@ -631,11 +638,14 @@ export function createUsageReader(resolveAgy, options = {}) {
     if (why) return expired(why)
     if (isDead(stored)) return expired("agy's sign-in no longer works")
     const key = stored?.state === "present" ? stored.fp : "unknown"
-    if (held && held.key === key && now() < held.until) {
+    const agy = resolveAgy()
+    if (!agy) return { windows: [], error: NO_AGY, signIn: "kept" }
+    // a failure held for another agy (gone, or another found since) isn't
+    // this one's
+    if (held && held.key === key && held.agy === agy && now() < held.until) {
       return { windows: [], error: held.error, signIn: held.auth ? "expired" : "kept" }
     }
     try {
-      const agy = resolveAgy()
       // an access token that has ended or ends within two minutes, with a
       // refresh token: read without running agy (fetchUsage's direct)
       const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
@@ -659,8 +669,8 @@ export function createUsageReader(resolveAgy, options = {}) {
         noteDead(stored)
         return expired("agy's sign-in no longer works")
       }
-      const n = held?.key === key ? held.n + 1 : 1
-      held = { key, n, until: now() + backoff(n), error: message, auth }
+      const n = held?.key === key && held.agy === agy ? held.n + 1 : 1
+      held = { key, agy, n, until: now() + backoff(n), error: message, auth }
       if (auth) saidExpired = true
       return { windows: [], error: message, signIn: auth ? "expired" : "kept" }
     }
