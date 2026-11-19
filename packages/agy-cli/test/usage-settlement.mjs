@@ -950,6 +950,42 @@ test("LRU 淘汰后，补默认字段的 follow-up 仍能 resume 原 session", a
   })
 })
 
+test("LRU 淘汰后 resume 的 agy 跑在原 session 的目录里（agy 的缓存跟着目录走）", async () => {
+  await withKit({ env: { AGY_BRIDGE_MAX_PROCS: "1" }, sessionResume: true }, async (kit) => {
+    for (const text of ["a1", "b1", "a2", "b2", "a3"]) {
+      kit.prompts.push(async (agent) => {
+        await agent.text(text)
+        return { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 1 } }
+      })
+    }
+    const bodyA = baseBody({ messages: [{ role: "user", content: "conversation A" }] })
+    const bodyB = baseBody({ messages: [{ role: "user", content: "conversation B" }] })
+    const follow = (body, prior, reply, next) => ({
+      ...body,
+      messages: [...prior, { role: "assistant", content: [{ type: "text", text: reply }] }, { role: "user", content: next }],
+    })
+    await runTurn(kit, bodyA)
+    await runTurn(kit, bodyB)
+    const a2 = follow(bodyA, bodyA.messages, "a1", "more A")
+    await runTurn(kit, a2)
+    await runTurn(kit, follow(bodyB, bodyB.messages, "b1", "more B"))
+    await runTurn(kit, follow(bodyA, a2.messages, "a2", "and more A"))
+    assert.equal(kit.acpSpawns.length, 5, "每次换会话都应挤掉另一个 agy")
+    const resumes = kit.acpLog.filter((item) => item.method === "session/resume")
+    assert.equal(resumes.length, 3, "A、B、A 都应 resume，而不是新开 session")
+    const [a, b, aAgain, bAgain, aThird] = kit.acpSpawns.map((spawn) => spawn.cwd)
+    assert.ok(a && b && a !== b, "两个会话应各有自己的目录")
+    assert.equal(aAgain, a, "resume 的 agy 换了目录，agy 会整段不走缓存")
+    assert.equal(bAgain, b)
+    assert.equal(aThird, a)
+    for (const item of resumes) {
+      const spawn = kit.acpSpawns[item.spawn]
+      assert.equal(item.params.cwd, spawn?.cwd ?? item.params.cwd)
+    }
+    assert.ok(fs.existsSync(path.join(a, ".agents", "agents")), "目录被删后应重新建好")
+  })
+})
+
 test("取消 prompt 把缓存比例校准为 0 后，下一回合工具步也不再把前缀估成读缓存", async () => {
   await withKit({}, async (kit) => {
     const cancelled = { inputTokens: 5000, cachedReadTokens: 0, outputTokens: 3 }

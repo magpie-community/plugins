@@ -91,8 +91,10 @@ MCP server. The control port listens on loopback only, with a token per process.
   arrives, the same turn continues, and the client executes each call exactly once.
 - **Session resume**: each finished turn is recorded. After a Magpie or plugin
   restart, the session continues through `session/resume` as long as the history
-  and instruction hashes still match. The state file stores session IDs and
-  hashes, never message text.
+  and instruction hashes still match. agy's prompt cache follows the folder it
+  runs in, so a resumed session runs in its own temporary folder again and its
+  cache still hits. The state file stores session IDs, hashes and that folder,
+  never message text.
 - **Isolation**: your global MCP configuration is never read. Every agy process
   runs with a temporary agent, and every permission request agy raises for its
   own tools (shell, file edits, browser) is refused. A request for one of the
@@ -369,7 +371,8 @@ off unless you turn it on.
   the output token limit", its instruction to continue, and "Retries
   remaining: N"); the model's continuation after them still reaches the client.
   An ending that says "This service has been disabled in this account
-  for violation of Terms of Service" is returned as a no-retry
+  for violation of Terms of Service" (agy 1.5.9 puts "PERMISSION_DENIED
+  (code 403):" before it, 1.5.10 doesn't) is returned as a no-retry
   `permission_error` with 403 semantics, not as normal reply text. So is the
   "Verification Required" ending (Google wants the account verified), with
   the link to verify it at when agy logged one, else where to verify it.
@@ -377,6 +380,20 @@ off unless you turn it on.
   account's own quota is used up) ends the turn as a rate limit
   (`rate_limit_error`, HTTP 429 without streaming) carrying agy's words and
   reset, so magpie rests the account until then and asks the next one.
+  The "⚠ Our servers are experiencing high traffic right now …" ending
+  (Google has no capacity for the model now, and agy's own retries met the
+  same 503) ends the turn as `overloaded_error` (HTTP 503 without
+  streaming), so the account is not rested and magpie tries again or
+  elsewhere. Found by ifccod, and ported from their patch.
+- **A reply with only thinking, no text and no tool call** (billion-context's
+  "the turn degenerated again after the continuation nudge"): when one of the
+  model's replies comes back empty, agy writes "⚠ Model produced invalid
+  output." and tries again; when that try is empty too, agy ends the turn as
+  finished. The plugin doesn't hand such an ending over as the reply: it asks
+  once more in the same session, where the model still has the whole context.
+  Still empty, the turn ends with an error, so magpie asks the next account,
+  and the client sending the request again continues in that session. An
+  empty ending with no thinking either is returned as it is.
 - **HTTP 409 saying tool results do not match the history**: usually the client
   rewrote the history or tool IDs mid-conversation. When the plugin can work out
   the correct match it rebuilds the session; when it cannot, it refuses rather
