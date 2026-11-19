@@ -15,6 +15,12 @@ magpie plugin add @magpie-community/opencode-packycode-balance-auth
 magpie plugin login packycode-balance
 ```
 
+In Magpie's desktop app, install the package from **Plugins**, then open
+**Providers → Add provider → From plugins** and choose **PackyAPI account
+balance**. Magpie presents the same host, password, and User ID prompts there;
+the plugin does not need a separate settings page. The CLI commands above are
+an alternative.
+
 Choose the domain used by your PackyAPI account, then enter:
 
 1. **System access token** from Personal Settings → Security Settings. Magpie
