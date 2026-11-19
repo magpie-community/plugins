@@ -290,10 +290,18 @@ beside the model. Claude models and Auto have thinking budget variants. Models w
 
 `auth.usage` reads `Get-Usage-Limits`: the month's credits, the Free trial
 while it is active, and each bonus (`bonuses`: a first upgrade's trial
-credits, a promotion's) while it is `ACTIVE` and not expired, as a window of
-its own with its count and when it lapses. Bonus windows are shown only.
-Kiro spends the plan's credits first, so a month used up while a bonus has
-credits left is shown only too, and the account isn't taken for spent.
+credits, a promotion's) while it is `ACTIVE` or `EXHAUSTED` (used up) and
+not expired, as a window of its own with its count and when it lapses.
+Bonus windows are shown only. Kiro spends the plan's credits first, then
+the bonus, so a month used up while a bonus has credits left goes on on
+credits (`credits: true`): magpie asks that account after the provider's
+accounts that still have plan credits, since the plan's credits are lost at
+the month's reset and a trial's last a year. The window is also set aside
+(`aside: true`), so a magpie that doesn't read `credits` doesn't take the
+account for spent. Only an `ACTIVE` bonus counts as credits left (an
+`EXHAUSTED` one is shown only), and when a bonus left lapses before the
+month's reset the month is only set aside, so that bonus isn't asked last
+and lost.
 
 With overage on (`overageConfiguration.overageStatus` `ENABLED`), the month
 is two windows, as the Kiro IDE shows it: the plan's credits, shown only

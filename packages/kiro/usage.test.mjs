@@ -136,16 +136,65 @@ test("a free trial and bonus credits together, and a spent month set aside while
   expect(windows.map((w) => [w.name, w.display, w.aside])).toEqual([
     ["Free trial", "100 / 500", undefined], ["Credits", "12.5 / 50", undefined], ["Bonus credits", "10 / 100", true]])
   expect(windows[2].runsOut).toBe(90)
-  // the month used up: Kiro goes on to the bonus, so the month is shown only
+  // the month used up: Kiro goes on to the bonus, so the month goes on on
+  // credits (set aside for a magpie that doesn't know them)
   const spent = _internal.usageOf(withBreakdown(l, { currentUsageWithPrecision: 50 }), now).windows
-  expect(spent.find((w) => w.name === "Credits").aside).toBe(true)
+  expect(spent.find((w) => w.name === "Credits")).toMatchObject({ used: 100, aside: true, credits: true })
   expect(spent.find((w) => w.name === "Free trial").aside).toBeUndefined()
+  expect(spent.find((w) => w.name === "Bonus credits").credits).toBeUndefined()
+  // below its end the month is the account's as before
+  expect(windows.find((w) => w.name === "Credits").credits).toBeUndefined()
   // and the bonus used up too: the month stops the account again
   const all = _internal.usageOf(withBreakdown(l, { currentUsageWithPrecision: 50,
     bonuses: [trialCredits({ displayName: "Bonus credits", currentUsage: 100, usageLimit: 100 })] }), now).windows
   expect(all.find((w) => w.name === "Credits").aside).toBeUndefined()
+  expect(all.find((w) => w.name === "Credits").credits).toBeUndefined()
   expect(all.find((w) => w.name === "Bonus credits")).toMatchObject({ used: 100, aside: true })
   expect(all.find((w) => w.name === "Bonus credits").runsOutAt).toBeUndefined()
+})
+
+// Kiro marks trial credits used up EXHAUSTED (a Pro+ account's answer,
+// details replaced): still shown, at 100%, so the card says the trial was
+// spent rather than leaving it out; the month used up stops the account.
+test("an exhausted trial is shown spent, and a month used up with it stops the account", () => {
+  const now = 1800000000_000
+  const l = withBreakdown(PRO, { currentUsageWithPrecision: 984, bonuses: [trialCredits({ status: "EXHAUSTED", currentUsage: 500 })] })
+  const { windows } = _internal.usageOf(l, now)
+  expect(windows).toEqual([{ ...MONTH, used: 100, display: "984 / 984", amount: 984 },
+    { ...BONUS, used: 100, display: "500 / 500", amount: 500, runsOutAt: undefined, runsOut: undefined }])
+  expect(windows[0].aside).toBeUndefined()
+  expect(windows[0].credits).toBeUndefined()
+})
+
+// A bonus Kiro marks EXHAUSTED is nothing to go on with, even if its count
+// says some is left: the month used up stops the account. A bonus left
+// that lapses before the month's reset is not asked last: the month is
+// only set aside, as before credits.
+test("an exhausted bonus is no credits left, and one lapsing before the reset is not asked last", () => {
+  const now = 1790000000_000
+  const odd = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ status: "EXHAUSTED", currentUsage: 499.5 })] }), now).windows
+  expect(odd[0]).toMatchObject({ name: "Credits", used: 100 })
+  expect(odd[0].aside).toBeUndefined()
+  expect(odd[0].credits).toBeUndefined()
+  const soon = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ currentUsage: 10, expiresAt: 1796083200 - 86400 })] }), now).windows
+  expect(soon[0]).toMatchObject({ name: "Credits", used: 100, aside: true })
+  expect(soon[0].credits).toBeUndefined()
+  const later = _internal.usageOf(withBreakdown(PRO, { currentUsageWithPrecision: 984,
+    bonuses: [trialCredits({ currentUsage: 10, expiresAt: 1796083200 + 86400 })] }), now).windows
+  expect(later[0]).toMatchObject({ name: "Credits", used: 100, aside: true, credits: true })
+})
+
+// With overage on, the overage used up while a trial has credits left
+// goes on on them; the plan's own window, shown only, never says credits.
+test("the overage used up with a trial left goes on on credits", () => {
+  const now = 1800000000_000
+  const l = { ...withBreakdown(PRO, { currentUsageWithPrecision: 1084, overageCapWithPrecision: 100, currentOveragesWithPrecision: 100,
+    bonuses: [trialCredits({ currentUsage: 10 })] }), overageConfiguration: { overageStatus: "ENABLED" } }
+  const { windows } = _internal.usageOf(l, now)
+  expect(windows.map((w) => [w.name, w.aside, w.credits])).toEqual([
+    ["Credits", true, undefined], ["Overage", true, true], ["Trial credits", true, undefined]])
 })
 
 test("Kiro's refusal is the card's error", async () => {
