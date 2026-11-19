@@ -58,6 +58,26 @@ test("OpenCode's variant names the level", async () => {
   expect(seen.find((s) => s.name === "streamGenerateContent").json.model).toBe("gemini-3.7-flash-low")
 })
 
+test("the reply names the id it went out under, for magpie's ledger", async () => {
+  fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [{ content: { role: "model", parts: [{ text: "hi" }] }, finishReason: "STOP" }] }) })
+  const f = await loaderFetch(auth())
+  for (const [model, effort, method, want] of [
+    ["gemini-3.7-flash", "high", "streamGenerateContent", "gemini-3.7-flash-high"],
+    ["gemini-3.7-flash", "low", "generateContent", "gemini-3.7-flash-low"],
+    ["gemini-3-flash", "", "streamGenerateContent", "gemini-3-flash"],
+  ]) {
+    const res = await f(URL_(model, method), { method: "POST", headers: effort ? { "x-magpie-effort": effort } : {}, body: ask() })
+    expect(res.status).toBe(200)
+    expect(res.headers.get("x-magpie-sent-model")).toBe(want)
+    await res.text()
+  }
+  fake({ fetchAvailableModels: models, streamGenerateContent: () => new Response(JSON.stringify({ error: { code: 500, message: "boom" } }), { status: 500 }) })
+  const g = await loaderFetch(auth())
+  const bad = await g(URL_("gemini-3.7-flash"), { method: "POST", headers: { "x-magpie-effort": "high" }, body: ask() })
+  expect(bad.status).toBe(500)
+  expect(bad.headers.get("x-magpie-sent-model")).toBe("gemini-3.7-flash-high")
+})
+
 test("a level in capitals, as Gemini's own clients write it, names the level too (#1169)", async () => {
   const seen = fake({ fetchAvailableModels: models, streamGenerateContent: () => sse({ candidates: [] }) })
   const f = await loaderFetch(auth())

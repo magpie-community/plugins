@@ -74,6 +74,10 @@ A request picks the level in this order:
 Asking for a level the model lacks picks the nearest one, and a tie goes
 up.
 
+The reply's `x-magpie-sent-model` header names the id the request went
+out under (`gemini-3.7-flash-high`), so magpie can show it beside the
+model. OpenCode ignores the header.
+
 ## Requests
 
 The plugin sends every request to `v1internal:streamGenerateContent`,
