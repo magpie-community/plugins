@@ -7,6 +7,7 @@ import { STATUS_CODES } from "node:http"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { parseToolJSON, wrapAnthropicTools, unwrapAnthropicTools } from "./anthropic-tools.mjs"
+import { aliasToolNames, restoreToolNames } from "./tool-names.mjs"
 
 const PROVIDER = "factory"
 
@@ -2211,12 +2212,15 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           if (path.includes("/llm/a/")) h.set("X-Api-Key", "placeholder")
           // another agent's request opens as droid's does (droidBody)
           const anthropic = path.includes("/llm/a/") && (path.endsWith("/messages") || path.endsWith("/messages/count_tokens"))
-          const adapted = anthropic ? wrapAnthropicTools(anthropicBody(body)) : { body: droidBody(path, body), names: new Set() }
+          // Factory refuses some tool names outright (tool-names.mjs): those
+          // go out under another name and come back as the caller's
+          const named = aliasToolNames(anthropic ? anthropicBody(body) : droidBody(path, body))
+          const adapted = anthropic ? wrapAnthropicTools(named.body) : { body: named.body, names: new Set() }
           const out = sanitizeBody(adapted.body)
           // the caller's length is of the body it sent, not of this one
           if (out !== init?.body) h.delete("content-length")
           const res = await fetch(url, { ...init, method: init?.method ?? (input instanceof Request ? input.method : "POST"), headers: h, body: out })
-          return path.endsWith("/messages") ? unwrapAnthropicTools(res, adapted.names) : res
+          return restoreToolNames(path.endsWith("/messages") ? await unwrapAnthropicTools(res, adapted.names) : res, named.aliases)
         }
 
         return {

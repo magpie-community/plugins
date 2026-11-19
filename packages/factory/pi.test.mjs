@@ -48,7 +48,9 @@ test("pi's opening sentence is cut to its first half on chat completions, the re
   const send = await loaded()
   const b = await send(chat, { model: "deepseek-v4.1-flash", messages: [{ role: "developer", content: PI }, { role: "user", content: "hi" }], tools, stream: true })
   expect(b.messages).toEqual([{ role: "system", content: DROID_LINE }, { role: "developer", content: ADAPTED }, { role: "user", content: "hi" }])
-  expect(b.tools).toEqual(tools)
+  // Factory refuses pi's read, bash, edit and write as tool names: they go out as droid's (tool-names.mjs)
+  const droid = { read: "Read", bash: "Execute", edit: "Edit", write: "Create" }
+  expect(b.tools).toEqual(tools.map((t) => ({ ...t, function: { ...t.function, name: droid[t.function.name] } })))
   // as a system message too, and in text parts
   let c = await send(chat, { model: "kimi-k3", messages: [{ role: "system", content: PI }, { role: "user", content: "hi" }] })
   expect(c.messages[0]).toEqual({ role: "system", content: DROID_LINE + "\n" + ADAPTED })
