@@ -1,0 +1,29 @@
+{
+  "name": "@magpie-community/opencode-doubao-image-auth",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "files": [
+    "index.mjs",
+    "cdp.mjs",
+    "doubao.mjs",
+    "prompt.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md"
+  ],
+  "description": "Doubao images (豆包生图) as an image provider: drives 豆包's 对话 → 图像生成 on Seedream and answers /v1/images/generations, with no chat of its own",
+  "magpie": {
+    "maxConcurrency": 1
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magpie-community/plugins.git",
+    "directory": "packages/doubao-image"
+  },
+  "keywords": ["magpie", "magpie-plugin", "doubao", "image", "seedream"],
+  "license": "MIT",
+  "exports": {
+    ".": "./opencode2.mjs"
+  }
+}
