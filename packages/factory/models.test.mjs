@@ -217,3 +217,83 @@ test("DeepSeek V4.1 Flash 1017 reaches both model hooks as droid 0.251.0 has it"
   expect(provider.capabilities.attachment).toBe(true)
   expect(provider.capabilities.input.image).toBe(true)
 })
+
+const DROID_1140 = readFileSync(new URL("./testdata/droid-1.14.0-gpt62.txt", import.meta.url), "utf8")
+
+test("droid 1.14.0's GPT-6.2 Astra and Sol reach both model hooks, while Ultra Fast stays excluded", async () => {
+  expect(DROID_1140).toContain("function m(e,o){return R({maxInputTokens:e-o,maxOutputTokens:o})}")
+  expect(DROID_1140).toContain("g=m(1050000,128000)")
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const configAll = await models()
+  const providerAll = await hooks.provider.models({ id: "factory" }, {})
+  for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) {
+    const text = DROID_1140.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
+    expect(text).toBeDefined()
+    expect(text).toContain('provider:"openai"')
+    expect(text).toContain('apiProviders:["openai"]')
+    expect(text).toContain("contextLimits:g,")
+    const efforts = JSON.parse(text.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+    const variants = Object.fromEntries(efforts.map((e) => [e, { reasoningEffort: e }]))
+    const c = configAll[id]
+    const p = providerAll[id]
+    for (const m of [c, p]) {
+      expect(m).toBeDefined()
+      expect(m.id).toBe(id)
+      expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+      expect(m.limit).toEqual({ context: 1050000, output: 128000 })
+      expect(m.variants).toEqual(variants)
+      expect(m.rate).toBe(Number(text.match(/cost:\{tokenMultiplier:([\d.]+)/)[1]))
+      expect(m.rateWas).toBe(0)
+    }
+    expect(c.provider).toEqual({ npm: "@ai-sdk/openai", api: "https://api.factory.ai/api/llm/o/v1" })
+    expect(c.attachment).toBe(true)
+    expect(c.temperature).toBe(false)
+    expect(p.providerID).toBe("factory")
+    expect(p.api).toEqual({ id, url: c.provider.api, npm: c.provider.npm })
+    expect(p.capabilities.attachment).toBe(true)
+    expect(p.capabilities.input.image).toBe(true)
+  }
+  const astraUltra = DROID_1140.split("\n").find((l) => l.startsWith('"gpt-6.2-astra-ultrafast":{id:"gpt-6.2-astra-ultrafast",'))
+  const solUltra = DROID_1140.split("\n").find((l) => l.startsWith('"gpt-6.2-sol-ultrafast":{id:"gpt-6.2-sol-ultrafast",'))
+  expect(astraUltra).toContain('explicitOptInRequirement:{kind:"high_cost"')
+  expect(astraUltra).toContain("disabledForPilots:!0")
+  expect(solUltra).toContain("disabledForPilots:!0")
+  expect(configAll["gpt-6.2-astra-ultrafast"]).toBeUndefined()
+  expect(configAll["gpt-6.2-sol-ultrafast"]).toBeUndefined()
+  expect(providerAll["gpt-6.2-astra-ultrafast"]).toBeUndefined()
+  expect(providerAll["gpt-6.2-sol-ultrafast"]).toBeUndefined()
+})
+
+const DROID_1150 = readFileSync(new URL("./testdata/droid-1.15.0-neon.txt", import.meta.url), "utf8")
+
+test("droid 1.15.0's Gemini 4 Neon reaches both model hooks on Factory's Gemini route", async () => {
+  const id = "gemini-4-neon"
+  expect(DROID_1150).toContain("function f(e,i){return C({maxInputTokens:e-i,maxOutputTokens:i})}")
+  const text = DROID_1150.split("\n").find((l) => l.startsWith(`"${id}":{id:"${id}",`))
+  expect(text).toBeDefined()
+  expect(text).toContain('provider:"google"')
+  expect(text).toContain('apiProviders:["google"]')
+  expect(text).toContain("images:!0")
+  expect(text).toContain("contextLimits:f(1048576,65536)")
+  const [, context, output] = text.match(/contextLimits:f\((\d+),(\d+)\)/)
+  const efforts = JSON.parse(text.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+  const variants = Object.fromEntries(efforts.map((e) => [e, { thinkingConfig: { includeThoughts: true, thinkingLevel: e } }]))
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const config = (await models())[id]
+  const provider = (await hooks.provider.models({ id: "factory" }, {}))[id]
+  for (const m of [config, provider]) {
+    expect(m).toBeDefined()
+    expect(m.id).toBe(id)
+    expect(m.name).toBe(text.match(/,name:"([^"]+)"/)[1])
+    expect(m.limit).toEqual({ context: Number(context), output: Number(output) })
+    expect(m.variants).toEqual(variants)
+    expect(m.rate).toBe(Number(text.match(/cost:\{tokenMultiplier:([\d.]+)/)[1]))
+    expect(m.rateWas).toBe(0)
+  }
+  expect(config.provider).toEqual({ npm: "@ai-sdk/google", api: "https://api.factory.ai/api/llm/g/v1" })
+  expect(config.attachment).toBe(true)
+  expect(provider.providerID).toBe("factory")
+  expect(provider.api).toEqual({ id, url: config.provider.api, npm: config.provider.npm })
+  expect(provider.capabilities.attachment).toBe(true)
+  expect(provider.capabilities.input.image).toBe(true)
+})
