@@ -146,3 +146,45 @@ test("an enterprise model's __dev detail is the one asked by; a preset's body ga
   const p = _internal.chatBody({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, "chat_v3", "", 0, null, "s", false, null, preset)
   for (const k of ["model_name", "provider", "config_source", "is_custom_model"]) expect(k in p).toBe(false)
 })
+
+// the reporter's next case (@liuyuexue2020 on X, 0.2.43, AI/deekseek-v4.1-flash
+// on console.enterprise.trae.cn): every reply stopped at exactly 2000 output
+// tokens, where the same model in Trae wrote more. Trae's own client sends
+// the model detail's max_tokens with every model; the plugin sent the
+// agent's limit only, and an enterprise model none at all when the agent
+// named none. The fake answers as the reporter met it: a request naming no
+// limit gets 2000 tokens.
+test("an enterprise model's chat is held to its detail's max_tokens, and sent it when the agent names none", async () => {
+  const hooks = await plugin([preset, ...listed])
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(ms["AI/deekseek-v4.1-flash"].limit.output).toBe(8192)
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    const out = Math.min(r.json.max_tokens || 2000, 8192)
+    return sse([["output", { response: "x" }], ["done", { usage: { prompt_tokens: 10, completion_tokens: out } }]])
+  })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (extra) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "AI/deekseek-v4.1-flash", messages: [{ role: "user", content: "write a lot" }], ...extra }) })
+    expect(res.status).toBe(200)
+    return f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1).json.max_tokens
+  }
+  expect(await ask({})).toBe(8192)
+  expect(await ask({ max_tokens: 100 })).toBe(100)
+  expect(await ask({ max_tokens: 100000 })).toBe(8192)
+  expect(await ask({ max_completion_tokens: 3000 })).toBe(3000)
+})
+
+test("an enterprise detail with no max_tokens sends the agent's limit or none", () => {
+  const bare = { ...listed[0], model_detail_list: [{ model_name: "deekseek-v4.1-flash", provider: "AI" }] }
+  const req = { model: bare.config_name, messages: [{ role: "user", content: "hi" }] }
+  expect("max_tokens" in _internal.chatBody(req, "chat_v3", "", 0, null, "s", false, null, bare)).toBe(false)
+  expect(_internal.chatBody({ ...req, max_tokens: 5000 }, "chat_v3", "", 0, null, "s", false, null, bare).max_tokens).toBe(5000)
+})
+
+test("a preset asked with no limit is sent its __dev max_tokens, as Trae's client sends it", () => {
+  const req = { model: "glm-5", messages: [{ role: "user", content: "hi" }] }
+  expect(_internal.chatBody(req, "chat_v3", "glm-5__dev", 32000, null, "s", false, null, preset).max_tokens).toBe(32000)
+  expect(_internal.chatBody({ ...req, max_tokens: 100 }, "chat_v3", "glm-5__dev", 32000, null, "s", false, null, preset).max_tokens).toBe(100)
+  // a function whose list doesn't name the model's __dev detail: nothing known, nothing sent
+  expect("max_tokens" in _internal.chatBody(req, "solo_agent", "", 0, null, "s", false, null, preset)).toBe(false)
+})

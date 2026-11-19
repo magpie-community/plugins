@@ -255,7 +255,11 @@ config, where Trae's list doesn't carry it, sent no `model_name`, and got
 4023 "something went wrong") — **not verified with a real enterprise seat**. A refused chat's error names
 the model, the functions tried and the host, and says when the account's
 list doesn't have the model. Context is the list's `context_window_tokens.dev`,
-output the `__dev` model's `max_tokens`. A model with a `__max` model and
+output the `__dev` model's `max_tokens` (an enterprise model's own detail's,
+since 0.2.44). That `max_tokens` is sent with every chat, the agent's limit
+held to it and it sent when the agent names none, as Trae's own client
+sends the model's `max_tokens` with each model: asked with none, an
+enterprise seat's replies stopped at exactly 2000 output tokens (0.2.43). A model with a `__max` model and
 a bigger `context_window_tokens.max` is listed again as its Max,
 `<id>-max` ("… (Max)"), with that window and the `__max` model's
 `max_tokens`; the two can come from different functions' lists (chat_v3

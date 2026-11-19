@@ -1632,10 +1632,21 @@ function chatBody(req, fn, modelName, most = 0, max = null, session = "", sees =
   }
   const effort = effortOf(levels, req.reasoning_effort ?? req.reasoningEffort)
   if (effort) body.reasoning_effort = effort
+  // the reply limit is always sent when the list gives the model one, as
+  // Trae's own client does: its agent's ModelConfig carries the detail's
+  // max_tokens with every model (ai-agent, "[ModelConfig] Received
+  // config_name=, model_name=, …, max_tokens="). Asked with none, an
+  // enterprise seat's every reply stopped at exactly 2000 output tokens,
+  // where the same model in Trae wrote more (@liuyuexue2020 on X,
+  // AI/deekseek-v4.1-flash, 0.2.43), most likely the limit Trae gives a
+  // request naming none (no seat to measure it on). An enterprise
+  // model has no __dev detail for most to come from, so its own detail's
+  // max_tokens is the one.
+  if (!(most > 0) && enterpriseModel(entry)) most = Number(enterpriseDetail(entry)?.max_tokens) || 0
   const asked = req.max_completion_tokens ?? req.max_tokens
   if (Number.isFinite(asked) && asked > 0) body.max_tokens = most > 0 ? Math.min(Math.floor(asked), most) : Math.floor(asked)
+  else if (most > 0) body.max_tokens = most
   if (max?.window) {
-    if (!body.max_tokens && most > 0) body.max_tokens = most
     body.user_message_context = { model_info: { prompt_max_tokens: max.window - (body.max_tokens || 0) } }
   }
   // an enterprise's built-in model says where its config comes from beside
@@ -4085,7 +4096,9 @@ const makePlugin = (site) => async ({ client }) => {
     const was = provider.models?.[id] ?? {}
     // context_window_tokens: dev is what a request gets, max only in Max mode
     const ctx = Number(m.context_window_tokens?.dev ?? m.context_window_size?.max?.[0] ?? m.context_window_size?.max ?? m.context_window_tokens?.max ?? m.prompt_max_tokens) || was.limit?.context || MODEL.limit.context
-    const out = Number(devModel(m)?.max_tokens) || was.limit?.output || 0
+    // output: the detail requests are served by (an enterprise model's own
+    // when it has no __dev one)
+    const out = Number((enterpriseModel(m) ? enterpriseDetail(m) : devModel(m))?.max_tokens) || was.limit?.output || 0
     const name = m.display_config?.display_name || m.display_name || m.display_model_name || was.name || id
     const input = (k) => (MODEL.modalities?.input ?? []).includes(k)
     // the list's multimodal says whether the model takes images, over the
