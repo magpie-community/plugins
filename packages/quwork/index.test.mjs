@@ -10,6 +10,17 @@ const browserAccount = (accessToken = "web-token") => async () => ({
   key: "sk-test",
   metadata: { source: "browser", accessToken, modelKey: true },
 })
+const cookieAccount = () => async () => ({
+  type: "api",
+  key: "quwork-session",
+  metadata: {
+    source: "browser",
+    accessToken: "",
+    uid: "6003",
+    cookies: [{ name: "session", value: "cookie-token" }],
+    modelKey: false,
+  },
+})
 
 test("config declares the QuWork provider and models", async () => {
   const hooks = await QuWorkProvider({})
@@ -25,7 +36,7 @@ test("the setup page links to QuWork and both official sign-in and model key met
   const page = readFileSync(new URL("./page/index.html", import.meta.url), "utf8")
   assert.equal(hooks.auth.provider, "quwork")
   assert.deepEqual(hooks.auth.methods.map((method) => method.type), ["oauth", "api"])
-  assert.match(page, /href="https:\/\/quwork\.cn\/" target="_self"/)
+  assert.match(page, /href="https:\/\/qurwork-llm\.rrzu\.com\/" target="_self"/)
   assert.match(page, /每日签到/)
   assert.doesNotMatch(page, /<input\b|<form\b/i)
   assert.equal(hooks.auth.methods[1].prompts[0].type, "password")
@@ -58,6 +69,48 @@ test("official browser sign-in reads the website session and uses a returned mod
     metadata: { source: "browser", accessToken: "web-token", modelKey: true },
   })
   assert.deepEqual(calls, [{ url: "https://llm.quwork.cn/v1/models", authorization: "Bearer sk-browser" }])
+})
+
+test("official Web App sign-in keeps a cookie session when no model key is returned", async () => {
+  const calls = []
+  const hooks = createPlugin({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, cookie: init.headers.cookie, user: init.headers["new-api-user"] })
+      return Response.json({
+        success: true,
+        data: { points_entitlement: { total_points: 42, limited_points: 42 } },
+      })
+    },
+    browser: {
+      find: () => true,
+      open: async () => ({
+        credentials: async () => ({
+          webToken: "",
+          llmToken: "",
+          uid: "6003",
+          cookies: [{ name: "session", value: "cookie-token" }],
+        }),
+        close: async () => {},
+      }),
+    },
+  })
+  const desc = await hooks.auth.methods[0].authorize()
+  assert.deepEqual(await desc.callback(), {
+    type: "success",
+    key: "quwork-session",
+    metadata: {
+      source: "browser",
+      accessToken: "",
+      cookies: [{ name: "session", value: "cookie-token" }],
+      uid: "6003",
+      modelKey: false,
+    },
+  })
+  assert.deepEqual(calls, [{
+    url: "https://qurwork-llm.rrzu.com/api/user/self",
+    cookie: "session=cookie-token",
+    user: "6003",
+  }])
 })
 
 test("the loader sends the active key only to the model gateway and rejects redirects", async () => {
@@ -222,7 +275,7 @@ test("checkin is ineligible for a pasted model key and makes no request", async 
     metadata: { source: "pasted" },
   }))
   assert.equal(result.outcome, "ineligible")
-  assert.match(result.message, /官网浏览器登录/)
+  assert.match(result.message, /Web App/)
   assert.equal(called, false)
 })
 
@@ -342,4 +395,31 @@ test("checkin reports an upstream permission refusal as ineligible", async () =>
     outcome: "ineligible",
     message: "无权进行此操作，权限不足",
   })
+})
+
+test("checkin uses the Web App cookie session and New-Api-User header", async () => {
+  const calls = []
+  const hooks = createPlugin({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, method: init.method ?? "GET", headers: init.headers })
+      if (init.method === "POST") {
+        return Response.json({ success: true, message: "签到成功", data: { quota_awarded: 100 } })
+      }
+      return Response.json({
+        success: true,
+        data: { enabled: true, stats: { checked_in_today: false } },
+      })
+    },
+  })
+  assert.deepEqual(await hooks.auth.checkin(cookieAccount()), {
+    outcome: "claimed",
+    credit: 100,
+    message: "签到成功",
+  })
+  assert.deepEqual(calls.map((call) => [call.url, call.method]), [
+    ["https://qurwork-llm.rrzu.com/api/user/checkin", "GET"],
+    ["https://qurwork-llm.rrzu.com/api/user/checkin", "POST"],
+  ])
+  assert.equal(calls[0].headers.cookie, "session=cookie-token")
+  assert.equal(calls[0].headers["new-api-user"], "6003")
 })

@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/opencode-quwork-auth",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "QuWork (Clawork) provider for OpenCode and Magpie with official website sign-in, daily check-in and authorized model key setup",
   "type": "module",
   "main": "./opencode.mjs",
