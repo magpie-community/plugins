@@ -55,20 +55,36 @@ import {
 import { resolveCallerProfile, unroutedDecision } from "./profiler-core.js";
 import { clearQuotasCache, getQuotasLoadStatus, loadLiveQuotas, resolveMagpieQuotasFile } from "./quota-loader.js";
 import { askClassifier, scoreTaskLive, scorerOptionsOf } from "./scorer-live.js";
+import { readingEffort } from "./axis-scores.js";
+import { FIVE_AXIS_EFFORT_READINGS } from "./reference-data.js";
+import { EFFORTS } from "./user-scores.js";
 
 export const PROVIDER_ID = "agentcompass";
 export const DECISION_MODEL_ID = "agentcompass-systemone";
 export const AGENTCOMPASS_ICON_DATA_URI =
   "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjgiIHN0cm9rZT0iIzNCODJGNiIgc3Ryb2tlLXdpZHRoPSI0IiBmaWxsPSIjMEYxNzJBIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMjIiIHN0cm9rZT0iIzYwQTVGQSIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1kYXNoYXJyYXk9IjMgMyIvPjxwb2x5Z29uIHBvaW50cz0iMzIsMTIgMzgsMzIgMzIsMjggMjYsMzIiIGZpbGw9IiNFRjQ0NDQiLz48cG9seWdvbiBwb2ludHM9IjMyLDUyIDM4LDMyIDMyLDM2IDI2LDMyIiBmaWxsPSIjRTJFOEYwIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMy41IiBmaWxsPSIjRjhGQUZDIi8+PC9zdmc+";
 
-const EFFORT_TO_JEV_SCORE = {
-  low: 0.0,
-  medium: 1.0,
-  high: 2.0,
-  xhigh: 3.0,
-  max: 3.0,
-  ultra: 3.0,
-};
+/**
+ * The scale of Magpie's effort question to a decision provider (Magpie v0.1.4470 `internal/gateway/decide.go`: `jevLevels`, lowest
+ * first, and the answer read as `jevLevels[clamp(round(score), 0, 3)]`): a score from 0 to 3, one point per level.
+ */
+export const JEV_EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
+
+/**
+ * The score each effort answers on that scale: a level of the scale answers its own point; an effort outside it answers the
+ * nearest end (`none`, `minimal` the bottom; `max`, `ultra` the top); `default` answers what the data reads it as
+ * (`readingEffort`). An effort not named here has no answer.
+ */
+export const EFFORT_TO_JEV_SCORE = Object.freeze(
+  Object.fromEntries(
+    [...EFFORTS, "default"].map((effort) => {
+      const reads = readingEffort({ effort_readings: FIVE_AXIS_EFFORT_READINGS }, effort);
+      const at = JEV_EFFORT_LEVELS.indexOf(reads);
+      const nearestEnd = EFFORTS.indexOf(reads) < EFFORTS.indexOf(JEV_EFFORT_LEVELS[0]) ? 0 : JEV_EFFORT_LEVELS.length - 1;
+      return [effort, at >= 0 ? at : nearestEnd];
+    }),
+  ),
+);
 
 function buildChoiceDistribution(choices, bestChoice, winnerProb = 0.88) {
   const probabilities = {};
@@ -125,8 +141,10 @@ function classifierChoice(answers, name, criteriaObj) {
   return typeof choice === "string" && choices.includes(choice) ? buildChoiceDistribution(choices, choice, 0.88) : null;
 }
 
-function buildEffortAnswer(effort, confidence = 0.9) {
-  const effScore = EFFORT_TO_JEV_SCORE[effort] ?? 2.0;
+/** The answer to Magpie's effort question for `effort`, or null for an effort the scale does not name (the answer is then left out). */
+export function buildEffortAnswer(effort, confidence = 0.9) {
+  if (!Object.hasOwn(EFFORT_TO_JEV_SCORE, String(effort))) return null;
+  const effScore = EFFORT_TO_JEV_SCORE[effort];
   const idx = String(Math.max(0, Math.min(3, Math.round(effScore))));
   const rem = Math.round(((1.0 - confidence) / 3) * 10000) / 10000;
   const probs = { "0": rem, "1": rem, "2": rem, "3": rem };
@@ -298,7 +316,8 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
       answers.level = matchMagpieIntentChoice(questions.level.criteria, syntheticDecision);
     }
     if (questions.effort) {
-      answers.effort = buildEffortAnswer(heldEffort, 0.94);
+      const effort = buildEffortAnswer(heldEffort, 0.94);
+      if (effort) answers.effort = effort;
     }
     return {
       model,
@@ -436,7 +455,8 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
   }
 
   if (questions.effort) {
-    answers.effort = buildEffortAnswer(effectiveEffort, 0.9);
+    const effort = buildEffortAnswer(effectiveEffort, 0.9);
+    if (effort) answers.effort = effort;
   }
 
   // Case 3: Direct task-profile System-One questions (when called as a general Jev endpoint)

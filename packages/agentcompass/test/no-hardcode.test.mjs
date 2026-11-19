@@ -509,7 +509,7 @@ const EXCEPTIONS = [
     sites: ['continuity.js: mime.startsWith("image/")', 'continuity.js: mime.startsWith("video/")'],
   },
   {
-    why: "model, provider and effort names (rule 4): cache lifetime by provider, effort suffixes, candidate pools, the router's virtual names",
+    why: "model, provider and effort names (rule 4): cache lifetime by provider, effort suffixes, candidate pools, the router's virtual names, an effort's point on Magpie's effort scale",
     sites: [
       'continuity.js: lower.includes("chatgpt")',
       'continuity.js: lower.includes("codex")',
@@ -531,6 +531,9 @@ const EXCEPTIONS = [
       "middleware.js: return DEFAULT_VIRTUAL_MODELS.includes(clean)",
       'middleware.js: mappedModel.includes("/")',
       'middleware.js: targetModel.includes(":")',
+      "index.js: JEV_EFFORT_LEVELS.indexOf(reads)",
+      "index.js: EFFORTS.indexOf(reads)",
+      "index.js: EFFORTS.indexOf(JEV_EFFORT_LEVELS[0])",
     ],
   },
   {

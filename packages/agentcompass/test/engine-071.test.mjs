@@ -22,6 +22,7 @@ import { V0_7_0, v070Row } from "../src/released-names.js";
 import { EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, risesWithEffort, upgradeScores } from "../src/user-scores.js";
 import { ONE_CONFIGURATION, candidatesFromModels, levelsOf } from "../scripts/candidates-from-models.mjs";
 import { onRequest as middlewareOnRequest } from "../src/middleware.js";
+import { EFFORT_TO_JEV_SCORE, JEV_EFFORT_LEVELS, buildEffortAnswer } from "../src/index.js";
 import { profile } from "./profile.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -245,4 +246,22 @@ test("the converter reads reasoning_levels first, else supported_reasoning_level
   assert.deepEqual(JSON.parse(run.stdout), { candidateModels: [{ model: "m-1", efforts: ["low"] }] });
   assert.equal(run.stderr.trim().split(/\r?\n/).length, 5);
   assert.match(run.stderr, /candidates-from-models: row 4: m-1 skipped/);
+});
+
+test("Mode B answers every effort on Magpie's effort scale: outside it the nearest end, `default` as it reads, an unknown name not at all", () => {
+  // Magpie decide.go: the effort answer is jevLevels[clamp(round(score), 0, 3)], jevLevels = low, medium, high, xhigh
+  JEV_EFFORT_LEVELS.forEach((level, point) => assert.equal(buildEffortAnswer(level).score, point, level));
+  const scores = EFFORTS.map((effort) => buildEffortAnswer(effort)?.score);
+  for (const [i, score] of scores.entries()) {
+    assert.ok(Number.isInteger(score) && score >= 0 && score < JEV_EFFORT_LEVELS.length, `${EFFORTS[i]} has an answer on the scale`);
+    if (i > 0) assert.ok(score >= scores[i - 1], `non-decreasing at ${EFFORTS[i]}`);
+  }
+  const below = EFFORTS.slice(0, EFFORTS.indexOf(JEV_EFFORT_LEVELS[0]));
+  const above = EFFORTS.slice(EFFORTS.indexOf(JEV_EFFORT_LEVELS.at(-1)) + 1);
+  for (const effort of below) assert.equal(buildEffortAnswer(effort).score, 0, `${effort}: the bottom of the scale`);
+  for (const effort of above) assert.equal(buildEffortAnswer(effort).score, JEV_EFFORT_LEVELS.length - 1, `${effort}: the top of the scale`);
+  const reads = readingEffort({ effort_readings: FIVE_AXIS_EFFORT_READINGS }, "default");
+  assert.equal(buildEffortAnswer("default").score, buildEffortAnswer(reads).score, `default answers as ${reads}`);
+  assert.deepEqual(Object.keys(EFFORT_TO_JEV_SCORE).sort(), [...EFFORTS, "default"].sort());
+  for (const unknown of ["turbo", "auto", "", null, undefined]) assert.equal(buildEffortAnswer(unknown), null, `${unknown}: no answer`);
 });
