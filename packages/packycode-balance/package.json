@@ -1,0 +1,19 @@
+{
+  "name": "@magpie-community/opencode-packycode-balance-auth",
+  "version": "0.1.0",
+  "description": "Magpie-only PackyAPI account balance with a system access token and user ID",
+  "homepage": "https://docs.packyapi.ai/docs/ccswitch/4-usage-query.html",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["index.mjs", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "packycode", "packyapi", "new-api", "balance"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins",
+    "directory": "packages/packycode-balance"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}
