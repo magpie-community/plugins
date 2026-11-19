@@ -150,13 +150,18 @@ test("usage client reads only loopback summary and refuses redirects", async () 
     { ...config, showHeatmap: false },
     async (url, init) => {
       calls++;
-      assert.equal(url, "http://127.0.0.1:3425/v1/magpie/usage?period=30d");
+      const period = calls === 1 ? "30d" : "all";
+      assert.equal(url, "http://127.0.0.1:3425/v1/magpie/usage?period=" + period);
       assert.equal(init.redirect, "error");
-      return Response.json(source());
+      const data = source();
+      if (period === "all") data.series.push({ ...data.series[0], time: "2025-01-01T00:00:00Z" });
+      return Response.json({ ...data, period });
     },
   );
   assert.equal(s.tokens, 1200);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  assert.equal(s.activeDays, 3);
+  assert.equal(s.days.length, 2);
 });
 test("weekly All Time histories expand using bounded summary date ranges", async () => {
   const now = new Date();

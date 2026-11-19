@@ -85,7 +85,7 @@ test("month heatmap fetches its own bounded daily range without changing 7-day h
     },
     new Date(2026, 10, 17, 23),
   );
-  assert.deepEqual(ranges, ["7d", "2026-11-01..2026-11-17"]);
+  assert.deepEqual(ranges, ["7d", "all", "2026-11-01..2026-11-17"]);
   assert.equal(stats.requests, 3);
   assert.equal(stats.heatmap.days[0].requests, 42);
   assert.equal(stats.heatmap.asOf, "2026-11-17");
@@ -104,12 +104,13 @@ test("31-day months split daily API reads and disabled heatmaps make no extra re
   );
   assert.deepEqual(ranges, [
     "30d",
+    "all",
     "2026-10-01..2026-10-30",
     "2026-10-31..2026-10-31",
   ]);
   ranges.length = 0;
   await readUsage({ ...defaults, showHeatmap: false }, fetcher);
-  assert.deepEqual(ranges, ["30d"]);
+  assert.deepEqual(ranges, ["30d", "all"]);
 });
 test("incompatible heatmap summary fails rather than publishing fabricated zero days", async () => {
   await assert.rejects(
@@ -119,7 +120,7 @@ test("incompatible heatmap summary fails rather than publishing fabricated zero 
         const p = new URL(url).searchParams.get("period");
         return Response.json({
           ...summary(p),
-          bucket: p === "30d" ? "day" : "week",
+          bucket: !p.includes("..") ? "day" : "week",
         });
       },
       new Date(2026, 10, 17),
@@ -219,7 +220,7 @@ test("annual history queries bounded daily summaries without gaps or overlaps", 
     { ...defaults, period: "7d" },
     async (url) => {
       const p = new URL(url).searchParams.get("period");
-      if (p !== "7d") ranges.push(p);
+      if (p.includes("..")) ranges.push(p);
       return Response.json(summary(p));
     },
     new Date(2026, 10, 18),

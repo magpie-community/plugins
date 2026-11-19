@@ -148,7 +148,7 @@ async function main() {
         since: days[0]!.date,
         requests: days.reduce((n, d) => n + d.requests, 0),
         tokens: total,
-        activeDays: days.filter((d) => d.requests > 0).length,
+        activeDays: history.filter((d) => d.requests > 0).length,
         estimatedCost: days.reduce((n, d) => n + d.cost, 0),
         unpriced: 0,
         days,

@@ -148,7 +148,7 @@
       cards = r;
       display();
       $("summary").textContent =
-        `${r.requests.toLocaleString()} 次请求 · ${r.activeDays} 个活跃日`;
+        `${r.requests.toLocaleString()} 次请求 · ${r.activeDays} 个累计活跃日`;
       $("preview-label").textContent = "本机真实用量 · 未发布";
     } catch (e) {
       if (seq !== previewSequence) return;

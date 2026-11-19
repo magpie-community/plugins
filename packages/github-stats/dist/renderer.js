@@ -68,7 +68,7 @@ export function renderCard(s, c, mode, updated) {
     for (const [i, v, label] of [
         [0, compact(s.tokens), "TOKENS"],
         [1, compact(s.requests), "REQUESTS"],
-        [2, String(s.activeDays), "ACTIVE DAYS"],
+        [2, String(s.activeDays), compactLayout ? "LIFETIME DAYS" : "ACTIVE DAYS · ALL TIME"],
     ]) {
         text(pad + i * col, 79, v, compactLayout ? 24 : 30, i === 0 ? "url(#accent)" : p.fg, 'font-weight="700" letter-spacing="-1"');
         text(pad + i * col, 96, label, compactLayout ? 8 : 9, p.muted, 'letter-spacing="1"');
@@ -240,7 +240,7 @@ export function renderCard(s, c, mode, updated) {
     text(w - pad, y, "LOCAL → GITHUB", 8, p.muted, 'text-anchor="end" letter-spacing="1"');
     const h = Math.ceil(y + 17);
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-labelledby="title desc">
-<title id="title">Magpie AI Usage Statistics</title><desc id="desc">${escapeXml(`${periodLabel}: ${s.tokens} tokens, ${s.requests} requests, ${s.activeDays} active days. Tokens equal input plus output.`)}</desc>
+<title id="title">Magpie AI Usage Statistics</title><desc id="desc">${escapeXml(`${periodLabel}: ${s.tokens} tokens, ${s.requests} requests, ${s.activeDays} lifetime active days. Tokens equal input plus output.`)}</desc>
 <defs><linearGradient id="accent"><stop stop-color="${p.purple}"/><stop offset=".55" stop-color="${c.theme === "aurora" ? "#6388EE" : p.purple}"/><stop offset="1" stop-color="${p.cyan}"/></linearGradient><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${p.purple}" stop-opacity=".25"/><stop offset="1" stop-color="${p.cyan}" stop-opacity=".015"/></linearGradient><radialGradient id="glow"><stop stop-color="${p.purple}" stop-opacity="${dark ? ".15" : ".09"}"/><stop offset="1" stop-color="${p.bg}" stop-opacity="0"/></radialGradient><clipPath id="card"><rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="16"/></clipPath></defs>
 <g clip-path="url(#card)"><rect width="${w}" height="${h}" fill="${p.bg}"/>${c.theme === "minimal" ? "" : `<ellipse cx="${w * 0.8}" cy="0" rx="${w * 0.65}" ry="${h * 0.8}" fill="url(#glow)"/>`}<g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">${content.join("\n")}</g></g><rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="16" fill="none" stroke="${p.line}"/>
 </svg>\n`;

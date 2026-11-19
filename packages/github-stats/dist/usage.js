@@ -110,13 +110,13 @@ async function fetchSummary(config, period, fetcher) {
     }
     return row(raw);
 }
-export async function readUsage(config, fetcher = fetch, now = new Date()) {
+async function readPeriod(config, fetcher = fetch, now = new Date()) {
     const raw = await fetchSummary(config, config.period, fetcher);
     if (config.period === "all" && raw.bucket === "week") {
         // Older histories switch to weekly buckets. Request bounded day ranges from
         // the SAME summary API instead of mixing the Requests ledger's different scope.
         const start = new Date(date(raw.since) + "T00:00:00Z");
-        const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
         const end = new Date(today + "T00:00:00Z"), series = [];
         if ((end.getTime() - start.getTime()) / 86400000 > 36525)
             throw new Error("历史时间范围异常。");
@@ -134,7 +134,14 @@ export async function readUsage(config, fetcher = fetch, now = new Date()) {
         raw.series = series;
         raw.bucket = "day";
     }
-    const stats = normalizeUsage(raw, config.period);
+    return normalizeUsage(raw, config.period);
+}
+export async function readUsage(config, fetcher = fetch, now = new Date()) {
+    const stats = await readPeriod(config, fetcher, now);
+    if (config.period !== "all") {
+        const history = await readPeriod({ ...config, period: "all" }, fetcher, now);
+        stats.activeDays = history.activeDays;
+    }
     if (config.showHeatmap) {
         const asOf = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
         const { start } = calendarRange(config.heatmapView, asOf);
