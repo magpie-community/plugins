@@ -6730,6 +6730,9 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       : withoutAnswered(body.messages.slice(history.length), answered))
     : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
+  if (!isFirstTurn && callerWorkDir && !proc.instructions.endsWith(workDirNote(callerWorkDir))) {
+    appendPrompt(baseParts, `\n${workDirNote(callerWorkDir)}\n`)
+  }
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
     if (isFirstTurn) {
@@ -7016,8 +7019,17 @@ export const AntigravityBridgePlugin = async () => {
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
             const callerWorkDir = namedWorkDirectory(body, init)
-            const workDir = workDirectory(callerWorkDir)
-            const instructions = sessionInstructions(body, callerWorkDir)
+            const declaredWorkDir = namedWorkDirectory(body, { headers: {} })
+            const directoryPaths = /^(?:[a-z]:[\\/]|\\\\)/i.test(declaredWorkDir || "") ? path.win32 : path.posix
+            const relativeDir = declaredWorkDir && callerWorkDir ? directoryPaths.relative(declaredWorkDir, callerWorkDir) : null
+            const withinProject = relativeDir !== null && relativeDir !== ".." &&
+              !relativeDir.startsWith(".." + directoryPaths.sep) && !directoryPaths.isAbsolute(relativeDir)
+            // The header follows the caller's terminal cwd. A child directory
+            // shares the declared project's session and allowed directory.
+            const sessionWorkDir = withinProject ? declaredWorkDir : callerWorkDir
+            const workDir = workDirectory(sessionWorkDir)
+            const instructions = sessionInstructions(body, sessionWorkDir)
+            const cwdNotice = callerWorkDir && callerWorkDir !== sessionWorkDir ? workDirNote(callerWorkDir) : ""
 
             try {
               const tools = normalizeTools(body)
@@ -7074,7 +7086,9 @@ export const AntigravityBridgePlugin = async () => {
                   let results = rawResults
                   if (!interrupted) {
                     try {
-                      const inspected = inspectToolTurn(rawResults, body)
+                      const noticeBody = cwdNotice ? { ...body, messages: [...body.messages,
+                        { role: "system", content: cwdNotice }] } : body
+                      const inspected = inspectToolTurn(rawResults, noticeBody)
                       results = inspected.results
                       if (inspected.userSteered) interrupted = true
                     } catch (error) {

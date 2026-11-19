@@ -2209,3 +2209,48 @@ test("compaction summaries survive an oversized current tool result", async () =
     })
   }
 })
+
+
+test("terminal subdirectories retain the declared project session", async () => {
+  for (const pendingTool of [false, true]) {
+    await withKit({}, async (kit) => {
+      const project = path.join(kit.tmp, "project")
+      const backend = path.join(project, "backend")
+      const scripts = path.join(backend, "scripts")
+      const other = path.join(kit.tmp, "project-other")
+      fs.mkdirSync(scripts, { recursive: true })
+      fs.mkdirSync(other)
+      kit.defaultPrompt = async agent => {
+        const text = promptText({ prompt: agent.prompt })
+        if (pendingTool && text.includes("original task")) {
+          const result = await agent.tool("Read", { path: "/repo/result.txt" })
+          await agent.text(JSON.stringify(result))
+        } else await agent.text("answer")
+        return { stopReason: "end_turn" }
+      }
+      const first = baseBody({ system: "Primary working directory: " + project,
+        messages: [{ role: "user", content: "original task " + "context ".repeat(9000) }] })
+      const headers = cwd => ({ "x-magpie-work-dir": encodeURIComponent(cwd) })
+      const one = await readSse(await kit.request(first, { headers: headers(project) }))
+      const second = pendingTool ? continueWithToolResults(first, one, () => "tool result") : {
+        ...first, messages: [...first.messages, { role: "assistant", content: one.content }, { role: "user", content: "continue the original task" }],
+      }
+      const two = await readSse(await kit.request(second, { headers: headers(backend) }))
+      assert.equal(two.stopReason, "end_turn")
+      const entries = kit.acpLog.filter(entry => entry.method === "session/prompt")
+      assert.equal(kit.acpSpawns.length, 1, "a child shell directory must not replace the project session")
+      if (pendingTool) assert.ok(two.content.some(block => block.text?.includes("working directory") && block.text.includes("backend")))
+      else {
+        assert.equal(entries[0].params.sessionId, entries[1].params.sessionId)
+        assert.ok(promptText(entries[1].params).includes("working directory"))
+        assert.ok(promptText(entries[1].params).includes("backend"))
+      }
+      const third = { ...second, messages: [...second.messages, { role: "assistant", content: two.content }, { role: "user", content: "next task" }] }
+      await readSse(await kit.request(third, { headers: headers(scripts) }))
+      assert.equal(kit.acpSpawns.length, 1)
+      const changed = { ...third, messages: [...third.messages, { role: "assistant", content: [{ type: "text", text: "answer" }] }, { role: "user", content: "new directory task" }] }
+      await readSse(await kit.request(changed, { headers: headers(other) }))
+      assert.equal(kit.acpSpawns.length, 2, "an outside project directory still changes session scope")
+    })
+  }
+})
