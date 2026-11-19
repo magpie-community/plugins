@@ -2096,6 +2096,7 @@ class Proc {
   // What a conversation sets; a spare gets it when one takes it (adopt).
   #assign(convKey, opts) {
     this.convKey = convKey
+    this.rootConvKey = opts.convKey || convKey
     this.model = opts.model
     this.selection = opts.selection
     this.tools = opts.tools ?? []
@@ -3360,6 +3361,7 @@ function park(proc) {
   unparked.delete(proc.convKey)
   parked.set(proc.convKey, {
     key: proc.convKey,
+    rootConvKey: proc.rootConvKey || proc.convKey,
     sessionId: proc.sessionId,
     historyHash: digest(historyKey(proc.expectedMessages)),
     historyHashSansInputs: digest(historyKey(stripToolUseInputs(proc.expectedMessages))),
@@ -3386,25 +3388,30 @@ function resumeWorkspace(workspace) {
 
 function takeParked(convKey, opts) {
   loadParked()
-  const entry = parked.get(convKey)
-  if (!entry) return null
-  parked.delete(convKey)
-  unparked.add(convKey)
-  saveParked()
-  if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
-    entry.instructionsHash !== digest(sentInstructionsIdentity(opts.instructions)) ||
-    entry.userCloak !== USER_CLOAK || entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) return null
   const incoming = digest(historyKey(opts.history))
-  const workspace = resumeWorkspace(entry.workspace)
-  if (entry.historyHash === incoming) return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
-  // Sans-inputs resume needs the hashes written by current park(). Old
-  // entries without them still resume on an exact historyHash match only.
   const incomingSans = digest(historyKey(stripToolUseInputs(opts.history)))
   const incomingIds = toolUseIdentitiesKey(opts.history)
-  const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
-  const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
-  if (!idsOk || !sansOk) return null
-  return { sessionId: entry.sessionId, expectedMessages: opts.history, workspace }
+  const instructionsHash = digest(sentInstructionsIdentity(opts.instructions))
+  let match = null
+  for (const entry of parked.values()) {
+    if ((entry.rootConvKey || entry.key) !== convKey) continue
+    if ([...allProcs].some(proc => proc.sessionId === entry.sessionId && !proc.dead && !proc.stopping)) continue
+    if (Date.now() - entry.at > RESUME_TTL_MS || (entry.workDir ?? null) !== (opts.workDir ?? null) ||
+      entry.instructionsHash !== instructionsHash || entry.userCloak !== USER_CLOAK ||
+      entry.instructionsInSession !== (systemAppend() && !!opts.instructions)) continue
+    // Old entries resume on exact history; input-normalized matching also
+    // requires the original tool identities, just as live continuation does.
+    const idsOk = incomingIds != null && entry.toolUseIdentitiesHash === digest(incomingIds)
+    const sansOk = entry.historyHashSansInputs === incomingSans || entry.historyHash === incomingSans
+    if (entry.historyHash !== incoming && !(idsOk && sansOk)) continue
+    if (match) return null
+    match = entry
+  }
+  if (!match) return null
+  parked.delete(match.key)
+  unparked.add(match.key)
+  saveParked()
+  return { sessionId: match.sessionId, expectedMessages: opts.history, workspace: resumeWorkspace(match.workspace) }
 }
 
 async function retire(key, proc) {
@@ -3575,6 +3582,22 @@ async function withAcquireLocks(keys, fn) {
   return run(0)
 }
 
+// Alternative histories stay available to their own continuations and retries.
+// A branch is eligible only within the same conversation and instruction scope.
+function findHistoryBranch(convKey, opts) {
+  let match = null
+  for (const proc of pool.values()) {
+    if (proc.rootConvKey !== convKey || proc.dead || proc.retiring) continue
+    if (proc.workDir !== opts.workDir || !sameInstructions(proc.instructions, opts.instructions)) continue
+    const matches = proc.matchesHistory(proc.turn ? opts.messages : opts.history) ||
+      (proc.turn && opts.hasToolResults && proc.matchesHistory(opts.history))
+    if (!matches) continue
+    if (match) return null
+    match = proc
+  }
+  return match
+}
+
 // begin, when given, starts the turn inside the same locks, so a request that
 // waits on them sees this one's turn and is never handed a process about to be busy.
 async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew = false, begin = null) {
@@ -3586,8 +3609,10 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
-      if (isFreshConversation && !forceNew && !pool.get(convKey)) {
-        const candidate = findLiveContinuedProc(opts)
+      if (!forceNew) {
+        const candidate = isFreshConversation
+          ? (!pool.get(convKey) ? findLiveContinuedProc(opts) : null)
+          : findHistoryBranch(convKey, opts)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
@@ -3605,7 +3630,8 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
 // Caller holds the conversation lock; recovery must not acquire it recursively.
 async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, forceNew = false, lockedKeys = new Set([convKey])) {
   await evictIdle()
-  let existing = pool.get(convKey)
+  const branch = !forceNew && !isFreshConversation ? findHistoryBranch(convKey, opts) : null
+  let existing = branch && lockedKeys.has(branch.convKey) ? branch : pool.get(convKey)
   if (existing?.turn?.cancelRequested) {
     await Promise.race([existing.turn.settled, new Promise((resolve) => setTimeout(resolve, CANCEL_SETTLE_MS))])
   }
@@ -3640,10 +3666,13 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // the whole previous opening (not just a shared prefix).
   if (!existing && !forceNew && isFreshConversation) {
     const candidate = findLiveContinuedProc(opts)
-    if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
+    if (candidate && lockedKeys.has(candidate.convKey)) {
+      existing = rekeyProc(candidate, convKey)
+      existing.rootConvKey = convKey
+    }
   }
   let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
-  let key = convKey
+  let key = existing?.convKey || convKey
   if (existing && !existing.dead && existing.turn && isFreshConversation && !forceNew &&
     !opts.hasToolResults && !existing.turn.cancelRequested && existing.turn.model !== opts.model) {
     // A new conversation that opens as a running one did (one system prompt and
@@ -3693,9 +3722,18 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
         !sameInstructions(existing.instructions, opts.instructions) ? "instructions" :
         !(existing.matchesHistory(matchedHistory) || continuedFresh) ? "history" : "fresh_after_first"
     }
-    existing.retiring = true
-    dropFromPool(existing)
-    await existing.stop().catch(() => {})
+    if (why === "history" && !existing.turn) {
+      // An edited transcript or a background fork must not destroy the other
+      // completed branch. Its exact continuation can still reuse this session.
+      const siblingKey = `${convKey}#history:${digest(historyKey(existing.expectedMessages))}:${randomBytes(4).toString("hex")}`
+      rekeyProc(existing, siblingKey)
+      park(existing)
+      key = convKey
+    } else {
+      existing.retiring = true
+      dropFromPool(existing)
+      await existing.stop().catch(() => {})
+    }
   }
   const resume = forceNew || isFreshConversation ? null : takeParked(convKey, opts)
   // a spare runs in a folder of its own, and a resumed session needs its own
@@ -5456,15 +5494,24 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   const turnOpen = "<current_turn>\n"
   const turnClose = "\n</current_turn>"
   const frame = utf8Bytes(historyOpen + historyClose + turnOpen + turnClose)
+  // A compaction checkpoint carries the active task. Reserve its opening
+  // message before a large current tool result consumes the replay budget.
+  const opening = history[0]
+  const summaryParts = opening?.role === "user" && messageText(opening).includes(
+    "This session is being continued from a previous conversation that ran out of context.",
+  ) ? renderHistoryEntry(opening) : null
+  const summaryReserve = summaryParts
+    ? Math.min(promptTextBytes(summaryParts), Math.max(0, Math.floor((budget - frame) / 3))) : 0
+  const mandatoryBudget = budget - summaryReserve
   // Mandatory segments first: instructions, the frame and the current turn.
   // An oversized current turn keeps its head and tail; instructions shrink
   // only when they alone would not leave the current turn any room.
   let headParts = head
   let turn = currentParts
-  if (promptTextBytes(headParts) + frame + promptTextBytes(turn) > budget) {
-    const forTurn = Math.max(0, budget - frame - promptTextBytes(headParts))
-    turn = clipPartsToBytes(turn, Math.max(forTurn, Math.min(promptTextBytes(turn), Math.floor((budget - frame) / 2))))
-    headParts = clipPartsToBytes(headParts, Math.max(0, budget - frame - promptTextBytes(turn)))
+  if (promptTextBytes(headParts) + frame + promptTextBytes(turn) > mandatoryBudget) {
+    const forTurn = Math.max(0, mandatoryBudget - frame - promptTextBytes(headParts))
+    turn = clipPartsToBytes(turn, Math.max(forTurn, Math.min(promptTextBytes(turn), Math.floor((mandatoryBudget - frame) / 2))))
+    headParts = clipPartsToBytes(headParts, Math.max(0, mandatoryBudget - frame - promptTextBytes(turn)))
   }
   let room = budget - frame - promptTextBytes(headParts) - promptTextBytes(turn)
   const render = (message) => {
@@ -5475,7 +5522,12 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   // A replay that fits is sent whole; only one that does not has its big
   // blocks clipped first (#1055).
   let entries = history.map(render)
-  if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
+  if (overRoom(entries)) entries = history.map((message, index) => {
+    if (index === 0 && summaryParts) {
+      return clipHistoryEntry({ parts: summaryParts, bytes: promptTextBytes(summaryParts) }, summaryReserve)
+    }
+    return render(clipHistoryMessage(message))
+  })
   let kept = entries
   let showOpeningDone = false
   if (overRoom(entries)) {
@@ -6708,6 +6760,9 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
       : withoutAnswered(body.messages.slice(history.length), answered))
     : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
+  if (!isFirstTurn && callerWorkDir && !proc.instructions.endsWith(workDirNote(callerWorkDir))) {
+    appendPrompt(baseParts, `\n${workDirNote(callerWorkDir)}\n`)
+  }
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
     if (isFirstTurn) {
@@ -6980,15 +7035,31 @@ export const AntigravityBridgePlugin = async () => {
             if (isOrchestrator(requestedModel)) return jsonError(400, orchestratorRefusal(requestedModel), undefined, { noRetry: true })
             const model = resolveAgyModel(await loadModelCatalog(agy), requestedModel, body)
             const selection = { model: requestedModel, effort: requestedEffort(body) }
-            const sessionScope = requestSessionScope(fetchInput, init)
+            let sessionScope = requestSessionScope(fetchInput, init)
+            const lastMessage = body.messages.at(-1)
+            if (lastMessage?.role === "user" && messageText(lastMessage).trimStart().startsWith("[SUGGESTION MODE:")) {
+              // Prediction requests carry the real conversation's prefix, but
+              // their reply is never appended to that conversation by clients.
+              // Isolate before marking tool calls or looking up a live turn.
+              sessionScope = JSON.stringify([sessionScope, "prompt-suggestion"])
+            }
             // an account's conversations are its own: its agy has them
-            const convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
+            let convKey = (home ? `acct:${path.basename(home)}:` : "") + conversationKey(body, sessionScope)
             const trailing = trailingMessages(body)
             const isFresh = trailing.history.length === 0
             const resultBlocks = extractToolResults(body)
             const callerWorkDir = namedWorkDirectory(body, init)
-            const workDir = workDirectory(callerWorkDir)
-            const instructions = sessionInstructions(body, callerWorkDir)
+            const declaredWorkDir = namedWorkDirectory(body, { headers: {} })
+            const directoryPaths = /^(?:[a-z]:[\\/]|\\\\)/i.test(declaredWorkDir || "") ? path.win32 : path.posix
+            const relativeDir = declaredWorkDir && callerWorkDir ? directoryPaths.relative(declaredWorkDir, callerWorkDir) : null
+            const withinProject = relativeDir !== null && relativeDir !== ".." &&
+              !relativeDir.startsWith(".." + directoryPaths.sep) && !directoryPaths.isAbsolute(relativeDir)
+            // The header follows the caller's terminal cwd. A child directory
+            // shares the declared project's session and allowed directory.
+            const sessionWorkDir = withinProject ? declaredWorkDir : callerWorkDir
+            const workDir = workDirectory(sessionWorkDir)
+            const instructions = sessionInstructions(body, sessionWorkDir)
+            const cwdNotice = callerWorkDir && callerWorkDir !== sessionWorkDir ? workDirNote(callerWorkDir) : ""
 
             try {
               const tools = normalizeTools(body)
@@ -7028,6 +7099,9 @@ export const AntigravityBridgePlugin = async () => {
                   if (found.some((item) => item.match.proc !== proc || item.match.turn !== turn)) {
                     return jsonError(409, "agy bridge: tool results from different conversations cannot be combined")
                   }
+                  // Tool recovery belongs to this branch's storage key. The
+                  // root in acquireOpts still groups its future continuations.
+                  convKey = proc.convKey
                   if (proc.turn !== turn) return jsonError(409, "agy bridge: the tool response has already completed")
                   if (turn.attached) throw new BusyError("agy bridge: this conversation already has an active response")
                   if (turn.steering) throw new BusyError("agy bridge: this conversation is already steering this tool turn")
@@ -7042,7 +7116,9 @@ export const AntigravityBridgePlugin = async () => {
                   let results = rawResults
                   if (!interrupted) {
                     try {
-                      const inspected = inspectToolTurn(rawResults, body)
+                      const noticeBody = cwdNotice ? { ...body, messages: [...body.messages,
+                        { role: "system", content: cwdNotice }] } : body
+                      const inspected = inspectToolTurn(rawResults, noticeBody)
                       results = inspected.results
                       if (inspected.userSteered) interrupted = true
                     } catch (error) {
@@ -7105,6 +7181,17 @@ export const AntigravityBridgePlugin = async () => {
                       proc.recordToolResults(turn, body.messages)
                     }
                     return streamResponse(proc, turn, body, init.signal)
+                  }
+                }
+                const owner = findHistoryBranch(convKey, acquireOpts)
+                if (owner) convKey = owner.convKey
+                else {
+                  const current = pool.get(convKey)
+                  const base = current?.turn?.baseHistory || current?.expectedMessages
+                  if (Array.isArray(base) && historyKey(trailing.history.slice(0, base.length)) !== historyKey(base)) {
+                    // Stale tool results from another branch have no live owner.
+                    // Replay them separately instead of retiring an unrelated turn.
+                    convKey = `${convKey}#replay:${digest(historyKey(trailing.history))}`
                   }
                 }
                 const held = pool.get(convKey)

@@ -864,3 +864,22 @@ test("a user's turn goes to agy with Codex's GPT-5 lines reworded", async () => 
     assert.ok(all.includes("You are Hermes Agent, built by Nous Research."), "other lines go as written in a user's turn")
   })
 })
+
+test("parked sibling histories survive root history mismatches", () => {
+  const root = "parked-sibling-root"
+  const historyA = [{ role: "user", content: "opening" }, { role: "assistant", content: "A" }]
+  const historyB = [{ role: "user", content: "opening" }, { role: "assistant", content: "B" }]
+  const workspaceA = path.join(os.tmpdir(), "magpie-agy-bridge-Aa0001")
+  const workspaceB = path.join(os.tmpdir(), "magpie-agy-bridge-Bb0002")
+  for (const [key, history, sessionId, workspace] of [[root, historyB, "session-B", workspaceB], [root + "#history:A", historyA, "session-A", workspaceA]]) {
+    park({ convKey: key, rootConvKey: root, expectedMessages: history, sessionId, workspace,
+      instructions: "Rules", workDir: "/tmp/parked-siblings", canPark() { return true } })
+  }
+  const opts = { workDir: "/tmp/parked-siblings", instructions: "Rules" }
+  const resumedA = takeParked(root, { ...opts, history: historyA })
+  const resumedB = takeParked(root, { ...opts, history: historyB })
+  assert.equal(resumedA?.sessionId, "session-A")
+  assert.equal(resumedB?.sessionId, "session-B")
+  assert.equal(resumedA?.workspace, workspaceA)
+  assert.equal(resumedB?.workspace, workspaceB)
+})
