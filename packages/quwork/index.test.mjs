@@ -330,3 +330,16 @@ test("checkin stops automatic retries when the network is unavailable", async ()
     message: "暂时无法连接 QuWork 签到服务；本次不自动重试，请稍后手动签到。",
   })
 })
+
+test("checkin reports an upstream permission refusal as ineligible", async () => {
+  const hooks = createPlugin({
+    fetchImpl: async () => Response.json({
+      success: false,
+      message: "无权进行此操作，权限不足",
+    }),
+  })
+  assert.deepEqual(await hooks.auth.checkin(browserAccount()), {
+    outcome: "ineligible",
+    message: "无权进行此操作，权限不足",
+  })
+})

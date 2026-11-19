@@ -186,6 +186,7 @@ function streakOf(data) {
 
 function outcomeFromMessage(message) {
   if (/已签到|已经签到|今日已签|重复签到|already\s*(?:checked|signed)/i.test(message)) return "done"
+  if (/无权|无权限|权限不足|没有权限|permission\s*denied|unauthorized|forbidden/i.test(message)) return "ineligible"
   if (/too\s*many|rate.?limit|请求过于频繁|操作频繁|频繁/i.test(message)) return "inactive"
   if (/未启用|未开启|未开放|disabled|not\s*enabled/i.test(message)) return "inactive"
   if (/captcha|验证码|人机|turnstile|challenge/i.test(message)) return "captcha"
@@ -284,6 +285,9 @@ async function interpretCheckinClaim(result, accessToken, fetchImpl, now = Date.
   if (payload && typeof payload === "object" && payload.success === false) {
     const outcome = outcomeFromMessage(message)
     if (outcome === "done") return { outcome, message: message || "今日已签到。" }
+    if (outcome === "ineligible") {
+      return { outcome, message: message || "当前账号没有签到权限，请到 QuWork 官网确认。" }
+    }
     if (outcome === "inactive" || outcome === "captcha") {
       return { outcome, message: message || (outcome === "captcha" ? "QuWork 要求人工验证，请在官网完成签到。" : "QuWork 当前未开放每日签到。") }
     }
