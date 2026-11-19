@@ -14,9 +14,9 @@
 
 ### What it is
 
-A [Magpie](https://github.com/yetone/magpie) gateway plugin that runs the routing engine of [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.0. For a request it chooses `<model>:<effort>` from the models you list, scoring each model at each effort on four capability categories (`creativity`, `coding`, `aesthetics`, `tool_operation`), its time and price, and what the account's quota windows have left. It also orders the seats of a Magpie account pool by quota headroom.
+A [Magpie](https://github.com/yetone/magpie) gateway plugin that runs the routing engine of [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.1. For a request it chooses `<model>:<effort>` from the models you list, scoring each model at each effort on four capability categories (`creativity`, `coding`, `aesthetics`, `tool_operation`), its time and price, and what the account's quota windows have left. It also orders the seats of a Magpie account pool by quota headroom.
 
-Magpie's own rules see a model name and pool state, not the task. This plugin reads a structured **task profile**, so a routine edit does not spend a flagship's weekly quota and a hard design task is not handed to a light model. How the engine scores is AgentCompass's, written once in its [technical reference](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/docs/technical-reference.md#1-how-scoring--allocation-work); this plugin does not repeat it.
+Magpie's own rules see a model name and pool state, not the task. This plugin reads a structured **task profile**, so a routine edit does not spend a flagship's weekly quota and a hard design task is not handed to a light model. How the engine scores is AgentCompass's, written once in its [technical reference](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.1/docs/technical-reference.md#1-how-scoring--allocation-work); this plugin does not repeat it.
 
 ### Rules and controls
 
@@ -43,7 +43,7 @@ magpie plugin list
 magpie plugin options <spec> '{"candidateModels":["claude-opus-5-5","claude-sonnet-5-5","gpt-6.1-sol","gemini-3.8-flash-high"]}'
 ```
 
-The middleware rewrites `body.model` to `<model>:<effort>` and sets the protocol's effort field. Without `candidateModels` or `defaultModel`, a request to a virtual model is refused with HTTP 400. A valid profile and the quota snapshot (`quotas`, with each account's `plan`) are in the [reference](docs/reference.md#task-profile).
+To route each model at exactly the efforts your Magpie offers for it, write the list from the gateway's own `/v1/models` ([candidates from the gateway](docs/reference.md#candidates-from-the-gateway)). The middleware rewrites `body.model` to `<model>:<effort>` and sets the protocol's effort field. Without `candidateModels` or `defaultModel`, a request to a virtual model is refused with HTTP 400. A valid profile and the quota snapshot (`quotas`, with each account's `plan`) are in the [reference](docs/reference.md#task-profile).
 
 **Mode B.** Let Magpie's Routing Groups use the plugin as their classifier, with a classifier model of your own (without one it answers `none of these` every turn):
 
@@ -78,9 +78,9 @@ Options, names by install source, limits, the repository layout and the tests: [
 
 ### 它是什么
 
-运行 [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.0 路由引擎的 [Magpie](https://github.com/yetone/magpie) 网关插件。对每个请求，它从你列出的模型里选出 `<model>:<effort>`：对每个模型的每个档位，按四类能力（`creativity`、`coding`、`aesthetics`、`tool_operation`）、耗时与价格、以及账号配额窗口的剩余量打分。它也按配额余量给 Magpie 账号池的席位排序。
+运行 [AgentCompass](https://github.com/akiiwa-games/AgentCompass) v0.7.1 路由引擎的 [Magpie](https://github.com/yetone/magpie) 网关插件。对每个请求，它从你列出的模型里选出 `<model>:<effort>`：对每个模型的每个档位，按四类能力（`creativity`、`coding`、`aesthetics`、`tool_operation`）、耗时与价格、以及账号配额窗口的剩余量打分。它也按配额余量给 Magpie 账号池的席位排序。
 
-Magpie 自带的规则只看到模型名和号池状态，看不到任务。本插件读取结构化的**任务画像**：日常小改动不会消耗旗舰的周额度，高难度设计任务也不会交给轻量模型。引擎如何打分由 AgentCompass 负责，只在它的[技术参考](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.0/docs/technical-reference.md#1-how-scoring--allocation-work)里写一次，本插件不重复。
+Magpie 自带的规则只看到模型名和号池状态，看不到任务。本插件读取结构化的**任务画像**：日常小改动不会消耗旗舰的周额度，高难度设计任务也不会交给轻量模型。引擎如何打分由 AgentCompass 负责，只在它的[技术参考](https://github.com/akiiwa-games/AgentCompass/blob/v0.7.1/docs/technical-reference.md#1-how-scoring--allocation-work)里写一次，本插件不重复。
 
 ### 规则与控制
 
@@ -107,7 +107,7 @@ magpie plugin list
 magpie plugin options <spec> '{"candidateModels":["claude-opus-5-5","claude-sonnet-5-5","gpt-6.1-sol","gemini-3.8-flash-high"]}'
 ```
 
-中间件把 `body.model` 改写为 `<model>:<effort>`，并写入协议对应的档位字段。没有 `candidateModels` 也没有 `defaultModel` 时，请求虚拟模型会返回 HTTP 400。合法的画像和配额快照（`quotas`，每个账号写明 `plan`）见[参考](docs/reference.md#task-profile)。
+要让每个模型只按你的 Magpie 为它提供的档位路由，用网关自己的 `/v1/models` 生成这份列表（[从网关生成候选](docs/reference.md#candidates-from-the-gateway)）。中间件把 `body.model` 改写为 `<model>:<effort>`，并写入协议对应的档位字段。没有 `candidateModels` 也没有 `defaultModel` 时，请求虚拟模型会返回 HTTP 400。合法的画像和配额快照（`quotas`，每个账号写明 `plan`）见[参考](docs/reference.md#task-profile)。
 
 **模式 B。** 让 Magpie 路由组把本插件用作分类器，并配置你自己的分类模型（没有则每一轮都回答 `none of these`）：
 

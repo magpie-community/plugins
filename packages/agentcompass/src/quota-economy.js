@@ -17,10 +17,9 @@
  */
 
 import { pyRound } from "./catalog.js";
-import { fiveAxisFit, fiveAxisTargets } from "./axis-scores.js";
+import { fiveAxisFit, fiveAxisTargets, readingEffort } from "./axis-scores.js";
 import { FIVE_AXIS_ANCHOR } from "./reference-data.js";
 
-export const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const INF = Number.POSITIVE_INFINITY;
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 
@@ -58,10 +57,14 @@ export function bundleTaskUsd(spec, model, hours, info, contextBurn = 1.0) {
   return hours * modelUsdPerHour(model, info) * contextBurn;
 }
 
-/** `[multiplier, basis]` of the time a task takes this model at `effort`; `[null, null]` when the data has none. */
+/**
+ * `[multiplier, basis]` of the time a task takes this model at `effort`; `[null, null]` when the data has none. An effort off the
+ * scale, and a bundle that names no effort, read the effort the data declares (`readingEffort`).
+ */
 export function durationAt(info, effort) {
-  const five = (((info || {}).five_axis || {}).duration) || {};
-  const key = effort || "high";
+  const state = (info || {}).five_axis || {};
+  const five = state.duration || {};
+  const key = readingEffort(state, effort);
   const mult = (five.by_effort || {})[key];
   if (typeof mult === "number" && Number.isFinite(mult) && mult > 0) return [Number(mult), (five.basis_by_effort || {})[key] || {}];
   return [null, null];

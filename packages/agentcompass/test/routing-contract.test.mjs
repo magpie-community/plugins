@@ -18,6 +18,8 @@ import * as profiler from "../src/profiler-core.js";
 import * as quota from "../src/quota.js";
 import * as quotaPools from "../src/quota-pools.js";
 import * as scorer from "../src/scorer-live.js";
+import { FIVE_AXIS_MODELS } from "../src/reference-data.js";
+import { EFFORTS } from "../src/user-scores.js";
 import { answerRequest, answerSystemOne, classifierAnswer } from "./classifier-stub.mjs";
 import { profile } from "./profile.mjs";
 
@@ -192,7 +194,7 @@ test("B-2.2 an entry's efforts are one row each with its own id, and a disabled 
 
   // A numbered account of a provider reads that provider's table
   const second = rankCandidates(PROFILE, { candidateModels: [{ id: "k", provider: "claude-2", account: "claude-2", model: "claude-haiku-5-5" }] });
-  assert.deepEqual(second.allCandidates.map((c) => c.effort), ["high"], "claude dispatches haiku at high only");
+  assert.deepEqual(second.allCandidates.map((c) => c.effort), catalog.DISPATCH_EFFORTS.claude["claude-haiku-5-5"], "claude-2 offers what the claude table lists");
   assert.ok(catalog.DISPATCH_EFFORTS.pi);
   const onPi = rankCandidates(PROFILE, { candidateModels: [{ id: "p", provider: "pi", account: "pi", model: "gpt-6-astra" }] });
   for (const c of onPi.allCandidates) assert.ok(catalog.DISPATCH_EFFORTS.pi["gpt-6-astra"].includes(c.effort), c.effort);
@@ -338,21 +340,25 @@ test("a provider whose table lists the model offers those efforts; a gateway off
 // A row's own `efforts` list (Cindy's catalog, or the operator's plugin options in Magpie) is what it is launched at: the launch
 // table shipped with a version removes none of it, and speaks only for a row that lists none.
 test("a listed effort outside the launch table is a candidate at that effort; no table entry removes the row", () => {
-  // codex lists gpt-6-luna at high only; the row offers medium
-  assert.deepEqual(catalog.DISPATCH_EFFORTS.codex["gpt-6-luna"].includes("medium"), false);
-  const row = { id: "luna", provider: "codex", account: "codex", model: "gpt-6-luna", efforts: ["medium"] };
+  // An effort the data times that the codex table does not list for gpt-6-luna; the row offers it
+  const table = catalog.DISPATCH_EFFORTS.codex["gpt-6-luna"];
+  const timed = Object.keys(FIVE_AXIS_MODELS["gpt-6-luna"].duration.by_effort);
+  const effort = EFFORTS.find((e) => !table.includes(e) && timed.includes(e));
+  const listedOnly = table.find((e) => e !== effort);
+  assert.ok(effort && listedOnly, "the data times an effort the table does not list");
+  const row = { id: "luna", provider: "codex", account: "codex", model: "gpt-6-luna", efforts: [effort] };
   const ranked = rankCandidates(PROFILE, { candidateModels: [row] });
-  assert.deepEqual(ranked.allCandidates.map((c) => c.effort), ["medium"]);
+  assert.deepEqual(ranked.allCandidates.map((c) => c.effort), [effort]);
   for (const c of ranked.allCandidates) assert.doesNotMatch(c.excluded.join("; "), /dispatch_efforts/);
   const decision = selectBestRoute(PROFILE, { candidateModels: [row] });
   assert.equal(decision.ok, true);
-  assert.equal(decision.targetEffort, "medium");
-  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", "medium"), true);
-  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", "high"), false);
+  assert.equal(decision.targetEffort, effort);
+  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", effort), true);
+  assert.equal(allocator.candidateOffers([row], "gpt-6-luna", listedOnly), false);
   // The operator's list in Magpie's options is served as written
   const body = request();
   middleware.onRequest(body, context({ candidateModels: [row] }));
-  assert.equal(body.model, "gpt-6-luna:medium");
+  assert.equal(body.model, `gpt-6-luna:${effort}`);
 });
 
 test("a row keeps every effort it lists, and a row that lists none follows the launch table", () => {
@@ -368,16 +374,18 @@ test("a row keeps every effort it lists, and a row that lists none follows the l
 });
 
 test("a listed effort the data has no score for leaves automatic routing with the missing data named; naming the model dispatches it", () => {
-  // gpt-6.1-sol has no Time/Task at ultra in the shipped data
-  const row = { id: "sol", provider: "codex", account: "codex", model: "gpt-6.1-sol", efforts: ["ultra"] };
+  // A row of the catalog with every category scored and no Time/Task at high in the shipped data
+  const [model] = Object.entries(FIVE_AXIS_MODELS).find(([m, r]) => catalog.MODELS[m] && r.missing.length === 0 && !("high" in r.duration.by_effort));
+  const name = model.replace(/[.]/g, "[.]");
+  const row = { id: "row", model, efforts: ["high"] };
   const auto = selectBestRoute(PROFILE, { candidateModels: [row] });
   assert.equal(auto.ok, false);
-  assert.match(auto.excluded.join("; "), /data error: no Time\/Task for gpt-6\.1-sol at ultra .*out of automatic routing/);
+  assert.match(auto.excluded.join("; "), new RegExp(`data error: no Time/Task for ${name} at high .*out of automatic routing`));
   assert.doesNotMatch(auto.excluded.join("; "), /dispatch_efforts/);
-  const named = selectBestRoute(PROFILE, { candidateModels: [row], constraintModel: "gpt-6.1-sol" });
+  const named = selectBestRoute(PROFILE, { candidateModels: [row], constraintModel: model });
   assert.equal(named.ok, true);
-  assert.equal(named.targetEffort, "ultra");
-  assert.match(named.warnings.join("; "), /no Time\/Task for gpt-6\.1-sol at ultra/);
+  assert.equal(named.targetEffort, "high");
+  assert.match(named.warnings.join("; "), new RegExp(`no Time/Task for ${name} at high`));
 });
 
 test("an effort the pool has no row for can be pinned: a row `<carrier>@<effort>` with pin_carrier, on what the provider dispatches", () => {
@@ -388,9 +396,10 @@ test("an effort the pool has no row for can be pinned: a row `<carrier>@<effort>
   assert.equal(decision.bundle.modeId, "bypass");
   const ranked = rankCandidates(PROFILE, { candidateModels: [row], constraintModel: "claude-opus-5-5", constraintEffort: "medium" });
   assert.ok(ranked.allCandidates.some((c) => c.id === "opus@medium"));
-  // Haiku dispatches at high only
+  // An effort the claude table does not list for haiku has no carrier row
+  const unlisted = EFFORTS.find((e) => !catalog.DISPATCH_EFFORTS.claude["claude-haiku-5-5"].includes(e));
   const haiku = { id: "h", provider: "claude", account: "claude", model: "claude-haiku-5-5", effort: "high" };
-  assert.equal(selectBestRoute(PROFILE, { candidateModels: [haiku], constraintModel: "claude-haiku-5-5", constraintEffort: "medium" }).blocked, true);
+  assert.equal(selectBestRoute(PROFILE, { candidateModels: [haiku], constraintModel: "claude-haiku-5-5", constraintEffort: unlisted }).blocked, true);
   // A fixed row carries nothing else
   assert.equal(selectBestRoute(PROFILE, { candidateModels: ["claude-opus-5-5:high"], constraintModel: "claude-opus-5-5", constraintEffort: "medium" }).blocked, true);
 });
@@ -507,9 +516,12 @@ test("the hooks hold as the middleware does, on the name routed and what the poo
   assert.equal(gone.continuation.held, false);
   assert.equal(gone.continuation.why, "effort_gone");
   assert.notEqual(`${gone.targetModel}:${gone.targetEffort}`, "gpt-6.1-sol:high");
-  const pinned = await run(["gpt-6-astra"], ["gpt-6-astra"], { constraintModel: "gpt-6-astra-medium" });
+  // A pin at an effort the held route is not on overrides the hold
+  const unpinned = await run(["gpt-6-astra"], ["gpt-6-astra"]);
+  const other = unpinned.targetEffort === "medium" ? "high" : "medium";
+  const pinned = await run(["gpt-6-astra"], ["gpt-6-astra"], { constraintModel: `gpt-6-astra-${other}` });
   assert.equal(pinned.continuation.why, "user_pin_override");
-  assert.equal(pinned.targetEffort, "medium");
+  assert.equal(pinned.targetEffort, other);
   const row = { id: "x", provider: "codex", account: "codex", model: "gpt-6-astra", effort: "medium", modeId: "m", draws: 2 };
   const held = await run([row], [row]);
   assert.equal(held.continuation.held, true);
@@ -518,11 +530,12 @@ test("the hooks hold as the middleware does, on the name routed and what the poo
 });
 
 test("a pool name with no row of its own says so, in the route and in the log (review M4)", () => {
-  const ok = selectBestRoute(PROFILE, { candidateModels: ["claude-sonnet-5-5", "gpt-5.4", "gemini-2.5-pro"] });
+  const ok = selectBestRoute(PROFILE, { candidateModels: ["claude-sonnet-5-5", "totally-unknown-mini", "gemini-2.5-pro"] });
   assert.equal(ok.ok, true);
   assert.equal(ok.warnings.length, 2);
-  assert.match(ok.warnings[0], /gpt-5\.4 is not in the catalog: no scores/);
-  assert.match(ok.warnings[1], /gemini-2\.5-pro is not in the catalog: scored as an estimate of gemini-4-argon-high/);
+  assert.match(ok.warnings[0], /totally-unknown-mini is not in the catalog: no scores/);
+  // A family name says which series it matches and that it has no scores of its own: it is not routed on that row's scores
+  assert.match(ok.warnings[1], /gemini-2\.5-pro is not in the catalog: it matches the gemini-4-argon-high series but has no row of its own, so it has no scores/);
   assert.deepEqual(selectBestRoute(PROFILE, { candidateModels: ["claude-sonnet-5-5", "claude-opus-4-6"] }).warnings, []);
 
   const rejected = [];
@@ -533,11 +546,11 @@ test("a pool name with no row of its own says so, in the route and in the log (r
         { options: { candidateModels: pool, continuityStore: new SessionContinuityStore(), now: NOW, ...extra }, state: {}, reject: (s, m) => rejected.push([s, m]) },
       ),
     );
-  const { logged } = refuse(["gpt-5.4"], "Prove the correctness of this distributed consensus algorithm and redesign the architecture across all modules");
+  const { logged } = refuse(["totally-unknown-mini"], "Prove the correctness of this distributed consensus algorithm and redesign the architecture across all modules");
   assert.deepEqual(rejected[0], [503, "agentcompass: no_route: no candidate can serve this request"]);
-  assert.match(logged.join("\n"), /no candidate is available: gpt-5\.4(@\w+)?: data error: no trusted data/);
-  assert.match(logged.join("\n"), /candidate name gpt-5\.4 is not in the catalog/);
-  refuse(["gpt-5.4"], "hello", { constraintModel: "claude-opus-9" });
+  assert.match(logged.join("\n"), /no candidate is available: totally-unknown-mini@\w+: data error: no trusted data/);
+  assert.match(logged.join("\n"), /candidate name totally-unknown-mini is not in the catalog/);
+  refuse(["totally-unknown-mini"], "hello", { constraintModel: "claude-opus-9" });
   assert.deepEqual(rejected[1], [503, "agentcompass: pin_not_in_pool: pinned model claude-opus-9 is not among the candidates"]);
 
   // The log carries a name warning once per runtime, a route's other warnings every time
@@ -1231,7 +1244,7 @@ test("the documents' examples work as written: the profile, the quotas snapshot,
   assert.ok(listed.length > 1, "the quickstart lists candidate models");
   for (const name of listed) assert.equal(catalog.catalogNameWarning(name), null, `${name} has an entry in the catalog`);
 
-  const anchors = new Set([...reference.matchAll(/^## (.+)$/gm)].map((m) => m[1].toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")));
+  const anchors = new Set([...reference.matchAll(/^#{2,4} (.+)$/gm)].map((m) => m[1].toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")));
   for (const [, file, anchor] of [...readme.matchAll(/\]\((docs\/[A-Za-z_.]+)(?:#([a-z-]+))?\)/g)]) {
     assert.ok(fs.existsSync(path.join(REPO, file)), `${file} exists`);
     if (anchor) assert.ok(anchors.has(anchor), `${file}#${anchor} is a heading of the reference`);

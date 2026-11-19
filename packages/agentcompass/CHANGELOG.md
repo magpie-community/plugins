@@ -2,6 +2,29 @@
 
 One entry per version, newest first. This lists what a user has to know to upgrade.
 
+## 0.4.0 - 2026-11-19
+
+The engine is AgentCompass v0.7.1 (pinned at `e35a462`, the `v0.7.1` tag), with the reference data of that release (schema 8: a value at every effort a gateway offers, or a declared known gap). `src/` is the source repository's at `e49bda0`. The source repository compares the port with AgentCompass's `allocator.plan` on a committed sample of 1,611 rows drawn from a grid of 64,428, plus 280 bare-name rows; every row is alike.
+
+**Upgrading**
+
+- **Efforts run `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`** (`user-scores.js` `EFFORTS`, AgentCompass's `user_scores.EFFORTS`). A bare name on a provider with no launch table (a gateway) is now offered at every effort the data times, `none`, `minimal` and `ultra` included; give a row `efforts[]` to run it at fewer. A row's own list is still what it runs at.
+- **Candidates from your gateway**: `scripts/candidates-from-models.mjs` turns your Magpie's `GET /v1/models` into `candidateModels` rows with Magpie's own efforts per model ([reference](docs/reference.md#candidates-from-the-gateway)).
+- **`userScores` schema 4.** A table of schema 3 (0.3.0) is read and upgraded: a score under a name v0.7.0 resolved through an alias v0.7.1 removed or re-targeted (`gemini-4-pro`, `gemini-4-ultra`, `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, `grok-4`, `kimi-k3.1-pro-highspeed`, `glm-5.3-flash`, `deepseek-flash`, `deepseek-v4-flash`, `deepseek-v4.1-flash`, `mimo-v2.6-pro-ultraspeed`) moves to the row v0.7.0 meant, so it keeps scoring the model you scored. A score whose name resolves to no row is kept in your table and ignored; it no longer makes a row of its own. A hand-written score now fills every effort the panel steps to, and no curve inverts along effort.
+- **Model identity moved** (AgentCompass v0.7.1): `gemini-4-pro` and `gemini-4-ultra` are no longer aliases of `gemini-4-argon-high` (they are now family names, with no scores); `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, DeepSeek's dated snapshots, `glm-5.3-flash`, `kimi-k3.1-pro-highspeed` and `mimo-v2.6-pro-ultraspeed` are rows of their own; `claude-haiku-4-5-20251001` is an alias of `claude-haiku-4-5`. A `candidateModels` entry or pin under one of these names now reaches that row, or is out of automatic routing with a warning if it has none.
+- **`gpt-6-pro`** is `gpt-6-astra` at one operating point above `max`: a maintainer score on it never reads below that point, and a candidate's note shows both inputs and which binds.
+- **The candidate note of a manual score** says what routing reads on each facet at the candidate's effort (`manual capability scores applied, read at <effort>: ...`).
+- **The catalog warning of a family name** no longer says it is scored as an estimate of its series' row: such a name has no scores, as the code already did since 0.3.0.
+- **Removed exports**: `EFFORT_ORDER` (`catalog.js`, `quota-economy.js`; use `EFFORTS` from `user-scores.js`). New: `EFFORTS`, `MEASURED_EFFORTS`, `EDGES`, `edgeAnchor`, `anchorEffort`, `boundAlongEffort`, `operatingPointFloor`, `appliedScores`, `appliedNote`, `DERIVED_FROM_LARGER` (`user-scores.js`); `readingEffort` (`axis-scores.js`); `V0_7_0`, `v070Row` (`released-names.js`); `FIVE_AXIS_EFFORT_READINGS`, `FIVE_AXIS_EFFORT_STEPS` (`reference-data.js`). A task's `include_unverified` and `force_fast` are no longer read (AgentCompass v0.7.1: a caller cannot lift the launch-evidence check; this port carries no fast mode).
+- **Some model names are served as other weights than the row they name.** On the saved Magpie 0.1.4470 catalog the provider's own listing identifies
+  `deepseek-v4-pro` on `deepseek` as `deepseek-v4-pro-0813`, `deepseek-v4-flash` on `deepseek` as `deepseek-v4.1-flash-1017`, `gemini-3.1-flash-lite-preview`
+  on `google` as the preview model itself while the name resolves to the `gemini-3.1-flash-lite` row, and `ministral-3b-2512`, `ministral-8b-2512`, `ministral-14b-2512` on `mistral` as
+  `ministral-3-3b-instruct-2512`, `ministral-3-8b-instruct-2512`, `ministral-3-14b-instruct-2512`. The plugin scores each as the row its name resolves to and
+  routes it automatically, as AgentCompass v0.7.1 itself would, so its scores may be those of other weights. If that matters to you, name the model you
+  want (a pin) or leave the name out of `candidateModels` (or add it as a `disabled` row). It closes when AgentCompass's reference data says which row a name
+  is on each provider, ported in a later plugin release.
+- A pin is still refused on a row you marked `disabled` (`pin_unavailable`): the plugin has no separate record of the user's own naming, which is what lets AgentCompass v0.7.1 launch an unchecked model the user names.
+
 ## 0.3.0 - 2026-11-18
 
 The engine is AgentCompass v0.7.0 (pinned at `7827cdb`, the `v0.7.0` tag), with the reference data of that release; `src/` is the source repository's at `c27dd73`. The source repository compares the port with AgentCompass's `allocator.plan` on a committed sample of 1,085 rows drawn from a grid of 43,372 (the whole grid was also compared once); every row is alike. This version also carries what 0.2.2 was to bring (prepared on 2026-11-18, never published), the first item below.

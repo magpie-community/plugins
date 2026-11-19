@@ -113,7 +113,6 @@ export function rank(taskIn, ctx) {
     metered_ok: true,
     metered_fallback: false,
     disable_fast: false,
-    force_fast: false,
     _economy_pool: true,
   };
   const pool = Object.values(poolBundles)

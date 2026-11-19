@@ -17,7 +17,6 @@
 
 import {
   DISPATCH_EFFORTS,
-  EFFORT_ORDER,
   FAMILIES,
   MODEL_ALIASES,
   SCORING_POLICY,
@@ -29,6 +28,7 @@ import {
 import { PLAN_CAPACITY } from "./reference-data.js";
 import { canonicalWindowId, configuredPlan, planDefaults, planTable, planUnknownText } from "./plans.js";
 import { defaultScoredModels, scoredModels } from "./axis-scores.js";
+import { EFFORTS } from "./user-scores.js";
 import { dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
 import { inferModelProviderFamily, normalizeProviderFamily, providerMatchesModel, providersMatch } from "./quota.js";
 
@@ -138,7 +138,7 @@ export function bareEfforts(provider, model, fleet) {
   if (allowed !== null && allowed.length === 0) return [null];
   const timed = Object.keys((((info.five_axis || {}).duration) || {}).by_effort || {});
   const pool = allowed !== null ? allowed : timed;
-  const known = EFFORT_ORDER.filter((e) => pool.includes(e));
+  const known = EFFORTS.filter((e) => pool.includes(e));
   return known.length > 0 ? known : [null];
 }
 
@@ -151,7 +151,7 @@ export function effortRows(entry, fleet) {
   const { name: modelName, effort: colon } = splitEffortSuffix(stripped);
   const resolved = resolveModel(modelName, fleet.models, fleet.aliases, fleet.families);
   const suffix = colon || resolved.effort || null;
-  const fixedBySuffix = suffix && EFFORT_ORDER.includes(suffix);
+  const fixedBySuffix = suffix && EFFORTS.includes(suffix);
   const model = fixedBySuffix ? modelName : stripped;
   const provider = obj.provider || inferModelProviderFamily(model, fleet.aliases) || "gateway";
   // A row that lists its efforts is launched at those: the list is the host's (Cindy's `tasks.models()`) or the operator's
