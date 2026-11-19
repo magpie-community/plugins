@@ -295,8 +295,20 @@ class FakeAgy {
       // What agy offers this client in the session; unset, the session names none.
       if (this.offered()) models.availableModels = this.offered().map(([modelId, name]) => ({ modelId, name }))
       // A real signed-in agy takes ~3s to open a session (#1064).
-      if (this.kit.sessionNewDelayMs) setTimeout(() => this.respond(id, { sessionId: this.sessionId, models }), this.kit.sessionNewDelayMs)
-      else this.respond(id, { sessionId: this.sessionId, models })
+      const sendNew = () => {
+        this.respond(id, { sessionId: this.sessionId, models })
+        if (Array.isArray(this.kit.availableCommands)) {
+          this.send({
+            method: "session/update",
+            params: {
+              sessionId: this.sessionId,
+              update: { sessionUpdate: "available_commands_update", availableCommands: this.kit.availableCommands },
+            },
+          })
+        }
+      }
+      if (this.kit.sessionNewDelayMs) setTimeout(sendNew, this.kit.sessionNewDelayMs)
+      else sendNew()
     } else if (method === "session/set_model") {
       this.kit.setModels.push(params.modelId)
       // agy whose account Google turned away offers no model: every one is unknown
@@ -481,6 +493,7 @@ export async function createBridgeKit(options = {}) {
     prompts: [],
     promptSerial: 0,
     defaultPrompt: null,
+    availableCommands: options.availableCommands ?? null,
     sessionSerial: 0,
     initialAgyModel: options.initialAgyModel ?? "gemini-3.8-flash-low",
     offeredModels: options.offeredModels ?? null,
