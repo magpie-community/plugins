@@ -1696,12 +1696,16 @@ function statusOf(status, code, msg) {
   // "context limit" is a prompt-size refusal, not a quota; keep it out of
   // the bare "limit" test so it still reaches the context-length 400 below.
   const contextTooLong = low.includes("too long") || low.includes("context length") || low.includes("too many tokens")
-  const limit = low.includes("quota") || low.includes("rate limit") || low.includes("usage limit") || (/\blimit\b/.test(low) && !contextTooLong)
+  // A limit named outright is a quota: "quota", "rate limit", "usage limit".
+  // The bare word "limit" is not: Cursor also says "capacity limit", "token
+  // limit" and "Tool call limit exceeded", each a different failure with its
+  // own branch below, so it may only veto the transient-503 test (#1290).
+  const limit = low.includes("quota") || low.includes("rate limit") || low.includes("usage limit")
   // resource_exhausted is also Cursor's code when the model behind it does
   // not answer ("Network Error ... temporary"). OpenCode treats the
   // "usage limit reached" wording as provider.quota and does not retry, so a
   // temporary failure is a 503; text that names a real limit stays a 429 (#1290).
-  if (code === "resource_exhausted" && !limit && /network error|trouble connecting|temporar|try again/.test(low))
+  if (code === "resource_exhausted" && !limit && !/\blimit\b/.test(low) && /network error|trouble connecting|temporar|try again/.test(low))
     return out(503, msg)
   if (code === "resource_exhausted" || limit)
     return out(429, "usage limit reached: " + msg)

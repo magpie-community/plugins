@@ -37,6 +37,17 @@ test("a temporary resource_exhausted is an upstream failure, not a quota", () =>
     .toEqual({ status: 429, message: "usage limit reached: You have reached your limit. Please try again later." })
 })
 
+test("the bare word limit does not turn another code's failure into a quota", () => {
+  // Cursor says "limit" for three other failures, each of which keeps its own
+  // branch: an upstream capacity refusal, a prompt too large, and a tool cap.
+  expect(failure(200, JSON.stringify({ error: { code: "unavailable", message: "Model is at its capacity limit" } })))
+    .toEqual({ status: 503, message: "Model is at its capacity limit" })
+  expect(failure(200, JSON.stringify({ error: { code: "invalid_argument", message: "Your request exceeds the token limit for this model" } })))
+    .toEqual({ status: 400, message: "Your request exceeds the token limit for this model" })
+  expect(failure(200, JSON.stringify({ error: { code: "internal", message: "Tool call limit exceeded" } })))
+    .toEqual({ status: 502, message: "Tool call limit exceeded" })
+})
+
 // Cursor can refuse a prompt under an authentication code. The observed
 // wording identifies the request, not an expired sign-in; the surrounding
 // Connect envelopes below are synthetic variants of that failure.
