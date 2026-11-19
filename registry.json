@@ -306,6 +306,6 @@
       "icon": "https://raw.githubusercontent.com/pmndre/pine/next/docs/images/logo-light.svg",
       "summary": { "en": "Pine (pmndre/pine, the event-driven agent harness on pi's SDK) on magpie's Agents page: pick one of magpie's models and magpie writes its gateway and catalog into ~/.pine/models.json and the model into pine.json, so new conversations start on it. Restart Pine after a change; unofficial.", "zh": "把 Pine（pmndre/pine，跑在 pi SDK 上的事件驱动 Agent 框架）加到 magpie 的 Agent 页：选一个 magpie 的模型，magpie 把网关和模型目录写进 ~/.pine/models.json、把起始模型写进 pine.json，新对话就用它。换完模型要重启 Pine；非官方适配。" } },
     { "package": "@magpie-community/opencode-quwork-auth", "name": "QuWork", "providers": ["quwork"], "community": true,
-      "summary": { "en": "QuWork community integration with official website sign-in, quota and authorized model key setup.", "zh": "QuWork 社区接入，提供官网登录、积分查询和授权模型密钥配置。" } }
+      "summary": { "en": "QuWork community integration with official Web App sign-in, daily check-in and authorized model key setup.", "zh": "QuWork 社区接入，提供官方 Web App 登录、每日签到和授权模型密钥配置。" } }
   ]
 }

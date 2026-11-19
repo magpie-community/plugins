@@ -184,7 +184,7 @@ function captureLoginResponses(client) {
   return captured
 }
 
-export async function openChromeSession(url, { targetPrefix = "https://quwork.cn/" } = {}) {
+export async function openChromeSession(url, { targetPrefix = "https://qurwork-llm.rrzu.com/" } = {}) {
   const browser = findBrowser()
   if (!browser) throw new Error("没有找到 Chrome 或 Edge；请安装浏览器后重试")
   const profile = mkdtempSync(join(tmpdir(), "magpie-quwork-browser-"))
@@ -221,9 +221,34 @@ export async function openChromeSession(url, { targetPrefix = "https://quwork.cn
     return result.result?.value
   }
 
+  async function cookies() {
+    try {
+      const result = await client.send("Network.getAllCookies")
+      return (result.cookies ?? [])
+        .filter((cookie) => {
+          const domain = String(cookie?.domain ?? "").toLowerCase()
+          return domain.includes("rrzu.com") || domain.includes("quwork.cn")
+        })
+        .map(({ name, value, domain, path, secure, httpOnly, sameSite, expires }) => ({
+          name,
+          value,
+          domain,
+          path,
+          secure,
+          httpOnly,
+          sameSite,
+          expires,
+        }))
+    } catch {
+      return []
+    }
+  }
+
   async function credentials(timeoutMs) {
     const deadline = Date.now() + timeoutMs
     let webSeenAt = 0
+    let cookieSeenAt = 0
+    let uid = ""
     while (Date.now() < deadline && !closed) {
       if (spawnError) throw new Error(`浏览器无法启动：${spawnError}`)
       if (!captured.webToken) {
@@ -232,12 +257,27 @@ export async function openChromeSession(url, { targetPrefix = "https://quwork.cn
           if (typeof value === "string" && value.trim()) captured.webToken = value.trim()
         } catch {}
       }
+      if (!uid) {
+        try {
+          const value = await evaluate('localStorage.getItem("uid")')
+          if (typeof value === "string" && value.trim()) uid = value.trim()
+        } catch {}
+      }
+      if (!captured.cookies?.length || !cookieSeenAt) {
+        const current = await cookies()
+        if (current.length) {
+          captured.cookies = current
+          if (!cookieSeenAt) cookieSeenAt = Date.now()
+        }
+      }
       if (captured.webToken && !webSeenAt) webSeenAt = Date.now()
-      if (captured.llmToken) return { ...captured }
-      if (captured.webToken && Date.now() - webSeenAt > 3000) return { ...captured }
+      if (captured.llmToken) return { ...captured, uid }
+      if (captured.cookies?.length && uid && Date.now() - cookieSeenAt > 3000) return { ...captured, uid }
+      if (captured.cookies?.length && Date.now() - cookieSeenAt > 5000) return { ...captured, uid }
+      if (captured.webToken && Date.now() - webSeenAt > 3000) return { ...captured, uid }
       await sleep(500)
     }
-    return captured.webToken ? { ...captured } : null
+    return captured.webToken || captured.cookies?.length ? { ...captured, uid } : null
   }
 
   function close() {
@@ -263,5 +303,5 @@ export async function openChromeSession(url, { targetPrefix = "https://quwork.cn
     return closing
   }
 
-  return { evaluate, credentials, close }
+  return { evaluate, cookies, credentials, close }
 }

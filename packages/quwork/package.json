@@ -1,7 +1,7 @@
 {
   "name": "@magpie-community/opencode-quwork-auth",
-  "version": "0.1.9",
-  "description": "QuWork (Clawork) provider for OpenCode and Magpie with official website sign-in, quota and authorized model key setup",
+  "version": "0.1.10",
+  "description": "QuWork (Clawork) provider for OpenCode and Magpie with official Web App sign-in, daily check-in and authorized model key setup",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": {
@@ -33,8 +33,8 @@
   "magpie": {
     "name": "QuWork",
     "summary": {
-      "en": "QuWork community integration with official website sign-in, quota and authorized model key setup.",
-      "zh": "QuWork 社区接入，提供官网登录、积分查询和授权模型密钥配置。"
+      "en": "QuWork community integration with official Web App sign-in, daily check-in and authorized model key setup.",
+      "zh": "QuWork 社区接入，提供官方 Web App 登录、每日签到和授权模型密钥配置。"
     },
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMyZjZmZWQiLz48dGV4dCB4PSIzMiIgeT0iNDUiIGZvbnQtZmFtaWx5PSJBcmlhbCxIZWx2ZXRpY2Esc2Fucy1zZXJpZiIgZm9udC1zaXplPSIzOCIgZm9udC13ZWlnaHQ9IjcwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iI2ZmZmZmZiI+UTwvdGV4dD48L3N2Zz4=",
     "page": {
