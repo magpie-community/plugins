@@ -1,13 +1,13 @@
 # Magpie Paseo Bridge
 
-这个 Magpie 网关 hook 记录 Codex 最终回复实际走过的路由。Paseo 的 Magpie 插件读取本机索引，在回复旁显示实际供应商、模型和回退尝试。
+这个 Magpie 网关 hook 记录 Codex 每次请求实际使用的供应商、模型和回退尝试。Paseo Magpie `v0.6.0` 或更新版本可在轮次结束后，于最终回复下展开本轮已记录的请求。
 
 ## 安装
 
 Magpie 和 Paseo 守护进程需要在同一台机器上以同一系统用户运行，并使用相同的绝对 `XDG_CONFIG_HOME` 或同一用户主目录。Codex 的 Responses 请求需已接入该 Magpie 网关。
 
 ```sh
-magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.1'
+magpie plugin add 'github:kogekiplay/magpie-paseo-bridge#v0.1.2'
 magpie plugin list
 ```
 
@@ -17,9 +17,9 @@ magpie plugin list
 
 ## 匹配与隐私
 
-hook 只处理本机 Codex 主会话成功完成的 Responses 回复。它通过回环地址读取 Magpie trace，用会话 ID 和响应 ID 精确匹配唯一一条路由，再用最终助手消息的 ID 写入索引。工具轮的中间回复和标题、子代理等辅助请求会被跳过。
+hook 处理本机 Codex 主会话成功完成的 Responses 请求，包括产生工具调用的请求，并跳过标题、子代理等辅助请求。它通过回环地址读取 Magpie trace，用会话 ID 和响应 ID 精确匹配路由，用 Codex 的原生轮次将多条请求关联起来，再以最终助手消息 ID 供 Paseo 定位。
 
-索引位于 `$XDG_CONFIG_HOME/magpie/paseo-bridge/v1/` 或 `~/.config/magpie/paseo-bridge/v1/`。文件名由会话 ID、NUL 字节和消息 ID 计算 SHA-256 得到。记录只保存供应商、模型、尝试顺序、HTTP 状态码和失败标记，七天后过期。索引不会写入提示词、回复正文、凭据、账号或原始错误。
+索引位于 `$XDG_CONFIG_HOME/magpie/paseo-bridge/v1/` 或 `~/.config/magpie/paseo-bridge/v1/`。记录保存散列后的关联键、请求的排序字段、供应商、模型和尝试明细，七天后过期。索引不会写入提示词、回复正文、凭据、账号或原始错误。
 
 ## 看不到路由标签
 

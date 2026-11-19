@@ -11,7 +11,7 @@ import { isAbsolute, join } from "node:path";
 const responsePaths = new Set([
   "/v1/responses", "/responses", "/backend-api/codex/responses",
 ]);
-const recordName = /^[a-f0-9]{64}\.json$/;
+const recordName = /^[a-f0-9]{64}(?:-[a-f0-9]{64})?\.json$/;
 const tempName = /^\.[a-f0-9-]{36}\.tmp$/;
 const retentionMs = 7 * 24 * 60 * 60 * 1000;
 const maxRecords = 4096;
@@ -20,27 +20,43 @@ const maxRecordBytes = 16 * 1024;
 const maxTraceBytes = 4 * 1024 * 1024;
 const traceTimeoutMs = 650;
 
-// Magpie calls onResponse only for hooks that participate in onRequest.
-export function onRequest() {}
+export function onRequest(body, ctx) {
+  if (!mainCodexContext(ctx) || !ctx.state) return;
+  const turn = nativeTurnId(body?.client_metadata, ctx.session);
+  if (turn) ctx.state.paseoTurnKey = digest(ctx.session, turn);
+}
 
 export async function onResponse(reply, ctx) {
-  if (typeof process.getuid !== "function" || !mainCodexResponse(ctx)) return;
+  if (typeof process.getuid !== "function" || ctx?.success !== true || !mainCodexContext(ctx) ||
+      reply?.object !== "response" || !opaqueId(reply.id, 256) ||
+      (reply.status != null && reply.status !== "completed") || reply.error != null ||
+      !Array.isArray(reply.output) || reply.output.length > 256) return;
   const messageId = finalMessageId(reply);
-  if (!messageId) return;
+  const turn = ctx.state?.paseoTurnKey;
+  if (!messageId && !turn) return;
 
   try {
     const trace = await readTrace(process.env.MAGPIE_ADDR, ctx.signal);
     if (ctx.signal?.aborted) return;
-    const record = exactRoute(trace, ctx.session, reply.id);
-    if (record) storeRecord(ctx.session, messageId, record);
+    const hit = exactRoute(trace, ctx.session, reply.id);
+    if (!hit) return;
+    const { record, order } = hit;
+    let history;
+    if (typeof turn === "string" && /^[a-f0-9]{64}$/.test(turn) && order) {
+      const request = createHash("sha256").update(reply.id).digest("hex");
+      const phase = messageId ? "reply" : reply.output.some(isToolCall) ? "tool" : "model";
+      storeRecord(`${turn}-${request}`, { ...record, order, phase });
+      history = { turn, request, order };
+    }
+    if (messageId) storeRecord(digest(ctx.session, messageId), { ...record, ...(history && { history }) });
   } catch {
     // A local lookup or index error can only suppress the label. Error objects
     // from the trace, HTTP client and filesystem may contain private data.
   }
 }
 
-function mainCodexResponse(ctx) {
-  return ctx?.success === true && !ctx.signal?.aborted &&
+function mainCodexContext(ctx) {
+  return ctx && !ctx.signal?.aborted &&
     (ctx.origin === "local" || ctx.origin === "magpie-key") &&
     ctx.agent === "codex" && ctx.protocol === "responses" && ctx.kind === "" &&
     responsePaths.has(ctx.path) && opaqueId(ctx.session, 128);
@@ -51,16 +67,40 @@ function opaqueId(value, maxLength) {
     value.trim() === value && !/[\p{Cc}\p{Cs}]/u.test(value);
 }
 
-function finalMessageId(reply) {
-  if (reply?.object !== "response" || !opaqueId(reply.id, 256) ||
-      (reply.status != null && reply.status !== "completed") || reply.error != null ||
-      !Array.isArray(reply.output) || reply.output.length > 256) return;
+function nativeTurnId(metadata, session) {
+  if (!metadata || typeof metadata !== "object") return;
+  const sources = [metadata];
+  for (const key of ["x-codex-turn-metadata", "ws_request_header_x_codex_turn_metadata"]) {
+    let value = metadata[key];
+    if (value == null) continue;
+    if (typeof value === "string" && value.length <= 16_384) {
+      try { value = JSON.parse(value); } catch { return; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    sources.push(value);
+  }
+  const values = (key) => [...new Set(sources.map((source) => source[key]).filter((value) => value != null))];
+  const threads = values("thread_id");
+  const turns = values("turn_id");
+  if (threads.length !== 1 || threads[0] !== session || turns.length !== 1 || !opaqueId(turns[0], 128) ||
+      values("root_turn_id").some((root) => root !== turns[0])) return;
+  return turns[0];
+}
 
+function digest(session, id) {
+  return createHash("sha256").update(session).update("\0").update(id).digest("hex");
+}
+
+function isToolCall(item) {
+  return ["function_call", "custom_tool_call", "computer_call", "local_shell_call", "shell_call",
+    "apply_patch_call", "tool_search_call", "mcp_approval_request"].includes(item?.type);
+}
+
+function finalMessageId(reply) {
   let messageId;
   for (const item of reply.output) {
     // Tool calls awaiting client output continue the turn in another request.
-    if (["function_call", "custom_tool_call", "computer_call", "local_shell_call", "shell_call",
-      "apply_patch_call", "tool_search_call", "mcp_approval_request"].includes(item?.type)) return;
+    if (isToolCall(item)) return;
     if (item?.type !== "message" || item.role !== "assistant" || item.phase === "commentary") continue;
     if (messageId || !opaqueId(item.id, 256) || (item.status != null && item.status !== "completed") ||
         (item.phase != null && item.phase !== "final_answer")) return;
@@ -173,7 +213,10 @@ function exactRoute(trace, session, responseId) {
   if (winner.served && row.served && winner.served !== row.served) return;
   const model = winner.served || row.served || winner.model;
   if (!modelId(model)) return;
-  return { version: 1, provider, model, attempts };
+  const time = typeof row.time === "string" ? Date.parse(row.time) : NaN;
+  const order = Number.isSafeInteger(time) && time > 0 && Number.isSafeInteger(row.id) && row.id > 0
+    ? { time, id: row.id } : undefined;
+  return { record: { version: 1, provider, model, attempts }, order };
 }
 
 function ownedDirectory(path, uid, privateDirectory = false) {
@@ -262,10 +305,9 @@ function existingRecord(path, uid) {
   }
 }
 
-function storeRecord(session, messageId, record) {
+function storeRecord(key, record) {
   const uid = process.getuid();
   const index = indexDirectory(uid);
-  const key = createHash("sha256").update(session).update("\0").update(messageId).digest("hex");
   const path = join(index, `${key}.json`);
   const bytes = `${JSON.stringify(record)}\n`;
   const conflict = "{}\n";

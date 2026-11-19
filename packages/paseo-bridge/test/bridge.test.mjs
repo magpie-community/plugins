@@ -111,6 +111,34 @@ test("skips tool rounds, commentary, incomplete replies and ambiguous output", a
   assert.deepEqual(JSON.parse(await readFile(recordPath(), "utf8")), record);
 });
 
+test("indexes a tool response only when request metadata identifies its exact native turn", async () => {
+  const native = "native-turn";
+  const metadata = { thread_id: session, turn_id: native, root_turn_id: native };
+  const tool = { ...reply, output: [{ type: "function_call" }] };
+  useTrace([{ ...row, id: 3, time: "2026-11-19T10:00:00Z" }]);
+  for (const client_metadata of [
+    { ...metadata, thread_id: "another-thread" },
+    { ...metadata, root_turn_id: "parent-turn" },
+    { ...metadata, "x-codex-turn-metadata": JSON.stringify({ ...metadata, turn_id: "another-turn" }) },
+  ]) {
+    const ctx = { ...context, state: {} };
+    onRequest({ client_metadata }, ctx);
+    await onResponse(tool, ctx);
+  }
+  assert.deepEqual(requests, []);
+
+  const ctx = { ...context, state: {} };
+  onRequest({ client_metadata: metadata }, ctx);
+  await onResponse(tool, ctx);
+  const turnHash = createHash("sha256").update(session).update("\0").update(native).digest("hex");
+  const requestHash = createHash("sha256").update(responseId).digest("hex");
+  const file = `${turnHash}-${requestHash}.json`;
+  assert.deepEqual(await readdir(index), [file]);
+  assert.deepEqual(JSON.parse(await readFile(join(index, file), "utf8")), {
+    ...record, order: { id: 3, time: Date.parse("2026-11-19T10:00:00Z") }, phase: "tool",
+  });
+});
+
 test("requires exactly one successful main trace and a resolvable winning seat", async () => {
   for (const routes of [
     [{ ...row, responseId: undefined }], [{ ...row, done: false }], [{ ...row, status: 500 }],
