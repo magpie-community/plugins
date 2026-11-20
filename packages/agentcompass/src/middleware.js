@@ -37,7 +37,21 @@ import {
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { canonicalModel, servedModel, splitEffortSuffix } from "./catalog.js";
+import { MAGPIE_HOST, canonicalModel, catalogTables, expandHostProviders, magpieOptions, providerNamesOf, servedModel, splitEffortSuffix } from "./catalog.js";
+import { withoutUnconstrainingTag } from "./fleet.js";
+
+/** `canonicalModel` under a host's `options.catalog` (its models, aliases and `provider_names` table). */
+function catalogCanonical(rawModel, catalog) {
+  const names = catalogTables(catalog);
+  return canonicalModel(rawModel, names.aliases, names.models, names.families, [], names.providerNames);
+}
+
+/**
+ * The name a routed target or a preset's list entry is matched by, without its effort. Both sides are already without the tag that
+ * constrains no effort (`:auto`, `:off`, `:default`): `fleet.js` strips it from the target with `withoutUnconstrainingTag`, and
+ * `onProvider` strips it from the entry with the same function before reading it.
+ */
+const listedKey = (name) => splitEffortSuffix(String(name || "").trim()).name;
 import {
   STICK_KEEP_MS,
   bodyUpTo,
@@ -169,7 +183,7 @@ function shouldRoute(model, options = {}) {
 const ONE_CONFIGURATION = "default";
 
 function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const protocol = String(ctx?.protocol || "").toLowerCase();
   if (options.injectProtocolEffort !== true || !targetEffort || targetEffort === ONE_CONFIGURATION) return body;
 
@@ -198,7 +212,7 @@ function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
  * model and no effort (`ONE_CONFIGURATION`).
  */
 export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const rawModel = decision.targetModel;
   const targetEffort = decision.targetEffort || "high";
 
@@ -268,7 +282,7 @@ function replayedState(body, ctx, env, chain, stale, depth) {
   const tokens = Number(earlier.facts.estimatedInputTokens || 0);
   return {
     sessionKey: earlier.sessionKey,
-    model: canonicalModel(d.targetModel, env.options.catalog?.aliases),
+    model: catalogCanonical(d.targetModel, env.options.catalog),
     target: d.targetModel,
     effort: d.targetEffort || "high",
     provider: "",
@@ -332,6 +346,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
     cacheTtl: options.cacheTtl,
     models: options.catalog?.models,
     aliases: options.catalog?.aliases,
+    providerNames: providerNamesOf(options.catalog),
   });
 
   if (cont.shouldHold && cont.model) {
@@ -376,7 +391,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
         decision: {
           ok: true,
           targetModel: target,
-          canonicalModel: canonicalModel(cont.model, options.catalog?.aliases),
+          canonicalModel: catalogCanonical(cont.model, options.catalog),
           targetEffort: heldEffort,
           modelWithEffort: `${target}:${heldEffort}`,
           bundle: pool ? heldBundle(pool, target, heldEffort, options.catalog, pins) : null,
@@ -495,7 +510,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
   let finalEffort = decision.targetEffort;
   if (
     sessionState &&
-    canonicalModel(decision.targetModel) === canonicalModel(sessionState.model) &&
+    catalogCanonical(decision.targetModel, options.catalog) === catalogCanonical(sessionState.model, options.catalog) &&
     cont.why !== "cold" &&
     cont.why !== "compacted" &&
     cont.why !== "first" &&
@@ -554,7 +569,7 @@ function sendUnrouted(body, ctx, decision, options) {
  * under `routeAllModels` with no pin is the one case with a target of its own: routing found nothing better, it goes as asked.
  */
 function rejectBlocked(body, ctx, blocked) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const pinned = Object.keys(mergePinOptions(pinOptionsOf(options), body, body.task)).length > 0;
   if (!pinned && !isVirtualModelName(body.model, options)) return null;
   ctx.state = ctx.state || {};
@@ -567,7 +582,7 @@ export function onRequest(body, ctx = {}) {
     return undefined;
   }
 
-  const options = ctx.options || {};
+  const options = magpieOptions(ctx.options);
   const isClaimedModel = shouldRoute(body.model, options);
   const providerModelsAll = extractAllProviderModels(options);
   const hasModelsByProvider = providerModelsAll.length > 0;
@@ -739,7 +754,7 @@ export function onProvider(body, ctx = {}) {
     return undefined;
   }
 
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   const liveQuotas = loadLiveQuotas(options, now);
   const prov = ctx?.provider && typeof ctx.provider === "object" ? ctx.provider : null;
@@ -748,16 +763,28 @@ export function onProvider(body, ctx = {}) {
     extractModelList(options.modelsByProvider?.[prov?.name]);
   // The names of a preset's list are in that preset's namespace (`model_resolution.serving_providers`): one the preset's own
   // `provider_names` declaration makes another model than the bare name is (no row there, or another row) is routed by the
-  // spelling that keeps reading that declaration (`servedModel`), and sent to the preset as listed.
+  // spelling that keeps reading that declaration (`servedModel`, under `options.catalog`), and sent to the preset as listed
+  // whenever the target routed on, here or by `onRequest`, is that spelling. A tag that constrains no effort (`:auto`, `:off`,
+  // `:default`) is kept on the entry and left out of the name read and matched, as `fleet.js` leaves it out of the target. The
+  // preset's id is read through `host_providers.magpie` (`opencode-zen` serves models.dev's `opencode`). Every entry of the list
+  // keeps the preset id as Magpie gives it (`presets`) and the catalogs it serves (`served`), and a converted one the name as listed
+  // (`launch_model`), as a bundle AgentCompass derives for a Magpie account keeps them: a model the user names with the preset's id
+  // or its catalog's as the prefix names these entries (`pinMatchingBundles`).
+  const names = catalogTables(options.catalog);
+  const endpoints = prov?.id ? expandHostProviders([prov.id], MAGPIE_HOST, names.providerNames) : [];
   const listedAs = new Map();
   const providerModels = listedModels && prov?.id
     ? listedModels.map((entry) => {
         const name = typeof entry === "string" ? entry : entry?.model;
         if (!name) return entry;
-        const served = servedModel(name, [prov.id]);
-        if (served === name) return entry;
-        listedAs.set(splitEffortSuffix(served).name, splitEffortSuffix(name).name);
-        return typeof entry === "string" ? served : { ...entry, model: served };
+        const bare = withoutUnconstrainingTag(String(name).trim());
+        const tag = String(name).trim().slice(bare.length);
+        const served = servedModel(bare, endpoints, names.models, names.aliases, names.families, names.providerNames);
+        // Every name of the list is offered on this preset: its id as Magpie gives it and the catalogs it serves.
+        const offeredOn = { presets: [prov.id], served: endpoints };
+        if (served === bare) return typeof entry === "string" ? { model: entry, ...offeredOn } : { ...entry, ...offeredOn };
+        listedAs.set(listedKey(served), listedKey(bare));
+        return { ...(typeof entry === "string" ? {} : entry), model: `${served}${tag}`, launch_model: bare, ...offeredOn };
       })
     : listedModels;
 
@@ -802,6 +829,8 @@ export function onProvider(body, ctx = {}) {
         meteredOk: options.meteredOk,
         userScores: options.userScores,
         now,
+        // The pool's rows on the other presets: a model named with another preset's prefix is not served by this one.
+        pinOnlyModels: explicitCandidateModels(options, ctx) || [],
         ...mergePinOptions(pinOptionsOf(options), prevDecision.pins),
       });
       logRouteWarnings(routed.warnings);
@@ -827,11 +856,17 @@ export function onProvider(body, ctx = {}) {
           ctx.state.agentcompass = updated;
           ctx.state.route = updated;
         }
-        const listed = listedAs.get(updated.targetModel);
+        const listed = listedAs.get(listedKey(updated.targetModel));
         applyRoutedModelAndEffort(body, listed ? { ...updated, targetModel: listed } : updated, ctx);
         return body;
       }
       return undefined;
+    }
+    // The route `onRequest` chose stands on this preset; it still goes upstream under the name the preset lists for it.
+    const listed = prevDecision.ok !== false && prevDecision.targetModel ? listedAs.get(listedKey(prevDecision.targetModel)) : null;
+    if (listed) {
+      applyRoutedModelAndEffort(body, { ...prevDecision, targetModel: listed }, ctx);
+      return body;
     }
   }
 
@@ -876,7 +911,7 @@ export function onProvider(body, ctx = {}) {
  * records nothing, since it must not start a session that later turns hold, and its JSON reply says why.
  */
 export function onResponse(body, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const store = options.continuityStore || defaultContinuityStore;
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   const decision = ctx?.state?.agentcompass || ctx?.state?.route;
@@ -911,7 +946,7 @@ export function onResponse(body, ctx = {}) {
  */
 export function onAccount(accountOrBody, ctx = {}) {
   const decision = ctx?.state?.agentcompass || ctx?.state?.route;
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   if (decision?.ok === false && decision?.accountBlocked === true) {
     return { skip: true };
   }

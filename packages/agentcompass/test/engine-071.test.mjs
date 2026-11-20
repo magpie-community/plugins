@@ -13,13 +13,16 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { rankCandidates } from "../src/allocator.js";
+import { rankCandidates, selectBestRoute } from "../src/allocator.js";
 import { readingEffort, scoredModels } from "../src/axis-scores.js";
-import { FAMILIES, MODELS, MODEL_ALIASES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, healthKey, modelLeaf, resolveModel, rowKey, servedModel } from "../src/catalog.js";
+import { FAMILIES, MODELS, MODEL_ALIASES, NO_PROVIDER_NAMES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, checkModelPin, expandHostProviders, healthKey, magpieOptions, modelLeaf, modelPinProblem, providerNamesOf, resolveListed, resolveModel, rowKey, servedModel, slashSuffixes } from "../src/catalog.js";
+import { effectivePin, lookupNames, pinMatchingBundles, pinNamesBundle } from "../src/candidate-eval.js";
+import { applicableWindows } from "../src/quota-pools.js";
+import { normalizeTask } from "../src/task-intake.js";
 import { durationAt } from "../src/quota-economy.js";
 import { FIVE_AXIS_EFFORT_READINGS, FIVE_AXIS_EFFORT_STEPS, FIVE_AXIS_MODELS } from "../src/reference-data.js";
 import { V0_7_0, v070Row } from "../src/released-names.js";
-import { EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, resolveModelKey, risesWithEffort, scoreLayer, upgradeScores } from "../src/user-scores.js";
+import { EDGES, EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, resolveModelKey, risesWithEffort, scoreLayer, upgradeScores } from "../src/user-scores.js";
 import { ONE_CONFIGURATION, candidatesFromModels, levelsOf } from "../scripts/candidates-from-models.mjs";
 import { onProvider as middlewareOnProvider, onRequest as middlewareOnRequest } from "../src/middleware.js";
 import { EFFORT_TO_JEV_SCORE, JEV_EFFORT_LEVELS, buildEffortAnswer } from "../src/index.js";
@@ -27,6 +30,7 @@ import { profile } from "./profile.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROFILE = profile();
+const T0_071 = 1_790_000_000_000;
 const FIVE_AXIS_MODELS_TABLE = scoredModels();
 const facetsOf = (info) => Object.entries(info.five_axis.categories).flatMap(([c, cell]) => Object.entries(cell.facets || {}).map(([f, fc]) => [c, f, fc]));
 const ordered = (by, rises) => {
@@ -73,17 +77,29 @@ test("every shipped facet, after the maintainer scores, is ordered along effort 
 });
 
 test("a manual score fills every effort the panel steps to from High, and the edges from their anchors", () => {
-  const [model] = Object.entries(FIVE_AXIS_MODELS).find(([, r]) => r.categories.coding && r.categories.coding.facets);
+  // A facet with no curve of its own (no measured or estimated effort), so every effort but High comes from the panel's steps
+  // (`effort_steps`: High to each effort, then each edge from its anchor), which a row that already holds all eight would hide.
+  const [model] = Object.entries(FIVE_AXIS_MODELS).find(([, r]) => r.categories.coding && !(r.categories.coding.facets || {}).execution);
+  assert.ok(model, "the shipped data has a coding row with no execution facet");
   const scored = scoredModels({ userScores: { schema_version: 4, scores: { [model]: { "coding.execution": { level: 2.4, as_of: "2026-11-19" } } } } })[model];
   const cell = scored.five_axis.categories.coding.facets.execution;
+  const by = cell.by_effort;
   const steps = FIVE_AXIS_EFFORT_STEPS["coding.execution"];
-  const reachable = new Set(["high", ...Object.keys(steps.high), ...Object.keys(FIVE_AXIS_MODELS[model].categories.coding.facets.execution.by_effort)]);
-  if (reachable.has("low") && steps.low && steps.low.minimal) reachable.add("minimal");
-  if (reachable.has("max") && steps.max && steps.max.ultra) reachable.add("ultra");
-  if (steps.lowest_reasoning && steps.lowest_reasoning.none) reachable.add("none");
-  for (const e of reachable) assert.ok(typeof cell.by_effort[e] === "number", `${model} coding.execution at ${e}`);
-  assert.ok(ordered(cell.by_effort, true));
+  const near = (a, b, what) => assert.ok(Math.abs(a - b) <= 1e-4, `${model} coding.execution ${what}: ${a} vs ${b}`);
   assert.equal(cell.status, "user");
+  assert.deepEqual(cell.measured_efforts, []);
+  near(by.high, cell.manual.z, "high is the score");
+  const fromHigh = Object.entries(steps.high).filter(([, st]) => st && st.step !== null && st.step !== undefined);
+  assert.ok(fromHigh.length > 0);
+  for (const [e, st] of fromHigh) near(by[e], by.high + st.step, `${e} from high`);
+  // each edge: its anchor (the effort its `EDGES` entry steps from; `lowest_reasoning`, the lowest other effort) plus that step
+  for (const [edge, [key]] of Object.entries(EDGES)) {
+    const anchor = key === "lowest_reasoning" ? EFFORTS.find((e) => e !== edge && e in by) : key;
+    const st = (steps[key] || {})[edge];
+    assert.ok(st && anchor, `${edge}: a step and an anchor`);
+    near(by[edge], by[anchor] + st.step, `${edge} from ${anchor}`);
+  }
+  assert.ok(ordered(by, true));
 });
 
 test("a maintainer score on a row declared as another row at an operating point never reads below that point", () => {
@@ -337,7 +353,6 @@ test("a modelsByProvider name is read on its preset: a name the preset declares 
   const options = {
     candidateModels: [{ model: pair, efforts: ["high"] }],
     modelsByProvider: { [provider]: [{ model: name, efforts: ["high"] }] },
-    routePerProvider: true,
     constraintModel: pair,
   };
   const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
@@ -346,6 +361,293 @@ test("a modelsByProvider name is read on its preset: a name the preset declares 
   middlewareOnProvider(body, { ...ctx, provider: { id: provider, model: name } });
   assert.equal(ctx.state.route.targetModel, pair, "routed as the pair");
   assert.equal(body.model, `${name}:high`, "sent to the preset as listed");
+});
+
+test("onProvider sends the listed name whenever the route has one: a declaration onto another scored row, a tagged entry, no per-provider route", () => {
+  // A preset that lists a name its own declaration makes a scored row (constructed: no shipped declaration does this), under
+  // the host catalogue's own provider_names table. The route onRequest chose stands on the preset, so onProvider routes nothing
+  // again, and the body still goes as the preset lists the model; the entry's `:auto` tag is left out of the match on both sides.
+  const row = "gpt-6.1-sol";
+  assert.equal(resolveModel(row).key, row);
+  const listed = "acme-house-model";
+  assert.equal(resolveModel(listed).source, "unknown");
+  const providerNames = { defaults: PROVIDER_NAMES.defaults, rows: { ...PROVIDER_NAMES.rows, acme: { [listed]: { model: row } } } };
+  assert.equal(servedModel(listed, ["acme"], MODELS, MODEL_ALIASES, FAMILIES, providerNames), row);
+  for (const entry of [listed, `${listed}:auto`, `${listed}:default`, { model: listed, efforts: ["high"] }]) {
+    const options = { candidateModels: [{ model: row, efforts: ["high"] }], modelsByProvider: { acme: [entry] }, constraintModel: row, catalog: { providerNames } };
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+    const ctx = { protocol: "chat", state: {}, options };
+    middlewareOnRequest(body, ctx);
+    assert.equal(body.model, `${row}:high`, "onRequest routes the row");
+    const before = ctx.state.route;
+    const returned = middlewareOnProvider(body, { ...ctx, provider: { id: "acme" } });
+    assert.equal(ctx.state.route, before, "no per-provider route");
+    assert.equal(body.model, `${listed}:high`, JSON.stringify(entry));
+    assert.equal(returned, body);
+  }
+  // on a preset that does not list a name for the row, the body is left as routed
+  const options = { candidateModels: [{ model: row, efforts: ["high"] }], modelsByProvider: { other: [row] }, constraintModel: row, catalog: { providerNames } };
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+  const ctx = { protocol: "chat", state: {}, options };
+  middlewareOnRequest(body, ctx);
+  middlewareOnProvider(body, { ...ctx, provider: { id: "other" } });
+  assert.equal(body.model, `${row}:high`);
+});
+
+test("every table reads a spelling in one order: the full id, what follows each `/`, the last segment (model_resolution.slash_suffixes)", () => {
+  assert.deepEqual(slashSuffixes("a/b/c"), ["a/b/c", "b/c", "c"]);
+  // A list id whose model part holds a `/` reads its `<publisher>/<model>` alias as the name read on its preset does.
+  const published = Object.keys(MODEL_ALIASES).filter((name) => name.includes("/") && !name.startsWith("/"));
+  assert.ok(published.length > 0);
+  for (const name of published) {
+    for (const preset of ["google-vertex", "acme"]) {
+      const listId = `${preset}/${name}`;
+      const plain = resolveModel(listId);
+      const served = resolveModel(name, MODELS, MODEL_ALIASES, FAMILIES, PROVIDER_NAMES, [preset]);
+      assert.deepEqual([plain.key, plain.source], [served.key, served.source], listId);
+      assert.equal(rowKey(listId), rowKey(servedModel(name, [preset])), listId);
+    }
+  }
+  // Each table at each suffix, under a constructed table (no shipped declaration is keyed so): a provider's declaration keyed by
+  // the `<publisher>/<model>` part, a default keyed by it, a row reached only through it, and an alias keyed by it.
+  const models = { ...MODELS, "house-row": { ...MODELS["gpt-6.1-sol"] } };
+  const aliases = { ...MODEL_ALIASES, "pub/aliased-name": "house-row" };
+  const table = {
+    defaults: { ...PROVIDER_NAMES.defaults, "pub/defaulted-name": { model: "house-row" } },
+    rows: { ...PROVIDER_NAMES.rows, acme: { "pub/declared-name": { model: "house-row" } } },
+  };
+  const read = (name, providers = []) => resolveModel(name, models, aliases, FAMILIES, table, providers);
+  assert.deepEqual([read("acme/pub/declared-name").key, read("acme/pub/declared-name").source], ["house-row", "provider"]);
+  assert.deepEqual([read("gw/pub/defaulted-name").key, read("gw/pub/defaulted-name").source], ["house-row", "default"]);
+  assert.deepEqual([read("gw/pub/aliased-name").key, read("gw/pub/aliased-name").source], ["house-row", "alias"]);
+  assert.deepEqual([read("gw/sub/house-row").key, read("gw/sub/house-row").source], ["house-row", "alias"]);
+  assert.equal(read("pub/declared-name", ["acme"]).key, "house-row");
+  // decorated: each vendor tag and a dash effort are stripped before the suffixes are read again
+  assert.equal(read("gw/pub/aliased-name-latest").key, "house-row");
+  assert.equal(read("acme/pub/declared-name-high").effort, "high");
+});
+
+test("a Magpie preset reads the catalogs host_providers.magpie maps it to, only where the Magpie adapter holds a preset id", () => {
+  const presets = PROVIDER_NAMES.host_providers.magpie;
+  assert.ok(Object.keys(presets).length > 0);
+  for (const [preset, { providers }] of Object.entries(presets)) assert.deepEqual(expandHostProviders([preset], "magpie"), providers, preset);
+  assert.deepEqual(expandHostProviders(["opencode-zen", "deepseek", "opencode-zen"], "magpie"), ["opencode", "deepseek"]);
+  assert.deepEqual(expandHostProviders(["opencode-zen"], "cindy"), ["opencode-zen"], "another host reads no Magpie preset");
+  const magpie = providerNamesOf(magpieOptions({}).catalog);
+  assert.equal(providerNamesOf({}), PROVIDER_NAMES, "a catalogue the adapter did not mark reads no preset");
+  // `opencode-zen/deepseek-v4-flash`: under the adapter OpenCode's own declaration (no row there), as plain text the maker's default.
+  const name = "opencode-zen/deepseek-v4-flash";
+  const under = resolveListed(name, MODELS, MODEL_ALIASES, FAMILIES, magpie);
+  assert.deepEqual([under.key, under.source, under.provider], [null, PROVIDER_NAMES.rows.opencode["deepseek-v4-flash"].status, "opencode"]);
+  assert.equal(resolveListed(name).key, PROVIDER_NAMES.defaults["deepseek-v4-flash"].model);
+  assert.equal(rowKey(name, MODELS, MODEL_ALIASES, FAMILIES, magpie), "opencode/deepseek-v4-flash");
+  // a preset the table does not map is read as written, and a name with no `/` has no preset
+  for (const plain of ["deepseek/deepseek-v4-pro", "deepseek-v4-pro", "google-vertex/openai/gpt-oss-120b-maas"]) {
+    assert.deepEqual(resolveListed(plain, MODELS, MODEL_ALIASES, FAMILIES, magpie), resolveModel(plain), plain);
+  }
+  // onProvider reads `ctx.provider.id` the same way: the preset's own spelling is routed as OpenCode's pair and sent as listed
+  const pair = "opencode/deepseek-v4-flash";
+  const options = { candidateModels: [{ model: pair, efforts: ["high"] }], modelsByProvider: { "opencode-zen": [{ model: "deepseek-v4-flash", efforts: ["high"] }] }, constraintModel: pair };
+  assert.equal(servedModel("deepseek-v4-flash-high", expandHostProviders(["opencode-zen"], "magpie")), "opencode/deepseek-v4-flash:high");
+  assert.equal(servedModel("deepseek-v4-flash-high", ["opencode-zen"]), "deepseek-v4-flash-high", "outside the adapter the preset is a provider id like any other");
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+  const ctx = { protocol: "chat", state: {}, options };
+  middlewareOnRequest(body, ctx);
+  middlewareOnProvider(body, { ...ctx, provider: { id: "opencode-zen" } });
+  assert.equal(ctx.state.route.targetModel, pair, "routed as OpenCode's pair");
+  assert.equal(body.model, "deepseek-v4-flash:high", "sent as the preset lists it");
+});
+
+test("a row key is never read again as a name; a pair with no row is looked up as that pair, never as the bare name's row", () => {
+  // each undated row of a moved name is a row id and a declared name: its windows are its own, never the snapshot's
+  const moved = Object.keys(PROVIDER_NAMES.defaults).filter((k) => MODELS[k]);
+  assert.ok(moved.length > 0);
+  for (const key of moved) {
+    const snapshot = PROVIDER_NAMES.defaults[key].model;
+    const spec = { windows: { own: { hours: 168, models: [key] }, snapshot: { hours: 168, models: [snapshot] }, any: { hours: 168 } } };
+    assert.deepEqual(applicableWindows(spec, key, { windows: [] }, null, key).map(([wid]) => wid), ["own", "any"], key);
+  }
+  const fleet = { models: MODELS, aliases: MODEL_ALIASES, families: FAMILIES, providerNames: PROVIDER_NAMES };
+  assert.deepEqual(lookupNames("opencode/deepseek-v4-flash-high", fleet), ["opencode/deepseek-v4-flash", "opencode/deepseek-v4-flash-high"]);
+  assert.ok(!lookupNames("opencode/deepseek-v4-flash", fleet).includes("deepseek-v4-flash"));
+  assert.equal(rowKey("OpenCode/DeepSeek-V4-Flash-high"), "opencode/deepseek-v4-flash", "the spelling its provider declares");
+});
+
+test("a bare name names the model on every account; a prefix is obeyed; a prefix that names nothing is dropped and the rest read again", () => {
+  const fleet = { models: MODELS, aliases: MODEL_ALIASES, families: FAMILIES, providerNames: PROVIDER_NAMES };
+  const B = (id, account, provider, model, extra = {}) => ({ id, account, provider, model, effort: "high", ...extra });
+  const named = (pin, pool) => pinMatchingBundles(pin, pool, fleet).map((b) => b.id).sort();
+  const both = (pool, fn) => [pool, [...pool].reverse()].forEach(fn);
+  // one row on two accounts under two spellings
+  const oneRow = [B("a", "acct-a", "codex", "gpt-6.1-sol"), B("b", "acct-b", "pi", "openai/gpt-6.1-sol")];
+  both(oneRow, (pool) => {
+    assert.deepEqual(named("gpt-6.1-sol", pool), ["a", "b"], "bare: every bundle of the row");
+    assert.deepEqual(named("openai/gpt-6.1-sol", pool), ["b"], "prefixed: the typed spelling only");
+    assert.deepEqual(named("codex/gpt-6.1-sol", pool), ["a"], "prefixed by a provider id: that provider's bundle of the row");
+    assert.deepEqual(named("acct-b/gpt-6.1-sol", pool), ["b"], "prefixed by an account id");
+    assert.deepEqual(named("vendorx/gpt-6.1-sol", pool), ["a", "b"], "a prefix that names nothing is dropped");
+    assert.deepEqual(named("vendorx/codex/gpt-6.1-sol", pool), ["a"], "each level decided again: the next prefix is obeyed");
+    assert.deepEqual(named("vendorx/vendory/gpt-6.1-sol", pool), ["a", "b"]);
+    assert.equal(effectivePin("vendorx/codex/gpt-6.1-sol:high", pool, fleet), "codex/gpt-6.1-sol:high", "the pin as read");
+    assert.equal(effectivePin("acct-b/gpt-6.1-sol", pool, fleet), "acct-b/gpt-6.1-sol");
+  });
+  // two unmeasured names under two vendors
+  const unmeasured = [B("va", "g", "vendor-a", "vendor-a/novel-unmeasured"), B("vb", "g", "vendor-b", "vendor-b/novel-unmeasured")];
+  both(unmeasured, (pool) => {
+    assert.deepEqual(named("vendor-a/novel-unmeasured", pool), ["va"]);
+    assert.deepEqual(named("Vendor-A/Novel-Unmeasured:high", pool), ["va"]);
+    assert.deepEqual(named("novel-unmeasured", pool), ["va", "vb"]);
+  });
+  // a prefix that names a bundle keeps the crossings of rounds 1 to 3 closed: a no-row pair and the scored name, a repository id
+  // and the moved bare name
+  const pairs = [B("oc", "g", "opencode", "opencode/deepseek-v4-flash"), B("ds", "g", "deepseek", "deepseek/deepseek-v4-flash"),
+    B("repo", "g", "codex", "deepseek-ai/DeepSeek-V4-Pro"), B("bare", "g", "claude", "deepseek-v4-pro")];
+  both(pairs, (pool) => {
+    assert.deepEqual(named("opencode/deepseek-v4-flash", pool), ["oc"]);
+    assert.deepEqual(named("deepseek-v4-flash", pool), ["ds"]);
+    assert.deepEqual(named("deepseek-ai/DeepSeek-V4-Pro", pool), ["repo"]);
+    assert.deepEqual(named("deepseek-v4-pro", pool), ["bare"]);
+  });
+  // with nothing named `opencode` (or `deepseek-ai`) in the pool the prefix is dropped: the bare name's own bundles
+  assert.deepEqual(named("opencode/deepseek-v4-flash", [pairs[1]]), ["ds"], "nothing is `opencode`: bare deepseek-v4-flash");
+  assert.deepEqual(named("deepseek-ai/DeepSeek-V4-Pro", [pairs[3]]), ["bare"], "nothing is `deepseek-ai`: bare DeepSeek-V4-Pro");
+  // a prefix that names a bundle of another row is obeyed: nothing of the row is named, nothing substituted
+  assert.deepEqual(named("claude/deepseek-v4-flash", pairs), [], "`claude` names a bundle: obeyed, and none of its bundles is the row");
+  // Antigravity's two launch providers are one prefix (`account_fleet._same_provider`)
+  const agy = [B("ag", "acct-g", "antigravity-resilient", "gpt-6.1-sol"), B("cx", "acct-c", "codex", "gpt-6.1-sol")];
+  assert.deepEqual(named("antigravity/gpt-6.1-sol", agy), ["ag"]);
+  // an auto-bundle id names that id only
+  const auto = [B("auto:acct-a:codex:gpt-6.1-sol", "acct-a", "codex", "gpt-6.1-sol"), B("x", "acct-b", "pi", "gpt-6.1-sol")];
+  assert.deepEqual(named("auto:acct-a:codex:gpt-6.1-sol", auto), ["auto:acct-a:codex:gpt-6.1-sol"]);
+  assert.deepEqual(named("auto:acct-a:codex:gpt-6.1-sol:high", auto), []);
+  assert.equal(pinNamesBundle("auto:acct-a:codex:gpt-6.1-sol:high", auto[0], fleet), false, "an auto id is never read as a spelling");
+  // a Magpie preset id typed as a prefix names the rows listed on that preset, kept beside the catalogs it serves
+  const presets = [B("oz", "gateway", "gateway", "opencode/deepseek-v4-flash", { launch_model: "deepseek-v4-flash", presets: ["opencode-zen"], served: ["opencode"] }),
+    B("ds2", "gateway", "gateway", "deepseek/deepseek-v4-flash")];
+  both(presets, (pool) => {
+    assert.deepEqual(named("opencode-zen/deepseek-v4-flash", pool), ["oz"]);
+    assert.deepEqual(named("opencode/deepseek-v4-flash", pool), ["oz"], "the catalog the preset serves");
+    assert.deepEqual(named("deepseek-v4-flash", pool), ["ds2", "oz"], "bare: each as it reads the name");
+  });
+  // a malformed name matches nothing here and is refused where the caller hands it over
+  for (const bad of ["/gpt-6.1-sol", "openai/", "a//b", ":high", "  ", "auto:acct-a", "auto::codex:x", "openai/:high", 5]) {
+    assert.ok(modelPinProblem(bad), JSON.stringify(bad));
+    assert.throws(() => checkModelPin(bad), { code: "invalid_model_pin" });
+    assert.deepEqual(named(bad, oneRow), []);
+    const refused = selectBestRoute(PROFILE, { candidateModels: oneRow, constraintModel: bad });
+    assert.deepEqual([refused.ok, refused.error], [false, "invalid_model_pin"], JSON.stringify(bad));
+  }
+  for (const good of ["gpt-6.1-sol", "openai/gpt-6.1-sol:high", "google-vertex/openai/gpt-oss-120b-maas", "auto:a:codex:gpt-6.1-sol@high#2"]) {
+    assert.equal(modelPinProblem(good), null, good);
+  }
+  // the filters apply to the named bundles only: an unchecked or unavailable bundle a prefix names is refused, never replaced;
+  // a bare name launches the best of the rest
+  for (const flag of [{ disabled: true }, "unavailable"]) {
+    const pool = [B("a", "acct-a", "codex", "gpt-6.1-sol"), B("b", "acct-b", "pi", "openai/gpt-6.1-sol", flag === "unavailable" ? {} : flag)];
+    both(pool, (ordered) => {
+      const run = (pin) => rankCandidates(PROFILE, { candidateModels: ordered, constraintModel: pin, ...(flag === "unavailable" ? { unavailable: ["b"] } : {}) });
+      assert.equal(run("openai/gpt-6.1-sol").selected, null, `prefixed, ${JSON.stringify(flag)}`);
+      assert.equal(run("gpt-6.1-sol").selected?.id, "a", `bare, ${JSON.stringify(flag)}`);
+    });
+  }
+});
+
+test("onProvider matches a named model over the whole pool: another preset's prefix is refused on this preset, a bare name routes here", () => {
+  const options = {
+    catalog: {},
+    candidateModels: [{ model: "acme-a/gpt-6.1-sol", efforts: ["high"] }, { model: "acme-b/gpt-6.1-sol", efforts: ["high"] }],
+    modelsByProvider: { "acme-b": [{ model: "gpt-6.1-sol", efforts: ["high"] }] },
+  };
+  const tryOn = (pin) => {
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+    const ctx = { protocol: "chat", state: {}, options: { ...options, constraintModel: pin, routePerProvider: true } };
+    middlewareOnRequest(body, ctx);
+    const returned = middlewareOnProvider(body, { ...ctx, provider: { id: "acme-b" } });
+    return { returned, body, route: ctx.state.route };
+  };
+  const other = tryOn("acme-a/gpt-6.1-sol");
+  assert.equal(other.returned, undefined, "no route on acme-b for a model named on acme-a");
+  assert.notEqual(other.body.model, "gpt-6.1-sol:high");
+  const own = tryOn("acme-b/gpt-6.1-sol");
+  assert.equal(own.body.model, "gpt-6.1-sol:high");
+  const bare = tryOn("gpt-6.1-sol");
+  assert.equal(bare.body.model, "gpt-6.1-sol:high", "a bare name: any preset will do");
+});
+
+test("a Magpie preset is a prefix of what it lists, by its own id and by the catalog it serves, in both stages", () => {
+  const options = {
+    catalog: {},
+    candidateModels: [{ model: "opencode-zen/deepseek-v4-flash", efforts: ["high"] }, { model: "deepseek/deepseek-v4-flash", efforts: ["high"] }],
+    modelsByProvider: { "opencode-zen": [{ model: "deepseek-v4-flash", efforts: ["high"] }] },
+  };
+  const request = (pin) => {
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+    const ctx = { protocol: "chat", state: {}, options: { ...options, constraintModel: pin, routePerProvider: true } };
+    middlewareOnRequest(body, ctx);
+    return { body, ctx };
+  };
+  // onRequest: a list id is offered on its preset, so the catalog the preset serves names it
+  assert.equal(request("opencode/deepseek-v4-flash").ctx.state.route.targetModel, "opencode-zen/deepseek-v4-flash");
+  assert.equal(request("opencode-zen/deepseek-v4-flash").ctx.state.route.targetModel, "opencode-zen/deepseek-v4-flash");
+  // onProvider: each name of the preset's list is offered on it, so the preset's own id names it
+  const { body, ctx } = request("opencode-zen/deepseek-v4-flash");
+  middlewareOnProvider(body, { ...ctx, provider: { id: "opencode-zen" } });
+  assert.equal(body.model, "deepseek-v4-flash:high");
+});
+
+test("the task reads a named model as the pool reads it: a prefix that names nothing is dropped (task_intake.named_pin)", () => {
+  const fleet = { models: MODELS, aliases: MODEL_ALIASES, families: FAMILIES, providerNames: PROVIDER_NAMES };
+  const raw = { profile: PROFILE, constraints: { model: "opencode/deepseek-v4-flash" } };
+  const read = (pool) => normalizeTask(raw, { models: MODELS, aliases: MODEL_ALIASES, pinPool: pool, fleet });
+  const deepseek = [{ id: "ds", account: "g", provider: "deepseek", model: "deepseek/deepseek-v4-flash", effort: "high" }];
+  const opencode = [...deepseek, { id: "oc", account: "g", provider: "opencode", model: "opencode/deepseek-v4-flash", effort: "high" }];
+  assert.equal(read(deepseek).constraint_model, resolveModel("deepseek-v4-flash").key, "nothing is `opencode`: the bare name's row");
+  assert.equal(read(opencode).constraint_model, "opencode/deepseek-v4-flash", "`opencode` names a bundle: kept");
+  assert.equal(read(deepseek).constraint_raw_model, "opencode/deepseek-v4-flash", "what the user typed is kept beside it");
+  assert.throws(() => normalizeTask({ profile: PROFILE, constraints: { model: "opencode/" } }, { models: MODELS, aliases: MODEL_ALIASES }), { code: "invalid_model_pin" });
+  assert.throws(() => normalizeTask({ profile: PROFILE, constraints: { bundle: " " } }, { models: MODELS, aliases: MODEL_ALIASES }), { code: "invalid_model_pin" });
+});
+
+test("an exhausted bundle a bare name names is passed over for another of its row; a prefix that names it is refused, never replaced", () => {
+  const win = (name, remaining, hours) => ({ name, remaining, used: 100 - remaining, resetHours: hours });
+  const quotas = { "claude/a": { kind: "subscription", plan: "max", quota: { windows: [win("5 hours", 90, 3), win("7 days", 0, 100)] } } };
+  const pool = [{ model: "claude-sonnet-5-5", efforts: ["high"] }, { model: "anthropic/claude-sonnet-5-5", provider: "openrouter", efforts: ["high"] }];
+  for (const ordered of [pool, [...pool].reverse()]) {
+    const run = (pin) => selectBestRoute(PROFILE, { now: T0_071, candidateModels: ordered, quotas, constraintModel: pin });
+    const bare = run("claude-sonnet-5-5");
+    assert.equal(bare.ok, true);
+    assert.equal(bare.targetModel, "anthropic/claude-sonnet-5-5", "the bundle that can run");
+    const prefixed = run("claude/claude-sonnet-5-5");
+    assert.equal(prefixed.ok, false);
+    assert.match(prefixed.refusal, /^pin_unavailable: /);
+    assert.match(prefixed.warnings.join(" "), /exhausted|below launch floor/, "the named bundle's own reason");
+  }
+});
+
+test("a host catalogue brings its own provider_names table; with its own models and none, no shipped declaration is read", () => {
+  assert.equal(providerNamesOf(undefined), PROVIDER_NAMES);
+  assert.equal(providerNamesOf({ aliases: {} }), PROVIDER_NAMES);
+  assert.equal(providerNamesOf({ models: { m: {} } }), NO_PROVIDER_NAMES);
+  const own = { defaults: {}, rows: { acme: { "custom-m": { model: null, status: "retired" } } } };
+  assert.equal(providerNamesOf({ models: { m: {} }, providerNames: own }), own);
+  const models = { "custom-m": { display_name: "Custom M" } };
+  // a shipped declaration names rows this catalogue does not have: a score keyed by it lands on no row and is ignored
+  const [moved] = Object.keys(PROVIDER_NAMES.defaults);
+  assert.equal(resolveModelKey(moved, models, {}, PROVIDER_NAMES), moved);
+  assert.deepEqual([...scoreLayer({ [moved]: { coding: { level: 2, as_of: "2026-11-19" } } }, models, {}, PROVIDER_NAMES).keys()], [moved]);
+  const scores = { [moved]: { coding: 2 }, "custom-m": { coding: 3 } };
+  assert.doesNotThrow(() => rankCandidates(PROFILE, { candidateModels: ["custom-m"], catalog: { models }, userScores: scores }));
+  // the catalogue's own table is the one read: a pair it declares retired is that provider's own model ...
+  const ranked = rankCandidates(PROFILE, { candidateModels: ["acme/custom-m"], catalog: { models, providerNames: own } });
+  assert.ok(ranked.allCandidates.length > 0);
+  for (const c of ranked.allCandidates) assert.equal(c.canonicalModel, "acme/custom-m");
+  // ... and with its own models and no table, no declaration is read: the same pair is the catalogue's row by its name
+  for (const c of rankCandidates(PROFILE, { candidateModels: ["acme/custom-m"], catalog: { models } }).allCandidates) assert.equal(c.canonicalModel, "custom-m");
+  const [provider, name] = Object.entries(PROVIDER_NAMES.rows).flatMap(([p, n]) => Object.keys(n).filter((k) => n[k].model == null).map((k) => [p, k]))[0];
+  const status = PROVIDER_NAMES.rows[provider][name].status;
+  const warned = (catalog) => selectBestRoute(PROFILE, { candidateModels: [`${provider}/${name}`], catalog }).warnings.some((w) => w.includes(`(${status})`));
+  assert.equal(warned(undefined), true, "the shipped table declares the pair");
+  assert.equal(warned({ models }), false, "not read under a catalogue with its own models and no table");
 });
 
 test("a user score lands where its key's maker default says, the row's own id wins for its row, and the order of keys never matters", () => {

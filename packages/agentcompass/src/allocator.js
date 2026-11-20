@@ -28,6 +28,7 @@ import {
   escapeControls,
   healthKey,
   nameFixesEffort,
+  providerNamesOf,
   resolveModel,
   safeName,
   splitEffortSuffix,
@@ -45,7 +46,8 @@ import {
   METERED_LAST_RESORT,
   canonicalOf,
   dispatchAllowedEfforts,
-  rowKeyOf,
+  pinMatchingBundles,
+  pinNamesBundle,
   whenFailure,
 } from "./candidate-eval.js";
 import { GATEWAY_ACCOUNT, attachDisabledEfforts, buildFleet, effortRows, entryModel, expandBundles } from "./fleet.js";
@@ -74,6 +76,7 @@ export function fleetFor(options = {}, nowMs = Date.now()) {
     models: catalog.models || null,
     aliases: catalog.aliases || MODEL_ALIASES,
     userScores: options.userScores || null,
+    providerNames: providerNamesOf(catalog),
   });
   return { ...built, policy, normalized };
 }
@@ -141,9 +144,9 @@ function rawTaskOf(profileInput, options, nowMs) {
  */
 function workerOf(continuity, bundles, fleet) {
   if (!continuity || !continuity.previousModel) return null;
-  const key = rowKeyOf(continuity.previousModel, fleet);
   const effort = continuity.previousEffort ? lc(continuity.previousEffort) : null;
-  const rows = Object.values(bundles).filter((b) => rowKeyOf(b.model, fleet) === key);
+  // The held model names the bundles of its row as each reads names, as a named model does (`pinMatchingBundles`).
+  const rows = pinMatchingBundles(continuity.previousModel, Object.values(bundles), fleet);
   const row = rows.find((b) => effort && lc(b.effort || "") === effort) || (effort ? null : rows[0]);
   return row ? { bundle: row.id } : null;
 }
@@ -159,11 +162,17 @@ export function rankCandidates(profileInput, options = {}) {
   if (!given) return { task: null, selected: null, ranking: [], allCandidates: [] };
   const { fleet, usage, entries, policy, normalized } = fleetFor(options, nowMs);
   const pins = pinsOf(options, profileInput && profileInput.profile ? profileInput : null);
-  const pinnedKey = pins.model ? canonicalModel(splitPinModelAndEffort(String(pins.model).trim()).modelPart, fleet.aliases, fleet.models, fleet.families) : null;
+  const pinnedKey = pins.model ? canonicalModel(splitPinModelAndEffort(String(pins.model).trim()).modelPart, fleet.aliases, fleet.models, fleet.families, [], fleet.providerNames) : null;
   const list = Array.isArray(options.candidateModels) && options.candidateModels.length > 0 ? options.candidateModels : defaultPool(fleet, pinnedKey);
+  // Every bundle the pool offers, before any filter: a named model is read (`namedPin`) and matched (`pinPool`) over all of them,
+  // and over the rows the host offers elsewhere (`pinOnlyModels`: in `onProvider`, the other presets' rows of `candidateModels`),
+  // which never compete here: a prefix that names only those is obeyed and refused here, never dropped and served by this pool.
+  const all = expandBundles(list, fleet, entries);
+  const elsewhere = Array.isArray(options.pinOnlyModels) && options.pinOnlyModels.length > 0 ? expandBundles(options.pinOnlyModels, fleet, entries) : {};
+  const pinSource = { ...elsewhere, ...all };
   let task;
   try {
-    task = normalizeTask(given.raw, { policy, routes: ROUTES, models: fleet.models, aliases: fleet.aliases });
+    task = normalizeTask(given.raw, { policy, routes: ROUTES, models: fleet.models, aliases: fleet.aliases, providerNames: fleet.providerNames, pinPool: Object.values(pinSource), fleet });
   } catch (err) {
     if (!err.code) err.code = "invalid_caller_profile";
     throw err;
@@ -172,7 +181,7 @@ export function rankCandidates(profileInput, options = {}) {
   const taskOpts = profileInput && profileInput.profile ? profileInput : null;
   const unhealthy = new Set();
   for (const m of options.unhealthyModels || []) {
-    const key = healthKey(m, fleet.models, fleet.aliases, fleet.families);
+    const key = healthKey(m, fleet.models, fleet.aliases, fleet.families, fleet.providerNames);
     if (key) unhealthy.add(key);
     if (m) unhealthy.add(m);
   }
@@ -186,7 +195,8 @@ export function rankCandidates(profileInput, options = {}) {
     launch_failures: options.launchFailures || options.launch_failures || taskOpts?.launch_failures || null,
     bundles: {},
   };
-  const all = expandBundles(list, fleet, entries);
+  // A named model is matched over every bundle the pool offers, those a `when` keeps out included (`pinPool`).
+  ctx.pin_source = pinSource;
   // Rows their `when` keeps out never compete, but a blocked route still says why.
   const outOfScope = [];
   for (const [id, b] of Object.entries(all)) {
@@ -398,20 +408,19 @@ const fleetOfCatalog = (catalog) => fleetFor({ catalog: catalog || {} }, Date.no
  */
 function rowsNaming(list, model, catalog, pins) {
   const fleet = fleetOfCatalog(catalog);
-  const key = rowKeyOf(model, fleet);
   const pinnedName = pins?.constraintModel ? splitPinModelAndEffort(String(pins.constraintModel).trim()).modelPart : null;
-  const pinnedKey = pinnedName ? rowKeyOf(pinnedName, fleet) : null;
   const pinnedEffort = pins?.constraintEffort ? lc(pins.constraintEffort) : pins?.constraintModel ? splitPinModelAndEffort(String(pins.constraintModel).trim()).effortPart : null;
   const rows = [];
   for (const entry of list || []) {
     // A bare entry of the pinned model runs at the effort the pin names, table or not: as a new route expands it.
-    const same = pinnedKey !== null && rowKeyOf(entryModel(entry), fleet) === pinnedKey;
     const obj = typeof entry === "string" ? { model: entry } : entry;
+    const same = pinnedName !== null && pinNamesBundle(pinnedName, { ...obj, model: entryModel(entry) }, fleet);
     const given = same && pinnedEffort && !obj.effort && !Array.isArray(obj.efforts) && !nameFixesEffort(obj.model, fleet.models, fleet.aliases) ? { ...obj, effort: pinnedEffort } : entry;
     rows.push(...effortRows(given, fleet));
   }
   attachDisabledEfforts(rows, fleet);
-  return { rows: rows.filter((row) => rowKeyOf(row.model, fleet) === key), fleet };
+  // The rows of the routed model as each reads names (`pinMatchingBundles`), never a row a resolved key is read again into.
+  return { rows: pinMatchingBundles(model, rows, fleet), fleet };
 }
 
 /** R2 for one row: its own list when it has one, else the dispatch table, without what the user disabled. A row's own effort is what it runs. */
@@ -451,8 +460,8 @@ export function heldEffortOn(list, model, effort, catalog, { pins, profile } = {
   if (offers(effort)) return effort;
   const fullProfile = profile ? (profile.primary_level ? profile : sessionProfile({ profile })) : null;
   const ranked = fullProfile ? rankCandidates(fullProfile, { candidateModels: list, catalog }).ranking : null;
-  const key = rowKeyOf(model, fleet);
-  const passes = (candidate) => !ranked || ranked.some((row) => rowKeyOf(row.model, fleet) === key && row.effort === candidate);
+  const named = ranked ? new Set(pinMatchingBundles(model, ranked.map((row) => row.bundle), fleet)) : null;
+  const passes = (candidate) => !ranked || ranked.some((row) => named.has(row.bundle) && row.effort === candidate);
   const rank = EFFORTS.indexOf(effort);
   for (let i = rank - 1; i >= 0; i--) {
     if (offers(EFFORTS[i]) && passes(EFFORTS[i])) return EFFORTS[i];
@@ -519,8 +528,9 @@ export function heldTarget(model, sessionState, candidateModels, catalog) {
   const names = candidateModels.map(candidateModelName);
   if (sessionState?.target && names.includes(sessionState.target)) return sessionState.target;
   const fleet = fleetOfCatalog(catalog);
-  const key = healthKey(sessionState?.target || model, fleet.models, fleet.aliases, fleet.families);
-  return names.find((m) => healthKey(m, fleet.models, fleet.aliases, fleet.families) === key) || model;
+  // The first candidate of that model as it reads names (`pinMatchingBundles`).
+  const [first] = pinMatchingBundles(sessionState?.target || model, names.map((m) => ({ model: m })), fleet);
+  return first ? first.model : model;
 }
 
 
@@ -532,10 +542,10 @@ function excludedLine(candidate, why) {
 }
 
 /** Pool names routed on no row of their own: without this, a retired name just stops being picked. */
-function poolNameWarnings(options, models, aliases) {
+function poolNameWarnings(options, models, aliases, providerNames) {
   if (!Array.isArray(options.candidateModels)) return [];
   const names = options.candidateModels.map((entry) => (typeof entry === "string" ? entry : entry?.model)).filter(Boolean);
-  return [...new Set(names.map((name) => catalogNameWarning(name, models, aliases)).filter(Boolean))];
+  return [...new Set(names.map((name) => catalogNameWarning(name, models, aliases, undefined, providerNames)).filter(Boolean))];
 }
 
 const MAX_LOGGED_NAME_WARNINGS = 1024;
@@ -660,12 +670,14 @@ export function selectBestRoute(taskOrProfile, options = {}) {
   try {
     result = rankCandidates(taskOrProfile, options);
   } catch (err) {
-    if (err?.code !== "invalid_caller_profile" && !(err instanceof InvalidCallerProfile)) throw err;
+    const malformedPin = err?.code === "invalid_model_pin";
+    if (!malformedPin && err?.code !== "invalid_caller_profile" && !(err instanceof InvalidCallerProfile)) throw err;
     return {
       ok: false,
       blocked: true,
-      error: "invalid_caller_profile",
-      refusal: "invalid_caller_profile: the task profile is invalid",
+      // A malformed name is the caller's to correct (`model_resolution.check_model_pin`): its code and what is wrong with it.
+      error: malformedPin ? "invalid_model_pin" : "invalid_caller_profile",
+      refusal: malformedPin ? String(err.message) : "invalid_caller_profile: the task profile is invalid",
       targetModel: null,
       canonicalModel: null,
       targetEffort: "high",
@@ -681,7 +693,7 @@ export function selectBestRoute(taskOrProfile, options = {}) {
   const warnings = [
     ...(top ? [] : blockedWarnings(result)),
     ...(top ? (top.notes || []).filter((n) => n.startsWith("data error:")) : []),
-    ...poolNameWarnings(options, catalog.models || MODELS, catalog.aliases || MODEL_ALIASES),
+    ...poolNameWarnings(options, catalog.models || MODELS, catalog.aliases || MODEL_ALIASES, providerNamesOf(catalog)),
     ...new Set((result.accounts || []).flatMap((a) => a.warnings)),
   ];
   const refusal = top ? null : refusalOf(result);

@@ -28,7 +28,7 @@ import {
   rankCandidates,
   selectBestRoute,
 } from "./allocator.js";
-import { ROUTES, canonicalModel } from "./catalog.js";
+import { ROUTES, canonicalModel, magpieOptions, providerNamesOf } from "./catalog.js";
 import {
   SessionContinuityStore,
   analyzeTurnState,
@@ -161,7 +161,9 @@ export function buildEffortAnswer(effort, confidence = 0.9) {
  * This is a public gateway route, so `agentcompass` holds the conclusion only: accounts, quotas, the pool and health go to the
  * local log, and to the caller only under the operator's `decisionProviderDetails: true`.
  */
-export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
+export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
+  // Names here are Magpie list ids (`magpieOptions`).
+  const pluginOptions = magpieOptions(givenOptions);
   const model = bodyObj?.model || DECISION_MODEL_ID;
   const state = bodyObj?.state || {};
   const questions = bodyObj?.questions || {};
@@ -245,6 +247,7 @@ export async function handleSystemOneRequest(bodyObj, pluginOptions = {}) {
           cacheTtl: pluginOptions.cacheTtl,
           models: pluginOptions.catalog?.models,
           aliases: pluginOptions.catalog?.aliases,
+          providerNames: providerNamesOf(pluginOptions.catalog),
         })
       : null;
 

@@ -22,7 +22,13 @@ import {
   sessionProfile,
   selectBestRoute,
 } from "./allocator.js";
-import { canonicalModel } from "./catalog.js";
+import { canonicalModel, catalogTables, magpieOptions, providerNamesOf } from "./catalog.js";
+
+/** `canonicalModel`'s table arguments under a host's `options.catalog`. */
+const catalogArgs = (catalog) => {
+  const names = catalogTables(catalog);
+  return [names.aliases, names.models, names.families, [], names.providerNames];
+};
 import {
   computeSessionKey,
   defaultContinuityStore,
@@ -145,7 +151,7 @@ export async function onRequest(body, ctx = {}) {
     return undefined;
   }
 
-  const options = ctx.options || {};
+  const options = magpieOptions(ctx.options);
   const facts = extractRequestFacts(body, ctx);
 
   if (!shouldRouteRequest(facts.model, options)) {
@@ -179,6 +185,7 @@ export async function onRequest(body, ctx = {}) {
     cacheTtl: options.cacheTtl,
     models: options.catalog?.models,
     aliases: options.catalog?.aliases,
+    providerNames: providerNamesOf(options.catalog),
   });
 
   // Fast path: Hold active session Provider/Model without calling the intent classifier
@@ -190,7 +197,8 @@ export async function onRequest(body, ctx = {}) {
       now,
       options
     );
-    const canonical = canonicalModel(cont.model, options.catalog?.aliases);
+    const names = catalogTables(options.catalog);
+    const canonical = canonicalModel(cont.model, names.aliases, names.models, names.families, [], names.providerNames);
     const heldModel = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
     // Contract R2: a hold runs what the pool offers now. Nothing at or below the held effort, or a pin that names it: route again.
     const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
@@ -407,7 +415,7 @@ export async function onRequest(body, ctx = {}) {
   let finalEffort = decision.targetEffort;
   if (
     sessionState &&
-    canonicalModel(decision.targetModel) === canonicalModel(sessionState.model) &&
+    canonicalModel(decision.targetModel, ...catalogArgs(options.catalog)) === canonicalModel(sessionState.model, ...catalogArgs(options.catalog)) &&
     cont.why !== "cold" &&
     cont.why !== "compacted" &&
     cont.why !== "first" &&
@@ -488,7 +496,7 @@ export async function onRequest(body, ctx = {}) {
 }
 
 export async function onResponse(reply, ctx = {}) {
-  const options = ctx?.options || {};
+  const options = magpieOptions(ctx?.options);
   const store = options.continuityStore || defaultContinuityStore;
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
   // An unrouted request was the client's own choice: it must not start a session that later turns hold.
