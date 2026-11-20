@@ -64,6 +64,6 @@ The historical live sequence above covers one shared-lineage cycle. Its temporar
 
 ## Limits
 
-The monthly meter reports `subscriptionBalance.amountUsedRatio`; Code's share is text from `subscriptionBalance.kimiCodeUsedRatio`, never a second allowance. Expiration fields are not asserted to be reset times. Inference continues to read the local desktop Work key and enforce its exact gateway origin/account binding. Membership renewal does not replace a revoked Work key.
+The monthly meter reports `subscriptionBalance.amountUsedRatio`; Code's share is text from `subscriptionBalance.kimiCodeUsedRatio`, never a second allowance. Expiration fields are not asserted to be reset times. Local accounts continue to read the desktop Work key; explicitly imported accounts use their saved copy. Both enforce its exact gateway origin/account binding. Membership renewal does not replace a revoked Work key.
 
 The historical live test covered renewal and read-only membership/model access, not an inference or desktop UI conversation at the current revision. Previous macOS and Windows streaming checks are historical coverage. Windows refresh, Linux, Intel macOS, long sleep/offline intervals, months of continuous renewal and future server revocation policy remain unverified. Automatic renewal does not guarantee a permanent session.
