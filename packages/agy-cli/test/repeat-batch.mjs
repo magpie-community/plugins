@@ -643,6 +643,92 @@ test("A16: a trimmed replay keeps the task a nudge in a later turn refers back t
   }
 })
 
+// plugins#1401, sevenqcx (DSH, Gemini 4 Neon): turn 1 pasted a narration
+// and asked to list a folder, pull three sounds out, stop, and write the
+// revised narration (ending "青瓦晨雾") only after "继续". Turn 2 was "继续"
+// alone, on a new session (session_new reason=history). The replay clipped the
+// middle out of the user's own long message, as it does a tool result's, and
+// pinned an older task at 4 KiB, so the requirements in the middle were gone.
+function narrationConversation({ narrationRepeats, toolSteps }) {
+  const narration = "江南的清晨，雨声落在青石板上，橹声从河心传来，远处有鸟鸣。".repeat(narrationRepeats)
+  const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+  const messages = [
+    { role: "user", content: "ANCHOR 写一段江南旁白" },
+    { role: "assistant", content: "ANCHOR 好的" },
+    { role: "user", content: [
+      { type: "text", text: `请先列出 /Users/x/audio 目录。之前的旁白：\n${narration}\nREQ-NARRATION 修改要求：语气更舒缓，保留三个声音，最后一句以“青瓦晨雾”结尾。\n${narration}\n先提取三个声音，然后停下，等我说“继续”再交付修改后的旁白。` },
+      { type: "text", text: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nworkspace: /Users/x" },
+    ] },
+  ]
+  for (let step = 0; step < toolSteps; step++) {
+    messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_n${step}`, name: "Bash", input: { command: `ls /Users/x/audio/${step}` } }] })
+    messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_n${step}`, content: big(`step-${step}`) }] })
+  }
+  messages.push({ role: "assistant", content: "SOUNDS 三个声音：雨声、橹声、鸟鸣。我先停下，等你说继续。" })
+  messages.push({ role: "user", content: "继续" })
+  return messages
+}
+
+test("A16: a replay after \"继续\" keeps the requirements in the middle of the user's long request (plugins#1401)", async () => {
+  // 150 repeats: a ~26 KB request inside the kept tail; 60 with 14 steps: a
+  // ~10 KB request that only a pin keeps.
+  for (const shape of [{ narrationRepeats: 150, toolSteps: 8 }, { narrationRepeats: 60, toolSteps: 14 }]) {
+    const stderr = captureStderr()
+    let prompt
+    try {
+      await withKit({}, async (kit) => {
+        scriptedAgent(kit)
+        const messages = narrationConversation(shape)
+        const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `narration-${shape.toolSteps}` }, messages })))
+        assert.equal(parsed.stopReason, "end_turn")
+        prompt = prompts(kit).at(-1)
+      })
+    } finally {
+      stderr.restore()
+    }
+    const label = JSON.stringify(shape)
+    assert.ok(bytes(prompt) <= 112 * 1024, `${label}: initial prompt is ${bytes(prompt)} bytes`)
+    assert.ok(prompt.includes("REQ-NARRATION 修改要求"), `${label}: the requirements are in the replay`)
+    assert.ok(prompt.includes("SOUNDS 三个声音"), `${label}: the newest reply is kept`)
+    assert.ok(!prompt.includes("step-0 head") || shape.toolSteps < 10, `${label}: tool output gave way first`)
+    const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+    assert.ok(replay, `${label}: a replay row is logged`)
+    assert.equal(replay.messages_before, shape.toolSteps * 2 + 4)
+    assert.equal(replay.user_before, 2)
+    assert.equal(replay.last_user_index[0], 2)
+    assert.deepEqual(replay.last_user_kept.slice(0, 1), [true])
+    assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
+    assert.ok(replay.bytes_after <= replay.bytes_before && replay.messages_after <= replay.messages_before)
+    const row = JSON.stringify(replay)
+    for (const secret of ["江南", "REQ-NARRATION", "ANCHOR", "继续", "/Users/x"]) {
+      assert.ok(!row.includes(secret), `${label}: the replay row carries no content (${secret})`)
+    }
+  }
+})
+
+test("A16: a replay into a new session after the history changed logs its counts under that reason (plugins#1401)", async () => {
+  const stderr = captureStderr()
+  try {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const first = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages: [{ role: "user", content: "ANCHOR 写一段江南旁白" }] })))
+      assert.equal(first.stopReason, "end_turn")
+      const messages = narrationConversation({ narrationRepeats: 150, toolSteps: 8 })
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: "narration-history" }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      assert.ok(prompts(kit).at(-1).includes("REQ-NARRATION 修改要求"))
+    })
+  } finally {
+    stderr.restore()
+  }
+  const sessionNew = stderr.lines.filter((row) => row.action === "session_new").at(-1)
+  const replay = stderr.lines.filter((row) => row.action === "replay").at(-1)
+  assert.equal(sessionNew.reason, "history")
+  assert.equal(replay.reason, "history")
+  assert.equal(replay.conv, sessionNew.conv)
+  assert.deepEqual(replay.last_user_whole.slice(0, 1), [true])
+})
+
 test("A16: a replay that fits the budget keeps every big history block whole (#1055)", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)

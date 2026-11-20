@@ -3808,6 +3808,7 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   warmSpare(agyPath, opts.workDir).catch(() => {})
   // Why this request got a new agy session, so a cache that never hits can be
   // traced to the check that failed (#1058). Counts only, never content.
+  proc.sessionReason = why
   logSessionEvent(proc, why, {
     fresh: !!isFreshConversation, resumed: !!proc.resumed, spare: !!spare,
     parked: !!resume, history: Array.isArray(opts.history) ? opts.history.length : null,
@@ -3871,13 +3872,13 @@ function logBridgeEvent(proc, turn, action, reason, meta = {}, extra = {}) {
 let sessionWindowStart = 0
 let sessionWindowCount = 0
 
-function logSessionEvent(proc, reason, extra) {
+function logSessionEvent(proc, reason, extra, action = "session_new") {
   if (process.env.AGY_BRIDGE_EVENTS === "0") return
   const now = Date.now()
   if (now - sessionWindowStart >= EVENT_WINDOW_MS) { sessionWindowStart = now; sessionWindowCount = 0 }
   if (sessionWindowCount++ >= EVENT_MAX_PER_WINDOW) return
   const row = { event: "agy_bridge_session", host_epoch: HOST_EPOCH, ts: now,
-    conv: proc?.convKey ? digest(proc.convKey).slice(0, 12) : null, action: "session_new", reason, ...extra }
+    conv: proc?.convKey ? digest(proc.convKey).slice(0, 12) : null, action, reason, ...extra }
   try { process.stderr.write("[agy-bridge] " + JSON.stringify(row) + "\n") } catch {}
 }
 
@@ -5403,13 +5404,19 @@ function headTail(text) {
 
 // A copy of a history message whose oversized text blocks, tool results and
 // tool-call arguments keep only their head and tail. The original is untouched.
-function clipHistoryMessage(message) {
-  if (typeof message.content === "string") return { ...message, content: clipHistoryText(message.content) }
+// What the user wrote is clipped only past `userLimit`, which the caller sets
+// well above a tool result's: a request often states what to do in the middle
+// of a long paste, and tool output gives way first (plugins#1401).
+function clipHistoryMessage(message, userLimit = HISTORY_BLOCK_CLIP_BYTES) {
+  const clipText = (text) => message.role === "user" && userLimit > HISTORY_BLOCK_CLIP_BYTES && !isMetaOnlyUserText(text)
+    ? clipMiddle(text, userLimit)
+    : clipHistoryText(text)
+  if (typeof message.content === "string") return { ...message, content: clipText(message.content) }
   if (!Array.isArray(message.content)) return message
   return {
     ...message,
     content: message.content.map((block) => {
-      if (block?.type === "text" && typeof block.text === "string") return { ...block, text: clipHistoryText(block.text) }
+      if (block?.type === "text" && typeof block.text === "string") return { ...block, text: clipText(block.text) }
       if (block?.type === "tool_result") {
         if (typeof block.content === "string") return { ...block, content: clipHistoryText(block.content) }
         if (Array.isArray(block.content)) {
@@ -5630,6 +5637,36 @@ function fillHistoryTail(entries, floor, left, noteBytes) {
 
 // `reserveBytes` is text the caller appends after </current_turn>.
 function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
+  return renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes).parts
+}
+
+// The newest user tasks a replay reports on, newest first.
+const REPLAY_STATS_LAST_USER = 4
+
+// Counts only, never content: how much of the history a replay kept, and
+// whether each of the newest user tasks went in whole, clipped or not at all.
+function replayStats(history, raw, kept, keptIndices) {
+  const sum = (list) => list.reduce((total, entry) => total + entry.bytes, 0)
+  const keptAt = new Map(keptIndices.map((index, at) => [index, kept[at]]))
+  const users = []
+  for (let i = history.length - 1; i >= 0 && users.length < REPLAY_STATS_LAST_USER; i--) {
+    if (isUserTask(history[i])) users.push(i)
+  }
+  return {
+    messages_before: history.length,
+    messages_after: keptIndices.length,
+    user_before: history.filter(isUserTask).length,
+    user_after: keptIndices.filter((i) => isUserTask(history[i])).length,
+    bytes_before: sum(raw),
+    bytes_after: sum([...keptAt.values()]),
+    clipped: keptIndices.filter((i) => keptAt.get(i).bytes < raw[i].bytes).length,
+    last_user_index: users,
+    last_user_kept: users.map((i) => keptAt.has(i)),
+    last_user_whole: users.map((i) => keptAt.has(i) && keptAt.get(i).bytes >= raw[i].bytes),
+  }
+}
+
+function renderInitialPrompt(body, callerWorkDir, instructionsInSession, reserveBytes = 0) {
   const { history, messages: current } = trailingMessages(body)
   const budget = Math.max(0, maxInitialPromptBytes() - reserveBytes)
   const head = []
@@ -5640,7 +5677,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   }
   const currentParts = renderTurnMessagesParts(current)
   // A fresh conversation needs no wrapper; it would only add tokens.
-  if (!head.length && !history.length) return clipPartsToBytes(currentParts, budget)
+  if (!head.length && !history.length) return { parts: clipPartsToBytes(currentParts, budget), stats: replayStats(history, [], [], []) }
   const historyOpen = history.length ? "<conversation_history>\n" : ""
   const historyClose = history.length ? HISTORY_RECORD_NOTE + "</conversation_history>\n\n" : ""
   const turnOpen = "<current_turn>\n"
@@ -5664,8 +5701,12 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   const overRoom = (list) => list.reduce((sum, entry) => sum + entry.bytes, 0) > room
   // A replay that fits is sent whole; only one that does not has its big
   // blocks clipped first (#1055).
-  let entries = history.map(render)
-  if (overRoom(entries)) entries = history.map((message) => render(clipHistoryMessage(message)))
+  const raw = history.map(render)
+  let entries = raw
+  let keptIndices = entries.map((_, i) => i)
+  if (overRoom(entries)) {
+    entries = history.map((message) => render(clipHistoryMessage(message, Math.max(HISTORY_BLOCK_CLIP_BYTES, Math.floor(room / 3)))))
+  }
   let kept = entries
   let showOpeningDone = false
   if (overRoom(entries)) {
@@ -5676,6 +5717,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
     let reservedOpeningDone = false
     if (room < noteBytes) {
       kept = []
+      keptIndices = []
     } else {
       if (inToolLoop && loopStart > 0 && room >= noteBytes + openingDoneBytes) {
         reservedOpeningDone = true
@@ -5713,8 +5755,17 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
         ? (newestTask ? newestTask.tasks.reduce((sum, i) => sum + userTextBytes(history[i]), 0) : -1)
         : current.reduce((sum, message) => sum + (isUserTask(message) ? userTextBytes(message) : 0), 0) ||
           -1
+      // The newest earlier task is what the nudge most likely means: room is
+      // set aside for it whole (up to a third of the room), and for a few
+      // older ones clipped (plugins#1401).
+      let pinTarget = -1
+      for (let i = entries.length - 1; i > 0 && pinTarget < 0; i--) {
+        if (!keep.includes(i) && isUserTask(history[i])) pinTarget = i
+      }
+      const pinFirstBytes = Math.max(PINNED_USER_TASK_CLIP_BYTES, pinTarget > 0 ? entries[pinTarget].bytes : 0)
       const pinReserve = newestBytes >= 0 && newestBytes <= NUDGE_MAX_BYTES
-        ? Math.min(PINNED_USER_TASKS_BYTES, Math.floor(room / 4))
+        ? Math.min(PINNED_USER_TASKS_BYTES - PINNED_USER_TASK_CLIP_BYTES + pinFirstBytes,
+          Math.floor(room / (pinFirstBytes > PINNED_USER_TASK_CLIP_BYTES ? 3 : 4)))
         : 0
       let left = room - keptSliceBytes(keep, entries.length, entries, noteBytes) - pinReserve
       const floor = keep.length ? keep.at(-1) : -1
@@ -5745,7 +5796,9 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
         for (let idx = (tail.length ? tail[0] : entries.length) - 1; idx > 0 && pinned < PINNED_USER_TASKS_MAX; idx--) {
           if (keep.includes(idx) || !isUserTask(history[idx])) continue
           const saved = entries[idx]
-          if (saved.bytes > PINNED_USER_TASK_CLIP_BYTES) entries[idx] = clipHistoryEntry(saved, PINNED_USER_TASK_CLIP_BYTES)
+          // the first (newest) pin may take what the reserve has left; older ones are clipped
+          const limit = pinned ? PINNED_USER_TASK_CLIP_BYTES : Math.max(PINNED_USER_TASK_CLIP_BYTES, pinReserve - pinnedBytes)
+          if (saved.bytes > limit) entries[idx] = clipHistoryEntry(saved, limit)
           const nextKeep = [...keep, idx].sort((x, y) => x - y)
           if (pinnedBytes + entries[idx].bytes <= pinReserve &&
             keptSliceBytes([...nextKeep, ...tail], entries.length, entries, noteBytes) <= room) {
@@ -5757,7 +5810,7 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
           }
         }
       }
-      const keptIndices = [...keep, ...tail]
+      keptIndices = [...keep, ...tail]
       kept = []
       let next = 0
       for (const i of keptIndices) {
@@ -5781,7 +5834,8 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
   appendPrompt(out, turnOpen)
   appendPrompt(out, turn)
   appendPrompt(out, turnClose)
-  return promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget)
+  const stats = replayStats(history, raw, keptIndices.map((i) => entries[i]), keptIndices)
+  return { parts: promptTextBytes(out) <= budget ? out : clipPartsToBytes(out, budget), stats }
 }
 
 function renderContinuedTurnParts(messages) {
@@ -6937,12 +6991,20 @@ async function beginTurn(proc, history, body, callerWorkDir, model, selection, a
   const flattened = proc.pendingFlattenedTurn
   proc.pendingFlattenedTurn = null
   const isFirstTurn = !proc.hasSentFirstTurn
-  const baseParts = !isFirstTurn
-    ? renderContinuedTurnParts(flattened
+  let baseParts
+  if (!isFirstTurn) {
+    baseParts = renderContinuedTurnParts(flattened
       ? [flattened, ...body.messages.slice(1)]
       : withoutAnswered(body.messages.slice(history.length), answered))
-    : renderInitialPromptParts(body, callerWorkDir, proc.instructionsInSession,
+  } else {
+    const initial = renderInitialPrompt(body, callerWorkDir, proc.instructionsInSession,
       reminder.length ? promptTextBytes(reminder) + 2 : 0)
+    baseParts = initial.parts
+    // what a replay into a new session kept, in counts (plugins#1401)
+    if (initial.stats.messages_before) {
+      logSessionEvent(proc, proc.sessionReason ?? null, { ...initial.stats, prompt_bytes: promptTextBytes(baseParts) }, "replay")
+    }
+  }
   const contentParts = mergePromptParts(baseParts, reminder)
   if (promptHasImage(contentParts) && !proc.supportsImages) {
     if (isFirstTurn) {
