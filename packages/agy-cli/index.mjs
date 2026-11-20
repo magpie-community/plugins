@@ -2570,7 +2570,15 @@ class Proc {
   matchesHistory(messages) {
     if (this.historyInvalid) return false
     if (this.expectedMessages == null) return !this.turn && !this.hasSentFirstTurn
-    if (historyKey(this.expectedMessages) === historyKey(messages)) return true
+    const expectedKey = historyKey(this.expectedMessages)
+    const actualKey = historyKey(messages)
+    if (expectedKey === actualKey) return true
+    // magpie's masking can mask a text the session already has differently
+    // on a later request: the local model that missed it under load (the
+    // rules masked it alone) reads it for a later one, and a value in an
+    // earlier message becomes a {{KIND_xxxxxxxx}} placeholder. The history
+    // is the same one, so the session holds (yetone/magpie#7223).
+    if (sameUpToMaskedValues(expectedKey, actualKey)) return true
     // Clients such as Claude Code canonicalize tool_use.input when they
     // persist history (e.g. filling default replace_all: false). The live
     // session still has the model-issued arguments. historyKey already
@@ -3656,8 +3664,8 @@ async function acquireProc(agyPath, convKey, opts, isFreshConversation, forceNew
     const keys = extra && extra !== convKey ? [convKey, extra] : [convKey]
     const outcome = await withAcquireLocks(keys, async () => {
       const locked = new Set(keys)
-      if (isFreshConversation && !forceNew && !pool.get(convKey)) {
-        const candidate = findLiveContinuedProc(opts)
+      if (!forceNew && !pool.get(convKey)) {
+        const candidate = isFreshConversation ? findLiveContinuedProc(opts) : findRemaskedProc(convKey, opts)
         const needed = candidate?.convKey
         if (needed && !locked.has(needed) && attempt < 2) return { retry: needed }
       }
@@ -3710,6 +3718,10 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
   // the whole previous opening (not just a shared prefix).
   if (!existing && !forceNew && isFreshConversation) {
     const candidate = findLiveContinuedProc(opts)
+    if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
+  }
+  if (!existing && !forceNew && !isFreshConversation) {
+    const candidate = findRemaskedProc(convKey, opts)
     if (candidate && lockedKeys.has(candidate.convKey)) existing = rekeyProc(candidate, convKey)
   }
   let why = forceNew && opts.dropReason ? opts.dropReason : "no_live"
@@ -4518,6 +4530,33 @@ function isContinuedOpening(proc, firstMessage) {
   return flattenedContinuationMessage(proc, firstMessage) != null
 }
 
+// The live session of a conversation whose first message masking now writes
+// otherwise (a value in it went as written before and as a placeholder now,
+// or back), so its key changed though the conversation is the same one
+// (yetone/magpie#7223).
+function findRemaskedProc(convKey, opts) {
+  const first = Array.isArray(opts?.messages) ? opts.messages[0] : null
+  const history = opts?.history
+  const account = /^(.*?)[0-9a-f]{64}$/.exec(convKey)?.[1]
+  if (!first || !Array.isArray(history) || !history.length || account == null) return null
+  const firstKey = historyKey([first])
+  let found = null
+  for (const proc of pool.values()) {
+    if (proc.dead || proc.retiring || proc.turn || !proc.hasSentFirstTurn) continue
+    if (proc.convKey === convKey || /^(.*?)[0-9a-f]{64}$/.exec(proc.convKey)?.[1] !== account) continue
+    if ((proc.userId || "") !== (opts.userId || "")) continue
+    if ((proc.sessionScope || "") !== (opts.sessionScope || "")) continue
+    if (proc.workDir !== opts.workDir || !sameInstructions(proc.instructions, opts.instructions)) continue
+    const expectedFirst = Array.isArray(proc.expectedMessages) ? proc.expectedMessages[0] : null
+    if (!expectedFirst || !sameUpToMaskedValues(historyKey([expectedFirst]), firstKey)) continue
+    if (!proc.matchesHistory(history)) continue
+    // two would be a guess
+    if (found) return null
+    found = proc
+  }
+  return found
+}
+
 function findLiveContinuedProc(opts) {
   const first = Array.isArray(opts?.messages) ? opts.messages[0] : null
   if (!first) return null
@@ -4556,6 +4595,45 @@ function rekeyProc(proc, newKey) {
   return proc
 }
 
+
+// A value magpie's masking put in place of what it found (redact.tag):
+// {{KIND_xxxxxxxx}}, its suffix lowercase base32.
+const MASKED_VALUE_RE = /\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}/g
+// The longest text one placeholder stands in for, as its JSON string.
+const MASKED_VALUE_MAX = 1024
+
+// Whether two history keys are the same but for values masking wrote as a
+// placeholder in one and as written in the other: each placeholder of one
+// stands for some text of the other's, inside one JSON string, and
+// everything else is the same, byte for byte.
+function sameUpToMaskedValues(a, b) {
+  return matchesWithMaskedValues(a, b) || matchesWithMaskedValues(b, a)
+}
+
+function matchesWithMaskedValues(pattern, text) {
+  const parts = pattern.split(MASKED_VALUE_RE)
+  if (parts.length < 2) return false
+  const holes = pattern.match(MASKED_VALUE_RE)
+  if (!text.startsWith(parts[0])) return false
+  let at = parts[0].length
+  for (let index = 1; index < parts.length; index++) {
+    const next = parts[index]
+    const last = index === parts.length - 1
+    // the same placeholder in both, or the value it stands for
+    if (text.startsWith(holes[index - 1] + next, at) && (!last || at + holes[index - 1].length + next.length === text.length)) {
+      at += holes[index - 1].length + next.length
+      continue
+    }
+    const end = last ? (text.endsWith(next) ? text.length - next.length : -1) : text.indexOf(next, at + 1)
+    if (end <= at || end - at > MASKED_VALUE_MAX) return false
+    const value = text.slice(at, end)
+    // a value never takes in the end of the JSON string it is in, nor a
+    // placeholder of its own: masking writes one in place of a value
+    if (/(?:^|[^\\])(?:\\\\)*"/.test(value) || /\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}/.test(value)) return false
+    at = end + next.length
+  }
+  return at === text.length
+}
 
 function historyKey(messages) {
   const rows = []
@@ -7190,6 +7268,8 @@ export const AntigravityBridgePlugin = async () => {
                     logBridgeEvent(proc, turn, "drop_live", dropReason, acquireOpts, {
                       history: trailingMessages(body).history.length,
                       expected_history: Array.isArray(proc.expectedMessages) ? proc.expectedMessages.length : null,
+                      // an interrupted turn is dropped when its history differs too
+                      history_matches: historyMatches,
                       tools_grew: !!proc.toolsGrew(tools),
                       work_dir_changed: proc.workDir !== workDir,
                       instructions_changed: !sameInstructions(proc.instructions, instructions),
