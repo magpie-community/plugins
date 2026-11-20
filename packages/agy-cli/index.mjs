@@ -2595,6 +2595,17 @@ class Proc {
     return compactedEarlierHistory(this.expectedMessages, messages)
   }
 
+  // messages are where this session's history stood one or more turns back:
+  // a prefix of what it has, ending before a user message agy has answered.
+  continuesPast(messages) {
+    if (this.historyInvalid || this.turn || !Array.isArray(this.expectedMessages) || !Array.isArray(messages)) return false
+    const k = messages.length
+    if (!k || k >= this.expectedMessages.length || this.expectedMessages[k].role !== "user") return false
+    const expectedKey = historyKey(this.expectedMessages.slice(0, k))
+    const actualKey = historyKey(messages)
+    return expectedKey === actualKey || sameUpToMaskedValues(expectedKey, actualKey)
+  }
+
   // Clients such as Claude Code normalize tool_use inputs when recording an
   // assistant message (e.g. filling default replace_all: false on Edit or
   // stripping a redundant cd prefix on Bash). When the pending turn's exact
@@ -3757,9 +3768,15 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
     }
     const continuedFresh = isFreshConversation && existing.hasSentFirstTurn &&
       isContinuedOpening(existing, Array.isArray(opts.messages) ? opts.messages[0] : null)
+    // Claude Code's compaction leaves the last exchange out of its history and
+    // appends the summary instructions to that exchange's user message. The
+    // live session has the whole conversation; a new one gets a replay cut to
+    // the prompt budget, and summarizes what is left of it.
+    const compactionFork = !forceNew && !!opts.compaction && !existing.dead && !existing.retiring &&
+      !existing.matchesHistory(matchedHistory) && existing.continuesPast(matchedHistory)
     const compatible = !forceNew && !existing.dead && !existing.retiring &&
       existing.workDir === opts.workDir && sameInstructions(existing.instructions, opts.instructions) &&
-      (existing.matchesHistory(matchedHistory) || continuedFresh)
+      (existing.matchesHistory(matchedHistory) || continuedFresh || compactionFork)
     if (compatible && (!(isFreshConversation && existing.hasSentFirstTurn) || continuedFresh)) {
       if (continuedFresh) {
         const first = Array.isArray(opts.messages) ? opts.messages[0] : null
@@ -3771,7 +3788,10 @@ async function acquireProcLocked(agyPath, convKey, opts, isFreshConversation, fo
       await existing.updateTools(opts.tools)
       // agy never listed the tools this request declares (an agy started
       // with none whose MCP server never connected): a new one may.
-      if (existing.toolsListed()) return { proc: existing, history: matchedHistory }
+      if (existing.toolsListed()) {
+        if (compactionFork) logBridgeEvent(existing, null, "kept", "compaction_fork", opts)
+        return { proc: existing, history: matchedHistory }
+      }
       why = "tools_unlisted"
     } else {
       why = forceNew ? "forced" : existing.dead ? "dead" : existing.retiring ? "retiring" :
@@ -4755,6 +4775,14 @@ function renderPrefillCarrierParts(message) {
   const body = (assistantTextOf(message) || "").trim()
   if (!body) return []
   return [{ type: "text", text: `${prefillCarrierNote()}\n${body}` }]
+}
+
+// What Claude Code's /compact and auto-compact ask for. A partial compaction
+// ("the RECENT portion") is left out: it keeps the later messages as they are.
+const CLAUDE_COMPACT_PROMPT = "Your task is to create a detailed summary of the conversation so far"
+
+function isCompactionTurn(messages) {
+  return messages.some((message) => message?.role === "user" && contentText(message.content).includes(CLAUDE_COMPACT_PROMPT))
 }
 
 function trailingMessages(body) {
@@ -7363,7 +7391,8 @@ export const AntigravityBridgePlugin = async () => {
               }
               const acquireOpts = { model, selection, tools, workDir, instructions, history: trailing.history,
                 messages: body.messages, layout, nonstream: body.stream === false, reqId, convKey,
-                hasToolResults: resultBlocks.length > 0, userId: body.metadata?.user_id || "", sessionScope }
+                hasToolResults: resultBlocks.length > 0, compaction: isCompactionTurn(trailing.messages),
+                userId: body.metadata?.user_id || "", sessionScope }
               let answeredIds = null
               const begin = (proc, history) => beginTurn(proc, history, body, callerWorkDir, model, selection, answeredIds)
               let keptSession = false
