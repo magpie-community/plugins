@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.14 · 2026-11-21
+
+The cards carry the names the software gives the vendors, a subscription can be
+given a name of its own, and the countdowns are written at one size.
+
+> 卡片上的厂商名换成软件自己给的那个名字：Magpie 给 zhipu 的是「Zhipu GLM」，给 minimax-cn 的是
+> 「MiniMax (China)」，组件以前写死自己的「GLM」「MiniMax」，软件里看到的余额和组件上的卡片说的是
+> 两家不同的东西。插件页「显示哪些订阅」里每一行下面多了一个输入框，可以给订阅另起一个名字，留空
+> 就用软件里的名字；名字记在这个账号上，手机页面和组件都用它。倒计时的字号统一了：同一段字以前有
+> 三个字号（大组件共用窗口时 10pt、不共用时 8 或 9pt，中组件挤排时窗口名写死 8pt），现在同一族里
+> 只有一个字号。厂商之间从来没有单独的字号——MiniMax 的「5 小时」看着比别人大，是因为它只有
+> 5 小时一个窗口，没有周额度那一行。名字换长了，标题的字号跟着小一点：四张卡的中号组件在常见的手机上
+> （390×844）标题是 9.7pt（以前是 12pt），嫌小就给这一家另起一个短名字。小号组件的参数认软件里的
+> 名字了：`zhipu`、`minimax-cn` 现在和 `glm`、`minimax` 一样能找到那张卡。
+
+### Changed
+
+- **A card carries the name Magpie gives the vendor.** Magpie calls zhipu
+  "Zhipu GLM" and minimax-cn "MiniMax (China)"; the widget used to carry names
+  of its own ("GLM", "MiniMax"), so the balance in the software and the card on
+  the home screen talked about two different things. The widget now takes the
+  name the gateway sends, and a name that cannot be shown (one that carries the
+  separator of a label, one that is too long, one with control characters in
+  it) falls back to the plain name of the family.
+- **A subscription can be given a name of its own.** Every row under "which
+  subscriptions" on the plugin page has a field of its own now; leave it empty
+  and the name of the software is used. The name belongs to that account, and
+  the page on the phone and the widget both carry it.
+- **The countdown is written at one size.** The same words used to be written
+  at three sizes: the large widget wrote them at 10pt when the page shared one
+  window and at 8 or 9pt when it did not, and the name of the window (`5h`) in
+  the dense medium layout was pinned at 8pt, a point smaller than everything
+  else on that card. Within one family the same words now have one size.
+- **The names are longer, so the titles are a little smaller.** "MiniMax
+  (China)" is longer than "MiniMax". With four cards the medium widget writes
+  its titles at 9.7pt on a common phone (390×844), where it wrote 12pt before;
+  with three cards the cells are wider and the titles stay at 12pt, and on the
+  smallest phone four cards are written at 8.1pt. If that is too small, give
+  that one subscription a shorter name of your own.
+- **The parameter of the small widget knows the names of the software.**
+  `zhipu` and `minimax-cn` now find the same card as `glm` and `minimax`.
+- Ten new tests guard all of it: the name of the vendor is used, a name that
+  cannot be shown falls back to the plain one, the name survives a reading that
+  was stored, the name the user gives is used and the ones that cannot be are
+  dropped, the countdown of the large widget is one size whether the page
+  shares a window or not, the name of the window is one size in both layouts of
+  the medium family, the small widget knows the names of the software, and the
+  row that is dragged carries the name with it. All ten are red on 0.4.13.
+- On the computer this release changed the service and the script of the
+  widget, so the plugin has to be updated and reloaded. The script on the phone
+  has to be updated once: run the installer (`SetupUsageWidget.js`) in
+  Scriptable again.
+
 ## 0.4.13 · 2026-11-20
 
 The vendor list of the legacy gateway counts every request again, a new

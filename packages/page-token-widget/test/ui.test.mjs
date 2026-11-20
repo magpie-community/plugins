@@ -331,12 +331,33 @@ test('the subscription rows can be dragged into another order', async () => {
   // is written back with the selection.
   assert.match(page, /className = 'grip'/);
   assert.match(page, /dragstart/);
-  assert.match(page, /label\.after\(dragging\)|label\.before\(dragging\)/);
+  // The row that moves is the wrapper of the label, so that the name the user
+  // gives a subscription travels with it.
+  assert.match(page, /querySelectorAll\('\.sub-row'\)/);
+  assert.match(page, /rows\[to\]\.after\(dragging\)|rows\[to\]\.before\(dragging\)/);
   assert.match(page, /api\/v1\/console\/options/);
   // The rows are drawn in the order the user has given, not in the order the
   // gateway happens to list them.
   assert.match(page, /for \(const entry of state\.display\?\.subscriptions \|\| \[\]\)/);
   assert.match(styles, /\.grip/);
+});
+
+test('a subscription can be given a name of its own', async () => {
+  const page = await read('ui/app.js');
+  const styles = await read('ui/style.css');
+  // The name is a field of its own under the row, and it holds the name that
+  // was given to this subscription.
+  assert.match(page, /const rename = document\.createElement\('input'\)/);
+  assert.match(page, /rename\.type = 'text'/);
+  assert.match(page, /rename\.maxLength = 32/);
+  assert.match(page, /rename\.value = \(state\.display\?\.names \|\| \{\}\)\[subscription\.id\] \|\| ''/);
+  // The name goes to the service with the other choices of the page. An empty
+  // field means the name of the software is used again.
+  assert.match(page, /body: JSON\.stringify\(\{ names \}\)/);
+  assert.match(page, /delete names\[subscription\.id\]/);
+  // A change of the name must not be taken for a change of the selection.
+  assert.match(page, /if \(event\.target && event\.target\.type === 'text'\) return;/);
+  assert.match(styles, /\.checks \.sub-name/);
 });
 
 test('the phone says goodbye to its row on the list', async () => {

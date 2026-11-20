@@ -4,7 +4,7 @@ import { writeAtomic } from './atomic.mjs';
 import {
   resolveQuotas, normalizeUsage, normalizeUsageSummary, sanitizeCachedLabels,
   sanitizeCachedSummary, shanghaiDay, project, providerFamily, accountKey,
-  todayContext, usageForCard,
+  todayContext, usageForCard, cardName,
 } from './normalize.mjs';
 
 // The snapshot of the service is good for a minute. A reading that arrives
@@ -473,7 +473,9 @@ export class Collector {
     return cards.map(card => ({
       id: card.id,
       provider: card.provider,
-      label: card.label,
+      // The console shows the name the card carries, the one the user gave it
+      // or the one the vendor has.
+      label: cardName(card, this.display?.names),
       account: card.account || null,
       alias: card.alias || null,
       // Whether the gateway reported a number for this account today. An

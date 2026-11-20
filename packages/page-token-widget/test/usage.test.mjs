@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeQuotas, project, resolveQuotas, sanitizeCachedLabels, shanghaiDay } from '../lib/normalize.mjs';
+import { displayOptions, normalizeQuotas, project, resolveQuotas, sanitizeCachedLabels, shanghaiDay } from '../lib/normalize.mjs';
 
 const iso = (offset = 0) => new Date(Date.now() + offset).toISOString();
 
@@ -208,4 +208,90 @@ test('the plan of an account is read even when the gateway sends the money of th
   assert.equal(second[0].stale, false, 'the reading of the account is the live one');
   assert.deepEqual(second[0].windows.map(window => window.usedPercent), [10, 60],
     'the card of the account did not follow the live reading');
+});
+
+// Magpie names its vendors itself: "Zhipu GLM", "MiniMax (China)". The
+// widget used to carry names of its own ("GLM", "MiniMax"), and the software
+// and the widget said two different things about the same subscription. The
+// name of the software is the name of the widget.
+test('a card carries the name Magpie gives the vendor', () => {
+  const [glm] = normalizeQuotas({ data: [{ provider: 'zhipu', name: 'Zhipu GLM', windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(glm.label, 'Zhipu GLM');
+  assert.equal(glm.vendor, 'Zhipu GLM');
+  const [minimax] = normalizeQuotas({ data: [{ provider: 'minimax-cn', name: 'MiniMax (China)', windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(minimax.label, 'MiniMax (China)');
+  // The account of a vendor still stands behind the name of the vendor.
+  const [codex] = normalizeQuotas({ data: [
+    { provider: 'codex', name: 'Codex', user: 'alpha@example.com', windows: [{ name: '5 hours', used: 1 }] },
+    { provider: 'codex', name: 'Codex', user: 'beta@example.com', windows: [{ name: '5 hours', used: 1 }] },
+  ] });
+  assert.equal(codex.label, 'Codex · alpha');
+});
+
+test('a vendor name that cannot be shown is not shown', () => {
+  // The separator of a label would cut the name in two, a name that is too
+  // long is not a name, and control characters have no place in one: all of
+  // them fall back to the plain name of the family.
+  const [plain] = normalizeQuotas({ data: [{ provider: 'zhipu', windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(plain.label, 'GLM');
+  const [cut] = normalizeQuotas({ data: [{ provider: 'zhipu', name: 'A · B', windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(cut.label, 'GLM');
+  const [long] = normalizeQuotas({ data: [{ provider: 'zhipu', name: 'x'.repeat(41), windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(long.label, 'GLM');
+  const bell = String.fromCharCode(7);
+  const [loud] = normalizeQuotas({ data: [{ provider: 'zhipu', name: bell, windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(loud.label, 'GLM');
+  // A name that carries a control character is cleaned, not thrown away.
+  const [cleaned] = normalizeQuotas({ data: [{ provider: 'zhipu', name: 'Zhipu' + bell + 'GLM', windows: [{ name: '5 hours', used: 1 }] }] });
+  assert.equal(cleaned.label, 'Zhipu GLM');
+});
+
+test('the name of a vendor survives a reading that was stored', () => {
+  // The card falls back to the reading that was stored when the gateway is
+  // quiet. The name of the vendor is part of the card, so the card that comes
+  // back says the same name.
+  const live = resolveQuotas({ data: [{ provider: 'zhipu', name: 'Zhipu GLM', windows: [{ name: '5 hours', used: 1 }] }] }, {}, []);
+  const stored = sanitizeCachedLabels(live, 'quotas');
+  assert.equal(stored[0].label, 'Zhipu GLM');
+  const [again] = resolveQuotas({ data: [] }, {}, stored);
+  assert.equal(again.label, 'Zhipu GLM');
+});
+
+test('the name the user gives a subscription is kept, the others are not', () => {
+  const display = displayOptions({
+    names: {
+      'codex@alpha': '工作账号',
+      'codex@beta': 'x'.repeat(33),
+      'codex@gamma': 'A · B',
+      'codex@delta': 42,
+      'codex@epsilon': '   ',
+    },
+  });
+  assert.deepEqual(display.names, { 'codex@alpha': '工作账号' });
+});
+
+test('a subscription carries the name the user gives it', () => {
+  const view = project(
+    snapshot({
+      today: iso(),
+      todayPeriodDay: shanghaiDay(Date.now()),
+      cards: [card('codex@alpha', 'codex', 'alpha', { today: { totalTokens: 1234, requests: 5 } })],
+    }),
+    Date.now(),
+    { subscriptions: ['codex@alpha'], names: { 'codex@alpha': '工作账号' } },
+    {},
+  );
+  assert.equal(view.subscriptions[0].label, '工作账号');
+  // Without a name of his own the card keeps the name of the vendor.
+  const plain = project(
+    snapshot({
+      today: iso(),
+      todayPeriodDay: shanghaiDay(Date.now()),
+      cards: [card('codex@alpha', 'codex', 'alpha', { today: { totalTokens: 1234, requests: 5 } })],
+    }),
+    Date.now(),
+    { subscriptions: ['codex@alpha'] },
+    {},
+  );
+  assert.equal(plain.subscriptions[0].label, 'codex · alpha');
 });

@@ -40,7 +40,10 @@ magpie plugin add @magpie-community/page-token-widget
   last seven days and the ranking per provider.
 - The plugin page chooses which subscriptions the medium and the large widget
   show, and it can drag them into the order you want. The phone and the widgets
-  follow that order.
+  follow that order. Every row has a field of its own under it: a name of your
+  own for that subscription, used by the page on the phone and by the widgets.
+  Leave it empty and the name Magpie gives the vendor is used — "Zhipu GLM" and
+  "MiniMax (China)", the names the software shows as well.
 - The plugin page also chooses what the **small** widget shows: the quota that
   is left or the quota that is used, and which subscription the small widget
   follows. A widget parameter may still override both, for that one widget.
@@ -243,7 +246,7 @@ widget only.
 
 | Size | Shows | Widget Parameter |
 |---|---|---|
-| Small | one quota, the reset countdown, today's tokens | empty (the plugin page decides); `codex`, `minimax`, `glm`, or one account written `codex@<account>`; `\|used` shows what is used |
+| Small | one quota, the reset countdown, today's tokens | empty (the plugin page decides); `codex`, `minimax`, `glm`, or one account written `codex@<account>`; the names the software uses, `zhipu` and `minimax-cn`, work as well; `\|used` shows what is used |
 | Medium | up to 6 per page; today's tokens | empty; `page=2` for the second page |
 | Large | up to 6 per page; two columns with the quota, the reset and the second window; today's and the last seven days | empty; `page=2` for the second page |
 

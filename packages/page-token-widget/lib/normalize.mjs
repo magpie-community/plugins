@@ -9,6 +9,19 @@ const PROVIDER_ORDER = ['codex', 'minimax', 'glm'];
 // The display name of each family, used to match a subscription with the usage
 // row of the same vendor.
 const FAMILY_LABELS = { codex: 'Codex', minimax: 'MiniMax', glm: 'GLM' };
+// The name Magpie itself gives a vendor ("Zhipu GLM", "MiniMax (China)").
+// The component says the same name, so that the software and the widget are
+// one thing and not two. It is text of the upstream, so it is cleaned before
+// it is shown: the separator of the label ("·") would cut the name in two, a
+// name that is too long is not a name, and control characters have no place
+// in one.
+const vendorName = value => {
+  const text = typeof value === 'string'
+    ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+    : '';
+  if (!text || text.length > 40 || text.includes('·')) return '';
+  return text;
+};
 // The family an upstream provider id belongs to, or null when it is unknown.
 export const providerFamily = id => PROVIDERS[id]?.id || null;
 export const iso = value => typeof value === 'string' && Number.isFinite(Date.parse(value))
@@ -224,6 +237,9 @@ export function normalizeQuotas(raw, cache = {}) {
     // numbered keeps its number in the label, so the two can be told apart.
     const suffix = id === base ? '' : id.slice(base.length);
     const shown = alias || (named ? account : null);
+    // The name the vendor carries is the name Magpie gives it, so that the
+    // card says what the software says about the same subscription.
+    const vendor = vendorName(card?.name) || provider.label;
     // The usage of this account alone, when the gateway could report it.
     const own = card?.accountUsage?.today;
     const accountUsage = typeof own?.totalTokens === 'number' && Number.isFinite(own.totalTokens)
@@ -231,7 +247,11 @@ export function normalizeQuotas(raw, cache = {}) {
     return [{
       id,
       provider: provider.id,
-      label: shown ? provider.label + ' · ' + shown + suffix : provider.label + (index > 1 ? ' ' + index : ''),
+      label: shown ? vendor + ' · ' + shown + suffix : vendor + (index > 1 ? ' ' + index : ''),
+      // The name of the vendor is kept with the card, so that a card that
+      // falls back to a reading that was stored still says the name Magpie
+      // gives the vendor.
+      vendor,
       account: named ? account : null,
       alias,
       accountUsage,
@@ -295,6 +315,9 @@ export function resolveQuotas(raw, cache = {}, previous = [], cachedIdentities =
   const history = group(previous.map(card => ({
     ...card, provider: card.provider === 'glm' ? 'zhipu' : card.provider,
     readAt: card.updatedAt,
+    // The name the vendor carries travels with the card, so that a card that
+    // falls back to the reading that was stored says the same name.
+    name: card.vendor || card.name,
     windows: card.windows.map(window => ({ ...window, name: window.label, used: window.usedPercent })),
   })));
   const selected = [];
@@ -439,6 +462,9 @@ export function normalizeUsageSummary(raw) {
 export function sanitizeCachedLabels(data, key) {
   if (key === 'quotas') return normalizeQuotas({ data: data.map(card => ({
     provider: card.provider === 'glm' ? 'zhipu' : card.provider, plan: card.plan, readAt: card.updatedAt, stale: card.stale === true,
+    // The name the vendor carries travels with the card, so that the card
+    // that is stored says the name Magpie gives the vendor.
+    name: card.vendor || card.name,
     account: card.account,
     alias: card.alias,
     accountUsage: card.accountUsage,
@@ -511,6 +537,22 @@ export function displayOptions(value = {}) {
     if (account && !SUBSCRIPTION_ACCOUNT.test(account)) return '';
     return subscriptionId(wanted);
   })();
+  // The name the user gives a subscription is his own: it is what the widget
+  // and the phone show for it. It is kept per card, so a name follows the
+  // account it was given to, and it survives a restart of the service.
+  const names = (() => {
+    const given = value.names && typeof value.names === 'object' && !Array.isArray(value.names) ? value.names : {};
+    const out = {};
+    for (const [id, name] of Object.entries(given)) {
+      if (typeof id !== 'string' || typeof name !== 'string') continue;
+      const text = name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+      // The separator of the label would cut the name in two, so a name that
+      // carries one is not a name.
+      if (!text || text.length > 32 || text.includes('·')) continue;
+      out[id] = text;
+    }
+    return out;
+  })();
   return {
     modelLimit: limit(value.modelLimit, DEFAULT_DISPLAY.modelLimit),
     agentLimit: limit(value.agentLimit, DEFAULT_DISPLAY.agentLimit),
@@ -519,8 +561,16 @@ export function displayOptions(value = {}) {
     subscriptions: subscriptions.length ? subscriptions : [...DEFAULT_DISPLAY.subscriptions],
     widgetMode,
     widgetCard,
+    names,
   };
 }
+// The name of a card is the name the user gave it, or the name the vendor
+// carries. The phone and the widget read it from here, so that they say the
+// same thing about the same subscription.
+export const cardName = (card, names = {}) => {
+  const own = typeof names?.[card?.id] === 'string' ? names[card.id].trim() : '';
+  return own || card?.label || '';
+};
 // Command line overrides for the configuration script. An empty value never
 // replaces a saved choice; it is ignored so a typo cannot silently reset it.
 export function displayOverrides(argv = []) {
@@ -609,6 +659,9 @@ export function project(snapshot, now = Date.now(), display = {}, settings = {})
   const usageOf = card => usageForCard(card, { outdated, todayProviders, familySizes, day });
   const subscriptions = cards.map(card => ({
     ...card,
+    // The name the user gave the card is the name it carries on the phone and
+    // on the widget.
+    label: cardName(card, choices.names),
     usage: usageOf(card),
     // The usage of a subscription comes from the reading of today: when that
     // reading is old, the numbers on the card are old as well.

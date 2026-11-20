@@ -559,6 +559,11 @@ import { pairingLeft, remainingText } from './timing.mjs';
     };
     for (const subscription of ordered) {
       const family = subscription.provider || subscription.id;
+      // The name the user gives the subscription is his own: it is what the
+      // widget and the phone show for it. It stands under the row, so that
+      // the row itself keeps the order it is dragged into.
+      const row = document.createElement('div');
+      row.className = 'sub-row';
       const label = document.createElement('label');
       label.className = 'sub';
       const grip = document.createElement('span');
@@ -592,16 +597,16 @@ import { pairingLeft, remainingText } from './timing.mjs';
         event.stopPropagation();
       });
       grip.addEventListener('dragstart', event => {
-        dragging = label;
-        label.classList.add('dragging');
+        dragging = row;
+        row.classList.add('dragging');
         event.dataTransfer.effectAllowed = 'move';
         event.dataTransfer.setData('text/plain', '');
-        event.dataTransfer.setDragImage(label, 12, 12);
+        event.dataTransfer.setDragImage(row, 12, 12);
       });
       grip.addEventListener('dragend', () => {
         dragging = null;
-        label.classList.remove('dragging');
-        for (const row of list.querySelectorAll('.over')) row.classList.remove('over');
+        row.classList.remove('dragging');
+        for (const marked of list.querySelectorAll('.over')) marked.classList.remove('over');
       });
       label.addEventListener('dragover', event => {
         event.preventDefault();
@@ -612,21 +617,50 @@ import { pairingLeft, remainingText } from './timing.mjs';
       label.addEventListener('drop', event => {
         event.preventDefault();
         label.classList.remove('over');
-        if (!dragging || dragging === label) return;
-        const rows = [...list.querySelectorAll('label')];
+        if (!dragging || dragging === row) return;
+        const rows = [...list.querySelectorAll('.sub-row')];
         const from = rows.indexOf(dragging);
-        const to = rows.indexOf(label);
+        const to = rows.indexOf(row);
         if (from < 0 || to < 0) return;
         // The dragged row goes where it was dropped: below the row it was
         // dropped on, or above it.
-        if (to > from) label.after(dragging);
-        else label.before(dragging);
+        if (to > from) rows[to].after(dragging);
+        else rows[to].before(dragging);
         dragging = null;
         void save();
       });
-      list.append(label);
+      // The name of the subscription, the one the user gives it. It is saved
+      // when the field is left, and it is the name the card carries on the
+      // phone and in the widget.
+      const rename = document.createElement('input');
+      rename.type = 'text';
+      rename.className = 'sub-name';
+      rename.maxLength = 32;
+      rename.placeholder = '自定义名称（留空就用软件里的名字）';
+      rename.title = '手机上显示的名字，留空就用软件里的名字';
+      rename.value = (state.display?.names || {})[subscription.id] || '';
+      rename.addEventListener('change', async () => {
+        const names = { ...(state.display?.names || {}) };
+        const given = String(rename.value || '').trim();
+        if (given) names[subscription.id] = given;
+        else delete names[subscription.id];
+        try {
+          const result = await api('api/v1/console/options', {
+            method: 'POST',
+            body: JSON.stringify({ names }),
+          });
+          state.display = result.display;
+          text('subNote', '已经记下，手机上的组件下一次刷新就会跟着变。');
+        } catch {
+          text('subNote', '没有存上，请再试一次。');
+        }
+      });
+      row.append(label, rename);
+      list.append(row);
     }
-    list.onchange = () => {
+    list.onchange = (event) => {
+      // The name of a subscription is saved by its own field.
+      if (event.target && event.target.type === 'text') return;
       void save();
     };
   };

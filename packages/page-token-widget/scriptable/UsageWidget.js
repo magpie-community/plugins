@@ -233,6 +233,10 @@ function text(parent, value, size, color, weight) {
 // font size; a little more is kept, so that a letter with a long tail is not
 // cut off.
 const LINE_HEIGHT = 1.25;
+// The provider id Magpie itself uses. The parameter of the small widget may
+// say the name the software says ("zhipu", "minimax-cn"), so that the name
+// the user reads on the screen is a name that works.
+const PROVIDER_ALIASES = { zhipu: "glm", "minimax-cn": "minimax" };
 // A line of a card with a height of its own. The height of a text is decided
 // by the letters it holds — a name that is scaled down to fit, a line that
 // holds nothing but a space — and a card whose line is shorter than the one
@@ -492,12 +496,18 @@ function subscriptionGrid(parent, cards, sharedWindow) {
   // card, and every point is needed there.
   const reserveAccountLine = !dense && style.account > 0 && cards.some(card => splitLabel(card.label).account);
   // Every name of the page takes the size that fits the narrowest of them, so
-  // the cards keep one title size.
+  // the cards keep one title size. The names are the names Magpie gives the
+  // vendors, and they are longer than the names of the families were
+  // ("MiniMax (China)" instead of "MiniMax"): a name that does not fit is
+  // shortened, and the title of the page is the size that fits the longest of
+  // them, so that no card of the page is written smaller than the others.
   // The dense large family has no line of its own for the account, so it
   // goes with the name of the vendor.
   const titleText = card => large && dense ? card.label : splitLabel(card.label).vendor;
   const names = cards.map(card => fitName(titleText(card), style.name, cellWidth));
-  const nameSize = names.length ? Math.min(...names.map(name => name.size)) : style.name;
+  const nameSize = names.length
+    ? Math.min(...names.map(name => name.size))
+    : style.name;
   for (let start = 0; start < cards.length; start += columns) {
     if (start) grid.addSpacer(style.rowGap);
     const row = grid.addStack(); row.topAlignContent();
@@ -562,8 +572,9 @@ function subscriptionGrid(parent, cards, sharedWindow) {
       text(valueRow, percent(primary), numberSize, accent(primary), "medium");
       if (!large && dense && !sharedWindow) {
         // The window of the card stands at the right end of the row, and the
-        // pair of the word and the number at the left of it.
-        valueRow.addSpacer(); text(valueRow, windowLabel(primary), 8, colors.muted);
+        // pair of the word and the number at the left of it. The name of the
+        // window is written at the size the same name has everywhere else.
+        valueRow.addSpacer(); text(valueRow, windowLabel(primary), style.reset, colors.muted);
       } else {
         atLeft(valueRow);
       }
@@ -574,7 +585,9 @@ function subscriptionGrid(parent, cards, sharedWindow) {
         if (!dense) {
           column.addSpacer(style.resetGap);
           const label = (sharedWindow ? "" : windowLabel(primary) + " · ") + shortReset(primary);
-          const size = sharedWindow ? style.reset : Math.min(style.reset, cellWidth < 64 ? 8 : 9);
+          // The same text is written at the same size, whether the page shares
+          // one window or not.
+          const size = style.reset;
           text(column, label, size, colors.muted);
         }
         // The second window is the weekly limit. The large family has a line
@@ -641,9 +654,12 @@ if (!settings || !settings.token || !data || data.schemaVersion !== 1) {
     const exact = chosen ? cards.find(c => c.id === chosen) : null;
     const same = chosen ? cards.filter(c => String(c.id).toLowerCase() === chosen.toLowerCase()) : [];
     // A vendor is matched before an account: an account of another vendor
-    // may carry the name of this one.
-    const byProvider = chosen ? cards.find(c => c.provider === chosen.toLowerCase()) : null;
-    const byAccount = chosen ? cards.find(c => String(c.account || "").toLowerCase() === chosen.toLowerCase()) : null;
+    // may carry the name of this one. The name the software gives the vendor
+    // is a name that works as well.
+    const wanted = chosen ? String(chosen).toLowerCase() : "";
+    const vendor = PROVIDER_ALIASES[wanted] || wanted;
+    const byProvider = wanted ? cards.find(c => c.provider === vendor || c.provider === wanted) : null;
+    const byAccount = wanted ? cards.find(c => String(c.account || "").toLowerCase() === wanted) : null;
     const found = exact || (same.length === 1 ? same[0] : null) || byProvider || byAccount;
     // The account of a card can be renamed; an old parameter then finds
     // nothing. The first card is shown instead, and the note says so.

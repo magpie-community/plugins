@@ -215,6 +215,7 @@ const runWidget = async ({
   args = {},
   paired = null,
   cache = '',
+  screen = null,
 } = {}) => {
   const log = [];
   const widgets = [];
@@ -253,7 +254,15 @@ const runWidget = async ({
     Font: { systemFont: (size) => ({ size }), mediumSystemFont: (size) => ({ size, medium: true }) },
     config: { widgetFamily: 'medium', widgetParameter: '', runsInWidget: true, ...config },
     args: { widgetParameter: '', ...args },
-    Device: { name: () => 'iPhone', model: () => 'iPhone', isUsingDarkAppearance: () => false },
+    Device: {
+      name: () => 'iPhone',
+      model: () => 'iPhone',
+      isUsingDarkAppearance: () => false,
+      // A phone of a known size is asked for its size only when the test
+      // wants one: without it the widget keeps the size of the smallest
+      // phone it knows.
+      ...(screen ? { screenSize: () => ({ width: screen[0], height: screen[1] }) } : {}),
+    },
   };
   vm.createContext(context);
   // A script that comes from the pairing page carries the address and a
@@ -852,14 +861,44 @@ const realCards = () => {
   // The cards are mixed on purpose: a card with an account of its own and a
   // card without one stand next to each other, in the middle family as well
   // as in the large one. A fixture that keeps the two kinds apart would let
-  // a row of one kind hide a card that sits a line too high.
+  // a row of one kind hide a card that sits a line too high. The names are
+  // the names Magpie gives the vendors themselves: they are longer than the
+  // names of the families, and the cards have to fit them all the same.
   return [
-    { id: 'minimax', provider: 'minimax', account: null, label: 'MiniMax', windows: [window('5h', 96)], usage: { today: { totalTokens: 282669693 } }, stale: false },
+    { id: 'minimax', provider: 'minimax', account: null, label: 'MiniMax (China)', windows: [window('5h', 96)], usage: { today: { totalTokens: 282669693 } }, stale: false },
     { id: 'codex@liuzq1103', provider: 'codex', account: 'liuzq1103', label: 'Codex · liuzq1103', windows: [window('5h', 100), window('7d', 18)], usage: { today: { totalTokens: 7171104 } }, stale: false },
-    { id: 'glm', provider: 'glm', account: null, label: 'GLM', windows: [window('5h', 7), window('7d', 40)], usage: { today: { totalTokens: 34228561 } }, stale: false },
+    { id: 'glm', provider: 'glm', account: null, label: 'Zhipu GLM', windows: [window('5h', 7), window('7d', 40)], usage: { today: { totalTokens: 34228561 } }, stale: false },
     { id: 'codex@fangzt98', provider: 'codex', account: 'fangzt98', label: 'Codex · fangzt98', windows: [window('5h', 11), window('7d', 95)], usage: { today: { totalTokens: 1077940 } }, stale: false },
   ];
 };
+
+// The text of the widget, with the size it is written at. The size is the
+// thing the eye reads first: two words that say the same thing must be
+// written at the same size, or the page says two things at once.
+const writings = (stack, found = []) => {
+  for (const child of stack.children || []) {
+    if (child.type === 'text') {
+      found.push({
+        text: String(child.element.text || ''),
+        size: child.element.font && child.element.font.size,
+      });
+    } else if (child.type === 'stack') writings(child.stack, found);
+  }
+  return found;
+};
+
+// A card with one window of its own, and the name of the window beside it.
+// The windows of a page are not the same, so that the page does not share one
+// window: then every card says which window it is.
+const oneWindowCards = count => Array.from({ length: count }, (_, index) => ({
+  id: 'vendor' + index,
+  provider: 'codex',
+  account: null,
+  label: 'Vendor ' + index,
+  windows: [{ label: (index + 2) + 'h', usedPercent: 20, remainingPercent: 80, resetsAt: new Date(Date.now() + 3600000).toISOString() }],
+  usage: { today: { totalTokens: 1 } },
+  stale: false,
+}));
 
 const denseCards = (count) => {
   const page = realCards().concat(realCards().slice(0, 2)).map((card, index) => ({
@@ -1071,7 +1110,7 @@ test('the name of a card stands at the top of its line', async () => {
     '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
   });
   const { tree } = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
-  const names = ['MiniMax', 'Codex', 'GLM'];
+  const names = ['MiniMax (China)', 'Codex', 'Zhipu GLM'];
   const lines = allStacks(tree).filter(stack => stack.children.some(child =>
     child.type === 'text' && names.includes(String(child.element.text || ''))));
   assert.equal(lines.length, 4, 'every card of the page shows its name');
@@ -1090,7 +1129,7 @@ test('the name of the small widget stands at the top of its line', async () => {
   });
   const { tree } = await runWidget({ request: Request, config: { widgetFamily: 'small' } });
   const lines = allStacks(tree).filter(stack => stack.children.some(child =>
-    child.type === 'text' && String(child.element.text || '') === 'MiniMax'));
+    child.type === 'text' && String(child.element.text || '') === 'MiniMax (China)'));
   assert.equal(lines.length, 1, 'the small widget shows the name of one card');
   assert.equal(lines[0].alignment, 'top', 'the name stands at the top of its line');
 });
@@ -1265,7 +1304,7 @@ test('the name of a card stands at the left of it', async () => {
     '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
   });
   const { tree } = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
-  const names = ['MiniMax', 'Codex', 'GLM'];
+  const names = ['MiniMax (China)', 'Codex', 'Zhipu GLM'];
   const lines = allStacks(tree).filter(stack => stack.children.some(child =>
     child.type === 'text' && names.includes(String(child.element.text || ''))));
   assert.equal(lines.length, 4, 'every card of the page shows its name');
@@ -1336,7 +1375,7 @@ test('the rows of the small widget stand at the left of it', async () => {
   });
   const { tree } = await runWidget({ request: Request, config: { widgetFamily: 'small' } });
   const names = allStacks(tree).filter(stack => stack.children.some(child =>
-    child.type === 'text' && String(child.element.text || '') === 'MiniMax'));
+    child.type === 'text' && String(child.element.text || '') === 'MiniMax (China)'));
   assert.equal(names.length, 1, 'the small widget shows the name of one card');
   const last = names[0].children[names[0].children.length - 1];
   assert.equal(last.type, 'spacer', 'the line of the name ends with room for the rest of the widget');
@@ -1541,4 +1580,95 @@ test('the ink of the bar is as long as the quota that is left', async () => {
     assert.ok(Math.abs(ink.stack.size.width - wanted) < 0.01,
       'the ink of the bar is ' + ink.stack.size.width + ' points wide, but ' + left[index] + '% of ' + cell + ' is ' + wanted);
   });
+});
+
+// The countdown of a card is the same thing on every card of the page, and
+// it is written at one size. It used to be written at ten points when the
+// page shared one window and at nine when it did not, so the same countdown
+// changed its size with the company it kept.
+test('the countdown of the large widget is written at one size', async () => {
+  const window = label => ({ label, usedPercent: 20, remainingPercent: 80, resetsAt: new Date(Date.now() + 3600000).toISOString() });
+  const cards = (first, second) => [
+    { id: 'codex@alpha', provider: 'codex', account: 'alpha', label: 'Codex · alpha', windows: [window(first)], usage: { today: { totalTokens: 1 } }, stale: false },
+    { id: 'glm', provider: 'glm', account: null, label: 'Zhipu GLM', windows: [window(second)], usage: { today: { totalTokens: 1 } }, stale: false },
+  ];
+  const sizesOf = tree => writings(tree)
+    .filter(writing => /\d+(?:时\d+)?分|\d+天/.test(writing.text))
+    .map(writing => writing.size);
+  // The page shares one window: the name of it is written once, in the foot.
+  const shared = cards('5h', '5h');
+  const { Request: sharedRequest } = listening({ '/api/v1/overview': overview({}, shared) });
+  const together = await runWidget({
+    request: sharedRequest,
+    config: { widgetFamily: 'large' },
+    screen: [393, 852],
+  });
+  // The page does not share one window: every card says which window it is.
+  const apart = cards('5h', '7d');
+  const { Request: apartRequest } = listening({ '/api/v1/overview': overview({}, apart) });
+  const alone = await runWidget({
+    request: apartRequest,
+    config: { widgetFamily: 'large' },
+    screen: [393, 852],
+  });
+  const togetherSizes = sizesOf(together.tree);
+  const aloneSizes = sizesOf(alone.tree);
+  assert.equal(togetherSizes.length, 2, 'both cards of the page say how long is left');
+  assert.equal(aloneSizes.length, 2, 'both cards of the page say how long is left');
+  assert.deepEqual(new Set(togetherSizes), new Set([togetherSizes[0]]), 'the countdown of the page is one size');
+  assert.deepEqual(new Set(aloneSizes), new Set([aloneSizes[0]]), 'the countdown of the page is one size');
+  assert.deepEqual(aloneSizes, togetherSizes,
+    'the countdown of a card is the same size, whether the page shares one window or not');
+});
+
+// The name of a window is the same thing in the roomy layout of the medium
+// family and in the dense one. It used to be a point smaller in the dense
+// one, so the same two letters changed their size with the number of cards.
+test('the name of a window is written at one size in the medium family', async () => {
+  const screen = [393, 852];
+  const windowOf = tree => writings(tree)
+    .filter(writing => /^\d+h/.test(writing.text))
+    .map(writing => writing.size);
+  // Four cards: the roomy layout, and every card says which window it is.
+  const roomy = oneWindowCards(4);
+  const { Request: roomyRequest } = listening({ '/api/v1/overview': overview({}, roomy) });
+  const wide = await runWidget({ request: roomyRequest, config: { widgetFamily: 'medium' }, screen });
+  // Five cards: the dense layout, where the name of the window stands at the
+  // other end of the row of the number.
+  const dense = oneWindowCards(5);
+  const { Request: denseRequest } = listening({ '/api/v1/overview': overview({}, dense) });
+  const tight = await runWidget({ request: denseRequest, config: { widgetFamily: 'medium' }, screen });
+  const wideSizes = windowOf(wide.tree);
+  const denseSizes = windowOf(tight.tree);
+  assert.equal(wideSizes.length, 4, 'every card of the roomy page says which window it is');
+  assert.equal(denseSizes.length, 5, 'every card of the dense page says which window it is');
+  assert.deepEqual(new Set(denseSizes), new Set([denseSizes[0]]), 'the name of the window is one size');
+  assert.deepEqual(new Set(denseSizes), new Set(wideSizes),
+    'the name of a window is written at the same size in both layouts of the medium family');
+});
+
+// Magpie names its vendors itself: "Zhipu GLM", "MiniMax (China)". The
+// parameter of the small widget may say the name the software says, so that
+// the name the user reads on the screen is a name that works.
+test('the small widget knows the name Magpie gives the vendor', async () => {
+  const window = { label: '5h', usedPercent: 20, remainingPercent: 80, resetsAt: new Date(Date.now() + 3600000).toISOString() };
+  const cards = [
+    { id: 'glm', provider: 'glm', account: null, label: 'Zhipu GLM', windows: [window], usage: null, stale: false },
+    { id: 'minimax', provider: 'minimax', account: null, label: 'MiniMax (China)', windows: [window], usage: null, stale: false },
+    { id: 'codex@alpha', provider: 'codex', account: 'alpha', label: 'Codex · alpha', windows: [window], usage: { today: { totalTokens: 1 } }, stale: false },
+  ];
+  const { Request } = listening({ '/api/v1/overview': overview({}, cards) });
+  const zhipu = await runWidget({
+    request: Request,
+    config: { widgetFamily: 'small' },
+    args: { widgetParameter: 'zhipu' },
+  });
+  assert.ok(zhipu.log.includes('Zhipu GLM'), 'the name of the software finds the card: ' + zhipu.log.join(' | '));
+  const { Request: otherRequest } = listening({ '/api/v1/overview': overview({}, cards) });
+  const minimax = await runWidget({
+    request: otherRequest,
+    config: { widgetFamily: 'small' },
+    args: { widgetParameter: 'minimax-cn' },
+  });
+  assert.ok(minimax.log.includes('MiniMax (China)'), 'the name of the software finds the card: ' + minimax.log.join(' | '));
 });

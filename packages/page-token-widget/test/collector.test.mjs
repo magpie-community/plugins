@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { Collector, REFRESH_STRATEGIES } from '../lib/collector.mjs';
+import { displayOptions } from '../lib/normalize.mjs';
 import { cleanup, startGateway, tempDir } from './helpers.mjs';
 
 const quotaRow = (provider, user, extra = {}) => ({
@@ -745,6 +746,34 @@ test('a gateway that comes back is asked the newer answer again', async () => {
     assert.equal(gateway.calls.filter(call => call === '/v1/magpie/usage?period=today').length, 2);
     assert.equal(gateway.calls.filter(call => call.includes('period=today&limit=1')).length, legacyCalls);
     assert.equal(collector.overview().sources.today.state, 'ok');
+  } finally {
+    await gateway.close();
+    await cleanup(local);
+  }
+});
+
+test('the console shows the name the user gives a subscription', async () => {
+  const gateway = await startGateway({
+    '/v1/magpie/quotas?kept=1': quotaAnswer([
+      quotaRow('codex', 'alpha@example.com', { name: 'Codex' }),
+      quotaRow('codex', 'beta@example.com', { name: 'Codex' }),
+    ]),
+    '/v1/magpie/usage?period=today': todayAnswer,
+    '/v1/magpie/usage/requests?period=7d&limit=1': weekAnswer,
+  });
+  const local = await tempDir();
+  try {
+    const collector = collectorFor(gateway, local);
+    await collector.refresh();
+    // The name of the vendor is the name Magpie gives it.
+    const plain = collector.allSubscriptions();
+    assert.equal(plain[0].label, 'Codex · alpha');
+    // The name the user gives a subscription is the name the console shows,
+    // and the name the phone and the widget carry.
+    collector.setDisplay(displayOptions({ names: { 'codex@alpha': '工作账号' } }));
+    const named = collector.allSubscriptions();
+    assert.equal(named.find(card => card.id === 'codex@alpha').label, '工作账号');
+    assert.equal(named.find(card => card.id === 'codex@beta').label, 'Codex · beta');
   } finally {
     await gateway.close();
     await cleanup(local);

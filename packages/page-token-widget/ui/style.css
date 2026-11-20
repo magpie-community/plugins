@@ -276,6 +276,28 @@ dd {
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
+/* A row of the subscription list and the name the user gives it: the row
+   keeps the order it is dragged into, the name stands under it. */
+.checks .sub-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.checks .sub-name {
+  width: 100%;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--fg);
+  font-family: inherit;
+}
+.checks .sub-name:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 ol {
   margin: 0;
   padding-left: 18px;
