@@ -1,6 +1,8 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-xiaoyunque-auth", "name": "小云雀", "providers": ["xiaoyunque"], "community": true,
+      "summary": { "en": "XiaoYunQue via official Skill APIs, browser sign-in or Access Key: native Magpie image/video models, credits and three tools for generation, recovery, downloads and Draft upgrades. Unlike KasenRi's tools-focused Access Key/Cookie plugin, this exposes native media routing and has no Cookie backend. Both share the same account/space credits and provider ID; enable only one.", "zh": "通过官方 Skill API、网页登录或 Access Key 使用小云雀：原生图片／视频模型、积分及生成、恢复、下载、Draft 升级三个工具。区别于 KasenRi 的 Access Key／Cookie 工具型插件，本插件侧重原生媒体入口，无 Cookie 后端。两者共享同账号／空间积分及供应商 ID，仅启用一个。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
