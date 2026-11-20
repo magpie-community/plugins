@@ -26,7 +26,7 @@ test("the reporter's [user, system] keeps the question as the message answered",
       ],
     }
     expect(turns(build(req))).toEqual([
-      ["user", "<thinking_mode>enabled</thinking_mode><max_thinking_length>50000</max_thinking_length>\nSESSION_INSTRUCTIONS\n\nENV_CONTEXT"],
+      ["user", "<thinking_mode>enabled</thinking_mode><max_thinking_length>12288</max_thinking_length>\nSESSION_INSTRUCTIONS\n\nENV_CONTEXT"],
       ["assistant", "Understood."],
       ["user", "USER_QUESTION"],
     ])

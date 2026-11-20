@@ -917,20 +917,44 @@ function nativeOf(s) {
 
 const thinks = (id) => /claude/i.test(id) || id === "auto"
 // the levels a thinking model offers, as the built-in thinks them (xhigh as
-// long as max: #120)
+// long as max: #120). Kiro ends a single turn at about 16k output tokens
+// even when the catalog names a larger maxOutputTokens or none
+// (plugins#1365): a budget of 20k–50k spent that turn thinking and stopped
+// max_tokens with no text and no tool call. fitBudget keeps each level, and
+// an explicit budget_tokens, inside the turn and leaves room for the answer.
 const BUDGETS = { low: 10000, medium: 20000, high: 30000, xhigh: 50000, max: 50000 }
+const TURN_OUTPUT = 16384
+const ANSWER_RESERVE = 4096
+const outputs = new Map() // a model's advertised max output, when Kiro listed one
+
+function fitBudget(n, advertised) {
+  const cap = advertised > 0 && advertised < TURN_OUTPUT ? advertised : TURN_OUTPUT
+  const reserve = Math.min(ANSWER_RESERVE, Math.floor(cap / 2))
+  const limit = Math.max(1, cap - reserve)
+  const b = Math.floor(Number(n))
+  if (!Number.isFinite(b) || b <= 0) return 0
+  return Math.min(b, limit)
+}
+
+// outputLimit is the output cap told to the client. Kiro's own number is
+// kept. None (the catalog omits maxOutputTokens, and limit.output 0 made
+// magpie report max_output_tokens 1048576) is the single-turn cap.
+function outputLimit(n) {
+  return n > 0 ? n : TURN_OUTPUT
+}
 
 function modelVariants(m) {
   const native = natives.get(m.id)
   if (native && !native.adaptive) return Object.fromEntries(native.levels.map((effort) => [effort, { effort }]))
-  return thinks(m.id) ? Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: b } }])) : {}
+  if (!thinks(m.id)) return {}
+  return Object.fromEntries(Object.entries(BUDGETS).map(([k, b]) => [k, { thinking: { type: "enabled", budgetTokens: fitBudget(b, m.output) } }]))
 }
 
 function configModel(m) {
   const variants = modelVariants(m)
   return {
     name: m.name,
-    limit: { context: m.context ?? 0, output: m.output ?? 0 },
+    limit: { context: m.context ?? 0, output: outputLimit(m.output) },
     ...(m.images ? { attachment: true, modalities: { input: ["text", "image"], output: ["text"] } } : {}),
     ...(Object.keys(variants).length ? { reasoning: true, variants } : {}),
     tool_call: true,
@@ -951,7 +975,7 @@ function runtimeModel(m) {
     headers: {},
     options: {},
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-    limit: { context: m.context ?? 0, output: m.output ?? 0 },
+    limit: { context: m.context ?? 0, output: outputLimit(m.output) },
     capabilities: {
       temperature: true,
       reasoning: Object.keys(variants).length > 0,
@@ -1021,6 +1045,8 @@ async function listModels(a) {
   for (const m of list) {
     windows.set(m.id, m.context)
     natives.set(m.id, m.native)
+    if (m.output > 0) outputs.set(m.id, m.output)
+    else outputs.delete(m.id)
   }
   return list
 }
@@ -1217,10 +1243,12 @@ function thinking(req, model) {
   const effort = req.output_config?.effort ?? ""
   const on = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive"
   if (!on || !thinks(String(model).toLowerCase())) return 0
-  const budget = { low: 10000, high: 30000, xhigh: 50000, max: 50000 }[effort]
-  if (budget) return budget
-  if (!effort && req.thinking?.budget_tokens > 0) return req.thinking.budget_tokens
-  return 20000
+  const advertised = outputs.get(String(model ?? ""))
+  const named = BUDGETS[effort]
+  if (named) return fitBudget(named, advertised)
+  // no level named: the caller's own budget, still inside the turn
+  if (!effort && req.thinking?.budget_tokens > 0) return fitBudget(req.thinking.budget_tokens, advertised)
+  return fitBudget(BUDGETS.medium, advertised)
 }
 
 // Adaptive models accept effort only with thinking enabled (#538).
@@ -2237,6 +2265,11 @@ async function* garMessages(body) {
   }
 }
 
+// contentFiltered is a stream error whose words are Kiro's content filter
+// ("Output blocked by content filtering policy", or a bounded content_filter
+// code), as against a stop reason CONTENT_FILTERED, which is matched on its own.
+const contentFiltered = (text) => /content filtering policy|\bcontent[_-]filter(?:ed)?\b/i.test(String(text ?? ""))
+
 // events turns Kiro's reply into events: text, thinking, tool calls (the
 // arguments in pieces), then the usage and why it stopped — or an error.
 async function* events(body, model, budget, sse = false, scope) {
@@ -2320,14 +2353,22 @@ async function* events(body, model, budget, sse = false, scope) {
     if (e?.name !== "AbortError") failed = "the reply broke off: " + e.message
   }
   yield* think.end()
-  if (failed) {
-    yield { kind: "error", text: failed }
-    return
-  }
   const window = windows.get(model) ?? 0
   // Kiro says how full the context is rather than how many tokens
   if (!usage.input && pct > 0 && window > 0) usage.input = Math.floor((pct / 100) * window)
   if (!usage.output) usage.output = Math.floor((said + 3) / 4)
+  // A content filter said as a stream error (CreateResponse's error or
+  // response.failed, or generateAssistantResponse's exception: "Output
+  // blocked by content filtering policy") is the same refusal as a
+  // CONTENT_FILTERED stop. Any other stream error stays an error.
+  if (failed) {
+    if (contentFiltered(failed)) {
+      yield { kind: "stop", reason: "refusal", usage }
+      return
+    }
+    yield { kind: "error", text: failed }
+    return
+  }
   const full = /^model_context_window_exceeded$/i.test(stop)
   if (full && !said && !tools) {
     // stopped for the window before a word: the conversation doesn't fit
@@ -2908,7 +2949,7 @@ async function* searching(creds, auth, req, model, budget, signal, hosted, first
         } catch {
           b.input = {}
         }
-    if (!calls.length) {
+    if (!calls.length || stop.reason === "refusal") {
       yield { ...stop, usage }
       return
     }
