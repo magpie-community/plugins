@@ -56,6 +56,14 @@ magpie plugin login joycode
 
 `Claude-Opus-5-hq` 接收并计量约 900k 输入，但返回 `stop_reason: refusal`、没有文本，不能视为功能验证通过，暂不提高其窗口。其他 GPT、Claude、DeepSeek 别名不能继承上述实测结论。长上下文会增加实际 Token 用量，且缓存命中也可能计入账号额度。
 
+## 思考强度
+
+插件从账号模型目录的 `extJson.reasoning.efforts[].value` 读取可选档位，并同步给 magpie 和客户端。`extJson` 支持对象和 JSON 字符串；档位按目录顺序去重，忽略无效条目。新模型只要提供同样的目录字段，就能自动显示自己的档位。
+
+例如，当前 GPT-6 Astra 的目录列出 `low / medium / high / xhigh / max`，JoyAI-Code-1.6 列出 `high / max`。这些值来自上游目录，不按模型名称猜测，也不把所有模型统一成低、中、高。目录未提供有效档位时，保留原有回退声明。
+
+更新插件后执行 `magpie sync`，刷新客户端使用的模型目录；若 Codex 仍显示旧选项，重新打开客户端再选择模型。此次修复只补齐能力声明，不强制设置默认强度，也不改变请求转发规则。目录列出的档位不等于已逐个验证后端推理行为。
+
 ## 消息转发策略
 
 根据 2026-10-30 的 JoyCode 实测，仅对 Responses 协议做以下兼容：GPT-6 Astra、GPT-6.1 Sol 的显式 `none` / `minimal` 转为 `low`；GPT-6 Sol、GPT-5.6 Sol 仅将 `minimal` 转为 `low`，保留上游接受的 `none`。其他 reasoning 参数、有效或未指定的强度、未知模型和其他协议均不变。启用低档推理可能增加用量。此表基于当前账号目录，不自动覆盖未来新增模型。

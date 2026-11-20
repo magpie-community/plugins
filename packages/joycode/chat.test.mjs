@@ -302,6 +302,33 @@ for (const [label, model, reasoning] of [
   })
 }
 
+for (const [model, effort] of [
+  ['JoyAI-Code-1.6', 'max'],
+  ['GLM-5.3-jcloud', 'low'],
+  ['Kimi-K3.1', 'max'],
+  ['DeepSeek-V4-Pro', 'max'],
+  ['MiniMax-M3', 'high'],
+  ['Qwen-3.8-Max', 'xhigh'],
+]) {
+  test(`Chat Completions preserves ${model} effort ${effort}`, async t => {
+    let sent
+    const payload = {
+      model, messages: [{ role: 'user', content: 'OK' }],
+      reasoning_effort: effort, stream: true,
+    }
+    const response = await request(t, new Response('data: [DONE]\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    }), {
+      payload,
+      upstream(_url, init) { sent = JSON.parse(init.body) },
+    })
+    assert.equal(response.status, 200)
+    await response.text()
+    const { userId, tenant, orgFullName, language, ...forwarded } = sent
+    assert.deepEqual(forwarded, payload)
+  })
+}
+
 for (const [name, input, payload] of [
   [
     'Chat Completions',

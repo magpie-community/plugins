@@ -50,6 +50,58 @@ test('model adapter chooses the SDK that speaks its upstream protocol', async t 
   assert.equal(models['Claude-Opus-5-hq'].api.npm, '@ai-sdk/anthropic')
   for (const model of Object.values(models)) assert.equal(model.api.url, 'https://api-ai.jd.com/v1')
 })
+for (const [id, adapterType, levels] of [
+  ['GPT-6 Astra', 'openai-response', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['GPT-6.1 Sol', 'openai-response', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['JoyAI-Code-1.6', undefined, ['high', 'max']],
+  ['GLM-5.3-jcloud', undefined, ['low', 'medium', 'high']],
+  ['Kimi-K3.1', undefined, ['low', 'high', 'max']],
+  ['DeepSeek-V4-Pro', undefined, ['high', 'max']],
+  ['MiniMax-M3', undefined, ['low', 'medium', 'high']],
+  ['Qwen-3.8-Max', undefined, ['low', 'medium', 'xhigh']],
+  ['future-model', 'anthropic', ['low', 'high']],
+]) {
+  for (const serialized of [false, true]) {
+    test(`catalogue reasoning levels for ${id}, serialized=${serialized}`, async t => {
+      const ext = { adapterType, reasoning: {
+        defaultEffort: levels[0], efforts: levels.map(value => ({ label: 'Display label', value })),
+      } }
+      const { models } = await load(t, { list: [
+        { chatApiModel: id, extJson: serialized ? JSON.stringify(ext) : ext },
+      ] })
+      assert.equal(models[id].reasoning, true)
+      assert.equal(models[id].capabilities.reasoning, true)
+      assert.deepEqual(models[id].variants, Object.fromEntries(levels.map(effort => [effort, { reasoningEffort: effort }])))
+      assert.equal(models[id].options?.reasoningEffort, undefined)
+    })
+  }
+}
+test('invalid and duplicate reasoning entries do not invent selectable levels', async t => {
+  const { models } = await load(t, { list: [{
+    chatApiModel: 'test-model', extJson: { reasoning: { efforts: [
+      null, 'high', {}, { value: 1 }, { value: '' }, { value: '__proto__' },
+      { value: 'HIGH' }, { value: ' high ' }, { value: 'a'.repeat(65) },
+      { value: 'high' }, { value: 'high' }, { value: 'max' },
+    ] } },
+  }] })
+  assert.deepEqual(models['test-model'].variants, {
+    high: { reasoningEffort: 'high' }, max: { reasoningEffort: 'max' },
+  })
+})
+for (const extJson of [undefined, null, '{bad', '{}', 'null', {},
+  { reasoning: { defaultEffort: 'max' } }, { reasoning: { efforts: 'high' } },
+  { reasoning: { efforts: [] } }, { reasoning: { efforts: [null] } },
+]) {
+  test(`missing or malformed reasoning metadata preserves fallback: ${JSON.stringify(extJson)}`, async t => {
+    const { models } = await load(t, { list: [
+      { chatApiModel: 'GPT-6 Astra', extJson },
+      { chatApiModel: 'GLM-5.3-agent', extJson },
+    ] })
+    assert.equal(models['GPT-6 Astra'].variants, undefined)
+    assert.equal(models['GPT-6 Astra'].reasoning, undefined)
+    assert.equal(models['GLM-5.3-agent'].reasoning, true)
+  })
+}
 test('raises context only for exact input-verified models and preserves output limits', async t => {
   const { models } = await load(t, { list: [
     {
