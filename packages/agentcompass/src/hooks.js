@@ -12,8 +12,6 @@ import {
   candidateOffers,
   effortGoneWarning,
   heldBundle,
-  heldEffortOn,
-  heldTarget,
   explicitCandidateModels,
   extractModelList,
   mergePinOptions,
@@ -43,6 +41,7 @@ import {
   quotaAccountWarnings,
 } from "./quota.js";
 import { loadLiveQuotas } from "./quota-loader.js";
+import { heldTurn } from "./middleware.js";
 import { scoreTaskLive, scorerOptionsOf } from "./scorer-live.js";
 
 export { extractModelList };
@@ -193,48 +192,13 @@ export async function onRequest(body, ctx = {}) {
 
   // Fast path: Hold active session Provider/Model without calling the intent classifier
   if (cont.shouldHold && cont.model) {
-    const keptEffort = keepsEffort(
-      sessionState,
-      cont.effort || sessionState?.effort || "high",
-      facts.estimatedInputTokens,
-      now,
-      options
-    );
     const names = catalogTables(options.catalog);
     const canonical = canonicalModel(cont.model, names.aliases, names.models, names.families, [], names.providerNames);
-    const heldModel = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
-    // Contract R2: a hold runs what the pool offers now. Nothing at or below the held effort, or a pin that names it: route again.
-    const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
-    const heldEffort = pool ? heldEffortOn(pool, heldModel, keptEffort, options.catalog, { pins, profile: sessionProfile(sessionState) }) : keptEffort;
-    const effortGone = heldEffort === null || (heldEffort !== keptEffort && pinsFixEffort(pins));
-    if (effortGone) {
-      cont = {
-        shouldHold: false,
-        why: "effort_gone",
-        previousModel: cont.previousModel || cont.model,
-        previousEffort: keptEffort,
-        within: Boolean(facts.within),
-        turn: facts.turn || 1,
-      };
-    }
-    if (!effortGone) {
-      if (sessionKey) {
-        store.recordRequest(
-          sessionKey,
-          {
-            model: heldModel,
-            effort: heldEffort,
-            provider: cont.provider || sessionState?.provider || "",
-            workKind: sessionState?.workKind || "other_or_mixed",
-            difficulty: sessionState?.difficulty || "routine",
-            why: cont.why,
-            held: true,
-            pinnedBundle: pins.pinnedBundle,
-          },
-          facts,
-          now
-        );
-      }
+    const turn = heldTurn(cont, sessionState, facts, { pins, candidateModels, options, now });
+    if (turn.gone) cont = turn.gone;
+    if (!turn.gone) {
+      const { target: heldModel, effort: heldEffort, keptEffort, pool } = turn;
+      if (sessionKey) store.recordRequest(sessionKey, turn.record, facts, now);
 
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];

@@ -56,6 +56,7 @@ import {
 } from "./quota.js";
 import { resolveCallerProfile, unroutedDecision } from "./profiler-core.js";
 import { clearQuotasCache, getQuotasLoadStatus, loadLiveQuotas, resolveMagpieQuotasFile } from "./quota-loader.js";
+import { heldTurn } from "./middleware.js";
 import { askClassifier, scoreTaskLive, scorerOptionsOf } from "./scorer-live.js";
 import { readingEffort } from "./axis-scores.js";
 import { FIVE_AXIS_EFFORT_READINGS } from "./reference-data.js";
@@ -237,7 +238,7 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
   const chatSessionState = chatSessionKey ? store.get(chatSessionKey, now) : null;
   // The pins are read before the hold: a session is held past a pin only on a bundle the pin names (contract R3).
   const pins = mergePinOptions(pinOptionsOf(pluginOptions), state, rawTaskObj);
-  const chatCont =
+  let chatCont =
     chatFacts && chatSessionKey
       ? evaluateProviderContinuation(chatFacts, chatSessionState, {
           now,
@@ -286,29 +287,15 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
     };
   };
 
-  if (chatCont && chatCont.shouldHold && chatCont.model) {
-    const heldEffort = keepsEffort(
-      chatSessionState,
-      chatCont.effort || chatSessionState?.effort || "high",
-      chatFacts.estimatedInputTokens,
-      now,
-      pluginOptions
-    );
-    const heldModel = chatCont.model;
-    store.recordRequest(
-      chatSessionKey,
-      {
-        model: heldModel,
-        effort: heldEffort,
-        provider: chatCont.provider || chatSessionState?.provider || "",
-        workKind: chatSessionState?.workKind || "other_or_mixed",
-        difficulty: chatSessionState?.difficulty || "routine",
-        why: chatCont.why,
-        held: true,
-      },
-      chatFacts,
-      now
-    );
+  // A held turn is answered and recorded as onRequest and hooks do it (`heldTurn`): the route as the candidates name it, the effort the
+  // pool still offers, the pin it is on; when the held effort is gone the request routes again with the session's own profile.
+  const turn = chatCont && chatCont.shouldHold && chatCont.model
+    ? heldTurn(chatCont, chatSessionState, chatFacts, { pins, candidateModels: explicitCandidateModels(pluginOptions), options: pluginOptions, now })
+    : null;
+  if (turn?.gone) chatCont = turn.gone;
+  if (turn && !turn.gone) {
+    const { target: heldModel, effort: heldEffort } = turn;
+    store.recordRequest(chatSessionKey, turn.record, chatFacts, now);
     const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, pluginOptions.catalog?.policy) : undefined;
     const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, pluginOptions.catalog?.policy) : [];
     const answers = {};
@@ -374,7 +361,10 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
       : state.profile ?? chatFacts?.callerProfile,
     taskFacts.hasVisualInput,
   );
-  const { profile, meta } = caller?.error
+  // A hold whose effort is gone routes again with the session's own profile, as onRequest does.
+  const { profile, meta } = chatCont?.why === "effort_gone"
+    ? { profile: sessionProfile(chatSessionState), meta: { source: "session", why: "effort_gone" } }
+    : caller?.error
     ? { profile: null, meta: { source: "caller", reason: caller.error } }
     : caller
       ? { profile: caller.profile, meta: { source: "caller" } }

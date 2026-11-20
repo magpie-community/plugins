@@ -815,23 +815,59 @@ test("R6-F2: a warm session keeps its hold under a pin only when the held route 
     const kept = await warm(quotas, "claude/work/claude-sonnet-5-5");
     assert.deepEqual([kept.middleware, kept.hooks, kept.cold], ["held", "held", "served"], "a named seat that can run keeps the hold");
   }
-  // an effort pin on a held row: kept where the cold request serves it, refused where it refuses it
-  const family = ["acme-b/claude-opus-9", { model: "acme-a/gpt-6.1-sol", efforts: ["high"] }];
-  const onFamily = (pin) => {
+  // an effort pin on a held row: kept where the cold request serves it, refused with the same code where it refuses it. A family row
+  // on a gateway with no effort table runs at any effort a pin names; on `claude` its effort table offers none of `high`, `low`.
+  const onFamily = (row, pin) => {
+    const family = [row, { model: "acme-a/gpt-6.1-sol", efforts: ["high"] }];
     const store = new SessionContinuityStore();
     const options = { continuityStore: store, affinityMode: "session", candidateModels: family, now: T0_071 };
-    middlewareOnRequest({ model: "agentcompass/auto", user: "fam", profile: PROFILE, pinned_model: "acme-b/claude-opus-9", messages: r6Messages("") }, { state: {}, options });
+    middlewareOnRequest({ model: "agentcompass/auto", user: "fam", profile: PROFILE, pinned_model: row, messages: r6Messages("") }, { state: {}, options });
     let rejected = null;
     const ctx = { state: {}, reject: (status, message) => { rejected = `${status} ${message}`; }, options: { ...options, now: T0_071 + 1000 } };
     middlewareOnRequest({ model: "agentcompass/auto", user: "fam", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, ctx);
     const cold = selectBestRoute(PROFILE, { candidateModels: family, now: T0_071, constraintModel: pin });
     return [rejected ? rejected.split(": ")[1] : ctx.state.route.continuation?.held ? "held" : "routed", cold.ok ? "served" : cold.refusal.split(":")[0]];
   };
-  for (const pin of ["acme-b/claude-opus-9:high", "acme-b/claude-opus-9:low"]) {
-    const [warmAnswer, coldAnswer] = onFamily(pin);
-    assert.equal(warmAnswer === "held" || warmAnswer === "routed", coldAnswer === "served", `${pin}: warm ${warmAnswer}, cold ${coldAnswer}`);
-    if (coldAnswer !== "served") assert.equal(warmAnswer, coldAnswer, pin);
+  const seen = new Set();
+  for (const [row, pin] of [["acme-b/claude-opus-9", "acme-b/claude-opus-9:high"], ["acme-b/claude-opus-9", "acme-b/claude-opus-9:low"], ["claude/claude-opus-9", "claude/claude-opus-9:high"], ["claude/claude-opus-9", "claude/claude-opus-9:low"]]) {
+    const [warmAnswer, coldAnswer] = onFamily(row, pin);
+    seen.add(coldAnswer === "served" ? "served" : "refused");
+    // served cold: served warm, held where the pin names the held effort (`high`, the nominal effort of a row with none), else routed
+    if (coldAnswer === "served") assert.equal(warmAnswer, pin.endsWith(":high") ? "held" : "routed", `${pin}: served warm as cold`);
+    else assert.equal(warmAnswer, coldAnswer, `${pin}: refused warm as cold`);
   }
+  assert.deepEqual([...seen].sort(), ["refused", "served"], "both branches are reached");
+});
+
+test("R7-F1: Mode B records and answers a held turn as onRequest does: the route as the candidates name it, kept by a pin naming it", async () => {
+  const turns = (n) => Array.from({ length: 2 * n - 1 }, (_, i) => (i % 2 === 0 ? { role: "user", content: i === 0 ? "edit one function" : `turn ${i / 2 + 1}` } : { role: "assistant", content: "ok" }));
+  for (const third of [{ pinned_model: "acme-b/gpt-6.1-sol" }, { pinned_effort: "high" }, { pinned_bundle: "acme-b/gpt-6.1-sol:high" }, {}]) {
+    const store = new SessionContinuityStore();
+    const options = { continuityStore: store, affinityMode: "session", candidateModels: R6_POOL, decisionProviderDetails: true };
+    const ask = (state, n) => handleSystemOneRequest({ user: "r7", messages: turns(n), state: { profile: PROFILE, ...state }, questions: { effort: { type: "scale" } } }, { ...options, now: T0_071 + n * 1000 });
+    const first = (await ask({ pinned_model: "acme-b/gpt-6.1-sol" }, 1)).agentcompass;
+    assert.equal(first.targetModel, "acme-b/gpt-6.1-sol");
+    const second = (await ask({}, 2)).agentcompass;
+    assert.deepEqual([second.continuation.held, second.targetModel], [true, "acme-b/gpt-6.1-sol"], "held on the route as the candidates name it");
+    const kept = store.get(second.continuation.sessionKey, T0_071 + 2000);
+    assert.deepEqual([kept.lastHeld, kept.target, kept.turn], [true, "acme-b/gpt-6.1-sol", 2], "the held turn is recorded as routed");
+    // the same held turn through onRequest answers the same route
+    const mStore = new SessionContinuityStore();
+    const mOptions = { continuityStore: mStore, affinityMode: "session", candidateModels: R6_POOL };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "r7m", profile: PROFILE, pinned_model: "acme-b/gpt-6.1-sol", messages: turns(1) }, { state: {}, options: { ...mOptions, now: T0_071 + 1000 } });
+    const mctx = { state: {}, options: { ...mOptions, now: T0_071 + 2000 } };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "r7m", profile: PROFILE, messages: turns(2) }, mctx);
+    assert.deepEqual([mctx.state.route.continuation?.held, mctx.state.route.targetModel], [true, second.targetModel]);
+    const after = (await ask(third, 3)).agentcompass;
+    assert.deepEqual([after.continuation?.held, after.targetModel], [true, "acme-b/gpt-6.1-sol"], `turn 3 ${JSON.stringify(third)}: a pin naming the held route keeps it`);
+  }
+  // the held effort gone from the pool: Mode B routes again with the session's own profile, as onRequest does (no classifier asked)
+  const store = new SessionContinuityStore();
+  const base = { continuityStore: store, affinityMode: "session", decisionProviderDetails: true };
+  const ask = (state, n, candidateModels) => handleSystemOneRequest({ user: "r7g", messages: turns(n), state, questions: { effort: { type: "scale" } } }, { ...base, candidateModels, now: T0_071 + n * 1000 });
+  await ask({ profile: PROFILE, pinned_model: "acme-b/gpt-6.1-sol" }, 1, R6_POOL);
+  const gone = (await ask({}, 2, [{ model: "acme-b/gpt-6.1-sol", efforts: ["xhigh"] }])).agentcompass;
+  assert.deepEqual([gone.continuation?.why, gone.targetModel, gone.targetEffort], ["effort_gone", "acme-b/gpt-6.1-sol", "xhigh"]);
 });
 
 test("R6-F4: an unchecked effort applies to the preset it was written on, not to the presets serving the same catalog", () => {

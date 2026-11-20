@@ -314,6 +314,47 @@ function replayedState(body, ctx, env, chain, stale, depth) {
  * decision and what to record; nothing is recorded here, so replaying an earlier turn leaves the
  * store as it was.
  */
+/**
+ * A session's hold on this turn, one path for `onRequest`, `hooks` and Mode B (`/v1/systemone`): the route it is sent to as the
+ * candidate list names it (`heldTarget`: the store keeps models canonical), the effort the pool still offers at or below the kept one
+ * (contract R2), and the record the store keeps of the turn, with the pin it is on. `{ gone }` instead, the continuation that routes
+ * again, when nothing at or below the held effort is offered or a pin fixes an effort the pool no longer runs (`effort_gone`).
+ */
+export function heldTurn(cont, sessionState, facts, { pins, candidateModels, options, now }) {
+  const keptEffort = keepsEffort(sessionState, cont.effort || sessionState?.effort || "high", facts.estimatedInputTokens, now, options);
+  const target = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
+  const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
+  const effort = pool ? heldEffortOn(pool, target, keptEffort, options.catalog, { pins, profile: sessionProfile(sessionState) }) : keptEffort;
+  if (effort === null || (effort !== keptEffort && pinsFixEffort(pins))) {
+    return {
+      gone: {
+        shouldHold: false,
+        why: "effort_gone",
+        previousModel: cont.previousModel || cont.model,
+        previousEffort: keptEffort,
+        within: Boolean(facts.within),
+        turn: facts.turn || 1,
+      },
+    };
+  }
+  return {
+    target,
+    effort,
+    keptEffort,
+    pool,
+    record: {
+      model: target,
+      effort,
+      provider: cont.provider || sessionState?.provider || "",
+      workKind: sessionState?.workKind || "other_or_mixed",
+      difficulty: sessionState?.difficulty || "routine",
+      why: cont.why,
+      held: true,
+      pinnedBundle: pins.pinnedBundle,
+    },
+  };
+}
+
 function routeClaimed(body, ctx, env, depth = 0) {
   const { options, store, now, candidateModels, hasExplicitCandidates, canRewriteModel } = env;
   const facts = extractRequestFacts(body, ctx);
@@ -353,44 +394,18 @@ function routeClaimed(body, ctx, env, depth = 0) {
   });
 
   if (cont.shouldHold && cont.model) {
-    const keptEffort = keepsEffort(
-      sessionState,
-      cont.effort || sessionState?.effort || "high",
-      facts.estimatedInputTokens,
-      now,
-      options
-    );
-    const target = heldTarget(cont.model, sessionState, candidateModels, options.catalog);
-    // Contract R2: a hold runs what the pool offers now. Nothing at or below the held effort, or a pin that names it: route again.
-    const pool = Array.isArray(candidateModels) && candidateModels.length > 0 ? candidateModels : null;
-    const heldEffort = pool ? heldEffortOn(pool, target, keptEffort, options.catalog, { pins, profile: sessionProfile(sessionState) }) : keptEffort;
-    if (heldEffort === null || (heldEffort !== keptEffort && pinsFixEffort(pins))) {
-      cont = {
-        shouldHold: false,
-        why: "effort_gone",
-        previousModel: cont.previousModel || cont.model,
-        previousEffort: keptEffort,
-        within: Boolean(facts.within),
-        turn: facts.turn || 1,
-      };
+    const turn = heldTurn(cont, sessionState, facts, { pins, candidateModels, options, now });
+    if (turn.gone) {
+      cont = turn.gone;
     } else {
+      const { target, effort: heldEffort, keptEffort, pool } = turn;
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
       const stepWarnings = heldEffort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${heldEffort}`];
       return {
         facts,
         sessionKey,
-        record: {
-          model: target,
-          effort: heldEffort,
-          provider: cont.provider || sessionState?.provider || "",
-          workKind: sessionState?.workKind || "other_or_mixed",
-          difficulty: sessionState?.difficulty || "routine",
-          why: cont.why,
-          held: true,
-          anchor,
-          pinnedBundle: pins.pinnedBundle,
-        },
+        record: { ...turn.record, anchor },
         decision: {
           ok: true,
           targetModel: target,
