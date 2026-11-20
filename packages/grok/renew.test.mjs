@@ -176,7 +176,8 @@ test("a usage read Grok turns away is read again with the renewed token", async 
   const { hooks } = await plugin()
   const u = await hooks.auth.usage(async () => auth)
   expect(u).toEqual({ signIn: "kept", windows: [{ name: "Allowance", used: 10 }] })
-  expect(sent).toEqual(["Bearer tok-0", "Bearer tok-1"])
+  // the plan is asked once, after the read that went through
+  expect(sent).toEqual(["Bearer tok-0", "Bearer tok-1", "Bearer tok-1"])
 })
 
 test("auth.json caught mid-write is read again, not taken as signed out", async () => {
