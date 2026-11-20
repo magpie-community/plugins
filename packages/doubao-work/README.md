@@ -39,6 +39,15 @@ same, works too:
 4. The client's tools are asked for as text, `<tool_call>{"name": …,
    "arguments": …}</tool_call>`, and given back as `tool_calls`.
 
+   On macOS the app is started through LaunchServices (`open -n -a`), not by
+   running its executable directly. macOS attributes an app's permission
+   checks (辅助功能) to the process that started it, so a directly started
+   copy is judged by the plugin host's grants and reports 辅助功能 as not
+   enabled even when the app itself has it. Started by LaunchServices, the
+   app is its own subject and its own grant applies. A copy the plugin
+   started before this change keeps the old attribution until it is quit
+   and started again.
+
 Models: the plugin reads the 工作任务 model list from Doubao itself (the
 `brief_list` request the app's own page makes, through the app's page), so
 whatever 工作任务 offers is what magpie lists. Before 0.1.10 it read the menu
@@ -75,6 +84,23 @@ Third-party models you added to 豆包工作 yourself (your own API key) are not
 served here: the plugin lists only what the app's model menu offers from
 Doubao's side, and a model that runs on your own key is a direct call to that
 vendor, not a Doubao task. Add that API to magpie as its own provider instead.
+
+## Allowance and 签到
+
+The plan's allowance is read from the app's own `quota/summary` call, the
+one the 订阅 view makes. Every limit section is read, not just the plan's
+own: a free account keeps its 活动赠送额度 under
+`incentive_quota_section`, and a section that says `usage_exhausted` fills
+only its own windows. A window with no times takes its group's name
+(`活动赠送额度`), else 额度.
+
+magpie's 自动签到 switch and 立即签到 button call the plugin's
+`auth.checkin`, the same call the sidebar card's 签到 makes
+(`POST /alice/ug/campaign/landing/checkin`, with the query the page's own
+calls carried; the bare path answers 710010702). Doubao answers
+idempotently: a day already claimed comes back `done`, so pressing the
+button twice does not claim twice. Unlike usage, 签到 starts the app when
+it is closed; on macOS quit your own copy (⌘Q) first.
 
 ## What it costs
 

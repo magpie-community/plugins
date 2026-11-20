@@ -534,6 +534,29 @@ export const QUOTA = js(`
   } catch (e) { return { error: String(e && e.message || e) }; }
 `)
 
+// CHECKIN claims the day's 签到 through the app's own page, the call the
+// 立即签到 button of the sidebar card popup makes (s2-ug-sidebar-popup-host's
+// DailyCheckIn: POST /alice/ug/campaign/landing/checkin; no scene asks for
+// the account's default campaign, the one the card shows). The query is
+// copied from a call the page already made, as LIST does: the bare path is
+// not always answered.
+export const CHECKIN = js(`
+  const urls = performance.getEntriesByType("resource").map((e) => e.name).filter((u) => u.startsWith("https://www.doubao.com/alice/"));
+  // the campaign pages take the client's whole query (version_code, aid,
+  // device_id...): a call carrying only msToken answers 710010702, and the
+  // signed pair is not needed once the rest is there
+  const any = urls.filter((u) => /[?&]version_code=/.test(u)).pop() || urls.filter((u) => u.includes("?")).pop();
+  const q = new URL(any || "https://www.doubao.com/alice/?").searchParams;
+  q.delete("msToken");
+  q.delete("a_bogus");
+  const url = "https://www.doubao.com/alice/ug/campaign/landing/checkin?" + q;
+  try {
+    const r = await fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: "{}" });
+    const j = await r.json().catch(() => null);
+    return { status: r.status, code: j && j.code, msg: j && j.msg, data: j && j.data };
+  } catch (e) { return { error: String(e && e.message || e) }; }
+`)
+
 // BOT_ID is the bot Doubao's page names when it asks for its action bar
 // (the app's code has it as a constant); without it brief_list answers
 // 710010202.
@@ -569,26 +592,32 @@ export const LIST = js(`
 const HOUR = 3600000
 // quotaOf turns quota/summary into magpie's usage: the plan's short name
 // and one window per limit, as a percent used. A window names its span when
-// the reply gives one; without times it is just 额度.
+// the reply gives one; without times it takes its group's name (活动赠送额度
+// and the like), and a window no group names is just 额度.
 export function quotaOf(read) {
   const d = read?.body?.data
   if (!d || typeof d !== "object") return null
-  const groups = [...(d.window_limit_section?.window_limit_groups ?? []), ...(d.enterprise_window_limit_section?.window_limit_groups ?? [])]
+  // a free account keeps nowhere in window_limit_section the quota it has:
+  // the plan's own limits are an empty object and everything it holds is in
+  // incentive_quota_section. Every section is read, and a section that says
+  // usage_exhausted fills only its own windows.
+  const sections = [d.window_limit_section, d.enterprise_window_limit_section, d.incentive_quota_section]
   const windows = []
-  for (const g of groups)
-    for (const w of g?.window_limits ?? []) {
-      const pct = Number(w?.used_percent)
-      if (!Number.isFinite(pct)) continue
-      const span = Number(w.end_time) - Number(w.start_time)
-      let name = "额度"
-      if (w.start_time > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
-      const out = { name, used: Math.max(0, Math.min(100, pct)) }
-      if (w.less_than_one_percent && pct === 0) out.display = "不到 1%"
-      if (w.end_time > 0) out.resetsAt = Number(w.end_time)
-      windows.push(out)
-    }
-  const exhausted = d.window_limit_section?.usage_exhausted === true || d.enterprise_window_limit_section?.usage_exhausted === true
-  if (exhausted) for (const w of windows) w.used = 100
+  for (const s of sections) {
+    const dead = s?.usage_exhausted === true
+    for (const g of s?.window_limit_groups ?? [])
+      for (const w of g?.window_limits ?? []) {
+        const pct = Number(w?.used_percent)
+        if (!Number.isFinite(pct)) continue
+        const span = Number(w.end_time) - Number(w.start_time)
+        let name = String(g?.feature_group_name ?? "").trim() || "额度"
+        if (w.start_time > 0 && span > 0) name = span <= 6 * HOUR ? "5 小时" : span <= 8 * 24 * HOUR ? "每周" : "本月"
+        const out = { name, used: dead ? 100 : Math.max(0, Math.min(100, pct)) }
+        if (w.less_than_one_percent && pct === 0) out.display = "不到 1%"
+        if (w.end_time > 0) out.resetsAt = Number(w.end_time)
+        windows.push(out)
+      }
+  }
   return { plan: String(d.current_subscription?.display?.short_name || d.current_subscription?.display?.product_name || ""), windows }
 }
 
@@ -693,6 +722,46 @@ export class Doubao {
       fs.writeFileSync(tmp, JSON.stringify({ v: CACHE, at: this.tableAt, models: table }, null, 1))
       fs.renameSync(tmp, this.cacheFile)
     } catch {}
+  }
+
+  // checkin claims the day's 签到 for magpie's auth.checkin hook, which the
+  // switches and the 立即签到 button call. Doubao answers idempotently: a day
+  // already claimed comes back checked_in with idempotent set, so the hook
+  // can tell a claim this call made (claimed) from one it found done (done)
+  // without keeping a day of its own. The app is started when it is closed,
+  // as a request starts it.
+  async checkin({ signal } = {}) {
+    let page
+    try {
+      page = await this.connect(signal)
+    } catch (e) {
+      if (e?.code === "app_missing")
+        return { outcome: "failed", message: "没有找到豆包，请先安装。" }
+      if (e?.code === "app_busy") return { outcome: "failed", message: "豆包正在运行：请先退出豆包（⌘Q）再试。" }
+      return { outcome: "failed", message: String(e?.message ?? e) }
+    }
+    let read
+    try {
+      read = await page.eval(CHECKIN)
+    } catch (e) {
+      return { outcome: "failed", message: String(e?.message ?? e) }
+    }
+    if (read?.error) return { outcome: "failed", message: String(read.error) }
+    if (read?.status === 401 || read?.status === 403)
+      return { outcome: "failed", message: "豆包登录已过期，请重新登录豆包工作窗口。", signIn: "expired" }
+    if (read?.code !== 0)
+      return { outcome: "failed", message: read?.msg || `签到接口回答 ${read?.code ?? "?"}（HTTP ${read?.status ?? "?"}）` }
+    const d = read?.data
+    if (!d || d.checked_in !== true) return { outcome: "failed", message: "签到没有完成" }
+    const streak = Number(d.continuous_days)
+    const credit = Number(d.reward_amount)
+    // idempotent says the day was already claimed (in the app, or before):
+    // the vendor's answer, not a claim this call made
+    return {
+      outcome: d.idempotent === true ? "done" : "claimed",
+      ...(streak > 0 ? { streak } : {}),
+      ...(credit > 0 ? { credit } : {}),
+    }
   }
 
   // discover reads the models Doubao's 工作任务 offers and keeps them. It
