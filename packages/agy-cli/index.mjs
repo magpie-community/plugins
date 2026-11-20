@@ -1753,7 +1753,10 @@ class Turn {
     if (!final) this.toolResponseCount++
     const total = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
     const estimate = this.stepInputEstimates[step.estimateIndex] || step.inputEstimate
-    if (calibrate && total > 0) {
+    // A response sharing an earlier generation reports that generation's
+    // window as read, not a prompt of its own: it teaches neither the
+    // tokenizer scale nor the cache ratio.
+    if (calibrate && total > 0 && step.usageKind !== "agy_same_generation") {
       this.proc.inputTokenScale = Math.max(0.5, Math.min(1.5, total / estimate))
       this.proc.lastCacheRatio = Math.max(0, Math.min(1, usage.cache_read_input_tokens / total))
     }
@@ -6411,9 +6414,17 @@ async function measuredUsage(turn, step, content, result) {
       if (final) turn.stepUsageReconciled = true
       step.usageKind = "agy_same_generation"
       step.modelCalls = 0
+      // No model call ran for this response, so it adds no input or output.
+      // Its prompt is still the shared generation's whole window: clients
+      // read a response's input + cache read + cache write as how full the
+      // context is (dsh's context meter, Claude Code's), and an all-zero
+      // prompt showed an empty context between two real ones (0% -> 10% ->
+      // 1%, @seven_7cx on X). The window goes as read from the cache, which
+      // is what asking the model again would have read.
+      const context = measured.context || 0
       return {
         input_tokens: 0,
-        cache_read_input_tokens: 0,
+        cache_read_input_tokens: context,
         cache_creation_input_tokens: 0,
         output_tokens: 0,
       }
@@ -6430,7 +6441,7 @@ async function measuredUsage(turn, step, content, result) {
   const output = steps.reduce((sum, item) => sum + Math.max(item.output, item.thinking), 0)
   const thinking = steps.reduce((sum, item) => sum + item.thinking, 0)
   turn.stepCursor = { source: batch.source, idx: last.idx }
-  turn.measured = { prompt }
+  turn.measured = { prompt, context: last.input + last.read + last.write }
   if (final) turn.stepUsageReconciled = true
   step.usageKind = "agy_model_call"
   step.modelCalls = steps.length
