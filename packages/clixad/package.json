@@ -5,15 +5,33 @@
   "homepage": "https://clixad.onrender.com",
   "type": "module",
   "main": "./opencode.mjs",
-  "exports": { ".": "./opencode2.mjs" },
-  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
-  "keywords": ["opencode", "opencode-plugin", "magpie", "clixad"],
+  "exports": {
+    ".": "./opencode2.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "clixad"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/YeWen0130/magpie-clixad" },
-  "scripts": { "test": "node --test" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YeWen0130/magpie-clixad"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
   "magpie": {
     "name": "Clixad",
     "maxConcurrency": 2,
-    "icon": "https://clixad.onrender.com/favicon.ico"
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzExNjFkNiIvPjxwYXRoIGQ9Ik0xMCAyMmg0di00aDR2LTRoNHY0aDR2NGg0djRoLTR2NGgtNHY0aC00di00aC00eiIgZmlsbD0iIzY0ZDhmZiIvPjwvc3ZnPg=="
   }
 }
