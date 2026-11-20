@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   rmSync, statSync, symlinkSync, writeFileSync,
@@ -10,8 +11,9 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { LayerfsTools } from "./index.mjs"
 import {
-  DEFAULT_ROOT, IMPORT_MAX_FILES, LEGACY_ROOT, SimBackend, checkSourceDir, createBackend,
-  defaultRoot, scanImportTree,
+  DEFAULT_ROOT, IMPORT_MAX_FILES, LEGACY_ROOT, SimBackend, checkSourceDir, childEnvironment,
+  createBackend, defaultRoot, killShellTree, resolveComSpec, runShell, scanImportTree,
+  shellInvocation,
 } from "./layerfs.mjs"
 
 const sha = (s) => createHash("sha256").update(s).digest("hex")
@@ -838,3 +840,399 @@ test("0.10.2: the service answers with no store — the empty state, nothing wri
   // on its next answer: the page's reload lands on it
   await serviceData(`http://127.0.0.1:${portA}/`, (x) => !!x.projects.find((p) => p.name === "website"))
 }, 30000)
+
+// #1325: exec on Windows cannot spawn /bin/sh. These tests pin the shell
+// choice, the scratch environment, and the timeout kill on both platforms
+// without needing a Windows host — the real process-group kill stays an
+// end-to-end exec on POSIX.
+
+function fakeEE() {
+  const handlers = new Map()
+  return {
+    on(event, fn) {
+      const list = handlers.get(event) ?? []
+      list.push(fn)
+      handlers.set(event, list)
+      return this
+    },
+    once(event, fn) {
+      const wrap = (...args) => {
+        const list = handlers.get(event)
+        if (list) {
+          const i = list.indexOf(wrap)
+          if (i >= 0) list.splice(i, 1)
+        }
+        fn(...args)
+      }
+      return this.on(event, wrap)
+    },
+    emit(event, ...args) {
+      for (const fn of [...(handlers.get(event) ?? [])]) fn(...args)
+    },
+  }
+}
+function fakeProc(pid) {
+  const ee = fakeEE()
+  return {
+    pid,
+    stdout: fakeEE(),
+    stderr: fakeEE(),
+    killed: null,
+    on: ee.on,
+    once: ee.once,
+    emit: ee.emit,
+    kill(sig) { this.killed = sig ?? "SIGTERM"; return true },
+    unref() {},
+  }
+}
+function recordingSpawn(shellChild, taskkill = "ok") {
+  const calls = []
+  const spawnFn = (file, args, opts) => {
+    calls.push({ file, args, opts })
+    if (file === "taskkill") {
+      if (taskkill === "throw") throw new Error("taskkill ENOENT")
+      const killer = fakeProc(1)
+      if (taskkill === "error") queueMicrotask(() => killer.emit("error", new Error("ENOENT")))
+      if (taskkill === "fail") queueMicrotask(() => killer.emit("exit", 1))
+      if (taskkill === "ok") queueMicrotask(() => killer.emit("exit", 0))
+      return killer
+    }
+    return shellChild
+  }
+  return { calls, spawnFn }
+}
+function processRunning(pid) {
+  const r = spawnSync("ps", ["-p", String(pid), "-o", "state="], { encoding: "utf8" })
+  const state = (r.stdout || "").trim()
+  return state !== "" && !state.startsWith("Z")
+}
+
+test("#1325: ComSpec resolution prefers ComSpec, then COMSPEC, then any case, else cmd.exe", () => {
+  expect(resolveComSpec({})).toBe("cmd.exe")
+  expect(resolveComSpec({ ComSpec: "" })).toBe("cmd.exe")
+  expect(resolveComSpec({ ComSpec: "", COMSPEC: "" })).toBe("cmd.exe")
+  expect(resolveComSpec({ COMSPEC: "E:\\Windows\\System32\\cmd.exe" })).toBe("E:\\Windows\\System32\\cmd.exe")
+  expect(resolveComSpec({ comspec: "D:\\cmd.exe" })).toBe("D:\\cmd.exe")
+  expect(resolveComSpec({
+    ComSpec: "C:\\Windows\\System32\\cmd.exe",
+    COMSPEC: "E:\\cmd.exe",
+    comspec: "D:\\cmd.exe",
+  })).toBe("C:\\Windows\\System32\\cmd.exe")
+  expect(resolveComSpec({ COMSPEC: "E:\\cmd.exe", comspec: "D:\\cmd.exe" })).toBe("E:\\cmd.exe")
+  expect(resolveComSpec({ ComSpec: "", comspec: "D:\\cmd.exe" })).toBe("D:\\cmd.exe")
+})
+
+test("#1325: POSIX keeps /bin/sh -c detached; Windows uses cmd.exe /d /s /c and hides the window", () => {
+  expect(shellInvocation("echo hi", "linux")).toEqual({
+    file: "/bin/sh", args: ["-c", "echo hi"], detached: true,
+  })
+  expect(shellInvocation("echo hi", "darwin")).toEqual({
+    file: "/bin/sh", args: ["-c", "echo hi"], detached: true,
+  })
+  expect(shellInvocation("echo hello", "win32", {})).toEqual({
+    file: "cmd.exe",
+    args: ["/d", "/s", "/c", '"echo hello"'],
+    detached: false,
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  })
+  expect(shellInvocation("echo hello", "win32", { ComSpec: "C:\\Windows\\System32\\cmd.exe" }).file)
+    .toBe("C:\\Windows\\System32\\cmd.exe")
+  // Always wrap with outer quotes + windowsVerbatimArguments so libuv/Bun never escapes
+  // quotes/backslashes and cmd /s strips only our outer pair (including with leading spaces).
+  const quoted = shellInvocation('echo "hello"', "win32", { comspec: "D:\\cmd.exe" })
+  expect(quoted.file).toBe("D:\\cmd.exe")
+  expect(quoted.args).toEqual(["/d", "/s", "/c", '"echo "hello""'])
+  expect(quoted.windowsVerbatimArguments).toBe(true)
+  expect(quoted.detached).toBe(false)
+  expect(quoted.windowsHide).toBe(true)
+  const command = "\"C:\\Program Files\\app.exe\" --flag"
+  const wrapped = shellInvocation(command, "win32", {})
+  expect(wrapped.args).toEqual(["/d", "/s", "/c", `"${command}"`])
+  expect(wrapped.windowsVerbatimArguments).toBe(true)
+  const leadingSpaceQuoted = '  "C:\\Program Files\\app.exe" --flag'
+  const leadingWrapped = shellInvocation(leadingSpaceQuoted, "win32", {})
+  expect(leadingWrapped.args).toEqual(["/d", "/s", "/c", `"${leadingSpaceQuoted}"`])
+  expect(leadingWrapped.windowsVerbatimArguments).toBe(true)
+  const path = shellInvocation("dir C:\\Program Files\\", "win32", {})
+  expect(path.args).toEqual(["/d", "/s", "/c", '"dir C:\\Program Files\\"'])
+  expect(path.windowsVerbatimArguments).toBe(true)
+})
+
+test("#1325: scratch env redirects TEMP and TMP on Windows and drops case-variant keys", () => {
+  const dir = "/ws"
+  const win = childEnvironment({
+    Temp: "C:\\Users\\a\\AppData\\Local\\Temp",
+    Tmp: "C:\\Users\\a\\AppData\\Local\\Temp",
+    TMPDIR: "C:\\old-tmp",
+    Xdg_Cache_Home: "C:\\old-cache",
+    Path: "C:\\Windows",
+    COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+  }, dir, "win32")
+  expect(win.TEMP).toBe(join(dir, ".tmp"))
+  expect(win.TMP).toBe(join(dir, ".tmp"))
+  expect(win.TMPDIR).toBe(join(dir, ".tmp"))
+  expect(win.XDG_CACHE_HOME).toBe(join(dir, ".cache"))
+  expect(win.Temp).toBeUndefined()
+  expect(win.Tmp).toBeUndefined()
+  expect(win.Xdg_Cache_Home).toBeUndefined()
+  expect(win.Path).toBe("C:\\Windows")
+  expect(win.COMSPEC).toBe("C:\\Windows\\System32\\cmd.exe")
+  const scratchKeys = Object.keys(win).filter((k) => ["temp", "tmp", "tmpdir", "xdg_cache_home"].includes(k.toLowerCase()))
+  expect(scratchKeys.sort()).toEqual(["TEMP", "TMP", "TMPDIR", "XDG_CACHE_HOME"])
+  // POSIX stays case-sensitive: only TMPDIR and XDG_CACHE_HOME move
+  const posix = childEnvironment({
+    Temp: "keep-me",
+    TMP: "/host/tmp",
+    TMPDIR: "/host/tmpdir",
+    XDG_CACHE_HOME: "/host/cache",
+    PATH: "/usr/bin",
+  }, dir, "linux")
+  expect(posix.Temp).toBe("keep-me")
+  expect(posix.TMP).toBe("/host/tmp")
+  expect(posix.TEMP).toBeUndefined()
+  expect(posix.TMPDIR).toBe(join(dir, ".tmp"))
+  expect(posix.XDG_CACHE_HOME).toBe(join(dir, ".cache"))
+  expect(posix.PATH).toBe("/usr/bin")
+})
+
+test("#1325: a POSIX timeout kills the process group; the fallback kills the child", () => {
+  const kills = []
+  const child = fakeProc(77)
+  killShellTree(child, { platform: "linux", killFn: (pid, sig) => { kills.push([pid, sig]) } })
+  expect(kills).toEqual([[-77, "SIGKILL"]])
+  expect(child.killed).toBe(null)
+  const fallen = fakeProc(78)
+  killShellTree(fallen, { platform: "darwin", killFn: () => { throw new Error("ESRCH") } })
+  expect(fallen.killed).toBe("SIGKILL")
+})
+
+test("#1325: a Windows timeout tree-kills with taskkill /T /F /PID and falls back to SIGKILL", async () => {
+  const child = fakeProc(99)
+  const ok = recordingSpawn(child, "ok")
+  killShellTree(child, { platform: "win32", spawnFn: ok.spawnFn })
+  await new Promise((r) => setTimeout(r, 20))
+  expect(ok.calls).toEqual([{
+    file: "taskkill",
+    args: ["/T", "/F", "/PID", "99"],
+    opts: { windowsHide: true, stdio: "ignore" },
+  }])
+  expect(child.killed).toBe(null) // taskkill exited 0: the tree is already gone
+  const thrown = fakeProc(100)
+  const boom = recordingSpawn(thrown, "throw")
+  killShellTree(thrown, { platform: "win32", spawnFn: boom.spawnFn })
+  expect(thrown.killed).toBe("SIGKILL")
+  for (const mode of ["error", "fail"]) {
+    const leaked = fakeProc(101)
+    const rec = recordingSpawn(leaked, mode)
+    killShellTree(leaked, { platform: "win32", spawnFn: rec.spawnFn })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(leaked.killed).toBe("SIGKILL")
+  }
+})
+
+test("#1325: runShell on POSIX spawns /bin/sh and a timeout kills the group", async () => {
+  const dir = mkTmp("layerfs-sh-")
+  const child = fakeProc(77)
+  const kills = []
+  const { calls, spawnFn } = recordingSpawn(child)
+  const pending = runShell("printf hi", dir, 40, {
+    platform: "linux",
+    env: { TMPDIR: "/host/tmp", XDG_CACHE_HOME: "/host/cache", PATH: "/usr/bin", Temp: "keep" },
+    spawnFn,
+    killFn: (pid, sig) => { kills.push([pid, sig]) },
+  })
+  queueMicrotask(() => {}) // handlers attach before any scripted exit; this run times out
+  const result = await pending
+  expect(calls).toHaveLength(1)
+  expect(calls[0].file).toBe("/bin/sh")
+  expect(calls[0].args).toEqual(["-c", "printf hi"])
+  expect(calls[0].opts.detached).toBe(true)
+  expect(calls[0].opts.windowsHide).toBeUndefined()
+  expect(calls[0].opts.windowsVerbatimArguments).toBeUndefined()
+  expect(calls[0].opts.stdio).toEqual(["ignore", "pipe", "pipe"])
+  expect(calls[0].opts.cwd).toBe(dir)
+  expect(calls[0].opts.env.TMPDIR).toBe(join(dir, ".tmp"))
+  expect(calls[0].opts.env.XDG_CACHE_HOME).toBe(join(dir, ".cache"))
+  expect(calls[0].opts.env.TEMP).toBeUndefined()
+  expect(calls[0].opts.env.Temp).toBe("keep")
+  expect(kills).toEqual([[-77, "SIGKILL"]])
+  expect(result.timedOut).toBe(true)
+  expect(result.code).toBe(-1)
+  expect(existsSync(join(dir, ".tmp"))).toBe(true)
+  expect(existsSync(join(dir, ".cache"))).toBe(true)
+})
+
+test("#1325: runShell on Windows spawns ComSpec, redirects TEMP/TMP, and taskkills the tree", async () => {
+  const dir = mkTmp("layerfs-cmd-")
+  const child = fakeProc(99)
+  let groupKill = false
+  const { calls, spawnFn } = recordingSpawn(child, "ok")
+  const result = await runShell("echo hello", dir, 40, {
+    platform: "win32",
+    env: {
+      ComSpec: "",
+      comspec: "D:\\Windows\\cmd.exe",
+      Temp: "C:\\Users\\a\\AppData\\Local\\Temp",
+      Tmp: "C:\\Users\\a\\AppData\\Local\\Temp",
+      Path: "C:\\Windows",
+    },
+    spawnFn,
+    killFn: () => { groupKill = true },
+  })
+  const shell = calls[0]
+  expect(shell.file).toBe("D:\\Windows\\cmd.exe")
+  expect(shell.args).toEqual(["/d", "/s", "/c", '"echo hello"'])
+  expect(shell.opts.detached).toBe(false)
+  expect(shell.opts.windowsHide).toBe(true)
+  expect(shell.opts.windowsVerbatimArguments).toBe(true)
+  expect(shell.opts.stdio).toEqual(["ignore", "pipe", "pipe"])
+  expect(shell.opts.env.TEMP).toBe(join(dir, ".tmp"))
+  expect(shell.opts.env.TMP).toBe(join(dir, ".tmp"))
+  expect(shell.opts.env.TMPDIR).toBe(join(dir, ".tmp"))
+  expect(shell.opts.env.XDG_CACHE_HOME).toBe(join(dir, ".cache"))
+  expect(shell.opts.env.Temp).toBeUndefined()
+  expect(shell.opts.env.Tmp).toBeUndefined()
+  expect(shell.opts.env.Path).toBe("C:\\Windows")
+  const killer = calls.find((c) => c.file === "taskkill")
+  expect(killer.args).toEqual(["/T", "/F", "/PID", "99"])
+  expect(killer.opts).toEqual({ windowsHide: true, stdio: "ignore" })
+  expect(groupKill).toBe(false)
+  expect(result.timedOut).toBe(true)
+})
+
+test("#1325: runShell returns the child's status once it exits", async () => {
+  const dir = mkTmp("layerfs-exit-")
+  const child = fakeProc(5)
+  const result = await runShell("printf hi", dir, 5000, {
+    platform: "darwin",
+    env: { PATH: "/usr/bin" },
+    spawnFn: () => {
+      queueMicrotask(() => {
+        child.stdout.emit("data", "hi")
+        child.stderr.emit("data", "")
+        child.emit("exit", 0)
+      })
+      return child
+    },
+  })
+  expect(result).toEqual({ code: 0, stdout: "hi", stderr: "", timedOut: false })
+})
+
+test("#1325: a shell that exits just before timeoutMs cancels the timeout timer before drain finishes", async () => {
+  const dir = mkTmp("layerfs-race-")
+  const child = fakeProc(61)
+  const { calls, spawnFn } = recordingSpawn(child, "ok")
+  const pending = runShell("echo ok", dir, 25, {
+    platform: "win32",
+    env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    spawnFn,
+  })
+  setTimeout(() => {
+    child.stdout.emit("data", "ok\n")
+    child.emit("exit", 0)
+  }, 10)
+  const result = await pending
+  expect(result).toEqual({ code: 0, stdout: "ok\n", stderr: "", timedOut: false })
+  expect(calls.filter((c) => c.file === "taskkill")).toHaveLength(0)
+  expect(child.killed).toBe(null)
+})
+
+test("#1325: a hung taskkill falls back to killing both taskkill and the shell child before resolving", async () => {
+  const dir = mkTmp("layerfs-hung-taskkill-")
+  const child = fakeProc(62)
+  let killerProc = null
+  const spawnFn = (file) => {
+    if (file === "taskkill") {
+      killerProc = fakeProc(63)
+      return killerProc
+    }
+    return child
+  }
+  const result = await runShell("echo stall", dir, 20, {
+    platform: "win32",
+    env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    spawnFn,
+  })
+  expect(result.timedOut).toBe(true)
+  expect(result.code).toBe(-1)
+  expect(killerProc?.killed).toBe("SIGKILL")
+  expect(child.killed).toBe("SIGKILL")
+})
+
+test("#1325: a hung taskkill is still killed on its deadline even if the shell exits first", async () => {
+  const child = fakeProc(64)
+  let killerProc = null
+  killShellTree(child, {
+    platform: "win32",
+    killerTimeoutMs: 30,
+    spawnFn: (file) => {
+      expect(file).toBe("taskkill")
+      killerProc = fakeProc(65)
+      return killerProc
+    },
+  })
+  // Shell exits immediately while taskkill stays hung
+  child.emit("exit", 0)
+  await new Promise((r) => setTimeout(r, 60))
+  expect(killerProc?.killed).toBe("SIGKILL")
+  expect(child.killed).toBe(null)
+})
+
+test("#1325: a late shell exit after the 250ms backstop does not schedule a stray drain timer", async () => {
+  const dir = mkTmp("layerfs-late-exit-")
+  const child = fakeProc(66)
+  const { spawnFn } = recordingSpawn(child, "ok")
+  const result = await runShell("echo stall", dir, 15, {
+    platform: "win32",
+    env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    spawnFn,
+  })
+  expect(result.timedOut).toBe(true)
+  expect(result.code).toBe(-1)
+  const origSetTimeout = globalThis.setTimeout
+  let scheduled = 0
+  globalThis.setTimeout = (...args) => { scheduled++; return origSetTimeout(...args) }
+  try {
+    child.emit("exit", 0)
+  } finally {
+    globalThis.setTimeout = origSetTimeout
+  }
+  expect(scheduled).toBe(0)
+})
+
+test("#1325: exec's description names the Windows shell and its temp vars", async () => {
+  const { tool } = await simTools()
+  expect(tool.exec.description).toContain("cmd.exe")
+  expect(tool.exec.description).toContain("/bin/sh")
+  expect(tool.exec.description).toMatch(/TEMP and TMP/)
+  expect(tool.provision.description).toMatch(/TEMP and TMP/)
+  const readme = readFileSync(join(import.meta.dir, "README.md"), "utf8")
+  expect(readme).toContain("cmd.exe")
+  expect(readme).toContain("taskkill")
+})
+
+test.skipIf(process.platform === "win32")("#1325: a timeout kills the process group, so a background child does not survive it", async () => {
+  const { call } = await simTools()
+  const ws = await call("provision", { project: "website" })
+  const pidfile = join(ws.path, "sleep.pid")
+  let pid = 0
+  try {
+    const r = await call("exec", {
+      project: "website",
+      command: "sleep 30 & echo $! > sleep.pid; wait",
+      timeoutMs: 1000,
+    })
+    expect(r.timedOut).toBe(true)
+    pid = Number(readFileSync(pidfile, "utf8").trim())
+    expect(pid).toBeGreaterThan(0)
+    let gone = false
+    for (let i = 0; i < 40; i++) {
+      if (!processRunning(pid)) { gone = true; break }
+      await new Promise((res) => setTimeout(res, 50))
+    }
+    expect(gone).toBe(true)
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL") } catch { /* already gone */ } }
+  }
+})
