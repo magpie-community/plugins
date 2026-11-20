@@ -488,6 +488,7 @@ export async function fetchUsage(agy, {
   tempRoot = os.tmpdir(),
   quota = readQuotaDirect,
   direct = false,
+  first = false,
 } = {}) {
   if (!agy) throw new UsageError(NO_AGY)
   const deadline = Date.now() + timeout(timeoutMs)
@@ -542,6 +543,28 @@ export async function fetchUsage(agy, {
       }
       return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
     }
+    // With a stored sign-in to read it with, the quota is read first the
+    // way agy's /usage reads it: loadCodeAssist, then
+    // retrieveUserQuotaSummary. agy -p /usage makes those two only after
+    // its whole start, about twelve Code Assist calls in six rounds one
+    // after another (loadCodeAssist four times, fetchUserInfo,
+    // fetchAvailableModels, fetchAdminControls, listExperiments…, recorded
+    // from agy 1.5.12 on 2026-11-20): 5 to 10 seconds on a quick network,
+    // past the deadline on a slower one or behind a proxy, where the card
+    // said "agy usage query timed out.". The two calls take about 1.5
+    // seconds. When they can't answer (a sign-in that can't be read, a
+    // refusal, a reply with no quota), agy -p is asked as before, in the
+    // time left, and its answer (a refusal, a sign-in agy asks for) stands.
+    let firstFailed = ""
+    if (first) {
+      try {
+        const data = await quota({ env, version: version.stdout.trim(), deadline, signal })
+        return parseUsageReport({ status: "SUCCESS", command: { name: "usage", data } })
+      } catch (error) {
+        if (signal?.aborted) throw new UsageError("agy usage query was cancelled.", { kind: "cancel" })
+        firstFailed = error instanceof UsageError ? error.message : "a network request failed"
+      }
+    }
     const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--agent", "magpie-usage", "--print-timeout", `${Math.max(1, Math.ceil((deadline - Date.now()) / 1000))}s`], options)
     let report
     try { report = JSON.parse(result.stdout) } catch {}
@@ -558,6 +581,8 @@ export async function fetchUsage(agy, {
     if (failure.kind !== "auth" && refusedEligibility(said) && !NETWORK.test(said)) {
       // when that read fails too, the error says why, after agy's refusal
       const alsoFailed = why => new UsageError(`${failure.message} Reading the quota directly failed too: ${why.replace(/\.$/, "")}.`)
+      // asked already, before agy -p: not asked twice
+      if (firstFailed) throw alsoFailed(firstFailed)
       let data
       try {
         data = await quota({ env, version: version.stdout.trim(), deadline, signal })
@@ -650,7 +675,9 @@ export function createUsageReader(resolveAgy, options = {}) {
       // refresh token: read without running agy (fetchUsage's direct)
       const direct = stored?.state === "present" && stored.canRenew && stored.expiresAt > 0 && stored.expiresAt - now() < 2 * 60 * 1000
       if (!pending.has(agy)) {
-        const query = fetchUsage(agy, { ...fetchOptions, direct }).finally(() => {
+        // any other stored sign-in: read directly first, agy -p after
+        const first = !direct && stored?.state === "present"
+        const query = fetchUsage(agy, { ...fetchOptions, direct, first }).finally(() => {
           if (pending.get(agy) === query) pending.delete(agy)
         })
         pending.set(agy, query)
