@@ -387,3 +387,58 @@ test("StepCalls: an exec that arrives after its update #3 removes it from comple
   s.exec(execMessage("c3"))
   expect(s.completed).toBe(0)
 })
+
+test("StepCalls: ExecServerMessage metadata (#57-#59) and unknown string fields do not hide or spoof execs", () => {
+  const s = new StepCalls(nativeFields)
+  const uf = (id) => nativeFields(text(1, id))
+  s.update(7, uf("c3"))
+  s.exec(message(
+    uint(1, 7),
+    text(15, "exec-c3"),
+    text(57, "machine-host-1"),
+    uint(58, 1),
+    uint(59, 1),
+    text(65, "future-meta"),
+    bin(11, mcpArgs("c3")),
+  ))
+  expect(s.update(3, uf("c3"))).toBe(false)
+  expect(s.completed).toBe(0)
+  expect(s.pendingMcp).toBe(0)
+
+  s.update(7, uf("spoofed-id"))
+  expect(s.update(3, uf("spoofed-id"))).toBe(true)
+  expect(s.completed).toBe(1)
+  s.exec(message(uint(1, 8), text(15, "exec-c4"), bin(57, message(text(1, "spoofed-id"))), bin(11, mcpArgs("c4"))))
+  expect(s.completed).toBe(1)
+})
+
+test("native and stateless: a step waits for remaining calls when ExecServerMessage carries #57-#59 before mcp_args", async () => {
+  const withMeta = (id, rawID) => bin(2, message(
+    uint(1, id),
+    text(15, "exec-" + rawID),
+    text(57, "machine-host-1"),
+    uint(58, 1),
+    uint(59, 1),
+    bin(11, mcpArgs(rawID)),
+  ))
+  const raw = [
+    callUpdate(7, "c3", MCP),
+    withMeta(7, "c3"),
+    callUpdate(3, "c3", MCP),
+    callUpdate(7, "c4", MCP),
+    bin(1, bin(27, uint(1, 2))),
+    callUpdate(2, "c4", MCP),
+    withMeta(8, "c4"),
+  ]
+  const run = owner({ batchWait: 2000 })
+  run.pump(open(raw.map((b) => ({ data: envelope(b).subarray(5) }))))
+  await until(() => run.error || run.state === "awaiting-results")
+  expect(run.error).toBeUndefined()
+  expect(run.segment.events.filter((e) => e.tool)).toHaveLength(2)
+  expect(run.segment.events.at(-1).stop).toBe("tool_calls")
+
+  const { how, events } = await stateless(raw)
+  expect(how).toBe("ended")
+  expect(events.filter((e) => e.tool)).toHaveLength(2)
+  expect(events.at(-1).stop).toBe("tool_calls")
+})

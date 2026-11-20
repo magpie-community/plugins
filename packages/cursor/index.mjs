@@ -28,7 +28,7 @@
 //
 // OpenCode speaks chat completions to it (@ai-sdk/openai-compatible); the
 // fetch here answers them.
-import { NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWebSearch, setWireTrace, StepCalls, webSearchAnswer, webSearchDir, webSearchQuery } from "./native-session.mjs"
+import { EXEC_META, NATIVE_LIMITS, nativeSessions, NativeSessionError, nativeFields, nativeMcpArgs, pendingCalls, Quiet, setWebSearch, setWireTrace, StepCalls, webSearchAnswer, webSearchDir, webSearchQuery } from "./native-session.mjs"
 import { isDeepStrictEqual } from "node:util"
 import http2 from "node:http2"
 import { STATUS_CODES } from "node:http"
@@ -3503,7 +3503,7 @@ function exec(msg, tools, send, closeExec, refused, native = false) {
     closeExec(id)
   }
   const unavailable = () => {
-    const kind = es.find((e) => ![1, 15, 19, 55].includes(e.num))?.num ?? 0
+    const kind = es.find((e) => !EXEC_META.has(e.num))?.num ?? 0
     refused?.set(kind, (refused.get(kind) ?? 0) + 1)
     send(pb().bytes(5, pb().bytes(2, pb().varint(1, id).str(2, "not available"))).done())
     closeExec(id)
