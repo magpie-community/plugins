@@ -4,6 +4,14 @@ import { normalizeQuotas, project, resolveQuotas, sanitizeCachedLabels, shanghai
 
 const iso = (offset = 0) => new Date(Date.now() + offset).toISOString();
 
+test('a live identity cannot inherit usage from a local-name-only quota history', () => {
+  const previous = card('codex@alpha', 'codex', 'alpha', { today: { requests: 5, totalTokens: 50 } });
+  const broken = { provider: 'codex', user: 'alpha@replacement.example', windows: [] };
+  const [fallback] = resolveQuotas({ data: [broken] }, {}, [previous]);
+  assert.equal(fallback.stale, true);
+  assert.equal(fallback.accountUsage, null);
+});
+
 const card = (id, provider, account, usage, day) => ({
   id,
   provider,

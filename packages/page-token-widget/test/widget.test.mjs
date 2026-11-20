@@ -861,6 +861,133 @@ const realCards = () => {
   ];
 };
 
+const denseCards = (count) => {
+  const page = realCards().concat(realCards().slice(0, 2)).map((card, index) => ({
+    ...card,
+    id: card.id + '-' + index,
+    windows: card.windows.map((entry, at) => (at ? entry : { ...entry, label: (index + 2) + ' hours' })),
+  }));
+  return page.slice(0, count);
+};
+
+const phones = [[320, 568], [375, 667], [375, 812], [390, 844], [402, 874], [430, 932]];
+
+const measuredBody = (widget) => widget.children.find(
+  child => child instanceof MeasuredStack && child.vertical && child.size && child.size.height,
+);
+
+test('the five cards of the medium widget fit on every phone', async () => {
+  const cards = denseCards(5);
+  for (const screen of phones) {
+    const data = overview({ subscriptions: cards.map(card => card.id) }, cards);
+    const widget = await runMeasured({ screen, data });
+    const body = measuredBody(widget);
+    assert.ok(body, 'the body of the widget is there');
+    const grid = body.children.find(child => child instanceof MeasuredStack);
+    assert.ok(grid, 'the cards are in the body');
+    const room = body.size.height - grid.height();
+    assert.ok(
+      grid.height() <= body.size.height,
+      `the five cards are ${grid.height().toFixed(1)} points tall on ${screen.join('x')}, `
+      + `the body is ${body.size.height}: the cards run out of the widget`,
+    );
+    assert.ok(
+      room >= 5,
+      `the five cards are ${grid.height().toFixed(1)} points tall on ${screen.join('x')}, `
+      + `the body is ${body.size.height}, ${room.toFixed(1)} points are left`,
+    );
+  }
+});
+
+test('the six cards of the medium widget fit on every phone', async () => {
+  const cards = denseCards(6);
+  for (const screen of phones) {
+    const data = overview({ subscriptions: cards.map(card => card.id) }, cards);
+    const widget = await runMeasured({ screen, data });
+    const body = measuredBody(widget);
+    assert.ok(body, 'the body of the widget is there');
+    const grid = body.children.find(child => child instanceof MeasuredStack);
+    assert.ok(grid, 'the cards are in the body');
+    const room = body.size.height - grid.height();
+    assert.ok(
+      grid.height() <= body.size.height,
+      `the six cards are ${grid.height().toFixed(1)} points tall on ${screen.join('x')}, `
+      + `the body is ${body.size.height}: the cards run out of the widget`,
+    );
+    assert.ok(
+      room >= 5,
+      `the six cards are ${grid.height().toFixed(1)} points tall on ${screen.join('x')}, `
+      + `the body is ${body.size.height}, ${room.toFixed(1)} points are left`,
+    );
+  }
+});
+
+test('the bars of the cards of a dense medium row sit on one line', async () => {
+  for (const count of [5, 6]) {
+    const cards = denseCards(count);
+    const { Request } = listening({
+      '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
+    });
+    const run = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
+    const levels = barLevels({ type: 'stack', stack: run.tree });
+    assert.equal(levels.length, count, count + ' cards, ' + count + ' bars');
+    assert.equal(
+      new Set(levels).size, 1,
+      'the bars of the ' + count + ' cards sit at ' + levels.join(', '),
+    );
+  }
+});
+
+test('the account of a card is written in a dense medium card', async () => {
+  const cards = denseCards(5);
+  const { Request } = listening({
+    '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
+  });
+  const run = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
+  assert.ok(run.log.includes('liuzq1103'), 'the account is written: ' + run.log.join(' | '));
+  assert.ok(run.log.includes('fangzt98'), 'the account is written: ' + run.log.join(' | '));
+  const titles = allStacks(run.tree).filter(stack => stack.children.some(child =>
+    child.type === 'text' && String(child.element.text) === 'Codex'));
+  assert.equal(titles.length, 2, 'the two accounts of the vendor are two cards');
+  for (const title of titles) {
+    const vendor = title.children.find(child => child.type === 'text' && String(child.element.text) === 'Codex');
+    const account = title.children.find(child => child.type === 'text'
+      && /liuzq1103|fangzt98/.test(String(child.element.text)));
+    assert.ok(account, 'the account stands with the name of the vendor');
+    assert.ok(
+      account.element.font.size < vendor.element.font.size,
+      'the account is written smaller than the name of the vendor',
+    );
+    const last = title.children[title.children.length - 1];
+    assert.equal(last.type, 'spacer', 'the line of the name ends with room for the rest of the card');
+    assert.equal(last.size, null, 'the room is flexible, so the name stands at the left');
+  }
+});
+
+test('the account of a card is written when the vendor has a long name', async () => {
+  const cards = denseCards(5).map((card, index) => index === 1
+    ? { ...card, label: 'Perplexity Pro · liuzq1103' }
+    : card);
+  const { Request } = listening({
+    '/api/v1/overview': overview({ subscriptions: cards.map(card => card.id) }, cards),
+  });
+  const run = await runWidget({ request: Request, config: { widgetFamily: 'medium' } });
+  assert.ok(run.log.includes('liuzq1103'), 'the account is written: ' + run.log.join(' | '));
+  const titles = allStacks(run.tree).filter(stack => stack.children.some(child =>
+    child.type === 'text' && /liuzq1103/.test(String(child.element.text))));
+  assert.equal(titles.length, 1, 'the card of the long vendor has a title of its own');
+  const texts = titles[0].children.filter(child => child.type === 'text');
+  const account = texts.find(child => /liuzq1103/.test(String(child.element.text)));
+  const vendor = texts.find(child => child !== account && String(child.element.text) !== '·');
+  assert.ok(account, 'the account stands with the name of the vendor');
+  assert.ok(vendor, 'the name of the vendor stands with the account');
+  assert.ok(vendor.element.text.endsWith('…'), 'the long name of the vendor is shortened: ' + vendor.element.text);
+  assert.ok(
+    account.element.font.size < vendor.element.font.size,
+    'the account is written smaller than the name of the vendor',
+  );
+});
+
 // The bars of the cards of the medium widget have to sit on one line. A card
 // whose name is longer, or that has no account of its own, must not push its
 // bar up or down: the four bars are read side by side.

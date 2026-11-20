@@ -304,6 +304,23 @@ function shortenName(label, size, width) {
   while (keep > 1 && nameWidth(label.slice(0, keep) + "…") * size * minimumScale > width) keep--;
   return label.slice(0, keep) + "…";
 }
+function denseMediumStyle(frame) {
+  const rowGap = 4;
+  const titleGap = 1;
+  const barGap = 1;
+  const budget = (frame - rowGap - 5) / 2;
+  const style = { name: 9, value: 15, reset: 9, secondary: 0, account: 8, titleGap, barGap, resetGap: 3, rowGap };
+  for (const value of [20, 19, 18, 17, 16, 15]) {
+    const rest = budget - Math.round(value * LINE_HEIGHT) - titleGap - barGap - BAR_HEIGHT;
+    if (rest < Math.round(9 * LINE_HEIGHT)) continue;
+    style.value = value;
+    for (const name of [11, 10, 9]) {
+      if (Math.round(name * LINE_HEIGHT) <= rest) { style.name = name; break; }
+    }
+    break;
+  }
+  return style;
+}
 // The word in front of every number. Without it the bar and the number can
 // be read the wrong way round, and the night mode makes that worse. It is
 // one character: the cards of the middle family are narrow, and every point
@@ -439,6 +456,7 @@ function subscriptionGrid(parent, cards, sharedWindow) {
   const columns = large ? Math.min(2, cards.length) : cards.length > 4 ? 3 : cards.length;
   const rows = Math.ceil(cards.length / columns);
   const dense = large ? rows === 3 : rows === 2;
+  const denseMedium = !large && dense;
   const cellWidth = (layout.width - layout.columnGap * (columns - 1)) / columns;
   const tight = large ? dimensions.height < 345 : dimensions.height < 155;
   // A cell that has several accounts of one vendor carries a longer name, so a
@@ -450,7 +468,7 @@ function subscriptionGrid(parent, cards, sharedWindow) {
       ? { name: tight ? 11 : 12, value: tight ? 20 : 24, reset: 8, secondary: 8, account: 9, titleGap: 2, barGap: 3, resetGap: 3, rowGap: 8 }
       : { name: 13, value: 34, reset: 10, secondary: 10, account: 9, titleGap: 4, barGap: 6, resetGap: 5, rowGap: 16 }
     : dense
-      ? { name: tight ? 10 : 11, value: tight ? 18 : 20, titleGap: 1, barGap: 1, resetGap: 3, rowGap: tight ? 4 : 6, account: 0, secondary: 0, reset: 9 }
+      ? denseMediumStyle(dimensions.height - 2 * layout.vertical - layout.header - layout.footer)
       // The medium family gives every card two lines of a title and two lines
       // under the bar. The smallest medium widget has 84 points for a card,
       // and the lines are made smaller there so that they fit: a card that is
@@ -499,11 +517,25 @@ function subscriptionGrid(parent, cards, sharedWindow) {
       // In the dense large family the name of a card that has an account goes
       // with the account and is written smaller, but the line of it stays as
       // tall as the others, so the bars of the row sit on one line.
-      const titleSize = large && dense ? nameSize : (inline ? accountSize : nameSize);
-      const titleRow = line(column, titleSize, cellWidth);
-      text(titleRow, shortenName(vendor, inline ? accountSize : nameSize, cellWidth), inline ? accountSize : nameSize, colors.text, "medium");
-      atLeft(titleRow);
-      if (parts.account && style.account && !inline) {
+      if (denseMedium) {
+        const titleRow = line(column, nameSize, cellWidth);
+        const room = cellWidth - 6;
+        const accountSize = Math.max(7, Math.min(style.account, nameSize - 2));
+        const account = parts.account ? shortenName(parts.account, accountSize, room / 2) : "";
+        const vendor = shortenName(parts.vendor, nameSize, room - nameWidth(account) * accountSize);
+        text(titleRow, vendor, nameSize, colors.text, "medium");
+        if (account) {
+          text(titleRow, "·", accountSize, colors.muted);
+          text(titleRow, account, accountSize, colors.muted);
+        }
+        atLeft(titleRow);
+      } else {
+        const titleSize = large && dense ? nameSize : (inline ? accountSize : nameSize);
+        const titleRow = line(column, titleSize, cellWidth);
+        text(titleRow, shortenName(vendor, inline ? accountSize : nameSize, cellWidth), inline ? accountSize : nameSize, colors.text, "medium");
+        atLeft(titleRow);
+      }
+      if (parts.account && style.account && !inline && !denseMedium) {
         const accountRow = line(column, accountSize, cellWidth);
         text(accountRow, shortenName(parts.account, accountSize, cellWidth), accountSize, colors.muted);
         atLeft(accountRow);

@@ -59,6 +59,65 @@ const collectorFor = (gateway, dir, options = {}) => new Collector({
   ...options,
 });
 
+for (const [scenario, addresses] of [
+  ['replacement', ['alpha@new.example']],
+  ['collision', ['alpha@example.com', 'alpha@new.example']],
+]) {
+  test(`account ${scenario} invalidates a prior successful reading`, async context => {
+    const local = await tempDir();
+    context.after(() => cleanup(local));
+    const collector = collectorFor({ url: 'http://localhost' }, local);
+    let users = ['alpha@example.com'];
+    collector.request = async endpoint => {
+      if (endpoint.includes('quotas')) return quotaAnswer([...users, 'beta@example.com'].map(user => quotaRow('codex', user)));
+      if (endpoint.includes('7d')) return weekAnswer;
+      if (users === addresses) throw new Error('unavailable');
+      return todayAnswer;
+    };
+    await collector.collect();
+    assert.equal(collector.overview().subscriptions[0].usage.today.requests, 40);
+    users = addresses;
+    await collector.collect();
+    assert.equal(collector.overview().subscriptions[0].usage, null);
+  });
+}
+
+for (const source of ['disk', 'history', 'restart']) {
+  test(`quota outage preserves account usage through ${source}`, async context => {
+    const local = await tempDir();
+    context.after(() => cleanup(local));
+    let now = Date.parse('2026-11-13T12:00:00Z');
+    const create = () => collectorFor({ url: 'http://localhost' }, local, { clock: () => now });
+    let collector = create();
+    const rows = ['alpha@example.com', 'beta@example.com'].map(user => quotaRow('codex', user));
+    collector.request = async endpoint => endpoint.includes('quotas') ? quotaAnswer(rows)
+      : endpoint.includes('7d') ? weekAnswer : todayAnswer;
+    await collector.collect();
+    if (source === 'restart') {
+      collector = create();
+      await collector.load();
+    }
+    if (source === 'disk') collector.quotaCache = async () => rows.map(quota => ({ quota }));
+    collector.request = async endpoint => {
+      if (endpoint.includes('quotas') && source !== 'disk') return quotaAnswer([]);
+      throw new Error('unavailable');
+    };
+    await collector.collect();
+    const alpha = () => collector.overview().subscriptions.find(card => card.id === 'codex@alpha');
+    assert.equal(alpha().usage?.today.requests, 40);
+    if (source !== 'restart') {
+      const updated = { ...todayAnswer.accounts[0], calls: 45 };
+      collector.todayUsage = async () => ({ accounts: [{ ...updated, requests: 45, totalTokens: 600 }] });
+      await collector.collect();
+      assert.equal(alpha().usage?.today.requests, 45);
+    }
+    now += 86400_000;
+    collector.todayUsage = async () => ({ accounts: [] });
+    await collector.collect();
+    assert.equal(alpha().usage, null);
+  });
+}
+
 let dir;
 after(async () => {
   await cleanup(dir);
@@ -417,6 +476,7 @@ test('an older Magpie is still read', async () => {
     const overview = collector.overview();
     // The day is read the old way, and it is read.
     assert.equal(overview.sources.today.state, 'ok');
+    assert.equal(collector.snapshot.parts.today.data.providers[0].requests, 100);
     assert.equal(overview.usage.today.requests, 100);
     // And every account keeps its own numbers.
     const first = overview.subscriptions.find(card => card.id === 'codex@alpha');

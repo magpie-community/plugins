@@ -489,6 +489,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
   // Only one settling at a time.
   let settling = null;
   const settleForward = () => {
+    if (closed) return Promise.resolve();
     if (settling) return settling;
     settling = settleForwardOnce().finally(() => { settling = null; });
     return settling;
@@ -1207,6 +1208,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
     await settleForward();
     if (closed) return;
     if (options.listenTailnet !== false && tailnet.tailnetIP && !(await portPublished())) {
+      if (closed) return;
       // The address the tailnet listener binds. The permission of a request
       // does not depend on it: the listener that took the connection says
       // what the request may do, not the address it came from.
@@ -1264,6 +1266,7 @@ export async function startServer({ root, dataDir, magpieDir, options = {} }) {
       // on its way is waited for, so that it does not write the snapshot
       // after the service has gone.
       const stopping = collector.stop();
+      if (settling) await settling.catch(() => {});
       // Only the forwarding that belongs to this plugin is taken away.
       await removeForward(port, phonePort, runner, state.forward);
       await stopping;

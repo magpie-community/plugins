@@ -32,6 +32,78 @@ test('the service stops when the host asks it to stop', async () => {
   }
 });
 
+test('a shutdown that races the making of a forwarding still takes it away', async () => {
+  const dir = await tempDir();
+  const port = await freePort();
+  const phonePort = await freePort();
+  const mock = mockTailscale();
+  let enterSetup;
+  let releaseSetup;
+  const setupEntered = new Promise((resolve) => { enterSetup = resolve; });
+  const setupGate = new Promise((resolve) => { releaseSetup = resolve; });
+  let entryTimer;
+  const runner = async (args) => {
+    if (args.join(' ').startsWith('serve --bg')) {
+      enterSetup();
+      await setupGate;
+    }
+    return mock.runner(args);
+  };
+
+  try {
+    await plugin.server(
+      { directory: dir },
+      { port, phonePort, gatewayURL: 'http://127.0.0.1:1', forward: true, tailscaleRunner: runner },
+    );
+    await Promise.race([setupEntered, new Promise((resolve, reject) => {
+      entryTimer = setTimeout(() => reject(new Error('forward setup did not start')), 5000);
+    })]);
+    const stopping = plugin.stop();
+    await new Promise(resolve => setImmediate(resolve));
+    releaseSetup();
+    await stopping;
+
+    assert.ok(
+      mock.calls.some((call) => call === `serve --tcp=${port} off`),
+      mock.calls.join(' | '),
+    );
+    assert.equal(mock.serve.TCP[String(port)], undefined);
+  } finally {
+    clearTimeout(entryTimer);
+    releaseSetup();
+    await plugin.stop();
+    await cleanup(dir);
+  }
+});
+
+test('an immediate stop and restart waits for the old service to go', async () => {
+  const dir = await tempDir();
+  const port = await freePort();
+  const phonePort = await freePort();
+  const mock = mockTailscale();
+  const options = {
+    port,
+    phonePort,
+    gatewayURL: 'http://127.0.0.1:1',
+    forward: true,
+    tailscaleRunner: mock.runner,
+  };
+
+  try {
+    await plugin.server({ directory: dir }, options);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+
+    const stopping = plugin.stop();
+    const starting = plugin.server({ directory: dir }, options);
+    await Promise.all([stopping, starting]);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+    assert.equal(mock.serve.TCP[String(port)].TCPForward, `127.0.0.1:${phonePort}`);
+  } finally {
+    await plugin.stop();
+    await cleanup(dir);
+  }
+});
+
 test('a host that asks twice does not complain', async () => {
   const dir = await tempDir();
   try {

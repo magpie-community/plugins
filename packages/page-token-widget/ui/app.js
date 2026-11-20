@@ -644,13 +644,7 @@ import { pairingLeft, remainingText } from './timing.mjs';
     const wanted = new Set(display.subscriptions || []);
     const items = (state.subscriptions || []).filter(subscription => {
       const id = subscription.id || subscription.provider;
-      if (!id) return false;
-      // Only the cards that are really shown are offered: a card that is not
-      // projected would leave the small widget saying "not found". A card of
-      // an account is not the card of its vendor, so only the id itself is
-      // taken.
-      if (!wanted.size || wanted.has('*') || wanted.has(id)) return true;
-      return false;
+      return Boolean(id) && (!wanted.size || wanted.has('*') || wanted.has(id) || wanted.has(subscription.provider));
     });
     const choice = (field, value, label, hint) => {
       const wrapper = document.createElement('label');

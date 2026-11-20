@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.13 · 2026-11-20
+
+The vendor list of the legacy gateway counts every request again, a new
+account never shows the usage of the old one, and the medium widget fits five
+and six cards on a small screen.
+
+> 旧版网关的今日厂商用量按网关返回的厂商合计显示。即使个别账号读取失败，厂商榜仍能显示完整用量。
+> 同一天更换账号邮箱或遇到同名账号时，组件会清除该账号的旧用量，等待读到对应账号的新数据。
+> 停用或立即重启插件时，服务会等待正在进行的 Tailscale 转发操作结束，再清理自己创建的转发和监听器。
+> 桌面端选中整个厂商后，可以将该厂商的任一可见账号设为小号组件的默认卡片。中号组件同时显示 5 或 6 张
+> 卡片时，账号简称和厂商同排显示，小屏也能放下第二排进度条。
+
+### Fixed
+
+- **The vendor list of the legacy gateway counts every request.** The gateway
+  reported 100 Codex requests, but when one account failed to load, the list
+  showed only the other account's 40. The list takes the total the gateway
+  itself reports per vendor now, and the numbers of the accounts are counted
+  apart from it.
+- **A new account never shows the usage of the old one.** When an account email
+  changes on the same day, or two accounts carry the same name, the stale
+  reading of the old account is dropped instead of being shown under the new
+  card; the card waits for the reading of the account that is really there.
+- **Stopping and restarting do not race the cleanup any more.** With the plugin
+  disabled, a Tailscale forwarding that was still running could finish after
+  the cleanup had gone by. The shutdown stops taking new forwarding work, waits
+  for the work that started, and only then takes away the forwards and the
+  listeners that belong to this instance.
+- **The account picker of the small widget follows the same rules as the
+  service.** Selecting a whole vendor in the plugin window offers the visible
+  accounts of that vendor, and selecting one account offers only that account.
+- **The medium widget fits five and six cards.** The name of the account and
+  the vendor stand on one line now, so two cards of the same vendor can be
+  told apart, and the spacing of the rows and the size of the text follow the
+  height the medium widget really has: on the six measured screens the second
+  row is whole, the bars of a row stand on one line, and the name of the
+  account can be read.
+- Eleven new tests guard all of it: the vendor total survives an account that
+  fails to load, a changed account clears the old reading, a stop waits for
+  the forwarding that is running, the picker offers the accounts of the
+  selection, and the five and the six cards of the medium widget fit every
+  phone with their bars on one line.
+- On the computer this release changed the service and the script of the
+  widget, so the plugin has to be updated and reloaded. The script on the phone
+  has to be updated once: run the installer (`SetupUsageWidget.js`) in
+  Scriptable again.
+
 ## 0.4.12 · 2026-11-16
 
 The small widget fits its frame again, and the note of the large widget says

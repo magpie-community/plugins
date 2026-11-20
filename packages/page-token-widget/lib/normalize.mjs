@@ -265,7 +265,7 @@ export function normalizeQuotas(raw, cache = {}) {
 // belongs to a private cache key. All selected rows still cross the same allowlist.
 // Accounts of one vendor are kept apart: a reading is only ever taken from the
 // account it belongs to, so two Codex accounts never trade places.
-export function resolveQuotas(raw, cache = {}, previous = []) {
+export function resolveQuotas(raw, cache = {}, previous = [], cachedIdentities = []) {
   const group = rows => {
     const groups = new Map();
     for (const row of rows) {
@@ -316,6 +316,7 @@ export function resolveQuotas(raw, cache = {}, previous = []) {
       // source that knows more accounts wins, so a cache that lost an account
       // never hides the one the history still knows.
       const fallback = familyCached.length >= familySaved.length ? familyCached : familySaved;
+      if (fallback === familyCached) cachedIdentities.push(...familyCached);
       const rows = readings(fallback);
       if (rows.length) selected.push(...normalizeQuotas({ data: complete(rows) ? rows : rows.filter(usable) }).map(card => ({ ...card, stale: true })));
       continue;
@@ -332,7 +333,7 @@ export function resolveQuotas(raw, cache = {}, previous = []) {
       const before = readings(saved);
       picks.push(complete(fresh) ? { rows: fresh, stale: false }
         : complete(stored) ? { rows: stored, stale: true }
-        : complete(before) ? { rows: before, stale: true }
+        : complete(before) ? { rows: before.map(row => ({ ...row, accountUsage: null, accountUsageDay: null })), stale: true }
         : { rows: fresh.filter(usable), stale: true });
     }
     // The fallback of each account travels with its own rows: the cards are

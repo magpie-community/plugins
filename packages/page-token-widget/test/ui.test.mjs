@@ -74,6 +74,22 @@ test('every piece of the page the script reaches for is on the page', async () =
   }
 });
 
+test('the small widget picker offers the accounts covered by the display selection', async () => {
+  const script = await read('ui/app.js');
+  const renderer = script.match(/  const renderWidgetSettings = [\s\S]*?\n  \};/)[0];
+  const list = { children: [], replaceChildren() { this.children = []; }, append(row) { this.children.push(row); } };
+  const document = { createElement: () => ({ children: [], append(...children) { this.children.push(...children); } }) };
+  const render = new Function('document', 'element', 'node', `${renderer}\nreturn renderWidgetSettings;`)(document, () => list, document.createElement);
+  const subscriptions = ['codex@alpha', 'codex@beta', 'glm'].map(id => ({ id, provider: id.split('@')[0] }));
+  const offered = selected => {
+    render({ subscriptions, display: { subscriptions: selected } });
+    return list.children.map(row => row.children[0]).filter(input => input.name === 'widget-card' && input.value).map(input => input.value);
+  };
+  assert.deepEqual(offered(['codex']), ['codex@alpha', 'codex@beta']);
+  assert.deepEqual(offered(['codex@beta']), ['codex@beta']);
+  assert.deepEqual(offered(['*']), ['codex@alpha', 'codex@beta', 'glm']);
+});
+
 test('the parameter of the subscription sits on the right', async () => {
   const script = await read('ui/app.js');
   const css = await read('ui/style.css');

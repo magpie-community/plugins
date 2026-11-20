@@ -192,6 +192,11 @@ export class Collector {
   async quotas() {
     const cache = await this.quotaCache();
     const previous = this.snapshot.parts.quotas?.data || [];
+    const resolve = answer => {
+      const cachedIdentities = [];
+      const cards = resolveQuotas(answer, cache, previous, cachedIdentities);
+      return { cards, rows: { data: [...(Array.isArray(answer?.data) ? answer.data : []), ...cachedIdentities] } };
+    };
     let rows = null;
     let failure = null;
     try {
@@ -200,14 +205,14 @@ export class Collector {
       failure = error;
     }
     try {
-      return { cards: resolveQuotas(rows, cache, previous), rows };
+      return resolve(rows);
     } catch (error) {
       const empty = !failure && Array.isArray(rows?.data) && rows.data.length === 0;
       if (empty && this.plainQuotaAllowed()) {
         const plain = await this.plainQuota();
         if (plain) {
           try {
-            return { cards: resolveQuotas(plain, cache, previous), rows: plain };
+            return resolve(plain);
           } catch { /* The plain answer holds nothing usable either. */ }
         }
       }
@@ -222,8 +227,10 @@ export class Collector {
   // never asked about and never swap places.
   rememberAddresses(rows) {
     const fresh = new Map();
+    const observedFamilies = new Set();
     for (const row of Array.isArray(rows?.data) ? rows.data : []) {
       const family = providerFamily(row?.provider);
+      if (family) observedFamilies.add(family);
       const address = typeof row?.user === 'string' ? row.user.trim() : '';
       if (!family || !address.includes('@')) continue;
       const key = accountKey(family, address);
@@ -232,8 +239,14 @@ export class Collector {
       if (known === undefined) fresh.set(key, address);
       else if (known !== address) fresh.set(key, null);
     }
-    if (!fresh.size) return;
-    for (const [key, value] of fresh) this.addresses.set(key, value);
+    for (const [key, address] of this.addresses) {
+      if (!observedFamilies.has(key.split('@')[0])) {
+        fresh.set(key, address);
+        continue;
+      }
+      if (fresh.get(key) !== address) this.usage.delete(key);
+    }
+    this.addresses = fresh;
   }
 
   // The reading of today: the totals, the hours, the vendors and the accounts
@@ -305,11 +318,8 @@ export class Collector {
         cache_write: one.cache_write,
       });
     }
-    return normalizeUsageSummary({
-      ...raw,
-      providerKeys: Array.isArray(raw.by?.provider) ? raw.by.provider : [],
-      accounts,
-    });
+    const { metrics, trend, providers } = normalizeUsage(raw);
+    return { metrics, trend, providers, accounts: normalizeUsageSummary({ ...raw, accounts }).accounts };
   }
 
   // The reading of the week keeps the answer of the requests, because it is

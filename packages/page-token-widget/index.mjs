@@ -8,6 +8,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 
 let running;
 let current;
+let lifecycle;
 let directory;
 
 // The service is shut down and the forwarding of the tailnet is taken away.
@@ -17,10 +18,23 @@ async function shutdown() {
   const previous = running;
   running = undefined;
   current = undefined;
-  if (!previous) return { ok: true, stopped: false };
-  const service = await previous.catch(() => null);
-  await service?.close?.();
+  if (!previous) {
+    if (lifecycle) await lifecycle;
+    return { ok: true, stopped: false };
+  }
+  const stopping = (async () => {
+    const service = await previous.catch(() => null);
+    await service?.close?.();
+  })();
+  lifecycle = stopping;
+  await stopping;
   return { ok: true, stopped: true };
+}
+
+async function restart(previous, input) {
+  const service = await previous?.catch(() => null);
+  await service?.close?.();
+  return startServer({ root, ...input });
 }
 
 // The last way out. When the program ends, the sockets go with it, but the
@@ -44,17 +58,14 @@ export default {
     directory = input.directory;
     const wanted = JSON.stringify([input.directory, options]);
     if (wanted !== current) {
-      const previous = running;
       current = wanted;
-      running = (async () => {
-        await (await previous?.catch(() => null))?.close();
-        return startServer({
-          root,
-          dataDir: path.join(input.directory, DATA_DIR),
-          magpieDir: input.directory,
-          options,
-        });
-      })();
+      const before = running || lifecycle;
+      running = restart(before, {
+        dataDir: path.join(input.directory, DATA_DIR),
+        magpieDir: input.directory,
+        options,
+      });
+      lifecycle = running;
       running.catch(() => {
         if (current === wanted) current = undefined;
       });
