@@ -1,0 +1,82 @@
+:root {
+  color-scheme: dark;
+  --bg: var(--magpie-bg, #0b1016);
+  --card: var(--magpie-card, #111922);
+  --card-soft: var(--magpie-card-soft, #0e151d);
+  --fg: var(--magpie-fg, #e6edf3);
+  --muted: var(--magpie-muted, #8b9aaa);
+  --line: var(--magpie-line, #263442);
+  --accent: var(--magpie-accent, #5eead4);
+  --accent-fg: var(--magpie-accent-fg, #062622);
+  --danger: #ff8d8d;
+}
+:root[data-theme=light] {
+  color-scheme: light;
+  --bg: var(--magpie-bg, #f3f6f8);
+  --card: var(--magpie-card, #fff);
+  --card-soft: var(--magpie-card-soft, #f7f9fa);
+  --fg: var(--magpie-fg, #17222c);
+  --muted: var(--magpie-muted, #647483);
+  --line: var(--magpie-line, #d8e0e6);
+  --accent: var(--magpie-accent, #087f6c);
+  --accent-fg: var(--magpie-accent-fg, #fff);
+  --danger: #b42318;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.55 var(--magpie-font, Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif);
+}
+main { max-width: 780px; margin: 0 auto; padding: 24px 20px 36px; }
+.page-head { display: flex; align-items: center; gap: 13px; margin: 0 0 20px; }
+.brand { flex: none; border-radius: 10px; }
+h1, h2, p { margin: 0; }
+h1 { margin-top: 1px; font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
+h2 { margin-bottom: 12px; font-size: 13px; font-weight: 650; }
+.page-head p, small, .action-help { color: var(--muted); }
+.page-head p { margin-top: 4px; font-size: 12px; }
+.eyebrow { color: var(--accent); font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .14em; }
+.panel { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.status-panel { margin-bottom: 14px; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.section-heading h2 { margin: 0; }
+#status { color: var(--muted); font-size: 12px; text-align: right; }
+#status[data-error=true] { color: var(--danger); }
+.status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 15px 0 0; }
+.status-grid div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-soft); }
+.status-grid dt { color: var(--muted); font-size: 11px; }
+.status-grid dd { margin: 3px 0 0; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.notice { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.notice strong { color: var(--fg); font-weight: 600; }
+#form > section + section { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.field { margin-bottom: 16px; }
+.field label { display: block; margin-bottom: 6px; font-weight: 600; }
+input:not([type=checkbox]) {
+  width: 100%; min-height: 38px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--card-soft); color: var(--fg); font: inherit;
+}
+input[type=url], input[type=number], #agents { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+small { display: block; margin-top: 5px; font-size: 11.5px; font-weight: 400; }
+.check { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; cursor: pointer; }
+.check input { flex: none; width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--accent); }
+.check span { font-weight: 550; }
+.actions { display: flex; gap: 9px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+button {
+  min-height: 34px; padding: 6px 15px; border: 1px solid var(--accent); border-radius: 7px;
+  background: var(--accent); color: var(--accent-fg); font: inherit; font-weight: 650; cursor: pointer;
+}
+button.secondary { border-color: var(--line); background: transparent; color: var(--fg); }
+button:disabled { opacity: .45; cursor: default; }
+button:hover:not(:disabled) { filter: brightness(1.06); }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.action-help { margin-top: 9px; font-size: 11.5px; }
+@media (max-width: 620px) {
+  main { padding: 18px 12px 28px; }
+  .panel { padding: 15px; }
+  .status-grid { grid-template-columns: 1fr; gap: 7px; }
+  .section-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+  #status { text-align: left; }
+}
