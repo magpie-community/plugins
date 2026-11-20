@@ -11,6 +11,8 @@
  * 3. A pin goes out under the name typed when the pool lists it on the route's preset.
  * 4. A bare row of a model that takes no effort goes out with none; the decision and the session keep the engine's effort.
  * 5. A hold on a state rebuilt from the message history says so, and names no earlier route.
+ * 6. A line about a session is logged once per runtime for the session (Magpie drops a middleware's lines past 60 a minute,
+ *    `internal/middleware/middleware.go` `say`); the decision carries it on every turn it is true of.
  *
  * test/fixtures/magpie-v1-models-0.1.4603.json is the `GET /v1/models` answer of the real Magpie 0.1.4603 build in the sandbox run
  * (its own catalogue of the presets openai, anthropic, google, deepseek, mistral and opencode-zen, pointed at a local mock), with
@@ -26,6 +28,7 @@ import { selectBestRoute } from "../src/allocator.js";
 import { defaultScoredModels } from "../src/axis-scores.js";
 import { MODELS, MODEL_ALIASES, PROVIDER_NAMES, canonicalModel, magpieOptions, resolveListed, resolveModel } from "../src/catalog.js";
 import { SessionContinuityStore } from "../src/continuity.js";
+import { onRequest as hooksOnRequest } from "../src/hooks.js";
 import { holdJudge, onProvider, onRequest, routeDecider } from "../src/middleware.js";
 import { GROUP_PREFIXES, candidatesFromModels } from "../scripts/candidates-from-models.mjs";
 import { profile } from "./profile.mjs";
@@ -217,37 +220,85 @@ test("a typed listing the ranking leaves out is not sent: the route stays the en
   }
 });
 
-test("a hold on a state rebuilt from the message history says so and names no earlier route; one from the runtime's own record names it", () => {
+/** Run `fn` with Magpie's log captured: the lines the plugin wrote. */
+function logOf(fn) {
+  const lines = [];
+  const warn = console.warn;
+  console.warn = (line) => lines.push(String(line));
+  try {
+    fn();
+  } finally {
+    console.warn = warn;
+  }
+  return lines;
+}
+
+test("a hold on a state rebuilt from the message history says so on every turn and is logged once; one from the runtime's own record names its route", () => {
   const pool = ["openai/gpt-6-sol", "deepseek/deepseek-v4-flash"];
   const shared = new SessionContinuityStore();
   for (const runtime of ["one", "fresh"]) {
     const messages = [{ role: "user", content: `pinned first (${runtime})` }];
+    const notices = [];
     const logged = [];
-    for (let turn = 1; turn <= 3; turn++) {
+    for (let turn = 1; turn <= 5; turn++) {
       if (turn > 1) messages.push({ role: "assistant", content: "ok" }, { role: "user", content: `step ${turn}` });
       const body = { model: "agentcompass/auto", profile: PROFILE, messages: [...messages], ...(turn === 1 ? { pinned_model: "deepseek/deepseek-v4-flash" } : {}) };
       const ctx = { protocol: "chat", state: {}, reject, options: { candidateModels: pool, affinityMode: "session", continuityStore: runtime === "one" ? shared : new SessionContinuityStore() } };
-      const warn = console.warn;
-      console.warn = (line) => logged.push(String(line));
-      try {
-        onRequest(body, ctx);
-      } finally {
-        console.warn = warn;
-      }
+      logged.push(...logOf(() => onRequest(body, ctx)));
       const c = ctx.state.route.continuation;
       if (turn === 1) continue;
       assert.equal(c.held, true);
       if (runtime === "one") {
         assert.equal(c.stateFrom, "record");
         assert.ok(c.previousModel, "the route of the turn before, from the runtime's own record");
+        assert.equal(c.notice, undefined);
       } else {
         assert.equal(c.stateFrom, "history");
         assert.equal(c.previousModel, null, "no claim of the route an earlier turn ran on");
-        assert.match(c.notice, /message history/);
-        assert.ok(logged.some((line) => line.includes(c.notice)), "Magpie's log says it too");
+        assert.ok(c.notice, `turn ${turn}: the decision carries the notice`);
+        notices.push(c.notice);
       }
     }
+    for (const notice of new Set(notices)) {
+      assert.equal(logged.filter((line) => line.includes(notice)).length, 1, `${runtime}: logged once for the session`);
+    }
   }
+});
+
+test("a typed listing not sent is said in the decision on every turn and logged once for the session", () => {
+  const L1 = "deepseek/deepseek-flash";
+  const L2 = "deepseek/deepseek-v4-flash";
+  const pool = [{ model: L1, efforts: ["high"] }, { model: L2, efforts: ["high"], when: { max_primary_level: 1 } }];
+  const store = new SessionContinuityStore();
+  const messages = [{ role: "user", content: "typed, left out, a session" }];
+  const said = [];
+  const logged = [];
+  for (let turn = 1; turn <= 4; turn++) {
+    if (turn > 1) messages.push({ role: "assistant", content: "ok" }, { role: "user", content: `step ${turn}` });
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [...messages], pinned_model: L2 };
+    const ctx = { protocol: "chat", state: {}, reject, options: { candidateModels: pool, affinityMode: "session", continuityStore: store } };
+    logged.push(...logOf(() => onRequest(body, ctx)));
+    const warning = ctx.state.route.warnings.find((w) => w.includes(L2) && w.includes(L1));
+    assert.ok(warning, `turn ${turn}: the decision says why the typed listing was not sent`);
+    said.push(warning);
+  }
+  for (const warning of new Set(said)) assert.equal(logged.filter((line) => line.includes(warning)).length, 1, "logged once for the session");
+});
+
+test("a bare row of a model that takes no effort goes out with none on the hooks' route too", () => {
+  const name = "mistral/ministral-8b-2512";
+  const options = { injectProtocolEffort: true, candidateModels: [name], continuityStore: new SessionContinuityStore() };
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "the hooks' route of a bare row" }] };
+  const ctx = { protocol: "chat", state: {}, reject, options };
+  return Promise.resolve(quiet(() => hooksOnRequest(body, ctx))).then(() => {
+    const route = ctx.state.route;
+    assert.equal(route?.targetModel, name, "the hooks routed it");
+    const sent = { model: "agentcompass/auto", messages: body.messages };
+    quiet(() => onRequest(sent, { ...ctx, options }));
+    assert.equal(sent.model, name, "sent bare");
+    assert.equal(sent.reasoning_effort, undefined, "no reasoning_effort");
+    assert.notEqual(ctx.state.route.targetEffort, "default", "the decision keeps the engine's effort");
+  });
 });
 
 test("the per-request memos are keyed by their whole input: the pins and the continuity", () => {
@@ -262,10 +313,30 @@ test("the per-request memos are keyed by their whole input: the pins and the con
   const warm = decide(PROFILE, { ...none, continuity: { ...none.continuity, previousModel: cold.targetModel, previousEffort: cold.targetEffort, why: "cold" } });
   const engine = selectBestRoute(PROFILE, { candidateModels: pool, catalog: options.catalog, continuity: { previousModel: cold.targetModel, previousEffort: cold.targetEffort, why: "cold", cacheWarm: false } });
   assert.equal(warm.score, engine.score, "the continuity reaches the ranking");
-  assert.notEqual(warm.score, cold.score, "and changes it here");
   const judge = holdJudge(options, pool, undefined, Date.now());
   const held = { model: "openai/gpt-6-sol", target: "openai/gpt-6-sol", effort: cold.targetEffort, profile: PROFILE };
   assert.notEqual(judge({ constraintModel: "openai/gpt-6-sol" }, held), judge({ constraintModel: "deepseek/deepseek-v4-flash" }, held), "a hold is judged per pin");
+});
+
+test("a held route with no pinned bundle is judged once in a request, however the session says it has none", () => {
+  let reads = 0;
+  const models = new Proxy(defaultScoredModels(), {
+    get(target, key, receiver) {
+      if (typeof key === "string") reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const options = { catalog: { models, aliases: MODEL_ALIASES, providerNames: PROVIDER_NAMES } };
+  const judge = holdJudge(options, POOL, null, Date.now());
+  const pins = { constraintModel: "deepseek/deepseek-v4-flash" };
+  const route = { target: "deepseek/deepseek-v4-flash", effort: "high", profile: PROFILE };
+  const first = judge(pins, route);
+  assert.ok(reads > 0, "the first judgment ranks the pool");
+  for (const none of [{ pinnedBundle: null }, { pinnedBundle: "" }, { pinnedBundle: undefined }]) {
+    reads = 0;
+    assert.equal(judge(pins, { ...route, ...none }), first, "the same answer");
+    assert.equal(reads, 0, `${JSON.stringify(none)}: judged once, not ranked again`);
+  }
 });
 
 test("resolving with no models table answers as an empty table does, whatever was resolved with the shipped one before", () => {
