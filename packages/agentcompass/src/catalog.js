@@ -1525,7 +1525,8 @@ const resolutionMemos = new WeakMap();
  */
 function resolutionMemo(models, aliases, families, providerNames) {
   let level = resolutionMemos;
-  for (const table of [models || MODELS, aliases || NO_ALIASES, families || NO_FAMILIES]) {
+  // Each table as the resolver reads it (`knownNames`: no table is an empty one, never the shipped `MODELS`).
+  for (const table of [models || NO_MODELS, aliases || NO_ALIASES, families || NO_FAMILIES]) {
     let next = level.get(table);
     if (!next) level.set(table, (next = new WeakMap()));
     level = next;
@@ -1535,6 +1536,7 @@ function resolutionMemo(models, aliases, families, providerNames) {
   if (!memo) level.set(names, (memo = new Map()));
   return memo;
 }
+const NO_MODELS = Object.freeze({});
 const NO_ALIASES = Object.freeze({});
 const NO_FAMILIES = Object.freeze([]);
 const NO_PROVIDER_NAMES_GIVEN = Object.freeze({});

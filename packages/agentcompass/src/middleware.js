@@ -184,6 +184,11 @@ function shouldRoute(model, options = {}) {
 // id, no `:<effort>` (Magpie would read `m:default` as a model of that whole name) and no effort field.
 const ONE_CONFIGURATION = "default";
 
+// What a hold on a state rebuilt from the message history says (`replayedState`), in the decision and Magpie's log.
+const REBUILT_HOLD_NOTICE =
+  "held on a state rebuilt from the message history: this runtime did not serve the session's earlier turns, so it decided them " +
+  "again with this request's pins (an earlier turn's pin is not in the history); the route an earlier turn ran on is not known here";
+
 // The effort a route's `:<effort>` is spelled with for Magpie. Its askedAt splits only `provider.MemberEfforts` (none..max)
 // off a model, and Codex's `ultra` is no API's level that Magpie sends as `max` (`internal/gateway/ir.go` effortOf and
 // fitEffort, v0.1.4603): `<model>:ultra` would reach the vendor as a model of that whole name, so an `ultra` route goes as
@@ -222,7 +227,8 @@ function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
 export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
   const options = magpieOptions(ctx?.options);
   const rawModel = decision.targetModel;
-  const targetEffort = decision.targetEffort || "high";
+  // The effort the route is sent at (`sentEffort`, a model's one configuration) where it differs from the engine's.
+  const targetEffort = decision.sentEffort || decision.targetEffort || "high";
 
   if (!rawModel) return body;
 
@@ -367,7 +373,7 @@ export function heldTurn(cont, sessionState, facts, { pins, candidateModels, opt
  * quotas, time and pins, and a held route is judged by ranking that pool, so each held route is judged once per request, not once per
  * replayed turn. Nothing outlives the request: the next one is judged on its own options.
  */
-function holdJudge(options, candidateModels, liveQuotas, now) {
+export function holdJudge(options, candidateModels, liveQuotas, now) {
   const judged = new Map();
   return (pins, session) => {
     const held = { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle, profile: sessionProfile(session) };
@@ -381,26 +387,17 @@ function holdJudge(options, candidateModels, liveQuotas, now) {
  * `selectBestRoute` for one request, on its pool, catalog, quotas and time. A turn decided again from the history (`replayedState`)
  * that was cold (its age is unknown, so a TTL-gated hold does not apply) is routed again with the same profile, pins and previous
  * route as the turn after it, so a request on a runtime that never saw the session would rank one pool up to `MAX_REPLAY_DEPTH + 1`
- * times on identical input: each distinct input is ranked once. Each caller gets a decision of its own to add its fields to.
+ * times on identical input: each distinct input is ranked once. The key is the input that varies within the request itself
+ * (`inputs`: unhealthy models, minimum context, the pins, the continuity), the very object spread into the ranking's options, so
+ * nothing the ranking reads from it can be left out of the key; what does not vary within a request (the pool, the catalog, the
+ * quotas read once, the time) is fixed when the decider is made. Each caller gets a decision of its own to add its fields to.
  */
-function routeDecider({ options, candidateModels, liveQuotas, now }) {
+export function routeDecider({ options, candidateModels, liveQuotas, now }) {
   const decided = new Map();
-  return (profile, { unhealthyModels, minContextTokens, pins, continuity }) => {
-    const key = JSON.stringify([profile, unhealthyModels, minContextTokens, pins, continuity]);
-    if (!decided.has(key)) {
-      decided.set(key, selectBestRoute(profile, {
-        candidateModels,
-        catalog: options.catalog,
-        unhealthyModels,
-        minContextTokens,
-        quotas: liveQuotas,
-        meteredOk: options.meteredOk,
-        userScores: options.userScores,
-        now,
-        ...pins,
-        continuity,
-      }));
-    }
+  const fixed = { candidateModels, catalog: options.catalog, quotas: liveQuotas, meteredOk: options.meteredOk, userScores: options.userScores, now };
+  return (profile, inputs) => {
+    const key = JSON.stringify([profile, inputs]);
+    if (!decided.has(key)) decided.set(key, selectBestRoute(profile, { ...fixed, ...inputs }));
     const decision = decided.get(key);
     return decision && typeof decision === "object" ? { ...decision } : decision;
   };
@@ -410,11 +407,13 @@ function routeDecider({ options, candidateModels, liveQuotas, now }) {
  * A name the caller typed and the pool lists is the name sent. Magpie may list one row under several names on one preset
  * (`deepseek/deepseek-flash` and `deepseek/deepseek-v4-flash`): a pin names every listing of its row there, they rank alike, and the
  * route may be a listing the caller did not type. The pool's entry that spells the typed name (case and effort aside; a bare name
- * also as the entry's own name after its `<preset>/`), on the route's preset, of the route's row, and offering the route's effort
- * (contract R2), is sent instead, with the bundle of that entry. With no name typed, or none such listed, the route stays: the
- * choice among listings is the ranking's. The engine's ranking is AgentCompass's (the parity fixtures); the name sent is Magpie's.
+ * also as the entry's own name after its `<preset>/`), on the route's preset, of the route's row, is sent instead, with the bundle
+ * of that entry, when it offers the route's effort (contract R2) and the ranking the pins get keeps it (`kept`: its own `when`, and
+ * every other filter of the ranking, may leave it out where the route's listing runs); otherwise `{ refused }` names it, and the
+ * route stays the engine's. With no name typed, or none such listed, `null`: the choice among listings is the ranking's. The
+ * engine's ranking is AgentCompass's (the parity fixtures); the name sent is Magpie's.
  */
-function typedListing(target, effort, pins, candidateModels, catalog) {
+function typedListing(target, effort, pins, candidateModels, catalog, kept) {
   const pin = pins.constraintModel;
   if (!target || !pinGiven(pin) || modelPinProblem(pin) !== null || !Array.isArray(candidateModels)) return null;
   const typed = splitEffortSuffix(pyStrip(String(pin))).name.toLowerCase();
@@ -423,14 +422,25 @@ function typedListing(target, effort, pins, candidateModels, catalog) {
   const presetOf = (name) => (name.includes("/") ? name.slice(0, name.indexOf("/")) : "");
   const spells = (name) => name === typed || (!typed.includes("/") && name.includes("/") && name.slice(name.indexOf("/") + 1) === typed);
   const row = catalogCanonical(target, catalog);
-  const entry = candidateModels.find((candidate) => {
+  const listings = candidateModels.filter((candidate) => {
     const name = candidateModelName(candidate);
     const low = name.toLowerCase();
-    return spells(low) && presetOf(low) === presetOf(routed) && catalogCanonical(name, catalog) === row && candidateOffers([candidate], name, effort, catalog, pins);
+    return spells(low) && presetOf(low) === presetOf(routed) && catalogCanonical(name, catalog) === row;
   });
-  if (!entry) return null;
+  // The route already goes under a listing spelling the typed name.
+  if (listings.length === 0 || listings.some((candidate) => listedKey(candidateModelName(candidate)).toLowerCase() === routed)) return null;
+  const entry = listings.find((candidate) => {
+    const name = candidateModelName(candidate);
+    return candidateOffers([candidate], name, effort, catalog, pins) && kept(name);
+  });
+  if (!entry) return { refused: candidateModelName(listings[0]) };
   const name = candidateModelName(entry);
   return { target: name, bundle: heldBundle([entry], name, effort, catalog, pins) };
+}
+
+/** Why a typed listing was not sent (`typedListing` `{ refused }`); a new route's `excluded` holds the ranking's own reason for it. */
+function typedListingWarning(pin, refused, target) {
+  return `${pin} is sent as ${target}, another listing of the row it names: the listing typed, ${refused}, is not among the candidates this request may run`;
 }
 
 /**
@@ -439,10 +449,12 @@ function typedListing(target, effort, pins, candidateModels, catalog) {
  * `operating_point`) is routed by the engine at an effort the data times only because its one reading is copied to every effort;
  * the model takes none, and Magpie passes an effort on to a model that lists no levels as asked (`catalog.NearestEffort` keeps
  * `want` when the levels are none). Such a route is its one configuration (`ONE_CONFIGURATION`): the bare model with no effort, as a
- * converter row listed with no levels is.
+ * converter row listed with no levels is. It is only what is sent (`decision.sentEffort`): the decision and the session's record keep
+ * the engine's effort, which a hold is judged at (`pinKeepsHold` ranks at the engine's efforts).
  */
-function sentEffort(target, effort, pool, catalog) {
-  if (!target || effort === ONE_CONFIGURATION || splitEffortSuffix(target).effort) return effort;
+function sentEffort(target, effort, pool, catalog, pins) {
+  // An effort the caller named (a pin's `:effort`, `pinnedEffort`, a pinned bundle) is sent as named.
+  if (!target || effort === ONE_CONFIGURATION || splitEffortSuffix(target).effort || pinsFixEffort(pins || {})) return effort;
   const key = listedKey(target).toLowerCase();
   const carriesEffort = (pool || []).some((entry) => {
     const row = typeof entry === "string" ? { model: entry } : entry && typeof entry === "object" ? entry : {};
@@ -498,13 +510,19 @@ function routeClaimed(body, ctx, env, depth = 0) {
       cont = turn.gone;
     } else {
       const { keptEffort, pool } = turn;
-      const typed = typedListing(turn.target, turn.effort, pins, candidateModels, options.catalog);
-      const target = typed ? typed.target : turn.target;
-      const bundle = typed ? typed.bundle : pool ? heldBundle(pool, target, turn.effort, options.catalog, pins) : null;
-      const heldEffort = sentEffort(target, turn.effort, candidateModels, options.catalog);
+      const heldEffort = turn.effort;
+      const typed = typedListing(turn.target, heldEffort, pins, candidateModels, options.catalog, (name) =>
+        judgeHold(pins, { ...sessionState, target: name, model: name, effort: heldEffort, pinnedBundle: null }));
+      const target = typed?.target || turn.target;
+      const bundle = typed?.target ? typed.bundle : pool ? heldBundle(pool, target, heldEffort, options.catalog, pins) : null;
+      const sent = sentEffort(target, heldEffort, candidateModels, options.catalog, pins);
+      const fromHistory = Boolean(sessionState?.replayed);
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
-      const stepWarnings = turn.effort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${turn.effort}`];
+      const stepWarnings = [
+        ...(turn.effort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${turn.effort}`]),
+        ...(typed?.refused ? [typedListingWarning(pins.constraintModel, typed.refused, target)] : []),
+      ];
       return {
         facts,
         sessionKey,
@@ -515,6 +533,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
           canonicalModel: catalogCanonical(cont.model, options.catalog),
           targetEffort: heldEffort,
           modelWithEffort: `${target}:${heldEffort}`,
+          ...(sent !== heldEffort ? { sentEffort: sent } : {}),
           bundle: bundle ? { ...bundle, effort: heldEffort } : null,
           canRewriteModel,
           hasExplicitCandidates,
@@ -530,11 +549,16 @@ function routeClaimed(body, ctx, env, depth = 0) {
             why: cont.why,
             sessionKey,
             anchor,
-            replayed: Boolean(sessionState?.replayed),
+            replayed: fromHistory,
+            // A hold this runtime's own record makes, or one on a state rebuilt from the message history (`replayedState`): the
+            // earlier turns decided again with this request's pins, since the pins of an earlier turn are not in the history. The
+            // route an earlier turn ran on is not known to a runtime that did not serve it, so a rebuilt hold names none.
+            stateFrom: fromHistory ? "history" : "record",
+            ...(fromHistory ? { notice: REBUILT_HOLD_NOTICE } : {}),
             turn: facts.turn,
             within: facts.within,
-            previousModel: cont.previousModel || cont.model,
-            previousEffort: cont.previousEffort || heldEffort,
+            previousModel: fromHistory ? null : cont.previousModel || cont.model,
+            previousEffort: fromHistory ? null : cont.previousEffort || heldEffort,
           },
         },
       };
@@ -567,7 +591,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
   const decision = env.decide(profile, {
     unhealthyModels,
     minContextTokens,
-    pins,
+    ...pins,
     continuity: {
       previousModel: cont.previousModel || null,
       previousEffort: cont.previousEffort || null,
@@ -589,10 +613,11 @@ function routeClaimed(body, ctx, env, depth = 0) {
       sessionKey,
       anchor,
       replayed: Boolean(sessionState?.replayed),
+      stateFrom: sessionState ? (sessionState.replayed ? "history" : "record") : null,
       turn: facts.turn,
       within: facts.within,
-      previousModel: cont.previousModel || null,
-      previousEffort: cont.previousEffort || null,
+      previousModel: sessionState?.replayed ? null : cont.previousModel || null,
+      previousEffort: sessionState?.replayed ? null : cont.previousEffort || null,
     };
   }
 
@@ -641,14 +666,18 @@ function routeClaimed(body, ctx, env, depth = 0) {
     );
     if (!candidateModels || candidateOffers(candidateModels, decision.targetModel, kept, options.catalog)) finalEffort = kept;
   }
-  const typed = typedListing(decision.targetModel, finalEffort, pins, candidateModels, options.catalog);
-  if (typed) {
+  const typed = typedListing(decision.targetModel, finalEffort, pins, candidateModels, options.catalog, (name) =>
+    judgeHold(pins, { target: name, model: name, effort: finalEffort, profile: decision.profile }));
+  if (typed?.target) {
     decision.targetModel = typed.target;
     decision.bundle = typed.bundle;
+  } else if (typed?.refused) {
+    decision.warnings = [...(decision.warnings || []), typedListingWarning(pins.constraintModel, typed.refused, decision.targetModel)];
   }
-  finalEffort = sentEffort(decision.targetModel, finalEffort, candidateModels, options.catalog);
   decision.targetEffort = finalEffort;
   decision.modelWithEffort = `${decision.targetModel}:${finalEffort}`;
+  const sent = sentEffort(decision.targetModel, finalEffort, candidateModels, options.catalog, pins);
+  if (sent !== finalEffort) decision.sentEffort = sent;
 
   return {
     facts,
@@ -802,6 +831,7 @@ export function onRequest(body, ctx = {}) {
         decide: routeDecider({ options, candidateModels, liveQuotas, now }),
       });
       decision = routed.decision;
+      if (decision?.continuation?.held && decision.continuation.stateFrom === "history") console.warn(`agentcompass: ${decision.continuation.notice}`);
       // Magpie's log is where a gateway operator sees that a pinned model is too slow for a live loop
       logRouteWarnings(decision?.warnings);
       for (const warning of decision?.warnings || []) {
@@ -852,7 +882,7 @@ export function onRequest(body, ctx = {}) {
 
     if (!allowModelRewrite) {
       if (options.injectProtocolEffort === true) {
-        applyProtocolEffortOnly(body, decision.targetEffort, ctx);
+        applyProtocolEffortOnly(body, decision.sentEffort || decision.targetEffort, ctx);
         return body;
       }
       return dropRouterFields(body) ? body : undefined;
@@ -986,10 +1016,18 @@ export function onProvider(body, ctx = {}) {
       logRouteWarnings(routed.warnings);
       if (routed.ok && routed.targetModel) {
         const routedEffort = routed.targetEffort || prevDecision.targetEffort || "high";
-        const typed = typedListing(routed.targetModel, routedEffort, pins, providerPool, options.catalog);
-        const targetModel = typed ? typed.target : routed.targetModel;
-        const bundle = typed ? typed.bundle : routed.bundle;
-        const targetEffort = sentEffort(targetModel, routedEffort, providerPool, options.catalog);
+        const judgeHold = holdJudge(options, providerPool, liveQuotas, now);
+        const typed = typedListing(routed.targetModel, routedEffort, pins, providerPool, options.catalog, (name) =>
+          judgeHold(pins, { target: name, model: name, effort: routedEffort, profile: routed.profile }));
+        const targetModel = typed?.target || routed.targetModel;
+        const bundle = typed?.target ? typed.bundle : routed.bundle;
+        const targetEffort = routedEffort;
+        const sent = sentEffort(targetModel, routedEffort, providerPool, options.catalog, pins);
+        if (typed?.refused) {
+          const warning = typedListingWarning(pins.constraintModel, typed.refused, targetModel);
+          routed.warnings = [...(routed.warnings || []), warning];
+          logRouteWarnings([warning]);
+        }
         const updated = {
           ...prevDecision,
           ok: true,
@@ -998,6 +1036,7 @@ export function onProvider(body, ctx = {}) {
           canonicalModel: routed.canonicalModel,
           targetEffort,
           modelWithEffort: `${targetModel}:${targetEffort}`,
+          sentEffort: sent !== targetEffort ? sent : undefined,
           bundle,
           profile: routed.profile,
           selectedAccount: routed.selectedAccount ?? prevDecision.selectedAccount ?? null,
@@ -1047,6 +1086,8 @@ export function onProvider(body, ctx = {}) {
       accountBlocked: false,
       targetModel: prov.model.trim(),
       targetEffort: prevDecision?.targetEffort || "high",
+      // The provider's own model: what `onRequest` sent for its route says nothing of it.
+      sentEffort: undefined,
     };
     if (prevDecision && ctx.state && typeof ctx.state === "object") {
       ctx.state.agentcompass = fallbackDecision;
