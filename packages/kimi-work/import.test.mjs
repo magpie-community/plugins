@@ -28,6 +28,9 @@ test('magpie offers a guided config.json import in every window language',async(
   expect(p.auth.methods).toHaveLength(2);
   expect(p.auth.methods[1]).toMatchObject({type:'oauth',label:'导入 Kimi Work 凭据（粘贴 config.json）'});
   expect(p.auth.methods[1].prompts[0]).toMatchObject({type:'password',key:'config'});
+  expect(p.auth.methods[1].prompts[0].message).toContain('%APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json');
+  expect(p.auth.methods[1].prompts[0].message).toContain('%APPDATA%\\kimi-desktop\\daimon-storage.json');
+  expect(p.auth.methods[1].prompts[0].message).toContain('shareDir');
   expect(p.auth.methods[1].prompts[0].validate('')).toBeTruthy();
   expect(p.auth.methods[1].prompts[0].validate(file())).toBeUndefined();
 });

@@ -102,12 +102,12 @@ const IMPORT_METHOD = {
     ja:'Kimi Work 認証情報をインポート（config.json を貼り付け）',
     de:'Kimi-Work-Zugangsdaten importieren (config.json einfügen)',
   },
-  message:'粘贴 daimon/config.json 的完整 JSON 内容',
+  message:'粘贴 daimon/config.json 的完整 JSON 内容。Windows 默认路径：%APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json；如果移动过 Kimi 存储位置，真实路径以 %APPDATA%\\kimi-desktop\\daimon-storage.json 中的 shareDir 为准。',
   messages:{
-    en:'Paste the complete JSON contents of daimon/config.json',
-    'zh-TW':'貼上 daimon/config.json 的完整 JSON 內容',
-    ja:'daimon/config.json の完全な JSON 内容を貼り付けてください',
-    de:'Füge den vollständigen JSON-Inhalt von daimon/config.json ein',
+    en:'Paste the complete JSON contents of daimon/config.json. Windows default: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json; if you moved Kimi storage, use shareDir from %APPDATA%\\kimi-desktop\\daimon-storage.json.',
+    'zh-TW':'貼上 daimon/config.json 的完整 JSON 內容。Windows 預設路徑：%APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json；如果移動過 Kimi 儲存位置，真實路徑以 %APPDATA%\\kimi-desktop\\daimon-storage.json 中的 shareDir 為準。',
+    ja:'daimon/config.json の完全な JSON 内容を貼り付けてください。Windows のデフォルト: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json。Kimi の保存場所を移動した場合は、%APPDATA%\\kimi-desktop\\daimon-storage.json の shareDir を参照してください。',
+    de:'Füge den vollständigen JSON-Inhalt von daimon/config.json ein. Windows-Standard: %APPDATA%\\kimi-desktop\\daimon-share\\daimon\\config.json; bei verschobenem Kimi-Speicher gilt shareDir aus %APPDATA%\\kimi-desktop\\daimon-storage.json.',
   },
 };
 // spentQuota is a 403 body saying the account's allowance is used up, not
