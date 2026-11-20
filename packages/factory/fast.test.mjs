@@ -131,6 +131,51 @@ test("a GPT Fast Mode model goes out as droid sends it: its own id at the priori
   expect(JSON.parse(seen[4].body).model).toBe("glm-5.2")
 })
 
+test("explicit Ultra Fast stays distinct from the base model's Fast Mode", async () => {
+  const { l, seen } = await plugin()
+  const url = "https://api.factory.ai/api/llm/o/v1/responses"
+  const cases = [
+    ["gpt-6.2-sol", "priority", "gpt-6.2-sol-fast", "priority"],
+    ["gpt-6.2-astra", "priority", "gpt-6.2-astra-fast", "priority"],
+    ["gpt-6.2-sol-ultrafast", "priority", "gpt-6.2-sol-ultrafast", "ultrafast"],
+    ["gpt-6.2-sol-ultrafast", undefined, "gpt-6.2-sol-ultrafast", "ultrafast"],
+  ]
+  for (const [model, service_tier, expected, tier] of cases) {
+    await l.fetch(url, { method: "POST", body: JSON.stringify({ model, service_tier, input: "hi" }) })
+    expect(JSON.parse(seen.at(-1).body)).toMatchObject({ model: expected, service_tier: tier })
+  }
+})
+
+test("high-cost Ultra Fast requires current Factory organization opt-in", async () => {
+  const { l, seen } = await plugin()
+  const inference = globalThis.fetch
+  const model = "gpt-6.2-astra-ultrafast"
+  let settings = { success: true, settings: null }
+  const checked = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url) !== "https://api.factory.ai/api/organization/managed-settings") return inference(url, init)
+    checked.push(init.headers)
+    return Response.json(settings)
+  }
+  const request = () => l.fetch("https://api.factory.ai/api/llm/o/v1/responses", { body: JSON.stringify({ model, input: "hi" }) })
+  const missing = await request()
+  expect(missing.status).toBe(403)
+  expect((await missing.json()).error.code).toBe("model_opt_in_required")
+  expect(seen).toHaveLength(0)
+
+  settings.approvedExplicitModelOptInModelIds = [model]
+  settings.settings = { general: { modelPolicy: { requireExplicitOptInModelIds: [model] } } }
+  expect((await request()).status).toBe(403)
+  expect(seen).toHaveLength(0)
+
+  settings.settings.general.modelPolicy.requireExplicitOptInModelIds = []
+  expect((await request()).ok).toBe(true)
+  expect(checked).toHaveLength(3)
+  expect(checked[0].get("Authorization")).toBe("Bearer factory-token")
+  expect(checked[0].get("X-Factory-Org-Id")).toBe("org_A")
+  expect(JSON.parse(seen[0].body)).toMatchObject({ model, service_tier: "ultrafast" })
+})
+
 // #119 (psylch, 0.1.27): magpie shows a provider with nothing picked only
 // the first 24 models of its list. Placed beside their base models, the Fast
 // Mode models pushed GPT-5.3-Codex, Grok and GLM out of those 24; listed
@@ -139,7 +184,7 @@ test("the Fast Mode models come after every other model, so magpie's first 24 ar
   const { models } = await plugin()
   const ids = Object.keys(models)
   const first = ids.findIndex((id) => id.endsWith("-fast"))
-  expect(ids.slice(first).every((id) => id.endsWith("-fast"))).toBe(true)
-  expect(ids.slice(first)).toEqual([...OFFERED, ...OFFERED_170])
+  expect(ids.slice(first).every((id) => /-(?:ultra)?fast$/.test(id))).toBe(true)
+  expect(ids.slice(first, first + OFFERED.length + OFFERED_170.length)).toEqual([...OFFERED, ...OFFERED_170])
   for (const id of ["gpt-5.3-codex", "grok-4.7", "grok-4.6", "glm-5.3", "glm-5.3-flash"]) expect(ids.slice(0, 24)).toContain(id)
 })

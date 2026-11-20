@@ -43,28 +43,12 @@ const GEMINI = { npm: "@ai-sdk/google", api: API + "/api/llm/g/v1" }
 const E5 = ["low", "medium", "high", "xhigh", "max"]
 const E6 = ["none", "low", "medium", "high", "xhigh", "max"]
 const E4 = ["low", "medium", "high", "xhigh"]
+const GEMINI_4_NEON = "gemini-4-neon"
 
-// The models droid's /model picker offers, less auto (droid picks it client
-// side): id, name, the wire droid sends it on, the vendor it names in
-// x-api-provider, context, output, reasoning efforts, images. Haiku 5.5 and
-// Mistral Large 4 are droid 0.240.0's (models.test.mjs reads its registry);
-// GPT-6 Astra Ultra Fast, new there too, stays out: droid offers it only
-// after the user accepts Factory's high-cost terms for it
-// (explicitOptInRequirement). Gemini's are droid 0.241.1's, as magpie's
-// built-in has them (yetone/magpie#2080); Gemini 4 Argon is behind a
-// feature flag of Factory's there, so an account it isn't on for may be
-// refused it. The Fast Mode models are droid 0.240.0's (fastBody; testdata/
-// droid-0.240.0-fast.txt), at their base model's limits and efforts as
-// droid has them. Left out: Opus 4.6/4.7 Fast and GPT-5.4 Mini Fast (their
-// base models aren't offered). droid 1.7.0's new models (testdata/
-// droid-1.7.0-models.txt) are offered where droid 1.7.0 lists them for an
-// account with no special access: Fable 5.2, Kimi K3.1 Pro, Nemotron 3.5
-// Super, MiniMax M3.1 Flash, Inkling, Muse Spark 1.2, Beam 1.0, and GPT-6
-// Sol, GPT-6 Luna, GPT-5.6 Sol and GLM-5.2 Fast (GLM-5.2 Fast at its own
-// limits). Left out: GPT-6.1 Terra and Muse Spark Open (feature flags droid
-// lists them under only once on), GPT-6.1 Sol Ultra Fast (high-cost terms,
-// as Astra's), and Muse Spark 1.3 (Responses on Google, a route the plugin
-// has no wire for).
+// Factory's published catalog and Droid's registry supply the IDs, route,
+// upstream, limits, efforts, attachments and multiplier for each model.
+// Account feature flags and opt-ins are managed in Factory. The picker
+// keeps its first 24 entries (#119), with speed variants at the end.
 const MODELS = [
   ["claude-fable-5.1", "Fable 5.1", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
   ["claude-fable-5", "Fable 5", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 4],
@@ -123,7 +107,11 @@ const MODELS = [
   ["gemini-4-carbon", "Gemini 4 Carbon", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 1.6],
   // Droid 1.10.0 adds Hydrogen, the head of the Flash line, behind Factory's
   // Gemini4Hydrogen feature flag (#1073).
-  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, ["low", "medium", "high"], true, 0.6],
+  ["gemini-4-hydrogen", "Gemini 4 Hydrogen", GEMINI, "google", 1000000, 65536, E4, true, 0.6],
+  // Append catalog additions after magpie's default first 24 models (#119).
+  ["gpt-6.2-astra", "GPT-6.2 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 3.2],
+  ["gpt-6.2-sol", "GPT-6.2 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
+  [GEMINI_4_NEON, "Gemini 4 Neon", GEMINI, "google", 1048576, 65536, E4, true, 1.2],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -140,6 +128,10 @@ const MODELS = [
   ["gpt-6-luna-fast", "GPT-6 Luna Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 0.08],
   ["gpt-5.6-sol-fast", "GPT-5.6 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E6, true, 4],
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
+  ["gpt-6.2-astra-fast", "GPT-6.2 Astra Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 6.4],
+  ["gpt-6.2-sol-fast", "GPT-6.2 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 1.6],
+  ["gpt-6.2-astra-ultrafast", "GPT-6.2 Astra Ultra Fast", RESPONSES, "openai", 1050000, 128000, E5, true, 9.6],
+  ["gpt-6.2-sol-ultrafast", "GPT-6.2 Sol Ultra Fast", RESPONSES, "openai", 1050000, 128000, E5, true, 2.4],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 // Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
@@ -154,24 +146,24 @@ function groupedModels(models) {
     const index = MODEL_FAMILIES.findIndex((prefix) => id.startsWith(prefix))
     return index < 0 ? MODEL_FAMILIES.length : index
   }
-  const base = (id) => id.replace(/-fast$/, "")
-  return Object.fromEntries(Object.entries(models).sort(([a], [b]) => {
-    const group = family(a) - family(b)
-    if (group) return group
-    const aa = base(a), bb = base(b)
-    if (aa === bb) return Number(a.endsWith("-fast")) - Number(b.endsWith("-fast"))
-    return bb.localeCompare(aa, "en", { numeric: true })
-  }))
+  const base = (id) => id.replace(/-(?:ultra)?fast$/, "")
+  const speed = (id) => id.endsWith("-ultrafast") ? 2 : Number(id.endsWith("-fast"))
+  return Object.fromEntries(Object.entries(models).sort(([a], [b]) =>
+    family(a) - family(b) ||
+    base(b).localeCompare(base(a), "en", { numeric: true }) ||
+    speed(a) - speed(b)
+  ))
 }
 
 const byId = new Map(MODELS.map((m) => [m.id, m]))
 
-// A Fast Mode model is its base model served faster for more credits.
-// droid sends the Fast Mode id itself as the model; on Anthropic's wire with
-// speed "fast" and the fast-mode beta (anthropicFastMode), on OpenAI's with
-// service_tier "priority" (its apiRequest). FAST_OF is a base model's Fast
-// Mode id.
+// Droid sends speed variants by their own IDs. Anthropic Fast Mode uses
+// speed "fast" and the fast-mode beta. OpenAI Fast Mode uses service_tier
+// "priority", and Ultra Fast uses "ultrafast". Only Fast Mode is the
+// automatic upgrade for a base model's fast switch.
 const FAST_BETA = "fast-mode-2026-02-01"
+const HIGH_COST_MODEL = "gpt-6.2-astra-ultrafast"
+const OPT_IN_REQUIRED = "model_opt_in_required"
 const FAST_OF = new Map(MODELS.filter((m) => m.id.endsWith("-fast")).map((m) => [m.id.slice(0, -"-fast".length), m.id]))
 
 // fastBody sends a Fast Mode model as droid does. A request that asks its
@@ -194,15 +186,15 @@ function fastBody(path, body) {
     return { body, beta: false }
   }
   if (!m || typeof m !== "object" || Array.isArray(m) || typeof m.model !== "string") return { body, beta: false }
-  const asked = anthropic ? m.speed === "fast" : m.service_tier === "priority"
-  const model = asked && FAST_OF.has(m.model) ? FAST_OF.get(m.model) : m.model
-  const fast = byId.get(model)
-  if (!fast || !model.endsWith("-fast") || fast.wire !== (anthropic ? ANTHROPIC : RESPONSES)) return { body, beta: false }
-  if (anthropic && model === m.model && m.speed === "fast") return { body, beta: true }
-  if (responses && model === m.model && m.service_tier === "priority") return { body, beta: false }
+  const field = anthropic ? "speed" : "service_tier"
+  const fast = anthropic ? "fast" : "priority"
+  const model = m[field] === fast ? FAST_OF.get(m.model) ?? m.model : m.model
+  if (byId.get(model)?.wire !== (anthropic ? ANTHROPIC : RESPONSES)) return { body, beta: false }
+  const tier = responses && model.endsWith("-ultrafast") ? "ultrafast" : model.endsWith("-fast") ? fast : undefined
+  if (!tier) return { body, beta: false }
+  if (model === m.model && m[field] === tier) return { body, beta: anthropic }
   m.model = model
-  if (anthropic) m.speed = "fast"
-  else m.service_tier = "priority"
+  m[field] = tier
   return { body: JSON.stringify(m), beta: anthropic }
 }
 
@@ -251,8 +243,8 @@ function configModels(now = Date.now()) {
       reasoning: m.efforts.length > 0,
       attachment: m.images,
       tool_call: true,
-      // OpenAI's reasoning models take no temperature (droidBody)
-      temperature: m.upstream !== "openai",
+      // Droid omits sampling parameters on these reasoning models.
+      temperature: m.upstream !== "openai" && m.id !== GEMINI_4_NEON,
       modalities: { input: m.images ? ["text", "image"] : ["text"], output: ["text"] },
       cost: { input: 0, output: 0 },
       limit: { context: m.context, output: m.output },
@@ -284,7 +276,7 @@ function providerModel(provider, m, now = Date.now()) {
     cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
     limit: { context: m.context, output: m.output },
     capabilities: {
-      temperature: true,
+      temperature: m.id !== GEMINI_4_NEON,
       reasoning: m.efforts.length > 0,
       attachment: m.images,
       toolcall: true,
@@ -399,13 +391,33 @@ function factoryHeaders(h, c) {
   else h.delete("X-Factory-Org-Id")
 }
 
-async function factoryGet(c, path) {
+async function factoryGet(c, path, host = base(c)) {
   const h = new Headers({ Accept: "application/json" })
   factoryHeaders(h, c)
-  const res = await fetch(base(c) + path, { headers: h, signal: AbortSignal.timeout(30_000) })
+  const res = await fetch(host + path, { headers: h, signal: AbortSignal.timeout(30_000) })
   const text = await res.text()
   if (res.status !== 200) throw new FactoryStatus(res.status, "Factory: " + vendorError(text, statusLine(res.status)))
   return JSON.parse(text)
+}
+
+// Confirm the org's current opt-in before sending a high-cost model request.
+async function optedIn(c, id) {
+  const path = c.premBaseHost ? "/api/internal/member-managed-settings" : "/api/organization/managed-settings"
+  let settings
+  try {
+    settings = await factoryGet(c, path, llmBase(c))
+  } catch {
+    return false
+  }
+  if (settings?.success !== true) return false
+  const policy = settings.settings?.general?.modelPolicy
+  const required = policy?.requireExplicitOptInModelIds
+  if (required !== undefined && (!Array.isArray(required) || !required.every((value) => typeof value === "string"))) return false
+  const allowed = policy?.allowedModelIds
+  const includes = (value) => Array.isArray(value) && value.includes(id)
+  if (policy?.isFastModelsAllowed === false || includes(policy?.blockedModelIds) || includes(required)) return false
+  if (policy?.allowAllFactoryModels !== true && Array.isArray(allowed) && !allowed.includes(id)) return false
+  return Array.isArray(required) || includes(settings.approvedExplicitModelOptInModelIds) || includes(settings.explicitOptInExemptModelIds)
 }
 
 // firstOrg is the first WorkOS org /api/cli/org says the account is in, ""
@@ -509,7 +521,7 @@ function upstreamIds(text, headers) {
   if (code) parts.push("code " + code)
   const type = str(err.type)
   if (type) parts.push("type " + type)
-  return { id, said: parts.length ? " (upstream " + parts.join(", ") + ")" : "" }
+  return { id, code, said: parts.length ? " (upstream " + parts.join(", ") + ")" : "" }
 }
 
 // ---- opening as droid ---------------------------------------------------------
@@ -768,6 +780,12 @@ function geminiBody(model, body) {
   if (!m || typeof m !== "object" || Array.isArray(m)) return body
   m.model = model
   delete m.stream
+  const generation = m.generationConfig
+  const thinking = generation?.thinkingConfig
+  if (thinking?.thinkingLevel === "xhigh" && byId.get(model)?.efforts.includes("xhigh")) thinking.thinkingLevel = "XHIGH"
+  if (model === GEMINI_4_NEON && generation && typeof generation === "object") {
+    for (const key of ["temperature", "topP", "topK"]) delete generation[key]
+  }
   let si = m.systemInstruction
   if (typeof si === "string") si = { parts: [{ text: si }] }
   if (!si || typeof si !== "object") si = { parts: [] }
@@ -1084,9 +1102,8 @@ function dollars(cents) {
   return "$" + ((lo % 2 === 0 ? lo : lo + 1) / 100).toFixed(2)
 }
 
-// STANDARD_ONLY is the switch (magpie's plugin options, off by default)
-// that keeps an account in routing only while its Standard usage lasts
-// (magpie-community/plugins#349)
+// STANDARD_ONLY applies the account cap to Standard usage for every model
+// (magpie-community/plugins#349).
 const STANDARD_ONLY = "standard_only"
 
 // limitWindows turns the limits into windows: standard's by their span,
@@ -1095,7 +1112,7 @@ const STANDARD_ONLY = "standard_only"
 // to spend, a window used up stops neither. standardOnly (STANDARD_ONLY on)
 // makes standard's windows count every model, Core's too, extra usage or
 // not, and leaves Droid Core's and the extra usage to be shown only: an
-// account stops when any of standard's windows is used up.
+// window holds the account when it reaches the account's cap.
 function limitWindows(l, standardOnly = false) {
   const out = []
   const cents = typeof l.extraUsageBalanceCents === "number" ? l.extraUsageBalanceCents : null
@@ -2277,19 +2294,17 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
         // droid's FACTORY_API_KEY: the key is the bearer, never renewed
         { type: "api", label: "Factory API key (fk-…)", placeholder: "fk-…" },
       ],
-      // magpie's own switches (input.magpie.option), read at each usage
-      // reading
+      // magpie reads these settings when listing models or fetching usage.
       options: [
         {
           key: MODEL_ORDER,
           label: "Group models by company",
-          description: "Groups models by maker: Anthropic, OpenAI, Google, then others. Newer versions come first within each family, with Fast Mode beside its base model. Off preserves the default order and first 24 models. Refresh the model list after changing this option.",
+          description: "Groups models by maker and sorts each family newest first. Fast and Ultra Fast follow their base model. This changes which 24 models magpie initially shows.",
         },
         {
           key: STANDARD_ONLY,
-          label: "Standard usage only",
-          description:
-            "Keeps an account in routing only while its Standard usage lasts: once any Standard window (5 hours, 7 days, 30 days) is used up, magpie moves every model, Droid Core's too, to the next account until the window resets. Droid Core and Extra usage are shown but never keep an account in routing.",
+          label: "Route by Standard usage",
+          description: "Applies each account’s usage cap to Standard windows for every model, including Droid Core. Set a usage cap on each account for this to affect routing. Control Extra usage billing in Factory.",
         },
       ],
       // magpie renews the sign-in MAGPIE_LEAD before its end, before its
@@ -2365,6 +2380,9 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
             if (!betas.includes(FAST_BETA)) h.set("anthropic-beta", [...betas, FAST_BETA].join(","))
           }
           const model = byId.get(bodyModel(body))
+          if (model?.id === HIGH_COST_MODEL && !(await optedIn(c, model.id))) {
+            return errorReply(url, 403, "permission_error", `Factory could not confirm organization opt-in for ${model.id}. Ask an organization admin to enable it in Factory’s model access settings.`, undefined, undefined, OPT_IN_REQUIRED)
+          }
           const upstream = model ? model.upstream : path.includes("/llm/o/") ? "openai" : "anthropic"
           h.set("x-api-provider", upstream)
           h.set("x-session-id", sessionId(conversation, h.get("x-magpie-subagent"), session))
@@ -2426,6 +2444,9 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
               if (res.status === 413) return answer(await smaller(res))
               if (res.status !== 403) return answer(res)
               let text = await res.text()
+              if (upstreamIds(text, res.headers).code === OPT_IN_REQUIRED) {
+                return answer(errorReply(url, 403, "permission_error", vendorError(text, statusLine(403)), new Headers(res.headers), undefined, OPT_IN_REQUIRED))
+              }
               if (!contentRefused(res.status, text, res.headers) && (await mendOrg(res.status, text, onRenew).catch(() => false))) {
                 res = await send(input, init, body, onRenew, every)
                 if (res.status !== 403) return answer(res)

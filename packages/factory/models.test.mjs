@@ -157,6 +157,41 @@ test("every model in droid 1.7.0's picker is offered, or left out for a reason",
   expect(entry170("muse-spark-1.3")).toContain('apiEndpoint:"responses",apiProviders:["google"]')
 })
 
+// Factory's public model catalog (2026-11-20) and Droid 1.16.0's registry.
+const DROID_1160 = readFileSync(new URL("./testdata/droid-1.16.0-catalog.txt", import.meta.url), "utf8").split("\n")
+
+test("the newly covered catalog models are exposed with their Droid routes and limits", async () => {
+  const responses = "/api/llm/o/v1"
+  const gemini = "/api/llm/g/v1"
+  const cases = [
+    ["gpt-6.2-astra", responses, "openai", 1050000, 128000, 3.2],
+    ["gpt-6.2-astra-fast", responses, "openai", 1050000, 128000, 6.4],
+    ["gpt-6.2-astra-ultrafast", responses, "openai", 1050000, 128000, 9.6],
+    ["gpt-6.2-sol", responses, "openai", 1050000, 128000, 0.8],
+    ["gpt-6.2-sol-fast", responses, "openai", 1050000, 128000, 1.6],
+    ["gpt-6.2-sol-ultrafast", responses, "openai", 1050000, 128000, 2.4],
+    ["gemini-4-neon", gemini, "google", 1048576, 65536, 1.2],
+  ]
+  const config = await models()
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const provider = await hooks.provider.models({ id: "factory" })
+  for (const [id, path, upstream, context, output, rate] of cases) {
+    expect(_internal.MODELS.find((m) => m.id === id)?.upstream).toBe(upstream)
+    const api = "https://api.factory.ai" + path
+    expect(config[id]).toMatchObject({ id, limit: { context, output }, rate, provider: { api } })
+    expect(provider[id]).toMatchObject({ id, limit: { context, output }, rate, api: { url: api } })
+    const registry = DROID_1160.find((line) => line.startsWith(`"${id}":`))
+    const efforts = JSON.parse(registry.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+    expect(Object.keys(config[id].variants)).toEqual(efforts)
+    expect(provider[id].variants).toEqual(config[id].variants)
+    expect(config[id].attachment).toBe(!registry.includes("images:!1"))
+  }
+  for (const id of ["gemini-4-neon", "gemini-4-hydrogen"]) {
+    expect(config[id].variants.xhigh).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "xhigh" } })
+    expect(provider[id].variants).toEqual(config[id].variants)
+  }
+})
+
 // yetone/magpie#2080: droid 0.241.1 offers Gemini 4 Argon; the plugin
 // offered no Gemini at all. The cases are droid 0.241.1's entries.
 const DROID_241 = readFileSync(new URL("./testdata/droid-0.241.1-gemini.txt", import.meta.url), "utf8")
