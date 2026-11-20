@@ -1,17 +1,38 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, mkdir, rename, unlink, access } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, extname } from 'node:path';
-import { loadDetector, parseNumbers, type Detector } from '../vendor/lmfpd-sdk/index.js';
+import {
+  DEFAULT_DATA_URLS,
+  loadDetector,
+  parseNumbers,
+  type Detector,
+} from '../vendor/lmfpd-sdk/index.js';
 import { options, type Options } from './config';
 import { Gateway, accountHeader } from './gateway';
 import { Store } from './store';
 import { boundedText, BodyTooLargeError } from './http';
 import { normalizeChatStream } from './sse';
 import { requestHeaders } from './request-headers';
+import {
+  BANK_CHECK_INTERVAL_MS,
+  BANK_RETRY_INTERVAL_MS,
+  probeReferenceSource,
+  readBankManifest,
+  verifyBankDownload,
+  type RemoteBank,
+} from './reference-bank';
 import { serviceIdentity, VERSION } from './service-identity';
 import { createJob, runJob } from './detector';
 import { demoModels, demoHistory, demoAnalysis } from './demo';
-import type { Account, Job, Model, Provenance, TargetResult, RunRequest } from './types';
+import type {
+  Account,
+  BankUpdate,
+  Job,
+  Model,
+  Provenance,
+  TargetResult,
+  RunRequest,
+} from './types';
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
@@ -40,9 +61,16 @@ export async function startServer(input: Options = {}) {
   const active = new Map<string, AbortController>();
   const tickets = new Map<string, SampleTicket>();
   const listeners = new Map<string, Set<(job: Job) => void>>();
+  const cachePath = join(opt.dataDir, 'reference.bin');
+  const localSource = opt.bankSource && !/^https?:\/\//i.test(opt.bankSource);
+  const sources =
+    opt.bankSource && !localSource ? [opt.bankSource.replace(/\/+$/, '') + '/'] : DEFAULT_DATA_URLS;
   let detector: Detector | undefined,
     bankError = '',
     loading: Promise<Detector | undefined> | undefined;
+  let bankCheck: Promise<void> | undefined,
+    nextBankCheckAt = 0,
+    bankUpdate: BankUpdate = { state: 'idle' };
   let models: Model[] = [],
     accounts: Account[] = [],
     catalogError = '';
@@ -56,51 +84,100 @@ export async function startServer(input: Options = {}) {
     emit(job);
     await store.save(job);
   };
-  async function ensureDetector(force = false) {
+  async function ensureDetector(mode: 'cached' | 'load' | 'refresh' = 'load', remote?: RemoteBank) {
     if (opt.demo) return undefined;
-    if (detector && !force) return detector;
-    if (loading) return loading;
+    if (detector && mode !== 'refresh') return detector;
+    if (loading) {
+      if (mode !== 'refresh') return loading;
+      await loading;
+      return ensureDetector(mode, remote);
+    }
     loading = (async () => {
       try {
         await mkdir(opt.dataDir, { recursive: true, mode: 0o700 });
-        const cache = join(
-          opt.dataDir,
-          force && (!opt.bankSource || /^https?:\/\//i.test(opt.bankSource))
-            ? `reference-refresh-${uuid()}.bin`
-            : 'reference.bin',
-        );
+        const cache =
+          mode === 'refresh' && !localSource
+            ? join(opt.dataDir, `reference-refresh-${uuid()}.bin`)
+            : cachePath;
         try {
+          // With no remote sources the SDK only reads and validates its cache.
+          const source = localSource
+            ? opt.bankSource
+            : mode === 'cached'
+              ? []
+              : remote?.source || sources;
           const next = await loadDetector({
-            ...(opt.bankSource ? { source: opt.bankSource } : {}),
+            source,
             cache,
-            // Cached data never schedules the SDK's background refresh.
-            // Only an explicit download action replaces the cached snapshot.
             ttl: Infinity,
           });
-          if (force && cache !== join(opt.dataDir, 'reference.bin'))
-            await rename(cache, join(opt.dataDir, 'reference.bin'));
+          if (remote) await verifyBankDownload(cache, remote, next.builtAt);
+          const manifest = localSource
+            ? undefined
+            : await readBankManifest(cache).catch(() => undefined);
+          if (closed) throw new Error('Plugin service stopped');
+          if (cache !== cachePath) await rename(cache, cachePath);
           detector = next;
-          try {
-            const bytes = await readFile(join(opt.dataDir, 'reference.bin'));
-            modelCount = JSON.parse(bytes.subarray(4, 4 + bytes.readUInt32LE(0)).toString()).models
-              ?.length;
-          } catch {
-            /* Local reference directories need no downloaded cache. */
-          }
+          modelCount = manifest?.modelCount;
         } finally {
-          if (force && cache !== join(opt.dataDir, 'reference.bin'))
-            await unlink(cache).catch(() => {});
+          if (cache !== cachePath) await unlink(cache).catch(() => {});
         }
         bankError = '';
         return detector;
       } catch (e) {
-        bankError = gateway.redact(e);
+        if (mode !== 'cached') bankError = gateway.redact(e);
         return undefined;
       } finally {
         loading = undefined;
       }
     })();
     return loading;
+  }
+  async function refreshBank(): Promise<'current' | 'updated'> {
+    await ensureDetector('cached');
+    const cached = detector && (await readBankManifest(cachePath).catch(() => undefined));
+    const failures: string[] = [];
+    for (const source of sources) {
+      try {
+        if (closed) throw new Error('Plugin service stopped');
+        const remote = await probeReferenceSource(source);
+        if (closed) throw new Error('Plugin service stopped');
+        if (remote.version === cached?.version) return 'current';
+        if (detector && Date.parse(remote.builtAt) < Date.parse(detector.builtAt))
+          throw new Error('Source has an older reference snapshot');
+        if (await ensureDetector('refresh', remote)) return 'updated';
+        throw new Error(bankError || 'Reference data update failed');
+      } catch (error) {
+        failures.push(`${source} (${errorText(error)})`);
+      }
+    }
+    throw new Error(`Could not update reference data from ${failures.join(', ')}`);
+  }
+  async function checkBankUpdate(force = false, download = false) {
+    if (opt.demo) return;
+    if (bankCheck) return bankCheck;
+    if (!force && Date.now() < nextBankCheckAt) return;
+    bankCheck = (async () => {
+      try {
+        if (localSource || download) {
+          if (!(await ensureDetector(force ? 'refresh' : 'load')))
+            throw new Error(bankError || 'Reference data is unavailable');
+          bankUpdate = { state: localSource ? 'local' : 'updated' };
+        } else bankUpdate = { state: await refreshBank() };
+        bankError = '';
+        nextBankCheckAt = Date.now() + BANK_CHECK_INTERVAL_MS;
+      } catch (error) {
+        bankError = '';
+        bankUpdate = {
+          state: 'failed',
+          error: gateway.redact(error),
+        };
+        nextBankCheckAt = Date.now() + BANK_RETRY_INTERVAL_MS;
+      } finally {
+        bankCheck = undefined;
+      }
+    })();
+    return bankCheck;
   }
   function bankInfo() {
     return opt.demo
@@ -111,10 +188,7 @@ export async function startServer(input: Options = {}) {
   }
   async function bankStatus() {
     if (opt.demo || detector) return { state: 'ready' as const };
-    const localSource = opt.bankSource && !/^https?:\/\//i.test(opt.bankSource);
-    const file = localSource
-      ? join(opt.bankSource!, 'unified_bank.json')
-      : join(opt.dataDir, 'reference.bin');
+    const file = localSource ? join(opt.bankSource!, 'unified_bank.json') : cachePath;
     const cached = await access(file).then(
       () => true,
       () => false,
@@ -487,6 +561,8 @@ export async function startServer(input: Options = {}) {
                 jobs: store.list(),
                 bank: bankInfo(),
                 bankStatus: await bankStatus(),
+                bankUpdate,
+                localBank: Boolean(localSource),
                 gateway: {
                   url: opt.gateway,
                   reachable: opt.demo || !catalogError,
@@ -520,9 +596,23 @@ export async function startServer(input: Options = {}) {
                 // Reject malformed targets before allowing any reference download.
                 const job = createJob(config, models, '', accounts);
                 if (Object.keys(headers).length) job.config.headerNames = Object.keys(headers);
-                const engine = await ensureDetector();
+                let engine = await ensureDetector('cached');
+                if (!opt.demo && !engine) {
+                  await checkBankUpdate(true);
+                  engine = detector;
+                }
+                if (closed) return json({ error: 'Plugin service stopped' }, 503, cors);
                 if (!opt.demo && !engine)
-                  return json({ error: bankError || 'Reference data unavailable' }, 503, cors);
+                  return json(
+                    {
+                      error:
+                        bankError ||
+                        (bankUpdate.state === 'failed' && bankUpdate.error) ||
+                        'Reference data unavailable',
+                    },
+                    503,
+                    cors,
+                  );
                 job.bank.builtAt = opt.demo ? 'Demo reference data' : engine!.builtAt;
                 if (opt.demo) job.demo = true;
                 store.jobs.set(job.id, job);
@@ -536,18 +626,28 @@ export async function startServer(input: Options = {}) {
               } finally {
                 creatingJob = false;
               }
+            } else if (path === '/api/bank/check' && req.method === 'POST') {
+              await checkBankUpdate(url.searchParams.get('force') === '1');
+              response = json({
+                bank: bankInfo(),
+                bankStatus: await bankStatus(),
+                bankUpdate,
+                checkAgainInMs:
+                  opt.demo || localSource ? null : Math.max(0, nextBankCheckAt - Date.now()),
+              });
             } else if (
               (path === '/api/bank/download' || path === '/api/reload-data') &&
               req.method === 'POST'
             ) {
-              await ensureDetector(true);
+              await checkBankUpdate(true, true);
+              const error = bankUpdate.state === 'failed' ? bankUpdate.error : undefined;
               response = json(
                 {
                   bank: bankInfo(),
                   bankStatus: await bankStatus(),
-                  error: bankError || undefined,
+                  error,
                 },
-                bankError ? 503 : 200,
+                error ? 503 : 200,
               );
             } else {
               const m = path.match(/^\/api\/jobs\/([\w-]+)(?:\/(cancel|events|export))?$/);

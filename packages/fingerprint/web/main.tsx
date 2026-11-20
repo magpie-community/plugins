@@ -22,7 +22,15 @@ import {
   Trash,
   WarningCircle,
 } from '@phosphor-icons/react';
-import type { Bootstrap, Job, Model, RunRequest, Target, TargetResult } from '../src/types';
+import type {
+  BankCheckResponse,
+  Bootstrap,
+  Job,
+  Model,
+  RunRequest,
+  Target,
+  TargetResult,
+} from '../src/types';
 import { parseRequestHeaders } from '../src/request-headers';
 import { headerPresets, presetHeaderText } from '../src/header-presets';
 import { embedded, subscribeTheme } from './magpie';
@@ -278,7 +286,10 @@ function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const [downloadingBank, setDownloadingBank] = useState(false);
+  const [checkingBank, setCheckingBank] = useState(false);
+  const bankCheckInFlight = useRef(false);
+  const bankCheckTimer = useRef<number>(undefined);
+  const pageMounted = useRef(false);
   const configValid =
     integerInRange(config.targetParallel, 1, 3) &&
     integerInRange(config.sampleParallel, 1, 3) &&
@@ -324,6 +335,34 @@ function App() {
       }),
     [],
   );
+  const checkBank = async (force = false) => {
+    if (!pageMounted.current || bankCheckInFlight.current) return;
+    window.clearTimeout(bankCheckTimer.current);
+    bankCheckInFlight.current = true;
+    setCheckingBank(true);
+    let checkAgainInMs: number | null = 15 * 60 * 1000;
+    try {
+      const result = await api<BankCheckResponse>(`api/bank/check${force ? '?force=1' : ''}`, {
+        method: 'POST',
+      });
+      const { checkAgainInMs: delay, ...bank } = result;
+      checkAgainInMs = delay;
+      setBoot((current) => current && { ...current, ...bank, bankError: undefined });
+    } catch (e) {
+      setBoot(
+        (current) =>
+          current && {
+            ...current,
+            bankUpdate: { state: 'failed', error: String(e) },
+          },
+      );
+    } finally {
+      bankCheckInFlight.current = false;
+      setCheckingBank(false);
+      if (pageMounted.current && checkAgainInMs !== null)
+        bankCheckTimer.current = window.setTimeout(() => void checkBank(), checkAgainInMs + 100);
+    }
+  };
   const load = async () => {
     setError('');
     try {
@@ -334,38 +373,18 @@ function App() {
       if (window.__FINGERPRINT__?.initialProvider)
         setProvider(window.__FINGERPRINT__.initialProvider);
       setError(b.gateway.error || '');
+      if (!b.demo) void checkBank();
     } catch (e) {
       setError(String(e));
-    }
-  };
-  const downloadBank = async () => {
-    if (downloadingBank) return;
-    setDownloadingBank(true);
-    setError('');
-    try {
-      const result = await api<Pick<Bootstrap, 'bank' | 'bankStatus'> & { error?: string }>(
-        'api/bank/download',
-        { method: 'POST' },
-      );
-      setBoot((current) =>
-        current
-          ? {
-              ...current,
-              bank: result.bank,
-              bankStatus: result.bankStatus,
-              bankError: result.error,
-            }
-          : current,
-      );
-      if (result.error) setError(result.error);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setDownloadingBank(false);
     }
   };
   useEffect(() => {
-    load();
+    pageMounted.current = true;
+    void load();
+    return () => {
+      pageMounted.current = false;
+      window.clearTimeout(bankCheckTimer.current);
+    };
   }, []);
   useEffect(() => {
     if (!job || terminal(job.state)) return;
@@ -670,32 +689,58 @@ function App() {
                   </span>
                 ) : (
                   <span>
-                    {boot?.bankStatus?.state === 'cached'
-                      ? localize(
-                          t,
-                          '参考数据已缓存，将在运行时读取',
-                          '參考資料已快取，執行時讀取',
-                          'Reference data cached; it will be read when a run starts',
-                        )
-                      : localize(
-                          t,
-                          '参考数据未下载',
-                          '參考資料尚未下載',
-                          'Reference data not downloaded',
-                        )}
+                    {boot?.bankStatus.state === 'cached'
+                      ? localize(t, '参考库已缓存', '參考庫已快取', 'Reference data cached')
+                      : localize(t, '参考库未加载', '參考庫尚未載入', 'Reference data not loaded')}
                   </span>
                 )}
-                <button
-                  className="ghost-button bank-download"
-                  type="button"
-                  onClick={downloadBank}
-                  disabled={!boot || downloadingBank || starting}
-                >
-                  <DownloadSimple size={14} />
-                  {downloadingBank
-                    ? localize(t, '下载中…', '下載中…', 'Downloading…')
-                    : localize(t, '下载参考数据', '下載參考資料', 'Download reference data')}
-                </button>
+                {boot && !boot.demo && (
+                  <button
+                    className="ghost-button bank-download"
+                    type="button"
+                    onClick={() => void checkBank(true)}
+                    disabled={checkingBank || starting}
+                  >
+                    {checkingBank ? (
+                      <CircleNotch size={14} className="spin" />
+                    ) : (
+                      <ArrowClockwise size={14} />
+                    )}
+                    {boot.localBank
+                      ? checkingBank
+                        ? localize(t, '正在读取…', '正在讀取…', 'Loading…')
+                        : localize(t, '重新读取参考库', '重新讀取參考庫', 'Reload reference data')
+                      : checkingBank
+                        ? localize(t, '正在检查…', '正在檢查…', 'Checking…')
+                        : localize(t, '检查更新', '檢查更新', 'Check for updates')}
+                  </button>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'updated' && (
+                  <span role="status">
+                    {localize(t, '参考库已更新', '參考庫已更新', 'Reference data updated')}
+                  </span>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'current' && (
+                  <span role="status">
+                    {localize(t, '参考库已是最新', '參考庫已是最新', 'Reference data is current')}
+                  </span>
+                )}
+                {!checkingBank && boot?.bankUpdate?.state === 'failed' && (
+                  <span className="bank-error" role="status" title={boot.bankUpdate.error}>
+                    {localize(
+                      t,
+                      boot.bank
+                        ? '检查失败，继续使用当前参考库。'
+                        : '参考库检查或下载失败，请重试。',
+                      boot.bank
+                        ? '檢查失敗，繼續使用目前參考庫。'
+                        : '參考庫檢查或下載失敗，請重試。',
+                      boot.bank
+                        ? 'Update check failed. The current reference data remains active.'
+                        : 'Reference data check or download failed. Please retry.',
+                    )}
+                  </span>
+                )}
                 {boot?.bankError && (
                   <span className="bank-error" role="alert">
                     {boot.bankError}
@@ -703,14 +748,16 @@ function App() {
                 )}
               </div>
             </div>
-            <p className="source-note">
-              {localize(
-                t,
-                '默认参考源：lm.ikale.io，备用 cdn.jsdmirror.com。仅主动下载或无缓存时启动检测才会连接；来源站点会看到 IP，不接收凭证、提示词或模型回答。',
-                '預設參考來源：lm.ikale.io，備用 cdn.jsdmirror.com。僅主動下載或無快取時開始檢測才會連線；來源網站會看到 IP，不接收憑證、提示詞或模型回答。',
-                'Default reference sources: lm.ikale.io, with cdn.jsdmirror.com as fallback. Contacted only on download or an uncached run; these hosts see your IP, but receive no credentials, prompts or replies.',
-              )}
-            </p>
+            {boot && !boot.demo && !boot.localBank && (
+              <p className="source-note">
+                {localize(
+                  t,
+                  '默认参考源：lm.ikale.io，备用 cdn.jsdmirror.com。打开插件后会自动检查更新，发现新版本会后台更新；来源站点会看到 IP，不接收凭证、提示词或模型回答。',
+                  '預設參考來源：lm.ikale.io，備用 cdn.jsdmirror.com。打開插件後會自動檢查更新，發現新版本會在背景更新；來源網站會看到 IP，不接收憑證、提示詞或模型回答。',
+                  'Default reference sources: lm.ikale.io, with cdn.jsdmirror.com as fallback. The plugin checks for updates when opened and updates the cache when a new snapshot is available; these hosts see your IP, but receive no credentials, prompts or replies.',
+                )}
+              </p>
+            )}
             {boot?.demo && (
               <div className="notice demo">
                 <Lightning size={15} />

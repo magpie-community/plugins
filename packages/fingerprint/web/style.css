@@ -213,6 +213,9 @@ textarea:focus-visible {
   white-space: nowrap;
   font-size: 11px;
 }
+.bank-tools > .bank-error {
+  white-space: normal;
+}
 .bank-download {
   white-space: nowrap;
 }

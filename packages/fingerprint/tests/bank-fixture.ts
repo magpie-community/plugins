@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 
 // An empty, internally consistent SDK reference fixture, never used for scoring.
-export function cacheFixture() {
+export function cacheFixture(builtAt = 'test-snapshot') {
   const detector = Buffer.from(
     JSON.stringify({
       schema: 'shared-detector-v2',
-      bank_built_at: 'test-snapshot',
+      bank_built_at: builtAt,
       model_ids: [],
       response_counts: [],
     }),
@@ -17,7 +17,7 @@ export function cacheFixture() {
     JSON.stringify({
       schema: 'lmfpd-data-v1',
       detector_schema: 'shared-detector-v2',
-      built_at: 'test-snapshot',
+      built_at: builtAt,
       models: [],
       files: {
         'shared_detector.bin': {

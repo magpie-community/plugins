@@ -177,14 +177,25 @@ Keep the API key in the service environment when possible. `MAGPIE_FINGERPRINT_D
 overrides persistence; `MAGPIE_FINGERPRINT_BANK_SOURCE` can point to a local bank
 directory for fully offline scoring. Each batch retains its loaded detector instance.
 
-Opening/refreshing the page reads only the configured gateway and local history.
-`POST /api/bank/download` is the explicit download/refresh action; a valid
-`POST /api/jobs` also loads data if none is usable. Cached snapshots have no
-background refresh, including after the SDK default 24-hour TTL. Downloads use
-`https://lm.ikale.io/data/`, falling back to
-`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. These hosts see the client IP
-but receive no provider credentials, model ids, prompts or replies. A custom
-`bankSource` replaces these defaults.
+When the page opens, it requests `POST /api/bank/check`. The service compares
+the cached detector SHA-256 with `bundle.json` and downloads the new snapshot
+when they differ. The service checks the downloaded detector against the
+manifest hash before replacing the cache and skips snapshots older than the
+active one. While the page stays open, it repeats this check every 24 hours.
+A manual check uses `POST /api/bank/check?force=1`. The check is
+single-flight and throttled to once per 24 hours per service process, with a
+15-minute retry after a failure. The service loads a usable cached snapshot
+before checking remotely and keeps it active if the update fails. A valid `POST /api/jobs` also loads
+data when the service has not loaded a snapshot yet.
+
+The default sources are `https://lm.ikale.io/data/` and, as fallback,
+`https://cdn.jsdmirror.com/npm/lmfpd-data@latest/`. Checks request only each
+source's `bundle.json`; changed data is fetched through the pinned SDK. These
+hosts see the client IP but receive no provider credentials, model ids,
+prompts or replies. A custom HTTP(S) `bankSource` replaces these defaults. A
+local `bankSource` is read from disk on open and can be reloaded from the page. The
+bundled SDK's own stale-while-revalidate setting stays disabled so update
+checks and detector replacement use one coordinated path.
 
 Jobs are stored as atomic JSON files with owner-only permissions. The current limit
 is 200 batches, 24 targets per batch, three concurrent targets and three concurrent
