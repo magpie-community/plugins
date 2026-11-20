@@ -1,6 +1,9 @@
 {
   "version": 1,
   "plugins": [
+    { "package": "@magpie-community/opencode-llamacpp-auth", "name": "Local llama.cpp", "providers": ["llamacpp"], "community": true,
+      "icon": "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23111827%22%2F%3E%3Cpath%20d%3D%22M18%2020h28M18%2032h28M18%2044h28%22%20stroke%3D%22white%22%20stroke-width%3D%225%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2226%22%20cy%3D%2220%22%20r%3D%224%22%20fill%3D%22%2334d399%22%2F%3E%3Ccircle%20cx%3D%2240%22%20cy%3D%2232%22%20r%3D%224%22%20fill%3D%22%2360a5fa%22%2F%3E%3Ccircle%20cx%3D%2226%22%20cy%3D%2244%22%20r%3D%224%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E",
+      "summary": { "en": "Run local GGUF models with an on-demand llama.cpp server. Recursive folder scan and chat, decision, embedding and completion support.", "zh": "用按需启动的 llama.cpp 服务运行本地 GGUF 模型，支持递归扫描目录以及对话、决策、嵌入和补全四种类型。" } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
