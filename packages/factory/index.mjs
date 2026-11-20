@@ -1770,9 +1770,48 @@ const DSH_SKILL_CATALOG = /^<system-reminder>\n(?:A skill is a reusable set of t
 // reminder in it as the block it was; the rest stays as it is.
 const REMINDER_BLOCK = /<system-reminder>\n[\s\S]*?\n<\/system-reminder>/g
 function userText(text) {
+  const blocks = joinedBlocks(text)
+  if (blocks.length > 1) return blocks.map(oneUserText).join("")
+  return oneUserText(text)
+}
+
+function oneUserText(text) {
   const adapted = userBlockText(text)
   if (adapted !== text || !text.includes("<system-reminder>\n")) return adapted
   return text.replace(REMINDER_BLOCK, (block) => userBlockText(block))
+}
+
+// joinedBlocks splits a chat user message back into the blocks magpie
+// joined with nothing between them. Claude Code's turn after /compact is
+// one such turn: the summary, which ends with no newline, then each
+// restored file and the rest of its context as a reminder of its own. As
+// one text it opened with the compaction header and was adapted as one
+// summary, and the reminders glued to it went to Factory as they were
+// (@dannykkg on X, 2026-11-20). Only a place nothing but joining makes is
+// a boundary: a reminder opening right after a character that is not a
+// newline, or the compaction header right after a reminder's close, and
+// either only where every reminder opened before it is closed, so a file a
+// read result quotes stays inside its block. A text with no such place is
+// one block, as before.
+const REMINDER_OPEN = "<system-reminder>\n", REMINDER_CLOSE = "\n</system-reminder>"
+function joinedBlocks(text) {
+  if (!text.includes(REMINDER_OPEN)) return [text]
+  const blocks = []
+  let start = 0, open = 0
+  const marks = /<system-reminder>\n|\n<\/system-reminder>/g
+  for (let m; (m = marks.exec(text)) !== null;) {
+    const i = m.index
+    if (m[0] === REMINDER_OPEN) {
+      if (i > start && open === 0 && text[i - 1] !== "\n") { blocks.push(text.slice(start, i)); start = i }
+      open++
+    } else if (open > 0 && --open === 0) {
+      const next = i + REMINDER_CLOSE.length
+      const prefix = COMPACT_ARTIFACT.exec(text.slice(next, next + 400))?.[0] ?? ""
+      if (text.startsWith(COMPACT_HEADER, next + prefix.length)) { blocks.push(text.slice(start, next)); start = next }
+    }
+  }
+  blocks.push(text.slice(start))
+  return blocks
 }
 
 // Claude Code's tool search (ENABLE_TOOL_SEARCH, on behind a gateway since
