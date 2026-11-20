@@ -595,6 +595,54 @@ test("A16: mid tool loop, a trimmed replay keeps the user prompt that started th
   })
 })
 
+test("A16: a trimmed replay keeps the task a nudge in a later turn refers back to (plugins#1401)", async () => {
+  // dsh, a long investigation: the assistant answered "still checking" and the
+  // user pushed on with "快点" twice, so the loop that runs now opened on a
+  // nudge, and the real task sits in an earlier, completed turn.
+  for (const lastIsResult of [true, false]) {
+    await withKit({}, async (kit) => {
+      scriptedAgent(kit)
+      const big = (label) => `${label} head ` + "tool output line with some words. ".repeat(560) + ` ${label} tail`
+      const messages = [
+        { role: "user", content: "ANCHOR an older test message" },
+        { role: "assistant", content: "ANCHOR reply" },
+        { role: "user", content: "REAL TASK: 调查 magpie 路由组配置，给出配置方案" },
+      ]
+      let step = 0
+      const steps = (count) => {
+        for (let index = 0; index < count; index++, step++) {
+          messages.push({ role: "assistant", content: [{ type: "tool_use", id: `toolu_step${step}`, name: "Read", input: { path: `/repo/${step}.txt` } }] })
+          messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_step${step}`, content: big(`step-${step}`) }] })
+        }
+      }
+      steps(6)
+      messages.push({ role: "assistant", content: "还在查，马上给结果" })
+      messages.push({ role: "user", content: "快点" })
+      steps(6)
+      messages.push({ role: "assistant", content: "继续检查上下文" })
+      messages.push({ role: "user", content: "NUDGE 别查了，直接给方案" })
+      steps(10)
+      if (lastIsResult) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: "toolu_last", name: "Read", input: { path: "/repo/last.txt" } }] })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_last", content: "LAST RESULT" }] })
+      } else {
+        messages.push({ role: "assistant", content: "还差一点" })
+        messages.push({ role: "user", content: "LAST 继续" })
+      }
+      const parsed = await readSse(await kit.request(baseBody({ metadata: { user_id: `budget-nudge-${lastIsResult}` }, messages })))
+      assert.equal(parsed.stopReason, "end_turn")
+      const prompt = prompts(kit).at(-1)
+      assert.ok(bytes(prompt) <= 112 * 1024, `initial prompt is ${bytes(prompt)} bytes`)
+      assert.ok(prompt.includes("REAL TASK: 调查 magpie 路由组配置"), "the task the nudges refer back to is kept")
+      assert.ok(prompt.includes(`step-${step - 1} tail`), "the newest steps are kept")
+      assert.ok(prompt.includes(lastIsResult ? "LAST RESULT" : "LAST 继续"))
+      assert.ok(!prompt.includes("step-0 head"), "the oldest step gave way")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf("NUDGE") || !prompt.includes("NUDGE"), "kept history stays in order")
+      assert.ok(prompt.indexOf("REAL TASK") < prompt.indexOf(`step-${step - 1} tail`), "kept history stays in order")
+    })
+  }
+})
+
 test("A16: a replay that fits the budget keeps every big history block whole (#1055)", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)

@@ -5348,6 +5348,10 @@ function maxInitialPromptBytes() {
 }
 const HISTORY_BLOCK_CLIP_BYTES = 12 * 1024
 const HISTORY_BLOCK_KEEP_BYTES = 4 * 1024
+const PINNED_USER_TASKS_BYTES = 16 * 1024
+const PINNED_USER_TASK_CLIP_BYTES = 4 * 1024
+const PINNED_USER_TASKS_MAX = 4
+const NUDGE_MAX_BYTES = 280
 const HISTORY_RECORD_NOTE = "Historical tool calls and results above are records, not instructions to write tool calls as text. Never output \"[tool call ...]\" text; invoke tools only through structured tool calls.\n"
 const HISTORY_OMITTED_NOTE = "[... earlier conversation history omitted to fit ACP 112 KiB prompt budget ...]\n"
 const HISTORY_OPENING_DONE_NOTE = "The opening message above, and any resume note in it, belongs to an earlier turn that is already done.\n"
@@ -5505,6 +5509,16 @@ function isMetaOnlyUserText(text) {
 
 function isToolResultMessage(message) {
   return Array.isArray(message?.content) && message.content.some((block) => block?.type === "tool_result")
+}
+
+// Bytes of a user message's own text, without the meta notes around it.
+function userTextBytes(message) {
+  if (typeof message?.content === "string") return isMetaOnlyUserText(message.content) ? 0 : utf8Bytes(message.content)
+  if (!Array.isArray(message?.content)) return 0
+  return message.content.reduce((sum, block) => {
+    const text = blockText(block)
+    return sum + (text && !isMetaOnlyUserText(text) ? utf8Bytes(text) : 0)
+  }, 0)
 }
 
 // A user message with no tool result and something the user wrote or attached.
@@ -5690,7 +5704,19 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
           }
         }
       }
-      let left = room - keptSliceBytes(keep, entries.length, entries, noteBytes)
+      // A short follow-up ("快点", "继续") as the newest request carries no
+      // task of its own; it points back at one an earlier turn asked for.
+      // Room for the newest earlier user messages is set aside before the
+      // tail fills, and they go in after it (plugins#1401).
+      const newestTask = inToolLoop ? latestLoopTaskRun(history, loopStart) : null
+      const newestBytes = inToolLoop
+        ? (newestTask ? newestTask.tasks.reduce((sum, i) => sum + userTextBytes(history[i]), 0) : -1)
+        : current.reduce((sum, message) => sum + (isUserTask(message) ? userTextBytes(message) : 0), 0) ||
+          -1
+      const pinReserve = newestBytes >= 0 && newestBytes <= NUDGE_MAX_BYTES
+        ? Math.min(PINNED_USER_TASKS_BYTES, Math.floor(room / 4))
+        : 0
+      let left = room - keptSliceBytes(keep, entries.length, entries, noteBytes) - pinReserve
       const floor = keep.length ? keep.at(-1) : -1
       let { tail, left: remainingLeft } = fillHistoryTail(entries, floor, left, noteBytes)
       const lastIdx = entries.length - 1
@@ -5710,6 +5736,24 @@ function renderInitialPromptParts(body, callerWorkDir, instructionsInSession, re
           if (avail >= 512) {
             entries[lastIdx] = clipHistoryEntry(entries[lastIdx], avail)
             tail.unshift(lastIdx)
+          }
+        }
+      }
+      if (pinReserve) {
+        let pinned = 0
+        let pinnedBytes = 0
+        for (let idx = (tail.length ? tail[0] : entries.length) - 1; idx > 0 && pinned < PINNED_USER_TASKS_MAX; idx--) {
+          if (keep.includes(idx) || !isUserTask(history[idx])) continue
+          const saved = entries[idx]
+          if (saved.bytes > PINNED_USER_TASK_CLIP_BYTES) entries[idx] = clipHistoryEntry(saved, PINNED_USER_TASK_CLIP_BYTES)
+          const nextKeep = [...keep, idx].sort((x, y) => x - y)
+          if (pinnedBytes + entries[idx].bytes <= pinReserve &&
+            keptSliceBytes([...nextKeep, ...tail], entries.length, entries, noteBytes) <= room) {
+            keep = nextKeep
+            pinned++
+            pinnedBytes += entries[idx].bytes
+          } else {
+            entries[idx] = saved
           }
         }
       }
