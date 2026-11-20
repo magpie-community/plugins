@@ -537,8 +537,8 @@ const EXCEPTIONS = [
     ],
   },
   {
-    why: "the router's own keys, made here: a session key's separator, a turn's stamp, an account's identifiers from Magpie",
-    sites: ['continuity.js: sessionKey.includes("\\x00")', "middleware.js: chain.accepts.includes(sessionState.anchor)", "middleware.js: allowedByKind.includes(id)"],
+    why: "the router's own keys, made here: a session key's separator, a turn's stamp, an account's identifiers from Magpie and the quota seats a pin named",
+    sites: ['continuity.js: sessionKey.includes("\\x00")', "middleware.js: chain.accepts.includes(sessionState.anchor)", "middleware.js: allowedByKind.includes(id)", "middleware.js: decision.pinnedAccounts.includes(a.key)"],
   },
   {
     why: "the classifier's reply and the endpoints in the options: parsing what the model already answered, and which URL to call",

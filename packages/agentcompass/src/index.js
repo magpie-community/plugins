@@ -22,6 +22,7 @@ import {
   effortUnchecked,
   logRouteWarnings,
   mergePinOptions,
+  pinKeepsHold,
   pinOptionsOf,
   pinsFixEffort,
   refusalSummary,
@@ -233,10 +234,15 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
   const candidateModels = pluginOptions.candidateModels || pluginOptions.allowedModels;
   const chatSessionKey = chatFacts ? chatFacts.sessionKey || computeSessionKey(bodyObj, { options: pluginOptions }) : "";
   const chatSessionState = chatSessionKey ? store.get(chatSessionKey, now) : null;
+  // The pins are read before the hold: a session is held past a pin only on a bundle the pin names (contract R3).
+  const pins = mergePinOptions(pinOptionsOf(pluginOptions), state, rawTaskObj);
   const chatCont =
     chatFacts && chatSessionKey
       ? evaluateProviderContinuation(chatFacts, chatSessionState, {
           now,
+          pins,
+          // A pin keeps the hold only on a bundle it names in this pool (contract R3); a malformed one never does.
+          pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle }, { ...pluginOptions, candidateModels: explicitCandidateModels(pluginOptions) || undefined, quotas: liveQuotas, now }),
           affinityMode: pluginOptions.affinityMode || pluginOptions.affinity || "cache",
           availableModels: candidateModels,
           unhealthyModels: pluginOptions.unhealthyModels,
@@ -251,7 +257,6 @@ export async function handleSystemOneRequest(bodyObj, givenOptions = {}) {
         })
       : null;
 
-  const pins = mergePinOptions(pinOptionsOf(pluginOptions), state, rawTaskObj);
   const withDetails = pluginOptions.decisionProviderDetails === true;
   const blockedAnswer = (blocked, decision) => {
     logRouteWarnings(blocked.warnings);

@@ -17,6 +17,8 @@ import {
   explicitCandidateModels,
   extractModelList,
   mergePinOptions,
+  heldPinnedAccounts,
+  pinKeepsHold,
   pinOptionsOf,
   pinsFixEffort,
   sessionProfile,
@@ -175,6 +177,8 @@ export async function onRequest(body, ctx = {}) {
   let cont = evaluateProviderContinuation(facts, sessionState, {
     now,
     pins,
+    // A pin keeps the hold only on a bundle it names in this pool (contract R3); a malformed one never does.
+    pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle }, { ...options, candidateModels: candidateModels, quotas: liveQuotas, now }),
     affinityMode: options.affinityMode || options.affinity || "cache",
     availableModels: candidateModels,
     unhealthyModels: options.unhealthyModels,
@@ -234,6 +238,7 @@ export async function onRequest(body, ctx = {}) {
       }
 
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
+      const heldSeats = heldPinnedAccounts(pins, { ...options, candidateModels, quotas: liveQuotas, now });
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
       const stepWarnings = heldEffort === keptEffort ? [] : [`${heldModel}: effort ${keptEffort} is no longer offered; held at ${heldEffort}`];
       const allHeldWarnings = [...stepWarnings, ...heldWarnings];
@@ -249,6 +254,7 @@ export async function onRequest(body, ctx = {}) {
         canRewriteModel,
         hasExplicitCandidates,
         ...(heldAccounts ? { accounts: heldAccounts } : {}),
+        ...(heldSeats ? { pinnedAccounts: heldSeats } : {}),
         workKind: sessionState?.workKind || "other_or_mixed",
         difficulty: sessionState?.difficulty || "routine",
         axisDemand: sessionState?.profile?.axis_demand || null,
@@ -459,6 +465,7 @@ export async function onRequest(body, ctx = {}) {
     canRewriteModel,
     hasExplicitCandidates,
     selectedAccount: decision.selectedAccount || null,
+    ...(decision.pinnedAccounts ? { pinnedAccounts: decision.pinnedAccounts } : {}),
     quota: decision.quota || null,
     ...(decision.warnings?.length ? { warnings: decision.warnings } : {}),
     ...(decision.accounts ? { accounts: decision.accounts } : {}),

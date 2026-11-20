@@ -5,7 +5,7 @@
  * Pure ES2022 module with zero external or Node-only dependencies (Bun and Magpie's `moejs`).
  */
 
-import { DIFFICULTY_ORDER, DIRECT_SOURCES, FAMILIES, PROVIDER_NAMES, ROUTES, SCORING_POLICY, checkModelPin, resolveListed, splitEffortSuffix } from "./catalog.js";
+import { DIFFICULTY_ORDER, DIRECT_SOURCES, FAMILIES, PROVIDER_NAMES, ROUTES, SCORING_POLICY, checkModelPin, resolveListed, splitEffortSuffix, pinGiven, pyStrip } from "./catalog.js";
 import { effectivePin } from "./candidate-eval.js";
 import { WORK_KINDS, validateProfile } from "./profiler-core.js";
 
@@ -93,7 +93,6 @@ export function resolveModalityNeeds(needs, profile, implies) {
   return { visual, local_only: localOnly };
 }
 
-const given = (value) => value !== undefined && value !== null && value !== "";
 
 /**
  * `[model the user named, effort the user named]` from the constraints or the pinned_* request fields (`task_intake.named_pin`).
@@ -105,9 +104,9 @@ const given = (value) => value !== undefined && value !== null && value !== "";
 export function namedPin(constraints, task, models, aliases, providerNames = PROVIDER_NAMES, pool = null, fleet = null) {
   let effort = constraints.effort || task.pinned_effort;
   effort = typeof effort === "string" && effort.trim() ? effort.trim().toLowerCase() : null;
-  const fromConstraints = given(constraints.model);
-  if (!fromConstraints && !given(task.pinned_model)) {
-    return [given(constraints.bundle) ? checkModelPin(constraints.bundle, "constraints.bundle") : null, effort];
+  const fromConstraints = pinGiven(constraints.model);
+  if (!fromConstraints && !pinGiven(task.pinned_model)) {
+    return [pinGiven(constraints.bundle) ? checkModelPin(constraints.bundle, "constraints.bundle") : null, effort];
   }
   const raw = fromConstraints ? checkModelPin(constraints.model, "constraints.model") : checkModelPin(task.pinned_model, "pinned_model");
   const asRead = pool && pool.length > 0 && fleet ? effectivePin(raw, pool, fleet) : raw;
@@ -157,7 +156,7 @@ export function normalizeTask(raw, { policy = SCORING_POLICY, routes = ROUTES, m
   const [constraintModel, constraintEffort] = namedPin(constraints, task, models, aliases, providerNames, pinPool, fleet);
   // What the user typed, kept beside the resolved name: a pin is matched by it (`candidate-eval.js` `pinMatchedIds`).
   const rawPin = constraints.model || task.pinned_model;
-  const constraintRawModel = typeof rawPin === "string" && rawPin.trim() ? rawPin.trim() : null;
+  const constraintRawModel = typeof rawPin === "string" && pyStrip(rawPin) ? pyStrip(rawPin) : null;
   const implies = (routes[kind] || {}).implies || {};
   Object.assign(needs, resolveModalityNeeds(needs, profile, implies));
   const worker = chain.worker && typeof chain.worker === "object" ? { ...chain.worker } : null;
@@ -177,7 +176,8 @@ export function normalizeTask(raw, { policy = SCORING_POLICY, routes = ROUTES, m
     wants_fast: wantsFast,
     read_only_review: readOnlyReview,
     disable_fast: Boolean(task.disable_fast || needs.disable_fast),
-    pinned_bundle: task.pinned_bundle || null,
+    // A bundle named by id: refused where it is handed over when malformed, as a model pin is.
+    pinned_bundle: pinGiven(task.pinned_bundle) ? checkModelPin(task.pinned_bundle, "pinned_bundle") : null,
     chain_hours: Number(chain.total_hours || hours),
     coupling,
     worker,

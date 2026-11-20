@@ -13,10 +13,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { rankCandidates, selectBestRoute } from "../src/allocator.js";
+import { candidateOffers, rankCandidates, selectBestRoute } from "../src/allocator.js";
 import { readingEffort, scoredModels } from "../src/axis-scores.js";
-import { FAMILIES, MODELS, MODEL_ALIASES, NO_PROVIDER_NAMES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, checkModelPin, expandHostProviders, healthKey, magpieOptions, modelLeaf, modelPinProblem, providerNamesOf, resolveListed, resolveModel, rowKey, servedModel, slashSuffixes } from "../src/catalog.js";
-import { effectivePin, lookupNames, pinMatchingBundles, pinNamesBundle } from "../src/candidate-eval.js";
+import { FAMILIES, MODELS, MODEL_ALIASES, NO_PROVIDER_NAMES, PROVIDER_NAMES, canonicalModel, catalogNameWarning, checkModelPin, expandHostProviders, healthKey, magpieOptions, modelLeaf, modelPinProblem, pinGiven, providerNamesOf, pyStrip, resolveListed, resolveModel, rowKey, servedModel, slashSuffixes } from "../src/catalog.js";
+import { effectivePin, lookupNames, pinMatchesIdentity, pinMatchingBundles, pinNamesBundle } from "../src/candidate-eval.js";
 import { applicableWindows } from "../src/quota-pools.js";
 import { normalizeTask } from "../src/task-intake.js";
 import { durationAt } from "../src/quota-economy.js";
@@ -24,8 +24,10 @@ import { FIVE_AXIS_EFFORT_READINGS, FIVE_AXIS_EFFORT_STEPS, FIVE_AXIS_MODELS } f
 import { V0_7_0, v070Row } from "../src/released-names.js";
 import { EDGES, EFFORTS, SCHEMA_VERSION, anchorEffort, boundAlongEffort, resolveModelKey, risesWithEffort, scoreLayer, upgradeScores } from "../src/user-scores.js";
 import { ONE_CONFIGURATION, candidatesFromModels, levelsOf } from "../scripts/candidates-from-models.mjs";
-import { onProvider as middlewareOnProvider, onRequest as middlewareOnRequest } from "../src/middleware.js";
-import { EFFORT_TO_JEV_SCORE, JEV_EFFORT_LEVELS, buildEffortAnswer } from "../src/index.js";
+import { onAccount as middlewareOnAccount, onProvider as middlewareOnProvider, onRequest as middlewareOnRequest } from "../src/middleware.js";
+import { onRequest as hooksOnRequest } from "../src/hooks.js";
+import { SessionContinuityStore } from "../src/continuity.js";
+import { EFFORT_TO_JEV_SCORE, JEV_EFFORT_LEVELS, buildEffortAnswer, handleSystemOneRequest } from "../src/index.js";
 import { profile } from "./profile.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -552,7 +554,7 @@ test("a bare name names the model on every account; a prefix is obeyed; a prefix
   }
 });
 
-test("onProvider matches a named model over the whole pool: another preset's prefix is refused on this preset, a bare name routes here", () => {
+test("onProvider matches a named model over the whole pool: another preset's prefix is not rewritten on this preset (Magpie sends the body as onRequest left it), a bare name routes here", () => {
   const options = {
     catalog: {},
     candidateModels: [{ model: "acme-a/gpt-6.1-sol", efforts: ["high"] }, { model: "acme-b/gpt-6.1-sol", efforts: ["high"] }],
@@ -663,4 +665,180 @@ test("a user score lands where its key's maker default says, the row's own id wi
     const reversed = Object.fromEntries(Object.entries(layer).reverse());
     for (const doc of [layer, reversed]) assert.deepEqual(scoreLayer(doc, FIVE_AXIS_MODELS_TABLE).get(row), { coding: entry(2.9), creativity: entry(2.2) }, name);
   }
+});
+
+// ------------------------------------------------------------------------------------------------ round 6 (review R5-F1 to F6)
+
+const R6_FLEET = { models: MODELS, aliases: MODEL_ALIASES, families: FAMILIES, providerNames: PROVIDER_NAMES };
+const R6_POOL = [
+  { model: "acme-a/gpt-6.1-sol", efforts: ["high"] },
+  { model: "acme-b/gpt-6.1-sol", efforts: ["high"] },
+  { model: "acme-c/claude-sonnet-5-5", efforts: ["high"] },
+];
+const r6Messages = (turn) => [{ role: "user", content: "edit one function" }, { role: "assistant", content: "ok" }, { role: "user", content: turn }].slice(0, turn ? 3 : 1);
+
+/** A session held on `acme-b/gpt-6.1-sol` (its first turn named it), and the store it is held in. */
+function r6WarmStore() {
+  const store = new SessionContinuityStore();
+  const ctx = { state: {}, options: { continuityStore: store, affinityMode: "session", candidateModels: R6_POOL, now: T0_071 } };
+  middlewareOnRequest({ model: "agentcompass/auto", user: "r6", profile: PROFILE, pinned_model: "acme-b/gpt-6.1-sol", messages: r6Messages("") }, ctx);
+  assert.equal(ctx.state.route.targetModel, "acme-b/gpt-6.1-sol", "the first turn runs what it named");
+  return store;
+}
+
+test("R5-F1: a warm session keeps its hold only on a bundle the pin names in the pool; a malformed pin is refused before any hold, in every entry", async () => {
+  // the rule: hold when the request names nothing, or when the held bundle is among those the pin names (`pinMatchingBundles`)
+  const cases = [
+    ["gpt-6.1-sol", { held: true }],
+    ["acme-b/gpt-6.1-sol", { held: true }],
+    ["acme-a/gpt-6.1-sol", { held: false, target: "acme-a/gpt-6.1-sol" }],
+    ["acme-c/gpt-6.1-sol", { refused: "pin_" }],
+    ["/gpt-6.1-sol", { refused: "invalid_model_pin" }],
+    [0, { refused: "invalid_model_pin" }],
+  ];
+  for (const [pin, want] of cases) {
+    // Mode A middleware
+    const store = r6WarmStore();
+    let rejected = null;
+    const ctx = { state: {}, reject: (status, message) => { rejected = `${status} ${message}`; }, options: { continuityStore: store, affinityMode: "session", candidateModels: R6_POOL, now: T0_071 + 1000 } };
+    middlewareOnRequest({ model: "agentcompass/auto", user: "r6", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, ctx);
+    if (want.refused) {
+      assert.match(String(rejected), new RegExp(`503 agentcompass: ${want.refused}`), `middleware ${JSON.stringify(pin)}`);
+    } else {
+      assert.equal(Boolean(ctx.state.route.continuation?.held), want.held, `middleware ${JSON.stringify(pin)}`);
+      if (want.target) assert.equal(ctx.state.route.targetModel, want.target);
+    }
+    // hooks.js
+    const hStore = r6WarmStore();
+    const hctx = { state: {}, options: { continuityStore: hStore, affinityMode: "session", candidateModels: R6_POOL, now: T0_071 + 1000 } };
+    await hooksOnRequest({ model: "agentcompass/auto", user: "r6", profile: PROFILE, pinned_model: pin, messages: r6Messages("turn 2") }, hctx);
+    if (want.refused) {
+      assert.match(String(hctx.state.routeBlocked?.refusal), new RegExp(`^${want.refused}`), `hooks ${JSON.stringify(pin)}`);
+    } else {
+      assert.equal(Boolean(hctx.state.route.continuation?.held), want.held, `hooks ${JSON.stringify(pin)}`);
+      if (want.target) assert.equal(hctx.state.route.targetModel, want.target);
+    }
+  }
+  // Mode B (/v1/systemone): the pins are read before the hold
+  const store = new SessionContinuityStore();
+  const options = { continuityStore: store, affinityMode: "session", candidateModels: ["acme-a/gpt-6.1-sol", "acme-b/gpt-6.1-sol"], now: T0_071 };
+  const ask = (pin, now) => handleSystemOneRequest({ user: "r6b", messages: r6Messages(now ? "turn 2" : ""), state: { profile: PROFILE, pinned_model: pin }, questions: { effort: { type: "scale" } } }, { ...options, now: T0_071 + now });
+  assert.equal((await ask("acme-b/gpt-6.1-sol", 0)).agentcompass.targetModel, "acme-b/gpt-6.1-sol");
+  assert.equal((await ask("acme-a/gpt-6.1-sol", 1000)).agentcompass.targetModel, "acme-a/gpt-6.1-sol", "a pin that does not name the held bundle routes again");
+  const malformed = (await ask("/gpt-6.1-sol", 2000)).agentcompass;
+  assert.deepEqual([malformed.blocked, malformed.error], [true, "invalid_model_pin"]);
+});
+
+test("R5-F2: a seat's full id or its name as the prefix names that seat; the provider names every seat; none is substituted", () => {
+  const win = (name, remaining, resetHours) => ({ name, remaining, used: 100 - remaining, resetHours });
+  const seat = (sevenDay) => ({ kind: "subscription", plan: "max", quota: { windows: [win("5 hours", 90, 3), win("7 days", sevenDay, 100)] } });
+  const candidateModels = [{ model: "claude-sonnet-5-5", efforts: ["high"] }];
+  const run = (pin, quotas) => selectBestRoute(PROFILE, { now: T0_071, candidateModels, quotas, constraintModel: pin });
+  const exhausted = { "claude/work": seat(0), "claude/personal": seat(90) };
+  for (const pin of ["claude/work/claude-sonnet-5-5", "work/claude-sonnet-5-5", "Claude/Work/claude-sonnet-5-5:high"]) {
+    const r = run(pin, exhausted);
+    assert.deepEqual([r.ok, r.refusal?.split(":")[0]], [false, "pin_unavailable"], `${pin}: the named seat cannot run, none other stands in`);
+  }
+  for (const pin of ["claude-sonnet-5-5", "claude/claude-sonnet-5-5"]) {
+    const r = run(pin, exhausted);
+    assert.equal(r.selectedAccount, "claude/personal", `${pin}: every seat is named, the one that can run serves`);
+    assert.equal(r.pinnedAccounts, undefined, `${pin}: no seat is singled out`);
+  }
+  for (const pin of ["personal/claude-sonnet-5-5", "claude/personal/claude-sonnet-5-5"]) {
+    assert.deepEqual(run(pin, exhausted).pinnedAccounts, ["claude/personal"], pin);
+  }
+  // the longest id that matches is the prefix: a seat beats its provider
+  const ample = { "claude/work": seat(90), "claude/personal": seat(90) };
+  const onWork = run("claude/work/claude-sonnet-5-5", ample);
+  assert.deepEqual([onWork.selectedAccount, onWork.pinnedAccounts], ["claude/work", ["claude/work"]]);
+  // onAccount passes over the other known seats, and never an account the snapshot does not know
+  const decide = (decision, account) => middlewareOnAccount(account, { state: { route: decision, agentcompass: decision }, options: { quotas: ample, now: T0_071 } });
+  assert.deepEqual(decide(onWork, { provider: "claude", name: "personal", kind: "claude" }), { skip: true });
+  assert.equal(decide(onWork, { provider: "claude", name: "work", kind: "claude" }), undefined);
+  assert.equal(decide(onWork, { provider: "claude", name: "elsewhere", kind: "claude" }), undefined);
+  assert.equal(decide(run("claude-sonnet-5-5", ample), { provider: "claude", name: "personal", kind: "claude" }), undefined, "a bare name skips no seat");
+});
+
+test("R5-F3: an unchecked row listed on a preset turns its effort off on that preset only; a bare unchecked row on every row of the account", () => {
+  const route = (candidateModels, options = {}) => selectBestRoute(PROFILE, { candidateModels, ...options });
+  const onOther = route([{ model: "openrouter/gpt-6.1-sol", efforts: ["high"] }, { model: "acme-disabled/gpt-6.1-sol", disabled: true, efforts: ["high"] }]);
+  assert.equal(onOther.targetModel, "openrouter/gpt-6.1-sol", "the unchecked row is on another preset");
+  const bare = route([{ model: "openrouter/gpt-6.1-sol", efforts: ["high"] }, { model: "gpt-6.1-sol", effort: "high", disabled: true }]);
+  assert.equal(bare.ok, false, "a bare unchecked row turns the effort off across the account");
+  const sameName = route([{ model: "acme-a/gpt-6.1-sol", efforts: ["high"] }, { model: "acme-a/gpt-6.1-sol", effort: "high", disabled: true }]);
+  assert.equal(sameName.ok, false, "on its own preset");
+  // under the Magpie adapter the preset of a list id is its `presets`
+  const magpie = magpieOptions({ candidateModels: [{ model: "acme-a/gpt-6.1-sol", efforts: ["high"] }, { model: "acme-b/gpt-6.1-sol", effort: "high", disabled: true }] });
+  assert.equal(route(magpie.candidateModels, magpie).targetModel, "acme-a/gpt-6.1-sol");
+});
+
+test("R5-F4: one boundary for 'is a pin given' and one for its problem; never a throw, the engine's strip, a falsy non-string refused", () => {
+  for (const absent of [undefined, null, ""]) assert.equal(pinGiven(absent), false);
+  for (const given of [0, false, NaN, " ", [], {}]) assert.equal(pinGiven(given), true, String(given));
+  const circular = {};
+  circular.self = circular;
+  for (const odd of [10n, circular, Object.create(null), Symbol("x"), () => 1]) {
+    assert.match(modelPinProblem(odd), /^invalid_model_pin: model .* must be a non-empty model name\.$/);
+    const refused = selectBestRoute(PROFILE, { candidateModels: ["gpt-6.1-sol"], constraintModel: odd });
+    assert.deepEqual([refused.ok, refused.error], [false, "invalid_model_pin"]);
+  }
+  // Python's strip: `\x1c`..`\x1f` and `\x85` are space, `﻿` is not
+  for (const space of ["\x1c", "\x1f", "\x85", " ", "　"]) {
+    assert.equal(pyStrip(`${space}gpt-6.1-sol${space}`), "gpt-6.1-sol");
+    assert.ok(modelPinProblem(space));
+  }
+  assert.equal(pyStrip("﻿gpt"), "﻿gpt");
+  assert.equal(modelPinProblem("﻿"), null);
+  // a falsy non-string is a pin, refused at every entry
+  for (const pin of [0, false, NaN]) {
+    const refused = selectBestRoute(PROFILE, { candidateModels: ["gpt-6.1-sol"], constraintModel: pin });
+    assert.deepEqual([refused.ok, refused.error], [false, "invalid_model_pin"], `selectBestRoute ${String(pin)}`);
+    let rejected = null;
+    middlewareOnRequest(
+      { model: "agentcompass/auto", profile: PROFILE, pinned_model: pin, messages: r6Messages("") },
+      { state: {}, reject: (status, message) => { rejected = `${status} ${message}`; }, options: { candidateModels: ["gpt-6.1-sol"] } },
+    );
+    assert.match(String(rejected), /503 agentcompass: invalid_model_pin/, `middleware ${String(pin)}`);
+  }
+  // a malformed bundle pin is refused as malformed, not as missing
+  for (const field of ["pinnedBundle", "constraintBundle"]) {
+    const refused = selectBestRoute(PROFILE, { candidateModels: ["gpt-6.1-sol"], [field]: "openai/" });
+    assert.deepEqual([refused.ok, refused.error], [false, "invalid_model_pin"], field);
+  }
+});
+
+test("R5-F5: onProvider judges a prefix over every other preset's rows, from candidateModels and from modelsByProvider", () => {
+  // no candidateModels: every model is routed, and onRequest's pool is the requested name alone
+  const options = { catalog: {}, routeAllModels: true, routePerProvider: true, modelsByProvider: { "acme-a": [{ model: "gpt-6.1-sol", efforts: ["high"] }], "acme-b": [{ model: "gpt-6.1-sol", efforts: ["high"] }] } };
+  const tryOn = (pin, preset) => {
+    const body = { model: "gpt-6.1-sol", profile: PROFILE, pinned_model: pin, messages: r6Messages("") };
+    const ctx = { protocol: "chat", state: {}, options };
+    middlewareOnRequest(body, ctx);
+    const returned = middlewareOnProvider(body, { ...ctx, provider: { id: preset } });
+    return { returned, body };
+  };
+  assert.equal(tryOn("acme-a/gpt-6.1-sol", "acme-b").returned, undefined, "named on acme-a: acme-b's list does not rewrite it");
+  assert.equal(tryOn("acme-a/gpt-6.1-sol", "acme-a").body.model, "gpt-6.1-sol:high");
+  assert.equal(tryOn("gpt-6.1-sol", "acme-b").body.model, "gpt-6.1-sol:high", "a bare name: any preset");
+  // candidateOffers reads the other presets' rows with the pool, so a route named elsewhere is not offered here
+  const here = [{ model: "gpt-6.1-sol", efforts: ["high"], presets: ["acme-b"], served: ["acme-b"] }];
+  const there = [{ model: "gpt-6.1-sol", efforts: ["high"], presets: ["acme-a"], served: ["acme-a"] }];
+  assert.equal(candidateOffers(here, "acme-a/gpt-6.1-sol", "high", {}, undefined, there), false);
+  assert.equal(candidateOffers(here, "gpt-6.1-sol", "high", {}, undefined, there), true);
+  // in onProvider: the route onRequest chose on acme-a is not offered by acme-b's list, so acme-b routes its own row
+  const both = { catalog: {}, candidateModels: [{ model: "acme-a/gpt-6.1-sol", efforts: ["high"] }], modelsByProvider: options.modelsByProvider };
+  const chosen = { ok: true, targetModel: "acme-a/gpt-6.1-sol", targetEffort: "high", profile: PROFILE, hasExplicitCandidates: true, canRewriteModel: true, pins: {} };
+  const state = { agentcompass: { ...chosen }, route: { ...chosen } };
+  const body = { model: "acme-a/gpt-6.1-sol", messages: r6Messages("") };
+  middlewareOnProvider(body, { protocol: "chat", state, options: both, provider: { id: "acme-b" } });
+  assert.equal(state.route.targetModel, "gpt-6.1-sol", "acme-b's own row, not the route chosen on acme-a");
+});
+
+test("R5-F6: the exported pinNamesBundle obeys the prefix over its pool (account_fleet.pin_names_bundle); identity alone is pinMatchesIdentity", () => {
+  const codex = { id: "cx", account: "acct-c", provider: "codex", model: "gpt-6.1-sol", effort: "high" };
+  const pi = { id: "pi", account: "acct-p", provider: "pi", model: "openai/gpt-6.1-sol", effort: "high" };
+  assert.equal(pinMatchesIdentity("openai/gpt-6.1-sol", codex, R6_FLEET), true, "the same row, no prefix test");
+  assert.equal(pinNamesBundle("openai/gpt-6.1-sol", codex, R6_FLEET, [codex, pi]), false, "the prefix names pi's spelling only");
+  assert.equal(pinNamesBundle("openai/gpt-6.1-sol", pi, R6_FLEET, [codex, pi]), true);
+  assert.equal(pinNamesBundle("openai/gpt-6.1-sol", codex, R6_FLEET), true, "alone in its pool, the unknown prefix is dropped");
 });

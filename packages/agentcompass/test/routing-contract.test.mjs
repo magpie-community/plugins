@@ -1001,6 +1001,15 @@ test("/v1/systemone gives any caller the conclusion; the details take the operat
   for (const answer of pinAnswers) {
     assert.deepEqual(answer, { targetModel: null, blocked: true, error: "pin_unavailable", message: "the pinned model cannot serve this request" });
   }
+  // A malformed pin is the caller's own text, not a fact of the pool: its code and sentence quote what the caller typed, nothing more
+  const malformed = (await silently(() => systemOne({ constraintModel: "openai/" }, ok))).answer.agentcompass;
+  assert.deepEqual(malformed, {
+    targetModel: null,
+    blocked: true,
+    error: "invalid_model_pin",
+    message: "constraints.model 'openai/' is malformed (empty prefix or model segment around '/'); write a bare model name (<model>) or <provider>/<model>.",
+  });
+  assert.equal(leaks(malformed), false);
   // A short follow-up is a conclusion too
   const nudge = await index.handleSystemOneRequest(
     { model: "jev-6b-int8", state: { message: "继续", previous_message_kind: "code_implementation", previous_message_reasoning: "high" }, questions: SYSTEM_ONE_QUESTIONS },

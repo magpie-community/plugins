@@ -31,7 +31,7 @@ import { PLAN_CAPACITY } from "./reference-data.js";
 import { canonicalWindowId, configuredPlan, planDefaults, planTable, planUnknownText } from "./plans.js";
 import { defaultScoredModels, scoredModels } from "./axis-scores.js";
 import { EFFORTS } from "./user-scores.js";
-import { dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
+import { bundlePresets, bundleProviders, dispatchAllowedEfforts, modelInfo } from "./candidate-eval.js";
 import { inferModelProviderFamily, normalizeProviderFamily, providerMatchesModel, providersMatch } from "./quota.js";
 
 export const GATEWAY_ACCOUNT = "_gateway";
@@ -201,10 +201,13 @@ export function expandBundles(poolEntries, fleet, entries) {
   const bundles = [];
   for (const row of rows) {
     const accounts = matchingAccounts(row, entries, fleet.aliases);
-    const targets = accounts.length > 0 ? accounts.map((e) => ({ account: e.key, provider: normalizeProviderFamily(e.provider) })) : [{ account: GATEWAY_ACCOUNT, provider: row.provider }];
+    // A Magpie quota seat keeps its id (`<provider>/<seat>`) as the account and its seat name beside it: a pin's prefix names either.
+    const targets = accounts.length > 0
+      ? accounts.map((e) => ({ account: e.key, provider: normalizeProviderFamily(e.provider), seat: e.account && e.account !== e.key ? e.account : null }))
+      : [{ account: GATEWAY_ACCOUNT, provider: row.provider, seat: null }];
     for (const t of targets) {
       const baseId = row.id || `${row.model}:${row.effort ?? "default"}`;
-      bundles.push({ ...row, id: baseId, account: t.account, provider: t.provider, harness: row.harness || t.provider });
+      bundles.push({ ...row, id: baseId, account: t.account, provider: t.provider, harness: row.harness || t.provider, ...(t.seat ? { seat: t.seat } : {}) });
     }
   }
   const perId = new Map();
@@ -218,7 +221,21 @@ export function expandBundles(poolEntries, fleet, entries) {
   return out;
 }
 
-/** An effort the user unchecked on an account and model is no landing for any row of them (a family row is another model). */
+/**
+ * Where a row is offered: the Magpie presets it is listed under and the catalogs it serves, else the part of its name before the
+ * first `/` (`<preset>/<model>`), lowercase; empty for a bare name.
+ */
+function offeredOn(row) {
+  const ids = [...bundlePresets(row), ...bundleProviders(row)];
+  if (ids.length === 0 && String(row.model || "").includes("/")) ids.push(String(row.model).slice(0, String(row.model).indexOf("/")));
+  return new Set(ids.map((id) => id.toLowerCase()));
+}
+
+/**
+ * An effort the user unchecked on an account and model is no landing for any row of them (a family row is another model). An
+ * unchecked row listed under a preset (`<preset>/<model>`, a preset's own list) turns the effort off on that preset only; a bare
+ * unchecked row turns it off on every row of the account.
+ */
 export function attachDisabledEfforts(rows, fleet) {
   const groups = new Map();
   const keyOf = (c) => JSON.stringify([c.account || "", c.harness || "", healthKey(c.model, fleet.models, fleet.aliases, fleet.families, fleet.providerNames)]);
@@ -226,11 +243,14 @@ export function attachDisabledEfforts(rows, fleet) {
     if (!c.disabled || c.disabled_by_default) continue;
     const key = keyOf(c);
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c.effort);
+    groups.get(key).push({ effort: c.effort, on: offeredOn(c) });
   }
   for (const c of rows) {
-    const disabled = groups.get(keyOf(c));
-    if (disabled) c.disabled_efforts = disabled;
+    const unchecked = groups.get(keyOf(c));
+    if (!unchecked) continue;
+    const on = offeredOn(c);
+    const efforts = unchecked.filter((u) => u.on.size === 0 || [...u.on].some((id) => on.has(id))).map((u) => u.effort);
+    if (efforts.length > 0) c.disabled_efforts = efforts;
   }
 }
 

@@ -33,6 +33,8 @@ import {
   extractModelList,
   mergePinOptions,
   pinOptionsOf,
+  heldPinnedAccounts,
+  pinKeepsHold,
   pinsFixEffort,
   sessionProfile,
   selectBestRoute,
@@ -67,6 +69,7 @@ import {
   listQuotaAccounts,
   orderSeatsByQuotaEconomics,
   quotaAccountWarnings,
+  quotaAccountsMatching,
   shouldSkipQuotaAccount,
 } from "./quota.js";
 import { loadLiveQuotas } from "./quota-loader.js";
@@ -336,6 +339,8 @@ function routeClaimed(body, ctx, env, depth = 0) {
   let cont = evaluateProviderContinuation(facts, sessionState, {
     now,
     pins,
+    // A pin keeps the hold only on a bundle it names in this pool (contract R3); a malformed one never does.
+    pinKeepsHold: (session) => pinKeepsHold(pins, { model: session.target || session.model, effort: session.effort, pinnedBundle: session.pinnedBundle }, { ...options, candidateModels: candidateModels, quotas: liveQuotas, now }),
     affinityMode,
     availableModels: candidateModels,
     unhealthyModels: options.unhealthyModels,
@@ -372,6 +377,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
       };
     } else {
       const heldAccounts = liveQuotas ? listQuotaAccounts(liveQuotas, now, options.catalog?.policy) : undefined;
+      const heldSeats = heldPinnedAccounts(pins, { ...options, candidateModels, quotas: liveQuotas, now });
       const heldWarnings = liveQuotas ? quotaAccountWarnings(liveQuotas, now, options.catalog?.policy) : [];
       const stepWarnings = heldEffort === keptEffort ? [] : [`${target}: effort ${keptEffort} is no longer offered; held at ${heldEffort}`];
       return {
@@ -398,6 +404,7 @@ function routeClaimed(body, ctx, env, depth = 0) {
           canRewriteModel,
           hasExplicitCandidates,
           ...(heldAccounts ? { accounts: heldAccounts } : {}),
+          ...(heldSeats ? { pinnedAccounts: heldSeats } : {}),
           workKind: sessionState?.workKind || "other_or_mixed",
           difficulty: sessionState?.difficulty || "routine",
           axisDemand: sessionState?.profile?.axis_demand || null,
@@ -743,6 +750,42 @@ export function onRequest(body, ctx = {}) {
 }
 
 /**
+ * A preset's list as entries offered on it: each keeps the preset id as Magpie gives it (`presets`) and the catalogs it serves
+ * (`served`), and a name the preset's own `provider_names` declaration makes another model than the bare name is routed by the
+ * spelling that keeps reading that declaration (`servedModel`) with the name as listed beside it (`launch_model`; recorded in
+ * `listedAs` when given). A tag that constrains no effort (`:auto`, `:off`, `:default`) stays on the entry.
+ */
+function presetEntries(list, presetId, names, listedAs = null) {
+  const endpoints = expandHostProviders([presetId], MAGPIE_HOST, names.providerNames);
+  return list.map((entry) => {
+    const name = typeof entry === "string" ? entry : entry?.model;
+    if (!name) return entry;
+    const bare = withoutUnconstrainingTag(String(name).trim());
+    const tag = String(name).trim().slice(bare.length);
+    const served = servedModel(bare, endpoints, names.models, names.aliases, names.families, names.providerNames);
+    const offeredOn = { presets: [presetId], served: endpoints };
+    if (served === bare) return typeof entry === "string" ? { model: entry, ...offeredOn } : { ...entry, ...offeredOn };
+    if (listedAs) listedAs.set(listedKey(served), listedKey(bare));
+    return { ...(typeof entry === "string" ? {} : entry), model: `${served}${tag}`, launch_model: bare, ...offeredOn };
+  });
+}
+
+/**
+ * The rows the host offers on presets other than `prov` (`candidateModels`, and each other preset's `modelsByProvider` list as
+ * entries offered on it): a named model is matched over them too, so a prefix that names one of them is not dropped and served
+ * by this preset; they never compete here.
+ */
+function otherPresetRows(options, ctx, prov, names) {
+  const rows = [...(explicitCandidateModels(options, ctx) || [])];
+  for (const [id, list] of Object.entries(options.modelsByProvider || {})) {
+    if (id === prov?.id || id === prov?.name) continue;
+    const entries = extractModelList(list);
+    if (entries) rows.push(...presetEntries(entries, id, names));
+  }
+  return rows;
+}
+
+/**
  * Middleware `onProvider(body, ctx)` hook (`internal/middleware/run.go:Tried`):
  * Magpie passes `ctx.provider = { id, name, account, model }`.
  * Supports optional per-provider model lists via `options.modelsByProvider[provider.id]`
@@ -771,22 +814,8 @@ export function onProvider(body, ctx = {}) {
   // (`launch_model`), as a bundle AgentCompass derives for a Magpie account keeps them: a model the user names with the preset's id
   // or its catalog's as the prefix names these entries (`pinMatchingBundles`).
   const names = catalogTables(options.catalog);
-  const endpoints = prov?.id ? expandHostProviders([prov.id], MAGPIE_HOST, names.providerNames) : [];
   const listedAs = new Map();
-  const providerModels = listedModels && prov?.id
-    ? listedModels.map((entry) => {
-        const name = typeof entry === "string" ? entry : entry?.model;
-        if (!name) return entry;
-        const bare = withoutUnconstrainingTag(String(name).trim());
-        const tag = String(name).trim().slice(bare.length);
-        const served = servedModel(bare, endpoints, names.models, names.aliases, names.families, names.providerNames);
-        // Every name of the list is offered on this preset: its id as Magpie gives it and the catalogs it serves.
-        const offeredOn = { presets: [prov.id], served: endpoints };
-        if (served === bare) return typeof entry === "string" ? { model: entry, ...offeredOn } : { ...entry, ...offeredOn };
-        listedAs.set(listedKey(served), listedKey(bare));
-        return { ...(typeof entry === "string" ? {} : entry), model: `${served}${tag}`, launch_model: bare, ...offeredOn };
-      })
-    : listedModels;
+  const providerModels = listedModels && prov?.id ? presetEntries(listedModels, prov.id, names, listedAs) : listedModels;
 
   if (ctx?.state?.routeBlocked) return undefined;
 
@@ -807,12 +836,13 @@ export function onProvider(body, ctx = {}) {
     // The user unchecks an effort in the pool, and a provider's own list holds no such row (contract R2).
     const unchecked = (explicitCandidateModels(options, ctx) || []).filter((entry) => entry?.disabled && !entry.disabled_by_default);
     const providerPool = [...providerModels, ...unchecked];
+    const elsewhere = otherPresetRows(options, ctx, prov, names);
     const needProviderRoute =
       isVirtualModelName(body.model, options) ||
       prevDecision.ok === false ||
       prevDecision.canRewriteModel === false ||
       prevDecision.hasExplicitCandidates === false ||
-      !candidateOffers(providerPool, prevDecision.targetModel, prevDecision.targetEffort || "high", options.catalog) ||
+      !candidateOffers(providerPool, prevDecision.targetModel, prevDecision.targetEffort || "high", options.catalog, undefined, elsewhere) ||
       options.routePerProvider === true;
 
     if (needProviderRoute) {
@@ -829,8 +859,8 @@ export function onProvider(body, ctx = {}) {
         meteredOk: options.meteredOk,
         userScores: options.userScores,
         now,
-        // The pool's rows on the other presets: a model named with another preset's prefix is not served by this one.
-        pinOnlyModels: explicitCandidateModels(options, ctx) || [],
+        // The rows on the other presets: a model named with another preset's prefix names those, never this preset's.
+        pinOnlyModels: elsewhere,
         ...mergePinOptions(pinOptionsOf(options), prevDecision.pins),
       });
       logRouteWarnings(routed.warnings);
@@ -846,6 +876,7 @@ export function onProvider(body, ctx = {}) {
           bundle: routed.bundle,
           profile: routed.profile,
           selectedAccount: routed.selectedAccount ?? prevDecision.selectedAccount ?? null,
+          pinnedAccounts: routed.pinnedAccounts || null,
           quota: routed.quota ?? prevDecision.quota ?? null,
           canRewriteModel: true,
           hasExplicitCandidates: true,
@@ -977,6 +1008,13 @@ export function onAccount(accountOrBody, ctx = {}) {
 
   if (shouldSkipQuotaAccount(acct, ctx, quotaAccounts)) {
     return { skip: true };
+  }
+
+  // A pin whose prefix names quota seats (`claude/work/...`, `work/...`) is served by those seats only: another known seat is
+  // passed over. An account the snapshot does not know is not skipped (Magpie fails open, and so does this check).
+  if (Array.isArray(decision?.pinnedAccounts) && decision.pinnedAccounts.length > 0 && Array.isArray(quotaAccounts)) {
+    const known = quotaAccountsMatching(acct, ctx, quotaAccounts);
+    if (known.length > 0 && !known.some((a) => decision.pinnedAccounts.includes(a.key))) return { skip: true };
   }
 
   if (!decision) return undefined;
