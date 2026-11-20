@@ -1222,6 +1222,14 @@ class BusyError extends Error {
   }
 }
 
+// A live attached stream or an in-session steer. Unmatched tool results are a
+// client retry, so they use the same busy errors as a second reader of that turn.
+function liveTurnBusy(reason) {
+  return new BusyError(reason === "steering"
+    ? "agy bridge: this conversation is already steering this tool turn"
+    : "agy bridge: this conversation already has an active response")
+}
+
 // agy never listed the client's tools from the bridge's ide-tools MCP
 // server, so a turn would have the model see none of them, only agy's own
 // manage_task (plugins#1239). It names the cause where one is known.
@@ -4071,7 +4079,8 @@ async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn 
 }
 
 // Recheck under the same lock and start at most one replacement turn.
-// Kinds: active (409), conflict/incomplete (400), replayed, fallthrough.
+// Kinds: active (409, or 503 when the turn is attached or steering),
+// conflict/incomplete (400), replayed, fallthrough.
 // `ctx.attempts` set means the no-progress repeat limit was reached: a quiet
 // turn is then reclaimed even if it is not provably stale (never an attached one).
 async function recoverStaleTurn(ctx) {
@@ -4097,8 +4106,9 @@ async function recoverStaleTurn(ctx) {
     // Lineage supersession belongs to acquisition of a new prompt. Unmatched
     // results alone reclaim an unexpired owner only at the repeat limit.
     if (!verdict.stale && (!forced || verdict.reason === "attached" || verdict.reason === "steering")) {
+      if (verdict.reason === "attached" || verdict.reason === "steering") noProgressRepeats.delete(ctx.convKey)
       logBridgeEvent(current, held, "reject_active", verdict.reason, ctx.acquireOpts, extra)
-      return { kind: "active" }
+      return { kind: "active", reason: verdict.reason }
     }
     const reason = verdict.stale ? verdict.reason : "no_progress_repeat"
     logBridgeEvent(current, held, "reclaim", reason, ctx.acquireOpts, extra)
@@ -7349,12 +7359,17 @@ export const AntigravityBridgePlugin = async () => {
                   const verdict = movedOnVerdict(held.turn, body.messages) ?? staleTurnVerdict(held, held.turn)
                   let attempts
                   if (!verdict.stale) {
-                    // An attached stream is live progress; only a quiet turn counts.
-                    if (verdict.reason === "attached" || verdict.reason === "steering") noProgressRepeats.delete(convKey)
-                    else attempts = noteNoProgressRepeat(convKey, held.turn)
-                    if (attempts == null || attempts < NO_PROGRESS_REPEAT_LIMIT) {
-                      logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts,
-                        attempts != null ? { attempts } : {})
+                    // An attached stream or an in-session steer is live work. A retry
+                    // of unmatched results is a retryable 503, and it does not count
+                    // toward reclaiming that turn. A quiet pending turn still 409s.
+                    if (verdict.reason === "attached" || verdict.reason === "steering") {
+                      noProgressRepeats.delete(convKey)
+                      logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts)
+                      throw liveTurnBusy(verdict.reason)
+                    }
+                    attempts = noteNoProgressRepeat(convKey, held.turn)
+                    if (attempts < NO_PROGRESS_REPEAT_LIMIT) {
+                      logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts, { attempts })
                       return jsonError(409, "agy bridge: no active MCP call matches these tool results")
                     }
                   }
@@ -7365,6 +7380,7 @@ export const AntigravityBridgePlugin = async () => {
                     body, resultBlocks, acquireOpts, isFresh, begin, attempts })
                   if (recovery.kind === "replayed") return streamResponse(recovery.proc, recovery.turn, body, init.signal)
                   if (recovery.kind === "active") {
+                    if (recovery.reason === "attached" || recovery.reason === "steering") throw liveTurnBusy(recovery.reason)
                     return jsonError(409, "agy bridge: no active MCP call matches these tool results")
                   }
                   if (recovery.kind === "conflict" || recovery.kind === "incomplete") {

@@ -36,7 +36,7 @@ function cancelCount(kit) {
 async function settleResponse(resPromise) {
   const res = await resPromise
   if (res.status !== 200) {
-    return { status: res.status, body: await res.text() }
+    return { status: res.status, body: await res.text(), retry: res.headers.get("x-should-retry") }
   }
   const parsed = await readSse(res)
   return {
@@ -46,6 +46,40 @@ async function settleResponse(resPromise) {
     tools: parsed.content.filter((b) => b.type === "tool_use").map((b) => b.input),
     error: parsed.error,
   }
+}
+
+function unmatchedRetry(body, resultId = "toolu_unmatched_retry") {
+  return {
+    ...body,
+    messages: [
+      ...body.messages,
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_consumed_not_live0001", name: "Read", input: { path: "/old" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: resultId, content: "already consumed" }] },
+    ],
+  }
+}
+
+function captureBridgeEvents() {
+  const rows = []
+  const write = process.stderr.write
+  process.stderr.write = function (chunk, ...args) {
+    const text = typeof chunk === "string" ? chunk : chunk?.toString?.() ?? ""
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("[agy-bridge] ")) continue
+      try { rows.push(JSON.parse(line.slice("[agy-bridge] ".length))) } catch {}
+    }
+    return write.call(this, chunk, ...args)
+  }
+  return { rows, restore() { process.stderr.write = write } }
+}
+
+async function waitFor(fn, ms = 1000) {
+  const start = Date.now()
+  while (Date.now() - start < ms) {
+    if (fn()) return
+    await sleep(5)
+  }
+  throw new Error("timed out waiting for bridge state")
 }
 
 test("steerInSession: duplicate steer and plain continuation during waitAcpToolsCommitted return 503 without early cancel", async () => {
@@ -469,7 +503,7 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     assert.equal(kit.acpSpawns.length, 1)
   })
 
-  // 3x unmatched tool results (NO_PROGRESS_REPEAT_LIMIT) while steering must stay 409 and never reclaim
+  // 3x unmatched tool results while steering are retryable 503 and never reclaim
   await withKit({}, async (kit) => {
     kit.prompts.push(async (agent) => {
       agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
@@ -499,7 +533,8 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     }
     const steerRes = await settleResponse(steerReq)
 
-    assert.deepEqual(boguses.map((r) => r.status), [409, 409, 409])
+    assert.deepEqual(boguses.map((r) => r.status), [503, 503, 503])
+    assert.ok(boguses.every((r) => r.retry === null && /already steering this tool turn/.test(r.body)))
     assert.equal(steerRes.status, 200)
     assert.equal(steerRes.text, "survived unmatched repeats")
     assert.equal(kit.acpSpawns.length, 1)
@@ -609,6 +644,227 @@ test("steerInSession: deferred self-poll commit wait, foreign ACP tool isolation
     assert.equal(res.status, 200)
     assert.equal(kit.acpSpawns.length, 1)
     assert.ok(elapsed < 800, `failed status did not count as commit: ${elapsed}ms`)
+  })
+})
+
+test("unmatched tool_result while a turn is attached returns 503 BusyError and leaves that stream running", async () => {
+  await withKit({}, async (kit) => {
+    let release
+    const hold = new Promise((resolve) => { release = resolve })
+    kit.prompts.push(async (agent) => {
+      await agent.text("still streaming")
+      await hold
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    const body = baseBody({ messages: [{ role: "user", content: "attached unmatched retry" }] })
+    const liveReq = kit.request(body)
+    const liveSettled = liveReq.then(settleResponse, (error) => ({ status: 0, body: String(error?.message ?? error) }))
+    try {
+      await waitFor(() => [...kit.module.__agyTestAllProcs][0]?.turn?.attached)
+      const proc = [...kit.module.__agyTestAllProcs][0]
+      const turnId = proc.turn.turnId
+      assert.equal(proc.turn.steering, false)
+      const events = captureBridgeEvents()
+      try {
+        const retries = []
+        for (let i = 0; i < 3; i++) {
+          retries.push(await settleResponse(kit.request(unmatchedRetry(body, `toolu_unmatched_attached_${i}`))))
+        }
+        assert.deepEqual(retries.map((r) => r.status), [503, 503, 503])
+        assert.ok(retries.every((r) => r.retry === null && /already has an active response/.test(r.body)))
+        assert.equal(proc.turn.turnId, turnId)
+        assert.equal(proc.turn.attached, true)
+        assert.equal(proc.turn.steering, false)
+        assert.equal(kit.acpSpawns.length, 1)
+        const rejected = events.rows.filter((row) => row.action === "reject_active")
+        assert.equal(rejected.length, 3)
+        assert.ok(rejected.every((row) => row.reason === "attached" && row.attempts == null))
+        assert.ok(!events.rows.some((row) => row.action === "reclaim"))
+      } finally {
+        events.restore()
+      }
+    } finally {
+      release()
+    }
+    const live = await liveSettled
+    assert.equal(live.status, 200)
+    assert.equal(live.text, "still streaming")
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
+test("unmatched tool_result on a pending turn that is not attached or steering stays 409", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
+      const reply = await agent.tool("Read", { path: "/a" })
+      assert.equal(reply?.result?.content?.[0]?.text, "REAL_RESULT")
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    const body = baseBody({ messages: [{ role: "user", content: "pending unmatched stays 409" }] })
+    const first = await readSse(await kit.request(body))
+    const proc = [...kit.module.__agyTestAllProcs][0]
+    const turnId = proc.turn.turnId
+    assert.equal(proc.turn.attached, false)
+    assert.equal(proc.turn.steering, false)
+
+    const events = captureBridgeEvents()
+    try {
+      const retries = []
+      for (let i = 0; i < 2; i++) {
+        retries.push(await settleResponse(kit.request(unmatchedRetry(body, `toolu_unmatched_pending_${i}`))))
+      }
+      assert.deepEqual(retries.map((r) => r.status), [409, 409])
+      assert.ok(retries.every((r) => r.retry === null && /no active MCP call matches these tool results/.test(r.body)))
+      assert.equal(proc.turn?.turnId, turnId)
+      assert.equal(proc.turn.attached, false)
+      assert.equal(proc.turn.steering, false)
+      assert.equal(kit.acpSpawns.length, 1)
+      const rejected = events.rows.filter((row) => row.action === "reject_active")
+      assert.deepEqual(rejected.map((row) => row.reason), ["pending_tool", "pending_tool"])
+      assert.deepEqual(rejected.map((row) => row.attempts), [1, 2])
+      assert.ok(!events.rows.some((row) => row.action === "reclaim"))
+    } finally {
+      events.restore()
+    }
+
+    const done = await settleResponse(kit.request(continueWithToolResults(body, first, () => "REAL_RESULT")))
+    assert.equal(done.status, 200)
+    assert.equal(done.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
+  })
+})
+
+test("recoverStaleTurn active attached or steering inside the lock is 503 and does not reclaim", async () => {
+  for (const reason of ["attached", "steering"]) {
+    await withKit({}, async (kit) => {
+      kit.prompts.push(async (agent) => {
+        agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
+        const reply = await agent.tool("Read", { path: "/a" })
+        assert.equal(reply?.result?.content?.[0]?.text, "REAL_RESULT")
+        return { stopReason: "end_turn", usage: USAGE }
+      })
+      const body = baseBody({ messages: [{ role: "user", content: `recover ${reason} stays live` }] })
+      const first = await readSse(await kit.request(body))
+      const proc = [...kit.module.__agyTestAllProcs][0]
+      const turnId = proc.turn.turnId
+      assert.equal(proc.turn.attached, false)
+      assert.equal(proc.turn.steering, false)
+
+      for (let i = 0; i < 2; i++) {
+        const prior = await settleResponse(kit.request(unmatchedRetry(body, `toolu_unmatched_prior_${reason}_${i}`)))
+        assert.equal(prior.status, 409, prior.body)
+      }
+      assert.equal(proc.turn.turnId, turnId)
+      assert.equal(kit.acpSpawns.length, 1)
+
+      const pool = kit.module.__agyTestPool
+      const origGet = pool.get
+      let gets = 0
+      pool.get = function (key) {
+        const found = origGet.call(this, key)
+        gets += 1
+        if (gets === 2 && found?.turn === proc.turn) found.turn[reason] = true
+        return found
+      }
+      const events = captureBridgeEvents()
+      try {
+        const retry = await settleResponse(kit.request(unmatchedRetry(body, `toolu_unmatched_race_${reason}`)))
+        assert.equal(retry.status, 503, `${reason} race returned ${retry.status}: ${retry.body}`)
+        assert.equal(retry.retry, null)
+        assert.match(retry.body, reason === "steering" ? /already steering this tool turn/ : /already has an active response/)
+        assert.equal(proc.turn?.turnId, turnId)
+        assert.equal(kit.acpSpawns.length, 1)
+        const rejected = events.rows.filter((row) => row.action === "reject_active")
+        assert.equal(rejected.length, 1)
+        assert.equal(rejected[0].reason, reason)
+        assert.equal(rejected[0].attempts, 3)
+        assert.ok(!events.rows.some((row) => row.action === "reclaim" || row.action === "replay_started"))
+      } finally {
+        events.restore()
+        pool.get = origGet
+        if (proc.turn) {
+          proc.turn.attached = false
+          proc.turn.steering = false
+        }
+      }
+
+      // The in-lock 503 must clear noProgressRepeats so a subsequent quiet unmatched
+      // retry starts back at attempt 1 instead of reclaiming the live turn at attempt 4.
+      const postEvents = captureBridgeEvents()
+      try {
+        const afterQuiet = await settleResponse(kit.request(unmatchedRetry(body, `toolu_unmatched_after_${reason}`)))
+        assert.equal(afterQuiet.status, 409, `${reason} post-503 quiet retry returned ${afterQuiet.status}: ${afterQuiet.body}`)
+        assert.equal(proc.turn?.turnId, turnId)
+        assert.equal(kit.acpSpawns.length, 1)
+        const postRejected = postEvents.rows.filter((row) => row.action === "reject_active")
+        assert.equal(postRejected.length, 1)
+        assert.equal(postRejected[0].attempts, 1)
+        assert.ok(!postEvents.rows.some((row) => row.action === "reclaim" || row.action === "replay_started"))
+      } finally {
+        postEvents.restore()
+      }
+
+      const done = await settleResponse(kit.request(continueWithToolResults(body, first, () => "REAL_RESULT")))
+      assert.equal(done.status, 200)
+      assert.equal(done.stopReason, "end_turn")
+      assert.equal(kit.acpSpawns.length, 1)
+    })
+  }
+})
+
+test("recoverStaleTurn active for a reason other than attached or steering stays 409", async () => {
+  await withKit({}, async (kit) => {
+    kit.prompts.push(async (agent) => {
+      agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
+      const reply = await agent.tool("Read", { path: "/a" })
+      assert.equal(reply?.result?.content?.[0]?.text, "REAL_RESULT")
+      return { stopReason: "end_turn", usage: USAGE }
+    })
+    const body = baseBody({ messages: [{ role: "user", content: "recover pending stays 409" }] })
+    const first = await readSse(await kit.request(body))
+    const proc = [...kit.module.__agyTestAllProcs][0]
+    const turnId = proc.turn.turnId
+    const savedDeadline = proc.turn.deadlineAt
+    assert.ok(savedDeadline > kit.clock.now())
+    proc.turn.deadlineAt = kit.clock.now() - 1
+
+    const pool = kit.module.__agyTestPool
+    const origGet = pool.get
+    let gets = 0
+    pool.get = function (key) {
+      const found = origGet.call(this, key)
+      gets += 1
+      if (gets === 2 && found?.turn === proc.turn) found.turn.deadlineAt = savedDeadline
+      return found
+    }
+    const events = captureBridgeEvents()
+    let retry
+    try {
+      retry = await settleResponse(kit.request(unmatchedRetry(body, "toolu_unmatched_expired_race")))
+    } finally {
+      events.restore()
+      pool.get = origGet
+      if (proc.turn) proc.turn.deadlineAt = savedDeadline
+    }
+    assert.equal(retry.status, 409, retry.body)
+    assert.equal(retry.retry, null)
+    assert.match(retry.body, /no active MCP call matches these tool results/)
+    assert.doesNotMatch(retry.body, /already has an active response|already steering/)
+    assert.equal(proc.turn?.turnId, turnId)
+    assert.equal(proc.turn.attached, false)
+    assert.equal(proc.turn.steering, false)
+    assert.equal(kit.acpSpawns.length, 1)
+    const rejected = events.rows.filter((row) => row.action === "reject_active")
+    assert.equal(rejected.length, 1)
+    assert.equal(rejected[0].reason, "pending_tool")
+    assert.equal(rejected[0].attempts, undefined)
+    assert.ok(!events.rows.some((row) => row.action === "reclaim"))
+
+    const done = await settleResponse(kit.request(continueWithToolResults(body, first, () => "REAL_RESULT")))
+    assert.equal(done.status, 200)
+    assert.equal(done.stopReason, "end_turn")
+    assert.equal(kit.acpSpawns.length, 1)
   })
 })
 
