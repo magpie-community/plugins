@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MemorySQL</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="icon" href="icon.png" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <img src="icon.png" alt="" width="28" height="28" />
+        <h1>MemorySQL</h1>
+        <span id="status" class="pill">连接中…</span>
+        <span id="agentChip" class="chip" hidden></span>
+      </div>
+      <div class="top-actions">
+        <nav class="main-tabs" role="tablist">
+          <button class="mtab active" data-view="memory" type="button" title="管理长期记忆：从对话学习、确认候选、整理">记忆</button>
+          <button class="mtab" data-view="projects" type="button" title="按项目看续接包、项目总结与会话档案">项目</button>
+          <button class="mtab" data-view="search" type="button" title="跨 agent 搜索会话标题、消息内容与记忆">搜索</button>
+        </nav>
+        <button id="refresh" class="ghost" type="button" title="重新读取状态和当前页数据">刷新</button>
+      </div>
+    </header>
+
+    <p id="unavailable" class="notice" hidden></p>
+
+    <!-- 记忆 -->
+    <main id="view-memory" class="view">
+      <p class="intro">
+        你的 agent 在对话里值得长期记住的东西。内置存储会读安静下来的会话，先放进
+        「待确认」；你确认后它才会进入续接包。搜索框匹配内容/标签；作用域可以只看某个项目。
+      </p>
+
+      <section class="panel controls">
+        <div class="control-row">
+          <div class="who">
+            <strong>项目总结</strong>
+            <span id="digestLine" class="sub">关闭</span>
+          </div>
+          <div class="control-actions">
+            <select
+              id="modelPick"
+              class="field select"
+              aria-label="模型"
+              title="项目总结和整理记忆都用这个模型；默认跟 magpie 记忆蒸馏用同一个"
+            ></select>
+            <label class="num-field" title="会话安静多少分钟后才生成项目总结">
+              <span>安静期</span>
+              <input id="quietPick" class="field num" type="number" min="1" max="1440" step="1" />
+              <span>分钟</span>
+            </label>
+            <button
+              id="digestRun"
+              class="primary"
+              type="button"
+              title="立刻为会话已安静的项目生成/更新总结（一次最多 3 个）"
+            >
+              立即生成
+            </button>
+            <label class="switch" title="打开后，项目里的会话安静达到安静期就自动用 LLM 生成/更新项目总结">
+              <input id="digestOn" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+        </div>
+        <div class="control-row">
+          <div class="who">
+            <strong>整理记忆</strong>
+            <span id="dreamLine" class="sub">关闭</span>
+          </div>
+          <div class="control-actions">
+            <label class="num-field" title="两次整理之间至少间隔多少小时">
+              <span>每</span>
+              <input id="dreamEvery" class="field num" type="number" min="1" max="720" step="1" />
+              <span>小时</span>
+            </label>
+            <button
+              id="dreamRun"
+              class="ghost"
+              type="button"
+              title="合并说同一件事的记忆、归档过时记忆（手写/置顶不动）"
+            >
+              立即整理
+            </button>
+            <label class="switch" title="打开后按设定的间隔用 LLM 整理记忆">
+              <input id="dreamOn" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+        </div>
+        <div class="control-row">
+          <div class="who">
+            <strong>记忆注入</strong>
+            <span id="injectLine" class="sub">关闭（默认）</span>
+          </div>
+          <div class="control-actions">
+            <label
+              class="switch"
+              title="开启后把记忆与最近会话注入 agent 的第一条用户消息；只对本机请求生效，默认关闭"
+            >
+              <input id="injectOn" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+        </div>
+        <div id="injectPick" class="control-row slim inject-pick" hidden>
+          <span class="muted" title="不选具体 agent 时默认注入全部">注入到</span>
+          <label class="check" title="全部 agent；取消勾选后可以逐个选择"><input id="injectAll" type="checkbox" /> 全部 agent</label>
+          <div id="injectAgents" class="agent-picks"></div>
+        </div>
+        <p id="distillHint" class="muted hint" hidden></p>
+      </section>
+
+      <section class="panel">
+        <div class="mem-bar">
+          <input
+            id="memSearch"
+            class="field"
+            type="search"
+            placeholder="搜索记忆（内容 / 标签 / 原因）"
+            autocomplete="off"
+            title="搜内容、标签和「为什么」；支持中文两字词"
+          />
+          <div id="memStatus" class="seg">
+            <button type="button" data-status="active" class="active" title="已确认、会进入续接包的记忆">使用中</button>
+            <button type="button" data-status="candidate" title="模型抽取的候选，等你确认才会生效">待确认</button>
+            <button type="button" data-status="archived" title="已归档或已被合并的记忆">已归档</button>
+          </div>
+          <select id="memScope" class="field select" aria-label="作用域" title="只看全局记忆，或只看某个项目的记忆"></select>
+          <button id="memAdd" class="primary" type="button" title="手动写一条记忆（标记为手写，整理时不会改动）">+ 添加</button>
+        </div>
+        <div id="memList" class="mem-list"></div>
+      </section>
+    </main>
+
+    <!-- 项目 -->
+    <main id="view-projects" class="view" hidden>
+      <p class="intro">
+        左侧选项目 → 右侧看「续接包 / 项目总结 / 会话」。续接包给接手的 agent 用；
+        会话可点开看最近 200 条，右侧可以直接删除。
+      </p>
+      <div class="layout">
+        <section class="panel projects">
+          <div class="panel-head">
+            <h2>项目 <span id="projectCount" class="muted"></span></h2>
+          </div>
+          <input
+            id="filter"
+            class="field"
+            type="search"
+            placeholder="筛选项目 / 路径…"
+            autocomplete="off"
+            title="按项目名或路径筛选"
+          />
+          <ul id="projectList" class="project-list"></ul>
+        </section>
+
+        <section class="panel detail">
+          <div class="detail-head">
+            <h2 id="detailTitle">选择一个项目</h2>
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="context" type="button" title="交给新 agent 的续接包：记忆 + 最近会话 + 上一棒">续接包</button>
+              <button class="tab" data-tab="digest" type="button" title="项目滚动总结：总览 / 最近进展 / 待办">项目总结</button>
+              <button class="tab" data-tab="sessions" type="button" title="这个项目捕获到的会话档案">会话</button>
+            </div>
+            <button
+              id="digestGenerate"
+              class="ghost"
+              type="button"
+              hidden
+              title="用 magpie 里配置的模型重写这个项目的滚动总结"
+            >
+              用模型生成总结
+            </button>
+          </div>
+          <div id="detailBody" class="detail-body empty">从左侧选择一个项目。</div>
+        </section>
+      </div>
+    </main>
+
+    <!-- 搜索 -->
+    <main id="view-search" class="view" hidden>
+      <section class="panel search">
+        <h2>跨 agent 搜索</h2>
+        <p class="intro">
+          会话标题、消息内容、记忆一起搜；中文 1–2 个字也能命中。结果里的会话可以点开看原文。
+        </p>
+        <form id="searchForm" class="search-form">
+          <input
+            id="query"
+            class="field"
+            type="search"
+            placeholder="上次怎么做的 / 为什么这样定 / 踩过什么坑…"
+            autocomplete="off"
+            title="输入关键词，回车或点搜索"
+          />
+          <select id="searchScope" class="field select" aria-label="搜索范围" title="限定在某个项目里搜；默认全库"></select>
+          <button class="primary" type="submit" title="回车也可以搜索">搜索</button>
+        </form>
+        <p id="searchHint" class="muted hint">
+          提示：结果按相关度排序；点「看会话」展开最近 200 条消息。
+        </p>
+        <div id="searchHits" class="hits" hidden></div>
+        <pre id="searchResult" class="result" hidden></pre>
+      </section>
+    </main>
+
+    <footer class="foot">记忆可编辑 · 项目/搜索只读 · 数据在本机 · 悬停控件可看说明</footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
