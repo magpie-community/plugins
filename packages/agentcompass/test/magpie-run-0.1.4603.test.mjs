@@ -25,7 +25,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { selectBestRoute } from "../src/allocator.js";
-import { defaultScoredModels } from "../src/axis-scores.js";
+import { FIVE_AXIS_ANCHOR, defaultScoredModels, fiveAxisContinuityValue, fiveAxisDemand } from "../src/axis-scores.js";
 import { MODELS, MODEL_ALIASES, PROVIDER_NAMES, canonicalModel, magpieOptions, resolveListed, resolveModel } from "../src/catalog.js";
 import { SessionContinuityStore } from "../src/continuity.js";
 import { onRequest as hooksOnRequest } from "../src/hooks.js";
@@ -285,6 +285,44 @@ test("a typed listing not sent is said in the decision on every turn and logged 
   for (const warning of new Set(said)) assert.equal(logged.filter((line) => line.includes(warning)).length, 1, "logged once for the session");
 });
 
+test("a typed pin with control characters around it is one line in Magpie's log", () => {
+  const L1 = "deepseek/deepseek-flash";
+  const L2 = "deepseek/deepseek-v4-flash";
+  const pool = [{ model: L1, efforts: ["high"] }, { model: L2, efforts: ["high"], when: { max_primary_level: 1 } }];
+  for (const pin of [`${L2}\n`, `\t${L2}\u001f`, `\u2028${L2}\r`]) {
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: `typed with blanks ${JSON.stringify(pin)}` }], pinned_model: pin };
+    const ctx = { protocol: "chat", state: {}, reject, options: { candidateModels: pool, continuityStore: new SessionContinuityStore() } };
+    const lines = logOf(() => onRequest(body, ctx));
+    assert.equal(body.model, `${L1}:high`, "the pin still resolves");
+    const typed = lines.filter((line) => line.includes(L1) && line.includes("listing typed"));
+    assert.equal(typed.length, 1, `${JSON.stringify(pin)}: the warning is logged`);
+    assert.doesNotMatch(typed[0], /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/, `${JSON.stringify(pin)}: no control character splits the line`);
+    assert.ok(ctx.state.route.warnings.some((w) => w.includes(pin)), "the decision keeps the pin as typed");
+  }
+});
+
+test("onProvider's fallback to the provider's own model is sent by the same rule: bare for a model that takes no effort", () => {
+  for (const [listed, provider, bare] of [
+    [{ openai: ["gpt-6-sol"] }, { id: "mistral", name: "Mistral", model: "mistral/ministral-8b-2512" }, true],
+    [{ mistral: ["mistral-large-4"] }, { id: "openai", name: "OpenAI", model: "openai/gpt-6-sol" }, false],
+  ]) {
+    const options = { injectProtocolEffort: true, modelsByProvider: listed, continuityStore: new SessionContinuityStore() };
+    const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: `the fallback to ${provider.model}` }] };
+    const ctx = { protocol: "chat", state: {}, reject, options };
+    quiet(() => onRequest(body, ctx));
+    assert.equal(body.model, "agentcompass/auto", "onRequest leaves it to the provider Magpie tries");
+    const tried = JSON.parse(JSON.stringify(body));
+    quiet(() => onProvider(tried, { ...ctx, provider }));
+    if (bare) {
+      assert.equal(tried.model, provider.model, "sent bare");
+      assert.equal(tried.reasoning_effort, undefined, "no reasoning_effort");
+    } else {
+      assert.ok(tried.reasoning_effort, "a model with levels goes at an effort");
+      assert.equal(tried.model, `${provider.model}:${tried.reasoning_effort}`, "the provider's own model, at that effort");
+    }
+  }
+});
+
 test("a bare row of a model that takes no effort goes out with none on the hooks' route too", () => {
   const name = "mistral/ministral-8b-2512";
   const options = { injectProtocolEffort: true, candidateModels: [name], continuityStore: new SessionContinuityStore() };
@@ -308,14 +346,24 @@ test("the per-request memos are keyed by their whole input: the pins and the con
   const none = { unhealthyModels: [], minContextTokens: 0, continuity: { previousModel: null, previousEffort: null, why: "first", cacheWarm: false } };
   const pinned = (model) => decide(PROFILE, { ...none, constraintModel: model }).targetModel;
   assert.notEqual(pinned("openai/gpt-6-sol"), pinned("deepseek/deepseek-v4-flash"), "another pin, another answer");
-  // A held worker counts in the score (`workerOf`): the same request with a previous model is another input.
-  const cold = decide(PROFILE, none);
-  const warm = decide(PROFILE, { ...none, continuity: { ...none.continuity, previousModel: cold.targetModel, previousEffort: cold.targetEffort, why: "cold" } });
-  const engine = selectBestRoute(PROFILE, { candidateModels: pool, catalog: options.catalog, continuity: { previousModel: cold.targetModel, previousEffort: cold.targetEffort, why: "cold", cacheWarm: false } });
-  assert.equal(warm.score, engine.score, "the continuity reaches the ranking");
+  // A held worker counts in the score (`workerOf`): a candidate continuing it gets one demand level's worth of continuity
+  // (`fiveAxisContinuityValue`), one starting fresh none. The input is built for the rule to apply: the held worker is the pool's
+  // only candidate, and the task demands a category whose continuity value is positive. So the same request with a previous model
+  // is another input with another answer, whatever else the data score.
+  const alone = ["openai/gpt-6-sol"];
+  assert.ok(fiveAxisContinuityValue(fiveAxisDemand({ profile: PROFILE }), FIVE_AXIS_ANCHOR.targets) > 0, "the task demands a category continuity counts in");
+  const decideAlone = routeDecider({ options, candidateModels: alone, liveQuotas: undefined, now: Date.now() });
+  const cold = decideAlone(PROFILE, none);
+  const held = { ...none.continuity, previousModel: cold.targetModel, previousEffort: cold.targetEffort, why: "cold" };
+  const warm = decideAlone(PROFILE, { ...none, continuity: held });
+  const engine = selectBestRoute(PROFILE, { candidateModels: alone, catalog: options.catalog, continuity: held });
+  assert.equal(cold.components.continuity, 0, "nothing to continue on a cold request");
+  assert.ok(engine.components.continuity > 0, "the rule gives the held worker its continuity");
+  assert.equal(warm.components.continuity, engine.components.continuity, "the continuity reaches the ranking through the memo");
+  assert.equal(warm.score, engine.score);
   const judge = holdJudge(options, pool, undefined, Date.now());
-  const held = { model: "openai/gpt-6-sol", target: "openai/gpt-6-sol", effort: cold.targetEffort, profile: PROFILE };
-  assert.notEqual(judge({ constraintModel: "openai/gpt-6-sol" }, held), judge({ constraintModel: "deepseek/deepseek-v4-flash" }, held), "a hold is judged per pin");
+  const route = { model: "openai/gpt-6-sol", target: "openai/gpt-6-sol", effort: cold.targetEffort, profile: PROFILE };
+  assert.notEqual(judge({ constraintModel: "openai/gpt-6-sol" }, route), judge({ constraintModel: "deepseek/deepseek-v4-flash" }, route), "a hold is judged per pin");
 });
 
 test("a held route with no pinned bundle is judged once in a request, however the session says it has none", () => {
