@@ -49,6 +49,23 @@ test("a Gemini model goes to /api/llm/g/v1/generate, the model in the body, x-ap
   expect(await res.text()).toContain('"text":"ok"')
 })
 
+test("Gemini 4 Neon and Hydrogen use the native XHIGH thinking level", async () => {
+  const { l, seen } = await loaded()
+  for (const model of ["gemini-4-neon", "gemini-4-hydrogen"]) {
+    const body = { ...request, generationConfig: { temperature: 0.2, topP: 0.9, topK: 20, thinkingConfig: { includeThoughts: true, thinkingLevel: "xhigh" } } }
+    await l.fetch(`https://api.factory.ai/api/llm/g/v1/models/${model}:streamGenerateContent`, { body: JSON.stringify(body) })
+    const sent = seen.at(-1)
+    expect(sent.url).toBe("https://api.factory.ai/api/llm/g/v1/generate")
+    expect(sent.headers.get("x-api-provider")).toBe("google")
+    const parsed = JSON.parse(sent.body)
+    expect(parsed).toMatchObject({ model, generationConfig: { thinkingConfig: { thinkingLevel: "XHIGH" } } })
+    const omitted = model === "gemini-4-neon"
+    for (const key of ["temperature", "topP", "topK"]) {
+      expect(parsed.generationConfig[key]).toBe(omitted ? undefined : body.generationConfig[key])
+    }
+  }
+})
+
 test("a Gemini request with no system instruction gets droid's line, one droid opened already goes on as it is", async () => {
   const { l, seen } = await loaded()
   const at = "https://api.factory.ai/api/llm/g/v1/models/gemini-3.5-flash:streamGenerateContent?alt=sse"

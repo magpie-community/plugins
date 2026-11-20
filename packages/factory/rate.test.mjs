@@ -3,14 +3,13 @@
 // shows the same beside the model, so a cheap one is picked without opening
 // droid. A promotion running comes off it, with the multiplier before the
 // discount as rateWas — magpie strikes that through beside the price, as it
-// does for WorkBuddy's credits and Qoder's price factors. The cases are droid
-// 0.241.1's registry costs, 0.251.0's 1017 entry and 1.7.0's new models,
-// saved in testdata.
+// does for WorkBuddy's credits and Qoder's price factors. Registry entries
+// for the supported models are saved in testdata.
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { FactoryAuthPlugin, _internal } from "./index.mjs"
 
-const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt", "droid-1.7.0-models.txt", "droid-1.7.1-carbon.txt", "droid-1.10.0-hydrogen.txt"]
+const DROID = ["droid-0.241.1-costs.txt", "droid-0.251.0-deepseek-1017.txt", "droid-1.7.0-models.txt", "droid-1.7.1-carbon.txt", "droid-1.10.0-hydrogen.txt", "droid-1.16.0-catalog.txt"]
   .map((name) => readFileSync(new URL(`./testdata/${name}`, import.meta.url), "utf8")).join("\n")
 
 // cost is a model's cost text, as its entry keeps it (Inkling's key unquoted).

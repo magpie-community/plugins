@@ -30,14 +30,21 @@ test("company ordering is opt-in, preserves metadata, and is read on each model 
     before("claude-fable-5.2", "claude-fable-5.1")
     before("claude-fable-5", "claude-opus-5-5")
     before("claude-opus-5-5", "claude-opus-5")
-    before("claude-haiku-4-5-20251001", "gpt-6.1-sol")
+    before("claude-haiku-4-5-20251001", "gpt-6.2-sol")
+    before("gpt-6.2-sol", "gpt-6.2-astra")
+    before("gpt-6.2-astra", "gpt-6.1-sol")
     before("gpt-6.1-sol", "gpt-6-sol")
+    before("gemini-4-neon", "gemini-4-hydrogen")
     before("gpt-6-luna", "gpt-5.6-sol")
     before("gpt-5.3-codex-fast", "gemini-4-carbon")
     before("gemini-4-hydrogen", "gemini-4-carbon")
     before("gemini-4-carbon", "gemini-4-argon")
     before("gemini-3.8-flash", "gemini-3.1-pro-preview")
     before("glm-5.2-fast", "kimi-k3.1-pro")
+    for (const base of ["gpt-6.2-astra", "gpt-6.2-sol"]) {
+      expect(ids.slice(ids.indexOf(base), ids.indexOf(base) + 3)).toEqual([base, base + "-fast", base + "-ultrafast"])
+    }
+    expect(ids[ids.indexOf("gpt-6.1-sol") + 1]).toBe("gpt-6.1-sol-ultrafast")
     for (const id of ids.filter((id) => id.endsWith("-fast"))) {
       expect(ids.indexOf(id)).toBe(ids.indexOf(id.slice(0, -5)) + 1)
     }

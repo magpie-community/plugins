@@ -65,14 +65,11 @@ test("every model in droid 0.240.0's picker is offered, or left out for a reason
     "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
     // asks the user to accept Factory's high-cost terms first
     "gpt-6-astra-ultrafast": "opt-in",
-    // older generations the plugin has never offered, as before
-    "claude-opus-4-7": "older", "claude-opus-4-6": "older", "claude-opus-4-5-20251101": "older",
-    "claude-sonnet-4-5-20250929": "older", "gpt-5.5-pro": "older", "gpt-5.4-mini": "older", "gpt-5.2": "older",
-    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older", "grok-4.5": "older", "kimi-k2.5": "older",
-    "glm-5.1": "older", "glm-5": "older", "glm-4.7": "older",
-    "deepseek-v4-flash-0731": "older", "deepseek-v4-pro": "older",
-    // Fast Mode models whose base model isn't offered (fast.test.mjs)
-    "claude-opus-4-7-fast": "older", "claude-opus-4-6-fast": "older", "gpt-5.4-mini-fast": "older",
+    // Historical picker entries absent from Factory's current catalog.
+    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older",
+    "kimi-k2.5": "deprecated", "glm-5.1": "deprecated", "glm-5": "older", "glm-4.7": "older",
+    "deepseek-v4-flash-0731": "deprecated", "deepseek-v4-pro": "deprecated",
+    "claude-opus-4-7-fast": "deprecated", "claude-opus-4-6-fast": "deprecated",
   }
   const missing = picker.filter((id) => !got[id] && !reason[id])
   expect(missing).toEqual([])
@@ -137,24 +134,66 @@ test("every model in droid 1.7.0's picker is offered, or left out for a reason",
   const reason = {
     auto: "router", "auto-fast": "router",
     "garnet-07-15": "unreleased", "atlas-07-21": "unreleased", "aster-07-15": "unreleased",
-    "gpt-6-astra-ultrafast": "opt-in", "gpt-6.1-sol-ultrafast": "opt-in",
-    // listed only once their feature flag is on for an account
-    "gpt-6.1-terra": "flag", "muse-spark-open": "flag",
-    // Responses on Google: no wire of the plugin's goes there
-    "muse-spark-1.3": "wire",
-    "claude-opus-4-7": "older", "claude-opus-4-6": "older", "claude-opus-4-5-20251101": "older",
-    "claude-sonnet-4-5-20250929": "older", "gpt-5.5-pro": "older", "gpt-5.4-mini": "older", "gpt-5.2": "older",
-    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older", "grok-4.5": "older", "kimi-k2.5": "older",
-    "glm-5.1": "older", "glm-5": "older", "glm-4.7": "older",
-    "deepseek-v4-flash-0731": "older", "deepseek-v4-pro": "older",
-    "claude-opus-4-7-fast": "older", "claude-opus-4-6-fast": "older", "gpt-5.4-mini-fast": "older",
+    "gpt-6-astra-ultrafast": "outside the published catalog",
+    "muse-spark-open": "outside the published catalog",
+    "gpt-5.2-codex": "older", "gpt-5.1-codex-max": "older",
+    "kimi-k2.5": "deprecated", "glm-5.1": "deprecated", "glm-5": "older", "glm-4.7": "older",
+    "deepseek-v4-flash-0731": "deprecated", "deepseek-v4-pro": "deprecated",
+    "claude-opus-4-7-fast": "deprecated", "claude-opus-4-6-fast": "deprecated",
   }
   expect(picker.filter((id) => !got[id] && !reason[id])).toEqual([])
   expect(Object.keys(reason).filter((id) => got[id])).toEqual([])
-  expect(entry170("gpt-6.1-sol-ultrafast")).toContain('explicitOptInRequirement:{kind:"high_cost"')
-  expect(entry170("gpt-6.1-terra")).toContain("featureFlag:k.Gpt61Terra,")
   expect(entry170("muse-spark-open")).toContain("featureFlag:k.MuseSparkOpen,")
-  expect(entry170("muse-spark-1.3")).toContain('apiEndpoint:"responses",apiProviders:["google"]')
+})
+
+// Factory's public model catalog (2026-11-20) and Droid 1.16.0's registry.
+const DROID_1160 = readFileSync(new URL("./testdata/droid-1.16.0-catalog.txt", import.meta.url), "utf8").split("\n")
+
+test("the newly covered catalog models are exposed with their Droid routes and limits", async () => {
+  const messages = "/api/llm/a/v1"
+  const responses = "/api/llm/o/v1"
+  const gemini = "/api/llm/g/v1"
+  const cases = [
+    ["claude-opus-4-7", messages, "anthropic", 867000, 128000, 2],
+    ["claude-opus-4-6", messages, "anthropic", 867000, 128000, 2],
+    ["claude-opus-4-5-20251101", messages, "anthropic", 180000, 64000, 2],
+    ["claude-sonnet-4-5-20250929", messages, "anthropic", 180000, 32000, 1.2],
+    ["gpt-6.2-astra", responses, "openai", 1050000, 128000, 3.2],
+    ["gpt-6.2-astra-fast", responses, "openai", 1050000, 128000, 6.4],
+    ["gpt-6.2-astra-ultrafast", responses, "openai", 1050000, 128000, 9.6],
+    ["gpt-6.2-sol", responses, "openai", 1050000, 128000, 0.8],
+    ["gpt-6.2-sol-fast", responses, "openai", 1050000, 128000, 1.6],
+    ["gpt-6.2-sol-ultrafast", responses, "openai", 1050000, 128000, 2.4],
+    ["gpt-6.1-sol-ultrafast", responses, "openai", 1050000, 128000, 4.8],
+    ["gpt-6.1-terra", responses, "openai", 1050000, 128000, 0.4],
+    ["gpt-5.5-pro", responses, "openai", 1050000, 128000, 12],
+    ["gpt-5.4-mini", responses, "openai", 400000, 128000, 0.3],
+    ["gpt-5.4-mini-fast", responses, "openai", 400000, 128000, 0.6],
+    ["gpt-5.2", responses, "openai", 400000, 128000, 0.7],
+    ["gemini-4-neon", gemini, "google", 1048576, 65536, 1.2],
+    ["grok-4.5", responses, "xai", 200000, 63356, 0.8],
+    ["muse-spark-1.3", responses, "google", 1040000, 131072, 0.5],
+  ]
+  const config = await models()
+  const hooks = await FactoryAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const provider = await hooks.provider.models({ id: "factory" })
+  for (const [id, path, upstream, context, output, rate] of cases) {
+    expect(_internal.MODELS.find((m) => m.id === id)?.upstream).toBe(upstream)
+    const api = "https://api.factory.ai" + path
+    expect(config[id]).toMatchObject({ id, limit: { context, output }, rate, provider: { api } })
+    expect(provider[id]).toMatchObject({ id, limit: { context, output }, rate, api: { url: api } })
+    const registry = DROID_1160.find((line) => line.startsWith(`"${id}":`))
+    const efforts = JSON.parse(registry.match(/reasoningEffort:\{supported:(\[[^\]]*\])/)[1])
+    const variants = path === messages ? efforts.filter((effort) => effort !== "off") : efforts.map((effort) => effort === "off" ? "none" : effort)
+    expect(Object.keys(config[id].variants)).toEqual(variants)
+    expect(provider[id].variants).toEqual(config[id].variants)
+    expect(config[id].attachment).toBe(!registry.includes("images:!1"))
+  }
+  for (const id of ["gemini-4-neon", "gemini-4-hydrogen"]) {
+    expect(config[id].variants.xhigh).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "xhigh" } })
+    expect(provider[id].variants).toEqual(config[id].variants)
+  }
+  expect(_internal.CORE).not.toContain("muse-spark-1.3")
 })
 
 // yetone/magpie#2080: droid 0.241.1 offers Gemini 4 Argon; the plugin
