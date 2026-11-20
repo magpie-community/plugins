@@ -1561,6 +1561,226 @@ async function holdThoughts(res, signal) {
   return { bad: false, body }
 }
 
+// streamDeadlines is how long streamGenerateContent may say nothing.
+// firstChunkMs covers the fetch and the wait for the first non-empty
+// chunk; idleMs is reset as each later chunk arrives, so a stream that
+// keeps talking has no total limit. Tests shorten them. Bun's own socket
+// timer (~300s, TimeoutError code 23) is turned off (timeout: false): a
+// stall used to sit there, and magpie then recorded a 502 and tried again.
+const streamDeadlines = { firstChunkMs: 210_000, idleMs: 180_000 }
+
+// deadlineError is a deadline running out. It is a TimeoutError, the same
+// name as Bun's socket timer, so a caller that aborted is not this and
+// this is not an AbortError. magpie turns a throw before any reply into a
+// 502 and retries it; an AbortError from the caller's signal stays the
+// caller's, which a cancelled request already is.
+function deadlineError(stage) {
+  const ms = stage === "first" ? streamDeadlines.firstChunkMs : streamDeadlines.idleMs
+  const message = stage === "first"
+    ? `Antigravity sent no first chunk within ${ms}ms`
+    : `Antigravity's stream stalled for ${ms}ms`
+  return new DOMException(message, "TimeoutError")
+}
+
+// asDeadline prefers the caller's abort over a deadline that fired in the
+// same turn, and a deadline over the AbortError a fetch rejects with when
+// its signal is aborted.
+function asDeadline(parent, ctl, fallback) {
+  if (parent?.aborted) {
+    return parent.reason !== undefined ? parent.reason : new DOMException("Aborted", "AbortError")
+  }
+  if (ctl.signal.aborted && ctl.signal.reason?.name === "TimeoutError") return ctl.signal.reason
+  return fallback
+}
+
+// untilAbort settles with promise, or with signal's reason once signal
+// aborts, whichever is first. The abort listener does not outlive it.
+function untilAbort(signal, promise) {
+  if (signal.aborted) {
+    promise.catch(() => {})
+    return Promise.reject(signal.reason !== undefined ? signal.reason : new DOMException("Aborted", "AbortError"))
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort)
+      reject(signal.reason !== undefined ? signal.reason : new DOMException("Aborted", "AbortError"))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(signal.aborted ? (signal.reason !== undefined ? signal.reason : error) : error)
+      },
+    )
+  })
+}
+
+const nonempty = (chunk) => !!chunk && chunk.byteLength > 0
+
+// streamed is one v1internal:streamGenerateContent fetch. Non-2xx bodies keep
+// the same deadlines and caller signal until read or cancelled, so a stalled
+// error body cannot hang res.text(). For 2xx, the first non-empty chunk is
+// held so the caller can stream it; until that chunk, a stall throws, and
+// magpie has no reply head to keep. After it, a stall errors the stream.
+async function streamed(url, init) {
+  const parent = init?.signal
+  const ctl = new AbortController()
+  let timer
+  let cleaned = false
+  let linked = false
+  let stage = "first"
+  let reader
+  let streamCtl = null
+  let ended = false
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    clearTimeout(timer)
+    timer = undefined
+    if (linked) parent.removeEventListener("abort", onParent)
+  }
+  const finish = () => {
+    if (ended) return
+    ended = true
+    cleanup()
+  }
+  const abortActive = (reason) => {
+    if (!ctl.signal.aborted) ctl.abort(reason)
+    if (streamCtl) {
+      const err = asDeadline(parent, ctl, ctl.signal.reason)
+      finish()
+      reader?.cancel().catch(() => {})
+      try { streamCtl.error(err) } catch { /* already closed or errored */ }
+    } else {
+      cleanup()
+      reader?.cancel().catch(() => {})
+    }
+  }
+  const onParent = () => {
+    abortActive(parent.reason)
+  }
+  const arm = () => {
+    if (cleaned) return
+    clearTimeout(timer)
+    const at = stage
+    const ms = at === "first" ? streamDeadlines.firstChunkMs : streamDeadlines.idleMs
+    timer = setTimeout(() => {
+      timer = undefined
+      if (cleaned || ctl.signal.aborted) return
+      abortActive(deadlineError(at))
+    }, ms)
+  }
+  const wrapBody = (first) => {
+    const body = new ReadableStream({
+      start(c) {
+        streamCtl = c
+        if (first !== undefined) c.enqueue(first)
+      },
+      async pull(c) {
+        if (ended) return
+        if (ctl.signal.aborted || parent?.aborted) {
+          const err = asDeadline(parent, ctl, ctl.signal.reason)
+          finish()
+          await reader.cancel().catch(() => {})
+          c.error(err)
+          return
+        }
+        try {
+          const n = await untilAbort(ctl.signal, reader.read())
+          if (ended) return
+          if (n.done) {
+            const aborted = ctl.signal.aborted || parent?.aborted
+            finish()
+            if (aborted) c.error(asDeadline(parent, ctl, ctl.signal.reason))
+            else c.close()
+            return
+          }
+          if (nonempty(n.value)) {
+            stage = "idle"
+            arm()
+          }
+          c.enqueue(n.value)
+        } catch (e) {
+          if (ended) return
+          finish()
+          await reader.cancel().catch(() => {})
+          c.error(asDeadline(parent, ctl, e))
+        }
+      },
+      cancel(reason) {
+        finish()
+        return reader.cancel(reason)
+      },
+    })
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: new Headers(res.headers) })
+  }
+  if (parent) {
+    if (parent.aborted) ctl.abort(parent.reason)
+    else {
+      parent.addEventListener("abort", onParent, { once: true })
+      linked = true
+    }
+  }
+  if (ctl.signal.aborted) {
+    cleanup()
+    throw asDeadline(parent, ctl, ctl.signal.reason)
+  }
+  arm()
+  let res
+  try {
+    res = await untilAbort(ctl.signal, fetch(url, { ...init, signal: ctl.signal, timeout: false }))
+  } catch (e) {
+    cleanup()
+    throw asDeadline(parent, ctl, e)
+  }
+  if (!res.body) {
+    cleanup()
+    return res
+  }
+  if (!res.ok) {
+    if (ctl.signal.aborted || parent?.aborted) {
+      cleanup()
+      await res.body.cancel().catch(() => {})
+      throw asDeadline(parent, ctl, ctl.signal.reason)
+    }
+    reader = res.body.getReader()
+    return wrapBody(undefined)
+  }
+  reader = res.body.getReader()
+  try {
+    while (true) {
+      if (ctl.signal.aborted || parent?.aborted) {
+        throw asDeadline(parent, ctl, ctl.signal.reason)
+      }
+      const r = await untilAbort(ctl.signal, reader.read())
+      if (r.done) {
+        cleanup()
+        try { reader.releaseLock() } catch { /* already released */ }
+        return new Response(new ReadableStream({ start(c) { c.close() } }), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: new Headers(res.headers),
+        })
+      }
+      if (!nonempty(r.value)) continue
+      if (ctl.signal.aborted || parent?.aborted) {
+        throw asDeadline(parent, ctl, ctl.signal.reason)
+      }
+      stage = "idle"
+      arm()
+      return wrapBody(r.value)
+    }
+  } catch (e) {
+    cleanup()
+    await reader.cancel().catch(() => {})
+    throw asDeadline(parent, ctl, e)
+  }
+}
+
 // complete sends a Gemini request at url (…/models/<id>:<method>) to
 // Antigravity for the account s
 async function complete(s, url, init, magpie) {
@@ -1596,7 +1816,7 @@ async function complete(s, url, init, magpie) {
   const stream = method === "streamGenerateContent"
   const ua = await userAgent()
   const send = (credits) =>
-    fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
+    streamed(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok, "User-Agent": ua },
       body: JSON.stringify(envelope(req, sent, l.project.id, credits, init?.headers)),
@@ -1618,7 +1838,9 @@ async function complete(s, url, init, magpie) {
       try {
         again = await send(true)
       } catch (e) {
-        if (init?.signal?.aborted) throw e
+        // a caller abort stays one, and a deadline is a stall to retry,
+        // not the 429 this second ask was hoping to spend credits on
+        if (init?.signal?.aborted || e?.name === "TimeoutError") throw e
       }
       if (again?.ok) {
         res = again
@@ -2213,7 +2435,7 @@ async function webSearch({ query, count } = {}, ctx = {}) {
     throw e
   }
   const ua = await userAgent()
-  const res = await fetch(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
+  const res = await streamed(`${DAILY}/v1internal:streamGenerateContent?alt=sse`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok, "User-Agent": ua },
     body: JSON.stringify(envelope(req, sent, l.project.id, false)),
@@ -2347,6 +2569,7 @@ export const _internal = {
   pagesFromGrounding,
   webSearch,
   retry400,
+  streamDeadlines,
   badCall,
   usage,
   tokens,
