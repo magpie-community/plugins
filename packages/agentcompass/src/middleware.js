@@ -183,6 +183,12 @@ function shouldRoute(model, options = {}) {
 // id, no `:<effort>` (Magpie would read `m:default` as a model of that whole name) and no effort field.
 const ONE_CONFIGURATION = "default";
 
+// The effort a route's `:<effort>` is spelled with for Magpie. Its askedAt splits only `provider.MemberEfforts` (none..max)
+// off a model, and Codex's `ultra` is no API's level that Magpie sends as `max` (`internal/gateway/ir.go` effortOf and
+// fitEffort, v0.1.4603): `<model>:ultra` would reach the vendor as a model of that whole name, so an `ultra` route goes as
+// `<model>:max`, what Magpie sends for it.
+const MAGPIE_SUFFIX_EFFORT = { ultra: "max" };
+
 function applyProtocolEffortOnly(body, targetEffort, ctx = {}) {
   const options = magpieOptions(ctx?.options);
   const protocol = String(ctx?.protocol || "").toLowerCase();
@@ -231,7 +237,7 @@ export function applyRoutedModelAndEffort(body, decision, ctx = {}) {
 
   // Magpie natively supports `<model>:<effort>` in `gateway.go:askedAt` (unless disabled by option)
   if (options.useColonEffort !== false && targetEffort && targetEffort !== ONE_CONFIGURATION && !targetModel.includes(":")) {
-    body.model = `${targetModel}:${targetEffort}`;
+    body.model = `${targetModel}:${MAGPIE_SUFFIX_EFFORT[targetEffort] ?? targetEffort}`;
   } else {
     body.model = targetModel;
   }

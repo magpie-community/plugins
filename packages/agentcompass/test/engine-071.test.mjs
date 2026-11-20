@@ -240,6 +240,15 @@ test("a `default` row is one candidate read where the data reads `default`, and 
   assert.equal(body.reasoning_effort, "high");
 });
 
+test("an `ultra` route goes to Magpie as `<model>:max`: its askedAt splits only none..max off a model and sends ultra as max", () => {
+  // provider.MemberEfforts (none..max) is what askedAt splits; `m:ultra` would reach the vendor as a model of that whole name
+  const body = { model: "agentcompass/auto", profile: PROFILE, messages: [{ role: "user", content: "edit one function" }] };
+  const ctx = { protocol: "chat", state: {}, reject: (status, message) => ({ rejected: status, message }), options: { injectProtocolEffort: true, candidateModels: [{ model: "gpt-6.1-sol", efforts: ["ultra"] }] } };
+  middlewareOnRequest(body, ctx);
+  assert.equal(ctx.state.route?.targetEffort, "ultra", JSON.stringify(ctx.state.route ?? null));
+  assert.equal(body.model, "gpt-6.1-sol:max");
+});
+
 test("the converter reads reasoning_levels first, else supported_reasoning_levels, and names what it skips on stderr", () => {
   // the documented order: reasoning_levels when it lists any, supported_reasoning_levels otherwise
   const differing = { id: "m-order", reasoning_levels: ["low", "High"], supported_reasoning_levels: [{ effort: "medium" }, { effort: "xhigh" }] };
