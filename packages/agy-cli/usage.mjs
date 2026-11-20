@@ -273,8 +273,16 @@ function run(file, args, { cwd, env, deadline, signal, maxOutputBytes, onTreeKil
         spawned = Boolean(killer)
         if (typeof killer?.once === "function") {
           const done = new Promise(r => {
-            killer.once("error", () => { try { child.kill("SIGKILL") } catch {}; r() })
-            killer.once("close", code => { if (code !== 0) try { child.kill("SIGKILL") } catch {}; r() })
+            killer.once("error", () => {
+              clearTimeout(fallbackKillTimer)
+              try { child.kill("SIGKILL") } catch {}
+              r()
+            })
+            killer.once("close", code => {
+              clearTimeout(fallbackKillTimer)
+              if (code !== 0) try { child.kill("SIGKILL") } catch {}
+              r()
+            })
           })
           onTreeKill?.(done)
         }
@@ -282,7 +290,9 @@ function run(file, args, { cwd, env, deadline, signal, maxOutputBytes, onTreeKil
       if (!spawned) {
         try { child.kill("SIGKILL") } catch {}
       } else {
-        fallbackKillTimer = setTimeout(() => { try { child.kill("SIGKILL") } catch {} }, 500)
+        // Only fall back if taskkill itself hangs; killing cmd.exe earlier
+        // can orphan grandchildren before taskkill snapshots the tree.
+        fallbackKillTimer = setTimeout(() => { try { child.kill("SIGKILL") } catch {} }, 5000)
         fallbackKillTimer.unref?.()
       }
     }
@@ -519,7 +529,8 @@ export async function fetchUsage(agy, {
     })
     const options = { cwd: directory, env: childEnv, deadline, signal, maxOutputBytes, onTreeKill: p => { pendingTreeKill = p } }
     // --version needs no sign-in, so its hang is never read as one
-    const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + 3000) }).catch((error) => {
+    const versionBudgetMs = process.platform === "win32" ? 5000 : 3000
+    const version = await run(agy, ["--version"], { ...options, deadline: Math.min(deadline, Date.now() + versionBudgetMs) }).catch((error) => {
       if (error?.kind === "timeout") throw new UsageError(error.message)
       throw error
     })
@@ -582,7 +593,7 @@ export async function fetchUsage(agy, {
         if (pendingTreeKill) {
           const waitKill = pendingTreeKill
           pendingTreeKill = null
-          await Promise.race([waitKill, new Promise(resolve => setTimeout(resolve, 800))])
+          await Promise.race([waitKill, new Promise(resolve => setTimeout(resolve, 5000))])
         }
         await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)))
       }

@@ -1127,6 +1127,21 @@ let nativeConv
 }
 
 {
+  const secondBody = continuation(nativeBody, nativeEvents, "native-result")
+  const assistant = secondBody.messages[1]
+  secondBody.messages[1] = {
+    content: assistant.content.map(block => Object.fromEntries(Object.keys(block).sort().reverse().map(key => [key, block[key]]))),
+    role: assistant.role,
+  }
+  const { events } = await readSSE(await callFetch(secondBody))
+  check("field-order-independent history continues to end_turn", stopOf(events) === "end_turn" && textOf(events).includes("After tools"))
+  const delivered = logs().find(event => event.type === "mcpResult" && event.convId === nativeConv)
+  check("MCP receives actual result without placeholder", delivered?.result?.content?.[0]?.text === "native-result")
+  check("continuation sends no new agy prompt", logs().filter(event => event.type === "user" && event.convId === nativeConv).length === 1)
+  check("native tool reuses the same agy session", inits().filter(event => event.convId === nativeConv).length === 1)
+}
+
+{
   // #989: agy left tools with larger schemas (the reporter's bash at ~1005
   // tokens, grep at ~691) out of the model's function list and loaded them on
   // demand, while small ones (read at ~561 and below) were listed. The report
@@ -1155,21 +1170,6 @@ let nativeConv
     listed.every(tool => tool._meta?.["antigravity/alwaysLoad"] === true) &&
     listed.find(tool => tool.name === "bash")?.inputSchema?.properties?.command?.type === "string",
     JSON.stringify(listed.map(tool => [tool.name, tool._meta, JSON.stringify(tool).length])))
-}
-
-{
-  const secondBody = continuation(nativeBody, nativeEvents, "native-result")
-  const assistant = secondBody.messages[1]
-  secondBody.messages[1] = {
-    content: assistant.content.map(block => Object.fromEntries(Object.keys(block).sort().reverse().map(key => [key, block[key]]))),
-    role: assistant.role,
-  }
-  const { events } = await readSSE(await callFetch(secondBody))
-  check("field-order-independent history continues to end_turn", stopOf(events) === "end_turn" && textOf(events).includes("After tools"))
-  const delivered = logs().find(event => event.type === "mcpResult" && event.convId === nativeConv)
-  check("MCP receives actual result without placeholder", delivered?.result?.content?.[0]?.text === "native-result")
-  check("continuation sends no new agy prompt", logs().filter(event => event.type === "user" && event.convId === nativeConv).length === 1)
-  check("native tool reuses the same agy session", inits().filter(event => event.convId === nativeConv).length === 1)
 }
 
 {

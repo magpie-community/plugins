@@ -25,6 +25,7 @@ for (const [name, mocks] of [
   ["tool-schema.mjs", false],
   ["tool-summary.mjs", false],
   ["usage-settlement.mjs", false],
+  ["truncated-replay-usage.mjs", false],
   ["steer-in-session.mjs", false],
   ["dropped-call.mjs", false],
   ["repeat-batch.mjs", false],
@@ -51,10 +52,11 @@ test("test/re2-pattern-unit.mjs", () => {
 }, 70_000)
 
 test("test/smoke.mjs against a fake agy", () => {
-  const { code, output } = run([path.join(dir, "smoke.mjs")], 240_000)
+  const timeoutMs = process.platform === "win32" ? 420_000 : 240_000
+  const { code, output } = run([path.join(dir, "smoke.mjs")], timeoutMs)
   expect(output).toMatch(/ALL OK \(\d+ checks\)/)
   expect(code).toBe(0)
-}, 250_000)
+}, process.platform === "win32" ? 430_000 : 250_000)
 
 test("test/array-items-unit.mjs", () => {
   const { code, output } = run([path.join(dir, "array-items-unit.mjs")], 60_000)
