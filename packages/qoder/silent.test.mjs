@@ -49,23 +49,38 @@ for (const stream of [false, true]) {
   })
 }
 
-test("a reply whose headers came and whose first event never does is dropped the same way", async () => {
-  QUEUE.silent = 50
-  const { fetch } = await loader(
-    (signal) =>
-      new Response(
+for (const stream of [false, true]) {
+  test(`a reply whose headers came and whose first event never does is dropped the same way (stream ${stream})`, async () => {
+    QUEUE.silent = 50
+    let upstreamSignal
+    const state = { cancelled: false, reads: 0 }
+    const { fetch } = await loader((signal) => {
+      upstreamSignal = signal
+      signal?.addEventListener("abort", () => {}, { once: true })
+      return new Response(
         new ReadableStream({
-          start(ctl) {
-            signal?.addEventListener("abort", () => ctl.error(signal.reason ?? new Error("aborted")), { once: true })
+          pull() {
+            state.reads++
+            return new Promise(() => {})
+          },
+          cancel() {
+            state.cancelled = true
           },
         }),
         { headers: { "Content-Type": "text/event-stream" } },
-      ),
-  )
-  const res = await fetch(API_CHAT, { method: "POST", body: JSON.stringify({ model: "dfmodel", messages: [{ role: "user", content: "hi" }] }) })
-  expect(res.status).toBe(504)
-  expect((await res.json()).error.message).toMatch(/no first event/)
-})
+      )
+    })
+    const began = Date.now()
+    const res = await fetch(API_CHAT, { method: "POST", body: JSON.stringify({ model: "dfmodel", stream, messages: [{ role: "user", content: "hi" }] }) })
+    const text = await res.text()
+    expect(res.status).toBe(504)
+    expect(JSON.parse(text).error.message).toMatch(/no first event/)
+    expect(upstreamSignal.aborted).toBe(true)
+    expect(state.cancelled).toBe(true)
+    expect(state.reads).toBeGreaterThan(0)
+    expect(Date.now() - began).toBeLessThan(5_000)
+  })
+}
 
 test("a reply that answers within QUEUE.silent is not cut, and the timer is gone after it", async () => {
   QUEUE.silent = 200
@@ -81,3 +96,40 @@ test("a reply that answers within QUEUE.silent is not cut, and the timer is gone
   expect((await res.json()).choices[0].message.content).toBe("hello")
   await new Promise((r) => setTimeout(r, 300))
 })
+
+for (const stream of [false, true]) {
+  test(`a reply that answers first keeps its later reading after QUEUE.silent (stream ${stream})`, async () => {
+    QUEUE.silent = 150
+    const enc = new TextEncoder()
+    const line = (body) => enc.encode(`data:${JSON.stringify({ headers: {}, body: JSON.stringify(body), statusCodeValue: 200 })}\n\n`)
+    const state = { cancelled: false, reads: 0 }
+    const { fetch } = await loader(() => {
+      let read = 0
+      let closing = false
+      return new Response(
+        new ReadableStream({
+          pull(controller) {
+            read++
+            state.reads = read
+            if (read === 1) controller.enqueue(line({ choices: [{ delta: { content: "hello" } }] }))
+            else if (!closing) {
+              closing = true
+              setTimeout(() => controller.close(), 200)
+            }
+          },
+          cancel() {
+            state.cancelled = true
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      )
+    })
+    const res = await fetch(API_CHAT, { method: "POST", body: JSON.stringify({ model: "dfmodel", stream, messages: [{ role: "user", content: "hi" }] }) })
+    const text = await res.text()
+    expect(res.status).toBe(200)
+    if (stream) expect(text).toContain("hello")
+    else expect(JSON.parse(text).choices[0].message.content).toBe("hello")
+    expect(state.reads).toBeGreaterThan(1)
+    expect(state.cancelled).toBe(false)
+  })
+}
