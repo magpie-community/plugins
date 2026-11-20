@@ -361,8 +361,8 @@ else if (version) {
   const env = { ...process.env, TEST_LOG: logPath, TEST_REPORT: JSON.stringify(report([group([bucket()])])), TEST_DESCENDANT: path.join(directory, "descendant"), ...extraEnv }
   return {
     executable, env,
-    // agy's stored sign-in can't be read here (signin.mjs is tested on its own)
-    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }) },
+    // Tests that read quota supply their own endpoint and stored credential.
+    options: { env, tempRoot: directory, signIn: async () => ({ state: "unknown" }), quota: async () => { throw new Error("No quota endpoint configured for this fixture") } },
     async logs() { return (await fs.readFile(logPath, "utf8")).trim().split("\n").map(line => JSON.parse(line)) },
     // Every pid to see gone after a kill: the spawned children, and the agy
     // each one ran that got as far as logging (on Windows a grandchild under
@@ -855,7 +855,7 @@ test("a hung sign-in with an ended token is never restarted until the credential
 
 test("a timeout with a live access token preserves the sign-in", async t => {
   const f = await fixture(t, { TEST_MODE: "hang", TEST_ERROR: "Waiting for browser authentication" })
-  const live = { state: "present", fp: "live", canRenew: true, expiresAt: Date.now() + 3600_000, expired: false }
+  const live = { state: "present", fp: "live", canRenew: false, expiresAt: Date.now() + 3600_000, expired: false }
   const result = await createUsageReader(() => f.executable, { ...f.options, timeoutMs: 3000, signIn: async () => live })()
   assert.equal(result.signIn, "kept")
   await f.assertClean()
@@ -871,6 +871,14 @@ test("invalid and oversized stdout/stderr reports fail within the output budget"
     await assert.rejects(fetchUsage(f.executable, { ...f.options, ...(maxOutputBytes ? { maxOutputBytes } : {}) }), expected)
     await f.assertClean()
   }
+})
+
+test("a cold version probe has room inside the shared usage deadline", async t => {
+  const f = await fixture(t, { TEST_START_DELAY_MS: "3500" })
+  const result = await fetchUsage(f.executable, { ...f.options, timeoutMs: 18_000 })
+  assert.equal(result.windows[0].used, 25)
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+  await f.assertClean()
 })
 
 test("version/report hangs time out, terminate the process, and leave no workspace", async t => {
@@ -1072,7 +1080,7 @@ test("an account with no project and Google's reason for it says that reason", a
 // renews it first, and when that failed for a moment (a DNS miss at
 // Windows startup, a 10s keyring timeout) it opened Google's sign-in in the
 // browser. With such a token agy -p isn't run: the quota is read directly.
-test("an ended or ending access token with a refresh token is read without running agy -p", async t => {
+test("renewable dated credentials read quota directly while fresh, ending, or expired", async t => {
   for (const ends of [1, 1_000_000 + 60_000]) {
     const f = await fixture(t, { TEST_VERSION: "1.5.9" })
     const asked = []
@@ -1087,14 +1095,19 @@ test("an ended or ending access token with a refresh token is read without runni
     assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
     await f.assertClean()
   }
-  // a token with time left still goes through agy
-  const f = await fixture(t)
-  let asked = 0
+  // A live token must not start print mode, even when that command hangs.
+  const api = await codeAssist(t)
+  const f = await fixture(t, { TEST_MODE: "hang", TEST_VERSION: "1.5.9", CLOUD_CODE_URL: api.url })
   const stored = { state: "present", fp: "live", canRenew: true, expiresAt: 1_000_000 + 10 * 60_000, expired: false }
-  const read = createUsageReader(() => f.executable, { ...f.options, quota: async () => { asked++; return SUMMARY }, now: () => 1_000_000, signIn: async () => stored })
-  assert.equal((await read()).windows.length, 1)
-  assert.equal(asked, 0)
-  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version", "-p"])
+  const quota = o => readQuotaDirect({ ...o, stored: async () => STORED })
+  const read = createUsageReader(() => f.executable, { ...f.options, timeoutMs: 5000, quota, now: () => 1_000_000, signIn: async () => stored })
+  const result = await read()
+  assert.equal(result.error, undefined)
+  assert.equal(result.signIn, "kept")
+  assert.equal(result.windows.length, 2)
+  assert.deepEqual(api.calls.map(c => c.url), ["/v1internal:loadCodeAssist", "/v1internal:retrieveUserQuotaSummary"])
+  assert.deepEqual((await f.logs()).map(l => l.args[0]), ["--version"])
+  await f.assertClean()
 })
 
 test("a renewal that fails for a moment backs off and keeps the sign-in; one Google refuses asks for a new sign-in", async t => {

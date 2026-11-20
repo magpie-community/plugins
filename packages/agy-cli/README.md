@@ -13,8 +13,8 @@ OpenCode、Claude Code 等客户端经由 Magpie 调用 agy 向本插件开放�
 流式响应。
 
 - 底层是真正的 agy CLI，走它自带的 ACP 通道。ACP 握手里的 `clientInfo` 是本插件自己的
-  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己只在一种情况下请求 Google
-  的接口：agy 因地区拒绝 `/usage` 时，按 agy 的方式读额度（见「额度」）。
+  包名和版本（`opencode-agy-cli-auth`），不冒充 Zed 或其它编辑器。插件自己只为读取额度请求 Google
+  的接口，使用 agy 保存的登录和同一组额度接口（见「额度」）。模型请求由 agy 处理。
 - 客户端自己的工具（读写文件、执行命令等）通过 MCP 暴露给模型。工具由客户端执行，结果
   回传到同一轮 agy 对话里，模型看到的是原生工具调用。
 - 账号风险不由插件决定。Google 的使用政策变化时，插件无法替你保证账号不受限制。
@@ -161,19 +161,21 @@ magpie quota agy-cli --json
 magpie quota refresh agy-cli --json
 ```
 
-额度数据来自 agy 自己的 `/usage` 报告，显示的是当前 agy 登录账号的订阅窗口，按模型组
+额度数据来自 agy 的 `/usage` 所用的接口，显示的是当前 agy 登录账号的订阅窗口，按模型组
 分别列出。同一组的模型共用这一组的 5 小时和每周额度，所以 Magpie 显示各组，并在「全部模型」
 里列出组里的每个模型，读数是这一组用得最多的那个额度（先用完的那个；Google 自己给每个模型的
 读数就是组的读数）。插件不写 Google 令牌，也只把它发往 Google，查询的始终是 agy 当前登录的账号。没有可测量数据的窗口会显示
 "Limits not available"，而不是 0% 或 100%。
 
-在 Antigravity 未开放的地区，agy 会在资格检查时拒绝 `/usage`（"not currently available in
-your location"），尽管它自己查的额度已经拿到了。这时插件按 agy 的方式自己查：用 agy 存的登录，
+保存了可续期且带到期时间的 Google 登录时，插件优先直接读取额度，避免每次启动完整 CLI、
+初始化语言服务并等待地区资格检查。查询沿用 agy 的方式：用 agy 存的登录，
 以 agy 的 User-Agent 依次请求 Google Code Assist 的 `loadCodeAssist` 和
 `retrieveUserQuotaSummary`。快到期的访问令牌只在内存里续期，不写回。个人 Google 账号的
 `loadCodeAssist` 没给项目时，按 Google 给所有个人账号用的 `aicode-consumers` 项目查（agy
-自己不带项目查，Google 会拒绝）。这次查询也失败时，账号显示 agy 的拒绝原因和查询失败的原因，
-不显示数字。
+自己不带项目查，Google 会拒绝）。
+
+其他登录仍使用 agy 的 `/usage`。遇到地区资格拒绝时再尝试同一额度接口。两次查询都失败时，
+账号显示 agy 的拒绝原因和直接查询失败的原因。
 
 未登录的 agy 一运行就会在浏览器里打开 Google 登录页，所以插件在为额度或模型列表运行 agy 之前，
 先看系统钥匙串（macOS）或凭据管理器（Windows）里 agy 存的登录，只读有没有、何时到期。没有登录、
