@@ -71,9 +71,10 @@ export const kinds = {
   // 企业微信 group robot
   wecom: (c, m) => post(c.webhook, { msgtype: "text", text: { content: `${m.title}\n${m.body}` } }),
 
-  // Telegram bot
+  // Telegram bot; threadId posts into one topic of a forum group
   telegram: (c, m) => post(`${trimSlash(c.server ?? "https://api.telegram.org")}/bot${c.token}/sendMessage`, {
     chat_id: c.chatId, text: `${m.title}\n${m.body}`, disable_web_page_preview: true,
+    ...(c.threadId != null && String(c.threadId).trim() !== "" ? { message_thread_id: Number(c.threadId) } : {}),
   }),
 
   // anything else: the event as JSON
