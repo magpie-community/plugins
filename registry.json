@@ -1,6 +1,7 @@
 {
   "version": 1,
   "plugins": [
+    {   "package": "@magpie-community/opencode-clixad-auth",   "name": "Clixad",   "icon": "https://clixad.onrender.com/favicon.ico",   "providers": ["clixad"],   "community": true,   "summary": {     "en": "Clixad's 15 models through its OpenAI-compatible gateway on your own Clixad account: reuse the Clixad CLI sign-in or paste its token, with the live model list, the daily free-credit window and the credit balance.",     "zh": "用自己的 Clixad 账号经其 OpenAI 兼容网关使用全部 15 个模型：复用本机 Clixad CLI 登录或粘贴 token，显示实时模型列表、每日免费额度窗口与积分余额。"   } },
     { "package": "@magpie-community/opencode-gumloop-auth", "name": "Gumloop", "icon": "https://www.gumloop.com/favicon.ico", "providers": ["gumloop"], "community": true,
       "summary": { "en": "Gumloop with your API key and user ID: account models, streaming, tool calls and a locally calibrated credit estimate.", "zh": "使用 API key 和用户 ID 接入 Gumloop：按账号发现模型，支持流式响应、工具调用和本地校准的积分估算。" } },
     { "package": "@magpie-community/opencode-agnes-auth", "name": "Agnes AI", "icon": "https://www.agnes-ai.com/images/biglogo.png", "providers": ["agnes"], "community": true,
@@ -308,3 +309,4 @@
       "summary": { "en": "Pine (pmndre/pine, the event-driven agent harness on pi's SDK) on magpie's Agents page: pick one of magpie's models and magpie writes its gateway and catalog into ~/.pine/models.json and the model into pine.json, so new conversations start on it. Restart Pine after a change; unofficial.", "zh": "把 Pine（pmndre/pine，跑在 pi SDK 上的事件驱动 Agent 框架）加到 magpie 的 Agent 页：选一个 magpie 的模型，magpie 把网关和模型目录写进 ~/.pine/models.json、把起始模型写进 pine.json，新对话就用它。换完模型要重启 Pine；非官方适配。" } }
   ]
 }
+

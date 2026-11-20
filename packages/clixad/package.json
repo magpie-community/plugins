@@ -1,0 +1,19 @@
+{
+  "name": "@magpie-community/opencode-clixad-auth",
+  "version": "0.1.0",
+  "description": "Clixad (clixad.onrender.com) in magpie and OpenCode: all 15 models through one OpenAI-compatible gateway, reusing the Clixad CLI sign-in, with the daily free-credit window and the credit balance.",
+  "homepage": "https://clixad.onrender.com",
+  "type": "module",
+  "main": "./opencode.mjs",
+  "exports": { ".": "./opencode2.mjs" },
+  "files": ["index.mjs", "opencode.mjs", "opencode2.mjs", "README.md", "LICENSE"],
+  "keywords": ["opencode", "opencode-plugin", "magpie", "clixad"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/YeWen0130/magpie-clixad" },
+  "scripts": { "test": "node --test" },
+  "magpie": {
+    "name": "Clixad",
+    "maxConcurrency": 2,
+    "icon": "https://clixad.onrender.com/favicon.ico"
+  }
+}
