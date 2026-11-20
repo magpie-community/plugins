@@ -9,7 +9,7 @@ const TOKEN_HEADER = "x-hindsight-token";
 let running;
 let pluginOptions = {};
 
-function page() {
+function page(port) {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="hindsight-token" content="${TOKEN}"><title>Hindsight · 连接测试</title>
@@ -41,14 +41,15 @@ button.secondary{border-color:#263442;background:transparent;color:#e6edf3}butto
     run.disabled = true;
     state.textContent = "正在测试连接…";
     try {
-      const response = await fetch(location.pathname, {
+      const response = await fetch(location.href, {
         method: "POST",
+        credentials: "omit",
         headers: { "x-hindsight-token": token, "Accept": "application/json" }
       });
       const result = await response.json();
       state.textContent = result.ok
-        ? "连接成功：API 与数据库可用。\nbank：" + (result.bank || "hermes") + "\n耗时：" + (result.ms ?? "—") + " ms"
-        : (messages[result.code] || "连接失败：测试服务返回了未知状态。") + "\nbank：" + (result.bank || "hermes") + "\n耗时：" + (result.ms ?? "—") + " ms";
+        ? "连接成功：API 与数据库可用。\\nbank：" + (result.bank || "hermes") + "\\n耗时：" + (result.ms ?? "—") + " ms"
+        : (messages[result.code] || "连接失败：测试服务返回了未知状态。") + "\\nbank：" + (result.bank || "hermes") + "\\n耗时：" + (result.ms ?? "—") + " ms";
     } catch {
       state.textContent = "连接失败：本地测试服务没有响应。";
     } finally {
@@ -60,45 +61,75 @@ button.secondary{border-color:#263442;background:transparent;color:#e6edf3}butto
     else state.textContent = "请关闭此测试页并重新打开插件设置。";
   });
 })();
-</script></main></body></html>`;
+</script></body></html>`;
 }
 
-function html() {
-  return new Response(page(), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+function html(port) {
+  return new Response(page(port), { headers: {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' http://127.0.0.1:${port} http://localhost:${port}`
+  } });
 }
 
-function json(code, status = 200) {
-  return Response.json({ ok: code === "connected", code }, { status, headers: { "Cache-Control": "no-store" } });
+function cors(origin) {
+  return origin === "null" ? {
+    "Access-Control-Allow-Origin": "null",
+    "Access-Control-Allow-Headers": TOKEN_HEADER,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin"
+  } : {};
+}
+
+async function handle(req, server) {
+  const hosts = [`127.0.0.1:${server.port}`, `localhost:${server.port}`];
+  if (!hosts.includes(req.headers.get("host")?.toLowerCase()))
+    return new Response("Forbidden", { status: 403 });
+  if (new URL(req.url).pathname !== "/test")
+    return new Response("Not found", { status: 404 });
+  if (req.method === "GET") return html(server.port);
+  if (req.method !== "POST" && req.method !== "OPTIONS")
+    return new Response("Method not allowed", { status: 405 });
+  const origin = req.headers.get("origin");
+  if (origin !== null && origin !== "null" && !hosts.some(host => origin === `http://${host}`))
+    return new Response("Forbidden", { status: 403 });
+  const headers = { ...cors(origin), "Cache-Control": "no-store" };
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
+
+  const supplied = Buffer.from(req.headers.get(TOKEN_HEADER) || "");
+  const expected = Buffer.from(TOKEN);
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+    return Response.json({ ok: false, code: "forbidden" }, { status: 403, headers });
+  return Response.json(await testConnection(pluginOptions), { headers });
 }
 
 export default {
   id: "magpie-hindsight",
-  async server(input, options) {
+  async server(_input, options) {
+    const port = options?.port ?? DEFAULT_PORT;
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      console.warn("[magpie-hindsight] Invalid connection test port. Choose a port from 1024 to 65535 in plugin settings.");
+      return {};
+    }
+    if (running?.port === port) {
+      pluginOptions = options ?? {};
+      return {};
+    }
+    let server;
+    try {
+      server = Bun.serve({ hostname: "127.0.0.1", port, fetch: handle });
+    } catch {
+      console.warn(`[magpie-hindsight] Connection test could not listen on port ${port}. Choose a free port in plugin settings.`);
+      return {};
+    }
+    running?.stop(true);
+    running = server;
     pluginOptions = options ?? {};
-    running = Bun.serve({
-      hostname: input.hostname ?? "127.0.0.1",
-      port: input.port ?? options?.port ?? DEFAULT_PORT,
-      async fetch(req, server) {
-        const host = req.headers.get("host") || "";
-        const hostname = host.startsWith("[") ? host.slice(1, host.indexOf("]")) : host.split(":")[0];
-        const localNames = [server.hostname, "127.0.0.1", "localhost", "::1"];
-        if (!localNames.includes(hostname)) return new Response("Forbidden", { status: 403 });
-        const path = new URL(req.url).pathname;
-        if (req.method === "GET" && path === "/test") return html();
-        if (req.method === "POST" && path === "/test") {
-          const supplied = Buffer.from(req.headers.get(TOKEN_HEADER) || "");
-          const expected = Buffer.from(TOKEN);
-          if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return json("forbidden", 403);
-          try {
-            const result = await testConnection(pluginOptions);
-            return json(result);
-          } catch {
-            return json("unavailable", 503);
-          }
-        }
-        return new Response("Not found", { status: 404 });
-      }
-    });
-    return { close() { running?.stop(); running = undefined; } };
+    return { close() {
+      if (running !== server) return;
+      server.stop(true);
+      running = undefined;
+    } };
   }
 };

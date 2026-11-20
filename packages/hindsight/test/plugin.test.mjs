@@ -188,6 +188,53 @@ test("origin guard refuses remote, gateway-key and missing origin with no fetch"
   assert.equal(calls.length, 0);
 });
 
+test("the gateway accepts Magpie's own local agents using its built-in key", async () => {
+  const calls = [];
+  const plugin = createPlugin({ fetcher: mockHindsight(calls) });
+  const ctx = context({}, { origin: "magpie-key", agent: "codex" });
+  assert.match((await plugin.onRequest(request(), ctx)).messages[0].content, /SYNTHETIC_RECALL/);
+  assert.equal(calls.length, 1);
+});
+
+test("empty and failed recalls preserve previously injected conversation history", async () => {
+  let calls = 0;
+  const plugin = createPlugin({ fetcher: async () => {
+    calls++;
+    if (calls === 3) return new Response(null, { status: 503 });
+    return Response.json({ results: calls === 1 ? [{ text: "earlier memory" }] : [] });
+  } });
+  const first = await plugin.onRequest(request(), context());
+  for (const next of ["No matching memory", "Hindsight is offline"]) {
+    const body = request();
+    body.messages.push({ role: "assistant", content: "Earlier answer" }, { role: "user", content: next });
+    const result = await plugin.onRequest(body, context());
+    assert.equal(result?.messages[0].content, first.messages[0].content);
+    assert.equal(result?.messages[2].content, next);
+  }
+  assert.equal(calls, 3);
+});
+
+test("capture follows incremental Responses tool calls and ignores their preambles", async () => {
+  const calls = [];
+  const plugin = createPlugin({ fetcher: mockHindsight(calls) });
+  const responses = () => context({ capture: true }, { protocol: "responses", agent: "codex" });
+  const start = responses();
+  await plugin.onRequest({ input: "Original question" }, start);
+  await plugin.onResponse({ id: "resp_1", status: "completed", output_text: "Checking", output: [
+    { type: "function_call", call_id: "call_1" }
+  ] }, start);
+  assert.equal(calls.length, 1);
+
+  const followup = responses();
+  assert.equal(await plugin.onRequest({ previous_response_id: "resp_1",
+    input: [{ type: "function_call_output", call_id: "call_1", output: "private result" }]
+  }, followup), undefined);
+  await plugin.onResponse({ status: "completed", output_text: "Final answer" }, followup);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].payload.items[0].content, /Original question[\s\S]+Final answer/);
+  assert.doesNotMatch(calls[1].payload.items[0].content, /private result|Checking/);
+});
+
 test("an already-injected turn skips recall but still captures with fresh state", async () => {
   const calls = [];
   const plugin = createPlugin({ fetcher: mockHindsight(calls) });

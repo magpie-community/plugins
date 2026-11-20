@@ -22,7 +22,9 @@ async function readHealth(response) {
     }
     text += decoder.decode();
     const data = JSON.parse(text);
-    return data && typeof data === "object" && HEALTHY.has(data.status) ? data.status : null;
+    if (!data || typeof data !== "object" || typeof data.status !== "string") return "invalid";
+    if (!HEALTHY.has(data.status)) return "invalid";
+    return data.database === undefined || data.database === "connected" ? "connected" : "unavailable";
   } catch {
     try { await reader.cancel(); } catch { /* The response is already closed. */ }
     return null;
@@ -52,7 +54,6 @@ export async function testConnection(options = {}, fetcher = fetch) {
     try { await response.body?.cancel(); } catch { /* Ignore cleanup failures. */ }
     return { ok: false, code: [401, 403].includes(response.status) ? "unauthorized" : response.status === 404 ? "invalid" : "unavailable", ms: Date.now() - started, bank: config.bank };
   }
-  return await readHealth(response)
-    ? { ok: true, code: "connected", ms: Date.now() - started, bank: config.bank }
-    : { ok: false, code: "invalid", ms: Date.now() - started, bank: config.bank };
+  const code = await readHealth(response) ?? "invalid";
+  return { ok: code === "connected", code, ms: Date.now() - started, bank: config.bank };
 }

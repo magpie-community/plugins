@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { OPEN } from "./protocol.mjs";
+import { CLOSE, OPEN } from "./protocol.mjs";
 
 // Turn-level replay, the same model PowerContext and Nowledge Mem use: the
 // agent resends the ORIGINAL conversation every request, so a memory block is
@@ -8,7 +8,7 @@ import { OPEN } from "./protocol.mjs";
 // provider prompt cache keeps working.
 export function turns(body, protocol) {
   if (protocol === "responses" && typeof body.input === "string") {
-    return [{ index: 0, role: "user", text: body.input, append: t => { body.input += t; } }];
+    return [{ index: 0, text: body.input, append: t => { body.input += `\n\n${t}`; } }];
   }
   const list = protocol === "gemini" ? body.contents : protocol === "responses" ? body.input : body.messages;
   if (!Array.isArray(list)) return [];
@@ -16,22 +16,19 @@ export function turns(body, protocol) {
   list.forEach((msg, index) => {
     if (!msg || typeof msg !== "object") return;
     if (protocol === "responses" && msg.type !== undefined && msg.type !== "message") return;
-    const role = msg.role === "user" ? "user"
-      : msg.role === "assistant" || (protocol === "gemini" && msg.role === "model") ? "assistant" : undefined;
-    if (!role) return;
+    if (msg.role !== "user") return;
     const key = protocol === "gemini" ? "parts" : "content";
     if (typeof msg[key] === "string") {
-      out.push({ index, role, text: msg[key], append: t => { msg[key] += t; } });
+      out.push({ index, text: msg[key], append: t => { msg[key] += `\n\n${t}`; } });
       return;
     }
     if (!Array.isArray(msg[key])) return;
-    const parts = msg[key].filter(p => p && typeof p.text === "string" &&
-      (protocol === "gemini" ? p.thought !== true
-        : role === "assistant" ? p.type === "text" || p.type === "output_text"
-        : p.type === "text" || p.type === "input_text"));
-    if (!parts.length) return;
+    const content = msg[key].filter(p => p && (protocol === "gemini" ? !p.functionResponse : p.type !== "tool_result"));
+    if (!content.length) return;
+    const parts = content.filter(p => typeof p.text === "string" &&
+      (protocol === "gemini" ? p.thought !== true : p.type === "text" || p.type === "input_text"));
     out.push({
-      index, role,
+      index,
       text: parts.map(p => p.text).join("\n"),
       append: t => msg[key].push(protocol === "gemini" ? { text: t }
         : { type: protocol === "responses" ? "input_text" : "text", text: t })
@@ -40,56 +37,52 @@ export function turns(body, protocol) {
   return out;
 }
 
-export function target(all, query) {
-  const q = String(query ?? "").trim();
-  const users = all.filter(t => t.role === "user");
-  if (q) {
-    for (let i = users.length - 1; i >= 0; i--) {
-      if (users[i].text.includes(q)) return users[i];
-    }
-  }
-  return users[users.length - 1];
+export const turnKey = (turn, previousResponse = "") =>
+  createHash("sha256").update(`${previousResponse}\0${turn.index}\0${userText(turn.text)}`).digest("hex");
+
+export function userText(text) {
+  const start = text.lastIndexOf(OPEN);
+  return start !== -1 && text.trimEnd().endsWith(CLOSE) ? text.slice(0, start).trimEnd() : text;
 }
 
-export const turnKey = turn => createHash("sha256").update(`${turn.index}\0${turn.text}`).digest("hex");
-export const injected = turn => turn.text.includes(OPEN);
+export const injected = turn => userText(turn.text) !== turn.text;
 
 const MAX_TURNS = 200;
 // Per-plugin-instance store: one Magpie plugin instance keeps its own turn
 // cache, so sessions never leak across instances (or across tests).
 export function createConversationStore() {
-  const conversations = new Map(); // conversation key -> { turns: Map, at }
+  const conversations = new Map();
 
   return function conversation(ctx, config) {
-    const key = createHash("sha256").update([
-      ctx.origin ?? "", ctx.protocol ?? "", ctx.session ?? "", ctx.cwd ?? "", config.hindsight_api, config.bank
-    ].join("\0")).digest("hex");
-    let conv = conversations.get(key);
-    if (!conv) {
-      conv = { turns: new Map(), at: Date.now() };
-      conversations.set(key, conv);
-    }
-    conv.at = Date.now();
-    if (conversations.size > 64) {
-      for (const [k, v] of conversations) {
-        if (v !== conv) conversations.delete(k);
-        if (conversations.size <= 32) break;
+    const key = JSON.stringify([ctx.origin, ctx.protocol, ctx.agent, ctx.session, ctx.cwd,
+      config.hindsight_api, config.bank, config.recall_max_tokens]);
+    const cache = conversations.get(key) ?? new Map();
+    conversations.delete(key);
+    while (conversations.size >= 64) conversations.delete(conversations.keys().next().value);
+    conversations.set(key, cache);
+    return {
+      get: id => cache.get(id),
+      delete: id => cache.delete(id),
+      set(id, value) {
+        cache.delete(id);
+        while (cache.size >= MAX_TURNS) cache.delete(cache.keys().next().value);
+        cache.set(id, value);
       }
-    }
-    if (conv.turns.size > MAX_TURNS) {
-      const oldest = conv.turns.keys().next().value;
-      conv.turns.delete(oldest);
-    }
-    return conv.turns;
+    };
   };
 }
 
 // Reattach every cached block to its own user turn, oldest first, so a resent
 // conversation carries exactly the same injections as when they were made.
-export function replay(all, cache) {
+export function replay(all, cache, previousResponse) {
+  let changed = false;
   for (const t of all) {
-    if (t.role !== "user" || injected(t)) continue;
-    const kept = cache.get(turnKey(t));
-    if (kept?.text) t.append(kept.text);
+    if (injected(t)) continue;
+    const kept = cache.get(turnKey(t, previousResponse));
+    if (kept?.text) {
+      t.append(kept.text);
+      changed = true;
+    }
   }
+  return changed;
 }

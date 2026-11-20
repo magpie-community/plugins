@@ -16,7 +16,7 @@
     <div>
       <span class="eyebrow">MAGPIE GATEWAY</span>
       <h1>Hindsight Memory</h1>
-      <p>在请求进入 Agent 前召回记忆，按需采集对话。</p>
+      <p>模型收到请求前召回记忆，按需采集已完成的对话。</p>
     </div>
   </header>
 
@@ -72,6 +72,11 @@
         <label for="gatewayTimeoutMs">网关超时（毫秒）</label>
         <input id="gatewayTimeoutMs" name="gatewayTimeoutMs" type="number" required min="100" max="10000" step="100" value="5000" aria-describedby="gatewayTimeoutMs-help">
         <small id="gatewayTimeoutMs-help">Magpie 宿主等待 hook 的预算，推荐 5000；范围 100–10000。</small>
+      </div>
+      <div class="field">
+        <label for="port">连接测试端口</label>
+        <input id="port" name="port" type="number" required min="1024" max="65535" step="1" value="3482" aria-describedby="port-help">
+        <small id="port-help">默认 3482。若端口被占用，请改用空闲端口。此端口仅供设置页测试连接。</small>
       </div>
       <label class="check" for="allowRemote">
         <input id="allowRemote" name="allowRemote" type="checkbox">

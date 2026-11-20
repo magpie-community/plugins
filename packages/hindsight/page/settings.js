@@ -7,10 +7,9 @@ const DEFAULTS = Object.freeze({
   agents: Object.freeze([]),
   gatewayTimeoutMs: 5000,
   allowRemote: false,
-  allowInsecureHttp: false
+  allowInsecureHttp: false,
+  port: 3482
 });
-const SERVICE_PORT = 3482;
-let savedOptions = {};
 let busy = false;
 let dirty = false;
 let loaded = false;
@@ -66,8 +65,8 @@ function integer(id, min, max, label) {
 
 function readForm() {
   const bank = $("bank").value.trim();
-  if (!bank || bank.length > 128 || /[/?#\x00-\x1f\x7f]/.test(bank))
-    invalid("bank", "Bank 不能为空，且不能包含 / ? # 或控制字符。");
+  if (!bank || bank.length > 128 || bank === "." || bank === ".." || /[/?#\x00-\x1f\x7f]/.test(bank))
+    invalid("bank", "请输入有效的 bank ID。不能使用 .、.. 或包含 / ? # 和控制字符。");
   return {
     hindsight_api: apiUrl(),
     bank,
@@ -75,6 +74,7 @@ function readForm() {
     capture: $("capture").checked,
     agents: agents(),
     gatewayTimeoutMs: integer("gatewayTimeoutMs", 100, 10000, "网关超时"),
+    port: integer("port", 1024, 65535, "连接测试端口"),
     allowRemote: $("allowRemote").checked,
     allowInsecureHttp: $("allowInsecureHttp").checked
   };
@@ -94,6 +94,7 @@ function fillForm(options) {
   $("capture").checked = options.capture === true;
   $("agents").value = Array.isArray(options.agents) ? options.agents.join(", ") : "";
   $("gatewayTimeoutMs").value = options.gatewayTimeoutMs ?? DEFAULTS.gatewayTimeoutMs;
+  $("port").value = options.port ?? DEFAULTS.port;
   $("allowRemote").checked = options.allowRemote === true;
   $("allowInsecureHttp").checked = options.allowInsecureHttp === true;
   updateSummary(options);
@@ -101,8 +102,7 @@ function fillForm(options) {
 
 async function load() {
   try {
-    savedOptions = await magpie.options.get() || {};
-    fillForm(savedOptions);
+    fillForm(await magpie.options.get() || {});
     loaded = true;
     dirty = false;
     setBusy(false);
@@ -147,9 +147,13 @@ $("form").addEventListener("submit", async event => {
     const latest = await magpie.options.get();
     const next = { ...latest, ...values };
     const saved = await magpie.options.set(next);
-    savedOptions = saved && typeof saved === "object" ? saved : next;
-    updateSummary(savedOptions);
+    updateSummary(saved && typeof saved === "object" ? saved : next);
     dirty = false;
+    // Loading the page asks Magpie to start its test service on the new port.
+    if (values.port !== (latest?.port ?? DEFAULTS.port)) {
+      location.reload();
+      return;
+    }
     status("配置已保存 · 可以测试连接");
   } catch {
     status("保存失败，请稍后重试。", true);
@@ -158,20 +162,24 @@ $("form").addEventListener("submit", async event => {
   }
 });
 
-$("test-connection").addEventListener("click", () => {
+$("test-connection").addEventListener("click", async () => {
   if (busy || !loaded) return;
   if (dirty) {
     status("请先保存修改，再测试已保存的连接。", true);
     return;
   }
-  const port = Number.isInteger(savedOptions.port) && savedOptions.port >= 1024 && savedOptions.port <= 65535
-    ? savedOptions.port : SERVICE_PORT;
-  const base = magpie.service || `http://127.0.0.1:${port}`;
-  setBusy(true);
-  status("正在打开连接测试…");
-  try { location.assign(`${base.replace(/\/+$/, "")}/test`); }
+  try {
+    const saved = await magpie.options.get();
+    const port = saved?.port ?? DEFAULTS.port;
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      status("请填写并保存有效的连接测试端口。", true);
+      return;
+    }
+    const base = magpie.service || `http://127.0.0.1:${port}`;
+    status("正在打开连接测试。如果页面没有跳转，请检查连接测试端口是否被占用。");
+    location.assign(`${base.replace(/\/+$/, "")}/test`);
+  }
   catch {
-    setBusy(false);
     status("无法打开连接测试服务。", true);
   }
 });

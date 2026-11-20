@@ -8,10 +8,7 @@ async function readJson(response) {
   if (!response.body) throw new ApiError("invalid");
   for await (const chunk of response.body) {
     size += chunk.byteLength;
-    if (size > 1048576) {
-      await response.body.cancel();
-      throw new ApiError("invalid");
-    }
+    if (size > 1048576) throw new ApiError("invalid");
     chunks.push(Buffer.from(chunk));
   }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
@@ -38,10 +35,14 @@ export class Hindsight {
       });
     } catch { throw new ApiError("unavailable"); }
     if (!response.ok) {
-      await response.body?.cancel();
+      try { await response.body?.cancel(); } catch { /* Keep the HTTP failure classification. */ }
       throw new ApiError([401, 403].includes(response.status) ? "unauthorized" : response.status >= 500 || response.status === 429 ? "unavailable" : "invalid");
     }
-    return readJson(response);
+    try { return await readJson(response); }
+    catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError("unavailable");
+    }
   }
 
   async recall(query, signal) {
@@ -52,7 +53,7 @@ export class Hindsight {
       budget: "low",
       include: { entities: null, chunks: null, source_facts: null }
     }, { signal, timeoutMs: Math.max(100, Math.min(8000, this.config.gatewayTimeoutMs - 200)) });
-    if (!Array.isArray(data.results)) throw new ApiError("invalid");
+    if (!Array.isArray(data?.results)) throw new ApiError("invalid");
     return data.results.flatMap(result => typeof result?.text === "string" && result.text.trim() ? [result.text] : []);
   }
 

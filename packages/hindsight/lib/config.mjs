@@ -31,7 +31,8 @@ export function configuration(options = {}) {
   if (!loopback && url.protocol === "http:" && !allowInsecureHttp) invalid();
 
   const bank = options.bank ?? DEFAULTS.bank;
-  if (typeof bank !== "string" || !bank || bank !== bank.trim() || bank.length > 128 || /[/?#]/.test(bank)) invalid();
+  if (typeof bank !== "string" || !bank || bank !== bank.trim() || bank.length > 128 ||
+    bank === "." || bank === ".." || /[/?#\x00-\x1f\x7f]/.test(bank)) invalid();
 
   const recallMaxTokens = options.recall_max_tokens ?? DEFAULTS.recall_max_tokens;
   if (!Number.isInteger(recallMaxTokens) || recallMaxTokens < 1 || recallMaxTokens > 16384) invalid();

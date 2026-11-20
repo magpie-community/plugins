@@ -28,7 +28,11 @@ test("memory text is NUL-free, trimmed and whitespace-only entries are skipped",
 test("only completed final answers are eligible for capture", () => {
   assert.equal(finalAnswer({ choices: [{ finish_reason: "stop", message: { content: "done" } }] }, "chat"), "done");
   assert.equal(finalAnswer({ choices: [{ finish_reason: "length", message: { content: "partial" } }] }, "chat"), "");
+  assert.equal(finalAnswer({ choices: [{ finish_reason: "stop", message: { content: "Checking", tool_calls: [{ id: "c1" }] } }] }, "chat"), "");
   assert.equal(finalAnswer({ stop_reason: "end_turn", content: [{ type: "text", text: "done" }] }, "anthropic"), "done");
   assert.equal(finalAnswer({ status: "completed", output_text: "done" }, "responses"), "done");
   assert.equal(finalAnswer({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "done" }] } }] }, "gemini"), "done");
+  assert.equal(finalAnswer({ candidates: [{ finishReason: "STOP", content: { parts: [
+    { text: "Checking" }, { functionCall: { name: "search" } }
+  ] } }] }, "gemini"), "");
 });

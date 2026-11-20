@@ -11,11 +11,11 @@ function pageCalls(source) {
     .map(([, call]) => call.replace(/\s/g, "").replaceAll("?.", "."));
 }
 
-test("settings HTML exposes the eight option fields and status regions", async () => {
+test("settings HTML exposes plugin option fields and status regions", async () => {
   const html = await read("settings.html");
   const ids = [
     "form", "hindsight_api", "bank", "recall_max_tokens", "capture", "agents",
-    "gatewayTimeoutMs", "allowRemote", "allowInsecureHttp", "save", "test-connection",
+    "gatewayTimeoutMs", "port", "allowRemote", "allowInsecureHttp", "save", "test-connection",
     "status", "status-bank", "status-api", "status-agents"
   ];
   for (const id of ids) assert.match(html, new RegExp(`id=["']${id}["']`), `missing #${id}`);
@@ -72,4 +72,47 @@ test("loopback service has the Magpie host entry point without starting on impor
   const { default: service } = await import("./service.mjs");
   assert.equal(service.id, "magpie-hindsight");
   assert.equal(typeof service.server, "function");
+});
+
+test("connection service can load beside a busy port and responds to the sandboxed test page", async t => {
+  const { default: service } = await import("./service.mjs");
+  let handler;
+  const server = { hostname: "127.0.0.1", port: 3483, stop() {} };
+  t.mock.method(console, "warn", () => {});
+  t.mock.method(console, "error", () => {});
+  const bun = { serve({ hostname, port, fetch }) {
+    assert.equal(hostname, "127.0.0.1");
+    if (port === 3482) throw Object.assign(new Error("port busy"), { code: "EADDRINUSE" });
+    handler = fetch;
+    return server;
+  } };
+  const previousBun = globalThis.Bun;
+  globalThis.Bun = bun;
+  t.after(() => { if (previousBun) globalThis.Bun = previousBun; else delete globalThis.Bun; });
+  t.mock.method(globalThis, "fetch", async () => Response.json({ status: "healthy", database: "connected" }));
+
+  await assert.doesNotReject(() => service.server({}, { port: 3482 }));
+  const running = await service.server({}, { port: 3483, bank: "hermes" });
+  t.after(() => running.close());
+  const send = (method, headers = {}) => handler(new Request("http://127.0.0.1:3483/test", {
+    method, headers: { host: "127.0.0.1:3483", ...headers }
+  }), server);
+  const markup = await (await send("GET")).text();
+  const token = markup.match(/name="hindsight-token" content="([a-f0-9]+)"/)[1];
+  new Script(markup.match(/<script>([\s\S]+)<\/script>/)[1]);
+  const preflight = await send("OPTIONS", {
+    origin: "null", "access-control-request-method": "POST", "access-control-request-headers": "x-hindsight-token"
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
+  for (const headers of [{ origin: "https://example.com", "x-hindsight-token": token }, { origin: "null" }]) {
+    assert.equal((await send("POST", headers)).status, 403);
+  }
+  const response = await send("POST", { origin: "null", "x-hindsight-token": token });
+  assert.equal(response.headers.get("access-control-allow-origin"), "null");
+  const result = await response.json();
+  assert.equal(result.ok, true);
+  assert.equal(result.code, "connected");
+  assert.equal(result.bank, "hermes");
+  assert.ok(Number.isInteger(result.ms));
 });
