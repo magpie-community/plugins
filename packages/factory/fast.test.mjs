@@ -49,7 +49,7 @@ test("droid's Fast Mode models are offered at their base model's limits and effo
     expect(Object.keys(m.variants)).toEqual(efforts)
   }
   // left out, each for its reason (index.mjs, above MODELS)
-  for (const id of ["claude-opus-4-6-fast", "claude-opus-4-7-fast"]) expect(models[id]).toBeUndefined()
+  for (const id of ["claude-opus-4-6-fast", "claude-opus-4-7-fast", "gpt-5.4-mini-fast"]) expect(models[id]).toBeUndefined()
 })
 
 test("droid 1.7.0's GPT Fast Mode models are offered at their base model's limits and efforts, GLM-5.2 Fast at its own", async () => {
@@ -137,7 +137,6 @@ test("explicit Ultra Fast stays distinct from the base model's Fast Mode", async
   const cases = [
     ["gpt-6.2-sol", "priority", "gpt-6.2-sol-fast", "priority"],
     ["gpt-6.2-astra", "priority", "gpt-6.2-astra-fast", "priority"],
-    ["gpt-5.4-mini", "priority", "gpt-5.4-mini-fast", "priority"],
     ["gpt-6.2-sol-ultrafast", "priority", "gpt-6.2-sol-ultrafast", "ultrafast"],
     ["gpt-6.2-sol-ultrafast", undefined, "gpt-6.2-sol-ultrafast", "ultrafast"],
   ]

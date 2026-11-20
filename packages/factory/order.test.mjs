@@ -44,7 +44,6 @@ test("company ordering is opt-in, preserves metadata, and is read on each model 
     for (const base of ["gpt-6.2-astra", "gpt-6.2-sol"]) {
       expect(ids.slice(ids.indexOf(base), ids.indexOf(base) + 3)).toEqual([base, base + "-fast", base + "-ultrafast"])
     }
-    expect(ids[ids.indexOf("gpt-6.1-sol") + 1]).toBe("gpt-6.1-sol-ultrafast")
     for (const id of ids.filter((id) => id.endsWith("-fast"))) {
       expect(ids.indexOf(id)).toBe(ids.indexOf(id.slice(0, -5)) + 1)
     }

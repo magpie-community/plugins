@@ -66,16 +66,19 @@ sort newest first, with Fast and Ultra Fast following their base model.
 The setting is off by default, preserving the plugin's default picker order
 and its first 24 models.
 
-The plugin includes the non-deprecated entries in Factory's [model
-catalog](https://docs.factory.com/models) as of November 20, 2026. Factory
-feature flags, account tier and organization policy still determine access.
+Droid 1.14 and 1.15 add GPT-6.2 Astra, GPT-6.2 Sol and Gemini 4 Neon.
+Factory's [model catalog](https://docs.factory.com/models) lists their
+variants and prices. Access depends on Factory's account and organization
+settings.
+
+Each model is served on the one API droid uses for it:
 
 | API | Models |
 |---|---|
-| Anthropic Messages (`/api/llm/a/v1`) | Claude Fable, Opus, Sonnet, and Haiku, plus MiniMax M2.7 |
-| Responses (`/api/llm/o/v1`) | GPT, Grok, and Muse Spark 1.3 |
-| Chat completions (`/api/llm/o/v1`) | GLM, Kimi, DeepSeek V4.1 Flash, Qwen, MiniMax M3, Mistral, Nemotron, Inkling, Muse Spark 1.2, and Beam |
-| Gemini generate (`/api/llm/g/v1/generate`) | Gemini, including Gemini 4 Neon, Hydrogen, Carbon, and Argon |
+| Anthropic Messages (`/api/llm/a`) | Fable 5.2, Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
+| OpenAI Responses (`/api/llm/o/v1`) | GPT-6.2 Astra and Sol (both also in Fast and Ultra Fast), GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (GPT-6 Sol/Luna, GPT-5.6 Sol, GPT-5.5, GPT-5.4 and GPT-5.3-Codex also in Fast Mode), Grok 4.7, Grok 4.6 |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, GLM-5.2 Fast, Kimi K3.1 Pro, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3.1 Flash, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3.5 Super, Nemotron 3 Ultra, Inkling, Muse Spark 1.2, Beam 1.0 |
+| Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Neon, Hydrogen, Carbon, Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
 Flash (1017 too), Kimi K3 and GLM-5.2 (GLM-5.2 Fast too) have `none`, droid's
@@ -83,9 +86,15 @@ Flash (1017 too), Kimi K3 and GLM-5.2 (GLM-5.2 Fast too) have `none`, droid's
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
 
-Fable 5 models require Anthropic's data retention terms. Muse Spark 1.2
-(Fireworks Chat) and 1.3 (Google Responses) use Factory's Standard billing
-pool.
+droid 1.7.0's new models are included where droid 1.7.0 lists them for an
+account with no special access, at its registry's limits, efforts and
+multipliers. Fable 5.2 asks for the same data-retention terms as Fable 5.1
+in droid; it is placed after the other non-Fast models so magpie's first 24
+stay as they were (#119). Muse Spark 1.2 is on Fireworks but in droid's
+standard pool, so Droid Core's windows don't count it. GPT-6.1 Terra and
+Muse Spark Open (feature-flagged), GPT-6.1 Sol Ultra Fast (high-cost terms)
+and Muse Spark 1.3 (Responses on Google, which the plugin doesn't send) are
+not included.
 
 DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
 entry, with droid 0.251.0's 1,040,000-token context, 131,072-token output,
@@ -114,8 +123,8 @@ base model, the plugin selects its Fast Mode ID when available. GLM-5.2
 Fast is a separate chat completions model.
 
 Select an Ultra Fast model by its own ID to use `service_tier: "ultrafast"`.
-GPT-6.2 Astra Ultra Fast and GPT-6.1 Sol Ultra Fast require an organization
-admin to opt in through Factory's model access settings.
+GPT-6.2 Astra Ultra Fast requires an organization admin to opt in through
+Factory's model access settings.
 
 Droid picks the Auto model on the client.
 

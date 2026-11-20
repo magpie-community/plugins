@@ -91,40 +91,6 @@ test("handles SDK identity, request bodies and offset byte views without duplica
   expect(seen[2].body).toBe(seen[0].body)
 })
 
-test("Claude 4.5 uses the model's manual thinking budget and beta", async () => {
-  const { l, seen } = await loaded()
-  const sonnet = "claude-sonnet-4-5-20250929"
-  const opus = "claude-opus-4-5-20251101"
-  const messages = [{ role: "user", content: "OK" }]
-  await l.fetch(url, { method: "POST", headers: { "anthropic-beta": "client-beta" }, body: JSON.stringify({
-    model: sonnet, messages, max_tokens: 32000, thinking: { type: "adaptive" }, output_config: { effort: "high" },
-  }) })
-  const sent = JSON.parse(seen[0].body)
-  expect(sent.thinking).toEqual({ type: "enabled", budget_tokens: 24576 })
-  expect(sent.output_config).toBeUndefined()
-  expect(seen[0].headers.get("anthropic-beta")).toBe("client-beta,interleaved-thinking-2025-05-14")
-
-  const thinking = { type: "enabled", budget_tokens: 9000 }
-  await l.fetch(url, { method: "POST", body: JSON.stringify({ model: opus, messages, thinking, output_config: { effort: "medium" } }) })
-  expect(JSON.parse(seen[1].body)).toMatchObject({ thinking, output_config: { effort: "medium" } })
-  expect(seen[1].headers.get("anthropic-beta")).toBe("effort-2025-11-24")
-
-  await l.fetch(url, { method: "POST", body: JSON.stringify({ model: sonnet, messages }) })
-  expect(JSON.parse(seen[2].body).thinking).toBeUndefined()
-  expect(seen[2].headers.get("anthropic-beta")).toBeNull()
-})
-
-test("Muse Spark 1.3 retains the Responses route with Google as its upstream", async () => {
-  const { l, seen } = await loaded()
-  const at = "https://api.factory.ai/api/llm/o/v1/responses"
-  const body = { model: "muse-spark-1.3", input: "OK", reasoning: { effort: "high", summary: "auto" } }
-  await l.fetch(at, { method: "POST", body: JSON.stringify(body) })
-  expect(seen[0].url).toBe(at)
-  expect(seen[0].headers.get("x-api-provider")).toBe("google")
-  expect(seen[0].headers.get("OpenAI-Platform")).toBeNull()
-  expect(JSON.parse(seen[0].body)).toMatchObject({ ...body, instructions: droid })
-})
-
 test("does not change OpenAI requests, malformed JSON or invalid system schemas", async () => {
   const { l, seen } = await loaded()
   const body = JSON.stringify({ model: "gpt-6-sol", instructions: droid, input: "OK" })

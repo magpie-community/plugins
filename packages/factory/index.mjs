@@ -43,10 +43,7 @@ const GEMINI = { npm: "@ai-sdk/google", api: API + "/api/llm/g/v1" }
 const E5 = ["low", "medium", "high", "xhigh", "max"]
 const E6 = ["none", "low", "medium", "high", "xhigh", "max"]
 const E4 = ["low", "medium", "high", "xhigh"]
-const OPUS_45 = "claude-opus-4-5-20251101"
-const SONNET_45 = "claude-sonnet-4-5-20250929"
 const GEMINI_4_NEON = "gemini-4-neon"
-const CLAUDE_45_BUDGETS = new Map([["low", 4096], ["medium", 12288], ["high", 24576]])
 
 // Factory's published catalog and Droid's registry supply the IDs, route,
 // upstream, limits, efforts, attachments and multiplier for each model.
@@ -114,17 +111,7 @@ const MODELS = [
   // Append catalog additions after magpie's default first 24 models (#119).
   ["gpt-6.2-astra", "GPT-6.2 Astra", RESPONSES, "openai", 1050000, 128000, E5, true, 3.2],
   ["gpt-6.2-sol", "GPT-6.2 Sol", RESPONSES, "openai", 1050000, 128000, E5, true, 0.8],
-  ["gpt-6.1-terra", "GPT-6.1 Terra", RESPONSES, "openai", 1050000, 128000, E6, true, 0.4],
   [GEMINI_4_NEON, "Gemini 4 Neon", GEMINI, "google", 1048576, 65536, E4, true, 1.2],
-  ["claude-opus-4-7", "Opus 4.7", ANTHROPIC, "anthropic", 867000, 128000, E5, true, 2],
-  ["claude-opus-4-6", "Opus 4.6", ANTHROPIC, "anthropic", 867000, 128000, ["low", "medium", "high", "max"], true, 2],
-  [OPUS_45, "Opus 4.5", ANTHROPIC, "anthropic", 180000, 64000, ["low", "medium", "high"], true, 2],
-  [SONNET_45, "Sonnet 4.5", ANTHROPIC, "anthropic", 180000, 32000, ["low", "medium", "high"], true, 1.2],
-  ["gpt-5.5-pro", "GPT-5.5 Pro", RESPONSES, "openai", 1050000, 128000, ["medium", "high", "xhigh"], true, 12],
-  ["gpt-5.4-mini", "GPT-5.4 Mini", RESPONSES, "openai", 400000, 128000, E4, true, 0.3],
-  ["gpt-5.2", "GPT-5.2", RESPONSES, "openai", 400000, 128000, ["none", ...E4], true, 0.7],
-  ["grok-4.5", "Grok 4.5", RESPONSES, "xai", 200000, 63356, ["low", "medium", "high"], true, 0.8],
-  ["muse-spark-1.3", "Muse Spark 1.3", RESPONSES, "google", 1040000, 131072, E4, true, 0.5],
   // The Fast Mode models come last: magpie shows a provider with no models
   // picked only the first 24 of its list, and placed beside their base
   // models in 0.1.27 they pushed GPT-5.3-Codex, Grok 4.7, Grok 4.6, GLM-5.3
@@ -143,10 +130,8 @@ const MODELS = [
   ["glm-5.2-fast", "GLM-5.2 Fast", CHAT, "baseten", 524288, 131072, ["none", "high", "max"], false, 0.84],
   ["gpt-6.2-astra-fast", "GPT-6.2 Astra Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 6.4],
   ["gpt-6.2-sol-fast", "GPT-6.2 Sol Fast Mode", RESPONSES, "openai", 1050000, 128000, E5, true, 1.6],
-  ["gpt-5.4-mini-fast", "GPT-5.4 Mini Fast Mode", RESPONSES, "openai", 400000, 128000, E4, true, 0.6],
   ["gpt-6.2-astra-ultrafast", "GPT-6.2 Astra Ultra Fast", RESPONSES, "openai", 1050000, 128000, E5, true, 9.6],
   ["gpt-6.2-sol-ultrafast", "GPT-6.2 Sol Ultra Fast", RESPONSES, "openai", 1050000, 128000, E5, true, 2.4],
-  ["gpt-6.1-sol-ultrafast", "GPT-6.1 Sol Ultra Fast", RESPONSES, "openai", 1050000, 128000, E5, true, 4.8],
 ].map(([id, name, wire, upstream, context, output, efforts, images, rate]) => ({ id, name, wire, upstream, context, output, efforts, images, rate }))
 
 // Model makers, not API hosts: e.g. GLM and Kimi both use Fireworks.
@@ -177,7 +162,7 @@ const byId = new Map(MODELS.map((m) => [m.id, m]))
 // "priority", and Ultra Fast uses "ultrafast". Only Fast Mode is the
 // automatic upgrade for a base model's fast switch.
 const FAST_BETA = "fast-mode-2026-02-01"
-const EXPLICIT_OPT_IN = new Set(["gpt-6.2-astra-ultrafast", "gpt-6.1-sol-ultrafast"])
+const HIGH_COST_MODEL = "gpt-6.2-astra-ultrafast"
 const OPT_IN_REQUIRED = "model_opt_in_required"
 const FAST_OF = new Map(MODELS.filter((m) => m.id.endsWith("-fast")).map((m) => [m.id.slice(0, -"-fast".length), m.id]))
 
@@ -214,13 +199,9 @@ function fastBody(path, body) {
 }
 
 // variant is what the AI SDK package a model is on is given for an effort.
-function variant(model, effort) {
-  if (model.id === OPUS_45 || model.id === SONNET_45) {
-    const thinking = { type: "enabled", budgetTokens: CLAUDE_45_BUDGETS.get(effort) }
-    return model.id === OPUS_45 ? { effort, thinking } : { thinking }
-  }
-  if (model.wire === ANTHROPIC) return { effort }
-  if (model.wire === GEMINI) return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
+function variant(npm, effort) {
+  if (npm === ANTHROPIC.npm) return { effort }
+  if (npm === GEMINI.npm) return { thinkingConfig: { includeThoughts: true, thinkingLevel: effort } }
   return { reasoningEffort: effort }
 }
 
@@ -271,7 +252,7 @@ function configModels(now = Date.now()) {
       // multiplier before a promotion running now (0: none)
       rate,
       rateWas,
-      variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m, e)])),
+      variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m.wire.npm, e)])),
     }
   }
   return out
@@ -304,7 +285,7 @@ function providerModel(provider, m, now = Date.now()) {
       interleaved: false,
     },
     release_date: "",
-    variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m, e)])),
+    variants: Object.fromEntries(m.efforts.map((e) => [e, variant(m.wire.npm, e)])),
     free: false,
     // magpie's own: the token multiplier a request costs now, and the
     // multiplier before a promotion running now (0: none)
@@ -1871,37 +1852,7 @@ function undeferredTools(request) {
   return changed
 }
 
-function addAnthropicBeta(headers, flag) {
-  const betas = (headers.get("anthropic-beta") ?? "").split(",").map((beta) => beta.trim()).filter(Boolean)
-  if (!betas.includes(flag)) headers.set("anthropic-beta", [...betas, flag].join(","))
-}
-
-// Claude 4.5 uses manual thinking budgets. Translate adaptive requests from
-// a generic caller and preserve budgets already set by the Anthropic SDK.
-function claude45Thinking(request, headers) {
-  if (request.model !== OPUS_45 && request.model !== SONNET_45) return false
-  const effort = request.output_config?.effort ?? (request.thinking?.type === "adaptive" ? "medium" : undefined)
-  const budget = CLAUDE_45_BUDGETS.get(effort)
-  let changed = false
-  if (budget && (!request.thinking || request.thinking.type === "adaptive")) {
-    request.thinking = { ...request.thinking, type: "enabled", budget_tokens: budget }
-    if (Number.isSafeInteger(request.max_tokens) && request.max_tokens <= budget) request.max_tokens += budget
-    changed = true
-  }
-  if (request.model === SONNET_45) {
-    if (request.thinking?.type === "enabled") addAnthropicBeta(headers, "interleaved-thinking-2025-05-14")
-    if (request.output_config?.effort !== undefined) {
-      delete request.output_config.effort
-      if (Object.keys(request.output_config).length === 0) delete request.output_config
-      changed = true
-    }
-  } else if (request.output_config?.effort !== undefined) {
-    addAnthropicBeta(headers, "effort-2025-11-24")
-  }
-  return changed
-}
-
-function anthropicBody(body, headers) {
+function anthropicBody(body) {
   let request
   try {
     const text = typeof body === "string" ? body
@@ -1918,7 +1869,7 @@ function anthropicBody(body, headers) {
   if (request.system != null && typeof request.system !== "string" && !Array.isArray(request.system)) return body
   if (Array.isArray(request.system) && request.system.some((b) => b?.type === "text" && typeof b.text !== "string")) return body
 
-  let changed = claude45Thinking(request, headers)
+  let changed = false
   const system = typeof request.system === "string" ? [{ type: "text", text: request.system }] : request.system ?? []
   if (typeof request.system === "string" && !request.system.startsWith(DROID_LINE)) changed = true
   const kept = []
@@ -2424,9 +2375,12 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           const path = new URL(url).pathname
           const sped = fastBody(path, body)
           body = sped.body
-          if (sped.beta) addAnthropicBeta(h, FAST_BETA)
+          if (sped.beta) {
+            const betas = (h.get("anthropic-beta") ?? "").split(",").map((b) => b.trim()).filter(Boolean)
+            if (!betas.includes(FAST_BETA)) h.set("anthropic-beta", [...betas, FAST_BETA].join(","))
+          }
           const model = byId.get(bodyModel(body))
-          if (EXPLICIT_OPT_IN.has(model?.id) && !(await optedIn(c, model.id))) {
+          if (model?.id === HIGH_COST_MODEL && !(await optedIn(c, model.id))) {
             return errorReply(url, 403, "permission_error", `Factory could not confirm organization opt-in for ${model.id}. Ask an organization admin to enable it in Factory’s model access settings.`, undefined, undefined, OPT_IN_REQUIRED)
           }
           const upstream = model ? model.upstream : path.includes("/llm/o/") ? "openai" : "anthropic"
@@ -2443,7 +2397,7 @@ export const FactoryAuthPlugin = async ({ client, magpie }) => {
           // Factory refuses some tool names outright (tool-names.mjs): those
           // go out under another name and come back as the caller's; with
           // every, all of its tools do (renamedInFull)
-          const named = aliasToolNames(anthropic ? anthropicBody(body, h) : droidBody(path, body), every)
+          const named = aliasToolNames(anthropic ? anthropicBody(body) : droidBody(path, body), every)
           const adapted = anthropic ? wrapAnthropicTools(named.body) : { body: named.body, names: new Set() }
           const out = sanitizeBody(adapted.body)
           // the caller's length is of the body it sent, not of this one
