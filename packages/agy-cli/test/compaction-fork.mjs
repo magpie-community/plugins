@@ -73,3 +73,84 @@ test("the same shape without the compaction prompt (an edited last message) stil
   assert.notEqual(prompts.at(-1).session, prompts[0].session)
   assert.ok(prompts.at(-1).text.includes("part 1 code A"))
 })
+
+// After the compaction Claude Code goes on with the summary alone, as the first
+// message of a conversation of its own key. It used to get a new session, and
+// agy's own context of the whole conversation gave way to the summary.
+const SUMMARY = "1. Primary Request and Intent: the user is writing code in three parts, part 1 code A, part 2 code B " +
+  "and part 3 code C, and asked for each to be noted.\n\n2. Key Technical Concepts: none beyond the three parts.\n\n" +
+  "3. Pending Tasks: wait for part 4."
+const OPENING = "This session is being continued from a previous conversation that ran out of context. " +
+  "The summary below covers the earlier portion of the conversation."
+
+function compactedOpening(summary) {
+  // Claude Code drops <analysis>, unwraps <summary> and squeezes blank lines
+  return `${OPENING}\n\nSummary:\n${summary.replace(/\n\n+/g, "\n")}\n\nIf you need specific details from before compaction, read the full transcript.`
+}
+
+async function compactThenContinue(kit, prompts, opening, rounds = 1) {
+  kit.defaultPrompt = async (agent) => {
+    const text = (agent.prompt || []).map((p) => p.text || "").join("")
+    prompts.push({ session: agent.sessionId, text })
+    await agent.text(text.includes("Your task is to create") ? `<analysis>notes</analysis>\n<summary>\n${SUMMARY}\n</summary>` : "noted")
+    return { stopReason: "end_turn" }
+  }
+  let messages = []
+  for (const part of ["part 1 code A", "part 2 code B", "part 3 code C"]) {
+    messages = [...messages, { role: "user", content: part }, NOTICE]
+    const parsed = await readSse(await kit.request(baseBody({ messages })))
+    messages = [...messages, { role: "assistant", content: parsed.content.filter((block) => block.type === "text") }]
+  }
+  for (let round = 0; round < rounds; round++) {
+    const userAt = messages.length - 3
+    const forked = [...messages.slice(0, userAt),
+      { role: "user", content: [{ type: "text", text: contentOf(messages[userAt]) + "\n" }, { type: "text", text: COMPACT }] }, NOTICE]
+    await readSse(await kit.request(baseBody({ messages: forked })))
+    messages = [{ role: "user", content: [{ type: "text", text: opening }, { type: "text", text: `part ${4 + round} code D` }] }, NOTICE]
+    const parsed = await readSse(await kit.request(baseBody({ messages })))
+    messages = [...messages, { role: "assistant", content: parsed.content.filter((block) => block.type === "text") },
+      { role: "user", content: `part ${5 + round} code E` }, NOTICE]
+    const next = await readSse(await kit.request(baseBody({ messages })))
+    messages = [...messages, { role: "assistant", content: next.content.filter((block) => block.type === "text") }]
+  }
+}
+
+function contentOf(message) {
+  return typeof message.content === "string" ? message.content : message.content.map((block) => block.text || "").join("")
+}
+
+async function withCompaction(opening, rounds) {
+  const stderr = captureStderr()
+  const kit = await createBridgeKit({})
+  const prompts = []
+  try {
+    await compactThenContinue(kit, prompts, opening, rounds)
+    return { prompts, opened: stderr.lines.filter((row) => row.action === "session_new"), events: stderr.lines }
+  } finally {
+    await kit.dispose()
+    stderr.restore()
+  }
+}
+
+test("the compacted conversation goes on in the session that wrote its summary", async () => {
+  const { prompts, opened, events } = await withCompaction(compactedOpening(SUMMARY))
+  assert.equal(opened.length, 1, JSON.stringify(opened))
+  assert.ok(prompts.every((prompt) => prompt.session === prompts[0].session))
+  assert.ok(events.some((row) => row.action === "kept" && row.reason === "compacted_opening"), JSON.stringify(events))
+  const [opening, next] = prompts.slice(-2)
+  assert.ok(opening.text.includes("part 4 code D"), opening.text)
+  // the session went on: the next turn sends only what is new
+  assert.ok(next.text.includes("part 5 code E") && !next.text.includes("part 4 code D"), next.text)
+})
+
+test("a compacted opening with another conversation's summary starts a new session", async () => {
+  const { opened, events } = await withCompaction(compactedOpening(SUMMARY.replace(/code/g, "kode")))
+  assert.equal(opened.length, 2, JSON.stringify(opened))
+  assert.ok(!events.some((row) => row.reason === "compacted_opening"))
+})
+
+test("a second compaction before agy compacted its own window starts a new session, not a compaction every turn", async () => {
+  const { opened, events } = await withCompaction(compactedOpening(SUMMARY), 2)
+  assert.equal(events.filter((row) => row.reason === "compacted_opening").length, 1, JSON.stringify(events))
+  assert.equal(opened.length, 2, JSON.stringify(opened))
+})
