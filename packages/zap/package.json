@@ -1,0 +1,12 @@
+{
+  "name": "@magpie-community/agent-zap",
+  "version": "0.1.0",
+  "description": "Zap (the OpenWarp fork of Warp) as a magpie agent: pick one of magpie's models for it on the Agents page",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": ["zap.agent.js", "index.mjs", "toml.mjs", "README.md"],
+  "keywords": ["magpie", "magpie-agent", "zap", "openwarp", "warp", "llm-gateway"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/zap" },
+  "magpie": { "agent": "./zap.agent.js", "icon": "https://github.com/zerx-lab.png" }
+}
