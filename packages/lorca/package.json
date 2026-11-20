@@ -1,6 +1,6 @@
 {
   "name": "@magpie-community/agent-lorca",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lorca (lorca.app) as a magpie agent: writes Magpie's gateway, models and MCP servers into Lorca's credentials",
   "type": "module",
   "files": [
