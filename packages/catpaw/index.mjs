@@ -10,6 +10,8 @@
 // catpaw-proxy.mjs the same day); conversation reuse and tool continuation
 // are phase 2.
 
+import { iconData } from "./icon.mjs"
+
 const ID = "catpaw"
 const NAME = "妙手 CatPaw"
 
@@ -735,6 +737,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
   return {
     auth: {
       provider: ID,
+      icon: iconData,
       // CatPaw has no refresh: the sign-in lives in the desktop client's
       // auth.json and is re-read before every request (mtime-checked), so
       // an "expiry" is just the next read finding a new file
@@ -1285,6 +1288,7 @@ export async function CatPawAuthPlugin({ client } = {}) {
         name: NAME,
         npm: "@ai-sdk/openai-compatible",
         api: ORIGIN,
+        ...(iconData ? { icon: iconData } : {}),
         ...was,
         models: { ...Object.fromEntries(Object.entries(MODELS).map(([id, m]) => [id, configModel(id, m)])), ...(was.models ?? {}) },
       }
