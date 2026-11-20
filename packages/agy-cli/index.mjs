@@ -57,6 +57,8 @@ const AGENT_NAME = "magpie-bridge"
 const MCP_SERVER_PATH = fileURLToPath(new URL("./mcp-server.mjs", import.meta.url))
 // agy exposes tools from the --ide-mcp-port server as direct functions with this prefix.
 const IDE_TOOL_PREFIX = "mcp_ide-tools_"
+const IDE_TOOL_NAME_LIMIT = 64 - IDE_TOOL_PREFIX.length
+const IDE_TOOL_ALIAS_PREFIX = "_agy_"
 // agy 1.3.5+: a tools/list entry with this _meta key is never deferred.
 const ALWAYS_LOAD = "antigravity/alwaysLoad"
 const IDLE_MS = positiveTimeout(process.env.AGY_BRIDGE_IDLE_MS, 10 * 60 * 1000)
@@ -1474,6 +1476,27 @@ export function ideToolOf(toolCall) {
   return ""
 }
 
+// agy validates the function name after adding its prefix. Keep the client's
+// name on the response side, and use a stable alias in the ACP catalog.
+function toolsByMcpName(tools) {
+  const byName = new Map()
+  for (const tool of tools) {
+    const { name } = tool
+    let listedName = name
+    if (name.length > IDE_TOOL_NAME_LIMIT || /[^a-zA-Z0-9_-]/.test(name) || name.startsWith(IDE_TOOL_ALIAS_PREFIX)) {
+      const readable = name.replace(/[^a-zA-Z0-9_-]/g, "_")
+      let attempt = 0
+      do {
+        const suffix = "_" + createHash("sha256").update(`${attempt++}:\0${name}`).digest("hex").slice(0, 16)
+        const room = IDE_TOOL_NAME_LIMIT - IDE_TOOL_ALIAS_PREFIX.length - suffix.length
+        listedName = IDE_TOOL_ALIAS_PREFIX + readable.slice(-room) + suffix
+      } while (byName.has(listedName))
+    }
+    byName.set(listedName, tool)
+  }
+  return byName
+}
+
 function agentDefinition() {
   const lines = [
     "---",
@@ -2174,6 +2197,7 @@ class Proc {
     this.selection = opts.selection
     this.tools = opts.tools ?? []
     this.toolsSignature = JSON.stringify(this.tools)
+    this.toolsByMcpName = toolsByMcpName(this.tools)
     this.instructions = opts.instructions || ""
     this.userId = opts.userId || ""
     this.sessionScope = opts.sessionScope || ""
@@ -2441,7 +2465,11 @@ class Proc {
     // instead, so every tool stays (plugins#1140). The trimmed list is kept
     // per catalog: agy asks again on every tools/list_changed.
     if (this.fittedFor !== this.toolsSignature) {
-      this.fitted = fitTools(this.tools.map((tool) => ({ ...tool, _meta: { ...tool._meta, [ALWAYS_LOAD]: true } })))
+      this.fitted = fitTools(Array.from(this.toolsByMcpName, ([name, tool]) => ({
+        ...tool,
+        name,
+        _meta: { ...tool._meta, [ALWAYS_LOAD]: true },
+      })))
       this.fittedFor = this.toolsSignature
     }
     return this.fitted
@@ -2474,6 +2502,7 @@ class Proc {
     if (signature === this.toolsSignature) return
     this.tools = tools
     this.toolsSignature = signature
+    this.toolsByMcpName = toolsByMcpName(tools)
     await this.#announceTools()
   }
 
@@ -2498,7 +2527,7 @@ class Proc {
       // Anything that would run inside agy itself (shell, file edits,
       // questions, browser) is denied.
       const tool = ideToolOf(params?.toolCall)
-      if (tool && this.tools.some((t) => t.name === tool)) {
+      if (this.toolsByMcpName.has(tool)) {
         const allow = (params?.options || []).find((option) => option?.kind === "allow_once")
         if (allow) return { outcome: { outcome: "selected", optionId: allow.optionId } }
       }
@@ -2884,11 +2913,11 @@ class Proc {
     if (!turn.promptInFlight) {
       throw new Error("agy bridge: no prompt in flight for MCP call")
     }
-    const name = message.name
+    const tool = this.toolsByMcpName.get(message.name)
+    if (!tool) throw new Error(`agy bridge: undeclared tool ${message.name}`)
+    const name = tool.name
     let args = message.arguments ?? {}
     if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("agy bridge: invalid tool arguments")
-    const tool = this.tools.find((item) => item.name === name)
-    if (!tool) throw new Error(`agy bridge: undeclared tool ${name}`)
     // agy consumes its internal toolSummary instead of forwarding it to MCP.
     if (name === "run_command" && tool.inputSchema?.properties?.toolSummary && !Object.hasOwn(args, "toolSummary")) {
       args = { ...args, toolSummary: "Run command" }
