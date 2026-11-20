@@ -262,6 +262,14 @@ client sends. WorkBuddy drops `reasoning_content`, so a client such as Grok
 Build that sends it lost its earlier thinking; nothing is folded into the
 message's content.
 
+`kimi-k3.1-pro` (and `-highspeed`) answers 400 "Invalid request parameters"
+to an assistant turn with `tool_calls` and no text, which is how OpenAI
+clients such as dsh record a call-only turn (`"content": null`), so an
+agent failed from its first tool call on. Since 0.2.37 such a turn goes to
+that model with one space as its content, as the same model on QwenWork
+serves it (#1213). A turn with text, and every other model, go as they
+came; `kimi-k3` takes the empty turn.
+
 A chat's tools are given shapes WorkBuddy's models take. Without them
 WorkBuddy AI answers 400 "Invalid request parameters" (11133), DeepSeek's
 models to each shape below and Kimi's, GPT's, Gemini's and GLM's to some:

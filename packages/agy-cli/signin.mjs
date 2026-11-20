@@ -187,6 +187,29 @@ export async function storedEmail(opts) {
   }
 }
 
+// signedInEmail is storedEmail, else, for a sign-in that doesn't name its
+// account (id_token_email), who Google says its access token is for: the
+// userinfo agy itself asks at sign-in, with the token agy stored. "" when
+// neither tells; a token that has ended is not renewed for it. An account
+// saved without its email is listed as "API key" (tmr11235 on X), which
+// it isn't.
+export async function signedInEmail(opts = {}, { fetch: fetchFn = globalThis.fetch, timeoutMs = 5_000 } = {}) {
+  const email = await storedEmail(opts)
+  if (email) return email
+  const access = (await storedToken(opts))?.token?.access_token
+  if (typeof access !== "string" || !access) return ""
+  try {
+    const res = await fetchFn(USERINFO_URL, { headers: { Authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) return ""
+    const who = await res.json()
+    return typeof who?.email === "string" && who.email.includes("@") ? who.email.trim().slice(0, 200) : ""
+  } catch {
+    return ""
+  }
+}
+
+const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
 // cannotSignIn is why a stored sign-in can't serve agy without a new
 // Google sign-in, or "" when it may.
 export function cannotSignIn(s) {

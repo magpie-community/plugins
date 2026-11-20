@@ -1005,8 +1005,43 @@ function systemOn(b) {
     changed = true
   }
   if (asReasoning(b.messages)) changed = true
+  if (callText(b)) changed = true
   if (b.messages[0]?.role !== "system") {
     b.messages.unshift({ role: "system", content: "You are a helpful assistant." })
+    changed = true
+  }
+  return changed
+}
+
+// Kimi K3.1 Pro refuses an assistant turn with tool_calls and no text,
+// which is how every OpenAI client records a call-only turn (dsh sends
+// "content": null), so an agent fails from its second request on, once the
+// model has called a tool. WorkBuddy answers it 400 "Invalid request
+// parameters" (Gloria335056 on X: only kimi-k3.1-pro, every other model
+// fine, from dsh). The same model on QwenWork refused null and "" and took
+// one space, with DeepSeek, GLM and Qwen on the same account taking the
+// empty turn (nanfei892, plugins #1213, measured). Measured 2026-11-19 on
+// www.workbuddy.ai, kimi-k3 took the null turn. So a kimi-k3.1-pro (and
+// -highspeed) call-only turn goes with one space; a turn with text, and
+// every other model, go as they came.
+const CALL_TEXT = " "
+function callTextModel(id) {
+  return /^kimi-k3\.1-pro(?:-|$)/i.test(String(id ?? ""))
+}
+
+function emptyContent(c) {
+  if (c === null || c === undefined || c === "") return true
+  return Array.isArray(c) && c.every((p) => p?.type === "text" && !p.text)
+}
+
+// callText gives b's call-only assistant turns CALL_TEXT for a model that
+// needs it; true when it changed any
+function callText(b) {
+  if (!callTextModel(b?.model)) return false
+  let changed = false
+  for (const m of b.messages) {
+    if (m?.role !== "assistant" || !Array.isArray(m.tool_calls) || !m.tool_calls.length || !emptyContent(m.content)) continue
+    m.content = CALL_TEXT
     changed = true
   }
   return changed
@@ -5000,4 +5035,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }
+export const _internal = { callText, replyFacts, reportEvents, stepOf, reporting, machineOf, endpointOf, moved, at, signInsIn, importSignIns, importFrom, otherSite, withGrowth, inputLengthOf, HIDE_DSH, hideDsh, dshHidden, planCodes, listedExtra, idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, SMALL_BUDGET, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, freeWindowRouting, routingRefusalRows, readRoutingRefusals, readLedgerTail, pinned, pinning, rowTime, rowAccount, ofAccount, windowOffset, windowReset, CN_ESTIMATED_WINDOWS, FREE_WINDOW_AI, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM, routingReads, routingParsed, restIdentity, routingLines, ROUTING_LINE_MAX }

@@ -5,7 +5,7 @@
 // Not tried with a real enterprise account: the hosts below are made up.
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
-import { TraeCNAuthPlugin, _internal } from "./index.mjs"
+import { TraeCNAuthPlugin, TraeGlobalAuthPlugin, _internal } from "./index.mjs"
 import { fakeTrae, json, signedIn, sse } from "./fake.mjs"
 
 // the console's own answer, as a real enterprise account's is: the seat
@@ -65,6 +65,83 @@ test("the sign-in page doesn't hide the enterprise (SaaS) sign-in", async () => 
   expect(q.get("hide_saas_login")).not.toBe("true")
   await fetch(new URL(q.get("auth_callback_url")) + "?error=x")
   await a.callback()
+})
+
+// Since November 2026 trae.cn's authorization page sends a signed-out
+// browser to a Doubao/Feishu account sign-in with no way to an enterprise
+// one (@yalifesign on X). The enterprise way starts on the realm's console's
+// own authorization page, which takes the same parameters and calls back the
+// same way, naming its Api host (console.enterprise.trae.cn's code, read
+// 2026-11-19; not tried with a real seat).
+test("the enterprise way opens the console's authorization page with the IDE's parameters", async () => {
+  for (const [make, site] of [[TraeCNAuthPlugin, CN], [TraeGlobalAuthPlugin, GLOBAL]]) {
+    const hooks = await make({ client: {} })
+    const m = hooks.auth.methods[1]
+    expect(m.type).toBe("oauth")
+    expect(m.label).toBe(`${site.name} enterprise account (browser)`)
+    const a = await m.authorize()
+    const u = new URL(a.url)
+    expect(u.origin).toBe(site.hosts.console)
+    expect(u.pathname).toBe("/authorization")
+    // what the console's page checks before it calls back
+    for (const k of ["auth_from", "login_trace_id", "device_id", "auth_callback_url"]) expect(u.searchParams.get(k)).toBeTruthy()
+    expect(["trae", "solo"]).toContain(u.searchParams.get("auth_from"))
+    expect(new URL(u.searchParams.get("auth_callback_url")).hostname).toBe("127.0.0.1")
+    await fetch(u.searchParams.get("auth_callback_url") + "?error=x")
+    expect(await a.callback()).toEqual({ type: "failed", error: "x" })
+    // the personal way is still the consumer site's
+    const p = await hooks.auth.methods[0].authorize()
+    expect(new URL(p.url).origin).toBe(site.hosts.web)
+    await fetch(new URL(p.url).searchParams.get("auth_callback_url") + "?error=x")
+    await p.callback()
+  }
+})
+
+test("the console's callback signs in an enterprise seat on its console", async () => {
+  f = fakeTrae()
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const a = await hooks.auth.methods[1].authorize()
+  const q = new URL(a.url).searchParams
+  // the console's callback: _t() in its authorization page
+  const url = new URL(q.get("auth_callback_url"))
+  const exp = Math.floor(Date.now() / 1000) + 7200
+  for (const [k, v] of Object.entries({
+    scope: "saas", host: ENT, consoleHost: ENT, coreHost: ENT, isRedirect: "true", loginTraceID: q.get("login_trace_id"),
+    userJwt: JSON.stringify({ Token: "jwt-e", TokenExpireAt: exp }),
+    userInfo: JSON.stringify({ UserID: "u-e", ScreenName: "Acme", TenantID: "t-1" }),
+    refreshToken: "r-e", refreshExpireAt: String(exp + 86400), data: "r-e",
+  })) url.searchParams.set(k, v)
+  await fetch(url)
+  const got = await a.callback()
+  expect(got.type).toBe("success")
+  expect(got.access).toBe("jwt-e")
+  expect(got.refresh).toBe("r-e")
+  expect(got.host).toBe(ENT)
+  expect(_internal.isEnterprise(got, CN)).toBe(true)
+  expect(CN.apiOf(got)).toBe(CN.hosts.console)
+  expect(got.deviceId).toBe(q.get("device_id"))
+})
+
+test("a console callback naming no host keeps its console as the seat's host", async () => {
+  f = fakeTrae()
+  const hooks = await TraeCNAuthPlugin({ client: {} })
+  const a = await hooks.auth.methods[1].authorize()
+  const url = new URL(new URL(a.url).searchParams.get("auth_callback_url"))
+  url.searchParams.set("consoleHost", ENT)
+  url.searchParams.set("userJwt", JSON.stringify({ Token: "jwt-e", TokenExpireAt: Math.floor(Date.now() / 1000) + 7200 }))
+  url.searchParams.set("refreshToken", "r-e")
+  await fetch(url)
+  const got = await a.callback()
+  expect(got.host).toBe(ENT)
+  expect(_internal.isEnterprise(got, CN)).toBe(true)
+  // the consumer page's callback is not read that way
+  const p = await hooks.auth.methods[0].authorize()
+  const pu = new URL(new URL(p.url).searchParams.get("auth_callback_url"))
+  pu.searchParams.set("consoleHost", ENT)
+  pu.searchParams.set("userJwt", JSON.stringify({ Token: "jwt-p", TokenExpireAt: Math.floor(Date.now() / 1000) + 7200 }))
+  pu.searchParams.set("refreshToken", "r-p")
+  await fetch(pu)
+  expect(_internal.isEnterprise(await p.callback(), CN)).toBe(false)
 })
 
 test("only an https host on Trae's own domains is taken", () => {

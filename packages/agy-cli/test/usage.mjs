@@ -661,6 +661,44 @@ test("reports sanitized failures and preserves the bridge sign-in; failures back
   }
 })
 
+// tmr11235 on X (magpie v0.1.4520): the account's usage said "agy CLI not
+// found" while its chats ran through agy. A read made before agy was there
+// was held for the backoff, which grows to hours; agy found since is read
+// at once, and a failure held for one agy isn't another's.
+test("no agy found is not held: an agy found since is read at once", async t => {
+  const f = await fixture(t)
+  let agy = null
+  const clock = 1_000_000
+  const read = createUsageReader(() => agy, { ...f.options, now: () => clock })
+  for (let i = 0; i < 3; i++) {
+    const missing = await read()
+    assert.deepEqual(missing.windows, [])
+    assert.equal(missing.signIn, "kept")
+    assert.match(missing.error, /agy CLI not found[\s\S]*Sign in to this account again/)
+  }
+  agy = f.executable
+  const found = await read()
+  assert.equal(found.error, undefined)
+  assert.equal(found.windows.length, 1)
+  await f.assertClean()
+})
+
+test("a failure held for one agy is not another agy's", async t => {
+  const f = await fixture(t, { TEST_MODE: "fail", TEST_ERROR: "connection refused" })
+  let agy = f.executable
+  const clock = 1_000_000
+  const read = createUsageReader(() => agy, { ...f.options, now: () => clock })
+  assert.match((await read()).error, /network or proxy/)
+  f.env.TEST_MODE = ""
+  assert.match((await read()).error, /network or proxy/, "the same agy is held")
+  const other = path.join(path.dirname(f.executable), "agy2" + path.extname(f.executable))
+  await fs.copyFile(f.executable, other)
+  await fs.chmod(other, 0o755)
+  agy = other
+  assert.equal((await read()).windows.length, 1)
+  await f.assertClean()
+})
+
 const startupAuthLogs = [
   "W1115 15:13:30.249469      10 cache.go:157] error getting token source: You are not logged into Antigravity.",
   "I1115 15:13:30.317328       1 server_oauth.go:226] OAuth: authenticated successfully",

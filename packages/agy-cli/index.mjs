@@ -9,7 +9,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { ACCOUNT_DISABLED_REFUSED, agyRefusal, createUsageReader, verifyLinkIn, verifyRefused } from "./usage.mjs"
 import { catalogRows, storeCatalogRows } from "./model-ids.mjs"
-import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, storedEmail, storedSignInNow } from "./signin.mjs"
+import { backgroundBlocked, cannotSignIn, forgetStoredSignIn, signedInEmail, storedEmail, storedSignInNow } from "./signin.mjs"
 import { sanitizePatternFields } from "./re2-pattern.mjs"
 import { startLogin } from "./login.mjs"
 import { accountsDir, currentHome, dropHome, homeIdOfAuth, homeOf, inAccount, newHome, tokenFile } from "./account.mjs"
@@ -443,10 +443,68 @@ function execOnce(file, args, opts = {}) {
   })
 }
 
+// Antigravity's desktop app keeps its gateway in ~/.gemini/config/config.json
+// ({"gateway":{"enabled":true,"url":…}}), and agy reads the same file: an agy
+// on ~/.gemini lists and serves the gateway's models, not the Google
+// account's. When magpie has wired the app to itself, that gateway is
+// magpie, so this provider listed magpie's own models and a turn would go
+// back into magpie (canlee886 on X, agy 1.5.10). agy acp on the bridge's own
+// folder (geminiDirArgs) reads no such file; `agy models` takes no
+// --gemini-dir, so with the app's gateway on, the catalog and the sign-in
+// check come from an agy acp session on that folder instead. A file that
+// can't be read as JSON counts as on: the session route is right either way.
+export function appGatewayOn(home = currentHome() ?? os.homedir()) {
+  let text
+  try {
+    text = fs.readFileSync(path.join(home, ".gemini", "config", "config.json"), "utf8")
+  } catch {
+    return false
+  }
+  try {
+    const gateway = JSON.parse(text)?.gateway
+    return gateway?.enabled === true
+  } catch {
+    return true
+  }
+}
+
+// gatewayListed: `agy models` would answer from the app's gateway, and a
+// turn's agy (the bridge's folder) would not.
+async function gatewayListed(agyPath) {
+  if (!appGatewayOn()) return false
+  return Boolean((await geminiDirArgs(agyPath)).dir)
+}
+
+// offeredList is what the last agy acp session offered, as parseAgyModels
+// rows: a session's model option names a family ("gemini-3.8-flash") beside
+// its levels ("gemini-3.8-flash-high"), and only the levels are kept.
+function offeredList() {
+  const offered = ms().acpOfferedModels
+  if (!offered?.size) return null
+  const ids = [...offered.keys()]
+  const families = new Set(ids.filter(id => ids.some(other => other.startsWith(id + "-") &&
+    EFFORT_ORDER.includes(other.slice(id.length + 1).toLowerCase()))))
+  const out = []
+  for (const [id, name] of offered) {
+    if (families.has(id)) continue
+    const effort = /-(high|medium|low|minimal|xhigh|max)$/i.exec(id)?.[1]?.toLowerCase()
+    out.push({ id, name, effort })
+  }
+  return out.length ? out : null
+}
+
+// listOffered asks agy acp, on the bridge's folder, what it offers now.
+async function listOffered(agyPath) {
+  ms().offeredStale = true
+  await probeOfferedOnce(agyPath)
+  return ms().offeredStale ? null : offeredList()
+}
+
 async function listAgyModels(agyPath) {
   // a listing nobody asked for doesn't run an agy that would start its own
   // Google sign-in (signin.mjs); the catalog it has stays
   if (await backgroundBlocked()) return null
+  if (await gatewayListed(agyPath)) return listOffered(agyPath)
   const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000, unrefTimer: true })
   // null, not FALLBACK_MODELS: a failed listing must not overwrite a dynamic catalog.
   if (err || timedOut || code !== 0) {
@@ -478,6 +536,8 @@ function refusalOf() {
 async function refusalNow(agyPath) {
   if (refusals.has(currentHome() ?? "")) return refusalOf()
   if (!agyPath || await backgroundBlocked()) return ""
+  // the gateway's listing says nothing of the Google account
+  if (await gatewayListed(agyPath)) return ""
   const { err, stdout, stderr, code, timedOut } = await execOnce(agyPath, await modelsArgs(agyPath), { timeoutMs: 15_000 })
   if (err || timedOut || code === 0) return ""
   const why = agyRefusal(`${stderr}\n${stdout}`)
@@ -514,6 +574,13 @@ async function probeSignedIn(agy) {
   // caller goes on to magpie's own sign-in link instead
   const blocked = await backgroundBlocked({ fresh: true })
   if (blocked) return { ok: false, why: blocked }
+  if (await gatewayListed(agy)) {
+    const list = await listOffered(agy)
+    if (!list) return { ok: false, why: "agy acp offered no model: agy is not signed in to Google" }
+    useAgyPath(agy)
+    storeListedCatalog(agy, list, Date.now())
+    return { ok: true }
+  }
   const probe = await execOnce(agy, await modelsArgs(agy), { timeoutMs: 15_000 })
   const listed = !probe.err && !probe.timedOut && probe.code === 0 &&
     probe.stdout.split("\n").some(line => /^\S+\s+\S/.test(line.trim()))
@@ -674,8 +741,11 @@ async function probeOfferedModels(agyPath) {
   let conn = null
   let timer
   try {
+    // on the folder a turn runs on, so it offers what a turn is served
+    // (appGatewayOn: on ~/.gemini it would offer the app's gateway's)
+    const own = await geminiDirArgs(agyPath)
     workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "magpie-agy-models-"))
-    child = spawnAgy(agyPath, ["acp"], { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+    child = spawnAgy(agyPath, ["acp", ...own.args], { cwd: workspace, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
     child.on("error", () => conn?.close(new Error("agy acp failed to start")))
     child.on("close", () => conn?.close(new Error("agy acp exited")))
     child.stdin?.on("error", () => {})
@@ -5312,6 +5382,28 @@ const DSH_PLAN_MODE_RE = /(?:^|\r?\n)The user switched this session (?:to plan|b
 // DeepSeek Harness sends a runtime-context snapshot as its own user message;
 // a gateway that merges user messages into one string could lose text after it.
 const DSH_RUNTIME_SNAPSHOT_RE = /^Current runtime context(?:\. This snapshot supersedes earlier runtime-context snapshots\.(?:\r?\n[\s\S]*)?|: none\. Earlier runtime-context snapshots no longer apply\.)$/
+// tmux-context's location reading, a finished background job's notice and the
+// note that the model changed: user-role text DSH adds on its own too.
+const DSH_TMUX_RE = /(?:^|\r?\n)tmux location \(turn \d+\):\r?\nsession [^\r\n]*\r?\nwindow active=[^\r\n]*/g
+const DSH_JOB_RE = /(?:^|\r?\n)background job \S+ \([^\r\n]*\) finished [^\r\n]*/g
+const DSH_MODEL_NOTE_RE = /(?:^|\r?\n)\[model changed: assistant turns above this point were generated by [^\r\n]*\]/g
+const DSH_NOTE_RES = [DSH_TIME_CONTEXT_RE, DSH_REPEAT_TOOL_RE, DSH_PLAN_MODE_RE, DSH_TMUX_RE, DSH_JOB_RE, DSH_MODEL_NOTE_RE]
+
+// DSH's own notes in a user text, apart from what the user wrote. Beside a
+// live tool_result they are context for the model, never the user steering
+// (seven_7cx on X: every step's clock note dropped the live session).
+function takeDshNotes(text) {
+  if (DSH_RUNTIME_SNAPSHOT_RE.test(text.trim())) return { notes: [text.trim()], rest: "" }
+  const notes = []
+  let rest = text
+  for (const re of DSH_NOTE_RES) {
+    rest = rest.replace(re, (match) => {
+      notes.push(match.trim())
+      return ""
+    })
+  }
+  return { notes, rest }
+}
 
 function isMetaOnlyUserText(text) {
   const rest = stripMagpiePlaceholderNotice(text)
@@ -5321,6 +5413,9 @@ function isMetaOnlyUserText(text) {
     .replace(DSH_TIME_CONTEXT_RE, "")
     .replace(DSH_REPEAT_TOOL_RE, "")
     .replace(DSH_PLAN_MODE_RE, "")
+    .replace(DSH_TMUX_RE, "")
+    .replace(DSH_JOB_RE, "")
+    .replace(DSH_MODEL_NOTE_RE, "")
     .replace(/\[Request interrupted by user(?: for tool use)?\]/g, "")
     .replace(/\[(?:SYSTEM NOTIFICATION|MESSAGE FROM NON-USER SOURCE) - NOT USER INPUT\]/g, "")
     .trim()
@@ -5770,7 +5865,14 @@ function inspectToolTurn(results, body) {
         out = appendResultPart(out, resultIndex, parseUserImage(block))
         continue
       }
-      const rawText = blockText(block)
+      let rawText = blockText(block)
+      if (message.role === "user") {
+        const dsh = takeDshNotes(rawText)
+        if (dsh.notes.length) {
+          notices.push(...dsh.notes)
+          rawText = dsh.rest
+        }
+      }
       if (!seenResult && message.role === "user" && rawText.trim()) {
         // A user can steer a pending tool turn from either side of a tool_result.
         // Replay the instruction as a user prompt, never as an MCP tool response.
@@ -6742,7 +6844,7 @@ function noAgy() {
 // (account.mjs) keeps the home's name with it, and a key of its own, so
 // two accounts whose email can't be read aren't taken for one.
 async function signedInAs(homeId = "") {
-  const email = await storedEmail()
+  const email = await signedInEmail()
   const metadata = { ...(email ? { email } : {}), ...(homeId ? { agyHome: homeId } : {}) }
   return { type: "success", key: homeId ? `agy:${homeId}` : "agy", ...(Object.keys(metadata).length ? { metadata } : {}) }
 }

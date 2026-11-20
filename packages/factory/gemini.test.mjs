@@ -2,7 +2,8 @@
 // /api/llm/g/v1/generate, as magpie's built-in sends them (buildGemini,
 // factoryDroidGoogle in internal/provider/factory_client.go).
 import { afterEach, expect, test } from "bun:test"
-import { FactoryAuthPlugin } from "./index.mjs"
+import { readFileSync } from "node:fs"
+import { FactoryAuthPlugin, _internal } from "./index.mjs"
 
 const real = globalThis.fetch
 afterEach(() => (globalThis.fetch = real))
@@ -101,4 +102,28 @@ test("adapts ZCode generated Gemini system context while preserving values and u
   expect(sent.contents).toEqual([{ role: "user", parts: [{ text: context.replace("You have been invoked", "\\u0059ou have been invoked") }] }])
   await l.fetch(url, { method: "POST", body: JSON.stringify(sent) })
   expect(JSON.parse(seen[1].body)).toEqual(sent)
+})
+
+// marovole on X: gemini-4-hydrogen requests of 0.6 to 1.6 MB came back 400
+// "Invalid model ID in request body", every retry alike. magpie's gateway
+// sends a Gemini body's fields sorted, so the model came after the
+// contents, a long session's megabytes; droid sends it first.
+test("a large Gemini request opens with the model, its fields in droid's order", async () => {
+  const droidBody = readFileSync(new URL("./testdata/droid-1.14.0-gemini-body.txt", import.meta.url), "utf8")
+  const droidOrder = [...droidBody.match(/ar=\{(.*)\}/)[1].matchAll(/(?:^|,)(\w+):/g)].map((m) => m[1])
+    .filter((k) => k !== "parts" && k !== "text" && k !== "functionDeclarations")
+  expect(droidOrder).toEqual(_internal.GEMINI_ORDER)
+
+  const { l, seen } = await loaded()
+  const big = "x".repeat(1_600_000)
+  // as buildGemini in magpie's gateway marshals it: Go sorts a map's keys
+  const sorted = `{"contents":[{"role":"user","parts":[{"text":"${big}"}]}],"generationConfig":{"maxOutputTokens":512},"model":"gemini-4-hydrogen","systemInstruction":{"parts":[{"text":"Be brief."}]},"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}},"tools":[{"functionDeclarations":[{"name":"Read"}]}]}`
+  await l.fetch("https://api.factory.ai/api/llm/g/v1/models/gemini-4-hydrogen:streamGenerateContent?alt=sse", { method: "POST", body: sorted })
+  // the AI SDK's Google package names no model in the body at all
+  await l.fetch("https://api.factory.ai/api/llm/g/v1/models/gemini-4-hydrogen:streamGenerateContent?alt=sse", { method: "POST", body: JSON.stringify({ ...request, contents: [{ role: "user", parts: [{ text: big }] }] }) })
+  for (const s of seen) {
+    expect(s.body.startsWith('{"model":"gemini-4-hydrogen","contents":')).toBe(true)
+    expect(Object.keys(JSON.parse(s.body))).toEqual([..._internal.GEMINI_ORDER, ...(s === seen[0] ? ["toolConfig"] : [])])
+  }
+  expect(JSON.parse(seen[0].body).toolConfig).toEqual({ functionCallingConfig: { mode: "AUTO" } })
 })

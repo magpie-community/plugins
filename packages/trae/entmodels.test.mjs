@@ -146,3 +146,115 @@ test("an enterprise model's __dev detail is the one asked by; a preset's body ga
   const p = _internal.chatBody({ model: "glm-5", messages: [{ role: "user", content: "hi" }] }, "chat_v3", "", 0, null, "s", false, null, preset)
   for (const k of ["model_name", "provider", "config_source", "is_custom_model"]) expect(k in p).toBe(false)
 })
+
+// the reporter's next case (@liuyuexue2020 on X, 0.2.43, AI/deekseek-v4.1-flash
+// on console.enterprise.trae.cn): every reply stopped at exactly 2000 output
+// tokens, where the same model in Trae wrote more. Trae's own client sends
+// the model detail's max_tokens with every model; the plugin sent the
+// agent's limit only, and an enterprise model none at all when the agent
+// named none. The fake answers as the reporter met it: a request naming no
+// limit gets 2000 tokens.
+test("an enterprise model's chat is held to its detail's max_tokens, and sent it when the agent names none", async () => {
+  const hooks = await plugin([preset, ...listed])
+  const ms = await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  expect(ms["AI/deekseek-v4.1-flash"].limit.output).toBe(8192)
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => {
+    const out = Math.min(r.json.max_tokens || 2000, 8192)
+    return sse([["output", { response: "x" }], ["done", { usage: { prompt_tokens: 10, completion_tokens: out } }]])
+  })
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (extra) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ model: "AI/deekseek-v4.1-flash", messages: [{ role: "user", content: "write a lot" }], ...extra }) })
+    expect(res.status).toBe(200)
+    return f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1).json.max_tokens
+  }
+  expect(await ask({})).toBe(8192)
+  expect(await ask({ max_tokens: 100 })).toBe(100)
+  expect(await ask({ max_tokens: 100000 })).toBe(8192)
+  expect(await ask({ max_completion_tokens: 3000 })).toBe(3000)
+})
+
+test("an enterprise detail with no max_tokens sends the agent's limit or none", () => {
+  const bare = { ...listed[0], model_detail_list: [{ model_name: "deekseek-v4.1-flash", provider: "AI" }] }
+  const req = { model: bare.config_name, messages: [{ role: "user", content: "hi" }] }
+  expect("max_tokens" in _internal.chatBody(req, "chat_v3", "", 0, null, "s", false, null, bare)).toBe(false)
+  expect(_internal.chatBody({ ...req, max_tokens: 5000 }, "chat_v3", "", 0, null, "s", false, null, bare).max_tokens).toBe(5000)
+})
+
+test("a preset asked with no limit is sent its __dev max_tokens, as Trae's client sends it", () => {
+  const req = { model: "glm-5", messages: [{ role: "user", content: "hi" }] }
+  expect(_internal.chatBody(req, "chat_v3", "glm-5__dev", 32000, null, "s", false, null, preset).max_tokens).toBe(32000)
+  expect(_internal.chatBody({ ...req, max_tokens: 100 }, "chat_v3", "glm-5__dev", 32000, null, "s", false, null, preset).max_tokens).toBe(100)
+  // a function whose list doesn't name the model's __dev detail: nothing known, nothing sent
+  expect("max_tokens" in _internal.chatBody(req, "solo_agent", "", 0, null, "s", false, null, preset)).toBe(false)
+})
+
+// the reporter's next case (@liuyuexue2020 on X, 0.2.44), their own request:
+// volc/deepseek-v4-1-flash asked for 120 long lines with max_tokens 4096 and
+// stream false. Four enterprise models each answered exactly 2000
+// completion tokens with finish_reason "stop", mid-answer. The fake is Trae
+// as inferred from its client (libharness 3.4.22): an enterprise model's
+// limit is read from enterprise_custom_hyper_params, a top-level max_tokens
+// is not, and a reply cut at the limit still says "stop".
+const LINE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const theirAsk = { model: "volc/deepseek-v4-1-flash", messages: [{ role: "user", content: `Generate exactly 120 numbered lines. Each line must be in this format: LINE-001: ${LINE}. Continue through LINE-120. Do not summarize, do not explain, and do not stop early.` }], max_tokens: 4096, temperature: 0, stream: false }
+const cutAt = (r) => r.json.enterprise_custom_hyper_params?.max_tokens || 2000
+const answer = (out, finish = "stop") => sse([["output", { response: "LINE-001: " + LINE }], ["done", { finish_reason: finish, usage: { prompt_tokens: 80, completion_tokens: out } }]])
+
+test("an enterprise model's chat names its limit in enterprise_custom_hyper_params, as Trae's client does", async () => {
+  const hooks = await plugin([preset, ...listed.map((m) => ({ ...m, multimodal: false, model_detail_list: m.model_detail_list.map((d) => ({ ...d, prompt_max_tokens: 120000 })) }))])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  f.route("POST /api/agent/v3/llm_utils_chat", (r) => answer(Math.min(cutAt(r), 3100)))
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify(theirAsk) })
+  expect(res.status).toBe(200)
+  const b = await res.json()
+  expect(b.usage.completion_tokens).toBe(3100)
+  expect(b.choices[0].finish_reason).toBe("stop")
+  const sent = f.seen.filter((r) => r.path === "/api/agent/v3/llm_utils_chat").at(-1).json
+  expect(sent.max_tokens).toBe(4096)
+  expect(sent.enterprise_custom_hyper_params).toEqual({ max_tokens: 4096, prompt_max_tokens: 120000, multimodal: false })
+  // a preset is sent no enterprise params
+  expect("enterprise_custom_hyper_params" in _internal.chatBody({ model: "glm-5", messages: [], max_tokens: 4096 }, "chat_v3", "glm-5__dev", 32000, null, "s", false, null, preset)).toBe(false)
+  // nor an enterprise model with no limit known
+  const bare = { ...listed[0], model_detail_list: [{ model_name: "deekseek-v4.1-flash", provider: "AI" }] }
+  expect("enterprise_custom_hyper_params" in _internal.chatBody({ model: bare.config_name, messages: [] }, "chat_v3", "", 0, null, "s", false, null, bare)).toBe(false)
+})
+
+test("a reply Trae cut at its limit ends for length, not stop, in a body and in a stream", async () => {
+  const hooks = await plugin([preset, ...listed])
+  await hooks.provider.models({ models: {} }, { auth: signedIn() })
+  let out = 2000
+  f.route("POST /api/agent/v3/llm_utils_chat", () => answer(out))
+  const opts = await hooks.auth.loader(async () => signedIn())
+  const ask = async (extra) => {
+    const res = await opts.fetch(opts.baseURL + "/chat/completions", { method: "POST", body: JSON.stringify({ ...theirAsk, ...extra }) })
+    expect(res.status).toBe(200)
+    if (!extra.stream) return (await res.json()).choices[0].finish_reason
+    const lines = (await res.text()).split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)))
+    return lines.map((x) => x.choices?.[0]?.finish_reason).filter(Boolean)
+  }
+  // Trae's own 2000, whatever was asked
+  expect(await ask({})).toBe("length")
+  expect(await ask({ stream: true })).toEqual(["length"])
+  // the limit sent, used up
+  out = 1000
+  expect(await ask({ max_tokens: 1000 })).toBe("length")
+  // a reply that ended short of both is whole
+  out = 1999
+  expect(await ask({})).toBe("stop")
+  expect(await ask({ stream: true })).toEqual(["stop"])
+  // a preset's reply of exactly 2000 under a bigger limit was not seen cut
+  out = 2000
+  expect(await ask({ model: "glm-5" })).toBe("stop")
+})
+
+test("cutFinish keeps what Trae said of a reply it didn't cut", () => {
+  const u = (c) => ({ completion_tokens: c })
+  expect(_internal.cutFinish("stop", u(2000), 4096, _internal.TRAE_CUT)).toBe("length")
+  expect(_internal.cutFinish("", u(2000), 4096, _internal.TRAE_CUT)).toBe("length")
+  expect(_internal.cutFinish("stop", u(2000), 4096, 0)).toBe("stop")
+  expect(_internal.cutFinish("content_filter", u(2000), 4096, _internal.TRAE_CUT)).toBe("content_filter")
+  expect(_internal.cutFinish("stop", u(4096), 4096, 0)).toBe("length")
+  expect(_internal.cutFinish("stop", null, 4096, _internal.TRAE_CUT)).toBe("stop")
+})

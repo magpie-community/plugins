@@ -225,7 +225,9 @@ class FakeAgy {
     child.onStdin = (chunk) => this.onStdin(chunk)
     // offeredModels may be a function of the agy's HOME: accounts on
     // different plans are offered different models (#1229).
-    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "") : kit.offeredModels
+    // and of its args: an agy on ~/.gemini is offered what the app's
+    // gateway lists, one on --gemini-dir its Google account's
+    this.offered = () => typeof kit.offeredModels === "function" ? kit.offeredModels(this.env.HOME ?? "", child.args) : kit.offeredModels
     // Whether this agy reaches the bridge's MCP server and lists the tools;
     // listTools(env) false stands in for an `nc` agy never runs (nc.cmd
     // under agy 1.5 on Windows, plugins#1239).
