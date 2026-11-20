@@ -21,9 +21,9 @@ src/inventory.js    # 读 ~/.config/magpie（providers / checkin；读失败=未
 src/classify.js     # 白名单过滤 + 脱敏（kind 白名单 / url 限 https）+ 三档状态
 src/allowlist.js    # 官方厂商白名单
 src/mapping.js      # 羊毛→插件（provider → 完整 npm 包名）
-page/               # index.html / app.js / style.css / brand/（图标）/ icon.svg
+page/               # index.html / app.js / style.css / brand/（图标）/ icon.svg（原生 <dialog> 弹层 / tablist 语义 / 亮暗自适应）
 NOTICE              # 品牌图标（lobe-icons, MIT）与数据来源署名
-test/               # 离线测试（host 分类 + 页面静态校验）
+test/               # 离线测试（host 分类 + 页面静态校验 + happy-dom 交互测试）
 ```
 
 ## 数据与合规
@@ -35,6 +35,20 @@ test/               # 离线测试（host 分类 + 页面静态校验）
 ```bash
 bun test
 ```
+
+## 发布（CI 自动，免令牌）
+- **日常推送 / PR**：`.github/workflows/ci.yml` 自动 `bun install` + `bun test`。
+- **发布**：推送 `vX.Y.Z` tag 并在 GitHub 创建 Release 后，`.github/workflows/release.yml` 自动「装依赖 → 测试 → 校验 tag 与 package.json 版本一致 → `npm publish`」。
+- **认证：npm Trusted Publishing（OIDC），不需要任何令牌。** 一次性在 npm 配置：
+  1. npmjs.com → 包 `magpie-free-tokens` → **Settings → Trusted publishing** → 添加 GitHub Actions：
+     - Repository owner：`sljdxde`
+     - Repository name：`magpie-free-tokens`
+     - Workflow filename：`release.yml`
+     - Environment：留空
+  2. 保存即可，无需生成或保存令牌。
+- 之后每次发版只需建 Release，npm 自动出包（带 provenance 来源证明）。
+
+> 旧做法（`NPM_TOKEN` secret + 经典 Automation 令牌）已被 npm 淘汰：经典令牌自 2025-11 起全面撤销，绕过 2FA 的令牌 2027-01 起不能直接发布。本项目已改用 OIDC。
 
 ## 安装（本地）
 ```bash

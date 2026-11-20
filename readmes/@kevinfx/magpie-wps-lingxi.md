@@ -10,7 +10,7 @@
 
 </div>
 
-> **来源与维护**：0.3.0 起本插件只走**桌面端通路**，不再使用网页端。代码基线取自
+> **来源与维护**：0.3.0 起以**桌面端 agent-runtime** 为主通路，不再使用旧 AIGC 对话端点。代码基线取自
 > [baijiu666/magpie-wps-lingxi](https://github.com/baijiu666/magpie-wps-lingxi) 0.4.11，
 > 其中合入了 [PR #3](https://github.com/KevinFX-code/magpie-wps-lingxi/pull/3)（shadyrispy：
 > agent-runtime 平面 + Cookie 归一化）、[PR #4](https://github.com/KevinFX-code/magpie-wps-lingxi/pull/4)
@@ -19,24 +19,27 @@
 > （MYCF711）与 [PR #5](https://github.com/KevinFX-code/magpie-wps-lingxi/pull/5)（baijiu666：任务中心一次性任务）
 > 的工作。0.1.x–0.2.x 的网页端实现仍保留在 git 历史里（含 `v0.2.3` 标签）。
 >
-> 0.3.0 相对 0.4.11 只加了一项：**客户端侧提示词预算**（见下），其余行为不变。
+> 0.3.0 起基于该桌面端实现持续改进；各版本变化见 [CHANGELOG](./CHANGELOG.md)。
 
 一个 magpie / OpenCode 供应商插件：登录 WPS 灵犀，把它的模型接进 Magpie、DeepSeek Harness、
 Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 
-**桌面端对齐（灵犀 1.3.31）**：11 个默认模型、1 条对话通路、3 个请求步骤（建会话 → 领 run → chat/completions）。
+**桌面端对齐（灵犀 1.3.31）**：11 个默认模型；agent-runtime 为主通路，遇到明确权限拒绝时纯文本请求可回退到 cowork_web。
 
 ---
 
 ## 🌟 核心特性
 
-- 🖥 **只走桌面客户端通路**  
+- 🖥 **桌面客户端主通路**
   与安装包里的 app-server 完全一致：`POST /api/aioffice/v1/cowork/sessions` 建会话 →
   `POST /api/public/v1/credits/runs` 领 run → `POST /api/public/v1/agent-runtime/chat/completions` 对话。
-  原生 `messages` / `tools` 进，原生 `tool_calls` / `reasoning_content` / `usage` 出。
-- 🧹 **没有网页平面**  
-  旧的 `/api/aigc/v3/assistant/...` 通路、`question` 压平、`<|FunctionCallBegin|>` 正文工具桥全部删除；
-  不存在“有 tools 走一条、没 tools 走另一条”的分叉。
+  原生 `messages` / `tools` 进，原生 `tool_calls` / `reasoning_content` / `usage` 出；同时转换 Codex Responses 的 `input`、函数工具和调用结果。
+- 🔁 **权限拒绝回退**
+  只有上游明确返回 HTTP 403 `PermissionDenied` 才尝试 `cowork_web`。该通路只接受纯文本；请求含工具或多模态内容时保留 403，不把不完整回答伪装成成功。
+- 🧵 **会话隔离**
+  有稳定会话 ID 时按账号、模型、客户端、模式和会话分别缓存 run。请求未带会话 ID 时每次新建 run，避免不同对话共用上下文；如果客户端每轮不提供稳定 ID，可能增加 run 用量。
+- 🧹 **不走旧 AIGC 对话接口**
+  `/api/aigc/v3/assistant/...`、`question` 压平和正文工具桥已删除。`cowork_web` 仅用于一次性任务及明确权限拒绝后的纯文本回退。
 - 🎁 **每日签到 + 一次性任务 (`auth.checkin`)**  
   读客户端任务中心 `GET /api/public/v1/tasks`，领取 `daily_check_in`；
   已领过返回 `done`，领到返回 `claimed` 并用领前/领后余额差作为奖励。
@@ -60,7 +63,7 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 
 ---
 
-## 🔌 对话通路（唯一一条）
+## 🔌 agent-runtime 主通路
 
 | 步骤 | 请求 | 说明 |
 |---|---|---|
@@ -68,8 +71,9 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 | 2 | `POST /api/public/v1/credits/runs` | `{client_request_id, session_id, model_provider:"lingxi", model_id, agent_input:{...}}`，返回 `run_id` |
 | 3 | `POST /api/public/v1/agent-runtime/chat/completions` | 头带 `X-Cc-Session-ID` / `X-Cc-Run-ID`，SSE 返回 |
 
-- 计费按 run：一个 run 内多次调用只扣一次智点，所以 session/run 按「账号 × 模型」缓存 1 小时；
-  上游报 `SQLNoRows` / 会话不存在时自动重建一次。
+- 计费按 run：一个 run 内多次调用只扣一次智点。有 `client_metadata.thread_id`（或等效会话 ID）时，session/run 按「账号 × 模型 × 客户端 × 模式 × 会话」缓存 1 小时；
+  没有稳定会话 ID 时不缓存，每次创建独立 run。上游报 `SQLNoRows` / 会话不存在时自动重建一次。
+- 若上游明确返回 403 `PermissionDenied`，纯文本请求会改用 `cowork_web` WebSocket；工具调用、工具历史和图片内容不降级，仍返回 403。
 - 响应帧：`data:{"code":"Success","usage":{…},"choices":[{"text","reasoning_content","tool_calls","finish_reason"}]}`，
   没有 `[DONE]`，靠 `finish_reason` 收尾；`code != Success` 直接作为上游错误返回。
 - 请求头（与客户端一致）：`X-Client-Type: lingxi_claw`、`X-Client-Lang: zh-CN`、
@@ -81,7 +85,7 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 对话端点 | ✅ | 只有 `agent-runtime/chat/completions`；网页通路已删 |
+| 对话端点 | ✅ | `agent-runtime/chat/completions` 主通路；明确 `PermissionDenied` 时纯文本回退 `cowork_web` |
 | 会话 / run | ✅ | cowork 会话 + credits/runs，`session_type:"cowork_client"`、`agent_version:2` |
 | 请求头 | ✅ | `X-Client-Type`、`X-Client-Lang`、`X-Cc-Agent-Type`、`X-Cc-Session-ID`、`X-Cc-Run-ID`、`X-Request-Id`；有 `copilot_server_branch` 时带 `X-Cc-Region` |
 | 模型目录 | ✅ | 登录后只取 `sessions/plans` 的 `data.models`；未登录用真实模型快照 |
@@ -89,11 +93,11 @@ Claude Code、Codex、Cursor 等任何支持 OpenAI 格式的客户端。
 | 工具调用 | ✅ | 原生 `tools` / `tool_calls`，不再从正文反解 |
 | 流式帧 | ✅ | `choices[].text` / `reasoning_content` / `tool_calls` / `finish_reason`，`code != Success` 即报错 |
 | 用量 | ✅ | `usage` 原样带回；`cached_tokens` / `reasoning_tokens` 归一成 OpenAI 形状 |
-| 会话缓存 | ✅ | session/run 按「账号 × 模型」缓存 1 小时；上游报会话不存在时重建一次 |
+| 会话缓存 | ✅ | 按对话 ID 隔离并缓存 1 小时；缺少 ID 时每次新建 run；过期会话重建一次 |
 | 额度 | ✅ | `credits/balance`：`total_balance` + `bonus_summary` 算已用；钱包型也给有限 `used` |
 | 签到 | ✅ | `tasks` + `tasks/{key}/claim`；已领返回 `done` |
 | 多账号 | ✅ | 按 `uid` 区分（无 uid 用 sid 尾部），不互相覆盖 |
-| 错误语义 | ✅ | 模型/参数错误 → 404；明确鉴权失败 → 401 |
+| 错误语义 | ✅ | `InvalidArgument` / 审核拦截 → 400；`PermissionDenied` → 403，纯文本尝试回退 |
 | 一次性任务·群聊 | ✅ | 网页端同款流程：`cowork_web` 会话 + WS `user.input` → 建群 → 解散（issue #5 的 400 根因已修：空会话缺真实使用信号） |
 | 一次性任务·专家/客户端 | ✅ 已验证 | v0.3.15 的 `execution_status` 生命周期（running → 对话 → completed，真实内核抓包复刻）是真根因修复；未领账号实测两任务同时翻转并自动领取（issue #5） |
 | 脚手架 | ✅ | `check.mjs` 30 通过 / 0 警告 / 0 失败；`score.mjs` 身份门通过、自动分 65/65 |
@@ -130,6 +134,7 @@ node tests/test_tasks.mjs --sid "你的 wps_sid"
 ```bash
 MAGPIE_LINGXI_MAX_PROMPT_KB=320     # 总预算，默认 320KB（约 80K token，留一半余量）
 MAGPIE_LINGXI_MAX_MESSAGE_KB=48     # 单条上限，默认 48KB
+MAGPIE_LINGXI_PLANE=cowork_web     # 可选：强制纯文本 cowork_web 通路；工具/图片请求会被拒绝
 ```
 
 > 为什么需要：网页端时代（0.2.2）靠的是同一个预算才把一个 961KB、已经彻底打不开的会话救回来。
@@ -160,11 +165,11 @@ magpie plugin add /path/to/magpie-wps-lingxi
 
 > 安装前先关掉上游同名插件：两者声明同一个 provider id `wps-lingxi`，同时启用会互相覆盖。
 
-> **关于 npm**：0.3.0 / 0.3.1 / 0.3.2 三次 `npm publish` 都只写进了元数据，tarball 一直 404
-> （`registry.npmjs.org` 上其他包正常、npm 状态页也全绿，怀疑是自动安全扫描扣住了这个包 ——
-> 它确实会读浏览器 Cookie 库、还会下载并执行远端二进制）。
-> 所以 **`npm` 上的 `latest` 已回退到能装的 `0.2.3`**（旧架构，网页端），
-> 0.3.x 请用上面的 `github:` 方式安装。等 npm 那边放行后再把 `latest` 推上去。
+> **通过 npm 安装（推荐）**：[`@kevinfx/magpie-wps-lingxi`](https://www.npmjs.com/package/@kevinfx/magpie-wps-lingxi) 当前 `latest` 为 `0.3.6`。在 Magpie 中运行：
+> ```bash
+> magpie plugin add @kevinfx/magpie-wps-lingxi
+> ```
+> 也可以直接从 GitHub 主线安装：`magpie plugin add github:KevinFX-code/magpie-wps-lingxi`.
 
 ---
 

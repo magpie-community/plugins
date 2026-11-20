@@ -235,9 +235,9 @@ bun bin/clean-login.mjs assets      # 只看已登记的资产（邮箱、手机
 bun bin/clean-login.mjs proxies add 家宽01 http 127.0.0.1 7102   # 存一条出口
 bun bin/clean-login.mjs accounts import plan                     # 预览 magpie 已有的账号
 bun bin/clean-login.mjs accounts import run --only <provider>#<recordId>
-bun bin/clean-login.mjs accounts exit <provider>#<recordId> --mode custom --proxy <proxyId>
-bun bin/clean-login.mjs accounts note <provider>#<recordId> 备用号
-bun bin/clean-login.mjs accounts delete <provider>#<recordId>
+bun bin/clean-login.mjs accounts exit <provider> <key> --mode custom --proxy <proxyId>
+bun bin/clean-login.mjs accounts note <provider> <key> 备用号
+bun bin/clean-login.mjs accounts delete <provider> <key>
 bun bin/clean-login.mjs assets add google-mail a@b.com --note 主邮箱   # 登记一条资产
 bun bin/clean-login.mjs assets get <id>                                 # 按 id 取一条
 bun bin/clean-login.mjs assets update <id> --note 备用                  # 改类型/账号/备注

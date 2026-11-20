@@ -41,13 +41,12 @@ magpie plugin add github:yimi1mi/busy-magpie
 
 工作方式：
 
-- 插件入口是 `plugin/launch.hooks.mjs`，在 `package.json` 的 `magpie.hooks` 里声明。
+- 根目录的 `package.json` 用 `magpie.middleware` 声明「中间件」分类，用 `magpie.hooks` 加载桌面启动器 `plugin/launch.hooks.mjs`。桌面挂件直接读取本机路由和用量。
 - magpie 第一次用到插件宿主时（通常是第一个 Agent 请求），查找已安装的桌面应用并启动。
 - 没安装时会自动从 GitHub 最新正式 release 下载安装包，校验 SHA-256 后安装并启动。Windows 使用 x64 安装器，静默安装到 `%LOCALAPPDATA%\Programs\Busy Magpie`；macOS 按运行架构选择 arm64 / x64 ZIP，安装到 `~/Applications/Busy Magpie.app`，无需管理员权限。
 - 下载文件保存在系统临时目录中新建的 `busy-magpie-*` 子目录。macOS 解压到 `~/Applications/.busy-magpie-install-*` 暂存目录，检查可执行文件后再整体移动到安装位置；不会覆盖已有应用，结束后清理下载和解压临时文件。下载与安装在后台进行，Agent 请求直接通过。
 - 设置 `BUSY_MAGPIE_NO_INSTALL=1` 可以关闭自动安装；`BUSY_MAGPIE_NO_LAUNCH=1` 同时关闭自动启动。
 - 下载开始、开始安装、安装完成/失败时都会发一条系统通知（Windows 用通知气泡，macOS 用通知中心）。如果系统开了专注模式，通知可能被折叠；插件日志里仍有 `[busy-magpie]` 记录。
-- `plugin/server.mjs` 是一个空 provider stub，避免 magpie 把 Electron 主进程当成供应商插件加载。
 - 如果安装在非默认目录，设置 `BUSY_MAGPIE_APP` 指向可执行文件后重启 magpie（Mac 为 `.app/Contents/MacOS/Busy Magpie`）：
 
 ```powershell
@@ -487,7 +486,7 @@ BUSY_MAGPIE_GATEWAY=http://127.0.0.1:3500 npm start
 调试渲染层：
 
 ```bash
-npx electron . --remote-debugging-port=9223
+npx electron shell --remote-debugging-port=9223
 node tools/cdp.mjs eval "document.body.innerText"
 node tools/cdp.mjs shot "artifacts/fan.png"
 ```

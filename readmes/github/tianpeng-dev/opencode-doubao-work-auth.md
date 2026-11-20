@@ -81,6 +81,56 @@ Magpie 保存的登录记录只包含配置名称、账号标识和显示名。C
 
 测试中的网络模拟仅用于异常、并发和协议边界验证。真实账号测试单独执行，不把模拟结果算作真实服务验证。尚未用第二个独立订阅账号、其他操作系统或额外购买额度包进行实际验证。
 
+## Windows 支持
+
+Windows 走纯 JS 的导入层 `lib/windows.mjs`，**不需要 Python，也不需要 uv**：`dist/index.mjs` 只依赖 `node:*` 内置模块，第三方依赖已打包进产物。
+
+| 环节 | 做法 |
+|---|---|
+| 数据根目录 | `%LOCALAPPDATA%\DoubaoWork\User Data` |
+| Cookies 位置 | `<profile>\Network\Cookies`（与 macOS 的 `<profile>/Cookies` 不同） |
+| Cookie 主密钥 | `Local State` 的 `os_crypt.encrypted_key` 去掉 `DPAPI` 前缀，交给系统 PowerShell 的 `ProtectedData::Unprotect` |
+| Cookie 解密 | AES-256-GCM（`node:crypto`），`meta.version >= 24` 时剥掉 32 字节域名哈希前缀；`v20`（App-Bound）会明确报错拒绝 |
+| 读 Cookies 库 | `bun:sqlite`（Magpie 宿主自带 bun），Node 环境回落到 `node:sqlite` |
+| `web_id` / `tea_uuid` | 直接扫 `Local Storage\leveldb` 下的 `.ldb`/`.log`，这些记录是明文 JSON 片段，多份按 `timestamp` 取最新，无需解析 LevelDB |
+| 客户端 / Chromium 版本 | `Application\DoubaoWork.exe` 与 `Application\app\DoubaoWork.exe` 的版本资源，兜底 `Local State` 的 `browser.shortcut_migration_version` |
+
+### 首次导入必须完全退出豆包工作
+
+Windows 的客户端把 Cookies 数据库开成独占句柄（实测 `FILE_SHARE_READ` / `READWRITE` / `DELETE` 全部被拒），运行中任何进程都读不到。所以**首次导入要让客户端完全退出（含托盘图标）**。导入成功后会话写进 DPAPI 加密缓存，之后客户端开着也能继续用：
+
+```
+%LOCALAPPDATA%\doubao-work-magpie\session.dpapi   # DPAPI CurrentUser 作用域，不可跨用户/跨机器复制
+```
+
+缓存只在 Windows 启用，macOS 仍走 `browser_cookie3` + Keychain，不落盘。缓存不自动刷新，客户端切换账号会因 uid 不匹配被拒绝（`account_changed`）。
+
+`import-doubao-work.ps1` 是这个流程的便利封装：等客户端退出 → 执行 `magpie plugin login doubao-work` → 按真实登录状态判定成败。用 GUI 点「导入豆包工作桌面登录」时不需要它，弹框里配置名留空即为 `auto`。
+
+注意两个 Windows PowerShell 5.1 的坑（脚本已处理）：管道/`WriteLine` 向 stdin 写入会带 CRLF，而 Magpie 按 LF 切行，收到 `auto\r` 会判成非法配置名直接退出；`2>&1` 会把原生程序的 stderr 包成 ErrorRecord，配合 `$ErrorActionPreference = "Stop"` 会中断整条管线。
+
+### 2026-11 客户端的三处协议变化
+
+改动都在本分支内，逐条实测确认：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `未支持的豆包推理强度：8`，模型 0 个 | 强度编号不固定：`自动` 是 `3=低 8=中 5=高`，其它模型是 `3/4/5/6=极高/7=最高`，GLM 没有「中」 | `parseModels` 改为按 `option.name` 映射（低/中/高/极高/最高），编号表兜底，未知档位退化成 `level-<n>` |
+| `豆包附件上传主机不在已验证的范围内` | `ApplyImageUpload` 不再返回 `*.vodupload.com`，实测在 `tos-*.douyin.com`、`tos-*.snssdk.com`、`tos-*.bytedancevod.com` 之间轮换 | 白名单扩到字节域名族，报错打印真实主机便于补充 |
+| `豆包历史列表分页游标无效`，后续请求全部 502 | `limit=50` 时服务端把 `next_conv_version` 在两个值之间来回跳，旧实现撞到重复游标即抛错，遗留清理记录会堵死后续请求 | 改为按卡片去重判断是否还有进展、`limit=20`、最多 4 页，翻不动即判定未被服务端确认 |
+
+### 验证
+
+```powershell
+node --test test/*.test.mjs                                        # 62 个用例
+$env:USERPROFILE\.cache\magpie\bun\1.4.4\magpie-bun.exe run test/windows-cookies.bun.mjs   # Cookies 整链（bun）
+magpie provider test doubao-work doubao-work-lite                  # 真实对话
+```
+
+本机实测：Windows 11 + Magpie 0.1.3962 + 豆包工作 2.36.3（Chromium 147.0.7727.149），登录成功、9 个模型、`provider test` 返回 `✓ chat`。
+
+已知边界：`channel` 仍沿用 `mac_official`（可用 `DOUBAO_WORK_CHANNEL` 覆盖做对比实验），服务端是否校验 `channel`/UA/`pc_version` 尚未验证；额度查询（`magpie quota`）在 Windows 上未单独验证。
+
 ## 开发
 
 ```sh

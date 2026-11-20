@@ -40,7 +40,7 @@
 [![Magpie](https://img.shields.io/badge/Magpie-Plugin-3177d9)](https://github.com/yetone/magpie)
 [![license](https://img.shields.io/badge/license-MIT-16845c)](./LICENSE)
 [![changelog](https://img.shields.io/badge/changelog-%E6%9B%B4%E6%96%B0%E8%AE%B0%E5%BD%95-6f7d91)](./CHANGELOG.md)
-[![version](https://img.shields.io/badge/version-0.12.8-0f6e56)](./package.json)
+[![version](https://img.shields.io/badge/version-0.12.9-0f6e56)](./package.json)
 
 ---
 
