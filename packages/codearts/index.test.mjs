@@ -3654,6 +3654,68 @@ test("signed in without MaaS, chat says which step is missing instead of sending
   assert.equal(seen.some((c) => c.url.includes("/v2/chat/completions")), false)
 })
 
+test("with autoMaasSubscribe the MaaS gateway is linked once, and the pair is kept", async () => {
+  const { record } = await officeAceAuthRecord({ modelAppKey: "", modelAppSecret: "" }, "iam::d1:user:hw0205")
+  const { fetcher, seen } = oaFetcher((url) => {
+    if (url.includes("/v1/claw/client-permission-validate")) {
+      return new Response(JSON.stringify({ subscription: { model_info: {} } }), { status: 200 })
+    }
+    if (url.includes("/v1/claw/client-subscription")) {
+      return new Response(
+        JSON.stringify({
+          subscription: {
+            model_info: {
+              model_auth_info: { model_app_key: "auto-key", model_app_secret: "auto-secret" },
+              model_api_url_base: "",
+            },
+          },
+        }),
+        { status: 200 },
+      )
+    }
+    if (url.includes("/v2/chat/completions")) return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    return undefined
+  })
+  const calls = []
+  // magpie merges what auth.set returns into the stored record; the loader reads
+  // the record again for each request, so the stub has to do the same.
+  let stored = record
+  const client = {
+    app: { log: async () => {} },
+    auth: {
+      set: async (opts) => {
+        calls.push(opts)
+        stored = { ...stored, ...opts.body }
+        return { data: true }
+      },
+    },
+  }
+  const plugin = await OfficeAceAuthPlugin({ client }, { fetch: fetcher, autoMaasSubscribe: true })
+  const loader = await plugin.auth.loader(async () => stored)
+  const response = await loader.fetch("https://api.modelarts-maas.com/v2/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "glm-5.3", messages: [] }),
+  })
+
+  assert.equal(response.status, 200)
+  // exactly one write, signed like the vendor's own client
+  const posted = seen.filter((c) => c.url.includes("/v1/claw/client-subscription"))
+  assert.equal(posted.length, 1)
+  assert.equal(posted[0].headers.get("x-subscription-type"), "v2")
+  assert.match(posted[0].headers.get("authorization"), /^SDK-HMAC-SHA256 /)
+  // the pair is written on the card's record ...
+  assert.equal(calls.length, 1)
+  const written = JSON.parse(calls[0].body.access)
+  assert.equal(written.modelAppKey, "auto-key")
+  assert.equal(written.modelAppSecret, "auto-secret")
+  // ... and the chat goes out with it, not with an empty Basic header
+  const chat = seen.find((c) => c.url.includes("/v2/chat/completions"))
+  assert.equal(
+    chat.headers.get("authorization"),
+    "Basic " + Buffer.from("auto-key:auto-secret").toString("base64"),
+  )
+})
+
 // ---- a sign-in writes only its own card's record ---------------------------
 
 /** The credential a CodeArts sign-in yields (as magpie stores it). */
