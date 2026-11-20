@@ -90,12 +90,6 @@ function mcpCommitWaitMs() {
   return 5_000
 }
 const RECLAIM_STOP_TIMEOUT_MS = 10_000
-// Repeated unmatched tool results against the same turn that made no progress:
-// attempts below the limit stay 409 (a live turn may still be waiting), the
-// limit-th attempt must end in a replay or a terminal 400, never another 409.
-const NO_PROGRESS_REPEAT_LIMIT = 3
-const NO_PROGRESS_REPEAT_WINDOW_MS = 10 * 60 * 1000
-const NO_PROGRESS_REPEAT_MAX_ENTRIES = 256
 const POOL_PRESSURE_NOTE = "agy bridge: this tool call was closed to free an agy process for another conversation; stop this turn"
 const SUPERSEDED_NOTE = "agy bridge: this tool call was superseded because the client conversation continued without it; stop this turn"
 const DROPPED_NOTE = "agy bridge: cancelled by the client, not executed; the conversation continues with the next message"
@@ -3888,26 +3882,6 @@ function logSessionEvent(proc, reason, extra, action = "session_new") {
   try { process.stderr.write("[agy-bridge] " + JSON.stringify(row) + "\n") } catch {}
 }
 
-// Per-conversation counter of consecutive unmatched tool-result requests that
-// hit the same turn while its lastProgressAt did not move. A different turn,
-// any progress, a window timeout or a reclaim restarts it from zero.
-const noProgressRepeats = new Map()
-
-function noteNoProgressRepeat(convKey, turn, now = Date.now()) {
-  let entry = noProgressRepeats.get(convKey)
-  if (!entry || entry.turnId !== turn.turnId || entry.progressAt !== turn.lastProgressAt ||
-    now - entry.firstAt > NO_PROGRESS_REPEAT_WINDOW_MS) {
-    entry = { turnId: turn.turnId, progressAt: turn.lastProgressAt, firstAt: now, attempts: 0 }
-  }
-  entry.attempts++
-  noProgressRepeats.delete(convKey)
-  noProgressRepeats.set(convKey, entry)
-  while (noProgressRepeats.size > NO_PROGRESS_REPEAT_MAX_ENTRIES) {
-    noProgressRepeats.delete(noProgressRepeats.keys().next().value)
-  }
-  return entry.attempts
-}
-
 function staleTurnVerdict(proc, turn, now = Date.now()) {
   if (!turn || turn.cancelRequested) return { stale: false, reason: "cancelling" }
   if (turn.attached) return { stale: false, reason: "attached" }
@@ -4060,7 +4034,6 @@ async function keepDroppedTurn(proc, turn, opts) {
 }
 
 async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn closed") {
-  noProgressRepeats.delete(proc.convKey)
   turn.closeNote = note
   proc.retiring = true
   proc.historyInvalid = true
@@ -4077,47 +4050,39 @@ async function reclaimStaleTurn(proc, turn, note = "agy bridge: stale tool turn 
   } finally { clearTimeout(timer) }
 }
 
-// Recheck under the same lock and start at most one replacement turn.
-// Kinds: active (409), conflict/incomplete (400), replayed, fallthrough.
-// `ctx.attempts` set means the no-progress repeat limit was reached: a quiet
-// turn is then reclaimed even if it is not provably stale (never an attached one).
+// Recheck under the same lock and start at most one replacement turn for tool
+// results no live call waits for. Kinds: active (503: the held turn streams,
+// steers or was replaced meanwhile), incomplete (400), replayed, fallthrough.
+// A held turn that only waits is left behind at once: the request carries its
+// own whole tool round, and no later request answers that turn's calls (its
+// client has moved past them), so waiting on it would only return errors.
 async function recoverStaleTurn(ctx) {
   return withAcquireLock(ctx.convKey, async () => {
     const current = pool.get(ctx.convKey)
     const held = current?.turn
-    const forced = ctx.attempts != null
-    const extra = forced ? { attempts: ctx.attempts } : {}
-    const turnId = ctx.turn?.turnId ?? null
-    if (!current || !held) {
-      if (!forced) return { kind: "fallthrough" }
-      // Another request already disposed of this turn: this duplicate must not start a second one.
-      logBridgeEvent(current, ctx.turn, "recover_refused", "turn_gone", ctx.acquireOpts, extra)
-      return { kind: "conflict", turnId }
-    }
+    if (!current || !held || held.cancelRequested) return { kind: "fallthrough" }
     if (current !== ctx.proc || held !== ctx.turn) {
-      // Another request replaced the turn while this one waited: never cancel it.
-      logBridgeEvent(current, held, "recover_refused", "turn_replaced", ctx.acquireOpts, extra)
-      return { kind: "conflict", turnId }
+      // Another request replaced the turn while this one waited: never cancel
+      // it; the client tries again against what holds the session now.
+      logBridgeEvent(current, held, "recover_refused", "turn_replaced", ctx.acquireOpts)
+      return { kind: "active", reason: "replaced" }
     }
-    if (held.cancelRequested) return { kind: "fallthrough" }
     const verdict = movedOnVerdict(held, ctx.body?.messages) ?? staleTurnVerdict(current, held)
-    // Lineage supersession belongs to acquisition of a new prompt. Unmatched
-    // results alone reclaim an unexpired owner only at the repeat limit.
-    if (!verdict.stale && (!forced || verdict.reason === "attached" || verdict.reason === "steering")) {
-      logBridgeEvent(current, held, "reject_active", verdict.reason, ctx.acquireOpts, extra)
-      return { kind: "active" }
+    if (!verdict.stale && (verdict.reason === "attached" || verdict.reason === "steering")) {
+      logBridgeEvent(current, held, "reject_active", verdict.reason, ctx.acquireOpts)
+      return { kind: "active", reason: verdict.reason }
     }
-    const reason = verdict.stale ? verdict.reason : "no_progress_repeat"
-    logBridgeEvent(current, held, "reclaim", reason, ctx.acquireOpts, extra)
-    await reclaimStaleTurn(current, held)
     const problem = replayHistoryProblem(ctx.body, ctx.resultBlocks)
     if (problem) {
-      logBridgeEvent(current, held, "replay_refused", problem, ctx.acquireOpts, extra)
-      return { kind: "incomplete", turnId }
+      logBridgeEvent(current, held, "replay_refused", problem, ctx.acquireOpts)
+      return { kind: "incomplete" }
     }
+    const reason = verdict.stale ? verdict.reason : "unmatched_results"
+    logBridgeEvent(current, held, "reclaim", reason, ctx.acquireOpts)
+    await reclaimStaleTurn(current, held)
     const { proc, history } = await acquireProcLocked(ctx.agy, ctx.convKey, ctx.acquireOpts, ctx.isFresh, true)
     const turn = await ctx.begin(proc, history)
-    logBridgeEvent(proc, turn, "replay_started", reason, ctx.acquireOpts, { ...extra, replaced_turn_id: held.turnId })
+    logBridgeEvent(proc, turn, "replay_started", reason, ctx.acquireOpts, { replaced_turn_id: held.turnId })
     return { kind: "replayed", proc, turn }
   })
 }
@@ -7416,7 +7381,6 @@ export const AntigravityBridgePlugin = async () => {
                   if (proc.turn !== turn) return jsonError(409, "agy bridge: the tool response has already completed")
                   if (turn.attached) throw new BusyError("agy bridge: this conversation already has an active response")
                   if (turn.steering) throw new BusyError("agy bridge: this conversation is already steering this tool turn")
-                  noProgressRepeats.delete(convKey) // matched results are real progress
                   const rawResults = matches.map(({ block, match }) => ({
                     block,
                     call: match.call,
@@ -7496,38 +7460,38 @@ export const AntigravityBridgePlugin = async () => {
                 }
                 const held = pool.get(convKey)
                 if (held?.turn && !held.turn.cancelRequested) {
+                  // No live MCP call waits for these results, but the
+                  // conversation's session holds a turn. A turn streaming to
+                  // another request is busy for now (503, the client tries
+                  // again once that response ends). Any other turn is left
+                  // behind: the client's own history has moved past it (a
+                  // sibling request replaced it, a resent or rewritten round,
+                  // renamed ids beside an earlier edit), so the request's own
+                  // tool round is replayed into a fresh session at once. Only
+                  // a round the request itself can't replay is refused, with
+                  // a 400 that stops retries and leaves the held turn alone.
                   const verdict = movedOnVerdict(held.turn, body.messages) ?? staleTurnVerdict(held, held.turn)
-                  let attempts
-                  if (!verdict.stale) {
-                    // An attached stream is live progress; only a quiet turn counts.
-                    if (verdict.reason === "attached" || verdict.reason === "steering") noProgressRepeats.delete(convKey)
-                    else attempts = noteNoProgressRepeat(convKey, held.turn)
-                    if (attempts == null || attempts < NO_PROGRESS_REPEAT_LIMIT) {
-                      logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts,
-                        attempts != null ? { attempts } : {})
-                      return jsonError(409, "agy bridge: no active MCP call matches these tool results")
-                    }
+                  if (!verdict.stale && (verdict.reason === "attached" || verdict.reason === "steering")) {
+                    logBridgeEvent(held, held.turn, "reject_active", verdict.reason, acquireOpts)
+                    throw new BusyError(verdict.reason === "steering"
+                      ? "agy bridge: this conversation is already steering this tool turn"
+                      : "agy bridge: this conversation already has an active response")
                   }
-                  // The held turn can never progress again, or the same unmatched
-                  // results hit it too often without progress: reclaim it and
-                  // replay this request's own tool round once, under one lock.
+                  const problem = replayHistoryProblem(body, resultBlocks)
+                  if (problem) {
+                    logBridgeEvent(held, held.turn, "replay_refused", problem, acquireOpts)
+                    throw new ConflictError("agy bridge: incomplete tool history. Stop resending it; continue from the last self-consistent message.", "tool_history_incomplete")
+                  }
                   const recovery = await recoverStaleTurn({ agy, convKey, proc: held, turn: held.turn,
-                    body, resultBlocks, acquireOpts, isFresh, begin, attempts })
+                    body, resultBlocks, acquireOpts, isFresh, begin })
                   if (recovery.kind === "replayed") return streamResponse(recovery.proc, recovery.turn, body, init.signal)
                   if (recovery.kind === "active") {
-                    return jsonError(409, "agy bridge: no active MCP call matches these tool results")
+                    throw new BusyError(recovery.reason === "steering"
+                      ? "agy bridge: this conversation is already steering this tool turn"
+                      : "agy bridge: this conversation already has an active response")
                   }
-                  if (recovery.kind === "conflict" || recovery.kind === "incomplete") {
-                    const code = recovery.kind === "conflict" ? "tool_state_conflict" : "tool_history_incomplete"
-                    const message = attempts != null
-                      ? `agy bridge: ${code}: these tool results matched no live call ${attempts} times without progress, and this conversation's tool state cannot be realigned. Stop resending them; restart from the last self-consistent user message.`
-                      : recovery.kind === "conflict"
-                        ? "agy bridge: this turn was already replaced. Stop resending this request."
-                        : "agy bridge: incomplete tool history. Stop resending it; continue from the last self-consistent message."
-                    return jsonError(400, message, code, {
-                      noRetry: true,
-                      ...(attempts != null ? { extra: { attempts, turn_id: recovery.turnId } } : {}),
-                    })
+                  if (recovery.kind === "incomplete") {
+                    throw new ConflictError("agy bridge: incomplete tool history. Stop resending it; continue from the last self-consistent message.", "tool_history_incomplete")
                   }
                   // fallthrough: the turn went away or is being cancelled; take the normal path.
                 }
@@ -7602,7 +7566,7 @@ export const AntigravityBridgePlugin = async () => {
 
 // Only permanent tool-history 400s opt out of retries. Magpie header forwarding
 // has not been verified; busy responses and existing 409s retain their semantics.
-// `extra` merges diagnostic fields (attempts, turn_id) into the error object.
+// `extra` merges diagnostic fields into the error object.
 function jsonError(status, message, code, { extra, headers, noRetry = false } = {}) {
   return new Response(
     JSON.stringify({

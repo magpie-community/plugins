@@ -469,7 +469,7 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     assert.equal(kit.acpSpawns.length, 1)
   })
 
-  // 3x unmatched tool results (NO_PROGRESS_REPEAT_LIMIT) while steering must stay 409 and never reclaim
+  // unmatched tool results while steering are busy (503, try again) and never reclaim
   await withKit({}, async (kit) => {
     kit.prompts.push(async (agent) => {
       agent.update({ sessionUpdate: "tool_call", toolCallId: "c1", status: "in_progress" })
@@ -499,7 +499,7 @@ test("steerInSession: pool pressure and repeated unmatched tool results cannot e
     }
     const steerRes = await settleResponse(steerReq)
 
-    assert.deepEqual(boguses.map((r) => r.status), [409, 409, 409])
+    assert.deepEqual(boguses.map((r) => r.status), [503, 503, 503])
     assert.equal(steerRes.status, 200)
     assert.equal(steerRes.text, "survived unmatched repeats")
     assert.equal(kit.acpSpawns.length, 1)

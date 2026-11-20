@@ -144,7 +144,7 @@ test("A6b: an agy removed after it was found is not found again", async () => {
   })
 })
 
-// ------------------------------------------------ A7 no-progress repeat limit
+// ------------------------------------------------ A7 unmatched tool rounds
 
 async function pendingToolTurn(kit, body) {
   const parsed = await readSse(await kit.request(body))
@@ -164,22 +164,16 @@ function unmatchedRound(body, { answerId = "toolu_unmatched", callId = "toolu_un
   }
 }
 
-test("A7: the third unmatched repeat against a quiet turn replays the request's own tool round", async () => {
+test("A7: an unmatched round against a quiet turn replays the request's own tool round at once", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit, { "UNMATCHED RESULT": "replayed from history" })
     const body = baseBody({ metadata: { user_id: "repeat-replay" }, messages: [{ role: "user", content: "TOOL start" }] })
     await pendingToolTurn(kit, body)
-    const unmatched = unmatchedRound(body)
-    for (const attempt of [1, 2]) {
-      const response = await kit.request(unmatched)
-      assert.equal(response.status, 409, `attempt ${attempt} must stay 409`)
-      assert.equal(response.headers.get("x-should-retry"), null)
-      await response.text()
-    }
-    assert.equal(kit.acpSpawns.length, 1, "the first two attempts must not start a process")
-    const third = await readSse(await kit.request(unmatched))
-    assert.equal(third.stopReason, "end_turn")
-    assert.equal(third.content.find((block) => block.type === "text")?.text, "replayed from history")
+    const response = await kit.request(unmatchedRound(body))
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const first = await readSse(response)
+    assert.equal(first.stopReason, "end_turn")
+    assert.equal(first.content.find((block) => block.type === "text")?.text, "replayed from history")
     assert.equal(kit.acpSpawns.length, 2, "the replay runs on a fresh process")
     assert.ok(prompts(kit).at(-1).includes("UNMATCHED RESULT"))
   })
@@ -216,38 +210,30 @@ test("A7: a turn the conversation went on without is replayed at the first unmat
   })
 })
 
-test("A7: a later round with the bridge's own id shape is not taken as the conversation moving on (#1051)", async () => {
+test("A7: a later round with the bridge's own id shape is replayed too (#1051)", async () => {
   await withKit({}, async (kit) => {
-    scriptedAgent(kit)
+    scriptedAgent(kit, { "FOREIGN RESULT": "replayed own shape" })
     const body = baseBody({ metadata: { user_id: "moved-on-own-shape" }, messages: [{ role: "user", content: "TOOL start" }] })
     const first = await pendingToolTurn(kit, body)
     const response = await kit.request(movedOnRound(body, first, "toolu_0123456789abcdef01234567"))
-    assert.equal(response.status, 409)
-    await response.text()
-    assert.equal(kit.acpSpawns.length, 1)
+    assert.equal(response.status, 200, response.status === 200 ? "" : await response.text())
+    const parsed = await readSse(response)
+    assert.equal(parsed.content.find((block) => block.type === "text")?.text, "replayed own shape")
+    assert.equal(kit.acpSpawns.length, 2)
   })
 })
 
-test("A7: a third repeat that cannot be replayed ends in a terminal 400 with attempts and turn_id", async () => {
+test("A7: an unmatched round that cannot be replayed is a terminal 400 at once", async () => {
   await withKit({}, async (kit) => {
     scriptedAgent(kit)
     const body = baseBody({ metadata: { user_id: "repeat-terminal" }, messages: [{ role: "user", content: "TOOL start" }] })
     await pendingToolTurn(kit, body)
     // The result answers an ID that its own assistant message never issued.
     const broken = unmatchedRound(body, { answerId: "toolu_answer", callId: "toolu_other" })
-    const statuses = []
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await kit.request(broken)
-      statuses.push(response.status)
-      await response.text()
-    }
-    assert.deepEqual(statuses, [409, 409])
     const terminal = await errorOf(await kit.request(broken))
     assert.equal(terminal.status, 400)
     assert.equal(terminal.retry, "false")
     assert.equal(terminal.body.error.code, "tool_history_incomplete")
-    assert.equal(terminal.body.error.attempts, 3)
-    assert.match(terminal.body.error.turn_id, /^turn_[0-9a-f]+$/)
     assert.equal(kit.acpSpawns.length, 1, "an unreplayable round never starts a process")
   })
 })
