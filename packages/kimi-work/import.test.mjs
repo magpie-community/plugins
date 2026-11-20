@@ -25,6 +25,24 @@ test('magpie offers a guided config.json import in every window language',async(
   expect(typeof p.auth.import).toBe('function');
   expect(p.auth.importFrom).toContain('daimon/config.json');
   for(const lang of ['zh','zh-TW','ja','de'])expect(p.auth.importFroms[lang]).toContain('daimon/config.json');
+  expect(p.auth.methods).toHaveLength(2);
+  expect(p.auth.methods[1]).toMatchObject({type:'oauth',label:'导入 Kimi Work 凭据（粘贴 config.json）'});
+  expect(p.auth.methods[1].prompts[0]).toMatchObject({type:'password',key:'config'});
+  expect(p.auth.methods[1].prompts[0].validate('')).toBeTruthy();
+  expect(p.auth.methods[1].prompts[0].validate(file())).toBeUndefined();
+});
+
+test('the sign-in menu also accepts pasted config.json content without reading the desktop',async()=>{
+  const {p,desktopReads}=fixture(async(url,init)=>{
+    expect(url).toBe(I.BASE+'/models');
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer '+workToken);
+    return Response.json(catalog);
+  });
+  const flow=await p.auth.methods[1].authorize({config:file()});
+  expect(flow).toMatchObject({url:'',method:'auto'});
+  const auth=await flow.callback();
+  expect(auth).toMatchObject({type:'success',imported:true,workToken,access:webToken});
+  expect(desktopReads()).toBe(0);
 });
 
 test('a selected config.json is validated and explicitly imports both Work and membership credentials',async()=>{

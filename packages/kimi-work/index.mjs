@@ -94,6 +94,22 @@ const IMPORT_FROM = {
     de: 'Wähle daimon/config.json eines bei Work angemeldeten Kimi-Desktops. Danach ist Kimi hier nicht nötig. Die sensiblen Zugangsdaten werden in magpies Auth-Speicher abgelegt; nach Ablauf des Work-Schlüssels erneut importieren.',
   },
 };
+const IMPORT_METHOD = {
+  label:'导入 Kimi Work 凭据（粘贴 config.json）',
+  labels:{
+    en:'Import Kimi Work credentials (paste config.json)',
+    'zh-TW':'匯入 Kimi Work 憑證（貼上 config.json）',
+    ja:'Kimi Work 認証情報をインポート（config.json を貼り付け）',
+    de:'Kimi-Work-Zugangsdaten importieren (config.json einfügen)',
+  },
+  message:'粘贴 daimon/config.json 的完整 JSON 内容',
+  messages:{
+    en:'Paste the complete JSON contents of daimon/config.json',
+    'zh-TW':'貼上 daimon/config.json 的完整 JSON 內容',
+    ja:'daimon/config.json の完全な JSON 内容を貼り付けてください',
+    de:'Füge den vollständigen JSON-Inhalt von daimon/config.json ein',
+  },
+};
 // spentQuota is a 403 body saying the account's allowance is used up, not
 // that the token or the model is refused (#465).
 const spentQuota = text => /resource_exhausted|usage limit|billing cycle|insufficient balance|quota/i.test(String(text??''));
@@ -692,7 +708,15 @@ function createPlugin({readSession=readDesktop,fetchImpl=globalThis.fetch,platfo
           // pair when available; older desktops still get a reference account.
           return signedIn(s);
         },
-      })}],
+      })},{
+        type:'oauth',label:IMPORT_METHOD.label,labels:IMPORT_METHOD.labels,
+        prompts:[{type:'password',key:'config',message:IMPORT_METHOD.message,messages:IMPORT_METHOD.messages,
+          placeholder:'{"credentials":{…}}',validate:v=>v&&v.trim()?undefined:'请粘贴 daimon/config.json 的内容'}],
+        authorize:async inputs=>({
+          url:'',method:'auto',instructions:'验证导入的 Kimi Work 凭据。',
+          callback:async(_,{signal}={})=>importFile(inputs?.config,signal),
+        }),
+      }],
       refreshLead:REFRESH_LEAD,
       async refresh(auth) {
         if(!hasPair(auth))return;

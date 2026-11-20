@@ -8,7 +8,7 @@ Kimi Work 的对话密钥与会员令牌是两套凭据。原实现只把会员�
 
 ## Decision
 
-使用 Magpie 已有的 `auth.import` 文件导入协议，让用户选择已登录 Work 的 Kimi 桌面版 `daimon/config.json`。导入时复用本机文件的字段校验和官方 Work origin 限制，并用文件中的 Work 密钥请求 `/models` 验证后才返回成功账号。
+使用 Magpie 已有的 `auth.import` 文件导入协议，让用户选择已登录 Work 的 Kimi 桌面版 `daimon/config.json`；同时在 `auth.methods` 中提供粘贴同一文件内容的第二种登录方案，使点击登录即可在本机读取和凭据导入之间选择。导入时复用本机文件的字段校验和官方 Work origin 限制，并用文件中的 Work 密钥请求 `/models` 验证后才返回成功账号。
 
 导入账号在同一宿主账号项中显式保存 `workToken`、会员 access/refresh token、UID 和 `imported: true`。请求、模型发现和额度读取遇到这种账号时只使用已保存凭据，不调用 `readDesktop()`。原有本机及 reference-only 账号不自动迁移，仍按原路径读取桌面文件。
 
@@ -18,7 +18,7 @@ Kimi Work 的对话密钥与会员令牌是两套凭据。原实现只把会员�
 
 用户可以把可信机器上的 Work 凭据导入未安装 Kimi 的 Magpie，省去手工粘贴 JSON 的专用界面，并复用宿主的文件选择、代理、取消和账号保存流程。代价是 Work 密钥现在会按用户显式操作保存在宿主明文认证库中；文件仍须由某台已登录 Kimi 桌面版的机器生成，跨设备有效期和撤销策略仍由 Kimi 控制。
 
-该入口是 Magpie 扩展，OpenCode 会忽略 `auth.import`，因此不宣称 OpenCode 也支持文件选择登录。
+文件选择入口是 Magpie 扩展，OpenCode 会忽略 `auth.import`；粘贴凭据的登录方法使用标准 `auth.methods`，不依赖 Magpie 的文件选择界面。
 
 ## Alternatives considered
 
@@ -30,4 +30,4 @@ Kimi Work 的对话密钥与会员令牌是两套凭据。原实现只把会员�
 
 ## Verification
 
-合成 `config.json` 测试覆盖导入声明、合法文件验证、导入后无桌面读取的对话/模型/额度请求、无 refresh token 的文件、无效 JSON/字段/origin、失效 Work 密钥和重新导入提示。既有测试继续约束本机登录不复制 Work 密钥及 reference-only 行为。未使用真实账号或真实凭据测试跨设备登录。
+合成 `config.json` 测试覆盖导入声明、登录菜单的粘贴方法、合法文件验证、导入后无桌面读取的对话/模型/额度请求、无 refresh token 的文件、无效 JSON/字段/origin、失效 Work 密钥和重新导入提示。既有测试继续约束本机登录不复制 Work 密钥及 reference-only 行为。未使用真实账号或真实凭据测试跨设备登录。
