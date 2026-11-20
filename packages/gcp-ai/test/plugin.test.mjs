@@ -697,7 +697,10 @@ const mockFetch = (projects = [{ projectId: "example-project", name: "Example Pr
     const match = parsed.pathname.match(/\/v1\/projects\/([^/]+)\/services\/aiplatform\.googleapis\.com/)
     const projectId = match ? decodeURIComponent(match[1]) : undefined
     const candidate = projects.find((p) => p.projectId === projectId)
-    const enabled = candidate ? candidate.vertexEnabled !== false : false
+    // A project the list does not name is not one this token can see. 403,
+    // not a 200 with Vertex enabled, so a direct Service Usage probe rejects it.
+    if (!candidate) return { ok: false, status: 403, json: async () => ({}) }
+    const enabled = candidate.vertexEnabled !== false
     return {
       ok: true,
       json: async () => ({ state: enabled ? "ENABLED" : "DISABLED" }),
@@ -911,6 +914,261 @@ test("an account whose project list has no Vertex-enabled project fails the sign
       assert.deepEqual(await readdir(root).catch(() => []), [])
     } finally { await login?.close(); globalThis.fetch = original }
   } finally { await fixture.close() }
+})
+
+// A second Google account, with the first already filed. Cloud Resource
+// Manager answers `projects` unless `crmStatus` is set, in which case the list
+// cannot be read and a named project is the only one a sign-in can keep.
+async function signInAnotherAccount({ projects = [], crmStatus, env = {}, options = {} } = {}) {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  const logins = []
+  const first = "first@example.com"
+  const second = "second@example.com"
+  const root = join(fixture.directory, "plugin")
+  const finish = async () => {
+    await Promise.all(logins.map((login) => login.close()))
+    globalThis.fetch = original
+    await fixture.close()
+  }
+  try {
+    const known = adcDirectoryFor(first, root)
+    await mkdir(known, { recursive: true })
+    await writeFile(join(known, "application_default_credentials.json"), JSON.stringify({ type: "authorized_user", client_id: "id", client_secret: "secret", refresh_token: "refresh" }))
+    await fixture.set({ token: first, pendingToken: second })
+    for (const [name, value] of Object.entries(env)) process.env[name] = value
+    const listed = mockFetch(projects)
+    globalThis.fetch = async (url, init) => {
+      if (crmStatus && new URL(url).host === "cloudresourcemanager.googleapis.com") return { ok: false, status: crmStatus, json: async () => ({}) }
+      return listed(url, init)
+    }
+    const login = await startLogin({ adcRoot: root, profile: join(fixture.directory, "profile"), ...options }, signInWindowOf([]))
+    logins.push(login)
+    const result = await login.result
+    return { result, root, second, finish }
+  } catch (error) {
+    await finish()
+    throw error
+  }
+}
+
+for (const variable of ["GOOGLE_CLOUD_PROJECT", "GOOGLE_VERTEX_PROJECT"]) {
+  test(`a second account does not adopt an inaccessible ${variable} from the machine`, { timeout: 30000 }, async () => {
+    const signIn = await signInAnotherAccount({
+      env: { [variable]: "first-project" },
+      projects: [
+        { projectId: "first-project", name: "First", lifecycleState: "ACTIVE", vertexEnabled: false },
+        { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+      ],
+    })
+    try {
+      assert.equal(signIn.result.account, signIn.second)
+      assert.equal(signIn.result.creditsSession, "ready")
+      assert.equal(signIn.result.project, "second-project")
+    } finally { await signIn.finish() }
+  })
+}
+
+test("a second account ignores a machine-wide project it cannot see and uses its own Vertex project", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_VERTEX_PROJECT: "first-project", GOOGLE_CLOUD_PROJECT: "other-project" },
+    projects: [{ projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true }],
+  })
+  try {
+    assert.equal(signIn.result.project, "second-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("a second account with no usable project is not registered against an inaccessible machine-wide project", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_CLOUD_PROJECT: "first-project" },
+    projects: [{ projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: false }],
+  })
+  try {
+    assert.equal(signIn.result.project, undefined)
+    assert.equal(signIn.result.creditsSession, "unavailable")
+    assert.match(signIn.result.warning, /Vertex AI enabled/)
+    assert.deepEqual((await readdir(signIn.root)).filter((name) => name.startsWith("adc-second")), [])
+  } finally { await signIn.finish() }
+})
+
+test("a machine-wide project the new account can use is kept", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_CLOUD_PROJECT: "env-project" },
+    projects: [
+      { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+      { projectId: "env-project", name: "Env", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.project, "env-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("an explicit project the new account can use beats a machine-wide project", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_CLOUD_PROJECT: "first-project" },
+    options: { project: "row-project" },
+    projects: [
+      { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+      { projectId: "row-project", name: "Row", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.project, "row-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("an explicit project the list does not mention is kept", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    options: { project: "row-project" },
+    projects: [{ projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true }],
+  })
+  try {
+    assert.equal(signIn.result.project, "row-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("an explicit project whose Vertex API is off is refused instead of registered", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_CLOUD_PROJECT: "env-project" },
+    options: { project: "row-project" },
+    projects: [
+      { projectId: "row-project", name: "Row", lifecycleState: "ACTIVE", vertexEnabled: false },
+      { projectId: "env-project", name: "Env", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.project, undefined)
+    assert.match(signIn.result.warning, /row-project does not have Vertex AI enabled/)
+    assert.deepEqual((await readdir(signIn.root)).filter((name) => name.startsWith("adc-second")), [])
+  } finally { await signIn.finish() }
+})
+
+test("an explicit project is kept when Service Usage returns 403 without scanning CRM", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  let login
+  try {
+    let crmCalled = false
+    globalThis.fetch = async (url, init) => {
+      const parsed = new URL(String(url))
+      if (parsed.host === "cloudresourcemanager.googleapis.com") {
+        crmCalled = true
+        return { ok: true, status: 200, json: async () => ({ projects: [listedProject("explicit-403-project")] }) }
+      }
+      return accountFetch({
+        "explicit@example.com": { service: { "explicit-403-project": 403 } },
+      })(url, init)
+    }
+    const root = join(fixture.directory, "plugin")
+    await fixture.set({ pendingToken: "explicit@example.com", approved: "explicit@example.com" })
+    login = await startLogin({ adcRoot: root, profile: join(fixture.directory, "profile"), project: "explicit-403-project" }, signInWindowOf([]))
+    const result = await login.result
+    assert.equal(result.project, "explicit-403-project")
+    assert.equal(result.creditsSession, "ready")
+    assert.equal(crmCalled, false)
+  } finally { await login?.close(); globalThis.fetch = original; await fixture.close() }
+})
+
+test("an explicit project is kept when Cloud Resource Manager cannot list projects", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    crmStatus: 403,
+    options: { project: "explicit-project" },
+    env: { GOOGLE_CLOUD_PROJECT: "first-project" },
+  })
+  try {
+    assert.equal(signIn.result.project, "explicit-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+    assert.doesNotMatch(signIn.result.warning ?? "", /could not be listed/)
+  } finally { await signIn.finish() }
+})
+
+test("a machine-wide project is kept when Cloud Resource Manager cannot list projects", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    crmStatus: 403,
+    env: { GOOGLE_VERTEX_PROJECT: "env-project" },
+  })
+  try {
+    assert.equal(signIn.result.project, "env-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+    assert.doesNotMatch(signIn.result.warning ?? "", /could not be listed/)
+  } finally { await signIn.finish() }
+})
+
+test("a provider row project outranks both machine-wide variables when projects cannot be listed", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    crmStatus: 403,
+    options: { rowProject: "row-project" },
+    env: { GOOGLE_VERTEX_PROJECT: "vertex-project", GOOGLE_CLOUD_PROJECT: "cloud-project" },
+  })
+  try {
+    assert.equal(signIn.result.project, "row-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("GOOGLE_VERTEX_PROJECT outranks GOOGLE_CLOUD_PROJECT when projects cannot be listed", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    crmStatus: 403,
+    env: { GOOGLE_VERTEX_PROJECT: "vertex-project", GOOGLE_CLOUD_PROJECT: "cloud-project" },
+  })
+  try {
+    assert.equal(signIn.result.project, "vertex-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("a provider row project with Vertex disabled is skipped for the account's own project", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    options: { rowProject: "row-project" },
+    projects: [
+      { projectId: "row-project", name: "Row", lifecycleState: "ACTIVE", vertexEnabled: false },
+      { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.account, signIn.second)
+    assert.equal(signIn.result.project, "second-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+    assert.equal(signIn.result.warning, undefined)
+  } finally { await signIn.finish() }
+})
+
+test("GOOGLE_CLOUD_PROJECT is selected when GOOGLE_VERTEX_PROJECT is not usable by this account", { timeout: 30000 }, async () => {
+  // second-project is first in Cloud Resource Manager's order, so collapsing
+  // the two variables to GOOGLE_VERTEX_PROJECT and then taking usable[0]
+  // would file this account under second-project.
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_VERTEX_PROJECT: "vertex-project", GOOGLE_CLOUD_PROJECT: "cloud-project" },
+    projects: [
+      { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+      { projectId: "vertex-project", name: "Vertex", lifecycleState: "ACTIVE", vertexEnabled: false },
+      { projectId: "cloud-project", name: "Cloud", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.project, "cloud-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
+})
+
+test("an inaccessible GOOGLE_VERTEX_PROJECT falls through to a usable GOOGLE_CLOUD_PROJECT", { timeout: 30000 }, async () => {
+  const signIn = await signInAnotherAccount({
+    env: { GOOGLE_VERTEX_PROJECT: "vertex-project", GOOGLE_CLOUD_PROJECT: "cloud-project" },
+    projects: [
+      { projectId: "second-project", name: "Second", lifecycleState: "ACTIVE", vertexEnabled: true },
+      { projectId: "cloud-project", name: "Cloud", lifecycleState: "ACTIVE", vertexEnabled: true },
+    ],
+  })
+  try {
+    assert.equal(signIn.result.project, "cloud-project")
+    assert.equal(signIn.result.creditsSession, "ready")
+  } finally { await signIn.finish() }
 })
 
 test("a consent page approved as another account saves nothing and keeps no ADC for the wanted one", { timeout: 30000 }, async () => {
@@ -1701,4 +1959,302 @@ test("usage accepts plugin-level aliases while provider options take precedence"
     options: { ...provider.options, consoleAccountAliases: { "old@example.com": "invalid-email" } },
   })
   assert.match(override.error, /intended Google account email/)
+})
+
+const listedProject = (projectId, vertexEnabled = true) => ({ projectId, name: projectId, lifecycleState: "ACTIVE", vertexEnabled })
+
+function accountFetch(accounts) {
+  return async (url, init) => {
+    const parsed = new URL(String(url))
+    const token = String(init?.headers?.authorization ?? "").replace(/^Bearer /, "")
+    if (parsed.host === "openidconnect.googleapis.com") {
+      return { ok: true, json: async () => ({ email: token, sub: `sub-${token}` }) }
+    }
+    const spec = accounts[token] ?? { projects: [] }
+    if (parsed.host === "cloudresourcemanager.googleapis.com") {
+      return { ok: true, status: 200, json: async () => spec.crm ?? { projects: spec.projects ?? [] } }
+    }
+    if (parsed.host === "serviceusage.googleapis.com") {
+      const id = decodeURIComponent(parsed.pathname.split("/")[3] ?? "")
+      const override = spec.service?.[id]
+      if (override === "ENABLED" || override === "DISABLED") return { ok: true, status: 200, json: async () => ({ state: override }) }
+      if (override) return { ok: false, status: override, json: async () => ({}) }
+      const listed = (spec.projects ?? []).find((project) => project.projectId === id)
+      if (!listed) return { ok: false, status: 403, json: async () => ({}) }
+      return { ok: true, json: async () => ({ state: listed.vertexEnabled === false ? "DISABLED" : "ENABLED" }) }
+    }
+    if (parsed.host === "aiplatform.googleapis.com") return { ok: true, status: 200, json: async () => ({}) }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+}
+
+const adcLogins = (calls) => calls.filter((args) => args[0] === "auth" && args[1] === "application-default" && args[2] === "login")
+
+async function recordedCalls(fixture) {
+  try { return await fixture.calls() }
+  catch (error) { if (error.code === "ENOENT") return []; throw error }
+}
+
+function installAccountFetch(accounts) {
+  let probes = 0
+  const sawProbe = deferred()
+  globalThis.fetch = async (url, init) => {
+    if (new URL(String(url)).host === "aiplatform.googleapis.com") {
+      if (++probes >= 2) sawProbe.resolve()
+      return { ok: true, status: 200, json: async () => ({}) }
+    }
+    return accountFetch(accounts)(url, init)
+  }
+  return sawProbe.promise
+}
+
+async function chromeStandIn(directory) {
+  const program = join(directory, "chrome-stand-in")
+  const log = join(directory, "chrome-stand-in.log")
+  await writeFile(program, `#!/bin/sh\nprintf '%s\\n' spawned >> ${JSON.stringify(log)}\n`, { mode: 0o755 })
+  const previous = process.env.VERTEX_CHROME_PATH
+  process.env.VERTEX_CHROME_PATH = program
+  return {
+    async spawned() { return readFile(log, "utf8").then((text) => text.includes("spawned"), () => false) },
+    restore() {
+      if (previous === undefined) delete process.env.VERTEX_CHROME_PATH
+      else process.env.VERTEX_CHROME_PATH = previous
+    },
+  }
+}
+
+async function authorizeAccount(hooks, fixture, email) {
+  await fixture.set({ pendingToken: email, approved: email })
+  const authorization = await hooks.auth.methods[0].authorize()
+  return authorization.callback()
+}
+
+test("authorize() keeps each account off a machine-wide project that account cannot use", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const chrome = await chromeStandIn(fixture.directory)
+  const original = globalThis.fetch
+  try {
+    process.env.GOOGLE_VERTEX_PROJECT = "vertex-project"
+    process.env.GOOGLE_CLOUD_PROJECT = "cloud-project"
+    const accounts = {
+      "first@example.com": { projects: [listedProject("vertex-project"), listedProject("cloud-project"), listedProject("second-project")] },
+      "second@example.com": {
+        projects: [listedProject("second-project"), listedProject("cloud-project")],
+        service: { "vertex-project": 403 },
+      },
+    }
+    const sawProbe = installAccountFetch(accounts)
+    const hooks = await plugin()
+    const config = { provider: { "gcp-ai": { options: { profile: join(fixture.directory, "chrome-profile") } } } }
+    await hooks.config(config)
+    const first = await authorizeAccount(hooks, fixture, "first@example.com")
+    const second = await authorizeAccount(hooks, fixture, "second@example.com")
+    assert.equal(first.type, "success")
+    assert.equal(first.project, "vertex-project")
+    assert.equal(first.accountId, "first@example.com")
+    assert.equal(second.type, "success")
+    assert.equal(second.project, "cloud-project")
+    assert.equal(second.creditsSession, "ready")
+    const logins = adcLogins(await recordedCalls(fixture))
+    assert.equal(logins.length, 2)
+    assert.ok(logins.every((args) => !args.some((arg) => String(arg).startsWith("--project="))))
+    delete process.env.GOOGLE_VERTEX_PROJECT
+    delete process.env.GOOGLE_CLOUD_PROJECT
+    await fixture.set({ project: "env-loader-probe-project" })
+    const loaded = await hooks.auth.loader(async () => ({ authMode: "gcloud" }))
+    assert.match(loaded.baseURL, /\/projects\/env-loader-probe-project\//)
+    assert.equal(config.provider["gcp-ai"].options.project, undefined)
+    await sawProbe
+  } finally { globalThis.fetch = original; chrome.restore(); await fixture.close() }
+})
+
+for (const [name, rowProject, projects, service] of [
+  ["has Vertex disabled", "row-disabled-project", [listedProject("row-disabled-project", false), listedProject("second-project")], {}],
+  ["is inaccessible", "row-inaccessible-project", [listedProject("second-project")], { "row-inaccessible-project": 403 }],
+]) {
+  test(`authorize() signs the next account in when the provider project ${name}`, { timeout: 30000 }, async () => {
+    const fixture = await fakeGcloud()
+    const chrome = await chromeStandIn(fixture.directory)
+    const original = globalThis.fetch
+    try {
+      const accounts = {
+        "first@example.com": { projects: [listedProject(rowProject), listedProject("second-project")] },
+        "second@example.com": { projects, service },
+      }
+      const sawProbe = installAccountFetch(accounts)
+      const hooks = await plugin()
+      const config = { provider: { "gcp-ai": { options: { project: rowProject, profile: join(fixture.directory, `chrome-profile-${name.split(" ")[0]}`) } } } }
+      await hooks.config(config)
+      const first = await authorizeAccount(hooks, fixture, "first@example.com")
+      const second = await authorizeAccount(hooks, fixture, "second@example.com")
+      assert.equal(first.type, "success")
+      assert.equal(first.project, rowProject)
+      assert.equal(second.type, "success")
+      assert.equal(second.project, "second-project")
+      assert.equal(second.creditsSession, "ready")
+      assert.equal(second.warning, undefined)
+      const logins = adcLogins(await recordedCalls(fixture))
+      assert.equal(logins.length, 2)
+      assert.ok(logins.every((args) => !args.some((arg) => String(arg).startsWith("--project="))))
+      const loaded = await hooks.auth.loader(async () => ({ authMode: "gcloud" }))
+      assert.match(loaded.baseURL, new RegExp(`/projects/${rowProject}/`))
+      assert.doesNotMatch(loaded.baseURL, /second-project/)
+      assert.equal(config.provider["gcp-ai"].options.project, rowProject)
+      await sawProbe
+    } finally { globalThis.fetch = original; chrome.restore(); await fixture.close() }
+  })
+}
+
+test("an empty Resource Manager list still keeps a project Service Usage reports as enabled", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  let login
+  try {
+    process.env.GOOGLE_VERTEX_PROJECT = "vertex-project"
+    globalThis.fetch = accountFetch({
+      "least@example.com": { crm: {}, service: { "vertex-project": "ENABLED" } },
+    })
+    const root = join(fixture.directory, "plugin")
+    await fixture.set({ pendingToken: "least@example.com", approved: "least@example.com" })
+    login = await startLogin({ adcRoot: root, profile: join(fixture.directory, "profile") }, signInWindowOf([]))
+    const result = await login.result
+    assert.equal(result.project, "vertex-project")
+    assert.equal(result.creditsSession, "ready")
+    assert.ok(adcLogins(await recordedCalls(fixture)).every((args) => !args.some((arg) => String(arg).startsWith("--project="))))
+  } finally { await login?.close(); globalThis.fetch = original; await fixture.close() }
+})
+
+test("an empty Resource Manager list rejects a project Service Usage refuses", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  let login
+  try {
+    process.env.GOOGLE_VERTEX_PROJECT = "vertex-project"
+    globalThis.fetch = accountFetch({
+      "least@example.com": { crm: {}, service: { "vertex-project": 403 } },
+    })
+    const root = join(fixture.directory, "plugin")
+    await fixture.set({ pendingToken: "least@example.com", approved: "least@example.com" })
+    login = await startLogin({ adcRoot: root, profile: join(fixture.directory, "profile") }, signInWindowOf([]))
+    const result = await login.result
+    assert.equal(result.project, undefined)
+    assert.equal(result.creditsSession, "unavailable")
+    assert.match(result.warning, /Vertex AI enabled/)
+    assert.deepEqual((await readdir(root).catch(() => [])).filter((name) => name.startsWith(".adc-pending") || name.startsWith("adc-")), [])
+  } finally { await login?.close(); globalThis.fetch = original; await fixture.close() }
+})
+
+test("an empty Resource Manager list tries GOOGLE_CLOUD_PROJECT after GOOGLE_VERTEX_PROJECT is refused", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const original = globalThis.fetch
+  let login
+  try {
+    process.env.GOOGLE_VERTEX_PROJECT = "vertex-project"
+    process.env.GOOGLE_CLOUD_PROJECT = "cloud-project"
+    globalThis.fetch = accountFetch({
+      "least@example.com": { crm: {}, service: { "vertex-project": 403, "cloud-project": "ENABLED" } },
+    })
+    const root = join(fixture.directory, "plugin")
+    await fixture.set({ pendingToken: "least@example.com", approved: "least@example.com" })
+    login = await startLogin({ adcRoot: root, profile: join(fixture.directory, "profile") }, signInWindowOf([]))
+    const result = await login.result
+    assert.equal(result.project, "cloud-project")
+    assert.equal(result.creditsSession, "ready")
+  } finally { await login?.close(); globalThis.fetch = original; await fixture.close() }
+})
+
+test("login CLI keeps --project explicit and a machine-wide project shared", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const chrome = await chromeStandIn(fixture.directory)
+  const original = globalThis.fetch
+  const previousLog = console.log
+  const previousError = console.error
+  const logs = []
+  console.log = (value) => { logs.push(String(value)) }
+  console.error = () => {}
+  try {
+    process.env.GOOGLE_CLOUD_PROJECT = "cloud-project"
+    process.env.VERTEX_CHROME_PROFILE = join(fixture.directory, "cli-profile")
+    globalThis.fetch = accountFetch({
+      "first@example.com": { projects: [listedProject("other-project"), listedProject("cloud-project")] },
+      "second@example.com": { projects: [listedProject("other-project"), listedProject("cloud-project")] },
+      "third@example.com": { projects: [listedProject("third-project")], service: { "cloud-project": 403 } },
+    })
+    await fixture.set({ pendingToken: "first@example.com", approved: "first@example.com" })
+    await main(["login"])
+    const shared = JSON.parse(logs.at(-1))
+    assert.equal(shared.project, "cloud-project")
+    assert.equal(shared.creditsSession, "ready")
+    await fixture.set({ pendingToken: "second@example.com", approved: "second@example.com" })
+    await main(["login", "--project", "explicit-project"])
+    const explicit = JSON.parse(logs.at(-1))
+    assert.equal(explicit.project, "explicit-project")
+    assert.equal(explicit.account, "second@example.com")
+    await fixture.set({ pendingToken: "third@example.com", approved: "third@example.com" })
+    await main(["login"])
+    const fallback = JSON.parse(logs.at(-1))
+    assert.equal(fallback.project, "third-project")
+    assert.equal(fallback.account, "third@example.com")
+    assert.equal(fallback.creditsSession, "ready")
+    const logins = adcLogins(await recordedCalls(fixture))
+    assert.equal(logins.length, 3)
+    assert.ok(!logins[0].some((arg) => String(arg).startsWith("--project=")))
+    assert.ok(logins[1].includes("--project=explicit-project"))
+    assert.ok(logins[1].includes("--billing-project=explicit-project"))
+    assert.ok(!logins[2].some((arg) => String(arg).startsWith("--project=")))
+    assert.equal(await chrome.spawned(), true)
+  } finally {
+    console.log = previousLog
+    console.error = previousError
+    globalThis.fetch = original
+    chrome.restore()
+    await fixture.close()
+  }
+})
+
+test("an invalid project id fails before gcloud or Chrome and leaves no staged ADC", { timeout: 30000 }, async () => {
+  const fixture = await fakeGcloud()
+  const chrome = await chromeStandIn(fixture.directory)
+  const original = globalThis.fetch
+  globalThis.fetch = async () => assert.fail("an invalid project must not call Google")
+  const root = join(fixture.directory, "plugin")
+  const visited = []
+  try {
+    const cases = [
+      { project: "bad project" },
+      { project: 123456789 },
+      { rowProject: "bad project" },
+      { rowProject: 123456789 },
+      { env: { GOOGLE_VERTEX_PROJECT: "bad project" } },
+      { env: { GOOGLE_CLOUD_PROJECT: "not a project" } },
+      { project: "explicit-project", env: { GOOGLE_CLOUD_PROJECT: "bad project" } },
+    ]
+    for (const options of cases) {
+      for (const name of ["GOOGLE_VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT"]) delete process.env[name]
+      for (const [name, value] of Object.entries(options.env ?? {})) process.env[name] = value
+      const loginOptions = { ...options }
+      delete loginOptions.env
+      const login = await startLogin({ adcRoot: root, ...loginOptions }, signInWindowOf(visited))
+      try {
+        const result = await login.result
+        assert.equal(result.project, undefined)
+        assert.match(result.warning, /project ID/)
+      } finally { await login.close() }
+    }
+    assert.equal(visited.length, 0)
+    assert.equal(adcLogins(await recordedCalls(fixture)).length, 0)
+    assert.deepEqual((await readdir(root).catch(() => [])).filter((name) => name.startsWith(".adc-pending")), [])
+    const hooks = await plugin()
+    for (const project of ["bad project", 123456789]) {
+      await hooks.config({ provider: { "gcp-ai": { options: { project } } } })
+      const authorization = await hooks.auth.methods[0].authorize()
+      const result = await authorization.callback()
+      assert.equal(result.type, "failed")
+      assert.match(result.error, /project ID/)
+    }
+    assert.equal(await chrome.spawned(), false)
+    assert.equal(adcLogins(await recordedCalls(fixture)).length, 0)
+    const managed = join(fixture.directory, ".config", "gcp-ai")
+    assert.deepEqual((await readdir(managed).catch(() => [])).filter((name) => name.startsWith(".adc-pending")), [])
+  } finally { globalThis.fetch = original; chrome.restore(); await fixture.close() }
 })

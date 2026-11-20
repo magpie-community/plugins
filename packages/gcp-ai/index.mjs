@@ -185,10 +185,20 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
         async authorize() {
           const options = settings(configured)
           options.profileDirectory ??= pluginOptions.profileDirectory
+          // settings() fills project from the row, then from a machine-wide
+          // variable. Neither is this invocation's --project. The row's value
+          // is a shared candidate: another account that cannot use it must not
+          // be bound to it or have its sign-in aborted. A non-string (a numeric
+          // project number) is kept so validateProject rejects it, rather than
+          // dropping it and signing in under some other project. The saved
+          // auth.project of one account must not be written back onto the row.
+          delete options.project
+          const rowProject = configured?.options?.project
+          if (rowProject !== undefined && rowProject !== "") options.rowProject = rowProject
           const login = await startLogin(options)
           return {
             url: "", method: "auto",
-            instructions: `A Chrome window opens on Google's consent page and you approve it there; when the plugin already has an account, it opens Google's add-account page first so you can pick which account this is. The plugin closes the window itself when gcloud finishes, so leave it open. Google must confirm the new ADC's email and stable subject (sub). A subject already present in a managed ADC is the same Google account even after an email change, so the new credentials are removed and the original ones are kept; if an existing ADC's subject cannot be confirmed, nothing is added. The project is the first of the account's projects that already has the Vertex AI API enabled, chosen automatically; with no such project the sign-in fails instead, so create one and enable the API before trying again. The sign-in expires after ten minutes.`,
+            instructions: `A Chrome window opens on Google's consent page and you approve it there; when the plugin already has an account, it opens Google's add-account page first so you can pick which account this is. The plugin closes the window itself when gcloud finishes, so leave it open. Google must confirm the new ADC's email and stable subject (sub). A subject already present in a managed ADC is the same Google account even after an email change, so the new credentials are removed and the original ones are kept; if an existing ADC's subject cannot be confirmed, nothing is added. The project is the first of the provider's project, GOOGLE_VERTEX_PROJECT and GOOGLE_CLOUD_PROJECT that this account can use with Vertex AI enabled, and otherwise the first of this account's own; a project this account cannot use is skipped, and with none the sign-in fails, so create one and enable the API before trying again. The sign-in expires after ten minutes.`,
             async callback() {
               try {
                 const identity = await login.result
@@ -198,8 +208,14 @@ export const GoogleVertexAuthPlugin = async (input = {}, pluginOptions = {}) => 
                 if (!identity.project) return { type: "failed", error: identity.warning ?? "The sign-in did not finish; nothing was saved" }
                 // This run's settings are the row's until it is restarted, so
                 // the hooks that were closed over before the sign-in still
-                // resolve to the project and profile it used.
-                configured = { ...configured, options: { ...(configured.options ?? {}), ...options } }
+                // resolve to the profile it used. The project is not one of
+                // those settings: copying it would file the next account under
+                // this account's project. rowProject is the candidate this
+                // sign-in was given, not a new row option.
+                const retained = { ...options }
+                delete retained.project
+                delete retained.rowProject
+                configured = { ...configured, options: { ...(configured.options ?? {}), ...retained } }
                 const record = { type: "success", access: "", refresh: "", expires: 0, source: "gcloud", authMode: identity.authMode, project: identity.project, billingAccount: options.billingAccount, profile: options.profile, ...(options.profileDirectory ? { profileDirectory: options.profileDirectory } : {}), creditsSession: identity.creditsSession }
                 // Each account's ADC lives in its own directory: without this
                 // the next sign-in would resolve against another account's.

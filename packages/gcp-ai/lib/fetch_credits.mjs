@@ -61,7 +61,9 @@ export async function main(args = process.argv.slice(2)) {
     console.log(JSON.stringify({ ...identity, ...(account ? { account } : {}), inferenceAuth: "token-verified" }, null, 2))
   } else if (command === "login") {
     console.error("Opening Chrome. If no Application Default Credentials exist yet, approving Google there also has gcloud write them.")
-    const login = await startLogin(options)
+    // --project is an explicit project. The machine-wide variable is not one:
+    // startLogin keeps it only when the account that just signed in can use it.
+    const login = await startLogin({ ...options, project: value("--project") })
     try {
       console.log(JSON.stringify({ ...await login.result, inferenceAuth: "token-verified" }, null, 2))
     } finally { await login.close() }
